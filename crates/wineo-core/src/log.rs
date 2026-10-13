@@ -44,10 +44,6 @@ impl Log {
         &self.path
     }
 
-    pub fn resets_path(&self) -> &Path {
-        &self.resets
-    }
-
     /// Starts a run's counter over, so each run's resets are counted on their own.
     pub fn begin(&self) -> Result<()> {
         let file = self.open_resets()?;

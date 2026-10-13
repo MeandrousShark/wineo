@@ -3,12 +3,38 @@ use std::os::unix::fs::symlink;
 use std::path::Path;
 use wineo_core::cancel::Token;
 use wineo_core::config::GlobalConfig;
-use wineo_core::import::{Cancelled, ImportProgress, ImportRequest, copy_runner, execute};
+use wineo_core::environment::Environment;
+use wineo_core::import::{
+    Cancelled, ImportProgress, ImportRequest, RunnerCopyReceipt, copy_runner_reviewed,
+    execute_reviewed, inspect_runner_copy,
+};
 use wineo_core::paths::Paths;
 
 #[path = "common/test_script.rs"]
 mod test_script;
 use test_script::write_script;
+
+// The unreviewed forms of the public imports, which only these tests call.
+fn execute(
+    paths: &Paths,
+    global: &GlobalConfig,
+    request: ImportRequest,
+    cancel: &Token,
+    progress: impl FnMut(ImportProgress),
+) -> anyhow::Result<Environment> {
+    execute_reviewed(paths, global, request, None, None, cancel, progress)
+}
+
+fn copy_runner(
+    source: impl AsRef<Path>,
+    destination_root: impl AsRef<Path>,
+    name: &str,
+    cancel: &Token,
+    progress: impl FnMut(ImportProgress),
+) -> anyhow::Result<RunnerCopyReceipt> {
+    let reviewed = inspect_runner_copy(source)?;
+    copy_runner_reviewed(&reviewed, destination_root, name, cancel, progress)
+}
 
 fn executable(path: &Path) {
     fs::create_dir_all(path.parent().unwrap()).unwrap();

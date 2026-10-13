@@ -29,13 +29,6 @@ impl SecretServiceKeyring {
         }
     }
 
-    pub fn for_account(account: &str) -> Self {
-        Self {
-            account: account.to_owned(),
-            label: format!("{SERVICE} {account} key"),
-        }
-    }
-
     fn attributes(&self) -> HashMap<&str, &str> {
         HashMap::from([("service", SERVICE), ("account", self.account.as_str())])
     }

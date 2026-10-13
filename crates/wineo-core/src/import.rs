@@ -302,19 +302,6 @@ fn inspect_impl(
     })
 }
 
-/// Execute an import after inspecting its source. This convenience form
-/// registers only the prefix and is equivalent to `execute_reviewed` with no
-/// imported settings.
-pub fn execute(
-    paths: &Paths,
-    global: &GlobalConfig,
-    request: ImportRequest,
-    cancel: &Token,
-    progress: impl FnMut(ImportProgress),
-) -> Result<Environment> {
-    execute_reviewed(paths, global, request, None, None, cancel, progress)
-}
-
 /// Execute a reviewed import. If `reviewed` is supplied, its source and
 /// fingerprint must still match when locks are held and immediately before
 /// publication.
@@ -1725,23 +1712,6 @@ pub fn inspect_runner_copy(source: impl AsRef<Path>) -> Result<RunnerCopyInspect
     })
 }
 
-pub fn copy_runner(
-    source: impl AsRef<Path>,
-    destination_root: impl AsRef<Path>,
-    name: &str,
-    cancel: &Token,
-    progress: impl FnMut(ImportProgress),
-) -> Result<RunnerCopyReceipt> {
-    copy_runner_with_review(
-        source.as_ref(),
-        destination_root.as_ref(),
-        name,
-        None,
-        cancel,
-        progress,
-    )
-}
-
 /// Copy the same runner tree that was offered in an earlier review.
 pub fn copy_runner_reviewed(
     reviewed: &RunnerCopyInspection,
@@ -2090,6 +2060,34 @@ mod tests {
     use super::*;
     use crate::components::Component;
     use crate::config::Defaults;
+
+    // The unreviewed forms, which only tests call.
+    fn execute(
+        paths: &Paths,
+        global: &GlobalConfig,
+        request: ImportRequest,
+        cancel: &Token,
+        progress: impl FnMut(ImportProgress),
+    ) -> Result<Environment> {
+        execute_reviewed(paths, global, request, None, None, cancel, progress)
+    }
+
+    fn copy_runner(
+        source: impl AsRef<Path>,
+        destination_root: impl AsRef<Path>,
+        name: &str,
+        cancel: &Token,
+        progress: impl FnMut(ImportProgress),
+    ) -> Result<RunnerCopyReceipt> {
+        copy_runner_with_review(
+            source.as_ref(),
+            destination_root.as_ref(),
+            name,
+            None,
+            cancel,
+            progress,
+        )
+    }
 
     fn paths(root: &Path) -> Paths {
         let root = root.to_owned();

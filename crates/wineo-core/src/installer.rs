@@ -529,12 +529,12 @@ fn clean_up_with(
     locked: impl FnOnce(&OperationState) -> Result<()>,
 ) -> Result<Option<Cleaned>> {
     let runtime = Runtime::new(paths, name);
-    let Some(target) = cleanup_target(paths, global, name, &runtime)? else {
+    let Some(target) = cleanup_target(&runtime)? else {
         return Ok(None);
     };
     let _guard = Locks::new(paths).acquire(Operation::Cleanup, name, &[&target.prefix])?;
     // Read again under the lock, in case another cleanup got there first.
-    let Some(target) = cleanup_target(paths, global, name, &runtime)? else {
+    let Some(target) = cleanup_target(&runtime)? else {
         return Ok(None);
     };
     let _runner_guard = if target.runner.name() == crate::runner::Runner::SYSTEM {
@@ -640,12 +640,7 @@ pub fn unresolved_message(paths: &Paths, name: &str) -> String {
 
 /// The record cleanup acts on. An unreadable record cannot identify what is
 /// safe to stop, so it remains unresolved.
-fn cleanup_target(
-    _paths: &Paths,
-    _global: &GlobalConfig,
-    _name: &str,
-    runtime: &Runtime,
-) -> Result<Option<OperationState>> {
+fn cleanup_target(runtime: &Runtime) -> Result<Option<OperationState>> {
     runtime.read_operation()
 }
 

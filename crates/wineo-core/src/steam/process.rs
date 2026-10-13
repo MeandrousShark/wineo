@@ -282,10 +282,6 @@ pub fn open_reaper(reaper: &Reaper) -> io::Result<Option<OwnedFd>> {
     Ok(Some(process.fd))
 }
 
-pub fn reaper_alive(reaper: &Reaper) -> bool {
-    open_reaper(reaper).is_ok_and(|fd| fd.is_some())
-}
-
 /// A pidfd can watch a process wineo did not spawn; waitid cannot.
 pub fn pidfd_exited(pidfd: &OwnedFd) -> io::Result<bool> {
     let mut descriptors = [PollFd::new(pidfd, PollFlags::IN)];

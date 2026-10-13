@@ -461,30 +461,6 @@ pub fn install_missing(
     )
 }
 
-pub fn install_missing_to_stderr(
-    name: &str,
-    runner: &Runner,
-    prefix: &Path,
-    env: &BTreeMap<String, String>,
-    wanted: &[String],
-    stop_timeout: u32,
-    token: &Token,
-    events: impl FnMut(WinetricksEvent),
-) -> anyhow::Result<()> {
-    install_missing_with_output(
-        name,
-        runner,
-        prefix,
-        env,
-        wanted,
-        stop_timeout,
-        token,
-        Output::Inherit,
-        true,
-        events,
-    )
-}
-
 fn install_missing_with_output(
     name: &str,
     runner: &Runner,
