@@ -858,7 +858,7 @@ fn signal_group(group: u32, signal: Signal) -> anyhow::Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use std::os::unix::fs::PermissionsExt;
+    use crate::test_script::write_script;
 
     use super::*;
 
@@ -996,8 +996,7 @@ mod tests {
         let bin = root.path().join("bin");
         fs::create_dir(&bin).unwrap();
         let script = bin.join("winetricks");
-        fs::write(&script, script_body).unwrap();
-        fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();
+        write_script(&script, script_body);
         let path = std::env::join_paths(std::iter::once(bin.clone()).chain(std::env::split_paths(
             &std::env::var_os("PATH").unwrap_or_default(),
         )))
@@ -1191,12 +1190,10 @@ mod tests {
         let bin = root.path().join("bin");
         fs::create_dir(&bin).unwrap();
         let script = bin.join("winetricks");
-        fs::write(
+        write_script(
             &script,
             "#!/bin/sh\ntouch \"$WINEPREFIX/partial\"\ntrap 'rm -f \"$WINEPREFIX/partial\"; exit 130' INT\nwhile :; do sleep 0.05; done\n",
-        )
-        .unwrap();
-        fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();
+        );
         let path = std::env::join_paths(std::iter::once(bin.clone()).chain(std::env::split_paths(
             &std::env::var_os("PATH").unwrap_or_default(),
         )))

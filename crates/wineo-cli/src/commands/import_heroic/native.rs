@@ -349,9 +349,10 @@ pub(super) fn list_lines(candidate: &HeroicCandidate) {
 
 #[cfg(test)]
 mod tests {
+    use crate::test_script::write_script;
     use std::cell::Cell;
     use std::fs;
-    use std::os::unix::fs::PermissionsExt;
+
     use std::path::Path;
 
     use wineo_core::steamgriddb::{Key, KeySource};
@@ -369,8 +370,7 @@ mod tests {
         fs::create_dir_all(heroic.join("sideload_apps")).unwrap();
         let exe = root.join("games/dusklight");
         fs::create_dir_all(exe.parent().unwrap()).unwrap();
-        fs::write(&exe, "#!/bin/sh\n").unwrap();
-        fs::set_permissions(&exe, fs::Permissions::from_mode(0o755)).unwrap();
+        write_script(&exe, "#!/bin/sh\n");
         fs::write(
             heroic.join("sideload_apps/library.json"),
             format!(

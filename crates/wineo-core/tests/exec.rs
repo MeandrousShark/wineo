@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 use std::fs;
-use std::os::unix::fs::{PermissionsExt, symlink};
+use std::os::unix::fs::symlink;
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
@@ -17,6 +17,9 @@ use wineo_core::operation::{Locks, Operation};
 use wineo_core::paths::Paths;
 use wineo_core::runtime::{RunMode, RunState, Runtime, exit_code};
 
+#[path = "common/test_script.rs"]
+mod test_script;
+use test_script::write_script;
 #[allow(dead_code)]
 #[path = "common/runners.rs"]
 mod runners;
@@ -66,8 +69,7 @@ fn paths(root: &Path) -> Paths {
 
 fn script(path: &Path, body: &str) {
     fs::create_dir_all(path.parent().unwrap()).unwrap();
-    fs::write(path, body).unwrap();
-    fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
+    write_script(path, body);
 }
 
 impl Fixture {

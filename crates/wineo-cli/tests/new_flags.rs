@@ -4,15 +4,13 @@
 mod common;
 
 use std::fs;
-use std::os::unix::fs::PermissionsExt;
 
 use common::*;
 
 fn executable(f: &Fixture, path: &str) -> std::path::PathBuf {
     let exe = f.root.path().join(path);
     fs::create_dir_all(exe.parent().unwrap()).unwrap();
-    fs::write(&exe, "#!/bin/sh\nexit 0\n").unwrap();
-    fs::set_permissions(&exe, fs::Permissions::from_mode(0o755)).unwrap();
+    write_script(&exe, "#!/bin/sh\nexit 0\n");
     exe
 }
 

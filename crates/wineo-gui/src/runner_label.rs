@@ -145,15 +145,14 @@ pub(crate) fn offer_card<'a, M: Clone + 'static>(
 /// A Proton build in a fake Steam's compatibility tools under `home`.
 #[cfg(test)]
 pub(crate) fn fake_steam_build(home: &std::path::Path, name: &str) -> std::path::PathBuf {
+    use crate::test_script::write_script;
     use std::fs;
-    use std::os::unix::fs::PermissionsExt;
 
     let dir = home.join(".steam/root/compatibilitytools.d").join(name);
     for program in ["proton", "files/bin/wine", "files/bin/wineserver"] {
         let file = dir.join(program);
         fs::create_dir_all(file.parent().unwrap()).unwrap();
-        fs::write(&file, "#!/bin/sh\nexit 0\n").unwrap();
-        fs::set_permissions(file, fs::Permissions::from_mode(0o755)).unwrap();
+        write_script(&file, "#!/bin/sh\nexit 0\n");
     }
     dir
 }

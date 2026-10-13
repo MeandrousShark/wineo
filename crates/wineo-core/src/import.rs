@@ -2069,6 +2069,7 @@ fn resolve_staged_path(
 
 #[cfg(test)]
 mod tests {
+    use crate::test_script::write_script;
     use std::ffi::OsString;
     use std::os::unix::fs::symlink;
 
@@ -2216,8 +2217,7 @@ mod tests {
         fs::create_dir_all(dir.join("bin")).unwrap();
         for executable in ["wine", "wineserver"] {
             let path = dir.join("bin").join(executable);
-            fs::write(&path, "#!/bin/sh\n").unwrap();
-            fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
+            write_script(&path, "#!/bin/sh\n");
         }
     }
 
@@ -2225,12 +2225,10 @@ mod tests {
         let dir = root.join(name);
         fs::create_dir_all(dir.join("files/bin")).unwrap();
         let proton = dir.join("proton");
-        fs::write(&proton, "#!/bin/sh\n").unwrap();
-        fs::set_permissions(&proton, fs::Permissions::from_mode(0o755)).unwrap();
+        write_script(&proton, "#!/bin/sh\n");
         for executable in ["wine", "wineserver"] {
             let path = dir.join("files/bin").join(executable);
-            fs::write(&path, "#!/bin/sh\n").unwrap();
-            fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
+            write_script(&path, "#!/bin/sh\n");
         }
         fs::write(dir.join("version"), format!("1 {name}\n")).unwrap();
     }
@@ -3021,13 +3019,11 @@ mod tests {
         let source = root.path().join("wine-build");
         let reviewed = inspect_runner_copy(&source).unwrap();
         fs::remove_dir_all(source.join("bin")).unwrap();
-        fs::write(source.join("proton"), "#!/bin/sh\n").unwrap();
-        fs::set_permissions(source.join("proton"), fs::Permissions::from_mode(0o755)).unwrap();
+        write_script(source.join("proton"), "#!/bin/sh\n");
         fs::create_dir_all(source.join("files/bin")).unwrap();
         for name in ["wine", "wineserver"] {
             let path = source.join("files/bin").join(name);
-            fs::write(&path, "#!/bin/sh\n").unwrap();
-            fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
+            write_script(&path, "#!/bin/sh\n");
         }
         let destination = root.path().join("installed");
         let error =

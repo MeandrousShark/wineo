@@ -1,5 +1,6 @@
+use crate::test_script::write_executable;
 use std::ffi::OsString;
-use std::os::unix::fs::{PermissionsExt, symlink};
+use std::os::unix::fs::symlink;
 
 use super::*;
 use crate::config::GlobalConfig;
@@ -31,9 +32,8 @@ fn runners(home: &Path) -> Runners {
 
 fn file(path: &Path, contents: &str, executable: bool) {
     fs::create_dir_all(path.parent().unwrap()).unwrap();
-    fs::write(path, contents).unwrap();
     let mode = if executable { 0o755 } else { 0o644 };
-    fs::set_permissions(path, fs::Permissions::from_mode(mode)).unwrap();
+    write_executable(path, contents, mode);
 }
 
 /// Heroic's folders only count once Heroic has written its config.

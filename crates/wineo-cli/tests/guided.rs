@@ -5,7 +5,7 @@ mod common;
 
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write};
-use std::os::unix::fs::{OpenOptionsExt, PermissionsExt, symlink};
+use std::os::unix::fs::{OpenOptionsExt, symlink};
 use std::process::{Child, Command, ExitStatus, Stdio};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
@@ -336,11 +336,10 @@ fn heroic_runner_copy_preserves_dependencies_and_survives_later_cancellation() {
         let source = f.root.path().join("heroic runner");
         fs::create_dir_all(source.join("bin")).unwrap();
         for file in ["wine", "wineserver"] {
-            fs::copy(
-                f.root.path().join("bin").join(file),
+            write_script(
                 source.join("bin").join(file),
-            )
-            .unwrap();
+                fs::read(f.root.path().join("bin").join(file)).unwrap(),
+            );
         }
         fs::write(
             heroic.join("GamesConfig/a.json"),
@@ -1379,8 +1378,7 @@ fn a_failed_creation_says_nothing_was_registered() {
         ),
         ("wineserver", "#!/bin/sh\nexit 0\n"),
     ] {
-        fs::write(bin.join(file), script).unwrap();
-        fs::set_permissions(bin.join(file), fs::Permissions::from_mode(0o755)).unwrap();
+        write_script(bin.join(file), script);
     }
     let mut pty = f.new_guided(&["--runner", "broken"]);
     plain_answers_prefilled(&mut pty, "game", "3");
@@ -1578,8 +1576,7 @@ fn setup_explains_a_prefix_it_cant_build_without_offering() {
 fn native_game(f: &Fixture) -> std::path::PathBuf {
     let exe = f.root.path().join("games/Dusklight/dusklight.sh");
     fs::create_dir_all(exe.parent().unwrap()).unwrap();
-    fs::write(&exe, "#!/bin/sh\nexit 0\n").unwrap();
-    fs::set_permissions(&exe, fs::Permissions::from_mode(0o755)).unwrap();
+    write_script(&exe, "#!/bin/sh\nexit 0\n");
     exe
 }
 
@@ -1708,8 +1705,7 @@ fn guided_new_with_exe_prefills_and_picks_the_wine_existing_target() {
     let f = Fixture::new();
     let exe = f.root.path().join("games/Palworld/start.sh");
     fs::create_dir_all(exe.parent().unwrap()).unwrap();
-    fs::write(&exe, "#!/bin/sh\nexit 0\n").unwrap();
-    fs::set_permissions(&exe, fs::Permissions::from_mode(0o755)).unwrap();
+    write_script(&exe, "#!/bin/sh\nexit 0\n");
 
     let mut pty = f.new_guided(&["--exe", exe.to_str().unwrap()]);
     pick_wine(&mut pty);

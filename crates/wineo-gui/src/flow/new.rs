@@ -2328,8 +2328,8 @@ fn apply_art(paths: &Paths, name: &str, art: &artwork::Draft, report: &mut Repor
 
 #[cfg(test)]
 mod tests {
+    use crate::test_script::write_script;
     use std::ffi::OsString;
-    use std::os::unix::fs::PermissionsExt;
 
     use super::*;
 
@@ -2377,12 +2377,12 @@ mod tests {
             .join("bin");
         fs::create_dir_all(&bin).unwrap();
         let wine = bin.join("wine");
-        fs::write(&wine, "#!/bin/sh\nif [ \"$1\" = wineboot ]; then\n  mkdir -p \"$WINEPREFIX/drive_c\"\n  printf 'WINE REGISTRY Version 2\\n' > \"$WINEPREFIX/system.reg\"\nfi\nexit 0\n").unwrap();
+        write_script(
+            &wine,
+            "#!/bin/sh\nif [ \"$1\" = wineboot ]; then\n  mkdir -p \"$WINEPREFIX/drive_c\"\n  printf 'WINE REGISTRY Version 2\\n' > \"$WINEPREFIX/system.reg\"\nfi\nexit 0\n",
+        );
         let wineserver = bin.join("wineserver");
-        fs::write(&wineserver, "#!/bin/sh\nexit 0\n").unwrap();
-        for path in [&wine, &wineserver] {
-            fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
-        }
+        write_script(&wineserver, "#!/bin/sh\nexit 0\n");
     }
 
     #[test]
@@ -2551,8 +2551,7 @@ mod tests {
         let paths =
             Paths::from_lookup(|key| (key == "HOME").then(|| OsString::from(root.path()))).unwrap();
         let exe = root.path().join("game.sh");
-        fs::write(&exe, "#!/bin/sh\n").unwrap();
-        fs::set_permissions(&exe, fs::Permissions::from_mode(0o755)).unwrap();
+        write_script(&exe, "#!/bin/sh\n");
         let draft = Draft {
             title: "Half-Life 2".to_owned(),
             kind: Kind::Native,
@@ -2727,7 +2726,7 @@ mod tests {
             .runner_root(&paths)
             .unwrap()
             .join("fake/bin/wine");
-        fs::write(
+        write_script(
             &wine,
             format!(
                 "#!/bin/sh\ncase \"$*\" in\n\
@@ -2736,8 +2735,7 @@ mod tests {
                  *setup.exe*) {installer} ;;\n\
                  esac\n"
             ),
-        )
-        .unwrap();
+        );
         let installer = root.path().join("setup.exe");
         fs::write(&installer, "fixture").unwrap();
         let draft = Draft {

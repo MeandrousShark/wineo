@@ -1,15 +1,18 @@
 use std::fs;
-use std::os::unix::fs::{PermissionsExt, symlink};
+use std::os::unix::fs::symlink;
 use std::path::Path;
 use wineo_core::cancel::Token;
 use wineo_core::config::GlobalConfig;
 use wineo_core::import::{Cancelled, ImportProgress, ImportRequest, copy_runner, execute};
 use wineo_core::paths::Paths;
 
+#[path = "common/test_script.rs"]
+mod test_script;
+use test_script::write_script;
+
 fn executable(path: &Path) {
     fs::create_dir_all(path.parent().unwrap()).unwrap();
-    fs::write(path, "not executed by import").unwrap();
-    fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
+    write_script(path, "not executed by import");
 }
 fn paths(root: &Path) -> Paths {
     Paths::from_lookup(|key| (key == "HOME").then(|| root.as_os_str().to_owned())).unwrap()

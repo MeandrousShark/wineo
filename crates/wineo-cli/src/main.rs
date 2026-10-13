@@ -40,6 +40,9 @@ mod wizard;
 #[cfg(test)]
 #[path = "../tests/common/snapshot.rs"]
 mod snapshot;
+#[cfg(test)]
+#[path = "../../wineo-core/tests/common/test_script.rs"]
+mod test_script;
 
 use std::path::PathBuf;
 use std::process::ExitCode;

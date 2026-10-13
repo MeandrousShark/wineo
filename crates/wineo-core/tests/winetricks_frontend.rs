@@ -1,6 +1,5 @@
 use std::collections::BTreeMap;
 use std::fs;
-use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use std::process::Command;
 
@@ -12,10 +11,13 @@ use wineo_core::winetricks::{self, EnsureEvent, EnsureOutput, WinetricksEvent};
 #[path = "common/runners.rs"]
 mod runners;
 
+#[path = "common/test_script.rs"]
+mod test_script;
+use test_script::write_script;
+
 fn script(path: &Path, body: &str) {
     fs::create_dir_all(path.parent().unwrap()).unwrap();
-    fs::write(path, body).unwrap();
-    fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
+    write_script(path, body);
 }
 
 #[test]

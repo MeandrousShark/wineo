@@ -1,6 +1,6 @@
+use crate::test_script::write_script;
 use std::collections::BTreeMap;
 use std::ffi::OsString;
-use std::os::unix::fs::PermissionsExt;
 use std::sync::{Arc, Barrier};
 
 use tempfile::TempDir;
@@ -96,8 +96,7 @@ impl Fixture {
         fs::create_dir_all(&runner).unwrap();
         for executable in ["wine", "wineserver"] {
             let path = runner.join(executable);
-            fs::write(&path, "#!/bin/sh\n").unwrap();
-            fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
+            write_script(&path, "#!/bin/sh\n");
         }
         let global = GlobalConfig {
             defaults: Defaults {
@@ -154,8 +153,7 @@ impl Fixture {
         )
         .unwrap();
         let start = dir.join("start.sh");
-        fs::write(&start, "#!/bin/sh\n").unwrap();
-        fs::set_permissions(&start, fs::Permissions::from_mode(0o755)).unwrap();
+        write_script(&start, "#!/bin/sh\n");
         self.install(serde_json::json!({
             "platform": "linux", "executable": "", "install_path": dir,
             "install_size": "5.03 GiB", "is_dlc": false, "version": "1.6.4871 rev588",
@@ -1357,8 +1355,7 @@ fn a_target_edited_after_matching_is_not_attached() {
     let migration = fx.migration(RIMWORLD);
     let paths = fx.paths.clone();
     let other = fx.path("unrelated.sh");
-    fs::write(&other, "#!/bin/sh\n").unwrap();
-    fs::set_permissions(&other, fs::Permissions::from_mode(0o755)).unwrap();
+    write_script(&other, "#!/bin/sh\n");
     // A target edit doesn't take the operation lock, so it can land after
     // matching, while migration holds the folder's locks.
     on("before_record", move || {

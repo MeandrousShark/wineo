@@ -1,9 +1,10 @@
 use super::*;
+use crate::test_script::write_script;
 use crate::{removal, sidebar};
 use iced::event::Status;
 use iced::keyboard::{Key, Modifiers, key::Named};
 use std::fs;
-use std::os::unix::fs::{MetadataExt, PermissionsExt};
+use std::os::unix::fs::MetadataExt;
 use wineo_core::paths::Paths;
 use wineo_core::trash;
 
@@ -251,8 +252,7 @@ fn missing_prefix_is_not_described_as_left_in_place_or_included() {
 fn restore_partial_success_stays_visible_after_the_entry_is_removed() {
     let (root, mut app) = fixture();
     let exe = root.path().join("game.sh");
-    fs::write(&exe, "#!/bin/sh\nexit 0\n").unwrap();
-    fs::set_permissions(&exe, fs::Permissions::from_mode(0o755)).unwrap();
+    write_script(&exe, "#!/bin/sh\nexit 0\n");
     let config = app.paths.environment_config("desktop-game");
     fs::create_dir_all(config.parent().unwrap()).unwrap();
     fs::write(

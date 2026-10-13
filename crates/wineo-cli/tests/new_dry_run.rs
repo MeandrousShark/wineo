@@ -3,7 +3,6 @@
 mod common;
 
 use std::fs;
-use std::os::unix::fs::PermissionsExt;
 use std::process::Output;
 
 use common::*;
@@ -16,7 +15,7 @@ printf '%s %s\n' "$0" "$*" >>"$WINEO_TEST_RUNNER_MARKER"
 exit 97
 "#;
     for runner in ["wine", "wineserver", "umu-run"] {
-        fs::write(f.root.path().join("bin").join(runner), script).unwrap();
+        write_script(f.root.path().join("bin").join(runner), script);
     }
 }
 
@@ -57,8 +56,7 @@ fn dry_run_with_home(f: &Fixture, args: &[&str], at_home: bool) -> Output {
 fn executable(f: &Fixture, relative: &str) -> String {
     let path = f.root.path().join(relative);
     fs::create_dir_all(path.parent().unwrap()).unwrap();
-    fs::write(&path, "game executable").unwrap();
-    fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
+    write_script(&path, "game executable");
     path.display().to_string()
 }
 

@@ -1,12 +1,11 @@
 mod common;
 
 use std::fs;
-use std::os::unix::fs::PermissionsExt;
 use std::os::unix::process::CommandExt;
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 
-use common::{Fixture, assert_success};
+use common::{Fixture, assert_success, write_script};
 use wineo_core::config::{EnvironmentConfig, GlobalConfig};
 use wineo_core::environment::Environment;
 use wineo_core::operation::Operation;
@@ -25,8 +24,7 @@ fn complete_proton(f: &Fixture, name: &str) {
     fs::create_dir_all(&bin).unwrap();
     for name in ["wine", "wineserver"] {
         let path = bin.join(name);
-        fs::write(&path, "#!/bin/sh\nexit 0\n").unwrap();
-        fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
+        write_script(&path, "#!/bin/sh\nexit 0\n");
     }
 }
 fn paths(f: &Fixture) -> Paths {

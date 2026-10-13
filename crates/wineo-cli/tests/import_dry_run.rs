@@ -1,12 +1,11 @@
 mod common;
 
 use std::fs;
-use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
 use common::snapshot::Snapshot;
-use common::{Fixture, assert_success, stderr, stdout};
+use common::{Fixture, assert_success, stderr, stdout, write_script};
 
 const RUNNER_MARKER: &str = "WINEO_TEST_RUNNER_MARKER";
 
@@ -39,8 +38,7 @@ fn install_guarded_wine(f: &Fixture) {
 }
 
 fn write_executable(path: &Path, text: &str) {
-    fs::write(path, text).unwrap();
-    fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
+    write_script(path, text);
 }
 
 fn run_with(f: &Fixture, args: &[&str], configure: impl FnOnce(&mut Command)) -> Output {
