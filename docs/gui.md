@@ -122,16 +122,18 @@ uninstalling it.` The panel's hero and logo art are dimmed for a game that
 isn't installed, like its card.
 
 A [GOG game](gog.md) shows an **Update** row in its panel: **Up to date**,
-**Update available**, **Update on GOG**, or **Can't compare**, with a line
-for Windows games saying their updates come in a later release. Native games
-with an update get an **Update available** badge on their poster and
+**Update available**, **Update on GOG**, or **Can't compare**. Games with
+an update, native or Windows installer games, get an **Update available** badge on their poster and
 **Update** in the Actions and right-click menus. **Update** opens a page with
 the same review as `wineo update NAME` (versions, download size, and the
 unpacked estimate), then download, verify, unpack, and publish progress,
 then what changed and the lists of your files it moved aside, kept, or
-overwrote. Planning and updating both count as work for Back, Cancel, and
-closing the window. A game whose last update was interrupted has a **Finish
-update** badge and button in place of Play, and another environment running
+overwrote. A Windows game's update shows each installer as it runs, and if
+one quits before installing anything, the page asks once whether to open
+its own setup window. Planning and updating both count as work for Back,
+Cancel, and closing the window. A game whose last update was interrupted has a **Finish
+update** badge and button in place of Play (**Finish install** for an
+interrupted install), and another environment running
 from its folder can't play and says which game to finish. Once after the
 app starts, when you're logged in to GOG and not in a portable folder, it
 checks your GOG games for updates in the background; a failure only goes to
@@ -458,12 +460,30 @@ finish page counts the results like `wineo import steam --all`: `Imported 1
 of 2 games.` In a portable folder it refuses: `Steam games can't be imported
 into a portable folder.`
 
-**Import from GOG** lists the GOG games Heroic installed, to move into
-wineo like `wineo import gog` (see [GOG games](gog.md)). Games already moved
-say `Already migrated as NAME.`, and entries Heroic can't describe, or a
+**Import from GOG** shows every GOG game you own, as tiles, to install or
+to move from Heroic like `wineo import gog` (see [GOG games](gog.md)).
+Logged out, it offers only the games Heroic installed and says to log in.
+Games already in wineo say `Installed as NAME.` or `Already migrated as
+NAME.`, an install that stopped before its environment was saved shows
+`Install didn't finish` and can be finished, and games
+Heroic installed say `In Heroic`. Heroic's issues, and entries Heroic can't describe, or a
 game two Heroic configs put in different folders, show as issues instead of
 disappearing. A game both a native and a Flatpak Heroic list in one folder
-shows once. Picking one opens a review: the environment it attaches to or
+shows once.
+
+Picking a game you own opens the install review: the environment it
+creates, the folder (with **Browse...**), the platform when GOG offers
+both, the language (the setting, or one you type; Enter checks it), the
+language it actually installs in, a runner and arch for Windows, the
+version, the DLC you own, and the download and installed sizes as
+estimates. **Install** stays off until the review matches what you've
+typed. Then come download and install progress, with **Cancel** and
+**Force stop**, then the result. A Windows game whose info file names no
+program offers a list of the programs it installed, the game's own folder
+first. Back from the result returns to the library with the game
+selected.
+
+Picking a game Heroic installed opens a review: the environment it attaches to or
 creates, the folder, track, version, language, DLC, and for a new Windows
 environment the prefix (Heroic's, kept where it is) and a runner choice
 with the same copy and download offers as Heroic import. When another
@@ -612,7 +632,10 @@ in your browser and shows its address with **Copy link**, then a masked
 import gog --login`; what you paste is never shown or logged. **Log out**,
 shown while you're logged in, removes the login and that account's owned-games list. Both run outside
 the Save bar, and their result shows if you leave and come back. The
-section works in a portable folder too.
+section works in a portable folder too. **Games folder** (with
+**Browse...**) and **GOG language** (a locale tag like `fr-FR`) set where
+and in what language games install; they save with the Save bar, and a
+portable folder leaves them alone.
 
 ## Keyboard
 

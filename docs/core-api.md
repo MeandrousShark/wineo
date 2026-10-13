@@ -344,11 +344,14 @@ an hour unless `refresh` is set.
 - A `Status` has the environment, game id, title, folder, platform, track,
   language, `installed` and `available` (versions, or builds on the Galaxy
   track), `state` (`UpToDate`, `Available`, `OnGog`, `CantCompare`, whose
-  `as_str()` is the JSON `update` value), `applicable` (true only for a
-  native game with an update), `reason`, `unfinished` (a journal is
+  `as_str()` is the JSON `update` value), `applicable` (true for a native or
+  Windows installer game with an update), `reason`, `unfinished` (a journal is
   present, so the game needs finishing before it launches), `warnings`,
   and `dlc` (`DlcStatus` per DLC, with `Unknown` for a migrated DLC whose
-  version Heroic never recorded). A `DlcStatus` has GOG's `title` and the
+  version Heroic never recorded and `NotInstalled` for one you own that GOG
+  offers but isn't installed). Checks ask `Client::owned_ids` which DLC you
+  own only when GOG lists DLC the folder doesn't record; if that fails,
+  nothing new is listed and a warning says so. A `DlcStatus` has GOG's `title` and the
   folder's `name`; `label(base_title)` gives `NAME (ID)`.
 - Status comes from the last committed state even when a journal is
   present. A Galaxy-tracked game whose `goggame-<id>.info` shows a newer
@@ -367,8 +370,9 @@ an hour unless `refresh` is set.
   `folder::folder_holding` to see, without locks, whether another game's
   unfinished update blocks it.
 
-Updating a native game, reinstalling it, or finishing an interrupted one
-goes through `gog::update::plan` and `apply`:
+Updating a native or Windows installer game, reinstalling it, or finishing
+an interrupted update or install goes through `gog::update::plan` and
+`apply`:
 
 - `plan(paths, session, name, Options { reinstall, refresh }, &token) ->
   Plan` reads only. It returns `UpToDate` or `Update(Pending)`, which says
@@ -389,9 +393,14 @@ goes through `gog::update::plan` and `apply`:
   paths, as `.wineo-saved`), kept (old files you changed), and overwritten
   (shipped files you changed, and on a migrated game's first rebuild, any
   file that differed from the new one).
-- Windows games refuse (`UpdateError::WindowsInstaller` names plan 0050,
-  `Galaxy` plan 0051), as do `install` and `repair` journals from later
-  releases (`LaterRelease`). `Running` means the environment is running,
+- Windows installer games run the full installer over the game, then each
+  changed DLC's, holding the environment and prefix reserved from the
+  journal to the commit, syncing before it, and never deleting files after
+  a failure (`gog::update::windows`). Exit codes are classified as
+  `SetupExit`; a base installer that never started gives
+  `SetupError::NotStarted { wizard }`, and `Options.wizard` replans to run
+  its own setup window once. Galaxy games refuse (`Galaxy`, plan 0051), as
+  do `repair` journals (`LaterRelease`). `Running` means the environment is running,
   `Changed` that the folder changed since planning, and
   `Canceled { journal }` says whether a journal was left for recovery.
 - Downloaded packages live in `Paths::gog_download_cache()` and are removed
@@ -402,6 +411,28 @@ goes through `gog::update::plan` and `apply`:
   being written down. `product::load_with(.., save: false)` reads details
   without caching them. `account::Session::open` creates no files; the
   credentials lock appears only when a login, logout, or renewal saves.
+
+### GOG installs
+
+`gog::update::install` installs a game you own into a fresh folder as a new
+environment with `gog_id`, native or Windows.
+
+- `plan(paths, session, Request, &token) -> Plan` reads only. `Request`
+  names the game and optionally the platform, language (a locale tag),
+  runner, arch, folder, and `wizard`. It refuses a portable root, a taken
+  name, a non-empty or overlapping folder, and another environment's
+  pending install. An environment's own unfinished install is resumed from
+  its journal first, without GOG when its packages are cached. DLC you own
+  come from `Client::owned_ids`, in the base game's installer language, else
+  English, else `Unavailable`. Sizes are estimates.
+- `apply` / `apply_with_events` downloads everything first, checks space,
+  takes the adoption, operation, in-use, and state locks, rechecks, writes
+  the folder's state with an `install` journal before the environment's
+  config, then unpacks a native game or runs the Windows installers through
+  `create::create_and_install_held`, and commits with `source = "install"`.
+  Frontends run `gog::extras::import` and desktop entries afterwards.
+- `folder::forget` also drops an `install` journal whose owner never got a
+  config.
 
 `gog::names` names products for display. `product_names(folder)` reads the
 `name` of each `goggame-<id>.info` in the folder and its `game/` directory,

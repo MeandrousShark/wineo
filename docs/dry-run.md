@@ -68,7 +68,8 @@ heroic --game` prints the game's summary.
   preview, and the dry run exits 1, like the real run's summary.
 
 `import gog --game`, `--all`, and the picker print the same review as the
-real migration and change nothing. A dry run may renew your GOG login and
+real migration or install and change nothing; an install's dry run
+downloads nothing and doesn't cache GOG's details. A dry run may renew your GOG login and
 save the new one, since GOG can retire the old one when it hands out
 another; it changes nothing else. `import gog --all --dry-run` reports a
 game that would fail as `TITLE: would fail: REASON` and exits 1, like

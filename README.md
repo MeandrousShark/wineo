@@ -31,8 +31,9 @@ wineo stop hades
 - **Steam games.** Bring [Steam games](docs/steam.md) into the library,
   installed or just owned, to tag, launch, stop, and count, while Steam keeps
   owning them. Owned games can be installed through Steam from wineo.
-- **GOG games.** Log in to GOG, move the [GOG games](docs/gog.md) Heroic
-  installed into wineo, and keep native ones up to date, DLC included.
+- **GOG games.** Log in to GOG and install the [GOG games](docs/gog.md)
+  you own, native or Windows, in your language, or move the ones Heroic
+  installed into wineo, then keep them up to date, DLC included.
 - **Clones, snapshots, and portable folders.** Copy an environment, snapshot
   and restore its prefix on a filesystem with reflinks (Btrfs, XFS), or keep
   everything in a folder you can move to another drive.
