@@ -2160,4 +2160,5 @@ fn a_recovery_labels_a_dlc_by_the_folder_s_name_or_its_id() {
 }
 
 pub(in crate::gog::update) mod install;
+mod real;
 mod windows;
