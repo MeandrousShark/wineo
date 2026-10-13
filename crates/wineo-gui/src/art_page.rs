@@ -289,6 +289,11 @@ impl Page {
         self.change = None;
         self.pending_find = None;
         self.close_picker();
+        // Opening the page again reloads its rows and decodes these anew.
+        for row in self.rows.values_mut() {
+            row.preview = None;
+            row.dimensions = None;
+        }
     }
 
     pub(crate) fn load(

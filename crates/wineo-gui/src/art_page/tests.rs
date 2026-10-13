@@ -1278,3 +1278,25 @@ fn art_picker_keeps_controls_whole_at_narrow_and_wide_widths() {
         );
     }
 }
+
+#[test]
+fn leaving_drops_decoded_previews() {
+    let (root, paths, mut page) = fixture();
+    let source = png(root.path());
+    art::set_manual(&paths, "game", None, Kind::Grid, &source, None).unwrap();
+    snapshot(&mut page, &paths);
+    let spot = (None, Kind::Grid);
+    let _ = page.update(
+        &paths,
+        Event::Previewed(
+            page.load_sequence,
+            spot.clone(),
+            Ok((image::Handle::from_rgba(1, 1, vec![0; 4]), Some((8, 12)))),
+        ),
+        decodes(),
+    );
+    assert!(page.has_preview(&spot));
+    page.leave();
+    assert!(!page.has_preview(&spot));
+    assert!(page.rows.get(&spot).unwrap().resolved.is_some());
+}
