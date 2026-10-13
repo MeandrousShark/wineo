@@ -43,6 +43,15 @@ pub enum Output<'a> {
     Log(&'a Path),
 }
 
+/// What an installer runs with besides its program. Empty by default, as for
+/// an installer someone picked.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Args {
+    pub args: Vec<String>,
+    /// Set on top of the environment's own variables.
+    pub env: BTreeMap<String, String>,
+}
+
 /// How an installer run ended.
 #[derive(Debug)]
 pub enum Outcome {
@@ -80,15 +89,36 @@ impl Installer {
         name: &str,
         program: &str,
     ) -> Result<Self> {
+        Self::prepare_args(paths, global, name, program, &Args::default())
+    }
+
+    /// `prepare`, for a program run with arguments and extra environment
+    /// variables, like an installer run silently.
+    pub fn prepare_args(
+        paths: &Paths,
+        global: &GlobalConfig,
+        name: &str,
+        program: &str,
+        args: &Args,
+    ) -> Result<Self> {
         // Resolved once to know which prefix to lock, then again under it.
         let environment = Environment::load(paths, name)?;
-        let locked = launch(paths, global, &environment, program)?
+        let locked = launch(paths, global, &environment, program, args)?
             .host
             .prefix()
             .ok_or_else(|| environment.config.no_prefix(name))?
             .to_owned();
         let guard = Locks::new(paths).acquire(Operation::Install, name, &[&locked])?;
-        Self::claim(guard, paths, global, name, program, Some(&locked), None)
+        Self::claim(
+            guard,
+            paths,
+            global,
+            name,
+            program,
+            args,
+            Some(&locked),
+            None,
+        )
     }
 
     /// The same for a caller already holding the environment and its prefix
@@ -102,30 +132,71 @@ impl Installer {
         program: &str,
     ) -> Result<Self> {
         guard.relabel(Operation::Install)?;
-        Self::claim(guard, paths, global, name, program, None, None)
+        Self::claim(
+            guard,
+            paths,
+            global,
+            name,
+            program,
+            &Args::default(),
+            None,
+            None,
+        )
     }
 
     /// Keeps creation and its installer on the same resolved runner.
     pub fn prepare_with_runner(
-        mut guard: Guard,
+        guard: Guard,
         paths: &Paths,
         global: &GlobalConfig,
         name: &str,
         program: &str,
         runner: &crate::runner::Runner,
     ) -> Result<Self> {
+        Self::prepare_with_runner_args(
+            guard,
+            paths,
+            global,
+            name,
+            program,
+            &Args::default(),
+            runner,
+        )
+    }
+
+    /// `prepare_with_runner`, with arguments and extra environment variables.
+    pub fn prepare_with_runner_args(
+        mut guard: Guard,
+        paths: &Paths,
+        global: &GlobalConfig,
+        name: &str,
+        program: &str,
+        args: &Args,
+        runner: &crate::runner::Runner,
+    ) -> Result<Self> {
         guard.relabel(Operation::Install)?;
-        Self::claim(guard, paths, global, name, program, None, Some(runner))
+        Self::claim(
+            guard,
+            paths,
+            global,
+            name,
+            program,
+            args,
+            None,
+            Some(runner),
+        )
     }
 
     /// Reads the environment again under the lock, so what runs is what its
     /// config says now rather than when someone started answering questions.
+    #[allow(clippy::too_many_arguments)]
     fn claim(
         guard: Guard,
         paths: &Paths,
         global: &GlobalConfig,
         name: &str,
         program: &str,
+        args: &Args,
         locked: Option<&Path>,
         fixed_runner: Option<&crate::runner::Runner>,
     ) -> Result<Self> {
@@ -148,7 +219,7 @@ impl Installer {
             Runners::new(paths, global)?.resolve_locked(paths, &environment.wine()?.runner)?
         };
         environment.config.require_wine_mut(name)?.runner = runner.name().to_owned();
-        let mut launch = launch(paths, global, &environment, program)?;
+        let mut launch = launch(paths, global, &environment, program, args)?;
         let Host::Wine {
             runner: launch_runner,
             prefix,
@@ -330,8 +401,9 @@ fn launch(
     global: &GlobalConfig,
     environment: &Environment,
     program: &str,
+    args: &Args,
 ) -> Result<Launch> {
-    Launch::exec(paths, global, environment, program, &[], &BTreeMap::new())
+    Launch::exec(paths, global, environment, program, &args.args, &args.env)
 }
 
 fn command(launch: &Launch, output: Output) -> Result<Command> {
