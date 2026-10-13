@@ -370,7 +370,6 @@ fn append_warning(messages: &mut Vec<String>, warning: Option<String>) {
 mod tests {
     use std::ffi::OsString;
     use std::fs;
-    use std::os::unix::fs::PermissionsExt;
     use std::os::unix::process::CommandExt;
     use std::process::{Child, Command, Stdio};
     use std::thread;
@@ -380,6 +379,7 @@ mod tests {
     use crate::process;
     use crate::runners::Runners;
     use crate::runtime::{RunMode, RunState, RunStatus};
+    use crate::test_script::write_script;
 
     fn paths(root: &std::path::Path) -> Paths {
         let root = root.to_owned();
@@ -394,11 +394,6 @@ mod tests {
             Some(OsString::from(path.as_os_str()))
         })
         .unwrap()
-    }
-
-    fn executable(path: &std::path::Path, content: &str) {
-        fs::write(path, content).unwrap();
-        fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
     }
 
     fn stop_child(child: &mut Child) {
@@ -452,10 +447,19 @@ mod tests {
         let runner_root = root.path().join("data/wineo/runners");
         let bin = runner_root.join("fake/bin");
         fs::create_dir_all(&bin).unwrap();
-        executable(&bin.join("wine"), "#!/bin/sh\nexit 0\n");
-        executable(
+        let release = root.path().join("release");
+        let settled = root.path().join("settled");
+        write_script(&bin.join("wine"), "#!/bin/sh\nexit 0\n");
+        // `-w` only returns once the test releases it, so cleanup can only come
+        // back early through its settle bound. Giving up after about 10 s keeps
+        // a broken bound from hanging the test.
+        write_script(
             &bin.join("wineserver"),
-            "#!/bin/sh\nif [ \"$1\" = \"-w\" ]; then sleep 0.2; fi\nexit 0\n",
+            &format!(
+                "#!/bin/sh\nif [ \"$1\" = \"-w\" ]; then\n  i=0\n  while [ ! -e '{}' ] && [ $i -lt 500 ]; do sleep 0.02; i=$((i + 1)); done\n  touch '{}'\nfi\nexit 0\n",
+                release.display(),
+                settled.display()
+            ),
         );
         let runner = Runners::at(runner_root).resolve("fake").unwrap();
 
@@ -490,13 +494,31 @@ mod tests {
         let outcome = clean_up_lost_run(&paths, "app", Duration::from_millis(30)).unwrap();
         let elapsed = started.elapsed();
         stop_child(&mut child);
-        thread::sleep(Duration::from_millis(250));
+        fs::write(&release, "").unwrap();
 
-        assert!(matches!(outcome, LostRunOutcome::Unresolved { .. }));
+        let warning = match &outcome {
+            LostRunOutcome::Unresolved { warning, .. } => warning.clone().unwrap_or_default(),
+            _ => panic!("expected an unresolved run, got {outcome:?}"),
+        };
         assert!(
-            elapsed < Duration::from_millis(150),
+            warning.contains("cleanup did not settle within 30 ms"),
+            "{warning}"
+        );
+        // Far below the fake's own 10 s limit, yet loose enough for a loaded machine.
+        assert!(
+            elapsed < Duration::from_secs(5),
             "settling took {elapsed:?}"
         );
+        // The abandoned settle check finishing late must not touch the state.
+        let deadline = std::time::Instant::now() + Duration::from_secs(20);
+        while !settled.exists() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "wineserver -w never returned"
+            );
+            thread::sleep(Duration::from_millis(20));
+        }
+        thread::sleep(Duration::from_millis(100));
         assert_eq!(
             runtime.read_state().unwrap().unwrap().status,
             RunStatus::Running
