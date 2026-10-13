@@ -178,6 +178,10 @@ struct Offer {
     /// None: no Linux installer.
     bytes: Option<Vec<u8>>,
     checksum: bool,
+    /// GOG's code for the installer's language.
+    language: &'static str,
+    /// More languages GOG offers the same package in.
+    also: Vec<&'static str>,
 }
 
 #[derive(Default)]
@@ -186,6 +190,12 @@ struct Gog {
     /// Products listed as DLC of the base, in order.
     dlc: Vec<u64>,
     downloads: usize,
+    /// The products the account owns. None owns every product offered.
+    owned: Option<Vec<u64>>,
+    /// Whether the owned ids list fails.
+    owned_ids_fail: bool,
+    /// Products whose package GOG fails to serve.
+    failing: Vec<u64>,
 }
 
 impl Gog {
@@ -195,15 +205,17 @@ impl Gog {
 
     fn json(&self, id: u64, base: &str) -> serde_json::Value {
         let offer = &self.offers[&id];
+        let languages = std::iter::once(offer.language).chain(offer.also.iter().copied());
         let installers: Vec<serde_json::Value> = offer
             .bytes
             .iter()
-            .map(|bytes| {
+            .flat_map(|bytes| languages.clone().map(move |language| (bytes, language)))
+            .map(|(bytes, language)| {
                 let name = Self::name(id, &offer.version);
                 serde_json::json!({
-                    "id": "installer_linux_en",
+                    "id": format!("installer_linux_{language}"),
                     "os": "linux",
-                    "language": "en",
+                    "language": language,
                     "version": offer.version,
                     "total_size": listed(bytes.len()),
                     "files": [{
@@ -236,6 +248,13 @@ impl Gog {
                 }
                 let mut json = self.json(id, base);
                 if id == RIMWORLD {
+                    json["dlcs"] = serde_json::json!({
+                        "products": self
+                            .dlc
+                            .iter()
+                            .map(|dlc| serde_json::json!({"id": dlc}))
+                            .collect::<Vec<_>>(),
+                    });
                     json["expanded_dlcs"] = self
                         .dlc
                         .iter()
@@ -267,6 +286,17 @@ impl Gog {
                 }
                 None => reply(404, "{}"),
             },
+            ["user", "data", "games"] if self.owned_ids_fail => reply(500, "{}"),
+            ["user", "data", "games"] => {
+                let owned = self
+                    .owned
+                    .clone()
+                    .unwrap_or_else(|| self.offers.keys().copied().collect());
+                reply(200, &serde_json::json!({ "owned": owned }).to_string())
+            }
+            ["files", name] if self.failing.iter().any(|id| self.is_file_of(*id, name)) => {
+                reply(500, "{}")
+            }
             ["files", name] => match self.find(name).and_then(|offer| offer.bytes.clone()) {
                 Some(bytes) => {
                     self.downloads += 1;
@@ -282,6 +312,12 @@ impl Gog {
             },
             _ => reply(404, "{}"),
         }
+    }
+
+    fn is_file_of(&self, id: u64, name: &str) -> bool {
+        self.offers
+            .get(&id)
+            .is_some_and(|offer| Self::name(id, &offer.version) == name)
     }
 
     fn find(&self, name: &str) -> Option<&Offer> {
@@ -353,6 +389,8 @@ impl Fixture {
                 version: version.to_owned(),
                 bytes: Some(package(items)),
                 checksum: true,
+                language: "en",
+                also: Vec::new(),
             },
         );
         if id != RIMWORLD && !gog.dlc.contains(&id) {
@@ -404,6 +442,7 @@ impl Fixture {
                         id: *id,
                         version: version.map(str::to_owned),
                         build: None,
+                        language: None,
                         status: ProductStatus::Installed,
                     })
                     .collect(),
@@ -1545,6 +1584,7 @@ fn windows(fx: &Fixture, track: Track) {
                 id: RIMWORLD,
                 version: Some("1".to_owned()),
                 build: Some("5".to_owned()),
+                language: None,
                 status: ProductStatus::Installed,
             }],
             files: Vec::new(),
@@ -2069,3 +2109,5 @@ fn a_recovery_labels_a_dlc_by_the_folder_s_name_or_its_id() {
     let pending = fx.pending(false, Options::default());
     assert_eq!(pending.dlc_label(ROYALTY), format!("Royalty ({ROYALTY})"));
 }
+
+pub(in crate::gog::update) mod install;

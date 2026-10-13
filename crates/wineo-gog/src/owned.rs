@@ -70,6 +70,22 @@ pub fn collect_pages<E: From<Error>>(
     Ok(products)
 }
 
+/// `{"owned": [ids...]}`, every product the account owns. The shape comes
+/// from other GOG tools and hasn't been checked against a live account.
+/// Anything in the list that isn't an id is skipped.
+pub(crate) fn parse_ids(json: &Value) -> Result<Vec<u64>, Error> {
+    let owned = json
+        .get("owned")
+        .and_then(Value::as_array)
+        .ok_or_else(|| Error::new(Endpoint::OwnedIds, ErrorKind::Malformed))?;
+    let mut seen = std::collections::HashSet::new();
+    Ok(owned
+        .iter()
+        .filter_map(json::id)
+        .filter(|id| seen.insert(*id))
+        .collect())
+}
+
 pub(crate) fn parse_page(json: &Value) -> Result<OwnedPage, Error> {
     let malformed = || Error::new(Endpoint::Owned, ErrorKind::Malformed);
     let number = |name: &str| {

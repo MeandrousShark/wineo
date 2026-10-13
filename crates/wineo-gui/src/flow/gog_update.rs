@@ -860,6 +860,7 @@ mod tests {
                 id: RIMWORLD,
                 version: Some("1.1".to_owned()),
                 build: None,
+                language: None,
                 status: ProductStatus::Installed,
             }],
             saved: vec![SavedAside {

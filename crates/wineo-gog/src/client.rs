@@ -270,6 +270,18 @@ impl Client {
         owned::collect_pages(|page| self.owned_page(access_token, page))
     }
 
+    /// Every product id the account owns, DLC included, which the owned
+    /// games list may leave out.
+    pub fn owned_ids(&self, access_token: &str) -> Result<Vec<u64>, Error> {
+        let url = join(
+            &self.endpoints.embed,
+            &["user", "data", "games"],
+            Endpoint::OwnedIds,
+        )?;
+        let json = self.get_json(Endpoint::OwnedIds, url, Some(access_token))?;
+        owned::parse_ids(&json)
+    }
+
     /// A product's details with its installers, patches, and expanded DLC.
     /// The access token, when given, is sent as GOG's own clients send it.
     pub fn product(&self, id: u64, access_token: Option<&str>) -> Result<Product, Error> {

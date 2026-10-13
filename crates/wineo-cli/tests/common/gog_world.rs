@@ -294,12 +294,14 @@ impl Fixture {
             id: gog_id,
             version: Some(version.to_owned()),
             build: None,
+            language: None,
             status: ProductStatus::Installed,
         })
         .chain(dlc.iter().map(|(id, version)| Product {
             id: *id,
             version: version.map(str::to_owned),
             build: None,
+            language: None,
             status: ProductStatus::Installed,
         }))
         .collect();
@@ -354,6 +356,7 @@ impl Fixture {
                     id: DISCO,
                     version: None,
                     build: Some("59781086834418085".to_owned()),
+                    language: None,
                     status: ProductStatus::Installed,
                 }],
                 files: Vec::new(),

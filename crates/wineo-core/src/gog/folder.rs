@@ -8,9 +8,9 @@
 //! shared by a launch for its whole run and taken exclusively, without
 //! waiting, by update and migration.
 //!
-//! Lock order: the adoption lock (migration only), an environment's
-//! operation lock, then in-use locks in key order, then state locks in key
-//! order, then config locks.
+//! Lock order: the adoption lock (migrations and fresh installs), an
+//! environment's operation lock, then in-use locks in key order, then state
+//! locks in key order, then config locks.
 
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Write};
@@ -120,6 +120,11 @@ pub struct Product {
     /// The build id, on the Galaxy track.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub build: Option<String>,
+    /// GOG's code for the language this product was installed in, when it
+    /// isn't the folder's, like a DLC that fell back to English. None means
+    /// the folder's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub language: Option<String>,
     pub status: ProductStatus,
 }
 
@@ -412,6 +417,23 @@ pub enum FolderError {
         "GOG game {gog_id}'s folder is mid-update. Migrate it again with wineo import gog --game {gog_id} and finish it."
     )]
     OwnerlessMidUpdate { gog_id: u64 },
+    /// An install whose state was written but whose environment's config
+    /// wasn't yet.
+    #[error(
+        "{name}'s GOG install didn't finish. Install GOG game {gog_id} again as {name} to finish it."
+    )]
+    UnfinishedInstall { name: String, gog_id: u64 },
+    /// An unfinished install whose environment was removed. Installing again
+    /// only finishes an environment's own install.
+    #[error(
+        "GOG game {gog_id}'s install in {folder} didn't finish, and no environment owns it. Delete the folder, forget it with wineo import gog --forget {folder}, and install the game again."
+    )]
+    OwnerlessInstall { gog_id: u64, folder: PathBuf },
+    /// A folder with no files but a GOG state of its own.
+    #[error(
+        "{folder} is already a GOG game folder. Forget it with wineo import gog --forget {folder} first."
+    )]
+    Tracked { folder: PathBuf },
     /// An update or migration found something running from the folder.
     /// `holders` names the environments running from it, sorted, and is
     /// empty when none could be named.
@@ -657,10 +679,10 @@ fn lock_file(path: &Path, exclusive: bool, cancel: &dyn Fn() -> bool) -> Result<
     }
 }
 
-/// Held by a migration from before it checks for overlapping folders until
-/// it has written the state of the folder it adopts, so two adoptions of
-/// nested folders can't both pass. Only migrations take it, and before any
-/// other lock.
+/// Held by a migration or a fresh install from before it checks for
+/// overlapping folders until it has written the state of the folder it
+/// adopts or creates, so two of them in nested folders can't both pass.
+/// Only they take it, and before any other lock.
 pub struct AdoptionLock {
     file: File,
 }
@@ -881,6 +903,46 @@ pub fn check_fresh_install(paths: &Paths, folder: &Path, name: &str) -> Result<P
     }
 }
 
+/// Why a launch from a folder with a journal is refused: finish it with
+/// `wineo update`, or, for an install whose environment has no config yet
+/// or no owner, install again.
+pub fn unfinished(paths: &Paths, state: &FolderState) -> FolderError {
+    let gog_id = state.gog_id().unwrap_or_default();
+    let install = state
+        .journal
+        .as_ref()
+        .is_some_and(|journal| journal.kind == JournalKind::Install);
+    match &state.owner {
+        Some(owner) if install && !owner_exists(paths, owner).unwrap_or(true) => {
+            FolderError::UnfinishedInstall {
+                name: owner.clone(),
+                gog_id,
+            }
+        }
+        Some(owner) => FolderError::MidUpdate {
+            name: owner.clone(),
+        },
+        None if install => FolderError::OwnerlessInstall {
+            gog_id,
+            folder: state.folder.clone(),
+        },
+        None => FolderError::OwnerlessMidUpdate { gog_id },
+    }
+}
+
+/// Whether `state` is an install that stopped before its environment's
+/// config was written, which installing again finishes.
+pub fn install_without_config(paths: &Paths, state: &FolderState) -> bool {
+    state
+        .journal
+        .as_ref()
+        .is_some_and(|journal| journal.kind == JournalKind::Install)
+        && state
+            .owner
+            .as_deref()
+            .is_some_and(|owner| !owner_exists(paths, owner).unwrap_or(true))
+}
+
 /// Sets `owner` to `name` on an existing state, under its lock.
 pub fn reclaim(
     paths: &Paths,
@@ -983,6 +1045,11 @@ pub fn release_missing_owner(
     let Some(state) = lock.read()? else {
         return Ok(false);
     };
+    // Released, an unfinished install could no longer be finished by
+    // installing again under its name.
+    if install_without_config(paths, &state) {
+        return Ok(false);
+    }
     match &state.owner {
         Some(owner) if !owner_exists(paths, owner)? => {
             lock.release()?;
@@ -1075,7 +1142,7 @@ fn remove_stale_temps(dir: &Path, key: &str) -> Result<()> {
 }
 
 /// Creates `dir` and any missing parents, syncing each new entry's parent.
-fn create_dir_durable(dir: &Path) -> Result<()> {
+pub(crate) fn create_dir_durable(dir: &Path) -> Result<()> {
     let mut missing = Vec::new();
     let mut current = dir;
     while !current.exists() {

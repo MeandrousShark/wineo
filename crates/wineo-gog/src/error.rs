@@ -7,6 +7,8 @@ pub enum Endpoint {
     Setup,
     Token,
     Owned,
+    /// Every product id the account owns, DLC included.
+    OwnedIds,
     Product,
     Link,
     Builds,
@@ -30,6 +32,7 @@ impl fmt::Display for Endpoint {
             Self::Setup => "GOG client setup",
             Self::Token => "GOG token request",
             Self::Owned => "GOG owned games request",
+            Self::OwnedIds => "GOG owned products request",
             Self::Product => "GOG product request",
             Self::Link => "GOG download link request",
             Self::Builds => "GOG build list request",

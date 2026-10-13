@@ -17,6 +17,7 @@ const ATTEMPTS: usize = 3;
 
 /// The GOG folders a launch touches, as found without locks.
 struct Touched<'a> {
+    paths: Paths,
     name: &'a str,
     gog_id: Option<&'a str>,
     /// By key, which is lock order.
@@ -63,6 +64,7 @@ impl<'a> Touched<'a> {
             states.entry(key(&state.folder)).or_insert(state);
         }
         Ok(Self {
+            paths: paths.clone(),
             name,
             gog_id,
             states,
@@ -117,16 +119,8 @@ impl<'a> Touched<'a> {
             }
             .into());
         }
-        if let Some(journal) = &state.journal {
-            return Err(match &state.owner {
-                Some(owner) => FolderError::MidUpdate {
-                    name: owner.clone(),
-                },
-                None => FolderError::OwnerlessMidUpdate {
-                    gog_id: state.gog_id().unwrap_or(journal.target.gog_id),
-                },
-            }
-            .into());
+        if state.journal.is_some() {
+            return Err(super::unfinished(&self.paths, &state).into());
         }
         Ok(())
     }

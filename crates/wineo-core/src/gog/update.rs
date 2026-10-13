@@ -187,7 +187,7 @@ pub enum UpdateError {
     WindowsInstaller { name: String },
     #[error("Updating Galaxy builds comes in a later release.")]
     Galaxy { name: String },
-    /// A journal of plan 0050's kinds, `install` or `repair`.
+    /// A journal of a kind this release can't finish yet, `repair`.
     #[error("{name} has an unfinished GOG {kind}, and finishing it comes in a later release.")]
     LaterRelease { name: String, kind: &'static str },
     #[error("{name} can't be updated: {why}")]
@@ -761,8 +761,13 @@ fn by_installer(
     let (base_installed, base_available) = match base(installed) {
         Some(base) if base.status == ProductStatus::Installed => {
             let label = title_or(&details.title, || format!("GOG game {}", installed.gog_id));
-            let (verdict, available) =
-                compare_one(os, &label, language, Some(details), base.version.as_deref());
+            let (verdict, available) = compare_one(
+                os,
+                &label,
+                base.language.as_deref().unwrap_or(language),
+                Some(details),
+                base.version.as_deref(),
+            );
             match verdict {
                 Verdict::Same => {}
                 Verdict::Differs => tally.available(),
@@ -785,8 +790,13 @@ fn by_installer(
         entry.title = gog.map(|gog| gog.title.clone()).filter(|t| !t.is_empty());
         if product.status == ProductStatus::Installed {
             let label = entry.label(&details.title);
-            let (verdict, available) =
-                compare_one(os, &label, language, gog, product.version.as_deref());
+            let (verdict, available) = compare_one(
+                os,
+                &label,
+                product.language.as_deref().unwrap_or(language),
+                gog,
+                product.version.as_deref(),
+            );
             entry.available = available;
             match verdict {
                 Verdict::Same => entry.state = DlcState::UpToDate,
@@ -1050,6 +1060,7 @@ fn info_build(folder: &Path, gog_id: u64) -> Option<String> {
 }
 
 mod apply;
+pub mod install;
 mod publish;
 
 pub use apply::{Options, Pending, Plan, PlannedProduct, Progress, Updated, apply, plan};

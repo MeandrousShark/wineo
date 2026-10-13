@@ -1137,3 +1137,42 @@ fn game_art_failures_are_classified_without_the_url() {
         assert_clean(&error);
     }
 }
+
+#[test]
+fn owned_ids_list_every_product_and_skip_what_isnt_an_id() {
+    let server = FakeGog::start(|_| {
+        reply(
+            200,
+            r#"{"owned": [1094900565, "1233017772", "x", -1, 1.5, null, 1094900565]}"#,
+        )
+    });
+    let ids = server.client().owned_ids(ACCESS).unwrap();
+    assert_eq!(ids, [1094900565, 1233017772]);
+    let requests = server.requests();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0].path(), "/user/data/games");
+    assert_eq!(
+        requests[0].header("authorization"),
+        Some(format!("Bearer {ACCESS}").as_str())
+    );
+}
+
+#[test]
+fn owned_ids_failures_are_classified() {
+    for (body, status, kind) in [
+        ("{}", 200, ErrorKind::Malformed),
+        (r#"{"owned": 3}"#, 200, ErrorKind::Malformed),
+        ("{", 200, ErrorKind::Json),
+        ("{}", 500, ErrorKind::Server(500)),
+        ("{}", 401, ErrorKind::Unauthorized),
+    ] {
+        let server = FakeGog::start(move |_| reply(status, body));
+        let error = server.client().owned_ids(ACCESS).unwrap_err();
+        assert_eq!(
+            (error.endpoint(), error.kind()),
+            (Endpoint::OwnedIds, kind),
+            "{body} {status}"
+        );
+        assert_clean(&error);
+    }
+}
