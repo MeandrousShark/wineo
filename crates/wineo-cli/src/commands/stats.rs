@@ -1,7 +1,6 @@
 use std::process::ExitCode;
 
 use jiff::Timestamp;
-use jiff::tz::TimeZone;
 use wineo_core::environment::Environment;
 use wineo_core::heroic::HeroicSource;
 use wineo_core::paths::Paths;
@@ -9,7 +8,7 @@ use wineo_core::stats::{self, HeroicImportResult, Log, Overview, OverviewOptions
 use wineo_core::view::{CollectionError, StatsCollectionOutput, StatsOutput, TagBreakdownOutput};
 
 use super::{json, table};
-use wineo_core::time::{day_label, duration_hm};
+use wineo_core::time::{LocalZone, Zone, day_label, duration_hm};
 
 /// Width of the label column in `stats <name>`'s detail lines, wide enough
 /// for `this month`, the longest one there is.
@@ -53,7 +52,7 @@ pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
             paths,
             &name,
             Timestamp::now(),
-            &TimeZone::system(),
+            &LocalZone::new(),
             args.json,
             args.sessions,
         ),
@@ -173,7 +172,7 @@ fn print_by_tag(overview: &Overview) {
     print_steam_notes(overview);
 }
 
-fn print_overview(overview: &Overview, tz: &TimeZone) {
+fn print_overview(overview: &Overview, tz: &dyn Zone) {
     if overview.rows.is_empty() {
         return;
     }
@@ -246,7 +245,7 @@ fn named(
     paths: &Paths,
     name: &str,
     now: Timestamp,
-    tz: &TimeZone,
+    tz: &dyn Zone,
     json_output: bool,
     include_sessions: bool,
 ) -> anyhow::Result<ExitCode> {
@@ -271,7 +270,7 @@ fn render_named(
     log: Option<&Log>,
     summary: &Summary,
     now: Timestamp,
-    tz: &TimeZone,
+    tz: &dyn Zone,
 ) -> String {
     let mut lines = vec![name.to_owned()];
     if summary.source == stats::Source::Steam {

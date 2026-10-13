@@ -13,7 +13,6 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use jiff::civil::Date;
-use jiff::tz::TimeZone;
 use jiff::{Span, Timestamp};
 use serde::{Deserialize, Serialize};
 
@@ -22,6 +21,7 @@ use crate::error::{IoContext, Result};
 use crate::heroic::HeroicSource;
 use crate::paths::Paths;
 use crate::runtime::{Runtime, State};
+use crate::time::{LocalZone, Zone};
 use crate::{config::GlobalConfig, steam};
 
 /// How a session came to an end.
@@ -278,7 +278,7 @@ pub struct Overview {
     pub warnings: Vec<String>,
     pub errors: Vec<OverviewError>,
     pub now: Timestamp,
-    pub tz: TimeZone,
+    pub tz: LocalZone,
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -297,7 +297,7 @@ pub fn overview(paths: &Paths) -> Result<Overview> {
 /// Loads configs only when filtering or collecting tags for a breakdown.
 pub fn overview_with_options(paths: &Paths, options: OverviewOptions<'_>) -> Result<Overview> {
     let now = Timestamp::now();
-    let tz = TimeZone::system();
+    let tz = LocalZone::new();
     let mut rows = Vec::new();
     let mut tags = BTreeMap::new();
     let mut warnings = Vec::new();
@@ -501,7 +501,7 @@ pub fn import_heroic_all(
 /// Builds the summary a `Log` and an optional in-progress session add up to,
 /// as of `now`. `this_week` and `this_month` bucket by each session's local
 /// start date in `tz`.
-pub fn summarize(log: &Log, running: Option<&Running>, now: Timestamp, tz: &TimeZone) -> Summary {
+pub fn summarize(log: &Log, running: Option<&Running>, now: Timestamp, tz: &dyn Zone) -> Summary {
     let live = running.map(|running| {
         Session::new(
             running.target.clone(),
@@ -529,18 +529,21 @@ pub fn summarize(log: &Log, running: Option<&Running>, now: Timestamp, tz: &Time
         .chain(log.imported.and_then(|imported| imported.last_played))
         .max();
 
-    let week_start = start_of_week(now, tz);
-    let month_start = start_of_month(now, tz);
-    let this_week_seconds = sessions
-        .iter()
-        .filter(|session| local_date(session.started_at, tz) >= week_start)
-        .map(|session| session.seconds)
-        .sum();
-    let this_month_seconds = sessions
-        .iter()
-        .filter(|session| local_date(session.started_at, tz) >= month_start)
-        .map(|session| session.seconds)
-        .sum();
+    // With no sessions the zone is never consulted, so it is never loaded.
+    let (this_week_seconds, this_month_seconds) = if sessions.is_empty() {
+        (0, 0)
+    } else {
+        let week_start = start_of_week(now, tz);
+        let month_start = start_of_month(now, tz);
+        let since = |start: Date| {
+            sessions
+                .iter()
+                .filter(|session| local_date(session.started_at, tz) >= start)
+                .map(|session| session.seconds)
+                .sum()
+        };
+        (since(week_start), since(month_start))
+    };
 
     let mut by_target: Vec<TargetSummary> = Vec::new();
     for session in &sessions {
@@ -601,7 +604,7 @@ pub fn summary(
     paths: &Paths,
     name: &str,
     now: Timestamp,
-    tz: &TimeZone,
+    tz: &dyn Zone,
 ) -> Result<(Summary, Vec<String>)> {
     let (summary, _, warnings) = summary_with_log(paths, name, now, tz)?;
     Ok((summary, warnings))
@@ -612,7 +615,7 @@ pub fn summary_with_log(
     paths: &Paths,
     name: &str,
     now: Timestamp,
-    tz: &TimeZone,
+    tz: &dyn Zone,
 ) -> Result<(Summary, Option<Log>, Vec<String>)> {
     let config_path = paths.environment_config(name);
     if let Ok(text) = fs::read_to_string(&config_path)
@@ -668,11 +671,11 @@ fn summarize_steam(playtime: steam::Playtime) -> Summary {
     }
 }
 
-fn local_date(ts: Timestamp, tz: &TimeZone) -> Date {
-    ts.to_zoned(tz.clone()).date()
+fn local_date(ts: Timestamp, tz: &dyn Zone) -> Date {
+    ts.to_zoned(tz.zone().clone()).date()
 }
 
-fn start_of_week(now: Timestamp, tz: &TimeZone) -> Date {
+fn start_of_week(now: Timestamp, tz: &dyn Zone) -> Date {
     let today = local_date(now, tz);
     let since_monday = i64::from(today.weekday().to_monday_one_offset()) - 1;
     today
@@ -680,13 +683,15 @@ fn start_of_week(now: Timestamp, tz: &TimeZone) -> Date {
         .unwrap_or(today)
 }
 
-fn start_of_month(now: Timestamp, tz: &TimeZone) -> Date {
+fn start_of_month(now: Timestamp, tz: &dyn Zone) -> Date {
     local_date(now, tz).first_of_month()
 }
 
 #[cfg(test)]
 mod tests {
     use std::ffi::OsString;
+
+    use jiff::tz::TimeZone;
 
     use super::*;
 

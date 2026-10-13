@@ -1,19 +1,59 @@
 //! Formatting times and durations the same way in every frontend.
 
+use std::sync::OnceLock;
+
 use jiff::Timestamp;
 use jiff::tz::TimeZone;
 
+/// Where local times are worked out.
+pub trait Zone {
+    fn zone(&self) -> &TimeZone;
+}
+
+impl Zone for TimeZone {
+    fn zone(&self) -> &TimeZone {
+        self
+    }
+}
+
+/// The system time zone, read on first use. Loading it costs a file read and
+/// a parse, which commands that print no local time shouldn't pay.
+#[derive(Debug, Default)]
+pub struct LocalZone(OnceLock<TimeZone>);
+
+impl LocalZone {
+    pub fn new() -> Self {
+        Self::default()
+    }
+}
+
+impl Zone for LocalZone {
+    fn zone(&self) -> &TimeZone {
+        self.0.get_or_init(TimeZone::system)
+    }
+}
+
+impl Clone for LocalZone {
+    fn clone(&self) -> Self {
+        let copy = Self::new();
+        if let Some(zone) = self.0.get() {
+            let _ = copy.0.set(zone.clone());
+        }
+        copy
+    }
+}
+
 /// Local wall-clock time, `%Y-%m-%d %H:%M:%S`.
-pub fn absolute(ts: Timestamp, tz: &TimeZone) -> String {
-    ts.to_zoned(tz.clone())
+pub fn absolute(ts: Timestamp, tz: &dyn Zone) -> String {
+    ts.to_zoned(tz.zone().clone())
         .strftime("%Y-%m-%d %H:%M:%S")
         .to_string()
 }
 
 /// `HH:MM` if `ts` falls on today in `tz`, else `YYYY-MM-DD HH:MM`.
-pub fn clock(now: Timestamp, ts: Timestamp, tz: &TimeZone) -> String {
-    let zoned = ts.to_zoned(tz.clone());
-    if zoned.date() == now.to_zoned(tz.clone()).date() {
+pub fn clock(now: Timestamp, ts: Timestamp, tz: &dyn Zone) -> String {
+    let zoned = ts.to_zoned(tz.zone().clone());
+    if zoned.date() == now.to_zoned(tz.zone().clone()).date() {
         zoned.strftime("%H:%M").to_string()
     } else {
         zoned.strftime("%Y-%m-%d %H:%M").to_string()
@@ -40,9 +80,9 @@ pub fn duration_hm(seconds: i64) -> String {
 
 /// `today`, `yesterday`, or a bare date like `Sep 4`, for when something last
 /// happened, in `tz`.
-pub fn day_label(now: Timestamp, ts: Timestamp, tz: &TimeZone) -> String {
-    let today = now.to_zoned(tz.clone()).date();
-    let date = ts.to_zoned(tz.clone()).date();
+pub fn day_label(now: Timestamp, ts: Timestamp, tz: &dyn Zone) -> String {
+    let today = now.to_zoned(tz.zone().clone()).date();
+    let date = ts.to_zoned(tz.zone().clone()).date();
     if date == today {
         "today".to_owned()
     } else if date == today.yesterday().unwrap_or(today) {

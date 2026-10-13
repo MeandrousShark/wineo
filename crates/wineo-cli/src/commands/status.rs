@@ -1,7 +1,6 @@
 use std::process::ExitCode;
 
 use jiff::Timestamp;
-use jiff::tz::TimeZone;
 use wineo_core::config::GlobalConfig;
 use wineo_core::environment::Environment;
 use wineo_core::error::Error;
@@ -13,7 +12,7 @@ use wineo_core::view::NamedOutput;
 
 use super::json;
 use super::table;
-use wineo_core::time::{absolute, day_label, duration_hm, relative};
+use wineo_core::time::{LocalZone, Zone, absolute, day_label, duration_hm, relative};
 
 /// Width of the label column in `status <name>`'s detail lines. Wide enough
 /// for the longest label there is, so no line pushes its value out of line.
@@ -53,7 +52,7 @@ pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
                 let configured = environment.config.wine().map(|wine| wine.runner.as_str());
                 json::print(&NamedOutput::new(&report, configured))?;
             } else {
-                print!("{}", render(&report, Timestamp::now(), &TimeZone::system()));
+                print!("{}", render(&report, Timestamp::now(), &LocalZone::new()));
             }
             Ok(ExitCode::SUCCESS)
         }
@@ -63,7 +62,7 @@ pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
 
 fn running(paths: &Paths, json_output: bool) -> anyhow::Result<ExitCode> {
     let now = Timestamp::now();
-    let tz = TimeZone::system();
+    let tz = LocalZone::new();
     // Something holding an environment is happening now too, and so may be
     // whatever an unresolved installer left, so both show up here.
     let overview = report::overview(
@@ -94,7 +93,7 @@ fn running(paths: &Paths, json_output: bool) -> anyhow::Result<ExitCode> {
 }
 
 /// Renders the full `status <name>` block, including its trailing newline.
-fn render(report: &EnvironmentReport, now: Timestamp, tz: &TimeZone) -> String {
+fn render(report: &EnvironmentReport, now: Timestamp, tz: &dyn Zone) -> String {
     let mut lines = vec![header(report, now, tz)];
     if let Some(operation) = report.busy {
         lines.push(label_line("busy", operation.describe()));
@@ -204,7 +203,7 @@ fn render(report: &EnvironmentReport, now: Timestamp, tz: &TimeZone) -> String {
     lines.join("\n") + "\n"
 }
 
-fn header(report: &EnvironmentReport, now: Timestamp, tz: &TimeZone) -> String {
+fn header(report: &EnvironmentReport, now: Timestamp, tz: &dyn Zone) -> String {
     let name = &report.name;
     let status = &report.status;
     if !matches!(
@@ -289,7 +288,7 @@ fn target_value(run: &RunState, exe: Option<&str>) -> String {
     }
 }
 
-fn played_value(played: &report::Played, now: Timestamp, tz: &TimeZone) -> String {
+fn played_value(played: &report::Played, now: Timestamp, tz: &dyn Zone) -> String {
     if played.source == Source::Steam {
         return if played.playtime_unknown {
             "unknown".to_owned()
@@ -367,6 +366,7 @@ fn continuation_line(text: &str) -> String {
 mod tests {
     use std::collections::BTreeMap;
 
+    use jiff::tz::TimeZone;
     use wineo_core::runtime::{RunStatus, Status};
 
     use super::*;

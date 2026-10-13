@@ -84,6 +84,9 @@ fn scan_reapers<R: ProcessReader>(
     }
 
     for pid in pids {
+        if !launches_wanted_app(reader, pid, app_args.as_slice()) {
+            continue;
+        }
         let Some(process) =
             reaper_candidate(reader, pid, app_args.as_slice(), &expected, &canonical)?
         else {
@@ -135,6 +138,26 @@ impl WantedApps for str {
 impl WantedApps for [String] {
     fn wants(&self, argument: &[u8]) -> bool {
         self.iter().any(|wanted| wanted.as_bytes() == argument)
+    }
+}
+
+/// A one-read rejection for the pids of a sweep, most of which are not a
+/// Steam launch at all. It only skips; a pid that passes (or whose command
+/// line could not be judged) still goes through the full pidfd-verified
+/// `reaper_candidate`, which reads the arguments again under the pidfd.
+fn launches_wanted_app<R: ProcessReader, W: WantedApps + ?Sized>(
+    reader: &R,
+    pid: u32,
+    wanted: &W,
+) -> bool {
+    match reader.arguments(pid) {
+        Ok(Some(arguments)) => {
+            arguments.len() >= 3 && arguments[1] == b"SteamLaunch" && wanted.wants(&arguments[2])
+        }
+        Ok(None) => false,
+        Err(error) if permission_denied(&error) => false,
+        // Leave anything unexpected to the full check, which reports it.
+        Err(_) => true,
     }
 }
 
@@ -1234,24 +1257,31 @@ mod tests {
     }
 
     #[test]
-    fn one_scan_opens_each_process_once_however_many_apps_it_serves() {
+    fn one_scan_reads_each_process_once_however_many_apps_it_serves() {
         let root = tempfile::tempdir().unwrap();
         let install = Install {
             kind: InstallKind::Native,
             root: root.path().to_owned(),
         };
-        let opens = |ids: &[&str]| {
+        let count = |ids: &[&str], what: &str| {
             let (reader, pids) = reaper_table(root.path());
             let ids = ids.iter().map(|id| (*id).to_owned()).collect::<Vec<_>>();
             scan_reapers(&reader, pids, &install, &ids, "boot").unwrap();
             let calls = reader.calls.borrow();
-            calls.iter().filter(|call| **call == "open").count()
+            calls.iter().filter(|call| **call == what).count()
         };
-        // Nine processes, plus the parent opened again for each reaper of a
-        // requested app that has a live parent (6, 7, 8, 9, 13).
-        assert_eq!(opens(&["10", "20", "30"]), 9 + 5);
-        // Three sweeps for the same apps would repeat the nine each time.
-        assert!(opens(&["10"]) + opens(&["20"]) + opens(&["30"]) > opens(&["10", "20", "30"]));
+        // Only launches of a requested app (6, 7, 8, 9, 12, 13) are opened,
+        // plus the parent again for each one with a live parent (6, 7, 8, 9,
+        // 13). The command-line prefilter keeps the bystanders (4, 5, 11)
+        // out of the pidfd path.
+        assert_eq!(count(&["10", "20", "30"], "open"), 6 + 5);
+        assert_eq!(count(&["20"], "open"), 1 + 1);
+        // Three sweeps for the same apps would repeat the nine prefilter
+        // reads each time.
+        let together = count(&["10", "20", "30"], "cmdline");
+        let apart =
+            count(&["10"], "cmdline") + count(&["20"], "cmdline") + count(&["30"], "cmdline");
+        assert!(apart > together);
     }
 
     #[test]

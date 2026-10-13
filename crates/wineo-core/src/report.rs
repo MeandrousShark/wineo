@@ -2,7 +2,6 @@ use std::cell::OnceCell;
 use std::collections::HashMap;
 
 use jiff::Timestamp;
-use jiff::tz::TimeZone;
 use serde::Serialize;
 
 use crate::components::{Builds, Component, LATEST};
@@ -16,6 +15,7 @@ use crate::paths::Paths;
 use crate::runners::Runners;
 use crate::runtime::{RunStatus, Runtime, State, Status};
 use crate::stats;
+use crate::time::LocalZone;
 use crate::winetricks;
 
 /// Everything `wineo status <name>` shows, gathered here so `--json` stays
@@ -350,7 +350,7 @@ impl EnvironmentReport {
             paths,
             &environment.name,
             Timestamp::now(),
-            &TimeZone::system(),
+            &LocalZone::new(),
         )?;
         let played = (summary.source == stats::Source::Steam
             || summary.sessions > 0
