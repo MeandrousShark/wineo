@@ -744,7 +744,7 @@ fn read_manifest(paths: &Paths, id: &str) -> Result<Manifest> {
         let bytes = if matches_identity(current, config.identity) {
             Some(fs::read(&source)?)
         } else if matches_identity(saved, retained_identity(config))
-            && digest(&retained)? == config.digest
+            && digest_matches(&retained, &config.digest)?
         {
             Some(fs::read(&retained)?)
         } else if config
@@ -755,12 +755,12 @@ fn read_manifest(paths: &Paths, id: &str) -> Result<Manifest> {
             // A returned copy may still be partial. Recovery validates it
             // before changing either side; the config is only parsed once it
             // is complete.
-            if digest(&source)? == config.digest {
+            if digest_matches(&source, &config.digest)? {
                 Some(fs::read(&source)?)
             } else {
                 None
             }
-        } else if manifest.phase == Phase::Pruning
+        } else if matches!(manifest.phase, Phase::Pruning | Phase::Removing)
             && matches!(config.step, Step::Deleting | Step::Deleted)
         {
             None
@@ -894,7 +894,76 @@ pub fn check_pending(paths: &Paths, name: &str, affected: &[&Path]) -> Result<()
     Ok(())
 }
 
+/// Marks digests written in the unambiguous encoding. Older manifests hold
+/// bare v1 digests, which `digest_matches` still checks the old way.
+const DIGEST_V2: &str = "v2:";
+
+/// A digest of a payload tree. Every name and symlink target is length
+/// prefixed and every file is hashed on its own, so no two different trees
+/// produce the same input, as v1's plain concatenation could.
 fn digest(path: &Path) -> Result<String> {
+    let mut hash = Sha256::new();
+    fn visit(path: &Path, hash: &mut Sha256) -> Result<()> {
+        let meta = fs::symlink_metadata(path)?;
+        if meta.file_type().is_symlink() {
+            let target = fs::read_link(path)?;
+            let target = target.as_os_str().as_encoded_bytes();
+            hash.update(b"l");
+            hash.update((target.len() as u64).to_le_bytes());
+            hash.update(target);
+        } else if meta.is_file() {
+            let mut file_hash = Sha256::new();
+            let mut file = File::open(path)?;
+            let mut buffer = [0u8; 65536];
+            loop {
+                let count = file.read(&mut buffer)?;
+                if count == 0 {
+                    break;
+                }
+                file_hash.update(&buffer[..count]);
+            }
+            hash.update(b"f");
+            hash.update(file_hash.finalize());
+        } else if meta.is_dir() {
+            let mut children = fs::read_dir(path)?
+                .map(|entry| entry.map(|entry| entry.path()))
+                .collect::<io::Result<Vec<_>>>()?;
+            children.sort();
+            hash.update(b"d");
+            hash.update((children.len() as u64).to_le_bytes());
+            for child in children {
+                let name = child.file_name().unwrap().as_encoded_bytes();
+                hash.update((name.len() as u64).to_le_bytes());
+                hash.update(name);
+                visit(&child, hash)?;
+            }
+        } else {
+            bail!("unsupported payload at {}", path.display());
+        }
+        Ok(())
+    }
+    visit(path, &mut hash)?;
+    Ok(format!("{DIGEST_V2}{:x}", hash.finalize()))
+}
+
+/// Whether `path` still has the recorded digest, in whichever encoding it
+/// was recorded.
+fn digest_matches(path: &Path, recorded: &str) -> Result<bool> {
+    if recorded.starts_with(DIGEST_V2) {
+        Ok(digest(path)? == recorded)
+    } else {
+        Ok(digest_v1(path)? == recorded)
+    }
+}
+
+/// Whether two trees hold exactly the same names, contents, and links. A
+/// digest match decides nothing destructive on its own, since a v1 digest
+/// from an older manifest can collide.
+fn same_tree(a: &Path, b: &Path) -> Result<bool> {
+    Ok(contained_in(a, b)? && contained_in(b, a)?)
+}
+
+fn digest_v1(path: &Path) -> Result<String> {
     let mut hash = Sha256::new();
     fn visit(path: &Path, hash: &mut Sha256) -> Result<()> {
         let meta = fs::symlink_metadata(path)?;
@@ -1009,7 +1078,7 @@ fn copy_verified(source: &Path, destination: &Path, expected: &str) -> Result<()
         bail!("unsafe payload at {}", source.display());
     }
     sync(parent(destination)?)?;
-    if digest(destination)? != expected {
+    if !digest_matches(destination, expected)? {
         bail!(
             "metadata copy verification failed at {}",
             destination.display()
@@ -1415,7 +1484,7 @@ fn move_out(paths: &Paths, manifest: &mut Manifest, index: usize) -> Result<()> 
         manifest.payloads[index].step = Step::DeletingSource;
         write_manifest(paths, manifest)?;
         require(&source, payload.identity)?;
-        if digest(&source)? != payload.digest {
+        if !digest_matches(&source, &payload.digest)? || !same_tree(&source, &destination)? {
             bail!(
                 "source changed while copying metadata at {}",
                 source.display()
@@ -1797,7 +1866,7 @@ fn verified_retained(path: &Path, payload: &Payload) -> Result<()> {
     // copy receives a distinct recorded identity.
     require(path, retained_identity(payload))?;
     require_same_mount_as_parent(path)?;
-    if digest(path)? != payload.digest {
+    if !digest_matches(path, &payload.digest)? {
         bail!("retained payload changed at {}", path.display());
     }
     Ok(())
@@ -1836,7 +1905,7 @@ fn return_payload(
                 bail!("retained copy changed at {}", retained.display());
             }
             verified_retained(&retained, &payload)?;
-            if digest(&original)? != payload.digest {
+            if !digest_matches(&original, &payload.digest)? || !same_tree(&original, &retained)? {
                 // Deleting a copied source can stop part way, leaving its
                 // root behind. Only the retained copy is whole then.
                 if payload.step != Step::DeletingSource || !contained_in(&original, &retained)? {
@@ -1853,6 +1922,17 @@ fn return_payload(
         manifest.payloads[index].step = Step::Returned;
         return write_manifest(paths, manifest);
     }
+    if rollback && source.is_some() && payload.step == Step::Deleting {
+        // Dropping the copy of an identical replacement was recorded before
+        // an interruption. The replacement stays; only the copy goes.
+        require_same_mount_as_parent(&original)?;
+        if saved.is_some() {
+            require(&retained, retained_identity(&payload))?;
+            delete_owned(&retained)?;
+        }
+        manifest.payloads[index].step = Step::Returned;
+        return write_manifest(paths, manifest);
+    }
     if rollback
         && source.is_some()
         && let Some(remaining) = saved
@@ -1864,8 +1944,11 @@ fn return_payload(
         // rename, is the user's newer version. It is never deleted.
         require_same_mount_as_parent(&original)?;
         verified_retained(&retained, &payload)?;
-        if digest(&original)? == payload.digest {
+        if digest_matches(&original, &payload.digest)? && same_tree(&original, &retained)? {
+            manifest.payloads[index].step = Step::Deleting;
+            write_manifest(paths, manifest)?;
             delete_owned(&retained)?;
+            failpoint("rollback.after_dropping_copy")?;
             manifest.payloads[index].step = Step::Returned;
         } else {
             manifest.payloads[index].kept = true;
@@ -1877,7 +1960,9 @@ fn return_payload(
     {
         require(&original, returned)?;
         require_same_mount_as_parent(&original)?;
-        if digest(&original)? != payload.digest {
+        let whole = digest_matches(&original, &payload.digest)?
+            && (saved.is_none() || same_tree(&original, &retained)?);
+        if !whole {
             // A crash during the reserved copy left a partial result. Its
             // identity proves it is our staging, not a new collision.
             if saved.is_none() {
@@ -2348,7 +2433,9 @@ fn return_config(paths: &Paths, manifest: &Manifest) -> Result<Option<Environmen
         let Some(found) = identity(path)? else {
             continue;
         };
-        if !identities.iter().any(|saved| saved.matches(found)) || digest(path)? != payload.digest {
+        if !identities.iter().any(|saved| saved.matches(found))
+            || !digest_matches(path, &payload.digest)?
+        {
             continue;
         }
         // Hand-edited configs must remain restorable even when they cannot be parsed.
@@ -3956,16 +4043,28 @@ mod tests {
     fn interrupted_art_copy(
         step: Step,
     ) -> Option<(Fixture, tempfile::TempDir, PathBuf, PathBuf, Manifest)> {
+        interrupted_art_copy_of(
+            step,
+            &[
+                ("icon.png", "icon"),
+                ("hero.png", "hero"),
+                ("grid/a.png", "grid"),
+            ],
+        )
+    }
+
+    fn interrupted_art_copy_of(
+        step: Step,
+        files: &[(&str, &str)],
+    ) -> Option<(Fixture, tempfile::TempDir, PathBuf, PathBuf, Manifest)> {
         let other = tempfile::tempdir_in("/dev/shm").ok()?;
         let f = Fixture::new();
         let source = f.paths.art_dir("game");
-        fs::create_dir_all(source.join("grid")).unwrap();
-        for (file, text) in [
-            ("icon.png", "icon"),
-            ("hero.png", "hero"),
-            ("grid/a.png", "grid"),
-        ] {
-            fs::write(source.join(file), text).unwrap();
+        fs::create_dir_all(&source).unwrap();
+        for (file, text) in files {
+            let path = source.join(file);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(path, text).unwrap();
         }
         let retained = other.path().join("art");
         let mut payload = make_payload(&f.paths, Kind::Art, &source, &retained)
@@ -4171,6 +4270,72 @@ mod tests {
             fs::read_to_string(retained.join("icon.png")).unwrap(),
             "icon"
         );
+    }
+
+    #[test]
+    fn digests_tell_apart_trees_whose_v1_input_was_the_same() {
+        let root = tempfile::tempdir().unwrap();
+        let (two, one) = (root.path().join("two"), root.path().join("one"));
+        fs::create_dir_all(&two).unwrap();
+        fs::create_dir_all(&one).unwrap();
+        fs::write(two.join("a"), "x").unwrap();
+        fs::write(two.join("b"), "y").unwrap();
+        fs::write(one.join("a"), "xbfiley").unwrap();
+        assert_eq!(digest_v1(&two).unwrap(), digest_v1(&one).unwrap());
+        assert_ne!(digest(&two).unwrap(), digest(&one).unwrap());
+        assert!(!same_tree(&two, &one).unwrap());
+        // A manifest written before v2 still verifies its own payload.
+        assert!(digest_matches(&two, &digest_v1(&two).unwrap()).unwrap());
+        assert!(!digest_matches(&two, &digest(&one).unwrap()).unwrap());
+    }
+
+    #[test]
+    fn rollback_keeps_a_copy_whose_replacement_only_collides_in_a_v1_digest() {
+        for v1 in [false, true] {
+            let Some((f, _other, source, retained, mut manifest)) =
+                interrupted_art_copy_of(Step::Copied, &[("a", "x"), ("b", "y")])
+            else {
+                return;
+            };
+            if v1 {
+                manifest.payloads[0].digest = digest_v1(&retained).unwrap();
+                write_manifest(&f.paths, &manifest).unwrap();
+            }
+            let replacement = source.with_file_name("game.new");
+            fs::create_dir(&replacement).unwrap();
+            fs::write(replacement.join("a"), "xbfiley").unwrap();
+            fs::remove_dir_all(&source).unwrap();
+            fs::rename(&replacement, &source).unwrap();
+            return_payload(&f.paths, &mut manifest, 0, true).unwrap();
+            assert!(manifest.payloads[0].kept, "v1: {v1}");
+            assert_eq!(fs::read_to_string(source.join("a")).unwrap(), "xbfiley");
+            assert_eq!(fs::read_to_string(retained.join("b")).unwrap(), "y");
+        }
+    }
+
+    #[test]
+    fn dropping_the_copy_of_an_identical_replacement_resumes_after_an_interruption() {
+        let Some(config_root) = tempfile::tempdir_in("/dev/shm").ok() else {
+            return;
+        };
+        let home = tempfile::tempdir().unwrap();
+        let (paths, source, id) = copied_config(home.path(), config_root.path());
+        let Some(id) = id else { return };
+        let temp = source.with_extension("toml.tmp");
+        fs::write(&temp, "kind = 'native'\n# before\n").unwrap();
+        fs::rename(&temp, &source).unwrap();
+        set_trash_failpoint(Some("rollback.after_dropping_copy"));
+        let error = recover_noting(&paths, id).unwrap_err();
+        set_trash_failpoint(None);
+        assert!(error.to_string().contains("injected"), "{error}");
+        assert!(!entry_dir(&paths, id).unwrap().join("config.toml").exists());
+        assert!(recover_noting(&paths, id).unwrap().is_empty());
+        assert_eq!(
+            fs::read_to_string(&source).unwrap(),
+            "kind = 'native'\n# before\n"
+        );
+        assert!(list(&paths).unwrap().is_empty());
+        assert!(check_pending(&paths, "game", &[]).is_ok());
     }
 
     #[test]
