@@ -42,7 +42,7 @@ use crate::gog::folder::{
 use crate::gog::install_dir::install_folder;
 use crate::gog::migrate::host_only;
 use crate::gog::package::{self, SpaceNeeded};
-use crate::gog::{language, names, owned, product};
+use crate::gog::{language, names, product};
 use crate::import::{self, ImportedSettings};
 use crate::paths::Paths;
 
@@ -76,11 +76,11 @@ pub struct Request {
     /// Whether the target's desktop entry is turned on. The frontend writes
     /// the entry, as after a migration.
     pub desktop: bool,
-    /// Fetch GOG's product details and owned list again instead of using
-    /// copies under an hour old.
+    /// Fetch GOG's product details again instead of using a copy under an
+    /// hour old.
     pub refresh: bool,
     /// Write nothing while planning, for a dry run: neither GOG's details
-    /// nor the owned list are cached.
+    /// are cached.
     pub read_only: bool,
 }
 
@@ -233,8 +233,8 @@ pub struct Installed {
 }
 
 /// Works out what installing `request.gog_id` natively does. Reads only: it
-/// takes no locks and writes nothing but GOG's product details and owned
-/// list caches, unless `read_only`, and a renewed login.
+/// takes no locks and writes nothing but GOG's product details cache,
+/// unless `read_only`, and a renewed login.
 ///
 /// Refused in a portable root, for a name already taken (unless it is this
 /// game's environment with its own interrupted install in the folder), for
@@ -320,9 +320,20 @@ pub fn plan(paths: &Paths, session: &mut Session, request: &Request) -> Result<P
         &mut files,
     );
 
-    let owned = owned::load_with(session, request.refresh, !request.read_only)?;
-    warnings.extend(owned.warning);
-    let owned: HashSet<u64> = owned.games.iter().map(|game| game.id).collect();
+    // The owned games list may leave DLC out, so ownership comes from the
+    // account's full list of owned ids. Without it the game still installs,
+    // just without DLC.
+    let owned: HashSet<u64> = match session.call(|client, token| client.owned_ids(token)) {
+        Ok(ids) => ids.into_iter().collect(),
+        Err(error) => {
+            if !game.dlc_ids.is_empty() {
+                warnings.push(format!(
+                    "Couldn't check which DLC you own, so none is installed: {error}"
+                ));
+            }
+            HashSet::new()
+        }
+    };
     let mut seen_dlc = HashSet::new();
     for &id in &game.dlc_ids {
         if !owned.contains(&id) || !seen_dlc.insert(id) {

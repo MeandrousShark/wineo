@@ -188,9 +188,10 @@ struct Gog {
     /// Products listed as DLC of the base, in order.
     dlc: Vec<u64>,
     downloads: usize,
-    /// The products the account owns. None owns every product offered. The
-    /// owned list lists DLC like games here, which real GOG may not.
+    /// The products the account owns. None owns every product offered.
     owned: Option<Vec<u64>>,
+    /// Whether the owned ids list fails.
+    owned_ids_fail: bool,
     /// Products whose package GOG fails to serve.
     failing: Vec<u64>,
 }
@@ -281,21 +282,13 @@ impl Gog {
                 }
                 None => reply(404, "{}"),
             },
-            ["account", "getFilteredProducts"] => {
+            ["user", "data", "games"] if self.owned_ids_fail => reply(500, "{}"),
+            ["user", "data", "games"] => {
                 let owned = self
                     .owned
                     .clone()
                     .unwrap_or_else(|| self.offers.keys().copied().collect());
-                let products: Vec<serde_json::Value> = owned
-                    .iter()
-                    .map(|id| serde_json::json!({"id": id, "title": format!("Product {id}")}))
-                    .collect();
-                let body = serde_json::json!({
-                    "page": 1,
-                    "totalPages": 1,
-                    "products": products,
-                });
-                reply(200, &body.to_string())
+                reply(200, &serde_json::json!({ "owned": owned }).to_string())
             }
             ["files", name] if self.failing.iter().any(|id| self.is_file_of(*id, name)) => {
                 reply(500, "{}")

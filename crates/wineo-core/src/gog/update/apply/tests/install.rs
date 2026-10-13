@@ -512,6 +512,23 @@ fn a_dlc_in_another_language_than_the_game_cant_be_compared_afterwards() {
 }
 
 #[test]
+fn without_the_owned_ids_the_game_installs_without_dlc() {
+    let fx = offered();
+    fx.gog.lock().unwrap().owned_ids_fail = true;
+    let plan = fx.install_plan(&request()).unwrap();
+    assert_eq!(plan.products().len(), 1);
+    assert_eq!(plan.warnings().len(), 1);
+    assert!(
+        plan.warnings()[0].starts_with("Couldn't check which DLC you own, so none is installed:"),
+        "{:?}",
+        plan.warnings()
+    );
+    fx.install_with(&plan, &Token::new(), |_| {}).unwrap();
+    assert_eq!(fx.statuses(), [(RIMWORLD, ProductStatus::Installed)]);
+    assert!(fx.launch_refusal().is_none());
+}
+
+#[test]
 fn a_dlc_with_no_linux_installer_is_recorded_unavailable() {
     let fx = offered();
     fx.withdraw(IDEOLOGY);

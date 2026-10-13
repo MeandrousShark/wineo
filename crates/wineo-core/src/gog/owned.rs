@@ -46,26 +46,10 @@ struct Cache {
 /// otherwise, or with `refresh`, the list is fetched and cached. Being
 /// logged out is always an error, even with a cache.
 pub fn load(session: &mut Session, refresh: bool) -> Result<Owned, LoadError> {
-    load_with(session, refresh, true)
+    load_at(session, refresh, jiff::Timestamp::now().as_second())
 }
 
-/// Like `load`, but with `save` off a fetched list is used and not cached,
-/// for a dry run.
-pub fn load_with(session: &mut Session, refresh: bool, save: bool) -> Result<Owned, LoadError> {
-    load_saving(session, refresh, save, jiff::Timestamp::now().as_second())
-}
-
-#[cfg(test)]
 fn load_at(session: &mut Session, refresh: bool, now: i64) -> Result<Owned, LoadError> {
-    load_saving(session, refresh, true, now)
-}
-
-fn load_saving(
-    session: &mut Session,
-    refresh: bool,
-    save: bool,
-    now: i64,
-) -> Result<Owned, LoadError> {
     // A session left over from another account never reads its cache.
     session.check().map_err(LoadError::Account)?;
     let user_id = session.user_id();
@@ -105,9 +89,9 @@ fn load_saving(
             // Published under the credentials lock, so a logout that ran
             // during the fetch can't have its deletion undone.
             let warning = session
-                .while_current(|| save.then(|| write_cache(&path, &cache)))
+                .while_current(|| write_cache(&path, &cache))
                 .map_err(LoadError::Account)?
-                .and_then(Result::err)
+                .err()
                 .map(|reason| format!("Couldn't save owned GOG games: {reason}"));
             Ok(Owned {
                 games: cache.games,
