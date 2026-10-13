@@ -268,6 +268,23 @@ Step 3's choices (2026-10-13, provisional while the maintainer was away):
   Inno language names (Chinese, Korean, Swedish, Romanian, Thai, Arabic,
   Latin American Spanish, Greek), and DLC ids from `user/data/games`.
 
+Step 4's choices (2026-10-13, provisional while the maintainer was away):
+
+- **GOG's patch installers aren't used; updates always run the full
+  installer.** GOG names no starting version a patch can be matched to:
+  Disco Elysium's patch is `5a8522d9 to d2970b9f` while its installer
+  version is `WINkay16062026_memfix`, and RimWorld's only "patch" is a
+  32-bit installer. The plan's patch path and its full-installer retry wait
+  until GOG's data allows an exact match.
+- **A first update or reinstall attempt whose game installer never
+  started (exit 1, 2, 3, 7)** drops the journal it wrote, so the game stays
+  launchable and the update is still offered. During a recovery the journal
+  stays, since an earlier attempt may have changed files.
+- **A DLC whose newer installer never starts** keeps its committed entry
+  (the old version is still installed) with a warning, not `failed`.
+- **Updates and reinstalls never add the default `game` target back**;
+  only installs do.
+
 Carried from 0049's acceptance (2026-10-12):
 
 - Sizes GOG lists are rounded to whole MiB, so they're estimates; a file's
