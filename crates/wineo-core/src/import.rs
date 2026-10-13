@@ -443,12 +443,9 @@ pub fn execute_reviewed(
             .ok_or_else(|| anyhow!("destination has no parent: {}", destination.display()))?;
         fs::create_dir_all(parent)
             .with_context(|| format!("failed to create {}", parent.display()))?;
-        let staging = tempfile::Builder::new()
-            .prefix(".wineo-import-")
-            .tempdir_in(parent)
-            .with_context(|| {
-                format!("failed to create staging directory in {}", parent.display())
-            })?;
+        let staging = Staging::new_in(".wineo-import-", parent).with_context(|| {
+            format!("failed to create staging directory in {}", parent.display())
+        })?;
         let staging_path = staging.path().to_owned();
         let _publish_lock = InstallLock::acquire(&destination)?;
         copy_tree_with(
@@ -1564,6 +1561,61 @@ pub fn register_native(
     Environment::load(paths, name).map_err(|err| anyhow!(err))
 }
 
+/// A staging directory for a copied tree. A copy that stops part way can
+/// leave read-only directories, which `TempDir` cleanup can't empty, so they
+/// are made writable first.
+pub(crate) struct Staging(Option<tempfile::TempDir>);
+
+impl Staging {
+    pub(crate) fn new_in(prefix: &str, parent: impl AsRef<Path>) -> io::Result<Self> {
+        tempfile::Builder::new()
+            .prefix(prefix)
+            .tempdir_in(parent)
+            .map(|dir| Self(Some(dir)))
+    }
+
+    pub(crate) fn path(&self) -> &Path {
+        self.0
+            .as_ref()
+            .expect("staging is held until dropped")
+            .path()
+    }
+
+    /// Hands the directory over, so it is no longer removed on drop.
+    pub(crate) fn keep(mut self) -> PathBuf {
+        self.0.take().expect("staging is held until dropped").keep()
+    }
+}
+
+impl Drop for Staging {
+    fn drop(&mut self) {
+        if let Some(dir) = self.0.take() {
+            make_removable(dir.path());
+        }
+    }
+}
+
+/// Best effort, since cleanup reports nothing either.
+fn make_removable(path: &Path) {
+    use std::os::unix::fs::PermissionsExt;
+
+    let Ok(metadata) = fs::symlink_metadata(path) else {
+        return;
+    };
+    if !metadata.is_dir() {
+        return;
+    }
+    let mode = metadata.permissions().mode();
+    if mode & 0o700 != 0o700 {
+        let _ = fs::set_permissions(path, fs::Permissions::from_mode(mode | 0o700));
+    }
+    if let Ok(entries) = fs::read_dir(path) {
+        for entry in entries.flatten() {
+            make_removable(&entry.path());
+        }
+    }
+}
+
 /// Flushes the filesystem holding `path`, so a copied tree and its rename
 /// reach the disk before a config naming it does. One call covers every
 /// file, which is cheaper than syncing each as it is copied.
@@ -1726,15 +1778,12 @@ fn copy_runner_with_review(
     }
     let before = inspection.fingerprint;
     let _publish_lock = InstallLock::acquire(&destination)?;
-    let staging = tempfile::Builder::new()
-        .prefix(".wineo-runner-")
-        .tempdir_in(&destination_root)
-        .with_context(|| {
-            format!(
-                "failed to create staging directory in {}",
-                destination_root.display()
-            )
-        })?;
+    let staging = Staging::new_in(".wineo-runner-", &destination_root).with_context(|| {
+        format!(
+            "failed to create staging directory in {}",
+            destination_root.display()
+        )
+    })?;
     let staging_path = staging.path().to_owned();
     copy_tree(source, &staging_path, &destination, cancel, &mut progress)?;
     check_cancelled(cancel)?;
@@ -2035,6 +2084,49 @@ mod tests {
         .unwrap()
     }
 
+    #[test]
+    fn a_failed_copy_removes_staging_that_holds_read_only_directories() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let root = tempfile::tempdir().unwrap();
+        let source = root.path().join("source");
+        fs::create_dir_all(source.join("a-locked")).unwrap();
+        fs::write(source.join("a-locked/file"), "data").unwrap();
+        fs::set_permissions(source.join("a-locked"), fs::Permissions::from_mode(0o555)).unwrap();
+        rustix::fs::mknodat(
+            rustix::fs::CWD,
+            source.join("z-fifo"),
+            rustix::fs::FileType::Fifo,
+            rustix::fs::Mode::from_raw_mode(0o600),
+            0,
+        )
+        .unwrap();
+        let parent = root.path().join("prefixes");
+        fs::create_dir(&parent).unwrap();
+        let staging = Staging::new_in(".wineo-clone-", &parent).unwrap();
+        let staged = staging.path().join("prefix");
+        assert!(
+            copy_tree(
+                &source,
+                &staged,
+                &parent.join("game"),
+                &Token::new(),
+                &mut |_| {}
+            )
+            .is_err()
+        );
+        assert_eq!(
+            fs::metadata(staged.join("a-locked"))
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o555
+        );
+        drop(staging);
+        assert_eq!(fs::read_dir(&parent).unwrap().count(), 0);
+        fs::set_permissions(source.join("a-locked"), fs::Permissions::from_mode(0o755)).unwrap();
+    }
     #[test]
     fn imported_targets_inside_a_portable_folder_are_stored_relative() {
         let paths = Paths::select(

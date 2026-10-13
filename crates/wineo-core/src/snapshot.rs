@@ -223,9 +223,7 @@ pub fn create_reviewed_with(
         .parent()
         .ok_or_else(|| anyhow!("snapshot has no parent"))?;
     ensure_storage_dirs(parent)?;
-    let staging = tempfile::Builder::new()
-        .prefix(".wineo-create-")
-        .tempdir_in(parent)?;
+    let staging = import::Staging::new_in(".wineo-create-", parent)?;
     let staged_prefix = staging.path().join("prefix");
     import::copy_tree_strict_reflink_with(
         &reviewed.prefix,
@@ -425,9 +423,7 @@ pub fn restore_reviewed_with(
         .prefix
         .parent()
         .ok_or_else(|| anyhow!("prefix has no parent"))?;
-    let staging = tempfile::Builder::new()
-        .prefix(".wineo-restore-")
-        .tempdir_in(parent)?;
+    let staging = import::Staging::new_in(".wineo-restore-", parent)?;
     let staging_path = staging.path().to_owned();
     // A saved link into the live prefix is internal to what the restore
     // puts back, so it is written relative too.

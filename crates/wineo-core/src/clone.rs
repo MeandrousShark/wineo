@@ -208,9 +208,7 @@ pub fn execute_reviewed(
         )
     })?;
     fs::create_dir_all(parent).with_context(|| format!("failed to create {}", parent.display()))?;
-    let staging = tempfile::Builder::new()
-        .prefix(".wineo-clone-")
-        .tempdir_in(parent)
+    let staging = import::Staging::new_in(".wineo-clone-", parent)
         .with_context(|| format!("failed to create staging directory in {}", parent.display()))?;
     let staging_path = staging.path().to_owned();
     let _publish_lock = InstallLock::acquire(&reviewed.destination)?;

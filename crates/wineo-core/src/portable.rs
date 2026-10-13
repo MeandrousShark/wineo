@@ -317,15 +317,12 @@ pub fn execute_reviewed_with(
     let prefixes = reviewed.folder.join("prefixes");
     fs::create_dir_all(&prefixes)
         .with_context(|| format!("failed to create {}", prefixes.display()))?;
-    let staging = tempfile::Builder::new()
-        .prefix(".wineo-copy-")
-        .tempdir_in(&prefixes)
-        .with_context(|| {
-            format!(
-                "failed to create staging directory in {}",
-                prefixes.display()
-            )
-        })?;
+    let staging = import::Staging::new_in(".wineo-copy-", &prefixes).with_context(|| {
+        format!(
+            "failed to create staging directory in {}",
+            prefixes.display()
+        )
+    })?;
     let _publish_lock = InstallLock::acquire(&reviewed.destination)?;
 
     let destination_snapshots = to.snapshot_root(&reviewed.destination, name);
@@ -736,9 +733,7 @@ pub fn execute_native_with(
     import::check_cancelled(cancel)?;
 
     fs::create_dir_all(&reviewed.folder)?;
-    let staging = tempfile::Builder::new()
-        .prefix(".wineo-copy-")
-        .tempdir_in(&reviewed.folder)?;
+    let staging = import::Staging::new_in(".wineo-copy-", &reviewed.folder)?;
     let staged_templates = staging.path().join("templates");
     if reviewed.templates_fingerprint.is_some() {
         import::copy_tree(
