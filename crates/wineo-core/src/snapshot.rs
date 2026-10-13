@@ -270,7 +270,7 @@ pub fn create_reviewed_with(
     import::check_cancelled(cancel)?;
     events(SnapshotEvent::Finishing);
     crate::download::publish(staging.path(), &reviewed.snapshot)?;
-    sync_dir(parent)?;
+    import::sync_filesystem(&reviewed.snapshot)?;
     events(SnapshotEvent::Progress(ImportProgress::Finished {
         entries: reviewed.fingerprint.entries,
     }));
@@ -456,6 +456,7 @@ pub fn restore_reviewed_with(
     )?;
     ensure_restore_same(reviewed, &final_inspection)?;
     import::validate_staged_prefix(&staging_path, &reviewed.prefix, reviewed.layout)?;
+    import::sync_filesystem(&staging_path)?;
     let old_is_subvolume = is_btrfs_subvolume(&reviewed.prefix)?;
     let marker_path = marker_path(paths, &reviewed.name);
     let marker = RestoreMarker {

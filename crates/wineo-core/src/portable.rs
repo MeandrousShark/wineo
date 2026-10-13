@@ -486,6 +486,9 @@ pub fn execute_reviewed_with(
         }
         published.extend(art.publish()?);
         published.extend(stats::copy_log(from, to, name)?);
+        for path in &published {
+            import::sync_filesystem(path)?;
+        }
         if let Some(text) = &reviewed.global_text {
             let path = to.global_config();
             let _guard = locks.config(&path).map_err(|err| anyhow!(err))?;
@@ -782,6 +785,9 @@ pub fn execute_native_with(
         }
         published.extend(art.publish()?);
         published.extend(stats::copy_log(from, to, name)?);
+        for path in &published {
+            import::sync_filesystem(path)?;
+        }
         if let Some(text) = &reviewed.global_text {
             let path = to.global_config();
             let _guard = locks.config(&path).map_err(|err| anyhow!(err))?;

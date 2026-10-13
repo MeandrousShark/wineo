@@ -241,6 +241,7 @@ pub fn execute_reviewed(
         );
     }
     publish(&staging_path, &reviewed.destination)?;
+    import::sync_filesystem(&reviewed.destination)?;
     progress(ImportProgress::Finished {
         entries: reviewed.prefix.fingerprint.entries,
     });

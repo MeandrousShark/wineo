@@ -476,6 +476,7 @@ pub fn execute_reviewed(
         }
         publish(&staging_path, &destination)?;
         published = true;
+        sync_filesystem(&destination)?;
         progress(ImportProgress::Finished {
             entries: locked.fingerprint.entries,
         });
@@ -1561,6 +1562,14 @@ pub fn register_native(
     let _config = locks.config(&config_path).map_err(|err| anyhow!(err))?;
     write_config_once(&config_path, &text)?;
     Environment::load(paths, name).map_err(|err| anyhow!(err))
+}
+
+/// Flushes the filesystem holding `path`, so a copied tree and its rename
+/// reach the disk before a config naming it does. One call covers every
+/// file, which is cheaper than syncing each as it is copied.
+pub(crate) fn sync_filesystem(path: &Path) -> Result<()> {
+    let dir = File::open(path).with_context(|| format!("failed to open {}", path.display()))?;
+    rustix::fs::syncfs(&dir).with_context(|| format!("failed to sync {}", path.display()))
 }
 
 pub(crate) fn write_config_once(path: &Path, contents: &str) -> Result<()> {
