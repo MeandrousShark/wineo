@@ -203,6 +203,26 @@ impl Fixture {
         dir
     }
 
+    /// The `goggame-*.info` files a GOG Linux install ships in `game/` for
+    /// RimWorld and its two DLC, which wineo reads the DLC names from.
+    pub fn name_rimworld(&self, folder: &std::path::Path) {
+        let game = folder.join("game");
+        fs::create_dir_all(&game).unwrap();
+        let names = [
+            (RIMWORLD, "RimWorld"),
+            (RIMWORLD_DLC[0], "RimWorld - Royalty"),
+            (RIMWORLD_DLC[1], "RimWorld - Ideology"),
+        ];
+        for (id, name) in names {
+            fs::write(
+                game.join(format!("goggame-{id}.info")),
+                json!({"gameId": id.to_string(), "name": name, "rootGameId": RIMWORLD.to_string()})
+                    .to_string(),
+            )
+            .unwrap();
+        }
+    }
+
     /// Disco Elysium, Windows, installed by Heroic from Galaxy in
     /// `Games/Disco`, with its own prefix, run by `runner`.
     pub fn heroic_disco(&self, runner: Value) -> PathBuf {

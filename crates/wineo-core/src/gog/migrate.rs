@@ -10,6 +10,7 @@
 //! Lock order: the adoption lock, the environment's operation lock, the
 //! folder's in-use lock, its state lock, then the config lock.
 
+use std::collections::HashMap;
 use std::fs;
 use std::io;
 use std::os::unix::fs::MetadataExt;
@@ -21,6 +22,7 @@ use serde_json::Value;
 use super::folder::{
     self, AdoptionLock, Committed, FolderLock, FolderState, Platform, Product, ProductStatus, Track,
 };
+use super::names;
 use crate::cancel::Token;
 use crate::config::{Arch, GlobalConfig};
 use crate::environment::{self, Environment, GogIdRecord};
@@ -141,6 +143,9 @@ pub struct Migration {
     /// runner. Empty when its settings name none.
     prefixes: Vec<PathBuf>,
     committed: Committed,
+    /// The folder's `goggame-*.info` names, read while planning so a review
+    /// can label DLC without touching the disk again.
+    names: HashMap<u64, String>,
     state: StateChange,
     fingerprint: InputFingerprint,
     target: Target,
@@ -223,6 +228,23 @@ impl Migration {
     /// What a first adoption records.
     pub fn committed(&self) -> &Committed {
         &self.committed
+    }
+
+    /// The DLC the folder records, each as `NAME [ID]`, in the order
+    /// they were added.
+    pub fn dlc_labels(&self) -> Vec<String> {
+        self.committed
+            .products
+            .iter()
+            .filter(|product| product.id != self.committed.gog_id)
+            .map(|product| {
+                names::dlc_label(
+                    &self.game.title,
+                    product.id,
+                    self.names.get(&product.id).map(String::as_str),
+                )
+            })
+            .collect()
     }
 
     /// What happens to the folder's state, as planned. `apply` decides
@@ -403,6 +425,7 @@ pub fn plan(paths: &Paths, source: &HeroicSource, gog_id: &str) -> Result<Plan> 
     if state == StateChange::Adopt {
         folder::check_overlap(paths, &folder)?;
     }
+    let names = names::product_names(&folder);
     Ok(Plan::Migrate(Migration {
         game,
         gog_id: id,
@@ -410,6 +433,7 @@ pub fn plan(paths: &Paths, source: &HeroicSource, gog_id: &str) -> Result<Plan> 
         launch,
         prefixes,
         committed,
+        names,
         state,
         fingerprint,
         target,

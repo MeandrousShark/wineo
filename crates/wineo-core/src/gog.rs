@@ -6,6 +6,7 @@ pub mod account;
 pub mod extras;
 pub mod folder;
 pub mod migrate;
+pub mod names;
 pub mod owned;
 pub mod package;
 pub mod product;

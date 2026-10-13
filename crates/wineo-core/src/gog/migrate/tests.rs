@@ -1488,3 +1488,39 @@ fn a_changed_migration_says_what_changed() {
         "The environment changed while migrating; run it again."
     );
 }
+
+#[test]
+fn a_migration_labels_dlc_by_the_names_the_folder_records() {
+    let mut fx = Fixture::new();
+    let folder = fx.rimworld();
+    let game = folder.join("game");
+    fs::create_dir_all(&game).unwrap();
+    for (id, name) in [
+        (RIMWORLD_DLC[0], "RimWorld - Royalty"),
+        (RIMWORLD_DLC[1], "RimWorld - Ideology"),
+    ] {
+        fs::write(
+            game.join(format!("goggame-{id}.info")),
+            format!(r#"{{"gameId":"{id}","name":"{name}"}}"#),
+        )
+        .unwrap();
+    }
+    assert_eq!(
+        fx.migration(RIMWORLD).dlc_labels(),
+        [
+            "Royalty [1233017772]",
+            "Ideology [1827857764]",
+            "DLC [1865538500]"
+        ]
+    );
+}
+
+#[test]
+fn a_migration_without_info_files_labels_dlc_by_id() {
+    let mut fx = Fixture::new();
+    fx.rimworld();
+    assert_eq!(
+        fx.migration(RIMWORLD).dlc_labels(),
+        ["DLC [1233017772]", "DLC [1827857764]", "DLC [1865538500]"]
+    );
+}

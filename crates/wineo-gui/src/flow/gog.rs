@@ -770,14 +770,11 @@ fn review_rows(migration: &Migration, heroic: Option<&str>) -> Vec<(&'static str
         ("Version", version),
         ("Language", committed.language.clone()),
     ]);
-    let dlc: Vec<String> = committed
-        .products
-        .iter()
-        .filter(|product| product.id != committed.gog_id)
-        .map(|product| product.id.to_string())
-        .collect();
-    if !dlc.is_empty() {
-        rows.push(("DLC", format!("{} ({})", dlc.len(), dlc.join(", "))));
+    // One DLC per row; the rest have no label, so they sit under the first.
+    let mut dlc = migration.dlc_labels().into_iter();
+    if let Some(first) = dlc.next() {
+        rows.push(("DLC", first));
+        rows.extend(dlc.map(|label| ("", label)));
     }
     if let Some(plan) = windows_plan(migration) {
         rows.push((
@@ -1493,9 +1490,53 @@ mod tests {
                 ("Track", "installer".to_owned()),
                 ("Version", "1.6.4871 rev588".to_owned()),
                 ("Language", "en".to_owned()),
-                ("DLC", "2 (1233017772, 1827857764)".to_owned()),
+                ("DLC", "DLC [1233017772]".to_owned()),
+                ("", "DLC [1827857764]".to_owned()),
             ]
         );
+    }
+
+    #[test]
+    fn the_review_lists_each_dlc_by_name_and_id() {
+        let mut fx = Fixture::new();
+        let folder = fx.native(RIMWORLD, "RimWorld", &[1233017772, 1827857764, 1865538500]);
+        let game = folder.join("game");
+        fs::create_dir_all(&game).unwrap();
+        for (id, name) in [
+            (1233017772_u64, "RimWorld - Royalty"),
+            (1827857764, "RimWorld - Ideology"),
+        ] {
+            fs::write(
+                game.join(format!("goggame-{id}.info")),
+                serde_json::json!({"gameId": id.to_string(), "name": name}).to_string(),
+            )
+            .unwrap();
+        }
+        let prepared = fx.prepared(RIMWORLD);
+        let rows = review_rows(&prepared.migration, prepared.heroic.as_deref());
+        let dlc: Vec<_> = rows
+            .iter()
+            .skip_while(|(label, _)| *label != "DLC")
+            .cloned()
+            .collect();
+        assert_eq!(
+            dlc,
+            [
+                ("DLC", "Royalty [1233017772]".to_owned()),
+                ("", "Ideology [1827857764]".to_owned()),
+                ("", "DLC [1865538500]".to_owned()),
+            ]
+        );
+        // The rows draw, the unlabeled ones included.
+        let mut page = fx.page();
+        page.picked = Some(0);
+        page.prepared = Some(prepared);
+        page.step = Step::Review;
+        let mut view = page.view(Palette::DARK, 0.0);
+        let probe = crate::layout_probe::probe(&mut view, iced::Size::new(680.0, 560.0));
+        let inset =
+            iced::Rectangle::new(iced::Point::new(24.0, 24.0), iced::Size::new(632.0, 512.0));
+        assert!(probe.outside(inset).is_empty());
     }
 
     #[test]

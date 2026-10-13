@@ -10,7 +10,7 @@
 //! so a read is always a whole file, and a check mustn't leave lock files
 //! behind.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -22,6 +22,7 @@ use super::folder::{
     self, Committed, FolderError, FolderLock, FolderState, Platform, Product, ProductStatus, Track,
 };
 use super::migrate::{host_only, id_text};
+use super::names;
 use super::product;
 use crate::environment::{self, Environment};
 use crate::paths::Paths;
@@ -107,6 +108,8 @@ pub struct DlcStatus {
     pub id: u64,
     /// None when GOG's details don't list this DLC.
     pub title: Option<String>,
+    /// The name in the folder's `goggame-*.info`, for when there's no title.
+    pub name: Option<String>,
     pub installed: Option<String>,
     pub available: Option<String>,
     pub state: DlcState,
@@ -139,6 +142,18 @@ pub struct Status {
     pub warnings: Vec<String>,
     /// Every product after the base, in the order they were added.
     pub dlc: Vec<DlcStatus>,
+}
+
+impl DlcStatus {
+    /// `NAME [ID]` against the base game's title: GOG's title if it listed
+    /// one, else the name in the folder.
+    pub fn label(&self, base_title: &str) -> String {
+        let title = self
+            .title
+            .as_deref()
+            .filter(|title| !title.trim().is_empty());
+        names::dlc_label(base_title, self.id, title.or(self.name.as_deref()))
+    }
 }
 
 /// A game that couldn't be checked.
@@ -488,6 +503,19 @@ fn status_of(
     state: FolderState,
     how: Check,
 ) -> Result<Status> {
+    let names = names::product_names(&state.folder);
+    status_with(session, paths, name, state, how, &names)
+}
+
+/// `status_of` with the folder's product names already read.
+pub(super) fn status_with(
+    session: &mut Session,
+    paths: &Paths,
+    name: &str,
+    state: FolderState,
+    how: Check,
+    names: &HashMap<u64, String>,
+) -> Result<Status> {
     let mut installed = Installed::of(name, &state)?;
     let details = product::load_with(
         paths,
@@ -530,14 +558,17 @@ fn status_of(
     } else {
         match (installed.platform, installed.track) {
             (Platform::Linux, Track::Installer) => {
-                by_installer("linux", &installed, &details.product)
+                by_installer("linux", &installed, names, &details.product)
             }
             (Platform::Windows, Track::Installer) => {
-                by_installer("windows", &installed, &details.product)
+                by_installer("windows", &installed, names, &details.product)
             }
-            (Platform::Windows, Track::Galaxy) => by_build(session, &installed, &details.product)?,
+            (Platform::Windows, Track::Galaxy) => {
+                by_build(session, &installed, names, &details.product)?
+            }
             (Platform::Linux, Track::Galaxy) => cant(
                 &installed,
+                names,
                 "GOG's Galaxy builds are only for Windows games.".to_owned(),
             ),
         }
@@ -571,13 +602,13 @@ fn status_of(
 }
 
 /// A game that can't be compared, with its DLC listed as they are.
-fn cant(installed: &Installed, why: String) -> Compared {
+fn cant(installed: &Installed, names: &HashMap<u64, String>, why: String) -> Compared {
     Compared {
         state: UpdateState::CantCompare,
         installed: base(installed).and_then(|base| base.version.clone().or(base.build.clone())),
         available: None,
         why: Some(why),
-        dlc: dlc(installed).map(|(dlc, _)| dlc).collect(),
+        dlc: dlc(installed, names).map(|(dlc, _)| dlc).collect(),
     }
 }
 
@@ -589,7 +620,10 @@ fn base(installed: &Installed) -> Option<&Product> {
 }
 
 /// Each product after the base, with its listing before any comparison.
-fn dlc(installed: &Installed) -> impl Iterator<Item = (DlcStatus, &Product)> {
+fn dlc<'a>(
+    installed: &'a Installed,
+    names: &'a HashMap<u64, String>,
+) -> impl Iterator<Item = (DlcStatus, &'a Product)> {
     installed
         .products
         .iter()
@@ -604,6 +638,7 @@ fn dlc(installed: &Installed) -> impl Iterator<Item = (DlcStatus, &Product)> {
                 DlcStatus {
                     id: product.id,
                     title: None,
+                    name: names.get(&product.id).cloned(),
                     installed: product.version.clone().or_else(|| product.build.clone()),
                     available: None,
                     state,
@@ -714,7 +749,12 @@ fn compare_one(
 /// installers. Any product that can't be compared makes the game's state
 /// Can't compare, since a rebuild would refuse it. Otherwise any difference
 /// makes it Available.
-fn by_installer(os: &str, installed: &Installed, details: &wineo_gog::Product) -> Compared {
+fn by_installer(
+    os: &str,
+    installed: &Installed,
+    names: &HashMap<u64, String>,
+    details: &wineo_gog::Product,
+) -> Compared {
     let language = &installed.language;
     let mut tally = Tally::default();
 
@@ -740,13 +780,11 @@ fn by_installer(os: &str, installed: &Installed, details: &wineo_gog::Product) -
     };
 
     let mut listing = Vec::new();
-    for (mut entry, product) in dlc(installed) {
+    for (mut entry, product) in dlc(installed, names) {
         let gog = details.dlcs.iter().find(|dlc| dlc.id == product.id);
         entry.title = gog.map(|gog| gog.title.clone()).filter(|t| !t.is_empty());
         if product.status == ProductStatus::Installed {
-            let label = title_or(entry.title.as_deref().unwrap_or(""), || {
-                format!("DLC {}", product.id)
-            });
+            let label = entry.label(&details.title);
             let (verdict, available) =
                 compare_one(os, &label, language, gog, product.version.as_deref());
             entry.available = available;
@@ -822,6 +860,7 @@ fn title_or(title: &str, fallback: impl FnOnce() -> String) -> String {
 fn by_build(
     session: &mut Session,
     installed: &Installed,
+    names: &HashMap<u64, String>,
     details: &wineo_gog::Product,
 ) -> Result<Compared> {
     let label = title_or(&details.title, || format!("GOG game {}", installed.gog_id));
@@ -860,7 +899,7 @@ fn by_build(
             }
         }
     };
-    let dlc = dlc(installed)
+    let dlc = dlc(installed, names)
         .map(|(mut entry, _)| {
             entry.title = details
                 .dlcs

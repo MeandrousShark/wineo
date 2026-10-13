@@ -604,8 +604,8 @@ saved, and shows where to get a key: <https://steamcommunity.com/dev/apikey>. Wi
 **GOG** shows which account is logged in. **Log in** opens GOG's login page
 in your browser and shows its address with **Copy link**, then a masked
 **Address** field for the address of the page you land on, like `wineo
-import gog --login`; what you paste is never shown or logged. **Log out**
-removes the login and that account's owned-games list. Both run outside
+import gog --login`; what you paste is never shown or logged. **Log out**,
+shown while you're logged in, removes the login and that account's owned-games list. Both run outside
 the Save bar, and their result shows if you leave and come back. The
 section works in a portable folder too.
 

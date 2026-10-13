@@ -109,10 +109,17 @@ fn updating_with_yes_downloads_unpacks_and_reports_what_changed() {
     assert_success(&out);
     let text = stdout(&out);
     assert!(text.starts_with("Update rimworld\n"), "{text}");
-    assert!(text.contains(&format!("RimWorld  {V1} -> {V2}")), "{text}");
-    assert!(text.contains(&format!("Royalty   {V1} -> {V2}")), "{text}");
+    // A DLC is named with its id, and the columns line up on the longest.
     assert!(
-        text.contains(&format!("Ideology  unknown -> {V2}")),
+        text.contains(&format!("{:<21}  {V1} -> {V2}", "RimWorld")),
+        "{text}"
+    );
+    assert!(
+        text.contains(&format!("{:<21}  {V1} -> {V2}", "Royalty [1233017772]")),
+        "{text}"
+    );
+    assert!(
+        text.contains(&format!("{:<21}  unknown -> {V2}", "Ideology [1827857764]")),
         "{text}"
     );
     assert!(text.contains("Updated rimworld.\n"), "{text}");
@@ -209,7 +216,14 @@ fn a_dry_run_shows_the_review_and_changes_nothing() {
     assert_success(&out);
     let text = stdout(&out);
     assert!(text.starts_with("Update rimworld\n"), "{text}");
-    assert!(text.contains("  download  2.1 KiB\n"), "{text}");
+    assert!(
+        text.contains(&format!("  {:<21}  2.1 KiB\n", "download")),
+        "{text}"
+    );
+    assert!(
+        text.contains(&format!("  {:<21}  {V1} -> {V2}\n", "Royalty [1233017772]")),
+        "{text}"
+    );
     assert!(text.contains("(an estimate)"), "{text}");
     assert!(text.ends_with("Dry run, nothing was updated.\n"), "{text}");
     assert_eq!(api.downloads(), 0);
@@ -261,7 +275,7 @@ fn reinstalling_rebuilds_a_game_that_is_up_to_date() {
     let text = stdout(&out);
     assert!(text.starts_with("Reinstall rimworld\n"), "{text}");
     assert!(
-        text.contains(&format!("RimWorld  {V2} (rebuilt)")),
+        text.contains(&format!("{:<21}  {V2} (rebuilt)", "RimWorld")),
         "{text}"
     );
     assert!(text.contains("Reinstalled rimworld.\n"), "{text}");
@@ -390,6 +404,26 @@ fn an_interrupted_update_finishes_offline_when_logged_out() {
     );
     assert_eq!(api.requests().len(), requests, "it used the network");
     assert!(!journal_left(&f, &folder));
+}
+
+#[test]
+fn a_recovery_review_names_each_dlc_from_the_folder_or_by_id() {
+    let (f, api, folder) = world();
+    interrupted_while_publishing(&f, &api, &folder);
+    assert_success(&f.gog(&api, &["import", "gog", "--logout"]));
+    // GOG's titles aren't there to ask, so the folder's own names stand in.
+    let plain = f.gog(&api, &["update", "rimworld", "--dry-run"]);
+    assert_success(&plain);
+    let text = stdout(&plain);
+    assert!(text.contains("  DLC [1233017772]  "), "{text}");
+    assert!(text.contains("  DLC [1827857764]  "), "{text}");
+
+    f.name_rimworld(&folder);
+    let named = f.gog(&api, &["update", "rimworld", "--dry-run"]);
+    assert_success(&named);
+    let text = stdout(&named);
+    assert!(text.contains("  Royalty [1233017772]  "), "{text}");
+    assert!(text.contains("  Ideology [1827857764]  "), "{text}");
 }
 
 #[test]
@@ -800,7 +834,7 @@ fn a_refreshed_dry_run_reviews_the_new_version_though_an_older_copy_is_cached() 
         assert_success(&out);
         let text = stdout(&out);
         assert!(
-            text.contains(&format!("RimWorld  {V1} -> {newer}")),
+            text.contains(&format!("{:<21}  {V1} -> {newer}", "RimWorld")),
             "{args:?}: {text}"
         );
         assert_same_tree(&before, &tree(f.root.path(), &[]));

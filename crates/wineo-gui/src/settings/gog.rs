@@ -174,6 +174,12 @@ impl Settings {
         self.status.as_ref().is_some_and(Status::logged_in)
     }
 
+    /// Whether the row offers Log out: only to someone logged in, and while
+    /// a logout runs so the button doesn't vanish under the click.
+    pub(crate) fn shows_logout(&self) -> bool {
+        self.logged_in() || self.busy == Some(Busy::LoggingOut)
+    }
+
     pub(crate) fn update(
         &mut self,
         paths: &Paths,
@@ -690,6 +696,9 @@ mod tests {
         let texts = super::super::view::gog_texts(&row);
         assert_eq!(texts[1], "Not logged in");
         assert!(!row.logged_in());
+        // Nobody to log out, so only Log in is offered.
+        assert!(texts.contains(&"Log in".to_owned()));
+        assert!(!texts.contains(&"Log out".to_owned()));
 
         let _ = row.update(
             &paths,
@@ -720,6 +729,36 @@ mod tests {
             ),
         );
         assert_eq!(row.status, Some(Status::LoggedOut));
+    }
+
+    #[test]
+    fn log_out_shows_while_logged_in_and_while_a_logout_runs() {
+        let (_root, paths) = setup();
+        let mut row = Settings::default();
+        // Still checking: nothing to log out of yet.
+        assert!(!row.shows_logout());
+        assert!(!super::super::view::gog_texts(&row).contains(&"Log out".to_owned()));
+        let sequence = row.sequence;
+        let _ = row.update(
+            &paths,
+            context(),
+            Event::StatusLoaded(
+                1,
+                sequence,
+                Ok(Status::LoggedIn {
+                    user_id: 9,
+                    plain_text: None,
+                }),
+            ),
+        );
+        assert!(row.shows_logout());
+        assert!(super::super::view::gog_texts(&row).contains(&"Log out".to_owned()));
+        let _ = row.update(&paths, context(), Event::Logout);
+        assert_eq!(row.busy, Some(Busy::LoggingOut));
+        assert!(super::super::view::gog_texts(&row).contains(&"Log out".to_owned()));
+        // Even if the status were already gone, the button stays while it runs.
+        row.status = Some(Status::LoggedOut);
+        assert!(row.shows_logout());
     }
 
     #[test]
