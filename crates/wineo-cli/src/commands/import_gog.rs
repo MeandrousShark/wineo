@@ -127,6 +127,10 @@ fn canceled(error: &anyhow::Error) -> bool {
             error.downcast_ref::<FolderError>(),
             Some(FolderError::Canceled)
         )
+        || matches!(
+            error.downcast_ref::<wineo_core::gog::update::UpdateError>(),
+            Some(wineo_core::gog::update::UpdateError::Canceled { .. })
+        )
         || error.is::<wineo_core::import::Cancelled>()
         || matches!(
             error.downcast_ref::<wineo_core::Error>(),

@@ -92,14 +92,20 @@ fn world() -> (Fixture, GogApi) {
 /// setup program runs `before` first, then installs the game and its info
 /// file.
 fn disco(api: &GogApi, version: &str, before: &str) {
+    let tasks = serde_json::json!([{
+        "isPrimary": true, "type": "FileTask", "path": "disco.exe", "category": "game",
+    }]);
+    disco_with(api, version, before, tasks);
+}
+
+/// `disco` with the info file's play tasks given.
+fn disco_with(api: &GogApi, version: &str, before: &str, tasks: serde_json::Value) {
     let info = serde_json::json!({
         "gameId": DISCO.to_string(),
         "rootGameId": DISCO.to_string(),
         "name": "Disco Elysium",
         "language": "English",
-        "playTasks": [{
-            "isPrimary": true, "type": "FileTask", "path": "disco.exe", "category": "game",
-        }],
+        "playTasks": tasks,
         "version": 1,
     });
     let script = format!(
@@ -701,4 +707,152 @@ fn forget_drops_an_install_that_never_got_a_config() {
     );
     assert!(f.gog_state(&folder).is_none());
     assert!(folder.is_dir());
+}
+
+/// Ctrl+C while planning, held by `WINEO_TEST_UPDATE_PAUSE=plan`.
+fn interrupted_while_planning(f: &Fixture, api: &GogApi) -> (std::process::ExitStatus, String) {
+    let mut command = f.gog_command(api);
+    command.env("WINEO_TEST_UPDATE_PAUSE", "plan").args([
+        "import",
+        "gog",
+        "--game",
+        &rimworld_id(),
+        "--yes",
+    ]);
+    let mut pty = Pty::spawn(command);
+    pty.expect("Planning");
+    let status = Command::new("kill")
+        .args(["-INT", &pty.id().to_string()])
+        .status()
+        .unwrap();
+    assert!(status.success());
+    let (status, output) = pty.finish();
+    (status, output.to_string())
+}
+
+#[test]
+fn ctrl_c_while_planning_cancels_or_keeps_the_unfinished_install() {
+    let (f, api) = world();
+    let (status, output) = interrupted_while_planning(&f, &api);
+    assert_eq!(status.code(), Some(130), "{output}");
+    assert!(output.contains("Install canceled."), "{output}");
+    assert!(!games(&f).join("RimWorld").exists());
+
+    // An install that stopped partway is left to finish.
+    let mut command = f.gog_command(&api);
+    command.env("WINEO_TEST_UPDATE_PAUSE", "publish").args([
+        "import",
+        "gog",
+        "--game",
+        &rimworld_id(),
+        "--yes",
+    ]);
+    let mut pty = Pty::spawn(command);
+    pty.expect("Publishing");
+    Command::new("kill")
+        .args(["-INT", &pty.id().to_string()])
+        .status()
+        .unwrap();
+    assert_eq!(pty.finish().0.code(), Some(130));
+    let (status, output) = interrupted_while_planning(&f, &api);
+    assert_eq!(status.code(), Some(130), "{output}");
+    assert!(output.contains("Install interrupted."), "{output}");
+    assert!(
+        output.contains("Finish the interrupted install with: wineo update rimworld"),
+        "{output}"
+    );
+    assert!(state(&f, &games(&f).join("RimWorld")).journal.is_some());
+}
+
+#[test]
+fn an_installed_game_says_so_without_a_terminal_or_a_login() {
+    let (f, api) = world();
+    assert_success(&import(&f, &api, &["--game", &rimworld_id(), "--yes"]));
+    assert_success(&import(&f, &api, &["--logout"]));
+    let out = import(&f, &api, &["--game", &rimworld_id()]);
+    assert_success(&out);
+    assert!(
+        stdout(&out).starts_with("Already installed. rimworld owns "),
+        "{}",
+        stdout(&out)
+    );
+}
+
+#[test]
+fn a_windows_game_that_names_no_program_says_how_to_pick_one() {
+    let (f, api) = world();
+    disco_with(&api, "1", "", serde_json::json!([]));
+    let out = import(
+        &f,
+        &api,
+        &["--game", &disco_id(), "--runner", "inno", "--yes"],
+    );
+    assert_success(&out);
+    assert!(
+        stdout(&out).contains(
+            "Disco Elysium names no program to start. Pick one with: wineo setup disco-elysium\n"
+        ),
+        "{}",
+        stdout(&out)
+    );
+}
+
+#[test]
+fn at_a_terminal_a_windows_game_that_names_no_program_offers_what_it_installed() {
+    let (f, api) = world();
+    let program = "mkdir -p \"$WINEPREFIX/drive_c/Program Files/Disco\" && : > \"$WINEPREFIX/drive_c/Program Files/Disco/disco.exe\"";
+    disco_with(&api, "1", program, serde_json::json!([]));
+    let mut pty = spawn(
+        &f,
+        &api,
+        &["import", "gog", "--game", &disco_id(), "--runner", "inno"],
+    );
+    pty.expect("Install it? [Y/n]: ");
+    pty.send("y");
+    pty.expect("Programs in disco-elysium:");
+    pty.send("1");
+    pty.expect("Press Enter to add it");
+    pty.send("");
+    pty.expect("Save these changes?");
+    pty.send("");
+    let (status, output) = pty.finish();
+    assert!(status.success(), "{output}");
+    assert!(!output.contains("names no program to start"), "{output}");
+    let config = f.created_config("disco-elysium");
+    assert!(
+        config.contains(r"C:\Program Files\Disco\disco.exe"),
+        "{config}"
+    );
+}
+
+#[test]
+fn a_setup_window_that_also_fails_is_reported_once() {
+    let (f, api) = world();
+    disco(&api, "1", "exit 3");
+    let mut pty = spawn(
+        &f,
+        &api,
+        &["import", "gog", "--game", &disco_id(), "--runner", "inno"],
+    );
+    pty.expect("Install it? [Y/n]: ");
+    pty.send("y");
+    pty.expect("Run its own setup window? [Y/n]: ");
+    pty.send("y");
+    let (status, output) = pty.finish();
+    assert_eq!(status.code(), Some(1), "{output}");
+    assert_eq!(
+        output.raw().matches("Run its own setup window?").count(),
+        1,
+        "{output}"
+    );
+    assert!(
+        output.contains(
+            "error: Disco Elysium's installer stopped before installing anything (exit code 3)."
+        ),
+        "{output}"
+    );
+    assert!(
+        output.contains("Finish the interrupted install with: wineo update disco-elysium"),
+        "{output}"
+    );
 }

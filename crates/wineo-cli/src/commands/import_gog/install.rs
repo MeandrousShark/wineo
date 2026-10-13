@@ -18,15 +18,16 @@ use wineo_core::gog::update::install::{self, Installed, Plan, Request};
 use wineo_core::gog::update::windows::{Event, SetupError};
 use wineo_core::gog::update::{self, Progress, UpdateError};
 use wineo_core::paths::Paths;
+use wineo_core::targets::Batch;
 
 use super::Args;
 use crate::commands::gog_support::{
     Account, Reporter, ask_wizard, offers_wizard, usage_error, warn,
 };
-use crate::commands::setup::watched_message;
+use crate::commands::setup::{self, watched_message};
 use crate::commands::transfer::Cancellation;
 use crate::commands::{components, desktop};
-use crate::picker;
+use crate::picker::{self, Place};
 use crate::prompt::{self, Canceled, Prompt, Reply, Terminal};
 use crate::style;
 
@@ -110,26 +111,30 @@ pub(super) fn one(paths: &Paths, args: &Args, id: &str) -> anyhow::Result<ExitCo
     let Ok(gog_id) = id.parse::<u64>() else {
         return Ok(usage_error(format!("{id} isn't a GOG game id.")));
     };
+    // Whether wineo already has it is known without GOG or a question.
+    let existing = existing(paths, gog_id)?;
+    if let Existing::Installed { name, folder } = &existing {
+        match folder {
+            Some(folder) => println!(
+                "Already installed. {name} owns {}.",
+                style::path(paths, folder)
+            ),
+            None => println!("Already installed as {name}."),
+        }
+        if args.dry_run {
+            println!("Dry run, nothing was installed.");
+        }
+        return Ok(ExitCode::SUCCESS);
+    }
     let asking = !args.yes && !args.dry_run;
     if asking && !prompt::interactive() {
         anyhow::bail!(NEEDS_YES);
     }
     let account = Account::new();
     let mut session = account.session(paths)?;
-    let name = match existing(paths, gog_id)? {
-        Existing::Installed { name, folder } => {
-            match folder {
-                Some(folder) => println!(
-                    "Already installed. {name} owns {}.",
-                    style::path(paths, &folder)
-                ),
-                None => println!("Already installed as {name}."),
-            }
-            if args.dry_run {
-                println!("Dry run, nothing was installed.");
-            }
-            return Ok(ExitCode::SUCCESS);
-        }
+    let unfinished = matches!(existing, Existing::Unfinished(_));
+    let name = match existing {
+        Existing::Installed { .. } => unreachable!("said above"),
         Existing::Unfinished(name) => name,
         Existing::None => new_name(paths, &session, gog_id, args.dry_run)?,
     };
@@ -152,7 +157,10 @@ pub(super) fn one(paths: &Paths, args: &Args, id: &str) -> anyhow::Result<ExitCo
         arch: args.arch,
         wizard: false,
     };
-    let plan = install::plan(paths, &mut session, &request, &Cancellation::new()?.token)?;
+    let plan = match plan_install(paths, &mut session, &request, unfinished)? {
+        Ok(plan) => plan,
+        Err(code) => return Ok(code),
+    };
     if plan.platform() == Platform::Linux && (args.runner.is_some() || args.arch.is_some()) {
         let flags = match (args.runner.is_some(), args.arch.is_some()) {
             (true, true) => "--runner and --arch",
@@ -201,11 +209,11 @@ pub(super) fn one(paths: &Paths, args: &Args, id: &str) -> anyhow::Result<ExitCo
         Err(error) => {
             let label = offers_wizard(&error);
             let Some((prompt, label)) = prompt.as_mut().zip(label) else {
-                return stopped(error, &plan);
+                return stopped(error, &plan, &plan);
             };
             match ask_wizard(prompt, &label) {
                 Ok(true) => {}
-                Ok(false) => return stopped(error, &plan),
+                Ok(false) => return stopped(error, &plan, &plan),
                 Err(asked) if asked.is::<Canceled>() => {
                     eprintln!("Install canceled.");
                     say_finish(plan.environment());
@@ -215,17 +223,122 @@ pub(super) fn one(paths: &Paths, args: &Args, id: &str) -> anyhow::Result<ExitCo
             }
             // The first attempt left its journal, so this carries it on.
             request.wizard = true;
-            let again = install::plan(paths, &mut session, &request, &Cancellation::new()?.token)?;
+            let again = match plan_install(paths, &mut session, &request, true)? {
+                Ok(again) => again,
+                Err(code) => return Ok(code),
+            };
             // A plan resumed from cached packages may only know the game
             // by its id, so the first plan names things.
             match apply(paths, &mut session, &again, &plan) {
                 Ok(installed) => installed,
-                Err(error) => return stopped(error, &again),
+                Err(error) => return stopped(error, &again, &plan),
             }
         }
     };
     report(paths, &plan, &installed)?;
+    if plan.platform() == Platform::Windows && installed.target.is_none() {
+        return pick_target(paths, &plan, prompt.as_mut());
+    }
     Ok(ExitCode::SUCCESS)
+}
+
+/// Plans the install, telling Ctrl+C apart: an unfinished install keeps its
+/// journal, which `wineo update` finishes.
+fn plan_install(
+    paths: &Paths,
+    session: &mut Session,
+    request: &Request,
+    unfinished: bool,
+) -> anyhow::Result<Result<Plan, ExitCode>> {
+    let cancellation = Cancellation::new()?;
+    #[cfg(debug_assertions)]
+    pause_for_test(&cancellation.token);
+    let planned = install::plan(paths, session, request, &cancellation.token);
+    match planned {
+        // Ctrl+C while planning cancels whatever planning made of it.
+        _ if cancellation.token.is_canceled() => {
+            if unfinished {
+                eprintln!("Install interrupted.");
+                say_finish(&request.name);
+            } else {
+                eprintln!("Install canceled.");
+            }
+            Ok(Err(ExitCode::from(130)))
+        }
+        Ok(plan) => Ok(Ok(plan)),
+        Err(error) if is_cancel(&error) => {
+            if unfinished {
+                eprintln!("Install interrupted.");
+                say_finish(&request.name);
+            } else {
+                eprintln!("Install canceled.");
+            }
+            Ok(Err(ExitCode::from(130)))
+        }
+        Err(error) => Err(error),
+    }
+}
+
+/// Lets a test press Ctrl+C while an install is planned: with
+/// `WINEO_TEST_UPDATE_PAUSE=plan`, planning waits for it first. Release
+/// builds never look at it.
+#[cfg(debug_assertions)]
+fn pause_for_test(token: &wineo_core::cancel::Token) {
+    if std::env::var("WINEO_TEST_UPDATE_PAUSE").as_deref() == Ok("plan") {
+        eprintln!("Planning");
+        while !token.is_canceled() {
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+    }
+}
+
+fn is_cancel(error: &anyhow::Error) -> bool {
+    error.is::<Canceled>()
+        || matches!(
+            error.downcast_ref::<UpdateError>(),
+            Some(UpdateError::Canceled { .. })
+        )
+        || matches!(
+            error.downcast_ref::<folder::FolderError>(),
+            Some(folder::FolderError::Canceled)
+        )
+}
+
+/// A Windows game whose info file names no program to start: at a
+/// terminal, the programs it installed are offered, as after `new`'s
+/// installer; otherwise it says how to pick one later.
+fn pick_target(paths: &Paths, plan: &Plan, prompt: Option<&mut Ask>) -> anyhow::Result<ExitCode> {
+    let name = plan.environment();
+    let environment = environment::Environment::load(paths, name)?;
+    if !environment.config.targets.is_empty() {
+        return Ok(ExitCode::SUCCESS);
+    }
+    let Some(prompt) = prompt else {
+        println!(
+            "{} names no program to start. Pick one with: wineo setup {name}",
+            plan.title()
+        );
+        return Ok(ExitCode::SUCCESS);
+    };
+    let global = GlobalConfig::load(paths)?;
+    let dir = environment.prefix(paths)?;
+    let place = Place {
+        paths,
+        name,
+        wine_prefix: wineo_core::prefix::wine_prefix_in(&dir),
+        native_env: None,
+    };
+    let mut batch = Batch::new(environment.config.targets.clone());
+    prompt.set_first_question(false);
+    picker::pick(prompt, &place, &mut batch)?;
+    if batch.is_empty() {
+        return setup::finish(paths, &global, name, prompt, &batch);
+    }
+    match setup::save(paths, &global, name, prompt, &mut batch, true)? {
+        Reply::Value(()) => setup::finish(paths, &global, name, prompt, &batch),
+        // Keeping on editing is what `setup` is for.
+        Reply::Back => setup::menu(paths, &global, name, prompt, &place, batch),
+    }
 }
 
 fn terminal() -> anyhow::Result<Ask> {
@@ -429,7 +542,7 @@ fn created(paths: &Paths, name: &str, event: CreateEvent) {
 
 /// Says how an install that didn't finish left things, and exits with the
 /// matching code.
-fn stopped(error: anyhow::Error, plan: &Plan) -> anyhow::Result<ExitCode> {
+fn stopped(error: anyhow::Error, plan: &Plan, names: &Plan) -> anyhow::Result<ExitCode> {
     let name = plan.environment();
     let finish = || say_finish(name);
     if let Some(UpdateError::Canceled { journal }) = error.downcast_ref() {
@@ -449,8 +562,20 @@ fn stopped(error: anyhow::Error, plan: &Plan) -> anyhow::Result<ExitCode> {
             finish();
             Ok(ExitCode::from(130))
         }
-        Some(SetupError::NotStarted { .. }) => {
-            eprintln!("{}", style::error_stderr(format!("error: {error}")));
+        // A plan resumed from cached packages may only know the game by its
+        // id, so it is named as `names` names it.
+        Some(SetupError::NotStarted { product, code, .. }) => {
+            let label = if *product == names.gog_id() {
+                names.title().to_owned()
+            } else {
+                names.dlc_label(*product)
+            };
+            eprintln!(
+                "{}",
+                style::error_stderr(format!(
+                    "error: {label}'s installer stopped before installing anything (exit code {code})."
+                ))
+            );
             finish();
             Ok(ExitCode::FAILURE)
         }
@@ -499,13 +624,6 @@ fn report(paths: &Paths, plan: &Plan, installed: &Installed) -> anyhow::Result<(
         println!("Finished the interrupted install of {name}.");
     } else {
         println!("Installed {title} as {name}.");
-    }
-    if plan.platform() == Platform::Windows && installed.target.is_none() {
-        let has_target = environment::Environment::load(paths, name)
-            .is_ok_and(|environment| !environment.config.targets.is_empty());
-        if !has_target {
-            println!("{title} names no program to start. Pick one with: wineo setup {name}");
-        }
     }
     Ok(())
 }
