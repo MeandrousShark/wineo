@@ -841,3 +841,80 @@ fn a_refreshed_dry_run_reviews_the_new_version_though_an_older_copy_is_cached() 
         assert_same_tree(&before, &tree(f.root.path(), &[]));
     }
 }
+
+#[test]
+fn all_skips_windows_games_without_a_graphical_session() {
+    let (f, api, folder) = world();
+    f.windows_game_with_update(&api);
+    let out = gog_api::checked(
+        f.gog_command(&api)
+            .args(["update", "--all", "--yes"])
+            .env_remove("DISPLAY")
+            .env_remove("WAYLAND_DISPLAY")
+            .output()
+            .unwrap(),
+    );
+    assert!(out.status.success(), "{}", stderr(&out));
+    let text = stdout(&out);
+    assert!(
+        text.contains(
+            "Skipped disco: Updating a Windows game needs a graphical session. Run this from your desktop.\n"
+        ),
+        "{text}"
+    );
+    assert!(text.contains("Updated 1 of 1 game.\n"), "{text}");
+    assert_eq!(read(&folder, "Data/core.txt"), format!("core {V2}"));
+}
+
+#[test]
+fn all_finishes_an_unfinished_windows_update_like_a_native_one() {
+    use wineo_core::gog::folder::{FolderLock, Journal, JournalKind};
+
+    let (f, api, _) = world();
+    f.windows_game_with_update(&api);
+    let disco = fs::canonicalize(f.root.path().join("Games/Disco")).unwrap();
+    let mut state = f.gog_state(&disco).unwrap();
+    let committed = state.committed.clone().unwrap();
+    state.journal = Some(Journal {
+        operation: "op".to_owned(),
+        kind: JournalKind::Update,
+        target: wineo_core::gog::folder::Target {
+            gog_id: committed.gog_id,
+            platform: committed.platform,
+            language: committed.language.clone(),
+            track: committed.track,
+            products: committed.products.clone(),
+        },
+        packages: Vec::new(),
+        attempted: Vec::new(),
+    });
+    FolderLock::exclusive(&f.paths(), &disco, &|| false)
+        .unwrap()
+        .write(&state)
+        .unwrap();
+    // Nothing newer on GOG, so only the journal brings it in.
+    api.with(|config| {
+        config.products.insert(
+            common::gog_world::DISCO,
+            product(
+                common::gog_world::DISCO,
+                "Disco Elysium",
+                &[gog_api::installer("windows", "en-US", "1")],
+                &[],
+            ),
+        );
+    });
+    let out = gog_api::checked(
+        f.gog_command(&api)
+            .args(["update", "--all", "--yes"])
+            .env_remove("DISPLAY")
+            .env_remove("WAYLAND_DISPLAY")
+            .output()
+            .unwrap(),
+    );
+    let text = stdout(&out);
+    assert!(
+        text.contains("Skipped disco: Updating a Windows game needs a graphical session."),
+        "{text}"
+    );
+}

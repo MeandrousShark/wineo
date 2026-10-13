@@ -10,6 +10,7 @@ use std::time::{Duration, Instant};
 use wineo_core::gog::account::{AccountError, Session};
 use wineo_core::gog::folder::{FolderError, JournalKind, Platform, Track};
 use wineo_core::gog::migrate::MigrateError;
+use wineo_core::gog::update::windows::SetupError;
 use wineo_core::gog::update::{
     self, Check, Options, Pending, Plan, Progress, UpdateError, Updated,
 };
@@ -25,6 +26,8 @@ type Ask = Prompt<Terminal, crate::output::Stream<io::Stdout>>;
 
 const NEEDS_YES: &str = "Updating without a terminal needs --yes.";
 const NAME_A_GAME: &str = "Name a game to update, or use --all.";
+const NEEDS_DESKTOP: &str =
+    "Updating a Windows game needs a graphical session. Run this from your desktop.";
 
 /// Ctrl+C stopped an update after it had started changing the game folder,
 /// which `wineo update` finishes.
@@ -84,6 +87,10 @@ fn stopped(error: &anyhow::Error) -> Option<Stop> {
         || matches!(
             error.downcast_ref::<UpdateError>(),
             Some(UpdateError::Canceled { .. })
+        )
+        || matches!(
+            error.downcast_ref::<SetupError>(),
+            Some(SetupError::Canceled { .. })
         )
         || matches!(
             error.downcast_ref::<FolderError>(),
@@ -191,12 +198,13 @@ fn all(paths: &Paths, args: &Args) -> anyhow::Result<ExitCode> {
         .collect();
     let mut names = Vec::new();
     let mut skipped = Vec::new();
+    let graphical = wineo_core::launch::graphical_session();
     for status in &batch.statuses {
         // A game with a journal is finished whatever GOG offers now.
-        let finishes = status.unfinished
-            && status.platform == Platform::Linux
-            && status.track == Track::Installer;
-        if status.applicable || finishes {
+        let finishes = status.unfinished && status.track == Track::Installer;
+        if (status.applicable || finishes) && status.platform == Platform::Windows && !graphical {
+            skipped.push(format!("Skipped {}: {NEEDS_DESKTOP}", status.environment));
+        } else if status.applicable || finishes {
             names.push(status.environment.clone());
         } else if let Some(reason) = &status.reason {
             skipped.push(format!(
@@ -420,13 +428,38 @@ fn apply(
             pause_for_test(pending.environment(), &step, &cancellation.token);
         },
     )
-    .map_err(|error| match error.downcast_ref::<UpdateError>() {
-        Some(UpdateError::Canceled { journal: true }) => Interrupted {
-            name: pending.environment().to_owned(),
+    .map_err(|error| setup_stopped(error, pending.environment(), pending.is_recovery()))
+}
+
+/// Says how an update stopped when it had started changing the folder, and
+/// how a Windows installer that stopped on its own left things. An
+/// installer that never started on a first attempt changed nothing, since
+/// the update drops its journal then; finishing one keeps it.
+fn setup_stopped(error: anyhow::Error, name: &str, recovery: bool) -> anyhow::Error {
+    let interrupted = || {
+        Interrupted {
+            name: name.to_owned(),
         }
-        .into(),
+        .into()
+    };
+    if let Some(UpdateError::Canceled { journal: true }) = error.downcast_ref() {
+        return interrupted();
+    }
+    match error.downcast_ref::<SetupError>() {
+        Some(SetupError::Canceled { .. }) if recovery => interrupted(),
+        Some(SetupError::NotStarted { label, code, .. }) => {
+            if recovery {
+                anyhow::anyhow!(
+                    "{label}'s installer never started (exit code {code}). Finish the update with: wineo update {name}"
+                )
+            } else {
+                anyhow::anyhow!(
+                    "{label}'s installer never started (exit code {code}), so nothing changed."
+                )
+            }
+        }
         _ => error,
-    })
+    }
 }
 
 /// Lets a test stop an update at a known point: with
@@ -613,5 +646,52 @@ fn finished(pending: &Pending) -> String {
         (JournalKind::Reinstall, true) => format!("Finished the interrupted reinstall of {name}"),
         (_, true) => format!("Finished the interrupted update of {name}"),
         (_, false) => format!("Updated {name}"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn not_started() -> anyhow::Error {
+        SetupError::NotStarted {
+            product: 1,
+            label: "Disco".to_owned(),
+            code: 3,
+            wizard: true,
+        }
+        .into()
+    }
+
+    fn canceled() -> anyhow::Error {
+        SetupError::Canceled {
+            product: 1,
+            label: "Disco".to_owned(),
+        }
+        .into()
+    }
+
+    #[test]
+    fn an_installer_that_never_started_is_one_line() {
+        assert_eq!(
+            setup_stopped(not_started(), "disco", false).to_string(),
+            "Disco's installer never started (exit code 3), so nothing changed."
+        );
+        assert_eq!(
+            setup_stopped(not_started(), "disco", true).to_string(),
+            "Disco's installer never started (exit code 3). Finish the update with: wineo update disco"
+        );
+    }
+
+    #[test]
+    fn an_installer_canceled_is_a_cancel_or_an_interruption() {
+        assert!(matches!(
+            stopped(&setup_stopped(canceled(), "disco", false)),
+            Some(Stop::Canceled)
+        ));
+        assert!(matches!(
+            stopped(&setup_stopped(canceled(), "disco", true)),
+            Some(Stop::Interrupted(name)) if name == "disco"
+        ));
     }
 }

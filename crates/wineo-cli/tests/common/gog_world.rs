@@ -338,6 +338,17 @@ impl Fixture {
     /// Disco Elysium as a Windows game from Galaxy whose latest build is
     /// newer than the one installed, which wineo can check but not update.
     pub fn galaxy_game_with_update(&self, api: &super::gog_api::GogApi) {
+        self.disco_with_update(api, Track::Galaxy);
+    }
+
+    /// Disco Elysium installed from GOG's Windows installer 1, with 2 on
+    /// GOG.
+    pub fn windows_game_with_update(&self, api: &super::gog_api::GogApi) {
+        self.disco_with_update(api, Track::Installer);
+    }
+
+    fn disco_with_update(&self, api: &super::gog_api::GogApi, track: Track) {
+        let galaxy = track == Track::Galaxy;
         let folder = self.heroic_disco(json!({"type": "wine", "name": "System", "bin": "wine"}));
         fs::write(
             self.config_dir().join("environments/disco.toml"),
@@ -353,12 +364,12 @@ impl Fixture {
                 gog_id: DISCO,
                 platform: Platform::Windows,
                 language: "en-US".to_owned(),
-                track: Track::Galaxy,
+                track,
                 products: vec![Product {
                     reported_language: None,
                     id: DISCO,
-                    version: None,
-                    build: Some("59781086834418085".to_owned()),
+                    version: (!galaxy).then(|| "1".to_owned()),
+                    build: galaxy.then(|| "59781086834418085".to_owned()),
                     language: None,
                     status: ProductStatus::Installed,
                 }],
@@ -376,7 +387,11 @@ impl Fixture {
                 super::gog_api::product(
                     DISCO,
                     "Disco Elysium",
-                    &[super::gog_api::installer("windows", "en-US", "1")],
+                    &[super::gog_api::installer(
+                        "windows",
+                        "en-US",
+                        if galaxy { "1" } else { "2" },
+                    )],
                     &[],
                 ),
             );
