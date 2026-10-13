@@ -2,7 +2,7 @@
 //! contains the Steam client, so every signal here goes through a verified
 //! pidfd for a member of the reaper's process tree.
 
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::ffi::OsStr;
 use std::fs;
 use std::io;
@@ -44,41 +44,101 @@ struct ProcStat {
 /// of the client. A path through `~/.steam/root` and its canonical target
 /// identify the same install.
 pub fn matching_reapers(install: &Install, app_id: &str) -> io::Result<Vec<Reaper>> {
+    Ok(reapers_by_app(install, &[app_id.to_owned()])?
+        .remove(app_id)
+        .unwrap_or_default())
+}
+
+/// `matching_reapers` for several apps from one sweep of /proc, which costs
+/// more than any single app's check. Every requested app has an entry, empty
+/// when nothing matched.
+pub fn reapers_by_app(
+    install: &Install,
+    app_ids: &[String],
+) -> io::Result<HashMap<String, Vec<Reaper>>> {
     let boot_id = current_boot_id()?;
+    scan_reapers(&Proc, proc_pids()?, install, app_ids, &boot_id)
+}
+
+fn scan_reapers<R: ProcessReader>(
+    reader: &R,
+    pids: Vec<u32>,
+    install: &Install,
+    app_ids: &[String],
+    boot_id: &str,
+) -> io::Result<HashMap<String, Vec<Reaper>>> {
     let expected = install.root().join("ubuntu12_32/reaper");
     let canonical = fs::canonicalize(install.root())
         .unwrap_or_else(|_| install.root().to_owned())
         .join("ubuntu12_32/reaper");
-    let app_arg = format!("AppId={app_id}");
-    let mut found = Vec::new();
-    let reader = Proc;
+    let app_args: Vec<String> = app_ids.iter().map(|id| format!("AppId={id}")).collect();
+    let mut found: HashMap<String, Vec<Reaper>> = app_ids
+        .iter()
+        .map(|app_id| (app_id.clone(), Vec::new()))
+        .collect();
+    if app_ids.is_empty() {
+        return Ok(found);
+    }
 
-    for pid in proc_pids()? {
-        let Some(process) = reaper_candidate(&reader, pid, &app_arg, &expected, &canonical)? else {
+    for pid in pids {
+        let Some(process) =
+            reaper_candidate(reader, pid, app_args.as_slice(), &expected, &canonical)?
+        else {
             continue;
         };
-        let Some(parent) = client_candidate(&reader, process.stat.ppid)? else {
+        let Some(parent) = client_candidate(reader, process.stat.ppid)? else {
             continue;
         };
         if !matches_client(install, &parent)
-            || !current_child(&reader, &process, parent.stat, &parent.fd)?
+            || !current_child(reader, &process, parent.stat, &parent.fd)?
         {
             continue;
         }
-        found.push(Reaper {
-            pid,
-            start_time: process.stat.start_time,
-            boot_id: boot_id.clone(),
-        });
+        // The candidate check proved argument 2 is one of the requested
+        // arguments, so the prefix is there and the id is valid text.
+        let Some(app_id) = process
+            .arguments
+            .get(2)
+            .and_then(|argument| std::str::from_utf8(argument).ok())
+            .and_then(|argument| argument.strip_prefix("AppId="))
+        else {
+            continue;
+        };
+        if let Some(reapers) = found.get_mut(app_id) {
+            reapers.push(Reaper {
+                pid,
+                start_time: process.stat.start_time,
+                boot_id: boot_id.to_owned(),
+            });
+        }
     }
-    found.sort_by_key(|reaper| reaper.pid);
+    for reapers in found.values_mut() {
+        reapers.sort_by_key(|reaper| reaper.pid);
+    }
     Ok(found)
 }
 
-fn reaper_candidate<R: ProcessReader>(
+/// The `AppId=<id>` arguments a scan accepts.
+trait WantedApps {
+    fn wants(&self, argument: &[u8]) -> bool;
+}
+
+impl WantedApps for str {
+    fn wants(&self, argument: &[u8]) -> bool {
+        self.as_bytes() == argument
+    }
+}
+
+impl WantedApps for [String] {
+    fn wants(&self, argument: &[u8]) -> bool {
+        self.iter().any(|wanted| wanted.as_bytes() == argument)
+    }
+}
+
+fn reaper_candidate<R: ProcessReader, W: WantedApps + ?Sized>(
     reader: &R,
     pid: u32,
-    app_arg: &str,
+    wanted: &W,
     expected: &Path,
     canonical: &Path,
 ) -> io::Result<Option<Inspected<R::Fd>>> {
@@ -96,19 +156,21 @@ fn reaper_candidate<R: ProcessReader>(
     if process.stat.ppid <= 1
         || arguments.len() < 3
         || arguments[1] != b"SteamLaunch"
-        || arguments[2] != app_arg.as_bytes()
+        || !wanted.wants(&arguments[2])
     {
         return Ok(None);
     }
+    // Equal to a wanted argument, which is valid text.
+    let app_arg = String::from_utf8_lossy(&arguments[2]).into_owned();
     process.arguments = arguments;
-    if !matches_arguments(&process.arguments, app_arg, expected, canonical) {
+    if !matches_arguments(&process.arguments, &app_arg, expected, canonical) {
         process.exe = match reader.exe(pid) {
             Ok(exe) => exe,
             Err(error) if permission_denied(&error) => return Ok(None),
             Err(error) => return Err(error),
         };
     }
-    if !matches_reaper(&process, app_arg, expected, canonical) || !still_current(reader, &process)?
+    if !matches_reaper(&process, &app_arg, expected, canonical) || !still_current(reader, &process)?
     {
         return Ok(None);
     }
@@ -744,6 +806,8 @@ mod tests {
         exe_error: Option<(u32, i32)>,
         missing_arguments: BTreeSet<u32>,
         missing_exe: BTreeSet<u32>,
+        arguments_by_pid: BTreeMap<u32, Vec<Vec<u8>>>,
+        exe_by_pid: BTreeMap<u32, PathBuf>,
     }
 
     impl FakeProc {
@@ -763,6 +827,8 @@ mod tests {
                 exe_error: None,
                 missing_arguments: BTreeSet::new(),
                 missing_exe: BTreeSet::new(),
+                arguments_by_pid: BTreeMap::new(),
+                exe_by_pid: BTreeMap::new(),
             }
         }
     }
@@ -809,6 +875,9 @@ mod tests {
             if self.missing_arguments.contains(&pid) {
                 return Ok(None);
             }
+            if let Some(arguments) = self.arguments_by_pid.get(&pid) {
+                return Ok(Some(arguments.clone()));
+            }
             Ok(Some(vec![
                 b"reaper".to_vec(),
                 b"SteamLaunch".to_vec(),
@@ -823,6 +892,9 @@ mod tests {
             }
             if self.missing_exe.contains(&pid) {
                 return Ok(None);
+            }
+            if let Some(exe) = self.exe_by_pid.get(&pid) {
+                return Ok(Some(exe.clone()));
             }
             Ok(Some(PathBuf::from("reaper")))
         }
@@ -1057,6 +1129,101 @@ mod tests {
         reader.exe_error = None;
         reader.arguments_error = Some((10, rustix::io::Errno::PERM.raw_os_error()));
         assert!(client_candidate(&reader, 10).unwrap().is_none());
+    }
+
+    /// A fake process table: a client (pid 5), reapers for apps 10, 20, and 30
+    /// under it, a reaper for app 30 under a foreign parent, and bystanders.
+    fn reaper_table(root: &Path) -> (FakeProc, Vec<u32>) {
+        let reaper = root.join("ubuntu12_32/reaper");
+        let client = root.join("ubuntu12_32/steam");
+        let launch = |app: &str| {
+            vec![
+                reaper.as_os_str().as_bytes().to_vec(),
+                b"SteamLaunch".to_vec(),
+                format!("AppId={app}").into_bytes(),
+                b"--".to_vec(),
+            ]
+        };
+        let mut reader = FakeProc::new(&[
+            stat(5, 2, 100),
+            stat(6, 5, 110),
+            stat(7, 5, 120),
+            stat(8, 5, 130),
+            stat(9, 4, 140),
+            stat(11, 5, 150),
+            stat(12, 1, 160),
+            stat(4, 2, 90),
+        ]);
+        reader.exe_by_pid.insert(5, client.clone());
+        reader.exe_by_pid.insert(4, PathBuf::from("/usr/bin/other"));
+        reader
+            .arguments_by_pid
+            .insert(5, vec![client.as_os_str().as_bytes().to_vec()]);
+        reader.arguments_by_pid.insert(4, vec![b"other".to_vec()]);
+        for (pid, app) in [(6, "10"), (7, "20"), (8, "30"), (9, "30")] {
+            reader.arguments_by_pid.insert(pid, launch(app));
+            reader.exe_by_pid.insert(pid, reaper.clone());
+        }
+        reader
+            .arguments_by_pid
+            .insert(11, vec![b"bash".to_vec(), b"-c".to_vec()]);
+        reader.arguments_by_pid.insert(12, launch("10"));
+        (reader, vec![4, 5, 6, 7, 8, 9, 11, 12])
+    }
+
+    #[test]
+    fn one_scan_gives_each_app_what_a_scan_for_it_alone_gives() {
+        let root = tempfile::tempdir().unwrap();
+        let install = Install {
+            kind: InstallKind::Native,
+            root: root.path().to_owned(),
+        };
+        let (reader, pids) = reaper_table(root.path());
+        let ids = |ids: &[&str]| ids.iter().map(|id| (*id).to_owned()).collect::<Vec<_>>();
+        let all = ids(&["10", "20", "30", "40"]);
+        let together = scan_reapers(&reader, pids.clone(), &install, &all, "boot").unwrap();
+
+        // The parent of 9 is not the client, and 12 is orphaned to init.
+        let pids_of = |app: &str| {
+            together[app]
+                .iter()
+                .map(|reaper| reaper.pid)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(pids_of("10"), [6]);
+        assert_eq!(pids_of("20"), [7]);
+        assert_eq!(pids_of("30"), [8]);
+        assert_eq!(pids_of("40"), Vec::<u32>::new());
+        assert_eq!(together["10"][0].start_time, 110);
+        assert_eq!(together["10"][0].boot_id, "boot");
+
+        for app in &all {
+            let (reader, pids) = reaper_table(root.path());
+            let alone =
+                scan_reapers(&reader, pids, &install, std::slice::from_ref(app), "boot").unwrap();
+            assert_eq!(alone[app], together[app], "app {app}");
+        }
+    }
+
+    #[test]
+    fn one_scan_opens_each_process_once_however_many_apps_it_serves() {
+        let root = tempfile::tempdir().unwrap();
+        let install = Install {
+            kind: InstallKind::Native,
+            root: root.path().to_owned(),
+        };
+        let opens = |ids: &[&str]| {
+            let (reader, pids) = reaper_table(root.path());
+            let ids = ids.iter().map(|id| (*id).to_owned()).collect::<Vec<_>>();
+            scan_reapers(&reader, pids, &install, &ids, "boot").unwrap();
+            let calls = reader.calls.borrow();
+            calls.iter().filter(|call| **call == "open").count()
+        };
+        // Eight processes, plus the client opened again for each reaper of a
+        // requested app that has a live parent (6, 7, 8, 9).
+        assert_eq!(opens(&["10", "20", "30"]), 8 + 4);
+        // Three sweeps for the same apps would repeat the eight each time.
+        assert!(opens(&["10"]) + opens(&["20"]) + opens(&["30"]) > opens(&["10", "20", "30"]));
     }
 
     #[test]
