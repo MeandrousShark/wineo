@@ -245,6 +245,26 @@ Step 2b's choices (2026-10-13):
   written can only be finished, not abandoned; `import gog` needs a way to
   drop it.
 
+Step 3's choices (2026-10-13, provisional while the maintainer was away):
+
+- **`goggame-<id>.info` has no game version** (its `version` is the file
+  format's, and `buildId` is Galaxy's), so a Windows install succeeds on
+  exit 0, and the version recorded is the GOG installer version wineo ran.
+  Step 4's update checks compare against that.
+- **A base installer that never started or was canceled (1, 2, 3, 7)**
+  keeps the environment and its `install` journal. Installing again resumes
+  it, offering the installer's own wizard once for 1, 3, and 7; abandoning
+  it waits for step 6.
+- **A language mismatch is recorded** as an optional `reported_language`
+  per product, written only when the game reports a different language than
+  requested, besides the review's warning.
+- **A Windows journal's `attempted` names the install folder as `.`**,
+  since an Inno installer's own files can't be listed ahead of time.
+- **Still to verify in acceptance:** whether umu/Proton pass Inno's exit
+  code through, how `/DIR=` paths with spaces reach Inno, the uncertain
+  Inno language names (Chinese, Korean, Swedish, Romanian, Thai, Arabic,
+  Latin American Spanish, Greek), and DLC ids from `user/data/games`.
+
 Carried from 0049's acceptance (2026-10-12):
 
 - Sizes GOG lists are rounded to whole MiB, so they're estimates; a file's
