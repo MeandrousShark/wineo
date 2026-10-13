@@ -394,3 +394,60 @@ interrupting an install and finishing it.
   0051.
 - Not planned: cloud saves, bonus content, posting playtime to GOG, Mac
   games, and GOG games in portable roots.
+
+## Acceptance checklist
+
+Use a throwaway games folder so nothing lands in `~/Games`: `wineo set
+--global defaults.games_root=~/wineo-0050-test` (unset it afterwards with
+`wineo set --global --unset defaults.games_root`). Pick a small native game
+you own that isn't installed, a small Windows-only one, and, if you have
+one, a game with DLC and a game GOG offers in several languages. Log in
+first: `wineo import gog --login`.
+
+1. `wineo import gog --list`: owned games show `not installed`, RimWorld
+   and Disco show `imported`. `--list --json` has the same, and
+   `wineo update --check` shows Disco Elysium as an update on GOG it can't
+   apply yet, with no "later release" line for installer games.
+2. `wineo import gog --game NATIVE_ID --dry-run`: the review shows the new
+   native environment, the folder under `~/wineo-0050-test`, `platform
+   linux`, `language en-US`, the version, any DLC you own as `NAME (ID)`,
+   and both sizes as estimates, then `Dry run, nothing was installed.` and
+   no folder is created.
+3. `wineo import gog --game NATIVE_ID`, confirm: download and unpack
+   progress, `Installed TITLE as NAME.`, and the game starts with `wineo
+   start NAME`. Its DLC you own are installed (this checks the
+   provisional owned-DLC source). `--list` now says `installed`, and running
+   the same command again says `Already installed.`
+4. Run step 3's command for another native game and press Ctrl+C during
+   the unpack: `Install interrupted.` and how to finish it, exit 130, and
+   `wineo start NAME` refuses. Run the same `--game ID` again: it finishes
+   from the downloaded packages without downloading again.
+5. `wineo import gog --game WINDOWS_ID`, confirm: the review adds a runner
+   and arch, a prefix is built, then `Running TITLE's installer`, and
+   `Installed TITLE as NAME.`; the game starts. (This checks that Proton
+   passes the installer's exit code through, and that a folder name with
+   spaces reaches the installer.) If its info file names no program, the
+   program list shows the game's own folder first.
+6. `wineo import gog --game LANGUAGE_ID --language fr-FR` (or another
+   language GOG lists for it): the review shows the language it installs
+   in, and the installed game is in that language. If the game reports a
+   different one, the result says `Requested ...; the installed game reports
+   ...` (this checks the Inno language names).
+7. `wineo update WINDOWS_NAME --reinstall`, confirm: each installer runs
+   again and `Reinstalled NAME.`; your saves stay. If GOG has published a
+   newer installer for a Windows game you have, `wineo update NAME` updates
+   it and the game's files change.
+8. In the app: **Add**, **Import from GOG** shows every game you own as
+   tiles, with the installed ones saying so. Pick a small game you haven't
+   installed: the review offers the platform (when both exist), language,
+   runner and arch for Windows, and the folder with **Browse...**; change
+   the language, press Enter, and the review updates. **Install** shows
+   progress and the result, and **Back to library** selects it.
+9. In the app, **Settings**, **GOG**: **Games folder** and **GOG language**
+   save with the Save bar; `english` is refused with the locale tag hint.
+10. Shrink the app's window and check the import grid, the install review
+    (native and Windows), and the program list in light and dark themes if
+    you use both.
+
+Afterwards, remove the test environments (`wineo rm NAME --delete-prefix`),
+delete `~/wineo-0050-test`, and unset `defaults.games_root`.

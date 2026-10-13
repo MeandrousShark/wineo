@@ -20,7 +20,7 @@ when it comes up, and the rows below have the details.
    games (done in 0.29.0 as [0048](plans/0048-steam-owned-games.md)), then
    GOG directly without Heroic: account, migration, and updates (done in
    0.30.0 as [0049](plans/0049-gog-games.md)), then installs
-   ([0050](plans/0050-gog-installs.md), in progress), then Galaxy builds (0051).
+   ([0050](plans/0050-gog-installs.md), implemented, in acceptance), then Galaxy builds (0051).
    Epic is a backlog row.
 6. GUI library views, designed against a library that includes store games.
 7. GUI themes, last, so they cover palette roles the store work adds.
