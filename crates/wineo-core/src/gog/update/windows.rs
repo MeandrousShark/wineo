@@ -428,15 +428,42 @@ pub(super) fn install(
         })?;
     }
 
+    // Each product's info file says which language it installed in. One
+    // that isn't the language asked for is recorded and said, without
+    // guessing why.
+    let folder_language = target.language.clone();
+    for product in &mut target.products {
+        product.reported_language = None;
+        if product.status != ProductStatus::Installed {
+            continue;
+        }
+        let Some((code, shown)) = read_info(&folder, product.id)
+            .as_ref()
+            .and_then(reported_language)
+        else {
+            continue;
+        };
+        let asked = product.language.as_deref().unwrap_or(&folder_language);
+        if code == asked {
+            continue;
+        }
+        let asked_shown = if asked == folder_language {
+            requested
+        } else {
+            asked
+        };
+        warnings.push(if product.id == gog_id {
+            format!("Requested {asked_shown}; the installed game reports {shown}.")
+        } else {
+            format!(
+                "Requested {asked_shown}; {} reports {shown}.",
+                label(product.id)
+            )
+        });
+        product.reported_language = Some(code);
+    }
     let info = read_info(&folder, gog_id);
     let reported = info.as_ref().and_then(reported_language);
-    if let Some((code, shown)) = &reported
-        && *code != target.language
-    {
-        warnings.push(format!(
-            "Requested {requested}; the installed game reports {shown}."
-        ));
-    }
     let launch = info.as_ref().and_then(|root| {
         migrate::windows_launch(&folder, folder.join(format!("goggame-{gog_id}.info")), root).ok()
     });

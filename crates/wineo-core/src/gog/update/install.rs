@@ -292,6 +292,7 @@ impl Plan {
                 .products
                 .iter()
                 .map(|planned| Product {
+                    reported_language: None,
                     id: planned.id,
                     version: planned.version.clone(),
                     build: None,

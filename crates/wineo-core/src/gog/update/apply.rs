@@ -686,6 +686,7 @@ pub(super) fn resolve(
             download_size: parts.iter().map(|file| file.size).sum(),
         });
         target.push(Product {
+            reported_language: None,
             id: product.id,
             version: Some(version),
             build: None,

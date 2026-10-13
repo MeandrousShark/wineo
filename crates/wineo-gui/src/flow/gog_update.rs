@@ -857,6 +857,7 @@ mod tests {
             recovered: false,
             claimed: true,
             products: vec![Product {
+                reported_language: None,
                 id: RIMWORLD,
                 version: Some("1.1".to_owned()),
                 build: None,

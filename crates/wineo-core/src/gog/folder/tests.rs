@@ -20,6 +20,7 @@ fn full_state(folder: &Path) -> FolderState {
             track: Track::Installer,
             products: vec![
                 Product {
+                    reported_language: None,
                     id: 1094900565,
                     version: Some("1.5.4104".to_owned()),
                     build: None,
@@ -27,6 +28,7 @@ fn full_state(folder: &Path) -> FolderState {
                     status: ProductStatus::Installed,
                 },
                 Product {
+                    reported_language: None,
                     id: 1149556166,
                     version: None,
                     build: None,
@@ -78,6 +80,7 @@ fn journal(gog_id: u64) -> Journal {
             language: "en-US".to_owned(),
             track: Track::Installer,
             products: vec![Product {
+                reported_language: None,
                 id: gog_id,
                 version: Some("1.6".to_owned()),
                 build: None,
@@ -155,6 +158,36 @@ fn a_state_from_before_product_languages_loads_unchanged() {
     with.committed.as_mut().unwrap().products[0].language = Some("de".to_owned());
     let written = with.to_toml().unwrap();
     assert!(written.contains("language = \"de\""), "{written}");
+    assert_eq!(FolderState::parse(&written).unwrap(), with);
+}
+
+#[test]
+fn a_state_from_before_reported_languages_loads_unchanged() {
+    let (_root, paths) = setup();
+    let folder = paths.gog_folders_dir().parent().unwrap().join("game");
+    let text = format!(
+        "version = 1\nowner = \"game\"\nfolder = \"{}\"\n\n[committed]\ngog_id = 1\nplatform = \"windows\"\nlanguage = \"en\"\ntrack = \"installer\"\n\n[[committed.products]]\nid = 1\nversion = \"1.0\"\nstatus = \"installed\"\n",
+        folder.display()
+    );
+    let state = FolderState::parse(&text).unwrap();
+    assert_eq!(
+        state.committed.as_ref().unwrap().products[0].reported_language,
+        None
+    );
+    assert!(!state.to_toml().unwrap().contains("reported_language"));
+
+    // Reading it through its lock leaves the file as it was.
+    let path = state_path(&paths, &folder);
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    fs::write(&path, &text).unwrap();
+    assert_eq!(load(&paths, &folder), Some(state));
+    assert_eq!(fs::read_to_string(&path).unwrap(), text);
+
+    // A reported language round-trips.
+    let mut with = FolderState::parse(&text).unwrap();
+    with.committed.as_mut().unwrap().products[0].reported_language = Some("fr".to_owned());
+    let written = with.to_toml().unwrap();
+    assert!(written.contains("reported_language = \"fr\""), "{written}");
     assert_eq!(FolderState::parse(&written).unwrap(), with);
 }
 

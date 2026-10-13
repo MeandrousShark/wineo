@@ -284,6 +284,15 @@ fn assert_installed(fx: &Fixture) {
             (DLC, ProductStatus::Installed)
         ]
     );
+    // The version recorded is the installer's that ran, which updates
+    // compare with; the info file has none.
+    assert!(
+        committed
+            .products
+            .iter()
+            .all(|product| product.version.as_deref() == Some("1.0")
+                && product.reported_language.is_none())
+    );
     assert_eq!(fx.read("Data/core.dat"), "core v1");
     assert_eq!(fx.read("Data/Royalty/r.dat"), "royalty v1");
     let environment = Environment::load(&fx.paths, "rimworld").unwrap();
@@ -451,8 +460,14 @@ fn a_language_the_installed_game_doesnt_report_is_said_without_guessing_why() {
         ["Requested English; the installed game reports French."]
     );
     assert_eq!(installed.reported_language.as_deref(), Some("fr"));
-    // The state records the installer's language.
-    assert_eq!(fx.state().committed.unwrap().language, "en");
+    // The state records the installer's language, and what the game
+    // reports instead.
+    let committed = fx.state().committed.unwrap();
+    assert_eq!(committed.language, "en");
+    assert_eq!(
+        committed.products[0].reported_language.as_deref(),
+        Some("fr")
+    );
 }
 
 #[test]

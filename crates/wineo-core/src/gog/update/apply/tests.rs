@@ -488,6 +488,7 @@ impl Fixture {
                 products: products
                     .iter()
                     .map(|(id, version)| Product {
+                        reported_language: None,
                         id: *id,
                         version: version.map(str::to_owned),
                         build: None,
@@ -1630,6 +1631,7 @@ fn windows(fx: &Fixture, track: Track) {
             language: "en".to_owned(),
             track,
             products: vec![Product {
+                reported_language: None,
                 id: RIMWORLD,
                 version: Some("1".to_owned()),
                 build: Some("5".to_owned()),

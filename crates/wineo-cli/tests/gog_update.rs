@@ -84,6 +84,7 @@ fn disco(f: &Fixture, api: &GogApi) {
             language: "en-US".to_owned(),
             track: Track::Galaxy,
             products: vec![Product {
+                reported_language: None,
                 id: DISCO,
                 version: None,
                 build: Some("59781086834418085".to_owned()),

@@ -125,6 +125,10 @@ pub struct Product {
     /// the folder's.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub language: Option<String>,
+    /// GOG's code for the language a Windows product's `goggame-<id>.info`
+    /// reported after installing, only when it isn't the one asked for.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reported_language: Option<String>,
     pub status: ProductStatus,
 }
 

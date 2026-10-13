@@ -277,6 +277,7 @@ pub(crate) fn native_game_with_dlc(
     let products: Vec<Product> = std::iter::once(gog_id)
         .chain(dlc.iter().copied())
         .map(|id| Product {
+            reported_language: None,
             id,
             version: Some(version.to_owned()),
             build: None,

@@ -751,6 +751,7 @@ fn committed(game: &HeroicGogGame, gog_id: u64) -> Committed {
         _ => Track::Installer,
     };
     let base = Product {
+        reported_language: None,
         id: gog_id,
         version: (track == Track::Installer && !game.version.is_empty())
             .then(|| game.version.clone()),
@@ -765,6 +766,7 @@ fn committed(game: &HeroicGogGame, gog_id: u64) -> Committed {
         .iter()
         .filter(|id| **id != gog_id)
         .map(|id| Product {
+            reported_language: None,
             id: *id,
             version: None,
             build: None,
