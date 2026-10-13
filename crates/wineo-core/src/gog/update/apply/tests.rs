@@ -24,6 +24,18 @@ const ROYALTY: u64 = 1233017772;
 const IDEOLOGY: u64 = 1827857764;
 const USER: u64 = 1001;
 const SCRIPT: &[u8] = b"#!/bin/bash\n# a stand-in for GOG's split file script\n";
+const MIB: usize = 1024 * 1024;
+
+/// A package's size as GOG's details list it: rounded to whole MiB, down
+/// like a big file's usually is, and up for the small ones here, which
+/// GOG would otherwise list as empty.
+fn listed(size: usize) -> usize {
+    if size >= MIB {
+        size / MIB * MIB
+    } else {
+        size.div_ceil(MIB) * MIB
+    }
+}
 
 /// Called at each step of `remove_packages`.
 type CleanupHook = Box<dyn FnMut(&'static str)>;
@@ -193,10 +205,10 @@ impl Gog {
                     "os": "linux",
                     "language": "en",
                     "version": offer.version,
-                    "total_size": bytes.len(),
+                    "total_size": listed(bytes.len()),
                     "files": [{
                         "id": "en3installer0",
-                        "size": bytes.len(),
+                        "size": listed(bytes.len()),
                         "downlink": format!("{base}/downlink/{name}"),
                     }],
                 })
@@ -346,6 +358,27 @@ impl Fixture {
         if id != RIMWORLD && !gog.dlc.contains(&id) {
             gog.dlc.push(id);
         }
+    }
+
+    /// Makes a product's package over a MiB, so GOG lists it smaller than
+    /// it is. The padding goes before the zip, like the rest of the header.
+    fn pad(&self, id: u64) {
+        let mut gog = self.gog.lock().unwrap();
+        let bytes = gog.offers.get_mut(&id).unwrap().bytes.as_mut().unwrap();
+        let at = bytes
+            .windows(9)
+            .position(|window| window == b"MOJOSETUP")
+            .unwrap();
+        bytes.splice(at..at, b"MOJOSETUP".repeat(MIB / 9 * 5 / 4));
+        assert!(listed(bytes.len()) < bytes.len());
+    }
+
+    fn package_size(&self, id: u64) -> u64 {
+        self.gog.lock().unwrap().offers[&id]
+            .bytes
+            .as_ref()
+            .unwrap()
+            .len() as u64
     }
 
     fn withdraw(&self, id: u64) {
@@ -1061,6 +1094,43 @@ fn recovery_uses_cached_packages_offline() {
         .unwrap();
     assert_finished_v2(&fx);
     assert_eq!(fx.downloads(), downloads);
+}
+
+#[test]
+fn an_update_interrupted_after_downloading_finishes_without_downloading_again() {
+    // Stopped before the journal, its packages are found again from GOG's
+    // rounded listing; after it, from the journal's exact sizes.
+    for (point, skip) in [("update.journal.before", 0), ("update.publish.after", 2)] {
+        let fx = installed_v1();
+        ready_for_v2(&fx);
+        fx.pad(RIMWORLD);
+        fx.pad(ROYALTY);
+        set_failpoint_nth(point, skip);
+        fx.update_err();
+        let downloads = fx.downloads();
+        if let Some(journal) = fx.state().journal {
+            let sizes: Vec<(u64, u64)> = journal
+                .packages
+                .iter()
+                .map(|package| (package.product, package.size))
+                .collect();
+            assert_eq!(
+                sizes,
+                [
+                    (RIMWORLD, fx.package_size(RIMWORLD)),
+                    (ROYALTY, fx.package_size(ROYALTY))
+                ]
+            );
+            let pending = fx.pending(false, Options::default());
+            assert!(pending.is_offline(), "{point}");
+            fx.apply_with(false, &pending, &Token::new(), |_| {})
+                .unwrap();
+        } else {
+            fx.update();
+        }
+        assert_finished_v2(&fx);
+        assert_eq!(fx.downloads(), downloads, "{point}");
+    }
 }
 
 #[test]

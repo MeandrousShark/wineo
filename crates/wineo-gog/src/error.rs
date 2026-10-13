@@ -78,10 +78,14 @@ pub enum ErrorKind {
     /// Only the kind is kept, since an `io::Error` can name a path.
     #[error("a cached file couldn't be read or written: {0}")]
     Disk(io::ErrorKind),
-    /// The file, or what GOG says about it, disagrees with the size in the
-    /// product details.
-    #[error("the file isn't the size GOG listed")]
+    /// The file, or what GOG's download server says about it, disagrees
+    /// with the exact size GOG's checksum gave or an earlier answer did.
+    #[error("the file doesn't match its expected size")]
     WrongSize,
+    /// GOG publishes no checksum for the file and its download server
+    /// didn't send a length, so there's no exact size to check it against.
+    #[error("GOG's download server didn't say how large the file is")]
+    UnknownSize,
     #[error("the file doesn't match GOG's checksum")]
     WrongChecksum,
     /// A resumed download's answer starts somewhere else or ends early.
@@ -139,7 +143,8 @@ impl Error {
             ErrorKind::Json
             | ErrorKind::Malformed
             | ErrorKind::TooLarge
-            | ErrorKind::WrongRange => Class::Malformed,
+            | ErrorKind::WrongRange
+            | ErrorKind::UnknownSize => Class::Malformed,
             ErrorKind::InvalidGrant
             | ErrorKind::Unauthorized
             | ErrorKind::Status(_)

@@ -12,12 +12,16 @@
 //! `installer_windows_en`, so every part of one installer (`setup_*.exe`
 //! and its `.bin` files) lands in one folder under GOG's own names, which
 //! is how the setup program finds them. The record names the file and its
-//! expected size and MD5, so a file can be found by its GOG file id without
+//! exact size and MD5, so a file can be found by its GOG file id without
 //! the network, and a partial download is only resumed for the same file.
 //! One file id holds one file at a time: a different one replaces it.
 //!
+//! GOG's product details list sizes rounded to whole MiB, so the exact size
+//! comes from the download: GOG's checksum, else the server's answer.
+//!
 //! Reusing a finished file is decided offline, from its record: the size,
-//! and the MD5 GOG published when the file was downloaded. If GOG later
+//! which must fit the listed one, and the MD5 GOG published when the file
+//! was downloaded. If GOG later
 //! replaces the file with another of the same size under the same name, only
 //! an MD5 the caller already knows, like one a journal recorded and passed
 //! to `DownloadCache::complete`, tells the two apart.
@@ -49,6 +53,10 @@ const LOCK_RETRY: Duration = Duration::from_millis(100);
 /// How much of a file is read or written at once.
 pub(crate) const CHUNK: usize = 256 * 1024;
 
+/// How far a file's real size can be from the size GOG lists for it, which
+/// is rounded to whole MiB.
+const LISTING_SLACK: u64 = 1024 * 1024;
+
 /// One installer file, by where it belongs in the cache and its size from
 /// the product details.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -58,6 +66,9 @@ pub struct Package<'a> {
     pub download_id: &'a str,
     /// GOG's file id, like `en1installer0`.
     pub file_id: &'a str,
+    /// The size GOG lists, rounded to whole MiB, or an exact one like a
+    /// journal recorded. Either way a cached file is matched within
+    /// `LISTING_SLACK` of it.
     pub size: u64,
     /// Every file of the installer as GOG lists it now, this one included.
     /// A cached file of the same name under an id not listed here is stale
@@ -213,7 +224,7 @@ impl DownloadCache {
     }
 
     /// The finished file for a package, when it's in the cache with its
-    /// size and an MD5 that matches. `md5`, like one a journal recorded,
+    /// recorded size, fitting the package's, and an MD5 that matches. `md5`, like one a journal recorded,
     /// must match the cache's own when both are known; with neither, only
     /// the size is checked. Reads the whole file to hash it, checking
     /// `cancel` between chunks.
@@ -224,7 +235,7 @@ impl DownloadCache {
         cancel: &dyn Fn() -> bool,
     ) -> Result<Option<PathBuf>, Error> {
         let folder = self.folder(package, Endpoint::Cache)?;
-        Ok(reusable(&folder, package, md5, cancel, Endpoint::Cache)?.map(|(path, _)| path))
+        Ok(reusable(&folder, package, md5, cancel, Endpoint::Cache)?.map(|found| found.path))
     }
 
     /// Every file cached for a product, by download id and then file id.
@@ -389,18 +400,31 @@ impl Drop for ProductLock {
     }
 }
 
-/// The finished file and its MD5, when it can be used as it is.
+/// Whether a file of `exact` bytes could be the one GOG lists at `listed`.
+/// Without a checksum this is all that tells a file GOG replaced under the
+/// same id from the one cached.
+pub(crate) fn fits_listing(exact: u64, listed: u64) -> bool {
+    exact.abs_diff(listed) <= LISTING_SLACK
+}
+
+/// A finished file that can be used as it is.
+pub(crate) struct Reusable {
+    pub path: PathBuf,
+    pub size: u64,
+    pub md5: Option<String>,
+}
+
 pub(crate) fn reusable(
     folder: &Path,
     package: &Package<'_>,
     md5: Option<&str>,
     cancel: &dyn Fn() -> bool,
     endpoint: Endpoint,
-) -> Result<Option<(PathBuf, Option<String>)>, Error> {
+) -> Result<Option<Reusable>, Error> {
     let Some(record) = read_record(folder, package.file_id) else {
         return Ok(None);
     };
-    if record.size != package.size {
+    if !fits_listing(record.size, package.size) {
         return Ok(None);
     }
     let md5 = match (md5.map(str::to_ascii_lowercase), record.md5) {
@@ -414,7 +438,7 @@ pub(crate) fn reusable(
         Err(error) => return Err(disk(endpoint)(error)),
     };
     let meta = file.metadata().map_err(disk(endpoint))?;
-    if !meta.is_file() || meta.len() != package.size {
+    if !meta.is_file() || meta.len() != record.size {
         return Ok(None);
     }
     if let Some(md5) = &md5 {
@@ -424,7 +448,11 @@ pub(crate) fn reusable(
             return Ok(None);
         }
     }
-    Ok(Some((path, md5)))
+    Ok(Some(Reusable {
+        path,
+        size: record.size,
+        md5,
+    }))
 }
 
 /// Feeds the rest of a file to `hasher`.

@@ -74,6 +74,19 @@ pub fn response(status: u16, headers: &[(&str, String)], body: &[u8]) -> Vec<u8>
     bytes
 }
 
+/// A response with no `Content-Length`, its end marked by closing the
+/// connection.
+pub fn unsized_response(status: u16, headers: &[(&str, String)], body: &[u8]) -> Vec<u8> {
+    let mut head = format!("HTTP/1.1 {status} X\r\n");
+    for (name, value) in headers {
+        head.push_str(&format!("{name}: {value}\r\n"));
+    }
+    head.push_str("Connection: close\r\n\r\n");
+    let mut bytes = head.into_bytes();
+    bytes.extend_from_slice(body);
+    bytes
+}
+
 /// Serves a file the way a download server does: whole, or from an offset
 /// with `Range: bytes=N-`.
 pub fn file(request: &Request, body: &[u8]) -> Reply {
