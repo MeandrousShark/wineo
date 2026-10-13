@@ -1,9 +1,13 @@
-//! Import from GOG: moving the GOG games Heroic installed into wineo, like
-//! `wineo import gog`. Lists Heroic's games, reviews one, migrates it, then
-//! adds GOG's playtime and art, which never fails the migration.
+//! Import from GOG, like `wineo import gog`: every game you own, to install
+//! (see `gog_install`), and the GOG games Heroic installed, to move into
+//! wineo. A migration is reviewed, applied, then adds GOG's playtime and
+//! art, which never fails the migration.
+
+use std::collections::{BTreeMap, BTreeSet};
 
 use iced::futures::channel::mpsc::unbounded;
-use iced::widget::{column, container, pick_list, row, text};
+use iced::keyboard::{self, Key, key::Named};
+use iced::widget::{Row, column, container, pick_list, row, text};
 use iced::{Center, Element, Fill, Task, border};
 use wineo_core::art::{Kind, Source};
 use wineo_core::cancel::Token;
@@ -11,20 +15,25 @@ use wineo_core::components::Component;
 use wineo_core::config::GlobalConfig;
 use wineo_core::download::{Https, Provider};
 use wineo_core::gog::account::Session;
+use wineo_core::gog::api::Client;
 use wineo_core::gog::extras::{self, Request};
-use wineo_core::gog::folder::{Platform, Track};
+use wineo_core::gog::folder::{self, JournalKind, Source as FolderSource, Track};
 use wineo_core::gog::migrate::{self, MigrateError, Migration, Outcome, Plan, StateChange, Target};
 use wineo_core::heroic::{HeroicGogEntry, HeroicGogGame, HeroicOrigin, HeroicSource, gog_games};
 use wineo_core::heroic_import::{self, Policy, RunnerSuggestion};
+use wineo_core::key_store::Keyring;
 use wineo_core::paths::Paths;
 use wineo_core::secret_service::SecretServiceKeyring;
 use wineo_core::steamgriddb;
 
 use super::Action;
-use super::heroic::{self, Prerequisite};
+use super::gog_install::{self, Install, Leave, Offer};
+use super::heroic::{self, Prerequisite, Tile};
 use crate::runner_label::Choice;
 use crate::theme::Palette;
-use crate::ui::{PickListStyle, accent_base, list_group, list_row, secondary_button};
+use crate::ui::{PickListStyle, accent_base, secondary_button};
+
+const GRID_ID: &str = "gog-import-grid";
 
 pub(crate) const HEROIC_NOTE: &str =
     "Remove it from Heroic's library, without deleting its files, so both don't update it.";
@@ -35,6 +44,8 @@ enum Step {
     Review,
     Working,
     Finished,
+    /// Installing an owned game, which `install` runs.
+    Install,
 }
 
 #[derive(Debug, Clone)]
@@ -59,7 +70,39 @@ pub(crate) struct Listing {
     games: Vec<Candidate>,
     /// Heroic records that couldn't be used, as sentences.
     issues: Vec<String>,
+    /// The owned games Heroic doesn't have, by what wineo has of them.
+    owned: Vec<Owned>,
+    /// Why the owned games aren't all listed, like being logged out.
+    owned_note: Option<String>,
 }
+
+/// An owned game, and what wineo has of it, like `import gog --list` says.
+#[derive(Debug, Clone)]
+pub(crate) struct Owned {
+    offer: Offer,
+    state: OwnedState,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum OwnedState {
+    NotInstalled,
+    /// Its install stopped; installing again finishes it.
+    Unfinished,
+    /// Installed by wineo, as this environment.
+    Installed(String),
+    /// Migrated from Heroic, as this environment.
+    Imported(String),
+}
+
+/// One tile of the grid.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Entry {
+    Heroic(usize),
+    Owned(usize),
+}
+
+/// What logged out says about the games you own.
+const OWNED_LOGGED_OUT: &str = "Log in to GOG in Settings to install the games you own.";
 
 /// One game ready to review: its migration, with a runner planned for a new
 /// Windows environment when one could be.
@@ -111,6 +154,9 @@ pub(crate) enum Event {
     Progress(u64, String),
     Finished(u64, Result<Report, String>),
     BackToLibrary,
+    /// Opens the install of the owned game at this index.
+    Install(usize),
+    Installing(Box<gog_install::Event>),
 }
 
 pub(crate) struct Page {
@@ -127,6 +173,11 @@ pub(crate) struct Page {
     notes: Vec<String>,
     leave_prompt: bool,
     action: Option<Action>,
+    install: Option<Box<Install>>,
+    /// The tile the keyboard is on, in grid order.
+    focus: Option<usize>,
+    /// Whether `focus` came from the keyboard, which draws the ring.
+    focus_visible: bool,
 }
 
 impl Page {
@@ -145,6 +196,9 @@ impl Page {
             notes: Vec::new(),
             leave_prompt: false,
             action: None,
+            install: None,
+            focus: None,
+            focus_visible: false,
         };
         let task = page.list();
         (page, task)
@@ -156,15 +210,23 @@ impl Page {
     }
 
     pub(crate) fn busy(&self) -> bool {
-        self.token.is_some()
+        self.token.is_some() || self.install.as_ref().is_some_and(|install| install.busy())
     }
 
-    /// A listing, preparation, or migration is running.
+    /// A listing, preparation, migration, or install is running.
     pub(crate) fn waiting(&self) -> bool {
         !self.status.is_empty()
+            || self
+                .install
+                .as_ref()
+                .is_some_and(|install| install.waiting())
     }
 
     pub(crate) fn cancel(&mut self, force: bool) {
+        if let Some(install) = &mut self.install {
+            install.cancel(force);
+            return;
+        }
         if let Some(token) = &self.token {
             if force {
                 token.force();
@@ -181,17 +243,26 @@ impl Page {
     }
 
     pub(crate) fn submit(&mut self) -> Task<Event> {
+        if let Some(install) = &mut self.install {
+            let task = install.submit();
+            return self.installing(task);
+        }
         if self.busy() || self.waiting() {
             return Task::none();
         }
         match self.step {
             Step::Review => self.start(),
             Step::Finished => self.update(Event::BackToLibrary),
-            Step::Games | Step::Working => Task::none(),
+            Step::Games => self.open_focused(),
+            Step::Working | Step::Install => Task::none(),
         }
     }
 
     pub(crate) fn back(&mut self) -> Task<Event> {
+        if let Some(install) = &mut self.install {
+            let task = install.back();
+            return self.installing(task);
+        }
         if self.busy() {
             return Task::none();
         }
@@ -207,10 +278,106 @@ impl Page {
                 self.notes.clear();
                 self.step = Step::Games;
             }
-            Step::Working => {}
+            Step::Working | Step::Install => {}
             Step::Finished => self.exit(),
         }
         Task::none()
+    }
+
+    /// Wraps the install's task, and follows where it leaves to.
+    fn installing(&mut self, task: Task<gog_install::Event>) -> Task<Event> {
+        let leave = self
+            .install
+            .as_mut()
+            .and_then(|install| install.take_leave());
+        match leave {
+            Some(Leave::Games) => {
+                self.install = None;
+                self.step = Step::Games;
+                self.error = None;
+                // What it may have changed shows in the grid.
+                return self.list();
+            }
+            Some(Leave::Library(name)) => {
+                self.action = Some(Action::Library {
+                    name,
+                    launch: false,
+                });
+            }
+            None => {}
+        }
+        task.map(|event| Event::Installing(Box::new(event)))
+    }
+
+    /// The grid's tiles in order: every game, by title.
+    fn entries(listing: &Listing) -> Vec<Entry> {
+        let mut entries: Vec<(String, Entry)> = listing
+            .games
+            .iter()
+            .enumerate()
+            .map(|(index, candidate)| (candidate.game.title.to_lowercase(), Entry::Heroic(index)))
+            .chain(
+                listing
+                    .owned
+                    .iter()
+                    .enumerate()
+                    .map(|(index, owned)| (owned.offer.title.to_lowercase(), Entry::Owned(index))),
+            )
+            .collect();
+        entries.sort_by(|a, b| a.0.cmp(&b.0));
+        entries.into_iter().map(|(_, entry)| entry).collect()
+    }
+
+    fn open(&mut self, entry: Entry) -> Task<Event> {
+        match entry {
+            Entry::Heroic(index) => self.update(Event::Pick(index)),
+            Entry::Owned(index) => self.update(Event::Install(index)),
+        }
+    }
+
+    fn open_focused(&mut self) -> Task<Event> {
+        let entry = self
+            .listing
+            .as_ref()
+            .zip(self.focus)
+            .and_then(|(listing, focus)| Self::entries(listing).get(focus).copied());
+        match entry {
+            Some(entry) => self.open(entry),
+            None => Task::none(),
+        }
+    }
+
+    /// Arrow keys move between tiles, and Enter or Space opens one.
+    pub(crate) fn key(
+        &mut self,
+        key: &Key,
+        _modifiers: keyboard::Modifiers,
+        width: f32,
+    ) -> Option<Task<Event>> {
+        if self.step != Step::Games || self.waiting() || self.leave_prompt {
+            return None;
+        }
+        let count = Self::entries(self.listing.as_ref()?).len();
+        let columns = heroic::grid_columns(width);
+        match key.as_ref() {
+            Key::Named(
+                named @ (Named::ArrowLeft | Named::ArrowRight | Named::ArrowUp | Named::ArrowDown),
+            ) => {
+                self.focus = heroic::move_focus(self.focus, named, columns, count);
+                self.focus_visible = true;
+                let index = self.focus?;
+                let columns = columns.max(1);
+                Some(heroic::reveal_row(
+                    GRID_ID,
+                    index / columns,
+                    count.div_ceil(columns),
+                ))
+            }
+            Key::Named(Named::Space | Named::Enter) | Key::Character(" ") => {
+                Some(self.open_focused())
+            }
+            _ => None,
+        }
     }
 
     fn exit(&mut self) {
@@ -226,7 +393,7 @@ impl Page {
     fn list(&mut self) -> Task<Event> {
         self.step = Step::Games;
         self.listing = None;
-        self.status = "Reading Heroic's GOG games...".to_owned();
+        self.status = "Reading your GOG games...".to_owned();
         let generation = self.next_generation();
         let paths = self.paths.clone();
         Task::perform(
@@ -330,6 +497,35 @@ impl Page {
 
     pub(crate) fn update(&mut self, event: Event) -> Task<Event> {
         match event {
+            Event::Installing(event) => match &mut self.install {
+                Some(install) => {
+                    let task = install.update(*event);
+                    self.installing(task)
+                }
+                None => Task::none(),
+            },
+            Event::Install(index) if self.step == Step::Games && !self.waiting() => {
+                let Some(owned) = self
+                    .listing
+                    .as_ref()
+                    .and_then(|listing| listing.owned.get(index))
+                else {
+                    return Task::none();
+                };
+                if !matches!(
+                    owned.state,
+                    OwnedState::NotInstalled | OwnedState::Unfinished
+                ) {
+                    return Task::none();
+                }
+                self.leave_prompt = false;
+                self.error = None;
+                self.notes.clear();
+                let (install, task) = Install::new(self.paths.clone(), owned.offer.clone());
+                self.install = Some(Box::new(install));
+                self.step = Step::Install;
+                task.map(|event| Event::Installing(Box::new(event)))
+            }
             Event::Back => self.back(),
             Event::Discard => {
                 self.leave_prompt = false;
@@ -359,6 +555,12 @@ impl Page {
                 }
                 self.leave_prompt = false;
                 self.picked = Some(index);
+                self.focus_visible = false;
+                self.focus = self.listing.as_ref().and_then(|listing| {
+                    Self::entries(listing)
+                        .iter()
+                        .position(|entry| *entry == Entry::Heroic(index))
+                });
                 self.prepared = None;
                 self.notes.clear();
                 self.prepare(None)
@@ -468,12 +670,39 @@ impl Page {
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn view(&self, palette: Palette, spin: f32) -> Element<'_, Event> {
+        self.view_at(palette, 900.0, spin)
+    }
+
+    /// `width` is the dialog's, which sets how many tiles fit across.
+    pub(crate) fn view_at(&self, palette: Palette, width: f32, spin: f32) -> Element<'_, Event> {
+        let back = secondary_button("Back", palette)
+            .on_press_maybe((!self.busy() && self.step != Step::Finished).then_some(Event::Back));
+        let mut page = column![]
+            .spacing(12)
+            .max_width(heroic::PAGE_MAX_WIDTH)
+            .height(Fill);
+        if let (Step::Install, Some(install)) = (self.step, &self.install) {
+            let (body, footer) = install.view(column![].spacing(14).width(Fill), palette, spin);
+            let body = Element::from(body).map(|event| Event::Installing(Box::new(event)));
+            page = page
+                .push(row![back].align_y(Center))
+                .push(heroic::scroll_body(body, None, palette));
+            if let Some(footer) = footer {
+                page = page.push(pinned(
+                    footer.map(|event| Event::Installing(Box::new(event))),
+                    palette,
+                ));
+            }
+            return heroic::page_frame(page);
+        }
         let title = match self.step {
             Step::Games => "Choose a GOG game",
             Step::Review => "Review GOG migration",
             Step::Working => "Migrating from GOG",
             Step::Finished => "GOG migration finished",
+            Step::Install => "Review GOG install",
         };
         let mut body = column![crate::ui::page_title(title, palette)]
             .spacing(14)
@@ -495,9 +724,9 @@ impl Page {
             body = body.push(text(note).size(13).color(palette.muted));
         }
         match self.step {
-            Step::Games => body = self.games_view(body, palette),
+            Step::Games => {}
             Step::Review => body = self.review_view(body, palette),
-            Step::Working => {}
+            Step::Working | Step::Install => {}
             Step::Finished => {
                 if let Some(report) = &self.report {
                     for line in &report.lines {
@@ -509,12 +738,6 @@ impl Page {
                 }
             }
         }
-        let back = secondary_button("Back", palette)
-            .on_press_maybe((!self.busy() && self.step != Step::Finished).then_some(Event::Back));
-        let mut page = column![]
-            .spacing(12)
-            .max_width(heroic::PAGE_MAX_WIDTH)
-            .height(Fill);
         if self.leave_prompt {
             page = page.push(text("Discard this GOG import draft?")).push(
                 row![
@@ -524,9 +747,14 @@ impl Page {
                 .spacing(12),
             );
         }
-        page = page
-            .push(row![back].align_y(Center))
-            .push(heroic::scroll_body(body, None, palette));
+        page = page.push(row![back].align_y(Center));
+        // The title and notes scroll with the tiles, like the other import
+        // grids.
+        page = if self.step == Step::Games {
+            page.push(self.games_view(body, palette, width))
+        } else {
+            page.push(heroic::scroll_body(body, None, palette))
+        };
         let footer: Option<Element<'_, Event>> = match self.step {
             Step::Review => self.prepared.as_ref().map(|prepared| {
                 accent_base("Migrate", palette.primary)
@@ -546,14 +774,10 @@ impl Page {
                     .on_press(Event::BackToLibrary)
                     .into(),
             ),
-            Step::Games => None,
+            Step::Games | Step::Install => None,
         };
         if let Some(footer) = footer {
-            page = page.push(container(footer).padding(12).width(Fill).style(move |_| {
-                container::Style::default()
-                    .background(palette.surface)
-                    .border(border::rounded(8).width(1).color(palette.border))
-            }));
+            page = page.push(pinned(footer, palette));
         }
         heroic::page_frame(page)
     }
@@ -562,48 +786,96 @@ impl Page {
         &'a self,
         mut body: iced::widget::Column<'a, Event>,
         palette: Palette,
-    ) -> iced::widget::Column<'a, Event> {
+        width: f32,
+    ) -> Element<'a, Event> {
         let Some(listing) = &self.listing else {
-            return body;
+            return heroic::scroll_body(body, None, palette);
         };
         for issue in &listing.issues {
             body = body.push(text(issue).size(13).color(palette.warning));
         }
-        if listing.games.is_empty() {
-            return body.push(text("Heroic has no GOG games.").color(palette.muted));
+        if let Some(note) = &listing.owned_note {
+            body = body.push(text(note).size(13).color(palette.muted));
         }
-        let rows = listing.games.iter().enumerate().map(|(index, candidate)| {
-            let (note, ready) = match &candidate.standing {
-                Standing::Ready(_) => (None, true),
-                Standing::Already { environment } => {
-                    (Some(format!("Already migrated as {environment}.")), false)
-                }
-                Standing::Failed(reason) => (Some(reason.clone()), false),
+        let entries = Self::entries(listing);
+        if entries.is_empty() {
+            let empty = if listing.owned_note.is_some() {
+                "Heroic has no GOG games."
+            } else {
+                "You don't own any GOG games."
             };
-            let game = &candidate.game;
-            let mut content = column![
-                text(&game.title).color(if ready {
-                    palette.foreground
-                } else {
-                    palette.muted
-                }),
-                text(format!("{} - {}", game.id, platform_label(game.platform)))
-                    .size(12)
-                    .color(palette.muted)
-            ]
-            .spacing(2);
-            if let Some(note) = note {
-                let color = if matches!(candidate.standing, Standing::Failed(_)) {
-                    palette.warning
-                } else {
-                    palette.muted
+            return heroic::scroll_body(body.push(text(empty).color(palette.muted)), None, palette);
+        }
+        let columns = heroic::grid_columns(width);
+        let tiles: Vec<Element<'a, Event>> = entries
+            .iter()
+            .enumerate()
+            .map(|(position, entry)| {
+                let (title, reason, note, dimmed, event) = match *entry {
+                    Entry::Heroic(index) => {
+                        let candidate = &listing.games[index];
+                        let (reason, note) = match &candidate.standing {
+                            Standing::Ready(_) => (None, Some("In Heroic".to_owned())),
+                            Standing::Already { environment } => {
+                                (Some(format!("Already migrated as {environment}.")), None)
+                            }
+                            Standing::Failed(reason) => (Some(reason.clone()), None),
+                        };
+                        (
+                            candidate.game.title.as_str(),
+                            reason,
+                            note,
+                            false,
+                            Event::Pick(index),
+                        )
+                    }
+                    Entry::Owned(index) => {
+                        let owned = &listing.owned[index];
+                        let (reason, note, dimmed) = match &owned.state {
+                            OwnedState::NotInstalled => {
+                                (None, Some("Not installed".to_owned()), true)
+                            }
+                            OwnedState::Unfinished => {
+                                (None, Some("Install didn't finish".to_owned()), false)
+                            }
+                            OwnedState::Installed(name) => {
+                                (Some(format!("Installed as {name}.")), None, false)
+                            }
+                            OwnedState::Imported(name) => {
+                                (Some(format!("Already migrated as {name}.")), None, false)
+                            }
+                        };
+                        (
+                            owned.offer.title.as_str(),
+                            reason,
+                            note,
+                            dimmed,
+                            Event::Install(index),
+                        )
+                    }
                 };
-                content = content.push(text(note).size(12).color(color));
-            }
-            list_row(content, palette)
-                .on_press_maybe((ready && !self.waiting()).then_some(Event::Pick(index)))
-        });
-        body.push(list_group(rows, palette))
+                heroic::tile(
+                    Tile {
+                        title,
+                        poster: None,
+                        reason,
+                        note,
+                        chosen: false,
+                        focus_ring: self.focus_visible && self.focus == Some(position),
+                        dimmed,
+                    },
+                    palette,
+                    event,
+                )
+            })
+            .collect();
+        let mut rows = column![].spacing(heroic::TILE_GAP);
+        let mut tiles = tiles.into_iter().peekable();
+        while tiles.peek().is_some() {
+            rows = rows
+                .push(Row::with_children(tiles.by_ref().take(columns)).spacing(heroic::TILE_GAP));
+        }
+        heroic::grid_scroll(GRID_ID, body.into(), rows.into(), palette)
     }
 
     fn review_view<'a>(
@@ -719,17 +991,23 @@ impl Page {
     }
 }
 
+/// A step's action row, pinned under the scrolling content.
+fn pinned<'a>(footer: Element<'a, Event>, palette: Palette) -> Element<'a, Event> {
+    container(footer)
+        .padding(12)
+        .width(Fill)
+        .style(move |_| {
+            container::Style::default()
+                .background(palette.surface)
+                .border(border::rounded(8).width(1).color(palette.border))
+        })
+        .into()
+}
+
 fn windows_plan(migration: &Migration) -> Option<&heroic_import::GamePlan> {
     match migration.target() {
         Target::Windows { plan, .. } => plan.as_ref(),
         _ => None,
-    }
-}
-
-fn platform_label(platform: Platform) -> &'static str {
-    match platform {
-        Platform::Linux => "Linux",
-        Platform::Windows => "Windows",
     }
 }
 
@@ -804,7 +1082,135 @@ fn load_listing(paths: &Paths) -> Result<Listing, String> {
         return Err(MigrateError::Portable.to_string());
     }
     let sources = heroic_import::sources(paths, None).map_err(|error| error.to_string())?;
-    Ok(listing_from(paths, &sources))
+    let mut listing = listing_from(paths, &sources);
+    let keyring = SecretServiceKeyring::for_spec(&wineo_core::gog::account::KEY_SPEC);
+    match wineo_core::gog::client_from_env() {
+        Ok(client) => add_owned(paths, &keyring, client, &mut listing),
+        Err(error) => listing.owned_note = Some(error.to_string()),
+    }
+    Ok(listing)
+}
+
+/// Adds the owned games Heroic doesn't have to `listing`, with what wineo
+/// has of each, the way `import gog --list` tells them apart. Logged out, or
+/// when GOG can't be asked, only the note says so: Heroic's games still
+/// migrate without a login.
+pub(crate) fn add_owned(
+    paths: &Paths,
+    keyring: &dyn Keyring,
+    client: Client,
+    listing: &mut Listing,
+) {
+    let mut session = match Session::open(paths, keyring, client) {
+        Ok(Some(session)) => session,
+        Ok(None) => {
+            listing.owned_note = Some(OWNED_LOGGED_OUT.to_owned());
+            return;
+        }
+        Err(error) => {
+            listing.owned_note = Some(format!("Couldn't read the GOG login: {error}"));
+            return;
+        }
+    };
+    let owned = match wineo_core::gog::owned::load(&mut session, false) {
+        Ok(owned) => owned,
+        Err(error) => {
+            listing.owned_note = Some(format!("Couldn't list the games you own: {error}"));
+            return;
+        }
+    };
+    listing.owned_note = owned.warning;
+    let in_heroic: BTreeSet<&str> = listing
+        .games
+        .iter()
+        .map(|candidate| candidate.game.id.as_str())
+        .collect();
+    let recorded = recorded_games(paths);
+    let configless = configless_installs(paths);
+    let mut games: Vec<Owned> = owned
+        .games
+        .into_iter()
+        .filter(|game| !in_heroic.contains(game.id.to_string().as_str()))
+        .map(|game| {
+            let state = match recorded.get(&game.id) {
+                Some(name) => recorded_state(paths, name, game.id),
+                None if configless.contains_key(&game.id) => OwnedState::Unfinished,
+                None => OwnedState::NotInstalled,
+            };
+            let unfinished = match (&state, recorded.get(&game.id)) {
+                (OwnedState::Unfinished, Some(name)) => Some(name.clone()),
+                (OwnedState::Unfinished, None) => configless.get(&game.id).cloned(),
+                _ => None,
+            };
+            Owned {
+                offer: Offer {
+                    gog_id: game.id,
+                    title: game.title,
+                    linux: game.works_on.linux,
+                    windows: game.works_on.windows,
+                    unfinished,
+                },
+                state,
+            }
+        })
+        .collect();
+    games.sort_by_cached_key(|owned| (owned.offer.title.to_lowercase(), owned.offer.gog_id));
+    listing.owned = games;
+}
+
+/// The environment that records each GOG game, by game id. A config that
+/// can't be read doesn't say.
+fn recorded_games(paths: &Paths) -> BTreeMap<u64, String> {
+    let mut recorded = BTreeMap::new();
+    for name in wineo_core::environment::names(paths).unwrap_or_default() {
+        if let Ok(Some(id)) = wineo_core::gog::update::recorded_gog_id(paths, &name)
+            && let Ok(id) = id.parse()
+        {
+            recorded.entry(id).or_insert(name);
+        }
+    }
+    recorded
+}
+
+/// What `name`'s folder for game `id` says: an install to finish, one wineo
+/// made, or a migrated game. A state that can't be read reads as migrated.
+fn recorded_state(paths: &Paths, name: &str, id: u64) -> OwnedState {
+    let state = folder::find(paths, name, &id.to_string()).ok().flatten();
+    let installing = state
+        .as_ref()
+        .and_then(|state| state.journal.as_ref())
+        .is_some_and(|journal| journal.kind == JournalKind::Install);
+    let installed = state
+        .and_then(|state| state.committed)
+        .is_some_and(|committed| committed.source == Some(FolderSource::Install));
+    if installing {
+        OwnedState::Unfinished
+    } else if installed {
+        OwnedState::Installed(name.to_owned())
+    } else {
+        OwnedState::Imported(name.to_owned())
+    }
+}
+
+/// Installs that stopped before their environment's config was written, by
+/// game id, with the name they'll get.
+fn configless_installs(paths: &Paths) -> BTreeMap<u64, String> {
+    let mut found = BTreeMap::new();
+    for (_, state) in folder::list(paths).unwrap_or_default() {
+        let Ok(state) = state else { continue };
+        let unfinished = state.committed.is_none()
+            && state
+                .journal
+                .as_ref()
+                .is_some_and(|journal| journal.kind == JournalKind::Install);
+        if let (Some(owner), Some(id)) = (&state.owner, state.gog_id())
+            && unfinished
+            && !paths.environment_config(owner).exists()
+        {
+            found.entry(id).or_insert_with(|| owner.clone());
+        }
+    }
+    found
 }
 
 /// Every GOG game the Heroic configurations installed, planned so the page
@@ -1045,15 +1451,15 @@ fn run(
 
 /// What importing GOG's extras said.
 #[derive(Debug, Default)]
-struct Extras {
-    lines: Vec<String>,
-    notes: Vec<String>,
+pub(super) struct Extras {
+    pub(super) lines: Vec<String>,
+    pub(super) notes: Vec<String>,
     icon: bool,
 }
 
 /// Imports GOG's playtime and art, like `import gog` does after migrating.
 /// Every problem is a note; nothing here fails.
-fn import_extras(
+pub(super) fn import_extras(
     paths: &Paths,
     global: &GlobalConfig,
     environment: &str,

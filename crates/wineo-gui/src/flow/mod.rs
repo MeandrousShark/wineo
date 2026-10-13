@@ -1,6 +1,7 @@
 pub(crate) mod artwork;
 mod clone;
 mod gog;
+mod gog_install;
 mod gog_update;
 mod heroic;
 pub(crate) mod new;
@@ -220,7 +221,7 @@ impl Page {
                 .view(palette, width, spin)
                 .map(|event| Event::SteamMessage(Box::new(event))),
             Self::Gog(page) => page
-                .view(palette, spin)
+                .view_at(palette, width, spin)
                 .map(|event| Event::GogMessage(Box::new(event))),
             Self::GogUpdate(page) => page
                 .view(palette, spin)
@@ -255,8 +256,12 @@ impl Page {
                                 palette,
                             )
                             .on_press(Event::Steam),
-                            choice("5 - Import from GOG", "GOG games Heroic installed", palette,)
-                                .on_press(Event::Gog),
+                            choice(
+                                "5 - Import from GOG",
+                                "Install the games you own, or move Heroic's",
+                                palette,
+                            )
+                            .on_press(Event::Gog),
                         ],
                         palette,
                     ),)
@@ -286,6 +291,9 @@ impl Page {
             Self::Steam(page) => page
                 .key(key, modifiers, width)
                 .map(|task| task.map(|event| Event::SteamMessage(Box::new(event)))),
+            Self::Gog(page) => page
+                .key(key, modifiers, width)
+                .map(|task| task.map(|event| Event::GogMessage(Box::new(event)))),
             _ => None,
         }
     }
