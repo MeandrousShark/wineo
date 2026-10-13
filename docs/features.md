@@ -173,6 +173,10 @@ maintainer calls it stable, which these criteria are meant to inform.
 3. Document a `--json` schema for every command that has `--json`, and say
    which changes count as compatible (new fields yes, renamed or removed
    fields no). [JSON output](json-output.md) covers most of this already.
+   In progress (2026-10-12): an audit of every `--json` command found the
+   page missing `hooks`, two validate codes, enum lists, and nullable
+   fields; those are documented now, with a compatible-changes section.
+   Three gaps are in the code, not the docs, and wait on the maintainer.
 4. Make `schema_version` a guarantee: a config written by any 1.x release
    loads in every later 1.x, and an older one either loads or migrates
    cleanly. Add upgrade tests that load fixture configs and state written

@@ -18,6 +18,23 @@ use snake case, enum values are lowercase, optional values are `null`, arrays
 remain arrays when empty, and timestamps use RFC 3339 with an offset. Saved
 launch arguments and environment variables are never included.
 
+## Compatible changes
+
+These outputs are part of wineo's [stable contract](stability.md). A field
+keeps its name, type, and meaning. Within a release series:
+
+- New fields can appear, in any object. Scripts should ignore fields they
+  don't know.
+- Enum fields can gain values, so scripts should handle a value they don't
+  know, for example by treating it as "other".
+- Renaming a field, removing it, changing its type, or changing what a value
+  means is a breaking change, and waits for the next major version.
+- Validate's `code` values are stable, so new checks get new codes rather
+  than reusing old ones.
+
+Nothing in the output carries a version number; these rules are the
+guarantee.
+
 ## Named status
 
 `wineo status <name> --json` returns one object. The common status fields are:
@@ -42,10 +59,20 @@ launch arguments and environment variables are never included.
 }
 ```
 
-`tags` is the environment's tags, an empty array when it has none. `run` is `null` when there is no saved run. Its timestamps and exit code are
-nullable. `busy` is a lowercase operation value such as `launch` or
-`winetricks`. `state` reports runtime state independently of `busy` and
-`unresolved`.
+`tags` is the environment's tags, an empty array when it has none. `run` is
+`null` when there is no saved run. Its timestamps and exit code are nullable,
+and `mode` is `detached` or `attached`.
+
+`state` reports runtime state independently of `busy` and `unresolved`:
+`running`, `starting`, `exited`, `failed`, `stopped`, or `inactive` (never
+started). `busy` is `null`, or the operation holding the environment:
+`create`, `remove`, `winetricks`, `configure`, `launch`, `install`,
+`cleanup`, `snapshot`, `copy`, `trash`, `migrate`, `update`, `hook-before`,
+or `hook-after`.
+
+`hooks` is `{"before": true, "after": false}`, saying which
+[launch hooks](hooks.md) are set, or `null` when neither is. The commands
+themselves are never included.
 
 Named status also includes `kind`, `wine`, `native`, or `proxied`; `runner` with
 `configured`, `resolved`, and `version`; `prefix`; nullable `target_exe`, `gameid`, and `store`; `gamemode`, `gamescope`, `mangohud`, and `wayland` (see [Launch options](launch-options.md));
@@ -101,7 +128,7 @@ Nameless `status --json` and `list --json` return the same envelope:
 ```
 
 Each item in `environments` contains the common status fields shown above,
-plus `kind`, which is `null` for a config that can't be read, and a Steam
+including `hooks`, plus `kind`, which is `null` for a config that can't be read, and a Steam
 game's `launcher`, `app_id`, `install`, `install_progress`, `install_problem`,
 and `started_by`.
 `list` includes every environment whose runtime status can be read, and
@@ -144,10 +171,13 @@ argument errors keep their normal stderr output.
 }
 ```
 
-`state` is `not_installed`, `heroic` (installed by Heroic, not migrated
-yet), or `imported`. Only an imported game has `environment`, `track`
-(`installer` or `galaxy`), `version`, `update`, and `dlc`; the rest have
-`null`, `false` for `applicable`, and an empty `dlc`.
+`platforms` holds `windows`, `mac`, and `linux`, the ones GOG sells the
+game for. `state` is `not_installed`, `heroic` (installed by Heroic, not
+migrated yet), or `imported`. Only an imported game has `environment`,
+`track` (`installer` or `galaxy`), `version`, `update`, and `dlc`; the rest
+have `null`, `false` for `applicable`, and an empty `dlc`. An imported game
+whose update check failed, or any game in a [portable folder](portable.md),
+where the check is skipped, has its `environment` but `null` for the rest.
 
 `wineo update --check --json` checks the environments that track a GOG
 game:
@@ -172,13 +202,15 @@ game:
 }
 ```
 
+`installed` and `available` are `null` when the version isn't known.
+
 In both, `update` is `available`, `none`, `galaxy` (an update on GOG that
 a later release applies), or `cant_compare`. `applicable` says whether this
 wineo can apply it, and `reason` says why not: `windows_installer`,
 `galaxy`, or a sentence when the versions can't be compared. A DLC's
 `state` is `none` (up to date), `available`, `unknown` (a migrated DLC whose version
-Heroic never recorded), `cant_compare`, `failed`, or `unavailable`. GOG ids
-are strings.
+Heroic never recorded), `cant_compare`, `failed`, or `unavailable`, and its
+`title` is `null` when GOG's details don't list it. GOG ids are strings.
 
 A game that can't be checked goes in `errors` with its `name` (the
 environment, or `null`), `id` (or `null`), and `message`; the rest still
@@ -191,7 +223,10 @@ no JSON, like named status.
 
 `wineo validate --json` reports every problem and never asks, even at a
 terminal. With `--fix`, it applies every fix first and then reports what's
-left:
+left. The exception is an interrupted snapshot restore
+(`restore_interrupted`), which `wineo snapshot recover` finishes; `--fix`
+leaves it in `problems`, with its `fix` label, and lists it in neither
+`fixed` nor `errors`:
 
 ```json
 {
@@ -236,7 +271,7 @@ The codes are stable:
 | `global_config` | `global_config_invalid` |
 | `template` | `template_invalid`, `template_unresolved` |
 | `environment_config` | `environment_config_invalid` |
-| `wine` | `runner_missing`, `build_missing`, `prefix_missing`, `prefix_refused` |
+| `wine` | `runner_missing`, `build_missing`, `prefix_missing`, `prefix_refused`, `winetricks_missing`, `winetricks_unavailable` |
 | `target` | `exe_missing`, `cwd_missing`, `gamemode_missing`, `gamescope_missing`, `mangohud_missing`, `wayland_unsupported` |
 | `native_target` | `native_exe_invalid` |
 | `environment` | `target_ambiguous` |
@@ -273,6 +308,7 @@ on stderr and no JSON on stdout.
   "last_played": "2026-09-26T10:00:00Z",
   "running": false,
   "imported_seconds": 0,
+  "source": "wineo",
   "targets": [
     { "target": "game", "seconds": 17820, "sessions": 2 },
     { "target": "editor", "seconds": 780, "sessions": 1 }
