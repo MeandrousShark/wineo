@@ -274,6 +274,45 @@ impl Install {
             .is_some_and(|prepared| prepared.choices == self.choices)
     }
 
+    /// The platform the game installs for without a plan to say: the one
+    /// picked, or Windows for a game GOG lists only for Windows.
+    fn platform(&self) -> Option<Platform> {
+        self.choices
+            .platform
+            .or((self.offer.windows && !self.offer.linux).then_some(Platform::Windows))
+    }
+
+    /// Whether the review can still change things, which a resumed install
+    /// can't.
+    fn editable(&self) -> bool {
+        self.stage == Stage::Review && !self.plan().is_some_and(Plan::resumes)
+    }
+
+    fn windows(&self) -> bool {
+        self.plan().map(Plan::platform).or(self.platform()) == Some(Platform::Windows)
+    }
+
+    /// A Windows plan that failed, perhaps on its runner or arch, keeps both
+    /// pickers so they can be fixed here.
+    fn corrects_runner(&self) -> bool {
+        self.editable() && self.windows() && self.plan().is_none()
+    }
+
+    fn offers_runner_download(&self) -> bool {
+        self.editable()
+            && self.windows()
+            && (self.plan().is_none()
+                || self
+                    .prepared
+                    .as_ref()
+                    .is_some_and(|prepared| prepared.runners.is_empty()))
+    }
+
+    #[cfg(test)]
+    pub(super) fn planned(&self) -> Option<&str> {
+        self.plan().map(Plan::title)
+    }
+
     fn ready(&self) -> bool {
         self.plan().is_some() && !self.waiting() && self.current()
     }
@@ -831,7 +870,7 @@ impl Install {
             summary = summary.push(shown_row("Folder", plan.folder().display().to_string()));
         }
         let both = self.offer.linux && self.offer.windows;
-        let platform = plan.map(Plan::platform).or(self.choices.platform);
+        let platform = plan.map(Plan::platform).or(self.platform());
         if editable && both {
             summary = summary.push(control_row(
                 "Platform",
@@ -864,7 +903,6 @@ impl Install {
         if let Some(plan) = plan {
             summary = summary.push(shown_row("Installs in", plan.language_name().to_owned()));
         }
-        let windows = platform == Some(Platform::Windows);
         if let Some(creation) = plan.and_then(Plan::creation) {
             if editable {
                 let runner = creation.runner().selection();
@@ -893,9 +931,9 @@ impl Install {
                 summary = summary.push(shown_row("Runner", creation.runner().name().to_owned()));
                 summary = summary.push(shown_row("Arch", creation.resolved_arch().to_string()));
             }
-        } else if editable && windows && plan.is_none() {
-            // The plan failed, perhaps on the runner, so another can be
-            // picked.
+        } else if self.corrects_runner() {
+            // The plan failed, perhaps on the runner or arch, so either can
+            // be picked again.
             summary = summary.push(control_row(
                 "Runner",
                 pick_list(
@@ -909,6 +947,13 @@ impl Install {
                 .placeholder("Choose a runner")
                 .wineo_style(palette)
                 .into(),
+            ));
+            summary = summary.push(control_row(
+                "Arch",
+                pick_list([Arch::Win64, Arch::Win32], self.choices.arch, Event::Arch)
+                    .placeholder("Choose an arch")
+                    .wineo_style(palette)
+                    .into(),
             ));
         }
         if let Some(plan) = plan {
@@ -945,7 +990,8 @@ impl Install {
         } else if let Err(error) = &prepared.plan {
             body = body.push(text(error).color(palette.danger));
         }
-        if editable && windows && prepared.runners.is_empty() {
+        // A failed plan may be missing its runner, so one can be fetched.
+        if self.offers_runner_download() {
             body = body.push(
                 secondary_button("Download latest GE-Proton", palette)
                     .on_press_maybe(idle.then_some(Event::DownloadRunner)),
@@ -1973,5 +2019,53 @@ pub(super) mod tests {
         )
         .unwrap_err();
         assert_eq!(error, LOGGED_OUT);
+    }
+
+    #[test]
+    fn a_failed_windows_plan_keeps_its_runner_and_arch_controls() {
+        let world = World::new();
+        set_graphical_session(Some(true));
+        let prepared = world.prepare(
+            &disco(),
+            &Choices {
+                runner: Some("missing-runner".to_owned()),
+                ..Choices::default()
+            },
+            false,
+        );
+        assert!(prepared.plan.is_err());
+        let mut page = page(&world.paths, disco(), prepared);
+        // A Windows-only game stays Windows without a plan to say so.
+        assert_eq!(page.platform(), Some(Platform::Windows));
+        assert!(page.corrects_runner());
+        assert!(page.offers_runner_download());
+        fits(&page, &[(280.0, 240.0), (900.0, 720.0)]);
+        let _ = page.update(Event::Arch(Arch::Win32));
+        assert_eq!(page.choices.arch, Some(Arch::Win32));
+        page.status.clear();
+        let _ = page.update(Event::Runner("inno".to_owned()));
+        assert_eq!(page.choices.runner.as_deref(), Some("inno"));
+        let fixed = world.prepare(&disco(), &page.choices.clone(), false);
+        let generation = page.generation;
+        let _ = page.update(Event::Prepared(generation, Ok(Box::new(fixed))));
+        assert!(page.ready());
+        assert!(!page.corrects_runner());
+
+        // A game with both picks Windows and keeps it when that plan fails.
+        let failed = world.prepare(
+            &rimworld(),
+            &Choices {
+                platform: Some(Platform::Windows),
+                runner: Some("missing-runner".to_owned()),
+                ..Choices::default()
+            },
+            false,
+        );
+        assert!(failed.plan.is_err());
+        let mut both = super::tests::page(&world.paths, rimworld(), failed);
+        both.choices.platform = Some(Platform::Windows);
+        both.choices.runner = Some("missing-runner".to_owned());
+        assert!(both.corrects_runner());
+        set_graphical_session(None);
     }
 }

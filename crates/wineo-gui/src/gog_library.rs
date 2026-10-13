@@ -172,9 +172,8 @@ pub(crate) fn state_label(state: UpdateState) -> &'static str {
 /// says it.
 pub(crate) fn reason_note(reason: &Reason) -> String {
     match reason {
-        Reason::WindowsInstaller => {
-            "Updating Windows installer games comes in a later release.".to_owned()
-        }
+        // Older releases' reason, which core no longer gives.
+        Reason::WindowsInstaller => "This game can't be updated here.".to_owned(),
         Reason::Galaxy => "Updating Galaxy builds comes in a later release.".to_owned(),
         Reason::CantCompare(why) => why.clone(),
     }
@@ -389,7 +388,7 @@ mod tests {
         assert_eq!(state_label(UpdateState::OnGog), "Update on GOG");
         assert_eq!(
             reason_note(&Reason::WindowsInstaller),
-            "Updating Windows installer games comes in a later release."
+            "This game can't be updated here."
         );
     }
 

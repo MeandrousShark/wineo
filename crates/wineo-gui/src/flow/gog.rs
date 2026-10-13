@@ -156,7 +156,9 @@ pub(crate) enum Event {
     BackToLibrary,
     /// Opens the install of the owned game at this index.
     Install(usize),
-    Installing(Box<gog_install::Event>),
+    /// An install's event, with the instance it belongs to, so a reply to
+    /// a review that was left can't reach the next one.
+    Installing(u64, Box<gog_install::Event>),
 }
 
 pub(crate) struct Page {
@@ -174,6 +176,8 @@ pub(crate) struct Page {
     leave_prompt: bool,
     action: Option<Action>,
     install: Option<Box<Install>>,
+    /// Which opened review `install` is; each one gets a new number.
+    install_instance: u64,
     /// The tile the keyboard is on, in grid order.
     focus: Option<usize>,
     /// Whether `focus` came from the keyboard, which draws the ring.
@@ -197,6 +201,7 @@ impl Page {
             leave_prompt: false,
             action: None,
             install: None,
+            install_instance: 0,
             focus: None,
             focus_visible: false,
         };
@@ -306,7 +311,8 @@ impl Page {
             }
             None => {}
         }
-        task.map(|event| Event::Installing(Box::new(event)))
+        let instance = self.install_instance;
+        task.map(move |event| Event::Installing(instance, Box::new(event)))
     }
 
     /// The grid's tiles in order: every game, by title.
@@ -497,12 +503,12 @@ impl Page {
 
     pub(crate) fn update(&mut self, event: Event) -> Task<Event> {
         match event {
-            Event::Installing(event) => match &mut self.install {
-                Some(install) => {
+            Event::Installing(instance, event) => match &mut self.install {
+                Some(install) if instance == self.install_instance => {
                     let task = install.update(*event);
                     self.installing(task)
                 }
-                None => Task::none(),
+                _ => Task::none(),
             },
             Event::Install(index) if self.step == Step::Games && !self.waiting() => {
                 let Some(owned) = self
@@ -523,8 +529,10 @@ impl Page {
                 self.notes.clear();
                 let (install, task) = Install::new(self.paths.clone(), owned.offer.clone());
                 self.install = Some(Box::new(install));
+                self.install_instance = self.install_instance.wrapping_add(1);
                 self.step = Step::Install;
-                task.map(|event| Event::Installing(Box::new(event)))
+                let instance = self.install_instance;
+                task.map(move |event| Event::Installing(instance, Box::new(event)))
             }
             Event::Back => self.back(),
             Event::Discard => {
@@ -690,13 +698,15 @@ impl Page {
             .height(Fill);
         if let (Step::Install, Some(install)) = (self.step, &self.install) {
             let (body, footer) = install.view(column![].spacing(14).width(Fill), palette, spin);
-            let body = Element::from(body).map(|event| Event::Installing(Box::new(event)));
+            let instance = self.install_instance;
+            let body =
+                Element::from(body).map(move |event| Event::Installing(instance, Box::new(event)));
             page = page
                 .push(row![back].align_y(Center))
                 .push(heroic::scroll_body(body, None, palette));
             if let Some(footer) = footer {
                 page = page.push(pinned(
-                    footer.map(|event| Event::Installing(Box::new(event))),
+                    footer.map(move |event| Event::Installing(instance, Box::new(event))),
                     palette,
                 ));
             }
@@ -2521,10 +2531,14 @@ mod tests {
             .unwrap();
         let _ = page.update(Event::Install(index));
         let generation = page.install.as_ref().unwrap().generation();
-        let _ = page.update(Event::Installing(Box::new(gog_install::Event::Prepared(
-            generation,
-            Ok(Box::new(prepared)),
-        ))));
+        let instance = page.install_instance;
+        let _ = page.update(Event::Installing(
+            instance,
+            Box::new(gog_install::Event::Prepared(
+                generation,
+                Ok(Box::new(prepared)),
+            )),
+        ));
         for (width, height) in [(280.0, 240.0), (360.0, 280.0), (900.0, 720.0)] {
             let inset = iced::Rectangle::new(
                 iced::Point::new(24.0, 24.0),
@@ -2535,5 +2549,58 @@ mod tests {
             let spilled = probe.outside(inset);
             assert!(spilled.is_empty(), "{width}x{height}: {spilled:?}");
         }
+    }
+
+    #[test]
+    fn a_reply_to_a_review_that_was_left_never_reaches_the_next_one() {
+        use super::super::gog_install::tests::{World, rimworld};
+
+        let world = World::new();
+        let stale = world.prepare(&rimworld(), &Default::default(), false);
+        let mut listing = Listing::default();
+        add_owned(
+            &world.paths,
+            &world.keyring,
+            world.server.client(),
+            &mut listing,
+        );
+        let titles: Vec<String> = listing
+            .owned
+            .iter()
+            .map(|owned| owned.offer.title.clone())
+            .collect();
+        let rimworld_at = titles.iter().position(|title| title == "RimWorld").unwrap();
+        let disco_at = titles
+            .iter()
+            .position(|title| title == "Disco Elysium")
+            .unwrap();
+        let (mut page, _) = Page::new(world.paths.clone());
+        let generation = page.generation;
+        let _ = page.update(Event::Listed(generation, Ok(listing.clone())));
+        // Open RimWorld, leave while it plans, then open Disco Elysium.
+        let _ = page.update(Event::Install(rimworld_at));
+        let first = page.install_instance;
+        let first_generation = page.install.as_ref().unwrap().generation();
+        let _ = page.back();
+        assert!(page.install.is_none());
+        let generation = page.generation;
+        let _ = page.update(Event::Listed(generation, Ok(listing)));
+        let _ = page.update(Event::Install(disco_at));
+        assert_eq!(
+            page.install.as_ref().unwrap().generation(),
+            first_generation,
+            "both start at the same generation"
+        );
+        // RimWorld's plan arrives late and is dropped.
+        let _ = page.update(Event::Installing(
+            first,
+            Box::new(gog_install::Event::Prepared(
+                first_generation,
+                Ok(Box::new(stale)),
+            )),
+        ));
+        let install = page.install.as_ref().unwrap();
+        assert_eq!(install.planned(), None);
+        assert!(install.waiting(), "Disco Elysium is still being planned");
     }
 }
