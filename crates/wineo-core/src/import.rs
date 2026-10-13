@@ -321,10 +321,8 @@ pub fn execute_reviewed(
         bail!("--adopt cannot be combined with --dir");
     }
 
-    let (runner, _runner_guard) = Runners::new(paths, global)
-        .map_err(|err| anyhow!(err))?
-        .resolve_locked(paths, &request.runner)
-        .map_err(|err| anyhow!(err))?;
+    let (runner, _runner_guard) =
+        Runners::new(paths, global)?.resolve_locked(paths, &request.runner)?;
     let first = inspect_with(
         &request.source,
         Some(&runner),
@@ -341,10 +339,7 @@ pub fn execute_reviewed(
     } else {
         match request.destination {
             Some(destination) => paths::resolve(&destination),
-            None => global
-                .prefix_root(paths)
-                .map_err(|err| anyhow!(err))?
-                .join(&request.name),
+            None => global.prefix_root(paths)?.join(&request.name),
         }
     };
     paths.check_prefix(&destination)?;
@@ -364,13 +359,11 @@ pub fn execute_reviewed(
     check_destination(paths, &request.name, request.adopt, &destination)?;
 
     let lock = Locks::new(paths);
-    let mut operation = lock
-        .acquire(
-            Operation::Create,
-            &request.name,
-            &[&source_root, &destination],
-        )
-        .map_err(|err| anyhow!(err))?;
+    let mut operation = lock.acquire(
+        Operation::Create,
+        &request.name,
+        &[&source_root, &destination],
+    )?;
     let locked = inspect_with(
         &request.source,
         Some(&runner),
@@ -389,19 +382,13 @@ pub fn execute_reviewed(
     let shared = shared_names(paths, &request.name, [&source_root, &destination])?;
     check_destination(paths, &request.name, request.adopt, &destination)?;
     for shared in shared {
-        Runtime::new(paths, &shared)
-            .check_quiet(&shared)
-            .map_err(|err| anyhow!(err))?;
+        Runtime::new(paths, &shared).check_quiet(&shared)?;
     }
-    Runtime::new(paths, &request.name)
-        .check_quiet(&request.name)
-        .map_err(|err| anyhow!(err))?;
+    Runtime::new(paths, &request.name).check_quiet(&request.name)?;
 
     // Validate Heroic settings before copying so a bad target or environment
     // variable cannot leave a published prefix with no registration.
-    let prefix_value = paths
-        .store_prefix(&destination)
-        .map_err(|err| anyhow!(err))?;
+    let prefix_value = paths.store_prefix(&destination)?;
     if paths.portable_root().is_some()
         && settings.is_some_and(|settings| settings.targets.values().any(|target| target.desktop))
     {
@@ -499,11 +486,8 @@ pub fn execute_reviewed(
         }
         return Err(Error::EnvironmentExists(request.name.clone()).into());
     }
-    let config =
-        EnvironmentConfig::parse(&config_path, &config_text).map_err(|err| anyhow!(err))?;
-    let wine = config
-        .require_wine(&request.name)
-        .map_err(|err| anyhow!(err))?;
+    let config = EnvironmentConfig::parse(&config_path, &config_text)?;
+    let wine = config.require_wine(&request.name)?;
     let _build_guards = build_lock::config(
         paths,
         global,
@@ -559,11 +543,11 @@ pub(crate) fn ensure_same_review(expected: &Inspection, actual: &Inspection) -> 
 /// registers the source where it is, which other environments may share.
 fn check_destination(paths: &Paths, name: &str, adopt: bool, destination: &Path) -> Result<()> {
     if adopt {
-        crate::environment::check_nesting(paths, name, destination)
+        crate::environment::check_nesting(paths, name, destination)?;
     } else {
-        crate::environment::check_destination(paths, name, destination)
+        crate::environment::check_destination(paths, name, destination)?;
     }
-    .map_err(|err| anyhow!(err))
+    Ok(())
 }
 
 fn check_shared_configs(paths: &Paths, name: &str, prefixes: [&Path; 2]) -> Result<()> {
@@ -580,8 +564,7 @@ fn shared_names(paths: &Paths, name: &str, prefixes: [&Path; 2]) -> Result<Vec<S
     }
     let mut names = Vec::new();
     for prefix in resolved {
-        let sharing =
-            crate::environment::sharing_prefix(paths, name, &prefix).map_err(|err| anyhow!(err))?;
+        let sharing = crate::environment::sharing_prefix(paths, name, &prefix)?;
         if !sharing.unreadable.is_empty() {
             bail!(
                 "could not inspect existing environments: {}",
@@ -1519,7 +1502,7 @@ fn finish_config(mut doc: DocumentMut, settings: Option<&ImportedSettings>) -> R
     }
     let text = doc.to_string();
     let path = Path::new("<import>");
-    EnvironmentConfig::parse(path, &text).map_err(|err| anyhow!(err))?;
+    EnvironmentConfig::parse(path, &text)?;
     Ok(text)
 }
 
@@ -1539,9 +1522,7 @@ pub fn register_native(
         return Err(Error::EnvironmentExists(name.to_owned()).into());
     }
     let text = native_config_text(&stored_settings(paths, settings)?)?;
-    let _operation = Locks::new(paths)
-        .acquire(Operation::Create, name, &[])
-        .map_err(|err| anyhow!(err))?;
+    let _operation = Locks::new(paths).acquire(Operation::Create, name, &[])?;
     write_native_config(paths, name, &text)
 }
 
@@ -1555,11 +1536,9 @@ pub(crate) fn native_config(paths: &Paths, settings: &ImportedSettings) -> Resul
 /// holds the environment's operation lock.
 pub(crate) fn write_native_config(paths: &Paths, name: &str, text: &str) -> Result<Environment> {
     let config_path = paths.environment_config(name);
-    let _config = Locks::new(paths)
-        .config(&config_path)
-        .map_err(|err| anyhow!(err))?;
+    let _config = Locks::new(paths).config(&config_path)?;
     write_config_once(&config_path, text)?;
-    Environment::load(paths, name).map_err(|err| anyhow!(err))
+    Ok(Environment::load(paths, name)?)
 }
 
 /// A staging directory for a copied tree. A copy that stops part way can

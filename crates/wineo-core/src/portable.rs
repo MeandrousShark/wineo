@@ -101,19 +101,15 @@ pub fn inspect_with(
         .portable_root()
         .ok_or_else(|| anyhow!("no portable folder selected"))?
         .to_owned();
-    Environment::ensure_exists(from, name).map_err(|err| anyhow!(err))?;
+    Environment::ensure_exists(from, name)?;
     let source_path = from.environment_config(name);
     let source_config = fs::read_to_string(&source_path)
         .with_context(|| format!("failed to read {}", source_path.display()))?;
-    let config =
-        EnvironmentConfig::parse(&source_path, &source_config).map_err(|err| anyhow!(err))?;
-    let wine = config.require_wine(name).map_err(|err| anyhow!(err))?;
-    let configured_root = from.config_path(&wine.prefix).map_err(|err| anyhow!(err))?;
+    let config = EnvironmentConfig::parse(&source_path, &source_config)?;
+    let wine = config.require_wine(name)?;
+    let configured_root = from.config_path(&wine.prefix)?;
     let (runner, _runner_guard) = if import::root_layout_ambiguous(&configured_root) {
-        let (runner, guard) = Runners::new(from, global)
-            .map_err(|err| anyhow!(err))?
-            .resolve_locked(from, &wine.runner)
-            .map_err(|err| anyhow!(err))?;
+        let (runner, guard) = Runners::new(from, global)?.resolve_locked(from, &wine.runner)?;
         (Some(runner), guard)
     } else {
         (None, None)
@@ -130,7 +126,7 @@ pub fn inspect_with(
     }
     let source_root = prefix.source_root.clone();
     let destination = folder.join("prefixes").join(name);
-    to.check_prefix(&destination).map_err(|err| anyhow!(err))?;
+    to.check_prefix(&destination)?;
 
     let source_snapshots = from.snapshot_root(&source_root, name);
     let source_config_dir = from
@@ -278,40 +274,25 @@ pub fn execute_reviewed_with(
     )?;
     let source_locks = Locks::new(from);
     // The prefix locks are shared by every root, so they are only taken once.
-    let _source = source_locks
-        .acquire(Operation::Copy, name, &[])
-        .map_err(|err| anyhow!(err))?;
+    let _source = source_locks.acquire(Operation::Copy, name, &[])?;
     let locks = Locks::new(to);
-    let _operation = locks
-        .acquire(
-            Operation::Create,
-            name,
-            &[&reviewed.source_root, &reviewed.destination],
-        )
-        .map_err(|err| anyhow!(err))?;
-    let _source_config = source_locks
-        .config(&from.environment_config(name))
-        .map_err(|err| anyhow!(err))?;
+    let _operation = locks.acquire(
+        Operation::Create,
+        name,
+        &[&reviewed.source_root, &reviewed.destination],
+    )?;
+    let _source_config = source_locks.config(&from.environment_config(name))?;
     ensure_same(
         reviewed,
         &inspect_with(from, to, global, name, cancel, |event| {
             events(CopyEvent::Progress(event))
         })?,
     )?;
-    for shared in environment::sharing_prefix(from, name, &reviewed.source_root)
-        .map_err(|err| anyhow!(err))?
-        .names
-    {
-        Runtime::new(from, &shared)
-            .check_quiet(&shared)
-            .map_err(|err| anyhow!(err))?;
+    for shared in environment::sharing_prefix(from, name, &reviewed.source_root)?.names {
+        Runtime::new(from, &shared).check_quiet(&shared)?;
     }
-    Runtime::new(from, name)
-        .check_quiet(name)
-        .map_err(|err| anyhow!(err))?;
-    Runtime::new(to, name)
-        .check_quiet(name)
-        .map_err(|err| anyhow!(err))?;
+    Runtime::new(from, name).check_quiet(name)?;
+    Runtime::new(to, name).check_quiet(name)?;
     import::check_cancelled(cancel)?;
 
     let prefixes = reviewed.folder.join("prefixes");
@@ -370,8 +351,7 @@ pub fn execute_reviewed_with(
         let layout = snapshot::relocate_manifest(to, &staged, &reviewed.destination)?;
         let saved_path = staged.join("config.toml");
         let saved_text = fs::read_to_string(&saved_path)?;
-        let saved =
-            EnvironmentConfig::parse(&saved_path, &saved_text).map_err(|err| anyhow!(err))?;
+        let saved = EnvironmentConfig::parse(&saved_path, &saved_text)?;
         let relocated = clone::transform_config(
             from,
             to,
@@ -488,12 +468,12 @@ pub fn execute_reviewed_with(
         }
         if let Some(text) = &reviewed.global_text {
             let path = to.global_config();
-            let _guard = locks.config(&path).map_err(|err| anyhow!(err))?;
+            let _guard = locks.config(&path)?;
             write_global_once(to, text)?;
             published.push(path);
         }
         let config_path = to.environment_config(name);
-        let _guard = locks.config(&config_path).map_err(|err| anyhow!(err))?;
+        let _guard = locks.config(&config_path)?;
         let destination_global = destination_global(to, reviewed.global_text.as_deref())?;
         write_environment_once(to, &destination_global, name, &reviewed.config_text)
     })();
@@ -501,7 +481,7 @@ pub fn execute_reviewed_with(
     events(CopyEvent::Progress(ImportProgress::Finished {
         entries: reviewed.prefix.fingerprint.entries,
     }));
-    Environment::load(to, name).map_err(|err| anyhow!(err))
+    Ok(Environment::load(to, name)?)
 }
 
 /// What the first copy into a folder brings along besides the environment:
@@ -612,12 +592,11 @@ pub fn inspect_native_with(
         .portable_root()
         .ok_or_else(|| anyhow!("no portable folder selected"))?
         .to_owned();
-    Environment::ensure_exists(from, name).map_err(|err| anyhow!(err))?;
+    Environment::ensure_exists(from, name)?;
     let source_path = from.environment_config(name);
     let source_config = fs::read_to_string(&source_path)
         .with_context(|| format!("failed to read {}", source_path.display()))?;
-    let config =
-        EnvironmentConfig::parse(&source_path, &source_config).map_err(|err| anyhow!(err))?;
+    let config = EnvironmentConfig::parse(&source_path, &source_config)?;
     match &config.kind {
         Kind::Native => {}
         Kind::Wine(_) => bail!("{name} is not a native environment"),
@@ -710,16 +689,10 @@ pub fn execute_native_with(
     };
     let name = &reviewed.name;
     let source_locks = Locks::new(from);
-    let _source = source_locks
-        .acquire(Operation::Copy, name, &[])
-        .map_err(|err| anyhow!(err))?;
+    let _source = source_locks.acquire(Operation::Copy, name, &[])?;
     let locks = Locks::new(to);
-    let _operation = locks
-        .acquire(Operation::Create, name, &[])
-        .map_err(|err| anyhow!(err))?;
-    let _source_config = source_locks
-        .config(&from.environment_config(name))
-        .map_err(|err| anyhow!(err))?;
+    let _operation = locks.acquire(Operation::Create, name, &[])?;
+    let _source_config = source_locks.config(&from.environment_config(name))?;
     let current = inspect_native_with(from, to, name, cancel, |event| {
         events(CopyEvent::Progress(event))
     })?;
@@ -785,12 +758,12 @@ pub fn execute_native_with(
         }
         if let Some(text) = &reviewed.global_text {
             let path = to.global_config();
-            let _guard = locks.config(&path).map_err(|err| anyhow!(err))?;
+            let _guard = locks.config(&path)?;
             write_global_once(to, text)?;
             published.push(path);
         }
         let config_path = to.environment_config(name);
-        let _guard = locks.config(&config_path).map_err(|err| anyhow!(err))?;
+        let _guard = locks.config(&config_path)?;
         let destination_global = destination_global(to, reviewed.global_text.as_deref())?;
         write_environment_once(to, &destination_global, name, &reviewed.config_text)
     })();
@@ -810,7 +783,7 @@ pub fn execute_native_with(
     events(CopyEvent::Progress(ImportProgress::Finished {
         entries: copied.get(),
     }));
-    Environment::load(to, name).map_err(|err| anyhow!(err))
+    Ok(Environment::load(to, name)?)
 }
 
 fn destination_global(to: &Paths, copied: Option<&str>) -> Result<GlobalConfig> {
@@ -883,16 +856,14 @@ fn write_environment_once(
 /// The source global config for a portable folder: its prefix root follows
 /// the folder, and everything else, like external runner roots, is kept.
 fn portable_global(to: &Paths, path: &Path, text: &str) -> Result<String> {
-    GlobalConfig::parse(path, text).map_err(|err| anyhow!(err))?;
+    GlobalConfig::parse(path, text)?;
     let mut doc: DocumentMut = text.parse()?;
     if let Some(defaults) = doc
         .get_mut("defaults")
         .and_then(|item| item.as_table_like_mut())
         && defaults.contains_key("prefix_root")
     {
-        let root = to
-            .store(&to.default_prefix_root())
-            .map_err(|err| anyhow!(err))?;
+        let root = to.store(&to.default_prefix_root())?;
         defaults.insert("prefix_root", toml_edit::value(Value::from(root)));
     }
     let updated = doc.to_string();
@@ -901,7 +872,7 @@ fn portable_global(to: &Paths, path: &Path, text: &str) -> Result<String> {
     }
     config::stamp_schema(&mut doc);
     let updated = doc.to_string();
-    GlobalConfig::parse(path, &updated).map_err(|err| anyhow!(err))?;
+    GlobalConfig::parse(path, &updated)?;
     Ok(updated)
 }
 

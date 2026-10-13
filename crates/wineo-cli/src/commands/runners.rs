@@ -53,8 +53,8 @@ pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
             "runner",
             wineo_core::build_lock::Kind::Runner,
             args.yes,
-            |paths, name| wineo_core::runners::size(paths, name).map_err(anyhow::Error::from),
-            |paths, name| wineo_core::runners::remove(paths, name).map_err(anyhow::Error::from),
+            |paths, name| Ok(wineo_core::runners::size(paths, name)?),
+            |paths, name| Ok(wineo_core::runners::remove(paths, name)?),
         );
     }
 
