@@ -3,6 +3,48 @@
 A finished plan bumps the minor version and fixes between plans bump the
 patch version. See `AGENTS.md` for the rule.
 
+## 0.30.1 - 2026-10-12
+
+- The library loads faster with Steam games in it: wineo checks running
+  processes once for all of them instead of once per game, which took
+  `wineo list` from about 120 ms to 20 ms on a library of 22.
+- Data-loss fixes from an audit of trash, snapshots, clone, imports, and
+  portable copies:
+  - Restoring a snapshot, deleting one, and pruning trash never reach into
+    a mount: a prefix with something mounted inside it, or a folder that is
+    itself a mount point, is refused instead of having the mounted files
+    deleted.
+  - Recovering an interrupted removal whose files sat on another
+    filesystem no longer throws away the complete copy in the trash when
+    the original was half deleted. If the original was changed or replaced
+    instead, it stays as it is and the earlier copy becomes a normal trash
+    entry you can restore or prune.
+  - Removing an environment whose files sit on another filesystem checks
+    the copy in the trash file by file before deleting the original, not
+    only by a digest that two different folders could share.
+  - Copies, imports, clones, and runner copies are flushed to disk before
+    they're registered, and first-time configs are written atomically.
+  - A failed copy no longer leaves its staging folder behind when the
+    source has read-only folders.
+- Behavior change: a prefix inside another environment's prefix, or one
+  that contains another's, is refused by `new`, clone, import (including
+  `--adopt`), `set prefix=`, portable copy, snapshot restore, trash restore,
+  and `rm --delete-prefix`. Sharing the exact same prefix still works.
+- Behavior change: clone and import refuse a `--dir` another environment
+  already names as its prefix, even when that folder is missing (an
+  unmounted drive, say), and portable copy refuses to replace an existing
+  play log in the target folder.
+- Ctrl+C or `wineo stop` during a Steam game's start no longer fails with
+  "Interrupted system call" or records the run as `failed`, and a failed
+  lock acquire releases what it took right away.
+- JSON: `update --check --json` and `import gog --list --json` have
+  `unfinished`, true when an interrupted update has to be finished.
+  Behavior change: `stats --json` no longer has `this_week_seconds` and
+  `this_month_seconds` for Steam games; those totals are text-only for every
+  environment. [JSON output](docs/json-output.md) now documents every field
+  and which changes count as compatible.
+- `snapshot recover` names the config it can't read when that blocks it.
+
 ## 0.30.0 - 2026-10-12
 
 - GOG account, migration, and updates
