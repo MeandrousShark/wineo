@@ -62,9 +62,7 @@ pub enum InstallError {
     #[error("{what} changed since the install was planned; plan it again.")]
     Changed { what: String },
     /// The name's own install stopped in another folder.
-    #[error(
-        "{name}'s install in {folder} didn't finish. Install it again there, or remove it first."
-    )]
+    #[error("{name}'s install in {folder} didn't finish. Install it again there to finish it.")]
     PendingElsewhere { name: String, folder: PathBuf },
 }
 

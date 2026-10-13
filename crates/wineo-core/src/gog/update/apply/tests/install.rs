@@ -1004,7 +1004,7 @@ fn a_pending_install_keeps_its_name_from_another_folder() {
     fx.install_err();
     let elsewhere = fx.root.path().join("Elsewhere");
     let message = format!(
-        "rimworld's install in {} didn't finish. Install it again there, or remove it first.",
+        "rimworld's install in {} didn't finish. Install it again there to finish it.",
         fx.folder.display()
     );
     let error = fx
