@@ -956,6 +956,16 @@ fn digest_matches(path: &Path, recorded: &str) -> Result<bool> {
     }
 }
 
+#[cfg(test)]
+type DropHook = fn(&Path, &Path);
+
+#[cfg(test)]
+thread_local! {
+    /// Runs once just before a restored copy's retained twin is dropped.
+    static BEFORE_RETAINED_DROP: std::cell::Cell<Option<DropHook>> =
+        const { std::cell::Cell::new(None) };
+}
+
 /// Whether two trees hold exactly the same names, contents, and links. A
 /// digest match decides nothing destructive on its own, since a v1 digest
 /// from an older manifest can collide.
@@ -2037,8 +2047,26 @@ fn return_payload(
         manifest.payloads[index].return_stage = None;
         manifest.payloads[index].step = Step::Copied;
         write_manifest(paths, manifest)?;
-        // Keep the retained copy until the returned one has durable identity.
+        // Keep the retained copy until the returned one has durable identity
+        // and holds exactly what the retained copy does.
+        #[cfg(test)]
+        BEFORE_RETAINED_DROP.with(|hook| {
+            if let Some(hook) = hook.take() {
+                hook(&original, &retained);
+            }
+        });
         verified_retained(&retained, &payload)?;
+        let returned = manifest.payloads[index]
+            .returned_identity
+            .ok_or_else(|| anyhow!("returned copy has no recorded identity"))?;
+        require(&original, returned)?;
+        if !same_tree(&original, &retained)? {
+            bail!(
+                "{} differs from its retained copy at {}; both were kept",
+                original.display(),
+                retained.display()
+            );
+        }
         delete_owned(&retained)?;
     }
     manifest.payloads[index].step = Step::Returned;
@@ -4336,6 +4364,30 @@ mod tests {
         );
         assert!(list(&paths).unwrap().is_empty());
         assert!(check_pending(&paths, "game", &[]).is_ok());
+    }
+
+    #[test]
+    fn restore_keeps_a_retained_copy_that_no_longer_matches_the_returned_one() {
+        let Some((f, _other, source, retained, mut manifest)) =
+            interrupted_art_copy_of(Step::Retained, &[("a", "x"), ("b", "y")])
+        else {
+            return;
+        };
+        fs::remove_dir_all(&source).unwrap();
+        manifest.phase = Phase::Restoring;
+        // An older manifest, whose v1 digest cannot tell the trees apart.
+        manifest.payloads[0].digest = digest_v1(&retained).unwrap();
+        write_manifest(&f.paths, &manifest).unwrap();
+        BEFORE_RETAINED_DROP.with(|hook| {
+            hook.set(Some(|_, retained| {
+                fs::remove_file(retained.join("b")).unwrap();
+                fs::write(retained.join("a"), "xbfiley").unwrap();
+            }))
+        });
+        let error = return_payload(&f.paths, &mut manifest, 0, false).unwrap_err();
+        assert!(error.to_string().contains("both were kept"), "{error}");
+        assert_eq!(fs::read_to_string(retained.join("a")).unwrap(), "xbfiley");
+        assert_eq!(fs::read_to_string(source.join("b")).unwrap(), "y");
     }
 
     #[test]
