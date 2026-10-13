@@ -357,6 +357,12 @@ Fixed during acceptance (2026-10-13):
 
 - A tile's reason, like a long `Already migrated as NAME.`, ran past the
   tile; it now wraps to two lines and is cut with an ellipsis, like titles.
+- Games you haven't installed no longer show dimmed in Import from GOG,
+  where nearly every game is one.
+- An install's download size drops "(an estimate)", like an update's: it's
+  GOG's size rounded to whole MiB. The installed size stays an estimate.
+- Settings shows only the key button that applies (Set key... or Remove
+  key) for SteamGridDB and Steam Web API, like GOG's Log in and Log out.
 
 Carried from 0049's acceptance (2026-10-12):
 
