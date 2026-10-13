@@ -408,9 +408,12 @@ edits.
 
 New environments can be Windows or Native Linux. Windows supports an empty
 environment, an existing executable, or an installer; Native Linux supports
-an empty registration or executable. Installer setup scans installed
-programs after completion so you can choose the game's target, rather than
-registering the installer. The **Name** is the game's title, used for its
+an empty registration or executable. Installer setup sets up DXVK and
+vkd3d-proton in the prefix before the installer runs, then scans installed
+programs once it's done, even if it exited with an error, so you can choose
+the game's target rather than registering the installer. A canceled
+installer keeps the environment and skips the scan: `Installer canceled. Add
+a target in Settings.` The **Name** is the game's title, used for its
 desktop entry, and the environment name is derived from it: lowercase, with
 spaces and punctuation turned into dashes, accents folded, and apostrophes
 and trademark symbols dropped, so "Assassin's Creed: Origins" becomes

@@ -43,7 +43,8 @@ answers carry over from 0049's questions:
 - **Installer runs.** `wineo new --install-exe` and the desktop app's
   installer step build a prefix and supervise an installer until its whole
   process group exits (`installer.rs`). It passes no arguments today, and
-  the CLI and the desktop app each have their own create-and-install code.
+  the CLI and the desktop app each have their own create-and-install code
+  (merged into one in step 2a).
 
 ## Proposed design
 

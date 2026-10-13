@@ -64,9 +64,11 @@ A few things to know:
   updating desktop entries failed. The message says which.
 - `art fetch --only KIND` exits 1 when nothing of that kind was found. Without
   `--only`, finding nothing is not an error.
-- An installer's own exit code is passed through, so an installer that exits
-  1 or 130 looks like a wineo failure or cancel. The message on stderr says
-  which it was.
+- An installer's own exit code is passed through by `new --install-exe` and
+  `setup`, so an installer that exits 1 or 130 looks like a wineo failure or
+  cancel. The message on stderr says which it was. Guided `wineo new` reports
+  a nonzero installer exit, still offers the installed programs, and exits 0
+  once you finish setting up; a canceled installer exits 130.
 - `run` on a [Steam game](steam.md) exits 0 when the game exits on its own,
   130 when it's stopped, and 1 when Steam never starts it, since the game's
   own exit code can't be collected.
