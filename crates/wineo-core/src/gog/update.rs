@@ -34,7 +34,7 @@ pub enum UpdateState {
     UpToDate,
     /// JSON `available`.
     Available,
-    /// A newer Galaxy build exists, applied by plan 0051. JSON `galaxy`.
+    /// A newer Galaxy build exists, applied by plan 0052. JSON `galaxy`.
     OnGog,
     /// JSON `cant_compare`.
     CantCompare,
@@ -58,7 +58,7 @@ pub enum Reason {
     /// An installer-tracked Windows game, from releases that couldn't update
     /// one. No longer given, but kept for frontends that still name it.
     WindowsInstaller,
-    /// A Galaxy-tracked game, applied by plan 0051.
+    /// A Galaxy-tracked game, applied by plan 0052.
     Galaxy,
     /// Why the game can't be compared, as a sentence.
     CantCompare(String),

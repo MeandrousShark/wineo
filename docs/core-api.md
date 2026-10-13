@@ -399,7 +399,7 @@ an interrupted update or install goes through `gog::update::plan` and
   a failure (`gog::update::windows`). Exit codes are classified as
   `SetupExit`; a base installer that never started gives
   `SetupError::NotStarted { wizard }`, and `Options.wizard` replans to run
-  its own setup window once. Galaxy games refuse (`Galaxy`, plan 0051), as
+  its own setup window once. Galaxy games refuse (`Galaxy`, plan 0052), as
   do `repair` journals (`LaterRelease`). `Running` means the environment is running,
   `Changed` that the folder changed since planning, and
   `Canceled { journal }` says whether a journal was left for recovery.

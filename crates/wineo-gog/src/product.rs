@@ -246,7 +246,7 @@ pub struct Build {
     pub branch: Option<String>,
     pub date_published: Option<String>,
     pub generation: Option<u64>,
-    /// The build's manifest, which 0051's downloader reads.
+    /// The build's manifest, which 0052's downloader reads.
     pub link: Option<String>,
 }
 

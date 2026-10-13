@@ -20,8 +20,9 @@ when it comes up, and the rows below have the details.
    games (done in 0.29.0 as [0048](plans/0048-steam-owned-games.md)), then
    GOG directly without Heroic: account, migration, and updates (done in
    0.30.0 as [0049](plans/0049-gog-games.md)), then installs
-   (done in 0.31.0 as [0050](plans/0050-gog-installs.md)), then Galaxy builds (0051).
-   Epic is a backlog row.
+   (done in 0.31.0 as [0050](plans/0050-gog-installs.md)), then Galaxy builds (0052).
+   Epic is a backlog row. Picked up first (2026-10-13): a simplification
+   and resource pass, [0051](plans/0051-lean-and-simple.md).
 6. GUI library views, designed against a library that includes store games.
 7. GUI themes, last, so they cover palette roles the store work adds.
 
@@ -201,9 +202,9 @@ maintainer calls it stable, which these criteria are meant to inform.
 8. Land, or decide against, the last big shape change in view: the proxied
    environment kind from store library import (queue items 4 and 5).
    Settled (2026-10-12): the proxied kind landed in 0047 and GOG went
-   direct. 0050 and 0051 ship as regular 0.x releases before 1.0, so their
+   direct. 0050 and 0052 ship as regular 0.x releases before 1.0, so their
    new flags, JSON, and state get used before they're frozen; 1.0 itself
-   adds no features, only the promise. Closes once 0051 lands.
+   adds no features, only the promise. Closes once 0052 lands.
 9. A stretch of daily use, across at least two releases, where upgrading a
    real library needs no manual fixes.
 
