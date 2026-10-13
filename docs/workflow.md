@@ -67,6 +67,9 @@ only adds what it doesn't say. If the two disagree, `AGENTS.md` wins.
   tag and match its shape.
 - Call out behavior changes in the changelog, including ones in the CLI that
   rode along with a GUI plan.
+- After pushing the tag, run `cargo clean` in the main checkout. Cargo keeps
+  every build's outputs, so a busy stretch of merges can grow `target/` to
+  hundreds of GB; worktrees clean up with their own removal.
 
 ## Working with the maintainer
 
