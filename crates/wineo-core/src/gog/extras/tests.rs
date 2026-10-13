@@ -90,6 +90,7 @@ impl Fixture {
         let login = StoredLogin {
             refresh_token: "REFRESH0".to_owned(),
             user_id: UserId::new(USER),
+            username: None,
         };
         store(&self.paths, &self.keyring, &login).unwrap();
     }

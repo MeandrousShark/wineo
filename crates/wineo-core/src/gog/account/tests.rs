@@ -5,7 +5,9 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use wineo_gog::ErrorKind;
 
 use super::*;
-use crate::gog::test_support::{FakeKeyring, Scripted, client, client_at, setup, tokens};
+use crate::gog::test_support::{
+    FakeKeyring, Scripted, client, client_at, client_with_profiles, setup, tokens,
+};
 use crate::key_store::NoKeyring;
 use crate::steam::api::fixture::{Server, refused, reply};
 
@@ -18,6 +20,7 @@ fn login_of(refresh: &str, user_id: u64) -> StoredLogin {
     StoredLogin {
         refresh_token: refresh.to_owned(),
         user_id: UserId::new(user_id),
+        username: None,
     }
 }
 
@@ -691,4 +694,281 @@ fn opening_a_session_creates_no_lock_file() {
     let session = open(&paths, &keyring, &server);
     assert_eq!(session.user_id(), UserId::new(USER));
     assert!(!lock.exists());
+}
+
+fn profile(name: &str) -> Vec<u8> {
+    reply(
+        200,
+        &serde_json::json!({"id": USER.to_string(), "username": name}).to_string(),
+    )
+}
+
+fn is_profile(line: &str) -> bool {
+    line.starts_with("GET /users/")
+}
+
+fn profile_requests(server: &Scripted) -> usize {
+    server
+        .requests()
+        .iter()
+        .filter(|line| is_profile(line))
+        .count()
+}
+
+fn named_login(refresh: &str, name: &str) -> StoredLogin {
+    StoredLogin {
+        username: Some(name.to_owned()),
+        ..login_of(refresh, USER)
+    }
+}
+
+#[test]
+fn logging_in_stores_the_username() {
+    let (_root, paths) = setup();
+    let keyring = FakeKeyring::default();
+    let server = Scripted::start(|line| {
+        if is_profile(line) {
+            profile("Hunter42")
+        } else {
+            tokens("ACCESS1", "REFRESH1", USER, 3600)
+        }
+    });
+    let logged_in = login(&paths, &keyring, client_with_profiles(&server.base), CODE).unwrap();
+    assert_eq!(logged_in.username.as_deref(), Some("Hunter42"));
+    assert_eq!(
+        server.requests()[1],
+        format!("GET /users/{USER} HTTP/1.1"),
+        "the name is asked for after the code is accepted"
+    );
+
+    let (stored, _) = stored_login(&paths, &keyring).unwrap().unwrap();
+    assert_eq!(stored, named_login("REFRESH1", "Hunter42"));
+    assert_eq!(
+        keyring.0.lock().unwrap().as_deref(),
+        Some(r#"{"refresh_token":"REFRESH1","user_id":"48628349957132247","username":"Hunter42"}"#)
+    );
+}
+
+#[test]
+fn a_failed_name_lookup_still_logs_in_with_none() {
+    for answer in [
+        reply(503, "{}"),
+        reply(404, "{}"),
+        reply(200, r#"{"username":"  "}"#),
+    ] {
+        let (_root, paths) = setup();
+        let keyring = FakeKeyring::default();
+        let server = Scripted::start(move |line| {
+            if is_profile(line) {
+                answer.clone()
+            } else {
+                tokens("ACCESS1", "REFRESH1", USER, 3600)
+            }
+        });
+        let logged_in = login(&paths, &keyring, client_with_profiles(&server.base), CODE).unwrap();
+        assert_eq!(logged_in.username, None);
+        assert_eq!(logged_in.user_id, UserId::new(USER));
+        assert_eq!(saved(&paths, &keyring), Some(login_of("REFRESH1", USER)));
+        // Nothing but the token and refresh fields, as before names existed.
+        assert_eq!(
+            keyring.0.lock().unwrap().as_deref(),
+            Some(r#"{"refresh_token":"REFRESH1","user_id":"48628349957132247"}"#)
+        );
+    }
+}
+
+#[test]
+fn a_login_saved_without_a_username_still_reads_and_is_not_rewritten() {
+    let (_root, paths) = setup();
+    let keyring = FakeKeyring::default();
+    let old = r#"{"refresh_token":"OLD","user_id":"48628349957132247"}"#;
+    *keyring.0.lock().unwrap() = Some(old.to_owned());
+    let (stored, source) = stored_login(&paths, &keyring).unwrap().unwrap();
+    assert_eq!(stored, login_of("OLD", USER));
+    assert_eq!(source, KeySource::Keyring);
+    // Opening a session only reads too.
+    let server = Server::start(vec![]);
+    let session = open(&paths, &keyring, &server);
+    assert_eq!(session.login.username, None);
+    assert_eq!(keyring.0.lock().unwrap().as_deref(), Some(old));
+    assert!(!paths.gog_credentials_generation().exists());
+}
+
+#[test]
+fn a_renewal_keeps_the_saved_username() {
+    let (_root, paths) = setup();
+    let keyring = FakeKeyring::default();
+    save(&paths, &keyring, &named_login("R1", "Hunter42")).unwrap();
+    let server = Scripted::start(|line| {
+        if is_profile(line) {
+            profile("Changed")
+        } else {
+            tokens("A2", "R2", USER, 3600)
+        }
+    });
+    let mut session = Session::open(&paths, &keyring, client_with_profiles(&server.base))
+        .unwrap()
+        .unwrap();
+    session.access_token().unwrap();
+    assert_eq!(saved(&paths, &keyring), Some(named_login("R2", "Hunter42")));
+    assert_eq!(profile_requests(&server), 0, "it is only asked for once");
+}
+
+#[test]
+fn a_renewal_fills_in_a_missing_username_once_per_session() {
+    let (_root, paths) = setup();
+    let keyring = FakeKeyring::default();
+    seed(&paths, &keyring, "R1", USER);
+    let server = Scripted::start(|line| {
+        if is_profile(line) {
+            profile("Hunter42")
+        } else {
+            // Expiring at once, so every call renews.
+            tokens("A", "R", USER, 60)
+        }
+    });
+    let mut session = Session::open(&paths, &keyring, client_with_profiles(&server.base))
+        .unwrap()
+        .unwrap();
+    session.access_token().unwrap();
+    let stored = saved(&paths, &keyring).unwrap();
+    assert_eq!(stored.username.as_deref(), Some("Hunter42"));
+    assert_eq!(stored.refresh_token, "R");
+    assert_eq!(profile_requests(&server), 1);
+
+    session.access_token().unwrap();
+    assert_eq!(saved(&paths, &keyring).unwrap().username, stored.username);
+    assert_eq!(profile_requests(&server), 1);
+}
+
+#[test]
+fn a_failed_lookup_during_a_renewal_changes_nothing_and_is_not_repeated() {
+    for answer in [reply(503, "{}"), reply(200, "not json"), reply(404, "{}")] {
+        let (_root, paths) = setup();
+        let keyring = FakeKeyring::default();
+        seed(&paths, &keyring, "R1", USER);
+        let server = Scripted::start(move |line| {
+            if is_profile(line) {
+                answer.clone()
+            } else {
+                tokens("A", "R", USER, 60)
+            }
+        });
+        let mut session = Session::open(&paths, &keyring, client_with_profiles(&server.base))
+            .unwrap()
+            .unwrap();
+        assert_eq!(session.access_token().unwrap().expose(), "A");
+        assert_eq!(saved(&paths, &keyring), Some(login_of("R", USER)));
+        assert_eq!(session.access_token().unwrap().expose(), "A");
+        assert_eq!(profile_requests(&server), 1);
+    }
+
+    // GOG being unreachable for the lookup alone is no different.
+    let (_root, paths) = setup();
+    let keyring = FakeKeyring::default();
+    seed(&paths, &keyring, "R1", USER);
+    let server = Server::start(vec![tokens("A", "R2", USER, 3600)]);
+    let mut session = open(&paths, &keyring, &server);
+    session.access_token().unwrap();
+    assert_eq!(saved(&paths, &keyring), Some(login_of("R2", USER)));
+}
+
+#[test]
+fn a_renewal_that_fails_never_asks_for_the_name() {
+    let (_root, paths) = setup();
+    let keyring = FakeKeyring::default();
+    seed(&paths, &keyring, "R1", USER);
+    let server = Scripted::start(|line| {
+        if is_profile(line) {
+            profile("Hunter42")
+        } else {
+            invalid_grant()
+        }
+    });
+    let mut session = Session::open(&paths, &keyring, client_with_profiles(&server.base))
+        .unwrap()
+        .unwrap();
+    assert!(matches!(
+        session.access_token().unwrap_err(),
+        AccountError::LoggedOut
+    ));
+    assert_eq!(profile_requests(&server), 0);
+    assert_eq!(saved(&paths, &keyring), None);
+}
+
+#[test]
+fn a_name_found_for_a_stale_renewal_is_saved_with_the_retry_not_over_a_newer_login() {
+    let (_root, paths) = setup();
+    let keyring = Arc::new(FakeKeyring::default());
+    seed(&paths, &*keyring, "OLD", USER);
+    let (handler_paths, handler_keyring) = (paths.clone(), Arc::clone(&keyring));
+    let tokens_seen = AtomicUsize::new(0);
+    let server = Scripted::start(move |line| {
+        if is_profile(line) {
+            return profile("Hunter42");
+        }
+        if tokens_seen.fetch_add(1, Ordering::SeqCst) == 0 {
+            // Another process renewed first, so this answer is stale.
+            replace(&handler_paths, &*handler_keyring, "NEWER", USER);
+            tokens("STALE", "STALE", USER, 3600)
+        } else {
+            tokens("A", "NEWER2", USER, 3600)
+        }
+    });
+    let mut session = Session::open(&paths, &*keyring, client_with_profiles(&server.base))
+        .unwrap()
+        .unwrap();
+    assert_eq!(session.access_token().unwrap().expose(), "A");
+    let sent: Vec<_> = server
+        .requests()
+        .iter()
+        .filter(|line| !is_profile(line))
+        .map(|line| sent_refresh(line))
+        .collect();
+    assert_eq!(sent, ["OLD", "NEWER"]);
+    assert_eq!(
+        saved(&paths, &*keyring),
+        Some(named_login("NEWER2", "Hunter42"))
+    );
+    assert_eq!(profile_requests(&server), 1);
+}
+
+#[test]
+fn another_process_filling_the_name_is_not_a_newer_login() {
+    let (_root, paths) = setup();
+    let keyring = Arc::new(FakeKeyring::default());
+    seed(&paths, &*keyring, "R1", USER);
+    let (handler_paths, handler_keyring) = (paths.clone(), Arc::clone(&keyring));
+    let server = Scripted::start(move |line| {
+        if is_profile(line) {
+            return profile("Mine");
+        }
+        // The same refresh token with only the name added.
+        store(
+            &handler_paths,
+            &*handler_keyring,
+            &named_login("R1", "Theirs"),
+        )
+        .unwrap();
+        tokens("A", "R2", USER, 3600)
+    });
+    let mut session = Session::open(&paths, &*keyring, client_with_profiles(&server.base))
+        .unwrap()
+        .unwrap();
+    assert_eq!(session.access_token().unwrap().expose(), "A");
+    // One renewal, not a retry, and the name already saved is kept.
+    let renewals = server
+        .requests()
+        .iter()
+        .filter(|line| !is_profile(line))
+        .count();
+    assert_eq!(renewals, 1);
+    assert_eq!(saved(&paths, &*keyring), Some(named_login("R2", "Theirs")));
+}
+
+#[test]
+fn the_username_is_not_a_secret_but_the_refresh_token_stays_redacted() {
+    let shown = format!("{:?}", named_login("REFRESHSECRET", "Hunter42"));
+    assert!(shown.contains("Hunter42"), "{shown}");
+    assert!(!shown.contains("REFRESHSECRET"), "{shown}");
 }

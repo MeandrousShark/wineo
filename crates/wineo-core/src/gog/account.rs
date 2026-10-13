@@ -1,6 +1,6 @@
-//! The GOG login: one secret, `{refresh_token, user_id}`, kept like the API
-//! keys (keyring first, then a private file). The access token only ever
-//! lives in memory.
+//! The GOG login: one secret, `{refresh_token, user_id}` plus the account's
+//! public name when it is known, kept like the API keys (keyring first, then
+//! a private file). The access token only ever lives in memory.
 //!
 //! Login, logout, and renewal all take one host-wide lock. A renewal sends
 //! its request without the lock, then saves only if the stored login is
@@ -47,6 +47,11 @@ const RENEW_TRIES: usize = 3;
 pub struct StoredLogin {
     pub refresh_token: String,
     pub user_id: UserId,
+    /// GOG's public name for the account. Logins saved before names were
+    /// looked up don't have it, and a lookup that failed leaves it out. It
+    /// isn't written when absent, so those logins read back byte for byte.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub username: Option<String>,
 }
 
 impl fmt::Debug for StoredLogin {
@@ -55,6 +60,7 @@ impl fmt::Debug for StoredLogin {
             .debug_struct("StoredLogin")
             .field("refresh_token", &"<redacted>")
             .field("user_id", &self.user_id)
+            .field("username", &self.username)
             .finish()
     }
 }
@@ -64,7 +70,15 @@ impl StoredLogin {
         Self {
             refresh_token: tokens.refresh_token.expose().to_owned(),
             user_id: tokens.user_id,
+            username: None,
         }
+    }
+
+    /// Whether `other` holds the same grant. The name doesn't count: another
+    /// process filling it in leaves a renewal that started from this refresh
+    /// token just as valid, so it isn't taken for a newer login.
+    fn same_grant(&self, other: &Self) -> bool {
+        self.refresh_token == other.refresh_token && self.user_id == other.user_id
     }
 
     fn to_secret(&self) -> String {
@@ -253,13 +267,16 @@ fn source_of(saved: &Saved) -> KeySource {
 #[derive(Debug)]
 pub struct LoggedIn<'a> {
     pub user_id: UserId,
+    /// None when GOG didn't say, which doesn't fail the login.
+    pub username: Option<String>,
     pub saved: Saved,
     /// Ready to use, with the access token from the login.
     pub session: Session<'a>,
 }
 
 /// Logs in with what the user pasted after GOG's login page: trades the code
-/// for tokens, then saves the login, replacing any other.
+/// for tokens, looks up the account's name, then saves the login, replacing
+/// any other. A name that can't be looked up is left out.
 pub fn login<'a>(
     paths: &Paths,
     keyring: &'a dyn Keyring,
@@ -275,7 +292,10 @@ pub fn login<'a>(
             Class::Temporary => AccountError::Temporary(error),
             Class::Malformed | Class::Other => AccountError::Gog(error),
         })?;
-    let login = StoredLogin::from_tokens(&tokens);
+    let mut login = StoredLogin::from_tokens(&tokens);
+    // Before the lock, since GOG may be slow, and ignoring failure because
+    // the name is only for show.
+    login.username = client.username(tokens.user_id).ok();
     let (saved, generation) = store(paths, keyring, &login)?;
     let mut session = Session {
         paths: paths.clone(),
@@ -285,10 +305,12 @@ pub fn login<'a>(
         source: source_of(&saved),
         generation,
         access: None,
+        name_looked_up: true,
     };
     session.set_access(&tokens, requested);
     Ok(LoggedIn {
         user_id: tokens.user_id,
+        username: session.login.username.clone(),
         saved,
         session,
     })
@@ -344,6 +366,9 @@ pub struct Session<'a> {
     /// The credentials generation `login` was read or saved at.
     generation: u64,
     access: Option<Access>,
+    /// Whether the name was already asked for in this session, so a login
+    /// without one costs a single lookup rather than one per renewal.
+    name_looked_up: bool,
 }
 
 impl fmt::Debug for Session<'_> {
@@ -378,6 +403,7 @@ impl<'a> Session<'a> {
             source,
             generation,
             access: None,
+            name_looked_up: false,
         }))
     }
 
@@ -492,19 +518,35 @@ impl<'a> Session<'a> {
 
     fn renew(&mut self) -> Result<(), AccountError> {
         self.access = None;
+        let mut fetched = None;
         for _ in 0..RENEW_TRIES {
             let started = self.login.clone();
             let requested = Instant::now();
             let result = self.client.refresh(&started.refresh_token);
+            // A login saved before names were kept gets its name now, while
+            // GOG is being talked to anyway. Best effort and outside the
+            // lock: a failure changes nothing about the renewal.
+            if started.username.is_none()
+                && !self.name_looked_up
+                && result
+                    .as_ref()
+                    .is_ok_and(|tokens| tokens.user_id == started.user_id)
+            {
+                self.name_looked_up = true;
+                fetched = self.client.username(started.user_id).ok();
+            }
             let lock = CredentialsLock::acquire(&self.paths)?;
             let current = saved_login(&self.paths, self.keyring)?;
-            if current.as_ref() == Some(&started) {
+            if let Some(current) = current.filter(|current| current.same_grant(&started)) {
                 return match result {
                     // GOG never should, but tokens for another account
                     // mustn't be saved over this one's.
                     Ok(tokens) if tokens.user_id != started.user_id => Err(AccountError::Switched),
                     Ok(tokens) => {
-                        let renewed = StoredLogin::from_tokens(&tokens);
+                        let mut renewed = StoredLogin::from_tokens(&tokens);
+                        // The saved name wins, since another process may
+                        // have filled it in since this one started.
+                        renewed.username = current.username.or(fetched);
                         let generation = bump_generation(&self.paths, &lock)?;
                         self.source = source_of(&save(&self.paths, self.keyring, &renewed)?);
                         self.generation = generation;
