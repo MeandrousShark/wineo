@@ -380,14 +380,16 @@ impl App {
         hero: Option<&crate::library::ArtFile>,
         logo: Option<&crate::library::ArtFile>,
     ) -> (Option<&image::Handle>, Option<&image::Handle>) {
-        let images = if card.not_installed() {
-            &self.dimmed_images
-        } else {
-            &self.images
-        };
+        let dimmed = card.not_installed();
         (
-            hero.and_then(|art| images.get(&(art.clone(), artwork::Kind::Hero))),
-            logo.and_then(|art| images.get(&(art.clone(), artwork::Kind::Logo))),
+            hero.and_then(|art| {
+                self.images
+                    .shown(&(art.clone(), artwork::Kind::Hero), dimmed)
+            }),
+            logo.and_then(|art| {
+                self.images
+                    .shown(&(art.clone(), artwork::Kind::Logo), dimmed)
+            }),
         )
     }
     fn after_hook_active(&self, card: &Card) -> bool {
@@ -666,17 +668,27 @@ impl App {
         }
     }
     pub(crate) fn load_panel_art(&mut self) -> Task<Message> {
-        if !self.panel_open {
-            return Task::none();
+        let keys = self.panel_art_keys();
+        for (key, _) in &keys {
+            self.images.touch(key);
         }
-        let paths = self
+        self.load_images(keys)
+    }
+    /// The open panel's hero and logo, and whether they are drawn dimmed.
+    pub(crate) fn panel_art_keys(&self) -> Vec<(crate::ArtKey, bool)> {
+        if !self.panel_open {
+            return Vec::new();
+        }
+        let Some(card) = self
             .selected
             .as_ref()
             .and_then(|name| self.cards.iter().find(|card| &card.name == name))
-            .and_then(|card| {
-                self.chosen_target(card)
-                    .and_then(|target| card.panel_art.get(target))
-            })
+        else {
+            return Vec::new();
+        };
+        let dimmed = card.not_installed();
+        self.chosen_target(card)
+            .and_then(|target| card.panel_art.get(target))
             .map(|art| {
                 [
                     (art.hero.as_ref(), artwork::Kind::Hero),
@@ -685,9 +697,8 @@ impl App {
             })
             .into_iter()
             .flatten()
-            .filter_map(|(art, kind)| art.map(|art| (art.clone(), kind)))
-            .collect::<Vec<_>>();
-        self.load_images(paths)
+            .filter_map(|(art, kind)| art.map(|art| ((art.clone(), kind), dimmed)))
+            .collect()
     }
     pub(crate) fn panel<'a>(&'a self, card: &'a Card) -> Element<'a, Message> {
         let palette = self.palette;

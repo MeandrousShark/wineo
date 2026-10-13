@@ -1,3 +1,4 @@
+mod art_cache;
 mod art_navigation;
 mod art_page;
 mod art_picker;
@@ -97,9 +98,12 @@ pub(crate) struct App {
     pub(crate) target: Option<String>,
     card_click_target: Option<(String, Option<String>)>,
     pub(crate) hovered: Option<String>,
-    pub(crate) images: HashMap<ArtKey, image::Handle>,
-    pub(crate) dimmed_images: HashMap<ArtKey, image::Handle>,
-    loading: HashSet<ArtKey>,
+    pub(crate) images: art_cache::ArtCache<ArtKey>,
+    /// Art decoding, by key and whether it is decoded dimmed.
+    loading: HashSet<(ArtKey, bool)>,
+    /// The grid art `load_visible_art` last found around the viewport, which
+    /// eviction leaves alone.
+    visible_art: HashSet<ArtKey>,
     /// Caps concurrent art decodes, since a huge source costs far more memory
     /// than its thumbnail.
     decodes: Arc<tokio::sync::Semaphore>,
@@ -255,7 +259,7 @@ pub(crate) enum Message {
     CollapseTick(u64, Instant),
     ReducedMotion(bool),
     TrashBadgeLoaded(sidebar::TrashBadge),
-    ArtLoaded(ArtKey, Result<image::Handle, String>),
+    ArtLoaded(ArtKey, bool, Result<image::Handle, String>),
     Scrolled(scrollable::Viewport),
     GridCardLocated(String, u64, grid_motion::CardBounds),
     ScrollIdle,
@@ -340,9 +344,9 @@ impl App {
             target: None,
             card_click_target: None,
             hovered: None,
-            images: HashMap::new(),
-            dimmed_images: HashMap::new(),
+            images: art_cache::ArtCache::default(),
             loading: HashSet::new(),
+            visible_art: HashSet::new(),
             decodes: Arc::new(tokio::sync::Semaphore::new(MAX_DECODES)),
             thumbnails: Arc::new(Mutex::new(art_picker::ThumbnailCache::default())),
             failed_images: HashSet::new(),
@@ -1032,16 +1036,13 @@ impl App {
                 self.error = Some(error);
                 Task::none()
             }
-            Message::ArtLoaded(key, result) => {
-                self.loading.remove(&key);
+            Message::ArtLoaded(key, dimmed, result) => {
+                self.loading.remove(&(key.clone(), dimmed));
                 if self.current_art.get(&key.0.path) != Some(&key.0.identity) {
                     return Task::none();
                 }
                 match result {
-                    Ok(handle) => {
-                        self.images.insert(key, handle);
-                        self.refresh_dimmed_images();
-                    }
+                    Ok(handle) => self.art_loaded(key, dimmed, handle),
                     Err(_) => {
                         self.failed_images.insert(key);
                     }
@@ -1656,46 +1657,65 @@ impl App {
             .map(|art| (art.path.clone(), art.identity))
             .collect();
         self.images
-            .retain(|(art, _), _| self.current_art.get(&art.path) == Some(&art.identity));
-        self.loading
             .retain(|(art, _)| self.current_art.get(&art.path) == Some(&art.identity));
+        self.loading
+            .retain(|((art, _), _)| self.current_art.get(&art.path) == Some(&art.identity));
         self.failed_images
             .retain(|(art, _)| self.current_art.get(&art.path) == Some(&art.identity));
-        self.refresh_dimmed_images();
         self.error = None;
     }
-    fn refresh_dimmed_images(&mut self) {
-        let keys: HashSet<_> = self
-            .cards
-            .iter()
-            .filter(|card| card.not_installed())
-            .flat_map(|card| {
-                // The panel's hero and logo dim along with the poster.
-                let panel = card.panel_art.values().flat_map(|art| {
-                    art.hero
-                        .iter()
-                        .map(|hero| (hero.clone(), artwork::Kind::Hero))
-                        .chain(
-                            art.logo
-                                .iter()
-                                .map(|logo| (logo.clone(), artwork::Kind::Logo)),
-                        )
-                });
-                card.art
-                    .iter()
-                    .map(|art| (art.clone(), artwork::Kind::Grid))
-                    .chain(panel)
-                    .collect::<Vec<_>>()
-            })
-            .collect();
-        self.dimmed_images.retain(|key, _| keys.contains(key));
-        for key in keys {
-            if !self.dimmed_images.contains_key(&key)
-                && let Some(handle) = self.images.get(&key).and_then(artwork::grayscale)
-            {
-                self.dimmed_images.insert(key, handle);
+    /// Whether any card draws `key` in color, and whether any draws it dimmed.
+    fn art_wanted(&self, key: &ArtKey) -> (bool, bool) {
+        let (art, kind) = key;
+        let mut wanted = (false, false);
+        for card in &self.cards {
+            let uses = match kind {
+                artwork::Kind::Grid => card.art.as_ref() == Some(art),
+                artwork::Kind::Hero => card
+                    .panel_art
+                    .values()
+                    .any(|paths| paths.hero.as_ref() == Some(art)),
+                artwork::Kind::Logo => card
+                    .panel_art
+                    .values()
+                    .any(|paths| paths.logo.as_ref() == Some(art)),
+            };
+            if uses {
+                if card.not_installed() {
+                    wanted.1 = true;
+                } else {
+                    wanted.0 = true;
+                }
             }
         }
+        wanted
+    }
+    /// Stores decoded art. Once a card's current variant arrives the other
+    /// one goes, so a dimmed card holds only its grayscale copy.
+    fn art_loaded(&mut self, key: ArtKey, dimmed: bool, handle: image::Handle) {
+        let (color, gray) = self.art_wanted(&key);
+        let (wanted, other_wanted) = if dimmed { (gray, color) } else { (color, gray) };
+        if wanted {
+            self.images.insert(key.clone(), dimmed, handle);
+            if !other_wanted {
+                self.images.remove(&key, !dimmed);
+            }
+        } else if !self.images.contains(&key, !dimmed) {
+            // The card switched while this decoded; it still beats drawing
+            // nothing until the variant it wants now arrives.
+            self.images.insert(key, dimmed, handle);
+        }
+        self.evict_art();
+    }
+    fn evict_art(&mut self) {
+        let panel: HashSet<ArtKey> = self
+            .panel_art_keys()
+            .into_iter()
+            .map(|(key, _)| key)
+            .collect();
+        let visible = &self.visible_art;
+        self.images
+            .evict(|key| visible.contains(key) || panel.contains(key));
     }
     /// Records a new scroll offset. Scrolling moves the heap out of view, so
     /// the cards go back at once rather than leaving nothing to click.
@@ -1798,7 +1818,7 @@ impl App {
         let top = self.scroll_offset - margin;
         let bottom = self.scroll_offset + self.viewport_height + margin;
         let mut seen = HashSet::new();
-        let mut paths = Vec::new();
+        let mut keys = Vec::new();
         for columns in [
             grid_motion::columns_for_viewport(self.viewport_width, false),
             grid_motion::columns_for_viewport(self.viewport_width, true),
@@ -1808,20 +1828,25 @@ impl App {
                 if let Some(art) = &card.art {
                     let key = (art.clone(), artwork::Kind::Grid);
                     if seen.insert(key.clone()) {
-                        paths.push(key);
+                        keys.push((key, card.not_installed()));
                     }
                 }
             }
         }
-        self.load_images(paths)
+        for (key, _) in &keys {
+            self.images.touch(key);
+        }
+        self.visible_art = seen;
+        self.evict_art();
+        self.load_images(keys)
     }
-    fn load_images(&mut self, paths: Vec<ArtKey>) -> Task<Message> {
+    fn load_images(&mut self, keys: Vec<(ArtKey, bool)>) -> Task<Message> {
         let mut tasks = Vec::new();
         let cache = self.paths.art_cache_dir();
-        for key in paths {
-            if self.images.contains_key(&key)
+        for (key, dimmed) in keys {
+            if self.images.contains(&key, dimmed)
                 || self.failed_images.contains(&key)
-                || !self.loading.insert(key.clone())
+                || !self.loading.insert((key.clone(), dimmed))
             {
                 continue;
             }
@@ -1833,8 +1858,7 @@ impl App {
                         Ok(permit) => tokio::task::spawn_blocking({
                             let key = key.clone();
                             move || {
-                                let decoded = artwork::decode(&key.0.path, key.1, Some(&cache))
-                                    .map_err(|e| e.to_string());
+                                let decoded = decode_art(&key, dimmed, &cache);
                                 drop(permit);
                                 decoded
                             }
@@ -1845,11 +1869,25 @@ impl App {
                     };
                     (key, decoded)
                 },
-                |(key, decoded)| Message::ArtLoaded(key, decoded.unwrap_or_else(Err)),
+                move |(key, decoded)| Message::ArtLoaded(key, dimmed, decoded.unwrap_or_else(Err)),
             ));
         }
         Task::batch(tasks)
     }
+}
+
+/// Library art as drawn, grayscale when dimmed. Runs off the UI thread.
+fn decode_art(
+    key: &ArtKey,
+    dimmed: bool,
+    cache: &std::path::Path,
+) -> Result<image::Handle, String> {
+    let handle = artwork::decode(&key.0.path, key.1, Some(cache)).map_err(|e| e.to_string())?;
+    Ok(if dimmed {
+        artwork::grayscale(&handle).unwrap_or(handle)
+    } else {
+        handle
+    })
 }
 
 // One value, because `Application::settings` replaces everything set before it.
@@ -2727,15 +2765,15 @@ mod tests {
         let new_key = (new.clone(), artwork::Kind::Grid);
         app.merge(vec![card_with_art(old)]);
         let _ = app.load_visible_art();
-        assert!(app.loading.contains(&old_key));
+        assert!(app.loading.contains(&(old_key.clone(), false)));
         let handle = image::Handle::from_rgba(1, 1, vec![1, 2, 3, 255]);
-        let _ = app.update(Message::ArtLoaded(old_key.clone(), Ok(handle)));
-        assert!(app.images.contains_key(&old_key));
+        let _ = app.update(Message::ArtLoaded(old_key.clone(), false, Ok(handle)));
+        assert!(app.images.contains(&old_key, false));
         app.merge(vec![card_with_art(new)]);
-        assert!(!app.images.contains_key(&old_key));
+        assert!(!app.images.contains(&old_key, false));
         let _ = app.load_visible_art();
-        assert!(app.loading.contains(&new_key));
-        assert!(!app.loading.contains(&old_key));
+        assert!(app.loading.contains(&(new_key.clone(), false)));
+        assert!(!app.loading.contains(&(old_key.clone(), false)));
     }
 
     #[test]
@@ -2783,7 +2821,10 @@ mod tests {
         for row in visible {
             for card in &app.cards[row * columns..(row + 1) * columns] {
                 let key = (card.art.clone().unwrap(), artwork::Kind::Grid);
-                assert!(app.loading.contains(&key), "row {row} wasn't loaded");
+                assert!(
+                    app.loading.contains(&(key.clone(), false)),
+                    "row {row} wasn't loaded"
+                );
             }
         }
         // The range stays near the viewport instead of loading everything.
@@ -2791,7 +2832,7 @@ mod tests {
     }
 
     #[test]
-    fn steam_install_changes_reuse_art_and_update_the_grayscale_cache() {
+    fn steam_install_changes_swap_the_card_between_color_and_grayscale() {
         let mut app = app();
         let art = art_file("/tmp/steam-grid.png", 10);
         let key = (art.clone(), artwork::Kind::Grid);
@@ -2803,22 +2844,132 @@ mod tests {
             size: None,
         });
         app.merge(vec![card.clone()]);
-        let _ = app.update(Message::ArtLoaded(
-            key.clone(),
-            Ok(image::Handle::from_rgba(1, 1, vec![10, 80, 240, 255])),
-        ));
-        assert!(app.dimmed_images.is_empty());
+        let color = image::Handle::from_rgba(1, 1, vec![10, 80, 240, 255]);
+        let gray = image::Handle::from_rgba(1, 1, vec![70, 70, 70, 255]);
+        let _ = app.update(Message::ArtLoaded(key.clone(), false, Ok(color.clone())));
+        assert!(!app.images.contains(&key, true));
+
         card.steam.as_mut().unwrap().install = wineo_core::steam::AppState::NotInstalled.into();
         app.merge(vec![card.clone()]);
-        assert!(app.dimmed_images.contains_key(&key));
-        assert!(app.images.contains_key(&key));
+        // The color copy stands in while the grayscale one decodes.
+        assert_eq!(app.images.shown(&key, true), Some(&color));
+        let _ = app.load_visible_art();
+        assert!(app.loading.contains(&(key.clone(), true)));
+        let _ = app.update(Message::ArtLoaded(key.clone(), true, Ok(gray.clone())));
+        assert_eq!(app.images.shown(&key, true), Some(&gray));
+        assert!(!app.images.contains(&key, false));
+
         card.steam.as_mut().unwrap().install =
             wineo_core::steam::AppState::Unknown("Missing Steam".to_owned()).into();
         app.merge(vec![card]);
-        assert!(app.dimmed_images.is_empty());
-        assert!(app.images.contains_key(&key));
+        assert_eq!(app.images.shown(&key, false), Some(&gray));
+        let _ = app.load_visible_art();
+        assert!(app.loading.contains(&(key.clone(), false)));
+        let _ = app.update(Message::ArtLoaded(key.clone(), false, Ok(color.clone())));
+        assert_eq!(app.images.shown(&key, false), Some(&color));
+        assert!(!app.images.contains(&key, true));
         app.merge(Vec::new());
-        assert!(app.images.is_empty());
+        assert_eq!(app.images.len(), 0);
+    }
+
+    #[test]
+    fn a_variant_decoded_after_its_card_switched_back_is_dropped() {
+        let mut app = app();
+        let art = art_file("/tmp/steam-grid.png", 10);
+        let key = (art.clone(), artwork::Kind::Grid);
+        let mut card = steam_card("game", wineo_core::steam::AppState::Installed);
+        card.art = Some(art);
+        app.merge(vec![card.clone()]);
+        let color = image::Handle::from_rgba(1, 1, vec![10, 80, 240, 255]);
+        let _ = app.update(Message::ArtLoaded(key.clone(), false, Ok(color.clone())));
+        card.steam.as_mut().unwrap().install = wineo_core::steam::AppState::NotInstalled.into();
+        app.merge(vec![card.clone()]);
+        let _ = app.load_visible_art();
+        card.steam.as_mut().unwrap().install = wineo_core::steam::AppState::Installed.into();
+        app.merge(vec![card]);
+        let _ = app.update(Message::ArtLoaded(
+            key.clone(),
+            true,
+            Ok(image::Handle::from_rgba(1, 1, vec![70, 70, 70, 255])),
+        ));
+        assert_eq!(app.images.shown(&key, false), Some(&color));
+        assert!(!app.images.contains(&key, true));
+    }
+
+    #[test]
+    fn dimmed_art_decodes_to_grayscale_off_the_ui_thread() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("grid.png");
+        ::image::RgbaImage::from_pixel(2, 3, ::image::Rgba([10, 80, 240, 255]))
+            .save(&path)
+            .unwrap();
+        let key = (art_file(path.to_str().unwrap(), 1), artwork::Kind::Grid);
+        let pixels = |handle: image::Handle| match handle {
+            image::Handle::Rgba { pixels, .. } => pixels[..4].to_vec(),
+            _ => panic!("expected decoded art"),
+        };
+        let cache = root.path().join("cache");
+        assert_eq!(
+            pixels(decode_art(&key, false, &cache).unwrap()),
+            [10, 80, 240, 255]
+        );
+        let gray = pixels(decode_art(&key, true, &cache).unwrap());
+        assert!(gray[0] == gray[1] && gray[1] == gray[2] && gray[3] == 255);
+    }
+
+    #[test]
+    fn art_scrolled_out_of_range_is_evicted_and_reloads_when_it_returns() {
+        let mut app = app();
+        app.viewport_width = 1000.0;
+        app.viewport_height = 800.0;
+        let columns = grid_motion::columns_for_viewport(app.viewport_width, false);
+        app.merge(
+            (0..columns * 60)
+                .map(|index| {
+                    let mut card = card(&format!("game-{index}"), State::Inactive, 0);
+                    card.art = Some(art_file(&format!("/tmp/art-{index}.png"), index as u64));
+                    card
+                })
+                .collect(),
+        );
+        let poster = 600 * 1024;
+        let load = |app: &mut App| {
+            let _ = app.load_visible_art();
+            let keys: Vec<_> = app.loading.drain().collect();
+            for (key, dimmed) in &keys {
+                let handle = image::Handle::from_rgba(1, poster / 4, vec![0; poster as usize]);
+                let _ = app.update(Message::ArtLoaded(key.clone(), *dimmed, Ok(handle)));
+            }
+            keys
+        };
+        let middle_offset = 30.0 * 320.0;
+        let top = load(&mut app);
+        app.scroll_offset = middle_offset;
+        let middle = load(&mut app);
+        assert!(!top.is_empty() && middle.iter().all(|key| !top.contains(key)));
+        // Room for either range around the viewport, but not both.
+        let budget = top.len().max(middle.len()) * poster as usize;
+        app.images = art_cache::ArtCache::with_budget(budget);
+        app.scroll_offset = 0.0;
+        load(&mut app);
+        app.scroll_offset = middle_offset;
+        load(&mut app);
+        for (key, dimmed) in &middle {
+            assert!(app.images.contains(key, *dimmed));
+        }
+        let evicted = top
+            .iter()
+            .filter(|(key, dimmed)| !app.images.contains(key, *dimmed))
+            .count();
+        assert!(evicted > 0);
+        assert!(app.images.bytes() <= budget);
+
+        app.scroll_offset = 0.0;
+        let _ = app.load_visible_art();
+        for key in &top {
+            assert!(app.images.contains(&key.0, key.1) || app.loading.contains(key));
+        }
+        assert_eq!(app.loading.len(), evicted);
     }
 
     fn steam_card(name: &str, install: wineo_core::steam::AppState) -> Card {
@@ -3057,30 +3208,41 @@ mod tests {
             },
         );
         app.merge(vec![card.clone()]);
-        let blue = || image::Handle::from_rgba(1, 1, vec![10, 80, 240, 255]);
-        for key in [
+        app.selected = Some("game".into());
+        app.panel_open = true;
+        let keys = [
             (hero.clone(), artwork::Kind::Hero),
             (logo.clone(), artwork::Kind::Logo),
-        ] {
-            let _ = app.update(Message::ArtLoaded(key.clone(), Ok(blue())));
-            assert!(app.dimmed_images.contains_key(&key));
+        ];
+        let _ = app.load_panel_art();
+        let blue = || image::Handle::from_rgba(1, 1, vec![10, 80, 240, 255]);
+        let gray = || image::Handle::from_rgba(1, 1, vec![70, 70, 70, 255]);
+        for key in &keys {
+            assert!(app.loading.contains(&(key.clone(), true)));
+            let _ = app.update(Message::ArtLoaded(key.clone(), true, Ok(gray())));
+            assert!(!app.images.contains(key, false));
         }
-        let gray = |handle: Option<&image::Handle>| match handle {
+        let is_gray = |handle: Option<&image::Handle>| match handle {
             Some(image::Handle::Rgba { pixels, .. }) => {
                 pixels[0] == pixels[1] && pixels[1] == pixels[2]
             }
             _ => panic!("expected decoded art"),
         };
         let (shown_hero, shown_logo) = app.panel_images(&app.cards[0], Some(&hero), Some(&logo));
-        assert!(gray(shown_hero));
-        assert!(gray(shown_logo));
+        assert!(is_gray(shown_hero));
+        assert!(is_gray(shown_logo));
 
         card.steam.as_mut().unwrap().install = AppState::Installed.into();
         app.merge(vec![card]);
-        assert!(app.dimmed_images.is_empty());
+        let _ = app.load_panel_art();
+        for key in &keys {
+            assert!(app.loading.contains(&(key.clone(), false)));
+            let _ = app.update(Message::ArtLoaded(key.clone(), false, Ok(blue())));
+            assert!(!app.images.contains(key, true));
+        }
         let (shown_hero, shown_logo) = app.panel_images(&app.cards[0], Some(&hero), Some(&logo));
-        assert!(!gray(shown_hero));
-        assert!(!gray(shown_logo));
+        assert!(!is_gray(shown_hero));
+        assert!(!is_gray(shown_logo));
     }
 
     #[test]
@@ -3092,14 +3254,18 @@ mod tests {
         let new_key = (new.clone(), artwork::Kind::Grid);
         app.merge(vec![card_with_art(old)]);
         let _ = app.load_visible_art();
-        let _ = app.update(Message::ArtLoaded(old_key.clone(), Err("invalid".into())));
+        let _ = app.update(Message::ArtLoaded(
+            old_key.clone(),
+            false,
+            Err("invalid".into()),
+        ));
         let _ = app.load_visible_art();
         assert!(app.failed_images.contains(&old_key));
         assert!(app.loading.is_empty());
         app.merge(vec![card_with_art(new)]);
         assert!(!app.failed_images.contains(&old_key));
         let _ = app.load_visible_art();
-        assert!(app.loading.contains(&new_key));
+        assert!(app.loading.contains(&(new_key.clone(), false)));
     }
 
     #[test]
