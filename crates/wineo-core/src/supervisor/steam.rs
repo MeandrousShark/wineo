@@ -160,11 +160,17 @@ impl Supervisor {
         if self.token.as_ref().is_some_and(Token::is_canceled) {
             return Some(false);
         }
-        match received.or_else(|| self.events.try_recv().ok()) {
-            Some(Event::Force) => Some(true),
-            Some(Event::Stop) => Some(false),
-            _ => None,
+        // A wakeup that isn't a stop must not hide one queued behind it, so
+        // the whole queue is read. A force outranks an earlier stop.
+        let mut stop = None;
+        for event in received.into_iter().chain(self.events.try_iter()) {
+            match event {
+                Event::Force => return Some(true),
+                Event::Stop => stop = Some(false),
+                _ => {}
+            }
         }
+        stop
     }
 
     fn watch_steam(
@@ -399,6 +405,29 @@ fn test_timeout(variable: &str, fallback: Duration) -> Duration {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_stop_queued_behind_a_wakeup_is_not_missed() {
+        let token = Token::new();
+        let supervisor = Supervisor::with_token(&token);
+        supervisor.sender.send(Event::ReaperExited).unwrap();
+        supervisor.sender.send(Event::Pulse).unwrap();
+        supervisor.sender.send(Event::Stop).unwrap();
+        let received = supervisor.events.recv().unwrap();
+        assert!(matches!(received, Event::ReaperExited));
+        assert_eq!(supervisor.stop_request(Some(received)), Some(false));
+        assert_eq!(supervisor.stop_request(None), None);
+    }
+
+    #[test]
+    fn a_queued_force_outranks_an_earlier_stop() {
+        let token = Token::new();
+        let supervisor = Supervisor::with_token(&token);
+        supervisor.sender.send(Event::Stop).unwrap();
+        supervisor.sender.send(Event::Pulse).unwrap();
+        supervisor.sender.send(Event::Force).unwrap();
+        assert_eq!(supervisor.stop_request(Some(Event::Pulse)), Some(true));
+    }
 
     fn progress(flags: u32, staged: u64) -> steam::Progress {
         steam::Progress {
