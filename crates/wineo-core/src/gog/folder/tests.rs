@@ -457,6 +457,72 @@ fn forget_is_refused_while_owned() {
     assert!(paths.gog_folder_lock(&key(&folder)).exists());
 }
 
+/// An install of game 1 that stopped before `owner`'s config was written.
+fn pending_install(folder: &Path, owner: &str) -> FolderState {
+    FolderState {
+        journal: Some(Journal {
+            operation: "op-1".to_owned(),
+            kind: JournalKind::Install,
+            target: Target {
+                gog_id: 1,
+                platform: Platform::Linux,
+                language: "en".to_owned(),
+                track: Track::Installer,
+                products: Vec::new(),
+            },
+            packages: Vec::new(),
+            attempted: Vec::new(),
+        }),
+        ..FolderState::new(folder.to_owned(), Some(owner.to_owned()))
+    }
+}
+
+#[test]
+fn forget_drops_an_install_whose_config_was_never_written() {
+    let (root, paths) = setup();
+    let folder = root.path().join("g");
+    fs::create_dir_all(&folder).unwrap();
+    save(&paths, &pending_install(&folder, "rimworld"));
+
+    // Not while anything runs from the folder.
+    let held = InUseLock::new(&paths, &folder)
+        .unwrap()
+        .try_shared("clone")
+        .unwrap()
+        .unwrap();
+    let error = forget(&paths, &folder, NEVER).unwrap_err();
+    assert!(matches!(
+        error.downcast_ref::<FolderError>(),
+        Some(FolderError::InUse {
+            action: InUseAction::Forget,
+            ..
+        })
+    ));
+    assert!(state_path(&paths, &folder).exists());
+    drop(held);
+
+    assert!(forget(&paths, &folder, NEVER).unwrap());
+    assert!(!state_path(&paths, &folder).exists());
+    assert!(folder.exists());
+}
+
+#[test]
+fn forget_keeps_refusing_an_install_whose_config_exists() {
+    let (root, paths) = setup();
+    let folder = root.path().join("g");
+    fs::create_dir_all(&folder).unwrap();
+    save(&paths, &pending_install(&folder, "rimworld"));
+    let config = paths.environment_config("rimworld");
+    fs::create_dir_all(config.parent().unwrap()).unwrap();
+    fs::write(&config, "kind = \"native\"\n").unwrap();
+    let error = forget(&paths, &folder, NEVER).unwrap_err();
+    assert!(matches!(
+        error.downcast_ref::<FolderError>(),
+        Some(FolderError::OwnedByOther { .. })
+    ));
+    assert!(state_path(&paths, &folder).exists());
+}
+
 /// A fake filesystem: each listed path exists on its device.
 fn devices(map: &[(&Path, u64)]) -> impl Fn(&Path) -> io::Result<Option<u64>> + use<> {
     let map: HashMap<PathBuf, u64> = map
