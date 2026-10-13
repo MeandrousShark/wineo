@@ -179,6 +179,7 @@ fn game_json(row: &Row) -> Value {
         "update": status.map(|status| status.state.as_str()),
         "applicable": status.is_some_and(|status| status.applicable),
         "reason": status.map_or(Value::Null, |status| reason_json(&status.reason)),
+        "unfinished": status.is_some_and(|status| status.unfinished),
         "dlc": status.map(|status| dlc_json(&status.dlc)).unwrap_or_default(),
     })
 }

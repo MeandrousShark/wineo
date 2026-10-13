@@ -104,6 +104,7 @@ fn status_json(status: &Status) -> serde_json::Value {
         "update": status.state.as_str(),
         "applicable": status.applicable,
         "reason": reason_json(&status.reason),
+        "unfinished": status.unfinished,
         "dlc": dlc_json(&status.dlc),
     })
 }

@@ -208,15 +208,11 @@ fn steam_stats_json_marks_unavailable_session_fields_null() {
     assert_eq!(known["source"], "steam");
     assert_eq!(known["seconds"], 1_332_000);
     assert_eq!(known["last_played"], "2026-09-04T12:00:00Z");
-    for key in [
-        "sessions",
-        "average_seconds",
-        "longest",
-        "first_played",
-        "this_week_seconds",
-        "this_month_seconds",
-    ] {
+    for key in ["sessions", "average_seconds", "longest", "first_played"] {
         assert_json_null(&known, key);
+    }
+    for key in ["this_week_seconds", "this_month_seconds"] {
+        assert!(known.get(key).is_none(), "{key} is text-only: {known}");
     }
 
     let unknown = json_output(&f.run_at_home(&["stats", "unknown", "--json"]));

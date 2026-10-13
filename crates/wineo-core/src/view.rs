@@ -211,8 +211,9 @@ pub struct CollectionError {
 }
 
 /// `wineo stats [NAME] --json`'s shape, named or as one of a collection's
-/// `environments`. Week and month fields stay omitted for Wineo stats and are
-/// null for Steam, which cannot supply them.
+/// `environments`. This week's and this month's totals are text-only: they
+/// depend on the local time zone and the current time, and scripts can work
+/// them out from `sessions_log`.
 #[derive(Serialize)]
 pub struct StatsOutput<'a> {
     pub name: &'a str,
@@ -227,10 +228,6 @@ pub struct StatsOutput<'a> {
     pub targets: Vec<TargetSummary>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sessions_log: Option<&'a [Session]>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub this_week_seconds: Option<Option<i64>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub this_month_seconds: Option<Option<i64>>,
     pub source: &'static str,
 }
 
@@ -249,8 +246,6 @@ impl<'a> StatsOutput<'a> {
             imported_seconds: summary.imported_seconds,
             targets: summary.targets.clone(),
             sessions_log: (!steam).then_some(sessions_log).flatten(),
-            this_week_seconds: steam.then_some(None),
-            this_month_seconds: steam.then_some(None),
             source: summary.source.as_str(),
         }
     }

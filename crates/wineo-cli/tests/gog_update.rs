@@ -186,12 +186,14 @@ fn check_json_has_the_plans_shape() {
             {
                 "name": "disco", "id": DISCO.to_string(), "track": "galaxy",
                 "installed": "59781086834418085", "available": "59781086834418086",
-                "update": "galaxy", "applicable": false, "reason": "galaxy", "dlc": [],
+                "update": "galaxy", "applicable": false, "reason": "galaxy",
+                "unfinished": false, "dlc": [],
             },
             {
                 "name": "rimworld", "id": RIMWORLD.to_string(), "track": "installer",
                 "installed": "1.6.4871 rev588", "available": "1.6.4900 rev600",
                 "update": "available", "applicable": true, "reason": null,
+                "unfinished": false,
                 "dlc": [
                     {"id": RIMWORLD_DLC[0].to_string(), "title": "Royalty", "state": "available"},
                     {"id": RIMWORLD_DLC[1].to_string(), "title": "Ideology", "state": "unknown"},
@@ -401,4 +403,9 @@ fn an_interrupted_update_is_pointed_out() {
         "{}",
         stdout(&out)
     );
+
+    let out = f.gog(&api, &["update", "--check", "--json", "mid"]);
+    assert_success(&out);
+    let json: Value = serde_json::from_str(&stdout(&out)).unwrap();
+    assert_eq!(json["environments"][0]["unfinished"], true, "{json}");
 }
