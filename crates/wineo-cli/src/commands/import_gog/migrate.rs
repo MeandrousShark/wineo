@@ -279,14 +279,11 @@ fn review_lines(paths: &Paths, migration: &Migration, entry: &HeroicGogEntry) ->
         ("version", version),
         ("language", committed.language.clone()),
     ]);
-    let dlc: Vec<String> = committed
-        .products
-        .iter()
-        .filter(|product| product.id != committed.gog_id)
-        .map(|product| product.id.to_string())
-        .collect();
-    if !dlc.is_empty() {
-        rows.push(("dlc", format!("{} ({})", dlc.len(), dlc.join(", "))));
+    // One DLC per line; the rest sit under the first one's value.
+    let mut dlc = migration.dlc_labels().into_iter();
+    if let Some(first) = dlc.next() {
+        rows.push(("dlc", first));
+        rows.extend(dlc.map(|label| ("", label)));
     }
     if let Target::Windows {
         plan: Some(plan), ..

@@ -80,7 +80,8 @@ fn a_native_game_becomes_an_environment_and_nothing_of_heroics_changes() {
         "  track        installer",
         "  version      1.6.4871 rev588",
         "  language     en",
-        "  dlc          2 (1233017772, 1827857764)",
+        "  dlc          DLC [1233017772]",
+        "               DLC [1827857764]",
         "Migrated RimWorld as rimworld.",
         "Remove it from Heroic's library, without deleting its files, so both don't update it.",
     ] {
@@ -109,6 +110,26 @@ fn a_native_game_becomes_an_environment_and_nothing_of_heroics_changes() {
     assert_eq!(dlc, RIMWORLD_DLC);
     assert!(folder.join("mods-1.5/MyMod").is_dir());
     heroic.assert_unchanged(&f.heroic());
+}
+
+#[test]
+fn the_review_lists_each_dlc_by_name_and_id() {
+    let f = fixture();
+    let folder = f.heroic_rimworld();
+    f.name_rimworld(&folder);
+
+    let out = import(&f, &["--game", &game(RIMWORLD), "--yes"]);
+    assert_success(&out);
+    let text = stdout(&out);
+    for line in [
+        "  dlc          Royalty [1233017772]",
+        "               Ideology [1827857764]",
+    ] {
+        assert!(
+            text.lines().any(|l| l == line),
+            "missing {line:?} in:\n{text}"
+        );
+    }
 }
 
 #[test]

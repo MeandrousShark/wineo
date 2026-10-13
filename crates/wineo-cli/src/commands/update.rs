@@ -135,7 +135,7 @@ fn print_table(statuses: &[Status]) {
                 status.environment
             );
         }
-        for note in dlc_notes(&status.dlc) {
+        for note in dlc_notes(status) {
             println!("{note}");
         }
     }

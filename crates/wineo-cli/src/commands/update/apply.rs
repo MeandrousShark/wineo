@@ -328,14 +328,13 @@ fn action(pending: &Pending) -> &'static str {
     }
 }
 
-/// A product's title, which a recovery from saved packages doesn't have:
-/// then the game is named by its environment.
+/// The base game's title, which a recovery from saved packages doesn't
+/// have: then the game is named by its environment. A DLC is `NAME [ID]`.
 fn product_label(pending: &Pending, id: u64, title: Option<&str>) -> String {
-    match title {
-        Some(title) => title.to_owned(),
-        None if id == pending.target().gog_id => pending.environment().to_owned(),
-        None => format!("DLC {id}"),
+    if id != pending.target().gog_id {
+        return pending.dlc_label(id);
     }
+    title.map_or_else(|| pending.environment().to_owned(), str::to_owned)
 }
 
 /// `1.0 -> 1.1`, or the version alone when a rebuild installs the same one.
