@@ -245,6 +245,15 @@ Shipped in 0.31.1.
   loads only when a time is shown: `wineo list` 16.8 ms to 7.2 ms, `status`
   16.4 ms to 6.9 ms (merged after 0.31.1).
 
+- Decoded library art lives in one cache with a 96 MiB budget, evicting art
+  outside the visible rows (plus a 2-row margin, the range a panel
+  animation sweeps through, and whatever the panel draws, including during
+  its fade). A dimmed card keeps only its gray copy, grayscale runs off the
+  UI thread, and a closed Art page drops its previews. On a 300-game copy
+  that is about 210 MB less after scrolling (Xvfb). Visible change: a
+  closing panel keeps its picked target's art through the fade instead of
+  switching to the default target's.
+
 Limits accepted in review:
 
 - A spinner inside a scrollable that is itself scrolled out of an outer
@@ -257,6 +266,10 @@ Limits accepted in review:
 - An open, focused settings page still checks its file every 2 s.
 - The Art page notices a replaced file by its modification time and size,
   so a same-size replacement that keeps the old time shows on reopening.
+- A card scrolled back faster than the 2-row prefetch can show its title
+  on the surface color until its art decodes, as a never-visited card does.
+  On very large windows the protected art alone can exceed the budget; it
+  is never evicted, so the app just keeps less earlier art.
 - At most one periodic scan runs at a time, and an explicit reload makes
   scans read before it stale. A scan stuck on a hung filesystem holds that
   slot; there is no scan timeout.
