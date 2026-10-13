@@ -2474,4 +2474,66 @@ mod tests {
         assert_eq!(owned, ["Celeste"], "Heroic's RimWorld shows once");
         assert_eq!(Page::entries(&listing), [Entry::Owned(0), Entry::Heroic(0)]);
     }
+
+    #[test]
+    fn the_install_pages_stay_inside_narrow_and_short_dialogs() {
+        use super::super::gog_install::tests::{World, inno, rimworld};
+        use wineo_core::gog::update::windows::set_graphical_session;
+
+        let world = World::new();
+        set_graphical_session(Some(true));
+        let native = world.prepare(&rimworld(), &Default::default(), false);
+        let windows = world.prepare(
+            &rimworld(),
+            &super::super::gog_install::Choices {
+                platform: Some(wineo_core::gog::folder::Platform::Windows),
+                ..inno()
+            },
+            false,
+        );
+        set_graphical_session(None);
+        for prepared in [native, windows] {
+            check_install_layout(&world, prepared);
+        }
+    }
+
+    fn check_install_layout(
+        world: &super::super::gog_install::tests::World,
+        prepared: super::super::gog_install::Prepared,
+    ) {
+        let (mut page, _) = Page::new(world.paths.clone());
+        let generation = page.generation;
+        let mut listing = Listing::default();
+        add_owned(
+            &world.paths,
+            &world.keyring,
+            world.server.client(),
+            &mut listing,
+        );
+        let _ = page.update(Event::Listed(generation, Ok(listing)));
+        let index = page
+            .listing
+            .as_ref()
+            .unwrap()
+            .owned
+            .iter()
+            .position(|owned| owned.offer.title == "RimWorld")
+            .unwrap();
+        let _ = page.update(Event::Install(index));
+        let generation = page.install.as_ref().unwrap().generation();
+        let _ = page.update(Event::Installing(Box::new(gog_install::Event::Prepared(
+            generation,
+            Ok(Box::new(prepared)),
+        ))));
+        for (width, height) in [(280.0, 240.0), (360.0, 280.0), (900.0, 720.0)] {
+            let inset = iced::Rectangle::new(
+                iced::Point::new(24.0, 24.0),
+                iced::Size::new(width - 48.0, height - 48.0),
+            );
+            let mut view = page.view_at(Palette::DARK, width, 0.0);
+            let probe = crate::layout_probe::probe(&mut view, iced::Size::new(width, height));
+            let spilled = probe.outside(inset);
+            assert!(spilled.is_empty(), "{width}x{height}: {spilled:?}");
+        }
+    }
 }

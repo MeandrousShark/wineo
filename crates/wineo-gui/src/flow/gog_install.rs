@@ -237,6 +237,11 @@ impl Install {
         !self.status.is_empty()
     }
 
+    #[cfg(test)]
+    pub(super) fn generation(&self) -> u64 {
+        self.generation
+    }
+
     pub(crate) fn finished(&self) -> bool {
         self.stage == Stage::Finished
     }
@@ -809,16 +814,13 @@ impl Install {
             .padding([6, 10])
             .width(Fill)
             .style(move |_, status| crate::chips::input_style(palette, status));
+            summary = summary.push(control_row("Folder", input.into()));
+            // Its own line, so a narrow window doesn't squeeze the field away.
             summary = summary.push(control_row(
-                "Folder",
-                row![
-                    input,
-                    secondary_button("Browse...", palette)
-                        .on_press_maybe(idle.then_some(Event::Browse))
-                ]
-                .spacing(8)
-                .align_y(Center)
-                .into(),
+                "",
+                secondary_button("Browse...", palette)
+                    .on_press_maybe(idle.then_some(Event::Browse))
+                    .into(),
             ));
             if let Some(plan) = plan
                 && !self.choices.dir.trim().is_empty()
