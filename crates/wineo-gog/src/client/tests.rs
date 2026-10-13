@@ -913,6 +913,83 @@ fn profile_errors_are_classified_like_the_other_endpoints() {
     assert_clean(&error);
 }
 
+const QUICK: Duration = Duration::from_millis(300);
+
+/// A lookup that must give up at its deadline, however the server holds it.
+#[track_caller]
+fn assert_gives_up_quickly(client: &Client) {
+    let started = std::time::Instant::now();
+    let error = client.username(UserId::new(1)).unwrap_err();
+    assert!(
+        started.elapsed() < Duration::from_millis(1500),
+        "took {:?}",
+        started.elapsed()
+    );
+    assert_eq!(
+        (error.kind(), error.class(), error.endpoint()),
+        (ErrorKind::Timeout, Class::Temporary, Endpoint::Profile)
+    );
+    assert_clean(&error);
+}
+
+#[test]
+fn a_profile_that_never_answers_gives_up_at_the_deadline() {
+    let server = FakeGog::start(|_| Reply::Stall(Vec::new(), Duration::from_secs(5)));
+    assert_gives_up_quickly(&server.client().with_profile_deadline(QUICK));
+}
+
+#[test]
+fn a_profile_body_that_stalls_gives_up_at_the_deadline() {
+    let cut = b"HTTP/1.1 200 OK\r\nContent-Length: 100\r\n\r\n{\"user".to_vec();
+    let server = FakeGog::start(move |_| Reply::Stall(cut.clone(), Duration::from_secs(5)));
+    assert_gives_up_quickly(&server.client().with_profile_deadline(QUICK));
+}
+
+#[test]
+fn a_profile_body_trickling_in_gives_up_at_the_deadline_not_per_read() {
+    use std::io::{Read, Write};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let base = format!("http://{}", listener.local_addr().unwrap());
+    let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let stopped = std::sync::Arc::clone(&stop);
+    std::thread::spawn(move || {
+        let Ok((mut stream, _)) = listener.accept() else {
+            return;
+        };
+        let mut head = [0_u8; 1024];
+        let _ = stream.read(&mut head);
+        let _ = stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 100000\r\n\r\n");
+        // One byte at a time, each well inside any per-read timeout.
+        for _ in 0..200 {
+            if stopped.load(std::sync::atomic::Ordering::Relaxed) || stream.write_all(b" ").is_err()
+            {
+                return;
+            }
+            let _ = stream.flush();
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    });
+    let client = Client::with_base("wineo-test/1", &base)
+        .unwrap()
+        .with_profile_deadline(QUICK);
+    assert_gives_up_quickly(&client);
+    stop.store(true, std::sync::atomic::Ordering::Relaxed);
+}
+
+#[test]
+fn an_oversized_profile_is_refused() {
+    let body = format!(
+        r#"{{"username":"Hunter42","pad":"{}"}}"#,
+        "x".repeat(70_000)
+    );
+    let server = FakeGog::start(move |_| reply(200, &body));
+    let error = server.client().username(UserId::new(1)).unwrap_err();
+    assert_eq!(
+        (error.kind(), error.class()),
+        (ErrorKind::TooLarge, Class::Malformed)
+    );
+}
+
 #[test]
 fn game_art_reads_every_link_without_a_token() {
     let server = FakeGog::start(|_| reply(200, &art_body(1094900565).to_string()));

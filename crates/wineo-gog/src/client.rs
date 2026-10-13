@@ -1,5 +1,6 @@
 use std::io::{self, Read};
-use std::time::Duration;
+use std::sync::mpsc;
+use std::time::{Duration, Instant};
 
 use reqwest::Url;
 use serde_json::Value;
@@ -16,6 +17,12 @@ const MAX_BODY: u64 = 16 * 1024 * 1024;
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 /// Applies to each read of a blocking response, not the whole body.
 const READ_TIMEOUT: Duration = Duration::from_secs(30);
+/// The whole profile lookup, connecting through the last byte. The name is
+/// only for show, and the lookup sits in front of saving a login, so a slow
+/// users.gog.com must not hold that up.
+const PROFILE_DEADLINE: Duration = Duration::from_secs(2);
+/// A profile is a few hundred bytes.
+const PROFILE_MAX_BODY: usize = 64 * 1024;
 
 /// The base URL of each GOG service the client talks to.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -62,6 +69,7 @@ pub struct Client {
     pub(crate) cdn: reqwest::blocking::Client,
     endpoints: Endpoints,
     max_body: u64,
+    profile_deadline: Duration,
 }
 
 impl Client {
@@ -126,7 +134,16 @@ impl Client {
             cdn,
             endpoints,
             max_body: MAX_BODY,
+            profile_deadline: PROFILE_DEADLINE,
         })
+    }
+
+    /// Changes how long the profile lookup may take in all, so a test of the
+    /// deadline doesn't wait for the real one.
+    #[cfg(any(test, debug_assertions, feature = "test-server"))]
+    pub fn with_profile_deadline(mut self, deadline: Duration) -> Self {
+        self.profile_deadline = deadline;
+        self
     }
 
     pub fn endpoints(&self) -> &Endpoints {
@@ -282,7 +299,22 @@ impl Client {
             &["users", &user_id.to_string()],
             Endpoint::Profile,
         )?;
-        let json = self.get_json(Endpoint::Profile, url, None)?;
+        let fail = |kind| Error::new(Endpoint::Profile, kind);
+        let (http, deadline) = (self.http.clone(), self.profile_deadline);
+        // The blocking client times out each read separately, so a server
+        // trickling bytes could go on forever. A worker does the request
+        // and this waits for it only as long as the deadline. One that is
+        // given up on stops itself at its next read.
+        let (sender, receiver) = mpsc::channel();
+        std::thread::Builder::new()
+            .name("gog-profile".to_owned())
+            .spawn(move || {
+                let _ = sender.send(fetch_profile(&http, url, deadline));
+            })
+            .map_err(|_| fail(ErrorKind::Request))?;
+        let json = receiver
+            .recv_timeout(deadline)
+            .map_err(|_| fail(ErrorKind::Timeout))??;
         profile::parse_username(&json)
     }
 
@@ -325,6 +357,42 @@ impl Client {
     fn read_body(&self, response: reqwest::blocking::Response) -> Result<Vec<u8>, ErrorKind> {
         read_limited(response, self.max_body)
     }
+}
+
+/// A small public document, all within `deadline` and
+/// `PROFILE_MAX_BODY` bytes. Errors classify like `fetch_json`'s.
+fn fetch_profile(
+    http: &reqwest::blocking::Client,
+    url: Url,
+    deadline: Duration,
+) -> Result<Value, Error> {
+    let fail = |kind| Error::new(Endpoint::Profile, kind);
+    let started = Instant::now();
+    let mut response = http
+        .get(url)
+        .timeout(deadline)
+        .send()
+        .map_err(|error| fail(send_error(&error)))?;
+    let status = response.status().as_u16();
+    if status != 200 {
+        return Err(fail(status_kind(Endpoint::Profile, status, None)));
+    }
+    let mut body = Vec::new();
+    let mut chunk = [0_u8; 4096];
+    loop {
+        if started.elapsed() >= deadline {
+            return Err(fail(ErrorKind::Timeout));
+        }
+        match response.read(&mut chunk) {
+            Ok(0) => break,
+            Ok(read) => body.extend_from_slice(&chunk[..read]),
+            Err(error) => return Err(fail(read_error(&error))),
+        }
+        if body.len() > PROFILE_MAX_BODY {
+            return Err(fail(ErrorKind::TooLarge));
+        }
+    }
+    serde_json::from_slice(&body).map_err(|_| fail(ErrorKind::Json))
 }
 
 /// Reads a whole body of at most `limit` bytes.
