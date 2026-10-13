@@ -297,6 +297,9 @@ pub enum Progress {
     Stage { product: u64, done: u64, total: u64 },
     /// Entries published into the game folder.
     Publish { done: usize, total: usize },
+    /// A Windows product's installer is starting. `interactive` when it
+    /// shows its own wizard.
+    Installing { product: u64, interactive: bool },
 }
 
 /// What `apply` did.
@@ -1200,7 +1203,18 @@ fn run_windows(
             fresh,
         },
         token,
-        &mut |_| {},
+        &mut |event| {
+            if let windows::Event::Installing {
+                product,
+                interactive,
+            } = event
+            {
+                (progress.borrow_mut())(Progress::Installing {
+                    product,
+                    interactive,
+                });
+            }
+        },
         &mut warnings,
     )?;
     Ok(Updated {
