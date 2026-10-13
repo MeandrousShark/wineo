@@ -2180,6 +2180,7 @@ fn a_recovery_labels_a_dlc_by_the_folder_s_name_or_its_id() {
     assert_eq!(pending.dlc_label(ROYALTY), format!("Royalty ({ROYALTY})"));
 }
 
+mod dlc;
 pub(in crate::gog::update) mod install;
 mod real;
 mod windows;
