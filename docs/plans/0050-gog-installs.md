@@ -308,6 +308,25 @@ Step 5's choices (2026-10-13, provisional while the maintainer was away):
 - **0049's carry-over of failed and unavailable DLC** now applies only to
   DLC wineo can't install; those GOG still offers are retried, per 19A.
 
+Step 6's choices (2026-10-13, provisional while the maintainer was away):
+
+- **`state: installed` means wineo installed the game**; `imported` still
+  means it was migrated from Heroic. The folder state records an optional
+  provenance, absent for migrated games, so existing states read as before.
+- **Installs turn desktop entries on by default**, like migration, with no
+  flag to turn them off.
+- **The environment name comes from GOG's title**; there's no `--name`, and
+  a taken name is refused as usual.
+- **Option conflicts exit 2** (`Heroic has TITLE installed, so --game
+  migrates it. Leave out --platform and --dir.`).
+- **The setup-window question** (`LABEL's installer didn't start. Run its own
+  setup window? [Y/n]:`) is asked by `import gog --game` and a single
+  `wineo update NAME`, never by `update --all` or with `--yes`.
+- **A Windows game whose info file names no program** points to `wineo
+  setup NAME` instead of opening a program picker.
+- **`import gog --forget FOLDER` also drops an install that never got its
+  config**, refusing while anything runs; the files stay.
+
 Carried from 0049's acceptance (2026-10-12):
 
 - Sizes GOG lists are rounded to whole MiB, so they're estimates; a file's
