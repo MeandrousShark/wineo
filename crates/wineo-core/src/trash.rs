@@ -1179,24 +1179,48 @@ pub(crate) fn set_fake_mounts(paths: Vec<PathBuf>) {
     FAKE_MOUNTS.with(|mounts| *mounts.borrow_mut() = paths);
 }
 
-fn same_tree_mount(root: Identity, path: &Path) -> Result<bool> {
+/// `path`'s mount ID. A test's fake mount gives everything under it an ID
+/// of its own, like a real bind mount would.
+fn mount_of(path: &Path, current: Identity) -> Option<u64> {
     #[cfg(test)]
-    if FAKE_MOUNTS.with(|mounts| mounts.borrow().iter().any(|mount| mount == path)) {
-        return Ok(false);
+    if let Some(fake) = FAKE_MOUNTS.with(|mounts| {
+        mounts
+            .borrow()
+            .iter()
+            .enumerate()
+            .filter(|(_, mount)| path.starts_with(mount))
+            .max_by_key(|(_, mount)| mount.as_os_str().len())
+            .map(|(index, _)| u64::MAX - index as u64)
+    }) {
+        return Some(fake);
     }
+    let _ = path;
+    current.mount
+}
+
+fn same_tree_mount(root: Identity, path: &Path) -> Result<bool> {
     let current =
         identity(path)?.ok_or_else(|| anyhow!("storage unavailable at {}", path.display()))?;
-    if root.mount.is_none() || current.mount != root.mount {
+    let mount = mount_of(path, current);
+    if root.mount.is_none() || mount != root.mount {
         return Ok(false);
     }
     Ok(current.device == root.device || subvolume_property(path)?.is_some())
 }
 
-/// The first directory under `path`, walking without following symlinks,
-/// that belongs to another mount. Bind mounts of the same filesystem keep
-/// st_dev, so the mount ID is what tells them apart.
+/// The first directory at or under `path`, walking without following
+/// symlinks, that is a mount point: `path` itself when it is mounted apart
+/// from its parent, or a directory on another mount below it. Bind mounts of
+/// the same filesystem keep st_dev, so the mount ID is what tells them apart.
 pub(crate) fn foreign_mount(path: &Path) -> Result<Option<PathBuf>> {
-    let root = identity(path)?.ok_or_else(|| anyhow!("missing tree at {}", path.display()))?;
+    let mut root = identity(path)?.ok_or_else(|| anyhow!("missing tree at {}", path.display()))?;
+    root.mount = mount_of(path, root);
+    let parent = parent(path)?;
+    let parent_identity =
+        identity(parent)?.ok_or_else(|| anyhow!("storage unavailable at {}", parent.display()))?;
+    if root.mount.is_none() || mount_of(parent, parent_identity) != root.mount {
+        return Ok(Some(path.to_owned()));
+    }
     fn walk(path: &Path, root: Identity) -> Result<Option<PathBuf>> {
         if !fs::symlink_metadata(path)?.is_dir() {
             return Ok(None);

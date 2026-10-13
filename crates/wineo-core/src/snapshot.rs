@@ -1968,4 +1968,26 @@ mod tests {
             "keep"
         );
     }
+
+    #[test]
+    fn snapshot_cleanup_refuses_a_mounted_root() {
+        let root = tempfile::tempdir_in(env!("CARGO_MANIFEST_DIR")).unwrap();
+        let snapshot = root.path().join("one");
+        fs::create_dir_all(snapshot.join("prefix")).unwrap();
+        fs::write(snapshot.join("keep.txt"), "keep").unwrap();
+        crate::trash::set_fake_mounts(vec![snapshot.clone()]);
+        let error = remove_tree(&snapshot).unwrap_err();
+        crate::trash::set_fake_mounts(Vec::new());
+        assert!(
+            error.to_string().contains(&format!(
+                "has a mount at {}, so it was kept",
+                snapshot.display()
+            )),
+            "{error}"
+        );
+        assert_eq!(
+            fs::read_to_string(snapshot.join("keep.txt")).unwrap(),
+            "keep"
+        );
+    }
 }
