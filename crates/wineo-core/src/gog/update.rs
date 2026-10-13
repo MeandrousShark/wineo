@@ -833,7 +833,8 @@ fn by_installer(
     };
     let language = &installed.language;
     let mut tally = Tally::default();
-    let mut products = Vec::new();
+    // Failed and unavailable DLC GOG offers now, to install in their place.
+    let mut offered = HashMap::new();
     let mut notes = Vec::new();
 
     let (base_installed, base_available) = match base(installed) {
@@ -862,24 +863,20 @@ fn by_installer(
         }
     };
 
-    if let Some(base) = base(installed) {
-        products.push(base.clone());
-    }
     let mut listing = Vec::new();
     for (mut entry, product) in dlc(installed, names) {
         let gog = details.dlcs.iter().find(|dlc| dlc.id == product.id);
         entry.title = gog.map(|gog| gog.title.clone()).filter(|t| !t.is_empty());
-        let mut wanted = product.clone();
         if product.status != ProductStatus::Installed {
             // Recorded because it was owned, so only GOG's offer is checked.
             let label = entry.label(&details.title);
-            if let Ok(offered) = dlc_offer(installed.platform, &label, language, gog) {
-                entry.available = Some(offered.version.clone());
+            if let Ok(offer) = dlc_offer(installed.platform, &label, language, gog) {
+                entry.available = Some(offer.version.clone());
                 if product.status == ProductStatus::Unavailable {
                     entry.state = DlcState::NotInstalled;
                 }
                 tally.available();
-                wanted = offered.product(product.id);
+                offered.insert(product.id, offer.product(product.id));
             }
         } else {
             let label = entry.label(&details.title);
@@ -906,10 +903,18 @@ fn by_installer(
                 }
             }
         }
-        products.push(wanted);
         listing.push(entry);
     }
 
+    let mut products: Vec<Product> = installed
+        .products
+        .iter()
+        .map(|product| {
+            offered
+                .remove(&product.id)
+                .unwrap_or_else(|| product.clone())
+        })
+        .collect();
     // Owned DLC the folder has no record of, in GOG's order.
     let mut added = HashSet::new();
     for &id in &details.dlc_ids {
