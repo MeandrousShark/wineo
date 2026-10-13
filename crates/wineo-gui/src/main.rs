@@ -1650,8 +1650,13 @@ impl App {
             let columns = grid_motion::columns_for_viewport(self.viewport_width, false);
             let floor = self.scroll_offset + self.viewport_height;
             let visible = grid_motion::cards_between(&heights, columns, self.scroll_offset, floor);
-            let surface = self.palette.surface;
-            let placeholder = image::Handle::from_rgba(1, 1, surface.into_rgba8().to_vec());
+            // Nothing in view would leave only hidden cards and nothing to click.
+            if visible.is_empty() {
+                return Task::none();
+            }
+            // 2x3 so it keeps the poster's shape when fit into the frame.
+            let placeholder =
+                image::Handle::from_rgba(2, 3, self.palette.surface.into_rgba8().repeat(6));
             let seed = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .map_or(0, |elapsed| elapsed.as_nanos() as u64);

@@ -735,6 +735,18 @@ mod tests {
             assert!(!app.collapse.idle());
             let _ = app.update(Message::SearchChanged("game-1".into()));
             assert!(app.collapse.idle());
+            let _ = app.update(Message::SearchChanged(String::new()));
+            click_library(&mut app, 10);
+            let _ = app.update(Message::Window(iced::window::Event::Resized(Size::new(
+                900.0, 700.0,
+            ))));
+            assert!(app.collapse.idle());
+            click_library(&mut app, 10);
+            assert!(!app.collapse.idle());
+            let mut cards = app.cards.clone();
+            cards.push(card("game-new", State::Inactive, 0));
+            let _ = app.update(Message::Loaded(Ok(cards)));
+            assert!(app.collapse.idle());
         }
 
         #[test]
