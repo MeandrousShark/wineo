@@ -3,6 +3,33 @@
 A finished plan bumps the minor version and fixes between plans bump the
 patch version. See `AGENTS.md` for the rule.
 
+## 0.30.0 - 2026-10-12
+
+- GOG account, migration, and updates
+  ([0049](docs/plans/0049-gog-games.md)), without Heroic. `wineo import gog
+  --login` logs in through GOG's login page in your browser and keeps the
+  login in the keyring; `--list` shows the games you own, `--game ID` and
+  `--all` move games Heroic installed into wineo in place, and `--logout`
+  removes the login. See [GOG games](docs/gog.md).
+- New `wineo update`: `--check` compares GOG games and their DLC with GOG's
+  current versions (`--json` too), `wineo update NAME` updates a native
+  game from GOG's packages, `--reinstall` rebuilds it to repair changed or
+  missing files, and `--all` updates every game with an update. An update
+  writes down what it's doing first, so an interrupted one never leaves a
+  half-updated game that runs: `wineo start` refuses until `wineo update
+  NAME` finishes it, from the packages already downloaded.
+- Migrated games keep their Heroic prefix and settings, and pick up GOG
+  playtime and art wineo doesn't have yet.
+- Behavior change: an environment migrated from GOG gets a `gog_id` key,
+  which only `import gog` sets. `rm`, trash, restore, snapshot restore,
+  clone, and `validate` keep the game folder's record consistent, and
+  `wineo start` refuses an environment whose game folder is mid-update.
+- The desktop app has a **GOG** section in Settings to log in and out,
+  **Import from GOG** for migrating, an **Update** status row on GOG games,
+  and **Finish update** for an interrupted one.
+- DLC are shown as `NAME (ID)`, like every other title and ID, and the
+  logged-in account shows its GOG username.
+
 ## 0.29.1 - 2026-10-10
 
 - In the desktop app, the art page and the art picker work in narrow and
