@@ -476,8 +476,8 @@ Picking a game you own opens the install review: the environment it
 creates, the folder (with **Browse...**), the platform when GOG offers
 both, the language (the setting, or one you type; Enter checks it), the
 language it actually installs in, a runner and arch for Windows, the
-version, the DLC you own, and the download and installed sizes as
-estimates. **Install** stays off until the review matches what you've
+version, the DLC you own, the download size, and an estimate of the
+installed size. **Install** stays off until the review matches what you've
 typed. Then come download and install progress, with **Cancel** and
 **Force stop**, then the result. A Windows game whose info file names no
 program offers a list of the programs it installed, the game's own folder
@@ -615,7 +615,9 @@ Hover the selected runner to see its full name.
 **Set key...** takes the key in a masked field, checks it with SteamGridDB,
 and saves it like `wineo art key`: to the keyring, or to a plain text file
 with a warning when there's no keyring. **Remove key** deletes the saved
-key. Both apply right away, outside the Save bar, and don't count as
+key. Only the one that applies shows: **Set key...** with no key,
+**Remove key** with one saved, and both while the variable's key could
+hide a saved one. Both apply right away, outside the Save bar, and don't count as
 edits. You can leave the page while one runs, and its result shows when you
 come back. With `WINEO_STEAMGRIDDB_KEY` set, the section says it overrides
 the saved key. See [The SteamGridDB key](art.md#the-steamgriddb-key).

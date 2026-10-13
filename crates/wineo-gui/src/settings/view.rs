@@ -7,6 +7,7 @@ use iced::{Center, Color, Element, Fill, Font, border, font};
 use wineo_core::art::Kind;
 use wineo_core::components::Component;
 use wineo_core::config::{self, Arch};
+use wineo_core::key_store::KeySource;
 
 use super::form::{self, Build, Choice, Field, GamescopeFields, List, Source, Switch};
 use super::global;
@@ -535,6 +536,10 @@ pub(super) struct KeyRow<'a> {
     result: Option<&'a str>,
     error: Option<&'a str>,
     hint: Option<String>,
+    /// Whether a key is saved, so only the button that applies shows. None
+    /// while unknown, or when a variable's key could hide a saved one,
+    /// shows both.
+    saved: Option<bool>,
     busy: Option<super::steamgriddb::Busy>,
     input_open: bool,
     input: &'a super::steamgriddb::Secret,
@@ -544,6 +549,14 @@ pub(super) struct KeyRow<'a> {
     set: Event,
     remove: Event,
     text: fn(super::steamgriddb::Secret) -> Event,
+}
+
+fn saved(source: Option<KeySource>) -> Option<bool> {
+    match source {
+        None => Some(false),
+        Some(KeySource::Keyring | KeySource::File) => Some(true),
+        Some(KeySource::Variable) => None,
+    }
 }
 
 fn status_or_checking(label: Option<String>, failed: bool) -> String {
@@ -580,6 +593,10 @@ pub(super) fn steamgriddb_row<'a>(
         result: settings.result.as_deref(),
         error: settings.error.as_deref(),
         hint: None,
+        saved: settings
+            .status
+            .as_ref()
+            .and_then(|status| saved(status.source)),
         busy: settings.busy,
         input_open: settings.input_open,
         input: &settings.input,
@@ -621,6 +638,10 @@ pub(super) fn steam_key_row<'a>(
         result: settings.result.as_deref(),
         error: settings.error.as_deref(),
         hint: Some(format!("Get a key at {}.", super::steam_key::KEY_PAGE)),
+        saved: settings
+            .status
+            .as_ref()
+            .and_then(|status| saved(status.source)),
         busy: settings.busy,
         input_open: settings.input_open,
         input: &settings.input,
@@ -658,7 +679,12 @@ impl KeyRow<'_> {
         if self.input_open {
             texts.extend([self.placeholder, "Save", "Cancel"].map(str::to_owned));
         } else {
-            texts.extend(["Set key...", "Remove key"].map(str::to_owned));
+            if self.saved != Some(true) {
+                texts.push("Set key...".to_owned());
+            }
+            if self.saved != Some(false) {
+                texts.push("Remove key".to_owned());
+            }
         }
         texts
     }
@@ -674,6 +700,7 @@ fn key_row<'a>(row_data: KeyRow<'a>, spinner: f32, palette: Palette) -> Element<
         result,
         error,
         hint,
+        saved,
         busy,
         input_open,
         input,
@@ -745,15 +772,22 @@ fn key_row<'a>(row_data: KeyRow<'a>, spinner: f32, palette: Palette) -> Element<
             .align_y(Center),
         );
     } else {
-        rows = rows.push(
-            row![
-                action_button("Set key...", palette.primary, busy.is_none(), send(open)),
+        let mut buttons = row![].spacing(8).align_y(Center);
+        if saved != Some(true) {
+            buttons = buttons.push(action_button(
+                "Set key...",
+                palette.primary,
+                busy.is_none(),
+                send(open),
+            ));
+        }
+        if saved != Some(false) {
+            buttons = buttons.push(
                 secondary_button("Remove key", palette)
                     .on_press_maybe(busy.is_none().then(|| send(remove))),
-            ]
-            .spacing(8)
-            .align_y(Center),
-        );
+            );
+        }
+        rows = rows.push(buttons);
     }
     rows.into()
 }
