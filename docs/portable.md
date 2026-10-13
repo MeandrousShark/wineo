@@ -137,7 +137,7 @@ The review reports whether the destination can reflink from the source. A
 copy without reflink support still succeeds but takes full space; creating or
 restoring a snapshot inside the folder still requires a reflink-capable
 filesystem regardless. Wineo refuses to copy onto a name or path that
-already exists in the destination, anything that would overlap the source,
+already exists in the destination, including a play log in `DIR/stats/`, anything that would overlap the source,
 and a source with an interrupted restore that still needs recovery.
 
 Wineo stages the copy inside the folder and publishes it without replacing

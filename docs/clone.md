@@ -12,7 +12,11 @@ names are case sensitive and must match the registered name exactly.
 By default, wineo puts the copy under the configured prefix root at
 `<prefix root>/NEW_NAME`. The default root gives
 `~/.local/share/wineo/prefixes/NEW_NAME`. `--dir` chooses a different
-destination. The destination must not exist or overlap the source. Clone copies
+destination. The destination must not exist or overlap the source, and it
+can't be a directory another environment names as its prefix, even one
+that's missing (on an unmounted drive, say), or sit inside or around another
+environment's prefix (see
+[Prefixes inside prefixes](config-files.md#prefixes-inside-prefixes)). Clone copies
 the prefix; it does not adopt, merge, overwrite, or create a new Wine prefix.
 
 Wineo reviews the source, destination, runner, prefix layout, targets, external

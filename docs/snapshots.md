@@ -47,6 +47,13 @@ before the game was migrated and has no `gog_id`, restore puts the current
 one back and says so. A saved config with a different `gog_id` is refused
 before anything changes.
 
+Restore refuses a prefix with something mounted inside it, or one that is
+itself a mount point, since cleaning up the old prefix would delete the
+mounted files: `zomboid's prefix has a mount at PATH. Unmount it first.`
+Deleting a snapshot refuses the same way. It also refuses while another
+environment's prefix sits inside this one (see
+[Prefixes inside prefixes](config-files.md#prefixes-inside-prefixes)).
+
 Wineo stages and validates the restored prefix before changing the live one.
 If a restore is interrupted, ordinary commands refuse to use that environment
 until recovery. Roll back the interrupted restore with:

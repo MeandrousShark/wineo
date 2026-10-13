@@ -41,6 +41,18 @@ collisions rather than overwriting existing data. Restoring a plain `rm` entry
 returns its config, art, and playtime while leaving the prefix and snapshots
 where they were; restoring a `--delete-prefix` entry returns those too.
 
+Restore also refuses an environment whose prefix now sits inside another
+environment's prefix, or one another environment already names (see
+[Prefixes inside prefixes](config-files.md#prefixes-inside-prefixes)).
+Pruning never deletes into a mount: an entry with a mount inside, or that is
+a mount point, is refused.
+
+If a removal was interrupted while its files were being copied to another
+filesystem, `wineo validate --fix` finishes or rolls it back. When the
+original was changed or replaced in the meantime (an editor saving the
+config, say), it stays as it is, and the copy from before becomes a normal
+trash entry you can restore or prune; `validate --fix` says which.
+
 A prefix left in place must still match its recorded identity. Restore refuses
 if it has disappeared or been replaced. A prefix already absent at removal
 does not block restore. Broken configs are retained byte-for-byte and restore
