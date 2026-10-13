@@ -679,10 +679,6 @@ pub(crate) fn report_installer<I: Input, W: Write>(
     prompt: &mut Prompt<I, W>,
     outcome: wineo_core::Result<Outcome>,
 ) -> anyhow::Result<Ran> {
-    let log = Runtime::new(paths, name).install_log_path();
-    let shown_log = paths
-        .contract(&log)
-        .unwrap_or_else(|_| log.display().to_string());
     let outcome = match outcome {
         Ok(outcome) => outcome,
         Err(err) => {
@@ -702,11 +698,7 @@ pub(crate) fn report_installer<I: Input, W: Write>(
             Ran::Finished
         }
         Outcome::Finished { exit_code } => {
-            match exit_code {
-                Some(code) => prompt.say(format!("The installer exited with code {code}."))?,
-                None => prompt.say("The installer's exit code could not be collected.")?,
-            }
-            prompt.say(format!("Its output is in {shown_log}."))?;
+            report_failed_exit(paths, name, prompt, exit_code)?;
             report_recovery(paths, name, prompt)?;
             let code = exit_code
                 .and_then(|code| u8::try_from(code).ok())
@@ -734,6 +726,26 @@ pub(crate) fn report_installer<I: Input, W: Write>(
             Ran::Ended(ExitCode::FAILURE)
         }
     })
+}
+
+/// Says that an installer finished with a failing or unknown exit code, and
+/// where its output went.
+pub(crate) fn report_failed_exit<I: Input, W: Write>(
+    paths: &Paths,
+    name: &str,
+    prompt: &mut Prompt<I, W>,
+    exit_code: Option<i32>,
+) -> anyhow::Result<()> {
+    let log = Runtime::new(paths, name).install_log_path();
+    let shown_log = paths
+        .contract(&log)
+        .unwrap_or_else(|_| log.display().to_string());
+    match exit_code {
+        Some(code) => prompt.say(format!("The installer exited with code {code}."))?,
+        None => prompt.say("The installer's exit code could not be collected.")?,
+    }
+    prompt.say(format!("Its output is in {shown_log}."))?;
+    Ok(())
 }
 
 /// The commands for what comes next, printed rather than run.

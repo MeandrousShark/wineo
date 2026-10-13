@@ -2434,6 +2434,52 @@ fn an_installers_exit_code_is_passed_on_and_the_environment_kept() {
 }
 
 #[test]
+fn new_lists_what_a_failed_installer_left() {
+    let f = Fixture::new();
+    let installer = f.root.path().join("fail-game.exe");
+    fs::write(&installer, b"").unwrap();
+    let output = f
+        .new_with_installer("game", &[], installer.to_str().unwrap())
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(3), "{}", stderr(&output));
+    assert!(
+        stderr(&output).contains("The installer exited with code 3."),
+        "{}",
+        stderr(&output)
+    );
+    assert!(stdout(&output).contains("Game"), "{}", stdout(&output));
+    assert!(
+        stderr(&output).contains("Add one with: wineo set game targets.<target>.exe="),
+        "{}",
+        stderr(&output)
+    );
+}
+
+#[test]
+fn a_canceled_installer_skips_the_program_list() {
+    let f = Fixture::new();
+    let child = f
+        .new_with_installer("game", &[], "setup")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    wait_for("the installer to start", || f.fake_program_running("game"));
+    signal(&child, "-INT");
+    let output = child.wait_with_output().unwrap();
+    assert_eq!(output.status.code(), Some(130), "{}", stderr(&output));
+    let text = stderr(&output);
+    assert!(
+        text.contains("Kept game. Continue with `wineo setup game`."),
+        "{text}"
+    );
+    assert!(!text.contains("Add one with"), "{text}");
+    assert!(!text.contains("Nothing is installed"), "{text}");
+    assert!(!stdout(&output).contains("Add a target with"));
+}
+
+#[test]
 fn new_reports_recovery_when_the_installer_disappears_after_registration() {
     let f = Fixture::new();
     let installer = f.root.path().join("installer.exe");

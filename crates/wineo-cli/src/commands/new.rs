@@ -6,7 +6,7 @@ use anyhow::bail;
 use wineo_core::cancel::Token;
 use wineo_core::config::{Arch, GlobalConfig};
 use wineo_core::create::{
-    self, CreateEvent, CreateRequest, ExeCheck, Hooks, Step, Stepped, TargetOutcome,
+    self, AfterInstall, CreateEvent, CreateRequest, ExeCheck, Hooks, Step, Stepped, TargetOutcome,
 };
 use wineo_core::environment::Environment;
 use wineo_core::error::Error;
@@ -152,20 +152,23 @@ pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
             }
             return Ok(ExitCode::SUCCESS);
         }
-        Stepped::NotPrepared(err)
-        | Stepped::Ran {
-            outcome: Err(err), ..
-        } => {
+        Stepped::NotPrepared(err) => {
             note(&format!("error: {:#}", anyhow::Error::from(err)));
             note(&setup::recovery_message(paths, name));
             return Ok(ExitCode::FAILURE);
         }
-        Stepped::Ran {
-            outcome: Ok(outcome),
-            resolved,
-        } => (outcome, resolved),
+        Stepped::Ran { outcome, resolved } => (outcome, resolved),
     };
 
+    let next = create::after_install(&outcome, resolved);
+    let outcome = match outcome {
+        Ok(outcome) => outcome,
+        Err(err) => {
+            note(&format!("error: {:#}", anyhow::Error::from(err)));
+            note(&setup::recovery_message(paths, name));
+            return Ok(ExitCode::FAILURE);
+        }
+    };
     match outcome {
         Outcome::Finished { exit_code } => {
             let code = exit_code.unwrap_or(1);
@@ -174,7 +177,7 @@ pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
                 Some(code) => eprintln!("The installer exited with code {code}."),
                 None => eprintln!("The installer's exit code could not be collected"),
             }
-            if !resolved {
+            if next != AfterInstall::Programs {
                 note("The installer finished, but cleanup is unresolved.");
                 note(&setup::recovery_message(paths, name));
                 return Ok(ExitCode::FAILURE);

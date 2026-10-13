@@ -12,7 +12,7 @@ use iced::widget::{
 use iced::{Center, Element, Fill, Shrink, Task};
 use wineo_core::cancel::Token;
 use wineo_core::config::{Arch, GamescopeSetting, GlobalConfig};
-use wineo_core::create::{self, CreateEvent, CreateRequest, Stepped, TargetOutcome};
+use wineo_core::create::{self, AfterInstall, CreateEvent, CreateRequest, Stepped, TargetOutcome};
 use wineo_core::desktop;
 use wineo_core::download::{Client, Provider};
 use wineo_core::environment::{Environment, NewEnvironment};
@@ -129,6 +129,8 @@ pub(crate) struct Report {
     registered: bool,
     playable: bool,
     cleanup_resolved: bool,
+    /// Whether to ask which installed program to use.
+    offer_programs: bool,
     notes: Vec<String>,
     programs: Vec<(String, String)>,
     art_error: Option<String>,
@@ -140,6 +142,7 @@ impl Report {
             registered: false,
             playable: false,
             cleanup_resolved: true,
+            offer_programs: false,
             notes: Vec::new(),
             programs: Vec::new(),
             art_error: None,
@@ -937,9 +940,7 @@ impl Page {
             Event::Done(generation, report)
                 if generation == self.generation && self.stage == Stage::Working =>
             {
-                let can_select = report.registered
-                    && report.cleanup_resolved
-                    && self.draft.source == Source::Installer;
+                let can_select = report.registered && report.offer_programs;
                 self.report = Some(report);
                 self.token = None;
                 if can_select {
@@ -2184,6 +2185,7 @@ fn perform(
         Stepped::Ran { outcome, resolved } => (outcome, resolved),
     };
     pump_log(&log, &mut log_offset, &mut log_output);
+    let next = create::after_install(&outcome, resolved);
     match outcome {
         Ok(Outcome::Finished { exit_code: Some(0) }) => {
             report.notes.push("Installed successfully".to_owned());
@@ -2197,19 +2199,19 @@ fn perform(
             .notes
             .push("Installer finished, but its result is unknown".to_owned()),
         // After a cancel the code only reflects how it was stopped.
-        Ok(Outcome::Canceled { .. }) => report.notes.push("Installer canceled".to_owned()),
-        Ok(Outcome::Unresolved { error, .. }) => {
-            report.cleanup_resolved = false;
-            report.notes.push(format!(
-                "Programs the installer started may still be running: {error}"
-            ));
-        }
+        Ok(Outcome::Canceled { .. }) => report
+            .notes
+            .push("Installer canceled. Add a target in Settings.".to_owned()),
+        Ok(Outcome::Unresolved { error, .. }) => report.notes.push(format!(
+            "Programs the installer started may still be running: {error}"
+        )),
         Err(error) => report.notes.push(format!("Installer failed: {error}")),
     }
-    if !resolved {
+    if next == AfterInstall::Unresolved {
         report.cleanup_resolved = false;
     }
-    if report.cleanup_resolved {
+    if next == AfterInstall::Programs {
+        report.offer_programs = true;
         match programs::scan(&runner.wine_prefix(&created.prefix)) {
             Ok(listing) => {
                 report.programs = listing
@@ -2712,6 +2714,93 @@ mod tests {
                 .config
                 .targets
                 .is_empty()
+        );
+    }
+
+    /// Runs the installer step with a wine whose installer run does `installer`.
+    fn install_with(installer: &str, cancel_when_running: bool) -> Report {
+        let root = tempfile::tempdir().unwrap();
+        let paths =
+            Paths::from_lookup(|key| (key == "HOME").then(|| OsString::from(root.path()))).unwrap();
+        fake_runner(&paths);
+        let wine = GlobalConfig::default()
+            .runner_root(&paths)
+            .unwrap()
+            .join("fake/bin/wine");
+        fs::write(
+            &wine,
+            format!(
+                "#!/bin/sh\ncase \"$*\" in\n\
+                 'wineboot --init') mkdir -p \"$WINEPREFIX/drive_c\"; printf 'WINE REGISTRY Version 2\\n' > \"$WINEPREFIX/system.reg\" ;;\n\
+                 'wineboot --end-session') touch \"$WINEPREFIX/stopped\" ;;\n\
+                 *setup.exe*) {installer} ;;\n\
+                 esac\n"
+            ),
+        )
+        .unwrap();
+        let installer = root.path().join("setup.exe");
+        fs::write(&installer, "fixture").unwrap();
+        let draft = Draft {
+            title: "installed-game".to_owned(),
+            source: Source::Installer,
+            path: installer.display().to_string(),
+            runner: "fake".to_owned(),
+            ..Draft::default()
+        };
+        let review = prepare(&paths, &draft).unwrap();
+        let token = Token::new();
+        let cancel = token.clone();
+        perform(
+            &paths,
+            draft,
+            review,
+            artwork::Draft::new(),
+            token,
+            |line| {
+                if cancel_when_running && line == "Running installer..." {
+                    cancel.cancel();
+                }
+            },
+            |_| {},
+        )
+    }
+
+    #[test]
+    fn a_failed_installer_still_offers_what_it_installed() {
+        let report = install_with(
+            "mkdir -p \"$WINEPREFIX/drive_c/Games/Game\"; : > \"$WINEPREFIX/drive_c/Games/Game/Game.exe\"; exit 3",
+            false,
+        );
+        assert!(report.offer_programs, "{:?}", report.notes);
+        assert!(
+            report
+                .notes
+                .contains(&"Installer reported an error (code 3)".to_owned()),
+            "{:?}",
+            report.notes
+        );
+        assert!(
+            report.programs.iter().any(|(name, _)| name == "Game"),
+            "{:?}",
+            report.programs
+        );
+    }
+
+    #[test]
+    fn a_canceled_installer_skips_the_programs_and_points_to_settings() {
+        let report = install_with(
+            "while [ ! -e \"$WINEPREFIX/stopped\" ]; do sleep 0.02; done",
+            true,
+        );
+        assert!(report.registered, "{:?}", report.notes);
+        assert!(!report.offer_programs, "{:?}", report.notes);
+        assert!(report.programs.is_empty());
+        assert!(
+            report
+                .notes
+                .contains(&"Installer canceled. Add a target in Settings.".to_owned()),
+            "{:?}",
+            report.notes
         );
     }
 

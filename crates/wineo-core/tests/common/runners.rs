@@ -102,6 +102,12 @@ break-wineserver)
     : >"$WINEPREFIX/drive_c/Games/Game/Game.exe"
     exit 0
     ;;
+*fail-game.exe)
+    # Installs the game, then fails anyway.
+    mkdir -p "$WINEPREFIX/drive_c/Games/Game"
+    : >"$WINEPREFIX/drive_c/Games/Game/Game.exe"
+    exit 3
+    ;;
 esac
 sleep 60 &
 if [ "$1" = stubborn ]; then

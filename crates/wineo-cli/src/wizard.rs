@@ -9,11 +9,11 @@ use std::process::ExitCode;
 
 use wineo_core::cancel::Token;
 use wineo_core::config::{Arch, GlobalConfig};
-use wineo_core::create::{self, CreateEvent, CreateRequest, Stepped};
+use wineo_core::create::{self, AfterInstall, CreateEvent, CreateRequest, Stepped};
 use wineo_core::environment::Environment;
 use wineo_core::error::Error;
 use wineo_core::install::{self, Wanted};
-use wineo_core::installer::Output;
+use wineo_core::installer::{Outcome, Output};
 use wineo_core::launch::Launch;
 use wineo_core::paths::Paths;
 use wineo_core::prefix;
@@ -322,7 +322,6 @@ pub fn run<I: Input, W: Write>(
         .map(|(_, template)| template.for_runner(&runner).0);
     create(
         paths,
-        global,
         prompt,
         guided,
         access,
@@ -1163,7 +1162,6 @@ fn create_native<I: Input, W: Write>(
 
 fn create<I: Input, W: Write>(
     paths: &Paths,
-    global: &GlobalConfig,
     prompt: &mut Prompt<I, W>,
     guided: &mut Guided,
     access: &Access,
@@ -1193,7 +1191,6 @@ fn create<I: Input, W: Write>(
     };
     let mut hooks = WizardHooks {
         paths,
-        global,
         prompt,
         guided,
         access,
@@ -1240,12 +1237,15 @@ fn create<I: Input, W: Write>(
             return Ok(ExitCode::FAILURE);
         }
     };
+    // What creation read is what the rest of setup goes on with.
     let create::Installed {
+        global,
         environment,
         runner,
         step,
         ..
     } = created;
+    let global = &global;
 
     let place = Place {
         paths,
@@ -1264,10 +1264,20 @@ fn create<I: Input, W: Write>(
             setup::report_recovery(paths, &name, prompt)?;
             return Ok(ExitCode::FAILURE);
         }
-        (How::Installer(_), Stepped::Ran { outcome, .. }) => {
+        (How::Installer(_), Stepped::Ran { outcome, resolved }) => {
             // Those were the installer's to act on, not a request to leave setup.
             prompt.input().forget_interrupts();
-            let ran = setup::report_installer(paths, &name, prompt, outcome)?;
+            let ran = match (&outcome, create::after_install(&outcome, resolved)) {
+                // Unlike `setup`'s own install, a failing exit still goes on to
+                // what got installed, since the environment is new.
+                (Ok(Outcome::Finished { exit_code }), AfterInstall::Programs)
+                    if *exit_code != Some(0) =>
+                {
+                    setup::report_failed_exit(paths, &name, prompt, *exit_code)?;
+                    Ran::Finished
+                }
+                _ => setup::report_installer(paths, &name, prompt, outcome)?,
+            };
             drop(install_cancellation);
             match ran {
                 Ran::Finished => picker::pick(prompt, &place, &mut batch).map(|_| ())?,
@@ -1299,7 +1309,6 @@ fn create<I: Input, W: Write>(
 /// The guided side of creating a Wine environment, and of its installer.
 struct WizardHooks<'a, I: Input, W: Write> {
     paths: &'a Paths,
-    global: &'a GlobalConfig,
     prompt: &'a mut Prompt<I, W>,
     guided: &'a mut Guided,
     access: &'a Access<'a>,
@@ -1350,12 +1359,12 @@ impl<I: Input, W: Write> create::Hooks for WizardHooks<'_, I, W> {
         }
     }
 
-    fn created(&mut self, _created: &create::Created) -> anyhow::Result<()> {
+    fn created(&mut self, created: &create::Created) -> anyhow::Result<()> {
         // Before the installer, so every question is answered before the wait.
         if let Some((key, term)) = self.art {
             fetch_art(
                 self.paths,
-                self.global,
+                &created.global,
                 self.prompt,
                 self.access,
                 self.name,
@@ -1366,8 +1375,7 @@ impl<I: Input, W: Write> create::Hooks for WizardHooks<'_, I, W> {
         Ok(())
     }
 
-    fn ready(&mut self, launch: &Launch) -> anyhow::Result<()> {
-        setup::ready_installer(self.paths, self.global, self.name, launch)?;
+    fn ready(&mut self, _launch: &Launch) -> anyhow::Result<()> {
         self.prompt.say(setup::RUNNING)?;
         self.cancellation = Some(Cancellation::with_token(&self.install_token)?);
         Ok(())
@@ -1702,6 +1710,23 @@ mod tests {
         );
         assert_eq!(saved_game(&world), Some(7));
         assert!(world.paths.art_dir("hades").join("icon.png").exists());
+    }
+
+    #[test]
+    fn creation_goes_on_with_the_config_it_read_rather_than_the_one_at_start() {
+        let world = world();
+        // Changed on disk after the wizard loaded its config, to fetch only
+        // grids, which the fake has none of.
+        let config = world.paths.global_config();
+        fs::create_dir_all(config.parent().unwrap()).unwrap();
+        fs::write(&config, "[art]\nfetch = [\"grid\"]\n").unwrap();
+        let (result, transcript, _) = wizard(&world, found, &answers(&["1", "Hades", "", "1"]));
+        assert!(result.is_ok(), "{result:?}\n{transcript}");
+        assert!(transcript.contains("Created hades"), "{transcript}");
+        assert!(
+            !world.paths.art_dir("hades").join("icon.png").exists(),
+            "{transcript}"
+        );
     }
 
     #[test]
