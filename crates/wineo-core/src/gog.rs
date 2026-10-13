@@ -3,6 +3,7 @@
 //! games Heroic installed, and importing GOG's playtime and artwork for them.
 
 pub mod account;
+pub mod covers;
 pub mod extras;
 pub mod folder;
 pub mod install_dir;

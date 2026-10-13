@@ -314,7 +314,7 @@ fn artwork(
 
 /// The link for a kind: the cover for the poster, the wider Galaxy
 /// background for the hero, and the square icon for the icon.
-fn link(links: &GameArt, kind: Kind) -> Option<&str> {
+pub(super) fn link(links: &GameArt, kind: Kind) -> Option<&str> {
     match kind {
         Kind::Grid => links.box_art.as_deref(),
         Kind::Hero => links
@@ -324,6 +324,24 @@ fn link(links: &GameArt, kind: Kind) -> Option<&str> {
         Kind::Logo => links.logo.as_deref(),
         Kind::Icon => links.icon_square.as_deref().or(links.icon.as_deref()),
     }
+}
+
+/// Downloads one image and checks it is a format `kind` accepts. Nothing is
+/// written, and a cancel that came during the download fails it.
+pub(super) fn fetch_image(
+    transport: &dyn Transport,
+    url: &str,
+    kind: Kind,
+    token: &Token,
+) -> Result<(Vec<u8>, art::Format)> {
+    let bytes = download_image(transport, url, |_, _| {}, token)?;
+    if token.is_canceled() {
+        anyhow::bail!("canceled");
+    }
+    let Some(format) = art::detect(&bytes).filter(|format| kind.accepts(*format)) else {
+        anyhow::bail!("it isn't a {} image", art::accepted(kind));
+    };
+    Ok((bytes, format))
 }
 
 /// Downloads and publishes one image without replacing anything. False when
@@ -336,14 +354,7 @@ fn store(
     identity: EnvironmentIdentity,
     token: &Token,
 ) -> Result<bool> {
-    let bytes = download_image(request.transport, url, |_, _| {}, token)?;
-    // A cancel that came during the download writes nothing.
-    if token.is_canceled() {
-        anyhow::bail!("canceled");
-    }
-    let Some(format) = art::detect(&bytes).filter(|format| kind.accepts(*format)) else {
-        anyhow::bail!("it isn't a {} image", art::accepted(kind));
-    };
+    let (bytes, format) = fetch_image(request.transport, url, kind, token)?;
     let stored = art::publish_source(
         paths,
         request.name,
