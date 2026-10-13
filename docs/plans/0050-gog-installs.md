@@ -239,8 +239,8 @@ Step 2b's choices (2026-10-13):
   packages are fetched again, and no product is ever dropped on resume.
 - **A pending install keeps its name**: installing the same name into
   another folder is refused until the first one is finished.
-- **DLC follow the language the game actually installed in**, then
-  English.
+- **DLC follow the base game's resolved installer language** (the one it
+  installs in, not the one requested), then English.
 - **Known gap for step 6:** an install interrupted before its config was
   written can only be finished, not abandoned; `import gog` needs a way to
   drop it.
