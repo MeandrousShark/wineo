@@ -159,8 +159,8 @@ answers carry over from 0049's questions:
 - `wineo import gog --game ID` now installs a game that isn't installed;
   0049's migration still applies when Heroic has it.
 - Install options: `--platform linux|windows` (default: Linux when a native
-  installer exists), `--language CODE` (default from the global
-  `gog.language`, English), `--runner` and `--arch` (defaults from the
+  installer exists), `--language TAG` (a locale tag, default from the global
+  `gog.language`, `en-US`), `--runner` and `--arch` (defaults from the
   global config, like `new`), `--dir`. When `--game` would migrate, these
   are refused, since the game is already installed: `Heroic has rimworld
   installed, so --game migrates it. Leave out --platform and --dir.`
@@ -176,6 +176,23 @@ answers carry over from 0049's questions:
 - Settings gains **Games folder** (`defaults.games_root`) and **GOG
   language** (`gog.language`).
 - **Update** now works on installer-tracked Windows games.
+
+## Decisions during implementation
+
+Settled by the maintainer on 2026-10-12, before step 1:
+
+- **`gog.language` and `--language` take locale tags** (`en-US`, `fr-FR`,
+  `pt-BR`, `zh-Hans`), not GOG's codes, so they read like other software's
+  settings. Default `en-US`. wineo maps a tag to GOG's installer code in one
+  place: a small table where GOG differs from the language subtag (`zh` to
+  `cn`, `ja` to `jp`, `cs` to `cz`, `pt-BR` to `br`, and so on), else the
+  subtag itself (`de-AT` to `de`). State files keep recording GOG's code.
+
+Carried from 0049's acceptance (2026-10-12):
+
+- Sizes GOG lists are rounded to whole MiB, so they're estimates; a file's
+  exact size comes from its checksum or the download (0.30.0).
+- DLC are labeled `NAME (ID)`, and a review's confirm prints one keys line.
 
 ## Implementation sequence
 
