@@ -25,7 +25,7 @@ pub use account::{
 };
 pub use process::{
     Baseline, Reaper, baseline, eligible_reapers, matching_reapers, open_reaper, pidfd_exited,
-    reaper_alive, reapers_by_app, stop_tree,
+    reaper_alive, reapers_by_app, stop_tree, wait_pidfd_exit,
 };
 use vdf::{Object, Value};
 

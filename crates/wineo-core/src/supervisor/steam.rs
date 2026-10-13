@@ -147,17 +147,32 @@ impl Supervisor {
     }
 
     fn steam_stop(&self) -> Option<bool> {
+        self.stop_request(None)
+    }
+
+    /// Whether a stop was asked for, and whether it is a force. `received` is
+    /// an event the caller already took off the channel while waiting, so it
+    /// isn't lost.
+    fn stop_request(&self, received: Option<Event>) -> Option<bool> {
         if self.token.as_ref().is_some_and(Token::is_forced) {
             return Some(true);
         }
         if self.token.as_ref().is_some_and(Token::is_canceled) {
             return Some(false);
         }
-        match self.events.try_recv() {
-            Ok(Event::Force) => Some(true),
-            Ok(Event::Stop) => Some(false),
-            _ => None,
+        // A wakeup that isn't a stop must not hide one queued behind it, so
+        // the whole queue is read. A second stop is the escalation to a
+        // force, which would otherwise be swallowed here.
+        let mut stop = None;
+        for event in received.into_iter().chain(self.events.try_iter()) {
+            match event {
+                Event::Force => return Some(true),
+                Event::Stop if stop.is_some() => return Some(true),
+                Event::Stop => stop = Some(false),
+                _ => {}
+            }
         }
+        stop
     }
 
     fn watch_steam(
@@ -195,16 +210,19 @@ impl Supervisor {
         );
         while state.phase.is_some() {
             if let Some(force) = self.steam_stop() {
-                notify(if force {
-                    Notice::Killing
-                } else {
-                    Notice::Stopping
-                });
+                notify(stop_notice(force));
                 return Ok(RunStatus::Stopped);
             }
             let now = Instant::now();
             if now < next_scan {
-                thread::sleep(Duration::from_millis(20));
+                // Stop requests and token changes arrive as events, so there
+                // is nothing to poll for between scans.
+                if let Ok(event) = self.events.recv_timeout(next_scan - now)
+                    && let Some(force) = self.stop_request(Some(event))
+                {
+                    notify(stop_notice(force));
+                    return Ok(RunStatus::Stopped);
+                }
                 continue;
             }
             next_scan = now + scan_interval;
@@ -238,13 +256,20 @@ impl Supervisor {
         else {
             return Ok(RunStatus::Exited);
         };
+        // The thread stays blocked in poll if this returns while the reaper is
+        // still alive, which costs nothing until it exits or the process ends.
+        let watcher = fd
+            .try_clone()
+            .context(|| "failed to watch Steam process".to_owned())?;
+        let exited = self.sender.clone();
+        thread::spawn(move || {
+            let _ = steam::wait_pidfd_exit(&watcher);
+            let _ = exited.send(Event::ReaperExited);
+        });
+        let mut received = None;
         loop {
-            if let Some(force) = self.steam_stop() {
-                notify(if force {
-                    Notice::Killing
-                } else {
-                    Notice::Stopping
-                });
+            if let Some(force) = self.stop_request(received.take()) {
+                notify(stop_notice(force));
                 let mut announced = force;
                 steam::stop_tree(&reaper, timeout, force, || {
                     let forced = self.token.as_ref().is_some_and(Token::is_forced)
@@ -262,8 +287,22 @@ impl Supervisor {
                 return Ok(RunStatus::Exited);
             }
             heartbeat_state(runtime, state, &mut heartbeat, notify);
-            thread::sleep(Duration::from_millis(20));
+            let due = heartbeat + HEARTBEAT_INTERVAL;
+            // An exit event only prompts the pidfd check above, so a stop that
+            // raced it is still seen first.
+            received = self
+                .events
+                .recv_timeout(due.saturating_duration_since(Instant::now()))
+                .ok();
         }
+    }
+}
+
+fn stop_notice(force: bool) -> Notice {
+    if force {
+        Notice::Killing
+    } else {
+        Notice::Stopping
     }
 }
 
@@ -368,6 +407,42 @@ fn test_timeout(variable: &str, fallback: Duration) -> Duration {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_stop_queued_behind_a_wakeup_is_not_missed() {
+        let token = Token::new();
+        let supervisor = Supervisor::with_token(&token);
+        supervisor.sender.send(Event::ReaperExited).unwrap();
+        supervisor.sender.send(Event::Pulse).unwrap();
+        supervisor.sender.send(Event::Stop).unwrap();
+        let received = supervisor.events.recv().unwrap();
+        assert!(matches!(received, Event::ReaperExited));
+        assert_eq!(supervisor.stop_request(Some(received)), Some(false));
+        assert_eq!(supervisor.stop_request(None), None);
+    }
+
+    #[test]
+    fn a_second_queued_stop_is_a_force() {
+        let token = Token::new();
+        let supervisor = Supervisor::with_token(&token);
+        supervisor.sender.send(Event::Stop).unwrap();
+        supervisor.sender.send(Event::Pulse).unwrap();
+        supervisor.sender.send(Event::Stop).unwrap();
+        assert_eq!(supervisor.stop_request(None), Some(true));
+        supervisor.sender.send(Event::Pulse).unwrap();
+        supervisor.sender.send(Event::Stop).unwrap();
+        assert_eq!(supervisor.stop_request(Some(Event::Stop)), Some(true));
+    }
+
+    #[test]
+    fn a_queued_force_outranks_an_earlier_stop() {
+        let token = Token::new();
+        let supervisor = Supervisor::with_token(&token);
+        supervisor.sender.send(Event::Stop).unwrap();
+        supervisor.sender.send(Event::Pulse).unwrap();
+        supervisor.sender.send(Event::Force).unwrap();
+        assert_eq!(supervisor.stop_request(Some(Event::Pulse)), Some(true));
+    }
 
     fn progress(flags: u32, staged: u64) -> steam::Progress {
         steam::Progress {

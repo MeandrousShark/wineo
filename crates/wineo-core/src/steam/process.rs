@@ -277,6 +277,19 @@ pub fn pidfd_exited(pidfd: &OwnedFd) -> io::Result<bool> {
     }
 }
 
+/// Blocks until the process behind the pidfd exits.
+pub fn wait_pidfd_exit(pidfd: &OwnedFd) -> io::Result<()> {
+    let mut descriptors = [PollFd::new(pidfd, PollFlags::IN)];
+    loop {
+        match poll(&mut descriptors, None) {
+            Ok(_) if !descriptors[0].revents().is_empty() => return Ok(()),
+            Ok(_) => {}
+            Err(rustix::io::Errno::INTR) => {}
+            Err(error) => return Err(error.into()),
+        }
+    }
+}
+
 /// Stop only processes descended from the verified reaper. New members get
 /// SIGTERM during the grace period, and every member ever seen keeps its
 /// pidfd so reparented survivors still get SIGKILL. `escalate` lets a second

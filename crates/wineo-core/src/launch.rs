@@ -150,10 +150,13 @@ impl Host {
         group: Option<u32>,
         boot_id: Option<&str>,
         leader_start: Option<u64>,
+        unbounded: bool,
     ) -> Result<()> {
         match self {
             Host::Wine { runner, prefix } => runner.wait_idle(prefix),
-            Host::Native { .. } => runner::wait_for_live_group(group, boot_id, leader_start),
+            Host::Native { .. } => {
+                runner::wait_for_live_group(group, boot_id, leader_start, unbounded)
+            }
             Host::Proxied { .. } => Err(Error::Unsettled(
                 "Steam runs require a reaper watch".to_owned(),
             )),
@@ -165,12 +168,15 @@ impl Host {
         group: Option<u32>,
         boot_id: Option<&str>,
         leader_start: Option<u64>,
+        unbounded: bool,
     ) -> Result<()> {
         match self {
             Host::Wine { runner, prefix } => {
-                runner.wait_settled_live(prefix, group, boot_id, leader_start)
+                runner.wait_settled_live(prefix, group, boot_id, leader_start, unbounded)
             }
-            Host::Native { .. } => runner::wait_for_live_group(group, boot_id, leader_start),
+            Host::Native { .. } => {
+                runner::wait_for_live_group(group, boot_id, leader_start, unbounded)
+            }
             Host::Proxied { .. } => Err(Error::Unsettled(
                 "Steam runs require a reaper watch".to_owned(),
             )),

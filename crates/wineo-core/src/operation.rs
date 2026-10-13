@@ -26,6 +26,9 @@ use crate::paths::{self, Paths, fnv1a, label};
 /// this long before deciding another command really holds it.
 const LOCK_ATTEMPTS: u32 = 20;
 const LOCK_RETRY: Duration = Duration::from_millis(5);
+/// Where the after hook's retries settle, since another launch of the same
+/// environment can hold its lock for a whole game session.
+const DRAIN_RETRY_MAX: Duration = Duration::from_millis(250);
 /// A config write only holds its lock while it reads, checks, and replaces one
 /// small file, so another one is waited for, up to about five seconds.
 const CONFIG_ATTEMPTS: u32 = 1000;
@@ -446,22 +449,30 @@ impl Locks {
     pub(crate) fn after_hook(&self, guard: Option<Guard>, name: &str) -> Result<Guard> {
         let operation = Operation::Hook(Phase::After);
         let prefixes = &[];
+        let mut retry = LOCK_RETRY;
         let _admission = loop {
             match self.admissions(name, true, operation, true) {
                 Err(Error::Busy {
                     holder: Some(Operation::Launch),
                     ..
-                }) => thread::sleep(LOCK_RETRY),
+                }) => {
+                    thread::sleep(retry);
+                    retry = drain_backoff(retry);
+                }
                 result => break result?,
             }
         };
         drop(guard);
+        let mut retry = LOCK_RETRY;
         loop {
             match self.acquire_inner(operation, name, prefixes) {
                 Err(Error::Busy {
                     holder: Some(Operation::Launch),
                     ..
-                }) => thread::sleep(LOCK_RETRY),
+                }) => {
+                    thread::sleep(retry);
+                    retry = drain_backoff(retry);
+                }
                 result => return result,
             }
         }
@@ -727,6 +738,11 @@ fn keyed_path(dir: &Path, kind: &str, path: &Path) -> PathBuf {
     dir.join(format!("{kind}-{label}-{hash:016x}.lock"))
 }
 
+/// The next after hook wait, doubling up to `DRAIN_RETRY_MAX`.
+fn drain_backoff(retry: Duration) -> Duration {
+    (retry * 2).min(DRAIN_RETRY_MAX)
+}
+
 fn open(path: &Path) -> Result<File> {
     OpenOptions::new()
         .create(true)
@@ -788,6 +804,17 @@ mod tests {
     use std::os::unix::fs::symlink;
 
     use super::*;
+
+    #[test]
+    fn the_after_hook_backs_off_to_the_cap() {
+        let mut retry = LOCK_RETRY;
+        let mut seen = Vec::new();
+        for _ in 0..9 {
+            seen.push(retry.as_millis());
+            retry = drain_backoff(retry);
+        }
+        assert_eq!(seen, [5, 10, 20, 40, 80, 160, 250, 250, 250]);
+    }
 
     fn locks(root: &Path) -> Locks {
         Locks::at(root.join("locks"))

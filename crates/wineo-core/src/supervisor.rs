@@ -60,6 +60,8 @@ enum Event {
     Heartbeat,
     /// The token changed, or something else worth rechecking happened.
     Pulse,
+    /// The Steam process being watched exited.
+    ReaperExited,
 }
 
 /// How long the run waits between events before it counts as a heartbeat.
@@ -370,7 +372,7 @@ impl Supervisor {
                 }
             };
             match event {
-                Event::Pulse => continue,
+                Event::Pulse | Event::ReaperExited => continue,
                 Event::Heartbeat => watched(Watched::Notice(Notice::Heartbeat)),
                 Event::Exited(status) => {
                     observed_exit = true;
@@ -381,12 +383,18 @@ impl Supervisor {
                     // this lasts until nothing is left running in the prefix.
                     let sender = self.sender.clone();
                     let (host, boot_id) = (host.clone(), boot_id.clone());
+                    let unbounded = give_up.is_none();
                     thread::spawn(move || {
                         let result = match settle {
-                            Settle::Idle => host.wait_idle(group, boot_id.as_deref(), leader_start),
-                            Settle::Confirmed => {
-                                host.wait_settled_live(group, boot_id.as_deref(), leader_start)
+                            Settle::Idle => {
+                                host.wait_idle(group, boot_id.as_deref(), leader_start, unbounded)
                             }
+                            Settle::Confirmed => host.wait_settled_live(
+                                group,
+                                boot_id.as_deref(),
+                                leader_start,
+                                unbounded,
+                            ),
                         };
                         let _ = sender.send(Event::Idle(result));
                     });
