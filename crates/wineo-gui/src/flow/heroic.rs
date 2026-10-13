@@ -4878,7 +4878,7 @@ mod tests {
     }
 
     #[test]
-    fn inspecting_a_game_shows_the_spinner_by_the_import_button_until_its_reply() {
+    fn inspecting_a_game_waits_by_the_import_button_until_its_reply() {
         let root = tempdir().unwrap();
         let mut page = grid_page(root.path());
         let listing = page.listing.clone().unwrap();

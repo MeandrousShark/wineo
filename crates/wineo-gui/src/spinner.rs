@@ -4,7 +4,7 @@ use std::time::Instant;
 
 use iced::advanced::svg::{self, Svg};
 use iced::advanced::{Clipboard, Layout, Shell, Widget, layout, mouse, renderer, widget::tree};
-use iced::{Color, Element, Event, Length, Radians, Rectangle, Size, window};
+use iced::{Color, Element, Event, Length, Point, Radians, Rectangle, Size, window};
 
 use crate::theme::Palette;
 
@@ -62,16 +62,20 @@ where
         &mut self,
         _tree: &mut tree::Tree,
         event: &Event,
-        _layout: Layout<'_>,
+        layout: Layout<'_>,
         _cursor: mouse::Cursor,
         _renderer: &Renderer,
         _clipboard: &mut dyn Clipboard,
         shell: &mut Shell<'_, Message>,
-        _viewport: &Rectangle,
+        viewport: &Rectangle,
     ) {
         if let Event::Window(window::Event::RedrawRequested(now)) = event {
             self.angle = angle(start(), *now);
-            shell.request_redraw();
+            // Scrollables forward redraws to children outside their viewport.
+            // Scrolling one back in redraws the window, which restarts it.
+            if layout.bounds().intersects(viewport) {
+                shell.request_redraw();
+            }
         }
     }
 
@@ -86,9 +90,18 @@ where
         _viewport: &Rectangle,
     ) {
         let bounds = layout.bounds();
+        // Fit the square image like ContentFit::Contain would.
+        let side = bounds.width.min(bounds.height);
+        let square = Rectangle::new(
+            Point::new(
+                bounds.center_x() - side / 2.0,
+                bounds.center_y() - side / 2.0,
+            ),
+            Size::new(side, side),
+        );
         renderer.draw_svg(
             Svg::new(self.handle.clone()).rotation(Radians(self.angle)),
-            bounds,
+            square,
             bounds,
         );
     }
@@ -129,8 +142,7 @@ mod tests {
         assert!((wrapped - TAU / 4.0).abs() < 1e-3);
     }
 
-    #[test]
-    fn redraws_turn_the_spinner_and_ask_for_the_next_frame() {
+    fn redraw(viewport: Rectangle) -> (Spinner, window::RedrawRequest, Instant) {
         let mut spinner = Spinner {
             handle: svg::Handle::from_memory(source(Palette::DARK).into_bytes()),
             size: 16.0,
@@ -150,11 +162,25 @@ mod tests {
             &(),
             &mut iced::advanced::clipboard::Null,
             &mut shell,
-            &Rectangle::with_size(Size::new(16.0, 16.0)),
+            &viewport,
         );
-        assert_eq!(shell.redraw_request(), window::RedrawRequest::NextFrame);
         assert!(shell.is_empty());
+        let request = shell.redraw_request();
+        (spinner, request, now)
+    }
+
+    #[test]
+    fn redraws_turn_the_spinner_and_ask_for_the_next_frame() {
+        let (spinner, request, now) = redraw(Rectangle::with_size(Size::new(16.0, 16.0)));
+        assert_eq!(request, window::RedrawRequest::NextFrame);
         assert_eq!(spinner.angle, angle(start(), now));
+    }
+
+    #[test]
+    fn a_spinner_outside_the_viewport_stops_asking_for_frames() {
+        let below = Rectangle::new(Point::new(0.0, 100.0), Size::new(16.0, 16.0));
+        let (_, request, _) = redraw(below);
+        assert_eq!(request, window::RedrawRequest::Wait);
     }
 
     #[test]

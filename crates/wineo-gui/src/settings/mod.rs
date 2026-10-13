@@ -4739,7 +4739,7 @@ mod tests {
     }
 
     #[test]
-    fn key_work_spins_the_spinner_only_while_it_runs() {
+    fn key_work_is_busy_only_while_it_runs() {
         let (_root, paths) = setup();
         let mut app = open_global_app(&paths);
         assert!(!app.spinning());
