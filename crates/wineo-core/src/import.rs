@@ -1598,7 +1598,7 @@ pub(crate) fn write_config_once(path: &Path, contents: &str) -> Result<()> {
         Ok(()) => {}
         Err(err) => {
             if err.kind() == io::ErrorKind::AlreadyExists {
-                bail!("environment config already exists: {}", path.display());
+                bail!("config already exists: {}", path.display());
             }
             return Err(err).with_context(|| format!("failed to register {}", path.display()));
         }

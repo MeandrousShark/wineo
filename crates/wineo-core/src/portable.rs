@@ -1,6 +1,6 @@
 //! Copying an environment from the standard layout into a portable folder.
 
-use std::fs::{self, File, OpenOptions};
+use std::fs::{self, File};
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, anyhow, bail};
@@ -855,7 +855,7 @@ fn write_global_once(paths: &Paths, text: &str) -> Result<()> {
     let path = paths.global_config();
     let global = GlobalConfig::parse(&path, text)?;
     let _guards = build_lock::config(paths, &global, Some(&global.defaults.runner), None, None)?;
-    write_once(&path, text)
+    import::write_config_once(&path, text)
 }
 
 fn write_environment_once(
@@ -902,23 +902,6 @@ fn portable_global(to: &Paths, path: &Path, text: &str) -> Result<String> {
     let updated = doc.to_string();
     GlobalConfig::parse(path, &updated).map_err(|err| anyhow!(err))?;
     Ok(updated)
-}
-
-fn write_once(path: &Path, text: &str) -> Result<()> {
-    use std::io::Write;
-
-    let parent = path
-        .parent()
-        .ok_or_else(|| anyhow!("config has no parent"))?;
-    fs::create_dir_all(parent)?;
-    let mut file = OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(path)
-        .with_context(|| format!("failed to create {}", path.display()))?;
-    file.write_all(text.as_bytes())?;
-    file.sync_all()?;
-    Ok(())
 }
 
 fn reject_overlap(source: &Path, folder: &Path) -> Result<()> {
