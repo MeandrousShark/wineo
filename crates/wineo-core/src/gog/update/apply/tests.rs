@@ -1958,3 +1958,42 @@ fn a_read_only_plan_with_refresh_reviews_what_gog_offers_now() {
     // Nothing was cached for the next run either.
     assert_eq!(fs::read(&cache).unwrap(), cached);
 }
+
+fn write_info(fx: &Fixture, id: u64, name: &str) {
+    fx.write(
+        &format!("game/goggame-{id}.info"),
+        &format!(r#"{{"gameId":"{id}","name":"{name}"}}"#),
+    );
+}
+
+#[test]
+fn a_dlc_is_labeled_by_gog_s_title_before_the_folder_s_name() {
+    let fx = installed_v1();
+    ready_for_v2(&fx);
+    write_info(&fx, RIMWORLD, "RimWorld");
+    write_info(&fx, ROYALTY, "RimWorld - Royalty Edition");
+    let pending = fx.pending(true, Options::default());
+    assert_eq!(pending.products()[1].title.as_deref(), Some("Royalty"));
+    assert_eq!(
+        pending.products()[1].name.as_deref(),
+        Some("RimWorld - Royalty Edition")
+    );
+    assert_eq!(pending.dlc_label(ROYALTY), format!("Royalty [{ROYALTY}]"));
+}
+
+#[test]
+fn a_recovery_labels_a_dlc_by_the_folder_s_name_or_its_id() {
+    let fx = installed_v1();
+    ready_for_v2(&fx);
+    set_failpoint_nth("update.publish.after", 4);
+    fx.update_err();
+    let pending = fx.pending(false, Options::default());
+    assert!(pending.is_recovery());
+    assert_eq!(pending.products()[1].title, None);
+    assert_eq!(pending.dlc_label(ROYALTY), format!("DLC [{ROYALTY}]"));
+
+    write_info(&fx, RIMWORLD, "RimWorld");
+    write_info(&fx, ROYALTY, "RimWorld - Royalty");
+    let pending = fx.pending(false, Options::default());
+    assert_eq!(pending.dlc_label(ROYALTY), format!("Royalty [{ROYALTY}]"));
+}

@@ -29,6 +29,7 @@ use crate::gog::folder::{
     JournalKind, Package, Platform, Product, ProductStatus, Target, Track, WinningEntry, failpoint,
 };
 use crate::gog::migrate::host_only;
+use crate::gog::names;
 use crate::gog::package::{self, PackageError};
 use crate::gog::product;
 use crate::operation::{Guard, Locks, Operation};
@@ -79,6 +80,9 @@ pub struct PlannedProduct {
     pub id: u64,
     /// GOG's title, when its details list one.
     pub title: Option<String>,
+    /// The name the folder's `goggame-*.info` gives it, for when GOG's
+    /// details have no title, as in a recovery from saved packages.
+    pub name: Option<String>,
     /// What the folder's state records now.
     pub installed: Option<String>,
     /// The version the rebuild installs. None for a product carried over
@@ -161,6 +165,27 @@ impl Pending {
 
     pub fn products(&self) -> &[PlannedProduct] {
         &self.products
+    }
+
+    /// A DLC as `NAME [ID]`: GOG's title if its details gave one, else the
+    /// name in the folder. The base game's own title or name is what a DLC's
+    /// leading `Game - ` is dropped against.
+    pub fn dlc_label(&self, id: u64) -> String {
+        let name = |product: &PlannedProduct| {
+            product
+                .title
+                .clone()
+                .filter(|title| !title.is_empty())
+                .or_else(|| product.name.clone())
+        };
+        let base = self
+            .products
+            .iter()
+            .find(|product| product.id == self.target.gog_id)
+            .and_then(name)
+            .unwrap_or_default();
+        let dlc = self.products.iter().find(|product| product.id == id);
+        names::dlc_label(&base, id, dlc.and_then(name).as_deref())
     }
 
     /// What has to be downloaded at most: every package's size, or zero when
@@ -259,6 +284,7 @@ pub fn plan(
         }
         native_only(name, journal.target.platform, journal.target.track)?;
         if let Some(files) = cached(paths, journal, token)? {
+            let names = names::product_names(&folder);
             let products = journal
                 .target
                 .products
@@ -266,6 +292,7 @@ pub fn plan(
                 .map(|product| PlannedProduct {
                     id: product.id,
                     title: None,
+                    name: names.get(&product.id).cloned(),
                     installed: installed_version(&state, product.id),
                     version: product.version.clone(),
                     status: product.status,
@@ -531,6 +558,7 @@ fn resolve(
     {
         return Err(refuse("The base game isn't installed.".to_owned()).into());
     }
+    let names = names::product_names(&state.folder);
     let mut target = Vec::new();
     let mut planned = Vec::new();
     let mut files = Vec::new();
@@ -549,6 +577,7 @@ fn resolve(
             planned.push(PlannedProduct {
                 id: product.id,
                 title,
+                name: names.get(&product.id).cloned(),
                 installed,
                 version: None,
                 status: product.status,
@@ -584,6 +613,7 @@ fn resolve(
         planned.push(PlannedProduct {
             id: product.id,
             title,
+            name: names.get(&product.id).cloned(),
             installed,
             version: Some(version.clone()),
             status: ProductStatus::Installed,

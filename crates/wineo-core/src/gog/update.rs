@@ -22,6 +22,7 @@ use super::folder::{
     self, Committed, FolderError, FolderLock, FolderState, Platform, Product, ProductStatus, Track,
 };
 use super::migrate::{host_only, id_text};
+use super::names;
 use super::product;
 use crate::environment::{self, Environment};
 use crate::paths::Paths;
@@ -107,6 +108,8 @@ pub struct DlcStatus {
     pub id: u64,
     /// None when GOG's details don't list this DLC.
     pub title: Option<String>,
+    /// The name in the folder's `goggame-*.info`, for when there's no title.
+    pub name: Option<String>,
     pub installed: Option<String>,
     pub available: Option<String>,
     pub state: DlcState,
@@ -139,6 +142,15 @@ pub struct Status {
     pub warnings: Vec<String>,
     /// Every product after the base, in the order they were added.
     pub dlc: Vec<DlcStatus>,
+}
+
+impl DlcStatus {
+    /// `NAME [ID]` against the base game's title: GOG's title if it listed
+    /// one, else the name in the folder.
+    pub fn label(&self, base_title: &str) -> String {
+        let title = self.title.as_deref().filter(|title| !title.is_empty());
+        names::dlc_label(base_title, self.id, title.or(self.name.as_deref()))
+    }
 }
 
 /// A game that couldn't be checked.
@@ -551,6 +563,11 @@ fn status_of(
         UpdateState::Available if !applicable => Some(Reason::WindowsInstaller),
         UpdateState::Available | UpdateState::UpToDate => None,
     };
+    let mut dlc = compared.dlc;
+    let names = names::product_names(&state.folder);
+    for entry in &mut dlc {
+        entry.name = names.get(&entry.id).cloned();
+    }
     Ok(Status {
         environment: name.to_owned(),
         gog_id: installed.gog_id,
@@ -566,7 +583,7 @@ fn status_of(
         reason,
         unfinished,
         warnings,
-        dlc: compared.dlc,
+        dlc,
     })
 }
 
@@ -604,6 +621,7 @@ fn dlc(installed: &Installed) -> impl Iterator<Item = (DlcStatus, &Product)> {
                 DlcStatus {
                     id: product.id,
                     title: None,
+                    name: None,
                     installed: product.version.clone().or_else(|| product.build.clone()),
                     available: None,
                     state,

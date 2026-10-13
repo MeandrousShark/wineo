@@ -278,6 +278,7 @@ fn a_native_game_matching_gog_is_up_to_date() {
         [DlcStatus {
             id: ROYALTY,
             title: Some("Royalty".to_owned()),
+            name: None,
             installed: Some("1.6.4871".to_owned()),
             available: Some("1.6.4871".to_owned()),
             state: DlcState::UpToDate,
@@ -1146,4 +1147,35 @@ fn a_portable_root_is_refused() {
         );
     }
     assert!(server.requests().is_empty());
+}
+
+#[test]
+fn a_dlc_gog_doesn_t_list_is_labeled_by_the_folder_s_name() {
+    let mut fx = Fixture::new();
+    fx.products.insert(
+        RIMWORLD,
+        product(RIMWORLD, "RimWorld", linux("1.6.4871"), vec![]),
+    );
+    let state = fx.native(vec![
+        installed(RIMWORLD, Some("1.6.4871")),
+        installed(ROYALTY, Some("1.6.4871")),
+        installed(IDEOLOGY, Some("1.6.4871")),
+    ]);
+    let game = state.folder.join("game");
+    fs::create_dir_all(&game).unwrap();
+    fs::write(
+        game.join(format!("goggame-{ROYALTY}.info")),
+        format!(r#"{{"gameId":"{ROYALTY}","name":"RimWorld - Royalty"}}"#),
+    )
+    .unwrap();
+    let status = fx.status("rimworld");
+    let labels: Vec<String> = status
+        .dlc
+        .iter()
+        .map(|dlc| dlc.label(&status.title))
+        .collect();
+    assert_eq!(
+        labels,
+        [format!("Royalty [{ROYALTY}]"), format!("DLC [{IDEOLOGY}]")]
+    );
 }
