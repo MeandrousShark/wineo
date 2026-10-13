@@ -695,13 +695,10 @@ mod tests {
         let prefix = root.path().join("prefix");
         fs::create_dir(&prefix).unwrap();
         let wine = root.path().join("wine");
-        fs::write(
+        crate::test_script::write_script(
             &wine,
             "#!/bin/sh\nif [ \"$1\" = wineboot ]; then\n  touch \"$WINEPREFIX/stopped\"\n  exit 0\nfi\ntouch \"$WINEPREFIX/started\"\nwhile [ ! -e \"$WINEPREFIX/stopped\" ]; do sleep 0.02; done\n",
-        )
-        .unwrap();
-        use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(&wine, fs::Permissions::from_mode(0o755)).unwrap();
+        );
         let installer = installer(root.path(), wine.to_str().unwrap());
         let started = prefix.join("started");
         let token = Token::new();
