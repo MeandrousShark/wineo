@@ -1332,6 +1332,17 @@ Fixed during acceptance (2026-10-12):
   update journal keep the exact size, so an interrupted update still
   finishes from its packages. A download with neither a checksum nor a
   length is refused. The fakes now list rounded sizes too.
+- **The username shows instead of the account number,** at the
+  maintainer's request: `Logged in to GOG as NAME.` in the CLI and the
+  app's Account row, whose repeated result line is gone. wineo looks the
+  name up at `users.gog.com/users/{id}` (public, sending only the id; not
+  `embed.gog.com/userData.json`, which returns the email) right after
+  logging in, and keeps it as an optional `username` in the stored login.
+  Older logins pick it up after a renewal, once per session. The lookup
+  waits at most 2 seconds, holds no lock, and failing just falls back to
+  the account number. Limit: it runs on a worker thread with its own HTTP
+  client, so a stuck resolver can keep that thread alive, but never delays
+  a login, a renewal, or exit.
 
 ## Implementation sequence
 
@@ -1432,7 +1443,7 @@ Logging in saves a real GOG login in your keyring; step 15 removes it.
    gog --login.` and exit 1.
 2. `wineo import gog --login`: your browser opens GOG's login page and the
    terminal prints its address. Log in, paste the address you land on (it
-   isn't shown as you paste): `Logged in to GOG as account N.`
+   isn't shown as you paste): `Logged in to GOG as NAME.`
 3. `wineo import gog --list`: your owned games, with RimWorld and Disco
    Elysium as `in Heroic`, each listed once even though your old Flatpak
    Heroic lists RimWorld too.

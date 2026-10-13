@@ -601,7 +601,8 @@ the saved key. See [The SteamGridDB key](art.md#the-steamgriddb-key).
 saved, and shows where to get a key: <https://steamcommunity.com/dev/apikey>. With
 `WINEO_STEAM_KEY` set, it says that overrides the saved key.
 
-**GOG** shows which account is logged in. **Log in**, shown while you're
+**GOG** shows the GOG username you're logged in as, or the account number
+until wineo has looked the name up. **Log in**, shown while you're
 logged out, opens GOG's login page
 in your browser and shows its address with **Copy link**, then a masked
 **Address** field for the address of the page you land on, like `wineo

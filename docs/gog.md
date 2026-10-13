@@ -17,13 +17,17 @@ Log in to GOG in your browser. If it doesn't open, go to:
 https://auth.gog.com/auth?client_id=...
 Then copy the address of the page you land on.
 Address:
-Logged in to GOG as account 48628349957132247.
+Logged in to GOG as rimworlder.
 ```
 
 wineo opens GOG's login page in your browser and prints its address too,
 for when there's no browser at hand. Log in, then paste the address of the
 page GOG lands you on (it starts with `https://embed.gog.com/on_login_success`).
 What you paste isn't shown, and it never appears in wineo's output or logs.
+wineo then asks GOG's public profile service for your username, sending
+only your account number. If that doesn't answer within 2 seconds, you're
+still logged in and wineo shows `Logged in to GOG as account N.` until a
+later renewal finds the name.
 
 The login is kept in your keyring as `service=wineo`, `account=gog`, like
 the Steam and SteamGridDB keys. wineo renews it as it goes, saving the new
