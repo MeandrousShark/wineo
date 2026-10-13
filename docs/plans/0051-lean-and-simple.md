@@ -132,40 +132,59 @@ This is the part of the plan that needs approval. These change behavior or
 architecture, so each needs an answer before work starts. Recommendations
 first.
 
+Answered (2026-10-13): the maintainer took every recommendation. Items 2, 5,
+and 8 to 12 had no recommendation written yet when that answer came, so
+theirs were added afterwards and wait for a separate yes.
+
 1. **The app's 2 s library rescan.** (a, recommended) Pause it while the
    window is unfocused and refresh on focus, and only redraw when the
    result changed. (b) inotify on wineo's folders, no timer. (c) Keep 2 s.
+   **Answer: a.**
 2. **Steam detection cadence.** The start phase scans `/proc` 4 times a
    second while waiting for Steam to launch a game. Slowing it to 1 s makes
-   detection up to a second later.
+   detection up to a second later. Recommended: keep 250 ms for the first
+   10 s, when a launch usually lands, then back off to 1 s, since the wait
+   can last minutes while Steam updates the game.
 3. **The trash check in every config load.** `Environment::load` reads
    every trash manifest, so `list` costs environments x trash entries.
    Recommended: read only manifest headers, or memoize once per command.
-   Integrity code, so it gets its own review.
+   Integrity code, so it gets its own review. **Answer: recommended.**
 4. **GOG package hashing.** Cached packages are MD5-hashed twice per update
    (on reuse, and again when pinned under the lock). Recommended: one full
-   verify, under the lock.
+   verify, under the lock. **Answer: recommended.**
 5. **Content vs metadata fingerprints** for clone and portable copies, which
-   read the whole prefix 3-4 times today.
+   read the whole prefix 3-4 times today. Recommended: keep content
+   fingerprints, since they guard against data loss, and only drop the
+   redundant passes (Track A).
 6. **One stop-escalation helper.** The "TERM, wait, KILL, settle" loop
    exists five times (supervisor, exec, winetricks, prefix wait, hooks), and
    the process identity triple travels through ~16 signatures. Recommended:
    one shared helper and one `Identity` type. Process teardown is
-   security-sensitive, so this one gets its own review.
+   security-sensitive, so this one gets its own review. **Answer:
+   recommended.**
 7. **Shared shapes for the import flows.** A shared import grid for the
    app's Heroic, Steam, and GOG pages; a trait for `flow::Page`; one
-   stage-and-publish helper for clone, portable, and import.
+   stage-and-publish helper for clone, portable, and import. **Answer: do
+   all three**, each its own patch with its own review.
 8. **`windows_installer` in JSON.** Core never gives it any more. Removing
-   it from the vocabulary touches the 1.0 JSON contract.
+   it from the vocabulary touches the 1.0 JSON contract. Recommended:
+   remove it now, while still 0.x, with a changelog note.
 9. **One D-Bus stack.** The app carries both zbus (iced) and libdbus (the
    keyring crate). A zbus-based keyring would drop libdbus and the `dbus`
-   build dependency.
+   build dependency. Recommended: yes, as its own patch with its own
+   review, since it handles secrets.
 10. **HTTP stack.** reqwest's blocking client brings tokio and a thread per
     client into the CLI. A synchronous client is a bigger change.
+    Recommended: keep reqwest. The CLI already runs `list` in 20 ms and
+    12 MB, and one shared client per batch (Track A) removes most of the
+    cost.
 11. **LTO for release builds.** Smaller and faster binaries, slower release
-    builds.
+    builds. Recommended: yes, picking thin or full LTO by measured size
+    and speed.
 12. **Guided flows** are written four ways (linear, two numbered step
-    machines, a typed step enum). Pick one pattern.
+    machines, a typed step enum). Pick one pattern. Recommended: the typed
+    step enum, since the compiler checks every step is handled. Flows move
+    to it one at a time, not in one rewrite.
 
 ## Possible bugs (fix as patches if confirmed)
 
