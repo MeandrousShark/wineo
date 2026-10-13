@@ -1,3 +1,6 @@
+use std::cell::OnceCell;
+use std::collections::HashMap;
+
 use jiff::Timestamp;
 use jiff::tz::TimeZone;
 use serde::Serialize;
@@ -160,7 +163,8 @@ impl From<crate::steam::AppState> for InstallReport {
 }
 
 fn kind_report(paths: &Paths, global: &GlobalConfig, kind: &Kind) -> KindReport {
-    let steam = matches!(kind, Kind::Proxied(_)).then(|| steam_overview(paths, global));
+    let steam = matches!(kind, Kind::Proxied(_))
+        .then(|| steam_overview(crate::steam::active_for(paths, global)));
     kind_report_with_steam(kind, steam.as_ref())
 }
 
@@ -187,8 +191,7 @@ fn kind_report_with_steam(kind: &Kind, steam: Option<&SteamOverview>) -> KindRep
     report
 }
 
-fn steam_overview(paths: &Paths, global: &GlobalConfig) -> SteamOverview {
-    let install = crate::steam::active_for(paths, global);
+fn steam_overview(install: Option<crate::steam::Install>) -> SteamOverview {
     let manifests = install
         .as_ref()
         .map(crate::steam::manifests)
@@ -289,13 +292,12 @@ impl EnvironmentReport {
         warnings: &mut Vec<String>,
     ) -> Result<Self> {
         let busy = Locks::new(paths).busy_with(&environment.name)?;
-        let status = status(
-            paths,
-            &environment.name,
-            busy,
-            Some(environment),
-            Some(global),
-        )?;
+        let app_ids = match &environment.config.kind {
+            Kind::Proxied(proxied) => vec![proxied.app_id.clone()],
+            Kind::Wine(_) | Kind::Native => Vec::new(),
+        };
+        let probe = SteamProbe::new(paths, Some(global), app_ids, &crate::steam::reapers_by_app);
+        let status = status(paths, &environment.name, busy, Some(environment), &probe)?;
         let wine = environment.config.wine();
         // An unresolvable runner is worth showing the rest of the status for.
         let operation_runner = Runtime::new(paths, &environment.name)
@@ -405,12 +407,70 @@ pub fn unresolved(paths: &Paths, name: &str) -> bool {
     Runtime::new(paths, name).check_resolved(name).is_err()
 }
 
+/// Reapers for several apps from one Steam install, or the failure to find them.
+type ReaperScan<'a> =
+    dyn Fn(&crate::steam::Install, &[String]) -> std::io::Result<ReapersByApp> + 'a;
+type ReapersByApp = HashMap<String, Vec<crate::steam::Reaper>>;
+
+/// What `status` needs to know about Steam. Finding the install and sweeping
+/// the process table cost far more than a single environment's share, so both
+/// happen at most once, on the first environment that needs them, for every
+/// proxied environment in the batch.
+struct SteamProbe<'a> {
+    paths: &'a Paths,
+    global: Option<&'a GlobalConfig>,
+    app_ids: Vec<String>,
+    scan: &'a ReaperScan<'a>,
+    install: OnceCell<Option<crate::steam::Install>>,
+    // io::Error can't be cloned, and every environment that asks after a
+    // failed scan should report it.
+    reapers: OnceCell<std::result::Result<ReapersByApp, (std::io::ErrorKind, String)>>,
+}
+
+impl<'a> SteamProbe<'a> {
+    fn new(
+        paths: &'a Paths,
+        global: Option<&'a GlobalConfig>,
+        app_ids: Vec<String>,
+        scan: &'a ReaperScan<'a>,
+    ) -> Self {
+        Self {
+            paths,
+            global,
+            app_ids,
+            scan,
+            install: OnceCell::new(),
+            reapers: OnceCell::new(),
+        }
+    }
+
+    /// None when the global config can't be read or Steam isn't installed.
+    fn install(&self) -> Option<&crate::steam::Install> {
+        self.install
+            .get_or_init(|| {
+                self.global
+                    .and_then(|global| crate::steam::active_for(self.paths, global))
+            })
+            .as_ref()
+    }
+
+    fn game_running(&self, install: &crate::steam::Install, app_id: &str) -> std::io::Result<bool> {
+        let reapers = self.reapers.get_or_init(|| {
+            (self.scan)(install, &self.app_ids).map_err(|error| (error.kind(), error.to_string()))
+        });
+        match reapers {
+            Ok(reapers) => Ok(reapers.get(app_id).is_some_and(|found| !found.is_empty())),
+            Err((kind, message)) => Err(std::io::Error::new(*kind, message.clone())),
+        }
+    }
+}
+
 fn status(
     paths: &Paths,
     name: &str,
     busy: Option<Operation>,
     environment: Option<&Environment>,
-    global: Option<&GlobalConfig>,
+    steam: &SteamProbe<'_>,
 ) -> Result<Status> {
     let runtime = Runtime::new(paths, name);
     let mut status = runtime.status()?;
@@ -437,13 +497,13 @@ fn status(
             lost: false,
         });
     }
-    if let (Some(proxied), Some(global)) = (proxied, global)
+    if let Some(proxied) = proxied
         && busy.is_none()
         && !matches!(status.state, State::Running | State::Starting)
-        && let Some(install) = crate::steam::active_for(paths, global)
-        && !crate::steam::matching_reapers(&install, &proxied.app_id)
+        && let Some(install) = steam.install()
+        && steam
+            .game_running(install, &proxied.app_id)
             .context(|| format!("failed to scan Steam processes for {name}"))?
-            .is_empty()
     {
         status.state = State::SteamRunning;
         status.run = None;
@@ -454,19 +514,36 @@ fn status(
 /// Reads the state, lock, installer record, and tags needed for every
 /// environment shown by `list` or `status` without a name.
 pub fn overview(paths: &Paths, filter: OverviewFilter<'_>) -> Result<Overview> {
+    overview_with(paths, filter, &crate::steam::reapers_by_app)
+}
+
+fn overview_with(paths: &Paths, filter: OverviewFilter<'_>, scan: &ReaperScan) -> Result<Overview> {
     let locks = Locks::new(paths);
     let global = GlobalConfig::load(paths).ok();
     let mut overview = Overview::default();
-    for name in environment::names(paths)? {
+    // Loaded up front so one process sweep can look for every Steam game.
+    let environments: Vec<_> = environment::names(paths)?
+        .into_iter()
+        .map(|name| {
+            let environment = Environment::load(paths, &name);
+            (name, environment)
+        })
+        .collect();
+    let mut app_ids: Vec<String> = environments
+        .iter()
+        .filter_map(
+            |(_, environment)| match &environment.as_ref().ok()?.config.kind {
+                Kind::Proxied(proxied) => Some(proxied.app_id.clone()),
+                Kind::Wine(_) | Kind::Native => None,
+            },
+        )
+        .collect();
+    app_ids.sort();
+    app_ids.dedup();
+    let probe = SteamProbe::new(paths, global.as_ref(), app_ids, scan);
+    for (name, environment) in environments {
         let busy = locks.busy_with(&name).unwrap_or(None);
-        let environment = Environment::load(paths, &name);
-        let current = status(
-            paths,
-            &name,
-            busy,
-            environment.as_ref().ok(),
-            global.as_ref(),
-        );
+        let current = status(paths, &name, busy, environment.as_ref().ok(), &probe);
         let unresolved = busy.is_none() && unresolved(paths, &name);
         match current {
             Ok(status)
@@ -493,10 +570,10 @@ pub fn overview(paths: &Paths, filter: OverviewFilter<'_>) -> Result<Overview> {
                                     }),
                                 )),
                                 kind: Some(match &global {
-                                    Some(global) => match &environment.config.kind {
+                                    Some(_) => match &environment.config.kind {
                                         Kind::Proxied(_) => {
                                             let steam = overview.steam.get_or_insert_with(|| {
-                                                steam_overview(paths, global)
+                                                steam_overview(probe.install().cloned())
                                             });
                                             kind_report_with_steam(
                                                 &environment.config.kind,
@@ -681,6 +758,114 @@ mod tests {
         let overview = overview(&paths, OverviewFilter::default()).unwrap();
         assert_eq!(overview.environments.len(), 1);
         assert!(overview.steam.is_none());
+    }
+
+    fn steam_library(paths: &Paths, proxied: &[&str]) {
+        fs::create_dir_all(paths.home().join(".local/share/Steam/steamapps")).unwrap();
+        fs::create_dir_all(paths.environments_dir()).unwrap();
+        for app_id in proxied {
+            fs::write(
+                paths.environment_config(&format!("game-{app_id}")),
+                format!("kind = \"proxied\"\nlauncher = \"steam\"\napp_id = \"{app_id}\"\n"),
+            )
+            .unwrap();
+        }
+    }
+
+    #[test]
+    fn overview_sweeps_processes_once_for_every_proxied_environment() {
+        let root = tempfile::tempdir().unwrap();
+        let paths = test_paths(root.path());
+        steam_library(&paths, &["111", "222", "333", "222"]);
+
+        let calls = std::cell::RefCell::new(Vec::<Vec<String>>::new());
+        let scan = |_: &crate::steam::Install, app_ids: &[String]| {
+            calls.borrow_mut().push(app_ids.to_vec());
+            Ok(app_ids
+                .iter()
+                .map(|app_id| {
+                    let reapers = if app_id == "222" {
+                        vec![crate::steam::Reaper {
+                            pid: 7,
+                            start_time: 1,
+                            boot_id: "boot".to_owned(),
+                        }]
+                    } else {
+                        Vec::new()
+                    };
+                    (app_id.clone(), reapers)
+                })
+                .collect())
+        };
+        let overview = overview_with(&paths, OverviewFilter::default(), &scan).unwrap();
+
+        assert_eq!(*calls.borrow(), [["111", "222", "333"]]);
+        let states: Vec<_> = overview
+            .environments
+            .iter()
+            .map(|environment| (environment.name.as_str(), environment.status.state))
+            .collect();
+        assert_eq!(
+            states,
+            [
+                ("game-111", State::Inactive),
+                ("game-222", State::SteamRunning),
+                ("game-333", State::Inactive),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_failed_sweep_is_reported_for_each_environment_that_needed_it() {
+        let root = tempfile::tempdir().unwrap();
+        let paths = test_paths(root.path());
+        steam_library(&paths, &["111", "222"]);
+
+        let calls = std::cell::Cell::new(0);
+        let scan = |_: &crate::steam::Install, _: &[String]| {
+            calls.set(calls.get() + 1);
+            Err(std::io::Error::other("no /proc"))
+        };
+        let overview = overview_with(&paths, OverviewFilter::default(), &scan).unwrap();
+
+        assert_eq!(calls.get(), 1);
+        assert!(overview.environments.is_empty());
+        let messages: Vec<_> = overview
+            .errors
+            .iter()
+            .map(|error| (error.name.as_str(), error.message.as_str()))
+            .collect();
+        assert_eq!(
+            messages,
+            [
+                (
+                    "game-111",
+                    "failed to scan Steam processes for game-111: no /proc"
+                ),
+                (
+                    "game-222",
+                    "failed to scan Steam processes for game-222: no /proc"
+                ),
+            ]
+        );
+    }
+
+    #[test]
+    fn overview_skips_the_sweep_without_a_steam_install() {
+        let root = tempfile::tempdir().unwrap();
+        let paths = test_paths(root.path());
+        steam_library(&paths, &["111"]);
+        fs::remove_dir_all(paths.home().join(".local/share/Steam")).unwrap();
+
+        let calls = std::cell::Cell::new(0);
+        let scan = |_: &crate::steam::Install, _: &[String]| {
+            calls.set(calls.get() + 1);
+            Ok(HashMap::new())
+        };
+        let overview = overview_with(&paths, OverviewFilter::default(), &scan).unwrap();
+
+        assert_eq!(calls.get(), 0);
+        assert_eq!(overview.environments.len(), 1);
     }
 
     #[test]
