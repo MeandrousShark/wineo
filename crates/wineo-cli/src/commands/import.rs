@@ -28,7 +28,7 @@ enum Source {
     Heroic(import_heroic::Args),
     /// Import a Steam game, installed or owned
     Steam(import_steam::Args),
-    /// Log in to GOG, list your games, or migrate the ones Heroic installed
+    /// Log in to GOG, list your games, install them, or migrate the ones Heroic installed
     Gog(import_gog::Args),
 }
 

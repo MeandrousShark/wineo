@@ -1,5 +1,5 @@
-//! `wineo import gog`: the GOG login, the games you own, and moving the
-//! games Heroic installed into wineo.
+//! `wineo import gog`: the GOG login, the games you own, installing them,
+//! and moving the games Heroic installed into wineo.
 
 use std::process::ExitCode;
 
