@@ -193,6 +193,10 @@ maintainer calls it stable, which these criteria are meant to inform.
    sweep is described in that row.
 7. No known data-loss bugs in trash, snapshots, imports, clone, or portable
    copies.
+   Audited (2026-10-12) by two reviewers from different model families;
+   everything they found was fixed in 0.30.1, with a delete-by-delete
+   inventory of trash and snapshots. Remaining limits are external races
+   and the two rows under "Close the last nested-prefix gaps".
 8. Land, or decide against, the last big shape change in view: the proxied
    environment kind from store library import (queue items 4 and 5).
    Settled (2026-10-12): the proxied kind landed in 0047 and GOG went
