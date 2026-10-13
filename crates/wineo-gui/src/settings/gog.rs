@@ -180,6 +180,17 @@ impl Settings {
         self.logged_in() || self.busy == Some(Busy::LoggingOut)
     }
 
+    /// Whether the row offers Log in: once the status says logged out, or the
+    /// check failed with nothing known, so a logged-in row doesn't flash it
+    /// while it loads. Like Log out, it stays while the login page opens.
+    pub(crate) fn shows_login(&self) -> bool {
+        let known = match &self.status {
+            Some(status) => !status.logged_in(),
+            None => self.status_error.is_some(),
+        };
+        known || self.busy == Some(Busy::Opening)
+    }
+
     pub(crate) fn update(
         &mut self,
         paths: &Paths,
@@ -732,11 +743,12 @@ mod tests {
     }
 
     #[test]
-    fn log_out_shows_while_logged_in_and_while_a_logout_runs() {
+    fn log_in_and_log_out_each_show_only_when_they_apply() {
         let (_root, paths) = setup();
         let mut row = Settings::default();
-        // Still checking: nothing to log out of yet.
+        // Still checking: nothing to log in to or out of yet.
         assert!(!row.shows_logout());
+        assert!(!row.shows_login());
         assert!(!super::super::view::gog_texts(&row).contains(&"Log out".to_owned()));
         let sequence = row.sequence;
         let _ = row.update(
@@ -753,12 +765,24 @@ mod tests {
         );
         assert!(row.shows_logout());
         assert!(super::super::view::gog_texts(&row).contains(&"Log out".to_owned()));
+        assert!(!row.shows_login());
+        assert!(!super::super::view::gog_texts(&row).contains(&"Log in".to_owned()));
         let _ = row.update(&paths, context(), Event::Logout);
         assert_eq!(row.busy, Some(Busy::LoggingOut));
         assert!(super::super::view::gog_texts(&row).contains(&"Log out".to_owned()));
         // Even if the status were already gone, the button stays while it runs.
         row.status = Some(Status::LoggedOut);
         assert!(row.shows_logout());
+        assert!(row.shows_login());
+
+        // A failed check with nothing known still offers a way in.
+        let mut row = Settings {
+            status_error: Some("GOG login check failed".to_owned()),
+            ..Settings::default()
+        };
+        assert!(row.shows_login());
+        row.status = Some(Status::LoggedOut);
+        assert!(super::super::view::gog_texts(&row).contains(&"Log in".to_owned()));
     }
 
     #[test]

@@ -1310,7 +1310,8 @@ Changed during acceptance, at the maintainer's request (2026-10-12):
   DLC without a login. A leading `Game - ` or `Game: ` is dropped; with no
   name, `DLC (ID)`. Only regular files up to 64 KiB are read, so a stray
   FIFO can't hang a check. JSON keeps `id` and GOG's raw `title`.
-- **Log out** shows only while logged in.
+- **Log out** shows only while logged in, and **Log in** only while logged
+  out (or when the check failed), so the row never offers both.
 - **Logging in stays copy and paste** for now. The maintainer turned down
   watching the clipboard for GOG's success address (privacy), and parked an
   embedded login window as a backlog row.
