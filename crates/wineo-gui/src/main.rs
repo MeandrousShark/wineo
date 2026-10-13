@@ -281,6 +281,7 @@ pub(crate) enum Message {
     Context(String),
     /// Where the cursor was when an input that can open the action menu arrived.
     MenuAnchor(iced::Point),
+    ForceStopDue,
     OverlayInput,
     ContextSettings(String),
     CloseMenu,
@@ -1278,6 +1279,7 @@ impl App {
                 };
                 Task::none()
             }
+            Message::ForceStopDue => Task::none(),
             Message::MenuAnchor(position) => {
                 self.menu_anchor = position;
                 Task::none()
@@ -3535,6 +3537,22 @@ mod tests {
 
         let _ = app.update(Message::StopFinished("game".into(), Ok(Vec::new())));
         assert!(app.operation.is_none());
+    }
+
+    #[test]
+    fn stop_wakes_the_app_when_force_stop_becomes_available() {
+        let mut app = selected_app(State::Running);
+        // The stop worker plus a one-shot wakeup at the deadline.
+        assert_eq!(app.update(Message::Stop).units(), 2);
+        let at = Instant::now() + Duration::from_millis(30);
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_time()
+            .build()
+            .unwrap();
+        let message = runtime.block_on(crate::panel::force_stop_due(at));
+        assert!(matches!(message, Message::ForceStopDue));
+        assert!(Instant::now() >= at);
+        let _ = app.update(message);
     }
 
     #[test]

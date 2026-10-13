@@ -47,6 +47,14 @@ const PANEL_CLEANUP_ID: &str = "panel-cleanup";
 /// Stop can't kill a game that was about to close.
 pub(crate) const FORCE_STOP_DELAY: Duration = Duration::from_secs(3);
 
+/// Wakes the app when Stop may become Force stop. The panel compares the
+/// deadline against the clock in `view`, which otherwise only reruns on the
+/// next unrelated message.
+pub(crate) async fn force_stop_due(at: Instant) -> Message {
+    tokio::time::sleep_until(at.into()).await;
+    Message::ForceStopDue
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct PanelError {
     pub(crate) text: String,
@@ -474,9 +482,14 @@ impl App {
                 installing: false,
                 after_hook: false,
             });
-            self.force_stop_at = Some((name.clone(), Instant::now() + FORCE_STOP_DELAY));
+            let at = Instant::now() + FORCE_STOP_DELAY;
+            self.force_stop_at = Some((name.clone(), at));
             self.panel_error = None;
             self.panel_note = None;
+            return Task::batch([
+                worker::stop(self.paths.clone(), name, false),
+                Task::perform(force_stop_due(at), |message| message),
+            ]);
         }
         worker::stop(self.paths.clone(), name, false)
     }
