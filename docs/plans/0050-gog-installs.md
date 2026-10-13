@@ -258,6 +258,9 @@ Step 3's choices (2026-10-13, provisional while the maintainer was away):
 - **A language mismatch is recorded** as an optional `reported_language`
   per product, written only when the game reports a different language than
   requested, besides the review's warning.
+- **DLC use the base game's chosen installer language**, then English,
+  since every package is fetched before anything runs. If the installed game
+  then reports a different language, that's reported, not chased.
 - **A Windows journal's `attempted` names the install folder as `.`**,
   since an Inno installer's own files can't be listed ahead of time.
 - **Still to verify in acceptance:** whether umu/Proton pass Inno's exit
