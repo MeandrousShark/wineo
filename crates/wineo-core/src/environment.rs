@@ -12,7 +12,7 @@ use crate::cancel::Token;
 use crate::config::{self, Arch, EnvironmentConfig, GlobalConfig, WineConfig};
 use crate::edit;
 use crate::error::{Error, IoContext, Result};
-use crate::files::write_atomic;
+use crate::files::{write_atomic, write_atomic_synced};
 use crate::installer::Output;
 use crate::name;
 use crate::operation::{LaunchReservation, Locks, Operation};
@@ -558,13 +558,7 @@ impl Environment {
         config::stamp_schema(&mut doc);
         let updated = doc.to_string();
         EnvironmentConfig::parse(&path, &updated)?;
-        write_atomic(&path, &updated)?;
-        let dir = path.parent().expect("a config has a parent");
-        fs::File::open(&path)
-            .and_then(|file| file.sync_all())
-            .and_then(|()| fs::File::open(dir))
-            .and_then(|dir| dir.sync_all())
-            .context(|| format!("failed to sync {}", path.display()))?;
+        write_atomic_synced(&path, &updated)?;
         Ok(GogIdRecord::Written)
     }
 }
