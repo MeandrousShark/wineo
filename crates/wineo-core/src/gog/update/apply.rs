@@ -14,13 +14,14 @@
 //! recheck through the first journal write to the commit.
 
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use wineo_gog::{DownloadCache, Pin, Verification};
 
 use super::publish::{self, PublishProgress, Publisher, Report, SavedAside};
+use super::windows::{self, SetupError};
 use super::{Check, UpdateError, UpdateState, installer_version, matching_installer, status_with};
 use crate::cancel::Token;
 use crate::environment::Environment;
@@ -278,7 +279,8 @@ pub fn plan(
 
     if let Some(journal) = &state.journal {
         // An interrupted native install is a rebuild like an update, so it
-        // is finished the same way.
+        // is finished the same way. An interrupted Windows install runs its
+        // installers again.
         match journal.kind {
             JournalKind::Repair => {
                 return Err(UpdateError::LaterRelease {
@@ -289,7 +291,15 @@ pub fn plan(
             }
             JournalKind::Install | JournalKind::Update | JournalKind::Reinstall => {}
         }
-        native_only(name, journal.target.platform, journal.target.track)?;
+        let target = &journal.target;
+        if target.platform == Platform::Windows
+            && target.track == Track::Installer
+            && journal.kind == JournalKind::Install
+        {
+            windows::check_graphical()?;
+        } else {
+            native_only(name, target.platform, target.track)?;
+        }
         if let Some(files) = cached(paths, journal, token)? {
             let products = journal
                 .target
@@ -329,6 +339,7 @@ pub fn plan(
             name,
             &state,
             Wanted {
+                platform: journal.target.platform,
                 language: &journal.target.language,
                 products: &journal.target.products,
                 names: &names,
@@ -396,6 +407,7 @@ pub fn plan(
         name,
         &state,
         Wanted {
+            platform: Platform::Linux,
             language: &committed.language,
             products: &committed.products,
             names: &names,
@@ -550,16 +562,18 @@ impl Resolved {
     }
 }
 
-/// What a rebuild is planned for: the language, the products to carry, and
-/// the folder's names for labeling them.
+/// What a rebuild is planned for: the platform and language, the products
+/// to carry, and the folder's names for labeling them.
 pub(super) struct Wanted<'a> {
+    pub(super) platform: Platform,
     pub(super) language: &'a str,
     pub(super) products: &'a [Product],
     pub(super) names: &'a HashMap<u64, String>,
 }
 
-/// Every installed product's current Linux installer for `language`, in
-/// order. Failed and unavailable products are carried over unchanged. Any
+/// Every installed product's current installer for the platform and
+/// `language`, in order: a Linux package, or a Windows setup program and its
+/// parts. Failed and unavailable products are carried over unchanged. Any
 /// installed product GOG no longer offers refuses the whole rebuild.
 pub(super) fn resolve(
     paths: &Paths,
@@ -570,10 +584,15 @@ pub(super) fn resolve(
     how: Check,
 ) -> Result<Resolved> {
     let Wanted {
+        platform,
         language,
         products,
         names,
     } = want;
+    let (os, shown) = match platform {
+        Platform::Linux => ("linux", "Linux"),
+        Platform::Windows => ("windows", "Windows"),
+    };
     let gog_id = state
         .gog_id()
         .ok_or_else(|| anyhow::anyhow!("{name}'s GOG state names no game"))?;
@@ -628,25 +647,35 @@ pub(super) fn resolve(
             )
         };
         let product_language = product.language.as_deref().unwrap_or(language);
-        let installer =
-            matching_installer("linux", &label, product_language, entry).map_err(refuse)?;
-        let version = installer_version("linux", &label, installer).map_err(refuse)?;
-        let [file] = installer.files.as_slice() else {
-            return Err(refuse(format!(
-                "{label}'s Linux installer comes in {} files, which wineo can't unpack.",
-                installer.files.len()
-            ))
-            .into());
+        let installer = matching_installer(os, &label, product_language, entry).map_err(refuse)?;
+        let version = installer_version(os, &label, installer).map_err(refuse)?;
+        let parts = match (platform, installer.files.as_slice()) {
+            (_, []) => {
+                return Err(refuse(format!(
+                    "GOG lists no files for {label}'s {shown} installer."
+                ))
+                .into());
+            }
+            (Platform::Linux, [_]) | (Platform::Windows, _) => installer.files.as_slice(),
+            (Platform::Linux, more) => {
+                return Err(refuse(format!(
+                    "{label}'s Linux installer comes in {} files, which wineo can't unpack.",
+                    more.len()
+                ))
+                .into());
+            }
         };
-        files.push(PlannedFile {
-            product: product.id,
-            label: label.clone(),
-            download_id: installer.id.clone(),
-            file_id: file.id.clone(),
-            size: file.size,
-            md5: None,
-            download: Some(installer.clone()),
-        });
+        for file in parts {
+            files.push(PlannedFile {
+                product: product.id,
+                label: label.clone(),
+                download_id: installer.id.clone(),
+                file_id: file.id.clone(),
+                size: file.size,
+                md5: None,
+                download: Some(installer.clone()),
+            });
+        }
         planned.push(PlannedProduct {
             id: product.id,
             title,
@@ -654,7 +683,7 @@ pub(super) fn resolve(
             installed,
             version: Some(version.clone()),
             status: ProductStatus::Installed,
-            download_size: file.size,
+            download_size: parts.iter().map(|file| file.size).sum(),
         });
         target.push(Product {
             id: product.id,
@@ -667,7 +696,7 @@ pub(super) fn resolve(
     Ok(Resolved {
         target: Target {
             gog_id,
-            platform: Platform::Linux,
+            platform,
             language: language.to_owned(),
             track: Track::Installer,
             products: target,
@@ -722,6 +751,9 @@ fn run(
     progress: &RefCell<impl FnMut(Progress)>,
     journaled: &mut bool,
 ) -> Result<Updated> {
+    if pending.target.platform == Platform::Windows {
+        return run_windows(paths, session, pending, token, progress, journaled);
+    }
     let name = pending.environment.as_str();
     let folder = pending.folder.as_path();
     let cancel = || token.is_canceled();
@@ -798,6 +830,134 @@ fn run(
         saved: report.saved,
         kept: report.kept,
         overwritten: report.overwritten,
+        warnings,
+    })
+}
+
+/// Finishes an interrupted Windows install: downloads what isn't cached,
+/// checks everything again under the locks, names the packages in the
+/// journal, and runs every installer again over the folder, which is how an
+/// Inno installer is repaired. Nothing in the folder is removed.
+fn run_windows(
+    paths: &Paths,
+    session: Option<&mut Session>,
+    pending: &Pending,
+    token: &Token,
+    progress: &RefCell<impl FnMut(Progress)>,
+    journaled: &mut bool,
+) -> Result<Updated> {
+    let name = pending.environment.as_str();
+    let folder = pending.folder.as_path();
+    let cancel = || token.is_canceled();
+    let changed = || UpdateError::Changed {
+        name: name.to_owned(),
+    };
+    windows::check_graphical()?;
+    let mut warnings = pending.warnings.clone();
+    let fetched = fetch(paths, session, pending, token, progress, &mut warnings)?;
+    let cache = DownloadCache::new(paths.gog_download_cache());
+    let (pins, located) = pin_packages(&cache, name, fetched, token, progress)?;
+    let mut setups = BTreeMap::new();
+    for (product, found) in windows::setup_programs(&located) {
+        let exe = found.map_err(|(label, count)| SetupError::NoSetupProgram { label, count })?;
+        setups.insert(product, exe);
+    }
+    windows::check_space(paths, folder, &located)?;
+
+    let operation = lock_operation(paths, name)?;
+    let gog_id = super::recorded_gog_id(paths, name)?;
+    if gog_id.as_deref().and_then(|id| id.parse().ok()) != pending.seen.gog_id {
+        return Err(changed().into());
+    }
+    let _in_use = folder::lock_for_update(paths, folder, name)?;
+    let lock = FolderLock::exclusive(paths, folder, &cancel)?;
+    let mut state = lock.read()?.ok_or_else(changed)?;
+    let unowned = |seen: &Seen| Seen {
+        owner: None,
+        ..seen.clone()
+    };
+    if unowned(&Seen::of(&state)) != unowned(&pending.seen) {
+        return Err(changed().into());
+    }
+    let claimed = pending.seen.owner.is_none();
+    if claimed {
+        state = lock.reclaim(name)?;
+    } else if state.owner != pending.seen.owner {
+        return Err(changed().into());
+    }
+    let mut target = pending.target.clone();
+    let packages: Vec<Package> = located
+        .iter()
+        .map(|(file, _)| Package {
+            product: file.product,
+            download_id: file.download_id.clone(),
+            file_id: file.file_id.clone(),
+            size: file.size,
+            md5: file.md5.clone(),
+        })
+        .collect();
+    let journal = state.journal.as_mut().ok_or_else(changed)?;
+    if journal.target != target || journal.packages != packages {
+        journal.target = target.clone();
+        journal.packages = packages;
+        lock.write(&state)?;
+    }
+    *journaled = true;
+    // The journal names the packages now, which keeps them cached, and
+    // running the installers takes the environment's own locks.
+    drop(pins);
+    drop(operation);
+
+    let title = pending
+        .products
+        .iter()
+        .find(|product| product.id == target.gog_id)
+        .and_then(|product| {
+            product
+                .title
+                .clone()
+                .filter(|title| !title.trim().is_empty())
+                .or_else(|| product.name.clone())
+        })
+        .unwrap_or_else(|| format!("GOG game {}", target.gog_id));
+    let base = target.gog_id;
+    let label = |id: u64| {
+        if id == base {
+            title.clone()
+        } else {
+            pending.dlc_label(id)
+        }
+    };
+    let language = target.language.clone();
+    windows::install(
+        paths,
+        lock,
+        windows::Job {
+            name,
+            title: &title,
+            target: &mut target,
+            setups: &setups,
+            label: &label,
+            create: None,
+            tag: &language,
+            requested: &language,
+            wizard: false,
+            desktop: false,
+        },
+        token,
+        &mut |_| {},
+        &mut warnings,
+    )?;
+    Ok(Updated {
+        environment: name.to_owned(),
+        folder: folder.to_owned(),
+        kind: pending.kind,
+        recovered: pending.recovery,
+        claimed,
+        products: target.products,
+        saved: Vec::new(),
+        kept: Vec::new(),
+        overwritten: Vec::new(),
         warnings,
     })
 }
@@ -1205,7 +1365,12 @@ fn package_entries(package: &package::Package) -> Vec<(String, EntryType)> {
 /// product is pinned while it's decided and removed, and an update pins its
 /// packages until its journal names them, so one being written meanwhile is
 /// always seen. A failure is only a warning, since the update is done.
-fn remove_packages(paths: &Paths, folder: &Path, products: &[u64], warnings: &mut Vec<String>) {
+pub(super) fn remove_packages(
+    paths: &Paths,
+    folder: &Path,
+    products: &[u64],
+    warnings: &mut Vec<String>,
+) {
     let cache = DownloadCache::new(paths.gog_download_cache());
     let mut products = products.to_vec();
     products.sort_unstable();

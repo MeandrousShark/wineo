@@ -297,6 +297,15 @@ impl FolderState {
                 bail!("invalid GOG operation id {}", journal.operation);
             }
             for entry in &journal.attempted {
+                // A Windows install names only the folder itself, since its
+                // installers don't say which files they write.
+                if entry.path == "."
+                    && entry.kind == EntryType::Directory
+                    && entry.md5.is_none()
+                    && entry.target.is_none()
+                {
+                    continue;
+                }
                 check_entry(
                     &entry.path,
                     entry.kind,

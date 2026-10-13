@@ -183,12 +183,12 @@ pub enum Target {
 
 /// How the game folder says the game starts.
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct Launch {
+pub(super) struct Launch {
     /// The file that said it, `goggame-<id>.info` or `gameinfo`.
-    info: PathBuf,
-    exe: PathBuf,
-    cwd: Option<PathBuf>,
-    args: Vec<String>,
+    pub(super) info: PathBuf,
+    pub(super) exe: PathBuf,
+    pub(super) cwd: Option<PathBuf>,
+    pub(super) args: Vec<String>,
 }
 
 /// What `apply` did.
@@ -892,7 +892,7 @@ fn other_info(folder: &Path) -> Option<String> {
 }
 
 /// The primary play task, or else the first file task, like Heroic.
-fn windows_launch(folder: &Path, info: PathBuf, root: &Value) -> Result<Launch> {
+pub(super) fn windows_launch(folder: &Path, info: PathBuf, root: &Value) -> Result<Launch> {
     let tasks: Vec<&Value> = root
         .get("playTasks")
         .and_then(Value::as_array)
