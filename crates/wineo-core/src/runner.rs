@@ -16,8 +16,11 @@ use crate::external_runners::Source;
 
 /// umu-launcher, which runs Proton the way Steam does.
 const UMU: &str = "umu-run";
-/// How often `wait_settled` checks whether a Proton process group is gone.
+/// How often `wait_settled` first checks whether a Proton process group is gone.
 const GROUP_POLL: Duration = Duration::from_millis(100);
+/// Where the check settles when a group outlives its launcher, since a whole
+/// game session can pass that way.
+const GROUP_POLL_MAX: Duration = Duration::from_secs(1);
 /// How long a killed group that lost its leader first gets to finish exiting.
 /// Long enough for killed members to become zombies, and too short to wait
 /// out anything still running, which stays unconfirmed.
@@ -675,12 +678,16 @@ fn wait_for_group(group: Option<u32>) -> Result<()> {
             "no process group was recorded to check".to_owned(),
         ));
     };
+    let mut poll = GROUP_POLL;
     loop {
         match test_kill_process_group(pid) {
             Err(Errno::SRCH) => return Ok(()),
             // Something in the group belongs to someone else, which still
             // means the group is not gone.
-            Ok(()) | Err(Errno::PERM) => std::thread::sleep(GROUP_POLL),
+            Ok(()) | Err(Errno::PERM) => {
+                std::thread::sleep(poll);
+                poll = backed_off(poll);
+            }
             Err(err) => {
                 return Err(io::Error::from(err))
                     .context(|| format!("failed to check process group {pid:?}"));
@@ -741,6 +748,11 @@ pub(crate) fn wait_for_live_group(
     })
 }
 
+/// The next wait after `poll`, doubling up to `GROUP_POLL_MAX`.
+fn backed_off(poll: Duration) -> Duration {
+    (poll * 2).min(GROUP_POLL_MAX)
+}
+
 /// Polls until an owned group has nothing live left. A killed group can lose
 /// its leader a moment before the rest, which leaves ownership unknown, so a
 /// fully identified group gets `LEADERLESS_GRACE` to finish exiting.
@@ -750,13 +762,17 @@ fn wait_for_owned_group(
     ownership: impl Fn() -> crate::process::GroupOwnership,
 ) -> Result<()> {
     let leaderless_deadline = Instant::now() + LEADERLESS_GRACE;
+    let mut poll = GROUP_POLL;
     loop {
         match ownership() {
             crate::process::GroupOwnership::Gone => return Ok(()),
             crate::process::GroupOwnership::Owned => {
                 match crate::process::group_has_live_members(group) {
                     Some(false) => return Ok(()),
-                    Some(true) => std::thread::sleep(GROUP_POLL),
+                    Some(true) => {
+                        std::thread::sleep(poll);
+                        poll = backed_off(poll);
+                    }
                     None => {
                         return Err(Error::Unsettled(
                             "process-group members could not be inspected".to_owned(),
@@ -862,6 +878,17 @@ mod tests {
     use std::fs;
 
     use super::*;
+
+    #[test]
+    fn group_polling_backs_off_to_the_cap() {
+        let mut poll = GROUP_POLL;
+        let mut seen = Vec::new();
+        for _ in 0..6 {
+            seen.push(poll.as_millis());
+            poll = backed_off(poll);
+        }
+        assert_eq!(seen, [100, 200, 400, 800, 1000, 1000]);
+    }
 
     #[test]
     fn finds_first_executable_on_path() {
