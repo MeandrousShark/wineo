@@ -1,6 +1,6 @@
 use std::os::unix::fs::PermissionsExt;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
 
 use wineo_gog::ErrorKind;
 
@@ -971,4 +971,240 @@ fn the_username_is_not_a_secret_but_the_refresh_token_stays_redacted() {
     let shown = format!("{:?}", named_login("REFRESHSECRET", "Hunter42"));
     assert!(shown.contains("Hunter42"), "{shown}");
     assert!(!shown.contains("REFRESHSECRET"), "{shown}");
+}
+
+/// Whether nobody holds the credentials lock right now, tried without
+/// waiting so a held lock fails the test instead of hanging it.
+fn lock_is_free(paths: &Paths) -> bool {
+    let path = paths.gog_credentials_lock();
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    let file = OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .open(path)
+        .unwrap();
+    flock(&file, FlockOperation::NonBlockingLockExclusive).is_ok()
+}
+
+/// A scripted GOG whose profile answers run `during` (with whether the
+/// credentials lock was free) before replying with a name. Tokens come from
+/// `token`, given the request's number from 0.
+fn racing_profile(
+    paths: &Paths,
+    during: impl Fn() + Send + 'static,
+    token: impl Fn(usize) -> Vec<u8> + Send + 'static,
+) -> (Scripted, Arc<std::sync::atomic::AtomicBool>) {
+    let free = Arc::new(std::sync::atomic::AtomicBool::new(true));
+    let (seen, paths) = (Arc::clone(&free), paths.clone());
+    let tokens_seen = AtomicUsize::new(0);
+    let server = Scripted::start(move |line| {
+        if is_profile(line) {
+            if !lock_is_free(&paths) {
+                seen.store(false, Ordering::SeqCst);
+            }
+            during();
+            profile("Hunter42")
+        } else {
+            token(tokens_seen.fetch_add(1, Ordering::SeqCst))
+        }
+    });
+    (server, free)
+}
+
+#[test]
+fn a_logout_during_the_profile_request_is_not_undone_by_the_renewal() {
+    let (_root, paths) = setup();
+    let keyring = Arc::new(FakeKeyring::default());
+    seed(&paths, &*keyring, "R1", USER);
+    let (during_paths, during_keyring) = (paths.clone(), Arc::clone(&keyring));
+    let (server, free) = racing_profile(
+        &paths,
+        move || {
+            logout(&during_paths, &*during_keyring).unwrap();
+        },
+        |_| tokens("A", "R2", USER, 3600),
+    );
+    let mut session = Session::open(&paths, &*keyring, client_with_profiles(&server.base))
+        .unwrap()
+        .unwrap();
+    let error = session.access_token().unwrap_err();
+    assert!(matches!(error, AccountError::LoggedOut), "{error:?}");
+    assert!(free.load(Ordering::SeqCst), "the lookup held the lock");
+    assert_eq!(profile_requests(&server), 1);
+    assert_eq!(saved(&paths, &*keyring), None);
+    assert!(!key_store::key_file(&KEY_SPEC, &paths).exists());
+    assert!(session.access.is_none());
+}
+
+#[test]
+fn a_switch_during_the_profile_request_leaves_the_newer_login_alone() {
+    let (_root, paths) = setup();
+    let keyring = Arc::new(FakeKeyring::default());
+    seed(&paths, &*keyring, "R1", USER);
+    let (during_paths, during_keyring) = (paths.clone(), Arc::clone(&keyring));
+    let (server, free) = racing_profile(
+        &paths,
+        move || replace(&during_paths, &*during_keyring, "THEIRS", OTHER_USER),
+        |_| tokens("A", "R2", USER, 3600),
+    );
+    let mut session = Session::open(&paths, &*keyring, client_with_profiles(&server.base))
+        .unwrap()
+        .unwrap();
+    let error = session.access_token().unwrap_err();
+    assert!(matches!(error, AccountError::Switched), "{error:?}");
+    assert!(free.load(Ordering::SeqCst), "the lookup held the lock");
+    // Exactly what the other account saved, with nobody's name added.
+    assert_eq!(
+        saved(&paths, &*keyring),
+        Some(login_of("THEIRS", OTHER_USER))
+    );
+    assert!(session.access.is_none());
+}
+
+#[test]
+fn a_newer_login_during_the_profile_request_is_renewed_and_gets_the_name() {
+    let (_root, paths) = setup();
+    let keyring = Arc::new(FakeKeyring::default());
+    seed(&paths, &*keyring, "R1", USER);
+    let (during_paths, during_keyring) = (paths.clone(), Arc::clone(&keyring));
+    let replaced = AtomicUsize::new(0);
+    let (server, free) = racing_profile(
+        &paths,
+        move || {
+            if replaced.fetch_add(1, Ordering::SeqCst) == 0 {
+                replace(&during_paths, &*during_keyring, "NEWER", USER);
+            }
+        },
+        |n| tokens("A", &format!("R{}", n + 2), USER, 3600),
+    );
+    let mut session = Session::open(&paths, &*keyring, client_with_profiles(&server.base))
+        .unwrap()
+        .unwrap();
+    assert_eq!(session.access_token().unwrap().expose(), "A");
+    assert!(free.load(Ordering::SeqCst), "the lookup held the lock");
+    let sent: Vec<_> = server
+        .requests()
+        .iter()
+        .filter(|line| !is_profile(line))
+        .map(|line| sent_refresh(line))
+        .collect();
+    // The stale answer (R2) was thrown away, and the retry used the newer
+    // login's token.
+    assert_eq!(sent, ["R1", "NEWER"]);
+    assert_eq!(profile_requests(&server), 1);
+    assert_eq!(
+        saved(&paths, &*keyring),
+        Some(named_login("R3", "Hunter42"))
+    );
+}
+
+#[test]
+fn the_lookup_at_login_holds_no_lock_and_saves_nothing_before_it_ends() {
+    let (_root, paths) = setup();
+    let keyring = Arc::new(FakeKeyring::default());
+    seed(&paths, &*keyring, "PREVIOUS", OTHER_USER);
+    let (during_paths, during_keyring) = (paths.clone(), Arc::clone(&keyring));
+    let during_saved = Arc::new(Mutex::new(None));
+    let record = Arc::clone(&during_saved);
+    let (server, free) = racing_profile(
+        &paths,
+        move || {
+            *record.lock().unwrap() = saved(&during_paths, &*during_keyring);
+        },
+        |_| tokens("A", "R1", USER, 3600),
+    );
+    let logged_in = login(&paths, &*keyring, client_with_profiles(&server.base), CODE).unwrap();
+    assert!(free.load(Ordering::SeqCst), "the lookup held the lock");
+    assert_eq!(
+        *during_saved.lock().unwrap(),
+        Some(login_of("PREVIOUS", OTHER_USER)),
+        "the login is saved only after the lookup"
+    );
+    assert_eq!(logged_in.username.as_deref(), Some("Hunter42"));
+    assert_eq!(
+        saved(&paths, &*keyring),
+        Some(named_login("R1", "Hunter42"))
+    );
+}
+
+#[test]
+fn a_slow_profile_delays_a_renewal_and_a_login_by_no_more_than_its_deadline() {
+    let slow = |line: &str| {
+        if is_profile(line) {
+            std::thread::sleep(Duration::from_millis(1500));
+            profile("Hunter42")
+        } else {
+            tokens("A", "R2", USER, 3600)
+        }
+    };
+    let quick = |server: &Scripted| {
+        client_with_profiles(&server.base).with_profile_deadline(Duration::from_millis(200))
+    };
+
+    let (_root, paths) = setup();
+    let keyring = FakeKeyring::default();
+    seed(&paths, &keyring, "R1", USER);
+    let server = Scripted::start(slow);
+    let mut session = Session::open(&paths, &keyring, quick(&server))
+        .unwrap()
+        .unwrap();
+    let started = Instant::now();
+    session.access_token().unwrap();
+    assert!(started.elapsed() < Duration::from_millis(1200));
+    // The renewed token is saved without a name, and not looked up again.
+    assert_eq!(saved(&paths, &keyring), Some(login_of("R2", USER)));
+
+    let (_root, paths) = setup();
+    let keyring = FakeKeyring::default();
+    let server = Scripted::start(slow);
+    let started = Instant::now();
+    let logged_in = login(&paths, &keyring, quick(&server), CODE).unwrap();
+    assert!(started.elapsed() < Duration::from_millis(1200));
+    assert_eq!(logged_in.username, None);
+    assert_eq!(saved(&paths, &keyring), Some(login_of("R2", USER)));
+}
+
+#[test]
+fn a_named_login_round_trips_through_the_plain_text_key_file() {
+    let (_root, paths) = setup();
+    let server = Scripted::start(|line| {
+        if is_profile(line) {
+            profile("Hunter42")
+        } else {
+            tokens("A", "R1", USER, 3600)
+        }
+    });
+    let logged_in = login(&paths, &NoKeyring, client_with_profiles(&server.base), CODE).unwrap();
+    let file = key_store::key_file(&KEY_SPEC, &paths);
+    assert_eq!(logged_in.saved, Saved::File(file.clone()));
+    assert_eq!(logged_in.username.as_deref(), Some("Hunter42"));
+    assert!(
+        fs::read_to_string(&file)
+            .unwrap()
+            .contains(r#""username":"Hunter42""#)
+    );
+
+    let (stored, source) = stored_login(&paths, &NoKeyring).unwrap().unwrap();
+    assert_eq!(
+        (stored, source),
+        (named_login("R1", "Hunter42"), KeySource::File)
+    );
+
+    // A renewal from the file keeps the name, without asking for it.
+    let mut session = Session::open(&paths, &NoKeyring, client_with_profiles(&server.base))
+        .unwrap()
+        .unwrap();
+    session.access_token().unwrap();
+    assert_eq!(
+        stored_login(&paths, &NoKeyring)
+            .unwrap()
+            .unwrap()
+            .0
+            .username
+            .as_deref(),
+        Some("Hunter42")
+    );
+    assert_eq!(profile_requests(&server), 1);
 }
