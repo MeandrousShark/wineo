@@ -445,6 +445,7 @@ impl Runner {
         group: Option<u32>,
         boot_id: Option<&str>,
         leader_start: Option<u64>,
+        unbounded: bool,
     ) -> Result<()> {
         if let Some(mut command) = self.wineserver(prefix) {
             let status = on_its_own(command.arg("-w"))
@@ -454,7 +455,7 @@ impl Runner {
                 return Err(Error::Unsettled(format!("wineserver -w failed ({status})")));
             }
         }
-        wait_for_live_group(group, boot_id, leader_start)
+        wait_for_live_group(group, boot_id, leader_start, unbounded)
     }
 
     /// Asks running programs to close: a Windows logoff for wine, SIGTERM to
@@ -735,16 +736,27 @@ pub(crate) fn wait_for_live_group(
     group: Option<u32>,
     boot_id: Option<&str>,
     leader_start: Option<u64>,
+    unbounded: bool,
 ) -> Result<()> {
     let (Some(group), Some(boot_id), Some(leader_start)) = (group, boot_id, leader_start) else {
         return Err(Error::Unsettled(
             "no complete process identity was recorded".to_owned(),
         ));
     };
-    // The supervised wait can last a whole game session.
-    wait_for_owned_group(group, true, GROUP_POLL_MAX, || {
+    wait_for_owned_group(group, true, live_poll_cap(unbounded), || {
         crate::process::live_group_ownership(group, boot_id, leader_start)
     })
+}
+
+/// Back off only in a wait with no deadline, where the run can last a whole
+/// game session. A wait bounded by a timeout, `give_up`, or `recv_timeout`
+/// keeps the fixed cadence, since its deadline can fall between two slow checks.
+fn live_poll_cap(unbounded: bool) -> Duration {
+    if unbounded {
+        GROUP_POLL_MAX
+    } else {
+        GROUP_POLL
+    }
 }
 
 /// The next wait after `poll`, doubling up to `max`. A `max` of `GROUP_POLL`
@@ -894,6 +906,8 @@ mod tests {
         assert_eq!(sequence(GROUP_POLL_MAX), [100, 200, 400, 800, 1000, 1000]);
         // Bounded and cleanup waits pass GROUP_POLL and never slow down.
         assert_eq!(sequence(GROUP_POLL), [100; 6]);
+        assert_eq!(live_poll_cap(true), GROUP_POLL_MAX);
+        assert_eq!(live_poll_cap(false), GROUP_POLL);
     }
 
     #[test]

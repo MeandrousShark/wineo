@@ -383,12 +383,18 @@ impl Supervisor {
                     // this lasts until nothing is left running in the prefix.
                     let sender = self.sender.clone();
                     let (host, boot_id) = (host.clone(), boot_id.clone());
+                    let unbounded = give_up.is_none();
                     thread::spawn(move || {
                         let result = match settle {
-                            Settle::Idle => host.wait_idle(group, boot_id.as_deref(), leader_start),
-                            Settle::Confirmed => {
-                                host.wait_settled_live(group, boot_id.as_deref(), leader_start)
+                            Settle::Idle => {
+                                host.wait_idle(group, boot_id.as_deref(), leader_start, unbounded)
                             }
+                            Settle::Confirmed => host.wait_settled_live(
+                                group,
+                                boot_id.as_deref(),
+                                leader_start,
+                                unbounded,
+                            ),
                         };
                         let _ = sender.send(Event::Idle(result));
                     });
