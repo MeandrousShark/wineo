@@ -269,6 +269,22 @@ impl<'a> Api<'a> {
     }
 }
 
+/// An image download the server answered with something but 200, kept typed
+/// so callers can tell a failing server from a missing file.
+#[derive(Debug, thiserror::Error)]
+#[error("the download answered with status {0}")]
+pub(crate) struct DownloadStatus(pub u16);
+
+/// An image download whose body broke off partway.
+#[derive(Debug, thiserror::Error)]
+#[error("failed to download {url}: {error}")]
+pub(crate) struct DownloadRead {
+    url: String,
+    // Not named `source`: thiserror would chain it, and `{:#}` would print
+    // the reason twice.
+    error: io::Error,
+}
+
 /// Downloads an image through `transport`, abandoning it past the art size
 /// cap. No key is sent, since images come from a CDN rather than an API.
 pub(crate) fn download_image(
@@ -280,7 +296,7 @@ pub(crate) fn download_image(
     check_download_cancel(cancel)?;
     let (response, total) = transport.request_with_length(url, None)?;
     if response.status != 200 {
-        bail!("the download answered with status {}", response.status);
+        return Err(DownloadStatus(response.status).into());
     }
     if total.is_some_and(|length| length > MAX_BYTES) {
         bail!("{url} is larger than 32 MiB");
@@ -301,7 +317,10 @@ pub(crate) fn download_image(
                     check_download_cancel(cancel)?;
                 }
                 result => {
-                    break result.map_err(|err| anyhow!("failed to download {url}: {err}"))?;
+                    break result.map_err(|error| DownloadRead {
+                        url: url.to_owned(),
+                        error,
+                    })?;
                 }
             }
         };

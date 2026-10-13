@@ -3121,6 +3121,193 @@ mod tests {
     }
 
     #[test]
+    fn a_cached_cover_that_wont_decode_is_removed_and_fetched_again_next_load() {
+        let fx = Fixture::new();
+        let listing = owned_listing(vec![owned_game_in(7, "Celeste", OwnedState::NotInstalled)]);
+        let page = page_with(&fx.paths, listing);
+        // A truncated download that passed the signature check.
+        fs::create_dir_all(fx.paths.gog_covers_dir()).unwrap();
+        let cached = fx.paths.gog_covers_dir().join("7.png");
+        fs::write(&cached, &png_bytes()[..12]).unwrap();
+        let server = art_server(true);
+        let covers = leaked(Covers::new(200, png_bytes()));
+
+        let first = load(&fx.paths, page.poster_jobs(), &Token::new(), None, covers);
+        assert_eq!(first.len(), 1);
+        assert!(first[0].1.is_err());
+        assert!(!cached.exists(), "it can't poison the cache");
+        assert_eq!(server.requests().len(), 0);
+
+        let second = load(
+            &fx.paths,
+            page.poster_jobs(),
+            &Token::new(),
+            Some(&server),
+            covers,
+        );
+        assert!(second[0].1.is_ok());
+        assert_eq!(server.requests().len(), 1);
+        assert!(cached.is_file());
+    }
+
+    #[test]
+    fn stored_art_that_wont_decode_is_never_removed() {
+        let fx = Fixture::new();
+        let dir = fx.paths.art_dir("rimworld");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("grid.png"), &png_bytes()[..12]).unwrap();
+        let listing = owned_listing(vec![owned_game_in(
+            1,
+            "RimWorld",
+            OwnedState::Installed("rimworld".to_owned()),
+        )]);
+        let page = page_with(&fx.paths, listing);
+        let covers = leaked(Covers::new(200, Vec::new()));
+        let sent = load(&fx.paths, page.poster_jobs(), &Token::new(), None, covers);
+        assert!(sent[0].1.is_err());
+        assert!(dir.join("grid.png").exists());
+    }
+
+    #[test]
+    fn an_outage_stops_the_fetching_after_three_games_but_cached_covers_still_load() {
+        let fx = Fixture::new();
+        let listing = owned_listing(
+            (1..=6)
+                .map(|id| owned_game_in(id, &format!("Game {id}"), OwnedState::NotInstalled))
+                .collect(),
+        );
+        let mut page = page_with(&fx.paths, listing);
+        // The last game in the grid was cached by an earlier load.
+        fs::create_dir_all(fx.paths.gog_covers_dir()).unwrap();
+        fs::write(fx.paths.gog_covers_dir().join("6.png"), png_bytes()).unwrap();
+        let server = crate::gog_fake::Server::start(|_| crate::gog_fake::reply(503, "{}"));
+        let covers = leaked(Covers::new(200, png_bytes()));
+        let sent = load(
+            &fx.paths,
+            page.poster_jobs(),
+            &Token::new(),
+            Some(&server),
+            covers,
+        );
+        let art_requests = server
+            .requests()
+            .iter()
+            .filter(|line| line.contains("/v2/games/"))
+            .count();
+        assert_eq!(art_requests, 3);
+        assert_eq!(covers.count(), 0);
+        let loaded: Vec<&str> = sent
+            .iter()
+            .filter(|(_, poster)| poster.is_ok())
+            .map(|(id, _)| id.as_str())
+            .collect();
+        assert_eq!(loaded, ["6"]);
+        let generation = page.poster_generation;
+        for (id, poster) in sent {
+            let _ = page.update(Event::Poster(generation, id, poster));
+        }
+        assert!(page.poster("6").is_some());
+        assert!(page.poster("1").is_none());
+        assert!(cached_only(&fx.paths, "6.png"), "nothing new was cached");
+    }
+
+    fn cached_only(paths: &Paths, name: &str) -> bool {
+        fs::read_dir(paths.gog_covers_dir())
+            .unwrap()
+            .all(|entry| entry.unwrap().file_name() == name)
+    }
+
+    #[test]
+    fn a_game_without_a_cover_does_not_count_as_an_outage() {
+        let fx = Fixture::new();
+        let listing = owned_listing(
+            (1..=6)
+                .map(|id| owned_game_in(id, &format!("Game {id}"), OwnedState::NotInstalled))
+                .collect(),
+        );
+        let page = page_with(&fx.paths, listing);
+        let server = crate::gog_fake::Server::start(|_| crate::gog_fake::reply(404, "{}"));
+        let covers = leaked(Covers::new(200, png_bytes()));
+        let sent = load(
+            &fx.paths,
+            page.poster_jobs(),
+            &Token::new(),
+            Some(&server),
+            covers,
+        );
+        assert_eq!(sent.len(), 6);
+        assert_eq!(server.requests().len(), 6);
+    }
+
+    #[test]
+    fn a_cover_that_isnt_an_outage_resets_the_count() {
+        let fx = Fixture::new();
+        let listing = owned_listing(
+            (1..=7)
+                .map(|id| owned_game_in(id, &format!("Game {id}"), OwnedState::NotInstalled))
+                .collect(),
+        );
+        let page = page_with(&fx.paths, listing);
+        // Two outages, a game with no cover, then outages until the stop.
+        let server = crate::gog_fake::Server::start(|line| {
+            let status = if line.contains("/v2/games/3?") {
+                404
+            } else {
+                503
+            };
+            crate::gog_fake::reply(status, "{}")
+        });
+        let covers = leaked(Covers::new(200, png_bytes()));
+        load(
+            &fx.paths,
+            page.poster_jobs(),
+            &Token::new(),
+            Some(&server),
+            covers,
+        );
+        let art_requests = server
+            .requests()
+            .iter()
+            .filter(|line| line.contains("/v2/games/"))
+            .count();
+        assert_eq!(art_requests, 6);
+    }
+
+    #[test]
+    fn canceling_after_the_first_cover_arrives_requests_nothing_more() {
+        let fx = Fixture::new();
+        let listing = owned_listing(
+            (1..=4)
+                .map(|id| owned_game_in(id, &format!("Game {id}"), OwnedState::NotInstalled))
+                .collect(),
+        );
+        let page = page_with(&fx.paths, listing);
+        let server = art_server(true);
+        let covers = leaked(Covers::new(200, png_bytes()));
+        let token = Token::new();
+        let mut sent = Vec::new();
+        gog_posters::run(
+            &fx.paths,
+            page.poster_jobs(),
+            &token,
+            || {
+                Ok(Network {
+                    client: server.client(),
+                    transport: Box::new(CoversRef(covers)),
+                })
+            },
+            |id, poster| {
+                sent.push((id, poster));
+                token.cancel();
+            },
+        );
+        assert_eq!(sent.len(), 1);
+        assert!(sent[0].1.is_ok());
+        assert_eq!(server.requests().len(), 1);
+        assert_eq!(covers.count(), 1);
+    }
+
+    #[test]
     fn heroic_games_not_yet_migrated_take_the_cover_by_their_numeric_id() {
         let mut fx = Fixture::new();
         fx.native(RIMWORLD, "RimWorld", &[]);

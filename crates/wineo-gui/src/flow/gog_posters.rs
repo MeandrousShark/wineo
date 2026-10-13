@@ -11,7 +11,7 @@ use wineo_core::art::{self, ArtConfig, Kind};
 use wineo_core::cancel::Token;
 use wineo_core::download::{Https, Transport};
 use wineo_core::gog::api::Client;
-use wineo_core::gog::covers;
+use wineo_core::gog::covers::{self, CoverError};
 use wineo_core::paths::Paths;
 
 use super::artwork::preview_with_format;
@@ -47,10 +47,16 @@ impl Network {
     }
 }
 
+/// How many covers in a row may fail because the network or GOG is down
+/// before the rest are left alone for this load.
+const OUTAGE_LIMIT: u32 = 3;
+
 /// Loads each job's poster and hands it to `emit`: everything that needs no
 /// network first, so stored art and covers already cached show up before
 /// the first download. A game with no stored art emits nothing. Stops when
-/// `token` is canceled.
+/// `token` is canceled, and stops fetching after `OUTAGE_LIMIT` covers in a
+/// row fail because the network or GOG is down, so an outage doesn't make a
+/// big library wait out hundreds of timeouts.
 pub(super) fn run(
     paths: &Paths,
     jobs: Vec<Job>,
@@ -63,24 +69,17 @@ pub(super) fn run(
         if token.is_canceled() {
             return;
         }
-        let path = match job.source {
+        match job.source {
             Source::Stored(environment) => match stored_grid(paths, &environment) {
-                Ok(Some(path)) => path,
-                Ok(None) => continue,
-                Err(error) => {
-                    emit(job.id, Err(error));
-                    continue;
-                }
+                Ok(Some(path)) => emit(job.id, decode(&path)),
+                Ok(None) => {}
+                Err(error) => emit(job.id, Err(error)),
             },
             Source::Cover(gog_id) => match covers::cached(paths, gog_id) {
-                Some(path) => path,
-                None => {
-                    missing.push((job.id, gog_id));
-                    continue;
-                }
+                Some(path) => emit(job.id, decode_cover(paths, gog_id, &path)),
+                None => missing.push((job.id, gog_id)),
             },
-        };
-        emit(job.id, decode(&path));
+        }
     }
     if missing.is_empty() {
         return;
@@ -94,13 +93,26 @@ pub(super) fn run(
             return;
         }
     };
+    let mut outages = 0;
     for (id, gog_id) in missing {
-        if token.is_canceled() {
+        if token.is_canceled() || outages >= OUTAGE_LIMIT {
             return;
         }
-        let poster = covers::cover(paths, &network.client, &*network.transport, gog_id, token)
-            .map_err(|error| format!("{error:#}"))
-            .and_then(|path| decode(&path));
+        let poster = match covers::cover(paths, &network.client, &*network.transport, gog_id, token)
+        {
+            Ok(path) => {
+                outages = 0;
+                decode_cover(paths, gog_id, &path)
+            }
+            Err(error) => {
+                if matches!(error, CoverError::Unavailable(_)) {
+                    outages += 1;
+                } else {
+                    outages = 0;
+                }
+                Err(error.to_string())
+            }
+        };
         emit(id, poster);
     }
 }
@@ -117,4 +129,15 @@ fn stored_grid(paths: &Paths, environment: &str) -> Result<Option<PathBuf>, Stri
 
 fn decode(path: &Path) -> Result<Handle, String> {
     preview_with_format(path, Kind::Grid).map(|(handle, _)| handle)
+}
+
+/// Decodes a cached cover. One that can't be decoded, like a truncated
+/// download, is removed so the next load fetches it again instead of failing
+/// on it forever. Art an environment stored is never removed.
+fn decode_cover(paths: &Paths, gog_id: u64, path: &Path) -> Result<Handle, String> {
+    let poster = decode(path);
+    if poster.is_err() {
+        let _ = covers::discard(paths, gog_id);
+    }
+    poster
 }
