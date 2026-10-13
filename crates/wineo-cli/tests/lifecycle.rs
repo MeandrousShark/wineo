@@ -369,7 +369,7 @@ fn start_reports_wine_failing_to_spawn() {
     let f = Fixture::new();
     f.environment("app", APP);
     let wine = f.root.path().join("bin/wine");
-    fs::write(&wine, "#!/nonexistent/interpreter\n").unwrap();
+    write_script(&wine, "#!/nonexistent/interpreter\n");
 
     let started = f.run(&["start", "app"]);
     assert!(!started.status.success());

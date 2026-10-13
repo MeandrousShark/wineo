@@ -51,7 +51,7 @@ fn slow_wineboot(f: &Fixture) {
         1,
     );
     assert_ne!(script, FAKE_WINE);
-    fs::write(wine, script).unwrap();
+    write_script(wine, script);
 }
 
 fn interrupt(child: &std::process::Child) {

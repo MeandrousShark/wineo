@@ -2726,7 +2726,7 @@ mod tests {
             .runner_root(&paths)
             .unwrap()
             .join("fake/bin/wine");
-        fs::write(
+        write_script(
             &wine,
             format!(
                 "#!/bin/sh\ncase \"$*\" in\n\
@@ -2735,8 +2735,7 @@ mod tests {
                  *setup.exe*) {installer} ;;\n\
                  esac\n"
             ),
-        )
-        .unwrap();
+        );
         let installer = root.path().join("setup.exe");
         fs::write(&installer, "fixture").unwrap();
         let draft = Draft {

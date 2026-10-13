@@ -620,7 +620,7 @@ fn heroic_proton_import_adds_hdr_only_with_supported_wayland() {
     f.install_proton("proton-test");
     symlink(".", prefix.join("pfx")).unwrap();
     let proton = f.root.path().join("data/wineo/runners/proton-test/proton");
-    fs::write(&proton, "#!/bin/sh\n# PROTON_ENABLE_WAYLAND\nexit 0\n").unwrap();
+    write_script(&proton, "#!/bin/sh\n# PROTON_ENABLE_WAYLAND\nexit 0\n");
     let settings = fs::read_to_string(heroic.join("config.json"))
         .unwrap()
         .replace(

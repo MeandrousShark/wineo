@@ -15,7 +15,7 @@ printf '%s %s\n' "$0" "$*" >>"$WINEO_TEST_RUNNER_MARKER"
 exit 97
 "#;
     for runner in ["wine", "wineserver", "umu-run"] {
-        fs::write(f.root.path().join("bin").join(runner), script).unwrap();
+        write_script(f.root.path().join("bin").join(runner), script);
     }
 }
 

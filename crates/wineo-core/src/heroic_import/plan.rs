@@ -1368,11 +1368,10 @@ pub(super) mod tests {
         assert_eq!(plan.settings().env["DXVK_HDR"], "custom");
 
         fake_proton_runner(&runners, "proton-test");
-        fs::write(
+        write_script(
             runners.join("proton-test/proton"),
             "#!/bin/sh\n# PROTON_ENABLE_WAYLAND\n",
-        )
-        .unwrap();
+        );
         let proton = Runners::at(runners).resolve("proton-test").unwrap();
         let mut imported = reviewed_import(root.path());
         imported.enable_wine_wayland = true;
@@ -1392,11 +1391,10 @@ pub(super) mod tests {
         let root = tempdir().unwrap();
         let runners = root.path().join("runners");
         fake_proton_runner(&runners, "proton-test");
-        fs::write(
+        write_script(
             runners.join("proton-test/proton"),
             "#!/bin/sh\n# PROTON_ENABLE_WAYLAND\n",
-        )
-        .unwrap();
+        );
         let proton = Runners::at(runners).resolve("proton-test").unwrap();
         let mut imported = reviewed_import(root.path());
         imported.enable_wine_wayland = true;
@@ -2111,11 +2109,10 @@ pub(super) mod tests {
         let root = tempdir().unwrap();
         let runners = root.path().join("runners");
         fake_proton_runner(&runners, "proton-test");
-        fs::write(
+        write_script(
             runners.join("proton-test/proton"),
             "#!/bin/sh\n# PROTON_ENABLE_WAYLAND\n",
-        )
-        .unwrap();
+        );
         let proton = Runners::at(runners).resolve("proton-test").unwrap();
         let imported = reviewed_import(root.path());
         let mut plan = planned(root.path(), imported, &proton);
