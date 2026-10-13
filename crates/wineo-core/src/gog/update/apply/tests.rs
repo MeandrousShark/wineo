@@ -895,9 +895,11 @@ fn up_to_date_is_a_no_op_and_cant_compare_refuses() {
         Plan::UpToDate {
             environment,
             version,
+            warnings,
         } => {
             assert_eq!(environment, "rimworld");
             assert_eq!(version.as_deref(), Some("1.0"));
+            assert!(warnings.is_empty(), "{warnings:?}");
         }
         Plan::Update(_) => panic!("expected up to date"),
     }
@@ -1872,6 +1874,9 @@ fn failed_and_unavailable_products_are_carried_over_without_downloading() {
     products[1].status = ProductStatus::Failed;
     products[2].status = ProductStatus::Unavailable;
     fx.save(&state);
+    // Plan 0050's 19A retries DLC GOG still offers, so carrying over needs it withdrawn.
+    fx.withdraw(ROYALTY);
+    fx.withdraw(IDEOLOGY);
     let pending = fx.pending(true, Options::default());
     assert_eq!(pending.products()[1].download_size, 0);
     fx.apply_with(true, &pending, &Token::new(), |_| {})
@@ -2180,6 +2185,7 @@ fn a_recovery_labels_a_dlc_by_the_folder_s_name_or_its_id() {
     assert_eq!(pending.dlc_label(ROYALTY), format!("Royalty ({ROYALTY})"));
 }
 
+mod dlc;
 pub(in crate::gog::update) mod install;
 mod real;
 mod windows;

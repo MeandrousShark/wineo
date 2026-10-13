@@ -89,6 +89,10 @@ struct Fixture {
     keyring: Arc<FakeKeyring>,
     products: BTreeMap<u64, Value>,
     builds: BTreeMap<u64, Value>,
+    /// The ids the account owns. None fails the list, as GOG's own 404.
+    owned: Option<Vec<u64>>,
+    /// How many times the owned ids were asked for.
+    owned_asked: Arc<std::sync::atomic::AtomicUsize>,
 }
 
 impl Fixture {
@@ -103,6 +107,8 @@ impl Fixture {
             keyring,
             products: BTreeMap::new(),
             builds: BTreeMap::new(),
+            owned: None,
+            owned_asked: Arc::default(),
         }
     }
 
@@ -182,6 +188,7 @@ impl Fixture {
     /// Serves GOG's token, product, and build endpoints from the maps.
     fn serve(&self) -> Scripted {
         let (products, builds) = (self.products.clone(), self.builds.clone());
+        let (owned, asked) = (self.owned.clone(), Arc::clone(&self.owned_asked));
         Scripted::start(move |line| {
             let path = line.split(' ').nth(1).unwrap_or_default();
             let path = path.split('?').next().unwrap_or_default();
@@ -197,6 +204,13 @@ impl Fixture {
             match parts.as_slice() {
                 ["products", _] => found(&products),
                 ["products", _, "os", "windows", "builds"] => found(&builds),
+                ["user", "data", "games"] => {
+                    asked.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    match &owned {
+                        Some(owned) => reply(200, &json!({ "owned": owned }).to_string()),
+                        None => reply(404, "{}"),
+                    }
+                }
                 _ => reply(404, "{}"),
             }
         })
@@ -1269,4 +1283,76 @@ fn a_blank_gog_title_falls_back_to_the_folder_s_name() {
         state: DlcState::Unknown,
     };
     assert_eq!(dlc.label("RimWorld"), format!("Royalty ({ROYALTY})"));
+}
+
+#[test]
+fn a_batch_asks_which_dlc_the_account_owns_once() {
+    const OTHER: u64 = 2001;
+    const OTHER_DLC: u64 = 2002;
+    let mut fx = Fixture::new();
+    fx.products.insert(
+        RIMWORLD,
+        product(
+            RIMWORLD,
+            "RimWorld",
+            linux("1"),
+            vec![dlc(ROYALTY, "Royalty", linux("1"))],
+        ),
+    );
+    fx.products.insert(
+        OTHER,
+        product(
+            OTHER,
+            "Other",
+            linux("1"),
+            vec![dlc(OTHER_DLC, "Extra", linux("1"))],
+        ),
+    );
+    // The helper lists DLC details only; GOG's DLC ids come with them.
+    for (id, dlc) in [(RIMWORLD, ROYALTY), (OTHER, OTHER_DLC)] {
+        fx.products.get_mut(&id).unwrap()["dlcs"] = json!({"products": [{"id": dlc}]});
+    }
+    fx.owned = Some(vec![RIMWORLD, ROYALTY, OTHER, OTHER_DLC]);
+    fx.native(vec![installed(RIMWORLD, Some("1"))]);
+    fx.game(
+        "other",
+        OTHER,
+        Platform::Linux,
+        Track::Installer,
+        "en",
+        vec![installed(OTHER, Some("1"))],
+    );
+    let batch = fx.with(|session| check_all(session, true)).unwrap();
+    assert!(batch.errors.is_empty(), "{:?}", batch.errors);
+    let found: Vec<_> = batch
+        .statuses
+        .iter()
+        .map(|status| {
+            (
+                status.environment.as_str(),
+                status.state,
+                status
+                    .dlc
+                    .iter()
+                    .map(|dlc| (dlc.id, dlc.state))
+                    .collect::<Vec<_>>(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        found,
+        [
+            (
+                "other",
+                UpdateState::Available,
+                vec![(OTHER_DLC, DlcState::NotInstalled)]
+            ),
+            (
+                "rimworld",
+                UpdateState::Available,
+                vec![(ROYALTY, DlcState::NotInstalled)]
+            ),
+        ]
+    );
+    assert_eq!(fx.owned_asked.load(std::sync::atomic::Ordering::SeqCst), 1);
 }

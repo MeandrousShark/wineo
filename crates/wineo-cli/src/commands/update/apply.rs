@@ -145,7 +145,10 @@ fn one(paths: &Paths, args: &Args, name: &str) -> anyhow::Result<ExitCode> {
     let mut session = account.open(paths)?;
     let planned = plan(paths, &mut session, name, args, &Cancellation::new()?)?;
     let pending = match planned {
-        Plan::UpToDate { .. } => {
+        Plan::UpToDate { warnings, .. } => {
+            for warning in &warnings {
+                warn(warning);
+            }
             println!("Up to date.");
             return Ok(ExitCode::SUCCESS);
         }
@@ -237,6 +240,17 @@ fn all(paths: &Paths, args: &Args) -> anyhow::Result<ExitCode> {
     }
     for line in &skipped {
         println!("{line}");
+    }
+    // A game being updated says its warnings in its review.
+    for status in &batch.statuses {
+        if !ready
+            .iter()
+            .any(|pending| pending.environment() == status.environment)
+        {
+            for warning in &status.warnings {
+                warn(format!("{}: {warning}", status.environment));
+            }
+        }
     }
     for pending in &ready {
         print_review(paths, pending);

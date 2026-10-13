@@ -1560,3 +1560,203 @@ fn an_update_or_reinstall_leaves_a_removed_default_target_removed() {
     assert!(environment.config.targets.is_empty());
     assert_settled(&fx);
 }
+
+// DLC an update installs that the folder doesn't have installed.
+
+/// GOG offers a second DLC, only on Windows.
+fn offer_ideology(fx: &Fixture) {
+    fx.offer_windows(
+        IDEOLOGY,
+        "RimWorld - Ideology",
+        "1.0",
+        &[("Data/Ideology/i.dat", "ideology v1")],
+        Some(info(IDEOLOGY, &["en-US"], "English", serde_json::json!([]))),
+    );
+}
+
+fn statuses_and_versions(fx: &Fixture) -> Vec<(u64, ProductStatus, Option<String>)> {
+    fx.state()
+        .committed
+        .unwrap()
+        .products
+        .iter()
+        .map(|product| (product.id, product.status, product.version.clone()))
+        .collect()
+}
+
+#[test]
+fn newly_owned_dlc_is_found_and_only_its_installer_runs() {
+    let fx = installed_windows();
+    offer_ideology(&fx);
+    // Not owned yet: nothing to do.
+    let status = crate::gog::update::check(&mut fx.session(), "rimworld", true).unwrap();
+    assert_eq!(status.state, UpdateState::UpToDate);
+
+    fx.owns_ids(&[RIMWORLD, DLC, IDEOLOGY]);
+    let status = crate::gog::update::check(&mut fx.session(), "rimworld", true).unwrap();
+    assert_eq!(status.state, UpdateState::Available);
+    assert!(status.applicable);
+    let dlc: Vec<_> = status.dlc.iter().map(|dlc| (dlc.id, dlc.state)).collect();
+    assert_eq!(
+        dlc,
+        [
+            (DLC, crate::gog::update::DlcState::UpToDate),
+            (IDEOLOGY, crate::gog::update::DlcState::NotInstalled),
+        ]
+    );
+    fx.update();
+    assert_eq!(ran_since_install(&fx), [setup(IDEOLOGY, "1.0")]);
+    assert_eq!(
+        versions(&fx),
+        [(RIMWORLD, v("1.0")), (DLC, v("1.0")), (IDEOLOGY, v("1.0"))]
+    );
+    assert_eq!(fx.read("Data/Ideology/i.dat"), "ideology v1");
+    assert_settled(&fx);
+    assert_eq!(cached(&fx, IDEOLOGY), 0);
+}
+
+#[test]
+fn a_failed_windows_dlc_is_retried_and_failing_again_stays_failed() {
+    let fx = offered();
+    fx.exits(DLC, 1);
+    fx.install_windows(&request()).unwrap();
+    assert_eq!(fx.statuses_windows()[1], (DLC, ProductStatus::Failed));
+    let status = crate::gog::update::check(&mut fx.session(), "rimworld", true).unwrap();
+    assert_eq!(status.state, UpdateState::Available);
+    assert_eq!(status.dlc[0].available.as_deref(), Some("1.0"));
+
+    // It stops before installing anything again: still failed, and the
+    // game launchable with nothing in flight.
+    let updated = fx.update();
+    assert_eq!(fx.ran()[2..], [setup(DLC, "1.0")]);
+    assert_eq!(
+        updated.warnings,
+        [format!(
+            "Royalty ({DLC}) failed and wasn't installed: its installer stopped before installing anything (exit code 1)."
+        )]
+    );
+    assert_eq!(
+        statuses_and_versions(&fx)[1],
+        (DLC, ProductStatus::Failed, None)
+    );
+    assert_eq!(fx.state().journal, None);
+    assert!(!fx.launch_refused());
+
+    fs::remove_file(fx.runs().join(format!("exit-{DLC}"))).unwrap();
+    fx.update();
+    assert_eq!(fx.ran()[3..], [setup(DLC, "1.0")]);
+    assert_eq!(
+        statuses_and_versions(&fx)[1],
+        (DLC, ProductStatus::Installed, v("1.0"))
+    );
+    assert_eq!(fx.read("Data/Royalty/r.dat"), "royalty v1");
+    assert_eq!(fx.state().journal, None);
+    assert!(!fx.launch_refused());
+}
+
+#[test]
+fn a_retried_dlc_stopping_partway_keeps_the_journal_until_update_finishes_it() {
+    let fx = offered();
+    fx.exits(DLC, 1);
+    fx.install_windows(&request()).unwrap();
+    fx.exits(DLC, 5);
+    let error = fx.try_update(Options::default()).unwrap_err();
+    assert!(
+        matches!(error.downcast_ref(), Some(SetupError::Partway { product, .. }) if *product == DLC),
+        "{error:#}"
+    );
+    assert!(fx.launch_refused());
+    assert_eq!(fx.state().journal.unwrap().kind, JournalKind::Update);
+
+    // Finishing, it never starts: an earlier run may have changed files, so
+    // the journal stays.
+    fx.exits(DLC, 1);
+    fx.try_update(Options::default()).unwrap_err();
+    assert!(fx.launch_refused());
+
+    fs::remove_file(fx.runs().join(format!("exit-{DLC}"))).unwrap();
+    let pending = fx.pending(false, Options::default());
+    assert!(pending.is_recovery() && pending.is_offline());
+    fx.apply_with(false, &pending, &Token::new(), |_| {})
+        .unwrap();
+    assert_eq!(
+        statuses_and_versions(&fx)[1],
+        (DLC, ProductStatus::Installed, v("1.0"))
+    );
+    assert!(!fx.launch_refused());
+    assert_eq!(fx.state().journal, None);
+}
+
+#[test]
+fn an_unavailable_windows_dlc_installs_once_gog_offers_it() {
+    let fx = offered();
+    let royalty = fx.gog.lock().unwrap().windows.remove(&DLC).unwrap();
+    fx.install_windows(&request()).unwrap();
+    assert_eq!(fx.statuses_windows()[1], (DLC, ProductStatus::Unavailable));
+    let status = crate::gog::update::check(&mut fx.session(), "rimworld", true).unwrap();
+    assert_eq!(status.state, UpdateState::UpToDate);
+
+    fx.gog.lock().unwrap().windows.insert(DLC, royalty);
+    let status = crate::gog::update::check(&mut fx.session(), "rimworld", true).unwrap();
+    assert_eq!(status.state, UpdateState::Available);
+    assert_eq!(
+        status.dlc[0].state,
+        crate::gog::update::DlcState::NotInstalled
+    );
+    fx.update();
+    assert_eq!(fx.ran()[1..], [setup(DLC, "1.0")]);
+    assert_eq!(
+        statuses_and_versions(&fx)[1],
+        (DLC, ProductStatus::Installed, v("1.0"))
+    );
+    assert_eq!(fx.read("Data/Royalty/r.dat"), "royalty v1");
+}
+
+#[test]
+fn an_update_adding_a_windows_dlc_interrupted_is_finished_by_update() {
+    for at in [
+        "update.journal.after",
+        "install.windows.dlc.after",
+        "install.windows.commit.before",
+    ] {
+        let fx = installed_windows();
+        offer_ideology(&fx);
+        fx.owns_ids(&[RIMWORLD, DLC, IDEOLOGY]);
+        set_failpoint(Some(at));
+        fx.update_err();
+        assert!(fx.launch_refused(), "{at}");
+        let pending = fx.pending(false, Options::default());
+        assert!(pending.is_recovery() && pending.is_offline(), "{at}");
+        fx.apply_with(false, &pending, &Token::new(), |_| {})
+            .unwrap();
+        assert_eq!(
+            versions(&fx),
+            [(RIMWORLD, v("1.0")), (DLC, v("1.0")), (IDEOLOGY, v("1.0"))],
+            "{at}"
+        );
+        assert_settled(&fx);
+    }
+}
+
+#[test]
+fn a_windows_reinstall_also_installs_newly_owned_dlc() {
+    let fx = installed_windows();
+    offer_ideology(&fx);
+    fx.owns_ids(&[RIMWORLD, DLC, IDEOLOGY]);
+    let updated = fx.reinstall();
+    assert_eq!(updated.kind, JournalKind::Reinstall);
+    assert_eq!(
+        ran_since_install(&fx),
+        [
+            setup(RIMWORLD, "1.0"),
+            setup(DLC, "1.0"),
+            setup(IDEOLOGY, "1.0")
+        ]
+    );
+    assert_eq!(
+        versions(&fx),
+        [(RIMWORLD, v("1.0")), (DLC, v("1.0")), (IDEOLOGY, v("1.0"))]
+    );
+    assert_eq!(fx.read("Data/Ideology/i.dat"), "ideology v1");
+    assert_settled(&fx);
+}
