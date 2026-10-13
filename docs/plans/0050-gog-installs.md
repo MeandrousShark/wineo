@@ -199,6 +199,18 @@ Settled by the maintainer on 2026-10-12, before step 1:
   native install on top. Any place the two existing flows disagree visibly
   comes back as a question rather than being picked silently.
 
+- **The installer flows behave the same** (2026-10-12, folded into step 2
+  as 2a-ii). 2a found the three flows (`new --install-exe`, guided `new`, and
+  the desktop app's installer step) differing in two places, and the
+  maintainer chose one behavior for all three:
+  - After the installer, every flow scans for programs and asks which to use,
+    whatever the exit code (a nonzero one is reported too), once Wine has
+    settled. A canceled installer keeps the environment and skips the
+    picker, pointing to `wineo setup NAME`.
+  - Every flow sets up the configured components (DXVK, vkd3d-proton) in the
+    prefix before the installer runs, as `wineo start` does before a
+    launch.
+
 Carried from 0049's acceptance (2026-10-12):
 
 - Sizes GOG lists are rounded to whole MiB, so they're estimates; a file's
