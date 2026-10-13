@@ -19,7 +19,7 @@ use signal_hook::consts::{SIGHUP, SIGINT, SIGTERM, SIGUSR1};
 use signal_hook::iterator::exfiltrator::raw::WithRawSiginfo;
 use signal_hook::iterator::{Handle, SignalsInfo};
 
-use crate::cancel::Token;
+use crate::cancel::{Subscription, Token};
 use crate::error::{self, Error, IoContext, Result};
 use crate::launch::{Host, Launch, Overrides};
 use crate::log::{Cap, Log};
@@ -58,6 +58,7 @@ enum Event {
     StopTimeout,
     /// Nothing else happened for `HEARTBEAT_INTERVAL`, so the run is still live.
     Heartbeat,
+    /// The token changed, or something else worth rechecking happened.
     Pulse,
 }
 
@@ -65,6 +66,19 @@ enum Event {
 /// Reuses the loop's own wait rather than a separate timer, so a live run
 /// costs one wakeup a minute rather than none.
 const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(60);
+
+/// What a wait that ran out means. The deadline wins a tie, and the heartbeat
+/// that lost it is still due on the next pass, so neither starves.
+fn timed_out(deadline: Option<Instant>, heartbeat_at: &mut Instant, now: Instant) -> Event {
+    if deadline.is_some_and(|d| d <= now) {
+        Event::StopTimeout
+    } else if *heartbeat_at <= now {
+        *heartbeat_at = now + HEARTBEAT_INTERVAL;
+        Event::Heartbeat
+    } else {
+        Event::Pulse
+    }
+}
 
 /// What the run loop tells whoever is watching it.
 #[derive(Debug)]
@@ -117,6 +131,8 @@ pub struct Supervisor {
     signals: Option<Handle>,
     signal_thread: Option<JoinHandle<()>>,
     token: Option<Token>,
+    /// Wakes the loop when the token rises; ends with the supervisor.
+    _subscription: Option<Subscription>,
 }
 
 impl Supervisor {
@@ -161,18 +177,26 @@ impl Supervisor {
             signals: Some(handle),
             signal_thread: Some(signal_thread),
             token: None,
+            _subscription: None,
         })
     }
 
     /// Watches stop requests supplied by a caller rather than process signals.
     pub fn with_token(token: &Token) -> Self {
         let (sender, events) = mpsc::channel();
+        let wake = sender.clone();
+        // Subscribing before the loop's first check means a cancel can't fall
+        // between the two.
+        let subscription = token.subscribe(move || {
+            let _ = wake.send(Event::Pulse);
+        });
         Self {
             events,
             sender,
             signals: None,
             signal_thread: None,
             token: Some(token.clone()),
+            _subscription: Some(subscription),
         }
     }
 
@@ -330,41 +354,19 @@ impl Supervisor {
             } else if self.token.as_ref().is_some_and(Token::is_canceled) && !saw_cancel {
                 saw_cancel = true;
                 Event::Stop
-            } else if self.token.is_some() {
-                let now = Instant::now();
-                let until = deadline.unwrap_or(heartbeat_at);
-                let timeout = until
-                    .saturating_duration_since(now)
-                    .min(Duration::from_millis(20));
-                match self.events.recv_timeout(timeout) {
-                    Ok(event) => event,
-                    Err(RecvTimeoutError::Timeout)
-                        if deadline.is_some_and(|d| d <= Instant::now()) =>
-                    {
-                        Event::StopTimeout
-                    }
-                    Err(RecvTimeoutError::Timeout) if heartbeat_at <= Instant::now() => {
-                        heartbeat_at = Instant::now() + HEARTBEAT_INTERVAL;
-                        Event::Heartbeat
-                    }
-                    Err(RecvTimeoutError::Timeout) => Event::Pulse,
-                    Err(RecvTimeoutError::Disconnected) => break lost(),
-                }
             } else {
-                match deadline {
-                    Some(deadline) => match self
-                        .events
-                        .recv_timeout(deadline.saturating_duration_since(Instant::now()))
-                    {
-                        Ok(event) => event,
-                        Err(RecvTimeoutError::Timeout) => Event::StopTimeout,
-                        Err(RecvTimeoutError::Disconnected) => break lost(),
-                    },
-                    None => match self.events.recv_timeout(HEARTBEAT_INTERVAL) {
-                        Ok(event) => event,
-                        Err(RecvTimeoutError::Timeout) => Event::Heartbeat,
-                        Err(RecvTimeoutError::Disconnected) => break lost(),
-                    },
+                // Heartbeats continue through a stop, since a lost run's end
+                // time comes from the last one.
+                let until = deadline.map_or(heartbeat_at, |d| d.min(heartbeat_at));
+                match self
+                    .events
+                    .recv_timeout(until.saturating_duration_since(Instant::now()))
+                {
+                    Ok(event) => event,
+                    Err(RecvTimeoutError::Timeout) => {
+                        timed_out(deadline, &mut heartbeat_at, Instant::now())
+                    }
+                    Err(RecvTimeoutError::Disconnected) => break lost(),
                 }
             };
             match event {
@@ -940,6 +942,38 @@ mod tests {
 
     use super::*;
     use crate::runner::Runner;
+
+    #[test]
+    fn heartbeats_continue_while_a_stop_deadline_is_pending() {
+        let now = Instant::now();
+        let mut heartbeat_at = now;
+        let deadline = Some(now + Duration::from_secs(300));
+        assert!(matches!(
+            timed_out(deadline, &mut heartbeat_at, now),
+            Event::Heartbeat
+        ));
+        assert_eq!(heartbeat_at, now + HEARTBEAT_INTERVAL);
+        assert!(matches!(
+            timed_out(deadline, &mut heartbeat_at, now),
+            Event::Pulse
+        ));
+    }
+
+    #[test]
+    fn a_heartbeat_due_with_the_deadline_does_not_starve_the_stop_timeout() {
+        let now = Instant::now();
+        let mut heartbeat_at = now;
+        assert!(matches!(
+            timed_out(Some(now), &mut heartbeat_at, now),
+            Event::StopTimeout
+        ));
+        assert_eq!(heartbeat_at, now);
+        let later = Some(now + KILL_RETRY);
+        assert!(matches!(
+            timed_out(later, &mut heartbeat_at, now),
+            Event::Heartbeat
+        ));
+    }
 
     #[test]
     fn stop_keeps_its_deadline_after_the_end_record_without_an_after_hook() {
