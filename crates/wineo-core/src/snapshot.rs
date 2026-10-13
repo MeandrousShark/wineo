@@ -626,7 +626,17 @@ pub fn recover(paths: &Paths, name: &str) -> Result<()> {
     let marker = read_marker(paths, &path, name)?;
     validate_marker_config(paths, name, &marker)?;
     // Rollback deletes whichever tree is not put back.
-    environment::check_nesting(paths, name, &marker.prefix)?;
+    environment::check_nesting(paths, name, &marker.prefix).map_err(|err| match err {
+        crate::Error::UnreadableEnvironments(names) => anyhow!(
+            "{} can't be read, so it's unknown whether its prefix is inside {name}'s. Fix it and run `wineo snapshot recover {name}` again.",
+            names
+                .iter()
+                .map(|other| paths.environment_config(other).display().to_string())
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+        err => err.into(),
+    })?;
     rollback_locked(paths, &path, &marker)
 }
 
@@ -1989,5 +1999,21 @@ mod tests {
             fs::read_to_string(snapshot.join("keep.txt")).unwrap(),
             "keep"
         );
+    }
+
+    #[test]
+    fn recovery_names_an_unreadable_config_it_cannot_check() {
+        let (_root, paths, prefix, config) = fixture(false);
+        interrupted_marker(&paths, &prefix, &config);
+        let broken = paths.environment_config("broken");
+        fs::write(&broken, "prefix = [").unwrap();
+        let error = recover(&paths, "game").unwrap_err().to_string();
+        assert!(
+            error.starts_with(&format!("{} can't be read", broken.display())),
+            "{error}"
+        );
+        assert!(marker_path(&paths, "game").exists());
+        fs::remove_file(&broken).unwrap();
+        recover(&paths, "game").unwrap();
     }
 }
