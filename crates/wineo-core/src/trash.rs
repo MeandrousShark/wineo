@@ -2097,6 +2097,7 @@ fn restore_locked_with(
             }
             verified_retained(&retained, payload)?;
         }
+        check_restored_prefix(paths, manifest)?;
         start_marker(paths, manifest, Intent::Restore)?;
         manifest.phase = Phase::Restoring;
         write_manifest(paths, manifest)?;
@@ -2178,6 +2179,31 @@ fn reclaim_gog(paths: &Paths, manifest: &Manifest, gog: &[FolderLock]) -> Result
         {
             return Err(err);
         }
+    }
+    Ok(())
+}
+
+/// Applies the rules that registering this prefix anew would: it may not
+/// nest with another environment's, and a prefix coming back from the trash
+/// may not land where another environment already points.
+fn check_restored_prefix(paths: &Paths, manifest: &Manifest) -> Result<()> {
+    // A hand-edited config that can't be parsed stays restorable, as before,
+    // so there is no prefix to check.
+    let Some(config) = return_config(paths, manifest)? else {
+        return Ok(());
+    };
+    let Some(wine) = config.wine() else {
+        return Ok(());
+    };
+    let prefix = paths.config_path(&wine.prefix)?;
+    let returning = manifest
+        .payloads
+        .iter()
+        .any(|payload| payload.kind == Kind::Prefix);
+    if returning {
+        environment::check_destination(paths, &manifest.name, &prefix)?;
+    } else {
+        environment::check_nesting(paths, &manifest.name, &prefix)?;
     }
     Ok(())
 }

@@ -227,3 +227,37 @@ fn import_adopt_still_shares_a_registered_prefix() {
         "--adopt",
     ]));
 }
+
+#[test]
+fn trash_restore_refuses_a_prefix_that_now_nests() {
+    let f = Fixture::new();
+    f.environment("outer", "");
+    f.environment("mover", "");
+    let removed = f.run(&["rm", "outer"]);
+    assert_success(&removed);
+    let id = common::trash_id(&removed);
+    let dir = f.root.path().join("prefixes/outer/drive_c/moved");
+    assert_success(&f.run(&["set", "mover", &format!("prefix={}", dir.display())]));
+    assert_refused(
+        &f.run(&["restore", &id]),
+        &format!("mover's {INSIDE_OUTER}"),
+    );
+    assert!(!f.config_dir().join("environments/outer.toml").exists());
+}
+
+#[test]
+fn trash_restore_refuses_a_prefix_another_environment_now_names() {
+    let f = Fixture::new();
+    f.environment("outer", "");
+    let removed = f.run(&["rm", "outer", "--delete-prefix"]);
+    assert_success(&removed);
+    let id = common::trash_id(&removed);
+    let prefix = f.root.path().join("prefixes/outer");
+    register(&f, "other", &prefix);
+    assert_refused(
+        &f.run(&["restore", &id]),
+        &format!("{} is already other's prefix.", prefix.display()),
+    );
+    assert!(!prefix.exists());
+    assert!(!f.config_dir().join("environments/outer.toml").exists());
+}
