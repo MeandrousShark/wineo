@@ -416,10 +416,7 @@ fn review_lines(paths: &Paths, plan: &Plan) -> Vec<String> {
             "none, uses the packages already downloaded".to_owned(),
         ));
     } else {
-        rows.push((
-            "download".to_owned(),
-            format!("about {} (an estimate)", style::size(plan.download_size())),
-        ));
+        rows.push(("download".to_owned(), style::size(plan.download_size())));
     }
     rows.push((
         "installed".to_owned(),

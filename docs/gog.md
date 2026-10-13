@@ -71,7 +71,7 @@ Install Unreal Tournament 2004 (1207658924)
   runner       GE-Proton11-7
   arch         win64
   version      3369.3
-  download     about 4.6 GiB (an estimate)
+  download     4.6 GiB
   installed    about 9.2 GiB (an estimate)
 Esc or Ctrl+C to cancel.
 Install it? [Y/n]:
@@ -96,8 +96,9 @@ after the game, in a folder named after it under `defaults.games_root`
   along, like moving a game.
 
 Everything is downloaded first, the game and each DLC, and checked before
-anything changes. The download and installed sizes are estimates, since
-GOG rounds its sizes; the real space check runs on the downloaded files.
+anything changes. The download size is GOG's, rounded to whole MiB, and
+the installed size is an estimate (twice the installers for a Windows
+game); the real space check runs on the downloaded files.
 
 A native game is unpacked from GOG's package, never run as a script, and
 starts with `start.sh`. A Windows game runs GOG's installer silently in a

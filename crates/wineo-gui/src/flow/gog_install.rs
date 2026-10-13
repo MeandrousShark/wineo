@@ -965,7 +965,7 @@ impl Install {
                 if plan.is_offline() {
                     "none, uses the packages already downloaded".to_owned()
                 } else {
-                    format!("about {} (an estimate)", format_bytes(plan.download_size()))
+                    format_bytes(plan.download_size())
                 },
             ));
             summary = summary.push(shown_row(
