@@ -333,6 +333,14 @@ pub fn inspect_restore_with(
     validate_label(label)?;
     let (env, current_config, prefix) = registered(paths, name)?;
     check_sharing(paths, name, &prefix)?;
+    // The old prefix is deleted after the swap, and that would reach into
+    // whatever is mounted inside it.
+    if let Some(mount) = crate::trash::foreign_mount(&prefix)? {
+        bail!(
+            "{name}'s prefix has a mount at {}. Unmount it first.",
+            mount.display()
+        );
+    }
     let current = inspect_prefix(paths, global, &env, &prefix, cancel, &mut progress)?;
     let snapshot = paths.snapshot_root(&prefix, name).join(label);
     import::reject_overlapping_paths(&prefix, &snapshot)?;
@@ -883,7 +891,12 @@ fn rollback_locked(paths: &Paths, marker_path: &Path, marker: &RestoreMarker) ->
     write_config_atomic(&config_path, &marker.old_config)?;
     fs::remove_file(marker_path)?;
     sync_dir(marker_path.parent().unwrap())?;
-    remove_tree(&marker.staging)?;
+    remove_tree(&marker.staging).with_context(|| {
+        format!(
+            "original prefix is back, but the restored copy remains at {}",
+            marker.staging.display()
+        )
+    })?;
     Ok(())
 }
 
@@ -962,6 +975,14 @@ fn sync_dir(path: &Path) -> Result<()> {
 
 fn remove_tree(path: &Path) -> Result<()> {
     ensure_directory(path)?;
+    // remove_dir_all would empty a mount before failing on its mount point.
+    if let Some(mount) = crate::trash::foreign_mount(path)? {
+        bail!(
+            "{} has a mount at {}, so it was kept",
+            path.display(),
+            mount.display()
+        );
+    }
     fs::remove_dir_all(path).with_context(|| format!("failed to remove {}", path.display()))
 }
 
@@ -1891,5 +1912,60 @@ mod tests {
         assert!(saved_gog_id(&host, "game", &other).is_err());
         assert_eq!(saved_gog_id(&portable, "game", &plain).unwrap(), None);
         assert_eq!(saved_gog_id(&portable, "game", &other).unwrap(), None);
+    }
+
+    #[test]
+    fn restore_refuses_a_prefix_with_a_mount_inside() {
+        let (_root, paths, prefix, _config) = fixture(false);
+        if !reflinks_supported(&prefix) {
+            return;
+        }
+        let global = GlobalConfig::default();
+        let create = inspect_create(&paths, &global, "game", "one").unwrap();
+        create_reviewed(&paths, &global, &create, &Token::new(), |_| {}).unwrap();
+        let review = inspect_restore(&paths, &global, "game", "one").unwrap();
+        let shared = prefix.join("drive_c/shared");
+        fs::create_dir(&shared).unwrap();
+        fs::write(shared.join("external.txt"), "keep").unwrap();
+        crate::trash::set_fake_mounts(vec![shared.clone()]);
+        let error = inspect_restore(&paths, &global, "game", "one").unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            format!(
+                "game's prefix has a mount at {}. Unmount it first.",
+                shared.display()
+            )
+        );
+        let error = restore_reviewed(&paths, &global, &review, &Token::new(), |_| {}).unwrap_err();
+        assert!(error.to_string().contains("Unmount it first"), "{error}");
+        crate::trash::set_fake_mounts(Vec::new());
+        assert_eq!(
+            fs::read_to_string(shared.join("external.txt")).unwrap(),
+            "keep"
+        );
+        assert!(!marker_path(&paths, "game").exists());
+    }
+
+    #[test]
+    fn snapshot_cleanup_stops_at_a_mount() {
+        let root = tempfile::tempdir_in(env!("CARGO_MANIFEST_DIR")).unwrap();
+        let old = root.path().join(".wineo-restore-old");
+        let mount = old.join("drive_c/shared");
+        fs::create_dir_all(&mount).unwrap();
+        fs::write(mount.join("external.txt"), "keep").unwrap();
+        crate::trash::set_fake_mounts(vec![mount.clone()]);
+        let error = remove_tree(&old).unwrap_err();
+        crate::trash::set_fake_mounts(Vec::new());
+        assert!(
+            error.to_string().contains(&format!(
+                "has a mount at {}, so it was kept",
+                mount.display()
+            )),
+            "{error}"
+        );
+        assert_eq!(
+            fs::read_to_string(mount.join("external.txt")).unwrap(),
+            "keep"
+        );
     }
 }

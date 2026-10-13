@@ -417,3 +417,68 @@ fn a_restore_fails_closed_on_an_unreadable_gog_state_when_either_config_has_gog_
         );
     }
 }
+
+/// A real bind mount needs a mount namespace. Run with
+/// `cargo test -p wineo-cli --test snapshot restore_refuses_a_real_bind_mount -- --ignored`;
+/// it needs `unshare` and unprivileged user namespaces, and skips without them.
+#[test]
+#[ignore]
+fn restore_refuses_a_real_bind_mount() {
+    let Some(f) = fixture() else { return };
+    let (Some(unshare), Some(mount)) = (
+        common::find_on_path("unshare"),
+        common::find_on_path("mount"),
+    ) else {
+        return;
+    };
+    if !Command::new(&unshare)
+        .args(["-rm", "true"])
+        .status()
+        .is_ok_and(|status| status.success())
+    {
+        return;
+    }
+    let (prefix, _) = environment(&f);
+    assert_success(&f.run(&["snapshot", "create", "game", "one"]));
+    // Same filesystem as the prefix, so only the mount ID tells them apart.
+    let external = f.root.path().join("external");
+    fs::create_dir(&external).unwrap();
+    fs::write(external.join("keep.txt"), b"external").unwrap();
+    let target = prefix.join("drive_c/shared");
+    fs::create_dir(&target).unwrap();
+
+    let wineo = f.wineo();
+    let mut command = Command::new(&unshare);
+    for (key, value) in wineo.get_envs() {
+        match value {
+            Some(value) => command.env(key, value),
+            None => command.env_remove(key),
+        };
+    }
+    let output = command
+        .args([
+            "-rm",
+            "/bin/sh",
+            "-c",
+            r#"m=$1; shift; "$m" --bind "$1" "$2" && shift 2 && exec "$@""#,
+            "sh",
+        ])
+        .arg(&mount)
+        .arg(&external)
+        .arg(&target)
+        .arg(wineo.get_program())
+        .args(["snapshot", "restore", "game", "one", "--yes"])
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    assert!(!output.status.success(), "{}", stderr(&output));
+    assert!(
+        stderr(&output).contains(&format!(
+            "game's prefix has a mount at {}. Unmount it first.",
+            target.display()
+        )),
+        "{}",
+        stderr(&output)
+    );
+    assert_eq!(fs::read(external.join("keep.txt")).unwrap(), b"external");
+}

@@ -1142,7 +1142,23 @@ fn subvolume_property(path: &Path) -> Result<Option<bool>> {
     }
 }
 
+#[cfg(test)]
+thread_local! {
+    static FAKE_MOUNTS: std::cell::RefCell<Vec<PathBuf>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Makes the mount checks treat `paths` as mount points, since a real bind
+/// mount needs root.
+#[cfg(test)]
+pub(crate) fn set_fake_mounts(paths: Vec<PathBuf>) {
+    FAKE_MOUNTS.with(|mounts| *mounts.borrow_mut() = paths);
+}
+
 fn same_tree_mount(root: Identity, path: &Path) -> Result<bool> {
+    #[cfg(test)]
+    if FAKE_MOUNTS.with(|mounts| mounts.borrow().iter().any(|mount| mount == path)) {
+        return Ok(false);
+    }
     let current =
         identity(path)?.ok_or_else(|| anyhow!("storage unavailable at {}", path.display()))?;
     if root.mount.is_none() || current.mount != root.mount {
@@ -1151,52 +1167,50 @@ fn same_tree_mount(root: Identity, path: &Path) -> Result<bool> {
     Ok(current.device == root.device || subvolume_property(path)?.is_some())
 }
 
-fn preflight_tree(path: &Path) -> Result<()> {
+/// The first directory under `path`, walking without following symlinks,
+/// that belongs to another mount. Bind mounts of the same filesystem keep
+/// st_dev, so the mount ID is what tells them apart.
+pub(crate) fn foreign_mount(path: &Path) -> Result<Option<PathBuf>> {
     let root = identity(path)?.ok_or_else(|| anyhow!("missing tree at {}", path.display()))?;
-    fn walk(path: &Path, root: Identity) -> Result<()> {
-        let meta = fs::symlink_metadata(path)?;
-        if !meta.is_dir() {
-            return Ok(());
+    fn walk(path: &Path, root: Identity) -> Result<Option<PathBuf>> {
+        if !fs::symlink_metadata(path)?.is_dir() {
+            return Ok(None);
         }
         if !same_tree_mount(root, path)? {
-            bail!(
-                "nested mount at {} is not owned by this trash entry",
-                path.display()
-            );
+            return Ok(Some(path.to_owned()));
         }
         subvolume_property(path)?;
         for entry in fs::read_dir(path)? {
             let entry = entry?;
-            if entry.file_type()?.is_dir() {
-                walk(&entry.path(), root)?;
+            if entry.file_type()?.is_dir()
+                && let Some(found) = walk(&entry.path(), root)?
+            {
+                return Ok(Some(found));
             }
         }
-        Ok(())
+        Ok(None)
     }
     walk(path, root)
 }
 
-fn check_tree_mounts(path: &Path) -> Result<()> {
-    let root = identity(path)?.ok_or_else(|| anyhow!("payload unavailable"))?;
-    fn visit(path: &Path, root: Identity) -> Result<()> {
-        if !fs::symlink_metadata(path)?.is_dir() {
-            return Ok(());
-        }
-        if !same_tree_mount(root, path)? {
-            bail!(
-                "nested mount at {} is not owned by this environment",
-                path.display()
-            );
-        }
-        for entry in fs::read_dir(path)? {
-            let entry = entry?;
-            if entry.file_type()?.is_dir() {
-                visit(&entry.path(), root)?;
-            }
-        }
-        Ok(())
+fn preflight_tree(path: &Path) -> Result<()> {
+    if let Some(mount) = foreign_mount(path)? {
+        bail!(
+            "nested mount at {} is not owned by this trash entry",
+            mount.display()
+        );
     }
-    visit(path, root)
+    Ok(())
+}
+
+fn check_tree_mounts(path: &Path) -> Result<()> {
+    if let Some(mount) = foreign_mount(path)? {
+        bail!(
+            "nested mount at {} is not owned by this environment",
+            mount.display()
+        );
+    }
+    Ok(())
 }
 
 fn delete_subvolumes(path: &Path) -> Result<()> {
