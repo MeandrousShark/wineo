@@ -1322,6 +1322,17 @@ Changed during acceptance, at the maintainer's request (2026-10-12):
   plus the confirm's own `Esc or Ctrl+C to cancel.` Other prompts are a
   backlog row.
 
+Fixed during acceptance (2026-10-12):
+
+- **GOG lists installer sizes rounded to whole MiB,** so every real
+  download failed with `the file isn't the size GOG listed`. A file's exact
+  size now comes from GOG's checksum file, else the download's
+  `Content-Length`; the listed size is only an estimate for reviews, and a
+  cached file within 1 MiB of it can be reused. The cache record and the
+  update journal keep the exact size, so an interrupted update still
+  finishes from its packages. A download with neither a checksum nor a
+  length is refused. The fakes now list rounded sizes too.
+
 ## Implementation sequence
 
 1. Create `wineo-gog` with the GOG client: login URL, code exchange,
