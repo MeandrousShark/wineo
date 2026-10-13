@@ -165,3 +165,65 @@ fn equal_prefixes_stay_shareable() {
     let shared = f.root.path().join("prefixes/first");
     assert_success(&f.run(&["set", "second", &format!("prefix={}", shared.display())]));
 }
+
+/// `other` names a prefix that is missing, like one on an unplugged drive.
+fn missing_prefix(f: &Fixture) -> PathBuf {
+    let gone = f.root.path().join("gone");
+    fs::create_dir_all(f.config_dir().join("environments")).unwrap();
+    register(f, "other", &gone);
+    gone
+}
+
+#[test]
+fn clone_refuses_a_destination_another_environment_names() {
+    let f = Fixture::new();
+    f.environment("source", "");
+    let gone = missing_prefix(&f);
+    assert_refused(
+        &f.run(&["clone", "source", "copy", "--dir", gone.to_str().unwrap()]),
+        &format!("{} is already other's prefix.", gone.display()),
+    );
+    assert!(!gone.exists());
+    assert!(!f.config_dir().join("environments/copy.toml").exists());
+}
+
+#[test]
+fn import_refuses_a_destination_another_environment_names() {
+    let f = Fixture::new();
+    f.environment("source", "");
+    let gone = missing_prefix(&f);
+    let source = f.root.path().join("prefixes/source");
+    assert_refused(
+        &f.run(&[
+            "import",
+            "prefix",
+            source.to_str().unwrap(),
+            "-n",
+            "copy",
+            "--runner",
+            "wine",
+            "--dir",
+            gone.to_str().unwrap(),
+        ]),
+        &format!("{} is already other's prefix.", gone.display()),
+    );
+    assert!(!gone.exists());
+    assert!(!f.config_dir().join("environments/copy.toml").exists());
+}
+
+#[test]
+fn import_adopt_still_shares_a_registered_prefix() {
+    let f = Fixture::new();
+    f.environment("source", "");
+    let source = f.root.path().join("prefixes/source");
+    assert_success(&f.run(&[
+        "import",
+        "prefix",
+        source.to_str().unwrap(),
+        "-n",
+        "adopted",
+        "--runner",
+        "wine",
+        "--adopt",
+    ]));
+}

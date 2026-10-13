@@ -106,7 +106,8 @@ pub fn inspect(
         );
     }
     check_shared_configs(paths, new_name, [&source_root, &destination])?;
-    crate::environment::check_nesting(paths, new_name, &destination).map_err(|err| anyhow!(err))?;
+    crate::environment::check_destination(paths, new_name, &destination)
+        .map_err(|err| anyhow!(err))?;
 
     let mut review = review_config(paths, &config, &source_root);
     if config.heroic_id.is_some() {

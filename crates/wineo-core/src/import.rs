@@ -374,8 +374,7 @@ pub fn execute_reviewed(
         return Err(Error::EnvironmentExists(request.name.clone()).into());
     }
     check_shared_configs(paths, &request.name, [&source_root, &destination])?;
-    crate::environment::check_nesting(paths, &request.name, &destination)
-        .map_err(|err| anyhow!(err))?;
+    check_destination(paths, &request.name, request.adopt, &destination)?;
 
     let lock = Locks::new(paths);
     let mut operation = lock
@@ -401,8 +400,7 @@ pub fn execute_reviewed(
     // the prefix lock above, so checking their runtime state here catches a
     // lost run or unresolved operation without refusing an idle shared prefix.
     let shared = shared_names(paths, &request.name, [&source_root, &destination])?;
-    crate::environment::check_nesting(paths, &request.name, &destination)
-        .map_err(|err| anyhow!(err))?;
+    check_destination(paths, &request.name, request.adopt, &destination)?;
     for shared in shared {
         Runtime::new(paths, &shared)
             .check_quiet(&shared)
@@ -570,6 +568,17 @@ pub(crate) fn ensure_same_review(expected: &Inspection, actual: &Inspection) -> 
         bail!("the reviewed prefix changed; inspect it again before importing");
     }
     Ok(())
+}
+
+/// A copy fills a new directory nobody else may name, while adoption
+/// registers the source where it is, which other environments may share.
+fn check_destination(paths: &Paths, name: &str, adopt: bool, destination: &Path) -> Result<()> {
+    if adopt {
+        crate::environment::check_nesting(paths, name, destination)
+    } else {
+        crate::environment::check_destination(paths, name, destination)
+    }
+    .map_err(|err| anyhow!(err))
 }
 
 fn check_shared_configs(paths: &Paths, name: &str, prefixes: [&Path; 2]) -> Result<()> {

@@ -162,7 +162,7 @@ pub fn inspect_with(
         }
     }
     environment::checked_sharing(from, name, &source_root)?;
-    environment::check_nesting(to, name, &destination)?;
+    environment::check_destination(to, name, &destination)?;
 
     let snapshots = snapshot::list(from, name)?;
     let resolved_snapshots = paths::resolve(&source_snapshots);
