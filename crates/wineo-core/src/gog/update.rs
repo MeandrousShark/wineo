@@ -187,7 +187,7 @@ pub enum UpdateError {
     WindowsInstaller { name: String },
     #[error("Updating Galaxy builds comes in a later release.")]
     Galaxy { name: String },
-    /// A journal of plan 0050's kinds, `install` or `repair`.
+    /// A journal of a kind this release can't finish yet, `repair`.
     #[error("{name} has an unfinished GOG {kind}, and finishing it comes in a later release.")]
     LaterRelease { name: String, kind: &'static str },
     #[error("{name} can't be updated: {why}")]
@@ -1050,6 +1050,7 @@ fn info_build(folder: &Path, gog_id: u64) -> Option<String> {
 }
 
 mod apply;
+pub mod install;
 mod publish;
 
 pub use apply::{Options, Pending, Plan, PlannedProduct, Progress, Updated, apply, plan};

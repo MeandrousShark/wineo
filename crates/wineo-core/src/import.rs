@@ -1552,12 +1552,26 @@ pub fn register_native(
         return Err(Error::EnvironmentExists(name.to_owned()).into());
     }
     let text = native_config_text(&stored_settings(paths, settings)?)?;
-    let locks = Locks::new(paths);
-    let _operation = locks
+    let _operation = Locks::new(paths)
         .acquire(Operation::Create, name, &[])
         .map_err(|err| anyhow!(err))?;
-    let _config = locks.config(&config_path).map_err(|err| anyhow!(err))?;
-    write_config_once(&config_path, &text)?;
+    write_native_config(paths, name, &text)
+}
+
+/// The config `register_native` writes for `settings`, checked but not
+/// written.
+pub(crate) fn native_config(paths: &Paths, settings: &ImportedSettings) -> Result<String> {
+    native_config_text(&stored_settings(paths, settings)?)
+}
+
+/// Writes a native environment's config once, for a caller that already
+/// holds the environment's operation lock.
+pub(crate) fn write_native_config(paths: &Paths, name: &str, text: &str) -> Result<Environment> {
+    let config_path = paths.environment_config(name);
+    let _config = Locks::new(paths)
+        .config(&config_path)
+        .map_err(|err| anyhow!(err))?;
+    write_config_once(&config_path, text)?;
     Environment::load(paths, name).map_err(|err| anyhow!(err))
 }
 

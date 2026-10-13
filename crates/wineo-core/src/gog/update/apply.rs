@@ -277,15 +277,17 @@ pub fn plan(
     let names = names::product_names(&folder);
 
     if let Some(journal) = &state.journal {
+        // An interrupted native install is a rebuild like an update, so it
+        // is finished the same way.
         match journal.kind {
-            JournalKind::Install | JournalKind::Repair => {
+            JournalKind::Repair => {
                 return Err(UpdateError::LaterRelease {
                     name: name.to_owned(),
                     kind: kind_word(journal.kind),
                 }
                 .into());
             }
-            JournalKind::Update | JournalKind::Reinstall => {}
+            JournalKind::Install | JournalKind::Update | JournalKind::Reinstall => {}
         }
         native_only(name, journal.target.platform, journal.target.track)?;
         if let Some(files) = cached(paths, journal, token)? {
