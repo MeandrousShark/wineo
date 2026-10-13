@@ -1,4 +1,4 @@
-Status: draft
+Status: approved
 
 # 0051: Lean and simple
 
@@ -132,9 +132,9 @@ This is the part of the plan that needs approval. These change behavior or
 architecture, so each needs an answer before work starts. Recommendations
 first.
 
-Answered (2026-10-13): the maintainer took every recommendation. Items 2, 5,
-and 8 to 12 had no recommendation written yet when that answer came, so
-theirs were added afterwards and wait for a separate yes.
+Answered (2026-10-13): the maintainer took every recommendation, including
+those for items 2, 5, and 8 to 12, which were written after the first
+answer and confirmed separately.
 
 1. **The app's 2 s library rescan.** (a, recommended) Pause it while the
    window is unfocused and refresh on focus, and only redraw when the
@@ -145,6 +145,7 @@ theirs were added afterwards and wait for a separate yes.
    detection up to a second later. Recommended: keep 250 ms for the first
    10 s, when a launch usually lands, then back off to 1 s, since the wait
    can last minutes while Steam updates the game.
+   **Answer: recommended.**
 3. **The trash check in every config load.** `Environment::load` reads
    every trash manifest, so `list` costs environments x trash entries.
    Recommended: read only manifest headers, or memoize once per command.
@@ -156,6 +157,7 @@ theirs were added afterwards and wait for a separate yes.
    read the whole prefix 3-4 times today. Recommended: keep content
    fingerprints, since they guard against data loss, and only drop the
    redundant passes (Track A).
+   **Answer: recommended.**
 6. **One stop-escalation helper.** The "TERM, wait, KILL, settle" loop
    exists five times (supervisor, exec, winetricks, prefix wait, hooks), and
    the process identity triple travels through ~16 signatures. Recommended:
@@ -169,22 +171,27 @@ theirs were added afterwards and wait for a separate yes.
 8. **`windows_installer` in JSON.** Core never gives it any more. Removing
    it from the vocabulary touches the 1.0 JSON contract. Recommended:
    remove it now, while still 0.x, with a changelog note.
+   **Answer: recommended.**
 9. **One D-Bus stack.** The app carries both zbus (iced) and libdbus (the
    keyring crate). A zbus-based keyring would drop libdbus and the `dbus`
    build dependency. Recommended: yes, as its own patch with its own
    review, since it handles secrets.
+   **Answer: recommended.**
 10. **HTTP stack.** reqwest's blocking client brings tokio and a thread per
     client into the CLI. A synchronous client is a bigger change.
     Recommended: keep reqwest. The CLI already runs `list` in 20 ms and
     12 MB, and one shared client per batch (Track A) removes most of the
     cost.
+    **Answer: recommended.**
 11. **LTO for release builds.** Smaller and faster binaries, slower release
     builds. Recommended: yes, picking thin or full LTO by measured size
     and speed.
+    **Answer: recommended.**
 12. **Guided flows** are written four ways (linear, two numbered step
     machines, a typed step enum). Pick one pattern. Recommended: the typed
     step enum, since the compiler checks every step is handled. Flows move
     to it one at a time, not in one rewrite.
+    **Answer: recommended.**
 
 ## Possible bugs (fix as patches if confirmed)
 
@@ -203,3 +210,28 @@ theirs were added afterwards and wait for a separate yes.
 Track A first, supervisor before the app, each change with its numbers.
 Track B interleaves, smallest and safest first. Track C items wait for
 answers and land as amendments to this plan.
+
+## Progress
+
+Measured on release builds, same commands as the baselines.
+
+- Supervisor during a game: about 100 wakeups a second to about 1. The
+  signal thread blocks in `wait()` and the child waiter in `waitid`, in core
+  and in the CLI's `Cancellation`.
+- Attached `wineo run`: 50 wakeups a second to 0. `Token` wakes its waiters
+  (a subscription and a Condvar) instead of being polled. Heartbeats now
+  continue through a stop, so a run lost mid-stop keeps an accurate end.
+- Desktop app, moving the mouse over the library (Xvfb, software
+  rendering): 109% CPU to 60%. Cursor moves no longer produce a message;
+  the right-click menu takes its position from the click. Spinners animate
+  themselves only while on screen, without rebuilding the view, and
+  "Force stop" gets its own wakeup at its deadline instead of riding the
+  spinner's frame tick.
+
+Limits accepted in review:
+
+- A spinner inside a scrollable that is itself scrolled out of an outer
+  scrollable can keep asking for frames: iced hands an inner scrollable its
+  own viewport. No spinner sits in nested scrollables today.
+- The trash page's "removed N s ago" labels refresh with the 2 s rescan
+  rather than every spinner frame.
