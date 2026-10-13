@@ -38,6 +38,11 @@ Files are capped at 32 MiB. The original bytes are kept as is in the store;
 wineo does not convert or resize anything there. A desktop entry's icon is a
 converted copy; see [Desktop entries](#desktop-entries) below.
 
+GOG box art for games you haven't installed, shown in the desktop app's
+Import from GOG grid, is a separate cache at
+`$XDG_CACHE_HOME/wineo/gog-covers/`, always on the host. It isn't part of
+any environment's store and is safe to delete.
+
 `art/<env>/art.toml` records where each file came from: a SteamGridDB asset
 ID, a manual file with its original name, or a GOG game ID for art a GOG
 migration added. See [Config file

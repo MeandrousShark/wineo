@@ -469,7 +469,8 @@ NAME.`, an install that stopped before its environment was saved shows
 Heroic installed say `In Heroic`. Heroic's issues, and entries Heroic can't describe, or a
 game two Heroic configs put in different folders, show as issues instead of
 disappearing. A game both a native and a Flatpak Heroic list in one folder
-shows once.
+shows once. Each tile shows the game's poster: its library art when wineo
+already has it, otherwise GOG's box art, downloaded once and cached.
 
 Picking a game you own opens the install review: the environment it
 creates, the folder (with **Browse...**), the platform when GOG offers
