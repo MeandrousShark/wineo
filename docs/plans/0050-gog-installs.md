@@ -322,8 +322,9 @@ Step 6's choices (2026-10-13, provisional while the maintainer was away):
 - **The setup-window question** (`LABEL's installer didn't start. Run its own
   setup window? [Y/n]:`) is asked by `import gog --game` and a single
   `wineo update NAME`, never by `update --all` or with `--yes`.
-- **A Windows game whose info file names no program** points to `wineo
-  setup NAME` instead of opening a program picker.
+- **A Windows game whose info file names no program** gets the program
+  list at a terminal, like `new` (the plan's rule); with `--yes` or without
+  a terminal it points to `wineo setup NAME` instead.
 - **`import gog --forget FOLDER` also drops an install that never got its
   config**, refusing while anything runs; the files stay.
 
