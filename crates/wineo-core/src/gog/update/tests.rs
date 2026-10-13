@@ -505,7 +505,7 @@ fn an_installed_dlc_gog_no_longer_offers_makes_the_game_cant_compare() {
     let status = fx.status("rimworld");
     assert_eq!(
         cant_compare(&status),
-        "Royalty [1233017772] has no Linux installer in en-US."
+        "Royalty (1233017772) has no Linux installer in en-US."
     );
     assert_eq!(dlc_state(&status, ROYALTY), DlcState::CantCompare);
     assert_eq!(dlc_state(&status, IDEOLOGY), DlcState::CantCompare);
@@ -518,7 +518,7 @@ fn an_installed_dlc_gog_no_longer_offers_makes_the_game_cant_compare() {
     let status = fx.status("rimworld");
     assert_eq!(
         cant_compare(&status),
-        "DLC [1827857764] has no Linux installer in en-US."
+        "DLC (1827857764) has no Linux installer in en-US."
     );
     assert_eq!(fx.state(&state), state);
 
@@ -533,7 +533,7 @@ fn an_installed_dlc_gog_no_longer_offers_makes_the_game_cant_compare() {
     let status = fx.status("rimworld");
     assert_eq!(
         cant_compare(&status),
-        "Ideology [1827857764] has no Linux installer in en-US."
+        "Ideology (1827857764) has no Linux installer in en-US."
     );
 }
 
@@ -1190,7 +1190,7 @@ fn a_dlc_gog_doesn_t_list_is_labeled_by_the_folder_s_name() {
         .collect();
     assert_eq!(
         labels,
-        [format!("Royalty [{ROYALTY}]"), format!("DLC [{IDEOLOGY}]")]
+        [format!("Royalty ({ROYALTY})"), format!("DLC ({IDEOLOGY})")]
     );
 }
 
@@ -1204,5 +1204,5 @@ fn a_blank_gog_title_falls_back_to_the_folder_s_name() {
         available: None,
         state: DlcState::Unknown,
     };
-    assert_eq!(dlc.label("RimWorld"), format!("Royalty [{ROYALTY}]"));
+    assert_eq!(dlc.label("RimWorld"), format!("Royalty ({ROYALTY})"));
 }

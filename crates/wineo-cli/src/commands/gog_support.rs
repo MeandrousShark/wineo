@@ -107,7 +107,7 @@ pub fn dlc_notes(status: &Status) -> Vec<String> {
                 DlcState::UpToDate => unreachable!("filtered out"),
             };
             // An unnamed DLC's label already starts with "DLC".
-            let prefix = if label.starts_with("DLC [") {
+            let prefix = if label.starts_with("DLC (") {
                 ""
             } else {
                 "DLC "
@@ -203,9 +203,9 @@ mod tests {
         assert_eq!(
             dlc_notes(&status),
             [
-                "  DLC Royalty [1233017772]: version unknown",
-                "  DLC Ideology [1827857764]: version unknown",
-                "  DLC [1865538500]: version unknown",
+                "  DLC Royalty (1233017772): version unknown",
+                "  DLC Ideology (1827857764): version unknown",
+                "  DLC (1865538500): version unknown",
             ]
         );
     }

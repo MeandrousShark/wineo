@@ -168,7 +168,7 @@ impl Pending {
         &self.products
     }
 
-    /// A DLC as `NAME [ID]`: GOG's title if its details gave one, else the
+    /// A DLC as `NAME (ID)`: GOG's title if its details gave one, else the
     /// name in the folder. The base game's own title or name is what a DLC's
     /// leading `Game - ` is dropped against.
     pub fn dlc_label(&self, id: u64) -> String {

@@ -107,7 +107,7 @@ fn the_folder_itself_wins_over_game() {
 fn a_label_drops_the_game_title_and_a_separator() {
     assert_eq!(
         dlc_label("RimWorld", 1233017772, Some("RimWorld - Royalty")),
-        "Royalty [1233017772]"
+        "Royalty (1233017772)"
     );
     assert_eq!(
         dlc_label(
@@ -115,7 +115,7 @@ fn a_label_drops_the_game_title_and_a_separator() {
             7,
             Some("Wasteland 3: Cult of the Holy Detonation")
         ),
-        "Cult of the Holy Detonation [7]"
+        "Cult of the Holy Detonation (7)"
     );
 }
 
@@ -124,26 +124,26 @@ fn a_label_keeps_a_name_it_cant_shorten() {
     // Nothing would be left.
     assert_eq!(
         dlc_label("RimWorld", 1, Some("RimWorld - ")),
-        "RimWorld - [1]"
+        "RimWorld - (1)"
     );
-    assert_eq!(dlc_label("RimWorld", 1, Some("RimWorld")), "RimWorld [1]");
+    assert_eq!(dlc_label("RimWorld", 1, Some("RimWorld")), "RimWorld (1)");
     // The prefix isn't the title plus a separator.
     assert_eq!(
         dlc_label("RimWorld", 2, Some("RimWorldly Extras")),
-        "RimWorldly Extras [2]"
+        "RimWorldly Extras (2)"
     );
-    assert_eq!(dlc_label("RimWorld", 3, Some("Ideology")), "Ideology [3]");
+    assert_eq!(dlc_label("RimWorld", 3, Some("Ideology")), "Ideology (3)");
     assert_eq!(
         dlc_label("Rimworld", 4, Some("RimWorld - Biotech")),
-        "RimWorld - Biotech [4]"
+        "RimWorld - Biotech (4)"
     );
-    assert_eq!(dlc_label("", 5, Some(" - Odd")), "- Odd [5]");
+    assert_eq!(dlc_label("", 5, Some(" - Odd")), "- Odd (5)");
 }
 
 #[test]
 fn a_label_without_a_name_says_dlc() {
-    assert_eq!(dlc_label("RimWorld", 9, None), "DLC [9]");
-    assert_eq!(dlc_label("RimWorld", 9, Some("  ")), "DLC [9]");
+    assert_eq!(dlc_label("RimWorld", 9, None), "DLC (9)");
+    assert_eq!(dlc_label("RimWorld", 9, Some("  ")), "DLC (9)");
 }
 
 fn mkfifo(path: &Path) {

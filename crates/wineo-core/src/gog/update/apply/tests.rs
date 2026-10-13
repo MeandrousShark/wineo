@@ -1271,7 +1271,7 @@ fn a_package_no_longer_offered_is_refused_before_any_change() {
         .unwrap_err();
     assert_eq!(
         error.to_string(),
-        "rimworld can't be updated: Royalty [1233017772] has no Linux installer in en-US."
+        "rimworld can't be updated: Royalty (1233017772) has no Linux installer in en-US."
     );
     assert_eq!((fx.state(), fx.tree()), before);
 }
@@ -1578,7 +1578,7 @@ fn a_package_without_a_checksum_is_checked_by_size_with_a_warning() {
     assert_eq!(
         updated.warnings,
         [
-            "GOG publishes no checksum for Royalty [1233017772]'s package, so only its size was checked."
+            "GOG publishes no checksum for Royalty (1233017772)'s package, so only its size was checked."
         ]
     );
     assert_finished_v2(&fx);
@@ -1980,7 +1980,7 @@ fn a_dlc_is_labeled_by_gog_s_title_before_the_folder_s_name() {
         pending.products()[1].name.as_deref(),
         Some("RimWorld - Royalty Edition")
     );
-    assert_eq!(pending.dlc_label(ROYALTY), format!("Royalty [{ROYALTY}]"));
+    assert_eq!(pending.dlc_label(ROYALTY), format!("Royalty ({ROYALTY})"));
 }
 
 #[test]
@@ -1992,10 +1992,10 @@ fn a_recovery_labels_a_dlc_by_the_folder_s_name_or_its_id() {
     let pending = fx.pending(false, Options::default());
     assert!(pending.is_recovery());
     assert_eq!(pending.products()[1].title, None);
-    assert_eq!(pending.dlc_label(ROYALTY), format!("DLC [{ROYALTY}]"));
+    assert_eq!(pending.dlc_label(ROYALTY), format!("DLC ({ROYALTY})"));
 
     write_info(&fx, RIMWORLD, "RimWorld");
     write_info(&fx, ROYALTY, "RimWorld - Royalty");
     let pending = fx.pending(false, Options::default());
-    assert_eq!(pending.dlc_label(ROYALTY), format!("Royalty [{ROYALTY}]"));
+    assert_eq!(pending.dlc_label(ROYALTY), format!("Royalty ({ROYALTY})"));
 }

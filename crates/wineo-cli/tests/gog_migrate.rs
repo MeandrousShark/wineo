@@ -80,8 +80,8 @@ fn a_native_game_becomes_an_environment_and_nothing_of_heroics_changes() {
         "  track        installer",
         "  version      1.6.4871 rev588",
         "  language     en",
-        "  dlc          DLC [1233017772]",
-        "               DLC [1827857764]",
+        "  dlc          DLC (1233017772)",
+        "               DLC (1827857764)",
         "Migrated RimWorld as rimworld.",
         "Remove it from Heroic's library, without deleting its files, so both don't update it.",
     ] {
@@ -122,8 +122,8 @@ fn the_review_lists_each_dlc_by_name_and_id() {
     assert_success(&out);
     let text = stdout(&out);
     for line in [
-        "  dlc          Royalty [1233017772]",
-        "               Ideology [1827857764]",
+        "  dlc          Royalty (1233017772)",
+        "               Ideology (1827857764)",
     ] {
         assert!(
             text.lines().any(|l| l == line),

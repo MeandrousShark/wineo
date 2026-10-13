@@ -1,5 +1,5 @@
 //! The names GOG installs record for their products, for showing a DLC as
-//! `Royalty [1233017772]` instead of by its bare id. Display only: nothing
+//! `Royalty (1233017772)` instead of by its bare id. Display only: nothing
 //! here reads a name to decide anything, and nothing is written.
 
 use std::collections::HashMap;
@@ -83,13 +83,13 @@ fn read_name(path: &Path, id: u64) -> Option<String> {
     (!name.is_empty()).then(|| name.to_owned())
 }
 
-/// A DLC as `NAME [ID]`. A name that starts with the base game's title and a
+/// A DLC as `NAME (ID)`. A name that starts with the base game's title and a
 /// separator (`RimWorld - Royalty`) drops it, unless nothing would be left.
-/// With no name the label is `DLC [ID]`.
+/// With no name the label is `DLC (ID)`.
 pub fn dlc_label(base_title: &str, id: u64, name: Option<&str>) -> String {
     let name = name.map(str::trim).filter(|name| !name.is_empty());
     let Some(name) = name else {
-        return format!("DLC [{id}]");
+        return format!("DLC ({id})");
     };
     let short = if base_title.is_empty() {
         name
@@ -101,7 +101,7 @@ pub fn dlc_label(base_title: &str, id: u64, name: Option<&str>) -> String {
             .filter(|rest| !rest.is_empty())
             .unwrap_or(name)
     };
-    format!("{short} [{id}]")
+    format!("{short} ({id})")
 }
 
 #[cfg(test)]

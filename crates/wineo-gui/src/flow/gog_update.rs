@@ -484,7 +484,7 @@ fn action(pending: &Pending) -> &'static str {
 }
 
 /// The base game's title, which a recovery from saved packages doesn't
-/// have: then the game is named by its environment. A DLC is `NAME [ID]`.
+/// have: then the game is named by its environment. A DLC is `NAME (ID)`.
 fn product_label(pending: &Pending, id: u64, title: Option<&str>) -> String {
     if id != pending.target().gog_id {
         return pending.dlc_label(id);
@@ -814,16 +814,16 @@ mod tests {
         assert_eq!(rows[0].0, "RimWorld");
         assert_eq!(
             rows[1],
-            ("Royalty [1233017772]".to_owned(), "1.0 -> 1.1".to_owned())
+            ("Royalty (1233017772)".to_owned(), "1.0 -> 1.1".to_owned())
         );
     }
 
     #[test]
     fn a_dlc_gog_gives_no_title_takes_the_folder_s_name_or_shows_its_id() {
         let rows = planned_with_dlc("", Some("RimWorld - Royalty"));
-        assert_eq!(rows[1].0, "Royalty [1233017772]");
+        assert_eq!(rows[1].0, "Royalty (1233017772)");
         let rows = planned_with_dlc("", None);
-        assert_eq!(rows[1].0, "DLC [1233017772]");
+        assert_eq!(rows[1].0, "DLC (1233017772)");
     }
 
     #[test]

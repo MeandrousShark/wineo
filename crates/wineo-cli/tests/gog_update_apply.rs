@@ -115,11 +115,11 @@ fn updating_with_yes_downloads_unpacks_and_reports_what_changed() {
         "{text}"
     );
     assert!(
-        text.contains(&format!("{:<21}  {V1} -> {V2}", "Royalty [1233017772]")),
+        text.contains(&format!("{:<21}  {V1} -> {V2}", "Royalty (1233017772)")),
         "{text}"
     );
     assert!(
-        text.contains(&format!("{:<21}  unknown -> {V2}", "Ideology [1827857764]")),
+        text.contains(&format!("{:<21}  unknown -> {V2}", "Ideology (1827857764)")),
         "{text}"
     );
     assert!(text.contains("Updated rimworld.\n"), "{text}");
@@ -221,7 +221,7 @@ fn a_dry_run_shows_the_review_and_changes_nothing() {
         "{text}"
     );
     assert!(
-        text.contains(&format!("  {:<21}  {V1} -> {V2}\n", "Royalty [1233017772]")),
+        text.contains(&format!("  {:<21}  {V1} -> {V2}\n", "Royalty (1233017772)")),
         "{text}"
     );
     assert!(text.contains("(an estimate)"), "{text}");
@@ -415,15 +415,15 @@ fn a_recovery_review_names_each_dlc_from_the_folder_or_by_id() {
     let plain = f.gog(&api, &["update", "rimworld", "--dry-run"]);
     assert_success(&plain);
     let text = stdout(&plain);
-    assert!(text.contains("  DLC [1233017772]  "), "{text}");
-    assert!(text.contains("  DLC [1827857764]  "), "{text}");
+    assert!(text.contains("  DLC (1233017772)  "), "{text}");
+    assert!(text.contains("  DLC (1827857764)  "), "{text}");
 
     f.name_rimworld(&folder);
     let named = f.gog(&api, &["update", "rimworld", "--dry-run"]);
     assert_success(&named);
     let text = stdout(&named);
-    assert!(text.contains("  Royalty [1233017772]  "), "{text}");
-    assert!(text.contains("  Ideology [1827857764]  "), "{text}");
+    assert!(text.contains("  Royalty (1233017772)  "), "{text}");
+    assert!(text.contains("  Ideology (1827857764)  "), "{text}");
 }
 
 #[test]

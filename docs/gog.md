@@ -64,9 +64,9 @@ Migrate RimWorld (1094900565)
   track        installer
   version      1.6.4871 rev588
   language     en
-  dlc          Royalty [1233017772]
-               Ideology [1827857764]
-               Biotech [1865538500]
+  dlc          Royalty (1233017772)
+               Ideology (1827857764)
+               Biotech (1865538500)
 Migrate it?
 Press Enter to migrate it, Esc or Ctrl+C to cancel.
 Migrated RimWorld as rimworld.
@@ -112,8 +112,8 @@ Heroic first.
 $ wineo update --check
 NAME      INSTALLED        AVAILABLE        STATE
 rimworld  1.6.4871 rev588  1.6.4900 rev600  update available
-  DLC Royalty [1233017772]: 1.6.4871 rev588 -> 1.6.4900 rev600
-  DLC Ideology [1827857764]: version unknown
+  DLC Royalty (1233017772): 1.6.4871 rev588 -> 1.6.4900 rev600
+  DLC Ideology (1827857764): version unknown
 ```
 
 `wineo update --check` compares your GOG games with what GOG offers now.
@@ -131,14 +131,14 @@ $ wineo update rimworld --yes
 Update rimworld
   folder                 ~/Games/RimWorld
   RimWorld               1.6.4871 rev588 -> 1.6.4900 rev600
-  Royalty [1233017772]   1.6.4871 rev588 -> 1.6.4900 rev600
-  Ideology [1827857764]  unknown -> 1.6.4900 rev600
+  Royalty (1233017772)   1.6.4871 rev588 -> 1.6.4900 rev600
+  Ideology (1827857764)  unknown -> 1.6.4900 rev600
   download               412 MiB
   unpacked               about 412 MiB (an estimate)
 Updated rimworld.
   RimWorld               1.6.4871 rev588 -> 1.6.4900 rev600
-  Royalty [1233017772]   1.6.4871 rev588 -> 1.6.4900 rev600
-  Ideology [1827857764]  unknown -> 1.6.4900 rev600
+  Royalty (1233017772)   1.6.4871 rev588 -> 1.6.4900 rev600
+  Ideology (1827857764)  unknown -> 1.6.4900 rev600
 Overwrote these files that differed from the new version:
   start.sh
 ```

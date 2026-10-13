@@ -145,7 +145,7 @@ pub struct Status {
 }
 
 impl DlcStatus {
-    /// `NAME [ID]` against the base game's title: GOG's title if it listed
+    /// `NAME (ID)` against the base game's title: GOG's title if it listed
     /// one, else the name in the folder.
     pub fn label(&self, base_title: &str) -> String {
         let title = self

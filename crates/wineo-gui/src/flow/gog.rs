@@ -1490,8 +1490,8 @@ mod tests {
                 ("Track", "installer".to_owned()),
                 ("Version", "1.6.4871 rev588".to_owned()),
                 ("Language", "en".to_owned()),
-                ("DLC", "DLC [1233017772]".to_owned()),
-                ("", "DLC [1827857764]".to_owned()),
+                ("DLC", "DLC (1233017772)".to_owned()),
+                ("", "DLC (1827857764)".to_owned()),
             ]
         );
     }
@@ -1522,9 +1522,9 @@ mod tests {
         assert_eq!(
             dlc,
             [
-                ("DLC", "Royalty [1233017772]".to_owned()),
-                ("", "Ideology [1827857764]".to_owned()),
-                ("", "DLC [1865538500]".to_owned()),
+                ("DLC", "Royalty (1233017772)".to_owned()),
+                ("", "Ideology (1827857764)".to_owned()),
+                ("", "DLC (1865538500)".to_owned()),
             ]
         );
         // The rows draw, the unlabeled ones included.

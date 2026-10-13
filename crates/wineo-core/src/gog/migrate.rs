@@ -230,7 +230,7 @@ impl Migration {
         &self.committed
     }
 
-    /// The DLC the folder records, each as `NAME [ID]`, in the order
+    /// The DLC the folder records, each as `NAME (ID)`, in the order
     /// they were added.
     pub fn dlc_labels(&self) -> Vec<String> {
         self.committed

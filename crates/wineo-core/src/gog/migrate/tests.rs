@@ -1508,9 +1508,9 @@ fn a_migration_labels_dlc_by_the_names_the_folder_records() {
     assert_eq!(
         fx.migration(RIMWORLD).dlc_labels(),
         [
-            "Royalty [1233017772]",
-            "Ideology [1827857764]",
-            "DLC [1865538500]"
+            "Royalty (1233017772)",
+            "Ideology (1827857764)",
+            "DLC (1865538500)"
         ]
     );
 }
@@ -1521,6 +1521,6 @@ fn a_migration_without_info_files_labels_dlc_by_id() {
     fx.rimworld();
     assert_eq!(
         fx.migration(RIMWORLD).dlc_labels(),
-        ["DLC [1233017772]", "DLC [1827857764]", "DLC [1865538500]"]
+        ["DLC (1233017772)", "DLC (1827857764)", "DLC (1865538500)"]
     );
 }

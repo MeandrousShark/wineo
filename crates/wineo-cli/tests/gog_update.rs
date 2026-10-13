@@ -139,11 +139,11 @@ fn check_lists_a_game_with_an_update_and_its_dlc() {
     }
     // Only the DLC that differ or aren't known are listed, indented.
     assert!(
-        lines.contains(&"  DLC Royalty [1233017772]: 1.6.4871 rev588 -> 1.6.4900 rev600"),
+        lines.contains(&"  DLC Royalty (1233017772): 1.6.4871 rev588 -> 1.6.4900 rev600"),
         "{text}"
     );
     assert!(
-        lines.contains(&"  DLC Ideology [1827857764]: version unknown"),
+        lines.contains(&"  DLC Ideology (1827857764): version unknown"),
         "{text}"
     );
     assert_eq!(stderr(&out), "");

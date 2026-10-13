@@ -299,7 +299,7 @@ in the host root, needs no GOG login, and never edits Heroic's files.
   Windows environment needs a runner first, through `plan_runner`; its
   prefix is always adopted in place. `game_plan_mut` and `native_plan_mut`
   edit a new environment like a Heroic import. `dlc_labels()` gives each
-  DLC as `NAME [ID]`, named from the folder's info files.
+  DLC as `NAME (ID)`, named from the folder's info files.
 - `apply(paths, global, &source, &migration, &token, progress) -> Outcome`
   checks everything again under the locks and writes `gog_id` into the
   config before the folder's state. It returns `AlreadyMigrated` or
@@ -349,7 +349,7 @@ an hour unless `refresh` is set.
   present, so the game needs finishing before it launches), `warnings`,
   and `dlc` (`DlcStatus` per DLC, with `Unknown` for a migrated DLC whose
   version Heroic never recorded). A `DlcStatus` has GOG's `title` and the
-  folder's `name`; `label(base_title)` gives `NAME [ID]`.
+  folder's `name`; `label(base_title)` gives `NAME (ID)`.
 - Status comes from the last committed state even when a journal is
   present. A Galaxy-tracked game whose `goggame-<id>.info` shows a newer
   build from another tool has that build recorded, under the folder's
@@ -378,7 +378,7 @@ goes through `gog::update::plan` and `apply`:
   one: GOG publishes no unpacked size). A folder with a journal is always
   `Update`, finishing the journal's own kind. `session` may be None only
   for recovery whose cached packages all verify. `dlc_label(id)` names a
-  DLC as `NAME [ID]`, from GOG's title or else the folder's name, so a
+  DLC as `NAME (ID)`, from GOG's title or else the folder's name, so a
   recovery from cached packages names DLC too.
 - `apply(paths, session, &pending, &token, progress) -> Updated` downloads
   and verifies every package holding no lock, so the game can be played
@@ -408,8 +408,8 @@ goes through `gog::update::plan` and `apply`:
 trusting a file only when its `gameId` matches its file name. It reads only
 regular files up to 64 KiB, and skips anything else silently, since a name
 is never worth failing over. `dlc_label(base_title, id, name)` gives
-`NAME [ID]`, dropping a leading `Base - ` or `Base: `
-(`RimWorld - Royalty` becomes `Royalty [1233017772]`), or `DLC [ID]` with
+`NAME (ID)`, dropping a leading `Base - ` or `Base: `
+(`RimWorld - Royalty` becomes `Royalty (1233017772)`), or `DLC (ID)` with
 no name.
 
 A folder in use refuses an update or migration with `FolderError::InUse`,
