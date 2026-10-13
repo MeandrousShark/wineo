@@ -29,13 +29,27 @@ struct MenuAnchor<'a, Message, Theme, Renderer> {
     on_anchor: Box<dyn Fn(Point) -> Message + 'a>,
 }
 
-fn opens_menu(event: &Event) -> bool {
+/// The last cursor position seen inside the window. iced forgets the
+/// cursor when it leaves, but the keyboard can still open the menu then.
+#[derive(Default)]
+struct State {
+    last: Option<Point>,
+}
+
+fn clicks_menu(event: &Event) -> bool {
     matches!(
         event,
         Event::Mouse(
             mouse::Event::ButtonPressed(mouse::Button::Right)
                 | mouse::Event::ButtonReleased(mouse::Button::Left)
-        ) | Event::Keyboard(keyboard::Event::KeyPressed {
+        )
+    )
+}
+
+fn keys_menu(event: &Event) -> bool {
+    matches!(
+        event,
+        Event::Keyboard(keyboard::Event::KeyPressed {
             key: keyboard::Key::Named(Named::Enter | Named::Space),
             repeat: false,
             ..
@@ -49,19 +63,19 @@ where
     Renderer: AdvancedRenderer,
 {
     fn tag(&self) -> tree::Tag {
-        self.content.as_widget().tag()
+        tree::Tag::of::<State>()
     }
 
     fn state(&self) -> tree::State {
-        self.content.as_widget().state()
+        tree::State::new(State::default())
     }
 
     fn children(&self) -> Vec<tree::Tree> {
-        self.content.as_widget().children()
+        vec![tree::Tree::new(&self.content)]
     }
 
     fn diff(&self, tree: &mut tree::Tree) {
-        self.content.as_widget().diff(tree);
+        tree.diff_children(std::slice::from_ref(&self.content));
     }
 
     fn size(&self) -> Size<Length> {
@@ -78,7 +92,9 @@ where
         renderer: &Renderer,
         limits: &layout::Limits,
     ) -> layout::Node {
-        self.content.as_widget_mut().layout(tree, renderer, limits)
+        self.content
+            .as_widget_mut()
+            .layout(&mut tree.children[0], renderer, limits)
     }
 
     fn operate(
@@ -90,7 +106,7 @@ where
     ) {
         self.content
             .as_widget_mut()
-            .operate(tree, layout, renderer, operation);
+            .operate(&mut tree.children[0], layout, renderer, operation);
     }
 
     fn update(
@@ -104,13 +120,29 @@ where
         shell: &mut Shell<'_, Message>,
         viewport: &Rectangle,
     ) {
-        if opens_menu(event)
-            && let Some(position) = cursor.position()
-        {
+        let state = tree.state.downcast_mut::<State>();
+        if let Event::Mouse(mouse::Event::CursorMoved { position }) = event {
+            state.last = Some(*position);
+        }
+        let anchor = if clicks_menu(event) {
+            cursor.position()
+        } else if keys_menu(event) {
+            cursor.position().or(state.last)
+        } else {
+            None
+        };
+        if let Some(position) = anchor {
             shell.publish((self.on_anchor)(position));
         }
         self.content.as_widget_mut().update(
-            tree, event, layout, cursor, renderer, clipboard, shell, viewport,
+            &mut tree.children[0],
+            event,
+            layout,
+            cursor,
+            renderer,
+            clipboard,
+            shell,
+            viewport,
         );
     }
 
@@ -124,9 +156,15 @@ where
         cursor: mouse::Cursor,
         viewport: &Rectangle,
     ) {
-        self.content
-            .as_widget()
-            .draw(tree, renderer, theme, style, layout, cursor, viewport);
+        self.content.as_widget().draw(
+            &tree.children[0],
+            renderer,
+            theme,
+            style,
+            layout,
+            cursor,
+            viewport,
+        );
     }
 
     fn mouse_interaction(
@@ -137,9 +175,13 @@ where
         viewport: &Rectangle,
         renderer: &Renderer,
     ) -> mouse::Interaction {
-        self.content
-            .as_widget()
-            .mouse_interaction(tree, layout, cursor, viewport, renderer)
+        self.content.as_widget().mouse_interaction(
+            &tree.children[0],
+            layout,
+            cursor,
+            viewport,
+            renderer,
+        )
     }
 
     fn overlay<'a>(
@@ -150,9 +192,13 @@ where
         viewport: &Rectangle,
         translation: Vector,
     ) -> Option<overlay::Element<'a, Message, Theme, Renderer>> {
-        self.content
-            .as_widget_mut()
-            .overlay(tree, layout, renderer, viewport, translation)
+        self.content.as_widget_mut().overlay(
+            &mut tree.children[0],
+            layout,
+            renderer,
+            viewport,
+            translation,
+        )
     }
 }
 
@@ -163,6 +209,11 @@ mod tests {
     use iced::widget::mouse_area;
 
     fn messages(event: Event, cursor: mouse::Cursor) -> Vec<Message> {
+        sequence(&[(event, cursor)])
+    }
+
+    /// Feeds events through one widget tree and returns every message.
+    fn sequence(events: &[(Event, mouse::Cursor)]) -> Vec<Message> {
         let card = mouse_area(iced::widget::Space::new().width(100).height(100))
             .on_right_press(Message::Context("game".into()));
         let mut widget: Element<'_, Message, iced::Theme, ()> = track(card, Message::MenuAnchor);
@@ -173,18 +224,35 @@ mod tests {
                 .as_widget_mut()
                 .layout(&mut tree, &(), &layout::Limits::new(Size::ZERO, bounds));
         let mut messages = Vec::new();
-        let mut shell = Shell::new(&mut messages);
-        widget.as_widget_mut().update(
-            &mut tree,
-            &event,
-            Layout::new(&node),
-            cursor,
-            &(),
-            &mut iced::advanced::clipboard::Null,
-            &mut shell,
-            &Rectangle::with_size(bounds),
-        );
+        for (event, cursor) in events {
+            let mut shell = Shell::new(&mut messages);
+            widget.as_widget_mut().update(
+                &mut tree,
+                event,
+                Layout::new(&node),
+                *cursor,
+                &(),
+                &mut iced::advanced::clipboard::Null,
+                &mut shell,
+                &Rectangle::with_size(bounds),
+            );
+        }
         messages
+    }
+
+    fn enter(repeat: bool) -> Event {
+        let key = keyboard::Key::Named(Named::Enter);
+        Event::Keyboard(keyboard::Event::KeyPressed {
+            key: key.clone(),
+            modified_key: key,
+            physical_key: keyboard::key::Physical::Unidentified(
+                keyboard::key::NativeCode::Unidentified,
+            ),
+            location: keyboard::Location::Standard,
+            modifiers: keyboard::Modifiers::empty(),
+            text: None,
+            repeat,
+        })
     }
 
     #[test]
@@ -218,22 +286,34 @@ mod tests {
             .is_empty()
         );
         for repeat in [false, true] {
-            let key = keyboard::Key::Named(Named::Enter);
-            let press = Event::Keyboard(keyboard::Event::KeyPressed {
-                key: key.clone(),
-                modified_key: key,
-                physical_key: keyboard::key::Physical::Unidentified(
-                    keyboard::key::NativeCode::Unidentified,
-                ),
-                location: keyboard::Location::Standard,
-                modifiers: keyboard::Modifiers::empty(),
-                text: None,
-                repeat,
-            });
-            let anchored = messages(press, mouse::Cursor::Available(at))
+            let anchored = messages(enter(repeat), mouse::Cursor::Available(at))
                 .iter()
                 .any(|message| matches!(message, Message::MenuAnchor(_)));
             assert_eq!(anchored, !repeat);
         }
+    }
+
+    #[test]
+    fn keys_outside_the_window_anchor_at_the_last_cursor_position() {
+        let last = Point::new(70.0, 20.0);
+        let messages = sequence(&[
+            (
+                Event::Mouse(mouse::Event::CursorMoved { position: last }),
+                mouse::Cursor::Available(last),
+            ),
+            (
+                Event::Mouse(mouse::Event::CursorLeft),
+                mouse::Cursor::Unavailable,
+            ),
+            (enter(false), mouse::Cursor::Unavailable),
+            (
+                Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Right)),
+                mouse::Cursor::Unavailable,
+            ),
+        ]);
+        assert!(matches!(
+            messages.as_slice(),
+            [Message::MenuAnchor(point)] if *point == last
+        ));
     }
 }
