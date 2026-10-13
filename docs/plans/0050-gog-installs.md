@@ -328,6 +328,24 @@ Step 6's choices (2026-10-13, provisional while the maintainer was away):
 - **`import gog --forget FOLDER` also drops an install that never got its
   config**, refusing while anything runs; the files stay.
 
+Step 7's choices (2026-10-13, provisional while the maintainer was away):
+
+- **Import from GOG lists owned games as text tiles**, without posters for
+  games that aren't installed: fetching covers for every owned game is a
+  network and cache question for later.
+- **Games folder and GOG language** sit in Settings' GOG section, and both
+  are off in a portable folder.
+- **A program picked after a Windows install** is named from its file, like
+  the CLI, and saved as the default with a desktop entry titled after the
+  game.
+- **Abandoning an install that never got its config** stays in the CLI
+  (`import gog --forget`); the app shows it as "Install didn't finish" and
+  can finish it.
+- **Logged out**, the grid still offers Heroic games for migration, and
+  owned games show a note to log in.
+- **A typed language or folder is checked on Enter**; Install stays off
+  until it has been, since each check asks GOG which DLC you own.
+
 Carried from 0049's acceptance (2026-10-12):
 
 - Sizes GOG lists are rounded to whole MiB, so they're estimates; a file's
