@@ -252,7 +252,7 @@ fn a_game_already_migrated_is_a_no_op() {
 }
 
 #[test]
-fn a_game_heroic_doesnt_have_changes_nothing() {
+fn a_game_heroic_doesnt_have_needs_a_login_to_install_and_changes_nothing() {
     let f = fixture();
     f.heroic_rimworld();
     let before = Snapshot::capture(f.root.path()).unwrap();
@@ -260,7 +260,7 @@ fn a_game_heroic_doesnt_have_changes_nothing() {
     assert_eq!(out.status.code(), Some(1));
     assert!(
         stderr(&out).contains(
-            "error: Heroic doesn't have GOG game 999, and installing games comes in a later release."
+            "error: Log in to GOG first: wineo import gog --login."
         ),
         "{}",
         stderr(&out)
@@ -271,7 +271,7 @@ fn a_game_heroic_doesnt_have_changes_nothing() {
     let bare = Fixture::new();
     let out = import(&bare, &["--game", "999", "--yes"]);
     assert_eq!(out.status.code(), Some(1));
-    assert!(stderr(&out).contains("installing games comes in a later release."));
+    assert!(stderr(&out).contains("error: Log in to GOG first: wineo import gog --login."));
 }
 
 #[test]
