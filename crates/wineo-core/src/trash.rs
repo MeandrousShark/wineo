@@ -141,6 +141,10 @@ struct Payload {
     return_stage: Option<Stage>,
     digest: String,
     step: Step,
+    /// Rollback found the source changed before its deletion began, so the
+    /// source stays live and this retained copy stays in the trash.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    kept: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1353,6 +1357,7 @@ fn make_payload(
         return_stage: None,
         digest: digest(source)?,
         step: Step::Ready,
+        kept: false,
     }))
 }
 
@@ -1835,11 +1840,10 @@ fn return_payload(
                 // Deleting a copied source can stop part way, leaving its
                 // root behind. Only the retained copy is whole then.
                 if payload.step != Step::DeletingSource || !contained_in(&original, &retained)? {
-                    bail!(
-                        "{} and its retained copy at {} differ; both were kept",
-                        original.display(),
-                        retained.display()
-                    );
+                    // Changed before its deletion began, so neither copy
+                    // is partial and both are kept.
+                    manifest.payloads[index].kept = true;
+                    return write_manifest(paths, manifest);
                 }
                 delete_owned(&original)?;
                 return return_payload(paths, manifest, index, rollback);
@@ -2043,16 +2047,29 @@ fn restore_locked(
     manifest: &mut Manifest,
     rollback: bool,
     gog: &[FolderLock],
+    notes: &mut Vec<String>,
 ) -> Result<()> {
-    restore_locked_with(paths, manifest, rollback, gog, || Ok(()))
+    restore_locked_noting(paths, manifest, rollback, gog, || Ok(()), notes)
 }
 
+#[cfg(test)]
 fn restore_locked_with(
     paths: &Paths,
     manifest: &mut Manifest,
     rollback: bool,
     gog: &[FolderLock],
     published: impl FnOnce() -> Result<()>,
+) -> Result<()> {
+    restore_locked_noting(paths, manifest, rollback, gog, published, &mut Vec::new())
+}
+
+fn restore_locked_noting(
+    paths: &Paths,
+    manifest: &mut Manifest,
+    rollback: bool,
+    gog: &[FolderLock],
+    published: impl FnOnce() -> Result<()>,
+    notes: &mut Vec<String>,
 ) -> Result<()> {
     let config = paths.environment_config(&manifest.name);
     if !rollback && manifest.phase == Phase::Trashed {
@@ -2127,7 +2144,7 @@ fn restore_locked_with(
         .and_then(|_| GlobalConfig::load(paths).ok());
     with_environment_build_locks(paths, global.as_ref(), restored_config.as_ref(), || {
         for index in (0..manifest.payloads.len()).rev() {
-            if manifest.payloads[index].step == Step::Returned {
+            if manifest.payloads[index].step == Step::Returned || manifest.payloads[index].kept {
                 continue;
             }
             return_payload(paths, manifest, index, rollback)?;
@@ -2141,12 +2158,96 @@ fn restore_locked_with(
     // Registration and payload restoration have completed. A shortcut failure
     // is reported, but it must not undo or block the returned environment.
     let desktop_error = reconcile(paths, &manifest.name).err();
-    complete_entry(paths, manifest)?;
+    if manifest.payloads.iter().any(|payload| payload.kept) {
+        keep_changed(paths, manifest, notes)?;
+    } else {
+        complete_entry(paths, manifest)?;
+    }
     if let Some(err) = desktop_error {
         bail!(
             "environment {} was restored, but its desktop entries need attention: {err:#}",
             manifest.name
         );
+    }
+    Ok(())
+}
+
+/// Ends a rollback that kept a changed source live: the retained copies from
+/// before the change become an ordinary trash entry, with a copy of the live
+/// config so the entry can be restored once the live environment is gone.
+fn keep_changed(paths: &Paths, manifest: &mut Manifest, notes: &mut Vec<String>) -> Result<()> {
+    let dir = entry_dir(paths, &manifest.id)?;
+    let mut kept: Vec<Payload> = manifest
+        .payloads
+        .iter()
+        .filter(|payload| payload.kept)
+        .cloned()
+        .collect();
+    for payload in &kept {
+        notes.push(format!(
+            "{} changed after it was copied to the trash, so it stays as it is; the copy from before is in trash entry {}",
+            resolved(paths, &payload.original)?.display(),
+            manifest.id
+        ));
+    }
+    if !kept.iter().any(|payload| payload.kind == Kind::Config) {
+        let source = paths.environment_config(&manifest.name);
+        let retained = dir.join("config.toml");
+        // The config payload has already gone back, so only a copy this step
+        // started before a crash can be here.
+        if identity(&retained)?.is_some() {
+            fs::remove_file(&retained)?;
+        }
+        let source_parent =
+            identity(parent(&source)?)?.ok_or_else(|| anyhow!("config storage unavailable"))?;
+        let destination_parent =
+            identity(&dir)?.ok_or_else(|| anyhow!("trash storage unavailable"))?;
+        let digest = digest(&source)?;
+        copy_verified(&source, &retained, &digest)?;
+        let copied = identity(&retained)?.ok_or_else(|| anyhow!("config copy disappeared"))?;
+        let cross = source_parent.mount != destination_parent.mount;
+        let identity = if cross {
+            identity(&source)?.ok_or_else(|| anyhow!("config disappeared"))?
+        } else {
+            copied
+        };
+        kept.insert(
+            0,
+            Payload {
+                kind: Kind::Config,
+                original: stored(paths, &source)?,
+                retained: stored(paths, &retained)?,
+                identity,
+                source_parent,
+                destination_parent,
+                copied_identity: cross.then_some(copied),
+                returned_identity: None,
+                out_stage: None,
+                return_stage: None,
+                digest,
+                step: Step::Retained,
+                kept: false,
+            },
+        );
+    }
+    for payload in &mut kept {
+        payload.kept = false;
+        payload.step = Step::Retained;
+        payload.returned_identity = None;
+        payload.out_stage = None;
+        payload.return_stage = None;
+    }
+    manifest.payloads = kept;
+    manifest.include_prefix = false;
+    manifest.prefix_present = None;
+    manifest.prefix_reference = None;
+    manifest.prefix_identity = None;
+    manifest.gog_folders.clear();
+    manifest.phase = Phase::Trashed;
+    write_manifest(paths, manifest)?;
+    if marker_for(paths, &manifest.id)?.is_some() {
+        finish_marker(paths, manifest)?;
+        retire_marker(paths, manifest)?;
     }
     Ok(())
 }
@@ -2264,7 +2365,7 @@ pub fn restore(paths: &Paths, id: &str) -> Result<()> {
         if manifest.phase != Phase::Trashed {
             bail!("entry {id} needs `wineo validate --fix` first");
         }
-        restore_locked(paths, manifest, false, gog)
+        restore_locked(paths, manifest, false, gog, &mut Vec::new())
     })
 }
 
@@ -2406,6 +2507,13 @@ pub fn prune_reviewed(paths: &Paths, review: &PruneReview) -> Vec<(String, Resul
 }
 
 pub fn recover(paths: &Paths, id: &str) -> Result<()> {
+    recover_noting(paths, id).map(|_| ())
+}
+
+/// `recover`, returning what a rollback kept in the trash instead of
+/// returning, for the caller to report.
+pub fn recover_noting(paths: &Paths, id: &str) -> Result<Vec<String>> {
+    let mut notes = Vec::new();
     if let Some((_, marker)) = marker_for(paths, id)? {
         require(&paths.trash_dir(), marker.metadata_identity)?;
         if let Some(saved) = marker.portable_identity {
@@ -2454,7 +2562,8 @@ pub fn recover(paths: &Paths, id: &str) -> Result<()> {
                 if !marker.finished {
                     finish_marker(paths, &marker.manifest)?;
                 }
-                return retire_marker(paths, &marker.manifest);
+                retire_marker(paths, &marker.manifest)?;
+                return Ok(notes);
             }
             bail!(
                 "trash entry {id} lost its manifest during {:?}; marker retained",
@@ -2463,15 +2572,16 @@ pub fn recover(paths: &Paths, id: &str) -> Result<()> {
         }
     }
     locked(paths, id, true, |manifest, gog| match manifest.phase {
-        Phase::Removing => restore_locked(paths, manifest, true, gog),
-        Phase::Restoring => restore_locked(paths, manifest, false, gog),
+        Phase::Removing => restore_locked(paths, manifest, true, gog, &mut notes),
+        Phase::Restoring => restore_locked(paths, manifest, false, gog, &mut notes),
         Phase::Pruning => prune_locked(paths, manifest),
         Phase::Trashed if marker_for(paths, id)?.is_some() => {
             finish_marker(paths, manifest)?;
             retire_marker(paths, manifest)
         }
         Phase::Trashed => bail!("entry {id} is not interrupted"),
-    })
+    })?;
+    Ok(notes)
 }
 
 #[cfg(test)]
@@ -3897,8 +4007,8 @@ mod tests {
             return;
         };
         fs::write(source.join("hero.png"), "edited").unwrap();
-        let error = return_payload(&f.paths, &mut manifest, 0, true).unwrap_err();
-        assert!(error.to_string().contains("both were kept"), "{error}");
+        return_payload(&f.paths, &mut manifest, 0, true).unwrap();
+        assert!(manifest.payloads[0].kept);
         assert_eq!(
             fs::read_to_string(source.join("hero.png")).unwrap(),
             "edited"
@@ -3910,6 +4020,106 @@ mod tests {
         assert_eq!(
             fs::read_to_string(retained.join("icon.png")).unwrap(),
             "icon"
+        );
+    }
+
+    #[test]
+    fn rollback_turns_a_copy_of_a_changed_source_into_a_trash_entry() {
+        let Some(config_root) = tempfile::tempdir_in("/dev/shm").ok() else {
+            return;
+        };
+        let f = Fixture::new();
+        let home = f._root.path().to_owned();
+        let config_home = config_root.path().to_owned();
+        let paths = Paths::from_lookup(move |key| match key {
+            "HOME" => Some(OsString::from(home.as_os_str())),
+            "XDG_CONFIG_HOME" => Some(OsString::from(config_home.as_os_str())),
+            _ => None,
+        })
+        .unwrap();
+        let source = paths.environment_config("game");
+        fs::create_dir_all(parent(&source).unwrap()).unwrap();
+        fs::write(&source, "kind = 'native'\n# before\n").unwrap();
+        let id = "20260926T183000Z-a1b2c3d6";
+        let dir = entry_dir(&paths, id).unwrap();
+        create_storage(&dir).unwrap();
+        let dest = dir.join("config.toml");
+        let mut payload = make_payload(&paths, Kind::Config, &source, &dest)
+            .unwrap()
+            .unwrap();
+        if payload.source_parent.mount == payload.destination_parent.mount {
+            return;
+        }
+        copy_verified(&source, &dest, &payload.digest).unwrap();
+        payload.copied_identity = identity(&dest).unwrap();
+        payload.step = Step::Copied;
+        let manifest = Manifest {
+            version: VERSION,
+            id: id.into(),
+            entry_identity: identity(&dir).unwrap().unwrap(),
+            name: "game".into(),
+            removed_at: "2026-09-26T18:30:00Z".into(),
+            include_prefix: false,
+            prefix_present: None,
+            prefix_reference: None,
+            prefix_identity: None,
+            phase: Phase::Removing,
+            payloads: vec![payload],
+            gog_folders: Vec::new(),
+        };
+        write_manifest(&paths, &manifest).unwrap();
+        // An edit lands after the copy, before deletion begins.
+        fs::write(&source, "kind = 'native'\n# after\n").unwrap();
+
+        let notes = recover_noting(&paths, id).unwrap();
+        assert_eq!(notes.len(), 1, "{notes:?}");
+        assert!(notes[0].contains(&format!("trash entry {id}")), "{notes:?}");
+        assert_eq!(
+            fs::read_to_string(&source).unwrap(),
+            "kind = 'native'\n# after\n"
+        );
+        let entry = inspect(&paths, id).unwrap();
+        assert_eq!(entry.phase, Phase::Trashed);
+        assert!(check_pending(&paths, "game", &[]).is_ok());
+        // Restorable once the live environment is out of the way.
+        assert!(restore(&paths, id).is_err());
+        fs::remove_file(&source).unwrap();
+        restore(&paths, id).unwrap();
+        assert_eq!(
+            fs::read_to_string(&source).unwrap(),
+            "kind = 'native'\n# before\n"
+        );
+        assert!(list(&paths).unwrap().is_empty());
+    }
+
+    #[test]
+    fn rollback_keeps_changed_art_and_adds_the_live_config() {
+        let Some((f, _other, source, retained, mut manifest)) = interrupted_art_copy(Step::Copied)
+        else {
+            return;
+        };
+        f.config("game", "kind = 'native'\n");
+        fs::write(source.join("hero.png"), "edited").unwrap();
+        let mut notes = Vec::new();
+        return_payload(&f.paths, &mut manifest, 0, true).unwrap();
+        keep_changed(&f.paths, &mut manifest, &mut notes).unwrap();
+        assert_eq!(notes.len(), 1);
+        assert_eq!(manifest.phase, Phase::Trashed);
+        assert_eq!(
+            manifest
+                .payloads
+                .iter()
+                .map(|payload| payload.kind)
+                .collect::<Vec<_>>(),
+            [Kind::Config, Kind::Art]
+        );
+        assert_eq!(
+            fs::read_to_string(retained.join("hero.png")).unwrap(),
+            "hero"
+        );
+        assert_eq!(
+            fs::read_to_string(source.join("hero.png")).unwrap(),
+            "edited"
         );
     }
 
