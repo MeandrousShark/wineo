@@ -1193,3 +1193,16 @@ fn a_dlc_gog_doesn_t_list_is_labeled_by_the_folder_s_name() {
         [format!("Royalty [{ROYALTY}]"), format!("DLC [{IDEOLOGY}]")]
     );
 }
+
+#[test]
+fn a_blank_gog_title_falls_back_to_the_folder_s_name() {
+    let dlc = DlcStatus {
+        id: ROYALTY,
+        title: Some("   ".to_owned()),
+        name: Some("RimWorld - Royalty".to_owned()),
+        installed: None,
+        available: None,
+        state: DlcState::Unknown,
+    };
+    assert_eq!(dlc.label("RimWorld"), format!("Royalty [{ROYALTY}]"));
+}

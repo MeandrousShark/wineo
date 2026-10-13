@@ -176,7 +176,7 @@ impl Pending {
             product
                 .title
                 .clone()
-                .filter(|title| !title.is_empty())
+                .filter(|title| !title.trim().is_empty())
                 .or_else(|| product.name.clone())
         };
         let base = self
