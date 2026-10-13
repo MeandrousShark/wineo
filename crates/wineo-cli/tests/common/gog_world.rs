@@ -270,6 +270,47 @@ impl Fixture {
         dir
     }
 
+    /// A drop-in runner `inno` whose wine sources a setup program as a shell
+    /// script, with `$DIR` set from its `/DIR=` argument, after appending its
+    /// name and arguments to `runs/<name>.args` and its name to `runs/log`.
+    pub fn inno_runner(&self) {
+        let runs = self.inno_runs();
+        fs::create_dir_all(&runs).unwrap();
+        let bin = self.root.path().join("data/wineo/runners/inno/bin");
+        fs::create_dir_all(&bin).unwrap();
+        write_script(bin.join("wineserver"), "#!/bin/sh\nexit 0\n");
+        write_script(
+            bin.join("wine"),
+            format!(
+                r#"#!/bin/sh
+RUNS='{runs}'
+case "$1" in
+wineboot) [ "$2" = --init ] && mkdir -p "$WINEPREFIX/drive_c" && echo 'WINE REGISTRY Version 2' > "$WINEPREFIX/system.reg"; exit 0 ;;
+--version) echo wine-inno; exit 0 ;;
+*.exe) ;;
+*) exit 0 ;;
+esac
+exe="$1"
+shift
+name=$(basename "$exe")
+printf '%s\n' "$exe" "$@" > "$RUNS/$name.args"
+echo "$name" >> "$RUNS/log"
+DIR=
+for arg in "$@"; do
+    case "$arg" in /DIR=Z:*) DIR=$(printf '%s' "${{arg#/DIR=Z:}}" | tr '\\' '/') ;; esac
+done
+. "$exe"
+"#,
+                runs = runs.display()
+            ),
+        );
+    }
+
+    /// Where the `inno` runner records its setup runs.
+    pub fn inno_runs(&self) -> PathBuf {
+        self.root.path().join("inno-runs")
+    }
+
     /// A native environment `name` that owns `folder` as GOG game `gog_id`,
     /// installed at `version` with the given DLC (id and version).
     pub fn gog_environment(

@@ -517,6 +517,46 @@ impl GogApi {
         })
     }
 
+    /// Puts a Windows installer for `id` on offer: a setup program, `script`,
+    /// which the fake Inno runner sources, and one part beside it. Returns
+    /// its entry for a product's details.
+    pub fn windows_package(&self, id: u64, language: &str, version: &str, script: &str) -> Value {
+        let stem = format!(
+            "setup_{id}_{}",
+            version.replace(|char: char| !char.is_ascii_alphanumeric(), "_")
+        );
+        let exe = format!("{stem}.exe");
+        let part = format!("{stem}-1.bin");
+        let script = format!("[ -f \"$(dirname \"$exe\")/{part}\" ] || exit 99\n{script}");
+        let part_bytes = b"the rest of the installer".to_vec();
+        let sizes = [script.len(), part_bytes.len()];
+        self.with(|config| {
+            config.files.insert(exe.clone(), script.into_bytes());
+            config.files.insert(part.clone(), part_bytes);
+        });
+        json!({
+            "id": format!("installer_windows_{language}"),
+            "name": "Installer",
+            "os": "windows",
+            "language": language,
+            "language_full": language,
+            "version": version,
+            "total_size": sizes[0] + sizes[1],
+            "files": [
+                {
+                    "id": format!("{language}1installer0"),
+                    "size": sizes[0],
+                    "downlink": format!("{}/downlink/{exe}", self.base),
+                },
+                {
+                    "id": format!("{language}1installer1"),
+                    "size": sizes[1],
+                    "downlink": format!("{}/downlink/{part}", self.base),
+                },
+            ],
+        })
+    }
+
     /// How many package files were downloaded.
     pub fn downloads(&self) -> usize {
         self.requests()

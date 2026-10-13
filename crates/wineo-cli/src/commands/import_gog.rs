@@ -3,12 +3,14 @@
 
 use std::process::ExitCode;
 
-use wineo_core::gog::folder::FolderError;
+use wineo_core::config::Arch;
+use wineo_core::gog::folder::{FolderError, Platform};
 
 use crate::prompt::Canceled;
 
 mod account;
 mod extras;
+mod install;
 mod list;
 mod migrate;
 
@@ -30,21 +32,53 @@ pub struct Args {
     /// With --list, print JSON
     #[arg(long, requires = "list")]
     pub json: bool,
-    /// Forget the saved state of a game folder that no environment owns
+    /// Forget the saved state of a game folder that no environment owns, or
+    /// of an install that stopped before its environment was created
     #[arg(long, value_name = "PATH", value_hint = clap::ValueHint::DirPath)]
     pub forget: Option<String>,
-    /// Migrate a game Heroic installed, by GOG id
+    /// Install a game by GOG id, or migrate it when Heroic has it
     #[arg(long, value_name = "ID")]
     pub game: Option<String>,
+    /// With --game, the platform to install for, Linux when GOG has a Linux installer
+    #[arg(long, value_enum, requires = "game")]
+    pub platform: Option<InstallPlatform>,
+    /// With --game, the language to install in, a locale tag like fr-FR
+    #[arg(long, value_name = "TAG", requires = "game")]
+    pub language: Option<String>,
+    /// With --game, the runner a Windows game's environment gets
+    #[arg(long, value_name = "NAME", requires = "game")]
+    pub runner: Option<String>,
+    /// With --game, a Windows game's prefix architecture, win64 or win32
+    #[arg(long, value_name = "ARCH", requires = "game")]
+    pub arch: Option<Arch>,
+    /// With --game, the folder to install into instead of the games folder
+    #[arg(long, value_name = "PATH", value_hint = clap::ValueHint::DirPath, requires = "game")]
+    pub dir: Option<String>,
     /// Migrate every game Heroic installed
     #[arg(long)]
     pub all: bool,
     /// Skip the confirmation and allow running without a terminal
     #[arg(short, long, conflicts_with_all = ["login", "logout", "list", "forget"])]
     pub yes: bool,
-    /// Review the migration without changing anything
+    /// Review the install or migration without changing anything
     #[arg(long, conflicts_with_all = ["login", "logout", "list", "forget"])]
     pub dry_run: bool,
+}
+
+/// What `--platform` takes.
+#[derive(Clone, Copy, clap::ValueEnum)]
+pub enum InstallPlatform {
+    Linux,
+    Windows,
+}
+
+impl From<InstallPlatform> for Platform {
+    fn from(platform: InstallPlatform) -> Self {
+        match platform {
+            InstallPlatform::Linux => Platform::Linux,
+            InstallPlatform::Windows => Platform::Windows,
+        }
+    }
 }
 
 pub fn run(

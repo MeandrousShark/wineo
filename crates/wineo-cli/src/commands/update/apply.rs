@@ -4,15 +4,12 @@
 
 use std::io;
 use std::process::ExitCode;
-use std::time::Duration;
 
 use wineo_core::gog::account::{AccountError, Session};
 use wineo_core::gog::folder::{FolderError, JournalKind, Platform, Track};
 use wineo_core::gog::migrate::MigrateError;
 use wineo_core::gog::update::windows::SetupError;
-use wineo_core::gog::update::{
-    self, Check, Options, Pending, Plan, Progress, UpdateError, Updated,
-};
+use wineo_core::gog::update::{self, Check, Options, Pending, Plan, UpdateError, Updated};
 use wineo_core::paths::Paths;
 
 use super::Args;
@@ -517,7 +514,11 @@ fn apply_raw(
         |step| {
             progress.show(&step);
             #[cfg(debug_assertions)]
-            pause_for_test(pending.environment(), &step, &cancellation.token);
+            crate::commands::gog_support::pause_for_test(
+                pending.environment(),
+                &step,
+                &cancellation.token,
+            );
         },
     )
 }
@@ -551,23 +552,6 @@ fn setup_stopped(error: anyhow::Error, name: &str, recovery: bool) -> anyhow::Er
             }
         }
         _ => error,
-    }
-}
-
-/// Lets a test stop an update at a known point: with
-/// `WINEO_TEST_UPDATE_PAUSE=download` or `publish`, the first step of that
-/// kind waits for Ctrl+C, and `publish:NAME` only for that environment.
-/// Release builds never look at it.
-#[cfg(debug_assertions)]
-fn pause_for_test(environment: &str, step: &Progress, token: &wineo_core::cancel::Token) {
-    let wanted = std::env::var("WINEO_TEST_UPDATE_PAUSE").unwrap_or_default();
-    let (at, only) = wanted.split_once(':').unwrap_or((wanted.as_str(), ""));
-    let here = matches!(
-        (at, step),
-        ("download", Progress::Download { .. }) | ("publish", Progress::Publish { .. })
-    ) && (only.is_empty() || only == environment);
-    while here && !token.is_canceled() {
-        std::thread::sleep(Duration::from_millis(20));
     }
 }
 

@@ -343,12 +343,30 @@ pub fn ask_wizard<I: crate::prompt::Input, W: std::io::Write>(
     prompt: &mut Prompt<I, W>,
     label: &str,
 ) -> anyhow::Result<bool> {
-    prompt.confirm_hint(false)?;
+    // Nothing comes before it to go back to, so Esc cancels.
+    prompt.set_first_question(true);
     match prompt.confirm(
         &format!("{label}'s installer didn't start. Run its own setup window?"),
         true,
     )? {
         Reply::Value(answer) => Ok(answer),
         Reply::Back => Err(Canceled.into()),
+    }
+}
+
+/// Lets a test stop an update at a known point: with
+/// `WINEO_TEST_UPDATE_PAUSE=download` or `publish`, the first step of that
+/// kind waits for Ctrl+C, and `publish:NAME` only for that environment.
+/// Release builds never look at it.
+#[cfg(debug_assertions)]
+pub fn pause_for_test(environment: &str, step: &Progress, token: &wineo_core::cancel::Token) {
+    let wanted = std::env::var("WINEO_TEST_UPDATE_PAUSE").unwrap_or_default();
+    let (at, only) = wanted.split_once(':').unwrap_or((wanted.as_str(), ""));
+    let here = matches!(
+        (at, step),
+        ("download", Progress::Download { .. }) | ("publish", Progress::Publish { .. })
+    ) && (only.is_empty() || only == environment);
+    while here && !token.is_canceled() {
+        std::thread::sleep(Duration::from_millis(20));
     }
 }
