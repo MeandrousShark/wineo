@@ -560,6 +560,24 @@ pub(super) fn install(
     })
 }
 
+/// The locale tag installers in GOG's language `code` run with when nobody
+/// is asking for one, as when updating, and how warnings name the language:
+/// the `gog.language` setting when it is that language, else the code
+/// itself, named by GOG's `full` name for it when known.
+pub(super) fn asked_for(paths: &Paths, code: &str, full: Option<&str>) -> Result<(String, String)> {
+    let global = GlobalConfig::load(paths)?;
+    let setting = global.gog_language();
+    let tag = if language::installer_code(setting).as_deref() == Ok(code) {
+        setting.to_owned()
+    } else {
+        code.to_owned()
+    };
+    let name = full
+        .filter(|full| !full.trim().is_empty())
+        .map_or_else(|| tag.clone(), str::to_owned);
+    Ok((tag, name))
+}
+
 /// After an update's game installer stopped before installing anything,
 /// drops the journal this attempt wrote, leaving the game as `committed`
 /// says and launchable. Without `committed` the journal stays for `wineo

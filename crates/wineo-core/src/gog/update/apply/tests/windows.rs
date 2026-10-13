@@ -1448,3 +1448,41 @@ fn an_update_keeps_the_prefix_reserved_to_its_commit() {
             .is_ok()
     );
 }
+
+#[test]
+fn an_update_names_the_language_asked_for_like_an_install() {
+    let fx = installed_windows();
+    fx.offer_windows(
+        RIMWORLD,
+        "RimWorld",
+        "2.0",
+        &[("bin/Game.exe", "game")],
+        Some(info(RIMWORLD, &["fr-FR"], "French", primary_task())),
+    );
+    let updated = fx.update();
+    assert_eq!(
+        updated.warnings,
+        ["Requested English; the installed game reports French."]
+    );
+    // The installer ran in the setting's locale.
+    assert!(fx.args(RIMWORLD).contains(&"LC_ALL=en_US.UTF-8".to_owned()));
+
+    // Finishing without GOG's details names the setting's tag.
+    fx.offer_windows(
+        RIMWORLD,
+        "RimWorld",
+        "3.0",
+        &[("bin/Game.exe", "game")],
+        Some(info(RIMWORLD, &["fr-FR"], "French", primary_task())),
+    );
+    set_failpoint(Some("install.windows.base.after"));
+    fx.update_err();
+    let pending = fx.pending(false, Options::default());
+    let updated = fx
+        .apply_with(false, &pending, &Token::new(), |_| {})
+        .unwrap();
+    assert_eq!(
+        updated.warnings,
+        ["Requested en-US; the installed game reports French."]
+    );
+}

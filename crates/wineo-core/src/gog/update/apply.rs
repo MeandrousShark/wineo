@@ -88,6 +88,9 @@ pub struct Pending {
     warnings: Vec<String>,
     /// Run a Windows game's installer as its own wizard.
     wizard: bool,
+    /// GOG's name for the game installer's language, like `English`, when
+    /// its details were read.
+    language_name: Option<String>,
 }
 
 /// One product of the rebuild, for a review.
@@ -364,6 +367,7 @@ pub fn plan(
                 seen,
                 warnings: Vec::new(),
                 wizard: options.wizard,
+                language_name: None,
             }));
         }
         let session = session.ok_or(AccountError::LoggedOut)?;
@@ -645,6 +649,8 @@ pub(super) struct Resolved {
     pub(super) products: Vec<PlannedProduct>,
     pub(super) files: Vec<PlannedFile>,
     pub(super) warnings: Vec<String>,
+    /// GOG's name for the game installer's language, like `English`.
+    pub(super) language_name: Option<String>,
 }
 
 impl Resolved {
@@ -669,6 +675,7 @@ impl Resolved {
             seen,
             warnings: self.warnings,
             wizard,
+            language_name: self.language_name,
         }
     }
 }
@@ -722,6 +729,7 @@ pub(super) fn resolve(
     let mut target = Vec::new();
     let mut planned = Vec::new();
     let mut files = Vec::new();
+    let mut language_name = None;
     for product in products {
         let entry = if product.id == gog_id {
             Some(&details.product)
@@ -760,6 +768,9 @@ pub(super) fn resolve(
         let product_language = product.language.as_deref().unwrap_or(language);
         let installer = matching_installer(os, &label, product_language, entry).map_err(refuse)?;
         let version = installer_version(os, &label, installer).map_err(refuse)?;
+        if product.id == gog_id {
+            language_name = installer.language_full.clone();
+        }
         let parts = match (platform, installer.files.as_slice()) {
             (_, []) => {
                 return Err(refuse(format!(
@@ -816,6 +827,7 @@ pub(super) fn resolve(
         products: planned,
         files,
         warnings,
+        language_name,
     })
 }
 
@@ -1067,7 +1079,8 @@ fn run_windows(
             pending.dlc_label(id)
         }
     };
-    let language = target.language.clone();
+    let (tag, requested) =
+        windows::asked_for(paths, &target.language, pending.language_name.as_deref())?;
     windows::install(
         paths,
         lock,
@@ -1080,8 +1093,8 @@ fn run_windows(
             guard: operation,
             prefix: &prefix,
             create: None,
-            tag: &language,
-            requested: &language,
+            tag: &tag,
+            requested: &requested,
             wizard: pending.wizard,
             desktop: false,
             committed: state.committed.as_ref(),
