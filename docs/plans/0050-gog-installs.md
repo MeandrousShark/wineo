@@ -187,6 +187,11 @@ Settled by the maintainer on 2026-10-12, before step 1:
   place: a small table where GOG differs from the language subtag (`zh` to
   `cn`, `ja` to `jp`, `cs` to `cz`, `pt-BR` to `br`, and so on), else the
   subtag itself (`de-AT` to `de`). State files keep recording GOG's code.
+- **Which tags count** (2026-10-12, during step 1's review): RFC 5646's
+  `langtag` form with a 2 or 3 letter language, so script, region, variants,
+  and extensions all work, but grandfathered and private-use-only tags
+  don't, and a reserved 5 to 8 letter language is refused so `english`
+  stays a typo.
 
 Carried from 0049's acceptance (2026-10-12):
 
