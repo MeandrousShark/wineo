@@ -5,6 +5,8 @@
 pub mod account;
 pub mod extras;
 pub mod folder;
+pub mod install_dir;
+pub mod language;
 pub mod migrate;
 pub mod names;
 pub mod owned;

@@ -642,3 +642,120 @@ fn a_temporary_that_cant_be_removed_leaves_the_state_in_place() {
     fs::remove_dir_all(&stuck).unwrap();
     assert!(forget(&paths, &folder, NEVER).unwrap());
 }
+
+fn installing(folder: &Path, owner: Option<&str>, kind: JournalKind) -> FolderState {
+    FolderState {
+        journal: Some(Journal { kind, ..journal(1) }),
+        ..FolderState::new(folder.to_owned(), owner.map(str::to_owned))
+    }
+}
+
+#[test]
+fn a_fresh_install_may_use_a_missing_or_empty_folder() {
+    let (root, paths) = setup();
+    let games = canonical(root.path()).unwrap();
+    let missing = games.join("a/b/RimWorld");
+    assert_eq!(
+        check_fresh_install(&paths, &missing, "rimworld").unwrap(),
+        missing
+    );
+    fs::create_dir(games.join("empty")).unwrap();
+    assert_eq!(
+        check_fresh_install(&paths, &games.join("empty"), "rimworld").unwrap(),
+        games.join("empty")
+    );
+}
+
+#[test]
+fn a_fresh_install_resolves_symlinks_above_a_missing_folder() {
+    let (root, paths) = setup();
+    let real = canonical(root.path()).unwrap().join("real");
+    fs::create_dir(&real).unwrap();
+    std::os::unix::fs::symlink(&real, root.path().join("link")).unwrap();
+    let found =
+        check_fresh_install(&paths, &root.path().join("link/RimWorld"), "rimworld").unwrap();
+    assert_eq!(found, real.join("RimWorld"));
+    save(&paths, &game(&real.join("RimWorld"), Some("other"), 9));
+    let error = check_fresh_install(&paths, &root.path().join("link/RimWorld/Mods"), "rimworld")
+        .unwrap_err();
+    assert!(matches!(
+        error.downcast_ref::<FolderError>(),
+        Some(FolderError::Overlap { .. })
+    ));
+}
+
+#[test]
+fn a_fresh_install_refuses_a_folder_with_files() {
+    let (root, paths) = setup();
+    let folder = canonical(root.path()).unwrap().join("RimWorld");
+    fs::create_dir(&folder).unwrap();
+    fs::write(folder.join("saved.txt"), "mine").unwrap();
+    let error = check_fresh_install(&paths, &folder, "rimworld").unwrap_err();
+    assert_eq!(
+        error.to_string(),
+        format!("{} already exists and isn't empty.", folder.display())
+    );
+    let file = folder.join("saved.txt");
+    assert!(check_fresh_install(&paths, &file, "rimworld").is_err());
+}
+
+#[test]
+fn a_fresh_install_may_finish_its_own_install() {
+    let (root, paths) = setup();
+    let folder = canonical(root.path()).unwrap().join("RimWorld");
+    fs::create_dir(&folder).unwrap();
+    fs::write(folder.join(".wineo-partial"), "x").unwrap();
+    save(
+        &paths,
+        &installing(&folder, Some("rimworld"), JournalKind::Install),
+    );
+    assert_eq!(
+        check_fresh_install(&paths, &folder, "rimworld").unwrap(),
+        folder
+    );
+}
+
+#[test]
+fn a_fresh_install_refuses_other_environments_and_other_journals() {
+    let (root, paths) = setup();
+    let folder = canonical(root.path()).unwrap().join("RimWorld");
+    fs::create_dir(&folder).unwrap();
+    fs::write(folder.join("file"), "x").unwrap();
+    for state in [
+        installing(&folder, Some("other"), JournalKind::Install),
+        installing(&folder, None, JournalKind::Install),
+        installing(&folder, Some("rimworld"), JournalKind::Update),
+        installing(&folder, Some("rimworld"), JournalKind::Reinstall),
+        installing(&folder, Some("rimworld"), JournalKind::Repair),
+        game(&folder, Some("rimworld"), 1),
+    ] {
+        save(&paths, &state);
+        let error = check_fresh_install(&paths, &folder, "rimworld").unwrap_err();
+        assert!(
+            matches!(
+                error.downcast_ref::<FolderError>(),
+                Some(FolderError::NotEmpty { .. })
+            ),
+            "{state:?}: {error}"
+        );
+    }
+}
+
+#[test]
+fn a_fresh_install_refuses_to_overlap_another_games_folder() {
+    let (root, paths) = setup();
+    let games = canonical(root.path()).unwrap().join("games");
+    fs::create_dir_all(games.join("rimworld")).unwrap();
+    save(&paths, &game(&games.join("rimworld"), Some("other"), 1));
+    for folder in [games.join("rimworld/Mods"), games.clone()] {
+        let error = check_fresh_install(&paths, &folder, "rimworld").unwrap_err();
+        assert!(
+            matches!(
+                error.downcast_ref::<FolderError>(),
+                Some(FolderError::Overlap { .. })
+            ),
+            "{error}"
+        );
+    }
+    check_fresh_install(&paths, &games.join("rimworld2"), "rimworld").unwrap();
+}
