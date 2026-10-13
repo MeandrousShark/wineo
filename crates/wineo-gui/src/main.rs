@@ -163,6 +163,8 @@ pub(crate) struct App {
     flow: Option<flow::Page>,
     flow_generation: u64,
     action_menu: Option<String>,
+    /// The cursor at the last input that could open the action menu.
+    menu_anchor: iced::Point,
     action_menu_position: iced::Point,
     window_size: iced::Size,
     close_prompt: bool,
@@ -385,6 +387,7 @@ impl App {
             flow: None,
             flow_generation: 0,
             action_menu: None,
+            menu_anchor: iced::Point::ORIGIN,
             action_menu_position: iced::Point::ORIGIN,
             window_size: iced::Size::new(1200.0, 800.0),
             close_prompt: false,
@@ -1267,6 +1270,7 @@ impl App {
                 ])
             }
             Message::Context(name) => {
+                self.action_menu_position = self.menu_anchor;
                 self.action_menu = if self.action_menu.as_deref() == Some(&name) {
                     None
                 } else {
@@ -1275,7 +1279,7 @@ impl App {
                 Task::none()
             }
             Message::MenuAnchor(position) => {
-                self.action_menu_position = position;
+                self.menu_anchor = position;
                 Task::none()
             }
             Message::OverlayInput => Task::none(),
@@ -2356,6 +2360,20 @@ mod tests {
         app.close_prompt = false;
         tree.diff(app.view().as_widget());
         assert_eq!(scroll_state(&tree, tag), Some(state));
+    }
+
+    #[test]
+    fn an_open_action_menu_stays_put_until_the_next_context() {
+        let mut app = app();
+        app.cards = vec![card("game", State::Inactive, 0)];
+        let first = iced::Point::new(30.0, 40.0);
+        let _ = app.update(Message::MenuAnchor(first));
+        let _ = app.update(Message::Context("game".into()));
+        assert_eq!(app.action_menu_position, first);
+        // Releasing the menu's own scrollbar publishes a new anchor.
+        let _ = app.update(Message::MenuAnchor(iced::Point::new(300.0, 400.0)));
+        assert_eq!(app.action_menu.as_deref(), Some("game"));
+        assert_eq!(app.action_menu_position, first);
     }
 
     #[test]

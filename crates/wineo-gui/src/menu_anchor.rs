@@ -37,6 +37,7 @@ fn opens_menu(event: &Event) -> bool {
                 | mouse::Event::ButtonReleased(mouse::Button::Left)
         ) | Event::Keyboard(keyboard::Event::KeyPressed {
             key: keyboard::Key::Named(Named::Enter | Named::Space),
+            repeat: false,
             ..
         })
     )
@@ -200,7 +201,7 @@ mod tests {
     }
 
     #[test]
-    fn moves_and_unknown_cursors_publish_nothing() {
+    fn moves_unknown_cursors_and_key_repeats_publish_nothing() {
         let at = Point::new(30.0, 40.0);
         assert!(
             messages(
@@ -216,5 +217,23 @@ mod tests {
             )
             .is_empty()
         );
+        for repeat in [false, true] {
+            let key = keyboard::Key::Named(Named::Enter);
+            let press = Event::Keyboard(keyboard::Event::KeyPressed {
+                key: key.clone(),
+                modified_key: key,
+                physical_key: keyboard::key::Physical::Unidentified(
+                    keyboard::key::NativeCode::Unidentified,
+                ),
+                location: keyboard::Location::Standard,
+                modifiers: keyboard::Modifiers::empty(),
+                text: None,
+                repeat,
+            });
+            let anchored = messages(press, mouse::Cursor::Available(at))
+                .iter()
+                .any(|message| matches!(message, Message::MenuAnchor(_)));
+            assert_eq!(anchored, !repeat);
+        }
     }
 }
