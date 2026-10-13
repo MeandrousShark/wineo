@@ -96,6 +96,9 @@ pub(crate) struct App {
     reduced_motion: bool,
     grid_scroll_after_settle: Option<String>,
     pub(crate) target: Option<String>,
+    /// The card and target a closing panel keeps drawing until its exit
+    /// animation ends, since closing clears `target`.
+    exit_target: Option<(String, String)>,
     card_click_target: Option<(String, Option<String>)>,
     pub(crate) hovered: Option<String>,
     pub(crate) images: art_cache::ArtCache<ArtKey>,
@@ -342,6 +345,7 @@ impl App {
             reduced_motion: false,
             grid_scroll_after_settle: None,
             target: None,
+            exit_target: None,
             card_click_target: None,
             hovered: None,
             images: art_cache::ArtCache::default(),
@@ -1123,6 +1127,9 @@ impl App {
             Message::PanelTick(generation, now) => {
                 if self.section == sidebar::Section::Library {
                     self.panel_motion.tick(generation, now);
+                    if !self.panel_motion.reserved() {
+                        self.exit_target = None;
+                    }
                 }
                 Task::none()
             }
@@ -3325,6 +3332,75 @@ mod tests {
         ));
         assert!(!app.visible_art.contains(&key));
         assert!(!app.images.contains(&key, false));
+    }
+
+    #[test]
+    fn a_closing_panel_keeps_drawing_its_picked_target_until_the_exit_ends() {
+        let mut app = app();
+        let art = |target: &str| crate::library::ArtPaths {
+            hero: Some(art_file(&format!("/tmp/{target}-hero.png"), 1)),
+            logo: Some(art_file(&format!("/tmp/{target}-logo.png"), 2)),
+        };
+        let mut game = card("game", State::Inactive, 0);
+        game.targets = vec!["a".into(), "b".into()];
+        game.default_target = Some("a".into());
+        game.panel_art.insert("a".into(), art("a"));
+        game.panel_art.insert("b".into(), art("b"));
+        let other = card("other", State::Inactive, 0);
+        app.merge(vec![game, other]);
+        let keys = |target: &str| {
+            let paths = art(target);
+            [
+                (paths.hero.unwrap(), artwork::Kind::Hero),
+                (paths.logo.unwrap(), artwork::Kind::Logo),
+            ]
+        };
+        let pixel = || image::Handle::from_rgba(1, 1, vec![10, 80, 240, 255]);
+        // Nothing fits, so only protected art stays.
+        app.images = art_cache::ArtCache::with_budget(0);
+        let _ = app.update(Message::Select("game".into()));
+        for key in keys("a") {
+            let _ = app.update(Message::ArtLoaded(key, false, Ok(pixel())));
+        }
+        let _ = app.update(Message::TargetPicked("b".into()));
+        for key in keys("b") {
+            let _ = app.update(Message::ArtLoaded(key, false, Ok(pixel())));
+        }
+        for key in keys("a") {
+            assert!(!app.images.contains(&key, false));
+        }
+
+        let _ = app.update(Message::ClosePanel);
+        assert!(app.target.is_none() && app.panel_motion.active());
+        assert_eq!(app.drawn_target(&app.cards[0]), Some("b"));
+        let drawn: Vec<_> = app
+            .panel_art_keys()
+            .into_iter()
+            .map(|(key, _)| key)
+            .collect();
+        assert_eq!(drawn, keys("b"));
+        app.evict_art();
+        let paths = art("b");
+        let (hero, logo) =
+            app.panel_images(&app.cards[0], paths.hero.as_ref(), paths.logo.as_ref());
+        assert!(hero.is_some() && logo.is_some());
+        // A selection moved by keys mid-exit draws that card, as before.
+        app.selected = Some("other".into());
+        assert!(app.panel_art_keys().is_empty());
+        app.selected = Some("game".into());
+
+        // Reopening mid-exit starts from the default target, as before.
+        let _ = app.update(Message::Select("game".into()));
+        assert_eq!(app.drawn_target(&app.cards[0]), Some("a"));
+        let _ = app.update(Message::ClosePanel);
+        let generation = app.panel_motion.generation();
+        let _ = app.update(Message::PanelTick(
+            generation,
+            Instant::now() + Duration::from_secs(1),
+        ));
+        assert!(!app.panel_motion.reserved());
+        assert!(app.exit_target.is_none());
+        assert!(app.panel_art_keys().is_empty());
     }
 
     #[test]

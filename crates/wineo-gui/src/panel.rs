@@ -279,6 +279,14 @@ impl App {
     pub(crate) fn chosen_target<'a>(&'a self, card: &'a Card) -> Option<&'a str> {
         self.target.as_deref().or(card.default_target.as_deref())
     }
+    /// The target the panel draws: a closing panel keeps the one it had
+    /// while it fades out, unless another card was selected meanwhile.
+    pub(crate) fn drawn_target<'a>(&'a self, card: &'a Card) -> Option<&'a str> {
+        match &self.exit_target {
+            Some((name, target)) if !self.panel_open && *name == card.name => Some(target),
+            _ => self.chosen_target(card),
+        }
+    }
     pub(crate) fn panel_log_visible(&self) -> bool {
         self.log_view && self.checkup_log_scope != Some(crate::checkup::Scope::Global)
     }
@@ -294,6 +302,14 @@ impl App {
     pub(crate) fn close_panel(&mut self) {
         self.close_log();
         self.close_checkup();
+        self.exit_target = self
+            .selected
+            .as_ref()
+            .and_then(|name| self.cards.iter().find(|card| &card.name == name))
+            .and_then(|card| {
+                self.chosen_target(card)
+                    .map(|target| (card.name.clone(), target.to_owned()))
+            });
         self.panel_open = false;
         self.panel_motion.close(std::time::Instant::now());
         self.target = None;
@@ -689,7 +705,7 @@ impl App {
             return Vec::new();
         };
         let dimmed = card.not_installed();
-        self.chosen_target(card)
+        self.drawn_target(card)
             .and_then(|target| card.panel_art.get(target))
             .map(|art| {
                 [
@@ -705,7 +721,7 @@ impl App {
     pub(crate) fn panel<'a>(&'a self, card: &'a Card) -> Element<'a, Message> {
         let palette = self.palette;
         let hero_height = 220;
-        let target = self.chosen_target(card);
+        let target = self.drawn_target(card);
         let art = target.and_then(|target| card.panel_art.get(target));
         let hero = art.and_then(|art| art.hero.as_ref());
         let logo = art.and_then(|art| art.logo.as_ref());
@@ -833,7 +849,7 @@ impl App {
                         text("Launch target:").size(14),
                         pick_list(
                             card.targets.clone(),
-                            self.target.clone(),
+                            self.drawn_target(card).map(str::to_owned),
                             Message::TargetPicked,
                         )
                         .wineo_style(palette)
