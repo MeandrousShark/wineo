@@ -20,6 +20,8 @@ thiserror.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
+# For a test's name resolver that blocks the way the system's does.
+tokio = { version = "1", features = ["rt"] }
 
 [lints]
 workspace = true

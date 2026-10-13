@@ -976,6 +976,44 @@ fn a_profile_body_trickling_in_gives_up_at_the_deadline_not_per_read() {
     stop.store(true, std::sync::atomic::Ordering::Relaxed);
 }
 
+/// A name lookup that can't be canceled and takes `stall`, like the system's.
+struct StuckResolver(Duration);
+
+impl reqwest::dns::Resolve for StuckResolver {
+    fn resolve(&self, _name: reqwest::dns::Name) -> reqwest::dns::Resolving {
+        let stall = self.0;
+        Box::pin(async move {
+            let _ = tokio::task::spawn_blocking(move || std::thread::sleep(stall)).await;
+            Err("no such host".into())
+        })
+    }
+}
+
+#[test]
+fn a_stuck_name_lookup_gives_up_on_time_and_never_holds_up_dropping_the_client() {
+    let stall = Duration::from_secs(5);
+    let client = Client::with_resolver(
+        "wineo-test/1",
+        Endpoints::all_at("http://profile.test:9").unwrap(),
+        std::sync::Arc::new(StuckResolver(stall)),
+    )
+    .unwrap()
+    .with_profile_deadline(QUICK);
+    assert_gives_up_quickly(&client);
+
+    // The worker's own request has timed out by now but its lookup is still
+    // stuck. Were the client shared with it, this would be the last clone
+    // and dropping it would wait the lookup out.
+    std::thread::sleep(QUICK * 2);
+    let started = std::time::Instant::now();
+    drop(client);
+    assert!(
+        started.elapsed() < Duration::from_millis(1000),
+        "dropping took {:?}",
+        started.elapsed()
+    );
+}
+
 #[test]
 fn an_oversized_profile_is_refused() {
     let body = format!(
