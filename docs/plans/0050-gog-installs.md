@@ -227,6 +227,24 @@ Provisional, chosen overnight on 2026-10-13 while the maintainer was away
   journal that installing again (or `wineo update NAME`) resumes, rather
   than a config whose state is lost.
 
+Step 2b's choices (2026-10-13):
+
+- **Installs live beside create-and-install, not inside it.** A native GOG
+  install has no runner or prefix, so it is its own core module that shares
+  0049's download, space check, and rebuild with updates, rather than
+  another kind of install step.
+- **Resuming uses the journal first.** Installing again, or `wineo update
+  NAME`, finishes an interrupted install from the journal's recorded target
+  and cached packages, without asking GOG, even offline; only missing
+  packages are fetched again, and no product is ever dropped on resume.
+- **A pending install keeps its name**: installing the same name into
+  another folder is refused until the first one is finished.
+- **DLC follow the language the game actually installed in**, then
+  English.
+- **Known gap for step 6:** an install interrupted before its config was
+  written can only be finished, not abandoned; `import gog` needs a way to
+  drop it.
+
 Carried from 0049's acceptance (2026-10-12):
 
 - Sizes GOG lists are rounded to whole MiB, so they're estimates; a file's
