@@ -490,7 +490,7 @@ fn an_empty_folder_with_another_environments_state_is_refused() {
 }
 
 #[test]
-fn a_dlc_in_another_language_than_the_game_cant_be_compared_afterwards() {
+fn a_dlc_in_another_language_than_the_game_compares_and_updates_in_its_own() {
     let fx = offered();
     fx.language(RIMWORLD, "fr");
     let plan = fx
@@ -500,15 +500,34 @@ fn a_dlc_in_another_language_than_the_game_cant_be_compared_afterwards() {
         })
         .unwrap();
     fx.install_with(&plan, &Token::new(), |_| {}).unwrap();
-    assert_eq!(fx.state().committed.unwrap().language, "fr");
-    // The folder records one language, so the English DLC isn't found in
-    // it: this pins down today's behavior, an open question for the plan.
-    let status = check(&mut fx.session(), "rimworld", true).unwrap();
-    assert_eq!(status.state, UpdateState::CantCompare);
+    let committed = fx.state().committed.unwrap();
+    assert_eq!(committed.language, "fr");
+    // Only the products that differ from the folder record a language.
     assert_eq!(
-        status.reason.map(|reason| reason.as_str().to_owned()),
-        Some("Royalty (1233017772) has no Linux installer in fr.".to_owned())
+        committed
+            .products
+            .iter()
+            .map(|product| (product.id, product.language.as_deref()))
+            .collect::<Vec<_>>(),
+        [
+            (RIMWORLD, None),
+            (ROYALTY, Some("en")),
+            (IDEOLOGY, Some("en"))
+        ]
     );
+    let status = check(&mut fx.session(), "rimworld", true).unwrap();
+    assert_eq!(status.state, UpdateState::UpToDate, "{:?}", status.reason);
+
+    // A newer English Royalty is an update the rebuild applies, keeping
+    // each product's language.
+    fx.offer(ROYALTY, "RimWorld - Royalty", "2.0", &royalty_v2());
+    let status = check(&mut fx.session(), "rimworld", true).unwrap();
+    assert_eq!(status.state, UpdateState::Available);
+    fx.update();
+    assert_eq!(fx.read("Data/Royalty/r.dat"), "royalty v2");
+    let committed = fx.state().committed.unwrap();
+    assert_eq!(committed.products[1].version.as_deref(), Some("2.0"));
+    assert_eq!(committed.products[1].language.as_deref(), Some("en"));
 }
 
 #[test]

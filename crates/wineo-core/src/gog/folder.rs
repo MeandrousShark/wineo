@@ -120,6 +120,11 @@ pub struct Product {
     /// The build id, on the Galaxy track.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub build: Option<String>,
+    /// GOG's code for the language this product was installed in, when it
+    /// isn't the folder's, like a DLC that fell back to English. None means
+    /// the folder's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub language: Option<String>,
     pub status: ProductStatus,
 }
 

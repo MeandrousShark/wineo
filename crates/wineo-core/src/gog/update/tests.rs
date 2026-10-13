@@ -66,6 +66,7 @@ fn installed(id: u64, version: Option<&str>) -> folder::Product {
         id,
         version: version.map(str::to_owned),
         build: None,
+        language: None,
         status: ProductStatus::Installed,
     }
 }
@@ -75,6 +76,7 @@ fn built(id: u64, build: Option<&str>) -> folder::Product {
         id,
         version: None,
         build: build.map(str::to_owned),
+        language: None,
         status: ProductStatus::Installed,
     }
 }

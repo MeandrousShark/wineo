@@ -621,7 +621,9 @@ fn resolve(
                 title.as_deref().or(name),
             )
         };
-        let installer = matching_installer("linux", &label, language, entry).map_err(refuse)?;
+        let product_language = product.language.as_deref().unwrap_or(language);
+        let installer =
+            matching_installer("linux", &label, product_language, entry).map_err(refuse)?;
         let version = installer_version("linux", &label, installer).map_err(refuse)?;
         let [file] = installer.files.as_slice() else {
             return Err(refuse(format!(
@@ -652,6 +654,7 @@ fn resolve(
             id: product.id,
             version: Some(version),
             build: None,
+            language: product.language.clone(),
             status: ProductStatus::Installed,
         });
     }

@@ -339,6 +339,7 @@ fn products(ids: &[(u64, Option<&str>, Option<&str>)]) -> Vec<Product> {
             id: *id,
             version: version.map(str::to_owned),
             build: build.map(str::to_owned),
+            language: None,
             status: ProductStatus::Installed,
         })
         .collect()

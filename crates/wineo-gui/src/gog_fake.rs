@@ -280,6 +280,7 @@ pub(crate) fn native_game_with_dlc(
             id,
             version: Some(version.to_owned()),
             build: None,
+            language: None,
             status: ProductStatus::Installed,
         })
         .collect();

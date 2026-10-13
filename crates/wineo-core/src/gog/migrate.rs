@@ -757,6 +757,7 @@ fn committed(game: &HeroicGogGame, gog_id: u64) -> Committed {
         build: (track == Track::Galaxy)
             .then(|| game.build_id.clone())
             .flatten(),
+        language: None,
         status: ProductStatus::Installed,
     };
     let dlc = game
@@ -767,6 +768,7 @@ fn committed(game: &HeroicGogGame, gog_id: u64) -> Committed {
             id: *id,
             version: None,
             build: None,
+            language: None,
             status: ProductStatus::Installed,
         });
     Committed {

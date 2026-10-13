@@ -87,6 +87,7 @@ fn disco(f: &Fixture, api: &GogApi) {
                 id: DISCO,
                 version: None,
                 build: Some("59781086834418085".to_owned()),
+                language: None,
                 status: ProductStatus::Installed,
             }],
             files: Vec::new(),

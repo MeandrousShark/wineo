@@ -203,6 +203,11 @@ impl Plan {
                     id: planned.id,
                     version: planned.version.clone(),
                     build: None,
+                    // Recorded only where it differs from the folder's.
+                    language: planned
+                        .language
+                        .clone()
+                        .filter(|language| *language != self.language),
                     status: planned.status,
                 })
                 .collect(),
