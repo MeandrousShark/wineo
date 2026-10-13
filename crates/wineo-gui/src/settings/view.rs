@@ -778,7 +778,10 @@ pub(super) fn gog_texts(settings: &super::gog::Settings) -> Vec<String> {
         texts.push("Then copy the address of the page you land on.".to_owned());
         texts.extend(["Copy link", "Address", "Log in", "Cancel"].map(str::to_owned));
     } else {
-        texts.extend(["Log in", "Log out"].map(str::to_owned));
+        texts.push("Log in".to_owned());
+        if settings.shows_logout() {
+            texts.push("Log out".to_owned());
+        }
     }
     texts
 }
@@ -877,21 +880,20 @@ fn gog_row<'a>(
             .align_y(Center),
         );
     } else {
-        rows = rows.push(
-            row![
-                action_button(
-                    "Log in",
-                    palette.primary,
-                    idle,
-                    gog_send(GogEvent::LoginOpen)
-                ),
-                secondary_button("Log out", palette).on_press_maybe(
-                    (idle && settings.logged_in()).then(|| gog_send(GogEvent::Logout))
-                ),
-            ]
-            .spacing(8)
-            .align_y(Center),
-        );
+        let mut buttons = row![action_button(
+            "Log in",
+            palette.primary,
+            idle,
+            gog_send(GogEvent::LoginOpen)
+        )]
+        .spacing(8)
+        .align_y(Center);
+        if settings.shows_logout() {
+            buttons = buttons.push(secondary_button("Log out", palette).on_press_maybe(
+                (idle && settings.logged_in()).then(|| gog_send(GogEvent::Logout)),
+            ));
+        }
+        rows = rows.push(buttons);
     }
     rows.into()
 }
