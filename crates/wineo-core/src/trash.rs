@@ -1853,6 +1853,25 @@ fn return_payload(
         manifest.payloads[index].step = Step::Returned;
         return write_manifest(paths, manifest);
     }
+    if rollback
+        && source.is_some()
+        && let Some(remaining) = saved
+        && payload
+            .copied_identity
+            .is_some_and(|copied| copied.matches(remaining))
+    {
+        // A copied source replaced since, like an editor's save through a
+        // rename, is the user's newer version. It is never deleted.
+        require_same_mount_as_parent(&original)?;
+        verified_retained(&retained, &payload)?;
+        if digest(&original)? == payload.digest {
+            delete_owned(&retained)?;
+            manifest.payloads[index].step = Step::Returned;
+        } else {
+            manifest.payloads[index].kept = true;
+        }
+        return write_manifest(paths, manifest);
+    }
     if let Some(returned) = payload.returned_identity
         && matches_identity(source, returned)
     {
@@ -4025,12 +4044,42 @@ mod tests {
 
     #[test]
     fn rollback_turns_a_copy_of_a_changed_source_into_a_trash_entry() {
+        changed_config_rollback(|source, text| fs::write(source, text).unwrap());
+    }
+
+    #[test]
+    fn rollback_keeps_a_config_replaced_by_an_atomic_save() {
+        changed_config_rollback(|source, text| {
+            let temp = source.with_extension("toml.tmp");
+            fs::write(&temp, text).unwrap();
+            fs::rename(&temp, source).unwrap();
+        });
+    }
+
+    #[test]
+    fn rollback_drops_the_copy_when_an_atomic_save_kept_the_same_contents() {
         let Some(config_root) = tempfile::tempdir_in("/dev/shm").ok() else {
             return;
         };
-        let f = Fixture::new();
-        let home = f._root.path().to_owned();
-        let config_home = config_root.path().to_owned();
+        let home = tempfile::tempdir().unwrap();
+        let (paths, source, id) = copied_config(home.path(), config_root.path());
+        let Some(id) = id else { return };
+        let temp = source.with_extension("toml.tmp");
+        fs::write(&temp, "kind = 'native'\n# before\n").unwrap();
+        fs::rename(&temp, &source).unwrap();
+        assert!(recover_noting(&paths, id).unwrap().is_empty());
+        assert_eq!(
+            fs::read_to_string(&source).unwrap(),
+            "kind = 'native'\n# before\n"
+        );
+        assert!(list(&paths).unwrap().is_empty());
+    }
+
+    /// A config copied across filesystems into a removal that stopped
+    /// before deleting it. None for the id when there is no second filesystem.
+    fn copied_config(home: &Path, config_home: &Path) -> (Paths, PathBuf, Option<&'static str>) {
+        let home = home.to_owned();
+        let config_home = config_home.to_owned();
         let paths = Paths::from_lookup(move |key| match key {
             "HOME" => Some(OsString::from(home.as_os_str())),
             "XDG_CONFIG_HOME" => Some(OsString::from(config_home.as_os_str())),
@@ -4048,7 +4097,7 @@ mod tests {
             .unwrap()
             .unwrap();
         if payload.source_parent.mount == payload.destination_parent.mount {
-            return;
+            return (paths, source, None);
         }
         copy_verified(&source, &dest, &payload.digest).unwrap();
         payload.copied_identity = identity(&dest).unwrap();
@@ -4068,9 +4117,18 @@ mod tests {
             gog_folders: Vec::new(),
         };
         write_manifest(&paths, &manifest).unwrap();
-        // An edit lands after the copy, before deletion begins.
-        fs::write(&source, "kind = 'native'\n# after\n").unwrap();
+        (paths, source, Some(id))
+    }
 
+    fn changed_config_rollback(edit: impl Fn(&Path, &str)) {
+        let Some(config_root) = tempfile::tempdir_in("/dev/shm").ok() else {
+            return;
+        };
+        let home = tempfile::tempdir().unwrap();
+        let (paths, source, id) = copied_config(home.path(), config_root.path());
+        let Some(id) = id else { return };
+        // An edit lands after the copy, before deletion begins.
+        edit(&source, "kind = 'native'\n# after\n");
         let notes = recover_noting(&paths, id).unwrap();
         assert_eq!(notes.len(), 1, "{notes:?}");
         assert!(notes[0].contains(&format!("trash entry {id}")), "{notes:?}");
@@ -4090,6 +4148,29 @@ mod tests {
             "kind = 'native'\n# before\n"
         );
         assert!(list(&paths).unwrap().is_empty());
+    }
+
+    #[test]
+    fn rollback_keeps_art_replaced_by_a_new_folder() {
+        let Some((f, _other, source, retained, mut manifest)) = interrupted_art_copy(Step::Copied)
+        else {
+            return;
+        };
+        let replacement = source.with_file_name("game.new");
+        fs::create_dir(&replacement).unwrap();
+        fs::write(replacement.join("hero.png"), "new hero").unwrap();
+        fs::remove_dir_all(&source).unwrap();
+        fs::rename(&replacement, &source).unwrap();
+        return_payload(&f.paths, &mut manifest, 0, true).unwrap();
+        assert!(manifest.payloads[0].kept);
+        assert_eq!(
+            fs::read_to_string(source.join("hero.png")).unwrap(),
+            "new hero"
+        );
+        assert_eq!(
+            fs::read_to_string(retained.join("icon.png")).unwrap(),
+            "icon"
+        );
     }
 
     #[test]
