@@ -221,7 +221,7 @@ fn a_native_game_installs_with_its_owned_dlc() {
             .as_array()
             .unwrap()
             .iter()
-            .find(|game| game["id"] == id.to_string())
+            .find(|game| game["id"].as_str() == Some(id.to_string().as_str()))
             .unwrap()
             .clone()
     };
