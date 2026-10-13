@@ -114,11 +114,14 @@ struct RowData {
     preview_error: Option<String>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub(crate) struct Snapshot {
     targets: Vec<String>,
     game: Option<u64>,
     rows: BTreeMap<Spot, Option<Resolved>>,
+    /// Each resolved file's modification time and size, so the rescan sees
+    /// art replaced under the same name.
+    files: Vec<Option<(std::time::SystemTime, u64)>>,
 }
 
 #[derive(Debug, Clone)]
@@ -1320,10 +1323,19 @@ pub(crate) fn load_snapshot(paths: &Paths, name: &str) -> Result<Snapshot, Strin
             rows.insert((target.map(str::to_owned), kind), resolved);
         }
     }
+    let files = rows
+        .values()
+        .flatten()
+        .map(|resolved| {
+            let metadata = fs::metadata(&resolved.found.path).ok()?;
+            Some((metadata.modified().ok()?, metadata.len()))
+        })
+        .collect();
     Ok(Snapshot {
         targets,
         game: config.game,
         rows,
+        files,
     })
 }
 

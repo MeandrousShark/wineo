@@ -1,6 +1,6 @@
-//! The periodic library and trash rescan. Every message rebuilds and redraws
-//! the whole window, so a rescan only reaches `update` when its result
-//! differs from what the app shows.
+//! The periodic library, trash, and Art page rescan. Every message rebuilds
+//! and redraws the whole window, so a rescan only reaches `update` when its
+//! result differs from what the app shows.
 
 use std::hash::{Hash, Hasher};
 use std::sync::{Arc, Mutex, PoisonError};
@@ -10,6 +10,7 @@ use iced::futures::Stream;
 use wineo_core::paths::Paths;
 
 use crate::Message;
+use crate::art_page::{self, EnvironmentIdentity};
 use crate::library::{Card, load_library};
 use crate::sidebar::TrashBadge;
 use crate::trash_page::{Snapshot, entry_label};
@@ -26,6 +27,21 @@ struct Shown {
     /// The trash page's snapshot, with its "removed N ago" labels as of
     /// when it was applied.
     trash: Option<(Result<Snapshot, String>, Vec<String>)>,
+    /// The open Art page's name, its environment identity, and what it
+    /// last loaded.
+    art: Option<(String, EnvironmentIdentity, ArtSnapshot)>,
+    revisions: Revisions,
+}
+
+type ArtSnapshot = Result<art_page::Snapshot, String>;
+
+/// Bumped on every write, so a scan read before an explicit reload landed
+/// can't replace that reload's newer result.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct Revisions {
+    library: u64,
+    trash: u64,
+    art: u64,
 }
 
 #[derive(Clone, Default)]
@@ -36,17 +52,55 @@ impl Watch {
         self.0.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
+    pub(crate) fn revisions(&self) -> Revisions {
+        self.shown().revisions
+    }
+
     pub(crate) fn show_library(&self, library: Result<Vec<Card>, String>) {
-        self.shown().library = Some(library);
+        let mut shown = self.shown();
+        shown.library = Some(library);
+        shown.revisions.library += 1;
     }
 
     pub(crate) fn show_badge(&self, badge: TrashBadge) {
-        self.shown().badge = Some(badge);
+        let mut shown = self.shown();
+        shown.badge = Some(badge);
+        shown.revisions.trash += 1;
     }
 
     pub(crate) fn show_trash(&self, snapshot: Result<Snapshot, String>, now: jiff::Timestamp) {
         let labels = labels(&snapshot, now);
-        self.shown().trash = Some((snapshot, labels));
+        let mut shown = self.shown();
+        shown.trash = Some((snapshot, labels));
+        shown.revisions.trash += 1;
+    }
+
+    pub(crate) fn show_art(&self, name: String, identity: EnvironmentIdentity, art: ArtSnapshot) {
+        let mut shown = self.shown();
+        shown.art = Some((name, identity, art));
+        shown.revisions.art += 1;
+    }
+
+    pub(crate) fn forget_art(&self) {
+        let mut shown = self.shown();
+        shown.art = None;
+        shown.revisions.art += 1;
+    }
+
+    /// Drops the parts of `scan` read before a newer result was shown. The
+    /// next scan compares against that result, so no change is lost.
+    pub(crate) fn current(&self, mut scan: Scan) -> Scan {
+        let now = self.revisions();
+        if scan.revisions.library != now.library {
+            scan.library = None;
+        }
+        if scan.revisions.trash != now.trash {
+            scan.trash = None;
+        }
+        if scan.revisions.art != now.art {
+            scan.art = None;
+        }
+        scan
     }
 
     /// Keeps only the parts of a scan that differ from what is shown. Nothing
@@ -63,14 +117,40 @@ impl Watch {
                 !same_snapshot(shown, snapshot) || *labels != self::labels(snapshot, now)
             }),
         });
-        (library.is_some() || trash.is_some()).then_some(Scan { library, trash })
+        let art = scan.art.filter(|art| {
+            shown
+                .art
+                .as_ref()
+                .is_some_and(|(name, identity, snapshot)| {
+                    *name == art.name
+                        && (art.identity != Some(*identity) || *snapshot != art.snapshot)
+                })
+        });
+        (library.is_some() || trash.is_some() || art.is_some()).then_some(Scan {
+            revisions: scan.revisions,
+            library,
+            trash,
+            art,
+        })
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub(crate) struct Scan {
+    /// What was shown when the read started.
+    pub(crate) revisions: Revisions,
     pub(crate) library: Option<Result<Vec<Card>, String>>,
     pub(crate) trash: Option<Trash>,
+    pub(crate) art: Option<Art>,
+}
+
+/// What the open Art page reads: a recreated environment closes it, and any
+/// change to its rows, saved game, or art files reloads it.
+#[derive(Debug, Clone)]
+pub(crate) struct Art {
+    pub(crate) name: String,
+    pub(crate) identity: Option<EnvironmentIdentity>,
+    pub(crate) snapshot: ArtSnapshot,
 }
 
 #[derive(Debug, Clone)]
@@ -80,27 +160,36 @@ pub(crate) enum Trash {
     Page(Result<Snapshot, String>),
 }
 
-/// The subscription's identity. Opening or leaving the trash page restarts
-/// it, since that changes what is read.
+/// The subscription's identity. Opening or leaving the trash page or an Art
+/// page restarts it, since that changes what is read.
 pub(crate) struct Rescan {
     pub(crate) paths: Paths,
     pub(crate) watch: Watch,
     pub(crate) trash_page: bool,
+    pub(crate) art_page: Option<String>,
 }
 
 impl Hash for Rescan {
     fn hash<H: Hasher>(&self, state: &mut H) {
         self.trash_page.hash(state);
+        self.art_page.hash(state);
     }
 }
 
-pub(crate) fn read(paths: &Paths, trash_page: bool) -> Scan {
+pub(crate) fn read(paths: &Paths, watch: &Watch, trash_page: bool, art_page: Option<&str>) -> Scan {
+    let revisions = watch.revisions();
     Scan {
+        revisions,
         library: Some(load_library(paths).map_err(|error| error.to_string())),
         trash: Some(if trash_page {
             Trash::Page(crate::trash_work::read(paths))
         } else {
             Trash::Badge(TrashBadge::read(paths))
+        }),
+        art: art_page.map(|name| Art {
+            name: name.to_owned(),
+            identity: EnvironmentIdentity::read(paths, name),
+            snapshot: art_page::load_snapshot(paths, name),
         }),
     }
 }
@@ -111,12 +200,16 @@ pub(crate) fn stream(rescan: &Rescan) -> impl Stream<Item = Message> + use<> {
     let paths = rescan.paths.clone();
     let watch = rescan.watch.clone();
     let trash_page = rescan.trash_page;
+    let art_page = rescan.art_page.clone();
     iced::stream::channel(1, async move |mut output| {
         use iced::futures::SinkExt;
         loop {
             tokio::time::sleep(INTERVAL).await;
-            let paths = paths.clone();
-            let Ok(scan) = tokio::task::spawn_blocking(move || read(&paths, trash_page)).await
+            let (paths, reader, art_page) = (paths.clone(), watch.clone(), art_page.clone());
+            let Ok(scan) = tokio::task::spawn_blocking(move || {
+                read(&paths, &reader, trash_page, art_page.as_deref())
+            })
+            .await
             else {
                 continue;
             };
@@ -208,6 +301,10 @@ mod tests {
         (root, app)
     }
 
+    fn rescan(app: &App, trash_page: bool) -> Scan {
+        read(&app.paths, &app.shown, trash_page, app.art_page.as_deref())
+    }
+
     fn now() -> jiff::Timestamp {
         jiff::Timestamp::now()
     }
@@ -220,29 +317,29 @@ mod tests {
     fn nothing_is_reported_before_the_first_load_is_shown() {
         let (_root, app) = fixture();
         native(&app.paths, "game");
-        assert!(app.shown.changes(read(&app.paths, false), now()).is_none());
-        assert!(app.shown.changes(read(&app.paths, true), now()).is_none());
+        assert!(app.shown.changes(rescan(&app, false), now()).is_none());
+        assert!(app.shown.changes(rescan(&app, true), now()).is_none());
     }
 
     #[test]
     fn an_unchanged_rescan_reports_nothing_and_a_change_is_applied() {
         let (_root, mut app) = shown(&["game", "old"]);
-        assert!(app.shown.changes(read(&app.paths, false), now()).is_none());
+        assert!(app.shown.changes(rescan(&app, false), now()).is_none());
         trash::remove(&app.paths, "old", false).unwrap();
-        let scan = app.shown.changes(read(&app.paths, false), now()).unwrap();
+        let scan = app.shown.changes(rescan(&app, false), now()).unwrap();
         assert!(scan.library.is_some());
         assert!(matches!(scan.trash, Some(Trash::Badge(_))));
         let _ = app.update(Message::Rescanned(Box::new(scan)));
         assert_eq!(names(&app), ["game"]);
         assert_eq!(app.trash_badge.count, Some(1));
-        assert!(app.shown.changes(read(&app.paths, false), now()).is_none());
+        assert!(app.shown.changes(rescan(&app, false), now()).is_none());
     }
 
     #[test]
     fn only_the_changed_part_is_reported() {
         let (_root, app) = shown(&["game"]);
         native(&app.paths, "new");
-        let scan = app.shown.changes(read(&app.paths, false), now()).unwrap();
+        let scan = app.shown.changes(rescan(&app, false), now()).unwrap();
         assert!(scan.library.is_some());
         assert!(scan.trash.is_none());
     }
@@ -254,7 +351,7 @@ mod tests {
         watch.show_library(Ok(vec![base.clone()]));
         let scan = |cards: Vec<Card>| Scan {
             library: Some(Ok(cards)),
-            trash: None,
+            ..Scan::default()
         };
         assert!(watch.changes(scan(vec![base.clone()]), now()).is_none());
         let mut running = base.clone();
@@ -275,7 +372,7 @@ mod tests {
                 .changes(
                     Scan {
                         library: Some(Err("unreadable".into())),
-                        trash: None,
+                        ..Scan::default()
                     },
                     now(),
                 )
@@ -287,7 +384,7 @@ mod tests {
     fn a_shown_error_is_replaced_once_the_library_reads_again() {
         let (_root, mut app) = shown(&["game"]);
         let _ = app.update(Message::Loaded(Err("broken".into())));
-        let scan = app.shown.changes(read(&app.paths, false), now()).unwrap();
+        let scan = app.shown.changes(rescan(&app, false), now()).unwrap();
         let _ = app.update(Message::Rescanned(Box::new(scan)));
         assert!(app.error.is_none());
     }
@@ -303,8 +400,8 @@ mod tests {
             snapshot.clone(),
         )));
         let page = |snapshot: Result<Snapshot, String>| Scan {
-            library: None,
             trash: Some(Trash::Page(snapshot)),
+            ..Scan::default()
         };
         let shown_at = now();
         assert!(
@@ -336,7 +433,7 @@ mod tests {
         assert!(app.shown.changes(page(pending(&["x"])), shown_at).is_some());
 
         trash::remove(&app.paths, "b", false).unwrap();
-        let scan = app.shown.changes(read(&app.paths, true), now()).unwrap();
+        let scan = app.shown.changes(rescan(&app, true), now()).unwrap();
         let _ = app.update(Message::Rescanned(Box::new(scan)));
         let Some(Ok(snapshot)) = &app.trash_page.snapshot else {
             panic!("the page shows its snapshot");
@@ -349,7 +446,7 @@ mod tests {
     fn an_explicit_reload_in_flight_wins_and_the_change_is_not_lost() {
         let (_root, mut app) = shown(&["game"]);
         native(&app.paths, "new");
-        let scan = app.shown.changes(read(&app.paths, false), now()).unwrap();
+        let scan = app.shown.changes(rescan(&app, false), now()).unwrap();
         let _ = app.update(Message::Refresh);
         let generation = app.library_generation;
         let _ = app.update(Message::Rescanned(Box::new(scan)));
@@ -357,10 +454,10 @@ mod tests {
         assert_eq!(app.library_generation, generation);
         assert_eq!(names(&app), ["game"]);
         // The dropped result still differs from the screen, so it comes again.
-        assert!(app.shown.changes(read(&app.paths, false), now()).is_some());
+        assert!(app.shown.changes(rescan(&app, false), now()).is_some());
         let _ = app.update(Message::LibraryReloaded(generation, library(&app.paths)));
         assert_eq!(names(&app), ["game", "new"]);
-        assert!(app.shown.changes(read(&app.paths, false), now()).is_none());
+        assert!(app.shown.changes(rescan(&app, false), now()).is_none());
     }
 
     #[test]
@@ -380,6 +477,124 @@ mod tests {
         assert!(app.refreshing && app.trash_refreshing);
     }
 
+    #[test]
+    fn a_scan_read_before_an_explicit_reload_finished_is_dropped() {
+        let (_root, mut app) = shown(&["game"]);
+        let stale = rescan(&app, false);
+        native(&app.paths, "new");
+        let _ = app.update(Message::Refresh);
+        let _ = app.update(Message::LibraryReloaded(
+            app.library_generation,
+            library(&app.paths),
+        ));
+        assert_eq!(names(&app), ["game", "new"]);
+        let stale = app.shown.changes(stale, now()).unwrap();
+        assert!(!app.refreshing);
+        let _ = app.update(Message::Rescanned(Box::new(stale)));
+        assert_eq!(names(&app), ["game", "new"], "the newer reload stays");
+        // A change after the dropped scan still arrives with the next one.
+        native(&app.paths, "later");
+        let next = app.shown.changes(rescan(&app, false), now()).unwrap();
+        let _ = app.update(Message::Rescanned(Box::new(next)));
+        assert_eq!(names(&app), ["game", "later", "new"]);
+    }
+
+    fn art_app() -> (tempfile::TempDir, App) {
+        let (root, mut app) = fixture();
+        wineo_core::environment::Environment::create_native(
+            &app.paths,
+            &wineo_core::config::GlobalConfig::default(),
+            "game",
+            None,
+            false,
+        )
+        .unwrap();
+        let _ = app.update(Message::Loaded(library(&app.paths)));
+        let _ = app.update(Message::TrashBadgeLoaded(TrashBadge::read(&app.paths)));
+        app.selected = Some("game".into());
+        let _ = app.update(Message::OpenArt);
+        assert_eq!(app.art_page.as_deref(), Some("game"));
+        load_art(&mut app);
+        (root, app)
+    }
+
+    /// Delivers the Art page's load, as its task would.
+    fn load_art(app: &mut App) {
+        let page = &app.art_pages["game"];
+        let event = art_page::Event::Loaded(
+            page.load_sequence,
+            art_page::load_snapshot(&app.paths, "game"),
+        );
+        let _ = app.update(Message::ArtPage("game".into(), page.generation, event));
+    }
+
+    #[test]
+    fn an_open_art_page_sees_icon_and_game_only_changes() {
+        let (_root, mut app) = art_app();
+        assert!(app.shown.changes(rescan(&app, false), now()).is_none());
+        fs::create_dir_all(app.paths.art_dir("game")).unwrap();
+        let icon = app.paths.art_dir("game").join("icon.png");
+        let edits: [&dyn Fn(&App); 3] = [
+            &|_| fs::write(&icon, b"one").unwrap(),
+            &|_| fs::write(&icon, b"other").unwrap(),
+            &|app| wineo_core::art::save_game(&app.paths, "game", 42).unwrap(),
+        ];
+        for edit in edits {
+            edit(&app);
+            let changed = app.shown.changes(rescan(&app, false), now()).unwrap();
+            assert!(changed.library.is_none(), "only the Art page changed");
+            assert!(changed.art.is_some());
+            let sequence = app.art_pages["game"].load_sequence;
+            let _ = app.update(Message::Rescanned(Box::new(changed)));
+            assert_ne!(app.art_pages["game"].load_sequence, sequence, "it reloads");
+            load_art(&mut app);
+            assert!(app.shown.changes(rescan(&app, false), now()).is_none());
+        }
+    }
+
+    #[test]
+    fn a_recreated_environment_closes_its_art_page() {
+        let (_root, mut app) = art_app();
+        let config = app.paths.environment_config("game");
+        let text = fs::read(&config).unwrap();
+        fs::remove_file(&config).unwrap();
+        fs::write(&config, text).unwrap();
+        let changed = app.shown.changes(rescan(&app, false), now()).unwrap();
+        let _ = app.update(Message::Rescanned(Box::new(changed)));
+        assert!(app.art_page.is_none());
+    }
+
+    #[test]
+    fn input_counts_as_focus_when_no_focused_event_comes() {
+        let (_root, mut app) = shown(&["game"]);
+        let _ = app.update(Message::Window(iced::window::Event::Unfocused));
+        let press =
+            iced::Event::Mouse(iced::mouse::Event::ButtonPressed(iced::mouse::Button::Left));
+        let moved = iced::Event::Mouse(iced::mouse::Event::CursorMoved {
+            position: iced::Point::ORIGIN,
+        });
+        assert!(
+            crate::unfocused_input(&moved).is_none(),
+            "only presses count"
+        );
+        let message = crate::unfocused_input(&press).unwrap();
+        let _ = app.update(message);
+        assert!(app.focused);
+        assert!(app.refreshing && app.trash_refreshing);
+        let key = iced::Event::Keyboard(iced::keyboard::Event::KeyPressed {
+            key: iced::keyboard::Key::Named(iced::keyboard::key::Named::Enter),
+            modified_key: iced::keyboard::Key::Named(iced::keyboard::key::Named::Enter),
+            physical_key: iced::keyboard::key::Physical::Unidentified(
+                iced::keyboard::key::NativeCode::Unidentified,
+            ),
+            location: iced::keyboard::Location::Standard,
+            modifiers: iced::keyboard::Modifiers::empty(),
+            text: None,
+            repeat: false,
+        });
+        assert!(crate::unfocused_input(&key).is_some());
+    }
+
     fn paused<F: Future>(future: F) -> F::Output {
         tokio::runtime::Builder::new_current_thread()
             .enable_time()
@@ -396,6 +611,7 @@ mod tests {
             paths: app.paths.clone(),
             watch: app.shown.clone(),
             trash_page: false,
+            art_page: None,
         };
         paused(async {
             let mut stream = Box::pin(stream(&rescan));

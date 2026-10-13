@@ -79,6 +79,7 @@ impl App {
 
     pub(crate) fn leave_art(&mut self) {
         if let Some(name) = self.art_page.take() {
+            self.shown.forget_art();
             self.art_generation = self.art_generation.wrapping_add(1);
             if let Some(page) = self.art_pages.get_mut(&name) {
                 page.leave();
@@ -111,6 +112,7 @@ impl App {
         self.art_pages.remove(name);
         if self.art_page.as_deref() == Some(name) {
             self.art_page = None;
+            self.shown.forget_art();
         }
         if self.selected.as_deref() == Some(name) {
             self.selected = None;
@@ -221,6 +223,13 @@ impl App {
                 let key_available = self.steamgriddb_available;
                 let (step, identity, write_sequence, started_write, token) = {
                     let page = self.art_pages.get_mut(&name).unwrap();
+                    if let art_page::Event::Loaded(sequence, snapshot) = &event
+                        && *sequence == page.load_sequence
+                        && self.art_page.as_deref() == Some(&name)
+                    {
+                        self.shown
+                            .show_art(name.clone(), page.identity, snapshot.clone());
+                    }
                     let was_writing = page.writing;
                     let step = page.update_with_key_availability(
                         &self.paths,

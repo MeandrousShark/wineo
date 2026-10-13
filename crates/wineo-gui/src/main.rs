@@ -243,6 +243,8 @@ pub(crate) enum Message {
     /// The parts of a periodic rescan that differ from what is shown.
     Rescanned(Box<rescan::Scan>),
     SettingsTick,
+    /// A key or mouse button press while the window counts as unfocused.
+    InputWhileUnfocused,
     Loaded(Result<Vec<Card>, String>),
     LibraryReloaded(u64, Result<Vec<Card>, String>),
     TrashReloaded(u64, sidebar::TrashBadge),
@@ -473,6 +475,15 @@ impl App {
     /// Applies what a periodic rescan found changed. An explicit reload in
     /// flight wins, and the next rescan compares against its result.
     fn rescanned(&mut self, scan: rescan::Scan) -> Task<Message> {
+        let scan = self.shown.current(scan);
+        // Loaded already reloads the open Art page.
+        let art = match (&scan.library, &scan.art) {
+            (None, Some(art)) if self.art_page.as_ref() == Some(&art.name) => {
+                let cards = self.cards.clone();
+                self.refresh_art(&cards)
+            }
+            _ => Task::none(),
+        };
         let library = match scan.library {
             Some(result) if !self.refreshing => self.update(Message::Loaded(result)),
             _ => Task::none(),
@@ -490,7 +501,7 @@ impl App {
             }
             _ => Task::none(),
         };
-        Task::batch([library, trash])
+        Task::batch([library, trash, art])
     }
 
     fn management_busy(&self) -> bool {
@@ -577,6 +588,7 @@ impl App {
                     paths: self.paths.clone(),
                     watch: self.shown.clone(),
                     trash_page: self.section == sidebar::Section::Trash,
+                    art_page: self.art_page.clone(),
                 },
                 rescan::stream,
             )
@@ -590,9 +602,17 @@ impl App {
         } else {
             Subscription::none()
         };
+        // X11 maps windows unfocused, and without a window manager no Focused
+        // follows, so real input counts as focus.
+        let unfocused_input = if self.focused {
+            Subscription::none()
+        } else {
+            iced::event::listen_with(|event, _, _| unfocused_input(&event))
+        };
         Subscription::batch([
             rescan,
             settings_tick,
+            unfocused_input,
             iced::system::theme_changes().map(Message::ThemeChanged),
             window::events().map(|(_, event)| Message::Window(event)),
             iced::event::listen_with(|event, status, _| event_message(event, status)),
@@ -936,6 +956,14 @@ impl App {
             }
             Message::Rescanned(scan) => self.rescanned(*scan),
             Message::SettingsTick => self.settings_tick(),
+            Message::InputWhileUnfocused | Message::Window(window::Event::Focused) => {
+                if self.focused {
+                    Task::none()
+                } else {
+                    self.focused = true;
+                    self.update(Message::Refresh)
+                }
+            }
             Message::Section(section) => self.navigate_section(section),
             Message::SectionClicked(section) => {
                 let task = self.navigate_section(section);
@@ -1086,14 +1114,6 @@ impl App {
                     }
                     self.cancel_remove_dialog();
                     iced::exit()
-                }
-            }
-            Message::Window(window::Event::Focused) => {
-                if self.focused {
-                    Task::none()
-                } else {
-                    self.focused = true;
-                    self.update(Message::Refresh)
                 }
             }
             Message::Window(window::Event::Unfocused) => {
@@ -1944,6 +1964,15 @@ fn read_reduced_motion() -> Task<Message> {
 
 /// Maps a runtime event to an app message. The mouse Back button becomes an
 /// uncaptured Escape so every page's existing Escape handling runs unchanged.
+fn unfocused_input(event: &iced::Event) -> Option<Message> {
+    matches!(
+        event,
+        iced::Event::Keyboard(keyboard::Event::KeyPressed { .. })
+            | iced::Event::Mouse(iced::mouse::Event::ButtonPressed(_))
+    )
+    .then_some(Message::InputWhileUnfocused)
+}
+
 pub(crate) fn event_message(event: iced::Event, status: iced::event::Status) -> Option<Message> {
     match event {
         iced::Event::Keyboard(keyboard::Event::KeyPressed { key, modifiers, .. }) => {
