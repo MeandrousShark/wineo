@@ -18,7 +18,7 @@ use wineo_core::paths::Paths;
 use wineo_core::runners::Runners;
 
 use super::Args;
-use crate::commands::gog_support::warn;
+use crate::commands::gog_support::{usage_error, warn};
 use crate::commands::import::{ReturnToSourceMenu, check_review};
 use crate::commands::import_heroic::{
     ChosenRunner, ensure_components_available, finish_registered, pick_runner, report_playtime,
@@ -42,7 +42,29 @@ fn host_only(paths: &Paths) -> anyhow::Result<()> {
 }
 
 fn not_installed(id: &str) -> String {
-    format!("Heroic doesn't have GOG game {id}, and installing games comes in a later release.")
+    format!("Heroic doesn't have GOG game {id}.")
+}
+
+/// Refuses the install options for a game Heroic has, since `--game`
+/// migrates it instead.
+fn refuse_install_options(args: &Args, title: &str) -> Option<ExitCode> {
+    let given: Vec<&str> = [
+        (args.platform.is_some(), "--platform"),
+        (args.language.is_some(), "--language"),
+        (args.runner.is_some(), "--runner"),
+        (args.arch.is_some(), "--arch"),
+        (args.dir.is_some(), "--dir"),
+    ]
+    .into_iter()
+    .filter_map(|(given, flag)| given.then_some(flag))
+    .collect();
+    if given.is_empty() {
+        return None;
+    }
+    let flags = super::listed(&given);
+    Some(usage_error(format!(
+        "Heroic has {title} installed, so --game migrates it. Leave out {flags}."
+    )))
 }
 
 /// Every Heroic configuration found, in the places Heroic keeps one.
@@ -412,8 +434,11 @@ pub(super) fn one(paths: &Paths, args: &Args, id: &str, verbose: bool) -> anyhow
     let global = GlobalConfig::load(paths)?;
     let heroic = Heroic::load(paths)?;
     let Some(entry) = heroic.find(paths, id)? else {
-        anyhow::bail!(not_installed(id));
+        return super::install::one(paths, args, id);
     };
+    if let Some(code) = refuse_install_options(args, &entry.game.title) {
+        return Ok(code);
+    }
     let source = entry.source;
     let mut migration = match plan_one(paths, source, id)? {
         Planned::Already {

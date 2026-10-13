@@ -2,22 +2,20 @@
 //! native game with an update, with a review first, progress while it works,
 //! and what changed after.
 
-use std::collections::{HashMap, HashSet};
 use std::io;
 use std::process::ExitCode;
-use std::time::{Duration, Instant};
 
 use wineo_core::gog::account::{AccountError, Session};
 use wineo_core::gog::folder::{FolderError, JournalKind, Platform, Track};
 use wineo_core::gog::migrate::MigrateError;
 use wineo_core::gog::update::windows::SetupError;
-use wineo_core::gog::update::{
-    self, Check, Options, Pending, Plan, Progress, UpdateError, Updated,
-};
+use wineo_core::gog::update::{self, Check, Options, Pending, Plan, UpdateError, Updated};
 use wineo_core::paths::Paths;
 
 use super::Args;
-use crate::commands::gog_support::{Account, LOGGED_OUT, reason_note, usage_error, warn};
+use crate::commands::gog_support::{
+    Account, LOGGED_OUT, Reporter, ask_wizard, offers_wizard, reason_note, usage_error, warn,
+};
 use crate::commands::transfer::Cancellation;
 use crate::prompt::{self, Canceled, Prompt, Reply, Terminal};
 use crate::style;
@@ -34,6 +32,8 @@ const NEEDS_DESKTOP: &str =
 #[derive(Debug)]
 struct Interrupted {
     name: String,
+    /// Whether it was finishing an interrupted install.
+    install: bool,
 }
 
 impl std::fmt::Display for Interrupted {
@@ -62,6 +62,11 @@ pub(super) fn run(paths: &Paths, args: &Args) -> anyhow::Result<ExitCode> {
                 eprintln!("Finish the interrupted update with: wineo update {name}");
                 Ok(ExitCode::from(130))
             }
+            Some(Stop::InstallInterrupted(name)) => {
+                eprintln!("Install interrupted.");
+                eprintln!("Finish the interrupted install with: wineo update {name}");
+                Ok(ExitCode::from(130))
+            }
             Some(Stop::Canceled) => {
                 eprintln!("Update canceled.");
                 Ok(ExitCode::from(130))
@@ -75,13 +80,18 @@ pub(super) fn run(paths: &Paths, args: &Args) -> anyhow::Result<ExitCode> {
 enum Stop {
     Canceled,
     Interrupted(String),
+    InstallInterrupted(String),
 }
 
 /// Whether Ctrl+C or a refused question ended the command, and how far the
 /// update had got.
 fn stopped(error: &anyhow::Error) -> Option<Stop> {
-    if let Some(Interrupted { name }) = error.downcast_ref() {
-        return Some(Stop::Interrupted(name.clone()));
+    if let Some(Interrupted { name, install }) = error.downcast_ref() {
+        return Some(if *install {
+            Stop::InstallInterrupted(name.clone())
+        } else {
+            Stop::Interrupted(name.clone())
+        });
     }
     let canceled = error.is::<Canceled>()
         || matches!(
@@ -110,6 +120,7 @@ fn plan(
     session: &mut Option<Session<'_>>,
     name: &str,
     args: &Args,
+    wizard: bool,
     cancellation: &Cancellation,
 ) -> anyhow::Result<Plan> {
     let logged_out = session.is_none();
@@ -122,7 +133,7 @@ fn plan(
             refresh: args.refresh,
             // A dry run caches nothing and records nothing.
             read_only: args.dry_run,
-            wizard: false,
+            wizard,
         },
         &cancellation.token,
     )
@@ -143,7 +154,14 @@ fn plan(
 fn one(paths: &Paths, args: &Args, name: &str) -> anyhow::Result<ExitCode> {
     let account = Account::new();
     let mut session = account.open(paths)?;
-    let planned = plan(paths, &mut session, name, args, &Cancellation::new()?)?;
+    let planned = plan(
+        paths,
+        &mut session,
+        name,
+        args,
+        false,
+        &Cancellation::new()?,
+    )?;
     let pending = match planned {
         Plan::UpToDate { warnings, .. } => {
             for warning in &warnings {
@@ -167,7 +185,30 @@ fn one(paths: &Paths, args: &Args, name: &str) -> anyhow::Result<ExitCode> {
         confirm(&mut terminal()?, &pending)?;
     }
     let cancellation = Cancellation::new()?;
-    let updated = apply(paths, &mut session, &pending, &cancellation)?;
+    let (pending, updated) = match apply_raw(paths, &mut session, &pending, &cancellation) {
+        Ok(updated) => (pending, updated),
+        Err(error) => {
+            let Some(label) = offers_wizard(&error).filter(|_| asking) else {
+                return Err(stopped_as(error, &pending));
+            };
+            if !ask_wizard(&mut terminal()?, &label)? {
+                return Err(stopped_as(error, &pending));
+            }
+            drop(cancellation);
+            // The first attempt dropped its journal, or kept it to finish,
+            // so the update is planned again before it runs as a wizard.
+            let cancellation = Cancellation::new()?;
+            let again = match plan(paths, &mut session, name, args, true, &cancellation)? {
+                Plan::Update(pending) => pending,
+                Plan::UpToDate { .. } => {
+                    println!("Up to date.");
+                    return Ok(ExitCode::SUCCESS);
+                }
+            };
+            let updated = apply(paths, &mut session, &again, &cancellation)?;
+            (again, updated)
+        }
+    };
     report(paths, &pending, &updated);
     Ok(ExitCode::SUCCESS)
 }
@@ -224,7 +265,7 @@ fn all(paths: &Paths, args: &Args) -> anyhow::Result<ExitCode> {
         if planning.token.is_canceled() {
             return Err(Canceled.into());
         }
-        match plan(paths, &mut session, name, args, &planning) {
+        match plan(paths, &mut session, name, args, false, &planning) {
             Ok(Plan::Update(pending)) => ready.push(pending),
             Ok(Plan::UpToDate { .. }) => {}
             Err(error) if stopped(&error).is_some() => return Err(error),
@@ -346,6 +387,7 @@ fn action(pending: &Pending) -> &'static str {
     match (pending.kind(), pending.is_recovery()) {
         (JournalKind::Reinstall, false) => "Reinstall",
         (JournalKind::Reinstall, true) => "Finish the interrupted reinstall of",
+        (JournalKind::Install, true) => "Finish the interrupted install of",
         (_, true) => "Finish the interrupted update of",
         (_, false) => "Update",
     }
@@ -430,7 +472,40 @@ fn apply(
     pending: &Pending,
     cancellation: &Cancellation,
 ) -> anyhow::Result<Updated> {
-    let mut progress = Reporter::new(pending);
+    apply_raw(paths, session, pending, cancellation).map_err(|error| stopped_as(error, pending))
+}
+
+/// `setup_stopped`, naming an interrupted install as one.
+fn stopped_as(error: anyhow::Error, pending: &Pending) -> anyhow::Error {
+    let mut error = setup_stopped(error, pending.environment(), pending.is_recovery());
+    if pending.kind() == JournalKind::Install
+        && let Some(interrupted) = error.downcast_mut::<Interrupted>()
+    {
+        interrupted.install = true;
+    }
+    error
+}
+
+/// The update with core's own errors, so a Windows installer that never
+/// started can still be told apart.
+fn apply_raw(
+    paths: &Paths,
+    session: &mut Option<Session<'_>>,
+    pending: &Pending,
+    cancellation: &Cancellation,
+) -> anyhow::Result<Updated> {
+    let mut progress = Reporter::new(
+        pending
+            .products()
+            .iter()
+            .map(|product| {
+                (
+                    product.id,
+                    product_label(pending, product.id, product.title.as_deref()),
+                )
+            })
+            .collect(),
+    );
     update::apply(
         paths,
         session.as_mut(),
@@ -439,10 +514,13 @@ fn apply(
         |step| {
             progress.show(&step);
             #[cfg(debug_assertions)]
-            pause_for_test(pending.environment(), &step, &cancellation.token);
+            crate::commands::gog_support::pause_for_test(
+                pending.environment(),
+                &step,
+                &cancellation.token,
+            );
         },
     )
-    .map_err(|error| setup_stopped(error, pending.environment(), pending.is_recovery()))
 }
 
 /// Says how an update stopped when it had started changing the folder, and
@@ -453,6 +531,7 @@ fn setup_stopped(error: anyhow::Error, name: &str, recovery: bool) -> anyhow::Er
     let interrupted = || {
         Interrupted {
             name: name.to_owned(),
+            install: false,
         }
         .into()
     };
@@ -473,126 +552,6 @@ fn setup_stopped(error: anyhow::Error, name: &str, recovery: bool) -> anyhow::Er
             }
         }
         _ => error,
-    }
-}
-
-/// Lets a test stop an update at a known point: with
-/// `WINEO_TEST_UPDATE_PAUSE=download` or `publish`, the first step of that
-/// kind waits for Ctrl+C, and `publish:NAME` only for that environment.
-/// Release builds never look at it.
-#[cfg(debug_assertions)]
-fn pause_for_test(environment: &str, step: &Progress, token: &wineo_core::cancel::Token) {
-    let wanted = std::env::var("WINEO_TEST_UPDATE_PAUSE").unwrap_or_default();
-    let (at, only) = wanted.split_once(':').unwrap_or((wanted.as_str(), ""));
-    let here = matches!(
-        (at, step),
-        ("download", Progress::Download { .. }) | ("publish", Progress::Publish { .. })
-    ) && (only.is_empty() || only == environment);
-    while here && !token.is_canceled() {
-        std::thread::sleep(Duration::from_millis(20));
-    }
-}
-
-/// Prints one line per stage and a progress line about once a second, the
-/// way other downloads do.
-struct Reporter {
-    labels: HashMap<u64, String>,
-    last: Option<Instant>,
-    file: Option<(u64, String)>,
-    verified: HashSet<u64>,
-    unpacking: HashSet<u64>,
-    publishing: bool,
-}
-
-impl Reporter {
-    fn new(pending: &Pending) -> Self {
-        Self {
-            labels: pending
-                .products()
-                .iter()
-                .map(|product| {
-                    (
-                        product.id,
-                        product_label(pending, product.id, product.title.as_deref()),
-                    )
-                })
-                .collect(),
-            last: None,
-            file: None,
-            verified: HashSet::new(),
-            unpacking: HashSet::new(),
-            publishing: false,
-        }
-    }
-
-    fn label(&self, product: u64) -> String {
-        self.labels
-            .get(&product)
-            .cloned()
-            .unwrap_or_else(|| format!("GOG product {product}"))
-    }
-
-    /// Whether a second has passed since the last progress line.
-    fn due(&self) -> bool {
-        self.last
-            .is_none_or(|last| last.elapsed() >= Duration::from_secs(1))
-    }
-
-    fn say(&mut self, line: String) {
-        eprintln!("{line}");
-        self.last = Some(Instant::now());
-    }
-
-    fn show(&mut self, step: &Progress) {
-        match step {
-            Progress::Download {
-                product,
-                file_id,
-                done,
-                total,
-            } => {
-                let key = (*product, file_id.clone());
-                let first = self.file.as_ref() != Some(&key);
-                self.file = Some(key);
-                if first || done == total || self.due() {
-                    self.say(format!(
-                        "Downloading {}: {} / {}",
-                        self.label(*product),
-                        style::size(*done),
-                        style::size(*total)
-                    ));
-                }
-            }
-            Progress::Verify { product } => {
-                if self.verified.insert(*product) {
-                    self.say(format!("Verifying {}", self.label(*product)));
-                }
-            }
-            Progress::Stage {
-                product,
-                done,
-                total,
-            } => {
-                if self.unpacking.insert(*product) {
-                    self.say(format!("Unpacking {}", self.label(*product)));
-                } else if self.due() {
-                    self.say(format!(
-                        "Unpacking {}: {} / {}",
-                        self.label(*product),
-                        style::size(*done),
-                        style::size(*total)
-                    ));
-                }
-            }
-            Progress::Publish { done, total } => {
-                if !self.publishing {
-                    self.publishing = true;
-                    self.say(format!("Publishing {total} files"));
-                } else if done == total || self.due() {
-                    self.say(format!("Published {done} of {total} files"));
-                }
-            }
-        }
     }
 }
 
@@ -658,6 +617,7 @@ fn finished(pending: &Pending) -> String {
     match (pending.kind(), pending.is_recovery()) {
         (JournalKind::Reinstall, false) => format!("Reinstalled {name}"),
         (JournalKind::Reinstall, true) => format!("Finished the interrupted reinstall of {name}"),
+        (JournalKind::Install, true) => format!("Finished the interrupted install of {name}"),
         (_, true) => format!("Finished the interrupted update of {name}"),
         (_, false) => format!("Updated {name}"),
     }

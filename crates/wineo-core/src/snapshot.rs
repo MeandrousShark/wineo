@@ -1899,6 +1899,7 @@ mod tests {
         let folder = root.path().join("game");
         let state = FolderState {
             committed: Some(Committed {
+                source: None,
                 gog_id: 7,
                 platform: Platform::Linux,
                 language: "en".to_owned(),

@@ -287,6 +287,7 @@ pub(crate) fn native_game_with_dlc(
         .collect();
     let state = FolderState {
         committed: Some(Committed {
+            source: None,
             gog_id,
             platform: Platform::Linux,
             language: "en-US".to_owned(),

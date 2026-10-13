@@ -79,6 +79,17 @@ pub struct Committed {
     /// update.
     #[serde(default)]
     pub files: Vec<WinningEntry>,
+    /// How the game got here: `install` when wineo installed it. None means
+    /// it was migrated, as every state from before this field was.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<Source>,
+}
+
+/// Who put a game in its folder, when it wasn't a migration.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Source {
+    Install,
 }
 
 /// What an operation will commit, enough to finish it without asking GOG.
@@ -473,6 +484,7 @@ pub enum FolderError {
 pub enum InUseAction {
     Update,
     Migrate,
+    Forget,
 }
 
 /// The refusal for an update or migration of `name`'s game folder while
@@ -487,6 +499,7 @@ fn in_use_message(name: &str, holders: &[String], action: InUseAction) -> String
     let doing = match action {
         InUseAction::Update => "updating",
         InUseAction::Migrate => "migrating",
+        InUseAction::Forget => "forgetting",
     };
     format!("{who} {verb} running from this game folder. Stop {stop} before {doing} {name}.")
 }
@@ -574,7 +587,16 @@ impl FolderLock {
         let mut state = self
             .read()?
             .ok_or_else(|| FolderError::NoState(self.folder.clone()))?;
-        state.committed = Some(committed);
+        // Finishing an install records it; anything later keeps what was
+        // recorded, so an update of an installed game still says so.
+        let source = match &state.journal {
+            Some(journal) if journal.kind == JournalKind::Install => Some(Source::Install),
+            _ => state.committed.as_ref().and_then(|old| old.source),
+        };
+        state.committed = Some(Committed {
+            source: committed.source.or(source),
+            ..committed
+        });
         state.journal = None;
         state.device = Some(fs::metadata(&self.folder)?.dev());
         self.write(&state)?;
@@ -972,13 +994,32 @@ pub fn release(paths: &Paths, folder: &Path, cancel: &dyn Fn() -> bool) -> Resul
 }
 
 /// Removes a folder's state on purpose. Refused while an environment owns
-/// it. Returns whether there was one.
+/// it, except an install that stopped before its environment's config was
+/// written, which nothing else can abandon; that one is refused while
+/// anything runs from the folder. Returns whether there was one. The
+/// folder's files stay either way.
 pub fn forget(paths: &Paths, folder: &Path, cancel: &dyn Fn() -> bool) -> Result<bool> {
+    // The in-use lock comes before the state lock, and a running install
+    // holds both, so it is tried first without waiting.
+    let in_use = match peek(paths, folder)? {
+        Some(state) if configless_install(paths, &state) => {
+            let owner = state.owner.unwrap_or_default();
+            let lock = InUseLock::new(paths, folder)?;
+            Some(lock.try_exclusive()?.ok_or_else(|| FolderError::InUse {
+                name: owner,
+                holders: lock.holders(),
+                action: InUseAction::Forget,
+            })?)
+        }
+        _ => None,
+    };
     let lock = FolderLock::exclusive(paths, folder, cancel)?;
     let Some(state) = lock.read()? else {
         return Ok(false);
     };
-    if let Some(owner) = state.owner {
+    if (in_use.is_none() || !configless_install(paths, &state))
+        && let Some(owner) = state.owner
+    {
         return Err(FolderError::OwnedByOther {
             folder: folder.to_owned(),
             owner,
@@ -987,6 +1028,20 @@ pub fn forget(paths: &Paths, folder: &Path, cancel: &dyn Fn() -> bool) -> Result
     }
     lock.remove()?;
     Ok(true)
+}
+
+/// Whether `state` is a first install that stopped before its owner's
+/// config was written.
+fn configless_install(paths: &Paths, state: &FolderState) -> bool {
+    state.committed.is_none()
+        && state
+            .journal
+            .as_ref()
+            .is_some_and(|journal| journal.kind == JournalKind::Install)
+        && state
+            .owner
+            .as_deref()
+            .is_some_and(|owner| !paths.environment_config(owner).exists())
 }
 
 /// The device of `path`, None when it doesn't exist, or an error when that

@@ -698,6 +698,17 @@ impl Reporter {
                 };
                 self.said(line)
             }
+            Progress::Installing {
+                product,
+                interactive,
+            } => {
+                let line = if *interactive {
+                    format!("Opening {}'s setup window", self.label(*product))
+                } else {
+                    format!("Running {}'s installer", self.label(*product))
+                };
+                self.said(line)
+            }
         }
     }
 }
@@ -1133,6 +1144,15 @@ mod tests {
                 .line(&Progress::Publish { done: 0, total: 12 })
                 .as_deref(),
             Some("Publishing 12 files")
+        );
+        assert_eq!(
+            reporter
+                .line(&Progress::Installing {
+                    product: RIMWORLD,
+                    interactive: false
+                })
+                .as_deref(),
+            Some("Running RimWorld's installer")
         );
     }
 

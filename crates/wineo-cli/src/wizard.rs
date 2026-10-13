@@ -1142,6 +1142,7 @@ fn create_native<I: Input, W: Write>(
         name,
         wine_prefix: None,
         native_env: Some(native_env),
+        game_folder: None,
     };
     let mut batch = Batch::new(environment.config.targets.clone());
     let program = Program {
@@ -1252,6 +1253,7 @@ fn create<I: Input, W: Write>(
         name: &name,
         wine_prefix: Some(runner.wine_prefix(&dir)),
         native_env: None,
+        game_folder: None,
     };
     let mut batch = Batch::new(environment.config.targets.clone());
     match (how, step) {

@@ -134,6 +134,7 @@ pub(crate) fn setup<I: Input, W: Write>(
             name,
             wine_prefix: None,
             native_env: Some(native_env),
+            game_folder: None,
         };
         return menu(
             paths,
@@ -160,6 +161,7 @@ pub(crate) fn setup<I: Input, W: Write>(
         name,
         wine_prefix,
         native_env: None,
+        game_folder: None,
     };
     menu(
         paths,

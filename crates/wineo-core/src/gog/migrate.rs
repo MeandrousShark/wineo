@@ -774,6 +774,7 @@ fn committed(game: &HeroicGogGame, gog_id: u64) -> Committed {
             status: ProductStatus::Installed,
         });
     Committed {
+        source: None,
         gog_id,
         platform: game.platform,
         language: game.language.clone(),

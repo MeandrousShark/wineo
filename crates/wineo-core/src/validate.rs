@@ -3327,6 +3327,7 @@ mod tests {
             FolderState {
                 device: Some(7),
                 committed: Some(Committed {
+                    source: None,
                     gog_id: ID,
                     platform: target.platform,
                     language: target.language.clone(),

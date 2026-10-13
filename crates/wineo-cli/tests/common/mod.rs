@@ -436,6 +436,7 @@ impl Fixture {
                 meta.dev()
             }),
             committed: Some(Committed {
+                source: None,
                 gog_id,
                 platform: target.platform,
                 language: target.language.clone(),

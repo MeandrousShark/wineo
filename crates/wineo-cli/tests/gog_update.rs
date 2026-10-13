@@ -79,6 +79,7 @@ fn disco(f: &Fixture, api: &GogApi) {
     };
     let state = FolderState {
         committed: Some(Committed {
+            source: None,
             gog_id: DISCO,
             platform: Platform::Windows,
             language: "en-US".to_owned(),

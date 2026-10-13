@@ -804,6 +804,7 @@ fn an_ownerless_folder_is_reclaimed_with_its_journal() {
     let mut existing = FolderState::new(folder::canonical(&folder).unwrap(), None);
     existing.device = Some(7);
     existing.committed = Some(Committed {
+        source: None,
         gog_id: 1094900565,
         platform: Platform::Linux,
         language: "de".to_owned(),

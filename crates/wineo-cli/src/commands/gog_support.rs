@@ -1,16 +1,23 @@
 //! What `import gog` and `update` share: the saved GOG login, how update
-//! states read, and the JSON for them.
+//! states read, the JSON for them, progress lines, and the question that
+//! offers a Windows installer's own setup window.
 
+use std::collections::{HashMap, HashSet};
 use std::process::ExitCode;
+use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
 use wineo_core::gog;
 use wineo_core::gog::account::Session;
 use wineo_core::gog::folder::Track;
-use wineo_core::gog::update::{DlcState, DlcStatus, GameError, Reason, Status, UpdateState};
+use wineo_core::gog::update::windows::SetupError;
+use wineo_core::gog::update::{
+    DlcState, DlcStatus, GameError, Progress, Reason, Status, UpdateState,
+};
 use wineo_core::paths::Paths;
 use wineo_core::secret_service::SecretServiceKeyring;
 
+use crate::prompt::{Canceled, Prompt, Reply};
 use crate::style;
 
 pub const LOGGED_OUT: &str = "Log in to GOG first: wineo import gog --login.";
@@ -152,6 +159,159 @@ pub fn error_subject(error: &GameError) -> String {
         (Some(name), _) => name.clone(),
         (None, Some(id)) => id.to_string(),
         (None, None) => "A GOG game folder".to_owned(),
+    }
+}
+
+/// Prints one line per stage and a progress line about once a second, the
+/// way other downloads do.
+pub struct Reporter {
+    labels: HashMap<u64, String>,
+    last: Option<Instant>,
+    file: Option<(u64, String)>,
+    verified: HashSet<u64>,
+    unpacking: HashSet<u64>,
+    publishing: bool,
+}
+
+impl Reporter {
+    /// `labels` names each product, by id, the way the review does.
+    pub fn new(labels: HashMap<u64, String>) -> Self {
+        Self {
+            labels,
+            last: None,
+            file: None,
+            verified: HashSet::new(),
+            unpacking: HashSet::new(),
+            publishing: false,
+        }
+    }
+
+    fn label(&self, product: u64) -> String {
+        self.labels
+            .get(&product)
+            .cloned()
+            .unwrap_or_else(|| format!("GOG product {product}"))
+    }
+
+    /// Whether a second has passed since the last progress line.
+    fn due(&self) -> bool {
+        self.last
+            .is_none_or(|last| last.elapsed() >= Duration::from_secs(1))
+    }
+
+    fn say(&mut self, line: String) {
+        eprintln!("{line}");
+        self.last = Some(Instant::now());
+    }
+
+    pub fn show(&mut self, step: &Progress) {
+        match step {
+            Progress::Download {
+                product,
+                file_id,
+                done,
+                total,
+            } => {
+                let key = (*product, file_id.clone());
+                let first = self.file.as_ref() != Some(&key);
+                self.file = Some(key);
+                if first || done == total || self.due() {
+                    self.say(format!(
+                        "Downloading {}: {} / {}",
+                        self.label(*product),
+                        style::size(*done),
+                        style::size(*total)
+                    ));
+                }
+            }
+            Progress::Verify { product } => {
+                if self.verified.insert(*product) {
+                    self.say(format!("Verifying {}", self.label(*product)));
+                }
+            }
+            Progress::Stage {
+                product,
+                done,
+                total,
+            } => {
+                if self.unpacking.insert(*product) {
+                    self.say(format!("Unpacking {}", self.label(*product)));
+                } else if self.due() {
+                    self.say(format!(
+                        "Unpacking {}: {} / {}",
+                        self.label(*product),
+                        style::size(*done),
+                        style::size(*total)
+                    ));
+                }
+            }
+            Progress::Publish { done, total } => {
+                if !self.publishing {
+                    self.publishing = true;
+                    self.say(format!("Publishing {total} files"));
+                } else if done == total || self.due() {
+                    self.say(format!("Published {done} of {total} files"));
+                }
+            }
+            Progress::Installing {
+                product,
+                interactive,
+            } => {
+                let line = if *interactive {
+                    format!("Opening {}'s setup window", self.label(*product))
+                } else {
+                    format!("Running {}'s installer", self.label(*product))
+                };
+                self.say(line);
+            }
+        }
+    }
+}
+
+/// The game's label when its Windows installer never started and running
+/// it as its own wizard may get further.
+pub fn offers_wizard(error: &anyhow::Error) -> Option<String> {
+    match error.downcast_ref::<SetupError>() {
+        Some(SetupError::NotStarted {
+            label,
+            wizard: true,
+            ..
+        }) => Some(label.clone()),
+        _ => None,
+    }
+}
+
+/// Asks once whether to run an installer that never started as its own
+/// setup window. No is false; Esc and Ctrl+C cancel.
+pub fn ask_wizard<I: crate::prompt::Input, W: std::io::Write>(
+    prompt: &mut Prompt<I, W>,
+    label: &str,
+) -> anyhow::Result<bool> {
+    // Nothing comes before it to go back to, so Esc cancels.
+    prompt.set_first_question(true);
+    match prompt.confirm(
+        &format!("{label}'s installer didn't start. Run its own setup window?"),
+        true,
+    )? {
+        Reply::Value(answer) => Ok(answer),
+        Reply::Back => Err(Canceled.into()),
+    }
+}
+
+/// Lets a test stop an update at a known point: with
+/// `WINEO_TEST_UPDATE_PAUSE=download` or `publish`, the first step of that
+/// kind waits for Ctrl+C, and `publish:NAME` only for that environment.
+/// Release builds never look at it.
+#[cfg(debug_assertions)]
+pub fn pause_for_test(environment: &str, step: &Progress, token: &wineo_core::cancel::Token) {
+    let wanted = std::env::var("WINEO_TEST_UPDATE_PAUSE").unwrap_or_default();
+    let (at, only) = wanted.split_once(':').unwrap_or((wanted.as_str(), ""));
+    let here = matches!(
+        (at, step),
+        ("download", Progress::Download { .. }) | ("publish", Progress::Publish { .. })
+    ) && (only.is_empty() || only == environment);
+    while here && !token.is_canceled() {
+        std::thread::sleep(Duration::from_millis(20));
     }
 }
 
