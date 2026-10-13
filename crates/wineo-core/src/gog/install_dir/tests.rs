@@ -28,6 +28,22 @@ fn control_characters_are_removed() {
 }
 
 #[test]
+fn direction_and_format_characters_are_removed() {
+    assert_eq!(
+        safe_folder_name("Game\u{202e}gpj.exe\u{202c}").unwrap(),
+        "Gamegpj.exe"
+    );
+    assert_eq!(
+        safe_folder_name("\u{200e}A\u{200f}B\u{2066}C\u{2069}\u{200b}D\u{200d}E\u{feff}").unwrap(),
+        "ABCDE"
+    );
+    assert!(safe_folder_name("\u{202e}\u{200b}").is_err());
+    // Other Unicode stays, the fullwidth slash included.
+    let kept = "Caf\u{e9} \u{ff0f} \u{4e2d}\u{6587}";
+    assert_eq!(safe_folder_name(kept).unwrap(), kept);
+}
+
+#[test]
 fn trailing_dots_and_spaces_are_removed() {
     assert_eq!(safe_folder_name("Game. . ").unwrap(), "Game");
     assert_eq!(safe_folder_name("Game...").unwrap(), "Game");
