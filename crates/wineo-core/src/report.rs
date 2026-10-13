@@ -760,15 +760,24 @@ mod tests {
         assert!(overview.steam.is_none());
     }
 
-    fn steam_library(paths: &Paths, proxied: &[&str]) {
+    /// One proxied environment per `(name, app id)`, with a Steam install.
+    fn steam_library(paths: &Paths, proxied: &[(&str, &str)]) {
         fs::create_dir_all(paths.home().join(".local/share/Steam/steamapps")).unwrap();
         fs::create_dir_all(paths.environments_dir()).unwrap();
-        for app_id in proxied {
+        for (name, app_id) in proxied {
             fs::write(
-                paths.environment_config(&format!("game-{app_id}")),
+                paths.environment_config(name),
                 format!("kind = \"proxied\"\nlauncher = \"steam\"\napp_id = \"{app_id}\"\n"),
             )
             .unwrap();
+        }
+    }
+
+    fn reaper(pid: u32) -> crate::steam::Reaper {
+        crate::steam::Reaper {
+            pid,
+            start_time: 1,
+            boot_id: "boot".to_owned(),
         }
     }
 
@@ -776,7 +785,15 @@ mod tests {
     fn overview_sweeps_processes_once_for_every_proxied_environment() {
         let root = tempfile::tempdir().unwrap();
         let paths = test_paths(root.path());
-        steam_library(&paths, &["111", "222", "333", "222"]);
+        steam_library(
+            &paths,
+            &[
+                ("game-a", "111"),
+                ("game-b", "222"),
+                ("game-c", "333"),
+                ("game-d", "222"),
+            ],
+        );
 
         let calls = std::cell::RefCell::new(Vec::<Vec<String>>::new());
         let scan = |_: &crate::steam::Install, app_ids: &[String]| {
@@ -785,11 +802,7 @@ mod tests {
                 .iter()
                 .map(|app_id| {
                     let reapers = if app_id == "222" {
-                        vec![crate::steam::Reaper {
-                            pid: 7,
-                            start_time: 1,
-                            boot_id: "boot".to_owned(),
-                        }]
+                        vec![reaper(7), reaper(8)]
                     } else {
                         Vec::new()
                     };
@@ -799,6 +812,7 @@ mod tests {
         };
         let overview = overview_with(&paths, OverviewFilter::default(), &scan).unwrap();
 
+        // Two environments share app 222, which is asked about once.
         assert_eq!(*calls.borrow(), [["111", "222", "333"]]);
         let states: Vec<_> = overview
             .environments
@@ -808,18 +822,96 @@ mod tests {
         assert_eq!(
             states,
             [
-                ("game-111", State::Inactive),
-                ("game-222", State::SteamRunning),
-                ("game-333", State::Inactive),
+                ("game-a", State::Inactive),
+                ("game-b", State::SteamRunning),
+                ("game-c", State::Inactive),
+                ("game-d", State::SteamRunning),
             ]
         );
+    }
+
+    #[test]
+    fn environments_that_are_busy_or_running_never_cause_a_sweep() {
+        let root = tempfile::tempdir().unwrap();
+        let paths = test_paths(root.path());
+        steam_library(
+            &paths,
+            &[
+                ("busy", "111"),
+                ("running", "222"),
+                ("starting", "333"),
+                ("hook", "444"),
+            ],
+        );
+        let locks = Locks::new(&paths);
+        let _busy = locks.acquire(Operation::Winetricks, "busy", &[]).unwrap();
+
+        let state = |name: &str, phase: Option<crate::runtime::RunPhase>| {
+            let mut state = RunState::running(
+                RunMode::Detached,
+                "steam".to_owned(),
+                1,
+                None,
+                &Default::default(),
+            );
+            state.phase = phase;
+            Runtime::new(&paths, name).write_state(&state).unwrap();
+        };
+        state("running", None);
+        let _running = Runtime::new(&paths, "running").try_lock().unwrap().unwrap();
+        state("starting", Some(crate::runtime::RunPhase::Starting));
+        let _starting = Runtime::new(&paths, "starting")
+            .try_lock()
+            .unwrap()
+            .unwrap();
+        // The after hook runs once the game has already exited.
+        let mut exited = RunState::running(
+            RunMode::Detached,
+            "steam".to_owned(),
+            1,
+            None,
+            &Default::default(),
+        );
+        exited.status = RunStatus::Exited;
+        Runtime::new(&paths, "hook").write_state(&exited).unwrap();
+        let _hook = locks
+            .acquire(Operation::Hook(crate::hooks::Phase::After), "hook", &[])
+            .unwrap();
+
+        let calls = std::cell::Cell::new(0);
+        let scan = |_: &crate::steam::Install, _: &[String]| {
+            calls.set(calls.get() + 1);
+            Ok(HashMap::new())
+        };
+        let overview = overview_with(&paths, OverviewFilter::default(), &scan).unwrap();
+
+        assert_eq!(calls.get(), 0);
+        let states: Vec<_> = overview
+            .environments
+            .iter()
+            .map(|environment| (environment.name.as_str(), environment.status.state))
+            .collect();
+        assert_eq!(
+            states,
+            [
+                ("busy", State::Inactive),
+                ("hook", State::Exited),
+                ("running", State::Running),
+                ("starting", State::Starting),
+            ]
+        );
+
+        // One idle game among them is enough to sweep, once.
+        steam_library(&paths, &[("idle", "555")]);
+        overview_with(&paths, OverviewFilter::default(), &scan).unwrap();
+        assert_eq!(calls.get(), 1);
     }
 
     #[test]
     fn a_failed_sweep_is_reported_for_each_environment_that_needed_it() {
         let root = tempfile::tempdir().unwrap();
         let paths = test_paths(root.path());
-        steam_library(&paths, &["111", "222"]);
+        steam_library(&paths, &[("game-111", "111"), ("game-222", "222")]);
 
         let calls = std::cell::Cell::new(0);
         let scan = |_: &crate::steam::Install, _: &[String]| {
@@ -854,7 +946,7 @@ mod tests {
     fn overview_skips_the_sweep_without_a_steam_install() {
         let root = tempfile::tempdir().unwrap();
         let paths = test_paths(root.path());
-        steam_library(&paths, &["111"]);
+        steam_library(&paths, &[("game-111", "111")]);
         fs::remove_dir_all(paths.home().join(".local/share/Steam")).unwrap();
 
         let calls = std::cell::Cell::new(0);

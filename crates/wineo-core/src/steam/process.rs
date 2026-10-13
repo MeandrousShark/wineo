@@ -1134,8 +1134,8 @@ mod tests {
         assert!(client_candidate(&reader, 10).unwrap().is_none());
     }
 
-    /// A fake process table: a client (pid 5), reapers for apps 10, 20, and 30
-    /// under it, a reaper for app 30 under a foreign parent, and bystanders.
+    /// A fake process table: a client (pid 5), reapers for apps 10 (two), 20,
+    /// and 30 under it, a reaper for app 30 under a foreign parent, and bystanders.
     fn reaper_table(root: &Path) -> (FakeProc, Vec<u32>) {
         let reaper = root.join("ubuntu12_32/reaper");
         let client = root.join("ubuntu12_32/steam");
@@ -1155,6 +1155,7 @@ mod tests {
             stat(9, 4, 140),
             stat(11, 5, 150),
             stat(12, 1, 160),
+            stat(13, 5, 170),
             stat(4, 2, 90),
         ]);
         reader.exe_by_pid.insert(5, client.clone());
@@ -1171,7 +1172,11 @@ mod tests {
             .arguments_by_pid
             .insert(11, vec![b"bash".to_vec(), b"-c".to_vec()]);
         reader.arguments_by_pid.insert(12, launch("10"));
-        (reader, vec![4, 5, 6, 7, 8, 9, 11, 12])
+        // A second game process for app 10, listed ahead of the first so the
+        // result has to be sorted.
+        reader.arguments_by_pid.insert(13, launch("10"));
+        reader.exe_by_pid.insert(13, reaper.clone());
+        (reader, vec![13, 4, 5, 6, 7, 8, 9, 11, 12])
     }
 
     #[test]
@@ -1193,7 +1198,7 @@ mod tests {
                 .map(|reaper| reaper.pid)
                 .collect::<Vec<_>>()
         };
-        assert_eq!(pids_of("10"), [6]);
+        assert_eq!(pids_of("10"), [6, 13]);
         assert_eq!(pids_of("20"), [7]);
         assert_eq!(pids_of("30"), [8]);
         assert_eq!(pids_of("40"), Vec::<u32>::new());
@@ -1222,10 +1227,10 @@ mod tests {
             let calls = reader.calls.borrow();
             calls.iter().filter(|call| **call == "open").count()
         };
-        // Eight processes, plus the client opened again for each reaper of a
-        // requested app that has a live parent (6, 7, 8, 9).
-        assert_eq!(opens(&["10", "20", "30"]), 8 + 4);
-        // Three sweeps for the same apps would repeat the eight each time.
+        // Nine processes, plus the parent opened again for each reaper of a
+        // requested app that has a live parent (6, 7, 8, 9, 13).
+        assert_eq!(opens(&["10", "20", "30"]), 9 + 5);
+        // Three sweeps for the same apps would repeat the nine each time.
         assert!(opens(&["10"]) + opens(&["20"]) + opens(&["30"]) > opens(&["10", "20", "30"]));
     }
 
