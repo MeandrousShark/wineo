@@ -664,7 +664,7 @@ fn legacy_pending_removing_and_restoring_entries_disable_rows_and_recover() {
     send(&mut app, Event::Recover(restoring.id.clone()));
     let generation = app.change_generation;
     let result = trash_work::recover_entry(&app.paths, restoring.id.clone());
-    assert_eq!(result, Ok(()));
+    assert_eq!(result, Ok(Vec::new()));
     send(&mut app, Event::Recovered(generation, result));
     load_current(&mut app);
     assert!(app.trash_page.snapshot().unwrap().pending.is_empty());
@@ -710,9 +710,9 @@ fn real_pending_markers_recover_both_phases_and_keep_collision_errors_visible() 
     let generation = app.change_generation;
     assert_eq!(
         trash_work::recover_entry(&app.paths, removing.id.clone()),
-        Ok(())
+        Ok(Vec::new())
     );
-    send(&mut app, Event::Recovered(generation, Ok(())));
+    send(&mut app, Event::Recovered(generation, Ok(Vec::new())));
     load_current(&mut app);
     assert_eq!(trash::pending_entries(&app.paths).unwrap().len(), 1);
 
@@ -720,9 +720,9 @@ fn real_pending_markers_recover_both_phases_and_keep_collision_errors_visible() 
     let generation = app.change_generation;
     assert_eq!(
         trash_work::recover_entry(&app.paths, restoring.id.clone()),
-        Ok(())
+        Ok(Vec::new())
     );
-    send(&mut app, Event::Recovered(generation, Ok(())));
+    send(&mut app, Event::Recovered(generation, Ok(Vec::new())));
     load_current(&mut app);
     assert!(trash::pending_entries(&app.paths).unwrap().is_empty());
     assert!(app.trash_page.snapshot().unwrap().pending.is_empty());
@@ -944,4 +944,42 @@ fn active_remove_refuses_trash_restore_and_prune() {
         app.change_generation,
         Err("test cancellation".into()),
     ));
+}
+
+#[test]
+fn recovery_shows_a_copy_it_kept_in_the_trash() {
+    let Some((_root, _config, mut app)) = pending_fixture() else {
+        return;
+    };
+    native(&app.paths, "edited");
+    trash::set_trash_failpoint(Some("out.after_publish"));
+    let result = trash::remove(&app.paths, "edited", false);
+    trash::set_trash_failpoint(None);
+    assert!(result.unwrap_err().to_string().contains("injected"));
+    let id = trash::pending_entries(&app.paths).unwrap()[0].id.clone();
+    // Edited after the copy, so recovery keeps both versions.
+    let config = app.paths.environment_config("edited");
+    fs::write(&config, "schema_version = 1\nkind = 'native'\n# edited\n").unwrap();
+
+    open_trash(&mut app);
+    send(&mut app, Event::Recover(id.clone()));
+    let generation = app.change_generation;
+    let result = trash_work::recover_entry(&app.paths, id.clone());
+    send(&mut app, Event::Recovered(generation, result));
+    let feedback = app.trash_page.feedback();
+    assert_eq!(feedback[0], ("Recovered edited.".to_owned(), false));
+    assert_eq!(feedback.len(), 2, "{feedback:?}");
+    assert!(
+        feedback[1]
+            .0
+            .contains(&format!("the copy from before is in trash entry {id}")),
+        "{feedback:?}"
+    );
+    assert!(!feedback[1].1);
+    let _ = app.trash_view();
+    load_current(&mut app);
+    let snapshot = app.trash_page.snapshot().unwrap();
+    assert!(snapshot.pending.is_empty());
+    assert!(snapshot.entries.iter().any(|entry| entry.id == id));
+    assert!(fs::read_to_string(config).unwrap().contains("# edited"));
 }
