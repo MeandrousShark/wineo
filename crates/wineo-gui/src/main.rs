@@ -96,9 +96,6 @@ pub(crate) struct App {
     reduced_motion: bool,
     grid_scroll_after_settle: Option<String>,
     pub(crate) target: Option<String>,
-    /// The card and target a closing panel keeps drawing until its exit
-    /// animation ends, since closing clears `target`.
-    exit_target: Option<(String, String)>,
     card_click_target: Option<(String, Option<String>)>,
     pub(crate) hovered: Option<String>,
     pub(crate) images: art_cache::ArtCache<ArtKey>,
@@ -345,7 +342,6 @@ impl App {
             reduced_motion: false,
             grid_scroll_after_settle: None,
             target: None,
-            exit_target: None,
             card_click_target: None,
             hovered: None,
             images: art_cache::ArtCache::default(),
@@ -1127,9 +1123,6 @@ impl App {
             Message::PanelTick(generation, now) => {
                 if self.section == sidebar::Section::Library {
                     self.panel_motion.tick(generation, now);
-                    if !self.panel_motion.reserved() {
-                        self.exit_target = None;
-                    }
                 }
                 Task::none()
             }
@@ -3359,6 +3352,12 @@ mod tests {
         // Nothing fits, so only protected art stays.
         app.images = art_cache::ArtCache::with_budget(0);
         let _ = app.update(Message::Select("game".into()));
+        // Settled open, so closing starts a real exit.
+        let generation = app.panel_motion.generation();
+        let _ = app.update(Message::PanelTick(
+            generation,
+            Instant::now() + Duration::from_secs(1),
+        ));
         for key in keys("a") {
             let _ = app.update(Message::ArtLoaded(key, false, Ok(pixel())));
         }
@@ -3399,8 +3398,42 @@ mod tests {
             Instant::now() + Duration::from_secs(1),
         ));
         assert!(!app.panel_motion.reserved());
-        assert!(app.exit_target.is_none());
+        assert!(app.panel_motion.exit_target().is_none());
         assert!(app.panel_art_keys().is_empty());
+    }
+
+    #[test]
+    fn an_exit_that_ends_without_a_tick_forgets_its_target() {
+        let mut app = app();
+        app.viewport_width = 1000.0;
+        app.viewport_height = 800.0;
+        let mut game = card("game", State::Inactive, 0);
+        game.targets = vec!["a".into(), "b".into()];
+        game.default_target = Some("a".into());
+        app.merge(vec![game]);
+        let close_on_b = |app: &mut App| {
+            let _ = app.update(Message::Select("game".into()));
+            let generation = app.panel_motion.generation();
+            let _ = app.update(Message::PanelTick(
+                generation,
+                Instant::now() + Duration::from_secs(1),
+            ));
+            let _ = app.update(Message::TargetPicked("b".into()));
+            let _ = app.update(Message::ClosePanel);
+            assert!(app.panel_motion.active());
+            assert_eq!(app.drawn_target(&app.cards[0]), Some("b"));
+        };
+
+        close_on_b(&mut app);
+        let _ = app.update(Message::Section(sidebar::Section::Trash));
+        assert!(app.panel_motion.exit_target().is_none());
+        let _ = app.update(Message::Section(sidebar::Section::Library));
+
+        close_on_b(&mut app);
+        app.start_collapse(Instant::now());
+        assert!(!app.collapse.idle());
+        assert!(app.panel_motion.exit_target().is_none());
+        assert_eq!(app.drawn_target(&app.cards[0]), Some("a"));
     }
 
     #[test]
@@ -3424,6 +3457,12 @@ mod tests {
         // Nothing fits, so only protected art stays.
         app.images = art_cache::ArtCache::with_budget(0);
         let _ = app.update(Message::Select("game".into()));
+        // Settled open, so closing starts a real exit.
+        let generation = app.panel_motion.generation();
+        let _ = app.update(Message::PanelTick(
+            generation,
+            Instant::now() + Duration::from_secs(1),
+        ));
         let pixel = || image::Handle::from_rgba(1, 1, vec![10, 80, 240, 255]);
         let keys = [
             (hero.clone(), artwork::Kind::Hero),

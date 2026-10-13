@@ -280,9 +280,10 @@ impl App {
         self.target.as_deref().or(card.default_target.as_deref())
     }
     /// The target the panel draws: a closing panel keeps the one it had
-    /// while it fades out, unless another card was selected meanwhile.
+    /// while it fades out, since closing clears `target`, unless another
+    /// card was selected meanwhile.
     pub(crate) fn drawn_target<'a>(&'a self, card: &'a Card) -> Option<&'a str> {
-        match &self.exit_target {
+        match self.panel_motion.exit_target() {
             Some((name, target)) if !self.panel_open && *name == card.name => Some(target),
             _ => self.chosen_target(card),
         }
@@ -302,16 +303,18 @@ impl App {
     pub(crate) fn close_panel(&mut self) {
         self.close_log();
         self.close_checkup();
-        self.exit_target = self
+        // Taken before closing, so closing again mid-exit keeps it.
+        let exit_target = self
             .selected
             .as_ref()
             .and_then(|name| self.cards.iter().find(|card| &card.name == name))
             .and_then(|card| {
-                self.chosen_target(card)
+                self.drawn_target(card)
                     .map(|target| (card.name.clone(), target.to_owned()))
             });
         self.panel_open = false;
-        self.panel_motion.close(std::time::Instant::now());
+        self.panel_motion
+            .close(std::time::Instant::now(), exit_target);
         self.target = None;
         self.panel_error = None;
         self.panel_note = None;
