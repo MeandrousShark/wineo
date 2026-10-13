@@ -64,6 +64,10 @@ pub(crate) enum Event {
     GlobalArt(ArtFetch),
     GlobalArtKind(wineo_core::art::Kind, bool),
     GlobalExternalRunners(bool),
+    /// Opens a folder picker for the Games folder.
+    BrowseGamesRoot,
+    /// The page's generation, the field when the picker opened, and the pick.
+    PickedGamesRoot(u64, String, Result<Option<std::path::PathBuf>, String>),
     SteamGridDbKeySetOpen,
     SteamGridDbKeySetCancel,
     SteamGridDbKeyText(steamgriddb::Secret),
@@ -1295,6 +1299,13 @@ impl Page {
                 }
                 Step::none()
             }
+            // GOG games live in the host library, so a portable folder's
+            // values would do nothing.
+            Event::GlobalField(global::Field::GamesRoot | global::Field::GogLanguage, _)
+                if paths.portable_root().is_some() =>
+            {
+                Step::none()
+            }
             Event::GlobalField(field, value) => {
                 if let View::Global(editor) = &mut self.view
                     && editor.form.draft.set_field(field, value)
@@ -1302,6 +1313,49 @@ impl Page {
                     self.edited();
                 }
                 Step::none()
+            }
+            Event::BrowseGamesRoot => {
+                let View::Global(editor) = &self.view else {
+                    return Step::none();
+                };
+                if self.locked() || paths.portable_root().is_some() {
+                    return Step::none();
+                }
+                let previous = editor.form.draft.games_root.clone();
+                let generation = self.generation;
+                Step::task(Task::perform(
+                    crate::picker::pick("Select games folder".to_owned(), true),
+                    move |result| {
+                        Message::Settings(Event::PickedGamesRoot(
+                            generation,
+                            previous.clone(),
+                            result,
+                        ))
+                    },
+                ))
+            }
+            Event::PickedGamesRoot(generation, previous, result) => {
+                let View::Global(editor) = &self.view else {
+                    return Step::none();
+                };
+                // A field typed in meanwhile wins over a late pick.
+                if generation != self.generation || editor.form.draft.games_root != previous {
+                    return Step::none();
+                }
+                match result {
+                    Ok(Some(path)) => self.update(
+                        paths,
+                        Event::GlobalField(
+                            global::Field::GamesRoot,
+                            path.to_string_lossy().into_owned(),
+                        ),
+                    ),
+                    Ok(None) => Step::none(),
+                    Err(error) => {
+                        self.error = Some(error);
+                        Step::none()
+                    }
+                }
             }
             // A portable folder never uses other launchers' builds, so the
             // switch there would do nothing.
@@ -2856,6 +2910,87 @@ mod tests {
         let _ = page.update(&paths, Event::Saved(1, Ok(report)));
         let _ = page.update(&paths, Event::Loaded(1, load::snapshot_global(&paths)));
         assert!(page.has_file());
+        assert!(!page.is_dirty());
+    }
+
+    #[test]
+    fn the_games_folder_and_gog_language_save_and_validate() {
+        let (_root, paths) = setup();
+        let mut page = global_page(&paths);
+        let _ = page.update(
+            &paths,
+            Event::GlobalField(global::Field::GogLanguage, "english".into()),
+        );
+        assert_eq!(
+            global_editor(&page).form.problem().as_deref(),
+            Some("Invalid gog.language: use a locale tag like en-US.")
+        );
+        assert!(!page.can_save());
+        let _ = page.update(
+            &paths,
+            Event::GlobalField(global::Field::GogLanguage, "fr-FR".into()),
+        );
+        let _ = page.update(
+            &paths,
+            Event::GlobalField(global::Field::GamesRoot, "games".into()),
+        );
+        assert_eq!(
+            global_editor(&page).form.problem().as_deref(),
+            Some("The path must be absolute or start with ~/.")
+        );
+        // A folder picked while the field still holds what it held then
+        // replaces it; a late one after typing doesn't.
+        let _ = page.update(
+            &paths,
+            Event::PickedGamesRoot(1, "games".into(), Ok(Some("/mnt/games".into()))),
+        );
+        let _ = page.update(
+            &paths,
+            Event::PickedGamesRoot(1, "other".into(), Ok(Some("/mnt/late".into()))),
+        );
+        assert_eq!(global_editor(&page).form.draft.games_root, "/mnt/games");
+        assert!(global_editor(&page).form.problem().is_none());
+        for size in [iced::Size::new(900.0, 700.0), iced::Size::new(360.0, 280.0)] {
+            let mut view = page.view(&paths, crate::theme::Palette::DARK, 0.0);
+            let _ = crate::layout_probe::layout(&mut view, size);
+        }
+        let edits = global_editor(&page).form.edits();
+        assert_eq!(
+            edits.pairs,
+            [
+                ("defaults.games_root".to_owned(), "/mnt/games".to_owned()),
+                ("gog.language".to_owned(), "fr-FR".to_owned()),
+            ]
+        );
+        let report = load::save_global(&paths, &edits).unwrap();
+        assert_eq!(report.failed, None);
+        let saved = GlobalConfig::load(&paths).unwrap();
+        assert_eq!(saved.gog_language(), "fr-FR");
+        assert_eq!(
+            saved.games_root(&paths).unwrap(),
+            std::path::PathBuf::from("/mnt/games")
+        );
+        let page = global_page(&paths);
+        assert_eq!(global_editor(&page).form.draft.gog_language, "fr-FR");
+        assert!(!page.is_dirty());
+    }
+
+    #[test]
+    fn a_portable_page_leaves_the_gog_install_fields_alone() {
+        let root = tempfile::tempdir().unwrap();
+        let home = root.path().join("home");
+        fs::create_dir_all(&home).unwrap();
+        let paths = Paths::select(
+            move |key| (key == "HOME").then(|| std::ffi::OsString::from(&home)),
+            Some(&root.path().join("portable")),
+        )
+        .unwrap();
+        let mut page = global_page(&paths);
+        let _ = page.update(
+            &paths,
+            Event::GlobalField(global::Field::GogLanguage, "fr-FR".into()),
+        );
+        let _ = page.update(&paths, Event::BrowseGamesRoot);
         assert!(!page.is_dirty());
     }
 

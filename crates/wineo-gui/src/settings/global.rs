@@ -18,6 +18,8 @@ pub(crate) enum Field {
     Vkd3dRoot,
     StopTimeout,
     LogLimitMb,
+    GamesRoot,
+    GogLanguage,
 }
 
 impl Field {
@@ -28,6 +30,8 @@ impl Field {
         Self::Vkd3dRoot,
     ];
     pub(crate) const NUMBERS: [Self; 2] = [Self::StopTimeout, Self::LogLimitMb];
+    /// What GOG installs use, shown in the GOG section.
+    pub(crate) const GOG: [Self; 2] = [Self::GamesRoot, Self::GogLanguage];
 
     pub(crate) fn key(self) -> &'static str {
         match self {
@@ -37,6 +41,8 @@ impl Field {
             Self::Vkd3dRoot => "defaults.vkd3d_root",
             Self::StopTimeout => "stop_timeout",
             Self::LogLimitMb => "log_limit_mb",
+            Self::GamesRoot => "defaults.games_root",
+            Self::GogLanguage => "gog.language",
         }
     }
     pub(crate) fn label(self) -> &'static str {
@@ -47,6 +53,8 @@ impl Field {
             Self::Vkd3dRoot => "vkd3d root",
             Self::StopTimeout => "Stop timeout (seconds)",
             Self::LogLimitMb => "Log limit (MB)",
+            Self::GamesRoot => "Games folder",
+            Self::GogLanguage => "GOG language",
         }
     }
     pub(crate) fn default_root(self, paths: &Paths) -> std::path::PathBuf {
@@ -55,6 +63,7 @@ impl Field {
             Self::RunnerRoot => paths.default_runner_root(),
             Self::DxvkRoot => paths.default_dxvk_root(),
             Self::Vkd3dRoot => paths.default_vkd3d_root(),
+            Self::GamesRoot => paths.default_games_root(),
             _ => unreachable!("root fields"),
         }
     }
@@ -76,6 +85,8 @@ pub(crate) struct Values {
     pub(crate) vkd3d_root: String,
     pub(crate) stop_timeout: String,
     pub(crate) log_limit_mb: String,
+    pub(crate) games_root: String,
+    pub(crate) gog_language: String,
     pub(crate) art_fetch: ArtFetch,
     pub(crate) env: Vec<EnvRow>,
     /// Unset until the offer is answered, which reads as off.
@@ -101,6 +112,8 @@ impl Values {
             vkd3d_root: config.defaults.vkd3d_root.clone().unwrap_or_default(),
             stop_timeout: shown("stop_timeout", config.stop_timeout),
             log_limit_mb: shown("log_limit_mb", config.log_limit_mb),
+            games_root: config.defaults.games_root.clone().unwrap_or_default(),
+            gog_language: config.gog.language.clone().unwrap_or_default(),
             art_fetch: config.art.fetch,
             external_runners: config.external_runners,
             env: config
@@ -135,6 +148,8 @@ impl Values {
             Field::Vkd3dRoot => &self.vkd3d_root,
             Field::StopTimeout => &self.stop_timeout,
             Field::LogLimitMb => &self.log_limit_mb,
+            Field::GamesRoot => &self.games_root,
+            Field::GogLanguage => &self.gog_language,
         }
     }
     fn field_mut(&mut self, field: Field) -> &mut String {
@@ -145,6 +160,8 @@ impl Values {
             Field::Vkd3dRoot => &mut self.vkd3d_root,
             Field::StopTimeout => &mut self.stop_timeout,
             Field::LogLimitMb => &mut self.log_limit_mb,
+            Field::GamesRoot => &mut self.games_root,
+            Field::GogLanguage => &mut self.gog_language,
         }
     }
     pub(crate) fn set_field(&mut self, field: Field, value: String) -> bool {
@@ -242,7 +259,22 @@ impl Form {
                 return Some("The prefix must be absolute or start with ~/.".to_owned());
             }
         }
-        None
+        self.gog_problem()
+    }
+    /// What's wrong with an edited Games folder or GOG language.
+    pub(crate) fn gog_problem(&self) -> Option<String> {
+        let edited = |field| {
+            let value = self.draft.field(field);
+            (value != self.loaded.field(field) && !value.is_empty()).then_some(value)
+        };
+        if let Some(value) = edited(Field::GamesRoot)
+            && !Path::new(value).is_absolute()
+            && !value.starts_with("~/")
+        {
+            return Some("The path must be absolute or start with ~/.".to_owned());
+        }
+        edited(Field::GogLanguage)
+            .and_then(|value| wineo_core::gog::language::validate(value).err())
     }
     pub(crate) fn edits(&self) -> Edits {
         let (before, after) = (&self.loaded, &self.draft);
@@ -266,7 +298,11 @@ impl Form {
                 .pairs
                 .push(("defaults.arch".to_owned(), after.arch.as_str().to_owned()));
         }
-        for field in Field::ROOTS.into_iter().chain(Field::NUMBERS) {
+        for field in Field::ROOTS
+            .into_iter()
+            .chain(Field::NUMBERS)
+            .chain(Field::GOG)
+        {
             let (old, new) = (before.field(field), after.field(field));
             let changed = if field.number() {
                 old.parse::<u32>().ok() != new.parse::<u32>().ok()

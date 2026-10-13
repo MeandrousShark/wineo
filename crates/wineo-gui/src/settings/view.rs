@@ -496,7 +496,16 @@ fn global_view<'a>(
             palette,
         ))
         .id(iced::widget::Id::new(STEAM_KEY_ID)),
-        section("GOG", gog_row(gog, locked, spinner, palette), palette),
+        section(
+            "GOG",
+            column![
+                gog_install_rows(editor, paths, locked, palette),
+                gog_row(gog, locked, spinner, palette)
+            ]
+            .spacing(12)
+            .into(),
+            palette
+        ),
         section(
             "Environment variables",
             env_rows(
@@ -786,6 +795,69 @@ pub(super) fn gog_texts(settings: &super::gog::Settings) -> Vec<String> {
         }
     }
     texts
+}
+
+/// Where GOG installs go and in which language. Both are form fields, saved
+/// with the rest, unlike the login below them.
+fn gog_install_rows<'a>(
+    editor: &'a global::Editor,
+    paths: &Paths,
+    locked: bool,
+    palette: Palette,
+) -> Element<'a, Message> {
+    let draft = &editor.form.draft;
+    // GOG games live in the host library, so a portable folder has none.
+    let portable = paths.portable_root().is_some();
+    let off = locked || portable;
+    let games = global::Field::GamesRoot;
+    let placeholder = games.default_root(paths).display().to_string();
+    let mut rows = column![
+        setting_row(
+            games.label(),
+            text_field(
+                &placeholder,
+                draft.field(games),
+                off,
+                move |value| send(Event::GlobalField(games, value)),
+                palette,
+            ),
+            Some(
+                secondary_button("Browse...", palette)
+                    .on_press_maybe((!off).then(|| send(Event::BrowseGamesRoot)))
+                    .into()
+            ),
+            palette,
+        ),
+        setting_row(
+            global::Field::GogLanguage.label(),
+            text_field(
+                wineo_core::gog::language::DEFAULT,
+                draft.field(global::Field::GogLanguage),
+                off,
+                |value| send(Event::GlobalField(global::Field::GogLanguage, value)),
+                palette,
+            ),
+            None,
+            palette,
+        ),
+    ]
+    .spacing(12);
+    if portable {
+        rows = rows.push(
+            text("Not used in a portable folder.")
+                .size(13)
+                .color(palette.muted),
+        );
+    } else if let Some(problem) = editor.form.gog_problem() {
+        rows = rows.push(text(problem).size(12).color(palette.danger));
+    } else {
+        rows = rows.push(
+            text("A locale tag like fr-FR. Games without it install in English.")
+                .size(12)
+                .color(palette.muted),
+        );
+    }
+    rows.into()
 }
 
 fn gog_row<'a>(
