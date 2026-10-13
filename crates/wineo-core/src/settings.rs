@@ -1276,6 +1276,34 @@ stop_timeout = 3 # short
     }
 
     #[test]
+    fn setting_an_unchanged_value_in_other_quotes_writes_nothing() {
+        let (_root, paths) = setup();
+        let path = paths.global_config();
+        for (text, key, value) in [
+            ("[gog]\nlanguage = 'de'\n", "gog.language", "de"),
+            (
+                "[defaults]\ngames_root = '/mnt/games'\n",
+                "defaults.games_root",
+                "/mnt/games",
+            ),
+            (
+                "[defaults]\ngames_root = '~/Games'\n",
+                "defaults.games_root",
+                "~/Games",
+            ),
+            ("[defaults]\nrunner = 'wine'\n", "defaults.runner", "wine"),
+            ("stop_timeout =   30 # mine\n", "stop_timeout", "30"),
+        ] {
+            write_global(&paths, text);
+            let before = modified(&path);
+            std::thread::sleep(std::time::Duration::from_millis(20));
+            update(&paths, ConfigFile::Global, &[(key, value)], &[]).unwrap();
+            assert_eq!(fs::read_to_string(&path).unwrap(), text, "{key}");
+            assert_eq!(modified(&path), before, "{key}");
+        }
+    }
+
+    #[test]
     fn a_legacy_global_config_is_stamped_on_edit() {
         let (_root, paths) = setup();
         let original = "# mine\n[defaults]\nrunner = \"wine\"\n";

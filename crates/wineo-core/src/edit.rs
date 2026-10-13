@@ -665,6 +665,11 @@ pub(crate) fn store_value(table: &mut Table, field: &str, mut value: Value) {
     match table.entry(field) {
         Entry::Occupied(mut entry) => {
             if let Item::Value(old) = entry.get() {
+                // The same value in other quotes or spacing is left as written,
+                // so a no-op edit doesn't rewrite a hand-written file.
+                if same_value(old, &value) {
+                    return;
+                }
                 *value.decor_mut() = old.decor().clone();
             }
             entry.insert(Item::Value(value));
@@ -672,6 +677,19 @@ pub(crate) fn store_value(table: &mut Table, field: &str, mut value: Value) {
         Entry::Vacant(entry) => {
             entry.insert(Item::Value(value));
         }
+    }
+}
+
+/// Whether two values mean the same, whatever their quoting or spacing.
+fn same_value(old: &Value, new: &Value) -> bool {
+    match (old, new) {
+        (Value::String(old), Value::String(new)) => old.value() == new.value(),
+        (Value::Integer(old), Value::Integer(new)) => old.value() == new.value(),
+        (Value::Boolean(old), Value::Boolean(new)) => old.value() == new.value(),
+        (Value::Array(old), Value::Array(new)) => {
+            old.len() == new.len() && old.iter().zip(new).all(|(old, new)| same_value(old, new))
+        }
+        _ => false,
     }
 }
 
