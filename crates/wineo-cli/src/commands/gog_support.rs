@@ -104,6 +104,7 @@ pub fn dlc_notes(status: &Status) -> Vec<String> {
                 DlcState::CantCompare => "can't compare".to_owned(),
                 DlcState::Failed => "failed".to_owned(),
                 DlcState::Unavailable => "unavailable".to_owned(),
+                DlcState::NotInstalled => "not installed".to_owned(),
                 DlcState::UpToDate => unreachable!("filtered out"),
             };
             // An unnamed DLC's label already starts with "DLC".

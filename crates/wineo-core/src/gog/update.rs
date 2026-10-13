@@ -10,7 +10,7 @@
 //! so a read is always a whole file, and a check mustn't leave lock files
 //! behind.
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -85,10 +85,14 @@ pub enum DlcState {
     /// the game's state.
     Unknown,
     CantCompare,
-    /// Plan 0050 only.
+    /// Its install failed. When GOG offers it again, `available` says which
+    /// version and the next update retries it.
     Failed,
-    /// Plan 0050 only.
+    /// GOG offers no installer for it in the game's language or English.
     Unavailable,
+    /// Owned and offered, but not installed: bought since, or unavailable
+    /// until now. The next update installs it.
+    NotInstalled,
 }
 
 impl DlcState {
@@ -100,6 +104,7 @@ impl DlcState {
             Self::CantCompare => "cant_compare",
             Self::Failed => "failed",
             Self::Unavailable => "unavailable",
+            Self::NotInstalled => "not_installed",
         }
     }
 }
@@ -222,9 +227,9 @@ pub struct Check {
     pub read_only: bool,
 }
 
-/// Checks the GOG game environment `name` runs. Needs a login for Galaxy
-/// builds only; product details are public. With `refresh`, cached details
-/// are fetched again.
+/// Checks the GOG game environment `name` runs. Product details are public;
+/// the login lists Galaxy builds and which DLC the account owns. With
+/// `refresh`, cached details are fetched again.
 ///
 /// Refused in a portable root (`MigrateError::Portable`). Fails with
 /// `UpdateError::NotTracked` when the environment has no `gog_id`, and with
@@ -247,7 +252,7 @@ pub fn check_with(session: &mut Session, name: &str, how: Check) -> Result<Statu
     host_only(&paths)?;
     Environment::ensure_exists(&paths, name)?;
     let state = game_of(&paths, name)?;
-    status_of(session, &paths, name, state, how)
+    status_of(session, &paths, name, state, how, &mut Owned::default())
 }
 
 /// `name`'s game folder: the one it owns, else an ownerless one of its game
@@ -322,6 +327,7 @@ pub fn check_all(session: &mut Session, refresh: bool) -> Result<Batch> {
 pub fn check_all_with(session: &mut Session, how: Check) -> Result<Batch> {
     let paths = session.paths().clone();
     host_only(&paths)?;
+    let mut owned = Owned::default();
     let mut batch = Batch::default();
     // The environments whose game was checked or reported in the loop.
     let mut seen = BTreeSet::new();
@@ -356,7 +362,7 @@ pub fn check_all_with(session: &mut Session, how: Check) -> Result<Batch> {
                 continue;
             }
         }
-        match status_of(session, &paths, &owner, state, how) {
+        match status_of(session, &paths, &owner, state, how, &mut owned) {
             Ok(status) => batch.statuses.push(status),
             Err(error) => batch.errors.push(GameError {
                 environment: Some(owner),
@@ -382,7 +388,7 @@ pub fn check_all_with(session: &mut Session, how: Check) -> Result<Batch> {
             // update or launch claims. Only read here.
             Ok(Some(state)) if state.owner.is_none() => {
                 let id = state.gog_id();
-                match status_of(session, &paths, &name, state, how) {
+                match status_of(session, &paths, &name, state, how, &mut owned) {
                     Ok(status) => batch.statuses.push(status),
                     Err(error) => batch.errors.push(GameError {
                         environment: Some(name),
@@ -492,6 +498,39 @@ struct Compared {
     available: Option<String>,
     why: Option<String>,
     dlc: Vec<DlcStatus>,
+    /// What an installer-tracked game's update rebuilds: every product, with
+    /// failed and unavailable DLC GOG offers now turned installed, and newly
+    /// owned DLC added after them.
+    products: Option<Vec<Product>>,
+    /// Why each newly owned DLC can't be installed, for an update's review.
+    notes: Vec<String>,
+}
+
+/// The ids the account owns, asked of GOG once for any number of games.
+#[derive(Debug, Default)]
+pub(super) struct Owned(Option<Result<HashSet<u64>, String>>);
+
+impl Owned {
+    fn get(&mut self, session: &mut Session) -> Result<&HashSet<u64>, String> {
+        let owned = self.0.get_or_insert_with(|| {
+            session
+                .call(|client, token| client.owned_ids(token))
+                .map(|ids| ids.into_iter().collect())
+                .map_err(|error| error.to_string())
+        });
+        owned.as_ref().map_err(Clone::clone)
+    }
+}
+
+/// A status and what updating the game would rebuild.
+pub(super) struct Checked {
+    pub(super) status: Status,
+    /// See `Compared::products`. None on the Galaxy track and while an
+    /// install hasn't finished.
+    pub(super) products: Option<Vec<Product>>,
+    /// Notes for an update's review: newly owned DLC that can't be
+    /// installed, and why DLC ownership couldn't be told.
+    pub(super) notes: Vec<String>,
 }
 
 fn status_of(
@@ -500,9 +539,10 @@ fn status_of(
     name: &str,
     state: FolderState,
     how: Check,
+    owned: &mut Owned,
 ) -> Result<Status> {
     let names = names::product_names(&state.folder);
-    status_with(session, paths, name, state, how, &names)
+    Ok(status_with(session, paths, name, state, how, &names, owned)?.status)
 }
 
 /// `status_of` with the folder's product names already read.
@@ -513,7 +553,8 @@ pub(super) fn status_with(
     state: FolderState,
     how: Check,
     names: &HashMap<u64, String>,
-) -> Result<Status> {
+    owned: &mut Owned,
+) -> Result<Checked> {
     let mut installed = Installed::of(name, &state)?;
     let details = product::load_with(
         paths,
@@ -545,6 +586,31 @@ pub(super) fn status_with(
         installed = Installed::committed(&adopted.committed, false);
     }
 
+    // Newly owned DLC are only looked for when GOG lists DLC the folder
+    // doesn't have, so most games never ask. Without the list, nothing is
+    // said about them, as when installing.
+    let mut notes = Vec::new();
+    let unlisted = details
+        .product
+        .dlc_ids
+        .iter()
+        .any(|id| !installed.products.iter().any(|product| product.id == *id));
+    let owned = if installed.track == Track::Installer && !installed.unfinished_install && unlisted
+    {
+        match owned.get(session) {
+            Ok(owned) => Some(owned),
+            Err(error) => {
+                let note = format!(
+                    "Couldn't check which DLC you own, so DLC you bought since isn't listed: {error}"
+                );
+                warnings.push(note.clone());
+                notes.push(note);
+                None
+            }
+        }
+    } else {
+        None
+    };
     let compared = if installed.unfinished_install {
         Compared {
             state: UpdateState::CantCompare,
@@ -552,14 +618,13 @@ pub(super) fn status_with(
             available: None,
             why: Some("The install hasn't finished.".to_owned()),
             dlc: Vec::new(),
+            products: None,
+            notes: Vec::new(),
         }
     } else {
         match (installed.platform, installed.track) {
-            (Platform::Linux, Track::Installer) => {
-                by_installer("linux", &installed, names, &details.product)
-            }
-            (Platform::Windows, Track::Installer) => {
-                by_installer("windows", &installed, names, &details.product)
+            (Platform::Linux | Platform::Windows, Track::Installer) => {
+                by_installer(&installed, names, &details.product, owned)
             }
             (Platform::Windows, Track::Galaxy) => {
                 by_build(session, &installed, names, &details.product)?
@@ -579,7 +644,8 @@ pub(super) fn status_with(
         UpdateState::OnGog => Some(Reason::Galaxy),
         UpdateState::Available | UpdateState::UpToDate => None,
     };
-    Ok(Status {
+    notes.extend(compared.notes);
+    let status = Status {
         environment: name.to_owned(),
         gog_id: installed.gog_id,
         title: details.product.title,
@@ -595,6 +661,11 @@ pub(super) fn status_with(
         unfinished,
         warnings,
         dlc: compared.dlc,
+    };
+    Ok(Checked {
+        status,
+        products: compared.products,
+        notes,
     })
 }
 
@@ -606,6 +677,8 @@ fn cant(installed: &Installed, names: &HashMap<u64, String>, why: String) -> Com
         available: None,
         why: Some(why),
         dlc: dlc(installed, names).map(|(dlc, _)| dlc).collect(),
+        products: None,
+        notes: Vec::new(),
     }
 }
 
@@ -745,15 +818,23 @@ fn compare_one(
 /// The installer track: the base game and every installed DLC against GOG's
 /// installers. Any product that can't be compared makes the game's state
 /// Can't compare, since a rebuild would refuse it. Otherwise any difference
-/// makes it Available.
+/// makes it Available, and so does a DLC the next update would install: a
+/// failed or unavailable one GOG offers now, or one in `owned` that the
+/// folder doesn't have.
 fn by_installer(
-    os: &str,
     installed: &Installed,
     names: &HashMap<u64, String>,
     details: &wineo_gog::Product,
+    owned: Option<&HashSet<u64>>,
 ) -> Compared {
+    let os = match installed.platform {
+        Platform::Linux => "linux",
+        Platform::Windows => "windows",
+    };
     let language = &installed.language;
     let mut tally = Tally::default();
+    let mut products = Vec::new();
+    let mut notes = Vec::new();
 
     let (base_installed, base_available) = match base(installed) {
         Some(base) if base.status == ProductStatus::Installed => {
@@ -781,11 +862,26 @@ fn by_installer(
         }
     };
 
+    if let Some(base) = base(installed) {
+        products.push(base.clone());
+    }
     let mut listing = Vec::new();
     for (mut entry, product) in dlc(installed, names) {
         let gog = details.dlcs.iter().find(|dlc| dlc.id == product.id);
         entry.title = gog.map(|gog| gog.title.clone()).filter(|t| !t.is_empty());
-        if product.status == ProductStatus::Installed {
+        let mut wanted = product.clone();
+        if product.status != ProductStatus::Installed {
+            // Recorded because it was owned, so only GOG's offer is checked.
+            let label = entry.label(&details.title);
+            if let Ok(offered) = dlc_offer(installed.platform, &label, language, gog) {
+                entry.available = Some(offered.version.clone());
+                if product.status == ProductStatus::Unavailable {
+                    entry.state = DlcState::NotInstalled;
+                }
+                tally.available();
+                wanted = offered.product(product.id);
+            }
+        } else {
             let label = entry.label(&details.title);
             let (verdict, available) = compare_one(
                 os,
@@ -810,6 +906,50 @@ fn by_installer(
                 }
             }
         }
+        products.push(wanted);
+        listing.push(entry);
+    }
+
+    // Owned DLC the folder has no record of, in GOG's order.
+    let mut added = HashSet::new();
+    for &id in &details.dlc_ids {
+        if !owned.is_some_and(|owned| owned.contains(&id))
+            || installed.products.iter().any(|product| product.id == id)
+            || !added.insert(id)
+        {
+            continue;
+        }
+        let gog = details.dlcs.iter().find(|dlc| dlc.id == id);
+        let mut entry = DlcStatus {
+            id,
+            title: gog.map(|gog| gog.title.clone()).filter(|t| !t.is_empty()),
+            name: names.get(&id).cloned(),
+            installed: None,
+            available: None,
+            state: DlcState::Unavailable,
+        };
+        let label = entry.label(&details.title);
+        match dlc_offer(installed.platform, &label, language, gog) {
+            Ok(offered) => {
+                entry.available = Some(offered.version.clone());
+                entry.state = DlcState::NotInstalled;
+                tally.available();
+                products.push(offered.product(id));
+            }
+            // Recorded as unavailable when an update runs anyway, as an
+            // install records it, but no reason to run one.
+            Err(why) => {
+                notes.push(why);
+                products.push(Product {
+                    reported_language: None,
+                    id,
+                    version: None,
+                    build: None,
+                    language: None,
+                    status: ProductStatus::Unavailable,
+                });
+            }
+        }
         listing.push(entry);
     }
 
@@ -819,7 +959,68 @@ fn by_installer(
         available: base_available,
         why: tally.why,
         dlc: listing,
+        products: Some(products),
+        notes,
     }
+}
+
+/// A DLC that isn't installed, as GOG offers it now.
+struct DlcOffer {
+    version: String,
+    /// GOG's code for its installer's language when that isn't the folder's,
+    /// which is how it's recorded.
+    language: Option<String>,
+}
+
+impl DlcOffer {
+    fn product(&self, id: u64) -> Product {
+        Product {
+            reported_language: None,
+            id,
+            version: Some(self.version.clone()),
+            build: None,
+            language: self.language.clone(),
+            status: ProductStatus::Installed,
+        }
+    }
+}
+
+/// The installer a DLC that isn't installed would get, the way an install
+/// picks one: in the folder's language, else English. A folder language
+/// with a region, like a migrated game's `en-US`, is GOG's primary code when
+/// GOG has nothing spelled the same way.
+fn dlc_offer(
+    platform: Platform,
+    label: &str,
+    language: &str,
+    entry: Option<&wineo_gog::Product>,
+) -> Result<DlcOffer, String> {
+    let Some(entry) = entry else {
+        return Err(format!("GOG lists no details for {label}."));
+    };
+    let os = match platform {
+        Platform::Linux => "linux",
+        Platform::Windows => "windows",
+    };
+    let primary = language.split(['-', '_']).next().unwrap_or(language);
+    let code = if entry
+        .installers
+        .iter()
+        .any(|installer| installer.os == os && installer.language == language)
+    {
+        language
+    } else {
+        primary
+    };
+    let picked = install::pick(entry, label, code, platform)?;
+    // What an update matches it by: the folder's language, unless it fell
+    // back to another.
+    let recorded = (picked.language != language && picked.language != primary)
+        .then(|| picked.language.clone());
+    Ok(DlcOffer {
+        version: picked.version,
+        language: recorded,
+    })
 }
 
 /// A game's state from its products: Can't compare beats Available beats Up
@@ -923,6 +1124,8 @@ fn by_build(
         available: latest.map(|build| build.build_id.clone()),
         why,
         dlc,
+        products: None,
+        notes: Vec::new(),
     })
 }
 

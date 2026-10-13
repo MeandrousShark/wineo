@@ -25,12 +25,15 @@ use std::cell::RefCell;
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use wineo_gog::{DownloadCache, Pin, Verification};
 
+use super::install::dlc_can_fail;
 use super::publish::{self, PublishProgress, Publisher, Report, SavedAside};
 use super::windows::{self, SetupError};
-use super::{Check, UpdateError, UpdateState, installer_version, matching_installer, status_with};
+use super::{
+    Check, Owned, UpdateError, UpdateState, installer_version, matching_installer, status_with,
+};
 use crate::cancel::Token;
 use crate::environment::Environment;
 use crate::gog::account::{AccountError, CallError, Session};
@@ -239,6 +242,40 @@ impl Pending {
     pub fn warnings(&self) -> &[String] {
         &self.warnings
     }
+
+    /// Whether this update installs DLC `id` that wasn't installed: newly
+    /// owned, or a failed or unavailable one GOG offers now. One that fails
+    /// before anything changes is recorded as failed and the rest goes on.
+    /// Finishing an interrupted update never drops a product, since an
+    /// earlier attempt may have written its files.
+    fn adds(&self, id: u64) -> bool {
+        if self.recovery || id == self.target.gog_id {
+            return false;
+        }
+        !self.seen.committed.as_ref().is_some_and(|committed| {
+            committed
+                .products
+                .iter()
+                .any(|product| product.id == id && product.status == ProductStatus::Installed)
+        })
+    }
+
+    /// The target with each product in `failed` recorded as failed, saying
+    /// why in `warnings`.
+    fn failing(&self, failed: &BTreeMap<u64, String>, warnings: &mut Vec<String>) -> Target {
+        let mut target = self.target.clone();
+        for (id, why) in failed {
+            if let Some(product) = target.products.iter_mut().find(|p| p.id == *id) {
+                product.status = ProductStatus::Failed;
+                product.version = None;
+            }
+            warnings.push(format!(
+                "{} failed and wasn't installed: {why}",
+                self.dlc_label(*id)
+            ));
+        }
+        target
+    }
 }
 
 /// How far `apply` has got.
@@ -414,19 +451,22 @@ pub fn plan(
         windows::check_graphical()?;
     }
     let session = session.ok_or(AccountError::LoggedOut)?;
-    let mut refresh = options.refresh;
+    // Checked for a reinstall too, which also installs DLC owned since and
+    // retries failed or unavailable ones GOG offers now.
+    let checked = status_with(
+        session,
+        paths,
+        name,
+        state.clone(),
+        Check {
+            refresh: options.refresh,
+            read_only: options.read_only,
+        },
+        &names,
+        &mut Owned::default(),
+    )?;
+    let status = checked.status;
     if !options.reinstall {
-        let status = status_with(
-            session,
-            paths,
-            name,
-            state.clone(),
-            Check {
-                refresh: options.refresh,
-                read_only: options.read_only,
-            },
-            &names,
-        )?;
         match status.state {
             UpdateState::UpToDate => {
                 return Ok(Plan::UpToDate {
@@ -446,11 +486,14 @@ pub fn plan(
                 .into());
             }
         }
-        // Just fetched and cached, so the cached details are current. A
-        // read-only plan cached nothing, so it fetches again rather than
-        // reuse an older copy that is still fresh.
-        refresh = refresh && options.read_only;
     }
+    // Just fetched and cached, so the cached details are current. A
+    // read-only plan cached nothing, so it fetches again rather than reuse
+    // an older copy that is still fresh.
+    let refresh = options.refresh && options.read_only;
+    let products = checked
+        .products
+        .unwrap_or_else(|| committed.products.clone());
     let mut resolved = resolve(
         paths,
         session,
@@ -459,7 +502,7 @@ pub fn plan(
         Wanted {
             platform: committed.platform,
             language: &committed.language,
-            products: &committed.products,
+            products: &products,
             names: &names,
         },
         Check {
@@ -467,6 +510,7 @@ pub fn plan(
             read_only: options.read_only,
         },
     )?;
+    resolved.warnings.extend(checked.notes);
     if committed.platform == Platform::Windows {
         select_windows(&mut resolved, Some(&committed), |_| options.reinstall);
         if resolved.files.is_empty() {
@@ -888,15 +932,38 @@ fn run(
     // Downloading and checking the packages changes nothing, so it holds no
     // lock and the game can still be played meanwhile.
     let mut warnings = pending.warnings.clone();
-    let fetched = fetch(paths, session, pending, token, progress, &mut warnings)?;
+    let mut failed = BTreeMap::new();
+    let fetched = fetch(
+        paths,
+        session,
+        pending,
+        token,
+        progress,
+        &mut warnings,
+        &mut failed,
+    )?;
     let cache = DownloadCache::new(paths.gog_download_cache());
-    let (pins, fetched) = pin_packages(&cache, name, fetched, token, progress)?;
+    let (pins, located) = pin_packages(&cache, name, fetched, token, progress)?;
     let mut opened = Vec::new();
-    for (file, path) in &fetched {
-        let package = open_package(path)
-            .with_context(|| format!("failed to open {}'s package", file.label))?;
-        opened.push((file.product, package));
+    let mut fetched = Vec::new();
+    for (file, path) in located {
+        match open_package(&path) {
+            Ok(package) => {
+                opened.push((file.product, package));
+                fetched.push((file, path));
+            }
+            Err(error) if pending.adds(file.product) && !is_cancel(&error) => {
+                failed.insert(
+                    file.product,
+                    format!("Couldn't open {}'s package: {error:#}", file.label),
+                );
+            }
+            Err(error) => {
+                return Err(error.context(format!("failed to open {}'s package", file.label)));
+            }
+        }
     }
+    let target = pending.failing(&failed, &mut warnings);
     check_fit(paths, folder, &opened)?;
 
     let _operation = lock_operation(paths, name)?;
@@ -932,7 +999,7 @@ fn run(
         state,
         Work {
             kind: pending.kind,
-            target: &pending.target,
+            target: &target,
         },
         Packages {
             pins,
@@ -950,7 +1017,7 @@ fn run(
         kind: pending.kind,
         recovered: pending.recovery,
         claimed,
-        products: pending.target.products.clone(),
+        products: target.products,
         saved: report.saved,
         kept: report.kept,
         overwritten: report.overwritten,
@@ -979,14 +1046,38 @@ fn run_windows(
     };
     windows::check_graphical()?;
     let mut warnings = pending.warnings.clone();
-    let fetched = fetch(paths, session, pending, token, progress, &mut warnings)?;
+    let mut failed = BTreeMap::new();
+    let fetched = fetch(
+        paths,
+        session,
+        pending,
+        token,
+        progress,
+        &mut warnings,
+        &mut failed,
+    )?;
     let cache = DownloadCache::new(paths.gog_download_cache());
     let (pins, located) = pin_packages(&cache, name, fetched, token, progress)?;
     let mut setups = BTreeMap::new();
     for (product, found) in windows::setup_programs(&located) {
-        let exe = found.map_err(|(label, count)| SetupError::NoSetupProgram { label, count })?;
-        setups.insert(product, exe);
+        match found {
+            Ok(exe) => {
+                setups.insert(product, exe);
+            }
+            Err((label, count)) => {
+                let error = SetupError::NoSetupProgram { label, count };
+                if !pending.adds(product) {
+                    return Err(error.into());
+                }
+                failed.insert(product, error.to_string());
+            }
+        }
     }
+    let located: Vec<Located> = located
+        .into_iter()
+        .filter(|(file, _)| setups.contains_key(&file.product))
+        .collect();
+    let mut target = pending.failing(&failed, &mut warnings);
     windows::check_space(paths, folder, &located)?;
 
     // The prefix is held from here to the commit, so nothing like a snapshot
@@ -1013,7 +1104,6 @@ fn run_windows(
     } else if state.owner != pending.seen.owner {
         return Err(changed().into());
     }
-    let mut target = pending.target.clone();
     let packages: Vec<Package> = located
         .iter()
         .map(|(file, _)| Package {
@@ -1325,7 +1415,9 @@ pub(super) fn operation_id() -> String {
 }
 
 /// Every package downloaded, with the checksum it was verified against, or
-/// the journal's packages when finishing offline.
+/// the journal's packages when finishing offline. A DLC the update adds
+/// whose download fails goes in `failed`, without its files, as when
+/// installing.
 fn fetch(
     paths: &Paths,
     session: Option<&mut Session>,
@@ -1333,6 +1425,7 @@ fn fetch(
     token: &Token,
     progress: &RefCell<impl FnMut(Progress)>,
     warnings: &mut Vec<String>,
+    failed: &mut BTreeMap<u64, String>,
 ) -> Result<Vec<PlannedFile>> {
     // Finishing offline uses what the journal names, checked once pinned.
     if pending.offline {
@@ -1342,8 +1435,19 @@ fn fetch(
     let cache = DownloadCache::new(paths.gog_download_cache());
     let mut fetched = Vec::new();
     for file in &pending.files {
-        fetched.push(download(session, &cache, file, token, progress, warnings)?);
+        if failed.contains_key(&file.product) {
+            continue;
+        }
+        match download(session, &cache, file, token, progress, warnings) {
+            Ok(file) => fetched.push(file),
+            Err(error) if pending.adds(file.product) && dlc_can_fail(&error) => {
+                failed.insert(file.product, format!("{error:#}"));
+            }
+            Err(error) => return Err(error),
+        }
     }
+    // A Windows installer whose other parts failed can't run either.
+    fetched.retain(|file| !failed.contains_key(&file.product));
     Ok(fetched)
 }
 

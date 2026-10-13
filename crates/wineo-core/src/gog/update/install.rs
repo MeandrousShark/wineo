@@ -792,14 +792,14 @@ fn resumed(
 }
 
 /// A product's installer, picked for a platform and language.
-struct Picked<'a> {
+pub(super) struct Picked<'a> {
     installer: &'a wineo_gog::Download,
     /// One package for a Linux installer; a Windows one's setup program and
     /// its parts.
     files: Vec<&'a wineo_gog::DownloadFile>,
-    version: String,
+    pub(super) version: String,
     /// GOG's code for the installer's language.
-    language: String,
+    pub(super) language: String,
 }
 
 impl Picked<'_> {
@@ -837,7 +837,7 @@ impl Picked<'_> {
 
 /// A product's installer for `platform` in GOG's language `code`, else in
 /// English, or why there is none it can use.
-fn pick<'a>(
+pub(super) fn pick<'a>(
     entry: &'a wineo_gog::Product,
     label: &str,
     code: &str,
@@ -1288,7 +1288,7 @@ pub(super) fn windows_attempted() -> Vec<Attempted> {
 /// Whether a DLC's download failing leaves the rest to install: anything
 /// but a cancel or a login that stopped working, which would stop the rest
 /// too.
-fn dlc_can_fail(error: &anyhow::Error) -> bool {
+pub(super) fn dlc_can_fail(error: &anyhow::Error) -> bool {
     !is_cancel(error) && error.downcast_ref::<AccountError>().is_none()
 }
 
