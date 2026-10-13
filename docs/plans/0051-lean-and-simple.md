@@ -228,10 +228,29 @@ Measured on release builds, same commands as the baselines.
   "Force stop" gets its own wakeup at its deadline instead of riding the
   spinner's frame tick.
 
+Shipped in 0.31.1.
+
+- C1, the app's rescan (merged after 0.31.1): idle in the background went
+  from 6.5% CPU (Xvfb) to 0%, with no rescans and no redraws. Focused, it
+  still scans every 2 s but only sends a message, and so redraws, when what
+  it read differs from what's on screen: 1.35% CPU, almost all of it the
+  trash manifest reads that C3 trims. Refocusing refreshes at once, and on
+  X11 without a window manager a key or click counts as focus. While an Art
+  page is open the scan also watches its files and saved game, and a failed
+  SteamGridDB name lookup retries with backoff (4 s to 64 s).
+
 Limits accepted in review:
 
 - A spinner inside a scrollable that is itself scrolled out of an outer
   scrollable can keep asking for frames: iced hands an inner scrollable its
   own viewport. No spinner sits in nested scrollables today.
-- The trash page's "removed N s ago" labels refresh with the 2 s rescan
-  rather than every spinner frame.
+- The trash page's "removed N s ago" labels update when their text
+  changes, at most every 2 s, rather than every spinner frame.
+- A wineo window that is visible but not focused stops updating until it
+  is focused or clicked: "focused" means keyboard focus.
+- An open, focused settings page still checks its file every 2 s.
+- The Art page notices a replaced file by its modification time and size,
+  so a same-size replacement that keeps the old time shows on reopening.
+- At most one periodic scan runs at a time, and an explicit reload makes
+  scans read before it stale. A scan stuck on a hung filesystem holds that
+  slot; there is no scan timeout.
