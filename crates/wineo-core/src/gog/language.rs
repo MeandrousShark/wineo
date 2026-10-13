@@ -6,28 +6,69 @@
 pub const DEFAULT: &str = "en-US";
 
 /// A tag's language and region, normalized for comparing: the language in
-/// lowercase and the region in uppercase.
+/// lowercase and the region in uppercase. The rest of a tag (extlang,
+/// script, variants, extensions, private use) is checked and ignored, since
+/// GOG's codes don't depend on it.
 struct Tag {
     language: String,
     region: Option<String>,
 }
 
+fn alpha(part: &str, len: std::ops::RangeInclusive<usize>) -> bool {
+    len.contains(&part.len()) && part.bytes().all(|b| b.is_ascii_alphabetic())
+}
+
+fn alnum(part: &str, len: std::ops::RangeInclusive<usize>) -> bool {
+    len.contains(&part.len()) && part.bytes().all(|b| b.is_ascii_alphanumeric())
+}
+
+/// Parses a well-formed BCP 47 language tag (RFC 5646 section 2.1), which
+/// is hyphen-separated and case-insensitive. The language is 2 or 3 letters,
+/// narrower than the RFC's 4 to 8 letter forms, which are reserved or
+/// unassigned and would only let a typo like `english` through. A private-use-only tag (`x-...`)
+/// and the old grandfathered tags have no language to map, so they're refused.
 fn parse(tag: &str) -> Option<Tag> {
-    let mut parts = tag.split('-');
-    let language = parts.next()?;
-    if !(2..=3).contains(&language.len()) || !language.bytes().all(|b| b.is_ascii_alphabetic()) {
-        return None;
+    let parts: Vec<&str> = tag.split('-').collect();
+    let mut rest = parts.iter().copied().peekable();
+    let language = rest.next().filter(|part| alpha(part, 2..=3))?;
+    for _ in 0..3 {
+        rest.next_if(|part| alpha(part, 3..=3));
     }
-    let mut rest = parts.peekable();
-    // A script is four letters; a region is two letters or three digits.
-    // The script is checked and dropped, since the language and region pick
-    // GOG's code (all Chinese is one code).
-    let _script =
-        rest.next_if(|part| part.len() == 4 && part.bytes().all(|b| b.is_ascii_alphabetic()));
+    rest.next_if(|part| alpha(part, 4..=4));
     let region = rest.next_if(|part| {
-        (part.len() == 2 && part.bytes().all(|b| b.is_ascii_alphabetic()))
-            || (part.len() == 3 && part.bytes().all(|b| b.is_ascii_digit()))
+        alpha(part, 2..=2) || part.bytes().all(|b| b.is_ascii_digit()) && part.len() == 3
     });
+    while rest
+        .next_if(|part| {
+            alnum(part, 5..=8) || (alnum(part, 4..=4) && part.as_bytes()[0].is_ascii_digit())
+        })
+        .is_some()
+    {}
+    // An extension is a singleton and then one or more subtags of 2-8.
+    while rest
+        .next_if(|part| alnum(part, 1..=1) && !part.eq_ignore_ascii_case("x"))
+        .is_some()
+    {
+        let mut any = false;
+        while rest.next_if(|part| alnum(part, 2..=8)).is_some() {
+            any = true;
+        }
+        if !any {
+            return None;
+        }
+    }
+    if rest
+        .next_if(|part| part.eq_ignore_ascii_case("x"))
+        .is_some()
+    {
+        let mut any = false;
+        while rest.next_if(|part| alnum(part, 1..=8)).is_some() {
+            any = true;
+        }
+        if !any {
+            return None;
+        }
+    }
     if rest.next().is_some() {
         return None;
     }
@@ -37,12 +78,15 @@ fn parse(tag: &str) -> Option<Tag> {
     })
 }
 
+/// What a refused value is told, after `Invalid gog.language:`.
+pub const FORM_HINT: &str = "use a locale tag like en-US";
+
 /// Checks the form of a tag. Which languages exist is not checked, since GOG
 /// decides what it offers.
 pub fn validate(tag: &str) -> Result<(), String> {
     parse(tag)
         .map(drop)
-        .ok_or_else(|| "Invalid gog.language: use a locale tag like en-US.".to_owned())
+        .ok_or_else(|| format!("Invalid gog.language: {FORM_HINT}."))
 }
 
 /// Tags where GOG's code isn't the lowercase language subtag, as

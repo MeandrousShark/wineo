@@ -64,8 +64,16 @@ fn malformed_tags_are_refused() {
         "en-",
         "-US",
         "en-U",
-        "en-USA",
         "en-US-x",
+        "en-US-u",
+        "en-US-u-ca-",
+        "x-private",
+        "en--US",
+        "en-US-",
+        "enenenenen-US",
+        "en-ünï",
+        "en-US-x-",
+        "de-CH-19011901x",
         "e1",
         " en",
         "en-Latn-US-1",
@@ -81,8 +89,38 @@ fn malformed_tags_are_refused() {
 #[test]
 fn well_formed_tags_outside_the_table_are_accepted() {
     for good in [
-        "en", "en-US", "fr-FR", "pt-BR", "zh-Hans", "zh-CN", "es-419", "xx", "tlh",
+        "en",
+        "en-US",
+        "fr-FR",
+        "pt-BR",
+        "zh-Hans",
+        "zh-CN",
+        "es-419",
+        "xx",
+        "tlh",
+        "de-CH-1901",
+        "sl-rozaj",
+        "sl-rozaj-biske",
+        "en-US-u-ca-gregory",
+        "en-US-x-private",
+        "zh-cmn-Hans-CN",
+        "en-a-bbb-ccc",
+        "SL-ROZAJ",
+        "qaa",
     ] {
         validate(good).unwrap_or_else(|error| panic!("{good}: {error}"));
     }
+}
+
+#[test]
+fn full_tags_map_by_language_and_region() {
+    assert_eq!(installer_code("de-CH-1901").unwrap(), "de");
+    assert_eq!(installer_code("en-US-u-ca-gregory").unwrap(), "en");
+    assert_eq!(installer_code("sl-rozaj").unwrap(), "sl");
+    assert_eq!(installer_code("en-US-x-private").unwrap(), "en");
+    assert_eq!(installer_code("zh-cmn-Hans-CN").unwrap(), "cn");
+    assert_eq!(installer_code("pt-BR-u-nu-latn").unwrap(), "br");
+    assert_eq!(installer_code("es-419-x-a").unwrap(), "es_mx");
+    // The private-use part isn't a region.
+    assert_eq!(installer_code("pt-x-br").unwrap(), "pt");
 }
