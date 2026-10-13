@@ -9,6 +9,7 @@ use crate::auth::{self, AuthCode, CLIENT_ID, CLIENT_SECRET, REDIRECT_URI, Tokens
 use crate::error::{Endpoint, Error, ErrorKind};
 use crate::owned::{self, OwnedPage, OwnedProduct};
 use crate::product::{self, Builds, Product, ResolvedLink};
+use crate::profile;
 
 /// Product details with every DLC expanded run to a few megabytes.
 const MAX_BODY: u64 = 16 * 1024 * 1024;
@@ -24,6 +25,7 @@ pub struct Endpoints {
     pub api: Url,
     pub content_system: Url,
     pub gameplay: Url,
+    pub users: Url,
 }
 
 impl Endpoints {
@@ -35,6 +37,7 @@ impl Endpoints {
             api: parse("https://api.gog.com"),
             content_system: parse("https://content-system.gog.com"),
             gameplay: parse("https://gameplay.gog.com"),
+            users: parse("https://users.gog.com"),
         }
     }
 
@@ -46,7 +49,8 @@ impl Endpoints {
             embed: base.clone(),
             api: base.clone(),
             content_system: base.clone(),
-            gameplay: base,
+            gameplay: base.clone(),
+            users: base,
         })
     }
 }
@@ -80,6 +84,13 @@ impl Client {
     pub fn with_base(user_agent: &str, base: &str) -> Result<Self, Error> {
         let endpoints =
             Endpoints::all_at(base).ok_or(Error::new(Endpoint::Setup, ErrorKind::Request))?;
+        Self::build(user_agent, endpoints, false, CONNECT_TIMEOUT, READ_TIMEOUT)
+    }
+
+    /// `with_base` with each service placed separately, for a test that
+    /// needs one of them somewhere else.
+    #[cfg(any(test, debug_assertions, feature = "test-server"))]
+    pub fn with_endpoints(user_agent: &str, endpoints: Endpoints) -> Result<Self, Error> {
         Self::build(user_agent, endpoints, false, CONNECT_TIMEOUT, READ_TIMEOUT)
     }
 
@@ -262,6 +273,17 @@ impl Client {
         url.query_pairs_mut().append_pair("locale", "en-US");
         let json = self.get_json(Endpoint::GameArt, url, None)?;
         art::parse_game_art(&json, id)
+    }
+
+    /// The public name on an account's profile. Public, so no token is sent.
+    pub fn username(&self, user_id: UserId) -> Result<String, Error> {
+        let url = join(
+            &self.endpoints.users,
+            &["users", &user_id.to_string()],
+            Endpoint::Profile,
+        )?;
+        let json = self.get_json(Endpoint::Profile, url, None)?;
+        profile::parse_username(&json)
     }
 
     fn get_json(&self, endpoint: Endpoint, url: Url, bearer: Option<&str>) -> Result<Value, Error> {

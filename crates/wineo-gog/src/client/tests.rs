@@ -255,6 +255,7 @@ fn the_production_client_refuses_plain_http_and_defaults_to_gog() {
         &production.endpoints().api,
         &production.endpoints().content_system,
         &production.endpoints().gameplay,
+        &production.endpoints().users,
     ] {
         assert_eq!(url.scheme(), "https");
         assert!(url.host_str().unwrap().ends_with(".gog.com"));
@@ -838,6 +839,78 @@ fn art_body(id: u64) -> serde_json::Value {
         },
         "_embedded": {"product": {"id": id, "title": "RimWorld"}},
     })
+}
+
+fn profile_body() -> String {
+    json!({
+        "id": "48628349957132247",
+        "username": "  Hunter42 ",
+        "created_date": "2013-01-01T00:00:00+00:00",
+        "avatar": {"gog_image_id": "abc", "sdk_img_32": "https://images.gog.com/a_32.jpg"},
+        "is_employee": false,
+        "tags": [],
+    })
+    .to_string()
+}
+
+#[test]
+fn the_username_is_read_from_the_public_profile_without_a_token() {
+    let server = FakeGog::start(|_| reply(200, &profile_body()));
+    let name = server
+        .client()
+        .username(UserId::new(48628349957132247))
+        .unwrap();
+    assert_eq!(name, "Hunter42");
+    let request = &server.requests()[0];
+    assert_eq!(
+        (request.method.as_str(), request.path()),
+        ("GET", "/users/48628349957132247")
+    );
+    assert_eq!(request.header("authorization"), None);
+}
+
+#[test]
+fn a_missing_or_blank_username_is_malformed() {
+    for body in [
+        json!({"id": "1"}),
+        json!({"id": "1", "username": ""}),
+        json!({"id": "1", "username": "   "}),
+        json!({"id": "1", "username": 7}),
+        json!({"id": "1", "username": "Bad\u{1b}[2JName"}),
+        json!({"id": "1", "username": "x".repeat(500)}),
+        json!([]),
+    ] {
+        let server = FakeGog::start(move |_| reply(200, &body.to_string()));
+        let error = server.client().username(UserId::new(1)).unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::Malformed);
+        assert_eq!(error.class(), Class::Malformed);
+        assert_eq!(error.endpoint(), Endpoint::Profile);
+    }
+    let server = FakeGog::start(|_| reply(200, "not json"));
+    let error = server.client().username(UserId::new(1)).unwrap_err();
+    assert_eq!(error.kind(), ErrorKind::Json);
+}
+
+#[test]
+fn profile_errors_are_classified_like_the_other_endpoints() {
+    for (status, kind, class) in [
+        (404, ErrorKind::Status(404), Class::Other),
+        (401, ErrorKind::Unauthorized, Class::Other),
+        (429, ErrorKind::RateLimited, Class::Temporary),
+        (503, ErrorKind::Server(503), Class::Temporary),
+    ] {
+        let server = FakeGog::start(move |_| reply(status, "{}"));
+        let error = server.client().username(UserId::new(1)).unwrap_err();
+        assert_eq!((error.kind(), error.class()), (kind, class), "{status}");
+        assert_eq!(error.endpoint(), Endpoint::Profile);
+        assert_clean(&error);
+    }
+    let error = Client::with_base("wineo-test/1", &refused())
+        .unwrap()
+        .username(UserId::new(1))
+        .unwrap_err();
+    assert_eq!(error.class(), Class::Temporary);
+    assert_clean(&error);
 }
 
 #[test]

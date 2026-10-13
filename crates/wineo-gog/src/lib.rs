@@ -1,7 +1,8 @@
 //! A blocking client for GOG's web APIs: login, the owned list, product
-//! details, installer links, Galaxy build lists, playtime, artwork links, and
-//! installer downloads into a cache. It knows tokens, URLs, and folders, never wineo's
-//! environments, prefixes, configs, or runners.
+//! details, installer links, Galaxy build lists, playtime, artwork links,
+//! account names, and installer downloads into a cache. It knows tokens,
+//! URLs, and folders, never wineo's environments, prefixes, configs, or
+//! runners.
 //!
 //! Tokens, authorization codes, the client secret, and pasted redirect
 //! addresses are secrets. None of them can reach an `Error`: every failure is
@@ -20,6 +21,7 @@ mod error;
 mod json;
 mod owned;
 mod product;
+mod profile;
 
 #[cfg(test)]
 mod fake;
