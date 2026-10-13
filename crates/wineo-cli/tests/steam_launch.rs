@@ -247,7 +247,10 @@ fn a_missing_reaper_fails_after_short_test_timeout_and_runs_after() {
     ));
     assert_success(&s.run_with_start_timeout(&["start", "civ"], 500));
     s.f.wait_for_run_end("civ", "failed");
-    wait_for("failed after hook", || marker.exists());
+    // The shell creates the file before printf writes to it.
+    wait_for("failed after hook", || {
+        fs::read_to_string(&marker).is_ok_and(|text| !text.is_empty())
+    });
     assert_eq!(fs::read_to_string(marker).unwrap(), "failed");
     assert!(
         s.f.log("civ").contains("Steam didn't start civ."),
@@ -488,7 +491,10 @@ fn detached_spawn_failure_fails_start_and_runs_after_once() {
         "{}",
         stderr(&started)
     );
-    wait_for("failed launch after hook", || marker.exists());
+    // The shell creates the file before printf writes to it.
+    wait_for("failed launch after hook", || {
+        fs::read_to_string(&marker).is_ok_and(|text| !text.is_empty())
+    });
     assert_eq!(fs::read_to_string(marker).unwrap(), "failed\n");
     assert_eq!(s.dispatch_count(), 0);
     assert!(!s.f.stats_log("civ").exists());
