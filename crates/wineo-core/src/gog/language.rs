@@ -131,5 +131,66 @@ pub fn installer_code(tag: &str) -> Result<String, String> {
     Ok(found.map_or(tag.language, |(_, _, code)| (*code).to_owned()))
 }
 
+/// For each GOG code: the name Inno Setup installers usually give the
+/// language in their `[Languages]` section, which `/LANG=` picks, and the
+/// locale an installer runs in when the tag asked for names no region. Inno's
+/// own translations use these names; GOG's installers aren't documented and
+/// may name theirs differently, which is why the locale is set as well.
+/// Uncertain rows, where Inno ships no official translation and installers
+/// are known to vary: `cn` (`chinesesimplified`, or `chinese`), `ko`, `sv`,
+/// `ro`, `th`, `ar`, `es_mx` (likely just `spanish`), and `gk`.
+const INNO: &[(&str, &str, &str)] = &[
+    ("en", "english", "en_US"),
+    ("fr", "french", "fr_FR"),
+    ("de", "german", "de_DE"),
+    ("es", "spanish", "es_ES"),
+    ("es_mx", "spanish", "es_MX"),
+    ("it", "italian", "it_IT"),
+    ("pl", "polish", "pl_PL"),
+    ("ru", "russian", "ru_RU"),
+    ("br", "brazilianportuguese", "pt_BR"),
+    ("pt", "portuguese", "pt_PT"),
+    ("jp", "japanese", "ja_JP"),
+    ("cn", "chinesesimplified", "zh_CN"),
+    ("ko", "korean", "ko_KR"),
+    ("cz", "czech", "cs_CZ"),
+    ("hu", "hungarian", "hu_HU"),
+    ("nl", "dutch", "nl_NL"),
+    ("tr", "turkish", "tr_TR"),
+    ("uk", "ukrainian", "uk_UA"),
+    ("fi", "finnish", "fi_FI"),
+    ("da", "danish", "da_DK"),
+    ("no", "norwegian", "nb_NO"),
+    ("sv", "swedish", "sv_SE"),
+    ("gk", "greek", "el_GR"),
+    ("ro", "romanian", "ro_RO"),
+    ("th", "thai", "th_TH"),
+    ("ar", "arabic", "ar_EG"),
+];
+
+/// The Inno Setup language name for GOG's code `code`, when the table knows
+/// one.
+pub fn inno_language(code: &str) -> Option<&'static str> {
+    INNO.iter()
+        .find(|(known, _, _)| *known == code)
+        .map(|(_, name, _)| *name)
+}
+
+/// The POSIX locale an installer in GOG's language `code` runs in, like
+/// `fr_FR.UTF-8`: the region `tag` names when it asked for that language,
+/// else the table's usual one. None for a language the table doesn't know.
+pub fn posix_locale(tag: &str, code: &str) -> Option<String> {
+    let (_, _, usual) = INNO.iter().find(|(known, _, _)| *known == code)?;
+    let asked = parse(tag).filter(|_| installer_code(tag).is_ok_and(|asked| asked == code));
+    let locale = match asked {
+        Some(Tag {
+            language,
+            region: Some(region),
+        }) if region.len() == 2 => format!("{language}_{region}"),
+        _ => (*usual).to_owned(),
+    };
+    Some(format!("{locale}.UTF-8"))
+}
+
 #[cfg(test)]
 mod tests;

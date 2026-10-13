@@ -143,3 +143,25 @@ fn distinct_variants_and_singletons_are_fine() {
         validate(good).unwrap_or_else(|error| panic!("{good}: {error}"));
     }
 }
+
+#[test]
+fn inno_names_and_locales_follow_the_code() {
+    assert_eq!(inno_language("en"), Some("english"));
+    assert_eq!(inno_language("br"), Some("brazilianportuguese"));
+    assert_eq!(inno_language("jp"), Some("japanese"));
+    assert_eq!(inno_language("xx"), None);
+    for (tag, code, locale) in [
+        ("fr-FR", "fr", Some("fr_FR.UTF-8")),
+        ("fr-CA", "fr", Some("fr_CA.UTF-8")),
+        ("fr", "fr", Some("fr_FR.UTF-8")),
+        ("pt-BR", "br", Some("pt_BR.UTF-8")),
+        ("zh-Hans", "cn", Some("zh_CN.UTF-8")),
+        ("ja", "jp", Some("ja_JP.UTF-8")),
+        ("es-419", "es_mx", Some("es_MX.UTF-8")),
+        // An installer that fell back to English runs in English.
+        ("fr-CA", "en", Some("en_US.UTF-8")),
+        ("xx-YY", "xx", None),
+    ] {
+        assert_eq!(posix_locale(tag, code).as_deref(), locale, "{tag} {code}");
+    }
+}

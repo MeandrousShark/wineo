@@ -732,6 +732,12 @@ pub fn wayland_session() -> bool {
     std::env::var_os("WAYLAND_DISPLAY").is_some_and(|display| !display.is_empty())
 }
 
+/// Whether wineo runs in a graphical session at all, Wayland or X, which a
+/// Windows installer's windows need.
+pub fn graphical_session() -> bool {
+    wayland_session() || std::env::var_os("DISPLAY").is_some_and(|display| !display.is_empty())
+}
+
 fn resolve_wrappers(
     global: &GlobalConfig,
     environment: &Environment,
