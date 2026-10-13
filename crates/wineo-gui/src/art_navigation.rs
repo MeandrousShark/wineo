@@ -563,6 +563,7 @@ mod tests {
         let old_key = (old.clone(), crate::artwork::Kind::Grid);
         app.images.insert(
             old_key.clone(),
+            false,
             iced::widget::image::Handle::from_rgba(1, 1, vec![0; 4]),
         );
         ::image::RgbImage::new(10, 15).save(&source).unwrap();
@@ -587,8 +588,11 @@ mod tests {
             .clone()
             .unwrap();
         assert_ne!(new.identity, old.identity);
-        assert!(!app.images.contains_key(&old_key));
-        assert!(app.loading.contains(&(new, crate::artwork::Kind::Grid)));
+        assert!(!app.images.contains(&old_key, false));
+        assert!(
+            app.loading
+                .contains(&((new, crate::artwork::Kind::Grid), false))
+        );
     }
 
     #[test]

@@ -279,6 +279,15 @@ impl App {
     pub(crate) fn chosen_target<'a>(&'a self, card: &'a Card) -> Option<&'a str> {
         self.target.as_deref().or(card.default_target.as_deref())
     }
+    /// The target the panel draws: a closing panel keeps the one it had
+    /// while it fades out, since closing clears `target`, unless another
+    /// card was selected meanwhile.
+    pub(crate) fn drawn_target<'a>(&'a self, card: &'a Card) -> Option<&'a str> {
+        match self.panel_motion.exit_target() {
+            Some((name, target)) if !self.panel_open && *name == card.name => Some(target),
+            _ => self.chosen_target(card),
+        }
+    }
     pub(crate) fn panel_log_visible(&self) -> bool {
         self.log_view && self.checkup_log_scope != Some(crate::checkup::Scope::Global)
     }
@@ -294,8 +303,18 @@ impl App {
     pub(crate) fn close_panel(&mut self) {
         self.close_log();
         self.close_checkup();
+        // Taken before closing, so closing again mid-exit keeps it.
+        let exit_target = self
+            .selected
+            .as_ref()
+            .and_then(|name| self.cards.iter().find(|card| &card.name == name))
+            .and_then(|card| {
+                self.drawn_target(card)
+                    .map(|target| (card.name.clone(), target.to_owned()))
+            });
         self.panel_open = false;
-        self.panel_motion.close(std::time::Instant::now());
+        self.panel_motion
+            .close(std::time::Instant::now(), exit_target);
         self.target = None;
         self.panel_error = None;
         self.panel_note = None;
@@ -380,14 +399,16 @@ impl App {
         hero: Option<&crate::library::ArtFile>,
         logo: Option<&crate::library::ArtFile>,
     ) -> (Option<&image::Handle>, Option<&image::Handle>) {
-        let images = if card.not_installed() {
-            &self.dimmed_images
-        } else {
-            &self.images
-        };
+        let dimmed = card.not_installed();
         (
-            hero.and_then(|art| images.get(&(art.clone(), artwork::Kind::Hero))),
-            logo.and_then(|art| images.get(&(art.clone(), artwork::Kind::Logo))),
+            hero.and_then(|art| {
+                self.images
+                    .shown(&(art.clone(), artwork::Kind::Hero), dimmed)
+            }),
+            logo.and_then(|art| {
+                self.images
+                    .shown(&(art.clone(), artwork::Kind::Logo), dimmed)
+            }),
         )
     }
     fn after_hook_active(&self, card: &Card) -> bool {
@@ -666,17 +687,29 @@ impl App {
         }
     }
     pub(crate) fn load_panel_art(&mut self) -> Task<Message> {
-        if !self.panel_open {
-            return Task::none();
+        let keys = self.panel_art_keys();
+        for (key, _) in &keys {
+            self.images.touch(key);
         }
-        let paths = self
+        self.load_images(keys)
+    }
+    /// The panel's hero and logo, and whether they are drawn dimmed. A
+    /// closing panel still draws until its exit animation ends, so its art
+    /// counts until then, chosen the way `panel` chooses it.
+    pub(crate) fn panel_art_keys(&self) -> Vec<(crate::ArtKey, bool)> {
+        if !self.panel_open && !self.panel_reserved() {
+            return Vec::new();
+        }
+        let Some(card) = self
             .selected
             .as_ref()
             .and_then(|name| self.cards.iter().find(|card| &card.name == name))
-            .and_then(|card| {
-                self.chosen_target(card)
-                    .and_then(|target| card.panel_art.get(target))
-            })
+        else {
+            return Vec::new();
+        };
+        let dimmed = card.not_installed();
+        self.drawn_target(card)
+            .and_then(|target| card.panel_art.get(target))
             .map(|art| {
                 [
                     (art.hero.as_ref(), artwork::Kind::Hero),
@@ -685,14 +718,13 @@ impl App {
             })
             .into_iter()
             .flatten()
-            .filter_map(|(art, kind)| art.map(|art| (art.clone(), kind)))
-            .collect::<Vec<_>>();
-        self.load_images(paths)
+            .filter_map(|(art, kind)| art.map(|art| ((art.clone(), kind), dimmed)))
+            .collect()
     }
     pub(crate) fn panel<'a>(&'a self, card: &'a Card) -> Element<'a, Message> {
         let palette = self.palette;
         let hero_height = 220;
-        let target = self.chosen_target(card);
+        let target = self.drawn_target(card);
         let art = target.and_then(|target| card.panel_art.get(target));
         let hero = art.and_then(|art| art.hero.as_ref());
         let logo = art.and_then(|art| art.logo.as_ref());
@@ -820,7 +852,7 @@ impl App {
                         text("Launch target:").size(14),
                         pick_list(
                             card.targets.clone(),
-                            self.target.clone(),
+                            self.drawn_target(card).map(str::to_owned),
                             Message::TargetPicked,
                         )
                         .wineo_style(palette)

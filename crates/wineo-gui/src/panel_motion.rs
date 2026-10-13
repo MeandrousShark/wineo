@@ -24,6 +24,9 @@ pub(crate) struct PanelMotion {
     progress: f32,
     transition: Option<Transition>,
     generation: u64,
+    /// The card and target a closing panel keeps drawing. It lives here so
+    /// every way the exit ends, a tick or a snap, clears it.
+    exit_target: Option<(String, String)>,
 }
 
 impl Default for PanelMotion {
@@ -32,17 +35,25 @@ impl Default for PanelMotion {
             progress: 0.0,
             transition: None,
             generation: 0,
+            exit_target: None,
         }
     }
 }
 
 impl PanelMotion {
     pub(crate) fn open(&mut self, now: Instant) {
+        self.exit_target = None;
         self.move_to(1.0, now);
     }
 
-    pub(crate) fn close(&mut self, now: Instant) {
+    /// Starts the exit, drawing `exit_target` (card, target) until it ends.
+    pub(crate) fn close(&mut self, now: Instant, exit_target: Option<(String, String)>) {
         self.move_to(0.0, now);
+        self.exit_target = exit_target.filter(|_| self.reserved());
+    }
+
+    pub(crate) fn exit_target(&self) -> Option<&(String, String)> {
+        self.exit_target.as_ref()
     }
 
     fn move_to(&mut self, to: f32, now: Instant) {
@@ -85,11 +96,15 @@ impl PanelMotion {
         }) {
             self.transition = None;
         }
+        if !self.reserved() {
+            self.exit_target = None;
+        }
     }
 
     pub(crate) fn snap(&mut self, open: bool) {
         self.progress = if open { 1.0 } else { 0.0 };
         self.transition = None;
+        self.exit_target = None;
         self.generation = self.generation.wrapping_add(1);
     }
 
@@ -288,7 +303,7 @@ mod tests {
         assert!(!motion.interactive());
         motion.tick(motion.generation(), start + Duration::from_millis(80));
         let halfway = motion.progress();
-        motion.close(start + Duration::from_millis(80));
+        motion.close(start + Duration::from_millis(80), None);
         assert_eq!(motion.progress(), halfway);
         assert!(motion.reserved());
         motion.tick(motion.generation(), start + Duration::from_millis(160));

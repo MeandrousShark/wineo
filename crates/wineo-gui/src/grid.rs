@@ -92,12 +92,8 @@ impl App {
         let placeholder = self.collapse.placeholder()?;
         let dimmed = card.not_installed();
         let art = card.art.as_ref().and_then(|art| {
-            let key = (art.clone(), crate::artwork::Kind::Grid);
-            if dimmed {
-                self.dimmed_images.get(&key)
-            } else {
-                self.images.get(&key)
-            }
+            self.images
+                .shown(&(art.clone(), crate::artwork::Kind::Grid), dimmed)
         });
         let opacity = if dimmed {
             crate::panel::DIMMED_OPACITY
@@ -114,12 +110,8 @@ impl App {
         let selected = self.selected.as_ref() == Some(&card.name);
         let dimmed = card.not_installed();
         let art = card.art.as_ref().and_then(|art| {
-            let key = (art.clone(), crate::artwork::Kind::Grid);
-            if dimmed {
-                self.dimmed_images.get(&key)
-            } else {
-                self.images.get(&key)
-            }
+            self.images
+                .shown(&(art.clone(), crate::artwork::Kind::Grid), dimmed)
         });
         let poster: Element<'_, Message> = match art {
             Some(handle) => image(handle.clone())
