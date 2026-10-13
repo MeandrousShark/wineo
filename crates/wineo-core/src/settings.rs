@@ -556,6 +556,9 @@ fn update_with_writer(
                 paths.check_prefix_root(&dir)?;
                 paths.store(&dir)?
             }
+            // GOG games live in the host library, so this is never
+            // relative to a portable folder.
+            (Scope::Global, "defaults.games_root") => paths.contract(&paths.absolute(value)?)?,
             (Scope::Environment, key)
                 if key.starts_with("targets.")
                     && (key.ends_with(".exe") || key.ends_with(".cwd")) =>
@@ -1146,6 +1149,130 @@ stop_timeout = 3 # short
         let missing = update(&paths, ConfigFile::Global, &[], &["external_runners"]).unwrap();
         assert!(missing.is_empty());
         assert_eq!(fs::read_to_string(paths.global_config()).unwrap(), original);
+    }
+
+    fn write_global(paths: &Paths, text: &str) {
+        fs::create_dir_all(paths.global_config().parent().unwrap()).unwrap();
+        fs::write(paths.global_config(), text).unwrap();
+    }
+
+    #[test]
+    fn the_gog_settings_keep_comments_and_formatting() {
+        let (_root, paths) = setup();
+        let original = "schema_version = 1\n# mine\n[defaults]\nrunner = \"wine\" # keep\n\n[env]\nA = \"1\"\n";
+        write_global(&paths, original);
+        update(
+            &paths,
+            ConfigFile::Global,
+            &[
+                ("gog.language", "de-AT"),
+                ("defaults.games_root", "~/Library/Games"),
+            ],
+            &[],
+        )
+        .unwrap();
+        let text = fs::read_to_string(paths.global_config()).unwrap();
+        assert_eq!(
+            text,
+            "schema_version = 1\n# mine\n[defaults]\nrunner = \"wine\" # keep\ngames_root = \"~/Library/Games\"\n\n[env]\nA = \"1\"\n\n[gog]\nlanguage = \"de-AT\"\n"
+        );
+        let config = GlobalConfig::load(&paths).unwrap();
+        assert_eq!(config.gog_language(), "de-AT");
+        assert_eq!(
+            config.games_root(&paths).unwrap(),
+            paths.expand("~/Library/Games")
+        );
+    }
+
+    #[test]
+    fn games_root_is_stored_absolute_like_prefix_root() {
+        let (_root, paths) = setup();
+        update(
+            &paths,
+            ConfigFile::Global,
+            &[("defaults.games_root", "relative/games")],
+            &[],
+        )
+        .unwrap();
+        let stored = GlobalConfig::load(&paths).unwrap().defaults.games_root;
+        let absolute = paths.absolute("relative/games").unwrap();
+        assert_eq!(stored, Some(paths.contract(&absolute).unwrap()));
+        assert!(
+            Path::new(&paths.expand(stored.as_deref().unwrap())).is_absolute(),
+            "{stored:?}"
+        );
+    }
+
+    #[test]
+    fn a_bad_gog_language_is_refused_without_writing() {
+        let (_root, paths) = setup();
+        let original = "schema_version = 1\n[defaults]\nrunner = \"wine\"\n";
+        write_global(&paths, original);
+        let path = paths.global_config();
+        let before = modified(&path);
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        for bad in ["english", "en_US", "", "en-"] {
+            let err =
+                update(&paths, ConfigFile::Global, &[("gog.language", bad)], &[]).unwrap_err();
+            assert_eq!(
+                err.to_string(),
+                "invalid value for `gog.language`: use a locale tag like en-US",
+                "{bad:?}"
+            );
+        }
+        assert_eq!(fs::read_to_string(&path).unwrap(), original);
+        assert_eq!(modified(&path), before);
+    }
+
+    #[test]
+    fn unsetting_the_gog_settings_drops_emptied_tables() {
+        let (_root, paths) = setup();
+        write_global(
+            &paths,
+            "schema_version = 1\n[defaults]\ngames_root = \"/g\"\n\n[gog]\nlanguage = \"fr\"\n",
+        );
+        let missing = update(
+            &paths,
+            ConfigFile::Global,
+            &[],
+            &["gog.language", "defaults.games_root", "gog.language"],
+        )
+        .unwrap();
+        assert_eq!(missing, ["gog.language"]);
+        assert_eq!(
+            fs::read_to_string(paths.global_config()).unwrap(),
+            "schema_version = 1\n"
+        );
+    }
+
+    #[test]
+    fn a_no_op_gog_edit_leaves_a_legacy_global_file_alone() {
+        let (_root, paths) = setup();
+        let original = "# mine\n[defaults]\nrunner = \"wine\"\n";
+        write_global(&paths, original);
+        let path = paths.global_config();
+        let before = modified(&path);
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        let missing = update(
+            &paths,
+            ConfigFile::Global,
+            &[],
+            &["gog.language", "defaults.games_root"],
+        )
+        .unwrap();
+        assert_eq!(missing, ["gog.language", "defaults.games_root"]);
+        assert_eq!(fs::read_to_string(&path).unwrap(), original);
+        assert_eq!(modified(&path), before);
+
+        write_global(&paths, "[gog]\nlanguage = \"de\"\n");
+        let before = modified(&path);
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        update(&paths, ConfigFile::Global, &[("gog.language", "de")], &[]).unwrap();
+        assert_eq!(
+            fs::read_to_string(&path).unwrap(),
+            "[gog]\nlanguage = \"de\"\n"
+        );
+        assert_eq!(modified(&path), before);
     }
 
     #[test]

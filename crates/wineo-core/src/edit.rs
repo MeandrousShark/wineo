@@ -150,6 +150,15 @@ fn set_global(root: &mut Table, key: &str, raw: &str) -> Result<(), EditError> {
             store_value(table, "arch", value);
             Ok(())
         }
+        "gog.language" => {
+            crate::gog::language::validate(raw).map_err(|_| EditError::InvalidValue {
+                key: key.to_owned(),
+                reason: crate::gog::language::FORM_HINT.to_owned(),
+            })?;
+            let table = ensure_table(root, "gog", "gog", false)?;
+            store_value(table, "language", Value::from(raw));
+            Ok(())
+        }
         "art.fetch" => {
             let fetch = raw.parse::<crate::config::ArtFetch>().map_err(|reason| {
                 EditError::InvalidValue {
@@ -179,7 +188,8 @@ fn set_global(root: &mut Table, key: &str, raw: &str) -> Result<(), EditError> {
         "defaults.prefix_root"
         | "defaults.runner_root"
         | "defaults.dxvk_root"
-        | "defaults.vkd3d_root" => {
+        | "defaults.vkd3d_root"
+        | "defaults.games_root" => {
             let value = parse_string_value(key, raw)?;
             let field = key.strip_prefix("defaults.").expect("checked above");
             let table = ensure_table(root, "defaults", "defaults", false)?;
@@ -529,6 +539,8 @@ fn unset_global(root: &mut Table, key: &str) -> Result<bool, EditError> {
         "defaults.runner_root" => unset_field(root, "defaults", "defaults", "runner_root"),
         "defaults.dxvk_root" => unset_field(root, "defaults", "defaults", "dxvk_root"),
         "defaults.vkd3d_root" => unset_field(root, "defaults", "defaults", "vkd3d_root"),
+        "defaults.games_root" => unset_field(root, "defaults", "defaults", "games_root"),
+        "gog.language" => unset_field(root, "gog", "gog", "language"),
         "art.fetch" => unset_field(root, "art", "art", "fetch"),
         _ => {
             if let Some(var) = key.strip_prefix("env.") {
