@@ -163,6 +163,8 @@ pub struct Plan {
 pub struct Creation {
     runner: Runner,
     arch: Option<Arch>,
+    /// What `arch` comes to, for a review.
+    resolved_arch: Arch,
     prefix: PathBuf,
     adopted: bool,
 }
@@ -175,6 +177,11 @@ impl Creation {
     /// The arch asked for. None uses what the runner and global config say.
     pub fn arch(&self) -> Option<Arch> {
         self.arch
+    }
+
+    /// The arch the prefix gets, from the request or the defaults.
+    pub fn resolved_arch(&self) -> Arch {
+        self.resolved_arch
     }
 
     pub fn prefix(&self) -> &Path {
@@ -221,6 +228,18 @@ impl Plan {
     /// instead of creating the environment.
     pub fn resumes(&self) -> bool {
         self.resume
+    }
+
+    /// Whether a resumed install finishes from packages already in the
+    /// download cache, without GOG.
+    pub fn is_offline(&self) -> bool {
+        self.offline
+    }
+
+    /// Whether the environment's config is already written, as a resumed
+    /// install's may be.
+    pub fn has_config(&self) -> bool {
+        self.has_config
     }
 
     /// The base game first, then each owned DLC in GOG's order.
@@ -633,6 +652,7 @@ fn creation(
     Ok(Some(Creation {
         runner: plan.runner().clone(),
         arch: request.arch,
+        resolved_arch: plan.arch(),
         prefix: plan.prefix().to_owned(),
         adopted: plan.adopted(),
     }))
