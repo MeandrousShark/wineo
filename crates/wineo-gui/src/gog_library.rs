@@ -4,7 +4,7 @@
 
 use wineo_core::config::Kind;
 use wineo_core::environment::Environment;
-use wineo_core::gog::folder::{self, FolderState};
+use wineo_core::gog::folder::{self, FolderState, JournalKind};
 use wineo_core::gog::update::{self, Reason, Status, UpdateState};
 use wineo_core::paths::Paths;
 
@@ -18,12 +18,30 @@ pub(crate) struct GogCard {
     /// Another environment owns a game folder this one launches from, and
     /// its update was interrupted. Holds that owner.
     pub(crate) blocked_by: Option<String>,
+    /// What was interrupted, its own or the blocking owner's, is an install
+    /// rather than an update.
+    pub(crate) install: bool,
 }
 
 impl GogCard {
     /// Why Play is off for a clone, naming the game to finish.
     pub(crate) fn blocked_note(&self) -> Option<String> {
-        self.blocked_by.as_deref().map(blocked_note)
+        self.blocked_by.as_deref().map(|owner| {
+            if self.install {
+                format!("{owner}'s game folder is mid-install. Use Finish install on {owner}.")
+            } else {
+                blocked_note(owner)
+            }
+        })
+    }
+
+    /// The label of the action that finishes what was interrupted.
+    pub(crate) fn finish_label(&self) -> &'static str {
+        if self.install {
+            "Finish install"
+        } else {
+            "Finish update"
+        }
     }
 }
 
@@ -62,20 +80,24 @@ impl Folders {
             return None;
         }
         let gog_id = env.config.gog_id.clone();
-        let unfinished = gog_id.as_deref().is_some_and(|id| {
-            self.states.iter().any(|state| {
-                state.owner.as_deref() == Some(env.name.as_str())
-                    && state.is_game(id)
-                    && state.journal.is_some()
+        let own = gog_id.as_deref().and_then(|id| {
+            self.states.iter().find_map(|state| {
+                (state.owner.as_deref() == Some(env.name.as_str()) && state.is_game(id))
+                    .then_some(state.journal.as_ref()?.kind)
             })
         });
-        let blocked_by = (self.journal && !unfinished)
+        let unfinished = own.is_some();
+        let blocking = (self.journal && !unfinished)
             .then(|| blocking_owner(paths, env))
             .flatten();
+        let install =
+            own.or(blocking.as_ref().map(|(_, kind)| *kind)) == Some(JournalKind::Install);
+        let blocked_by = blocking.map(|(owner, _)| owner);
         (gog_id.is_some() || blocked_by.is_some()).then_some(GogCard {
             gog_id,
             unfinished,
             blocked_by,
+            install,
         })
     }
 }
@@ -85,13 +107,16 @@ impl Folders {
 /// without locks, unlike a launch's check, since this runs every refresh and
 /// a held in-use lock, even briefly, could make an update refuse. Anything
 /// else a launch would refuse is left for Play to report.
-fn blocking_owner(paths: &Paths, env: &Environment) -> Option<String> {
+fn blocking_owner(paths: &Paths, env: &Environment) -> Option<(String, JournalKind)> {
     update::named_paths(paths, &env.name)
         .iter()
         .filter_map(|path| folder::folder_holding(paths, path).ok().flatten())
         .find_map(|state| {
-            state.journal.as_ref()?;
-            state.owner.filter(|owner| *owner != env.name)
+            let kind = state.journal.as_ref()?.kind;
+            state
+                .owner
+                .filter(|owner| *owner != env.name)
+                .map(|owner| (owner, kind))
         })
 }
 
@@ -100,6 +125,7 @@ fn blocking_owner(paths: &Paths, env: &Environment) -> Option<String> {
 pub(crate) enum Badge {
     UpdateAvailable,
     FinishUpdate,
+    FinishInstall,
 }
 
 impl Badge {
@@ -107,13 +133,18 @@ impl Badge {
         match self {
             Self::UpdateAvailable => "Update available",
             Self::FinishUpdate => "Finish update",
+            Self::FinishInstall => "Finish install",
         }
     }
 }
 
 pub(crate) fn badge(gog: Option<&GogCard>, status: Option<&Status>) -> Option<Badge> {
-    if gog.is_some_and(|gog| gog.unfinished) {
-        Some(Badge::FinishUpdate)
+    if let Some(gog) = gog.filter(|gog| gog.unfinished) {
+        Some(if gog.install {
+            Badge::FinishInstall
+        } else {
+            Badge::FinishUpdate
+        })
     } else if status.is_some_and(updatable) {
         Some(Badge::UpdateAvailable)
     } else {
@@ -121,7 +152,8 @@ pub(crate) fn badge(gog: Option<&GogCard>, status: Option<&Status>) -> Option<Ba
     }
 }
 
-/// Whether this wineo can update the game now: a native game with an update.
+/// Whether this wineo can update the game now: an installer-tracked game
+/// with an update.
 pub(crate) fn updatable(status: &Status) -> bool {
     status.applicable && status.state == UpdateState::Available
 }
@@ -140,9 +172,8 @@ pub(crate) fn state_label(state: UpdateState) -> &'static str {
 /// says it.
 pub(crate) fn reason_note(reason: &Reason) -> String {
     match reason {
-        Reason::WindowsInstaller => {
-            "Updating Windows installer games comes in a later release.".to_owned()
-        }
+        // Older releases' reason, which core no longer gives.
+        Reason::WindowsInstaller => "This game can't be updated here.".to_owned(),
         Reason::Galaxy => "Updating Galaxy builds comes in a later release.".to_owned(),
         Reason::CantCompare(why) => why.clone(),
     }
@@ -332,6 +363,7 @@ mod tests {
             gog_id: Some(RIMWORLD.to_string()),
             unfinished,
             blocked_by: blocked_by.map(str::to_owned),
+            install: false,
         })
     }
 
@@ -356,7 +388,7 @@ mod tests {
         assert_eq!(state_label(UpdateState::OnGog), "Update on GOG");
         assert_eq!(
             reason_note(&Reason::WindowsInstaller),
-            "Updating Windows installer games comes in a later release."
+            "This game can't be updated here."
         );
     }
 

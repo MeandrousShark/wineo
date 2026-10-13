@@ -25,6 +25,7 @@ ashpd = { version = "0.12.3", default-features = false, features = ["tokio"] }
 flate2.workspace = true
 serde_json.workspace = true
 tar.workspace = true
+zip.workspace = true
 wineo-core = { workspace = true, features = ["test-support"] }
 
 [lints]

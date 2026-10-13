@@ -1,9 +1,13 @@
-//! Import from GOG: moving the GOG games Heroic installed into wineo, like
-//! `wineo import gog`. Lists Heroic's games, reviews one, migrates it, then
-//! adds GOG's playtime and art, which never fails the migration.
+//! Import from GOG, like `wineo import gog`: every game you own, to install
+//! (see `gog_install`), and the GOG games Heroic installed, to move into
+//! wineo. A migration is reviewed, applied, then adds GOG's playtime and
+//! art, which never fails the migration.
+
+use std::collections::{BTreeMap, BTreeSet};
 
 use iced::futures::channel::mpsc::unbounded;
-use iced::widget::{column, container, pick_list, row, text};
+use iced::keyboard::{self, Key, key::Named};
+use iced::widget::{Row, column, container, pick_list, row, text};
 use iced::{Center, Element, Fill, Task, border};
 use wineo_core::art::{Kind, Source};
 use wineo_core::cancel::Token;
@@ -11,20 +15,25 @@ use wineo_core::components::Component;
 use wineo_core::config::GlobalConfig;
 use wineo_core::download::{Https, Provider};
 use wineo_core::gog::account::Session;
+use wineo_core::gog::api::Client;
 use wineo_core::gog::extras::{self, Request};
-use wineo_core::gog::folder::{Platform, Track};
+use wineo_core::gog::folder::{self, JournalKind, Source as FolderSource, Track};
 use wineo_core::gog::migrate::{self, MigrateError, Migration, Outcome, Plan, StateChange, Target};
 use wineo_core::heroic::{HeroicGogEntry, HeroicGogGame, HeroicOrigin, HeroicSource, gog_games};
 use wineo_core::heroic_import::{self, Policy, RunnerSuggestion};
+use wineo_core::key_store::Keyring;
 use wineo_core::paths::Paths;
 use wineo_core::secret_service::SecretServiceKeyring;
 use wineo_core::steamgriddb;
 
 use super::Action;
-use super::heroic::{self, Prerequisite};
+use super::gog_install::{self, Install, Leave, Offer};
+use super::heroic::{self, Prerequisite, Tile};
 use crate::runner_label::Choice;
 use crate::theme::Palette;
-use crate::ui::{PickListStyle, accent_base, list_group, list_row, secondary_button};
+use crate::ui::{PickListStyle, accent_base, secondary_button};
+
+const GRID_ID: &str = "gog-import-grid";
 
 pub(crate) const HEROIC_NOTE: &str =
     "Remove it from Heroic's library, without deleting its files, so both don't update it.";
@@ -35,6 +44,8 @@ enum Step {
     Review,
     Working,
     Finished,
+    /// Installing an owned game, which `install` runs.
+    Install,
 }
 
 #[derive(Debug, Clone)]
@@ -59,7 +70,39 @@ pub(crate) struct Listing {
     games: Vec<Candidate>,
     /// Heroic records that couldn't be used, as sentences.
     issues: Vec<String>,
+    /// The owned games Heroic doesn't have, by what wineo has of them.
+    owned: Vec<Owned>,
+    /// Why the owned games aren't all listed, like being logged out.
+    owned_note: Option<String>,
 }
+
+/// An owned game, and what wineo has of it, like `import gog --list` says.
+#[derive(Debug, Clone)]
+pub(crate) struct Owned {
+    offer: Offer,
+    state: OwnedState,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum OwnedState {
+    NotInstalled,
+    /// Its install stopped; installing again finishes it.
+    Unfinished,
+    /// Installed by wineo, as this environment.
+    Installed(String),
+    /// Migrated from Heroic, as this environment.
+    Imported(String),
+}
+
+/// One tile of the grid.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Entry {
+    Heroic(usize),
+    Owned(usize),
+}
+
+/// What logged out says about the games you own.
+const OWNED_LOGGED_OUT: &str = "Log in to GOG in Settings to install the games you own.";
 
 /// One game ready to review: its migration, with a runner planned for a new
 /// Windows environment when one could be.
@@ -111,6 +154,11 @@ pub(crate) enum Event {
     Progress(u64, String),
     Finished(u64, Result<Report, String>),
     BackToLibrary,
+    /// Opens the install of the owned game at this index.
+    Install(usize),
+    /// An install's event, with the instance it belongs to, so a reply to
+    /// a review that was left can't reach the next one.
+    Installing(u64, Box<gog_install::Event>),
 }
 
 pub(crate) struct Page {
@@ -127,6 +175,13 @@ pub(crate) struct Page {
     notes: Vec<String>,
     leave_prompt: bool,
     action: Option<Action>,
+    install: Option<Box<Install>>,
+    /// Which opened review `install` is; each one gets a new number.
+    install_instance: u64,
+    /// The tile the keyboard is on, in grid order.
+    focus: Option<usize>,
+    /// Whether `focus` came from the keyboard, which draws the ring.
+    focus_visible: bool,
 }
 
 impl Page {
@@ -145,6 +200,10 @@ impl Page {
             notes: Vec::new(),
             leave_prompt: false,
             action: None,
+            install: None,
+            install_instance: 0,
+            focus: None,
+            focus_visible: false,
         };
         let task = page.list();
         (page, task)
@@ -156,15 +215,23 @@ impl Page {
     }
 
     pub(crate) fn busy(&self) -> bool {
-        self.token.is_some()
+        self.token.is_some() || self.install.as_ref().is_some_and(|install| install.busy())
     }
 
-    /// A listing, preparation, or migration is running.
+    /// A listing, preparation, migration, or install is running.
     pub(crate) fn waiting(&self) -> bool {
         !self.status.is_empty()
+            || self
+                .install
+                .as_ref()
+                .is_some_and(|install| install.waiting())
     }
 
     pub(crate) fn cancel(&mut self, force: bool) {
+        if let Some(install) = &mut self.install {
+            install.cancel(force);
+            return;
+        }
         if let Some(token) = &self.token {
             if force {
                 token.force();
@@ -181,17 +248,26 @@ impl Page {
     }
 
     pub(crate) fn submit(&mut self) -> Task<Event> {
+        if let Some(install) = &mut self.install {
+            let task = install.submit();
+            return self.installing(task);
+        }
         if self.busy() || self.waiting() {
             return Task::none();
         }
         match self.step {
             Step::Review => self.start(),
             Step::Finished => self.update(Event::BackToLibrary),
-            Step::Games | Step::Working => Task::none(),
+            Step::Games => self.open_focused(),
+            Step::Working | Step::Install => Task::none(),
         }
     }
 
     pub(crate) fn back(&mut self) -> Task<Event> {
+        if let Some(install) = &mut self.install {
+            let task = install.back();
+            return self.installing(task);
+        }
         if self.busy() {
             return Task::none();
         }
@@ -207,10 +283,107 @@ impl Page {
                 self.notes.clear();
                 self.step = Step::Games;
             }
-            Step::Working => {}
+            Step::Working | Step::Install => {}
             Step::Finished => self.exit(),
         }
         Task::none()
+    }
+
+    /// Wraps the install's task, and follows where it leaves to.
+    fn installing(&mut self, task: Task<gog_install::Event>) -> Task<Event> {
+        let leave = self
+            .install
+            .as_mut()
+            .and_then(|install| install.take_leave());
+        match leave {
+            Some(Leave::Games) => {
+                self.install = None;
+                self.step = Step::Games;
+                self.error = None;
+                // What it may have changed shows in the grid.
+                return self.list();
+            }
+            Some(Leave::Library(name)) => {
+                self.action = Some(Action::Library {
+                    name,
+                    launch: false,
+                });
+            }
+            None => {}
+        }
+        let instance = self.install_instance;
+        task.map(move |event| Event::Installing(instance, Box::new(event)))
+    }
+
+    /// The grid's tiles in order: every game, by title.
+    fn entries(listing: &Listing) -> Vec<Entry> {
+        let mut entries: Vec<(String, Entry)> = listing
+            .games
+            .iter()
+            .enumerate()
+            .map(|(index, candidate)| (candidate.game.title.to_lowercase(), Entry::Heroic(index)))
+            .chain(
+                listing
+                    .owned
+                    .iter()
+                    .enumerate()
+                    .map(|(index, owned)| (owned.offer.title.to_lowercase(), Entry::Owned(index))),
+            )
+            .collect();
+        entries.sort_by(|a, b| a.0.cmp(&b.0));
+        entries.into_iter().map(|(_, entry)| entry).collect()
+    }
+
+    fn open(&mut self, entry: Entry) -> Task<Event> {
+        match entry {
+            Entry::Heroic(index) => self.update(Event::Pick(index)),
+            Entry::Owned(index) => self.update(Event::Install(index)),
+        }
+    }
+
+    fn open_focused(&mut self) -> Task<Event> {
+        let entry = self
+            .listing
+            .as_ref()
+            .zip(self.focus)
+            .and_then(|(listing, focus)| Self::entries(listing).get(focus).copied());
+        match entry {
+            Some(entry) => self.open(entry),
+            None => Task::none(),
+        }
+    }
+
+    /// Arrow keys move between tiles, and Enter or Space opens one.
+    pub(crate) fn key(
+        &mut self,
+        key: &Key,
+        _modifiers: keyboard::Modifiers,
+        width: f32,
+    ) -> Option<Task<Event>> {
+        if self.step != Step::Games || self.waiting() || self.leave_prompt {
+            return None;
+        }
+        let count = Self::entries(self.listing.as_ref()?).len();
+        let columns = heroic::grid_columns(width);
+        match key.as_ref() {
+            Key::Named(
+                named @ (Named::ArrowLeft | Named::ArrowRight | Named::ArrowUp | Named::ArrowDown),
+            ) => {
+                self.focus = heroic::move_focus(self.focus, named, columns, count);
+                self.focus_visible = true;
+                let index = self.focus?;
+                let columns = columns.max(1);
+                Some(heroic::reveal_row(
+                    GRID_ID,
+                    index / columns,
+                    count.div_ceil(columns),
+                ))
+            }
+            Key::Named(Named::Space | Named::Enter) | Key::Character(" ") => {
+                Some(self.open_focused())
+            }
+            _ => None,
+        }
     }
 
     fn exit(&mut self) {
@@ -226,7 +399,7 @@ impl Page {
     fn list(&mut self) -> Task<Event> {
         self.step = Step::Games;
         self.listing = None;
-        self.status = "Reading Heroic's GOG games...".to_owned();
+        self.status = "Reading your GOG games...".to_owned();
         let generation = self.next_generation();
         let paths = self.paths.clone();
         Task::perform(
@@ -330,6 +503,37 @@ impl Page {
 
     pub(crate) fn update(&mut self, event: Event) -> Task<Event> {
         match event {
+            Event::Installing(instance, event) => match &mut self.install {
+                Some(install) if instance == self.install_instance => {
+                    let task = install.update(*event);
+                    self.installing(task)
+                }
+                _ => Task::none(),
+            },
+            Event::Install(index) if self.step == Step::Games && !self.waiting() => {
+                let Some(owned) = self
+                    .listing
+                    .as_ref()
+                    .and_then(|listing| listing.owned.get(index))
+                else {
+                    return Task::none();
+                };
+                if !matches!(
+                    owned.state,
+                    OwnedState::NotInstalled | OwnedState::Unfinished
+                ) {
+                    return Task::none();
+                }
+                self.leave_prompt = false;
+                self.error = None;
+                self.notes.clear();
+                let (install, task) = Install::new(self.paths.clone(), owned.offer.clone());
+                self.install = Some(Box::new(install));
+                self.install_instance = self.install_instance.wrapping_add(1);
+                self.step = Step::Install;
+                let instance = self.install_instance;
+                task.map(move |event| Event::Installing(instance, Box::new(event)))
+            }
             Event::Back => self.back(),
             Event::Discard => {
                 self.leave_prompt = false;
@@ -359,6 +563,12 @@ impl Page {
                 }
                 self.leave_prompt = false;
                 self.picked = Some(index);
+                self.focus_visible = false;
+                self.focus = self.listing.as_ref().and_then(|listing| {
+                    Self::entries(listing)
+                        .iter()
+                        .position(|entry| *entry == Entry::Heroic(index))
+                });
                 self.prepared = None;
                 self.notes.clear();
                 self.prepare(None)
@@ -468,12 +678,46 @@ impl Page {
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn view(&self, palette: Palette, spin: f32) -> Element<'_, Event> {
+        self.view_at(palette, 900.0, spin)
+    }
+
+    /// `width` is the dialog's, which sets how many tiles fit across.
+    pub(crate) fn view_at(&self, palette: Palette, width: f32, spin: f32) -> Element<'_, Event> {
+        let finished = self.step == Step::Finished
+            || self
+                .install
+                .as_ref()
+                .is_some_and(|install| install.finished());
+        let back = secondary_button("Back", palette)
+            .on_press_maybe((!self.busy() && !finished).then_some(Event::Back));
+        let mut page = column![]
+            .spacing(12)
+            .max_width(heroic::PAGE_MAX_WIDTH)
+            .height(Fill);
+        if let (Step::Install, Some(install)) = (self.step, &self.install) {
+            let (body, footer) = install.view(column![].spacing(14).width(Fill), palette, spin);
+            let instance = self.install_instance;
+            let body =
+                Element::from(body).map(move |event| Event::Installing(instance, Box::new(event)));
+            page = page
+                .push(row![back].align_y(Center))
+                .push(heroic::scroll_body(body, None, palette));
+            if let Some(footer) = footer {
+                page = page.push(pinned(
+                    footer.map(move |event| Event::Installing(instance, Box::new(event))),
+                    palette,
+                ));
+            }
+            return heroic::page_frame(page);
+        }
         let title = match self.step {
             Step::Games => "Choose a GOG game",
             Step::Review => "Review GOG migration",
             Step::Working => "Migrating from GOG",
             Step::Finished => "GOG migration finished",
+            Step::Install => "Review GOG install",
         };
         let mut body = column![crate::ui::page_title(title, palette)]
             .spacing(14)
@@ -495,9 +739,9 @@ impl Page {
             body = body.push(text(note).size(13).color(palette.muted));
         }
         match self.step {
-            Step::Games => body = self.games_view(body, palette),
+            Step::Games => {}
             Step::Review => body = self.review_view(body, palette),
-            Step::Working => {}
+            Step::Working | Step::Install => {}
             Step::Finished => {
                 if let Some(report) = &self.report {
                     for line in &report.lines {
@@ -509,12 +753,6 @@ impl Page {
                 }
             }
         }
-        let back = secondary_button("Back", palette)
-            .on_press_maybe((!self.busy() && self.step != Step::Finished).then_some(Event::Back));
-        let mut page = column![]
-            .spacing(12)
-            .max_width(heroic::PAGE_MAX_WIDTH)
-            .height(Fill);
         if self.leave_prompt {
             page = page.push(text("Discard this GOG import draft?")).push(
                 row![
@@ -524,9 +762,14 @@ impl Page {
                 .spacing(12),
             );
         }
-        page = page
-            .push(row![back].align_y(Center))
-            .push(heroic::scroll_body(body, None, palette));
+        page = page.push(row![back].align_y(Center));
+        // The title and notes scroll with the tiles, like the other import
+        // grids.
+        page = if self.step == Step::Games {
+            page.push(self.games_view(body, palette, width))
+        } else {
+            page.push(heroic::scroll_body(body, None, palette))
+        };
         let footer: Option<Element<'_, Event>> = match self.step {
             Step::Review => self.prepared.as_ref().map(|prepared| {
                 accent_base("Migrate", palette.primary)
@@ -546,14 +789,10 @@ impl Page {
                     .on_press(Event::BackToLibrary)
                     .into(),
             ),
-            Step::Games => None,
+            Step::Games | Step::Install => None,
         };
         if let Some(footer) = footer {
-            page = page.push(container(footer).padding(12).width(Fill).style(move |_| {
-                container::Style::default()
-                    .background(palette.surface)
-                    .border(border::rounded(8).width(1).color(palette.border))
-            }));
+            page = page.push(pinned(footer, palette));
         }
         heroic::page_frame(page)
     }
@@ -562,48 +801,96 @@ impl Page {
         &'a self,
         mut body: iced::widget::Column<'a, Event>,
         palette: Palette,
-    ) -> iced::widget::Column<'a, Event> {
+        width: f32,
+    ) -> Element<'a, Event> {
         let Some(listing) = &self.listing else {
-            return body;
+            return heroic::scroll_body(body, None, palette);
         };
         for issue in &listing.issues {
             body = body.push(text(issue).size(13).color(palette.warning));
         }
-        if listing.games.is_empty() {
-            return body.push(text("Heroic has no GOG games.").color(palette.muted));
+        if let Some(note) = &listing.owned_note {
+            body = body.push(text(note).size(13).color(palette.muted));
         }
-        let rows = listing.games.iter().enumerate().map(|(index, candidate)| {
-            let (note, ready) = match &candidate.standing {
-                Standing::Ready(_) => (None, true),
-                Standing::Already { environment } => {
-                    (Some(format!("Already migrated as {environment}.")), false)
-                }
-                Standing::Failed(reason) => (Some(reason.clone()), false),
+        let entries = Self::entries(listing);
+        if entries.is_empty() {
+            let empty = if listing.owned_note.is_some() {
+                "Heroic has no GOG games."
+            } else {
+                "You don't own any GOG games."
             };
-            let game = &candidate.game;
-            let mut content = column![
-                text(&game.title).color(if ready {
-                    palette.foreground
-                } else {
-                    palette.muted
-                }),
-                text(format!("{} - {}", game.id, platform_label(game.platform)))
-                    .size(12)
-                    .color(palette.muted)
-            ]
-            .spacing(2);
-            if let Some(note) = note {
-                let color = if matches!(candidate.standing, Standing::Failed(_)) {
-                    palette.warning
-                } else {
-                    palette.muted
+            return heroic::scroll_body(body.push(text(empty).color(palette.muted)), None, palette);
+        }
+        let columns = heroic::grid_columns(width);
+        let tiles: Vec<Element<'a, Event>> = entries
+            .iter()
+            .enumerate()
+            .map(|(position, entry)| {
+                let (title, reason, note, dimmed, event) = match *entry {
+                    Entry::Heroic(index) => {
+                        let candidate = &listing.games[index];
+                        let (reason, note) = match &candidate.standing {
+                            Standing::Ready(_) => (None, Some("In Heroic".to_owned())),
+                            Standing::Already { environment } => {
+                                (Some(format!("Already migrated as {environment}.")), None)
+                            }
+                            Standing::Failed(reason) => (Some(reason.clone()), None),
+                        };
+                        (
+                            candidate.game.title.as_str(),
+                            reason,
+                            note,
+                            false,
+                            Event::Pick(index),
+                        )
+                    }
+                    Entry::Owned(index) => {
+                        let owned = &listing.owned[index];
+                        let (reason, note, dimmed) = match &owned.state {
+                            OwnedState::NotInstalled => {
+                                (None, Some("Not installed".to_owned()), true)
+                            }
+                            OwnedState::Unfinished => {
+                                (None, Some("Install didn't finish".to_owned()), false)
+                            }
+                            OwnedState::Installed(name) => {
+                                (Some(format!("Installed as {name}.")), None, false)
+                            }
+                            OwnedState::Imported(name) => {
+                                (Some(format!("Already migrated as {name}.")), None, false)
+                            }
+                        };
+                        (
+                            owned.offer.title.as_str(),
+                            reason,
+                            note,
+                            dimmed,
+                            Event::Install(index),
+                        )
+                    }
                 };
-                content = content.push(text(note).size(12).color(color));
-            }
-            list_row(content, palette)
-                .on_press_maybe((ready && !self.waiting()).then_some(Event::Pick(index)))
-        });
-        body.push(list_group(rows, palette))
+                heroic::tile(
+                    Tile {
+                        title,
+                        poster: None,
+                        reason,
+                        note,
+                        chosen: false,
+                        focus_ring: self.focus_visible && self.focus == Some(position),
+                        dimmed,
+                    },
+                    palette,
+                    event,
+                )
+            })
+            .collect();
+        let mut rows = column![].spacing(heroic::TILE_GAP);
+        let mut tiles = tiles.into_iter().peekable();
+        while tiles.peek().is_some() {
+            rows = rows
+                .push(Row::with_children(tiles.by_ref().take(columns)).spacing(heroic::TILE_GAP));
+        }
+        heroic::grid_scroll(GRID_ID, body.into(), rows.into(), palette)
     }
 
     fn review_view<'a>(
@@ -719,17 +1006,23 @@ impl Page {
     }
 }
 
+/// A step's action row, pinned under the scrolling content.
+fn pinned<'a>(footer: Element<'a, Event>, palette: Palette) -> Element<'a, Event> {
+    container(footer)
+        .padding(12)
+        .width(Fill)
+        .style(move |_| {
+            container::Style::default()
+                .background(palette.surface)
+                .border(border::rounded(8).width(1).color(palette.border))
+        })
+        .into()
+}
+
 fn windows_plan(migration: &Migration) -> Option<&heroic_import::GamePlan> {
     match migration.target() {
         Target::Windows { plan, .. } => plan.as_ref(),
         _ => None,
-    }
-}
-
-fn platform_label(platform: Platform) -> &'static str {
-    match platform {
-        Platform::Linux => "Linux",
-        Platform::Windows => "Windows",
     }
 }
 
@@ -804,7 +1097,135 @@ fn load_listing(paths: &Paths) -> Result<Listing, String> {
         return Err(MigrateError::Portable.to_string());
     }
     let sources = heroic_import::sources(paths, None).map_err(|error| error.to_string())?;
-    Ok(listing_from(paths, &sources))
+    let mut listing = listing_from(paths, &sources);
+    let keyring = SecretServiceKeyring::for_spec(&wineo_core::gog::account::KEY_SPEC);
+    match wineo_core::gog::client_from_env() {
+        Ok(client) => add_owned(paths, &keyring, client, &mut listing),
+        Err(error) => listing.owned_note = Some(error.to_string()),
+    }
+    Ok(listing)
+}
+
+/// Adds the owned games Heroic doesn't have to `listing`, with what wineo
+/// has of each, the way `import gog --list` tells them apart. Logged out, or
+/// when GOG can't be asked, only the note says so: Heroic's games still
+/// migrate without a login.
+pub(crate) fn add_owned(
+    paths: &Paths,
+    keyring: &dyn Keyring,
+    client: Client,
+    listing: &mut Listing,
+) {
+    let mut session = match Session::open(paths, keyring, client) {
+        Ok(Some(session)) => session,
+        Ok(None) => {
+            listing.owned_note = Some(OWNED_LOGGED_OUT.to_owned());
+            return;
+        }
+        Err(error) => {
+            listing.owned_note = Some(format!("Couldn't read the GOG login: {error}"));
+            return;
+        }
+    };
+    let owned = match wineo_core::gog::owned::load(&mut session, false) {
+        Ok(owned) => owned,
+        Err(error) => {
+            listing.owned_note = Some(format!("Couldn't list the games you own: {error}"));
+            return;
+        }
+    };
+    listing.owned_note = owned.warning;
+    let in_heroic: BTreeSet<&str> = listing
+        .games
+        .iter()
+        .map(|candidate| candidate.game.id.as_str())
+        .collect();
+    let recorded = recorded_games(paths);
+    let configless = configless_installs(paths);
+    let mut games: Vec<Owned> = owned
+        .games
+        .into_iter()
+        .filter(|game| !in_heroic.contains(game.id.to_string().as_str()))
+        .map(|game| {
+            let state = match recorded.get(&game.id) {
+                Some(name) => recorded_state(paths, name, game.id),
+                None if configless.contains_key(&game.id) => OwnedState::Unfinished,
+                None => OwnedState::NotInstalled,
+            };
+            let unfinished = match (&state, recorded.get(&game.id)) {
+                (OwnedState::Unfinished, Some(name)) => Some(name.clone()),
+                (OwnedState::Unfinished, None) => configless.get(&game.id).cloned(),
+                _ => None,
+            };
+            Owned {
+                offer: Offer {
+                    gog_id: game.id,
+                    title: game.title,
+                    linux: game.works_on.linux,
+                    windows: game.works_on.windows,
+                    unfinished,
+                },
+                state,
+            }
+        })
+        .collect();
+    games.sort_by_cached_key(|owned| (owned.offer.title.to_lowercase(), owned.offer.gog_id));
+    listing.owned = games;
+}
+
+/// The environment that records each GOG game, by game id. A config that
+/// can't be read doesn't say.
+fn recorded_games(paths: &Paths) -> BTreeMap<u64, String> {
+    let mut recorded = BTreeMap::new();
+    for name in wineo_core::environment::names(paths).unwrap_or_default() {
+        if let Ok(Some(id)) = wineo_core::gog::update::recorded_gog_id(paths, &name)
+            && let Ok(id) = id.parse()
+        {
+            recorded.entry(id).or_insert(name);
+        }
+    }
+    recorded
+}
+
+/// What `name`'s folder for game `id` says: an install to finish, one wineo
+/// made, or a migrated game. A state that can't be read reads as migrated.
+fn recorded_state(paths: &Paths, name: &str, id: u64) -> OwnedState {
+    let state = folder::find(paths, name, &id.to_string()).ok().flatten();
+    let installing = state
+        .as_ref()
+        .and_then(|state| state.journal.as_ref())
+        .is_some_and(|journal| journal.kind == JournalKind::Install);
+    let installed = state
+        .and_then(|state| state.committed)
+        .is_some_and(|committed| committed.source == Some(FolderSource::Install));
+    if installing {
+        OwnedState::Unfinished
+    } else if installed {
+        OwnedState::Installed(name.to_owned())
+    } else {
+        OwnedState::Imported(name.to_owned())
+    }
+}
+
+/// Installs that stopped before their environment's config was written, by
+/// game id, with the name they'll get.
+fn configless_installs(paths: &Paths) -> BTreeMap<u64, String> {
+    let mut found = BTreeMap::new();
+    for (_, state) in folder::list(paths).unwrap_or_default() {
+        let Ok(state) = state else { continue };
+        let unfinished = state.committed.is_none()
+            && state
+                .journal
+                .as_ref()
+                .is_some_and(|journal| journal.kind == JournalKind::Install);
+        if let (Some(owner), Some(id)) = (&state.owner, state.gog_id())
+            && unfinished
+            && !paths.environment_config(owner).exists()
+        {
+            found.entry(id).or_insert_with(|| owner.clone());
+        }
+    }
+    found
 }
 
 /// Every GOG game the Heroic configurations installed, planned so the page
@@ -1045,15 +1466,15 @@ fn run(
 
 /// What importing GOG's extras said.
 #[derive(Debug, Default)]
-struct Extras {
-    lines: Vec<String>,
-    notes: Vec<String>,
+pub(super) struct Extras {
+    pub(super) lines: Vec<String>,
+    pub(super) notes: Vec<String>,
     icon: bool,
 }
 
 /// Imports GOG's playtime and art, like `import gog` does after migrating.
 /// Every problem is a note; nothing here fails.
-fn import_extras(
+pub(super) fn import_extras(
     paths: &Paths,
     global: &GlobalConfig,
     environment: &str,
@@ -1866,5 +2287,320 @@ mod tests {
             ]
         );
         assert_eq!(duration(25 * 60), "25 min");
+    }
+
+    const CELESTE: u64 = 1452425640;
+    const HADES: u64 = 1477079530;
+
+    /// Writes an install of `id` that stopped before `owner`'s config was
+    /// written.
+    fn configless(paths: &Paths, folder: &std::path::Path, owner: &str, id: u64) {
+        use wineo_core::gog::folder::{FolderLock, FolderState, Journal, Platform, Target};
+        fs::create_dir_all(folder).unwrap();
+        let folder = fs::canonicalize(folder).unwrap();
+        let state = FolderState {
+            journal: Some(Journal {
+                operation: "op".to_owned(),
+                kind: JournalKind::Install,
+                target: Target {
+                    gog_id: id,
+                    platform: Platform::Linux,
+                    language: "en".to_owned(),
+                    track: Track::Installer,
+                    products: Vec::new(),
+                },
+                packages: Vec::new(),
+                attempted: Vec::new(),
+            }),
+            ..FolderState::new(folder.clone(), Some(owner.to_owned()))
+        };
+        FolderLock::exclusive(paths, &folder, &|| false)
+            .unwrap()
+            .write(&state)
+            .unwrap();
+    }
+
+    #[test]
+    fn the_grid_lists_every_owned_game_by_what_wineo_has_of_it() {
+        use super::super::gog_install::tests::{
+            DISCO, RIMWORLD as RIMWORLD_ID, World, disco, inno, rimworld,
+        };
+        use crate::gog_fake::{native_game, owned_game};
+        use wineo_core::gog::update::windows::set_graphical_session;
+
+        let world = World::new();
+        set_graphical_session(Some(true));
+        world.installed(&rimworld(), &Default::default()).unwrap();
+        // Disco's installer stops partway, which leaves its install to finish.
+        world.disco("1", "exit 4", true);
+        let failure = world.installed(&disco(), &inno()).unwrap_err();
+        assert!(
+            format!("{failure:?}").contains("stopped partway"),
+            "{failure:?}"
+        );
+        set_graphical_session(None);
+        native_game(
+            &world.paths,
+            world.root.path(),
+            "stardew",
+            STARDEW.parse().unwrap(),
+            "1.0",
+            false,
+        );
+        configless(
+            &world.paths,
+            &world.root.path().join("Games/Hades"),
+            "hades",
+            HADES,
+        );
+        world.library.lock().unwrap().owned.extend([
+            owned_game(STARDEW.parse().unwrap(), "Stardew Valley", true, true),
+            owned_game(CELESTE, "Celeste", true, false),
+            owned_game(HADES, "Hades", true, true),
+        ]);
+
+        let mut listing = Listing::default();
+        add_owned(
+            &world.paths,
+            &world.keyring,
+            world.server.client(),
+            &mut listing,
+        );
+        assert_eq!(listing.owned_note, None);
+        let states: Vec<(&str, &OwnedState, Option<&str>)> = listing
+            .owned
+            .iter()
+            .map(|owned| {
+                (
+                    owned.offer.title.as_str(),
+                    &owned.state,
+                    owned.offer.unfinished.as_deref(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            states,
+            [
+                ("Celeste", &OwnedState::NotInstalled, None),
+                (
+                    "Disco Elysium",
+                    &OwnedState::Unfinished,
+                    Some("disco-elysium")
+                ),
+                ("Hades", &OwnedState::Unfinished, Some("hades")),
+                (
+                    "RimWorld",
+                    &OwnedState::Installed("rimworld".to_owned()),
+                    None
+                ),
+                (
+                    "Stardew Valley",
+                    &OwnedState::Imported("stardew".to_owned()),
+                    None
+                ),
+            ]
+        );
+        assert_eq!(listing.owned[0].offer.gog_id, CELESTE);
+        assert!(listing.owned[0].offer.linux && !listing.owned[0].offer.windows);
+        assert_eq!(listing.owned[3].offer.gog_id, RIMWORLD_ID);
+        assert_eq!(listing.owned[1].offer.gog_id, DISCO);
+
+        let (mut page, _) = Page::new(world.paths.clone());
+        let generation = page.generation;
+        let _ = page.update(Event::Listed(generation, Ok(listing)));
+        // Narrow and short dialogs keep the grid scrolling inside them.
+        for (width, height) in [(280.0, 240.0), (360.0, 280.0), (680.0, 560.0)] {
+            let inset = iced::Rectangle::new(
+                iced::Point::new(24.0, 24.0),
+                iced::Size::new(width - 48.0, height - 48.0),
+            );
+            let mut view = page.view_at(Palette::DARK, width, 0.0);
+            let probe = crate::layout_probe::probe(&mut view, iced::Size::new(width, height));
+            assert!(probe.outside(inset).is_empty(), "{width}x{height}");
+        }
+        // Installed and migrated games can't be opened.
+        let _ = page.update(Event::Install(3));
+        let _ = page.update(Event::Install(4));
+        assert_eq!(page.step, Step::Games);
+        // The keyboard moves to Celeste first, and Enter opens its install.
+        let task = page.key(
+            &Key::Named(Named::ArrowRight),
+            keyboard::Modifiers::empty(),
+            680.0,
+        );
+        assert!(task.is_some());
+        assert_eq!(page.focus, Some(0));
+        let _ = page.key(
+            &Key::Named(Named::Enter),
+            keyboard::Modifiers::empty(),
+            680.0,
+        );
+        assert_eq!(page.step, Step::Install);
+        assert!(page.waiting(), "it plans the install");
+        {
+            let mut view = page.view_at(Palette::DARK, 680.0, 0.0);
+            let _ = crate::layout_probe::layout(&mut view, iced::Size::new(680.0, 560.0));
+        }
+        // Back from the review returns to the grid and reads it again.
+        let _ = page.back();
+        assert_eq!(page.step, Step::Games);
+        assert!(page.install.is_none());
+    }
+
+    #[test]
+    fn heroic_games_show_once_and_logged_out_still_migrates() {
+        use crate::gog_fake::{Library, library_server, owned_game, save_login};
+        use crate::settings::steam_key::tests::TestKeyring;
+
+        let mut fx = Fixture::new();
+        fx.native(RIMWORLD, "RimWorld", &[]);
+        let library = std::sync::Arc::new(std::sync::Mutex::new(Library {
+            owned: vec![
+                owned_game(RIMWORLD.parse().unwrap(), "RimWorld", true, true),
+                owned_game(CELESTE, "Celeste", true, false),
+            ],
+            ..Library::default()
+        }));
+        let server = library_server(library);
+        let keyring = TestKeyring(std::cell::RefCell::new(None));
+
+        let mut listing = fx.listing();
+        add_owned(&fx.paths, &keyring, server.client(), &mut listing);
+        assert_eq!(
+            listing.owned_note.as_deref(),
+            Some("Log in to GOG in Settings to install the games you own.")
+        );
+        assert!(listing.owned.is_empty());
+        assert_eq!(titles(&listing), ["RimWorld"]);
+
+        save_login(&fx.paths, &keyring);
+        let mut listing = fx.listing();
+        add_owned(&fx.paths, &keyring, server.client(), &mut listing);
+        let owned: Vec<&str> = listing
+            .owned
+            .iter()
+            .map(|owned| owned.offer.title.as_str())
+            .collect();
+        assert_eq!(owned, ["Celeste"], "Heroic's RimWorld shows once");
+        assert_eq!(Page::entries(&listing), [Entry::Owned(0), Entry::Heroic(0)]);
+    }
+
+    #[test]
+    fn the_install_pages_stay_inside_narrow_and_short_dialogs() {
+        use super::super::gog_install::tests::{World, inno, rimworld};
+        use wineo_core::gog::update::windows::set_graphical_session;
+
+        let world = World::new();
+        set_graphical_session(Some(true));
+        let native = world.prepare(&rimworld(), &Default::default(), false);
+        let windows = world.prepare(
+            &rimworld(),
+            &super::super::gog_install::Choices {
+                platform: Some(wineo_core::gog::folder::Platform::Windows),
+                ..inno()
+            },
+            false,
+        );
+        set_graphical_session(None);
+        for prepared in [native, windows] {
+            check_install_layout(&world, prepared);
+        }
+    }
+
+    fn check_install_layout(
+        world: &super::super::gog_install::tests::World,
+        prepared: super::super::gog_install::Prepared,
+    ) {
+        let (mut page, _) = Page::new(world.paths.clone());
+        let generation = page.generation;
+        let mut listing = Listing::default();
+        add_owned(
+            &world.paths,
+            &world.keyring,
+            world.server.client(),
+            &mut listing,
+        );
+        let _ = page.update(Event::Listed(generation, Ok(listing)));
+        let index = page
+            .listing
+            .as_ref()
+            .unwrap()
+            .owned
+            .iter()
+            .position(|owned| owned.offer.title == "RimWorld")
+            .unwrap();
+        let _ = page.update(Event::Install(index));
+        let generation = page.install.as_ref().unwrap().generation();
+        let instance = page.install_instance;
+        let _ = page.update(Event::Installing(
+            instance,
+            Box::new(gog_install::Event::Prepared(
+                generation,
+                Ok(Box::new(prepared)),
+            )),
+        ));
+        for (width, height) in [(280.0, 240.0), (360.0, 280.0), (900.0, 720.0)] {
+            let inset = iced::Rectangle::new(
+                iced::Point::new(24.0, 24.0),
+                iced::Size::new(width - 48.0, height - 48.0),
+            );
+            let mut view = page.view_at(Palette::DARK, width, 0.0);
+            let probe = crate::layout_probe::probe(&mut view, iced::Size::new(width, height));
+            let spilled = probe.outside(inset);
+            assert!(spilled.is_empty(), "{width}x{height}: {spilled:?}");
+        }
+    }
+
+    #[test]
+    fn a_reply_to_a_review_that_was_left_never_reaches_the_next_one() {
+        use super::super::gog_install::tests::{World, rimworld};
+
+        let world = World::new();
+        let stale = world.prepare(&rimworld(), &Default::default(), false);
+        let mut listing = Listing::default();
+        add_owned(
+            &world.paths,
+            &world.keyring,
+            world.server.client(),
+            &mut listing,
+        );
+        let titles: Vec<String> = listing
+            .owned
+            .iter()
+            .map(|owned| owned.offer.title.clone())
+            .collect();
+        let rimworld_at = titles.iter().position(|title| title == "RimWorld").unwrap();
+        let disco_at = titles
+            .iter()
+            .position(|title| title == "Disco Elysium")
+            .unwrap();
+        let (mut page, _) = Page::new(world.paths.clone());
+        let generation = page.generation;
+        let _ = page.update(Event::Listed(generation, Ok(listing.clone())));
+        // Open RimWorld, leave while it plans, then open Disco Elysium.
+        let _ = page.update(Event::Install(rimworld_at));
+        let first = page.install_instance;
+        let first_generation = page.install.as_ref().unwrap().generation();
+        let _ = page.back();
+        assert!(page.install.is_none());
+        let generation = page.generation;
+        let _ = page.update(Event::Listed(generation, Ok(listing)));
+        let _ = page.update(Event::Install(disco_at));
+        assert_eq!(
+            page.install.as_ref().unwrap().generation(),
+            first_generation,
+            "both start at the same generation"
+        );
+        // RimWorld's plan arrives late and is dropped.
+        let _ = page.update(Event::Installing(
+            first,
+            Box::new(gog_install::Event::Prepared(
+                first_generation,
+                Ok(Box::new(stale)),
+            )),
+        ));
+        let install = page.install.as_ref().unwrap();
+        assert_eq!(install.planned(), None);
+        assert!(install.waiting(), "Disco Elysium is still being planned");
     }
 }

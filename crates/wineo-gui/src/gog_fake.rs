@@ -336,3 +336,227 @@ pub(crate) fn native_environment(
     )
     .unwrap();
 }
+
+/// What `library_server` serves: the owned list, the owned ids, product
+/// details with `{BASE}` standing for the server, and installer files by
+/// name.
+#[derive(Default)]
+pub(crate) struct Library {
+    pub(crate) owned: Vec<serde_json::Value>,
+    pub(crate) owned_ids: Vec<u64>,
+    pub(crate) products: Vec<serde_json::Value>,
+    pub(crate) files: std::collections::HashMap<String, Vec<u8>>,
+}
+
+/// A fake GOG with a whole account: its owned games and ids, product
+/// details, and the installers they name, kept in `library` so a test can
+/// change what's offered while the server runs.
+pub(crate) fn library_server(library: Arc<Mutex<Library>>) -> Server {
+    let base = Arc::new(std::sync::OnceLock::<String>::new());
+    let seen = Arc::clone(&base);
+    let server = Server::start(move |line| {
+        let base = seen.get().cloned().unwrap_or_default();
+        let path = line.split(' ').nth(1).unwrap_or_default();
+        let path = path.split('?').next().unwrap_or_default();
+        if path == "/token" {
+            return tokens("REFRESH", USER);
+        }
+        let library = library.lock().unwrap();
+        let parts: Vec<&str> = path.trim_matches('/').split('/').collect();
+        match parts.as_slice() {
+            ["account", "getFilteredProducts"] => reply(
+                200,
+                &serde_json::json!({"page": 1, "totalPages": 1, "products": library.owned})
+                    .to_string(),
+            ),
+            ["user", "data", "games"] => reply(
+                200,
+                &serde_json::json!({"owned": library.owned_ids}).to_string(),
+            ),
+            ["products", id] => library
+                .products
+                .iter()
+                .find(|product| id.parse::<u64>().ok() == product["id"].as_u64())
+                .map_or_else(
+                    || reply(404, "{}"),
+                    |body| reply(200, &body.to_string().replace("{BASE}", &base)),
+                ),
+            ["downlink", name] => reply(
+                200,
+                &serde_json::json!({
+                    "downlink": format!("{base}/files/{name}"),
+                    "checksum": null,
+                })
+                .to_string(),
+            ),
+            ["files", name] => match library.files.get(*name) {
+                Some(bytes) => {
+                    let mut answer = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                        bytes.len()
+                    )
+                    .into_bytes();
+                    answer.extend_from_slice(bytes);
+                    answer
+                }
+                None => reply(404, "{}"),
+            },
+            _ => reply(404, "{}"),
+        }
+    });
+    let _ = base.set(server.base.clone());
+    server
+}
+
+/// An owned game as GOG's list shows it.
+pub(crate) fn owned_game(id: u64, title: &str, linux: bool, windows: bool) -> serde_json::Value {
+    serde_json::json!({
+        "id": id,
+        "title": title,
+        "worksOn": {"Windows": windows, "Mac": false, "Linux": linux},
+        "dlcCount": 0,
+    })
+}
+
+/// A product's details with `installers` and each of `dlcs` expanded.
+pub(crate) fn product(
+    id: u64,
+    title: &str,
+    installers: Vec<serde_json::Value>,
+    dlcs: Vec<serde_json::Value>,
+) -> serde_json::Value {
+    serde_json::json!({
+        "id": id,
+        "title": title,
+        "downloads": {"installers": installers, "patches": []},
+        "dlcs": {"products": dlcs.iter().map(|dlc| serde_json::json!({"id": dlc["id"]})).collect::<Vec<_>>()},
+        "expanded_dlcs": dlcs,
+    })
+}
+
+impl Library {
+    /// Offers a Linux installer for `id` whose one file is a package of
+    /// `files` (path and content; `start.sh` is executable), and returns its
+    /// entry for a product's details.
+    pub(crate) fn linux_installer(
+        &mut self,
+        id: u64,
+        version: &str,
+        files: &[(&str, &str)],
+    ) -> serde_json::Value {
+        let name = format!("game_{id}_{}.sh", safe(version));
+        let bytes = native_package(files);
+        let size = bytes.len();
+        self.files.insert(name.clone(), bytes);
+        serde_json::json!({
+            "id": format!("installer_linux_en_{id}"),
+            "os": "linux",
+            "language": "en",
+            "language_full": "English",
+            "version": version,
+            "total_size": size,
+            "files": [{"id": "en3installer0", "size": size, "downlink": format!("{{BASE}}/downlink/{name}")}],
+        })
+    }
+
+    /// Offers a Windows installer for `id`: a setup program, `script`, which
+    /// the fake `inno` runner sources with `$DIR` set, and a part beside it.
+    pub(crate) fn windows_installer(
+        &mut self,
+        id: u64,
+        version: &str,
+        script: &str,
+    ) -> serde_json::Value {
+        let stem = format!("setup_{id}_{}", safe(version));
+        let exe = format!("{stem}.exe");
+        let part = format!("{stem}-1.bin");
+        let script = format!("[ -f \"$(dirname \"$exe\")/{part}\" ] || exit 99\n{script}");
+        let sizes = [script.len(), 4];
+        self.files.insert(exe.clone(), script.into_bytes());
+        self.files.insert(part.clone(), b"part".to_vec());
+        serde_json::json!({
+            "id": format!("installer_windows_en_{id}"),
+            "os": "windows",
+            "language": "en",
+            "language_full": "English",
+            "version": version,
+            "total_size": sizes[0] + sizes[1],
+            "files": [
+                {"id": "en1installer0", "size": sizes[0], "downlink": format!("{{BASE}}/downlink/{exe}")},
+                {"id": "en1installer1", "size": sizes[1], "downlink": format!("{{BASE}}/downlink/{part}")},
+            ],
+        })
+    }
+
+    /// Replaces `id`'s details.
+    pub(crate) fn offer(&mut self, details: serde_json::Value) {
+        let id = details["id"].as_u64();
+        self.products.retain(|product| product["id"].as_u64() != id);
+        self.products.push(details);
+    }
+}
+
+fn safe(version: &str) -> String {
+    version.replace(|char: char| !char.is_ascii_alphanumeric(), "_")
+}
+
+/// A native package like GOG's `.sh`: a shell header, a MojoSetup stand-in,
+/// and a zip of the game files, `start.sh` executable.
+pub(crate) fn native_package(files: &[(&str, &str)]) -> Vec<u8> {
+    use std::io::Cursor;
+    use zip::write::SimpleFileOptions;
+    let mut zip = zip::ZipWriter::new(Cursor::new(Vec::new()));
+    for (path, content) in files {
+        let mode = if path.ends_with(".sh") { 0o755 } else { 0o644 };
+        zip.start_file(
+            format!("data/noarch/{path}"),
+            SimpleFileOptions::default()
+                .compression_method(zip::CompressionMethod::Stored)
+                .unix_permissions(mode),
+        )
+        .unwrap();
+        zip.write_all(content.as_bytes()).unwrap();
+    }
+    let zipped = zip.finish().unwrap().into_inner();
+    let mut bytes = b"#!/bin/sh\n# Makeself stand-in\nexit 0\n".to_vec();
+    bytes.extend(b"MOJOSETUP".repeat(50));
+    bytes.extend(zipped);
+    bytes
+}
+
+/// A runner `inno` whose wine sources a setup program as a shell script,
+/// with `$DIR` set from its `/DIR=` argument, after writing its arguments to
+/// `runs/<name>.args`, like the CLI tests' runner.
+pub(crate) fn inno_runner(paths: &wineo_core::paths::Paths, runs: &std::path::Path) {
+    std::fs::create_dir_all(runs).unwrap();
+    let bin = wineo_core::config::GlobalConfig::default()
+        .runner_root(paths)
+        .unwrap()
+        .join("inno/bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    write_script(bin.join("wineserver"), "#!/bin/sh\nexit 0\n");
+    write_script(
+        bin.join("wine"),
+        format!(
+            r#"#!/bin/sh
+RUNS='{runs}'
+case "$1" in
+wineboot) [ "$2" = --init ] && mkdir -p "$WINEPREFIX/drive_c" && echo 'WINE REGISTRY Version 2' > "$WINEPREFIX/system.reg"; exit 0 ;;
+--version) echo wine-inno; exit 0 ;;
+*.exe) ;;
+*) exit 0 ;;
+esac
+exe="$1"
+shift
+name=$(basename "$exe")
+printf '%s\n' "$exe" "$@" > "$RUNS/$name.args"
+DIR=
+for arg in "$@"; do
+    case "$arg" in /DIR=Z:*) DIR=$(printf '%s' "${{arg#/DIR=Z:}}" | tr '\\' '/') ;; esac
+done
+. "$exe"
+"#,
+            runs = runs.display()
+        ),
+    );
+}
