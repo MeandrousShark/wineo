@@ -427,10 +427,12 @@ impl Locks {
                     subject: format!("environment `{name}`"),
                 })?);
             }
-            if exclusive {
-                record(&file, &path, operation)?;
-            }
+            // In the guard before recording, so a failed record still unlocks it.
             guard.files.push((file, path));
+            if exclusive {
+                let (file, path) = guard.files.last().expect("just pushed");
+                record(file, path, operation)?;
+            }
         }
         Ok(guard)
     }
