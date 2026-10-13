@@ -534,16 +534,24 @@ impl Locks {
         for dir in [&self.dir, &self.prefix_dir] {
             fs::create_dir_all(dir).context(|| format!("failed to create {}", dir.display()))?;
         }
-        let mut files = Vec::with_capacity(targets.len());
+        // Held in a guard from the first lock, so an error below unlocks what
+        // was already taken instead of leaving it to a forked child's fd copy.
+        let mut guard = Guard {
+            files: Vec::with_capacity(targets.len()),
+            exclusive: !operation.is_shared(),
+            operation,
+            _reservation: None,
+        };
         for target in &targets {
             let file = open(&target.path)?;
             if !take(&file, &target.path, operation.is_shared(), LOCK_ATTEMPTS)? {
                 return Err(self.busy(target)?);
             }
+            guard.files.push((file, target.path.clone()));
             if !operation.is_shared() {
-                record(&file, &target.path, operation)?;
+                let (file, path) = guard.files.last().expect("just pushed");
+                record(file, path, operation)?;
             }
-            files.push((file, target.path.clone()));
         }
         if operation != Operation::Snapshot && operation != Operation::Trash {
             let marker = paths::restore_marker(&self.dir, self.portable.as_deref(), name);
@@ -567,12 +575,7 @@ impl Locks {
             crate::trash::check_pending(paths, name, prefixes)
                 .map_err(|err| Error::Unsettled(err.to_string()))?;
         }
-        Ok(Guard {
-            files,
-            exclusive: !operation.is_shared(),
-            operation,
-            _reservation: None,
-        })
+        Ok(guard)
     }
 
     /// Serializes creating, changing, and removing the config file at `path`.
