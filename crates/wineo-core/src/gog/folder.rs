@@ -385,6 +385,13 @@ pub enum FolderError {
         other: String,
         other_folder: PathBuf,
     },
+    /// A fresh install into a folder that already has files and isn't this
+    /// environment's own unfinished install.
+    #[error("{folder} already exists and isn't empty.")]
+    NotEmpty { folder: PathBuf },
+    /// A title with nothing left once it is made safe for a folder name.
+    #[error("{title:?} can't be made into a folder name.")]
+    UnusableTitle { title: String },
     #[error("No GOG state for {0}.")]
     NoState(PathBuf),
     #[error("{name}'s GOG state can't be checked: {detail}.")]
@@ -810,6 +817,68 @@ pub fn check_overlap(paths: &Paths, folder: &Path) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// The canonical form of a folder that may not exist yet: its deepest
+/// existing ancestor resolved, with the missing names after it. That is what
+/// `canonical` gives once the folder is created, so state files and the
+/// overlap check agree with it.
+fn canonical_new(folder: &Path) -> Result<PathBuf> {
+    if !folder.is_absolute() {
+        bail!("{} isn't an absolute path.", folder.display());
+    }
+    let mut missing = Vec::new();
+    let mut existing = folder;
+    // A dangling symlink exists as far as this is concerned, and fails to
+    // resolve, rather than being walked past.
+    let mut base = loop {
+        match fs::symlink_metadata(existing) {
+            Ok(_) => break canonical(existing)?,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                let (Some(name), Some(parent)) = (existing.file_name(), existing.parent()) else {
+                    bail!("{} isn't a usable folder path.", folder.display());
+                };
+                missing.push(name);
+                existing = parent;
+            }
+            Err(error) => {
+                return Err(error)
+                    .with_context(|| format!("failed to inspect {}", existing.display()));
+            }
+        }
+    };
+    base.extend(missing.iter().rev());
+    Ok(base)
+}
+
+/// Checks a fresh install of environment `name` into `folder`, Windows or
+/// native, and returns the folder in canonical form. It's refused when the
+/// folder overlaps another game's, or exists and isn't empty, unless it is
+/// the folder of `name`'s own unfinished install. Read without locks, so it
+/// is for planning; the install rechecks under the folder's lock.
+pub fn check_fresh_install(paths: &Paths, folder: &Path, name: &str) -> Result<PathBuf> {
+    let folder = canonical_new(folder)?;
+    check_overlap(paths, &folder)?;
+    let empty = match fs::read_dir(&folder) {
+        Ok(mut entries) => entries.next().is_none(),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => true,
+        // A file, or a folder wineo can't list, isn't one to install into.
+        Err(_) => false,
+    };
+    if empty {
+        return Ok(folder);
+    }
+    let own_install = peek(paths, &folder)?.is_some_and(|state| {
+        state.owner.as_deref() == Some(name)
+            && state
+                .journal
+                .is_some_and(|journal| journal.kind == JournalKind::Install)
+    });
+    if own_install {
+        Ok(folder)
+    } else {
+        Err(FolderError::NotEmpty { folder }.into())
+    }
 }
 
 /// Sets `owner` to `name` on an existing state, under its lock.
