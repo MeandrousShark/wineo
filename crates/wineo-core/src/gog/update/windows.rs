@@ -366,11 +366,15 @@ pub(super) fn install(
             tag,
             interactive,
         )?;
-        events(Event::Installing {
+        let installing = || Event::Installing {
             product: id,
             interactive,
-        });
+        };
         let created = if base { create.take() } else { None };
+        // Creating the environment comes first, so it says so after.
+        if created.is_none() {
+            events(installing());
+        }
         let held = guard.take().expect("each run hands the locks back");
         let (outcome, resolved) = match created {
             Some(request) => {
@@ -382,6 +386,7 @@ pub(super) fn install(
                     &output,
                     token,
                     events,
+                    installing(),
                 )?;
                 guard = Some(back);
                 (outcome?, resolved)
@@ -618,7 +623,9 @@ fn give_up(lock: &FolderLock, committed: Option<&Committed>) -> Result<()> {
 
 /// Creates the environment and runs the base game's installer in it under
 /// the same lock, returning how it ended and whether everything it started
-/// is known to have stopped.
+/// is known to have stopped. `installing` is reported once the environment
+/// exists.
+#[allow(clippy::too_many_arguments)]
 fn run_created(
     paths: &Paths,
     request: CreateRequest,
@@ -627,6 +634,7 @@ fn run_created(
     output: &Path,
     token: &Token,
     events: &mut dyn FnMut(Event),
+    installing: Event,
 ) -> Result<(crate::Result<Outcome>, bool, Guard)> {
     let step = Step::GogInstaller {
         program: exe,
@@ -634,7 +642,10 @@ fn run_created(
         output: Output::Log(output),
         token,
     };
-    let mut hooks = Forward { events };
+    let mut hooks = Forward {
+        events,
+        installing: Some(installing),
+    };
     let installed =
         create::create_and_install_held(paths, request, Some(step), guard, token, &mut hooks)?;
     let outcome = match installed.step {
@@ -652,6 +663,7 @@ fn run_created(
 /// Passes creation's events on.
 struct Forward<'a, 'b> {
     events: &'a mut (dyn FnMut(Event) + 'b),
+    installing: Option<Event>,
 }
 
 impl Hooks for Forward<'_, '_> {
@@ -659,6 +671,13 @@ impl Hooks for Forward<'_, '_> {
 
     fn event(&mut self, event: CreateEvent) {
         (self.events)(Event::Create(event));
+    }
+
+    fn created(&mut self, _created: &create::Created) -> Result<(), Self::Stop> {
+        if let Some(installing) = self.installing.take() {
+            (self.events)(installing);
+        }
+        Ok(())
     }
 
     fn watched(&mut self, watched: Watched) {

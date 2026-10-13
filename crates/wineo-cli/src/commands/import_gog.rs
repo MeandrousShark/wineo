@@ -111,6 +111,16 @@ pub fn run(
     }
 }
 
+/// Flags as a sentence lists them: `--a`, `--a and --b`, `--a, --b, and --c`.
+fn listed(flags: &[&str]) -> String {
+    match flags {
+        [] => String::new(),
+        [one] => (*one).to_owned(),
+        [one, two] => format!("{one} and {two}"),
+        [rest @ .., last] => format!("{}, and {last}", rest.join(", ")),
+    }
+}
+
 fn canceled(error: &anyhow::Error) -> bool {
     error.is::<Canceled>()
         || matches!(

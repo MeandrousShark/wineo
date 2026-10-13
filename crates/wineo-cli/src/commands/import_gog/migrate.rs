@@ -58,12 +58,10 @@ fn refuse_install_options(args: &Args, title: &str) -> Option<ExitCode> {
     .into_iter()
     .filter_map(|(given, flag)| given.then_some(flag))
     .collect();
-    let flags = match given.as_slice() {
-        [] => return None,
-        [one] => (*one).to_owned(),
-        [one, two] => format!("{one} and {two}"),
-        [rest @ .., last] => format!("{}, and {last}", rest.join(", ")),
-    };
+    if given.is_empty() {
+        return None;
+    }
+    let flags = super::listed(&given);
     Some(usage_error(format!(
         "Heroic has {title} installed, so --game migrates it. Leave out {flags}."
     )))

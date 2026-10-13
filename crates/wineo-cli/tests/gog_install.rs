@@ -184,6 +184,12 @@ fn a_native_game_installs_with_its_owned_dlc() {
         "{}",
         stderr(&out)
     );
+    // New environments get desktop entries, as migrated ones do.
+    assert!(
+        stderr(&out).contains("Added a desktop entry for game in rimworld"),
+        "{}",
+        stderr(&out)
+    );
     let folder = games(&f).join("RimWorld");
     assert_eq!(
         fs::read_to_string(folder.join("Data/core.txt")).unwrap(),
@@ -237,10 +243,14 @@ fn a_windows_game_installs_from_its_installer() {
         text.contains("Installed Disco Elysium as disco-elysium.\n"),
         "{text}"
     );
+    // The prefix is built before the installer runs, and says so first.
+    let err = stderr(&out);
+    let creating = err.find("Creating a wine prefix").expect(&err);
+    let running = err.find("Running Disco Elysium's installer").expect(&err);
+    assert!(creating < running, "{err}");
     assert!(
-        stderr(&out).contains("Running Disco Elysium's installer"),
-        "{}",
-        stderr(&out)
+        err.contains("Added a desktop entry for game in disco-elysium"),
+        "{err}"
     );
     let folder = games(&f).join("Disco Elysium");
     assert_eq!(fs::read_to_string(folder.join("disco.exe")).unwrap(), "1");
@@ -450,6 +460,20 @@ fn an_interrupted_install_is_finished_by_update_or_by_installing_again() {
         );
         let folder = games(&f).join("RimWorld");
         assert!(state(&f, &folder).journal.is_some());
+        // It carries on as it began, so options that would change it are
+        // refused.
+        let refused = import(
+            &f,
+            &api,
+            &["--game", &rimworld_id(), "--language", "de-DE", "--yes"],
+        );
+        assert_eq!(refused.status.code(), Some(2));
+        assert!(
+            stderr(&refused)
+                .contains("install didn't finish, so --game finishes it. Leave out --language."),
+            "{}",
+            stderr(&refused)
+        );
 
         let out = if finish == "update" {
             f.gog(&api, &["update", "rimworld", "--yes"])

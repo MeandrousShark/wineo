@@ -1,5 +1,6 @@
 //! What `import gog` and `update` share: the saved GOG login, how update
-//! states read, and the JSON for them.
+//! states read, the JSON for them, progress lines, and the question that
+//! offers a Windows installer's own setup window.
 
 use std::collections::{HashMap, HashSet};
 use std::process::ExitCode;

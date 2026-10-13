@@ -164,6 +164,26 @@ pub(super) fn one(paths: &Paths, args: &Args, id: &str) -> anyhow::Result<ExitCo
             plan.title()
         )));
     }
+    // An unfinished install carries on as it began.
+    if plan.resumes() {
+        let has_environment = plan.creation().is_none();
+        let ignored: Vec<&str> = [
+            (args.platform.is_some(), "--platform"),
+            (args.language.is_some(), "--language"),
+            (has_environment && args.runner.is_some(), "--runner"),
+            (has_environment && args.arch.is_some(), "--arch"),
+        ]
+        .into_iter()
+        .filter_map(|(given, flag)| given.then_some(flag))
+        .collect();
+        if !ignored.is_empty() {
+            return Ok(usage_error(format!(
+                "{}'s install didn't finish, so --game finishes it. Leave out {}.",
+                plan.title(),
+                super::listed(&ignored)
+            )));
+        }
+    }
     print_review(paths, &plan);
     if args.dry_run {
         println!("Dry run, nothing was installed.");
