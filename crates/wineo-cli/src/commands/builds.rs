@@ -40,12 +40,8 @@ pub fn run(paths: &Paths, component: Component, args: Args) -> anyhow::Result<Ex
             &kind,
             component.into(),
             args.yes,
-            |paths, name| {
-                wineo_core::components::size(paths, component, name).map_err(anyhow::Error::from)
-            },
-            |paths, name| {
-                wineo_core::components::remove(paths, component, name).map_err(anyhow::Error::from)
-            },
+            |paths, name| Ok(wineo_core::components::size(paths, component, name)?),
+            |paths, name| Ok(wineo_core::components::remove(paths, component, name)?),
         );
     }
 

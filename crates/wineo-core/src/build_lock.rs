@@ -7,7 +7,6 @@ use serde::{Deserialize, Serialize};
 
 use crate::components::{Builds, Component};
 use crate::config::GlobalConfig;
-use crate::environment::Environment;
 use crate::error::{Error, IoContext, Result};
 use crate::paths::{Paths, fnv1a, label};
 use crate::runner::Runner;
@@ -189,23 +188,6 @@ pub fn config(
         }
     }
     Ok(guards)
-}
-
-pub fn environment(
-    paths: &Paths,
-    global: &GlobalConfig,
-    environment: &Environment,
-) -> Result<Vec<Guard>> {
-    let Some(wine) = environment.config.wine() else {
-        return Ok(Vec::new());
-    };
-    config(
-        paths,
-        global,
-        Some(&wine.runner),
-        wine.dxvk.as_deref(),
-        wine.vkd3d.as_deref(),
-    )
 }
 
 #[cfg(test)]

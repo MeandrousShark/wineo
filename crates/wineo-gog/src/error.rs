@@ -125,6 +125,7 @@ impl Error {
         Self { endpoint, kind }
     }
 
+    #[cfg(test)]
     pub fn endpoint(&self) -> Endpoint {
         self.endpoint
     }

@@ -798,7 +798,6 @@ fn record(file: &File, path: &Path, operation: Operation) -> Result<()> {
         .context(|| format!("failed to write {}", path.display()))
 }
 
-/// A readable hint in the lock's file name. The hash is what makes it unique.
 #[cfg(test)]
 mod tests {
     use std::os::unix::fs::symlink;

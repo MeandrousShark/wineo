@@ -8,7 +8,9 @@ use serde_json::Value;
 use crate::art::{self, GameArt};
 use crate::auth::{self, AuthCode, CLIENT_ID, CLIENT_SECRET, REDIRECT_URI, Tokens, UserId};
 use crate::error::{Endpoint, Error, ErrorKind};
-use crate::owned::{self, OwnedPage, OwnedProduct};
+#[cfg(test)]
+use crate::owned::OwnedProduct;
+use crate::owned::{self, OwnedPage};
 use crate::product::{self, Builds, Product, ResolvedLink};
 use crate::profile;
 
@@ -266,6 +268,7 @@ impl Client {
 
     /// Every owned game, from every page. Any page failing fails the whole
     /// list, so a partial list is never mistaken for the library.
+    #[cfg(test)]
     pub fn owned_games(&self, access_token: &str) -> Result<Vec<OwnedProduct>, Error> {
         owned::collect_pages(|page| self.owned_page(access_token, page))
     }

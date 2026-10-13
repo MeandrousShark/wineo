@@ -52,23 +52,15 @@ pub fn inspect(
     if !name::is_valid(new_name) {
         bail!("invalid environment name `{new_name}`");
     }
-    Environment::ensure_exists(paths, source_name).map_err(|err| anyhow!(err))?;
+    Environment::ensure_exists(paths, source_name)?;
     let source_path = paths.environment_config(source_name);
     let source_config = fs::read_to_string(&source_path)
         .with_context(|| format!("failed to read {}", source_path.display()))?;
-    let config =
-        EnvironmentConfig::parse(&source_path, &source_config).map_err(|err| anyhow!(err))?;
-    let wine = config
-        .require_wine(source_name)
-        .map_err(|err| anyhow!(err))?;
-    let configured_root = paths
-        .config_path(&wine.prefix)
-        .map_err(|err| anyhow!(err))?;
+    let config = EnvironmentConfig::parse(&source_path, &source_config)?;
+    let wine = config.require_wine(source_name)?;
+    let configured_root = paths.config_path(&wine.prefix)?;
     let (runner, _runner_guard) = if import::root_layout_ambiguous(&configured_root) {
-        let (runner, guard) = Runners::new(paths, global)
-            .map_err(|err| anyhow!(err))?
-            .resolve_locked(paths, &wine.runner)
-            .map_err(|err| anyhow!(err))?;
+        let (runner, guard) = Runners::new(paths, global)?.resolve_locked(paths, &wine.runner)?;
         (Some(runner), guard)
     } else {
         (None, None)
@@ -80,12 +72,7 @@ pub fn inspect(
     let source_root = prefix.source_root.clone();
     let destination = match destination {
         Some(path) => paths::resolve(&absolute(path)?),
-        None => paths::resolve(
-            &global
-                .prefix_root(paths)
-                .map_err(|err| anyhow!(err))?
-                .join(new_name),
-        ),
+        None => paths::resolve(&global.prefix_root(paths)?.join(new_name)),
     };
     paths.check_prefix(&destination)?;
     import::reject_overlapping_paths(&source_root, &destination)?;
@@ -106,8 +93,7 @@ pub fn inspect(
         );
     }
     check_shared_configs(paths, new_name, [&source_root, &destination])?;
-    crate::environment::check_destination(paths, new_name, &destination)
-        .map_err(|err| anyhow!(err))?;
+    crate::environment::check_destination(paths, new_name, &destination)?;
 
     let mut review = review_config(paths, &config, &source_root);
     if config.heroic_id.is_some() {
@@ -164,16 +150,12 @@ pub fn execute_reviewed(
     )?;
     ensure_same(reviewed, &current)?;
     let locks = Locks::new(paths);
-    let mut operation = locks
-        .acquire(
-            Operation::Create,
-            &reviewed.new_name,
-            &[&reviewed.source_root, &reviewed.destination],
-        )
-        .map_err(|err| anyhow!(err))?;
-    let _source_config_lock = locks
-        .config(&paths.environment_config(&reviewed.source_name))
-        .map_err(|err| anyhow!(err))?;
+    let mut operation = locks.acquire(
+        Operation::Create,
+        &reviewed.new_name,
+        &[&reviewed.source_root, &reviewed.destination],
+    )?;
+    let _source_config_lock = locks.config(&paths.environment_config(&reviewed.source_name))?;
     let current = inspect(
         paths,
         global,
@@ -187,13 +169,9 @@ pub fn execute_reviewed(
         &reviewed.new_name,
         [&reviewed.source_root, &reviewed.destination],
     )? {
-        Runtime::new(paths, &shared)
-            .check_quiet(&shared)
-            .map_err(|err| anyhow!(err))?;
+        Runtime::new(paths, &shared).check_quiet(&shared)?;
     }
-    Runtime::new(paths, &reviewed.new_name)
-        .check_quiet(&reviewed.new_name)
-        .map_err(|err| anyhow!(err))?;
+    Runtime::new(paths, &reviewed.new_name).check_quiet(&reviewed.new_name)?;
     import::check_cancelled(cancel)?;
     if reviewed.destination.exists() {
         bail!(
@@ -283,11 +261,8 @@ pub fn execute_reviewed(
             config_path.display()
         );
     }
-    let config = EnvironmentConfig::parse(&config_path, &reviewed.config_text)
-        .map_err(|err| anyhow!(err))?;
-    let wine = config
-        .require_wine(&reviewed.new_name)
-        .map_err(|err| anyhow!(err))?;
+    let config = EnvironmentConfig::parse(&config_path, &reviewed.config_text)?;
+    let wine = config.require_wine(&reviewed.new_name)?;
     let _build_guards = build_lock::config(
         paths,
         global,
@@ -304,7 +279,7 @@ pub fn execute_reviewed(
             config_path.display()
         )
     })?;
-    Environment::load(paths, &reviewed.new_name).map_err(|err| anyhow!(err))
+    Ok(Environment::load(paths, &reviewed.new_name)?)
 }
 
 fn ensure_same(expected: &CloneInspection, actual: &CloneInspection) -> Result<()> {
@@ -384,7 +359,7 @@ pub(crate) fn transform_config(
     keep_heroic_id: bool,
 ) -> Result<String> {
     let mut doc: DocumentMut = source.parse()?;
-    let prefix = to.store_prefix(destination).map_err(|err| anyhow!(err))?;
+    let prefix = to.store_prefix(destination)?;
     edit::store_value(doc.as_table_mut(), "prefix", Value::from(prefix));
     if !keep_heroic_id {
         doc.as_table_mut().remove("heroic_id");
@@ -415,7 +390,7 @@ pub(crate) fn transform_config(
     }
     crate::config::stamp_schema(&mut doc);
     let text = doc.to_string();
-    EnvironmentConfig::parse(Path::new("<clone>"), &text).map_err(|err| anyhow!(err))?;
+    EnvironmentConfig::parse(Path::new("<clone>"), &text)?;
     Ok(text)
 }
 
@@ -454,7 +429,7 @@ pub(crate) fn native_config(
     }
     crate::config::stamp_schema(&mut doc);
     let text = doc.to_string();
-    EnvironmentConfig::parse(Path::new("<clone>"), &text).map_err(|err| anyhow!(err))?;
+    EnvironmentConfig::parse(Path::new("<clone>"), &text)?;
     Ok((changed, text))
 }
 
@@ -480,12 +455,11 @@ pub fn inspect_native(
     if !name::is_valid(new_name) {
         bail!("invalid environment name `{new_name}`");
     }
-    Environment::ensure_exists(paths, source_name).map_err(|err| anyhow!(err))?;
+    Environment::ensure_exists(paths, source_name)?;
     let source_path = paths.environment_config(source_name);
     let source_config = fs::read_to_string(&source_path)
         .with_context(|| format!("failed to read {}", source_path.display()))?;
-    let config =
-        EnvironmentConfig::parse(&source_path, &source_config).map_err(|err| anyhow!(err))?;
+    let config = EnvironmentConfig::parse(&source_path, &source_config)?;
     match &config.kind {
         Kind::Native => {}
         Kind::Wine(_) => bail!("{source_name} is not a native environment"),
@@ -517,12 +491,8 @@ pub fn inspect_native(
 /// config, which registers the copy.
 pub fn execute_native(paths: &Paths, reviewed: &NativeCloneInspection) -> Result<Environment> {
     let locks = Locks::new(paths);
-    let _operation = locks
-        .acquire(Operation::Create, &reviewed.new_name, &[])
-        .map_err(|err| anyhow!(err))?;
-    let _source_config_lock = locks
-        .config(&paths.environment_config(&reviewed.source_name))
-        .map_err(|err| anyhow!(err))?;
+    let _operation = locks.acquire(Operation::Create, &reviewed.new_name, &[])?;
+    let _source_config_lock = locks.config(&paths.environment_config(&reviewed.source_name))?;
     let current = inspect_native(paths, &reviewed.source_name, &reviewed.new_name)?;
     if current.source_config != reviewed.source_config
         || current.config_text != reviewed.config_text
@@ -536,7 +506,7 @@ pub fn execute_native(paths: &Paths, reviewed: &NativeCloneInspection) -> Result
     )
     .and_then(StagedArt::publish)?;
     let config_path = paths.environment_config(&reviewed.new_name);
-    let _config_lock = locks.config(&config_path).map_err(|err| anyhow!(err))?;
+    let _config_lock = locks.config(&config_path)?;
     import::write_config_once(&config_path, &reviewed.config_text).map_err(|err| match &art {
         Some(art) => anyhow!(
             "{err}; its art was copied to {}, move it aside and retry clone",
@@ -544,7 +514,7 @@ pub fn execute_native(paths: &Paths, reviewed: &NativeCloneInspection) -> Result
         ),
         None => err,
     })?;
-    Environment::load(paths, &reviewed.new_name).map_err(|err| anyhow!(err))
+    Ok(Environment::load(paths, &reviewed.new_name)?)
 }
 
 fn replace_existing(table: &mut dyn TableLike, field: &str, mut new: Value) -> Result<()> {
@@ -588,7 +558,7 @@ fn rebase(
     };
     let rebased = destination.join(relative);
     if to.portable_root().is_some() {
-        return to.store(&rebased).map(Some).map_err(|err| anyhow!(err));
+        return Ok(Some(to.store(&rebased)?));
     }
     Ok(Some(rebased.to_string_lossy().into_owned()))
 }

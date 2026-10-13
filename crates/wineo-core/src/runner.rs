@@ -8,7 +8,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use rustix::io::Errno;
-use rustix::process::{Pid, Signal, kill_process_group, test_kill_process_group};
+use rustix::process::{Pid, Signal, kill_process_group};
 use serde::{Deserialize, Serialize};
 
 use crate::error::{Error, IoContext, Result};
@@ -16,7 +16,7 @@ use crate::external_runners::Source;
 
 /// umu-launcher, which runs Proton the way Steam does.
 const UMU: &str = "umu-run";
-/// How often `wait_settled` first checks whether a Proton process group is gone.
+/// How often a wait first checks whether a Proton process group is gone.
 const GROUP_POLL: Duration = Duration::from_millis(100);
 /// Where the supervised wait settles when a group outlives its launcher, since
 /// a whole game session can pass that way. Bounded and cleanup waits keep
@@ -329,23 +329,6 @@ impl Runner {
         Ok(())
     }
 
-    /// Like `wait_idle`, but only returns Ok once it is confirmed that nothing
-    /// is left: wineserver has to report the prefix idle, and a Proton
-    /// program's whole process group has to be gone.
-    pub fn wait_settled(&self, prefix: &Path, group: Option<u32>) -> Result<()> {
-        let Some(mut command) = self.wineserver(prefix) else {
-            return wait_for_group(group);
-        };
-        let status = on_its_own(command.arg("-w"))
-            .status()
-            .context(|| "failed to run wineserver -w".to_owned())?;
-        if status.success() {
-            Ok(())
-        } else {
-            Err(Error::Unsettled(format!("wineserver -w failed ({status})")))
-        }
-    }
-
     /// Waits for a copy source to become idle. Cancellation stops only the
     /// waiter, leaving applications using the source prefix alone.
     pub fn wait_idle_for_copy(&self, prefix: &Path, token: &crate::cancel::Token) -> Result<()> {
@@ -418,8 +401,8 @@ impl Runner {
         Ok(())
     }
 
-    /// Like `wait_settled`, but requires the recorded process-group identity
-    /// before it can confirm that the group is gone.
+    /// Requires the recorded process-group identity before it can confirm that
+    /// the group is gone.
     pub fn wait_settled_owned(
         &self,
         prefix: &Path,
@@ -472,36 +455,6 @@ impl Runner {
         .status()
         .context(|| "failed to run wineboot --end-session".to_owned())?;
         Ok(())
-    }
-
-    /// Ends the session only while the recorded leader still proves ownership.
-    pub fn end_session_owned(
-        &self,
-        prefix: &Path,
-        group: Option<u32>,
-        boot_id: Option<&str>,
-        leader_start: Option<u64>,
-    ) -> Result<crate::process::GroupOwnership> {
-        let ownership = crate::process::group_ownership(group, boot_id, leader_start);
-        if ownership != crate::process::GroupOwnership::Owned {
-            return Ok(ownership);
-        }
-        if self.is_proton() {
-            return crate::process::signal_group_if_owned(
-                group,
-                boot_id,
-                leader_start,
-                Signal::TERM,
-            )
-            .context(|| "failed to signal tracked process group".to_owned());
-        }
-        on_its_own(
-            self.command(prefix, &[])?
-                .args(["wineboot", "--end-session"]),
-        )
-        .status()
-        .context(|| "failed to run wineboot --end-session".to_owned())?;
-        Ok(crate::process::GroupOwnership::Owned)
     }
 
     /// Ends a session while the caller still owns the operation and prefix.
@@ -665,31 +618,6 @@ fn signal_group(group: Option<u32>, signal: Signal) -> Result<Killed> {
         Err(Errno::SRCH) => Ok(Killed::Gone),
         Err(err) => {
             Err(io::Error::from(err)).context(|| format!("failed to signal process group {pid:?}"))
-        }
-    }
-}
-
-/// Polls until nothing is left in a process group. umu reaps what its
-/// container starts before it exits, so this is normally over at once.
-fn wait_for_group(group: Option<u32>) -> Result<()> {
-    let Some(pid) = group
-        .and_then(|group| i32::try_from(group).ok())
-        .and_then(Pid::from_raw)
-    else {
-        return Err(Error::Unsettled(
-            "no process group was recorded to check".to_owned(),
-        ));
-    };
-    loop {
-        match test_kill_process_group(pid) {
-            Err(Errno::SRCH) => return Ok(()),
-            // Something in the group belongs to someone else, which still
-            // means the group is not gone.
-            Ok(()) | Err(Errno::PERM) => std::thread::sleep(GROUP_POLL),
-            Err(err) => {
-                return Err(io::Error::from(err))
-                    .context(|| format!("failed to check process group {pid:?}"));
-            }
         }
     }
 }

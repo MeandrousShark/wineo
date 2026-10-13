@@ -117,16 +117,6 @@ pub fn set_imported(paths: &Paths, name: &str, imported: Imported) -> Result<()>
     append_line(&paths.stats_log(name), &ImportedLine { imported })
 }
 
-/// Removes an environment's whole play log, for `rm`. Returns whether there was one.
-pub fn remove_log(paths: &Paths, name: &str) -> Result<bool> {
-    let path = paths.stats_log(name);
-    match fs::remove_file(&path) {
-        Ok(()) => Ok(true),
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(false),
-        Err(err) => Err(err).context(|| format!("failed to remove {}", path.display())),
-    }
-}
-
 /// Copies `name`'s play log from one root to another, for `portable copy`,
 /// which carries it like art since it's the same game moving. Returns where
 /// it went, or None if there was no log to copy.

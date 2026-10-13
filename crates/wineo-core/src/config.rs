@@ -799,6 +799,7 @@ impl GlobalConfig {
     }
 
     /// GOG's installer language code for `gog_language`.
+    #[cfg(test)]
     pub fn gog_installer_language(&self) -> String {
         crate::gog::language::installer_code(self.gog_language())
             .expect("a loaded config's language was validated")
@@ -822,13 +823,6 @@ impl EnvironmentConfig {
 
     pub fn wine(&self) -> Option<&WineConfig> {
         match &self.kind {
-            Kind::Wine(wine) => Some(wine),
-            Kind::Native | Kind::Proxied(_) => None,
-        }
-    }
-
-    pub fn wine_mut(&mut self) -> Option<&mut WineConfig> {
-        match &mut self.kind {
             Kind::Wine(wine) => Some(wine),
             Kind::Native | Kind::Proxied(_) => None,
         }
