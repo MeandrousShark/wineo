@@ -22,11 +22,11 @@ fn alnum(part: &str, len: std::ops::RangeInclusive<usize>) -> bool {
     len.contains(&part.len()) && part.bytes().all(|b| b.is_ascii_alphanumeric())
 }
 
-/// Parses a well-formed BCP 47 language tag (RFC 5646 section 2.1), which
-/// is hyphen-separated and case-insensitive. The language is 2 or 3 letters,
-/// narrower than the RFC's 4 to 8 letter forms, which are reserved or
-/// unassigned and would only let a typo like `english` through. A private-use-only tag (`x-...`)
-/// and the old grandfathered tags have no language to map, so they're refused.
+/// Parses RFC 5646's `langtag` (hyphen-separated, case-insensitive), with a 2
+/// or 3 letter language and no repeated variant or extension singleton. The RFC
+/// also allows 4 to 8 letter languages, which are reserved or unassigned and
+/// would only let a typo like `english` through. Private-use-only (`x-...`)
+/// and grandfathered tags (`i-klingon`, `en-GB-oed`) aren't `langtag`s.
 fn parse(tag: &str) -> Option<Tag> {
     let parts: Vec<&str> = tag.split('-').collect();
     let mut rest = parts.iter().copied().peekable();
@@ -38,17 +38,30 @@ fn parse(tag: &str) -> Option<Tag> {
     let region = rest.next_if(|part| {
         alpha(part, 2..=2) || part.bytes().all(|b| b.is_ascii_digit()) && part.len() == 3
     });
-    while rest
-        .next_if(|part| {
-            alnum(part, 5..=8) || (alnum(part, 4..=4) && part.as_bytes()[0].is_ascii_digit())
-        })
-        .is_some()
-    {}
+    let mut variants = Vec::new();
+    while let Some(variant) = rest.next_if(|part| {
+        alnum(part, 5..=8) || (alnum(part, 4..=4) && part.as_bytes()[0].is_ascii_digit())
+    }) {
+        if variants
+            .iter()
+            .any(|seen: &&str| seen.eq_ignore_ascii_case(variant))
+        {
+            return None;
+        }
+        variants.push(variant);
+    }
     // An extension is a singleton and then one or more subtags of 2-8.
-    while rest
-        .next_if(|part| alnum(part, 1..=1) && !part.eq_ignore_ascii_case("x"))
-        .is_some()
+    let mut singletons = Vec::new();
+    while let Some(singleton) =
+        rest.next_if(|part| alnum(part, 1..=1) && !part.eq_ignore_ascii_case("x"))
     {
+        if singletons
+            .iter()
+            .any(|seen: &&str| seen.eq_ignore_ascii_case(singleton))
+        {
+            return None;
+        }
+        singletons.push(singleton);
         let mut any = false;
         while rest.next_if(|part| alnum(part, 2..=8)).is_some() {
             any = true;
@@ -81,8 +94,10 @@ fn parse(tag: &str) -> Option<Tag> {
 /// What a refused value is told, after `Invalid gog.language:`.
 pub const FORM_HINT: &str = "use a locale tag like en-US";
 
-/// Checks the form of a tag. Which languages exist is not checked, since GOG
-/// decides what it offers.
+/// Checks that a tag is a well-formed locale tag, meaning an RFC 5646 `langtag`
+/// with a 2 or 3 letter language and no repeated variant or extension
+/// singleton. Which languages exist is not checked, since GOG decides what it
+/// offers.
 pub fn validate(tag: &str) -> Result<(), String> {
     parse(tag)
         .map(drop)

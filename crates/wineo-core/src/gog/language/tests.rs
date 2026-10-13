@@ -73,6 +73,13 @@ fn malformed_tags_are_refused() {
         "enenenenen-US",
         "en-ünï",
         "en-US-x-",
+        "sl-rozaj-rozaj",
+        "sl-rozaj-ROZAJ",
+        "en-u-ca-gregory-u-nu-latn",
+        "en-a-foo-A-bar",
+        "i-klingon",
+        "en-GB-oed",
+        "x-whatever",
         "de-CH-19011901x",
         "e1",
         " en",
@@ -123,4 +130,16 @@ fn full_tags_map_by_language_and_region() {
     assert_eq!(installer_code("es-419-x-a").unwrap(), "es_mx");
     // The private-use part isn't a region.
     assert_eq!(installer_code("pt-x-br").unwrap(), "pt");
+}
+
+#[test]
+fn distinct_variants_and_singletons_are_fine() {
+    for good in [
+        "sl-rozaj-biske",
+        "en-a-foo-b-bar",
+        "en-u-ca-gregory-t-es",
+        "de-1901-1996",
+    ] {
+        validate(good).unwrap_or_else(|error| panic!("{good}: {error}"));
+    }
 }
