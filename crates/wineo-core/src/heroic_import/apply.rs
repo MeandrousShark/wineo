@@ -236,6 +236,7 @@ pub fn write_import_log(paths: &Paths, name: &str, body: &str) -> anyhow::Result
 
 #[cfg(test)]
 mod tests {
+    use crate::test_script::write_script;
     use std::fs;
 
     use tempfile::tempdir;
@@ -403,15 +404,13 @@ mod tests {
 
     #[test]
     fn apply_reloads_and_runs_a_safely_quoted_heroic_script_path() {
-        use std::os::unix::fs::PermissionsExt;
         use std::process::Command;
 
         let root = tempdir().unwrap();
         let (paths, global, source) = library(root.path());
         let script = root.path().join("script ' $ ;\nname.sh");
         let marker = root.path().join("script-ran");
-        fs::write(&script, "#!/bin/sh\nprintf ran > \"$MARKER\"\n").unwrap();
-        fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();
+        write_script(&script, "#!/bin/sh\nprintf ran > \"$MARKER\"\n");
         fs::write(
             source.config_dir().join("GamesConfig/a.json"),
             serde_json::json!({

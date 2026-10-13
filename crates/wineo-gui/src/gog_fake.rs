@@ -1,6 +1,7 @@
 //! A stand-in for GOG's servers in tests, like the core and CLI tests use:
 //! plain HTTP on localhost, answering each request line through a handler.
 
+use crate::test_script::write_script;
 use std::io::{Read, Write};
 use std::net::TcpListener;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -261,7 +262,6 @@ pub(crate) fn native_game_with_dlc(
     dlc: &[u64],
     interrupted: bool,
 ) -> std::path::PathBuf {
-    use std::os::unix::fs::PermissionsExt;
     use wineo_core::gog::folder::{
         Committed, FolderLock, FolderState, Journal, JournalKind, Platform, Product, ProductStatus,
         Target, Track,
@@ -272,8 +272,7 @@ pub(crate) fn native_game_with_dlc(
         .join(name);
     std::fs::create_dir_all(&folder).unwrap();
     let start = folder.join("start.sh");
-    std::fs::write(&start, "#!/bin/sh\n").unwrap();
-    std::fs::set_permissions(&start, std::fs::Permissions::from_mode(0o755)).unwrap();
+    write_script(&start, "#!/bin/sh\n");
     native_environment(paths, name, &start, Some(gog_id));
     let products: Vec<Product> = std::iter::once(gog_id)
         .chain(dlc.iter().copied())

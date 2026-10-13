@@ -3,7 +3,7 @@
 
 use std::fs;
 use std::io::{Cursor, Write};
-use std::os::unix::fs::{MetadataExt, PermissionsExt};
+use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 
 use serde_json::{Value, json};
@@ -11,7 +11,7 @@ use wineo_core::gog::folder::{
     Committed, FolderLock, FolderState, Platform, Product, ProductStatus, Track,
 };
 
-use super::Fixture;
+use super::{Fixture, write_script};
 
 /// One entry in a fixture package, under `data/noarch/`.
 pub enum Item<'a> {
@@ -192,8 +192,7 @@ impl Fixture {
         )
         .unwrap();
         let start = dir.join("start.sh");
-        fs::write(&start, "#!/bin/sh\n").unwrap();
-        fs::set_permissions(&start, fs::Permissions::from_mode(0o755)).unwrap();
+        write_script(&start, "#!/bin/sh\n");
         self.add_installed(json!({
             "platform": "linux", "executable": "", "install_path": dir,
             "install_size": "5.03 GiB", "is_dlc": false, "version": "1.6.4871 rev588",

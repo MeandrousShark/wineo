@@ -212,6 +212,21 @@ Settled by the maintainer on 2026-10-12, before step 1:
     prefix before the installer runs, as `wineo start` does before a
     launch.
 
+Provisional, chosen overnight on 2026-10-13 while the maintainer was away
+(each can be overruled; see the board's "Waiting on you"):
+
+- **Owned DLC ids** come from `embed.gog.com/user/data/games`, the account's
+  full owned-ids list, since `getFilteredProducts` may list games only. To be
+  checked against a real account in step 3's real-GOG test and acceptance.
+- **Each product records its own installed language**, an optional field
+  that defaults to the folder's, so a DLC that fell back to English still
+  compares and updates in a game installed in another language. Matching
+  for updates uses the product's own language.
+- **An install writes the folder's state, with its `install` journal,
+  before the environment's config.** A crash between the two leaves a
+  journal that installing again (or `wineo update NAME`) resumes, rather
+  than a config whose state is lost.
+
 Carried from 0049's acceptance (2026-10-12):
 
 - Sizes GOG lists are rounded to whole MiB, so they're estimates; a file's

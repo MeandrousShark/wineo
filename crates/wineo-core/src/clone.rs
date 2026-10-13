@@ -625,8 +625,9 @@ fn shared_names(paths: &Paths, name: &str, prefixes: [&Path; 2]) -> Result<Vec<S
 
 #[cfg(test)]
 mod tests {
+    use crate::test_script::write_script;
     use std::ffi::OsString;
-    use std::os::unix::fs::{MetadataExt, PermissionsExt, symlink};
+    use std::os::unix::fs::{MetadataExt, symlink};
 
     use super::*;
 
@@ -939,12 +940,10 @@ mod tests {
                 runner_root.join(runner_name).join("bin/wine")
             };
             fs::create_dir_all(executable.parent().unwrap()).unwrap();
-            fs::write(&executable, b"#!/bin/sh\n").unwrap();
-            fs::set_permissions(&executable, fs::Permissions::from_mode(0o755)).unwrap();
+            write_script(&executable, b"#!/bin/sh\n");
             if !proton {
                 let server = executable.with_file_name("wineserver");
-                fs::write(&server, b"#!/bin/sh\n").unwrap();
-                fs::set_permissions(server, fs::Permissions::from_mode(0o755)).unwrap();
+                write_script(&server, b"#!/bin/sh\n");
             }
             fs::write(
                 paths.environment_config("source"),

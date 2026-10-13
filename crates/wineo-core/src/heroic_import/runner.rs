@@ -197,6 +197,7 @@ pub fn suggest_runner(
 
 #[cfg(test)]
 mod tests {
+    use crate::test_script::write_script;
     use std::fs;
     use std::path::Path;
 
@@ -576,8 +577,6 @@ mod tests {
 
     #[test]
     fn a_wine_named_folder_is_never_used_in_place() {
-        use std::os::unix::fs::PermissionsExt;
-
         let root = tempdir().unwrap();
         let global = scanning(root.path());
         let paths = paths(root.path());
@@ -587,8 +586,7 @@ mod tests {
         fs::write(root.path().join(".config/heroic/config.json"), "{}").unwrap();
         for executable in ["wine", "wineserver"] {
             let path = dir.join("bin").join(executable);
-            fs::write(&path, "#!/bin/sh\n").unwrap();
-            fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
+            write_script(&path, "#!/bin/sh\n");
         }
         let mut imported = reviewed_import(&root.path().join("prefix"));
         imported.runner.kind = HeroicRunnerKind::Wine;

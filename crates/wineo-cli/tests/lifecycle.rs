@@ -4,7 +4,7 @@
 mod common;
 
 use std::fs;
-use std::os::unix::fs::{PermissionsExt, symlink};
+use std::os::unix::fs::symlink;
 use std::os::unix::process::CommandExt;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
@@ -369,7 +369,7 @@ fn start_reports_wine_failing_to_spawn() {
     let f = Fixture::new();
     f.environment("app", APP);
     let wine = f.root.path().join("bin/wine");
-    fs::write(&wine, "#!/nonexistent/interpreter\n").unwrap();
+    write_script(&wine, "#!/nonexistent/interpreter\n");
 
     let started = f.run(&["start", "app"]);
     assert!(!started.status.success());
@@ -1061,8 +1061,7 @@ fn the_runner_root_can_be_moved() {
     fs::create_dir_all(&bin).unwrap();
     for (file, script) in [("wine", FAKE_WINE), ("wineserver", FAKE_WINESERVER)] {
         let path = bin.join(file);
-        fs::write(&path, script).unwrap();
-        fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
+        write_script(&path, script);
     }
 
     // Not in the default root, so it is invisible until the setting moves.

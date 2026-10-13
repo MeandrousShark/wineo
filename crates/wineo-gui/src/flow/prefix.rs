@@ -1020,9 +1020,10 @@ fn discard_prompt(palette: Palette) -> Element<'static, Event> {
 
 #[cfg(test)]
 mod tests {
+    use crate::test_script::write_script;
     use std::ffi::OsString;
     use std::fs;
-    use std::os::unix::fs::PermissionsExt;
+
     use std::path::Path;
 
     use super::*;
@@ -1038,8 +1039,7 @@ mod tests {
         fs::create_dir_all(&root).unwrap();
         for program in ["wine", "wineserver"] {
             let path = root.join(program);
-            fs::write(&path, "#!/bin/sh\nexit 0\n").unwrap();
-            fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
+            write_script(&path, "#!/bin/sh\nexit 0\n");
         }
     }
 

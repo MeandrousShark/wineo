@@ -857,8 +857,8 @@ fn plan_windows(
 
 #[cfg(test)]
 mod tests {
+    use crate::test_script::write_script;
     use std::fs;
-    use std::os::unix::fs::PermissionsExt;
 
     use tempfile::tempdir;
 
@@ -1225,8 +1225,7 @@ mod tests {
         fn native(&mut self, id: &str, title: &str) {
             let exe = self.root.join(format!("games/{id}"));
             fs::create_dir_all(exe.parent().unwrap()).unwrap();
-            fs::write(&exe, "#!/bin/sh\n").unwrap();
-            fs::set_permissions(&exe, fs::Permissions::from_mode(0o755)).unwrap();
+            write_script(&exe, "#!/bin/sh\n");
             self.games.push(format!(
                 r#"{{"app_name":"{id}","title":"{title}","runner":"sideload","install":{{"platform":"linux","executable":"{}"}}}}"#,
                 exe.display()

@@ -811,6 +811,7 @@ fn write_new(path: &Path, contents: &str) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
+    use crate::test_script::write_script;
     use std::ffi::OsString;
 
     use super::*;
@@ -1389,7 +1390,6 @@ mod tests {
 
     #[test]
     fn canceling_prefix_creation_from_another_thread_removes_partial_state() {
-        use std::os::unix::fs::PermissionsExt;
         use std::thread;
         use std::time::{Duration, Instant};
 
@@ -1398,12 +1398,10 @@ mod tests {
         let prefix = root.path().join("home/prefixes/canceled");
         let marker = prefix.join("partial");
         let runner_path = root.path().join("fake-wine");
-        fs::write(
+        write_script(
             &runner_path,
             "#!/bin/sh\ncase \"$1\" in\n  wineboot)\n    printf partial > \"$WINEPREFIX/partial\"\n    trap 'exit 0' TERM\n    while :; do sleep 1; done\n    ;;\n  reg|-w|-k) exit 0 ;;\nesac\nexit 0\n",
-        )
-        .unwrap();
-        fs::set_permissions(&runner_path, fs::Permissions::from_mode(0o755)).unwrap();
+        );
         let runner = Runner::wine_build("fake".to_owned(), runner_path.clone(), runner_path);
         let token = Token::new();
         let worker_token = token.clone();
@@ -1466,7 +1464,6 @@ mod tests {
 
     #[test]
     fn canceling_into_an_existing_empty_dir_empties_it_and_keeps_it() {
-        use std::os::unix::fs::PermissionsExt;
         use std::thread;
         use std::time::{Duration, Instant};
 
@@ -1480,15 +1477,13 @@ mod tests {
         let marker = prefix.join("partial");
         let runner_path = root.path().join("fake-wine");
         // Leaves a subdirectory and a symlink out of the prefix behind.
-        fs::write(
+        write_script(
             &runner_path,
             format!(
                 "#!/bin/sh\ncase \"$1\" in\n  wineboot)\n    mkdir -p \"$WINEPREFIX/sub/deeper\"\n    ln -s '{}' \"$WINEPREFIX/link\"\n    printf partial > \"$WINEPREFIX/partial\"\n    trap 'exit 0' TERM\n    while :; do sleep 1; done\n    ;;\n  reg|-w|-k) exit 0 ;;\nesac\nexit 0\n",
                 outside.display()
             ),
-        )
-        .unwrap();
-        fs::set_permissions(&runner_path, fs::Permissions::from_mode(0o755)).unwrap();
+        );
         let runner = Runner::wine_build("fake".to_owned(), runner_path.clone(), runner_path);
         let token = Token::new();
         let worker_token = token.clone();

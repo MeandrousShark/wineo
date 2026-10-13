@@ -1,7 +1,11 @@
 use std::fs;
-use std::os::unix::fs::{PermissionsExt, symlink};
+use std::os::unix::fs::symlink;
 use std::path::Path;
 use std::process::Command;
+
+#[path = "../../wineo-core/tests/common/test_script.rs"]
+mod test_script;
+use test_script::write_script;
 
 fn write_environment(root: &Path, name: &str, contents: &str) {
     let dir = root.join("config/wineo/environments");
@@ -99,8 +103,7 @@ fn removal_completes_only_installed_build_names() {
     fs::create_dir_all(&runner_bin).unwrap();
     for name in ["wine", "wineserver"] {
         let path = runner_bin.join(name);
-        fs::write(&path, "#!/bin/sh\nexit 0\n").unwrap();
-        fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
+        write_script(&path, "#!/bin/sh\nexit 0\n");
     }
     symlink(
         "wine-tkg",
@@ -506,15 +509,12 @@ fn art_completes_environments_targets_and_kinds() {
 
 #[test]
 fn path_arguments_complete_paths_of_their_kind() {
-    use std::os::unix::fs::PermissionsExt;
-
     let root = tempfile::tempdir().unwrap();
     fixture(root.path());
     let games = root.path().join("games");
     fs::create_dir_all(games.join("sub")).unwrap();
     fs::write(games.join("readme.txt"), "").unwrap();
-    fs::write(games.join("run.sh"), "#!/bin/sh\n").unwrap();
-    fs::set_permissions(games.join("run.sh"), fs::Permissions::from_mode(0o755)).unwrap();
+    write_script(games.join("run.sh"), "#!/bin/sh\n");
 
     let complete = |words: &[&str]| {
         let mut found = complete_in(root.path(), None, root.path(), "fish", words);

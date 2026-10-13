@@ -665,9 +665,10 @@ fn add_default_target(
 
 #[cfg(test)]
 mod tests {
+    use crate::test_script::write_script;
     use std::ffi::OsString;
     use std::fs;
-    use std::os::unix::fs::PermissionsExt;
+
     use std::path::Path;
 
     use super::*;
@@ -687,8 +688,7 @@ mod tests {
         fs::create_dir_all(&bin).unwrap();
         for program in ["wine", "wineserver"] {
             let path = bin.join(program);
-            fs::write(&path, "#!/bin/sh\nexit 0\n").unwrap();
-            fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
+            write_script(&path, "#!/bin/sh\nexit 0\n");
         }
     }
 
@@ -958,14 +958,12 @@ mod tests {
             .join(name);
         fs::create_dir_all(&dir).unwrap();
         let script = dir.join("proton");
-        fs::write(&script, "#!/bin/sh\nexit 0\n").unwrap();
-        fs::set_permissions(script, fs::Permissions::from_mode(0o755)).unwrap();
+        write_script(&script, "#!/bin/sh\nexit 0\n");
         let bin = dir.join("files/bin");
         fs::create_dir_all(&bin).unwrap();
         for program in ["wine", "wineserver"] {
             let file = bin.join(program);
-            fs::write(&file, "#!/bin/sh\nexit 0\n").unwrap();
-            fs::set_permissions(file, fs::Permissions::from_mode(0o755)).unwrap();
+            write_script(&file, "#!/bin/sh\nexit 0\n");
         }
         dir
     }
@@ -1054,8 +1052,7 @@ mod tests {
         let bin = root.path().join("bin");
         fs::create_dir_all(&bin).unwrap();
         let exe = bin.join("game");
-        fs::write(&exe, "#!/bin/sh\nexit 0\n").unwrap();
-        fs::set_permissions(&exe, fs::Permissions::from_mode(0o755)).unwrap();
+        write_script(&exe, "#!/bin/sh\nexit 0\n");
         let mut global = GlobalConfig::default();
         global.env.insert("PATH".into(), bin.display().to_string());
         let before = snapshot_tree(root.path());
@@ -1229,8 +1226,7 @@ mod tests {
             .join("proton-test");
         fs::create_dir_all(&proton).unwrap();
         let script = proton.join("proton");
-        fs::write(&script, "#!/bin/sh\nexit 0\n").unwrap();
-        fs::set_permissions(script, fs::Permissions::from_mode(0o755)).unwrap();
+        write_script(&script, "#!/bin/sh\nexit 0\n");
         let mut request = request("game");
         request.runner = Some("proton-test".to_owned());
         request.arch = Some(Arch::Win32);
@@ -1372,9 +1368,9 @@ mod tests {
             .runner_root(paths)
             .unwrap()
             .join("fake/bin/wine");
-        crate::test_script::write_script(
+        write_script(
             &wine,
-            &format!(
+            format!(
                 "#!/bin/sh\n\
                  case \"$*\" in\n\
                  'wineboot --init') echo 'WINE REGISTRY Version 2' > \"$WINEPREFIX/system.reg\" ;;\n\

@@ -4,7 +4,6 @@
 mod common;
 
 use std::fs;
-use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
@@ -52,7 +51,7 @@ fn slow_wineboot(f: &Fixture) {
         1,
     );
     assert_ne!(script, FAKE_WINE);
-    fs::write(wine, script).unwrap();
+    write_script(wine, script);
 }
 
 fn interrupt(child: &std::process::Child) {
@@ -202,8 +201,7 @@ fn winetricks_builds_a_missing_prefix() {
     let bin = f.root.path().join("bin-winetricks");
     fs::create_dir_all(&bin).unwrap();
     let winetricks = bin.join("winetricks");
-    fs::write(&winetricks, "#!/bin/sh\necho \"winetricks: $*\"\n").unwrap();
-    fs::set_permissions(&winetricks, fs::Permissions::from_mode(0o755)).unwrap();
+    write_script(&winetricks, "#!/bin/sh\necho \"winetricks: $*\"\n");
     let path = std::env::join_paths(std::iter::once(bin).chain(std::env::split_paths(&f.path_var)))
         .unwrap();
     let prefix = f.prefix_root().join("app");

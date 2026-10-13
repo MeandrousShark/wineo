@@ -857,6 +857,7 @@ pub(crate) fn is_executable(path: &Path) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use crate::test_script::write_script;
     use std::ffi::OsString;
     use std::fs;
 
@@ -869,8 +870,7 @@ mod tests {
         // Not executable, so it must be skipped.
         fs::write(first.path().join("wine"), "").unwrap();
         let wine = second.path().join("wine");
-        fs::write(&wine, "").unwrap();
-        fs::set_permissions(&wine, fs::Permissions::from_mode(0o755)).unwrap();
+        write_script(&wine, "");
 
         let path_var = std::env::join_paths([
             "relative",
@@ -894,11 +894,14 @@ mod tests {
         let server = root.path().join("wineserver");
         let started = root.path().join("started");
         let killed = root.path().join("killed");
-        fs::write(&server, format!(
-            "#!/bin/sh\nif [ \"$1\" = -k ]; then\n  touch '{}'\nelse\n  touch '{}'\n  exec sleep 30\nfi\n",
-            killed.display(), started.display()
-        )).unwrap();
-        fs::set_permissions(&server, fs::Permissions::from_mode(0o755)).unwrap();
+        write_script(
+            &server,
+            format!(
+                "#!/bin/sh\nif [ \"$1\" = -k ]; then\n  touch '{}'\nelse\n  touch '{}'\n  exec sleep 30\nfi\n",
+                killed.display(),
+                started.display()
+            ),
+        );
         let runner = Runner::wine_build("fake".to_owned(), server.clone(), server);
         let token = crate::cancel::Token::new();
         let cancel = token.clone();

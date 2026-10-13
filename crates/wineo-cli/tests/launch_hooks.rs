@@ -4,7 +4,6 @@ mod common;
 
 use std::ffi::OsString;
 use std::fs::{self, File};
-use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::thread;
@@ -39,8 +38,7 @@ fn native_environment(f: &Fixture, name: &str, exe: &Path, hooks: &str) {
 
 fn install_native_program(f: &Fixture, name: &str, script: &str) -> PathBuf {
     let path = f.root.path().join("bin").join(name);
-    fs::write(&path, script).unwrap();
-    fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
+    write_script(&path, script);
     path
 }
 
@@ -62,7 +60,7 @@ fn hooked_targets(target: &str, before: Option<&str>, after: Option<&str>) -> St
 
 fn install_program_marker(f: &Fixture, program: &str, marker: &std::path::Path) {
     let real = f.root.path().join("bin/wine.real");
-    fs::copy(f.root.path().join("bin/wine"), &real).unwrap();
+    write_script(&real, fs::read(f.root.path().join("bin/wine")).unwrap());
     let wrapper = format!(
         "#!/bin/sh\nif [ \"$1\" = {} ]; then printf '%s\\n' program >> {}; exit 0; fi\nexec {} \"$@\"\n",
         shell_quote(program),
@@ -70,8 +68,7 @@ fn install_program_marker(f: &Fixture, program: &str, marker: &std::path::Path) 
         shell_quote(&real.display().to_string())
     );
     let path = f.root.path().join("bin/wine");
-    fs::write(&path, wrapper).unwrap();
-    fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
+    write_script(&path, wrapper);
 }
 
 fn append_marker(marker: &std::path::Path, value: &str) -> String {
@@ -282,8 +279,7 @@ fn failed_or_canceled_winetricks_runs_after_once_and_preserves_the_error() {
                 "#!/bin/sh\nexit 7\n".to_owned()
             };
             let winetricks = f.root.path().join("bin/winetricks");
-            fs::write(&winetricks, script).unwrap();
-            fs::set_permissions(&winetricks, fs::Permissions::from_mode(0o755)).unwrap();
+            write_script(&winetricks, script);
             let child = spawn_wineo(&f, &[mode, "app"]);
             let pid = child.id();
             if cancel {
@@ -339,12 +335,10 @@ fn failed_launch_blocks_exclusive_operations_through_launcher_cleanup() {
             ),
         );
         let winetricks = f.root.path().join("bin/winetricks");
-        fs::write(
+        write_script(
             &winetricks,
             format!("#!/bin/sh\n{}; exit 7\n", gate_hook(&preparation, &fail)),
-        )
-        .unwrap();
-        fs::set_permissions(&winetricks, fs::Permissions::from_mode(0o755)).unwrap();
+        );
         let child = spawn_wineo(&f, &[mode, "app"]);
         let pid = child.id();
         wait_for("preparation after before", || preparation.exists());
@@ -397,8 +391,7 @@ fn launcher_cleanup_after_uses_the_two_signal_wait_then_kill_behavior() {
         ),
     );
     let wine = f.root.path().join("bin/wine");
-    fs::write(&wine, "#!/nonexistent/interpreter\n").unwrap();
-    fs::set_permissions(&wine, fs::Permissions::from_mode(0o755)).unwrap();
+    write_script(&wine, "#!/nonexistent/interpreter\n");
 
     let stderr_path = f.root.path().join("run.stderr");
     let run = spawn_wineo_with_stderr(&f, &["run", "app"], &stderr_path);
@@ -1218,8 +1211,7 @@ fn after_receives_exit_values_and_runs_after_a_failed_spawn() {
             ),
         );
         let wine = f.root.path().join("bin/wine");
-        fs::write(&wine, "#!/nonexistent/interpreter\n").unwrap();
-        fs::set_permissions(&wine, fs::Permissions::from_mode(0o755)).unwrap();
+        write_script(&wine, "#!/nonexistent/interpreter\n");
         let child = spawn_wineo(&f, &[mode, "app"]);
         let pid = child.id();
         let failed = child.wait_with_output().unwrap();
@@ -1865,8 +1857,7 @@ fn failed_spawn_preserves_the_previous_real_run_record() {
         assert!(previous.contains("status = \"exited\""), "{previous}");
 
         let wine = f.root.path().join("bin/wine");
-        fs::write(&wine, "#!/nonexistent/interpreter\n").unwrap();
-        fs::set_permissions(&wine, fs::Permissions::from_mode(0o755)).unwrap();
+        write_script(&wine, "#!/nonexistent/interpreter\n");
         let failed = f.run(&[mode, "app"]);
         assert!(!failed.status.success(), "{mode}: {}", stderr(&failed));
         assert_eq!(
@@ -1895,8 +1886,7 @@ fn exec_winetricks_and_installers_do_not_run_hooks() {
     assert_success(&f.run(&["exec", "app", "exit-0"]));
 
     let winetricks = f.root.path().join("bin/winetricks");
-    fs::write(&winetricks, "#!/bin/sh\nexit 0\n").unwrap();
-    fs::set_permissions(&winetricks, fs::Permissions::from_mode(0o755)).unwrap();
+    write_script(&winetricks, "#!/bin/sh\nexit 0\n");
     assert_success(&f.run(&["winetricks", "app", "list-installed"]));
 
     f.write_template(

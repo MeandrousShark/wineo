@@ -1,7 +1,6 @@
 mod common;
 
 use std::fs;
-use std::os::unix::fs::PermissionsExt;
 
 use common::*;
 
@@ -10,12 +9,10 @@ const EXIT: &str = "winetricks = ['win10', 'corefonts']\n[targets.app]\nexe = 'e
 
 fn fake_winetricks(f: &Fixture) {
     let script = f.root.path().join("bin/winetricks");
-    fs::write(
+    write_script(
         &script,
         "#!/bin/sh\nprintf 'winetricks: %s FAKE_VAR=%s\\n' \"$*\" \"${FAKE_VAR-}\"\nprintf '%s\\n' \"$*\" >>\"$WINEPREFIX/winetricks-calls\"\n[ \"$1\" = -q ] || exit 0\nshift\nfor verb in \"$@\"; do\n    [ \"$verb\" = \"${WINEO_TEST_FAIL_VERB-}\" ] && exit 1\n    printf '%s\\n' \"$verb\" >>\"$WINEPREFIX/winetricks.log\"\ndone\n",
-    )
-    .unwrap();
-    fs::set_permissions(script, fs::Permissions::from_mode(0o755)).unwrap();
+    );
 }
 
 #[test]
