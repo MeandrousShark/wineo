@@ -19,7 +19,7 @@ use signal_hook::consts::{SIGHUP, SIGINT, SIGTERM, SIGUSR1};
 use signal_hook::iterator::exfiltrator::raw::WithRawSiginfo;
 use signal_hook::iterator::{Handle, SignalsInfo};
 
-use crate::cancel::Token;
+use crate::cancel::{Subscription, Token};
 use crate::error::{self, Error, IoContext, Result};
 use crate::launch::{Host, Launch, Overrides};
 use crate::log::{Cap, Log};
@@ -58,6 +58,7 @@ enum Event {
     StopTimeout,
     /// Nothing else happened for `HEARTBEAT_INTERVAL`, so the run is still live.
     Heartbeat,
+    /// The token changed, or something else worth rechecking happened.
     Pulse,
 }
 
@@ -117,6 +118,8 @@ pub struct Supervisor {
     signals: Option<Handle>,
     signal_thread: Option<JoinHandle<()>>,
     token: Option<Token>,
+    /// Wakes the loop when the token rises; ends with the supervisor.
+    _subscription: Option<Subscription>,
 }
 
 impl Supervisor {
@@ -161,18 +164,26 @@ impl Supervisor {
             signals: Some(handle),
             signal_thread: Some(signal_thread),
             token: None,
+            _subscription: None,
         })
     }
 
     /// Watches stop requests supplied by a caller rather than process signals.
     pub fn with_token(token: &Token) -> Self {
         let (sender, events) = mpsc::channel();
+        let wake = sender.clone();
+        // Subscribing before the loop's first check means a cancel can't fall
+        // between the two.
+        let subscription = token.subscribe(move || {
+            let _ = wake.send(Event::Pulse);
+        });
         Self {
             events,
             sender,
             signals: None,
             signal_thread: None,
             token: Some(token.clone()),
+            _subscription: Some(subscription),
         }
     }
 
@@ -330,41 +341,26 @@ impl Supervisor {
             } else if self.token.as_ref().is_some_and(Token::is_canceled) && !saw_cancel {
                 saw_cancel = true;
                 Event::Stop
-            } else if self.token.is_some() {
-                let now = Instant::now();
+            } else {
                 let until = deadline.unwrap_or(heartbeat_at);
-                let timeout = until
-                    .saturating_duration_since(now)
-                    .min(Duration::from_millis(20));
-                match self.events.recv_timeout(timeout) {
+                match self
+                    .events
+                    .recv_timeout(until.saturating_duration_since(Instant::now()))
+                {
                     Ok(event) => event,
                     Err(RecvTimeoutError::Timeout)
                         if deadline.is_some_and(|d| d <= Instant::now()) =>
                     {
                         Event::StopTimeout
                     }
-                    Err(RecvTimeoutError::Timeout) if heartbeat_at <= Instant::now() => {
+                    Err(RecvTimeoutError::Timeout)
+                        if deadline.is_none() && heartbeat_at <= Instant::now() =>
+                    {
                         heartbeat_at = Instant::now() + HEARTBEAT_INTERVAL;
                         Event::Heartbeat
                     }
                     Err(RecvTimeoutError::Timeout) => Event::Pulse,
                     Err(RecvTimeoutError::Disconnected) => break lost(),
-                }
-            } else {
-                match deadline {
-                    Some(deadline) => match self
-                        .events
-                        .recv_timeout(deadline.saturating_duration_since(Instant::now()))
-                    {
-                        Ok(event) => event,
-                        Err(RecvTimeoutError::Timeout) => Event::StopTimeout,
-                        Err(RecvTimeoutError::Disconnected) => break lost(),
-                    },
-                    None => match self.events.recv_timeout(HEARTBEAT_INTERVAL) {
-                        Ok(event) => event,
-                        Err(RecvTimeoutError::Timeout) => Event::Heartbeat,
-                        Err(RecvTimeoutError::Disconnected) => break lost(),
-                    },
                 }
             };
             match event {
