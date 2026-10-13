@@ -2,6 +2,7 @@ pub(crate) mod artwork;
 mod clone;
 mod gog;
 mod gog_install;
+mod gog_posters;
 mod gog_update;
 mod heroic;
 pub(crate) mod new;

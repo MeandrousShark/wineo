@@ -330,9 +330,8 @@ Step 6's choices (2026-10-13, provisional while the maintainer was away):
 
 Step 7's choices (2026-10-13, provisional while the maintainer was away):
 
-- **Import from GOG lists owned games as text tiles**, without posters for
-  games that aren't installed: fetching covers for every owned game is a
-  network and cache question for later.
+- ~~Import from GOG lists owned games as text tiles~~; overruled during
+  acceptance, see below.
 - **Games folder and GOG language** sit in Settings' GOG section, and both
   are off in a portable folder.
 - **A program picked after a Windows install** is named from its file, like
@@ -345,6 +344,19 @@ Step 7's choices (2026-10-13, provisional while the maintainer was away):
   owned games show a note to log in.
 - **A typed language or folder is checked on Enter**; Install stays off
   until it has been, since each check asks GOG which DLC you own.
+
+Changed during acceptance, at the maintainer's request (2026-10-13):
+
+- **Import from GOG shows posters.** A game wineo already has uses its
+  environment's stored grid art; any other uses GOG's box art, downloaded
+  once into a host-only cache (`$XDG_CACHE_HOME/wineo/gog-covers/`) by one
+  worker, one cover at a time. A cover that can't be fetched keeps the text
+  tile.
+
+Fixed during acceptance (2026-10-13):
+
+- A tile's reason, like a long `Already migrated as NAME.`, ran past the
+  tile; it now wraps to two lines and is cut with an ellipsis, like titles.
 
 Carried from 0049's acceptance (2026-10-12):
 

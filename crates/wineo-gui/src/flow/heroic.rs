@@ -2721,6 +2721,7 @@ const TILE_POSTER_HEIGHT: f32 = 180.0;
 /// so every row is the same height.
 const TILE_HEIGHT: f32 = 262.0;
 const TILE_TITLE_SIZE: f32 = 13.0;
+const TILE_REASON_SIZE: f32 = 11.0;
 pub(super) const TILE_GAP: f32 = 12.0;
 
 /// How many tiles fit across a flow dialog `width` wide, after the page's
@@ -3016,7 +3017,18 @@ pub(super) fn tile<'a, Message: Clone + 'a>(
     .padding([0.0, RING_INSET])
     .width(TILE_OUTER_WIDTH);
     if let Some(reason) = tile.reason {
-        details = details.push(text(reason).size(11).color(palette.warning));
+        // Balanced and cut like the title, since the tile is clipped and a
+        // freely wrapping reason would lose its end.
+        details = details.push(
+            text(
+                crate::tile_title::lines(&reason, TILE_WIDTH, TILE_REASON_SIZE, Font::DEFAULT)
+                    .join("\n"),
+            )
+            .size(TILE_REASON_SIZE)
+            .height(crate::tile_title::two_line_height(TILE_REASON_SIZE))
+            .color(palette.warning)
+            .wrapping(iced::widget::text::Wrapping::None),
+        );
     }
     if let Some(note) = tile.note {
         details = details.push(text(note).size(11).color(palette.muted));
@@ -4067,6 +4079,32 @@ mod tests {
             heights.push(title.y);
         }
         assert_eq!(heights[0], heights[1]);
+    }
+
+    #[test]
+    fn a_long_reason_stays_inside_the_tile_in_two_lines() {
+        use crate::layout_probe::{bounds_at, layout};
+        let size = iced::Size::new(400.0, 400.0);
+        for reason in [
+            "Already migrated as disco-elysium-the-final-cut.",
+            "Already migrated as a",
+        ] {
+            let mut view = tile(
+                Tile {
+                    reason: Some(reason.to_owned()),
+                    ..sample_tile("Disco Elysium - The Final Cut")
+                },
+                Palette::DARK,
+                Event::Toggle(0),
+            );
+            let node = layout(&mut view, size);
+            let reason = bounds_at(&node, &[0, 1, 1]);
+            assert_eq!(
+                reason.height,
+                crate::tile_title::two_line_height(TILE_REASON_SIZE)
+            );
+            assert!(reason.y + reason.height <= node.bounds().y + TILE_HEIGHT);
+        }
     }
 
     #[test]

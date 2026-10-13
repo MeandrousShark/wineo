@@ -206,6 +206,13 @@ impl Paths {
         self.cache.join("art")
     }
 
+    /// GOG's box art for games a user owns but wineo has no art for yet, one
+    /// `<id>.<ext>` each. Beside `art_cache_dir`, not inside it, since that one
+    /// holds thumbnails of stored art. On the host like any cache.
+    pub fn gog_covers_dir(&self) -> PathBuf {
+        self.cache.join("gog-covers")
+    }
+
     /// The cached list of Steam games an account owns. Always on the host,
     /// like any cache.
     pub fn steam_owned_cache(&self, steam_id: u64) -> PathBuf {
@@ -664,6 +671,27 @@ mod tests {
         assert_eq!(
             paths.art_cache_dir(),
             Path::new("/home/me/.cache/wineo/art")
+        );
+    }
+
+    #[test]
+    fn gog_covers_follow_xdg_cache_home_beside_the_art_cache() {
+        let paths = paths(&[("HOME", "/home/me"), ("XDG_CACHE_HOME", "/cache")]).unwrap();
+        assert_eq!(paths.gog_covers_dir(), Path::new("/cache/wineo/gog-covers"));
+        let paths = self::paths(&[("HOME", "/home/me"), ("XDG_CACHE_HOME", "relative")]).unwrap();
+        assert_eq!(
+            paths.gog_covers_dir(),
+            Path::new("/home/me/.cache/wineo/gog-covers")
+        );
+        assert!(!paths.gog_covers_dir().starts_with(paths.art_cache_dir()));
+    }
+
+    #[test]
+    fn gog_covers_stay_on_the_host_in_a_portable_folder() {
+        let paths = portable(&[("HOME", "/home/me")], Some("/mnt/usb/wineo")).unwrap();
+        assert_eq!(
+            paths.gog_covers_dir(),
+            Path::new("/home/me/.cache/wineo/gog-covers")
         );
     }
 

@@ -3,11 +3,12 @@
 //! wineo. A migration is reviewed, applied, then adds GOG's playtime and
 //! art, which never fails the migration.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use iced::futures::channel::mpsc::unbounded;
 use iced::keyboard::{self, Key, key::Named};
-use iced::widget::{Row, column, container, pick_list, row, text};
+use iced::widget::{Row, column, container, image, pick_list, row, text};
 use iced::{Center, Element, Fill, Task, border};
 use wineo_core::art::{Kind, Source};
 use wineo_core::cancel::Token;
@@ -28,6 +29,7 @@ use wineo_core::steamgriddb;
 
 use super::Action;
 use super::gog_install::{self, Install, Leave, Offer};
+use super::gog_posters::{self, Job, Network, Source as PosterSource};
 use super::heroic::{self, Prerequisite, Tile};
 use crate::runner_label::Choice;
 use crate::theme::Palette;
@@ -159,6 +161,16 @@ pub(crate) enum Event {
     /// An install's event, with the instance it belongs to, so a reply to
     /// a review that was left can't reach the next one.
     Installing(u64, Box<gog_install::Event>),
+    /// A decoded poster, with the load it belongs to and the id of its tile.
+    Poster(u64, String, Result<image::Handle, String>),
+}
+
+/// Numbers each poster load across pages, so a late reply from a page that
+/// was left can't match the load of the one opened next.
+static POSTER_LOADS: AtomicU64 = AtomicU64::new(0);
+
+fn next_poster_load() -> u64 {
+    POSTER_LOADS.fetch_add(1, Ordering::Relaxed)
 }
 
 pub(crate) struct Page {
@@ -182,6 +194,20 @@ pub(crate) struct Page {
     focus: Option<usize>,
     /// Whether `focus` came from the keyboard, which draws the ring.
     focus_visible: bool,
+    /// Decoded posters by tile id. None when a game's poster failed to load,
+    /// which keeps its text tile.
+    posters: HashMap<String, Option<image::Handle>>,
+    poster_generation: u64,
+    /// Stops the worker loading posters for a listing that is gone.
+    poster_token: Option<Token>,
+}
+
+impl Drop for Page {
+    fn drop(&mut self) {
+        if let Some(token) = &self.poster_token {
+            token.cancel();
+        }
+    }
 }
 
 impl Page {
@@ -204,6 +230,9 @@ impl Page {
             install_instance: 0,
             focus: None,
             focus_visible: false,
+            posters: HashMap::new(),
+            poster_generation: next_poster_load(),
+            poster_token: None,
         };
         let task = page.list();
         (page, task)
@@ -286,7 +315,14 @@ impl Page {
             Step::Working | Step::Install => {}
             Step::Finished => self.exit(),
         }
-        Task::none()
+        if self.step == Step::Games && self.action.is_none() && self.listing.is_some() {
+            // The posters still loading belong to a load that is now stale,
+            // so pick up the ones not yet decoded under a new one.
+            self.load_posters()
+        } else {
+            self.stop_posters();
+            Task::none()
+        }
     }
 
     /// Wraps the install's task, and follows where it leaves to.
@@ -399,6 +435,8 @@ impl Page {
     fn list(&mut self) -> Task<Event> {
         self.step = Step::Games;
         self.listing = None;
+        self.posters.clear();
+        self.stop_posters();
         self.status = "Reading your GOG games...".to_owned();
         let generation = self.next_generation();
         let paths = self.paths.clone();
@@ -410,6 +448,84 @@ impl Page {
             },
             move |result| Event::Listed(generation, result),
         )
+    }
+
+    /// Invalidates the poster load in flight, so its replies are dropped and
+    /// its worker stops at the next game.
+    fn stop_posters(&mut self) {
+        if let Some(token) = self.poster_token.take() {
+            token.cancel();
+        }
+        self.poster_generation = next_poster_load();
+    }
+
+    /// Loads the listing's posters that aren't decoded yet on one worker,
+    /// which sends each as it finishes.
+    fn load_posters(&mut self) -> Task<Event> {
+        self.stop_posters();
+        let jobs = self.poster_jobs();
+        if jobs.is_empty() {
+            return Task::none();
+        }
+        let token = Token::new();
+        self.poster_token = Some(token.clone());
+        let generation = self.poster_generation;
+        let paths = self.paths.clone();
+        let (sender, receiver) = unbounded();
+        let work = Task::future(async move {
+            let _ = tokio::task::spawn_blocking(move || {
+                gog_posters::run(&paths, jobs, &token, Network::open, |id, poster| {
+                    let _ = sender.unbounded_send(Event::Poster(generation, id, poster));
+                });
+            })
+            .await;
+        });
+        Task::batch([Task::run(receiver, |event| event), work.discard()])
+    }
+
+    /// A poster to load for every tile that has none yet, in grid order. A
+    /// game wineo has uses the art it stored; the others use GOG's cover.
+    fn poster_jobs(&self) -> Vec<Job> {
+        let Some(listing) = &self.listing else {
+            return Vec::new();
+        };
+        Self::entries(listing)
+            .into_iter()
+            .filter_map(|entry| {
+                let (id, source) = match entry {
+                    Entry::Heroic(index) => {
+                        let candidate = &listing.games[index];
+                        let id = candidate.game.id.clone();
+                        let source = match &candidate.standing {
+                            Standing::Already { environment } => {
+                                PosterSource::Stored(environment.clone())
+                            }
+                            Standing::Ready(_) | Standing::Failed(_) => {
+                                PosterSource::Cover(id.parse().ok()?)
+                            }
+                        };
+                        (id, source)
+                    }
+                    Entry::Owned(index) => {
+                        let owned = &listing.owned[index];
+                        let source = match &owned.state {
+                            OwnedState::Installed(name) | OwnedState::Imported(name) => {
+                                PosterSource::Stored(name.clone())
+                            }
+                            OwnedState::NotInstalled | OwnedState::Unfinished => {
+                                PosterSource::Cover(owned.offer.gog_id)
+                            }
+                        };
+                        (owned.offer.gog_id.to_string(), source)
+                    }
+                };
+                (!self.posters.contains_key(&id)).then_some(Job { id, source })
+            })
+            .collect()
+    }
+
+    fn poster(&self, id: &str) -> Option<&image::Handle> {
+        self.posters.get(id).and_then(Option::as_ref)
     }
 
     fn prepare(&mut self, runner: Option<String>) -> Task<Event> {
@@ -547,9 +663,16 @@ impl Page {
             Event::Listed(generation, result) if generation == self.generation => {
                 self.status.clear();
                 match result {
-                    Ok(listing) => self.listing = Some(listing),
+                    Ok(listing) => {
+                        self.listing = Some(listing);
+                        return self.load_posters();
+                    }
                     Err(error) => self.error = Some(error),
                 }
+                Task::none()
+            }
+            Event::Poster(generation, id, result) if generation == self.poster_generation => {
+                self.posters.insert(id, result.ok());
                 Task::none()
             }
             Event::Pick(index) if self.step == Step::Games && !self.waiting() => {
@@ -826,7 +949,7 @@ impl Page {
             .iter()
             .enumerate()
             .map(|(position, entry)| {
-                let (title, reason, note, dimmed, event) = match *entry {
+                let (id, title, reason, note, dimmed, event) = match *entry {
                     Entry::Heroic(index) => {
                         let candidate = &listing.games[index];
                         let (reason, note) = match &candidate.standing {
@@ -837,6 +960,7 @@ impl Page {
                             Standing::Failed(reason) => (Some(reason.clone()), None),
                         };
                         (
+                            candidate.game.id.clone(),
                             candidate.game.title.as_str(),
                             reason,
                             note,
@@ -861,6 +985,7 @@ impl Page {
                             }
                         };
                         (
+                            owned.offer.gog_id.to_string(),
                             owned.offer.title.as_str(),
                             reason,
                             note,
@@ -872,7 +997,7 @@ impl Page {
                 heroic::tile(
                     Tile {
                         title,
-                        poster: None,
+                        poster: self.poster(&id),
                         reason,
                         note,
                         chosen: false,
@@ -2602,5 +2727,598 @@ mod tests {
         let install = page.install.as_ref().unwrap();
         assert_eq!(install.planned(), None);
         assert!(install.waiting(), "Disco Elysium is still being planned");
+    }
+
+    // -- posters --
+
+    fn png_bytes() -> Vec<u8> {
+        let mut bytes = std::io::Cursor::new(Vec::new());
+        ::image::RgbaImage::from_pixel(8, 12, ::image::Rgba([200, 30, 30, 255]))
+            .write_to(&mut bytes, ::image::ImageFormat::Png)
+            .unwrap();
+        bytes.into_inner()
+    }
+
+    fn handle() -> image::Handle {
+        image::Handle::from_rgba(1, 1, vec![0; 4])
+    }
+
+    /// Serves one body for every cover URL, and records the requests.
+    struct Covers {
+        status: u16,
+        body: Vec<u8>,
+        seen: std::sync::Mutex<Vec<String>>,
+    }
+
+    impl Covers {
+        fn new(status: u16, body: Vec<u8>) -> Self {
+            Self {
+                status,
+                body,
+                seen: std::sync::Mutex::new(Vec::new()),
+            }
+        }
+
+        fn count(&self) -> usize {
+            self.seen.lock().unwrap().len()
+        }
+    }
+
+    impl wineo_core::download::Transport for Covers {
+        fn get(&self, url: &str) -> anyhow::Result<Box<dyn std::io::Read>> {
+            anyhow::bail!("unexpected plain request to {url}")
+        }
+
+        fn request(
+            &self,
+            url: &str,
+            _bearer: Option<&str>,
+        ) -> anyhow::Result<wineo_core::download::Response> {
+            self.seen.lock().unwrap().push(url.to_owned());
+            Ok(wineo_core::download::Response {
+                status: self.status,
+                body: Box::new(std::io::Cursor::new(self.body.clone())),
+            })
+        }
+    }
+
+    /// A GOG whose art answer names a cover for whichever game is asked
+    /// about, or fails with 500.
+    fn art_server(works: bool) -> crate::gog_fake::Server {
+        crate::gog_fake::Server::start(move |line| {
+            let path = line.split(' ').nth(1).unwrap_or_default();
+            let path = path.split('?').next().unwrap_or_default();
+            match path.strip_prefix("/v2/games/") {
+                Some(id) if works => crate::gog_fake::reply(
+                    200,
+                    &serde_json::json!({
+                        "_links": {"boxArtImage": {"href": format!("https://images.example/{id}.png")}},
+                        "_embedded": {"product": {"id": id.parse::<u64>().unwrap(), "title": "X"}},
+                    })
+                    .to_string(),
+                ),
+                _ => crate::gog_fake::reply(500, "{}"),
+            }
+        })
+    }
+
+    fn owned_game_in(id: u64, title: &str, state: OwnedState) -> Owned {
+        Owned {
+            offer: Offer {
+                gog_id: id,
+                title: title.to_owned(),
+                linux: true,
+                windows: false,
+                unfinished: None,
+            },
+            state,
+        }
+    }
+
+    fn owned_listing(owned: Vec<Owned>) -> Listing {
+        Listing {
+            owned,
+            ..Listing::default()
+        }
+    }
+
+    fn store_grid(paths: &Paths, environment: &str) {
+        let dir = paths.art_dir(environment);
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("grid.png"), png_bytes()).unwrap();
+    }
+
+    /// Runs the worker on `jobs` and collects what it sent.
+    fn load(
+        paths: &Paths,
+        jobs: Vec<Job>,
+        token: &Token,
+        server: Option<&crate::gog_fake::Server>,
+        covers: &'static Covers,
+    ) -> Vec<(String, Result<image::Handle, String>)> {
+        let mut sent = Vec::new();
+        gog_posters::run(
+            paths,
+            jobs,
+            token,
+            || {
+                let server = server.ok_or_else(|| "no network in this test".to_owned())?;
+                Ok(Network {
+                    client: server.client(),
+                    transport: Box::new(CoversRef(covers)),
+                })
+            },
+            |id, poster| sent.push((id, poster)),
+        );
+        sent
+    }
+
+    struct CoversRef(&'static Covers);
+
+    impl wineo_core::download::Transport for CoversRef {
+        fn get(&self, url: &str) -> anyhow::Result<Box<dyn std::io::Read>> {
+            self.0.get(url)
+        }
+
+        fn request(
+            &self,
+            url: &str,
+            bearer: Option<&str>,
+        ) -> anyhow::Result<wineo_core::download::Response> {
+            self.0.request(url, bearer)
+        }
+    }
+
+    fn leaked(covers: Covers) -> &'static Covers {
+        Box::leak(Box::new(covers))
+    }
+
+    fn covers_dir_is_empty(paths: &Paths) -> bool {
+        fs::read_dir(paths.gog_covers_dir()).map_or(true, |mut entries| entries.next().is_none())
+    }
+
+    fn page_with(paths: &Paths, listing: Listing) -> Page {
+        let (mut page, _) = Page::new(paths.clone());
+        let generation = page.generation;
+        let _ = page.update(Event::Listed(generation, Ok(listing)));
+        page
+    }
+
+    #[test]
+    fn a_stale_poster_event_is_ignored() {
+        let fx = Fixture::new();
+        let mut page = fx.page();
+        let generation = page.poster_generation;
+        let _ = page.update(Event::Poster(
+            generation.wrapping_sub(1),
+            RIMWORLD.to_owned(),
+            Ok(handle()),
+        ));
+        assert!(page.poster(RIMWORLD).is_none());
+        let _ = page.update(Event::Poster(generation, RIMWORLD.to_owned(), Ok(handle())));
+        assert!(page.poster(RIMWORLD).is_some());
+
+        // A relist starts over: the old load's reply lands nowhere.
+        let _ = page.list();
+        assert_ne!(page.poster_generation, generation);
+        let _ = page.update(Event::Poster(generation, STARDEW.to_owned(), Ok(handle())));
+        assert!(page.posters.is_empty());
+
+        // A page opened later never shares a load number with this one.
+        let (next, _) = Page::new(fx.paths.clone());
+        assert_ne!(next.poster_generation, page.poster_generation);
+        assert_ne!(next.poster_generation, generation);
+    }
+
+    #[test]
+    fn leaving_the_grid_stops_and_invalidates_the_poster_load() {
+        let mut fx = Fixture::new();
+        fx.native(RIMWORLD, "RimWorld", &[]);
+        let mut page = fx.page();
+        let token = page.poster_token.clone().expect("a load started");
+        let generation = page.poster_generation;
+        let _ = page.back();
+        assert!(matches!(page.take_action(), Some(Action::Choose)));
+        assert!(token.is_canceled());
+        assert_ne!(page.poster_generation, generation);
+        let _ = page.update(Event::Poster(generation, RIMWORLD.to_owned(), Ok(handle())));
+        assert!(page.poster(RIMWORLD).is_none());
+
+        // Dropping the page stops the worker too.
+        let mut page = fx.page();
+        let token = page.poster_token.take().unwrap();
+        page.poster_token = Some(token.clone());
+        drop(page);
+        assert!(token.is_canceled());
+    }
+
+    #[test]
+    fn going_back_from_a_review_restarts_the_unfinished_posters_under_a_new_load() {
+        let mut fx = Fixture::new();
+        fx.native(RIMWORLD, "RimWorld", &[]);
+        let mut page = fx.page();
+        let old = page.poster_token.clone().unwrap();
+        let generation = page.poster_generation;
+        page.step = Step::Review;
+        let _ = page.back();
+        assert_eq!(page.step, Step::Games);
+        assert!(old.is_canceled());
+        let token = page.poster_token.as_ref().expect("loading again");
+        assert!(!token.is_canceled());
+        assert_ne!(page.poster_generation, generation);
+        // The old load's reply is dropped; the new one's is kept.
+        let _ = page.update(Event::Poster(generation, RIMWORLD.to_owned(), Ok(handle())));
+        assert!(page.poster(RIMWORLD).is_none());
+        let current = page.poster_generation;
+        let _ = page.update(Event::Poster(current, RIMWORLD.to_owned(), Ok(handle())));
+        assert!(page.poster(RIMWORLD).is_some());
+    }
+
+    #[test]
+    fn a_failed_listing_loads_no_posters() {
+        let fx = Fixture::new();
+        let (mut page, _) = Page::new(fx.paths.clone());
+        let generation = page.generation;
+        let _ = page.update(Event::Listed(generation, Err("nope".to_owned())));
+        assert!(page.poster_token.is_none());
+        assert!(page.poster_jobs().is_empty());
+    }
+
+    #[test]
+    fn games_wineo_has_use_their_stored_grid_art_with_no_network() {
+        let mut fx = Fixture::new();
+        fx.native(STARDEW, "Stardew Valley", &[]);
+        let stardew = fx.prepared(STARDEW);
+        run(&fx.paths, &stardew, &Token::new(), |_| {}, no_extras).unwrap();
+        store_grid(&fx.paths, "stardew-valley");
+        store_grid(&fx.paths, "rimworld");
+        store_grid(&fx.paths, "stardew");
+        let mut listing = fx.listing();
+        assert!(matches!(
+            &listing.games[0].standing,
+            Standing::Already { environment } if environment == "stardew-valley"
+        ));
+        listing.owned = vec![
+            owned_game_in(1, "Installed", OwnedState::Installed("rimworld".to_owned())),
+            owned_game_in(2, "Imported", OwnedState::Imported("stardew".to_owned())),
+            owned_game_in(3, "Bare", OwnedState::Installed("absent".to_owned())),
+        ];
+        let mut page = page_with(&fx.paths, listing);
+        let jobs: Vec<(String, PosterSource)> = page
+            .poster_jobs()
+            .into_iter()
+            .map(|job| (job.id, job.source))
+            .collect();
+        // In grid order, which sorts by title.
+        assert_eq!(
+            jobs,
+            [
+                ("3".to_owned(), PosterSource::Stored("absent".to_owned())),
+                ("2".to_owned(), PosterSource::Stored("stardew".to_owned())),
+                ("1".to_owned(), PosterSource::Stored("rimworld".to_owned())),
+                (
+                    STARDEW.to_owned(),
+                    PosterSource::Stored("stardew-valley".to_owned())
+                ),
+            ]
+        );
+
+        // The worker never asks for a connection, and a game without stored
+        // art simply has no poster.
+        let covers = leaked(Covers::new(500, Vec::new()));
+        let generation = page.poster_generation;
+        let sent = load(&fx.paths, page.poster_jobs(), &Token::new(), None, covers);
+        assert_eq!(covers.count(), 0);
+        assert!(covers_dir_is_empty(&fx.paths));
+        assert_eq!(
+            sent.iter().map(|(id, _)| id.as_str()).collect::<Vec<_>>(),
+            ["2", "1", STARDEW]
+        );
+        for (id, poster) in sent {
+            let _ = page.update(Event::Poster(generation, id, poster));
+        }
+        assert!(page.poster("1").is_some());
+        assert!(page.poster("2").is_some());
+        assert!(page.poster(STARDEW).is_some());
+        assert!(page.poster("3").is_none());
+        // What has a poster isn't loaded again.
+        assert_eq!(page.poster_jobs().len(), 1);
+        crate::layout_probe::layout(
+            &mut page.view(Palette::DARK, 0.0),
+            iced::Size::new(680.0, 560.0),
+        );
+    }
+
+    #[test]
+    fn a_game_wineo_lacks_loads_its_cover_once_and_then_from_the_cache() {
+        let fx = Fixture::new();
+        let listing = owned_listing(vec![
+            owned_game_in(7, "Celeste", OwnedState::NotInstalled),
+            owned_game_in(8, "Hades", OwnedState::Unfinished),
+        ]);
+        let mut page = page_with(&fx.paths, listing);
+        let server = art_server(true);
+        let covers = leaked(Covers::new(200, png_bytes()));
+
+        let sent = load(
+            &fx.paths,
+            page.poster_jobs(),
+            &Token::new(),
+            Some(&server),
+            covers,
+        );
+        assert_eq!(sent.len(), 2);
+        assert!(sent.iter().all(|(_, poster)| poster.is_ok()));
+        assert_eq!(server.requests().len(), 2);
+        assert_eq!(covers.count(), 2);
+        assert!(fx.paths.gog_covers_dir().join("7.png").is_file());
+        assert!(!fx.paths.art_cache_dir().exists());
+
+        // A second page finds both in the cache and never builds a client.
+        let again = load(&fx.paths, page.poster_jobs(), &Token::new(), None, covers);
+        assert_eq!(again.len(), 2);
+        assert!(again.iter().all(|(_, poster)| poster.is_ok()));
+        assert_eq!(server.requests().len(), 2);
+        assert_eq!(covers.count(), 2);
+
+        let generation = page.poster_generation;
+        for (id, poster) in again {
+            let _ = page.update(Event::Poster(generation, id, poster));
+        }
+        assert!(page.poster("7").is_some() && page.poster("8").is_some());
+    }
+
+    #[test]
+    fn a_cover_that_cant_be_fetched_or_isnt_an_image_leaves_no_file_and_no_poster() {
+        for (server, covers) in [
+            (art_server(false), Covers::new(200, png_bytes())),
+            (art_server(true), Covers::new(404, png_bytes())),
+            (
+                art_server(true),
+                Covers::new(200, b"<html>no</html>".to_vec()),
+            ),
+        ] {
+            let fx = Fixture::new();
+            let listing =
+                owned_listing(vec![owned_game_in(7, "Celeste", OwnedState::NotInstalled)]);
+            let mut page = page_with(&fx.paths, listing);
+            let covers = leaked(covers);
+            let sent = load(
+                &fx.paths,
+                page.poster_jobs(),
+                &Token::new(),
+                Some(&server),
+                covers,
+            );
+            assert_eq!(sent.len(), 1);
+            assert!(sent[0].1.is_err());
+            assert!(covers_dir_is_empty(&fx.paths));
+            let generation = page.poster_generation;
+            for (id, poster) in sent {
+                let _ = page.update(Event::Poster(generation, id, poster));
+            }
+            assert!(page.poster("7").is_none());
+            // The tile keeps its title and still lays out.
+            crate::layout_probe::layout(
+                &mut page.view(Palette::DARK, 0.0),
+                iced::Size::new(680.0, 560.0),
+            );
+        }
+    }
+
+    #[test]
+    fn a_canceled_load_fetches_nothing_more() {
+        let fx = Fixture::new();
+        let listing = owned_listing(vec![owned_game_in(7, "Celeste", OwnedState::NotInstalled)]);
+        let page = page_with(&fx.paths, listing);
+        let server = art_server(true);
+        let covers = leaked(Covers::new(200, png_bytes()));
+        let token = Token::new();
+        token.cancel();
+        let sent = load(&fx.paths, page.poster_jobs(), &token, Some(&server), covers);
+        assert!(sent.is_empty());
+        assert!(server.requests().is_empty());
+    }
+
+    #[test]
+    fn a_cached_cover_that_wont_decode_is_removed_and_fetched_again_next_load() {
+        let fx = Fixture::new();
+        let listing = owned_listing(vec![owned_game_in(7, "Celeste", OwnedState::NotInstalled)]);
+        let page = page_with(&fx.paths, listing);
+        // A truncated download that passed the signature check.
+        fs::create_dir_all(fx.paths.gog_covers_dir()).unwrap();
+        let cached = fx.paths.gog_covers_dir().join("7.png");
+        fs::write(&cached, &png_bytes()[..12]).unwrap();
+        let server = art_server(true);
+        let covers = leaked(Covers::new(200, png_bytes()));
+
+        let first = load(&fx.paths, page.poster_jobs(), &Token::new(), None, covers);
+        assert_eq!(first.len(), 1);
+        assert!(first[0].1.is_err());
+        assert!(!cached.exists(), "it can't poison the cache");
+        assert_eq!(server.requests().len(), 0);
+
+        let second = load(
+            &fx.paths,
+            page.poster_jobs(),
+            &Token::new(),
+            Some(&server),
+            covers,
+        );
+        assert!(second[0].1.is_ok());
+        assert_eq!(server.requests().len(), 1);
+        assert!(cached.is_file());
+    }
+
+    #[test]
+    fn stored_art_that_wont_decode_is_never_removed() {
+        let fx = Fixture::new();
+        let dir = fx.paths.art_dir("rimworld");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("grid.png"), &png_bytes()[..12]).unwrap();
+        let listing = owned_listing(vec![owned_game_in(
+            1,
+            "RimWorld",
+            OwnedState::Installed("rimworld".to_owned()),
+        )]);
+        let page = page_with(&fx.paths, listing);
+        let covers = leaked(Covers::new(200, Vec::new()));
+        let sent = load(&fx.paths, page.poster_jobs(), &Token::new(), None, covers);
+        assert!(sent[0].1.is_err());
+        assert!(dir.join("grid.png").exists());
+    }
+
+    #[test]
+    fn an_outage_stops_the_fetching_after_three_games_but_cached_covers_still_load() {
+        let fx = Fixture::new();
+        let listing = owned_listing(
+            (1..=6)
+                .map(|id| owned_game_in(id, &format!("Game {id}"), OwnedState::NotInstalled))
+                .collect(),
+        );
+        let mut page = page_with(&fx.paths, listing);
+        // The last game in the grid was cached by an earlier load.
+        fs::create_dir_all(fx.paths.gog_covers_dir()).unwrap();
+        fs::write(fx.paths.gog_covers_dir().join("6.png"), png_bytes()).unwrap();
+        let server = crate::gog_fake::Server::start(|_| crate::gog_fake::reply(503, "{}"));
+        let covers = leaked(Covers::new(200, png_bytes()));
+        let sent = load(
+            &fx.paths,
+            page.poster_jobs(),
+            &Token::new(),
+            Some(&server),
+            covers,
+        );
+        let art_requests = server
+            .requests()
+            .iter()
+            .filter(|line| line.contains("/v2/games/"))
+            .count();
+        assert_eq!(art_requests, 3);
+        assert_eq!(covers.count(), 0);
+        let loaded: Vec<&str> = sent
+            .iter()
+            .filter(|(_, poster)| poster.is_ok())
+            .map(|(id, _)| id.as_str())
+            .collect();
+        assert_eq!(loaded, ["6"]);
+        let generation = page.poster_generation;
+        for (id, poster) in sent {
+            let _ = page.update(Event::Poster(generation, id, poster));
+        }
+        assert!(page.poster("6").is_some());
+        assert!(page.poster("1").is_none());
+        assert!(cached_only(&fx.paths, "6.png"), "nothing new was cached");
+    }
+
+    fn cached_only(paths: &Paths, name: &str) -> bool {
+        fs::read_dir(paths.gog_covers_dir())
+            .unwrap()
+            .all(|entry| entry.unwrap().file_name() == name)
+    }
+
+    #[test]
+    fn a_game_without_a_cover_does_not_count_as_an_outage() {
+        let fx = Fixture::new();
+        let listing = owned_listing(
+            (1..=6)
+                .map(|id| owned_game_in(id, &format!("Game {id}"), OwnedState::NotInstalled))
+                .collect(),
+        );
+        let page = page_with(&fx.paths, listing);
+        let server = crate::gog_fake::Server::start(|_| crate::gog_fake::reply(404, "{}"));
+        let covers = leaked(Covers::new(200, png_bytes()));
+        let sent = load(
+            &fx.paths,
+            page.poster_jobs(),
+            &Token::new(),
+            Some(&server),
+            covers,
+        );
+        assert_eq!(sent.len(), 6);
+        assert_eq!(server.requests().len(), 6);
+    }
+
+    #[test]
+    fn a_cover_that_isnt_an_outage_resets_the_count() {
+        let fx = Fixture::new();
+        let listing = owned_listing(
+            (1..=7)
+                .map(|id| owned_game_in(id, &format!("Game {id}"), OwnedState::NotInstalled))
+                .collect(),
+        );
+        let page = page_with(&fx.paths, listing);
+        // Two outages, a game with no cover, then outages until the stop.
+        let server = crate::gog_fake::Server::start(|line| {
+            let status = if line.contains("/v2/games/3?") {
+                404
+            } else {
+                503
+            };
+            crate::gog_fake::reply(status, "{}")
+        });
+        let covers = leaked(Covers::new(200, png_bytes()));
+        load(
+            &fx.paths,
+            page.poster_jobs(),
+            &Token::new(),
+            Some(&server),
+            covers,
+        );
+        let art_requests = server
+            .requests()
+            .iter()
+            .filter(|line| line.contains("/v2/games/"))
+            .count();
+        assert_eq!(art_requests, 6);
+    }
+
+    #[test]
+    fn canceling_after_the_first_cover_arrives_requests_nothing_more() {
+        let fx = Fixture::new();
+        let listing = owned_listing(
+            (1..=4)
+                .map(|id| owned_game_in(id, &format!("Game {id}"), OwnedState::NotInstalled))
+                .collect(),
+        );
+        let page = page_with(&fx.paths, listing);
+        let server = art_server(true);
+        let covers = leaked(Covers::new(200, png_bytes()));
+        let token = Token::new();
+        let mut sent = Vec::new();
+        gog_posters::run(
+            &fx.paths,
+            page.poster_jobs(),
+            &token,
+            || {
+                Ok(Network {
+                    client: server.client(),
+                    transport: Box::new(CoversRef(covers)),
+                })
+            },
+            |id, poster| {
+                sent.push((id, poster));
+                token.cancel();
+            },
+        );
+        assert_eq!(sent.len(), 1);
+        assert!(sent[0].1.is_ok());
+        assert_eq!(server.requests().len(), 1);
+        assert_eq!(covers.count(), 1);
+    }
+
+    #[test]
+    fn heroic_games_not_yet_migrated_take_the_cover_by_their_numeric_id() {
+        let mut fx = Fixture::new();
+        fx.native(RIMWORLD, "RimWorld", &[]);
+        let page = fx.page();
+        let jobs = page.poster_jobs();
+        assert_eq!(
+            jobs,
+            [Job {
+                id: RIMWORLD.to_owned(),
+                source: PosterSource::Cover(RIMWORLD.parse().unwrap()),
+            }]
+        );
     }
 }

@@ -266,6 +266,18 @@ mod tests {
     }
 
     #[test]
+    fn a_long_kebab_name_after_a_fitting_first_line_is_cut_on_line_two() {
+        assert_eq!(
+            balance(
+                "Already migrated as disco-elysium-the-final-cut.",
+                140.0,
+                chars
+            ),
+            ["Already migrated as", "disco-elysium-the..."]
+        );
+    }
+
+    #[test]
     fn the_cache_stays_bounded_and_keeps_titles_in_use() {
         let key = |title: &str| (title.to_owned(), 0, 0, Font::DEFAULT);
         let mut cache = Cache::new(8);
