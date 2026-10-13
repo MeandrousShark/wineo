@@ -813,35 +813,95 @@ fn only_a_galaxy_game_trusts_its_info_file() {
 }
 
 #[test]
-fn a_windows_installer_game_shows_an_update_it_cant_apply_yet() {
+fn a_windows_installer_game_has_an_update_this_wineo_can_apply() {
     let mut fx = Fixture::new();
     fx.products.insert(
         DISCO,
         product(
             DISCO,
             "Disco Elysium",
-            vec![installer("windows", "en", Some("2.0"))],
-            vec![],
+            vec![
+                installer("windows", "en", Some("2.0")),
+                installer("windows", "fr", Some("2.1")),
+            ],
+            vec![
+                dlc(
+                    ROYALTY,
+                    "Art",
+                    vec![installer("windows", "en", Some("1.0"))],
+                ),
+                dlc(
+                    IDEOLOGY,
+                    "Sound",
+                    vec![
+                        installer("windows", "en", Some("3.0")),
+                        installer("windows", "fr", Some("1.0")),
+                    ],
+                ),
+            ],
         ),
     );
+    // The game in French, one DLC that fell back to English, and one in
+    // French: each is compared in its own recorded language.
+    let english = |id, version| folder::Product {
+        language: Some("en".to_owned()),
+        ..installed(id, Some(version))
+    };
     fx.game(
         "disco",
         DISCO,
         Platform::Windows,
         Track::Installer,
-        "en-US",
-        vec![installed(DISCO, Some("1.0"))],
+        "fr",
+        vec![
+            installed(DISCO, Some("1.0")),
+            english(ROYALTY, "1.0"),
+            installed(IDEOLOGY, Some("1.0")),
+        ],
     );
     let status = fx.status("disco");
     assert_eq!(status.state, UpdateState::Available);
-    assert!(!status.applicable);
-    assert_eq!(status.reason, Some(Reason::WindowsInstaller));
-    assert_eq!(
-        status.reason.as_ref().unwrap().as_str(),
-        "windows_installer"
-    );
+    assert!(status.applicable);
+    assert_eq!(status.reason, None);
     assert_eq!(status.installed.as_deref(), Some("1.0"));
-    assert_eq!(status.available.as_deref(), Some("2.0"));
+    assert_eq!(status.available.as_deref(), Some("2.1"));
+    assert_eq!(dlc_state(&status, ROYALTY), DlcState::UpToDate);
+    assert_eq!(dlc_state(&status, IDEOLOGY), DlcState::UpToDate);
+
+    // A DLC-only update is one too.
+    fx.game(
+        "disco",
+        DISCO,
+        Platform::Windows,
+        Track::Installer,
+        "fr",
+        vec![
+            installed(DISCO, Some("2.1")),
+            english(ROYALTY, "0.9"),
+            installed(IDEOLOGY, Some("1.0")),
+        ],
+    );
+    let status = fx.status("disco");
+    assert_eq!(status.state, UpdateState::Available);
+    assert!(status.applicable);
+    assert_eq!(dlc_state(&status, ROYALTY), DlcState::Available);
+
+    // Nothing newer.
+    fx.game(
+        "disco",
+        DISCO,
+        Platform::Windows,
+        Track::Installer,
+        "fr",
+        vec![
+            installed(DISCO, Some("2.1")),
+            english(ROYALTY, "1.0"),
+            installed(IDEOLOGY, Some("1.0")),
+        ],
+    );
+    let status = fx.status("disco");
+    assert_eq!(status.state, UpdateState::UpToDate);
+    assert_eq!((status.applicable, status.reason), (false, None));
 }
 
 #[test]
