@@ -1,6 +1,5 @@
 use std::fs;
 use std::io::{BufRead, Write};
-use std::os::unix::fs::PermissionsExt;
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
@@ -11,6 +10,10 @@ use std::time::{Duration, Instant};
 
 use wineo_core::launch::Overrides;
 use wineo_core::runtime::{RunMode, RunState, RunStatus, Runtime};
+
+#[path = "../../wineo-core/tests/common/test_script.rs"]
+mod test_script;
+use test_script::write_script;
 
 /// Points every XDG dir into `root` so tests never touch the real config.
 fn wineo(root: &Path) -> Command {
@@ -1740,21 +1743,16 @@ echo "WINESERVER=$WINESERVER"
 echo "WINEDLLOVERRIDES=$WINEDLLOVERRIDES"
 "#;
 
-fn write_script(path: &Path, text: &str) {
-    fs::write(path, text).unwrap();
-    fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
-}
-
 /// A PATH with fake wine, wineserver, and winetricks, so these tests don't
 /// need any of them installed.
 fn fake_tools(root: &Path, winetricks: Option<&str>) -> PathBuf {
     let bin = root.join("bin");
     fs::create_dir_all(&bin).unwrap();
     for name in ["wine", "wineserver"] {
-        write_script(&bin.join(name), "#!/bin/sh\nexit 0\n");
+        write_script(bin.join(name), "#!/bin/sh\nexit 0\n");
     }
     if let Some(script) = winetricks {
-        write_script(&bin.join("winetricks"), script);
+        write_script(bin.join("winetricks"), script);
     }
     bin
 }

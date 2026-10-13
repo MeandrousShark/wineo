@@ -5,11 +5,11 @@
 mod common;
 
 use std::fs;
-use std::os::unix::fs::{PermissionsExt, symlink};
+use std::os::unix::fs::symlink;
 use std::path::{Path, PathBuf};
 use std::process::{Output, Stdio};
 
-use common::{Fixture, assert_success, stderr, wait_for};
+use common::{Fixture, assert_success, stderr, wait_for, write_script};
 use wineo_core::gog::folder::{FolderError, lock_for_update};
 
 const ID: u64 = 1094900565;
@@ -28,8 +28,7 @@ fn folder(f: &Fixture) -> PathBuf {
         .join("Games/RimWorld");
     fs::create_dir_all(&folder).unwrap();
     let linux = folder.join("RimWorldLinux");
-    fs::write(&linux, "#!/bin/sh\nexec sleep 60\n").unwrap();
-    fs::set_permissions(&linux, fs::Permissions::from_mode(0o755)).unwrap();
+    write_script(&linux, "#!/bin/sh\nexec sleep 60\n");
     fs::write(folder.join("RimWorld.exe"), "").unwrap();
     folder
 }

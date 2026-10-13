@@ -3,12 +3,10 @@
 
 mod common;
 
-use std::os::unix::fs::PermissionsExt;
-
 use common::gog_api::{CODE, GogApi, success_address};
 use common::gog_world::RIMWORLD;
 use common::pty::Pty;
-use common::{Fixture, assert_success, stderr, stdout};
+use common::{Fixture, assert_success, stderr, stdout, write_script};
 use serde_json::json;
 
 fn logged_in(f: &Fixture, api: &GogApi) {
@@ -126,12 +124,10 @@ fn programs_launched_through_the_fixture_dont_see_the_gog_override() {
     let dir = f.root.path().join("games");
     std::fs::create_dir_all(&dir).unwrap();
     let script = dir.join("probe.sh");
-    std::fs::write(
+    write_script(
         &script,
         "#!/bin/sh\nprintenv WINEO_TEST_GOG_API > \"$0.out\"\nexit 0\n",
-    )
-    .unwrap();
-    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+    );
     let config = f.config_dir().join("environments/probe.toml");
     std::fs::create_dir_all(config.parent().unwrap()).unwrap();
     std::fs::write(

@@ -1,12 +1,10 @@
 mod common;
 
 use std::collections::BTreeMap;
-use std::fs;
-use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 use std::process::Command;
 
-use common::Fixture;
+use common::{Fixture, write_script};
 use wineo_core::cancel::Token;
 use wineo_core::installer::Output;
 use wineo_core::runners::Runners;
@@ -21,8 +19,7 @@ fn unattended_install_calls_each_runner_once_in_order() {
     f.proton_environment("proton-app", "fake-proton", "");
 
     let script = f.root.path().join("bin/winetricks");
-    fs::write(&script, "#!/bin/sh\necho \"winetricks: $*\"\n").unwrap();
-    fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();
+    write_script(&script, "#!/bin/sh\necho \"winetricks: $*\"\n");
 
     for (runner, app, expected) in [
         ("fake-wine", "wine-app", "winetricks: -q corefonts win10"),

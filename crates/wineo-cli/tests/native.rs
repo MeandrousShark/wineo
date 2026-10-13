@@ -4,7 +4,6 @@
 mod common;
 
 use std::fs;
-use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 use std::process::Command;
 use std::time::{Duration, Instant};
@@ -45,8 +44,7 @@ impl NativeFixture for Fixture {
         let dir = self.root.path().join("games");
         fs::create_dir_all(&dir).unwrap();
         let path = dir.join(name);
-        fs::write(&path, body).unwrap();
-        fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
+        write_script(&path, body);
         path
     }
 

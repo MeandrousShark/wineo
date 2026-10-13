@@ -2,12 +2,12 @@ mod common;
 
 use std::fs;
 use std::io::{BufRead, BufReader};
-use std::os::unix::fs::{PermissionsExt, symlink};
+use std::os::unix::fs::symlink;
 use std::path::Path;
 use std::process::{Command, Stdio};
 use std::thread;
 
-use common::{Fixture, assert_success, heroic_library, stderr, stdout};
+use common::{Fixture, assert_success, heroic_library, stderr, stdout, write_script};
 
 fn bulk_heroic(f: &Fixture, config: &Path) -> std::process::Output {
     f.run(&[
@@ -1026,8 +1026,7 @@ fn native_heroic(f: &Fixture) -> (std::path::PathBuf, std::path::PathBuf) {
     fs::create_dir_all(config.join("GamesConfig")).unwrap();
     let exe = f.root.path().join("games/dusklight");
     fs::create_dir_all(exe.parent().unwrap()).unwrap();
-    fs::write(&exe, "#!/bin/sh\nexit 0\n").unwrap();
-    fs::set_permissions(&exe, fs::Permissions::from_mode(0o755)).unwrap();
+    write_script(&exe, "#!/bin/sh\nexit 0\n");
     fs::write(
         config.join("config.json"),
         r#"{"defaultSettings":{"winePrefix":"/nonexistent/prefix","wineVersion":{"type":"wine","name":"System","bin":"wine"},"autoInstallDxvk":true}}"#,
@@ -1274,8 +1273,7 @@ fn heroic_all_imports_windows_and_native_games_together() {
         // Adds Dusklight next to the Windows games.
         let exe = f.root.path().join("games/dusklight");
         fs::create_dir_all(exe.parent().unwrap()).unwrap();
-        fs::write(&exe, "#!/bin/sh\nexit 0\n").unwrap();
-        fs::set_permissions(&exe, fs::Permissions::from_mode(0o755)).unwrap();
+        write_script(&exe, "#!/bin/sh\nexit 0\n");
         let library = heroic.join("sideload_apps/library.json");
         let text = fs::read_to_string(&library).unwrap().replace(
             "]}",

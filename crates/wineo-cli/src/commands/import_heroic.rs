@@ -2483,6 +2483,7 @@ mod test_access {
 #[cfg(test)]
 mod tests {
     use super::test_access::access;
+    use crate::test_script::write_script;
     use std::collections::VecDeque;
     use std::fs;
 
@@ -2582,28 +2583,23 @@ mod tests {
     }
 
     fn fake_proton_runner(root: &Path, name: &str) {
-        use std::os::unix::fs::PermissionsExt;
         let dir = root.join(name);
         fs::create_dir_all(dir.join("files/bin")).unwrap();
         let proton = dir.join("proton");
-        fs::write(&proton, "#!/bin/sh\n").unwrap();
-        fs::set_permissions(&proton, fs::Permissions::from_mode(0o755)).unwrap();
+        write_script(&proton, "#!/bin/sh\n");
         for executable in ["wine", "wineserver"] {
             let path = dir.join("files/bin").join(executable);
-            fs::write(&path, "#!/bin/sh\n").unwrap();
-            fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
+            write_script(&path, "#!/bin/sh\n");
         }
         fs::write(dir.join("version"), format!("1 {name}\n")).unwrap();
     }
 
     fn fake_wine_runner(root: &Path, name: &str) -> Runner {
-        use std::os::unix::fs::PermissionsExt;
         let dir = root.join(name);
         fs::create_dir_all(dir.join("bin")).unwrap();
         for executable in ["wine", "wineserver"] {
             let path = dir.join("bin").join(executable);
-            fs::write(&path, "#!/bin/sh\n").unwrap();
-            fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
+            write_script(&path, "#!/bin/sh\n");
         }
         Runners::at(root.to_owned()).resolve(name).unwrap()
     }

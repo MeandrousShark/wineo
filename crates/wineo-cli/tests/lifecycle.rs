@@ -4,7 +4,7 @@
 mod common;
 
 use std::fs;
-use std::os::unix::fs::{PermissionsExt, symlink};
+use std::os::unix::fs::symlink;
 use std::os::unix::process::CommandExt;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
@@ -1061,8 +1061,7 @@ fn the_runner_root_can_be_moved() {
     fs::create_dir_all(&bin).unwrap();
     for (file, script) in [("wine", FAKE_WINE), ("wineserver", FAKE_WINESERVER)] {
         let path = bin.join(file);
-        fs::write(&path, script).unwrap();
-        fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
+        write_script(&path, script);
     }
 
     // Not in the default root, so it is invisible until the setting moves.

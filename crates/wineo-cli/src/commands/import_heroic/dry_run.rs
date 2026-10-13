@@ -199,10 +199,11 @@ fn missing_builds(
 
 #[cfg(test)]
 mod tests {
+    use crate::test_script::write_script;
     use std::cell::RefCell;
     use std::fs;
     use std::io::{Cursor, Read};
-    use std::os::unix::fs::PermissionsExt;
+
     use std::path::Path;
     use std::rc::Rc;
 
@@ -321,8 +322,13 @@ mod tests {
         fs::create_dir_all(&runner).unwrap();
         for program in ["wine", "wineserver"] {
             let file = runner.join(program);
-            fs::write(&file, format!("#!/bin/sh\nif [ \"${{1-}}\" = --version ]; then echo wine-test; exit 0; fi\ntouch '{}'\nexit 1\n", marker.display())).unwrap();
-            fs::set_permissions(file, fs::Permissions::from_mode(0o755)).unwrap();
+            write_script(
+                &file,
+                format!(
+                    "#!/bin/sh\nif [ \"${{1-}}\" = --version ]; then echo wine-test; exit 0; fi\ntouch '{}'\nexit 1\n",
+                    marker.display()
+                ),
+            );
         }
         fs::write(heroic.join("config.json"), format!(r#"{{"defaultSettings":{{"winePrefix":"{}","wineVersion":{{"type":"wine","name":"System","bin":"wine"}}}}}}"#, prefix.display())).unwrap();
         let settings = if pending {
@@ -518,18 +524,21 @@ mod tests {
                     .unwrap();
                     let exe = prefix.join("drive_c/game");
                     let marker = root.path().join("runner-started");
-                    fs::write(
+                    write_script(
                         &exe,
                         format!("#!/bin/sh\ntouch '{}'\nexit 1\n", marker.display()),
-                    )
-                    .unwrap();
-                    fs::set_permissions(&exe, fs::Permissions::from_mode(0o755)).unwrap();
+                    );
                     let runner = paths.host_data().join("runners/test-wine/bin");
                     fs::create_dir_all(&runner).unwrap();
                     for program in ["wine", "wineserver"] {
                         let file = runner.join(program);
-                        fs::write(&file, format!("#!/bin/sh\nif [ \"$1\" = --version ]; then echo wine-test; exit 0; fi\ntouch '{}'\nexit 1\n", marker.display())).unwrap();
-                        fs::set_permissions(file, fs::Permissions::from_mode(0o755)).unwrap();
+                        write_script(
+                            &file,
+                            format!(
+                                "#!/bin/sh\nif [ \"$1\" = --version ]; then echo wine-test; exit 0; fi\ntouch '{}'\nexit 1\n",
+                                marker.display()
+                            ),
+                        );
                     }
                     let platform = if native { "linux" } else { "Windows" };
                     fs::write(heroic.join("sideload_apps/library.json"), format!(r#"{{"games":[{{"app_name":"a","title":"Alpha","runner":"sideload","install":{{"platform":"{platform}","executable":"{}"}}}}]}}"#, exe.display())).unwrap();

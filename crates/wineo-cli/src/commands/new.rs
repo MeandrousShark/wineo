@@ -566,9 +566,9 @@ use crate::snapshot;
 
 #[cfg(test)]
 mod tests {
+    use crate::test_script::write_script;
     use std::cell::Cell;
     use std::fs;
-    use std::os::unix::fs::PermissionsExt;
 
     use wineo_core::steamgriddb::{self, NoKeyring};
 
@@ -615,8 +615,7 @@ mod tests {
         fs::create_dir_all(&runner_dir).unwrap();
         for exe in ["wine", "wineserver"] {
             let path = runner_dir.join(exe);
-            fs::write(&path, "#!/bin/sh\nexit 1\n").unwrap();
-            fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
+            write_script(&path, "#!/bin/sh\nexit 1\n");
         }
         let mut args = args(native);
         if !native {

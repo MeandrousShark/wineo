@@ -6,7 +6,7 @@
 
 use std::ffi::OsString;
 use std::fs;
-use std::os::unix::fs::{PermissionsExt, symlink};
+use std::os::unix::fs::symlink;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 use std::thread;
@@ -16,7 +16,10 @@ use wineo_core::runtime::Runtime;
 
 #[path = "../../../wineo-core/tests/common/runners.rs"]
 mod runners;
+#[path = "../../../wineo-core/tests/common/test_script.rs"]
+mod test_script;
 pub use runners::{FAKE_GAMEMODERUN, FAKE_UMU, FAKE_WINE, FAKE_WINESERVER};
+pub use test_script::write_script;
 pub mod gog_api;
 pub mod gog_world;
 pub mod pty;
@@ -49,8 +52,7 @@ impl Fixture {
             fs::create_dir_all(&bin).unwrap();
             for (name, script) in scripts {
                 let path = bin.join(name);
-                fs::write(&path, script).unwrap();
-                fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
+                write_script(&path, script);
             }
             bin
         };
@@ -186,8 +188,7 @@ impl Fixture {
         let dir = self.external_dir(launcher).join(name);
         fs::create_dir_all(dir.join("files/bin")).unwrap();
         let script = |path: PathBuf| {
-            fs::write(&path, "#!/bin/sh\nexit 0\n").unwrap();
-            fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
+            write_script(&path, "#!/bin/sh\nexit 0\n");
         };
         script(dir.join("proton"));
         script(dir.join("files/bin/wine"));
@@ -203,11 +204,10 @@ impl Fixture {
         let dir = self.external_dir(launcher).join(name);
         fs::create_dir_all(dir.join("bin")).unwrap();
         for file in ["wine", "wineserver"] {
-            fs::copy(
-                self.root.path().join("bin").join(file),
+            write_script(
                 dir.join("bin").join(file),
-            )
-            .unwrap();
+                fs::read(self.root.path().join("bin").join(file)).unwrap(),
+            );
         }
         if launcher.starts_with("heroic") {
             fs::write(self.root.path().join("config/heroic/config.json"), "{}").unwrap();
@@ -233,8 +233,7 @@ impl Fixture {
         fs::create_dir_all(&bin).unwrap();
         for (file, script) in [("wine", FAKE_WINE), ("wineserver", FAKE_WINESERVER)] {
             let path = bin.join(file);
-            fs::write(&path, script).unwrap();
-            fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
+            write_script(&path, script);
         }
     }
 
@@ -303,14 +302,12 @@ impl Fixture {
         let dir = self.root.path().join("data/wineo/runners").join(name);
         fs::create_dir_all(&dir).unwrap();
         let proton = dir.join("proton");
-        fs::write(&proton, "#!/bin/sh\nexit 0\n").unwrap();
-        fs::set_permissions(&proton, fs::Permissions::from_mode(0o755)).unwrap();
+        write_script(&proton, "#!/bin/sh\nexit 0\n");
         fs::write(dir.join("version"), format!("1717451631 {name}\n")).unwrap();
         fs::create_dir_all(dir.join("files/bin")).unwrap();
         for exe in ["wine", "wineserver"] {
             let path = dir.join("files/bin").join(exe);
-            fs::write(&path, "#!/bin/sh\nexit 0\n").unwrap();
-            fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
+            write_script(&path, "#!/bin/sh\nexit 0\n");
         }
     }
 
