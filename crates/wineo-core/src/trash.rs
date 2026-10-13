@@ -1555,22 +1555,7 @@ pub fn remove_with_force(
                 prefix_path.display()
             );
         }
-        for other in environment::names(paths)?
-            .into_iter()
-            .filter(|other| other != name)
-        {
-            if let Ok(other_prefix) =
-                Environment::load(paths, &other).and_then(|env| env.prefix(paths))
-            {
-                let other_prefix = paths::resolve(&other_prefix);
-                if prefix_path.starts_with(&other_prefix) || other_prefix.starts_with(prefix_path) {
-                    bail!(
-                        "prefix {} overlaps environment {other}'s prefix",
-                        prefix_path.display()
-                    );
-                }
-            }
-        }
+        environment::check_nesting(paths, name, prefix_path)?;
         if let Ok(global) = GlobalConfig::load(paths) {
             current
                 .as_ref()

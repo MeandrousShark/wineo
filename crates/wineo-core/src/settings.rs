@@ -110,6 +110,11 @@ pub fn apply(
             // An installer that never confirmed it was done may still have
             // programs running in the prefix these settings reach into.
             Runtime::new(paths, name).check_resolved(name)?;
+            for (_, raw) in pairs.iter().filter(|(key, _)| *key == "prefix") {
+                if let Some(prefix) = new_prefix(paths, raw) {
+                    crate::environment::check_nesting(paths, name, &prefix)?;
+                }
+            }
             Some(guard)
         }
         _ => None,

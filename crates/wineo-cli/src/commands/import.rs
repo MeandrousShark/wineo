@@ -271,6 +271,7 @@ pub(super) fn check_review(
             sharing.unreadable.join(", ")
         );
     }
+    wineo_core::environment::check_nesting(paths, &request.name, &destination)?;
     Ok(())
 }
 

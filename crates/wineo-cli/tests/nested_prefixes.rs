@@ -1,0 +1,167 @@
+mod common;
+
+use std::fs;
+use std::path::{Path, PathBuf};
+
+use common::{Fixture, assert_success, stderr};
+
+/// `outer` with a registered environment `inner` whose prefix sits inside it.
+fn nested(f: &Fixture) -> (PathBuf, PathBuf) {
+    f.environment("outer", "");
+    let outer = f.root.path().join("prefixes/outer");
+    let inner = outer.join("drive_c/nested-prefix");
+    fs::create_dir_all(inner.join("drive_c")).unwrap();
+    fs::write(
+        inner.join("system.reg"),
+        "WINE REGISTRY Version 2\n\n#arch=win64\n",
+    )
+    .unwrap();
+    fs::write(inner.join("drive_c/save.dat"), "inner save").unwrap();
+    register(f, "inner", &inner);
+    (outer, inner)
+}
+
+fn register(f: &Fixture, name: &str, prefix: &Path) {
+    fs::write(
+        f.config_dir().join(format!("environments/{name}.toml")),
+        format!(
+            "prefix = \"{}\"\nrunner = \"wine\"\narch = \"win64\"\n",
+            prefix.display()
+        ),
+    )
+    .unwrap();
+}
+
+fn assert_refused(output: &std::process::Output, message: &str) {
+    assert!(!output.status.success(), "{}", stderr(output));
+    assert!(stderr(output).contains(message), "{}", stderr(output));
+}
+
+const INSIDE_OUTER: &str = "prefix is inside outer's prefix. Move one of them first.";
+
+#[test]
+fn rm_refuses_to_take_a_nested_prefix_along() {
+    let f = Fixture::new();
+    let (outer, inner) = nested(&f);
+    assert_refused(
+        &f.run(&["rm", "outer", "--delete-prefix"]),
+        &format!("inner's {INSIDE_OUTER}"),
+    );
+    assert!(outer.join("system.reg").exists());
+    assert_eq!(
+        fs::read_to_string(inner.join("drive_c/save.dat")).unwrap(),
+        "inner save"
+    );
+    assert!(f.config_dir().join("environments/outer.toml").exists());
+}
+
+#[test]
+fn new_refuses_a_prefix_inside_another() {
+    let f = Fixture::new();
+    f.environment("outer", "");
+    let dir = f.root.path().join("prefixes/outer/drive_c/other");
+    assert_refused(
+        &f.run(&["new", "-n", "other", "--dir", dir.to_str().unwrap()]),
+        &format!("other's {INSIDE_OUTER}"),
+    );
+    assert!(!dir.exists());
+    assert!(!f.config_dir().join("environments/other.toml").exists());
+}
+
+#[test]
+fn new_refuses_a_prefix_around_another() {
+    let f = Fixture::new();
+    f.environment("inner", "");
+    let dir = f.root.path().join("prefixes");
+    assert_refused(
+        &f.run(&["new", "-n", "outer", "--dir", dir.to_str().unwrap()]),
+        &format!("inner's {INSIDE_OUTER}"),
+    );
+    assert!(!f.config_dir().join("environments/outer.toml").exists());
+}
+
+#[test]
+fn clone_refuses_a_destination_inside_another_prefix() {
+    let f = Fixture::new();
+    f.environment("outer", "");
+    f.environment("source", "");
+    let dir = f.root.path().join("prefixes/outer/drive_c/copy");
+    assert_refused(
+        &f.run(&["clone", "source", "copy", "--dir", dir.to_str().unwrap()]),
+        &format!("copy's {INSIDE_OUTER}"),
+    );
+    assert!(!dir.exists());
+    assert!(!f.config_dir().join("environments/copy.toml").exists());
+}
+
+#[test]
+fn import_refuses_a_destination_inside_another_prefix() {
+    let f = Fixture::new();
+    f.environment("outer", "");
+    f.environment("source", "");
+    let source = f.root.path().join("prefixes/source");
+    let dir = f.root.path().join("prefixes/outer/drive_c/copy");
+    assert_refused(
+        &f.run(&[
+            "import",
+            "prefix",
+            source.to_str().unwrap(),
+            "-n",
+            "copy",
+            "--runner",
+            "wine",
+            "--dir",
+            dir.to_str().unwrap(),
+        ]),
+        &format!("copy's {INSIDE_OUTER}"),
+    );
+    assert!(!dir.exists());
+    assert!(!f.config_dir().join("environments/copy.toml").exists());
+}
+
+#[test]
+fn import_adopt_refuses_a_prefix_inside_another() {
+    let f = Fixture::new();
+    let (_outer, inner) = nested(&f);
+    fs::remove_file(f.config_dir().join("environments/inner.toml")).unwrap();
+    assert_refused(
+        &f.run(&[
+            "import",
+            "prefix",
+            inner.to_str().unwrap(),
+            "-n",
+            "adopted",
+            "--runner",
+            "wine",
+            "--adopt",
+        ]),
+        &format!("adopted's {INSIDE_OUTER}"),
+    );
+    assert!(!f.config_dir().join("environments/adopted.toml").exists());
+}
+
+#[test]
+fn set_refuses_to_point_a_prefix_inside_another() {
+    let f = Fixture::new();
+    f.environment("outer", "");
+    f.environment("mover", "");
+    let before = fs::read_to_string(f.config_dir().join("environments/mover.toml")).unwrap();
+    let dir = f.root.path().join("prefixes/outer/drive_c/moved");
+    assert_refused(
+        &f.run(&["set", "mover", &format!("prefix={}", dir.display())]),
+        &format!("mover's {INSIDE_OUTER}"),
+    );
+    assert_eq!(
+        fs::read_to_string(f.config_dir().join("environments/mover.toml")).unwrap(),
+        before
+    );
+}
+
+#[test]
+fn equal_prefixes_stay_shareable() {
+    let f = Fixture::new();
+    f.environment("first", "");
+    f.environment("second", "");
+    let shared = f.root.path().join("prefixes/first");
+    assert_success(&f.run(&["set", "second", &format!("prefix={}", shared.display())]));
+}

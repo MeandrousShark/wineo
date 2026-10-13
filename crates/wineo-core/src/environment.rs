@@ -181,6 +181,7 @@ impl Environment {
         let _runner_guard = build_lock::runner(paths, runner)?;
         let dir = new.prefix_dir(paths, global)?;
         let prefix_value = paths.store_prefix(&dir)?;
+        check_nesting(paths, &new.name, &dir)?;
 
         // Proton keeps its prefix in `pfx/` under the directory it is given.
         let wine_prefix = runner.wine_prefix(&dir);
@@ -650,6 +651,65 @@ pub fn checked_sharing(paths: &Paths, name: &str, prefix: &Path) -> Result<Shari
         return Err(Error::UnreadableEnvironments(sharing.unreadable));
     }
     Ok(sharing)
+}
+
+/// Refuses `prefix` for `name` when another environment's prefix contains it
+/// or sits inside it, since moving or replacing the outer one would take the
+/// inner one along. Equal prefixes are sharing, which `sharing_prefix`
+/// reports. A config that can't be read could be either, so it refuses too.
+pub fn check_nesting(paths: &Paths, name: &str, prefix: &Path) -> Result<()> {
+    check_overlap(paths, name, prefix, true)
+}
+
+/// `check_nesting` for a directory a copy is about to fill, which no other
+/// environment may name as its prefix either, even one missing on disk.
+pub fn check_destination(paths: &Paths, name: &str, prefix: &Path) -> Result<()> {
+    check_overlap(paths, name, prefix, false)
+}
+
+fn check_overlap(paths: &Paths, name: &str, prefix: &Path, allow_equal: bool) -> Result<()> {
+    let wanted = crate::paths::resolve(prefix);
+    let mut unreadable = Vec::new();
+    for other in names(paths)? {
+        if other == name {
+            continue;
+        }
+        let loaded = Environment::load(paths, &other);
+        if loaded.as_ref().is_ok_and(|env| env.config.wine().is_none()) {
+            continue;
+        }
+        match loaded.and_then(|env| env.prefix(paths)) {
+            Ok(other_prefix) => {
+                let other_prefix = crate::paths::resolve(&other_prefix);
+                if other_prefix == wanted {
+                    if allow_equal {
+                        continue;
+                    }
+                    return Err(Error::PrefixTaken {
+                        path: wanted,
+                        owner: other,
+                    });
+                }
+                if wanted.starts_with(&other_prefix) {
+                    return Err(Error::NestedPrefix {
+                        inner: name.to_owned(),
+                        outer: other,
+                    });
+                }
+                if other_prefix.starts_with(&wanted) {
+                    return Err(Error::NestedPrefix {
+                        inner: other,
+                        outer: name.to_owned(),
+                    });
+                }
+            }
+            Err(_) => unreadable.push(other),
+        }
+    }
+    if !unreadable.is_empty() {
+        return Err(Error::UnreadableEnvironments(unreadable));
+    }
+    Ok(())
 }
 
 pub(crate) fn check_new_name(paths: &Paths, name: &str) -> Result<()> {

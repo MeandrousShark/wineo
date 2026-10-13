@@ -374,6 +374,8 @@ pub fn execute_reviewed(
         return Err(Error::EnvironmentExists(request.name.clone()).into());
     }
     check_shared_configs(paths, &request.name, [&source_root, &destination])?;
+    crate::environment::check_nesting(paths, &request.name, &destination)
+        .map_err(|err| anyhow!(err))?;
 
     let lock = Locks::new(paths);
     let mut operation = lock
@@ -399,6 +401,8 @@ pub fn execute_reviewed(
     // the prefix lock above, so checking their runtime state here catches a
     // lost run or unresolved operation without refusing an idle shared prefix.
     let shared = shared_names(paths, &request.name, [&source_root, &destination])?;
+    crate::environment::check_nesting(paths, &request.name, &destination)
+        .map_err(|err| anyhow!(err))?;
     for shared in shared {
         Runtime::new(paths, &shared)
             .check_quiet(&shared)

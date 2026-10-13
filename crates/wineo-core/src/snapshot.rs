@@ -333,6 +333,7 @@ pub fn inspect_restore_with(
     validate_label(label)?;
     let (env, current_config, prefix) = registered(paths, name)?;
     check_sharing(paths, name, &prefix)?;
+    environment::check_nesting(paths, name, &prefix)?;
     // The old prefix is deleted after the swap, and that would reach into
     // whatever is mounted inside it.
     if let Some(mount) = crate::trash::foreign_mount(&prefix)? {
@@ -627,6 +628,8 @@ pub fn recover(paths: &Paths, name: &str) -> Result<()> {
     Runtime::new(paths, name).check_quiet(name)?;
     let marker = read_marker(paths, &path, name)?;
     validate_marker_config(paths, name, &marker)?;
+    // Rollback deletes whichever tree is not put back.
+    environment::check_nesting(paths, name, &marker.prefix)?;
     rollback_locked(paths, &path, &marker)
 }
 

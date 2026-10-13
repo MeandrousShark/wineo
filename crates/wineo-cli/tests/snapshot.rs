@@ -482,3 +482,38 @@ fn restore_refuses_a_real_bind_mount() {
     );
     assert_eq!(fs::read(external.join("keep.txt")).unwrap(), b"external");
 }
+
+#[test]
+fn restore_refuses_a_parent_of_another_environments_prefix() {
+    let Some(f) = fixture() else { return };
+    let (prefix, _) = environment(&f);
+    assert_success(&f.run(&["snapshot", "create", "game", "one"]));
+    let nested = prefix.join("drive_c/nested-prefix");
+    fs::create_dir_all(nested.join("drive_c")).unwrap();
+    fs::write(
+        nested.join("system.reg"),
+        "WINE REGISTRY Version 2\n#arch=win64\n",
+    )
+    .unwrap();
+    fs::write(nested.join("drive_c/save.dat"), b"nested").unwrap();
+    fs::write(
+        f.config_dir().join("environments/nested.toml"),
+        format!(
+            "prefix = {:?}\nrunner = 'wine'\narch = 'win64'\n",
+            nested.to_str().unwrap()
+        ),
+    )
+    .unwrap();
+    let restored = f.run(&["snapshot", "restore", "game", "one", "--yes"]);
+    assert!(!restored.status.success());
+    assert!(
+        stderr(&restored)
+            .contains("nested's prefix is inside game's prefix. Move one of them first."),
+        "{}",
+        stderr(&restored)
+    );
+    assert_eq!(
+        fs::read(nested.join("drive_c/save.dat")).unwrap(),
+        b"nested"
+    );
+}
