@@ -194,6 +194,7 @@ game:
       "update": "available",
       "applicable": true,
       "reason": null,
+      "unfinished": false,
       "dlc": [{"id": "1233017772", "title": "Royalty", "state": "available"}]
     }
   ],
@@ -203,6 +204,9 @@ game:
 ```
 
 `installed` and `available` are `null` when the version isn't known.
+`unfinished` is `true` when an update or install was interrupted and
+`wineo update NAME` has to finish it before the game starts; `import gog
+--list --json` has it too, `false` for games that aren't imported.
 
 In both, `update` is `available`, `none`, `galaxy` (an update on GOG that
 a later release applies), or `cant_compare`. `applicable` says whether this
@@ -326,9 +330,13 @@ environments.
 
 A [Steam game](steam.md#playtime) has `"source": "steam"`. `seconds` and
 `last_played` are Steam's, or `null` when Steam's playtime can't be read.
-Steam keeps no sessions, so `sessions`, `average_seconds`, `longest`,
-`first_played`, `this_week_seconds`, and `this_month_seconds` are `null`,
-`targets` is empty, and `--sessions` adds no `sessions_log`.
+Steam keeps no sessions, so `sessions`, `average_seconds`, `longest`, and
+`first_played` are `null`, `targets` is empty, and `--sessions` adds no
+`sessions_log`.
+
+This week's and this month's totals, which `wineo stats NAME` shows, aren't
+in the JSON for any environment: they depend on the local time zone and the
+current time, and `sessions_log` has what a script needs to work them out.
 
 `--sessions` adds `sessions_log`, the environment's finished sessions as
 they're stored, for charts:
