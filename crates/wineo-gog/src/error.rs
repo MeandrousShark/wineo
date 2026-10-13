@@ -80,7 +80,7 @@ pub enum ErrorKind {
     Disk(io::ErrorKind),
     /// The file, or what GOG's download server says about it, disagrees
     /// with the exact size GOG's checksum gave or an earlier answer did.
-    #[error("the file isn't the size GOG listed")]
+    #[error("the file doesn't match its expected size")]
     WrongSize,
     /// GOG publishes no checksum for the file and its download server
     /// didn't send a length, so there's no exact size to check it against.
