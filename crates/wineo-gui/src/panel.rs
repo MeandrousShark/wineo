@@ -674,9 +674,11 @@ impl App {
         }
         self.load_images(keys)
     }
-    /// The open panel's hero and logo, and whether they are drawn dimmed.
+    /// The panel's hero and logo, and whether they are drawn dimmed. A
+    /// closing panel still draws until its exit animation ends, so its art
+    /// counts until then, chosen the way `panel` chooses it.
     pub(crate) fn panel_art_keys(&self) -> Vec<(crate::ArtKey, bool)> {
-        if !self.panel_open {
+        if !self.panel_open && !self.panel_reserved() {
             return Vec::new();
         }
         let Some(card) = self

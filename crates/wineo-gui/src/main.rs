@@ -1130,12 +1130,15 @@ impl App {
                 if self.section == sidebar::Section::Library {
                     let was_active = self.grid_motion.active();
                     self.grid_motion.tick(generation, now);
-                    if was_active
-                        && !self.grid_motion.active()
-                        && let Some(name) = self.grid_scroll_after_settle.take()
-                        && self.selected.as_deref() == Some(&name)
-                    {
-                        return self.scroll_selection();
+                    if was_active && !self.grid_motion.active() {
+                        // Drops the protection the motion's sweep needed.
+                        let art = self.load_visible_art();
+                        if let Some(name) = self.grid_scroll_after_settle.take()
+                            && self.selected.as_deref() == Some(&name)
+                        {
+                            return Task::batch([art, self.scroll_selection()]);
+                        }
+                        return art;
                     }
                 }
                 Task::none()
@@ -1817,13 +1820,29 @@ impl App {
         let margin = 2.0 * (heights.iter().copied().fold(0.0, f32::max) + GAP);
         let top = self.scroll_offset - margin;
         let bottom = self.scroll_offset + self.viewport_height + margin;
+        let mut ranges: Vec<_> = [false, true]
+            .into_iter()
+            .map(|open| {
+                let columns = grid_motion::columns_for_viewport(self.viewport_width, open);
+                grid_motion::cards_between(&heights, columns, top, bottom)
+            })
+            .filter(|range| !range.is_empty())
+            .collect();
+        // A card moving between its two slots can cross the viewport while
+        // neither slot is in it, but only cards between the two ranges move
+        // through it. Both layouts are known when the motion starts, so this
+        // holds for the whole motion; the tick that settles it narrows again.
+        if self.grid_motion.active()
+            && let (Some(start), Some(end)) = (
+                ranges.iter().map(|range| range.start).min(),
+                ranges.iter().map(|range| range.end).max(),
+            )
+        {
+            ranges = std::iter::once(start..end).collect();
+        }
         let mut seen = HashSet::new();
         let mut keys = Vec::new();
-        for columns in [
-            grid_motion::columns_for_viewport(self.viewport_width, false),
-            grid_motion::columns_for_viewport(self.viewport_width, true),
-        ] {
-            let range = grid_motion::cards_between(&heights, columns, top, bottom);
+        for range in ranges {
             for card in &filtered[range] {
                 if let Some(art) = &card.art {
                     let key = (art.clone(), artwork::Kind::Grid);
@@ -3191,6 +3210,102 @@ mod tests {
             request("game", Action::Install).unwrap(),
             "Steam is already installing game."
         );
+    }
+
+    #[test]
+    fn opening_the_panel_keeps_art_for_cards_sweeping_through_the_viewport() {
+        let mut app = app();
+        app.viewport_width = 1000.0;
+        app.viewport_height = 800.0;
+        app.merge(
+            (0..300)
+                .map(|index| {
+                    let mut card = card(&format!("game-{index}"), State::Inactive, 0);
+                    card.art = Some(art_file(&format!("/tmp/art-{index}.png"), index as u64));
+                    card
+                })
+                .collect(),
+        );
+        app.scroll_offset = 9600.0;
+        let heights: Vec<f32> = app.cards.iter().map(grid::card_height).collect();
+        let margin = 2.0 * (heights[0] + GAP);
+        let range = |open| {
+            grid_motion::cards_between(
+                &heights,
+                grid_motion::columns_for_viewport(app.viewport_width, open),
+                app.scroll_offset - margin,
+                app.scroll_offset + app.viewport_height + margin,
+            )
+        };
+        let (closed, open) = (range(false), range(true));
+        assert!(open.end < closed.start);
+        // Above the viewport when closed and below it when open.
+        let crossing = (open.end + closed.start) / 2;
+        let key = (
+            app.cards[crossing].art.clone().unwrap(),
+            artwork::Kind::Grid,
+        );
+        let _ = app.load_visible_art();
+        assert!(!app.visible_art.contains(&key));
+
+        let _ = app.update(Message::Select(app.cards[closed.start].name.clone()));
+        assert!(app.grid_motion.active());
+        assert!(app.visible_art.contains(&key));
+        assert!(app.loading.contains(&(key.clone(), false)));
+
+        let generation = app.grid_motion.generation();
+        let _ = app.update(Message::GridTick(
+            generation,
+            Instant::now() + Duration::from_secs(1),
+        ));
+        assert!(!app.grid_motion.active());
+        assert!(!app.visible_art.contains(&key));
+    }
+
+    #[test]
+    fn a_closing_panel_keeps_its_art_until_the_exit_ends() {
+        use wineo_core::steam::AppState;
+        let mut app = app();
+        let hero = art_file("/tmp/steam-hero.png", 10);
+        let logo = art_file("/tmp/steam-logo.png", 11);
+        let other = art_file("/tmp/other-grid.png", 12);
+        let mut card = steam_card("game", AppState::Installed);
+        card.panel_art.insert(
+            "steam".into(),
+            crate::library::ArtPaths {
+                hero: Some(hero.clone()),
+                logo: Some(logo.clone()),
+            },
+        );
+        let mut offscreen = card_with_art(other.clone());
+        offscreen.name = "other".into();
+        app.merge(vec![card, offscreen]);
+        // Nothing fits, so only protected art stays.
+        app.images = art_cache::ArtCache::with_budget(0);
+        let _ = app.update(Message::Select("game".into()));
+        let pixel = || image::Handle::from_rgba(1, 1, vec![10, 80, 240, 255]);
+        let keys = [
+            (hero.clone(), artwork::Kind::Hero),
+            (logo.clone(), artwork::Kind::Logo),
+        ];
+        for key in &keys {
+            let _ = app.update(Message::ArtLoaded(key.clone(), false, Ok(pixel())));
+            assert!(app.images.contains(key, false));
+        }
+
+        let _ = app.update(Message::ClosePanel);
+        assert!(!app.panel_open && app.panel_motion.active());
+        let other_key = (other, artwork::Kind::Grid);
+        let _ = app.update(Message::ArtLoaded(other_key.clone(), false, Ok(pixel())));
+        for key in &keys {
+            assert!(app.images.contains(key, false));
+        }
+
+        app.panel_motion.snap(false);
+        app.evict_art();
+        for key in &keys {
+            assert!(!app.images.contains(key, false));
+        }
     }
 
     #[test]
