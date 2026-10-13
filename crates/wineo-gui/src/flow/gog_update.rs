@@ -706,12 +706,16 @@ impl Reporter {
 mod tests {
     use std::cell::RefCell;
     use std::ffi::OsString;
+    use std::fs;
 
     use wineo_core::gog::folder::{Product, ProductStatus};
     use wineo_core::gog::update::SavedAside;
 
     use super::*;
-    use crate::gog_fake::{native_game, native_product, product_server, save_login};
+    use crate::gog_fake::{
+        native_game, native_game_with_dlc, native_product, native_product_with_dlc, product_server,
+        save_login,
+    };
     use crate::settings::steam_key::tests::TestKeyring;
 
     const RIMWORLD: u64 = 1094900565;
@@ -761,6 +765,65 @@ mod tests {
             )
         );
         assert_eq!(action(&pending), "Update");
+    }
+
+    const ROYALTY: u64 = 1233017772;
+
+    /// RimWorld with Royalty installed at 1.0 and GOG offering 1.1 of both,
+    /// Royalty titled `gog_title`, and `info` as its `goggame-*.info` name.
+    fn planned_with_dlc(gog_title: &str, info: Option<&str>) -> Vec<(String, String)> {
+        let (root, paths) = setup();
+        let folder = native_game_with_dlc(
+            &paths,
+            root.path(),
+            "rimworld",
+            RIMWORLD,
+            "1.0",
+            &[ROYALTY],
+            false,
+        );
+        if let Some(name) = info {
+            fs::create_dir_all(folder.join("game")).unwrap();
+            fs::write(
+                folder.join(format!("game/goggame-{ROYALTY}.info")),
+                serde_json::json!({"gameId": ROYALTY.to_string(), "name": name}).to_string(),
+            )
+            .unwrap();
+        }
+        let keyring = keyring();
+        save_login(&paths, &keyring);
+        let server = product_server(vec![native_product_with_dlc(
+            RIMWORLD,
+            "RimWorld",
+            "1.1",
+            &[(ROYALTY, gog_title)],
+        )]);
+        let planned =
+            plan_with(&paths, &keyring, server.client(), "rimworld", &Token::new()).unwrap();
+        let Planned::Update(pending) = planned else {
+            panic!("expected an update");
+        };
+        let rows = review_rows(&pending);
+        // Skip the folder row and keep the product rows.
+        rows[1..3].to_vec()
+    }
+
+    #[test]
+    fn a_dlc_row_is_its_gog_title_and_id() {
+        let rows = planned_with_dlc("RimWorld - Royalty", Some("Something else"));
+        assert_eq!(rows[0].0, "RimWorld");
+        assert_eq!(
+            rows[1],
+            ("Royalty [1233017772]".to_owned(), "1.0 -> 1.1".to_owned())
+        );
+    }
+
+    #[test]
+    fn a_dlc_gog_gives_no_title_takes_the_folder_s_name_or_shows_its_id() {
+        let rows = planned_with_dlc("", Some("RimWorld - Royalty"));
+        assert_eq!(rows[1].0, "Royalty [1233017772]");
+        let rows = planned_with_dlc("", None);
+        assert_eq!(rows[1].0, "DLC [1233017772]");
     }
 
     #[test]

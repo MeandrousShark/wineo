@@ -214,6 +214,22 @@ pub(crate) fn native_product(id: u64, title: &str, version: &str) -> serde_json:
     })
 }
 
+/// `native_product` with each of `dlc` (id and title) as an expanded DLC
+/// offering the same version.
+pub(crate) fn native_product_with_dlc(
+    id: u64,
+    title: &str,
+    version: &str,
+    dlc: &[(u64, &str)],
+) -> serde_json::Value {
+    let mut product = native_product(id, title, version);
+    product["expanded_dlcs"] = dlc
+        .iter()
+        .map(|(id, title)| native_product(*id, title, version))
+        .collect();
+    product
+}
+
 /// Saves a login the fake server's token endpoint renews.
 pub(crate) fn save_login(paths: &wineo_core::paths::Paths, keyring: &dyn Keyring) {
     let secret = format!(r#"{{"refresh_token":"R","user_id":"{USER}"}}"#);
@@ -232,6 +248,19 @@ pub(crate) fn native_game(
     version: &str,
     interrupted: bool,
 ) -> std::path::PathBuf {
+    native_game_with_dlc(paths, root, name, gog_id, version, &[], interrupted)
+}
+
+/// `native_game` with each of `dlc` installed at the same version.
+pub(crate) fn native_game_with_dlc(
+    paths: &wineo_core::paths::Paths,
+    root: &std::path::Path,
+    name: &str,
+    gog_id: u64,
+    version: &str,
+    dlc: &[u64],
+    interrupted: bool,
+) -> std::path::PathBuf {
     use std::os::unix::fs::PermissionsExt;
     use wineo_core::gog::folder::{
         Committed, FolderLock, FolderState, Journal, JournalKind, Platform, Product, ProductStatus,
@@ -246,12 +275,15 @@ pub(crate) fn native_game(
     std::fs::write(&start, "#!/bin/sh\n").unwrap();
     std::fs::set_permissions(&start, std::fs::Permissions::from_mode(0o755)).unwrap();
     native_environment(paths, name, &start, Some(gog_id));
-    let products = vec![Product {
-        id: gog_id,
-        version: Some(version.to_owned()),
-        build: None,
-        status: ProductStatus::Installed,
-    }];
+    let products: Vec<Product> = std::iter::once(gog_id)
+        .chain(dlc.iter().copied())
+        .map(|id| Product {
+            id,
+            version: Some(version.to_owned()),
+            build: None,
+            status: ProductStatus::Installed,
+        })
+        .collect();
     let state = FolderState {
         committed: Some(Committed {
             gog_id,
