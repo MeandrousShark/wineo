@@ -1,4 +1,4 @@
-Status: approved
+Status: done
 
 # 0050: GOG installs
 
@@ -212,8 +212,9 @@ Settled by the maintainer on 2026-10-12, before step 1:
     prefix before the installer runs, as `wineo start` does before a
     launch.
 
-Provisional, chosen overnight on 2026-10-13 while the maintainer was away
-(each can be overruled; see the board's "Waiting on you"):
+Provisional, chosen overnight on 2026-10-13 while the maintainer was away.
+The maintainer confirmed every provisional choice in this section after
+acceptance (2026-10-13), except the text tiles overruled below:
 
 - **Owned DLC ids** come from `embed.gog.com/user/data/games`, the account's
   full owned-ids list, since `getFilteredProducts` may list games only. To be

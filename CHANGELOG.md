@@ -3,6 +3,36 @@
 A finished plan bumps the minor version and fixes between plans bump the
 patch version. See `AGENTS.md` for the rule.
 
+## 0.31.0 - 2026-10-13
+
+- GOG installs ([0050](docs/plans/0050-gog-installs.md)). `wineo import gog
+  --game ID` now installs a game you own that isn't in wineo yet, natively
+  or from its Windows installer, with the DLC you own, into
+  `defaults.games_root` (default `~/Games`). `--platform`, `--language`,
+  `--runner`, `--arch`, and `--dir` choose how, and `--dry-run` shows the
+  review. A new `gog.language` setting takes a locale tag like `fr-FR`.
+  An interrupted install resumes from where it stopped when you install
+  again or run `wineo update NAME`, even offline. See [GOG
+  games](docs/gog.md).
+- `wineo update` now updates Windows installer games and `--reinstall`
+  repairs them, installs DLC bought since the game was installed, and
+  retries DLC that failed or wasn't offered before.
+- The desktop app's **Import from GOG** shows every game you own with its
+  poster, installs any of them through a review like the CLI's, and
+  finishes an install that didn't. Settings has the games folder and GOG
+  language.
+- Settings shows only the key button that applies for SteamGridDB and the
+  Steam Web API: **Set key...** with no key, **Remove key** with one.
+- Behavior change: `new --install-exe`, guided `new`, and the desktop app's
+  installer step now behave the same. Each sets up DXVK and vkd3d-proton
+  before the installer runs, and each asks which program to use afterwards
+  whatever the installer's exit code. A canceled installer keeps the
+  environment and points to `wineo setup NAME`.
+- JSON: `import gog --list --json` says `installed` for games wineo
+  installed (`imported` stays for migrated ones), a DLC's `state` can be
+  `not_installed`, and `update --check --json` no longer reports
+  `windows_installer` as a reason.
+
 ## 0.30.1 - 2026-10-12
 
 - The library loads faster with Steam games in it: wineo checks running
