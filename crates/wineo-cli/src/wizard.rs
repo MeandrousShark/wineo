@@ -1331,7 +1331,6 @@ fn fetch_art<I: Input, W: Write>(
 mod tests {
     use std::cell::Cell;
     use std::ffi::OsString;
-    use std::os::unix::fs::PermissionsExt;
 
     use wineo_core::art::Kind;
     use wineo_core::config::{Defaults, Hooks, HooksSetting};
@@ -1339,6 +1338,32 @@ mod tests {
 
     use super::*;
     use wineo_core::gamescope::{Gamescope, GamescopeSetting};
+
+    /// Writes an executable script from a child process. When this process
+    /// holds the file open for writing, any test thread that forks at that
+    /// moment hands the descriptor to its child until that child execs, and
+    /// running the script meanwhile fails with "Text file busy".
+    fn write_script(path: &std::path::Path, body: &str) {
+        use std::io::Write;
+        use std::process::{Command, Stdio};
+        let mut child = Command::new("sh")
+            .args(["-c", "cat > \"$1\" && chmod 755 \"$1\"", "sh"])
+            .arg(path)
+            .stdin(Stdio::piped())
+            .spawn()
+            .unwrap();
+        child
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(body.as_bytes())
+            .unwrap();
+        assert!(
+            child.wait().unwrap().success(),
+            "writing {}",
+            path.display()
+        );
+    }
 
     #[test]
     fn template_summary_lists_new_launch_settings() {
@@ -1396,8 +1421,7 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let script = |path: std::path::PathBuf, body: &str| {
             fs::create_dir_all(path.parent().unwrap()).unwrap();
-            fs::write(&path, body).unwrap();
-            fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
+            write_script(&path, body);
         };
         for (name, version) in [
             ("GE-Proton11-3", "GE-Proton11-3"),
@@ -1463,9 +1487,7 @@ mod tests {
         let bin = runners.join("fake/bin");
         fs::create_dir_all(&bin).unwrap();
         for executable in ["wine", "wineserver"] {
-            let path = bin.join(executable);
-            fs::write(&path, "#!/bin/sh\n").unwrap();
-            fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
+            write_script(&bin.join(executable), "#!/bin/sh\n");
         }
         let prefixes = root.path().join("prefixes");
         fs::create_dir_all(prefixes.join("hades")).unwrap();
