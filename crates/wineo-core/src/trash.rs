@@ -927,6 +927,31 @@ fn digest(path: &Path) -> Result<String> {
     Ok(format!("{:x}", hash.finalize()))
 }
 
+/// Whether everything in `part` is also in `whole` with the same contents,
+/// as a partly deleted copy of `whole` would be.
+fn contained_in(part: &Path, whole: &Path) -> Result<bool> {
+    let (part_meta, whole_meta) = (fs::symlink_metadata(part)?, fs::symlink_metadata(whole)?);
+    if part_meta.file_type().is_symlink() {
+        return Ok(
+            whole_meta.file_type().is_symlink() && fs::read_link(part)? == fs::read_link(whole)?
+        );
+    }
+    if part_meta.is_file() {
+        return Ok(whole_meta.is_file() && fs::read(part)? == fs::read(whole)?);
+    }
+    if !part_meta.is_dir() || !whole_meta.is_dir() {
+        return Ok(false);
+    }
+    for entry in fs::read_dir(part)? {
+        let name = entry?.file_name();
+        let other = whole.join(&name);
+        if fs::symlink_metadata(&other).is_err() || !contained_in(&part.join(&name), &other)? {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
 fn copy_verified(source: &Path, destination: &Path, expected: &str) -> Result<()> {
     let meta = fs::symlink_metadata(source)?;
     if meta.is_file() {
@@ -1787,7 +1812,8 @@ fn return_payload(
     if rollback && matches_identity(source, payload.identity) {
         require_same_mount_as_parent(&original)?;
         // Removal may have stopped before its move, or a copied metadata
-        // payload may still exist on both sides. The source is authoritative.
+        // payload may still exist on both sides. A whole source is
+        // authoritative.
         if let Some(remaining) = saved {
             if !payload
                 .copied_identity
@@ -1796,6 +1822,19 @@ fn return_payload(
                 bail!("retained copy changed at {}", retained.display());
             }
             verified_retained(&retained, &payload)?;
+            if digest(&original)? != payload.digest {
+                // Deleting a copied source can stop part way, leaving its
+                // root behind. Only the retained copy is whole then.
+                if payload.step != Step::DeletingSource || !contained_in(&original, &retained)? {
+                    bail!(
+                        "{} and its retained copy at {} differ; both were kept",
+                        original.display(),
+                        retained.display()
+                    );
+                }
+                delete_owned(&original)?;
+                return return_payload(paths, manifest, index, rollback);
+            }
             delete_owned(&retained)?;
         }
         manifest.payloads[index].step = Step::Returned;
@@ -3746,6 +3785,97 @@ mod tests {
         write_manifest(&paths, &manifest).unwrap();
         recover(&paths, &entry.id).unwrap();
         assert_eq!(fs::read(&config).unwrap(), b"kind = 'native'\n# raw\n");
+    }
+
+    /// Art and trash share the data directory, so the cross-device copy
+    /// keeps its retained side on /dev/shm and drives the rollback directly.
+    fn interrupted_art_copy(
+        step: Step,
+    ) -> Option<(Fixture, tempfile::TempDir, PathBuf, PathBuf, Manifest)> {
+        let other = tempfile::tempdir_in("/dev/shm").ok()?;
+        let f = Fixture::new();
+        let source = f.paths.art_dir("game");
+        fs::create_dir_all(source.join("grid")).unwrap();
+        for (file, text) in [
+            ("icon.png", "icon"),
+            ("hero.png", "hero"),
+            ("grid/a.png", "grid"),
+        ] {
+            fs::write(source.join(file), text).unwrap();
+        }
+        let retained = other.path().join("art");
+        let mut payload = make_payload(&f.paths, Kind::Art, &source, &retained)
+            .unwrap()
+            .unwrap();
+        if payload.source_parent.mount == payload.destination_parent.mount {
+            return None;
+        }
+        copy_verified(&source, &retained, &payload.digest).unwrap();
+        payload.copied_identity = identity(&retained).unwrap();
+        payload.step = step;
+        let id = "20260926T183000Z-a1b2c3d5";
+        let dir = entry_dir(&f.paths, id).unwrap();
+        create_storage(&dir).unwrap();
+        let manifest = Manifest {
+            version: VERSION,
+            id: id.into(),
+            entry_identity: identity(&dir).unwrap().unwrap(),
+            name: "game".into(),
+            removed_at: "2026-09-26T18:30:00Z".into(),
+            include_prefix: false,
+            prefix_present: None,
+            prefix_reference: None,
+            prefix_identity: None,
+            phase: Phase::Removing,
+            payloads: vec![payload],
+            gog_folders: Vec::new(),
+        };
+        write_manifest(&f.paths, &manifest).unwrap();
+        Some((f, other, source, retained, manifest))
+    }
+
+    #[test]
+    fn rollback_rebuilds_art_whose_source_deletion_was_interrupted() {
+        let Some((f, _other, source, retained, mut manifest)) =
+            interrupted_art_copy(Step::DeletingSource)
+        else {
+            return;
+        };
+        fs::remove_file(source.join("icon.png")).unwrap();
+        fs::remove_file(source.join("grid/a.png")).unwrap();
+        return_payload(&f.paths, &mut manifest, 0, true).unwrap();
+        assert_eq!(manifest.payloads[0].step, Step::Returned);
+        for (file, text) in [
+            ("icon.png", "icon"),
+            ("hero.png", "hero"),
+            ("grid/a.png", "grid"),
+        ] {
+            assert_eq!(fs::read_to_string(source.join(file)).unwrap(), text);
+        }
+        assert!(!retained.exists());
+    }
+
+    #[test]
+    fn rollback_keeps_both_copies_when_an_untouched_source_differs() {
+        let Some((f, _other, source, retained, mut manifest)) = interrupted_art_copy(Step::Copied)
+        else {
+            return;
+        };
+        fs::write(source.join("hero.png"), "edited").unwrap();
+        let error = return_payload(&f.paths, &mut manifest, 0, true).unwrap_err();
+        assert!(error.to_string().contains("both were kept"), "{error}");
+        assert_eq!(
+            fs::read_to_string(source.join("hero.png")).unwrap(),
+            "edited"
+        );
+        assert_eq!(
+            fs::read_to_string(retained.join("hero.png")).unwrap(),
+            "hero"
+        );
+        assert_eq!(
+            fs::read_to_string(retained.join("icon.png")).unwrap(),
+            "icon"
+        );
     }
 
     #[test]
