@@ -1961,6 +1961,7 @@ fn prepare(paths: &Paths, draft: &Draft) -> Result<Review, String> {
                 dir: (!draft.prefix.is_empty()).then(|| draft.prefix.clone()),
                 arch: draft.arch,
                 template: template.clone(),
+                gog_id: None,
             }
             .prefix_dir(paths, &global)
             .map_err(|error| error.to_string())?;
@@ -1991,6 +1992,7 @@ fn prepare(paths: &Paths, draft: &Draft) -> Result<Review, String> {
         dir: (!draft.prefix.is_empty()).then(|| draft.prefix.clone()),
         arch: Some(arch),
         template: template.clone(),
+        gog_id: None,
     }
     .prefix_dir(paths, &global)
     .map_err(|error| error.to_string())?;

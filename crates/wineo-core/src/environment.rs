@@ -74,6 +74,8 @@ pub struct NewEnvironment {
     pub arch: Option<Arch>,
     /// What `--template` named, already merged with the explicit flags.
     pub template: Option<Template>,
+    /// The GOG game it runs, recorded in the same write as the rest.
+    pub gog_id: Option<String>,
 }
 
 impl NewEnvironment {
@@ -220,6 +222,9 @@ impl Environment {
         doc["arch"] = value(arch.as_str());
         if let Some(template) = &new.template {
             template.apply(&mut doc);
+        }
+        if let Some(gog_id) = &new.gog_id {
+            doc["gog_id"] = value(gog_id.as_str());
         }
         let _guard = Locks::new(paths).config(&path)?;
         let _build_guards = build_lock::config(

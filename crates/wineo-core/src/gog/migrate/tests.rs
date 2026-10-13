@@ -336,6 +336,7 @@ impl Frozen {
 fn products(ids: &[(u64, Option<&str>, Option<&str>)]) -> Vec<Product> {
     ids.iter()
         .map(|(id, version, build)| Product {
+            reported_language: None,
             id: *id,
             version: version.map(str::to_owned),
             build: build.map(str::to_owned),

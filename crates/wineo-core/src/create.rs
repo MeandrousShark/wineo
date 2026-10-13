@@ -40,6 +40,9 @@ pub struct CreateRequest {
     pub desktop: bool,
     /// Refuse a changed create/adopt decision after a caller's review.
     pub expected_adopted: Option<bool>,
+    /// The GOG game the environment runs, written with the rest of its first
+    /// config.
+    pub gog_id: Option<String>,
 }
 
 /// Resolved creation choices, without locks or filesystem changes.
@@ -238,6 +241,7 @@ pub fn plan(paths: &Paths, request: CreateRequest) -> anyhow::Result<CreatePlan>
         dir: request.dir,
         arch,
         template,
+        gog_id: request.gog_id,
     };
     let prefix = new.prefix_dir(paths, &global)?;
     crate::environment::check_new_name(paths, &new.name)?;
@@ -298,6 +302,18 @@ pub fn apply(
     paths: &Paths,
     plan: CreatePlan,
     token: &Token,
+    events: impl FnMut(CreateEvent),
+) -> anyhow::Result<Created> {
+    apply_with(paths, plan, None, token, events)
+}
+
+/// `apply`, for a caller already holding the environment and the planned
+/// prefix exclusively, which the creation takes over instead of locking.
+fn apply_with(
+    paths: &Paths,
+    plan: CreatePlan,
+    held: Option<Guard>,
+    token: &Token,
     mut events: impl FnMut(CreateEvent),
 ) -> anyhow::Result<Created> {
     let CreatePlan {
@@ -341,7 +357,13 @@ pub fn apply(
             },
         )?;
     }
-    let guard = Locks::new(paths).acquire(Operation::Create, &new.name, &[&prefix])?;
+    let guard = match held {
+        Some(mut guard) => {
+            guard.relabel(Operation::Create)?;
+            guard
+        }
+        None => Locks::new(paths).acquire(Operation::Create, &new.name, &[&prefix])?,
+    };
     let current_adopted = crate::prefix::is_prefix(&runner.wine_prefix(&prefix));
     if current_adopted != adopted
         || expected_adopted.is_some_and(|expected| current_adopted != expected)
@@ -437,6 +459,15 @@ pub enum Step<'a> {
         output: Output<'a>,
         token: &'a crate::cancel::Token,
     },
+    /// A GOG game's Windows installer, run with the arguments and locale
+    /// variables that make it install silently into the game's folder. How
+    /// its exit code reads is up to the caller.
+    GogInstaller {
+        program: &'a str,
+        args: &'a installer::Args,
+        output: Output<'a>,
+        token: &'a crate::cancel::Token,
+    },
 }
 
 /// What a frontend does around `create_and_install`. Hooks run under the
@@ -490,6 +521,10 @@ pub struct Installed<S> {
     pub created_prefix: bool,
     pub target: TargetOutcome,
     pub step: Stepped<S>,
+    /// The environment's and prefix's locks, still held, when the caller
+    /// handed them in with `create_and_install_held`. Lost when the step
+    /// couldn't be prepared.
+    pub guard: Option<Guard>,
     _build_guard: Option<build_lock::Guard>,
 }
 
@@ -506,7 +541,36 @@ pub fn create_and_install<H: Hooks>(
     token: &crate::cancel::Token,
     hooks: &mut H,
 ) -> anyhow::Result<Installed<H::Stop>> {
-    let created = run(paths, request, token, |event| hooks.event(event))?;
+    create_and_install_with(paths, request, step, None, token, hooks)
+}
+
+/// `create_and_install` for a caller already holding the environment and the
+/// prefix `request` plans exclusively. The locks pass through creation and
+/// the step and come back in `Installed::guard`, so nothing else can touch
+/// the prefix until the caller lets go.
+pub fn create_and_install_held<H: Hooks>(
+    paths: &Paths,
+    request: CreateRequest,
+    step: Option<Step>,
+    guard: Guard,
+    token: &crate::cancel::Token,
+    hooks: &mut H,
+) -> anyhow::Result<Installed<H::Stop>> {
+    create_and_install_with(paths, request, step, Some(guard), token, hooks)
+}
+
+fn create_and_install_with<H: Hooks>(
+    paths: &Paths,
+    request: CreateRequest,
+    step: Option<Step>,
+    held: Option<Guard>,
+    token: &crate::cancel::Token,
+    hooks: &mut H,
+) -> anyhow::Result<Installed<H::Stop>> {
+    let keep = held.is_some();
+    let created = apply_with(paths, plan(paths, request)?, held, token, |event| {
+        hooks.event(event)
+    })?;
     let stopped = hooks.created(&created);
     let Created {
         global,
@@ -518,9 +582,9 @@ pub fn create_and_install<H: Hooks>(
         guard,
         _build_guard,
     } = created;
-    let step = match (stopped, step) {
-        (Err(stop), _) => Stepped::Stopped(stop),
-        (Ok(()), None) => Stepped::None,
+    let (step, guard) = match (stopped, step) {
+        (Err(stop), _) => (Stepped::Stopped(stop), Some(guard)),
+        (Ok(()), None) => (Stepped::None, Some(guard)),
         (
             Ok(()),
             Some(Step::Installer {
@@ -534,7 +598,26 @@ pub fn create_and_install<H: Hooks>(
             &environment.name,
             &runner,
             guard,
-            program,
+            (program, &installer::Args::default()),
+            output,
+            token,
+            hooks,
+        ),
+        (
+            Ok(()),
+            Some(Step::GogInstaller {
+                program,
+                args,
+                output,
+                token,
+            }),
+        ) => install(
+            paths,
+            &global,
+            &environment.name,
+            &runner,
+            guard,
+            (program, args),
             output,
             token,
             hooks,
@@ -548,6 +631,7 @@ pub fn create_and_install<H: Hooks>(
         created_prefix,
         target,
         step,
+        guard: guard.filter(|_| keep),
         _build_guard,
     })
 }
@@ -559,32 +643,33 @@ fn install<H: Hooks>(
     name: &str,
     runner: &Runner,
     guard: Guard,
-    program: &str,
+    (program, args): (&str, &installer::Args),
     output: Output,
     token: &crate::cancel::Token,
     hooks: &mut H,
-) -> Stepped<H::Stop> {
-    let installer =
-        match Installer::prepare_with_runner(guard, paths, global, name, program, runner) {
-            Ok(installer) => installer,
-            Err(err) => return Stepped::NotPrepared(err),
-        };
+) -> (Stepped<H::Stop>, Option<Guard>) {
+    let installer = match Installer::prepare_with_runner_args(
+        guard, paths, global, name, program, args, runner,
+    ) {
+        Ok(installer) => installer,
+        Err(err) => return (Stepped::NotPrepared(err), None),
+    };
     // Under the installer's lock, so the installer runs against the
     // components the config asks for, like a launch does.
     if let Err(err) = reconcile_components(paths, global, name, installer.launch(), hooks) {
-        return Stepped::NotPrepared(err);
+        return (Stepped::NotPrepared(err), None);
     }
     if let Err(stop) = hooks.ready(installer.launch()) {
-        return Stepped::Stopped(stop);
+        return (Stepped::Stopped(stop), None);
     }
-    let outcome = installer.run(
+    let (outcome, guard) = installer.run_keeping(
         token,
         std::time::Duration::from_secs(global.stop_timeout.into()),
         output,
         |watched| hooks.watched(watched),
     );
     let resolved = Runtime::new(paths, name).check_resolved(name).is_ok();
-    Stepped::Ran { outcome, resolved }
+    (Stepped::Ran { outcome, resolved }, Some(guard))
 }
 
 fn reconcile_components<H: Hooks>(
@@ -1524,6 +1609,52 @@ mod tests {
                 .read_operation()
                 .unwrap()
                 .is_none()
+        );
+    }
+
+    #[test]
+    fn a_gog_installer_step_gets_its_arguments_and_variables() {
+        let root = tempfile::tempdir().unwrap();
+        let paths = paths(root.path());
+        installing_runner(
+            &paths,
+            "shift; printf '%s|' \"$@\" \"$LC_ALL\" > \"$WINEPREFIX/args\"; exit 1",
+        );
+        let setup = root.path().join("setup.exe");
+        fs::write(&setup, "").unwrap();
+        let token = Token::new();
+        let mut recorder = Recorder::new(&token, "");
+        let log = root.path().join("install.log");
+        let args = installer::Args {
+            args: vec!["/SILENT".to_owned(), "/DIR=Z:\\a b".to_owned()],
+            env: [("LC_ALL".to_owned(), "fr_FR.UTF-8".to_owned())].into(),
+        };
+        let step = Step::GogInstaller {
+            program: setup.to_str().unwrap(),
+            args: &args,
+            output: Output::Log(&log),
+            token: &token,
+        };
+        let request = CreateRequest {
+            gog_id: Some("1207658930".to_owned()),
+            ..request("game")
+        };
+        let installed =
+            create_and_install(&paths, request, Some(step), &token, &mut recorder).unwrap();
+        assert!(matches!(
+            installed.step,
+            Stepped::Ran {
+                outcome: Ok(installer::Outcome::Finished { exit_code: Some(1) }),
+                resolved: true,
+            }
+        ));
+        assert_eq!(
+            fs::read_to_string(prefix_dir(&paths).join("args")).unwrap(),
+            "/SILENT|/DIR=Z:\\a b|fr_FR.UTF-8|"
+        );
+        assert_eq!(
+            installed.environment.config.gog_id.as_deref(),
+            Some("1207658930")
         );
     }
 

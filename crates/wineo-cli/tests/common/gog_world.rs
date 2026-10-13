@@ -291,6 +291,7 @@ impl Fixture {
         )
         .unwrap();
         let products = std::iter::once(Product {
+            reported_language: None,
             id: gog_id,
             version: Some(version.to_owned()),
             build: None,
@@ -298,6 +299,7 @@ impl Fixture {
             status: ProductStatus::Installed,
         })
         .chain(dlc.iter().map(|(id, version)| Product {
+            reported_language: None,
             id: *id,
             version: version.map(str::to_owned),
             build: None,
@@ -353,6 +355,7 @@ impl Fixture {
                 language: "en-US".to_owned(),
                 track: Track::Galaxy,
                 products: vec![Product {
+                    reported_language: None,
                     id: DISCO,
                     version: None,
                     build: Some("59781086834418085".to_owned()),

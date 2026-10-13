@@ -51,9 +51,16 @@ pub fn product_names(folder: &Path) -> HashMap<u64, String> {
     names
 }
 
-/// Reads one info file without ever waiting on it: a FIFO or a device named
-/// like one would block the open or the read forever.
 fn read_name(path: &Path, id: u64) -> Option<String> {
+    let root = read_info(path, id)?;
+    let name = root.get("name")?.as_str()?.trim();
+    (!name.is_empty()).then(|| name.to_owned())
+}
+
+/// Reads one `goggame-<id>.info` for game `id` without ever waiting on it: a
+/// FIFO or a device named like one would block the open or the read
+/// forever, and a file too big to be one isn't read.
+pub(crate) fn read_info(path: &Path, id: u64) -> Option<Value> {
     let metadata = fs::metadata(path).ok()?;
     if !metadata.is_file() || metadata.len() > MAX_INFO_BYTES {
         return None;
@@ -79,8 +86,7 @@ fn read_name(path: &Path, id: u64) -> Option<String> {
     if id_text(root.get("gameId")?) != id.to_string() {
         return None;
     }
-    let name = root.get("name")?.as_str()?.trim();
-    (!name.is_empty()).then(|| name.to_owned())
+    Some(root)
 }
 
 /// A DLC as `NAME (ID)`. A name that starts with the base game's title and a

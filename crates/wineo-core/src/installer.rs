@@ -43,6 +43,15 @@ pub enum Output<'a> {
     Log(&'a Path),
 }
 
+/// What an installer runs with besides its program. Empty by default, as for
+/// an installer someone picked.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Args {
+    pub args: Vec<String>,
+    /// Set on top of the environment's own variables.
+    pub env: BTreeMap<String, String>,
+}
+
 /// How an installer run ended.
 #[derive(Debug)]
 pub enum Outcome {
@@ -80,15 +89,36 @@ impl Installer {
         name: &str,
         program: &str,
     ) -> Result<Self> {
+        Self::prepare_args(paths, global, name, program, &Args::default())
+    }
+
+    /// `prepare`, for a program run with arguments and extra environment
+    /// variables, like an installer run silently.
+    pub fn prepare_args(
+        paths: &Paths,
+        global: &GlobalConfig,
+        name: &str,
+        program: &str,
+        args: &Args,
+    ) -> Result<Self> {
         // Resolved once to know which prefix to lock, then again under it.
         let environment = Environment::load(paths, name)?;
-        let locked = launch(paths, global, &environment, program)?
+        let locked = launch(paths, global, &environment, program, args)?
             .host
             .prefix()
             .ok_or_else(|| environment.config.no_prefix(name))?
             .to_owned();
         let guard = Locks::new(paths).acquire(Operation::Install, name, &[&locked])?;
-        Self::claim(guard, paths, global, name, program, Some(&locked), None)
+        Self::claim(
+            guard,
+            paths,
+            global,
+            name,
+            program,
+            args,
+            Some(&locked),
+            None,
+        )
     }
 
     /// The same for a caller already holding the environment and its prefix
@@ -102,30 +132,95 @@ impl Installer {
         program: &str,
     ) -> Result<Self> {
         guard.relabel(Operation::Install)?;
-        Self::claim(guard, paths, global, name, program, None, None)
+        Self::claim(
+            guard,
+            paths,
+            global,
+            name,
+            program,
+            &Args::default(),
+            None,
+            None,
+        )
+    }
+
+    /// `prepare_args`, for a caller already holding the environment and
+    /// `locked`, its prefix, exclusively. The locks are kept and relabeled.
+    pub fn prepare_args_with(
+        mut guard: Guard,
+        paths: &Paths,
+        global: &GlobalConfig,
+        name: &str,
+        program: &str,
+        args: &Args,
+        locked: &Path,
+    ) -> Result<Self> {
+        guard.relabel(Operation::Install)?;
+        Self::claim(
+            guard,
+            paths,
+            global,
+            name,
+            program,
+            args,
+            Some(locked),
+            None,
+        )
     }
 
     /// Keeps creation and its installer on the same resolved runner.
     pub fn prepare_with_runner(
-        mut guard: Guard,
+        guard: Guard,
         paths: &Paths,
         global: &GlobalConfig,
         name: &str,
         program: &str,
         runner: &crate::runner::Runner,
     ) -> Result<Self> {
+        Self::prepare_with_runner_args(
+            guard,
+            paths,
+            global,
+            name,
+            program,
+            &Args::default(),
+            runner,
+        )
+    }
+
+    /// `prepare_with_runner`, with arguments and extra environment variables.
+    pub fn prepare_with_runner_args(
+        mut guard: Guard,
+        paths: &Paths,
+        global: &GlobalConfig,
+        name: &str,
+        program: &str,
+        args: &Args,
+        runner: &crate::runner::Runner,
+    ) -> Result<Self> {
         guard.relabel(Operation::Install)?;
-        Self::claim(guard, paths, global, name, program, None, Some(runner))
+        Self::claim(
+            guard,
+            paths,
+            global,
+            name,
+            program,
+            args,
+            None,
+            Some(runner),
+        )
     }
 
     /// Reads the environment again under the lock, so what runs is what its
     /// config says now rather than when someone started answering questions.
+    #[allow(clippy::too_many_arguments)]
     fn claim(
         guard: Guard,
         paths: &Paths,
         global: &GlobalConfig,
         name: &str,
         program: &str,
+        args: &Args,
         locked: Option<&Path>,
         fixed_runner: Option<&crate::runner::Runner>,
     ) -> Result<Self> {
@@ -148,7 +243,7 @@ impl Installer {
             Runners::new(paths, global)?.resolve_locked(paths, &environment.wine()?.runner)?
         };
         environment.config.require_wine_mut(name)?.runner = runner.name().to_owned();
-        let mut launch = launch(paths, global, &environment, program)?;
+        let mut launch = launch(paths, global, &environment, program, args)?;
         let Host::Wine {
             runner: launch_runner,
             prefix,
@@ -194,14 +289,43 @@ impl Installer {
         })
     }
 
+    /// `run`, handing back the environment's and prefix's locks instead of
+    /// letting go of them, for a caller that runs more in the prefix and has
+    /// to keep everything else out until it's done.
+    pub fn run_keeping(
+        self,
+        token: &Token,
+        stop_timeout: Duration,
+        output: Output,
+        watched: impl FnMut(Watched),
+    ) -> (Result<Outcome>, Guard) {
+        self.run_keeping_with(token, stop_timeout, output, watched, |runtime, state| {
+            runtime.write_operation(state)
+        })
+    }
+
     fn run_with_writer(
         self,
         token: &Token,
         stop_timeout: Duration,
         output: Output,
-        mut watched: impl FnMut(Watched),
-        mut write_operation: impl FnMut(&Runtime, &OperationState) -> Result<()>,
+        watched: impl FnMut(Watched),
+        write_operation: impl FnMut(&Runtime, &OperationState) -> Result<()>,
     ) -> Result<Outcome> {
+        // Only once everything is known to have stopped or is recorded as
+        // unresolved can anything else have the prefix.
+        self.run_keeping_with(token, stop_timeout, output, watched, write_operation)
+            .0
+    }
+
+    fn run_keeping_with(
+        self,
+        token: &Token,
+        stop_timeout: Duration,
+        output: Output,
+        watched: impl FnMut(Watched),
+        write_operation: impl FnMut(&Runtime, &OperationState) -> Result<()>,
+    ) -> (Result<Outcome>, Guard) {
         let Self {
             guard,
             build_guard,
@@ -209,120 +333,138 @@ impl Installer {
             runtime,
             program,
         } = self;
-        let Host::Wine { runner, prefix } = &launch.host else {
-            unreachable!("an installer is only claimed for a launch in a prefix");
-        };
-        let mut record = OperationState {
-            operation: Operation::Install,
+        let outcome = run_parts(
+            build_guard,
+            launch,
+            runtime,
             program,
-            runner: runner.clone(),
-            prefix: prefix.clone(),
-            pid: None,
-            group: None,
-            boot_id: None,
-            leader_start: None,
-            started_at: Timestamp::now(),
-        };
-        let supervisor = Supervisor::with_token(token);
-        // Written before anything starts, so a crash can never leave something
-        // running that nothing records.
-        write_operation(&runtime, &record)?;
-        let mut child = match command(&launch, output).and_then(|mut command| {
-            command
-                .spawn()
-                .context(|| format!("failed to start {}", runner.launcher()))
-        }) {
-            Ok(child) => child,
-            Err(err) => {
-                // Nothing is running, so there is nothing left to protect.
-                let _ = runtime.clear_operation();
-                return Err(err);
+            (token, stop_timeout, output),
+            watched,
+            write_operation,
+        );
+        (outcome, guard)
+    }
+}
+
+fn run_parts(
+    build_guard: Option<build_lock::Guard>,
+    launch: Launch,
+    runtime: Runtime,
+    program: String,
+    (token, stop_timeout, output): (&Token, Duration, Output),
+    mut watched: impl FnMut(Watched),
+    mut write_operation: impl FnMut(&Runtime, &OperationState) -> Result<()>,
+) -> Result<Outcome> {
+    let Host::Wine { runner, prefix } = &launch.host else {
+        unreachable!("an installer is only claimed for a launch in a prefix");
+    };
+    let mut record = OperationState {
+        operation: Operation::Install,
+        program,
+        runner: runner.clone(),
+        prefix: prefix.clone(),
+        pid: None,
+        group: None,
+        boot_id: None,
+        leader_start: None,
+        started_at: Timestamp::now(),
+    };
+    let supervisor = Supervisor::with_token(token);
+    // Written before anything starts, so a crash can never leave something
+    // running that nothing records.
+    write_operation(&runtime, &record)?;
+    let mut child = match command(&launch, output).and_then(|mut command| {
+        command
+            .spawn()
+            .context(|| format!("failed to start {}", runner.launcher()))
+    }) {
+        Ok(child) => child,
+        Err(err) => {
+            // Nothing is running, so there is nothing left to protect.
+            let _ = runtime.clear_operation();
+            return Err(err);
+        }
+    };
+    process::quiet_core_dumps(&child);
+    record.pid = Some(child.id());
+    record.group = Some(child.id());
+    record.boot_id = process::boot_id();
+    record.leader_start = process::start_time(child.id());
+    if let Err(err) = write_operation(&runtime, &record) {
+        let cleanup = runner.kill_owned(
+            prefix,
+            record.group,
+            record.boot_id.as_deref(),
+            record.leader_start,
+        );
+        let _ = child.kill();
+        let exit_code = child.wait().ok().map(crate::runtime::exit_code);
+        let settled = match cleanup {
+            Ok(process::GroupOwnership::Owned | process::GroupOwnership::Gone) => {
+                settle(&record, GIVE_UP)
             }
+            Ok(process::GroupOwnership::Unknown) => Err(Error::Unsettled(
+                "installer process ownership could not be confirmed".to_owned(),
+            )),
+            Err(cleanup) => Err(cleanup),
         };
-        process::quiet_core_dumps(&child);
-        record.pid = Some(child.id());
-        record.group = Some(child.id());
-        record.boot_id = process::boot_id();
-        record.leader_start = process::start_time(child.id());
-        if let Err(err) = write_operation(&runtime, &record) {
-            let cleanup = runner.kill_owned(
-                prefix,
-                record.group,
-                record.boot_id.as_deref(),
-                record.leader_start,
-            );
-            let _ = child.kill();
-            let exit_code = child.wait().ok().map(crate::runtime::exit_code);
-            let settled = match cleanup {
-                Ok(process::GroupOwnership::Owned | process::GroupOwnership::Gone) => {
-                    settle(&record, GIVE_UP)
-                }
-                Ok(process::GroupOwnership::Unknown) => Err(Error::Unsettled(
-                    "installer process ownership could not be confirmed".to_owned(),
-                )),
-                Err(cleanup) => Err(cleanup),
-            };
-            return match settled {
-                Ok(()) => match runtime.clear_operation() {
-                    Ok(()) => Err(err),
-                    Err(cleanup) => Ok(Outcome::Unresolved {
-                        exit_code,
-                        canceled: false,
-                        error: cleanup,
-                    }),
-                },
+        return match settled {
+            Ok(()) => match runtime.clear_operation() {
+                Ok(()) => Err(err),
                 Err(cleanup) => Ok(Outcome::Unresolved {
                     exit_code,
                     canceled: false,
-                    error: Error::Unsettled(format!(
-                        "failed to save installer process identity: {err}; {cleanup}"
-                    )),
+                    error: cleanup,
                 }),
-            };
-        }
+            },
+            Err(cleanup) => Ok(Outcome::Unresolved {
+                exit_code,
+                canceled: false,
+                error: Error::Unsettled(format!(
+                    "failed to save installer process identity: {err}; {cleanup}"
+                )),
+            }),
+        };
+    }
 
-        let ending = supervisor.watch(
-            &launch.host,
-            record.group,
-            record.boot_id.clone(),
-            record.leader_start,
-            child,
-            stop_timeout,
-            Settle::Confirmed,
-            Some(GIVE_UP),
-            &mut watched,
-        );
-        drop(supervisor);
+    let ending = supervisor.watch(
+        &launch.host,
+        record.group,
+        record.boot_id.clone(),
+        record.leader_start,
+        child,
+        stop_timeout,
+        Settle::Confirmed,
+        Some(GIVE_UP),
+        &mut watched,
+    );
+    drop(supervisor);
 
-        let outcome = match ending.settled {
-            Ok(()) => {
-                // Everything has stopped either way. A record that can't be
-                // removed only makes the next command point at `wineo stop`.
-                if let Err(err) = runtime.clear_operation() {
-                    watched(Watched::Notice(Notice::Warning(err)));
+    let outcome = match ending.settled {
+        Ok(()) => {
+            // Everything has stopped either way. A record that can't be
+            // removed only makes the next command point at `wineo stop`.
+            if let Err(err) = runtime.clear_operation() {
+                watched(Watched::Notice(Notice::Warning(err)));
+            }
+            if ending.stopped {
+                Outcome::Canceled {
+                    exit_code: ending.exit_code,
                 }
-                if ending.stopped {
-                    Outcome::Canceled {
-                        exit_code: ending.exit_code,
-                    }
-                } else {
-                    Outcome::Finished {
-                        exit_code: ending.exit_code,
-                    }
+            } else {
+                Outcome::Finished {
+                    exit_code: ending.exit_code,
                 }
             }
-            Err(error) => Outcome::Unresolved {
-                exit_code: ending.exit_code,
-                canceled: ending.stopped,
-                error,
-            },
-        };
-        // Only now, once everything is known to have stopped or is recorded as
-        // unresolved, can anything else have the prefix.
-        drop(guard);
-        drop(build_guard);
-        Ok(outcome)
-    }
+        }
+        Err(error) => Outcome::Unresolved {
+            exit_code: ending.exit_code,
+            canceled: ending.stopped,
+            error,
+        },
+    };
+    drop(build_guard);
+    Ok(outcome)
 }
 
 fn launch(
@@ -330,8 +472,9 @@ fn launch(
     global: &GlobalConfig,
     environment: &Environment,
     program: &str,
+    args: &Args,
 ) -> Result<Launch> {
-    Launch::exec(paths, global, environment, program, &[], &BTreeMap::new())
+    Launch::exec(paths, global, environment, program, &args.args, &args.env)
 }
 
 fn command(launch: &Launch, output: Output) -> Result<Command> {

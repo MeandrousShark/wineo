@@ -63,6 +63,7 @@ fn builds(items: &[(&str, Option<&str>)]) -> Value {
 
 fn installed(id: u64, version: Option<&str>) -> folder::Product {
     folder::Product {
+        reported_language: None,
         id,
         version: version.map(str::to_owned),
         build: None,
@@ -73,6 +74,7 @@ fn installed(id: u64, version: Option<&str>) -> folder::Product {
 
 fn built(id: u64, build: Option<&str>) -> folder::Product {
     folder::Product {
+        reported_language: None,
         id,
         version: None,
         build: build.map(str::to_owned),

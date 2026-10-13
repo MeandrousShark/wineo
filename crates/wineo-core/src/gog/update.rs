@@ -1062,6 +1062,7 @@ fn info_build(folder: &Path, gog_id: u64) -> Option<String> {
 mod apply;
 pub mod install;
 mod publish;
+pub mod windows;
 
 pub use apply::{Options, Pending, Plan, PlannedProduct, Progress, Updated, apply, plan};
 pub use publish::SavedAside;

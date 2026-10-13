@@ -1,8 +1,11 @@
-//! Installing a native GOG game that isn't installed, into a fresh folder,
-//! as a new native environment with `gog_id`.
+//! Installing a GOG game that isn't installed, into a fresh folder, as a new
+//! environment with `gog_id`: native from GOG's Linux packages, or Wine or
+//! Proton running GOG's Windows installers.
 //!
-//! A fresh install is a rebuild of every product into an empty folder, so it
-//! shares an update's machinery in `apply`. `plan` resolves the game and its
+//! A fresh native install is a rebuild of every product into an empty
+//! folder, so it shares an update's machinery in `apply`. A Windows install
+//! writes the same state and journal, then creates the environment and runs
+//! each product's installer in it (see `windows`). `plan` resolves the game and its
 //! owned DLC and reads only. `apply` downloads every package, opens them and
 //! checks they fit, then under the locks creates the folder, writes its
 //! state with an `install` journal and no `[committed]`, writes the
@@ -28,16 +31,18 @@ use wineo_gog::DownloadCache;
 
 use super::apply::{
     self, Packages, PlannedFile, Progress, Wanted, Work, check_fit, download, free_space,
-    is_cancel, lock_operation, open_package, operation_id, pin_packages, rebuild,
+    is_cancel, lock_operation, lock_operation_on, open_package, operation_id, pin_packages,
+    rebuild,
 };
 use super::{Check, SavedAside, UpdateError};
 use crate::cancel::Token;
-use crate::config::{GlobalConfig, Target as TargetConfig};
+use crate::config::{Arch, GlobalConfig, Target as TargetConfig};
+use crate::create::{self, CreateRequest};
 use crate::environment;
 use crate::gog::account::{AccountError, Session};
 use crate::gog::folder::{
-    self, AdoptionLock, FolderLock, FolderState, Journal, JournalKind, Package, Platform, Product,
-    ProductStatus, Target, Track, failpoint,
+    self, AdoptionLock, Attempted, EntryType, FolderLock, FolderState, Journal, JournalKind,
+    Package, Platform, Product, ProductStatus, Target, Track, failpoint,
 };
 use crate::gog::install_dir::install_folder;
 use crate::gog::migrate::host_only;
@@ -45,17 +50,20 @@ use crate::gog::package::{self, SpaceNeeded};
 use crate::gog::{language, names, product};
 use crate::import::{self, ImportedSettings};
 use crate::paths::Paths;
+use crate::runner::Runner;
+
+use super::windows::{self, Event, SetupError};
 
 /// The language every GOG product falls back to.
 const FALLBACK: &str = "en";
 
 /// The target a new game's environment gets, as a migrated one does.
-const TARGET: &str = "game";
+const TARGET: &str = windows::TARGET;
 
 /// Refusals a frontend may want to tell apart.
 #[derive(Debug, thiserror::Error)]
 pub enum InstallError {
-    /// The base game can't be installed natively.
+    /// The base game has no installer wineo can use for the platform.
     #[error("{title} can't be installed: {why}")]
     NoInstaller { title: String, why: String },
     /// The environment or folder isn't what the plan saw any more.
@@ -85,6 +93,16 @@ pub struct Request {
     /// Write nothing while planning, for a dry run: neither GOG's details
     /// are cached.
     pub read_only: bool,
+    /// None installs natively when GOG has a Linux installer, else from its
+    /// Windows installer. An interrupted install carries on as it began.
+    pub platform: Option<Platform>,
+    /// The runner and arch a Windows game's new environment gets. None uses
+    /// the global defaults, like `new`.
+    pub runner: Option<String>,
+    pub arch: Option<Arch>,
+    /// Run the base game's Windows installer as its own wizard instead of
+    /// silently, after it stopped before installing anything.
+    pub wizard: bool,
 }
 
 /// One product an install would put in the folder, for a review.
@@ -132,6 +150,42 @@ pub struct Plan {
     /// The folder's state when planned: none, or the resumed install's.
     seen: Option<FolderState>,
     warnings: Vec<String>,
+    platform: Platform,
+    /// How a Windows game's environment is created, when it has no config.
+    creation: Option<Creation>,
+    wizard: bool,
+    /// What the review calls the base game's language, like `English`.
+    language_name: String,
+}
+
+/// A Windows game's new environment, resolved while planning.
+#[derive(Debug, Clone)]
+pub struct Creation {
+    runner: Runner,
+    arch: Option<Arch>,
+    prefix: PathBuf,
+    adopted: bool,
+}
+
+impl Creation {
+    pub fn runner(&self) -> &Runner {
+        &self.runner
+    }
+
+    /// The arch asked for. None uses what the runner and global config say.
+    pub fn arch(&self) -> Option<Arch> {
+        self.arch
+    }
+
+    pub fn prefix(&self) -> &Path {
+        &self.prefix
+    }
+
+    /// Whether a prefix is already there to adopt, as one an interrupted
+    /// install built leaves.
+    pub fn adopted(&self) -> bool {
+        self.adopted
+    }
 }
 
 impl Plan {
@@ -193,11 +247,32 @@ impl Plan {
         self.files.iter().map(|file| file.size).sum()
     }
 
-    /// An estimate of the space the installed game takes, which is only
-    /// known once the packages are downloaded: their size, since GOG's Linux
-    /// packages are barely compressed.
+    /// An estimate of the space the installed game takes. Natively it's
+    /// only known once the packages are downloaded, so until then it's their
+    /// size, since GOG's Linux packages are barely compressed. Windows
+    /// installers never say, so it stays twice their size.
     pub fn installed_estimate(&self) -> u64 {
-        self.files.iter().map(|file| file.size).sum()
+        let size = self.files.iter().map(|file| file.size).sum();
+        match self.platform {
+            Platform::Linux => size,
+            Platform::Windows => windows::estimate(size),
+        }
+    }
+
+    /// Whether the game installs natively or from its Windows installers.
+    pub fn platform(&self) -> Platform {
+        self.platform
+    }
+
+    /// How a Windows game's environment is created. None for a native game,
+    /// or an environment whose config is already written.
+    pub fn creation(&self) -> Option<&Creation> {
+        self.creation.as_ref()
+    }
+
+    /// Whether the base game's installer runs as its own wizard.
+    pub fn wizard(&self) -> bool {
+        self.wizard
     }
 
     pub fn warnings(&self) -> &[String] {
@@ -211,13 +286,14 @@ impl Plan {
         }
         Target {
             gog_id: self.gog_id,
-            platform: Platform::Linux,
+            platform: self.platform,
             language: self.language.clone(),
             track: Track::Installer,
             products: self
                 .products
                 .iter()
                 .map(|planned| Product {
+                    reported_language: None,
                     id: planned.id,
                     version: planned.version.clone(),
                     build: None,
@@ -251,8 +327,16 @@ pub struct Installed {
     /// longer ships: only possible when resuming with a newer plan.
     pub kept: Vec<String>,
     pub overwritten: Vec<String>,
-    /// Including why each failed DLC failed.
+    /// Including why each failed DLC failed, and a language the installed
+    /// game reports that isn't the one asked for.
     pub warnings: Vec<String>,
+    /// A Windows game's default target, from its `goggame-<id>.info`. None
+    /// when it names no program to start, so the frontend offers the
+    /// programs it finds instead, like `new`; or when it's native, whose
+    /// target is always `start.sh`.
+    pub target: Option<PathBuf>,
+    /// GOG's code for the language a Windows game's info file reports.
+    pub reported_language: Option<String>,
 }
 
 /// Works out what installing `request.gog_id` natively does. Reads only: it
@@ -401,18 +485,38 @@ pub fn plan(
         );
     }
 
+    // Natively when GOG has a Linux installer, and when it has neither, so
+    // the refusal names the platform wineo prefers.
+    let offers = |os: &str| game.installers.iter().any(|installer| installer.os == os);
+    let platform = request
+        .platform
+        .unwrap_or(if offers("windows") && !offers("linux") {
+            Platform::Windows
+        } else {
+            Platform::Linux
+        });
+    if platform == Platform::Windows {
+        windows::check_graphical()?;
+    }
+    let shown = os_name(platform);
     let mut products = Vec::new();
     let mut files = Vec::new();
-    let base = match pick(&game, &title, &code) {
+    let base = match pick(&game, &title, &code, platform) {
         Ok(picked) => picked,
         Err(why) => return Err(InstallError::NoInstaller { title, why }.into()),
     };
     if base.language != code {
         warnings.push(format!(
-            "{title} has no Linux installer in {requested}, so it installs in English."
+            "{title} has no {shown} installer in {requested}, so it installs in English."
         ));
     }
     let language = base.language.clone();
+    let language_name = base
+        .installer
+        .language_full
+        .clone()
+        .filter(|name| !name.is_empty())
+        .unwrap_or_else(|| language.clone());
     base.add(
         game.id,
         (Some(title.clone()), title.clone()),
@@ -445,16 +549,19 @@ pub fn plan(
             .map(|entry| entry.title.clone())
             .filter(|title| !title.is_empty());
         let label = names::dlc_label(&title, id, dlc_title.as_deref());
-        // In the game's own language, which may already be English.
+        // In the language the base game's installer was resolved in, which
+        // may already be English. Packages are all fetched before anything
+        // runs, so a different language a Windows game reports once
+        // installed is only reported, never followed.
         let picked = match entry {
-            Some(entry) => pick(entry, &label, &language),
+            Some(entry) => pick(entry, &label, &language, platform),
             None => Err(format!("GOG lists no details for {label}.")),
         };
         match picked {
             Ok(picked) => {
                 let note = (picked.language != language).then(|| {
                     format!(
-                        "{label} has no Linux installer in {requested}, so it installs in English."
+                        "{label} has no {shown} installer in {requested}, so it installs in English."
                     )
                 });
                 picked.add(id, (dlc_title, label), note, &mut products, &mut files);
@@ -487,7 +594,48 @@ pub fn plan(
         files,
         seen,
         warnings,
+        platform,
+        creation: creation(paths, request, platform, exists)?,
+        wizard: request.wizard && platform == Platform::Windows,
+        language_name,
     })
+}
+
+fn os_name(platform: Platform) -> &'static str {
+    match platform {
+        Platform::Linux => "Linux",
+        Platform::Windows => "Windows",
+    }
+}
+
+/// How a Windows game's environment will be created, checked like `new`
+/// checks it, when it has no config yet.
+fn creation(
+    paths: &Paths,
+    request: &Request,
+    platform: Platform,
+    has_config: bool,
+) -> Result<Option<Creation>> {
+    if platform != Platform::Windows || has_config {
+        return Ok(None);
+    }
+    let plan = create::plan(
+        paths,
+        CreateRequest {
+            name: request.name.clone(),
+            runner: request.runner.clone(),
+            arch: request.arch,
+            gog_id: Some(request.gog_id.to_string()),
+            ..CreateRequest::default()
+        },
+    )?;
+    create::check_arch(plan.runner(), request.arch)?;
+    Ok(Some(Creation {
+        runner: plan.runner().clone(),
+        arch: request.arch,
+        prefix: plan.prefix().to_owned(),
+        adopted: plan.adopted(),
+    }))
 }
 
 /// Refuses a name whose install stopped in another folder before its config
@@ -562,6 +710,10 @@ fn resumed(
         .journal
         .clone()
         .expect("a resumed install has a journal");
+    let platform = journal.target.platform;
+    if platform == Platform::Windows {
+        windows::check_graphical()?;
+    }
     let names = names::product_names(&folder);
     let (target, files, offline) = match cached {
         Some(files) => (journal.target.clone(), files, true),
@@ -572,6 +724,7 @@ fn resumed(
                 &request.name,
                 &seen,
                 Wanted {
+                    platform,
                     language: &journal.target.language,
                     products: &journal.target.products,
                     names: &names,
@@ -607,12 +760,21 @@ fn resumed(
                 .sum(),
         })
         .collect();
+    // GOG's name for the language isn't known without its details, so the
+    // tag asked for, when it is the same language.
+    let language_name =
+        if language::installer_code(&requested).as_deref() == Ok(target.language.as_str()) {
+            requested.clone()
+        } else {
+            target.language.clone()
+        };
     Ok(Plan {
         environment: request.name.clone(),
         gog_id: request.gog_id,
         title,
         folder,
         requested,
+        language_name,
         language: target.language.clone(),
         desktop: request.desktop,
         resume: true,
@@ -623,13 +785,18 @@ fn resumed(
         files,
         seen: Some(seen),
         warnings,
+        platform,
+        creation: creation(paths, request, platform, has_config)?,
+        wizard: request.wizard && platform == Platform::Windows,
     })
 }
 
-/// A product's Linux installer, picked for a language.
+/// A product's installer, picked for a platform and language.
 struct Picked<'a> {
     installer: &'a wineo_gog::Download,
-    file: &'a wineo_gog::DownloadFile,
+    /// One package for a Linux installer; a Windows one's setup program and
+    /// its parts.
+    files: Vec<&'a wineo_gog::DownloadFile>,
     version: String,
     /// GOG's code for the installer's language.
     language: String,
@@ -645,15 +812,17 @@ impl Picked<'_> {
         products: &mut Vec<Planned>,
         files: &mut Vec<PlannedFile>,
     ) {
-        files.push(PlannedFile {
-            product: id,
-            label,
-            download_id: self.installer.id.clone(),
-            file_id: self.file.id.clone(),
-            size: self.file.size,
-            md5: None,
-            download: Some(self.installer.clone()),
-        });
+        for file in &self.files {
+            files.push(PlannedFile {
+                product: id,
+                label: label.clone(),
+                download_id: self.installer.id.clone(),
+                file_id: file.id.clone(),
+                size: file.size,
+                md5: None,
+                download: Some(self.installer.clone()),
+            });
+        }
         products.push(Planned {
             id,
             title,
@@ -661,25 +830,34 @@ impl Picked<'_> {
             language: Some(self.language),
             status: ProductStatus::Installed,
             note,
-            download_size: self.file.size,
+            download_size: self.files.iter().map(|file| file.size).sum(),
         });
     }
 }
 
-/// A product's Linux installer in GOG's language `code`, else in English,
-/// or why there is none it can use.
-fn pick<'a>(entry: &'a wineo_gog::Product, label: &str, code: &str) -> Result<Picked<'a>, String> {
-    let linux: Vec<&wineo_gog::Download> = entry
+/// A product's installer for `platform` in GOG's language `code`, else in
+/// English, or why there is none it can use.
+fn pick<'a>(
+    entry: &'a wineo_gog::Product,
+    label: &str,
+    code: &str,
+    platform: Platform,
+) -> Result<Picked<'a>, String> {
+    let (os, shown) = match platform {
+        Platform::Linux => ("linux", "Linux"),
+        Platform::Windows => ("windows", "Windows"),
+    };
+    let offered: Vec<&wineo_gog::Download> = entry
         .installers
         .iter()
-        .filter(|installer| installer.os == "linux")
+        .filter(|installer| installer.os == os)
         .collect();
-    if linux.is_empty() {
-        return Err(format!("{label} has no Linux installer."));
+    if offered.is_empty() {
+        return Err(format!("{label} has no {shown} installer."));
     }
     let mut chosen = None;
     for language in [code, FALLBACK] {
-        let matching: Vec<_> = linux
+        let matching: Vec<_> = offered
             .iter()
             .filter(|installer| installer.language == language)
             .collect();
@@ -691,29 +869,37 @@ fn pick<'a>(entry: &'a wineo_gog::Product, label: &str, code: &str) -> Result<Pi
             }
             _ => {
                 return Err(format!(
-                    "{label} has more than one Linux installer in {language}."
+                    "{label} has more than one {shown} installer in {language}."
                 ));
             }
         }
     }
     let Some(installer) = chosen else {
         return Err(format!(
-            "{label} has no Linux installer in {code} or English."
+            "{label} has no {shown} installer in {code} or English."
         ));
     };
-    let [file] = installer.files.as_slice() else {
-        return Err(format!(
-            "{label}'s Linux installer comes in {} files, which wineo can't unpack.",
-            installer.files.len()
-        ));
-    };
+    let files: Vec<&wineo_gog::DownloadFile> = installer.files.iter().collect();
+    match (platform, files.len()) {
+        (_, 0) => {
+            return Err(format!(
+                "GOG lists no files for {label}'s {shown} installer."
+            ));
+        }
+        (Platform::Linux, 1) | (Platform::Windows, _) => {}
+        (Platform::Linux, count) => {
+            return Err(format!(
+                "{label}'s Linux installer comes in {count} files, which wineo can't unpack."
+            ));
+        }
+    }
     let version = installer
         .version
         .clone()
-        .ok_or_else(|| format!("GOG lists no version for {label}'s Linux installer."))?;
+        .ok_or_else(|| format!("GOG lists no version for {label}'s {shown} installer."))?;
     Ok(Picked {
         installer,
-        file,
+        files,
         version,
         language: installer.language.clone(),
     })
@@ -725,11 +911,13 @@ fn pick<'a>(entry: &'a wineo_gog::Product, label: &str, code: &str) -> Result<Pi
 /// game's failing refuses the install. Then everything the plan rested on
 /// is checked again under the locks, and the folder, its state with an
 /// `install` journal, and then the environment are written before any game
-/// file.
+/// file. A Windows game's environment is created, and each installer run,
+/// after the state; see `windows::install`.
 ///
 /// A failure or cancel after the journal is written leaves it, so the game
 /// refuses to launch until `wineo update NAME` finishes the install.
-/// `UpdateError::Canceled` says whether it did.
+/// `UpdateError::Canceled` says whether it did. Nothing a Windows installer
+/// wrote is ever removed.
 pub fn apply(
     paths: &Paths,
     session: &mut Session,
@@ -737,11 +925,32 @@ pub fn apply(
     token: &Token,
     progress: impl FnMut(Progress),
 ) -> Result<Installed> {
+    apply_with_events(paths, session, plan, token, progress, |_| {})
+}
+
+/// `apply`, reporting a Windows game's environment creation and installer
+/// runs to `events`.
+pub fn apply_with_events(
+    paths: &Paths,
+    session: &mut Session,
+    plan: &Plan,
+    token: &Token,
+    progress: impl FnMut(Progress),
+    mut events: impl FnMut(Event),
+) -> Result<Installed> {
     host_only(paths)?;
     // A resumed install's journal is there from the start.
     let mut journaled = plan.resume;
     let progress = RefCell::new(progress);
-    match run(paths, session, plan, token, &progress, &mut journaled) {
+    match run(
+        paths,
+        session,
+        plan,
+        token,
+        &progress,
+        &mut events,
+        &mut journaled,
+    ) {
         Err(error) if token.is_canceled() && is_cancel(&error) => {
             Err(UpdateError::Canceled { journal: journaled }.into())
         }
@@ -755,10 +964,12 @@ fn run(
     plan: &Plan,
     token: &Token,
     progress: &RefCell<impl FnMut(Progress)>,
+    events: &mut dyn FnMut(Event),
     journaled: &mut bool,
 ) -> Result<Installed> {
     let name = plan.environment.as_str();
     let folder = plan.folder.as_path();
+    let windows = plan.platform == Platform::Windows;
     let cancel = || token.is_canceled();
     let changed = |what: &str| InstallError::Changed {
         what: what.to_owned(),
@@ -766,6 +977,9 @@ fn run(
     let mut warnings = plan.warnings.clone();
     let mut target = plan.target();
     let cache = DownloadCache::new(paths.gog_download_cache());
+    if windows {
+        windows::check_graphical()?;
+    }
     check_space_before(paths, &cache, plan)?;
 
     // Downloading and opening the packages changes nothing, so it holds no
@@ -777,6 +991,9 @@ fn run(
         // Finishing from the journal's packages: checked once pinned.
         if file.download.is_none() {
             fetched.push(file.clone());
+            continue;
+        }
+        if failed.contains_key(&file.product) {
             continue;
         }
         match download(session, &cache, file, token, progress, &mut warnings) {
@@ -791,23 +1008,47 @@ fn run(
             }
         }
     }
+    // A Windows installer whose other parts failed can't run either.
+    fetched.retain(|file| !failed.contains_key(&file.product));
     let (pins, located) = pin_packages(&cache, name, fetched, token, progress)?;
     let mut kept = Vec::new();
     let mut opened = Vec::new();
-    for (file, path) in located {
-        match open_package(&path) {
-            Ok(package) => {
-                opened.push((file.product, package));
-                kept.push((file, path));
+    let mut setups = BTreeMap::new();
+    if windows {
+        for (product, found) in windows::setup_programs(&located) {
+            match found {
+                Ok(exe) => {
+                    setups.insert(product, exe);
+                }
+                Err((label, count)) => {
+                    let error = SetupError::NoSetupProgram { label, count };
+                    if plan.resume || product == plan.gog_id {
+                        return Err(error.into());
+                    }
+                    failed.insert(product, error.to_string());
+                }
             }
-            Err(error) if plan.resume || file.product == plan.gog_id || is_cancel(&error) => {
-                return Err(error.context(format!("failed to open {}'s package", file.label)));
-            }
-            Err(error) => {
-                failed.insert(
-                    file.product,
-                    format!("Couldn't open {}'s package: {error:#}", file.label),
-                );
+        }
+        kept = located
+            .into_iter()
+            .filter(|(file, _)| setups.contains_key(&file.product))
+            .collect();
+    } else {
+        for (file, path) in located {
+            match open_package(&path) {
+                Ok(package) => {
+                    opened.push((file.product, package));
+                    kept.push((file, path));
+                }
+                Err(error) if plan.resume || file.product == plan.gog_id || is_cancel(&error) => {
+                    return Err(error.context(format!("failed to open {}'s package", file.label)));
+                }
+                Err(error) => {
+                    failed.insert(
+                        file.product,
+                        format!("Couldn't open {}'s package: {error:#}", file.label),
+                    );
+                }
             }
         }
     }
@@ -824,10 +1065,26 @@ fn run(
             plan.dlc_label(*id)
         ));
     }
-    check_fit(paths, folder, &opened)?;
+    if windows {
+        windows::check_space(paths, folder, &kept)?;
+    } else {
+        check_fit(paths, folder, &opened)?;
+    }
 
-    let _adoption = AdoptionLock::acquire(paths, &cancel)?;
-    let _operation = lock_operation(paths, name)?;
+    // A Windows install holds its prefix as well, from here to the commit,
+    // so nothing else can replace it between installers.
+    let prefix = match (&plan.creation, windows) {
+        (Some(creation), _) => Some(crate::paths::resolve(&creation.prefix)),
+        (None, true) => Some(crate::paths::resolve(
+            &environment::Environment::load(paths, name)?.prefix(paths)?,
+        )),
+        (None, false) => None,
+    };
+    let adoption = AdoptionLock::acquire(paths, &cancel)?;
+    let operation = match &prefix {
+        Some(prefix) => lock_operation_on(paths, name, &[prefix.as_path()])?,
+        None => lock_operation(paths, name)?,
+    };
     let _in_use = folder::lock_for_update(paths, folder, name)?;
     let lock = FolderLock::exclusive(paths, folder, &cancel)?;
     #[cfg(test)]
@@ -857,6 +1114,16 @@ fn run(
     }
     failpoint("install.create.before")?;
 
+    let packages: Vec<Package> = kept
+        .iter()
+        .map(|(file, _)| Package {
+            product: file.product,
+            download_id: file.download_id.clone(),
+            file_id: file.file_id.clone(),
+            size: file.size,
+            md5: file.md5.clone(),
+        })
+        .collect();
     let state = match state {
         Some(state) => state,
         None => {
@@ -871,17 +1138,12 @@ fn run(
                 operation: operation_id(),
                 kind: JournalKind::Install,
                 target: target.clone(),
-                packages: kept
-                    .iter()
-                    .map(|(file, _)| Package {
-                        product: file.product,
-                        download_id: file.download_id.clone(),
-                        file_id: file.file_id.clone(),
-                        size: file.size,
-                        md5: file.md5.clone(),
-                    })
-                    .collect(),
-                attempted: Vec::new(),
+                packages: packages.clone(),
+                attempted: if windows {
+                    windows_attempted()
+                } else {
+                    Vec::new()
+                },
             });
             lock.write(&state)?;
             *journaled = true;
@@ -889,6 +1151,74 @@ fn run(
             state
         }
     };
+
+    if windows {
+        // A resumed install may run other packages than its journal names,
+        // which the journal has to name before they run.
+        let mut state = state;
+        let journal = state.journal.as_mut().expect("an install has a journal");
+        if journal.target != target || journal.packages != packages {
+            journal.target = target.clone();
+            journal.packages = packages;
+            lock.write(&state)?;
+        }
+        // The journal names the packages now, which keeps them cached.
+        drop(pins);
+        // The state covers the folder now.
+        drop(adoption);
+        let label = |id: u64| {
+            if id == plan.gog_id {
+                plan.title.clone()
+            } else {
+                plan.dlc_label(id)
+            }
+        };
+        let done = windows::install(
+            paths,
+            lock,
+            windows::Job {
+                name,
+                title: &plan.title,
+                target: &mut target,
+                setups: &setups,
+                label: &label,
+                guard: operation,
+                prefix: prefix
+                    .as_deref()
+                    .expect("a Windows install holds its prefix"),
+                create: plan.creation.as_ref().map(|creation| CreateRequest {
+                    name: name.to_owned(),
+                    resolved_runner: Some(creation.runner.clone()),
+                    arch: creation.arch,
+                    expected_adopted: Some(creation.adopted),
+                    gog_id: Some(plan.gog_id.to_string()),
+                    ..CreateRequest::default()
+                }),
+                tag: &plan.requested,
+                requested: &plan.language_name,
+                wizard: plan.wizard,
+                desktop: plan.desktop,
+            },
+            token,
+            events,
+            &mut warnings,
+        )?;
+        return Ok(Installed {
+            environment: name.to_owned(),
+            folder: folder.to_owned(),
+            gog_id: plan.gog_id,
+            title: plan.title.clone(),
+            resumed: plan.resume,
+            products: target.products,
+            saved: Vec::new(),
+            kept: Vec::new(),
+            overwritten: Vec::new(),
+            warnings,
+            target: done.target,
+            reported_language: done.reported_language,
+        });
+    }
+
     // The state comes first, naming this environment as owner, so a crash
     // before the config leaves a journal that installing again finishes,
     // never a config whose state is lost.
@@ -899,7 +1229,7 @@ fn run(
     }
     // The state now covers the folder, so other installs and migrations see
     // it in their overlap checks.
-    drop(_adoption);
+    drop(adoption);
 
     let report = rebuild(
         paths,
@@ -919,6 +1249,7 @@ fn run(
         journaled,
         &mut warnings,
     )?;
+    drop(operation);
     Ok(Installed {
         environment: name.to_owned(),
         folder: folder.to_owned(),
@@ -930,7 +1261,20 @@ fn run(
         kept: report.kept,
         overwritten: report.overwritten,
         warnings,
+        target: None,
+        reported_language: None,
     })
+}
+
+/// What a Windows install's journal says it may write: the whole folder,
+/// since its installers don't say which files they write.
+pub(super) fn windows_attempted() -> Vec<Attempted> {
+    vec![Attempted {
+        path: ".".to_owned(),
+        kind: EntryType::Directory,
+        md5: None,
+        target: None,
+    }]
 }
 
 /// Whether a DLC's download failing leaves the rest to install: anything
@@ -986,8 +1330,12 @@ fn check_space_before(paths: &Paths, cache: &DownloadCache, plan: &Plan) -> Resu
             remaining = remaining.saturating_add(file.size);
         }
     }
+    let needed = remaining.saturating_add(plan.installed_estimate());
+    if plan.platform == Platform::Windows {
+        return windows::check_estimate(paths, &plan.folder, needed);
+    }
     let needed = SpaceNeeded {
-        unpacked: remaining.saturating_add(plan.installed_estimate()),
+        unpacked: needed,
         assembled: 0,
     };
     package::check_space_with(paths, &plan.folder, needed, free_space(&plan.folder)?)?;

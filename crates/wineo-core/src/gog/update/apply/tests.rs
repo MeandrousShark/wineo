@@ -196,6 +196,18 @@ struct Gog {
     owned_ids_fail: bool,
     /// Products whose package GOG fails to serve.
     failing: Vec<u64>,
+    /// Windows installers, each a setup program and its parts.
+    windows: BTreeMap<u64, WindowsOffer>,
+}
+
+/// A product's Windows installer as GOG offers it.
+#[derive(Clone)]
+struct WindowsOffer {
+    version: String,
+    /// GOG's codes for the languages it's listed in.
+    languages: Vec<&'static str>,
+    /// File names and contents, the setup program first.
+    files: Vec<(String, Vec<u8>)>,
 }
 
 impl Gog {
@@ -206,6 +218,25 @@ impl Gog {
     fn json(&self, id: u64, base: &str) -> serde_json::Value {
         let offer = &self.offers[&id];
         let languages = std::iter::once(offer.language).chain(offer.also.iter().copied());
+        let windows = self.windows.get(&id).into_iter().flat_map(|windows| {
+            windows.languages.iter().map(move |language| {
+                serde_json::json!({
+                    "id": format!("installer_windows_{language}"),
+                    "os": "windows",
+                    "language": language,
+                    "language_full": if *language == "en" { "English" } else { "Other" },
+                    "version": windows.version,
+                    "total_size": windows.files.iter().map(|(_, bytes)| listed(bytes.len())).sum::<usize>(),
+                    "files": windows.files.iter().enumerate().map(|(number, (name, bytes))| {
+                        serde_json::json!({
+                            "id": format!("{language}1installer{number}"),
+                            "size": listed(bytes.len()),
+                            "downlink": format!("{base}/downlink/{name}"),
+                        })
+                    }).collect::<Vec<_>>(),
+                })
+            })
+        });
         let installers: Vec<serde_json::Value> = offer
             .bytes
             .iter()
@@ -225,6 +256,7 @@ impl Gog {
                     }],
                 })
             })
+            .chain(windows)
             .collect();
         serde_json::json!({
             "id": id,
@@ -265,17 +297,19 @@ impl Gog {
                 reply(200, &json.to_string())
             }
             ["downlink", name] => {
-                let sum = self
-                    .find(name)
-                    .is_some_and(|offer| offer.checksum)
-                    .then(|| format!("{base}/sums/{name}"));
+                let sum = (self.windows_file(name).is_some()
+                    || self.find(name).is_some_and(|offer| offer.checksum))
+                .then(|| format!("{base}/sums/{name}"));
                 let body = serde_json::json!({
                     "downlink": format!("{base}/files/{name}"),
                     "checksum": sum,
                 });
                 reply(200, &body.to_string())
             }
-            ["sums", name] => match self.find(name).and_then(|offer| offer.bytes.clone()) {
+            ["sums", name] => match self
+                .windows_file(name)
+                .or_else(|| self.find(name).and_then(|offer| offer.bytes.clone()))
+            {
                 Some(bytes) => {
                     let body = format!(
                         r#"<file name="{name}" md5="{}" total_size="{}"/>"#,
@@ -297,7 +331,10 @@ impl Gog {
             ["files", name] if self.failing.iter().any(|id| self.is_file_of(*id, name)) => {
                 reply(500, "{}")
             }
-            ["files", name] => match self.find(name).and_then(|offer| offer.bytes.clone()) {
+            ["files", name] => match self
+                .windows_file(name)
+                .or_else(|| self.find(name).and_then(|offer| offer.bytes.clone()))
+            {
                 Some(bytes) => {
                     self.downloads += 1;
                     let mut answer = format!(
@@ -318,6 +355,18 @@ impl Gog {
         self.offers
             .get(&id)
             .is_some_and(|offer| Self::name(id, &offer.version) == name)
+            || self
+                .windows
+                .get(&id)
+                .is_some_and(|windows| windows.files.iter().any(|(file, _)| file == name))
+    }
+
+    fn windows_file(&self, name: &str) -> Option<Vec<u8>> {
+        self.windows
+            .values()
+            .flat_map(|windows| &windows.files)
+            .find(|(file, _)| file == name)
+            .map(|(_, bytes)| bytes.clone())
     }
 
     fn find(&self, name: &str) -> Option<&Offer> {
@@ -439,6 +488,7 @@ impl Fixture {
                 products: products
                     .iter()
                     .map(|(id, version)| Product {
+                        reported_language: None,
                         id: *id,
                         version: version.map(str::to_owned),
                         build: None,
@@ -1581,6 +1631,7 @@ fn windows(fx: &Fixture, track: Track) {
             language: "en".to_owned(),
             track,
             products: vec![Product {
+                reported_language: None,
                 id: RIMWORLD,
                 version: Some("1".to_owned()),
                 build: Some("5".to_owned()),
@@ -2111,3 +2162,5 @@ fn a_recovery_labels_a_dlc_by_the_folder_s_name_or_its_id() {
 }
 
 pub(in crate::gog::update) mod install;
+mod real;
+mod windows;
