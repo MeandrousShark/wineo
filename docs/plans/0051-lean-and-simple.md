@@ -233,8 +233,9 @@ Shipped in 0.31.1.
 - C1, the app's rescan (merged after 0.31.1): idle in the background went
   from 6.5% CPU (Xvfb) to 0%, with no rescans and no redraws. Focused, it
   still scans every 2 s but only sends a message, and so redraws, when what
-  it read differs from what's on screen: 1.35% CPU, almost all of it the
-  trash manifest reads that C3 trims. Refocusing refreshes at once, and on
+  it read differs from what's on screen: 1.35% CPU. A profile of `wineo
+  list` puts about 40% of a library read in the Steam `/proc` sweep and 7%
+  in loading the time zone; trash reads are under 1% with an empty trash. Refocusing refreshes at once, and on
   X11 without a window manager a key or click counts as focus. While an Art
   page is open the scan also watches its files and saved game, and a failed
   SteamGridDB name lookup retries with backoff (4 s to 64 s).
