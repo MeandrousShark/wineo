@@ -311,7 +311,8 @@ fn list_json_has_the_plans_shape() {
         &serde_json::json!({
             "id": DISCO.to_string(), "title": "Disco Elysium", "platforms": ["windows"],
             "state": "heroic", "environment": null, "track": null, "version": null,
-            "update": null, "applicable": false, "reason": null, "dlc": [],
+            "update": null, "applicable": false, "reason": null, "unfinished": false,
+            "dlc": [],
         })
     );
     assert_eq!(hades["state"], "not_installed");
@@ -322,7 +323,7 @@ fn list_json_has_the_plans_shape() {
             "id": RIMWORLD.to_string(), "title": "RimWorld", "platforms": ["linux"],
             "state": "imported", "environment": "rimworld", "track": "installer",
             "version": "1.6.4871 rev588", "update": "available", "applicable": true,
-            "reason": null,
+            "reason": null, "unfinished": false,
             "dlc": [{"id": RIMWORLD_DLC[0].to_string(), "title": "Royalty", "state": "unknown"}],
         })
     );
