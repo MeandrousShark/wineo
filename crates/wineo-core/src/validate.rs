@@ -719,9 +719,12 @@ fn check_gog(
             continue;
         }
         let environment = state.owner.as_deref().filter(|owner| known(owner));
-        check_gog_folder(state, environment, device_of, report);
+        check_gog_folder(paths, state, environment, device_of, report);
+        // An install whose config isn't written yet is finished by
+        // installing again, which releasing its owner would prevent.
         if let Some(owner) = &state.owner
             && !known(owner)
+            && !folder::install_without_config(paths, state)
         {
             report.push(Problem::new(
                 Code::GogOwnerMissing,
@@ -780,6 +783,7 @@ fn check_gog(
 
 /// A folder mid-update, or one that can't be found.
 fn check_gog_folder(
+    paths: &Paths,
     state: &FolderState,
     environment: Option<&str>,
     device_of: DeviceOf<'_>,
@@ -791,9 +795,13 @@ fn check_gog_folder(
             Some(owner) => {
                 format!("{owner}'s game folder is mid-update. Finish it with wineo update {owner}.")
             }
-            None => format!(
-                "GOG game folder {folder} is mid-update. Migrate it again with wineo import gog and finish it."
-            ),
+            None => match folder::unfinished(paths, state) {
+                refusal @ (folder::FolderError::UnfinishedInstall { .. }
+                | folder::FolderError::OwnerlessInstall { .. }) => refusal.to_string(),
+                _ => format!(
+                    "GOG game folder {folder} is mid-update. Migrate it again with wineo import gog and finish it."
+                ),
+            },
         };
         report.push(Problem::new(Code::GogMidUpdate, environment, message, None));
     }

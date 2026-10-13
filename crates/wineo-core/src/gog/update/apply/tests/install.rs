@@ -290,7 +290,7 @@ fn listed_sizes_are_the_rounded_estimates() {
     // GOG lists the padded package smaller than it is; the download learns
     // its exact size, which the journal records.
     assert!(plan.products()[0].download_size < fx.package_size(RIMWORLD));
-    set_failpoint(Some("install.state.after"));
+    set_failpoint(Some("install.config.after"));
     fx.install_with(&plan, &Token::new(), |_| {}).unwrap_err();
     let journal = fx.state().journal.unwrap();
     assert_eq!(journal.packages[0].size, fx.package_size(RIMWORLD));
@@ -667,23 +667,86 @@ fn an_install_stopped_after_downloading_installs_again_without_downloading() {
 }
 
 #[test]
-fn a_crash_between_the_config_and_the_state_leaves_a_lost_state() {
+fn a_crash_between_the_state_and_the_config_is_finished_by_installing_again() {
     let fx = offered();
-    set_failpoint(Some("install.config.after"));
+    set_failpoint(Some("install.state.after"));
     fx.install_err();
+    assert!(!fx.paths.environment_config("rimworld").exists());
+    let state = fx.state();
+    assert_eq!(state.owner.as_deref(), Some("rimworld"));
+    assert_eq!(state.journal.unwrap().kind, JournalKind::Install);
+
+    // Anything launching from the folder says to install again.
+    let unfinished = "rimworld's GOG install didn't finish. Install GOG game 1094900565 again as rimworld to finish it.";
+    let error = folder::precheck(
+        &fx.paths,
+        "rimworld-copy",
+        None,
+        &[fx.folder.join("start.sh")],
+    )
+    .unwrap_err();
+    assert_eq!(error.to_string(), unfinished);
+    // `validate` says the same, and offers no fix that would release it.
+    let report = crate::validate::check_all(&fx.paths).unwrap();
+    let messages: Vec<(&str, bool)> = report
+        .problems
+        .iter()
+        .map(|problem| (problem.message.as_str(), problem.fix.is_some()))
+        .collect();
+    assert_eq!(messages, [(unfinished, false)]);
+    assert!(!folder::release_missing_owner(&fx.paths, &fx.folder, &|| false).unwrap());
+
+    let downloads = fx.downloads();
+    let plan = fx.install_plan(&request()).unwrap();
+    assert!(plan.resumes());
+    let installed = fx.install_with(&plan, &Token::new(), |_| {}).unwrap();
+    assert!(installed.resumed);
+    assert_eq!(fx.downloads(), downloads);
+    assert_installed(&fx);
     assert!(Environment::load(&fx.paths, "rimworld").is_ok());
-    assert!(folder::peek(&fx.paths, &fx.folder).unwrap().is_none());
-    let error = fx.plan_with(false, Options::default()).unwrap_err();
-    assert!(matches!(
-        error.downcast_ref(),
-        Some(FolderError::StateMissing { .. })
-    ));
 }
 
 #[test]
-fn an_install_stopped_after_its_state_is_written_is_finished_by_update() {
+fn an_unfinished_install_with_no_owner_says_how_to_start_over() {
     let fx = offered();
     set_failpoint(Some("install.state.after"));
+    fx.install_err();
+    folder::release(&fx.paths, &fx.folder, &|| false).unwrap();
+    let message = format!(
+        "GOG game 1094900565's install in {} didn't finish, and no environment owns it. Delete the folder, forget it with wineo import gog --forget {}, and install the game again.",
+        fx.folder.display(),
+        fx.folder.display()
+    );
+    let error = fx.install_plan(&request()).unwrap_err();
+    assert_eq!(error.to_string(), message);
+    let error = folder::precheck(
+        &fx.paths,
+        "rimworld-copy",
+        None,
+        &[fx.folder.join("start.sh")],
+    )
+    .unwrap_err();
+    assert_eq!(error.to_string(), message);
+
+    // An empty folder whose state has nothing in flight.
+    let mut state = fx.state();
+    state.journal = None;
+    fx.save(&state);
+    let error = fx.install_plan(&request()).unwrap_err();
+    assert_eq!(
+        error.to_string(),
+        format!(
+            "{} is already a GOG game folder. Forget it with wineo import gog --forget {} first.",
+            fx.folder.display(),
+            fx.folder.display()
+        )
+    );
+}
+
+#[test]
+fn an_install_stopped_after_its_environment_is_written_is_finished_by_update() {
+    let fx = offered();
+    set_failpoint(Some("install.config.after"));
     fx.install_err();
     let state = fx.state();
     assert_eq!(state.owner.as_deref(), Some("rimworld"));

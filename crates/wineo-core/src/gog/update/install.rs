@@ -4,9 +4,9 @@
 //! A fresh install is a rebuild of every product into an empty folder, so it
 //! shares an update's machinery in `apply`. `plan` resolves the game and its
 //! owned DLC and reads only. `apply` downloads every package, opens them and
-//! checks they fit, then under the locks writes the environment's config,
-//! creates the folder, writes its state with an `install` journal and no
-//! `[committed]`, and rebuilds. Anything that stops it after the journal is
+//! checks they fit, then under the locks creates the folder, writes its
+//! state with an `install` journal and no `[committed]`, writes the
+//! environment's config, and rebuilds. Anything that stops it after the journal is
 //! written leaves the journal, which `wineo update NAME` finishes like an
 //! interrupted update.
 //!
@@ -115,6 +115,9 @@ pub struct Plan {
     desktop: bool,
     /// Whether this environment's own interrupted install is carried on.
     resume: bool,
+    /// Whether the environment's config exists, which a resumed install's
+    /// may not yet.
+    has_config: bool,
     products: Vec<Planned>,
     files: Vec<PlannedFile>,
     /// The folder's state when planned: none, or the resumed install's.
@@ -281,26 +284,33 @@ pub fn plan(paths: &Paths, session: &mut Session, request: &Request) -> Result<P
     // the state is checked to be this environment's own install here.
     let own_install = seen.as_ref().is_some_and(|state| {
         state.owner.as_deref() == Some(name)
+            && state.gog_id() == Some(request.gog_id)
             && state
                 .journal
                 .as_ref()
                 .is_some_and(|journal| journal.kind == JournalKind::Install)
     });
-    let resume = exists
-        && own_install
-        && super::recorded_gog_id(paths, name)? == Some(request.gog_id.to_string());
+    // Its config is written after its state, so an install that stopped in
+    // between has no config yet and is carried on all the same.
+    let resume = own_install
+        && (!exists || super::recorded_gog_id(paths, name)? == Some(request.gog_id.to_string()));
     if exists && !resume {
         environment::check_new_name(paths, name)?;
     }
     if let Some(state) = &seen
         && !resume
     {
+        let install = state
+            .journal
+            .as_ref()
+            .is_some_and(|journal| journal.kind == JournalKind::Install);
         return Err(match &state.owner {
             Some(owner) if owner != name => folder::FolderError::OwnedByOther {
                 folder,
                 owner: owner.clone(),
             },
-            _ => folder::FolderError::NotEmpty { folder },
+            None if install => folder::unfinished(paths, state),
+            _ => folder::FolderError::Tracked { folder },
         }
         .into());
     }
@@ -383,6 +393,7 @@ pub fn plan(paths: &Paths, session: &mut Session, request: &Request) -> Result<P
         language,
         desktop: request.desktop,
         resume,
+        has_config: exists,
         products,
         files,
         seen,
@@ -487,8 +498,9 @@ fn pick<'a>(entry: &'a wineo_gog::Product, label: &str, code: &str) -> Result<Pi
 /// lock and changing nothing. A DLC whose package can't be downloaded or
 /// opened is recorded as failed and the game installs without it; the base
 /// game's failing refuses the install. Then everything the plan rested on
-/// is checked again under the locks, and the environment, the folder, and
-/// its state with an `install` journal are written before any game file.
+/// is checked again under the locks, and the folder, its state with an
+/// `install` journal, and then the environment are written before any game
+/// file.
 ///
 /// A failure or cancel after the journal is written leaves it, so the game
 /// refuses to launch until `wineo update NAME` finishes the install.
@@ -591,7 +603,10 @@ fn run(
     if state != plan.seen {
         return Err(changed(&folder.display().to_string()).into());
     }
-    if plan.resume {
+    if paths.environment_config(name).exists() != plan.has_config {
+        return Err(changed(name).into());
+    }
+    if plan.has_config {
         if super::recorded_gog_id(paths, name)? != Some(plan.gog_id.to_string()) {
             return Err(changed(name).into());
         }
@@ -601,8 +616,8 @@ fn run(
     if folder::check_fresh_install(paths, folder, name)? != folder {
         return Err(changed(&folder.display().to_string()).into());
     }
-    // The last check before the first write; from here the environment, the
-    // folder, and its state are written together.
+    // The last check before the first write; from here the folder, its
+    // state, and the environment are written together.
     if token.is_canceled() {
         return Err(UpdateError::Canceled { journal: false }.into());
     }
@@ -611,9 +626,6 @@ fn run(
     let state = match state {
         Some(state) => state,
         None => {
-            let config = import::native_config(paths, &settings(plan))?;
-            import::write_native_config(paths, name, &config)?;
-            failpoint("install.config.after")?;
             folder::create_dir_durable(folder)?;
             let mut state = FolderState::new(folder.to_owned(), Some(name.to_owned()));
             state.device = Some(
@@ -643,6 +655,14 @@ fn run(
             state
         }
     };
+    // The state comes first, naming this environment as owner, so a crash
+    // before the config leaves a journal that installing again finishes,
+    // never a config whose state is lost.
+    if !plan.has_config {
+        let config = import::native_config(paths, &settings(plan))?;
+        import::write_native_config(paths, name, &config)?;
+        failpoint("install.config.after")?;
+    }
     // The state now covers the folder, so other installs and migrations see
     // it in their overlap checks.
     drop(_adoption);
