@@ -327,6 +327,7 @@ fn pick_target(paths: &Paths, plan: &Plan, prompt: Option<&mut Ask>) -> anyhow::
         name,
         wine_prefix: wineo_core::prefix::wine_prefix_in(&dir),
         native_env: None,
+        game_folder: Some(plan.folder().to_owned()),
     };
     let mut batch = Batch::new(environment.config.targets.clone());
     prompt.set_first_question(false);

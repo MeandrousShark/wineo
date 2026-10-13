@@ -163,10 +163,48 @@ fn collect_shortcuts(drive_c: &Path, dir: &Path, listing: &mut Listing) {
     }
 }
 
+/// Every executable in `folder`, a game folder outside any prefix, found
+/// and filtered the way `scan` finds loose executables. Its `exe` is the
+/// Unix path, which a target takes as it is. A folder that can't be read
+/// lists nothing.
+pub fn scan_folder(folder: &Path) -> Listing {
+    let mut found = Vec::new();
+    let mut filtered = Vec::new();
+    walk(folder, false, &mut Vec::new(), &mut |relative| {
+        let program = Program {
+            source: Source::Executable,
+            name: relative
+                .last()
+                .map(|name| stem(Path::new(name)))
+                .unwrap_or_default(),
+            exe: relative
+                .iter()
+                .fold(folder.to_owned(), |path, part| path.join(part))
+                .to_string_lossy()
+                .into_owned(),
+            lnk: None,
+        };
+        if is_noise(relative) {
+            &mut filtered
+        } else {
+            &mut found
+        }
+        .push(program);
+    });
+    for list in [&mut found, &mut filtered] {
+        tidy(list);
+    }
+    Listing {
+        programs: found,
+        filtered,
+        unreadable: Vec::new(),
+    }
+}
+
 fn collect_executables(drive_c: &Path, advertised: &BTreeSet<String>, listing: &mut Listing) {
     let mut found = Vec::new();
     let mut filtered = Vec::new();
-    walk(drive_c, &mut Vec::new(), &mut |relative| {
+    walk(drive_c, true, &mut Vec::new(), &mut |relative| {
         let exe = windows_path(relative);
         if advertised.contains(&exe.to_ascii_lowercase()) {
             return;
@@ -207,9 +245,9 @@ fn tidy(programs: &mut Vec<Program>) {
     programs.dedup();
 }
 
-/// Calls `found` with the path components, relative to `drive_c`, of every
-/// executable below it.
-fn walk(dir: &Path, relative: &mut Vec<String>, found: &mut impl FnMut(&[String])) {
+/// Calls `found` with the path components, relative to `dir`, of every
+/// executable below it. `drive_c` skips wine's own directory at the top.
+fn walk(dir: &Path, drive_c: bool, relative: &mut Vec<String>, found: &mut impl FnMut(&[String])) {
     if relative.len() >= MAX_DEPTH {
         return;
     }
@@ -224,11 +262,11 @@ fn walk(dir: &Path, relative: &mut Vec<String>, found: &mut impl FnMut(&[String]
         };
         if kind.is_dir() {
             // Everything a fresh prefix has lives here, so it is never entered.
-            if relative.is_empty() && name.eq_ignore_ascii_case(WINE_DIR) {
+            if drive_c && relative.is_empty() && name.eq_ignore_ascii_case(WINE_DIR) {
                 continue;
             }
             relative.push(name);
-            walk(&entry.path(), relative, found);
+            walk(&entry.path(), drive_c, relative, found);
             relative.pop();
         } else if kind.is_file() && has_extension(&name, "exe") {
             relative.push(name);
@@ -447,6 +485,31 @@ mod tests {
                 r"exe wordpad C:\Program Files\Windows NT\Accessories\wordpad.exe",
             ]
         );
+    }
+
+    #[test]
+    fn a_game_folder_lists_its_executables_by_unix_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let folder = dir.path();
+        for path in ["Game.exe", "windows/Tool.exe", "unins000.exe", "notes.txt"] {
+            let path = folder.join(path);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(path, "").unwrap();
+        }
+        let listing = scan_folder(folder);
+        let shown = |path: &str| folder.join(path).display().to_string();
+        assert_eq!(
+            rows(&listing.programs),
+            [
+                format!("exe Game {}", shown("Game.exe")),
+                format!("exe Tool {}", shown("windows/Tool.exe")),
+            ]
+        );
+        assert_eq!(
+            rows(&listing.filtered),
+            [format!("exe unins000 {}", shown("unins000.exe"))]
+        );
+        assert!(scan_folder(&folder.join("missing")).is_empty());
     }
 
     #[test]

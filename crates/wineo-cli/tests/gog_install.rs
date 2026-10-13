@@ -810,6 +810,10 @@ fn at_a_terminal_a_windows_game_that_names_no_program_offers_what_it_installed()
     pty.expect("Install it? [Y/n]: ");
     pty.send("y");
     pty.expect("Programs in disco-elysium:");
+    // The game's folder comes first, then what the prefix has.
+    let game = games(&f).join("Disco Elysium/disco.exe");
+    pty.expect(&format!("1) disco  exe       {}", game.display()));
+    pty.expect(r"2) disco  exe       C:\Program Files\Disco\disco.exe");
     pty.send("1");
     pty.expect("Press Enter to add it");
     pty.send("");
@@ -820,7 +824,7 @@ fn at_a_terminal_a_windows_game_that_names_no_program_offers_what_it_installed()
     assert!(!output.contains("names no program to start"), "{output}");
     let config = f.created_config("disco-elysium");
     assert!(
-        config.contains(r"C:\Program Files\Disco\disco.exe"),
+        config.contains(&format!("exe = \"{}\"", game.display())),
         "{config}"
     );
 }

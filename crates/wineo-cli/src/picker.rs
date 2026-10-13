@@ -37,6 +37,9 @@ pub struct Place<'a> {
     /// by path: the global and environment `[env]` merged, whose PATH a bare
     /// name is looked up on.
     pub native_env: Option<BTreeMap<String, String>>,
+    /// A game folder outside the prefix whose programs are listed first, as
+    /// after a GOG install.
+    pub game_folder: Option<PathBuf>,
 }
 
 impl Place<'_> {
@@ -76,11 +79,19 @@ pub fn pick<I: Input, W: Write>(
         }
     }
     // Scanned the same way `wineo programs` does, so both list the same things.
-    let listing = place
+    let in_prefix = place
         .wine_prefix
         .as_deref()
         .and_then(|wine_prefix| programs::scan(wine_prefix).ok())
         .unwrap_or_default();
+    let mut listing = place
+        .game_folder
+        .as_deref()
+        .map(programs::scan_folder)
+        .unwrap_or_default();
+    listing.programs.extend(in_prefix.programs);
+    listing.filtered.extend(in_prefix.filtered);
+    listing.unreadable.extend(in_prefix.unreadable);
     for (shortcut, reason) in &listing.unreadable {
         prompt.say(format!("Skipped the shortcut {shortcut}: {reason}"))?;
     }
@@ -722,6 +733,7 @@ mod tests {
                 name: "hades",
                 wine_prefix: Some(self.wine_prefix.clone()),
                 native_env: None,
+                game_folder: None,
             }
         }
     }
