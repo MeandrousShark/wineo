@@ -25,7 +25,6 @@ const MAX_DRIFT: f32 = 90.0;
 const MAX_SPIN: f32 = 1.6;
 const MAX_HOP: f32 = 420.0;
 const STACK_STEP: f32 = 26.0;
-pub(crate) const RESTORE_AFTER: Duration = Duration::from_secs(12);
 const FADE_OUT: Duration = Duration::from_secs(3);
 const FADE_IN: Duration = Duration::from_millis(800);
 /// Captions return over the end of a rebuild, once the posters are nearly
@@ -747,17 +746,24 @@ mod tests {
         }
 
         #[test]
-        fn the_heap_restores_itself_and_ignores_stale_timers() {
+        fn the_heap_and_the_empty_library_stay_until_clicked() {
             let mut app = library(6);
             click_library(&mut app, 10);
-            let generation = app.collapse.generation();
             tick(&mut app, Duration::from_secs(4));
-            let _ = app.update(Message::CollapseTimeout(generation.wrapping_sub(1)));
+            tick(&mut app, Duration::from_secs(60));
+            let _ = app.update(Message::Refresh);
             assert!(app.collapse.resting());
-            let _ = app.update(Message::CollapseTimeout(generation));
-            assert!(app.collapse.animating());
-            tick(&mut app, Duration::from_secs(5));
+            assert!(!app.collapse.animating());
+            let _ = app.update(Message::Rebuild);
+            tick(&mut app, Duration::from_secs(61));
             assert!(app.collapse.idle());
+
+            app.reduced_motion = true;
+            click_library(&mut app, 10);
+            tick(&mut app, Duration::from_secs(4));
+            tick(&mut app, Duration::from_secs(60));
+            assert!(app.collapse.gone());
+            assert!(!app.collapse.animating());
         }
 
         #[test]

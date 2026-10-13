@@ -238,7 +238,6 @@ pub(crate) enum Message {
     SectionClicked(sidebar::Section),
     Rebuild,
     CollapseTick(u64, Instant),
-    CollapseTimeout(u64),
     ReducedMotion(bool),
     TrashBadgeLoaded(sidebar::TrashBadge),
     ArtLoaded(ArtKey, Result<image::Handle, String>),
@@ -888,7 +887,8 @@ impl App {
                 if section == sidebar::Section::Library
                     && self.collapse.clicks.record(Instant::now())
                 {
-                    Task::batch([task, self.start_collapse(Instant::now())])
+                    self.start_collapse(Instant::now());
+                    task
                 } else {
                     task
                 }
@@ -902,12 +902,6 @@ impl App {
             Message::CollapseTick(generation, now) => {
                 if self.section == sidebar::Section::Library {
                     self.collapse.tick(generation, now);
-                }
-                Task::none()
-            }
-            Message::CollapseTimeout(generation) => {
-                if generation == self.collapse.generation() && self.collapse.restorable() {
-                    self.collapse.restore(Instant::now());
                 }
                 Task::none()
             }
@@ -1631,13 +1625,13 @@ impl App {
     }
     /// Drops the visible cards, or fades them with reduced motion. The panel
     /// closes without animating so the cards fall from their closed slots.
-    fn start_collapse(&mut self, now: Instant) -> Task<Message> {
+    fn start_collapse(&mut self, now: Instant) {
         if !self.collapse.idle()
             || self.section != sidebar::Section::Library
             || self.panel_hidden()
             || self.filtered().is_empty()
         {
-            return Task::none();
+            return;
         }
         if self.panel_open {
             self.close_panel();
@@ -1660,7 +1654,7 @@ impl App {
             let visible = grid_motion::cards_between(&heights, columns, self.scroll_offset, floor);
             // Nothing in view would leave only hidden cards and nothing to click.
             if visible.is_empty() {
-                return Task::none();
+                return;
             }
             // 2x3 so it keeps the poster's shape when fit into the frame.
             let placeholder =
@@ -1684,9 +1678,6 @@ impl App {
                 seed,
             );
         }
-        let generation = self.collapse.generation();
-        Task::future(async { tokio::time::sleep(collapse::RESTORE_AFTER).await })
-            .map(move |()| Message::CollapseTimeout(generation))
     }
     pub(crate) fn filtered(&self) -> Vec<&Card> {
         let needle = self.search.to_lowercase();
