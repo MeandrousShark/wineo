@@ -791,6 +791,69 @@ mod tests {
         assert!(!app.art_pages["game"].has_preview(&(None, Kind::Grid)));
     }
 
+    #[test]
+    fn a_failed_game_lookup_retries_with_backoff_until_it_succeeds_or_closes() {
+        use std::time::Duration;
+        let (_root, mut app) = fixture();
+        art::save_game(&app.paths, "game", 77).unwrap();
+        let _ = app.update(Message::SteamGridDbKeyPresenceLoaded(1, true));
+        let _ = app.update(Message::ContextArt("game".into()));
+        let generation = app.art_pages["game"].generation;
+        let load_sequence = app.art_pages["game"].load_sequence;
+        let snapshot = art_page::load_snapshot(&app.paths, "game");
+        let send = |app: &mut App, event| {
+            let _ = app.update(Message::ArtPage("game".into(), generation, event));
+        };
+        send(&mut app, art_page::Event::Loaded(load_sequence, snapshot));
+        let mut expected = Duration::ZERO;
+        for _ in 0..7 {
+            let sequence = app.art_pages["game"].lookup_sequence;
+            send(
+                &mut app,
+                art_page::Event::GameLoaded(sequence, 77, Err("offline".into())),
+            );
+            expected = art_page::next_backoff(expected);
+            assert_eq!(app.art_pages["game"].lookup_backoff(), expected);
+            send(
+                &mut app,
+                art_page::Event::RetryLookup(sequence.wrapping_sub(1), 77),
+            );
+            assert_eq!(
+                app.art_pages["game"].lookup_sequence, sequence,
+                "a stale retry is ignored"
+            );
+            send(&mut app, art_page::Event::RetryLookup(sequence, 77));
+            assert_eq!(
+                app.art_pages["game"].lookup_sequence,
+                sequence + 1,
+                "it looks up again"
+            );
+        }
+        assert_eq!(expected, Duration::from_secs(64), "the wait stops growing");
+        let sequence = app.art_pages["game"].lookup_sequence;
+        send(
+            &mut app,
+            art_page::Event::GameLoaded(
+                sequence,
+                77,
+                Ok(Some(wineo_core::steamgriddb::Game {
+                    id: 77,
+                    name: "Found".into(),
+                    year: None,
+                })),
+            ),
+        );
+        assert_eq!(app.art_pages["game"].lookup_backoff(), Duration::ZERO);
+        assert_eq!(app.art_pages["game"].game_label(true), "Found");
+
+        // A retry due after the page closed is dropped.
+        let _ = app.update(Message::ContextArt("other".into()));
+        let page = &app.art_pages["game"];
+        let sequence = page.lookup_sequence;
+        send(&mut app, art_page::Event::RetryLookup(sequence, 77));
+        assert_eq!(app.art_pages["game"].lookup_sequence, sequence);
+    }
+
     fn start_picker_use(app: &mut App) -> (u64, u64, wineo_core::cancel::Token) {
         let _ = app.update(Message::SteamGridDbKeyPresenceLoaded(1, true));
         let _ = app.open_art("game".into());
