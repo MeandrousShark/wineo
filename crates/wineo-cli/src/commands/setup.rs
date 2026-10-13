@@ -614,46 +614,75 @@ pub(crate) fn run_installer<I: Input, W: Write>(
     installer: Installer,
 ) -> anyhow::Result<Ran> {
     let log = Runtime::new(paths, name).install_log_path();
-    let shown_log = paths
-        .contract(&log)
-        .unwrap_or_else(|_| log.display().to_string());
-    // Read under the installer's lock, which settings that change the prefix
-    // have to wait for, so this matches what the installer runs against.
-    let environment = Environment::load(paths, name)?;
-    if let Host::Wine { runner, prefix } = &installer.launch().host {
-        components::reconcile_config(paths, global, &environment, runner, prefix)?;
-    }
-    prompt.say("Running it now. Ctrl+C asks it to close.")?;
+    ready_installer(paths, global, name, installer.launch())?;
+    prompt.say(RUNNING)?;
     let cancellation = Cancellation::new()?;
     let outcome = installer.run(
         &cancellation.token,
         Duration::from_secs(global.stop_timeout.into()),
         Output::Log(&log),
         |watched| {
-            // Nothing worth telling whoever is watching the installer.
-            if matches!(watched, Watched::Notice(Notice::Heartbeat)) {
-                return;
+            if let Some(message) = watched_message(watched) {
+                let _ = prompt.say(message);
             }
-            let message = match watched {
-                Watched::Exited(_) => {
-                    "The installer exited. Waiting for anything it started to finish".to_owned()
-                }
-                Watched::Notice(Notice::Stopping) => {
-                    "Canceling the installer, press Ctrl+C again to force it".to_owned()
-                }
-                Watched::Notice(Notice::Killing) => {
-                    "Killing everything the installer left running".to_owned()
-                }
-                Watched::Notice(Notice::Warning(err)) => {
-                    format!("warning: {:#}", anyhow::Error::from(err))
-                }
-                Watched::Notice(Notice::Heartbeat) => unreachable!("handled above"),
-            };
-            let _ = prompt.say(message);
         },
     );
     // Those were the installer's to act on, not a request to leave setup.
     prompt.input().forget_interrupts();
+    report_installer(paths, name, prompt, outcome)
+}
+
+/// Said right before an installer starts.
+pub(crate) const RUNNING: &str = "Running it now. Ctrl+C asks it to close.";
+
+/// Brings the prefix's components in line with the config, once the installer
+/// holds the prefix and right before it starts.
+pub(crate) fn ready_installer(
+    paths: &Paths,
+    global: &GlobalConfig,
+    name: &str,
+    launch: &launch::Launch,
+) -> anyhow::Result<()> {
+    // Read under the installer's lock, which settings that change the prefix
+    // have to wait for, so this matches what the installer runs against.
+    let environment = Environment::load(paths, name)?;
+    if let Host::Wine { runner, prefix } = &launch.host {
+        components::reconcile_config(paths, global, &environment, runner, prefix)?;
+    }
+    Ok(())
+}
+
+/// What to tell whoever is watching an installer, if anything.
+pub(crate) fn watched_message(watched: Watched) -> Option<String> {
+    Some(match watched {
+        // Nothing worth telling whoever is watching the installer.
+        Watched::Notice(Notice::Heartbeat) => return None,
+        Watched::Exited(_) => {
+            "The installer exited. Waiting for anything it started to finish".to_owned()
+        }
+        Watched::Notice(Notice::Stopping) => {
+            "Canceling the installer, press Ctrl+C again to force it".to_owned()
+        }
+        Watched::Notice(Notice::Killing) => {
+            "Killing everything the installer left running".to_owned()
+        }
+        Watched::Notice(Notice::Warning(err)) => {
+            format!("warning: {:#}", anyhow::Error::from(err))
+        }
+    })
+}
+
+/// Says how an installer run went.
+pub(crate) fn report_installer<I: Input, W: Write>(
+    paths: &Paths,
+    name: &str,
+    prompt: &mut Prompt<I, W>,
+    outcome: wineo_core::Result<Outcome>,
+) -> anyhow::Result<Ran> {
+    let log = Runtime::new(paths, name).install_log_path();
+    let shown_log = paths
+        .contract(&log)
+        .unwrap_or_else(|_| log.display().to_string());
     let outcome = match outcome {
         Ok(outcome) => outcome,
         Err(err) => {

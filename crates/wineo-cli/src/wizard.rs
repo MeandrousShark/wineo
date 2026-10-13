@@ -7,18 +7,22 @@ use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
+use wineo_core::cancel::Token;
 use wineo_core::config::{Arch, GlobalConfig};
-use wineo_core::create::{self, CreateEvent, CreateRequest};
+use wineo_core::create::{self, CreateEvent, CreateRequest, Stepped};
 use wineo_core::environment::Environment;
 use wineo_core::error::Error;
 use wineo_core::install::{self, Wanted};
-use wineo_core::installer::Installer;
+use wineo_core::installer::Output;
+use wineo_core::launch::Launch;
 use wineo_core::paths::Paths;
 use wineo_core::prefix;
 use wineo_core::programs::{Program, Source};
 use wineo_core::runner::Runner;
 use wineo_core::runners::Runners;
+use wineo_core::runtime::Runtime;
 use wineo_core::steamgriddb::Key;
+use wineo_core::supervisor::Watched;
 use wineo_core::targets::Batch;
 use wineo_core::templates::{NEWEST_PROTON, Template, Templates};
 use wineo_core::winpath;
@@ -1177,9 +1181,30 @@ fn create<I: Input, W: Write>(
     let shown = paths
         .contract(&dir)
         .unwrap_or_else(|_| dir.display().to_string());
-    let mut cancellation = Some(Cancellation::new()?);
-    let token = cancellation.as_ref().unwrap().token.clone();
-    let created = match create::run(
+    let install_log = Runtime::new(paths, &name).install_log_path();
+    let install_token = Token::new();
+    let step = match &how {
+        How::Installer(program) => Some(create::Step::Installer {
+            program,
+            output: Output::Log(&install_log),
+            token: &install_token,
+        }),
+        How::Existing(_) | How::Nothing => None,
+    };
+    let mut hooks = WizardHooks {
+        paths,
+        global,
+        prompt,
+        guided,
+        access,
+        name: &name,
+        shown: &shown,
+        art: art.as_ref(),
+        cancellation: Some(Cancellation::new()?),
+        install_token: install_token.clone(),
+    };
+    let token = hooks.cancellation.as_ref().unwrap().token.clone();
+    let created = create::create_and_install(
         paths,
         CreateRequest {
             name: name.clone(),
@@ -1189,39 +1214,13 @@ fn create<I: Input, W: Write>(
             template,
             ..Default::default()
         },
+        step,
         &token,
-        |event| match event {
-            CreateEvent::BuildingPrefix { runner, .. } => {
-                let _ = prompt.say(if runner.is_proton() {
-                    format!("Creating a Proton prefix in {shown}, which takes a while")
-                } else {
-                    format!("Creating a wine prefix in {shown}, which takes a few seconds")
-                });
-            }
-            CreateEvent::Saved => {
-                drop(cancellation.take());
-                guided.registered = Some(name.clone());
-            }
-            CreateEvent::Registered { created_prefix, .. } => {
-                let _ = prompt.say(if created_prefix {
-                    format!("Created {name}.")
-                } else {
-                    format!("Created {name}, using the prefix already at {shown}.")
-                });
-            }
-            CreateEvent::Components(changes) => {
-                for change in changes {
-                    eprintln!("{}", components::describe(&change, &name));
-                }
-            }
-            CreateEvent::Desktop(changes) => {
-                for change in changes {
-                    eprintln!("{}", desktop::describe(&change, &name));
-                }
-            }
-            CreateEvent::TemplateComponentsOmitted { .. } => {}
-        },
-    ) {
+        &mut hooks,
+    );
+    // Kept through the installer's report, like `setup`'s own install.
+    let install_cancellation = hooks.cancellation.take();
+    let created = match created {
         Ok(created) => created,
         Err(err) => {
             if err
@@ -1241,17 +1240,12 @@ fn create<I: Input, W: Write>(
             return Ok(ExitCode::FAILURE);
         }
     };
-    drop(cancellation);
-    let create::Created {
+    let create::Installed {
         environment,
         runner,
-        guard,
+        step,
         ..
     } = created;
-    // Before the installer, so every question is answered before the wait.
-    if let Some((key, term)) = &art {
-        fetch_art(paths, global, prompt, access, &name, key, term)?;
-    }
 
     let place = Place {
         paths,
@@ -1260,30 +1254,29 @@ fn create<I: Input, W: Write>(
         native_env: None,
     };
     let mut batch = Batch::new(environment.config.targets.clone());
-    match how {
-        How::Nothing => {
-            drop(guard);
+    match (how, step) {
+        (_, Stepped::Stopped(err)) => return Err(err),
+        (How::Nothing, _) => {
             return setup::finish(paths, global, &name, prompt, &batch);
         }
-        How::Installer(program) => {
-            let installer = match Installer::prepare_with_runner(
-                guard, paths, global, &name, &program, &runner,
-            ) {
-                Ok(installer) => installer,
-                Err(err) => {
-                    prompt.say(format!("error: {:#}", anyhow::Error::from(err)))?;
-                    setup::report_recovery(paths, &name, prompt)?;
-                    return Ok(ExitCode::FAILURE);
-                }
-            };
-            match setup::run_installer(paths, global, &name, prompt, installer)? {
+        (How::Installer(_), Stepped::NotPrepared(err)) => {
+            prompt.say(format!("error: {:#}", anyhow::Error::from(err)))?;
+            setup::report_recovery(paths, &name, prompt)?;
+            return Ok(ExitCode::FAILURE);
+        }
+        (How::Installer(_), Stepped::Ran { outcome, .. }) => {
+            // Those were the installer's to act on, not a request to leave setup.
+            prompt.input().forget_interrupts();
+            let ran = setup::report_installer(paths, &name, prompt, outcome)?;
+            drop(install_cancellation);
+            match ran {
                 Ran::Finished => picker::pick(prompt, &place, &mut batch).map(|_| ())?,
                 Ran::Ended(code) => return Ok(code),
                 Ran::Back => unreachable!("an installer that ran never goes back"),
             }
         }
-        How::Existing(exe) => {
-            drop(guard);
+        (How::Installer(_), Stepped::None) => unreachable!("an installer always has a step"),
+        (How::Existing(exe), _) => {
             let program = Program {
                 source: Source::Executable,
                 name: picker::file_stem(&exe),
@@ -1300,6 +1293,90 @@ fn create<I: Input, W: Write>(
         Reply::Value(()) => setup::finish(paths, global, &name, prompt, &batch),
         // Keeping on editing is what `setup` is for.
         Reply::Back => setup::menu(paths, global, &name, prompt, &place, batch),
+    }
+}
+
+/// The guided side of creating a Wine environment, and of its installer.
+struct WizardHooks<'a, I: Input, W: Write> {
+    paths: &'a Paths,
+    global: &'a GlobalConfig,
+    prompt: &'a mut Prompt<I, W>,
+    guided: &'a mut Guided,
+    access: &'a Access<'a>,
+    name: &'a str,
+    shown: &'a str,
+    art: Option<&'a (Key, String)>,
+    /// Listens for Ctrl+C while creating until the config is saved, then
+    /// again while the installer runs.
+    cancellation: Option<Cancellation>,
+    install_token: Token,
+}
+
+impl<I: Input, W: Write> create::Hooks for WizardHooks<'_, I, W> {
+    type Stop = anyhow::Error;
+
+    fn event(&mut self, event: CreateEvent) {
+        let (name, shown) = (self.name, self.shown);
+        match event {
+            CreateEvent::BuildingPrefix { runner, .. } => {
+                let _ = self.prompt.say(if runner.is_proton() {
+                    format!("Creating a Proton prefix in {shown}, which takes a while")
+                } else {
+                    format!("Creating a wine prefix in {shown}, which takes a few seconds")
+                });
+            }
+            CreateEvent::Saved => {
+                drop(self.cancellation.take());
+                self.guided.registered = Some(name.to_owned());
+            }
+            CreateEvent::Registered { created_prefix, .. } => {
+                let _ = self.prompt.say(if created_prefix {
+                    format!("Created {name}.")
+                } else {
+                    format!("Created {name}, using the prefix already at {shown}.")
+                });
+            }
+            CreateEvent::Components(changes) => {
+                for change in changes {
+                    eprintln!("{}", components::describe(&change, name));
+                }
+            }
+            CreateEvent::Desktop(changes) => {
+                for change in changes {
+                    eprintln!("{}", desktop::describe(&change, name));
+                }
+            }
+            CreateEvent::TemplateComponentsOmitted { .. } => {}
+        }
+    }
+
+    fn created(&mut self, _created: &create::Created) -> anyhow::Result<()> {
+        // Before the installer, so every question is answered before the wait.
+        if let Some((key, term)) = self.art {
+            fetch_art(
+                self.paths,
+                self.global,
+                self.prompt,
+                self.access,
+                self.name,
+                key,
+                term,
+            )?;
+        }
+        Ok(())
+    }
+
+    fn ready(&mut self, launch: &Launch) -> anyhow::Result<()> {
+        setup::ready_installer(self.paths, self.global, self.name, launch)?;
+        self.prompt.say(setup::RUNNING)?;
+        self.cancellation = Some(Cancellation::with_token(&self.install_token)?);
+        Ok(())
+    }
+
+    fn watched(&mut self, watched: Watched) {
+        if let Some(message) = setup::watched_message(watched) {
+            let _ = self.prompt.say(message);
+        }
     }
 }
 
