@@ -657,14 +657,17 @@ mod tests {
 
     #[test]
     fn hooks_recorded_group_can_be_killed_by_another_caller() {
+        // The shell spins rather than waiting on `sleep`: members are killed
+        // before the leader, and a `wait` would let the shell exit 0 on its own
+        // in between.
         let (status, elapsed) = interrupted(
-            "trap '' TERM; sleep 60 & echo ready > ready; wait",
+            "trap '' TERM; sleep 60 & echo ready > ready; while :; do :; done",
             Duration::from_secs(60),
             |_, running| {
                 assert_eq!(running.kill_now().unwrap(), GroupOwnership::Owned);
             },
         );
-        assert_eq!(status.signal(), Some(9));
+        assert_eq!(status.signal(), Some(9), "{status:?}");
         assert!(elapsed < Duration::from_secs(5));
     }
 

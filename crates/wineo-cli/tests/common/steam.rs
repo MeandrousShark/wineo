@@ -480,9 +480,15 @@ fn signal_fixture_process(root: &Path, pid: u32) {
         return;
     }
     let mut descriptors = [PollFd::new(&pidfd, PollFlags::IN)];
-    if poll(&mut descriptors, Some(&Timespec::default())).is_err()
-        || !descriptors[0].revents().is_empty()
-    {
+    // poll is never restarted after a signal handler runs, even with a zero timeout.
+    loop {
+        match poll(&mut descriptors, Some(&Timespec::default())) {
+            Ok(_) => break,
+            Err(rustix::io::Errno::INTR) => {}
+            Err(_) => return,
+        }
+    }
+    if !descriptors[0].revents().is_empty() {
         return;
     }
     let _ = pidfd_send_signal(&pidfd, Signal::KILL);
