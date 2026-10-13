@@ -1160,6 +1160,10 @@ fn run(
         if journal.target != target || journal.packages != packages {
             journal.target = target.clone();
             journal.packages = packages;
+            // The last check before the journal changes.
+            if token.is_canceled() {
+                return Err(UpdateError::Canceled { journal: true }.into());
+            }
             lock.write(&state)?;
         }
         // The journal names the packages now, which keeps them cached.
@@ -1198,6 +1202,10 @@ fn run(
                 requested: &plan.language_name,
                 wizard: plan.wizard,
                 desktop: plan.desktop,
+                committed: None,
+                // A resumed install's journal was written by an earlier
+                // attempt.
+                fresh: !plan.resume,
             },
             token,
             events,

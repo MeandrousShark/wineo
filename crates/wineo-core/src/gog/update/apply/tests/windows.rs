@@ -902,3 +902,661 @@ fn an_info_file_that_isnt_a_small_regular_file_isnt_read() {
         assert_eq!(fx.state().journal, None);
     }
 }
+
+// Updates and reinstalls of an installed Windows game.
+
+/// RimWorld and its DLC installed from their 1.0 installers, and a save of
+/// yours in the folder.
+fn installed_windows() -> Fixture {
+    let fx = offered();
+    fx.install_windows(&request()).unwrap();
+    assert_installed(&fx);
+    fx.write("saves/mine.sav", "mine");
+    fx
+}
+
+/// GOG offers 2.0 of the game.
+fn base_v2(fx: &Fixture) {
+    fx.offer_windows(
+        RIMWORLD,
+        "RimWorld",
+        "2.0",
+        &[("bin/Game.exe", "game"), ("Data/core.dat", "core v2")],
+        Some(english(RIMWORLD)),
+    );
+}
+
+/// GOG offers 2.0 of the DLC.
+fn dlc_v2(fx: &Fixture) {
+    fx.offer_windows(
+        DLC,
+        "RimWorld - Royalty",
+        "2.0",
+        &[("Data/Royalty/r.dat", "royalty v2")],
+        Some(info(DLC, &["en-US"], "English", serde_json::json!([]))),
+    );
+}
+
+fn setup(id: u64, version: &str) -> String {
+    format!("setup_{id}_{}.exe", version.replace('.', "_"))
+}
+
+/// The installers each update ran, after the install's.
+fn ran_since_install(fx: &Fixture) -> Vec<String> {
+    fx.ran()[2..].to_vec()
+}
+
+fn versions(fx: &Fixture) -> Vec<(u64, Option<String>)> {
+    fx.state()
+        .committed
+        .unwrap()
+        .products
+        .iter()
+        .map(|product| (product.id, product.version.clone()))
+        .collect()
+}
+
+fn v(version: &str) -> Option<String> {
+    Some(version.to_owned())
+}
+
+/// Committed, launchable, with nothing in flight and your files there.
+fn assert_settled(fx: &Fixture) {
+    let state = fx.state();
+    assert_eq!(state.journal, None);
+    assert!(!fx.launch_refused());
+    assert_eq!(fx.read("saves/mine.sav"), "mine");
+    assert_eq!(cached(fx, RIMWORLD), 0);
+    assert_eq!(cached(fx, DLC), 0);
+}
+
+fn prefix(fx: &Fixture) -> PathBuf {
+    GlobalConfig::default()
+        .prefix_root(&fx.paths)
+        .unwrap()
+        .join("rimworld")
+}
+
+#[test]
+fn a_check_finds_a_windows_update_and_the_update_runs_the_newer_installer() {
+    let fx = installed_windows();
+    base_v2(&fx);
+    let status = crate::gog::update::check(&mut fx.session(), "rimworld", true).unwrap();
+    assert_eq!(status.state, UpdateState::Available);
+    assert!(status.applicable);
+    assert_eq!(status.reason, None);
+    assert_eq!(
+        (status.installed.as_deref(), status.available.as_deref()),
+        (Some("1.0"), Some("2.0"))
+    );
+
+    let pending = fx.pending(true, Options::default());
+    assert_eq!(pending.kind(), JournalKind::Update);
+    assert!(!pending.is_recovery());
+    // Only the game's installer runs; the DLC has nothing newer.
+    let planned: Vec<_> = pending
+        .products()
+        .iter()
+        .map(|product| (product.id, product.version.clone()))
+        .collect();
+    assert_eq!(planned, [(RIMWORLD, v("2.0")), (DLC, None)]);
+    assert_eq!(pending.unpacked_estimate(), 2 * pending.download_size());
+
+    let updated = fx
+        .apply_with(true, &pending, &Token::new(), |_| {})
+        .unwrap();
+    assert_eq!(updated.kind, JournalKind::Update);
+    assert!(!updated.recovered);
+    assert!(updated.warnings.is_empty(), "{:?}", updated.warnings);
+    assert_eq!(ran_since_install(&fx), [setup(RIMWORLD, "2.0")]);
+    assert_eq!(versions(&fx), [(RIMWORLD, v("2.0")), (DLC, v("1.0"))]);
+    assert_eq!(fx.read("Data/core.dat"), "core v2");
+    assert_eq!(fx.read("Data/Royalty/r.dat"), "royalty v1");
+    assert_settled(&fx);
+
+    // The same silent Inno arguments as installing.
+    let args = fx.args(RIMWORLD);
+    assert!(args[0].ends_with(&setup(RIMWORLD, "2.0")), "{args:?}");
+    assert_eq!(
+        args[1..6],
+        [
+            "/SP-",
+            "/SILENT",
+            "/SUPPRESSMSGBOXES",
+            "/NORESTART",
+            "/NOCANCEL"
+        ]
+    );
+    let dir = format!(
+        "/DIR=Z:{}",
+        fx.folder.display().to_string().replace('/', "\\")
+    );
+    assert!(args.contains(&dir), "{args:?}");
+
+    // The default target stays as it was.
+    let environment = Environment::load(&fx.paths, "rimworld").unwrap();
+    assert_eq!(environment.config.targets.len(), 1);
+    assert!(matches!(
+        fx.plan_with(true, Options::default()).unwrap(),
+        Plan::UpToDate { .. }
+    ));
+}
+
+#[test]
+fn each_installed_dlc_with_a_newer_version_runs_after_the_game() {
+    let fx = installed_windows();
+    base_v2(&fx);
+    dlc_v2(&fx);
+    fx.update();
+    assert_eq!(
+        ran_since_install(&fx),
+        [setup(RIMWORLD, "2.0"), setup(DLC, "2.0")]
+    );
+    assert_eq!(versions(&fx), [(RIMWORLD, v("2.0")), (DLC, v("2.0"))]);
+    assert_eq!(fx.read("Data/Royalty/r.dat"), "royalty v2");
+    assert_settled(&fx);
+}
+
+#[test]
+fn a_dlc_only_update_runs_only_the_dlc() {
+    let fx = installed_windows();
+    dlc_v2(&fx);
+    let status = crate::gog::update::check(&mut fx.session(), "rimworld", true).unwrap();
+    assert!(status.applicable);
+    fx.update();
+    assert_eq!(ran_since_install(&fx), [setup(DLC, "2.0")]);
+    assert_eq!(versions(&fx), [(RIMWORLD, v("1.0")), (DLC, v("2.0"))]);
+    assert_settled(&fx);
+}
+
+#[test]
+fn a_patch_gog_lists_is_never_used_and_the_full_installer_runs() {
+    let fx = installed_windows();
+    base_v2(&fx);
+    // Even one whose name says it starts from the installed version: GOG
+    // names no starting version wineo can trust.
+    fx.gog.lock().unwrap().patches.insert(
+        RIMWORLD,
+        vec![
+            ("Patch (1.0 to 2.0)".to_owned(), "2.0".to_owned()),
+            ("RimWorld (32Bit Installer)".to_owned(), "2.0".to_owned()),
+        ],
+    );
+    let downloads = fx.downloads();
+    fx.update();
+    // The setup program and its part.
+    assert_eq!(fx.downloads(), downloads + 2);
+    assert_eq!(ran_since_install(&fx), [setup(RIMWORLD, "2.0")]);
+    assert_eq!(versions(&fx)[0], (RIMWORLD, v("2.0")));
+    assert_settled(&fx);
+}
+
+#[test]
+fn a_reinstall_runs_every_current_installer_again() {
+    let fx = installed_windows();
+    fs::remove_file(fx.folder.join("Data/core.dat")).unwrap();
+    let updated = fx.reinstall();
+    assert_eq!(updated.kind, JournalKind::Reinstall);
+    assert_eq!(
+        ran_since_install(&fx),
+        [setup(RIMWORLD, "1.0"), setup(DLC, "1.0")]
+    );
+    assert_eq!(fx.read("Data/core.dat"), "core v1");
+    assert_eq!(versions(&fx), [(RIMWORLD, v("1.0")), (DLC, v("1.0"))]);
+    assert_settled(&fx);
+
+    // With newer installers on GOG, the current ones.
+    base_v2(&fx);
+    fx.reinstall();
+    assert_eq!(
+        ran_since_install(&fx)[2..],
+        [setup(RIMWORLD, "2.0"), setup(DLC, "1.0")]
+    );
+    assert_eq!(versions(&fx), [(RIMWORLD, v("2.0")), (DLC, v("1.0"))]);
+    assert_settled(&fx);
+}
+
+#[test]
+fn without_a_graphical_session_an_update_is_refused_before_anything() {
+    let fx = installed_windows();
+    base_v2(&fx);
+    set_graphical(false);
+    for reinstall in [false, true] {
+        let error = fx
+            .plan_with(
+                true,
+                Options {
+                    reinstall,
+                    ..Options::default()
+                },
+            )
+            .unwrap_err();
+        assert!(matches!(
+            error.downcast_ref(),
+            Some(SetupError::NoGraphicalSession)
+        ));
+    }
+    set_graphical(true);
+    assert_eq!(versions(&fx)[0], (RIMWORLD, v("1.0")));
+}
+
+#[test]
+fn an_update_interrupted_at_each_step_is_finished_by_update() {
+    for at in [
+        "update.journal.before",
+        "update.journal.after",
+        "install.windows.base.after",
+        "install.windows.dlc.after",
+        "install.windows.commit.before",
+    ] {
+        let fx = installed_windows();
+        base_v2(&fx);
+        dlc_v2(&fx);
+        set_failpoint(Some(at));
+        fx.update_err();
+        let downloads = fx.downloads();
+        if at == "update.journal.before" {
+            // Nothing changed, so it's an update like any other.
+            assert_eq!(fx.state().journal, None, "{at}");
+            assert!(!fx.launch_refused(), "{at}");
+            fx.update();
+        } else {
+            let journal = fx.state().journal.unwrap();
+            assert_eq!(journal.kind, JournalKind::Update, "{at}");
+            assert_eq!(journal.attempted[0].path, ".", "{at}");
+            assert!(fx.launch_refused(), "{at}");
+            assert_eq!(fx.read("saves/mine.sav"), "mine");
+            // Finished from the installers already downloaded, without GOG.
+            let pending = fx.pending(false, Options::default());
+            assert!(pending.is_recovery() && pending.is_offline(), "{at}");
+            assert_eq!(pending.kind(), JournalKind::Update, "{at}");
+            let updated = fx
+                .apply_with(false, &pending, &Token::new(), |_| {})
+                .unwrap();
+            assert!(updated.recovered, "{at}");
+        }
+        assert_eq!(fx.downloads(), downloads, "{at}");
+        assert_eq!(
+            versions(&fx),
+            [(RIMWORLD, v("2.0")), (DLC, v("2.0"))],
+            "{at}"
+        );
+        assert_eq!(fx.read("Data/core.dat"), "core v2", "{at}");
+        assert_settled(&fx);
+    }
+}
+
+#[test]
+fn a_reinstall_interrupted_is_finished_as_a_reinstall() {
+    let fx = installed_windows();
+    set_failpoint(Some("install.windows.base.after"));
+    let error = fx
+        .try_update(Options {
+            reinstall: true,
+            ..Options::default()
+        })
+        .unwrap_err();
+    assert!(format!("{error:#}").contains("injected"), "{error:#}");
+    assert_eq!(fx.state().journal.unwrap().kind, JournalKind::Reinstall);
+    let pending = fx.pending(true, Options::default());
+    assert_eq!(pending.kind(), JournalKind::Reinstall);
+    fx.apply_with(true, &pending, &Token::new(), |_| {})
+        .unwrap();
+    assert_eq!(
+        ran_since_install(&fx),
+        [
+            setup(RIMWORLD, "1.0"),
+            setup(RIMWORLD, "1.0"),
+            setup(DLC, "1.0")
+        ]
+    );
+    assert_settled(&fx);
+}
+
+#[test]
+fn a_dlc_only_update_interrupted_reruns_only_the_dlc() {
+    let fx = installed_windows();
+    dlc_v2(&fx);
+    fx.exits(DLC, 5);
+    fx.try_update(Options::default()).unwrap_err();
+    assert_eq!(fx.state().journal.unwrap().packages.len(), 2);
+    fs::remove_file(fx.runs().join(format!("exit-{DLC}"))).unwrap();
+
+    // With the cached installer gone, GOG's current one, for the same
+    // product.
+    fx.clear_cache();
+    let downloads = fx.downloads();
+    let pending = fx.pending(true, Options::default());
+    assert!(pending.is_recovery() && !pending.is_offline());
+    fx.apply_with(true, &pending, &Token::new(), |_| {})
+        .unwrap();
+    assert_eq!(fx.downloads(), downloads + 2);
+    assert_eq!(
+        ran_since_install(&fx),
+        [setup(DLC, "2.0"), setup(DLC, "2.0")]
+    );
+    assert_eq!(versions(&fx), [(RIMWORLD, v("1.0")), (DLC, v("2.0"))]);
+    assert_settled(&fx);
+}
+
+#[test]
+fn a_failed_update_keeps_every_file_until_update_finishes_it() {
+    for code in [4, 5, 6, 8, 9] {
+        let fx = installed_windows();
+        base_v2(&fx);
+        fx.exits(RIMWORLD, code);
+        let error = fx.try_update(Options::default()).unwrap_err();
+        assert!(
+            matches!(error.downcast_ref(), Some(SetupError::Partway { product, .. }) if *product == RIMWORLD),
+            "{error:#}"
+        );
+        let journal = fx.state().journal.unwrap();
+        assert_eq!(journal.kind, JournalKind::Update);
+        assert!(fx.launch_refused());
+        // What the installer wrote stays, and so does everything else.
+        assert_eq!(fx.read("Data/core.dat"), "core v2");
+        assert_eq!(fx.read("Data/Royalty/r.dat"), "royalty v1");
+        assert_eq!(fx.read("saves/mine.sav"), "mine");
+        assert_eq!(versions(&fx)[0], (RIMWORLD, v("1.0")));
+
+        fs::remove_file(fx.runs().join(format!("exit-{RIMWORLD}"))).unwrap();
+        let pending = fx.pending(true, Options::default());
+        assert!(pending.is_recovery());
+        fx.apply_with(true, &pending, &Token::new(), |_| {})
+            .unwrap();
+        assert_eq!(versions(&fx), [(RIMWORLD, v("2.0")), (DLC, v("1.0"))]);
+        assert_settled(&fx);
+    }
+}
+
+#[test]
+fn an_update_whose_installer_never_started_offers_its_wizard_once() {
+    for code in [1, 3, 7] {
+        let fx = installed_windows();
+        base_v2(&fx);
+        fx.exits(RIMWORLD, code);
+        let before = fx.state();
+        let error = fx.try_update(Options::default()).unwrap_err();
+        match error.downcast_ref() {
+            Some(SetupError::NotStarted {
+                product,
+                code: found,
+                wizard,
+                ..
+            }) => assert_eq!((*product, *found, *wizard), (RIMWORLD, code, true)),
+            _ => panic!("{error:#}"),
+        }
+        // Nothing changed, so the game is as it was and still launches,
+        // with the update still to do.
+        assert_eq!(fx.state(), before);
+        assert!(!fx.launch_refused());
+        let status = crate::gog::update::check(&mut fx.session(), "rimworld", true).unwrap();
+        assert!(status.applicable);
+
+        // The installer's own wizard, without the flags that hide it.
+        let wizard = Options {
+            wizard: true,
+            ..Options::default()
+        };
+        let pending = fx.pending(true, wizard);
+        assert!(pending.wizard());
+        let error = fx
+            .apply_with(true, &pending, &Token::new(), |_| {})
+            .unwrap_err();
+        assert!(matches!(
+            error.downcast_ref(),
+            Some(SetupError::NotStarted { wizard: false, .. })
+        ));
+        let args = fx.args(RIMWORLD);
+        assert!(!args.contains(&"/SILENT".to_owned()), "{args:?}");
+        assert_eq!(fx.state(), before);
+
+        fs::remove_file(fx.runs().join(format!("exit-{RIMWORLD}"))).unwrap();
+        fx.try_update(wizard).unwrap();
+        assert_eq!(versions(&fx)[0], (RIMWORLD, v("2.0")));
+        assert_settled(&fx);
+    }
+}
+
+#[test]
+fn an_update_canceled_by_its_installer_before_changing_anything_leaves_the_game() {
+    let fx = installed_windows();
+    base_v2(&fx);
+    fx.exits(RIMWORLD, 2);
+    let before = fx.state();
+    let error = fx.try_update(Options::default()).unwrap_err();
+    assert!(
+        matches!(error.downcast_ref(), Some(SetupError::Canceled { product, .. }) if *product == RIMWORLD),
+        "{error:#}"
+    );
+    assert_eq!(fx.state(), before);
+    assert!(!fx.launch_refused());
+}
+
+#[test]
+fn finishing_an_update_whose_installer_never_started_keeps_the_journal() {
+    let fx = installed_windows();
+    base_v2(&fx);
+    fx.exits(RIMWORLD, 5);
+    fx.try_update(Options::default()).unwrap_err();
+    // An earlier attempt may have changed files, so this one stopping
+    // early doesn't make the game whole.
+    fx.exits(RIMWORLD, 1);
+    let error = fx.try_update(Options::default()).unwrap_err();
+    assert!(matches!(
+        error.downcast_ref(),
+        Some(SetupError::NotStarted { wizard: true, .. })
+    ));
+    assert_eq!(fx.state().journal.unwrap().kind, JournalKind::Update);
+    assert!(fx.launch_refused());
+}
+
+#[test]
+fn a_dlc_whose_newer_installer_never_started_stays_as_it_was() {
+    let fx = installed_windows();
+    base_v2(&fx);
+    dlc_v2(&fx);
+    fx.exits(DLC, 1);
+    let updated = fx.update();
+    assert_eq!(
+        updated.warnings,
+        [format!(
+            "Royalty ({DLC}) wasn't updated: its installer stopped before installing anything (exit code 1)."
+        )]
+    );
+    assert_eq!(versions(&fx), [(RIMWORLD, v("2.0")), (DLC, v("1.0"))]);
+    assert_eq!(
+        fx.statuses_windows(),
+        [
+            (RIMWORLD, ProductStatus::Installed),
+            (DLC, ProductStatus::Installed)
+        ]
+    );
+    assert_settled(&fx);
+    // So the DLC's update is offered again.
+    let status = crate::gog::update::check(&mut fx.session(), "rimworld", true).unwrap();
+    assert!(status.applicable);
+}
+
+#[test]
+fn canceling_an_update_stops_at_its_checkpoints() {
+    // While checking the downloaded installers, before anything changed.
+    let fx = installed_windows();
+    base_v2(&fx);
+    let before = fx.state();
+    let pending = fx.pending(true, Options::default());
+    let token = Token::new();
+    let error = fx
+        .apply_with(true, &pending, &token, |step| {
+            if matches!(step, Progress::Verify { .. }) {
+                token.cancel();
+            }
+        })
+        .unwrap_err();
+    assert!(
+        matches!(
+            error.downcast_ref(),
+            Some(UpdateError::Canceled { journal: false })
+        ),
+        "{error:#}"
+    );
+    assert_eq!(fx.state(), before);
+    assert_eq!(fx.ran().len(), 2);
+
+    // After the installers, before the commit: the journal stays.
+    let token = Token::new();
+    let canceler = token.clone();
+    set_before_target(move || canceler.cancel());
+    let pending = fx.pending(true, Options::default());
+    let error = fx.apply_with(true, &pending, &token, |_| {}).unwrap_err();
+    assert!(
+        matches!(
+            error.downcast_ref(),
+            Some(UpdateError::Canceled { journal: true })
+        ),
+        "{error:#}"
+    );
+    assert_eq!(fx.state().journal.unwrap().kind, JournalKind::Update);
+    assert!(fx.launch_refused());
+    let pending = fx.pending(false, Options::default());
+    fx.apply_with(false, &pending, &Token::new(), |_| {})
+        .unwrap();
+    assert_eq!(versions(&fx)[0], (RIMWORLD, v("2.0")));
+    assert_settled(&fx);
+}
+
+#[test]
+fn an_update_keeps_the_prefix_reserved_to_its_commit() {
+    let fx = installed_windows();
+    base_v2(&fx);
+    let (paths, held) = (fx.paths.clone(), prefix(&fx));
+    let refused = std::rc::Rc::new(Cell::new(false));
+    let seen = std::rc::Rc::clone(&refused);
+    set_before_target(move || {
+        // A snapshot restore would replace the prefix mid-update.
+        seen.set(
+            Locks::new(&paths)
+                .acquire(Operation::Snapshot, "rimworld", &[&held])
+                .is_err(),
+        );
+    });
+    fx.update();
+    assert!(refused.get());
+    assert!(
+        Locks::new(&fx.paths)
+            .acquire(Operation::Snapshot, "rimworld", &[&prefix(&fx)])
+            .is_ok()
+    );
+}
+
+#[test]
+fn an_update_names_the_language_asked_for_like_an_install() {
+    let fx = installed_windows();
+    fx.offer_windows(
+        RIMWORLD,
+        "RimWorld",
+        "2.0",
+        &[("bin/Game.exe", "game")],
+        Some(info(RIMWORLD, &["fr-FR"], "French", primary_task())),
+    );
+    let updated = fx.update();
+    assert_eq!(
+        updated.warnings,
+        ["Requested English; the installed game reports French."]
+    );
+    // The installer ran in the setting's locale.
+    assert!(fx.args(RIMWORLD).contains(&"LC_ALL=en_US.UTF-8".to_owned()));
+
+    // Finishing without GOG's details names the setting's tag.
+    fx.offer_windows(
+        RIMWORLD,
+        "RimWorld",
+        "3.0",
+        &[("bin/Game.exe", "game")],
+        Some(info(RIMWORLD, &["fr-FR"], "French", primary_task())),
+    );
+    set_failpoint(Some("install.windows.base.after"));
+    fx.update_err();
+    let pending = fx.pending(false, Options::default());
+    let updated = fx
+        .apply_with(false, &pending, &Token::new(), |_| {})
+        .unwrap();
+    assert_eq!(
+        updated.warnings,
+        ["Requested en-US; the installed game reports French."]
+    );
+}
+
+/// Finishing an update whose DLC installer stopped partway, when the retry
+/// never starts: the DLC may be half updated, so the journal stays.
+#[test]
+fn a_dlc_that_never_starts_while_finishing_keeps_the_journal() {
+    for (base_too, code) in [(true, 1), (false, 3), (true, 7), (false, 2)] {
+        let fx = installed_windows();
+        if base_too {
+            base_v2(&fx);
+        }
+        dlc_v2(&fx);
+        fx.exits(DLC, 5);
+        fx.try_update(Options::default()).unwrap_err();
+        let committed = fx.state().committed;
+        fx.exits(DLC, code);
+        let error = fx.try_update(Options::default()).unwrap_err();
+        let product = match error.downcast_ref() {
+            Some(SetupError::NotStarted {
+                product, wizard, ..
+            }) => {
+                assert!(!wizard);
+                *product
+            }
+            Some(SetupError::Canceled { product, .. }) => *product,
+            _ => panic!("{error:#}"),
+        };
+        assert_eq!(product, DLC);
+        let state = fx.state();
+        assert_eq!(state.journal.unwrap().kind, JournalKind::Update);
+        assert_eq!(state.committed, committed);
+        assert!(fx.launch_refused());
+        assert_eq!(fx.read("saves/mine.sav"), "mine");
+
+        fs::remove_file(fx.runs().join(format!("exit-{DLC}"))).unwrap();
+        fx.try_update(Options::default()).unwrap();
+        let base = if base_too { "2.0" } else { "1.0" };
+        assert_eq!(versions(&fx), [(RIMWORLD, v(base)), (DLC, v("2.0"))]);
+        assert_settled(&fx);
+    }
+}
+
+#[test]
+fn a_dlc_that_never_starts_while_finishing_an_install_keeps_the_journal() {
+    let fx = offered();
+    fx.exits(DLC, 5);
+    fx.install_windows(&request()).unwrap_err();
+    fx.exits(DLC, 1);
+    let error = fx.install_windows(&request()).unwrap_err();
+    assert!(
+        matches!(error.downcast_ref(), Some(SetupError::NotStarted { product, .. }) if *product == DLC),
+        "{error:#}"
+    );
+    assert_eq!(fx.state().journal.unwrap().kind, JournalKind::Install);
+    assert!(fx.launch_refused());
+    fs::remove_file(fx.runs().join(format!("exit-{DLC}"))).unwrap();
+    fx.finish_windows();
+    assert_installed(&fx);
+}
+
+#[test]
+fn an_update_or_reinstall_leaves_a_removed_default_target_removed() {
+    let fx = installed_windows();
+    let config = fx.paths.environment_config("rimworld");
+    let mut doc: toml_edit::DocumentMut = fs::read_to_string(&config).unwrap().parse().unwrap();
+    doc["targets"].as_table_mut().unwrap().remove("game");
+    fs::write(&config, doc.to_string()).unwrap();
+    base_v2(&fx);
+    fx.update();
+    fx.reinstall();
+    assert_eq!(ran_since_install(&fx).len(), 3);
+    let environment = Environment::load(&fx.paths, "rimworld").unwrap();
+    assert!(environment.config.targets.is_empty());
+    assert_settled(&fx);
+}

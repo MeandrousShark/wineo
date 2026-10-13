@@ -1,5 +1,5 @@
-//! Whether a GOG game has an update on GOG, and, in `apply` and `publish`,
-//! applying a native game's update.
+//! Whether a GOG game has an update on GOG, and, in `apply`, `publish`, and
+//! `windows`, applying an installer-tracked game's update.
 //!
 //! Status is computed from a folder's `[committed]` state, even while a
 //! journal is present, so a half-finished update never hides what is
@@ -55,7 +55,8 @@ impl UpdateState {
 /// Why a game's update can't be applied, or can't be told.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Reason {
-    /// An installer-tracked Windows game, applied by plan 0050.
+    /// An installer-tracked Windows game, from releases that couldn't update
+    /// one. No longer given, but kept for frontends that still name it.
     WindowsInstaller,
     /// A Galaxy-tracked game, applied by plan 0051.
     Galaxy,
@@ -132,10 +133,10 @@ pub struct Status {
     /// build, when it could be told.
     pub available: Option<String>,
     pub state: UpdateState,
-    /// Whether this wineo can apply the update: a native game with one.
+    /// Whether this wineo can apply the update: an installer-tracked game
+    /// with one.
     pub applicable: bool,
-    /// Set when the state is `Available` or `OnGog` for a game this wineo
-    /// can't update, and when it is `CantCompare`.
+    /// Set when the state is `OnGog`, and when it is `CantCompare`.
     pub reason: Option<Reason>,
     /// A journal is present: the owner has an update to finish.
     pub unfinished: bool,
@@ -182,9 +183,6 @@ pub enum UpdateError {
     /// isn't taken for one that doesn't.
     #[error("{name} can't be checked: its config can't be read ({detail}).")]
     Unloadable { name: String, detail: String },
-    /// The same sentence `update --check` gives for these games.
-    #[error("Updating Windows installer games comes in a later release.")]
-    WindowsInstaller { name: String },
     #[error("Updating Galaxy builds comes in a later release.")]
     Galaxy { name: String },
     /// A journal of a kind this release can't finish yet, `repair`.
@@ -575,11 +573,10 @@ pub(super) fn status_with(
     };
 
     let applicable =
-        compared.state == UpdateState::Available && installed.platform == Platform::Linux;
+        compared.state == UpdateState::Available && installed.track == Track::Installer;
     let reason = match compared.state {
         UpdateState::CantCompare => compared.why.map(Reason::CantCompare),
         UpdateState::OnGog => Some(Reason::Galaxy),
-        UpdateState::Available if !applicable => Some(Reason::WindowsInstaller),
         UpdateState::Available | UpdateState::UpToDate => None,
     };
     Ok(Status {
