@@ -2673,6 +2673,42 @@ mod tests {
     }
 
     #[test]
+    fn key_rows_show_only_the_button_that_applies() {
+        use wineo_core::key_store::KeySource;
+        let (_root, paths) = setup();
+        let mut page = global_page(&paths);
+        let buttons = |texts: Vec<String>| -> Vec<String> {
+            texts
+                .into_iter()
+                .filter(|text| text == "Set key..." || text == "Remove key")
+                .collect()
+        };
+        for (source, shown) in [
+            (None, vec!["Set key..."]),
+            (Some(KeySource::Keyring), vec!["Remove key"]),
+            (Some(KeySource::File), vec!["Remove key"]),
+            // The variable's key may hide a saved one.
+            (Some(KeySource::Variable), vec!["Set key...", "Remove key"]),
+        ] {
+            page.steamgriddb.status = Some(steamgriddb::Status {
+                source,
+                override_note: source == Some(KeySource::Variable),
+            });
+            page.steam_key.status = Some(steam_key::Status {
+                source,
+                override_note: source == Some(KeySource::Variable),
+            });
+            let griddb = view::steamgriddb_row(&page.steamgriddb, &paths).texts();
+            assert_eq!(buttons(griddb), shown, "{source:?}");
+            assert_eq!(buttons(steam_texts(&page, &paths)), shown, "{source:?}");
+        }
+        // Still checking: both, so neither is out of reach.
+        page.steamgriddb.status = None;
+        let griddb = view::steamgriddb_row(&page.steamgriddb, &paths).texts();
+        assert_eq!(buttons(griddb), ["Set key...", "Remove key"]);
+    }
+
+    #[test]
     fn steam_key_row_saves_checks_and_removes_without_showing_the_key() {
         let key = steam_key::tests::KEY;
         let (_root, paths) = setup();

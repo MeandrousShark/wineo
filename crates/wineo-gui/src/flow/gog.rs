@@ -949,7 +949,7 @@ impl Page {
             .iter()
             .enumerate()
             .map(|(position, entry)| {
-                let (id, title, reason, note, dimmed, event) = match *entry {
+                let (id, title, reason, note, event) = match *entry {
                     Entry::Heroic(index) => {
                         let candidate = &listing.games[index];
                         let (reason, note) = match &candidate.standing {
@@ -964,24 +964,21 @@ impl Page {
                             candidate.game.title.as_str(),
                             reason,
                             note,
-                            false,
                             Event::Pick(index),
                         )
                     }
                     Entry::Owned(index) => {
                         let owned = &listing.owned[index];
-                        let (reason, note, dimmed) = match &owned.state {
-                            OwnedState::NotInstalled => {
-                                (None, Some("Not installed".to_owned()), true)
-                            }
+                        let (reason, note) = match &owned.state {
+                            OwnedState::NotInstalled => (None, Some("Not installed".to_owned())),
                             OwnedState::Unfinished => {
-                                (None, Some("Install didn't finish".to_owned()), false)
+                                (None, Some("Install didn't finish".to_owned()))
                             }
                             OwnedState::Installed(name) => {
-                                (Some(format!("Installed as {name}.")), None, false)
+                                (Some(format!("Installed as {name}.")), None)
                             }
                             OwnedState::Imported(name) => {
-                                (Some(format!("Already migrated as {name}.")), None, false)
+                                (Some(format!("Already migrated as {name}.")), None)
                             }
                         };
                         (
@@ -989,7 +986,6 @@ impl Page {
                             owned.offer.title.as_str(),
                             reason,
                             note,
-                            dimmed,
                             Event::Install(index),
                         )
                     }
@@ -1002,7 +998,10 @@ impl Page {
                         note,
                         chosen: false,
                         focus_ring: self.focus_visible && self.focus == Some(position),
-                        dimmed,
+                        // Nearly every game here isn't installed, so
+                        // dimming those like the library would wash out
+                        // the whole grid.
+                        dimmed: false,
                     },
                     palette,
                     event,
