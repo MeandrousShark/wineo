@@ -3,6 +3,24 @@
 A finished plan bumps the minor version and fixes between plans bump the
 patch version. See `AGENTS.md` for the rule.
 
+## 0.31.1 - 2026-10-13
+
+First fixes from [0051](docs/plans/0051-lean-and-simple.md), which trims
+what wineo does while nothing is happening.
+
+- A running game costs almost nothing to supervise. The background
+  supervisor woke about 100 times a second for the whole session; it now
+  wakes about once a second. An attached `wineo run` went from 50 wakeups a
+  second to none.
+- A native game whose launcher hands off to another process and exits is
+  checked once a second instead of 10 times, so the end of such a session
+  is noticed up to a second later. Steam launches and after hooks waiting
+  on another launch also stop polling.
+- A run that is lost in the middle of a long stop keeps an accurate end
+  time in its play log.
+- The desktop app does about half the work while the mouse moves over it,
+  and spinners only animate while they're on screen.
+
 ## 0.31.0 - 2026-10-13
 
 - GOG installs ([0050](docs/plans/0050-gog-installs.md)). `wineo import gog
