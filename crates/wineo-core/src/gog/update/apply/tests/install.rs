@@ -448,6 +448,70 @@ fn installing_again_carries_on_the_environments_own_interrupted_install() {
 }
 
 #[test]
+fn an_empty_folder_with_another_environments_state_is_refused() {
+    let fx = offered();
+    fs::create_dir_all(&fx.folder).unwrap();
+    for journal in [false, true] {
+        let mut state = FolderState::new(fx.folder.clone(), Some("other".to_owned()));
+        if journal {
+            state.journal = Some(Journal {
+                operation: "op".to_owned(),
+                kind: JournalKind::Update,
+                target: Target {
+                    gog_id: RIMWORLD,
+                    platform: Platform::Linux,
+                    language: "en".to_owned(),
+                    track: Track::Installer,
+                    products: Vec::new(),
+                },
+                packages: Vec::new(),
+                attempted: Vec::new(),
+            });
+        }
+        fx.save(&state);
+        // This game's environment doesn't take it over as its own install.
+        fx.config("rimworld", Path::new("/elsewhere/start.sh"));
+        let error = fx.install_plan(&request()).unwrap_err();
+        assert!(
+            matches!(
+                error.downcast_ref(),
+                Some(crate::Error::EnvironmentExists(_))
+            ),
+            "{error:#}"
+        );
+        fs::remove_file(fx.paths.environment_config("rimworld")).unwrap();
+        let error = fx.install_plan(&request()).unwrap_err();
+        assert!(
+            matches!(error.downcast_ref(), Some(FolderError::OwnedByOther { .. })),
+            "{error:#}"
+        );
+        assert_eq!(fx.state(), state);
+    }
+}
+
+#[test]
+fn a_dlc_in_another_language_than_the_game_cant_be_compared_afterwards() {
+    let fx = offered();
+    fx.language(RIMWORLD, "fr");
+    let plan = fx
+        .install_plan(&Request {
+            language: Some("fr-FR".to_owned()),
+            ..request()
+        })
+        .unwrap();
+    fx.install_with(&plan, &Token::new(), |_| {}).unwrap();
+    assert_eq!(fx.state().committed.unwrap().language, "fr");
+    // The folder records one language, so the English DLC isn't found in
+    // it: this pins down today's behavior, an open question for the plan.
+    let status = check(&mut fx.session(), "rimworld", true).unwrap();
+    assert_eq!(status.state, UpdateState::CantCompare);
+    assert_eq!(
+        status.reason.map(|reason| reason.as_str().to_owned()),
+        Some("Royalty (1233017772) has no Linux installer in fr.".to_owned())
+    );
+}
+
+#[test]
 fn a_dlc_with_no_linux_installer_is_recorded_unavailable() {
     let fx = offered();
     fx.withdraw(IDEOLOGY);

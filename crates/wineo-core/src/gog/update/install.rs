@@ -224,6 +224,9 @@ pub struct Installed {
     /// Anything already in the folder where the game puts something: only
     /// possible when resuming.
     pub saved: Vec<SavedAside>,
+    /// Files an earlier attempt wrote that you changed and the game no
+    /// longer ships: only possible when resuming with a newer plan.
+    pub kept: Vec<String>,
     pub overwritten: Vec<String>,
     /// Including why each failed DLC failed.
     pub warnings: Vec<String>,
@@ -269,17 +272,32 @@ pub fn plan(paths: &Paths, session: &mut Session, request: &Request) -> Result<P
     let folder = install_folder(&global.games_root(paths)?, &title, request.dir.as_deref())?;
     let folder = folder::check_fresh_install(paths, &folder, name)?;
     let seen = folder::peek(paths, &folder)?;
-    let resume = match &seen {
-        // Only this environment's own install gets here with a state.
-        Some(_) if exists => super::recorded_gog_id(paths, name)?
-            .is_some_and(|recorded| recorded == request.gog_id.to_string()),
-        _ => false,
-    };
+    // An empty folder passes the fresh-install check whatever its state, so
+    // the state is checked to be this environment's own install here.
+    let own_install = seen.as_ref().is_some_and(|state| {
+        state.owner.as_deref() == Some(name)
+            && state
+                .journal
+                .as_ref()
+                .is_some_and(|journal| journal.kind == JournalKind::Install)
+    });
+    let resume = exists
+        && own_install
+        && super::recorded_gog_id(paths, name)? == Some(request.gog_id.to_string());
     if exists && !resume {
         environment::check_new_name(paths, name)?;
     }
-    if seen.is_some() && !resume {
-        return Err(folder::FolderError::NotEmpty { folder }.into());
+    if let Some(state) = &seen
+        && !resume
+    {
+        return Err(match &state.owner {
+            Some(owner) if owner != name => folder::FolderError::OwnedByOther {
+                folder,
+                owner: owner.clone(),
+            },
+            _ => folder::FolderError::NotEmpty { folder },
+        }
+        .into());
     }
 
     let mut products = Vec::new();
@@ -639,6 +657,7 @@ fn run(
         resumed: plan.resume,
         products: target.products,
         saved: report.saved,
+        kept: report.kept,
         overwritten: report.overwritten,
         warnings,
     })
