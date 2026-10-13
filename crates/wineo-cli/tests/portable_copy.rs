@@ -402,3 +402,23 @@ fn play_stats_follow_the_copy_like_art() {
     assert_success(&copied);
     assert_eq!(read(dir.join("stats/game.jsonl")), f.read_stats_log("game"));
 }
+
+#[test]
+fn copy_refuses_to_replace_an_existing_play_log() {
+    let Some((f, _)) = fixture() else { return };
+    f.write_stats_log(
+        "game",
+        "{\"target\":\"game\",\"started_at\":\"2026-01-01T00:00:00Z\",\"ended_at\":\"2026-01-01T01:00:00Z\",\"seconds\":3600,\"end\":\"exited\"}\n",
+    );
+    let dir = f.root.path().join("usb");
+    fs::create_dir_all(dir.join("stats")).unwrap();
+    fs::write(dir.join("stats/game.jsonl"), "orphan\n").unwrap();
+    let copied = copy(&f, "game", &dir);
+    assert!(!copied.status.success());
+    assert!(
+        stderr(&copied).contains("game.jsonl already exists"),
+        "{}",
+        stderr(&copied)
+    );
+    assert_eq!(read(dir.join("stats/game.jsonl")), "orphan\n");
+}

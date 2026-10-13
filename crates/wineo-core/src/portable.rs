@@ -148,7 +148,12 @@ pub fn inspect_with(
         );
     }
     let destination_snapshots = to.snapshot_root(&destination, name);
-    for path in [&destination, &destination_snapshots, &to.art_dir(name)] {
+    for path in [
+        &destination,
+        &destination_snapshots,
+        &to.art_dir(name),
+        &to.stats_log(name),
+    ] {
         if fs::symlink_metadata(path).is_ok() {
             bail!(
                 "{} already exists; move it aside if a copy was interrupted",
@@ -630,11 +635,13 @@ pub fn inspect_native_with(
             folder.display()
         );
     }
-    if fs::symlink_metadata(to.art_dir(name)).is_ok() {
-        bail!(
-            "{} already exists; move it aside if a copy was interrupted",
-            to.art_dir(name).display()
-        );
+    for path in [to.art_dir(name), to.stats_log(name)] {
+        if fs::symlink_metadata(&path).is_ok() {
+            bail!(
+                "{} already exists; move it aside if a copy was interrupted",
+                path.display()
+            );
+        }
     }
     let (changed_settings, config_text) = clone::native_config(&source_config, &config, true)?;
     let mut external_target_paths = Vec::new();
