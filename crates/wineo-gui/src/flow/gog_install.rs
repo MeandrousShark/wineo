@@ -80,6 +80,8 @@ pub(crate) struct Prepared {
     default_language: String,
     /// `<games_root>/<title>`, which an empty folder uses.
     default_folder: PathBuf,
+    /// What it was planned with.
+    choices: Choices,
 }
 
 /// What a finished install says, and the programs to choose from when a
@@ -259,8 +261,16 @@ impl Install {
         self.prepared.as_ref()?.plan.as_deref().ok()
     }
 
+    /// Whether the review shows what installing would do now: a typed
+    /// language or folder only counts once it's planned.
+    fn current(&self) -> bool {
+        self.prepared
+            .as_ref()
+            .is_some_and(|prepared| prepared.choices == self.choices)
+    }
+
     fn ready(&self) -> bool {
-        self.plan().is_some() && !self.waiting()
+        self.plan().is_some() && !self.waiting() && self.current()
     }
 
     pub(crate) fn submit(&mut self) -> Task<Event> {
@@ -924,7 +934,13 @@ impl Install {
                 .background(palette.surface)
                 .border(border::rounded(12).width(1).color(palette.border))
         }));
-        if let Err(error) = &prepared.plan {
+        if editable && !self.current() && !self.waiting() {
+            body = body.push(
+                text("Press Enter to check the new language or folder.")
+                    .size(13)
+                    .color(palette.muted),
+            );
+        } else if let Err(error) = &prepared.plan {
             body = body.push(text(error).color(palette.danger));
         }
         if editable && windows && prepared.runners.is_empty() {
@@ -1150,6 +1166,7 @@ pub(crate) fn prepare_with(
         runners,
         default_language: global.gog_language().to_owned(),
         default_folder,
+        choices: choices.clone(),
     })
 }
 
@@ -1709,6 +1726,15 @@ pub(super) mod tests {
         assert!(!page.ready());
         let _ = page.update(Event::Language("de-AT".to_owned()));
         let _ = page.update(Event::Folder("~/Elsewhere".to_owned()));
+        // What's typed isn't installed until it's planned.
+        page.status.clear();
+        assert!(!page.ready());
+        page.choices = Choices {
+            platform: Some(Platform::Windows),
+            arch: Some(Arch::Win32),
+            dir: "~/Elsewhere".to_owned(),
+            ..inno()
+        };
 
         let windows = world.prepare(
             &rimworld(),
