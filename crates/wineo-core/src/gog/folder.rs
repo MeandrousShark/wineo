@@ -79,6 +79,17 @@ pub struct Committed {
     /// update.
     #[serde(default)]
     pub files: Vec<WinningEntry>,
+    /// How the game got here: `install` when wineo installed it. None means
+    /// it was migrated, as every state from before this field was.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<Source>,
+}
+
+/// Who put a game in its folder, when it wasn't a migration.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Source {
+    Install,
 }
 
 /// What an operation will commit, enough to finish it without asking GOG.
@@ -576,7 +587,16 @@ impl FolderLock {
         let mut state = self
             .read()?
             .ok_or_else(|| FolderError::NoState(self.folder.clone()))?;
-        state.committed = Some(committed);
+        // Finishing an install records it; anything later keeps what was
+        // recorded, so an update of an installed game still says so.
+        let source = match &state.journal {
+            Some(journal) if journal.kind == JournalKind::Install => Some(Source::Install),
+            _ => state.committed.as_ref().and_then(|old| old.source),
+        };
+        state.committed = Some(Committed {
+            source: committed.source.or(source),
+            ..committed
+        });
         state.journal = None;
         state.device = Some(fs::metadata(&self.folder)?.dev());
         self.write(&state)?;

@@ -506,6 +506,7 @@ impl Fixture {
     fn migrated(&self, products: &[(u64, Option<&str>)]) {
         let state = FolderState {
             committed: Some(Committed {
+                source: None,
                 gog_id: RIMWORLD,
                 platform: Platform::Linux,
                 language: "en-US".to_owned(),
@@ -1653,6 +1654,7 @@ fn not_enough_space_is_refused_before_any_change() {
 fn windows(fx: &Fixture, track: Track) {
     fx.save(&FolderState {
         committed: Some(Committed {
+            source: None,
             gog_id: RIMWORLD,
             platform: Platform::Windows,
             language: "en".to_owned(),

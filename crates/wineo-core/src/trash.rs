@@ -4728,6 +4728,7 @@ mod tests {
             };
             FolderState {
                 committed: Some(Committed {
+                    source: None,
                     gog_id: target.gog_id,
                     platform: target.platform,
                     language: target.language.clone(),

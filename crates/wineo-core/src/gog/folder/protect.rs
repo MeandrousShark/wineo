@@ -374,6 +374,7 @@ mod tests {
         };
         let state = FolderState {
             committed: Some(Committed {
+                source: None,
                 gog_id: ID,
                 platform: target.platform,
                 language: target.language.clone(),

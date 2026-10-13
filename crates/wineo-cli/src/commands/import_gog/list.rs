@@ -4,6 +4,7 @@ use std::process::ExitCode;
 use serde_json::{Value, json};
 use wineo_core::environment;
 use wineo_core::gog::api::OwnedProduct;
+use wineo_core::gog::folder::{self, Source};
 use wineo_core::gog::owned;
 use wineo_core::gog::update::{self, Batch, Status};
 use wineo_core::heroic_import;
@@ -20,6 +21,8 @@ enum State {
     NotInstalled,
     Heroic,
     Imported,
+    /// Installed by wineo rather than migrated.
+    Installed,
 }
 
 impl State {
@@ -28,6 +31,7 @@ impl State {
             Self::NotInstalled => "not_installed",
             Self::Heroic => "heroic",
             Self::Imported => "imported",
+            Self::Installed => "installed",
         }
     }
 
@@ -36,6 +40,7 @@ impl State {
             Self::NotInstalled => "not installed",
             Self::Heroic => "in Heroic",
             Self::Imported => "imported",
+            Self::Installed => "installed",
         }
     }
 }
@@ -81,8 +86,12 @@ pub(super) fn run(paths: &Paths, args: &Args) -> anyhow::Result<ExitCode> {
             let environment = status
                 .map(|status| status.environment.clone())
                 .or_else(|| recorded.get(&game.id).cloned());
-            let state = if environment.is_some() {
-                State::Imported
+            let state = if let Some(name) = &environment {
+                if installed_by_wineo(paths, name, game.id) {
+                    State::Installed
+                } else {
+                    State::Imported
+                }
             } else if in_heroic.contains(&game.id.to_string()) {
                 State::Heroic
             } else {
@@ -135,6 +144,16 @@ fn recorded_games(paths: &Paths) -> BTreeMap<u64, String> {
         }
     }
     recorded
+}
+
+/// Whether `name`'s folder for game `id` records that wineo installed it.
+/// A state that can't be read doesn't say, so the game reads as imported.
+fn installed_by_wineo(paths: &Paths, name: &str, id: u64) -> bool {
+    folder::find(paths, name, &id.to_string())
+        .ok()
+        .flatten()
+        .and_then(|state| state.committed)
+        .is_some_and(|committed| committed.source == Some(Source::Install))
 }
 
 /// The ids of the GOG games Heroic installed. A Heroic that can't be read

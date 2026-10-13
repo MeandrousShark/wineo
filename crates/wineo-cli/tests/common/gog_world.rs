@@ -351,6 +351,7 @@ done
         let state = FolderState {
             device: Some(fs::metadata(folder).unwrap().dev()),
             committed: Some(Committed {
+                source: None,
                 gog_id,
                 platform: Platform::Linux,
                 language: "en".to_owned(),
@@ -402,6 +403,7 @@ done
         .unwrap();
         let state = FolderState {
             committed: Some(Committed {
+                source: None,
                 gog_id: DISCO,
                 platform: Platform::Windows,
                 language: "en-US".to_owned(),

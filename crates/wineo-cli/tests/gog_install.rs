@@ -16,7 +16,7 @@ use common::pty::Pty;
 use common::snapshot::Snapshot;
 use common::{Fixture, assert_success, stderr, stdout};
 use wineo_core::gog::folder::{
-    FolderLock, FolderState, Journal, JournalKind, Platform, Target, Track,
+    FolderLock, FolderState, Journal, JournalKind, Platform, Source, Target, Track,
 };
 
 const V1: &str = "1.6.4871 rev588";
@@ -199,9 +199,9 @@ fn a_native_game_installs_with_its_owned_dlc() {
         fs::read_to_string(folder.join("Data/Royalty/about.txt")).unwrap(),
         "royalty"
     );
-    let state = state(&f, &folder);
-    assert!(state.journal.is_none());
-    let committed = state.committed.unwrap();
+    let installed = state(&f, &folder);
+    assert!(installed.journal.is_none());
+    let committed = installed.committed.unwrap();
     assert_eq!(committed.platform, Platform::Linux);
     assert_eq!(committed.products.len(), 2);
     let config = f.created_config("rimworld");
@@ -209,6 +209,63 @@ fn a_native_game_installs_with_its_owned_dlc() {
         config.contains(&format!("gog_id = \"{RIMWORLD}\"")),
         "{config}"
     );
+
+    assert_eq!(committed.source, Some(Source::Install));
+
+    // Listed as installed, not imported, in JSON and in the table.
+    let list = import(&f, &api, &["--list", "--json"]);
+    assert_success(&list);
+    let json: serde_json::Value = serde_json::from_slice(&list.stdout).unwrap();
+    let game = |id: u64| {
+        json["games"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|game| game["id"] == id.to_string())
+            .unwrap()
+            .clone()
+    };
+    assert_eq!(game(RIMWORLD)["state"], "installed");
+    assert_eq!(game(RIMWORLD)["environment"], "rimworld");
+    assert_eq!(game(DISCO)["state"], "not_installed");
+    let table = stdout(&import(&f, &api, &["--list"]));
+    let row = table
+        .lines()
+        .find(|line| line.contains("RimWorld"))
+        .unwrap();
+    assert!(
+        row.contains("installed") && !row.contains("imported"),
+        "{table}"
+    );
+
+    // An update keeps the record of who installed it.
+    let newer = api.linux_package(
+        RIMWORLD,
+        "en",
+        "2",
+        &gog_package(&[Item::Exe("start.sh", "#!/bin/sh\n")]),
+    );
+    let royalty = api.linux_package(
+        RIMWORLD_DLC[0],
+        "en",
+        "2",
+        &gog_package(&[Item::File("Data/Royalty/about.txt", "royalty 2")]),
+    );
+    api.with(|config| {
+        config.products.insert(
+            RIMWORLD,
+            product(
+                RIMWORLD,
+                "RimWorld",
+                &[newer],
+                &[product(RIMWORLD_DLC[0], "Royalty", &[royalty], &[])],
+            ),
+        );
+    });
+    assert_success(&f.gog(&api, &["update", "rimworld", "--refresh", "--yes"]));
+    let committed = state(&f, &folder).committed.unwrap();
+    assert_eq!(committed.products[0].version.as_deref(), Some("2"));
+    assert_eq!(committed.source, Some(Source::Install));
 
     // Installing it again says so and changes nothing.
     let again = import(&f, &api, &["--game", &rimworld_id(), "--yes"]);
@@ -258,6 +315,7 @@ fn a_windows_game_installs_from_its_installer() {
     assert!(args.contains("/SILENT"), "{args}");
     let committed = state(&f, &folder).committed.unwrap();
     assert_eq!(committed.platform, Platform::Windows);
+    assert_eq!(committed.source, Some(Source::Install));
     let config = f.created_config("disco-elysium");
     assert!(config.contains("disco.exe"), "{config}");
 }

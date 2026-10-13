@@ -1384,6 +1384,7 @@ pub(super) fn rebuild(
 
     let target = work.target;
     let committed = Committed {
+        source: None,
         gog_id: target.gog_id,
         platform: target.platform,
         language: target.language.clone(),

@@ -567,6 +567,7 @@ pub(super) fn install(
     }
     failpoint("install.windows.commit.before")?;
     lock.commit(Committed {
+        source: None,
         gog_id,
         platform: Platform::Windows,
         language: target.language.clone(),

@@ -139,6 +139,7 @@ impl Fixture {
         .unwrap();
         let state = FolderState {
             committed: Some(Committed {
+                source: None,
                 gog_id,
                 platform,
                 language: language.to_owned(),

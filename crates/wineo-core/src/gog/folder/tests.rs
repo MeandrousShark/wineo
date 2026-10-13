@@ -14,6 +14,7 @@ fn full_state(folder: &Path) -> FolderState {
         folder: folder.to_owned(),
         device: Some(42),
         committed: Some(Committed {
+            source: None,
             gog_id: 1094900565,
             platform: Platform::Linux,
             language: "en-US".to_owned(),
@@ -107,6 +108,7 @@ fn journal(gog_id: u64) -> Journal {
 fn game(folder: &Path, owner: Option<&str>, gog_id: u64) -> FolderState {
     FolderState {
         committed: Some(Committed {
+            source: None,
             gog_id,
             platform: Platform::Linux,
             language: "en-US".to_owned(),
@@ -159,6 +161,63 @@ fn a_state_from_before_product_languages_loads_unchanged() {
     let written = with.to_toml().unwrap();
     assert!(written.contains("language = \"de\""), "{written}");
     assert_eq!(FolderState::parse(&written).unwrap(), with);
+}
+
+#[test]
+fn a_state_from_before_sources_loads_unchanged_as_migrated() {
+    let (_root, paths) = setup();
+    let folder = paths.gog_folders_dir().parent().unwrap().join("game");
+    let text = format!(
+        "version = 1\nowner = \"rimworld\"\nfolder = \"{}\"\n\n[committed]\ngog_id = 1\nplatform = \"linux\"\nlanguage = \"en\"\ntrack = \"installer\"\n",
+        folder.display()
+    );
+    let state = FolderState::parse(&text).unwrap();
+    assert_eq!(state.committed.as_ref().unwrap().source, None);
+    assert!(!state.to_toml().unwrap().contains("source"));
+    let path = state_path(&paths, &folder);
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    fs::write(&path, &text).unwrap();
+    assert_eq!(load(&paths, &folder), Some(state));
+    assert_eq!(fs::read_to_string(&path).unwrap(), text);
+}
+
+#[test]
+fn finishing_an_install_records_it_and_later_commits_keep_it() {
+    let (root, paths) = setup();
+    let folder = root.path().join("g");
+    fs::create_dir_all(&folder).unwrap();
+    save(&paths, &pending_install(&folder, "rimworld"));
+    let lock = FolderLock::exclusive(&paths, &folder, NEVER).unwrap();
+    let committed = game(&folder, None, 1).committed.unwrap();
+    let state = lock.commit(committed.clone()).unwrap();
+    assert_eq!(state.committed.unwrap().source, Some(Source::Install));
+    assert!(
+        lock.read()
+            .unwrap()
+            .unwrap()
+            .to_toml()
+            .unwrap()
+            .contains("source = \"install\"")
+    );
+
+    // An update's commit keeps it.
+    let mut updating = lock.read().unwrap().unwrap();
+    let mut journal = pending_install(&folder, "rimworld").journal.unwrap();
+    journal.kind = JournalKind::Update;
+    updating.journal = Some(journal);
+    lock.write(&updating).unwrap();
+    let state = lock.commit(committed.clone()).unwrap();
+    assert_eq!(state.committed.unwrap().source, Some(Source::Install));
+
+    // A migrated game's commit records nothing.
+    let other = root.path().join("h");
+    fs::create_dir_all(&other).unwrap();
+    save(&paths, &game(&other, Some("other"), 2));
+    let lock = FolderLock::exclusive(&paths, &other, NEVER).unwrap();
+    let state = lock
+        .commit(game(&other, None, 2).committed.unwrap())
+        .unwrap();
+    assert_eq!(state.committed.unwrap().source, None);
 }
 
 #[test]
