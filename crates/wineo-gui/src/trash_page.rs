@@ -213,6 +213,8 @@ pub(crate) fn update(app: &mut App, event: Event) -> Task<Message> {
             if result.is_err() {
                 app.trash_page.cancel_review();
             }
+            app.shown.show_badge(app.trash_badge.clone());
+            app.shown.show_trash(result.clone(), jiff::Timestamp::now());
             app.trash_page.snapshot = Some(result);
             Task::none()
         }
@@ -446,6 +448,7 @@ pub(crate) fn prefix_note(paths: &Paths, entry: &Entry) -> Option<String> {
 impl App {
     pub(crate) fn reload_trash_page(&mut self) -> Task<Message> {
         self.trash_generation = self.trash_generation.wrapping_add(1);
+        self.shown.reloading_trash();
         self.trash_refreshing = true;
         self.trash_page.loading = true;
         trash_work::load(self.trash_generation, self.paths.clone())

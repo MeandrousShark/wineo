@@ -31,6 +31,7 @@ mod picker;
 mod portable_page;
 mod removal;
 mod remove_work;
+mod rescan;
 mod runner_label;
 mod settings;
 mod shortcuts;
@@ -177,6 +178,11 @@ pub(crate) struct App {
     change_generation: u64,
     library_generation: u64,
     trash_generation: u64,
+    /// What the periodic rescan compares its reads against.
+    shown: rescan::Watch,
+    /// True until the window reports losing focus, since some compositors
+    /// never send focus events.
+    focused: bool,
     trash_page: trash_page::Page,
     downloads_page: downloads_page::Page,
     checkups: HashMap<checkup::Scope, checkup::Results>,
@@ -234,6 +240,11 @@ pub(crate) enum Message {
     CopyLog,
     Hover(Option<String>),
     Refresh,
+    /// The parts of a periodic rescan that differ from what is shown.
+    Rescanned(Box<rescan::Scan>),
+    SettingsTick,
+    /// A key or mouse button press, which counts as focus while unfocused.
+    Pressed,
     Loaded(Result<Vec<Card>, String>),
     LibraryReloaded(u64, Result<Vec<Card>, String>),
     TrashReloaded(u64, sidebar::TrashBadge),
@@ -401,6 +412,8 @@ impl App {
             change_generation: 0,
             library_generation: 0,
             trash_generation: 0,
+            shown: rescan::Watch::default(),
+            focused: true,
             trash_page: trash_page::Page::default(),
             downloads_page: downloads_page::Page::default(),
             checkups: HashMap::new(),
@@ -443,6 +456,7 @@ impl App {
     }
     fn reload_library(&mut self) -> Task<Message> {
         self.library_generation = self.library_generation.wrapping_add(1);
+        self.shown.reloading_library();
         let generation = self.library_generation;
         Self::load(self.paths.clone()).map(move |message| match message {
             Message::Loaded(result) => Message::LibraryReloaded(generation, result),
@@ -452,11 +466,44 @@ impl App {
 
     fn reload_badge(&mut self) -> Task<Message> {
         self.trash_generation = self.trash_generation.wrapping_add(1);
+        self.shown.reloading_trash();
         let generation = self.trash_generation;
         Self::load_trash_badge(self.paths.clone()).map(move |message| match message {
             Message::TrashBadgeLoaded(badge) => Message::TrashReloaded(generation, badge),
             message => message,
         })
+    }
+
+    /// Applies what a periodic rescan found changed. An explicit reload in
+    /// flight wins, and the next rescan compares against its result.
+    fn rescanned(&mut self, scan: rescan::Scan) -> Task<Message> {
+        let scan = self.shown.current(scan);
+        // Loaded already reloads the open Art page.
+        let art = match (&scan.library, &scan.art) {
+            (None, Some(art)) if self.art_page.as_ref() == Some(&art.name) => {
+                let cards = self.cards.clone();
+                self.refresh_art(&cards)
+            }
+            _ => Task::none(),
+        };
+        let library = match scan.library {
+            Some(result) if !self.refreshing => self.update(Message::Loaded(result)),
+            _ => Task::none(),
+        };
+        let trash = match scan.trash {
+            _ if self.trash_refreshing => Task::none(),
+            Some(rescan::Trash::Page(snapshot)) if self.section == sidebar::Section::Trash => {
+                trash_page::update(
+                    self,
+                    trash_page::Event::Loaded(self.trash_generation, snapshot),
+                )
+            }
+            Some(rescan::Trash::Badge(badge)) if self.section != sidebar::Section::Trash => {
+                self.update(Message::TrashBadgeLoaded(badge))
+            }
+            _ => Task::none(),
+        };
+        Task::batch([library, trash, art])
     }
 
     fn management_busy(&self) -> bool {
@@ -536,10 +583,32 @@ impl App {
         } else {
             Subscription::none()
         };
+        // Paused while unfocused; focus coming back reloads at once.
+        let rescan = if self.focused {
+            Subscription::run_with(
+                rescan::Rescan {
+                    paths: self.paths.clone(),
+                    watch: self.shown.clone(),
+                    trash_page: self.section == sidebar::Section::Trash,
+                    art_page: self.art_page.clone(),
+                },
+                rescan::stream,
+            )
+        } else {
+            Subscription::none()
+        };
+        // The settings page compares its own disk copy, and the tick also
+        // keeps its busy refusal current, so it keeps a plain timer.
+        let settings_tick = if self.focused && self.settings.is_some() {
+            iced::time::every(rescan::INTERVAL).map(|_| Message::SettingsTick)
+        } else {
+            Subscription::none()
+        };
         Subscription::batch([
-            iced::time::every(Duration::from_secs(2)).map(|_| Message::Refresh),
+            rescan,
+            settings_tick,
             iced::system::theme_changes().map(Message::ThemeChanged),
-            window::events().map(|(_, event)| Message::Window(event)),
+            iced::event::listen_with(|event, _, _| window_or_press(event)),
             iced::event::listen_with(|event, status, _| event_message(event, status)),
             panel_motion,
             grid_motion,
@@ -879,6 +948,16 @@ impl App {
                 };
                 Task::batch([library, badge, self.settings_tick()])
             }
+            Message::Rescanned(scan) => self.rescanned(*scan),
+            Message::SettingsTick => self.settings_tick(),
+            Message::Pressed | Message::Window(window::Event::Focused) => {
+                if self.focused {
+                    Task::none()
+                } else {
+                    self.focused = true;
+                    self.update(Message::Refresh)
+                }
+            }
             Message::Section(section) => self.navigate_section(section),
             Message::SectionClicked(section) => {
                 let task = self.navigate_section(section);
@@ -923,6 +1002,7 @@ impl App {
             }
             Message::TrashBadgeLoaded(badge) => {
                 self.trash_refreshing = false;
+                self.shown.show_badge(badge.clone());
                 self.trash_badge = badge;
                 Task::none()
             }
@@ -948,6 +1028,7 @@ impl App {
             Message::Loaded(Err(error)) => {
                 self.refreshing = false;
                 self.loaded = true;
+                self.shown.show_library(Err(error.clone()));
                 self.error = Some(error);
                 Task::none()
             }
@@ -1028,6 +1109,10 @@ impl App {
                     self.cancel_remove_dialog();
                     iced::exit()
                 }
+            }
+            Message::Window(window::Event::Unfocused) => {
+                self.focused = false;
+                Task::none()
             }
             Message::Window(_) => Task::none(),
             Message::ThemeChanged(mode) => {
@@ -1436,6 +1521,8 @@ impl App {
             }
             let generation = self.flow_generation;
             let paths = self.paths.clone();
+            // An explicit library reload like `reload_library`.
+            self.shown.reloading_library();
             return Task::perform(
                 async move {
                     tokio::task::spawn_blocking(move || {
@@ -1465,6 +1552,7 @@ impl App {
         match result {
             Ok(cards) => self.merge(cards),
             Err(error) => {
+                self.shown.show_library(Err(error.clone()));
                 self.error = Some(error);
                 return Task::none();
             }
@@ -1547,6 +1635,7 @@ impl App {
         {
             self.target = card.default_target.clone();
         }
+        self.shown.show_library(Ok(cards.clone()));
         self.cards = cards;
         if layout_changed {
             self.grid_motion
@@ -1871,6 +1960,18 @@ fn read_reduced_motion() -> Task<Message> {
 
 /// Maps a runtime event to an app message. The mouse Back button becomes an
 /// uncaptured Escape so every page's existing Escape handling runs unchanged.
+/// Window events and presses share one subscription so focus changes and
+/// input arrive in the order they happened. X11 maps windows unfocused, and
+/// without a window manager no Focused follows, so a press counts as focus.
+pub(crate) fn window_or_press(event: iced::Event) -> Option<Message> {
+    match event {
+        iced::Event::Window(event) => Some(Message::Window(event)),
+        iced::Event::Keyboard(keyboard::Event::KeyPressed { .. })
+        | iced::Event::Mouse(iced::mouse::Event::ButtonPressed(_)) => Some(Message::Pressed),
+        _ => None,
+    }
+}
+
 pub(crate) fn event_message(event: iced::Event, status: iced::event::Status) -> Option<Message> {
     match event {
         iced::Event::Keyboard(keyboard::Event::KeyPressed { key, modifiers, .. }) => {
@@ -2463,7 +2564,7 @@ mod tests {
         let _ = app.update(Message::SteamGridDbKeyPresenceLoaded(2, false));
         assert!(app.steamgriddb_available);
     }
-    fn art_file(path: &str, len: u64) -> ArtFile {
+    pub(crate) fn art_file(path: &str, len: u64) -> ArtFile {
         ArtFile {
             path: PathBuf::from(path),
             identity: ArtIdentity {

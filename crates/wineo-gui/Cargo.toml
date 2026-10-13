@@ -27,6 +27,8 @@ serde_json.workspace = true
 tar.workspace = true
 zip.workspace = true
 wineo-core = { workspace = true, features = ["test-support"] }
+# Paused time drives the rescan stream in tests.
+tokio = { version = "1", features = ["test-util"] }
 
 [lints]
 workspace = true

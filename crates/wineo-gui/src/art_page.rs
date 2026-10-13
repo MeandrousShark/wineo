@@ -2,6 +2,7 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use iced::widget::{column, container, image, pick_list, row, scrollable, stack, text, text_input};
 use iced::{Center, ContentFit, Element, Fill, Task, border};
@@ -65,6 +66,8 @@ pub(crate) enum Event {
         Result<(image::Handle, Option<(u32, u32)>), String>,
     ),
     GameLoaded(u64, u64, Result<Option<Game>, String>),
+    /// Time to retry a failed game lookup, for the same lookup and game.
+    RetryLookup(u64, u64),
     Change,
     SearchText(String),
     Search,
@@ -114,11 +117,14 @@ struct RowData {
     preview_error: Option<String>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub(crate) struct Snapshot {
     targets: Vec<String>,
     game: Option<u64>,
     rows: BTreeMap<Spot, Option<Resolved>>,
+    /// Each resolved file's modification time and size, so the rescan sees
+    /// art replaced under the same name.
+    files: Vec<Option<(std::time::SystemTime, u64)>>,
 }
 
 #[derive(Debug, Clone)]
@@ -167,6 +173,8 @@ pub(crate) struct Page {
     game: Option<Game>,
     looked_up: Option<u64>,
     pub(crate) lookup_sequence: u64,
+    /// The wait before retrying the last failed lookup, zero after success.
+    lookup_backoff: Duration,
     rows: BTreeMap<Spot, RowData>,
     row_errors: BTreeMap<Spot, String>,
     error: Option<String>,
@@ -214,6 +222,7 @@ impl Page {
             game: None,
             looked_up: None,
             lookup_sequence: 0,
+            lookup_backoff: Duration::ZERO,
             rows: BTreeMap::new(),
             row_errors: BTreeMap::new(),
             error: None,
@@ -261,11 +270,17 @@ impl Page {
         }
     }
 
+    #[cfg(test)]
+    pub(crate) fn lookup_backoff(&self) -> Duration {
+        self.lookup_backoff
+    }
+
     pub(crate) fn leave(&mut self) {
         self.load_sequence = self.load_sequence.wrapping_add(1);
         self.loading = false;
         self.lookup_sequence = self.lookup_sequence.wrapping_add(1);
         self.looked_up = None;
+        self.lookup_backoff = Duration::ZERO;
         self.chooser_sequence = self.chooser_sequence.wrapping_add(1);
         self.chooser_active = false;
         self.path_kind = None;
@@ -506,12 +521,32 @@ impl Page {
                 if sequence == self.lookup_sequence && self.game_id == Some(id) =>
             {
                 match result {
-                    Ok(Some(game)) => self.game = Some(game),
-                    Err(_) => self.looked_up = None,
-                    Ok(None) => {}
+                    Ok(game) => {
+                        self.lookup_backoff = Duration::ZERO;
+                        if let Some(game) = game {
+                            self.game = Some(game);
+                        }
+                        Step::none()
+                    }
+                    // Page loads only come on a change now, so a failed lookup
+                    // retries on its own instead of waiting for the next one.
+                    Err(_) => {
+                        self.looked_up = None;
+                        self.lookup_backoff = next_backoff(self.lookup_backoff);
+                        let delay = self.lookup_backoff;
+                        Step::task(Task::perform(
+                            async move { tokio::time::sleep(delay).await },
+                            move |()| Event::RetryLookup(sequence, id),
+                        ))
+                    }
                 }
-                Step::none()
             }
+            Event::RetryLookup(sequence, id)
+                if sequence == self.lookup_sequence && self.game_id == Some(id) =>
+            {
+                Step::task(self.lookup_game(paths, key_available))
+            }
+            Event::RetryLookup(..) => Step::none(),
             Event::Showing(showing) => {
                 if showing.0.is_none()
                     || showing
@@ -1320,10 +1355,19 @@ pub(crate) fn load_snapshot(paths: &Paths, name: &str) -> Result<Snapshot, Strin
             rows.insert((target.map(str::to_owned), kind), resolved);
         }
     }
+    let files = rows
+        .values()
+        .flatten()
+        .map(|resolved| {
+            let metadata = fs::metadata(&resolved.found.path).ok()?;
+            Some((metadata.modified().ok()?, metadata.len()))
+        })
+        .collect();
     Ok(Snapshot {
         targets,
         game: config.game,
         rows,
+        files,
     })
 }
 
@@ -1351,6 +1395,13 @@ fn decode(
     };
     let preview = artwork::decode(path, kind, Some(cache)).map_err(|error| error.to_string())?;
     Ok((preview, dimensions))
+}
+
+const FIRST_LOOKUP_RETRY: Duration = Duration::from_secs(4);
+const LAST_LOOKUP_RETRY: Duration = Duration::from_secs(64);
+
+pub(crate) fn next_backoff(previous: Duration) -> Duration {
+    (previous * 2).clamp(FIRST_LOOKUP_RETRY, LAST_LOOKUP_RETRY)
 }
 
 fn lookup_game(paths: &Paths, id: u64) -> Result<Option<Game>, String> {
