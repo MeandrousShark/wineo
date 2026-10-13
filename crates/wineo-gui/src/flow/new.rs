@@ -12,13 +12,13 @@ use iced::widget::{
 use iced::{Center, Element, Fill, Shrink, Task};
 use wineo_core::cancel::Token;
 use wineo_core::config::{Arch, GamescopeSetting, GlobalConfig};
-use wineo_core::create::{self, CreateEvent, CreateRequest, TargetOutcome};
+use wineo_core::create::{self, CreateEvent, CreateRequest, Stepped, TargetOutcome};
 use wineo_core::desktop;
 use wineo_core::download::{Client, Provider};
 use wineo_core::environment::{Environment, NewEnvironment};
 use wineo_core::error::Error as CoreError;
 use wineo_core::install::{self, Wanted};
-use wineo_core::installer::{self, Installer, Outcome, Output};
+use wineo_core::installer::{self, Outcome, Output};
 use wineo_core::launch;
 use wineo_core::name;
 use wineo_core::paths::Paths;
@@ -2143,22 +2143,25 @@ fn perform(
         return report;
     };
     let request = create_request(&draft, review, runner.clone());
-    let created = match create::run(paths, request, &token, |event| match event {
-        CreateEvent::BuildingPrefix { dir, .. } => {
-            progress(format!("Building prefix in {}", dir.display()))
-        }
-        CreateEvent::Saved => progress("Environment registered".to_owned()),
-        CreateEvent::TemplateComponentsOmitted { .. } => {
-            progress("Template components bundled by Proton were omitted".to_owned())
-        }
-        CreateEvent::Components(changes) => {
-            progress(format!("Applied {} component changes", changes.len()))
-        }
-        CreateEvent::Desktop(changes) => {
-            progress(format!("Applied {} desktop changes", changes.len()))
-        }
-        CreateEvent::Registered { .. } => progress("Default target checked".to_owned()),
-    }) {
+    let log = Runtime::new(paths, name).install_log_path();
+    let step = (draft.source == Source::Installer).then(|| create::Step::Installer {
+        program: &draft.path,
+        output: Output::Log(&log),
+        token: &token,
+    });
+    let mut hooks = Hooks {
+        paths,
+        name,
+        art: &art,
+        report: &mut report,
+        progress: &mut progress,
+        log_output: &mut log_output,
+        log: &log,
+        log_offset: 0,
+    };
+    let created = create::create_and_install(paths, request, step, &token, &mut hooks);
+    let mut log_offset = hooks.log_offset;
+    let created = match created {
         Ok(created) => created,
         Err(error) => {
             report.registered = paths.environment_config(name).is_file();
@@ -2166,69 +2169,20 @@ fn perform(
             return report;
         }
     };
-    report.registered = true;
-    report.playable = created.target == TargetOutcome::Added;
-    if created.target == TargetOutcome::ExeNotFound {
-        report
-            .notes
-            .push("The executable was not found. Add a target in Settings.".to_owned());
-    }
-    apply_art(paths, name, &art, &mut report);
-    if let Err(error) = desktop::reconcile(
-        paths,
-        &created.global,
-        &created.environment,
-        Some(&created.runner),
-        &created.prefix,
-    ) {
-        report.notes.push(format!("Desktop entry: {error}"));
-    }
-    if draft.source != Source::Installer {
-        return report;
-    }
-    let installer = match Installer::prepare_with_runner(
-        created.guard,
-        paths,
-        &created.global,
-        name,
-        &draft.path,
-        &created.runner,
-    ) {
-        Ok(installer) => installer,
-        Err(error) => {
+    let (outcome, resolved) = match created.step {
+        Stepped::None => return report,
+        Stepped::Stopped(note) => {
+            report.notes.push(note);
+            return report;
+        }
+        Stepped::NotPrepared(error) => {
             report
                 .notes
                 .push(format!("Installer could not start: {error}"));
             return report;
         }
+        Stepped::Ran { outcome, resolved } => (outcome, resolved),
     };
-    let log = Runtime::new(paths, name).install_log_path();
-    if let Some(parent) = log.parent()
-        && let Err(error) = fs::create_dir_all(parent)
-    {
-        report.notes.push(error.to_string());
-        return report;
-    }
-    progress("Running installer...".to_owned());
-    let mut log_offset = 0;
-    let outcome = installer.run(
-        &token,
-        Duration::from_secs(created.global.stop_timeout.into()),
-        Output::Log(&log),
-        |event| {
-            pump_log(&log, &mut log_offset, &mut log_output);
-            match event {
-                Watched::Notice(Notice::Stopping) => progress("Canceling installer...".to_owned()),
-                Watched::Notice(Notice::Killing) => {
-                    progress("Force stopping installer...".to_owned())
-                }
-                Watched::Notice(Notice::Warning(error)) => {
-                    progress(format!("Installer warning: {error}"))
-                }
-                Watched::Notice(Notice::Heartbeat) | Watched::Exited(_) => {}
-            }
-        },
-    );
     pump_log(&log, &mut log_offset, &mut log_output);
     match outcome {
         Ok(Outcome::Finished { exit_code: Some(0) }) => {
@@ -2252,7 +2206,7 @@ fn perform(
         }
         Err(error) => report.notes.push(format!("Installer failed: {error}")),
     }
-    if Runtime::new(paths, name).check_resolved(name).is_err() {
+    if !resolved {
         report.cleanup_resolved = false;
     }
     if report.cleanup_resolved {
@@ -2268,6 +2222,87 @@ fn perform(
         }
     }
     report
+}
+
+/// The desktop app's side of creating a Windows environment, and of its
+/// installer.
+struct Hooks<'a, P, L> {
+    paths: &'a Paths,
+    name: &'a str,
+    art: &'a artwork::Draft,
+    report: &'a mut Report,
+    progress: &'a mut P,
+    log_output: &'a mut L,
+    log: &'a std::path::Path,
+    log_offset: usize,
+}
+
+impl<P: FnMut(String), L: FnMut(String)> create::Hooks for Hooks<'_, P, L> {
+    /// A note for the report.
+    type Stop = String;
+
+    fn event(&mut self, event: CreateEvent) {
+        let progress = &mut self.progress;
+        match event {
+            CreateEvent::BuildingPrefix { dir, .. } => {
+                progress(format!("Building prefix in {}", dir.display()))
+            }
+            CreateEvent::Saved => progress("Environment registered".to_owned()),
+            CreateEvent::TemplateComponentsOmitted { .. } => {
+                progress("Template components bundled by Proton were omitted".to_owned())
+            }
+            CreateEvent::Components(changes) => {
+                progress(format!("Applied {} component changes", changes.len()))
+            }
+            CreateEvent::Desktop(changes) => {
+                progress(format!("Applied {} desktop changes", changes.len()))
+            }
+            CreateEvent::Registered { .. } => progress("Default target checked".to_owned()),
+        }
+    }
+
+    fn created(&mut self, created: &create::Created) -> Result<(), String> {
+        let report = &mut *self.report;
+        report.registered = true;
+        report.playable = created.target == TargetOutcome::Added;
+        if created.target == TargetOutcome::ExeNotFound {
+            report
+                .notes
+                .push("The executable was not found. Add a target in Settings.".to_owned());
+        }
+        apply_art(self.paths, self.name, self.art, report);
+        if let Err(error) = desktop::reconcile(
+            self.paths,
+            &created.global,
+            &created.environment,
+            Some(&created.runner),
+            &created.prefix,
+        ) {
+            report.notes.push(format!("Desktop entry: {error}"));
+        }
+        Ok(())
+    }
+
+    fn ready(&mut self, _launch: &launch::Launch) -> Result<(), String> {
+        if let Some(parent) = self.log.parent() {
+            fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+        }
+        (self.progress)("Running installer...".to_owned());
+        Ok(())
+    }
+
+    fn watched(&mut self, watched: Watched) {
+        pump_log(self.log, &mut self.log_offset, &mut self.log_output);
+        let progress = &mut self.progress;
+        match watched {
+            Watched::Notice(Notice::Stopping) => progress("Canceling installer...".to_owned()),
+            Watched::Notice(Notice::Killing) => progress("Force stopping installer...".to_owned()),
+            Watched::Notice(Notice::Warning(error)) => {
+                progress(format!("Installer warning: {error}"))
+            }
+            Watched::Notice(Notice::Heartbeat) | Watched::Exited(_) => {}
+        }
+    }
 }
 
 fn pump_log(path: &std::path::Path, offset: &mut usize, output: &mut impl FnMut(String)) {
