@@ -1301,6 +1301,17 @@ Chosen during step 9:
 - **Logged out,** an update that can't finish from saved packages says
   `Log in to GOG first, in Settings.` There's no `--reinstall` in the app.
 
+Changed during acceptance, at the maintainer's request (2026-10-12):
+
+- **DLC are shown as `NAME [ID]`** (`Royalty [1233017772]`) everywhere a
+  DLC is labeled: the migration review (one per line), check notes, update
+  reviews, progress, results, and errors. GOG's title comes first, then the
+  `name` in the folder's `goggame-<id>.info`, so the migration review names
+  DLC without a login. A leading `Game - ` or `Game: ` is dropped; with no
+  name, `DLC [ID]`. Only regular files up to 64 KiB are read, so a stray
+  FIFO can't hang a check. JSON keeps `id` and GOG's raw `title`.
+- **Log out** shows only while logged in.
+
 ## Implementation sequence
 
 1. Create `wineo-gog` with the GOG client: login URL, code exchange,
