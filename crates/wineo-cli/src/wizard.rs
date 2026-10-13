@@ -1666,7 +1666,10 @@ mod tests {
     fn canceling_the_pick_list_keeps_the_environment() {
         let world = world();
         let (result, transcript, _) = wizard(&world, found, &answers(&["1", "", "", "q"]));
-        assert!(result.unwrap_err().is::<Canceled>(), "{transcript}");
+        assert!(
+            result.as_ref().is_err_and(|err| err.is::<Canceled>()),
+            "{result:?}\n{transcript}"
+        );
         assert!(world.paths.environment_config("hades").exists());
     }
 }
