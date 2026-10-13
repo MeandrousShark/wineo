@@ -161,63 +161,6 @@ pub fn error_subject(error: &GameError) -> String {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use std::path::PathBuf;
-
-    use wineo_core::gog::folder::{Platform, Track};
-
-    use super::*;
-
-    fn dlc(id: u64, title: Option<&str>, name: Option<&str>) -> DlcStatus {
-        DlcStatus {
-            id,
-            title: title.map(str::to_owned),
-            name: name.map(str::to_owned),
-            installed: None,
-            available: None,
-            state: DlcState::Unknown,
-        }
-    }
-
-    fn status(dlc: Vec<DlcStatus>) -> Status {
-        Status {
-            environment: "rimworld".to_owned(),
-            gog_id: 1,
-            title: "RimWorld".to_owned(),
-            folder: PathBuf::from("/games/rimworld"),
-            platform: Platform::Linux,
-            track: Track::Installer,
-            language: "en".to_owned(),
-            installed: None,
-            available: None,
-            state: UpdateState::UpToDate,
-            applicable: false,
-            reason: None,
-            unfinished: false,
-            warnings: Vec::new(),
-            dlc,
-        }
-    }
-
-    #[test]
-    fn dlc_notes_name_each_dlc_with_its_id() {
-        let status = status(vec![
-            dlc(1233017772, Some("Royalty"), Some("RimWorld - Royalty")),
-            dlc(1827857764, None, Some("RimWorld - Ideology")),
-            dlc(1865538500, None, None),
-        ]);
-        assert_eq!(
-            dlc_notes(&status),
-            [
-                "  DLC Royalty (1233017772): version unknown",
-                "  DLC Ideology (1827857764): version unknown",
-                "  DLC (1865538500): version unknown",
-            ]
-        );
-    }
-}
-
 /// Prints one line per stage and a progress line about once a second, the
 /// way other downloads do.
 pub struct Reporter {
@@ -368,5 +311,62 @@ pub fn pause_for_test(environment: &str, step: &Progress, token: &wineo_core::ca
     ) && (only.is_empty() || only == environment);
     while here && !token.is_canceled() {
         std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::PathBuf;
+
+    use wineo_core::gog::folder::{Platform, Track};
+
+    use super::*;
+
+    fn dlc(id: u64, title: Option<&str>, name: Option<&str>) -> DlcStatus {
+        DlcStatus {
+            id,
+            title: title.map(str::to_owned),
+            name: name.map(str::to_owned),
+            installed: None,
+            available: None,
+            state: DlcState::Unknown,
+        }
+    }
+
+    fn status(dlc: Vec<DlcStatus>) -> Status {
+        Status {
+            environment: "rimworld".to_owned(),
+            gog_id: 1,
+            title: "RimWorld".to_owned(),
+            folder: PathBuf::from("/games/rimworld"),
+            platform: Platform::Linux,
+            track: Track::Installer,
+            language: "en".to_owned(),
+            installed: None,
+            available: None,
+            state: UpdateState::UpToDate,
+            applicable: false,
+            reason: None,
+            unfinished: false,
+            warnings: Vec::new(),
+            dlc,
+        }
+    }
+
+    #[test]
+    fn dlc_notes_name_each_dlc_with_its_id() {
+        let status = status(vec![
+            dlc(1233017772, Some("Royalty"), Some("RimWorld - Royalty")),
+            dlc(1827857764, None, Some("RimWorld - Ideology")),
+            dlc(1865538500, None, None),
+        ]);
+        assert_eq!(
+            dlc_notes(&status),
+            [
+                "  DLC Royalty (1233017772): version unknown",
+                "  DLC Ideology (1827857764): version unknown",
+                "  DLC (1865538500): version unknown",
+            ]
+        );
     }
 }
