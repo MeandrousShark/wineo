@@ -856,6 +856,58 @@ fn a_record_far_from_the_listing_without_a_checksum_starts_over() {
 }
 
 #[test]
+fn a_legacy_record_with_the_listed_size_gets_the_exact_one() {
+    // What the old code left for a file with no checksum: a record holding
+    // the rounded listing and an empty partial file.
+    let gog = Gog::big();
+    gog.set(|script| script.sum = Sum::NoUrl);
+    let package = gog.package("en1installer0");
+    let record = Record {
+        size: package.size,
+        md5: None,
+        ..gog.record("en1installer0")
+    };
+    gog.leave_partial(record, &[]);
+    let downloaded = gog.get(&package).unwrap();
+    let size = gog.size("en1installer0");
+    assert_eq!(downloaded.size, size);
+    assert_eq!(
+        fs::read(&downloaded.path).unwrap(),
+        gog.body("en1installer0")
+    );
+    let record = cache::read_record(&gog.folder(), "en1installer0").unwrap();
+    assert_eq!((record.size, record.md5), (size, None));
+    assert_eq!(gog.file_requests()[0].header("range"), None);
+}
+
+#[test]
+fn a_whole_file_of_another_length_replaces_a_record_without_a_checksum() {
+    let gog = Gog::big();
+    gog.set(|script| {
+        script.sum = Sum::NoUrl;
+        script.ranges = Ranges::Whole;
+    });
+    let size = gog.size("en1installer0");
+    let record = Record {
+        size: size + 1000,
+        md5: None,
+        ..gog.record("en1installer0")
+    };
+    gog.leave_partial(record, &[7; 1000]);
+    let downloaded = gog.get(&gog.package("en1installer0")).unwrap();
+    assert_eq!(downloaded.size, size);
+    assert_eq!(
+        fs::read(&downloaded.path).unwrap(),
+        gog.body("en1installer0")
+    );
+    let record = cache::read_record(&gog.folder(), "en1installer0").unwrap();
+    assert_eq!(record.size, size);
+    let files = gog.file_requests();
+    assert_eq!(files.len(), 1);
+    assert_eq!(files[0].header("range"), Some("bytes=1000-"));
+}
+
+#[test]
 fn a_file_of_no_known_size_is_refused() {
     let gog = Gog::big();
     gog.set(|script| {
