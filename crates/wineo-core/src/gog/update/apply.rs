@@ -865,7 +865,10 @@ fn run_windows(
     }
     windows::check_space(paths, folder, &located)?;
 
-    let operation = lock_operation(paths, name)?;
+    // The prefix is held from here to the commit, so nothing like a snapshot
+    // restore can replace it between installers.
+    let prefix = crate::paths::resolve(&Environment::load(paths, name)?.prefix(paths)?);
+    let operation = lock_operation_on(paths, name, &[&prefix])?;
     let gog_id = super::recorded_gog_id(paths, name)?;
     if gog_id.as_deref().and_then(|id| id.parse().ok()) != pending.seen.gog_id {
         return Err(changed().into());
@@ -904,10 +907,8 @@ fn run_windows(
         lock.write(&state)?;
     }
     *journaled = true;
-    // The journal names the packages now, which keeps them cached, and
-    // running the installers takes the environment's own locks.
+    // The journal names the packages now, which keeps them cached.
     drop(pins);
-    drop(operation);
 
     let title = pending
         .products
@@ -939,6 +940,8 @@ fn run_windows(
             target: &mut target,
             setups: &setups,
             label: &label,
+            guard: operation,
+            prefix: &prefix,
             create: None,
             tag: &language,
             requested: &language,
@@ -1136,7 +1139,13 @@ pub(super) fn rebuild(
 /// Takes `name`'s operation lock. A run holds it shared for as long as the
 /// game runs, so that refusal is the running one.
 pub(super) fn lock_operation(paths: &Paths, name: &str) -> Result<Guard> {
-    match Locks::new(paths).acquire(Operation::Update, name, &[]) {
+    lock_operation_on(paths, name, &[])
+}
+
+/// `lock_operation`, also holding `prefixes`, for an install that runs in
+/// the environment's prefix.
+pub(super) fn lock_operation_on(paths: &Paths, name: &str, prefixes: &[&Path]) -> Result<Guard> {
+    match Locks::new(paths).acquire(Operation::Update, name, prefixes) {
         Err(crate::Error::Busy {
             holder: Some(Operation::Launch),
             ..

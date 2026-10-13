@@ -5,8 +5,9 @@ use super::*;
 use crate::config::GlobalConfig;
 use crate::environment::Environment;
 use crate::gog::update::install::{self, Installed, Request};
-use crate::gog::update::windows::tests::set_graphical;
+use crate::gog::update::windows::tests::{set_before_target, set_graphical};
 use crate::gog::update::windows::{Event, SetupError};
+use crate::operation::{Locks, Operation};
 use crate::test_script::write_script;
 
 /// A DLC of the game, which only has a Windows installer.
@@ -785,4 +786,119 @@ fn an_install_resumed_without_its_cached_installers_downloads_them_again() {
     fx.finish_windows();
     assert_eq!(fx.downloads(), downloads + 4);
     assert_installed(&fx);
+}
+
+#[test]
+fn the_environment_and_prefix_stay_reserved_between_installers() {
+    let fx = offered();
+    let plan = fx.plan_windows(&request()).unwrap();
+    let prefix = GlobalConfig::default()
+        .prefix_root(&fx.paths)
+        .unwrap()
+        .join("rimworld");
+    let mut checked = Vec::new();
+    install::apply_with_events(
+        &fx.paths,
+        &mut fx.session(),
+        &plan,
+        &Token::new(),
+        |_| {},
+        |event| {
+            if let Event::Installing { product, .. } = event {
+                // A snapshot restore, which would replace the prefix, is
+                // refused before creation and between installers.
+                let refused = Locks::new(&fx.paths)
+                    .acquire(Operation::Snapshot, "rimworld", &[&prefix])
+                    .is_err();
+                checked.push((product, refused));
+            }
+        },
+    )
+    .unwrap();
+    assert_eq!(checked, [(RIMWORLD, true), (DLC, true)]);
+    assert_installed(&fx);
+    // Let go once committed.
+    assert!(
+        Locks::new(&fx.paths)
+            .acquire(Operation::Snapshot, "rimworld", &[&prefix])
+            .is_ok()
+    );
+}
+
+#[test]
+fn finishing_with_update_also_keeps_the_prefix_reserved() {
+    let fx = offered();
+    fx.exits(DLC, 5);
+    fx.install_windows(&request()).unwrap_err();
+    fs::remove_file(fx.runs().join(format!("exit-{DLC}"))).unwrap();
+    let prefix = GlobalConfig::default()
+        .prefix_root(&fx.paths)
+        .unwrap()
+        .join("rimworld");
+    let paths = fx.paths.clone();
+    let refused = std::rc::Rc::new(Cell::new(false));
+    let seen = std::rc::Rc::clone(&refused);
+    set_before_target(move || {
+        seen.set(
+            Locks::new(&paths)
+                .acquire(Operation::Snapshot, "rimworld", &[&prefix])
+                .is_err(),
+        );
+    });
+    fx.finish_windows();
+    assert!(refused.get());
+    assert_installed(&fx);
+}
+
+#[test]
+fn a_cancel_after_the_installers_stops_before_the_target_and_commit() {
+    let fx = offered();
+    let plan = fx.plan_windows(&request()).unwrap();
+    let token = Token::new();
+    let canceler = token.clone();
+    set_before_target(move || canceler.cancel());
+    let error = install::apply(&fx.paths, &mut fx.session(), &plan, &token, |_| {}).unwrap_err();
+    assert!(
+        matches!(
+            error.downcast_ref(),
+            Some(UpdateError::Canceled { journal: true })
+        ),
+        "{error:#}"
+    );
+    assert_eq!(fx.state().journal.unwrap().kind, JournalKind::Install);
+    let environment = Environment::load(&fx.paths, "rimworld").unwrap();
+    assert!(environment.config.targets.is_empty());
+    fx.finish_windows();
+    assert_installed(&fx);
+}
+
+#[test]
+fn an_info_file_that_isnt_a_small_regular_file_isnt_read() {
+    for make in [
+        format!("mkfifo \"$DIR/goggame-{RIMWORLD}.info\""),
+        format!("head -c 200000 /dev/zero > \"$DIR/goggame-{RIMWORLD}.info\""),
+    ] {
+        let fx = Fixture::windows();
+        fx.offer_windows(
+            RIMWORLD,
+            "RimWorld",
+            "1.0",
+            &[("bin/Game.exe", "game")],
+            None,
+        );
+        // Written by the setup program in place of GOG's info file.
+        {
+            let mut gog = fx.gog.lock().unwrap();
+            let setup = &mut gog.windows.get_mut(&RIMWORLD).unwrap().files[0].1;
+            let text = String::from_utf8(setup.clone()).unwrap();
+            *setup = text
+                .replace("exit \"$code\"\n", &format!("{make}\nexit \"$code\"\n"))
+                .into_bytes();
+        }
+        fx.owns_ids(&[RIMWORLD]);
+        let installed = fx.install_windows(&request()).unwrap();
+        assert_eq!(installed.target, None);
+        assert_eq!(installed.reported_language, None);
+        assert_eq!(fx.state().journal, None);
+    }
 }

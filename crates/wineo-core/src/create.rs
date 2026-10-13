@@ -302,6 +302,18 @@ pub fn apply(
     paths: &Paths,
     plan: CreatePlan,
     token: &Token,
+    events: impl FnMut(CreateEvent),
+) -> anyhow::Result<Created> {
+    apply_with(paths, plan, None, token, events)
+}
+
+/// `apply`, for a caller already holding the environment and the planned
+/// prefix exclusively, which the creation takes over instead of locking.
+fn apply_with(
+    paths: &Paths,
+    plan: CreatePlan,
+    held: Option<Guard>,
+    token: &Token,
     mut events: impl FnMut(CreateEvent),
 ) -> anyhow::Result<Created> {
     let CreatePlan {
@@ -345,7 +357,13 @@ pub fn apply(
             },
         )?;
     }
-    let guard = Locks::new(paths).acquire(Operation::Create, &new.name, &[&prefix])?;
+    let guard = match held {
+        Some(mut guard) => {
+            guard.relabel(Operation::Create)?;
+            guard
+        }
+        None => Locks::new(paths).acquire(Operation::Create, &new.name, &[&prefix])?,
+    };
     let current_adopted = crate::prefix::is_prefix(&runner.wine_prefix(&prefix));
     if current_adopted != adopted
         || expected_adopted.is_some_and(|expected| current_adopted != expected)
@@ -503,6 +521,10 @@ pub struct Installed<S> {
     pub created_prefix: bool,
     pub target: TargetOutcome,
     pub step: Stepped<S>,
+    /// The environment's and prefix's locks, still held, when the caller
+    /// handed them in with `create_and_install_held`. Lost when the step
+    /// couldn't be prepared.
+    pub guard: Option<Guard>,
     _build_guard: Option<build_lock::Guard>,
 }
 
@@ -519,7 +541,36 @@ pub fn create_and_install<H: Hooks>(
     token: &crate::cancel::Token,
     hooks: &mut H,
 ) -> anyhow::Result<Installed<H::Stop>> {
-    let created = run(paths, request, token, |event| hooks.event(event))?;
+    create_and_install_with(paths, request, step, None, token, hooks)
+}
+
+/// `create_and_install` for a caller already holding the environment and the
+/// prefix `request` plans exclusively. The locks pass through creation and
+/// the step and come back in `Installed::guard`, so nothing else can touch
+/// the prefix until the caller lets go.
+pub fn create_and_install_held<H: Hooks>(
+    paths: &Paths,
+    request: CreateRequest,
+    step: Option<Step>,
+    guard: Guard,
+    token: &crate::cancel::Token,
+    hooks: &mut H,
+) -> anyhow::Result<Installed<H::Stop>> {
+    create_and_install_with(paths, request, step, Some(guard), token, hooks)
+}
+
+fn create_and_install_with<H: Hooks>(
+    paths: &Paths,
+    request: CreateRequest,
+    step: Option<Step>,
+    held: Option<Guard>,
+    token: &crate::cancel::Token,
+    hooks: &mut H,
+) -> anyhow::Result<Installed<H::Stop>> {
+    let keep = held.is_some();
+    let created = apply_with(paths, plan(paths, request)?, held, token, |event| {
+        hooks.event(event)
+    })?;
     let stopped = hooks.created(&created);
     let Created {
         global,
@@ -531,9 +582,9 @@ pub fn create_and_install<H: Hooks>(
         guard,
         _build_guard,
     } = created;
-    let step = match (stopped, step) {
-        (Err(stop), _) => Stepped::Stopped(stop),
-        (Ok(()), None) => Stepped::None,
+    let (step, guard) = match (stopped, step) {
+        (Err(stop), _) => (Stepped::Stopped(stop), Some(guard)),
+        (Ok(()), None) => (Stepped::None, Some(guard)),
         (
             Ok(()),
             Some(Step::Installer {
@@ -580,6 +631,7 @@ pub fn create_and_install<H: Hooks>(
         created_prefix,
         target,
         step,
+        guard: guard.filter(|_| keep),
         _build_guard,
     })
 }
@@ -595,29 +647,29 @@ fn install<H: Hooks>(
     output: Output,
     token: &crate::cancel::Token,
     hooks: &mut H,
-) -> Stepped<H::Stop> {
+) -> (Stepped<H::Stop>, Option<Guard>) {
     let installer = match Installer::prepare_with_runner_args(
         guard, paths, global, name, program, args, runner,
     ) {
         Ok(installer) => installer,
-        Err(err) => return Stepped::NotPrepared(err),
+        Err(err) => return (Stepped::NotPrepared(err), None),
     };
     // Under the installer's lock, so the installer runs against the
     // components the config asks for, like a launch does.
     if let Err(err) = reconcile_components(paths, global, name, installer.launch(), hooks) {
-        return Stepped::NotPrepared(err);
+        return (Stepped::NotPrepared(err), None);
     }
     if let Err(stop) = hooks.ready(installer.launch()) {
-        return Stepped::Stopped(stop);
+        return (Stepped::Stopped(stop), None);
     }
-    let outcome = installer.run(
+    let (outcome, guard) = installer.run_keeping(
         token,
         std::time::Duration::from_secs(global.stop_timeout.into()),
         output,
         |watched| hooks.watched(watched),
     );
     let resolved = Runtime::new(paths, name).check_resolved(name).is_ok();
-    Stepped::Ran { outcome, resolved }
+    (Stepped::Ran { outcome, resolved }, Some(guard))
 }
 
 fn reconcile_components<H: Hooks>(

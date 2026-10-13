@@ -26,9 +26,10 @@ use crate::gog::folder::{
     Committed, FolderLock, Platform, ProductStatus, Target, Track, failpoint,
 };
 use crate::gog::language;
-use crate::gog::migrate::{self, id_text};
+use crate::gog::migrate;
 use crate::gog::package::{self, PackageError, SpaceNeeded};
 use crate::installer::{self, Installer, Outcome, Output};
+use crate::operation::Guard;
 use crate::paths::Paths;
 use crate::supervisor::Watched;
 use crate::targets::{self, Batch, Spec, Written};
@@ -264,6 +265,11 @@ pub(super) struct Job<'a> {
     /// Each product's setup program, run in the target's order.
     pub(super) setups: &'a BTreeMap<u64, PathBuf>,
     pub(super) label: &'a dyn Fn(u64) -> String,
+    /// The environment's operation lock, holding `prefix` too, taken before
+    /// the folder's and kept to the commit.
+    pub(super) guard: Guard,
+    /// The prefix, resolved, that `guard` holds.
+    pub(super) prefix: &'a Path,
     /// The environment to create first, when it has no config yet.
     pub(super) create: Option<CreateRequest>,
     /// The locale tag asked for, for the installers' locale.
@@ -302,12 +308,17 @@ pub(super) fn install(
         target,
         setups,
         label,
+        guard,
+        prefix,
         mut create,
         tag,
         requested,
         wizard,
         desktop,
     } = job;
+    // Passed through creation and each installer and back, so the
+    // environment and its prefix stay reserved until the commit.
+    let mut guard = Some(guard);
     let folder = lock.folder().to_owned();
     let global = GlobalConfig::load(paths)?;
     let logs = paths.runtime_dir(name);
@@ -348,14 +359,31 @@ pub(super) fn install(
             interactive,
         });
         let created = if base { create.take() } else { None };
+        let held = guard.take().expect("each run hands the locks back");
         let (outcome, resolved) = match created {
-            Some(request) => run_created(paths, request, &exe_text, &args, &output, token, events)?,
+            Some(request) => {
+                let (outcome, resolved, back) = run_created(
+                    paths,
+                    request,
+                    held,
+                    (&exe_text, &args),
+                    &output,
+                    token,
+                    events,
+                )?;
+                guard = Some(back);
+                (outcome?, resolved)
+            }
             None => {
-                let outcome = Installer::prepare_args(paths, &global, name, &exe_text, &args)?
-                    .run(token, stop, Output::Log(&output), |watched| {
+                let installer = Installer::prepare_args_with(
+                    held, paths, &global, name, &exe_text, &args, prefix,
+                )?;
+                let (outcome, back) =
+                    installer.run_keeping(token, stop, Output::Log(&output), |watched| {
                         events(Event::Watched(watched))
-                    })?;
-                (outcome, true)
+                    });
+                guard = Some(back);
+                (outcome?, true)
             }
         };
         let partway = |detail: String| SetupError::Partway {
@@ -467,10 +495,24 @@ pub(super) fn install(
     let launch = info.as_ref().and_then(|root| {
         migrate::windows_launch(&folder, folder.join(format!("goggame-{gog_id}.info")), root).ok()
     });
+    // The last moment to stop before the config changes, and then before
+    // the commit, under the folder's and the environment's locks.
+    #[cfg(test)]
+    tests::before_target();
+    if token.is_canceled() {
+        return Err(UpdateError::Canceled { journal: true }.into());
+    }
     let added = match &launch {
         Some(launch) => add_target(paths, name, title, launch, desktop)?,
         None => None,
     };
+    // What the installers wrote reaches the disk before a state saying it's
+    // installed does; a failure here leaves the journal.
+    crate::import::sync_filesystem(&folder)?;
+    crate::import::sync_filesystem(prefix)?;
+    if token.is_canceled() {
+        return Err(UpdateError::Canceled { journal: true }.into());
+    }
     failpoint("install.windows.commit.before")?;
     lock.commit(Committed {
         gog_id,
@@ -482,6 +524,7 @@ pub(super) fn install(
     })?;
     failpoint("install.windows.commit.after")?;
     drop(lock);
+    drop(guard);
     let products: Vec<u64> = target.products.iter().map(|product| product.id).collect();
     remove_packages(paths, &folder, &products, warnings);
     Ok(Done {
@@ -496,12 +539,12 @@ pub(super) fn install(
 fn run_created(
     paths: &Paths,
     request: CreateRequest,
-    exe: &str,
-    args: &installer::Args,
+    guard: Guard,
+    (exe, args): (&str, &installer::Args),
     output: &Path,
     token: &Token,
     events: &mut dyn FnMut(Event),
-) -> Result<(Outcome, bool)> {
+) -> Result<(crate::Result<Outcome>, bool, Guard)> {
     let step = Step::GogInstaller {
         program: exe,
         args,
@@ -509,13 +552,18 @@ fn run_created(
         token,
     };
     let mut hooks = Forward { events };
-    let installed = create::create_and_install(paths, request, Some(step), token, &mut hooks)?;
-    match installed.step {
-        Stepped::Ran { outcome, resolved } => Ok((outcome?, resolved)),
-        Stepped::NotPrepared(error) => Err(error.into()),
+    let installed =
+        create::create_and_install_held(paths, request, Some(step), guard, token, &mut hooks)?;
+    let outcome = match installed.step {
+        Stepped::Ran { outcome, resolved } => (outcome, resolved),
+        Stepped::NotPrepared(error) => return Err(error.into()),
         Stepped::None => bail!("the installer wasn't run"),
         Stepped::Stopped(never) => match never {},
-    }
+    };
+    let guard = installed
+        .guard
+        .ok_or_else(|| anyhow::anyhow!("the installer let go of the environment's locks"))?;
+    Ok((outcome.0, outcome.1, guard))
 }
 
 /// Passes creation's events on.
@@ -537,9 +585,7 @@ impl Hooks for Forward<'_, '_> {
 
 /// The folder's `goggame-<id>.info`, when it is there and for this game.
 pub(super) fn read_info(folder: &Path, gog_id: u64) -> Option<Value> {
-    let text = std::fs::read_to_string(folder.join(format!("goggame-{gog_id}.info"))).ok()?;
-    let root: Value = serde_json::from_str(&text).ok()?;
-    (id_text(root.get("gameId")?) == gog_id.to_string()).then_some(root)
+    crate::gog::names::read_info(&folder.join(format!("goggame-{gog_id}.info")), gog_id)
 }
 
 /// GOG's code for the language an info file reports, from the locale tags it
@@ -600,6 +646,20 @@ pub(super) mod tests {
 
     thread_local! {
         static GRAPHICAL: Cell<Option<bool>> = const { Cell::new(None) };
+        static BEFORE_TARGET: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
+            const { std::cell::RefCell::new(None) };
+    }
+
+    /// Runs a test's hook once, after the last installer and before the
+    /// default target is written.
+    pub(in crate::gog::update) fn before_target() {
+        if let Some(hook) = BEFORE_TARGET.with(|hook| hook.borrow_mut().take()) {
+            hook();
+        }
+    }
+
+    pub(in crate::gog::update) fn set_before_target(hook: impl FnOnce() + 'static) {
+        BEFORE_TARGET.with(|cell| *cell.borrow_mut() = Some(Box::new(hook)));
     }
 
     /// Whether a test says there is a graphical session. Tests run as if

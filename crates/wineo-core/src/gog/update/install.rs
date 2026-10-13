@@ -31,7 +31,8 @@ use wineo_gog::DownloadCache;
 
 use super::apply::{
     self, Packages, PlannedFile, Progress, Wanted, Work, check_fit, download, free_space,
-    is_cancel, lock_operation, open_package, operation_id, pin_packages, rebuild,
+    is_cancel, lock_operation, lock_operation_on, open_package, operation_id, pin_packages,
+    rebuild,
 };
 use super::{Check, SavedAside, UpdateError};
 use crate::cancel::Token;
@@ -548,7 +549,10 @@ pub fn plan(
             .map(|entry| entry.title.clone())
             .filter(|title| !title.is_empty());
         let label = names::dlc_label(&title, id, dlc_title.as_deref());
-        // In the game's own language, which may already be English.
+        // In the language the base game's installer was resolved in, which
+        // may already be English. Packages are all fetched before anything
+        // runs, so a different language a Windows game reports once
+        // installed is only reported, never followed.
         let picked = match entry {
             Some(entry) => pick(entry, &label, &language, platform),
             None => Err(format!("GOG lists no details for {label}.")),
@@ -1067,8 +1071,20 @@ fn run(
         check_fit(paths, folder, &opened)?;
     }
 
+    // A Windows install holds its prefix as well, from here to the commit,
+    // so nothing else can replace it between installers.
+    let prefix = match (&plan.creation, windows) {
+        (Some(creation), _) => Some(crate::paths::resolve(&creation.prefix)),
+        (None, true) => Some(crate::paths::resolve(
+            &environment::Environment::load(paths, name)?.prefix(paths)?,
+        )),
+        (None, false) => None,
+    };
     let adoption = AdoptionLock::acquire(paths, &cancel)?;
-    let operation = lock_operation(paths, name)?;
+    let operation = match &prefix {
+        Some(prefix) => lock_operation_on(paths, name, &[prefix.as_path()])?,
+        None => lock_operation(paths, name)?,
+    };
     let _in_use = folder::lock_for_update(paths, folder, name)?;
     let lock = FolderLock::exclusive(paths, folder, &cancel)?;
     #[cfg(test)]
@@ -1148,10 +1164,8 @@ fn run(
         }
         // The journal names the packages now, which keeps them cached.
         drop(pins);
-        // The state covers the folder now. Creating the environment and
-        // running its installers take the environment's own locks.
+        // The state covers the folder now.
         drop(adoption);
-        drop(operation);
         let label = |id: u64| {
             if id == plan.gog_id {
                 plan.title.clone()
@@ -1168,6 +1182,10 @@ fn run(
                 target: &mut target,
                 setups: &setups,
                 label: &label,
+                guard: operation,
+                prefix: prefix
+                    .as_deref()
+                    .expect("a Windows install holds its prefix"),
                 create: plan.creation.as_ref().map(|creation| CreateRequest {
                     name: name.to_owned(),
                     resolved_runner: Some(creation.runner.clone()),
