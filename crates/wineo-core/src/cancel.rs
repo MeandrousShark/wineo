@@ -64,7 +64,16 @@ pub struct Subscription {
 
 impl Drop for Subscription {
     fn drop(&mut self) {
-        self.state.lock().list.retain(|(id, _)| *id != self.id);
+        let removed = {
+            let mut wakers = self.state.lock();
+            wakers
+                .list
+                .iter()
+                .position(|(id, _)| *id == self.id)
+                .map(|at| wakers.list.remove(at))
+        };
+        // A waker can own another subscription, whose drop locks again.
+        drop(removed);
     }
 }
 
@@ -170,6 +179,17 @@ mod tests {
         drop(token.subscribe(wake));
         token.cancel();
         assert_eq!(count.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn dropping_a_waker_that_owns_a_subscription_does_not_deadlock() {
+        let token = Token::new();
+        let first = token.subscribe(|| {});
+        let second = token.subscribe(move || {
+            let _ = &first;
+        });
+        drop(second);
+        token.cancel();
     }
 
     #[test]
