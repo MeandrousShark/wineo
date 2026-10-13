@@ -271,6 +271,11 @@ pub(super) fn check_review(
             sharing.unreadable.join(", ")
         );
     }
+    if request.adopt {
+        wineo_core::environment::check_nesting(paths, &request.name, &destination)?;
+    } else {
+        wineo_core::environment::check_destination(paths, &request.name, &destination)?;
+    }
     Ok(())
 }
 

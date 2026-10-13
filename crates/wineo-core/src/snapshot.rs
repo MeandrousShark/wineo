@@ -223,9 +223,7 @@ pub fn create_reviewed_with(
         .parent()
         .ok_or_else(|| anyhow!("snapshot has no parent"))?;
     ensure_storage_dirs(parent)?;
-    let staging = tempfile::Builder::new()
-        .prefix(".wineo-create-")
-        .tempdir_in(parent)?;
+    let staging = import::Staging::new_in(".wineo-create-", parent)?;
     let staged_prefix = staging.path().join("prefix");
     import::copy_tree_strict_reflink_with(
         &reviewed.prefix,
@@ -270,7 +268,7 @@ pub fn create_reviewed_with(
     import::check_cancelled(cancel)?;
     events(SnapshotEvent::Finishing);
     crate::download::publish(staging.path(), &reviewed.snapshot)?;
-    sync_dir(parent)?;
+    import::sync_filesystem(&reviewed.snapshot)?;
     events(SnapshotEvent::Progress(ImportProgress::Finished {
         entries: reviewed.fingerprint.entries,
     }));
@@ -333,6 +331,15 @@ pub fn inspect_restore_with(
     validate_label(label)?;
     let (env, current_config, prefix) = registered(paths, name)?;
     check_sharing(paths, name, &prefix)?;
+    environment::check_nesting(paths, name, &prefix)?;
+    // The old prefix is deleted after the swap, and that would reach into
+    // whatever is mounted inside it.
+    if let Some(mount) = crate::trash::foreign_mount(&prefix)? {
+        bail!(
+            "{name}'s prefix has a mount at {}. Unmount it first.",
+            mount.display()
+        );
+    }
     let current = inspect_prefix(paths, global, &env, &prefix, cancel, &mut progress)?;
     let snapshot = paths.snapshot_root(&prefix, name).join(label);
     import::reject_overlapping_paths(&prefix, &snapshot)?;
@@ -416,9 +423,7 @@ pub fn restore_reviewed_with(
         .prefix
         .parent()
         .ok_or_else(|| anyhow!("prefix has no parent"))?;
-    let staging = tempfile::Builder::new()
-        .prefix(".wineo-restore-")
-        .tempdir_in(parent)?;
+    let staging = import::Staging::new_in(".wineo-restore-", parent)?;
     let staging_path = staging.path().to_owned();
     // A saved link into the live prefix is internal to what the restore
     // puts back, so it is written relative too.
@@ -447,6 +452,7 @@ pub fn restore_reviewed_with(
     )?;
     ensure_restore_same(reviewed, &final_inspection)?;
     import::validate_staged_prefix(&staging_path, &reviewed.prefix, reviewed.layout)?;
+    import::sync_filesystem(&staging_path)?;
     let old_is_subvolume = is_btrfs_subvolume(&reviewed.prefix)?;
     let marker_path = marker_path(paths, &reviewed.name);
     let marker = RestoreMarker {
@@ -619,6 +625,18 @@ pub fn recover(paths: &Paths, name: &str) -> Result<()> {
     Runtime::new(paths, name).check_quiet(name)?;
     let marker = read_marker(paths, &path, name)?;
     validate_marker_config(paths, name, &marker)?;
+    // Rollback deletes whichever tree is not put back.
+    environment::check_nesting(paths, name, &marker.prefix).map_err(|err| match err {
+        crate::Error::UnreadableEnvironments(names) => anyhow!(
+            "{} can't be read, so it's unknown whether its prefix is inside {name}'s. Fix it and run `wineo snapshot recover {name}` again.",
+            names
+                .iter()
+                .map(|other| paths.environment_config(other).display().to_string())
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+        err => err.into(),
+    })?;
     rollback_locked(paths, &path, &marker)
 }
 
@@ -883,7 +901,12 @@ fn rollback_locked(paths: &Paths, marker_path: &Path, marker: &RestoreMarker) ->
     write_config_atomic(&config_path, &marker.old_config)?;
     fs::remove_file(marker_path)?;
     sync_dir(marker_path.parent().unwrap())?;
-    remove_tree(&marker.staging)?;
+    remove_tree(&marker.staging).with_context(|| {
+        format!(
+            "original prefix is back, but the restored copy remains at {}",
+            marker.staging.display()
+        )
+    })?;
     Ok(())
 }
 
@@ -962,6 +985,14 @@ fn sync_dir(path: &Path) -> Result<()> {
 
 fn remove_tree(path: &Path) -> Result<()> {
     ensure_directory(path)?;
+    // remove_dir_all would empty a mount before failing on its mount point.
+    if let Some(mount) = crate::trash::foreign_mount(path)? {
+        bail!(
+            "{} has a mount at {}, so it was kept",
+            path.display(),
+            mount.display()
+        );
+    }
     fs::remove_dir_all(path).with_context(|| format!("failed to remove {}", path.display()))
 }
 
@@ -1891,5 +1922,98 @@ mod tests {
         assert!(saved_gog_id(&host, "game", &other).is_err());
         assert_eq!(saved_gog_id(&portable, "game", &plain).unwrap(), None);
         assert_eq!(saved_gog_id(&portable, "game", &other).unwrap(), None);
+    }
+
+    #[test]
+    fn restore_refuses_a_prefix_with_a_mount_inside() {
+        let (_root, paths, prefix, _config) = fixture(false);
+        if !reflinks_supported(&prefix) {
+            return;
+        }
+        let global = GlobalConfig::default();
+        let create = inspect_create(&paths, &global, "game", "one").unwrap();
+        create_reviewed(&paths, &global, &create, &Token::new(), |_| {}).unwrap();
+        let review = inspect_restore(&paths, &global, "game", "one").unwrap();
+        let shared = prefix.join("drive_c/shared");
+        fs::create_dir(&shared).unwrap();
+        fs::write(shared.join("external.txt"), "keep").unwrap();
+        crate::trash::set_fake_mounts(vec![shared.clone()]);
+        let error = inspect_restore(&paths, &global, "game", "one").unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            format!(
+                "game's prefix has a mount at {}. Unmount it first.",
+                shared.display()
+            )
+        );
+        let error = restore_reviewed(&paths, &global, &review, &Token::new(), |_| {}).unwrap_err();
+        assert!(error.to_string().contains("Unmount it first"), "{error}");
+        crate::trash::set_fake_mounts(Vec::new());
+        assert_eq!(
+            fs::read_to_string(shared.join("external.txt")).unwrap(),
+            "keep"
+        );
+        assert!(!marker_path(&paths, "game").exists());
+    }
+
+    #[test]
+    fn snapshot_cleanup_stops_at_a_mount() {
+        let root = tempfile::tempdir_in(env!("CARGO_MANIFEST_DIR")).unwrap();
+        let old = root.path().join(".wineo-restore-old");
+        let mount = old.join("drive_c/shared");
+        fs::create_dir_all(&mount).unwrap();
+        fs::write(mount.join("external.txt"), "keep").unwrap();
+        crate::trash::set_fake_mounts(vec![mount.clone()]);
+        let error = remove_tree(&old).unwrap_err();
+        crate::trash::set_fake_mounts(Vec::new());
+        assert!(
+            error.to_string().contains(&format!(
+                "has a mount at {}, so it was kept",
+                mount.display()
+            )),
+            "{error}"
+        );
+        assert_eq!(
+            fs::read_to_string(mount.join("external.txt")).unwrap(),
+            "keep"
+        );
+    }
+
+    #[test]
+    fn snapshot_cleanup_refuses_a_mounted_root() {
+        let root = tempfile::tempdir_in(env!("CARGO_MANIFEST_DIR")).unwrap();
+        let snapshot = root.path().join("one");
+        fs::create_dir_all(snapshot.join("prefix")).unwrap();
+        fs::write(snapshot.join("keep.txt"), "keep").unwrap();
+        crate::trash::set_fake_mounts(vec![snapshot.clone()]);
+        let error = remove_tree(&snapshot).unwrap_err();
+        crate::trash::set_fake_mounts(Vec::new());
+        assert!(
+            error.to_string().contains(&format!(
+                "has a mount at {}, so it was kept",
+                snapshot.display()
+            )),
+            "{error}"
+        );
+        assert_eq!(
+            fs::read_to_string(snapshot.join("keep.txt")).unwrap(),
+            "keep"
+        );
+    }
+
+    #[test]
+    fn recovery_names_an_unreadable_config_it_cannot_check() {
+        let (_root, paths, prefix, config) = fixture(false);
+        interrupted_marker(&paths, &prefix, &config);
+        let broken = paths.environment_config("broken");
+        fs::write(&broken, "prefix = [").unwrap();
+        let error = recover(&paths, "game").unwrap_err().to_string();
+        assert!(
+            error.starts_with(&format!("{} can't be read", broken.display())),
+            "{error}"
+        );
+        assert!(marker_path(&paths, "game").exists());
+        fs::remove_file(&broken).unwrap();
+        recover(&paths, "game").unwrap();
     }
 }

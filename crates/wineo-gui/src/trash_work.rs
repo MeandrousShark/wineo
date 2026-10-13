@@ -74,7 +74,8 @@ pub(crate) fn recover(generation: u64, paths: Paths, id: String) -> Task<Message
     )
 }
 
-pub(crate) fn recover_entry(paths: &Paths, id: String) -> Result<(), String> {
+/// What recovery kept in the trash instead of returning, for the page to show.
+pub(crate) fn recover_entry(paths: &Paths, id: String) -> Result<Vec<String>, String> {
     validate::apply(
         paths,
         &Fix::RecoverTrash { id },
@@ -83,7 +84,12 @@ pub(crate) fn recover_entry(paths: &Paths, id: String) -> Result<(), String> {
         |_| {},
         |_, _| anyhow::bail!("trash recovery does not download components"),
     )
-    .map(|_| ())
+    .map(|notes| {
+        notes
+            .into_iter()
+            .map(|validate::Note::Warning(note)| paths.contract_text(&note))
+            .collect()
+    })
     .map_err(|error| paths.contract_text(&format!("{error:#}")))
 }
 

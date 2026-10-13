@@ -19,7 +19,6 @@ use serde::{Deserialize, Serialize};
 
 use crate::environment::{self, Environment};
 use crate::error::{IoContext, Result};
-use crate::files::write_atomic;
 use crate::heroic::HeroicSource;
 use crate::paths::Paths;
 use crate::runtime::{Runtime, State};
@@ -139,8 +138,22 @@ pub(crate) fn copy_log(from: &Paths, to: &Paths, name: &str) -> Result<Option<Pa
         Err(err) => return Err(err).context(|| format!("failed to read {}", source.display())),
     };
     let destination = to.stats_log(name);
-    write_atomic(&destination, bytes)?;
+    publish_new(&destination, &bytes)
+        .context(|| format!("failed to write {}", destination.display()))?;
     Ok(Some(destination))
+}
+
+/// Writes a file that must not replace one already there: a synced temp
+/// file is linked into place, which fails if the name is taken.
+fn publish_new(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    let parent = path.parent().unwrap_or(Path::new("."));
+    fs::create_dir_all(parent)?;
+    let mut staging = tempfile::NamedTempFile::new_in(parent)?;
+    staging.write_all(bytes)?;
+    staging.as_file().sync_all()?;
+    fs::hard_link(staging.path(), path)?;
+    drop(staging);
+    fs::File::open(parent)?.sync_all()
 }
 
 /// Everything read back from the log: its sessions, its `imported` line if
@@ -1266,5 +1279,29 @@ mod tests {
         };
         let summary = summarize(&log, Some(&running), now, &TimeZone::UTC);
         assert_eq!(last_session_seconds(&log, &summary, now), Some(900));
+    }
+
+    #[test]
+    fn copied_log_never_replaces_one_already_there() {
+        let root = tempfile::tempdir().unwrap();
+        let home = root.path().to_owned();
+        let lookup = move |key: &str| (key == "HOME").then(|| OsString::from(&home));
+        let from = Paths::select(lookup.clone(), None).unwrap();
+        let to = Paths::select(lookup, Some(&root.path().join("usb"))).unwrap();
+        fs::create_dir_all(from.stats_log("game").parent().unwrap()).unwrap();
+        fs::write(from.stats_log("game"), "source\n").unwrap();
+        fs::create_dir_all(to.stats_log("game").parent().unwrap()).unwrap();
+        fs::write(to.stats_log("game"), "orphan\n").unwrap();
+        assert!(copy_log(&from, &to, "game").is_err());
+        assert_eq!(
+            fs::read_to_string(to.stats_log("game")).unwrap(),
+            "orphan\n"
+        );
+        assert_eq!(
+            fs::read_dir(to.stats_log("game").parent().unwrap())
+                .unwrap()
+                .count(),
+            1
+        );
     }
 }

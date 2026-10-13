@@ -417,3 +417,163 @@ fn a_restore_fails_closed_on_an_unreadable_gog_state_when_either_config_has_gog_
         );
     }
 }
+
+/// `unshare` and `mount`, when unprivileged user and mount namespaces work.
+fn namespace_tools() -> Option<(PathBuf, PathBuf)> {
+    let unshare = common::find_on_path("unshare")?;
+    let mount = common::find_on_path("mount")?;
+    Command::new(&unshare)
+        .args(["-rm", "true"])
+        .status()
+        .is_ok_and(|status| status.success())
+        .then_some((unshare, mount))
+}
+
+/// Runs wineo with `args` in a private mount namespace where `source` is
+/// bind-mounted onto `target`.
+fn wineo_with_bind_mount(
+    f: &Fixture,
+    (unshare, mount): &(PathBuf, PathBuf),
+    source: &Path,
+    target: &Path,
+    args: &[&str],
+) -> std::process::Output {
+    let wineo = f.wineo();
+    let mut command = Command::new(unshare);
+    for (key, value) in wineo.get_envs() {
+        match value {
+            Some(value) => command.env(key, value),
+            None => command.env_remove(key),
+        };
+    }
+    command
+        .args([
+            "-rm",
+            "/bin/sh",
+            "-c",
+            r#"m=$1; shift; "$m" --bind "$1" "$2" && shift 2 && exec "$@""#,
+            "sh",
+        ])
+        .arg(mount)
+        .arg(source)
+        .arg(target)
+        .arg(wineo.get_program())
+        .args(args)
+        .stdin(Stdio::null())
+        .output()
+        .unwrap()
+}
+
+/// A real bind mount needs a mount namespace. Run with
+/// `cargo test -p wineo-cli --test snapshot real_bind_mount -- --ignored`;
+/// it needs `unshare` and unprivileged user namespaces, and skips without them.
+#[test]
+#[ignore]
+fn restore_refuses_a_real_bind_mount() {
+    let Some(f) = fixture() else { return };
+    let Some(tools) = namespace_tools() else {
+        return;
+    };
+    let (prefix, _) = environment(&f);
+    assert_success(&f.run(&["snapshot", "create", "game", "one"]));
+    // Same filesystem as the prefix, so only the mount ID tells them apart.
+    let external = f.root.path().join("external");
+    fs::create_dir(&external).unwrap();
+    fs::write(external.join("keep.txt"), b"external").unwrap();
+    let target = prefix.join("drive_c/shared");
+    fs::create_dir(&target).unwrap();
+
+    let output = wineo_with_bind_mount(
+        &f,
+        &tools,
+        &external,
+        &target,
+        &["snapshot", "restore", "game", "one", "--yes"],
+    );
+    assert!(!output.status.success(), "{}", stderr(&output));
+    assert!(
+        stderr(&output).contains(&format!(
+            "game's prefix has a mount at {}. Unmount it first.",
+            target.display()
+        )),
+        "{}",
+        stderr(&output)
+    );
+    assert_eq!(fs::read(external.join("keep.txt")).unwrap(), b"external");
+}
+
+/// See `restore_refuses_a_real_bind_mount` for how to run it.
+#[test]
+#[ignore]
+fn snapshot_delete_refuses_a_real_bind_mount_on_the_snapshot() {
+    let Some(f) = fixture() else { return };
+    let Some(tools) = namespace_tools() else {
+        return;
+    };
+    let (prefix, _) = environment(&f);
+    assert_success(&f.run(&["snapshot", "create", "game", "one"]));
+    let snapshot = prefix.parent().unwrap().join(".wineo-snapshots/game/one");
+    // A valid snapshot of its own, so only the mount check can stop it.
+    let external = f.root.path().join("external");
+    assert!(
+        Command::new("cp")
+            .arg("-a")
+            .arg(&snapshot)
+            .arg(&external)
+            .status()
+            .unwrap()
+            .success()
+    );
+    fs::write(external.join("keep.txt"), b"external").unwrap();
+
+    let output = wineo_with_bind_mount(
+        &f,
+        &tools,
+        &external,
+        &snapshot,
+        &["snapshot", "delete", "game", "one"],
+    );
+    assert!(!output.status.success(), "{}", stderr(&output));
+    assert!(
+        stderr(&output).contains(&format!("has a mount at {}", snapshot.display())),
+        "{}",
+        stderr(&output)
+    );
+    assert_eq!(fs::read(external.join("keep.txt")).unwrap(), b"external");
+    assert!(external.join("manifest.json").exists());
+}
+
+#[test]
+fn restore_refuses_a_parent_of_another_environments_prefix() {
+    let Some(f) = fixture() else { return };
+    let (prefix, _) = environment(&f);
+    assert_success(&f.run(&["snapshot", "create", "game", "one"]));
+    let nested = prefix.join("drive_c/nested-prefix");
+    fs::create_dir_all(nested.join("drive_c")).unwrap();
+    fs::write(
+        nested.join("system.reg"),
+        "WINE REGISTRY Version 2\n#arch=win64\n",
+    )
+    .unwrap();
+    fs::write(nested.join("drive_c/save.dat"), b"nested").unwrap();
+    fs::write(
+        f.config_dir().join("environments/nested.toml"),
+        format!(
+            "prefix = {:?}\nrunner = 'wine'\narch = 'win64'\n",
+            nested.to_str().unwrap()
+        ),
+    )
+    .unwrap();
+    let restored = f.run(&["snapshot", "restore", "game", "one", "--yes"]);
+    assert!(!restored.status.success());
+    assert!(
+        stderr(&restored)
+            .contains("nested's prefix is inside game's prefix. Move one of them first."),
+        "{}",
+        stderr(&restored)
+    );
+    assert_eq!(
+        fs::read(nested.join("drive_c/save.dat")).unwrap(),
+        b"nested"
+    );
+}

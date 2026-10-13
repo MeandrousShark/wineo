@@ -1723,7 +1723,12 @@ pub fn apply(
             art::drop_unknown_target(paths, environment, target)?;
         }
         Fix::RemoveStatsLog { environment } => remove_stats_log(paths, environment)?,
-        Fix::RecoverTrash { id } => trash::recover(paths, id)?,
+        Fix::RecoverTrash { id } => {
+            return Ok(trash::recover_noting(paths, id)?
+                .into_iter()
+                .map(Note::Warning)
+                .collect());
+        }
         Fix::RecoverSnapshot { .. } => {
             anyhow::bail!("snapshot recovery must be applied by itself with apply_single");
         }

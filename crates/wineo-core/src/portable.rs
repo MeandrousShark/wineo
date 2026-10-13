@@ -1,6 +1,6 @@
 //! Copying an environment from the standard layout into a portable folder.
 
-use std::fs::{self, File, OpenOptions};
+use std::fs::{self, File};
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, anyhow, bail};
@@ -148,7 +148,12 @@ pub fn inspect_with(
         );
     }
     let destination_snapshots = to.snapshot_root(&destination, name);
-    for path in [&destination, &destination_snapshots, &to.art_dir(name)] {
+    for path in [
+        &destination,
+        &destination_snapshots,
+        &to.art_dir(name),
+        &to.stats_log(name),
+    ] {
         if fs::symlink_metadata(path).is_ok() {
             bail!(
                 "{} already exists; move it aside if a copy was interrupted",
@@ -157,6 +162,7 @@ pub fn inspect_with(
         }
     }
     environment::checked_sharing(from, name, &source_root)?;
+    environment::check_destination(to, name, &destination)?;
 
     let snapshots = snapshot::list(from, name)?;
     let resolved_snapshots = paths::resolve(&source_snapshots);
@@ -311,15 +317,12 @@ pub fn execute_reviewed_with(
     let prefixes = reviewed.folder.join("prefixes");
     fs::create_dir_all(&prefixes)
         .with_context(|| format!("failed to create {}", prefixes.display()))?;
-    let staging = tempfile::Builder::new()
-        .prefix(".wineo-copy-")
-        .tempdir_in(&prefixes)
-        .with_context(|| {
-            format!(
-                "failed to create staging directory in {}",
-                prefixes.display()
-            )
-        })?;
+    let staging = import::Staging::new_in(".wineo-copy-", &prefixes).with_context(|| {
+        format!(
+            "failed to create staging directory in {}",
+            prefixes.display()
+        )
+    })?;
     let _publish_lock = InstallLock::acquire(&reviewed.destination)?;
 
     let destination_snapshots = to.snapshot_root(&reviewed.destination, name);
@@ -480,6 +483,9 @@ pub fn execute_reviewed_with(
         }
         published.extend(art.publish()?);
         published.extend(stats::copy_log(from, to, name)?);
+        for path in &published {
+            import::sync_filesystem(path)?;
+        }
         if let Some(text) = &reviewed.global_text {
             let path = to.global_config();
             let _guard = locks.config(&path).map_err(|err| anyhow!(err))?;
@@ -629,11 +635,13 @@ pub fn inspect_native_with(
             folder.display()
         );
     }
-    if fs::symlink_metadata(to.art_dir(name)).is_ok() {
-        bail!(
-            "{} already exists; move it aside if a copy was interrupted",
-            to.art_dir(name).display()
-        );
+    for path in [to.art_dir(name), to.stats_log(name)] {
+        if fs::symlink_metadata(&path).is_ok() {
+            bail!(
+                "{} already exists; move it aside if a copy was interrupted",
+                path.display()
+            );
+        }
     }
     let (changed_settings, config_text) = clone::native_config(&source_config, &config, true)?;
     let mut external_target_paths = Vec::new();
@@ -725,9 +733,7 @@ pub fn execute_native_with(
     import::check_cancelled(cancel)?;
 
     fs::create_dir_all(&reviewed.folder)?;
-    let staging = tempfile::Builder::new()
-        .prefix(".wineo-copy-")
-        .tempdir_in(&reviewed.folder)?;
+    let staging = import::Staging::new_in(".wineo-copy-", &reviewed.folder)?;
     let staged_templates = staging.path().join("templates");
     if reviewed.templates_fingerprint.is_some() {
         import::copy_tree(
@@ -774,6 +780,9 @@ pub fn execute_native_with(
         }
         published.extend(art.publish()?);
         published.extend(stats::copy_log(from, to, name)?);
+        for path in &published {
+            import::sync_filesystem(path)?;
+        }
         if let Some(text) = &reviewed.global_text {
             let path = to.global_config();
             let _guard = locks.config(&path).map_err(|err| anyhow!(err))?;
@@ -847,7 +856,7 @@ fn write_global_once(paths: &Paths, text: &str) -> Result<()> {
     let path = paths.global_config();
     let global = GlobalConfig::parse(&path, text)?;
     let _guards = build_lock::config(paths, &global, Some(&global.defaults.runner), None, None)?;
-    write_once(&path, text)
+    import::write_config_once(&path, text)
 }
 
 fn write_environment_once(
@@ -894,23 +903,6 @@ fn portable_global(to: &Paths, path: &Path, text: &str) -> Result<String> {
     let updated = doc.to_string();
     GlobalConfig::parse(path, &updated).map_err(|err| anyhow!(err))?;
     Ok(updated)
-}
-
-fn write_once(path: &Path, text: &str) -> Result<()> {
-    use std::io::Write;
-
-    let parent = path
-        .parent()
-        .ok_or_else(|| anyhow!("config has no parent"))?;
-    fs::create_dir_all(parent)?;
-    let mut file = OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(path)
-        .with_context(|| format!("failed to create {}", path.display()))?;
-    file.write_all(text.as_bytes())?;
-    file.sync_all()?;
-    Ok(())
 }
 
 fn reject_overlap(source: &Path, folder: &Path) -> Result<()> {

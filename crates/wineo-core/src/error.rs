@@ -113,6 +113,12 @@ pub enum Error {
     #[error("could not inspect environments: {}", .0.join(", "))]
     UnreadableEnvironments(Vec<String>),
 
+    #[error("{inner}'s prefix is inside {outer}'s prefix. Move one of them first.")]
+    NestedPrefix { inner: String, outer: String },
+
+    #[error("{} is already {owner}'s prefix. Pick another directory.", .path.display())]
+    PrefixTaken { path: PathBuf, owner: String },
+
     #[error("{0} canceled")]
     Canceled(&'static str),
 

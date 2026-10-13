@@ -2,8 +2,8 @@
 
 use std::collections::{HashMap, HashSet};
 use std::ffi::OsString;
-use std::fs::{self, OpenOptions};
-use std::io::{Cursor, Read, Write};
+use std::fs;
+use std::io::{Cursor, Read};
 use std::path::Path;
 
 use anyhow::Context;
@@ -521,15 +521,7 @@ fn imported_games(paths: &Paths) -> crate::Result<Vec<(String, String)>> {
 }
 
 fn write_new(path: &Path, contents: &str) -> anyhow::Result<()> {
-    if let Some(dir) = path.parent() {
-        fs::create_dir_all(dir).with_context(|| format!("failed to create {}", dir.display()))?;
-    }
-    OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(path)
-        .and_then(|mut file| file.write_all(contents.as_bytes()))
-        .with_context(|| format!("failed to write {}", path.display()))
+    crate::import::write_config_once(path, contents)
 }
 
 fn store_cached_art(paths: &Paths, name: &str, kind: Kind, source: &Path) -> anyhow::Result<()> {
@@ -1496,5 +1488,15 @@ mod tests {
             error.to_string(),
             "Steam doesn't say which account was used last"
         );
+    }
+
+    #[test]
+    fn a_new_config_never_replaces_one_already_there() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("environments/game.toml");
+        write_new(&path, "kind = 'native'\n").unwrap();
+        assert!(write_new(&path, "kind = 'other'\n").is_err());
+        assert_eq!(fs::read_to_string(&path).unwrap(), "kind = 'native'\n");
+        assert_eq!(fs::read_dir(path.parent().unwrap()).unwrap().count(), 1);
     }
 }

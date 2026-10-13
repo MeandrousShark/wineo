@@ -52,6 +52,8 @@ pub(crate) struct Page {
     pub(crate) recovery_errors: HashMap<String, String>,
     pub(crate) results: Vec<Outcome>,
     pub(crate) notice: Option<String>,
+    /// What the last recovery kept in the trash instead of returning.
+    pub(crate) notes: Vec<String>,
     pub(crate) review: Option<PruneReview>,
     pub(crate) reviewing: bool,
     pub(crate) review_generation: u64,
@@ -68,6 +70,7 @@ impl Default for Page {
             recovery_errors: HashMap::new(),
             results: Vec::new(),
             notice: None,
+            notes: Vec::new(),
             review: None,
             reviewing: false,
             review_generation: 0,
@@ -85,6 +88,7 @@ impl Page {
     fn clear_feedback(&mut self) {
         self.results.clear();
         self.notice = None;
+        self.notes.clear();
         self.error = None;
         self.row_errors.clear();
         self.recovery_errors.clear();
@@ -102,6 +106,7 @@ impl Page {
         if let Some(notice) = &self.notice {
             feedback.push((notice.clone(), false));
         }
+        feedback.extend(self.notes.iter().map(|note| (note.clone(), false)));
         for (id, error) in &self.row_errors {
             if self
                 .snapshot()
@@ -174,7 +179,7 @@ pub(crate) enum Event {
     Confirm,
     Pruned(u64, Result<Vec<Outcome>, String>),
     Recover(String),
-    Recovered(u64, Result<(), String>),
+    Recovered(u64, Result<Vec<String>, String>),
 }
 
 fn message(event: Event) -> Message {
@@ -291,7 +296,10 @@ pub(crate) fn update(app: &mut App, event: Event) -> Task<Message> {
                 unreachable!()
             };
             match result {
-                Ok(()) => app.trash_page.notice = Some(format!("Recovered {name}.")),
+                Ok(notes) => {
+                    app.trash_page.notice = Some(format!("Recovered {name}."));
+                    app.trash_page.notes = notes;
+                }
                 Err(error) => {
                     app.trash_page.recovery_errors.insert(id, error);
                 }

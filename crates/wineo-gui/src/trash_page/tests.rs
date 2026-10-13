@@ -664,7 +664,7 @@ fn legacy_pending_removing_and_restoring_entries_disable_rows_and_recover() {
     send(&mut app, Event::Recover(restoring.id.clone()));
     let generation = app.change_generation;
     let result = trash_work::recover_entry(&app.paths, restoring.id.clone());
-    assert_eq!(result, Ok(()));
+    assert_eq!(result, Ok(Vec::new()));
     send(&mut app, Event::Recovered(generation, result));
     load_current(&mut app);
     assert!(app.trash_page.snapshot().unwrap().pending.is_empty());
@@ -672,7 +672,7 @@ fn legacy_pending_removing_and_restoring_entries_disable_rows_and_recover() {
 }
 
 #[test]
-fn real_pending_markers_recover_both_phases_and_keep_collision_errors_visible() {
+fn real_pending_markers_recover_replaced_sources_and_show_restore_collisions() {
     let Some((_root, _config, mut app)) = pending_fixture() else {
         return;
     };
@@ -692,37 +692,85 @@ fn real_pending_markers_recover_both_phases_and_keep_collision_errors_visible() 
     assert!(!app.trash_page.row_enabled(&removing.id));
     assert!(!app.trash_page.row_enabled(&restoring.id));
 
+    // A config recreated with the same contents wins, and the trash copy
+    // has nothing left to keep.
     native(&app.paths, "removing-marker");
     send(&mut app, Event::Recover(removing.id.clone()));
     let generation = app.change_generation;
-    let error = trash_work::recover_entry(&app.paths, removing.id.clone()).unwrap_err();
+    let result = trash_work::recover_entry(&app.paths, removing.id.clone());
+    assert_eq!(result, Ok(Vec::new()));
+    send(&mut app, Event::Recovered(generation, result));
+    assert_eq!(
+        app.trash_page.feedback(),
+        vec![("Recovered removing-marker.".to_owned(), false)]
+    );
+    load_current(&mut app);
+    assert_eq!(trash::pending_entries(&app.paths).unwrap().len(), 1);
+    assert!(
+        !app.trash_page
+            .snapshot()
+            .unwrap()
+            .entries
+            .iter()
+            .any(|entry| entry.id == removing.id)
+    );
+
+    // Recreated with other contents, it still wins, and the copy from
+    // before becomes an ordinary trash entry.
+    native(&app.paths, "edited-marker");
+    let edited = interrupted_remove(&app.paths, "edited-marker");
+    fs::write(
+        app.paths.environment_config("edited-marker"),
+        "schema_version = 1\nkind = 'native'\n# edited\n",
+    )
+    .unwrap();
+    load_current(&mut app);
+    send(&mut app, Event::Recover(edited.id.clone()));
+    let generation = app.change_generation;
+    let result = trash_work::recover_entry(&app.paths, edited.id.clone());
+    send(&mut app, Event::Recovered(generation, result));
+    let feedback = app.trash_page.feedback();
+    assert_eq!(feedback.len(), 2, "{feedback:?}");
+    assert_eq!(feedback[0], ("Recovered edited-marker.".to_owned(), false));
+    assert!(
+        feedback[1].0.contains(&format!(
+            "the copy from before is in trash entry {}",
+            edited.id
+        )),
+        "{feedback:?}"
+    );
+    load_current(&mut app);
+    let snapshot = app.trash_page.snapshot().unwrap();
+    assert_eq!(snapshot.pending.len(), 1);
+    assert!(
+        snapshot
+            .entries
+            .iter()
+            .any(|entry| entry.id == edited.id && entry.phase == Phase::Trashed)
+    );
+
+    // An interrupted restore still refuses to replace a config that appeared.
+    native(&app.paths, "restoring-marker");
+    send(&mut app, Event::Recover(restoring.id.clone()));
+    let generation = app.change_generation;
+    let error = trash_work::recover_entry(&app.paths, restoring.id.clone()).unwrap_err();
     assert!(error.contains("collision"), "{error}");
     send(&mut app, Event::Recovered(generation, Err(error.clone())));
     assert_eq!(
-        app.trash_page.recovery_errors.get(&removing.id),
+        app.trash_page.recovery_errors.get(&restoring.id),
         Some(&error)
     );
     load_current(&mut app);
-    assert_eq!(trash::pending_entries(&app.paths).unwrap().len(), 2);
-
-    fs::remove_file(app.paths.environment_config("removing-marker")).unwrap();
-    send(&mut app, Event::Recover(removing.id.clone()));
-    let generation = app.change_generation;
-    assert_eq!(
-        trash_work::recover_entry(&app.paths, removing.id.clone()),
-        Ok(())
-    );
-    send(&mut app, Event::Recovered(generation, Ok(())));
-    load_current(&mut app);
     assert_eq!(trash::pending_entries(&app.paths).unwrap().len(), 1);
 
+    fs::remove_file(app.paths.environment_config("restoring-marker")).unwrap();
     send(&mut app, Event::Recover(restoring.id.clone()));
     let generation = app.change_generation;
     assert_eq!(
         trash_work::recover_entry(&app.paths, restoring.id.clone()),
-        Ok(())
+        Ok(Vec::new())
     );
-    send(&mut app, Event::Recovered(generation, Ok(())));
+    send(&mut app, Event::Recovered(generation, Ok(Vec::new())));
     load_current(&mut app);
     assert!(trash::pending_entries(&app.paths).unwrap().is_empty());
     assert!(app.trash_page.snapshot().unwrap().pending.is_empty());
@@ -944,4 +992,42 @@ fn active_remove_refuses_trash_restore_and_prune() {
         app.change_generation,
         Err("test cancellation".into()),
     ));
+}
+
+#[test]
+fn recovery_shows_a_copy_it_kept_in_the_trash() {
+    let Some((_root, _config, mut app)) = pending_fixture() else {
+        return;
+    };
+    native(&app.paths, "edited");
+    trash::set_trash_failpoint(Some("out.after_publish"));
+    let result = trash::remove(&app.paths, "edited", false);
+    trash::set_trash_failpoint(None);
+    assert!(result.unwrap_err().to_string().contains("injected"));
+    let id = trash::pending_entries(&app.paths).unwrap()[0].id.clone();
+    // Edited after the copy, so recovery keeps both versions.
+    let config = app.paths.environment_config("edited");
+    fs::write(&config, "schema_version = 1\nkind = 'native'\n# edited\n").unwrap();
+
+    open_trash(&mut app);
+    send(&mut app, Event::Recover(id.clone()));
+    let generation = app.change_generation;
+    let result = trash_work::recover_entry(&app.paths, id.clone());
+    send(&mut app, Event::Recovered(generation, result));
+    let feedback = app.trash_page.feedback();
+    assert_eq!(feedback[0], ("Recovered edited.".to_owned(), false));
+    assert_eq!(feedback.len(), 2, "{feedback:?}");
+    assert!(
+        feedback[1]
+            .0
+            .contains(&format!("the copy from before is in trash entry {id}")),
+        "{feedback:?}"
+    );
+    assert!(!feedback[1].1);
+    let _ = app.trash_view();
+    load_current(&mut app);
+    let snapshot = app.trash_page.snapshot().unwrap();
+    assert!(snapshot.pending.is_empty());
+    assert!(snapshot.entries.iter().any(|entry| entry.id == id));
+    assert!(fs::read_to_string(config).unwrap().contains("# edited"));
 }

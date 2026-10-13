@@ -15,6 +15,19 @@ pub(crate) fn write_atomic(path: &Path, contents: impl AsRef<[u8]>) -> Result<()
     write_unique(path, contents.as_ref()).context(|| format!("failed to write {}", path.display()))
 }
 
+/// `write_atomic` that survives a power loss: the temp file reaches the disk
+/// before the rename, and the rename before this returns.
+pub(crate) fn write_atomic_synced(path: &Path, contents: impl AsRef<[u8]>) -> Result<()> {
+    let options = Options {
+        mode: None,
+        sync: true,
+    };
+    let dir = path.parent().unwrap_or(Path::new("."));
+    write_with(path, contents.as_ref(), &COUNTER, options)
+        .and_then(|()| fs::File::open(dir)?.sync_all())
+        .context(|| format!("failed to write {}", path.display()))
+}
+
 /// One counter for every kind of writer, so they never race for a temp name.
 static COUNTER: AtomicU64 = AtomicU64::new(0);
 
@@ -119,6 +132,16 @@ mod tests {
         write_atomic(&path, "two").unwrap();
         assert_eq!(fs::read_to_string(&path).unwrap(), "two");
         assert_eq!(fs::read_dir(path.parent().unwrap()).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn synced_write_replaces_contents_without_leaving_temp_files() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("game.toml");
+        fs::write(&path, "one").unwrap();
+        write_atomic_synced(&path, "two").unwrap();
+        assert_eq!(fs::read_to_string(&path).unwrap(), "two");
+        assert_eq!(fs::read_dir(root.path()).unwrap().count(), 1);
     }
 
     #[test]
