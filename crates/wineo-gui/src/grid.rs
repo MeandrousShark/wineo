@@ -21,7 +21,7 @@ const ACTION_MENU_SPACING: f32 = 4.0;
 const ACTION_MENU_HEADER_HEIGHT: f32 = 20.0;
 const INSTALL_BAR_HEIGHT: f32 = 4.0;
 const CARD_TITLE_SIZE: f32 = 14.0;
-const CARD_POSTER_HEIGHT: f32 = 240.0;
+pub(crate) const CARD_POSTER_HEIGHT: f32 = 240.0;
 const CARD_SPACING: f32 = 4.0;
 /// The identifier line and the state and playtime row.
 const CARD_CONTEXT_SIZE: f32 = 12.0;
@@ -69,11 +69,47 @@ impl App {
     pub(crate) fn grid(&self) -> Element<'_, Message> {
         let filtered = self.filtered();
         let names = filtered.iter().map(|card| card.name.clone()).collect();
+        let scene = (!self.collapse.idle()).then(|| crate::grid_motion::Scene {
+            collapse: &self.collapse,
+            posters: filtered
+                .iter()
+                .enumerate()
+                .map(|(index, card)| {
+                    self.collapse
+                        .fell(index)
+                        .then(|| self.loose_poster(card))
+                        .flatten()
+                })
+                .collect(),
+            on_press: self.collapse.restorable().then_some(Message::Rebuild),
+        });
         let cards = filtered.into_iter().map(|card| self.card(card)).collect();
-        crate::grid_motion::grid(cards, names, &self.grid_motion)
+        crate::grid_motion::grid(cards, names, &self.grid_motion, scene)
+    }
+    /// The poster a collapsed card shows on its own, or a plain surface
+    /// when it has no art.
+    fn loose_poster(&self, card: &Card) -> Option<(iced::widget::image::Handle, f32)> {
+        let placeholder = self.collapse.placeholder()?;
+        let dimmed = card.not_installed();
+        let art = card.art.as_ref().and_then(|art| {
+            let key = (art.clone(), crate::artwork::Kind::Grid);
+            if dimmed {
+                self.dimmed_images.get(&key)
+            } else {
+                self.images.get(&key)
+            }
+        });
+        let opacity = if dimmed {
+            crate::panel::DIMMED_OPACITY
+        } else {
+            1.0
+        };
+        Some((art.unwrap_or(placeholder).clone(), opacity))
     }
     fn card<'a>(&'a self, card: &'a Card) -> Element<'a, Message> {
-        let palette = self.palette;
+        let alpha = self.collapse.alpha();
+        let caption = self.collapse.caption_alpha();
+        let palette = self.palette.faded(alpha);
         let hovered = self.hovered.as_ref() == Some(&card.name);
         let selected = self.selected.as_ref() == Some(&card.name);
         let dimmed = card.not_installed();
@@ -91,13 +127,16 @@ impl App {
                 .height(Fill)
                 .content_fit(ContentFit::Cover)
                 .border_radius(4)
-                .opacity(if dimmed {
-                    crate::panel::DIMMED_OPACITY
-                } else if hovered {
-                    0.85_f32
-                } else {
-                    1.0_f32
-                })
+                .opacity(
+                    alpha
+                        * if dimmed {
+                            crate::panel::DIMMED_OPACITY
+                        } else if hovered {
+                            0.85_f32
+                        } else {
+                            1.0_f32
+                        },
+                )
                 .into(),
             None => container(
                 text(&card.display_title)
@@ -127,11 +166,14 @@ impl App {
             )))
             .width(20)
             .height(20)
-            .opacity(if dimmed {
-                crate::panel::DIMMED_OPACITY
-            } else {
-                1.0_f32
-            });
+            .opacity(
+                alpha
+                    * if dimmed {
+                        crate::panel::DIMMED_OPACITY
+                    } else {
+                        1.0_f32
+                    },
+            );
             layers = layers.push(
                 container(mark)
                     .width(Fill)
@@ -190,7 +232,7 @@ impl App {
         let label =
             crate::tile_title::lines(&card.display_title, CARD_WIDTH, CARD_TITLE_SIZE, title_font)
                 .join("\n");
-        let dot_color = card.dot(palette);
+        let dot_color = card.dot(palette).scale_alpha(caption);
         let meta = row![
             container(Space::new())
                 .width(CARD_DOT)
@@ -200,10 +242,10 @@ impl App {
                     .border(border::rounded(4))),
             text(card.state_word())
                 .size(CARD_CONTEXT_SIZE)
-                .color(palette.muted),
+                .color(palette.muted.scale_alpha(caption)),
             text(card.playtime())
                 .size(CARD_CONTEXT_SIZE)
-                .color(palette.muted),
+                .color(palette.muted.scale_alpha(caption)),
         ]
         .spacing(CARD_META_SPACING)
         .align_y(Center);
@@ -213,11 +255,14 @@ impl App {
                 .size(CARD_TITLE_SIZE)
                 .height(crate::tile_title::two_line_height(CARD_TITLE_SIZE))
                 .font(title_font)
-                .color(if dimmed {
-                    palette.muted
-                } else {
-                    palette.foreground
-                })
+                .color(
+                    if dimmed {
+                        palette.muted
+                    } else {
+                        palette.foreground
+                    }
+                    .scale_alpha(caption)
+                )
                 .wrapping(iced::widget::text::Wrapping::None),
         ]
         .spacing(CARD_SPACING)
@@ -226,7 +271,7 @@ impl App {
             content = content.push(
                 text(truncate_name(&card.name, CARD_WIDTH))
                     .size(CARD_CONTEXT_SIZE)
-                    .color(palette.muted)
+                    .color(palette.muted.scale_alpha(caption))
                     .wrapping(iced::widget::text::Wrapping::None),
             );
         }
@@ -749,6 +794,8 @@ impl App {
         let library = mouse_area(wheel::scale(scroll, WHEEL_STEP_SCALE));
         let library = if self.panel_open {
             library.on_press(Message::ClosePanel)
+        } else if self.collapse.faded() {
+            library.on_press(Message::Rebuild)
         } else {
             library
         };

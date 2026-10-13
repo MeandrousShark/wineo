@@ -1,5 +1,6 @@
 use std::time::{Duration, Instant};
 
+use iced::advanced::image::Renderer as _;
 use iced::advanced::layout;
 use iced::advanced::mouse;
 use iced::advanced::overlay;
@@ -7,8 +8,12 @@ use iced::advanced::renderer;
 use iced::advanced::widget::operation::{Outcome, Scrollable};
 use iced::advanced::widget::{Id, Operation, Tree, tree};
 use iced::advanced::{Clipboard, Layout, Shell, Widget};
-use iced::{Element, Event, Fill, Length, Point, Rectangle, Renderer, Size, Task, Theme, Vector};
+use iced::widget::image;
+use iced::{
+    Element, Event, Fill, Length, Point, Radians, Rectangle, Renderer, Size, Task, Theme, Vector,
+};
 
+use crate::collapse::{Collapse, Look};
 use crate::{CARD_WIDTH, GAP, SCROLL_ID};
 
 const DURATION: Duration = Duration::from_millis(300);
@@ -204,7 +209,7 @@ fn slots(sizes: &[Size], columns: usize) -> (Vec<Point>, f32) {
     )
 }
 
-fn bounded_axis(from: f32, to: f32, progress: f32) -> f32 {
+pub(crate) fn bounded_axis(from: f32, to: f32, progress: f32) -> f32 {
     let travel = to - from;
     if progress < 0.0 {
         from + MAX_OVERSHOOT * (travel * progress / MAX_OVERSHOOT).tanh()
@@ -215,10 +220,20 @@ fn bounded_axis(from: f32, to: f32, progress: f32) -> f32 {
     }
 }
 
-pub(crate) fn grid<'a, Message: 'a>(
+/// What the grid needs while the cards are collapsed. Cards then ignore
+/// their own input, and a click on one sends `on_press` instead.
+pub(crate) struct Scene<'a, Message> {
+    pub(crate) collapse: &'a Collapse,
+    /// Each card's poster and its opacity, drawn on its own once loose.
+    pub(crate) posters: Vec<Option<(image::Handle, f32)>>,
+    pub(crate) on_press: Option<Message>,
+}
+
+pub(crate) fn grid<'a, Message: Clone + 'a>(
     cards: Vec<Element<'a, Message>>,
     names: Vec<String>,
     motion: &GridMotion,
+    scene: Option<Scene<'a, Message>>,
 ) -> Element<'a, Message> {
     Element::new(Grid {
         cards,
@@ -227,6 +242,7 @@ pub(crate) fn grid<'a, Message: 'a>(
             .map(|index| motion.progress(index))
             .collect(),
         fallback: motion.target,
+        scene,
     })
 }
 
@@ -235,6 +251,7 @@ struct Grid<'a, Message> {
     names: Vec<String>,
     positions: Vec<f32>,
     fallback: f32,
+    scene: Option<Scene<'a, Message>>,
 }
 
 #[derive(Default)]
@@ -243,9 +260,60 @@ struct GridState {
     sizes: Vec<Size>,
     closed: Vec<Point>,
     open: Vec<Point>,
+    looks: Vec<Look>,
 }
 
-impl<Message> Widget<Message, Theme, Renderer> for Grid<'_, Message> {
+impl GridState {
+    fn look(&self, index: usize) -> Look {
+        self.looks
+            .get(index)
+            .copied()
+            .unwrap_or(Look::Normal(Vector::ZERO))
+    }
+}
+
+/// Whether `point` is over a card drawn with `look` at `bounds`. A loose
+/// card only answers over its rotated poster.
+fn hit(look: Look, bounds: Rectangle, point: Point) -> bool {
+    match look {
+        Look::Hidden => false,
+        Look::Normal(_) => bounds.contains(point),
+        Look::Loose { rotation, .. } => {
+            let poster = poster_bounds(bounds);
+            let offset = point - poster.center();
+            let (sin, cos) = rotation.sin_cos();
+            let x = offset.x * cos + offset.y * sin;
+            let y = -offset.x * sin + offset.y * cos;
+            x.abs() <= poster.width / 2.0 && y.abs() <= poster.height / 2.0
+        }
+    }
+}
+
+/// The poster's area inside a card's node, within its selection frame.
+fn poster_bounds(card: Rectangle) -> Rectangle {
+    Rectangle::new(
+        card.position() + Vector::new(2.0, 2.0),
+        Size::new(CARD_WIDTH - 4.0, crate::grid::CARD_POSTER_HEIGHT - 4.0),
+    )
+}
+
+/// The poster's drawn size: its art fit inside the frame without cropping,
+/// since a rotated image can't be clipped to an upright frame.
+fn contain(handle: &image::Handle, frame: Rectangle) -> Rectangle {
+    let size = match handle {
+        image::Handle::Rgba { width, height, .. } if *width > 0 && *height > 0 => {
+            let scale = (frame.width / *width as f32).min(frame.height / *height as f32);
+            Size::new(*width as f32 * scale, *height as f32 * scale)
+        }
+        _ => frame.size(),
+    };
+    Rectangle::new(
+        frame.center() - Vector::new(size.width / 2.0, size.height / 2.0),
+        size,
+    )
+}
+
+impl<Message: Clone> Widget<Message, Theme, Renderer> for Grid<'_, Message> {
     fn tag(&self) -> tree::Tag {
         tree::Tag::of::<GridState>()
     }
@@ -289,6 +357,8 @@ impl<Message> Widget<Message, Theme, Renderer> for Grid<'_, Message> {
             state.open = slots(&sizes, columns(width - DOCK_WIDTH)).0;
         }
         let mut height = 2.0 * PADDING;
+        let collapse = self.scene.as_ref().map(|scene| scene.collapse);
+        state.looks.clear();
         let children = nodes
             .into_iter()
             .enumerate()
@@ -298,8 +368,18 @@ impl<Message> Widget<Message, Theme, Renderer> for Grid<'_, Message> {
                     bounded_axis(state.closed[index].x, state.open[index].x, progress),
                     bounded_axis(state.closed[index].y, state.open[index].y, progress),
                 );
+                // The content height follows the real slots only, so a
+                // collapse never changes the scroll range.
                 height = height.max(position.y + sizes[index].height + PADDING);
-                node.move_to(position)
+                let look = collapse.map_or(Look::Normal(Vector::ZERO), |collapse| {
+                    collapse.look(index, position)
+                });
+                state.looks.push(look);
+                node.move_to(match look {
+                    Look::Normal(offset) => position + offset,
+                    Look::Loose { position, .. } => position,
+                    Look::Hidden => position,
+                })
             })
             .collect();
         layout::Node::with_children(Size::new(width, height), children)
@@ -339,6 +419,27 @@ impl<Message> Widget<Message, Theme, Renderer> for Grid<'_, Message> {
         shell: &mut Shell<'_, Message>,
         viewport: &Rectangle,
     ) {
+        if let Some(scene) = &self.scene {
+            if let Event::Mouse(mouse::Event::ButtonPressed(button)) = event
+                && let Some(point) = cursor.position()
+                && viewport.contains(point)
+            {
+                let state = tree.state.downcast_ref::<GridState>();
+                let over = layout
+                    .children()
+                    .enumerate()
+                    .any(|(index, layout)| hit(state.look(index), layout.bounds(), point));
+                if over {
+                    if *button == mouse::Button::Left
+                        && let Some(message) = &scene.on_press
+                    {
+                        shell.publish(message.clone());
+                    }
+                    shell.capture_event();
+                }
+            }
+            return;
+        }
         for ((card, state), layout) in self
             .cards
             .iter_mut()
@@ -368,15 +469,39 @@ impl<Message> Widget<Message, Theme, Renderer> for Grid<'_, Message> {
         cursor: mouse::Cursor,
         viewport: &Rectangle,
     ) {
-        for ((card, state), layout) in self
+        let grid = tree.state.downcast_ref::<GridState>();
+        for (index, ((card, state), layout)) in self
             .cards
             .iter()
             .zip(&tree.children)
             .zip(layout.children())
-            .filter(|(_, layout)| layout.bounds().intersects(viewport))
+            .enumerate()
         {
-            card.as_widget()
-                .draw(state, renderer, theme, style, layout, cursor, viewport);
+            match grid.look(index) {
+                Look::Hidden => {}
+                Look::Normal(_) => {
+                    if layout.bounds().intersects(viewport) {
+                        card.as_widget()
+                            .draw(state, renderer, theme, style, layout, cursor, viewport);
+                    }
+                }
+                Look::Loose { rotation, .. } => {
+                    let Some(scene) = &self.scene else { continue };
+                    let Some((handle, opacity)) = scene.posters.get(index).cloned().flatten()
+                    else {
+                        continue;
+                    };
+                    let frame = poster_bounds(layout.bounds());
+                    // Clipped only to the view, so the rotated corners show.
+                    renderer.draw_image(
+                        iced::advanced::image::Image::new(handle.clone())
+                            .rotation(Radians(rotation))
+                            .opacity(opacity),
+                        contain(&handle, frame),
+                        *viewport,
+                    );
+                }
+            }
         }
     }
 
@@ -388,6 +513,20 @@ impl<Message> Widget<Message, Theme, Renderer> for Grid<'_, Message> {
         viewport: &Rectangle,
         renderer: &Renderer,
     ) -> mouse::Interaction {
+        if self.scene.is_some() {
+            let state = tree.state.downcast_ref::<GridState>();
+            let over = cursor.position().is_some_and(|point| {
+                layout
+                    .children()
+                    .enumerate()
+                    .any(|(index, layout)| hit(state.look(index), layout.bounds(), point))
+            });
+            return if over {
+                mouse::Interaction::Pointer
+            } else {
+                mouse::Interaction::default()
+            };
+        }
         self.cards
             .iter()
             .rev()
@@ -413,6 +552,9 @@ impl<Message> Widget<Message, Theme, Renderer> for Grid<'_, Message> {
         viewport: &Rectangle,
         translation: Vector,
     ) -> Option<overlay::Element<'a, Message, Theme, Renderer>> {
+        if self.scene.is_some() {
+            return None;
+        }
         overlay::from_children(
             &mut self.cards,
             tree,
@@ -548,6 +690,28 @@ mod tests {
         assert_eq!(motion.springs[7].velocity, velocity);
         motion.tick(motion.generation(), start + Duration::from_millis(220));
         assert!(motion.progress(7) < position);
+    }
+
+    #[test]
+    fn loose_cards_answer_clicks_only_over_their_rotated_poster() {
+        let bounds = Rectangle::new(Point::new(100.0, 100.0), Size::new(160.0, 300.0));
+        let poster = poster_bounds(bounds);
+        let corner = poster.position() + Vector::new(4.0, 4.0);
+        let caption = Point::new(180.0, 380.0);
+        let upright = Look::Loose {
+            position: bounds.position(),
+            rotation: 0.0,
+        };
+        let turned = Look::Loose {
+            position: bounds.position(),
+            rotation: std::f32::consts::FRAC_PI_4,
+        };
+        assert!(hit(upright, bounds, corner));
+        assert!(!hit(upright, bounds, caption));
+        assert!(!hit(turned, bounds, corner));
+        assert!(hit(turned, bounds, poster.center()));
+        assert!(hit(Look::Normal(Vector::ZERO), bounds, caption));
+        assert!(!hit(Look::Hidden, bounds, poster.center()));
     }
 
     #[test]

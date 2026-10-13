@@ -5,6 +5,7 @@ mod artwork;
 mod checkup;
 mod checkup_work;
 mod chips;
+mod collapse;
 mod download_progress;
 mod downloads_page;
 mod downloads_work;
@@ -83,6 +84,9 @@ pub(crate) struct App {
     panel_open: bool,
     panel_motion: panel_motion::PanelMotion,
     grid_motion: grid_motion::GridMotion,
+    collapse: collapse::Collapse,
+    /// The desktop asked for reduced motion, read once at startup.
+    reduced_motion: bool,
     grid_scroll_after_settle: Option<String>,
     pub(crate) target: Option<String>,
     card_click_target: Option<(String, Option<String>)>,
@@ -230,6 +234,11 @@ pub(crate) enum Message {
     LibraryReloaded(u64, Result<Vec<Card>, String>),
     TrashReloaded(u64, sidebar::TrashBadge),
     Section(sidebar::Section),
+    /// A sidebar row was clicked, as opposed to a keyboard shortcut.
+    SectionClicked(sidebar::Section),
+    Rebuild,
+    CollapseTick(u64, Instant),
+    ReducedMotion(bool),
     TrashBadgeLoaded(sidebar::TrashBadge),
     ArtLoaded(ArtKey, Result<image::Handle, String>),
     Scrolled(scrollable::Viewport),
@@ -309,6 +318,8 @@ impl App {
             panel_open: false,
             panel_motion: panel_motion::PanelMotion::default(),
             grid_motion: grid_motion::GridMotion::default(),
+            collapse: collapse::Collapse::default(),
+            reduced_motion: false,
             grid_scroll_after_settle: None,
             target: None,
             card_click_target: None,
@@ -410,6 +421,7 @@ impl App {
                 key_presence,
                 gog_check,
                 iced::system::theme().map(Message::ThemeChanged),
+                read_reduced_motion(),
             ]),
         )
     }
@@ -518,6 +530,13 @@ impl App {
         } else {
             Subscription::none()
         };
+        let collapse = if !self.panel_hidden() && self.collapse.animating() {
+            window::frames()
+                .with(self.collapse.generation())
+                .map(|(generation, now)| Message::CollapseTick(generation, now))
+        } else {
+            Subscription::none()
+        };
         Subscription::batch([
             iced::time::every(Duration::from_secs(2)).map(|_| Message::Refresh),
             iced::system::theme_changes().map(Message::ThemeChanged),
@@ -526,6 +545,7 @@ impl App {
             spinner,
             panel_motion,
             grid_motion,
+            collapse,
             idle,
             if self.toast.is_some() || self.feature_notice.is_some() {
                 iced::time::every(Duration::from_millis(100)).map(Message::ToastTick)
@@ -587,6 +607,14 @@ impl App {
         {
             return Task::none();
         }
+        if !self.collapse.idle()
+            && matches!(
+                message,
+                Message::Select(_) | Message::DoubleClick(_) | Message::Context(_)
+            )
+        {
+            return Task::none();
+        }
         let task = match message {
             Message::SnapshotsEnvironment(name) => self.open_snapshots(Some(name)),
             Message::Snapshots(event) => self.snapshots_update(event),
@@ -612,6 +640,7 @@ impl App {
             | Message::ToastFocus(..)) => removal::update(self, message),
             Message::SearchChanged(search) => {
                 self.search = search;
+                self.collapse.reset();
                 self.grid_motion
                     .snap(self.panel_open, self.filtered().len());
                 self.grid_scroll_after_settle = None;
@@ -853,6 +882,33 @@ impl App {
                 Task::batch([library, badge, self.settings_tick()])
             }
             Message::Section(section) => self.navigate_section(section),
+            Message::SectionClicked(section) => {
+                let task = self.navigate_section(section);
+                if section == sidebar::Section::Library
+                    && self.collapse.clicks.record(Instant::now())
+                {
+                    self.start_collapse(Instant::now());
+                    task
+                } else {
+                    task
+                }
+            }
+            Message::Rebuild => {
+                if self.collapse.restorable() {
+                    self.collapse.restore(Instant::now());
+                }
+                Task::none()
+            }
+            Message::CollapseTick(generation, now) => {
+                if self.section == sidebar::Section::Library {
+                    self.collapse.tick(generation, now);
+                }
+                Task::none()
+            }
+            Message::ReducedMotion(reduced) => {
+                self.reduced_motion = reduced;
+                Task::none()
+            }
             Message::LibraryReloaded(generation, result) => {
                 if generation == self.library_generation {
                     self.update(Message::Loaded(result))
@@ -916,7 +972,7 @@ impl App {
             Message::Scrolled(viewport) => {
                 self.viewport_width = viewport.bounds().width;
                 self.viewport_height = viewport.bounds().height;
-                self.scroll_offset = viewport.absolute_offset().y;
+                self.on_scroll_offset(viewport.absolute_offset().y);
                 self.scroll_visible_until = Some(Instant::now() + Duration::from_millis(850));
                 self.load_visible_art()
             }
@@ -960,6 +1016,7 @@ impl App {
                 self.viewport_height = (size.height - 48.0).max(0.0);
                 self.grid_motion
                     .snap(self.panel_open, self.filtered().len());
+                self.collapse.reset();
                 self.load_visible_art()
             }
             Message::Window(window::Event::CloseRequested) => {
@@ -1313,6 +1370,11 @@ impl App {
                 .snap(self.panel_open, self.filtered().len());
             self.grid_scroll_after_settle = None;
         }
+        // Leaving the Library, an overlay, or the panel opening by any path
+        // puts the cards back at once.
+        if !self.collapse.idle() && (self.panel_hidden() || self.panel_open) {
+            self.collapse.reset();
+        }
         let task = if panel_was_open && !self.panel_open {
             task.chain(iced::advanced::widget::operate(
                 iced::advanced::widget::operation::focusable::unfocus(),
@@ -1497,6 +1559,7 @@ impl App {
             self.grid_motion
                 .snap(self.panel_open, self.filtered().len());
             self.grid_scroll_after_settle = None;
+            self.collapse.reset();
         }
         self.current_art = self
             .cards
@@ -1550,6 +1613,70 @@ impl App {
             {
                 self.dimmed_images.insert(key, handle);
             }
+        }
+    }
+    /// Records a new scroll offset. Scrolling moves the heap out of view, so
+    /// the cards go back at once rather than leaving nothing to click.
+    fn on_scroll_offset(&mut self, offset: f32) {
+        if offset != self.scroll_offset {
+            self.collapse.reset();
+        }
+        self.scroll_offset = offset;
+    }
+    /// Drops the visible cards, or fades them with reduced motion. The panel
+    /// closes without animating so the cards fall from their closed slots.
+    fn start_collapse(&mut self, now: Instant) {
+        if !self.collapse.idle()
+            || self.section != sidebar::Section::Library
+            || self.panel_hidden()
+            || self.filtered().is_empty()
+        {
+            return;
+        }
+        if self.panel_open {
+            self.close_panel();
+        }
+        self.panel_motion.snap(false);
+        self.grid_motion.snap(false, self.filtered().len());
+        self.grid_scroll_after_settle = None;
+        self.action_menu = None;
+        self.hovered = None;
+        if self.reduced_motion {
+            self.collapse.fade(now);
+        } else {
+            let filtered = self.filtered();
+            let heights: Vec<f32> = filtered
+                .iter()
+                .map(|card| grid::card_height(card))
+                .collect();
+            let columns = grid_motion::columns_for_viewport(self.viewport_width, false);
+            let floor = self.scroll_offset + self.viewport_height;
+            let visible = grid_motion::cards_between(&heights, columns, self.scroll_offset, floor);
+            // Nothing in view would leave only hidden cards and nothing to click.
+            if visible.is_empty() {
+                return;
+            }
+            // 2x3 so it keeps the poster's shape when fit into the frame.
+            let placeholder =
+                image::Handle::from_rgba(2, 3, self.palette.surface.into_rgba8().repeat(6));
+            let seed = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |elapsed| elapsed.as_nanos() as u64);
+            let count = heights.len();
+            self.collapse.fall(
+                now,
+                count,
+                visible,
+                collapse::Area {
+                    floor,
+                    width: self.viewport_width,
+                    columns,
+                    // A partly visible top row can start a card height above.
+                    drop: self.viewport_height + heights.iter().copied().fold(0.0, f32::max),
+                },
+                placeholder,
+                seed,
+            );
         }
     }
     pub(crate) fn filtered(&self) -> Vec<&Card> {
@@ -1730,6 +1857,23 @@ fn main() -> ExitCode {
             ExitCode::FAILURE
         }
     }
+}
+
+/// Reads GNOME's animation switch through the desktop portal, the same
+/// D-Bus service the file chooser uses. Any failure means full motion.
+fn read_reduced_motion() -> Task<Message> {
+    Task::perform(
+        async {
+            let Ok(settings) = ashpd::desktop::settings::Settings::new().await else {
+                return false;
+            };
+            settings
+                .read::<bool>("org.gnome.desktop.interface", "enable-animations")
+                .await
+                .is_ok_and(|enabled| !enabled)
+        },
+        Message::ReducedMotion,
+    )
 }
 
 /// Maps a runtime event to an app message. The mouse Back button becomes an
