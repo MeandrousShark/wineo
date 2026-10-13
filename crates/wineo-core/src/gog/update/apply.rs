@@ -1,11 +1,19 @@
-//! Applying a native GOG game's update, reinstalling it, or finishing an
-//! interrupted one.
+//! Applying an installer-tracked GOG game's update, reinstalling it, or
+//! finishing an interrupted one.
 //!
 //! `plan` resolves what the game is rebuilt from and reports sizes, reading
 //! only. `apply` takes the plan, rechecks it under the locks, and does the
-//! work: download every package, open them and check space, write the
-//! journal, stage every product, layer them, write the journal again with
-//! every entry it is about to write, publish, clean up, sync, and commit.
+//! work. A native game: download every package, open them and check space,
+//! write the journal, stage every product, layer them, write the journal
+//! again with every entry it is about to write, publish, clean up, sync, and
+//! commit. A Windows game: download each installer that runs, write the
+//! journal, and run them over the folder (see `windows`).
+//!
+//! A Windows update runs the full installer of each product with a newer
+//! version, the game's first. GOG's patch installers aren't used: GOG's
+//! details name no version a patch starts from, and the versions in a
+//! patch's name aren't the installer versions wineo records, so wineo can't
+//! tell which patch fits.
 //!
 //! Downloading and checking the packages holds no lock, so the game can
 //! still be played meanwhile. Then, in lock order: the owner's operation
@@ -47,6 +55,10 @@ pub struct Options {
     /// Write nothing while planning, for a dry run: product details aren't
     /// cached and another tool's build isn't recorded.
     pub read_only: bool,
+    /// Run a Windows game's installer as its own wizard instead of silently,
+    /// after it stopped before installing anything
+    /// (`SetupError::NotStarted` with `wizard`).
+    pub wizard: bool,
 }
 
 /// What updating one game would do.
@@ -74,6 +86,8 @@ pub struct Pending {
     files: Vec<PlannedFile>,
     seen: Seen,
     warnings: Vec<String>,
+    /// Run a Windows game's installer as its own wizard.
+    wizard: bool,
 }
 
 /// One product of the rebuild, for a review.
@@ -88,7 +102,8 @@ pub struct PlannedProduct {
     /// What the folder's state records now.
     pub installed: Option<String>,
     /// The version the rebuild installs. None for a product carried over
-    /// unchanged because it failed or wasn't available.
+    /// unchanged: one that failed or wasn't available, or a Windows
+    /// product whose installer doesn't run because it has nothing newer.
     pub version: Option<String>,
     pub status: ProductStatus,
     /// Its package's size, zero when carried over.
@@ -203,9 +218,19 @@ impl Pending {
 
     /// An estimate of the space unpacking takes, which is only known once
     /// the packages are downloaded: their size, since GOG's Linux packages
-    /// are barely compressed.
+    /// are barely compressed. Windows installers never say, so it's twice
+    /// their size.
     pub fn unpacked_estimate(&self) -> u64 {
-        self.files.iter().map(|file| file.size).sum()
+        let size = self.files.iter().map(|file| file.size).sum();
+        match self.target.platform {
+            Platform::Linux => size,
+            Platform::Windows => windows::estimate(size),
+        }
+    }
+
+    /// Whether a Windows game's installer runs as its own wizard.
+    pub fn wizard(&self) -> bool {
+        self.wizard
     }
 
     pub fn warnings(&self) -> &[String] {
@@ -254,14 +279,18 @@ pub struct Updated {
     pub warnings: Vec<String>,
 }
 
-/// Works out what updating `name`'s native GOG game does. Reads only: it
-/// takes no locks and writes nothing but GOG's product details cache and,
-/// when the login is renewed, the login.
+/// Works out what updating `name`'s installer-tracked GOG game does. Reads
+/// only: it takes no locks and writes nothing but GOG's product details
+/// cache and, when the login is renewed, the login.
 ///
 /// A folder with a journal is finished: from the cached packages its
 /// journal names when they all verify, which needs no session, else from
 /// GOG's current packages. Without a journal, `Plan::UpToDate` when nothing
 /// changed and `options.reinstall` is off.
+///
+/// A Windows game needs a graphical session. Its update runs the installer
+/// of each product with a newer version, and its reinstall every installed
+/// product's. Galaxy-tracked games are refused.
 pub fn plan(
     paths: &Paths,
     session: Option<&mut Session>,
@@ -292,13 +321,9 @@ pub fn plan(
             JournalKind::Install | JournalKind::Update | JournalKind::Reinstall => {}
         }
         let target = &journal.target;
-        if target.platform == Platform::Windows
-            && target.track == Track::Installer
-            && journal.kind == JournalKind::Install
-        {
+        installer_only(name, target.platform, target.track)?;
+        if target.platform == Platform::Windows {
             windows::check_graphical()?;
-        } else {
-            native_only(name, target.platform, target.track)?;
         }
         if let Some(files) = cached(paths, journal, token)? {
             let products = journal
@@ -318,6 +343,14 @@ pub fn plan(
                         .map(|file| file.size)
                         .sum(),
                 })
+                .map(|mut planned| {
+                    // A Windows product the journal has no installer for
+                    // doesn't run.
+                    if !files.iter().any(|file| file.product == planned.id) {
+                        planned.version = None;
+                    }
+                    planned
+                })
                 .collect();
             return Ok(Plan::Update(Pending {
                 environment: name.to_owned(),
@@ -330,10 +363,11 @@ pub fn plan(
                 files,
                 seen,
                 warnings: Vec::new(),
+                wizard: options.wizard,
             }));
         }
         let session = session.ok_or(AccountError::LoggedOut)?;
-        let resolved = resolve(
+        let mut resolved = resolve(
             paths,
             session,
             name,
@@ -349,12 +383,21 @@ pub fn plan(
                 read_only: options.read_only,
             },
         )?;
+        if target.platform == Platform::Windows {
+            // What an earlier attempt ran may be half done, so it runs
+            // again whatever GOG offers now.
+            let named: Vec<u64> = journal.packages.iter().map(|p| p.product).collect();
+            select_windows(&mut resolved, state.committed.as_ref(), |id| {
+                named.contains(&id)
+            });
+        }
         return Ok(Plan::Update(resolved.pending(
             name,
             folder,
             journal.kind,
             true,
             seen,
+            options.wizard,
         )));
     }
 
@@ -362,7 +405,10 @@ pub fn plan(
         .committed
         .clone()
         .ok_or_else(|| anyhow::anyhow!("{name}'s GOG install hasn't started."))?;
-    native_only(name, committed.platform, committed.track)?;
+    installer_only(name, committed.platform, committed.track)?;
+    if committed.platform == Platform::Windows {
+        windows::check_graphical()?;
+    }
     let session = session.ok_or(AccountError::LoggedOut)?;
     let mut refresh = options.refresh;
     if !options.reinstall {
@@ -401,13 +447,13 @@ pub fn plan(
         // reuse an older copy that is still fresh.
         refresh = refresh && options.read_only;
     }
-    let resolved = resolve(
+    let mut resolved = resolve(
         paths,
         session,
         name,
         &state,
         Wanted {
-            platform: Platform::Linux,
+            platform: committed.platform,
             language: &committed.language,
             products: &committed.products,
             names: &names,
@@ -417,14 +463,72 @@ pub fn plan(
             read_only: options.read_only,
         },
     )?;
+    if committed.platform == Platform::Windows {
+        select_windows(&mut resolved, Some(&committed), |_| options.reinstall);
+        if resolved.files.is_empty() {
+            // GOG went back to what is installed since the check.
+            return Ok(Plan::UpToDate {
+                environment: name.to_owned(),
+                version: installed_version(&state, committed.gog_id),
+            });
+        }
+    }
     let kind = if options.reinstall {
         JournalKind::Reinstall
     } else {
         JournalKind::Update
     };
-    Ok(Plan::Update(
-        resolved.pending(name, folder, kind, false, seen),
-    ))
+    Ok(Plan::Update(resolved.pending(
+        name,
+        folder,
+        kind,
+        false,
+        seen,
+        options.wizard,
+    )))
+}
+
+/// Narrows a Windows rebuild to the products whose installers run: each
+/// installed product with a version other than the committed one, or that
+/// `always` picks. Every other product keeps what is committed for it, so
+/// none is recorded at a version it never got.
+fn select_windows(
+    resolved: &mut Resolved,
+    committed: Option<&Committed>,
+    always: impl Fn(u64) -> bool,
+) {
+    let previous = |id: u64| committed.and_then(|c| c.products.iter().find(|p| p.id == id));
+    let runs: Vec<u64> = resolved
+        .target
+        .products
+        .iter()
+        .filter(|product| product.status == ProductStatus::Installed)
+        .filter(|product| {
+            always(product.id)
+                || previous(product.id).is_none_or(|old| {
+                    old.status != ProductStatus::Installed || old.version != product.version
+                })
+        })
+        .map(|product| product.id)
+        .collect();
+    resolved.files.retain(|file| runs.contains(&file.product));
+    for product in &mut resolved.target.products {
+        if product.status != ProductStatus::Installed || runs.contains(&product.id) {
+            continue;
+        }
+        let Some(old) = previous(product.id) else {
+            continue;
+        };
+        *product = old.clone();
+        if let Some(planned) = resolved
+            .products
+            .iter_mut()
+            .find(|planned| planned.id == product.id)
+        {
+            planned.version = None;
+            planned.download_size = 0;
+        }
+    }
 }
 
 fn kind_word(kind: JournalKind) -> &'static str {
@@ -436,12 +540,11 @@ fn kind_word(kind: JournalKind) -> &'static str {
     }
 }
 
-/// Refuses a Windows game, naming the plan whose release updates it.
-fn native_only(name: &str, platform: Platform, track: Track) -> Result<()> {
+/// Refuses a Galaxy-tracked game, which a later release updates.
+fn installer_only(name: &str, platform: Platform, track: Track) -> Result<()> {
     let name = name.to_owned();
     match (platform, track) {
-        (Platform::Linux, Track::Installer) => Ok(()),
-        (Platform::Windows, Track::Installer) => Err(UpdateError::WindowsInstaller { name }.into()),
+        (_, Track::Installer) => Ok(()),
         (Platform::Windows, Track::Galaxy) => Err(UpdateError::Galaxy { name }.into()),
         (Platform::Linux, Track::Galaxy) => Err(UpdateError::CantCompare {
             name,
@@ -485,7 +588,13 @@ pub(super) fn cached(
     covered.dedup();
     let mut wanted = installed;
     wanted.sort_unstable();
-    if journal.packages.is_empty() || covered != wanted {
+    // A native rebuild unpacks every installed product; a Windows one runs
+    // only the installers its journal names.
+    let whole = match journal.target.platform {
+        Platform::Linux => covered == wanted,
+        Platform::Windows => covered.iter().all(|id| wanted.contains(id)),
+    };
+    if journal.packages.is_empty() || !whole {
         return Ok(None);
     }
     let cache = DownloadCache::new(paths.gog_download_cache());
@@ -546,6 +655,7 @@ impl Resolved {
         kind: JournalKind,
         recovery: bool,
         seen: Seen,
+        wizard: bool,
     ) -> Pending {
         Pending {
             environment: name.to_owned(),
@@ -558,6 +668,7 @@ impl Resolved {
             files: self.files,
             seen,
             warnings: self.warnings,
+            wizard,
         }
     }
 }
@@ -835,10 +946,11 @@ fn run(
     })
 }
 
-/// Finishes an interrupted Windows install: downloads what isn't cached,
-/// checks everything again under the locks, names the packages in the
-/// journal, and runs every installer again over the folder, which is how an
-/// Inno installer is repaired. Nothing in the folder is removed.
+/// Updates or reinstalls a Windows game, or finishes an interrupted install,
+/// update, or reinstall: downloads what isn't cached, checks everything
+/// again under the locks, writes or renews the journal naming the packages,
+/// and runs each planned installer over the folder, which is also how an
+/// Inno installer is repaired. Nothing in the folder is ever removed.
 fn run_windows(
     paths: &Paths,
     session: Option<&mut Session>,
@@ -900,11 +1012,36 @@ fn run_windows(
             md5: file.md5.clone(),
         })
         .collect();
-    let journal = state.journal.as_mut().ok_or_else(changed)?;
-    if journal.target != target || journal.packages != packages {
-        journal.target = target.clone();
-        journal.packages = packages;
-        lock.write(&state)?;
+    // Whether this attempt starts the journal, so nothing has run before it.
+    let fresh = state.journal.is_none();
+    match state.journal.as_mut() {
+        Some(journal) => {
+            if journal.target != target || journal.packages != packages {
+                journal.target = target.clone();
+                journal.packages = packages;
+                lock.write(&state)?;
+            }
+        }
+        None => {
+            if pending.recovery {
+                return Err(changed().into());
+            }
+            state.journal = Some(Journal {
+                operation: operation_id(),
+                kind: pending.kind,
+                target: target.clone(),
+                packages,
+                attempted: super::install::windows_attempted(),
+            });
+            // The last check before the first write.
+            if token.is_canceled() {
+                return Err(UpdateError::Canceled { journal: false }.into());
+            }
+            failpoint("update.journal.before")?;
+            lock.write(&state)?;
+            *journaled = true;
+            failpoint("update.journal.after")?;
+        }
     }
     *journaled = true;
     // The journal names the packages now, which keeps them cached.
@@ -945,8 +1082,10 @@ fn run_windows(
             create: None,
             tag: &language,
             requested: &language,
-            wizard: false,
+            wizard: pending.wizard,
             desktop: false,
+            committed: state.committed.as_ref(),
+            fresh,
         },
         token,
         &mut |_| {},

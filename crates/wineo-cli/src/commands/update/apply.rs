@@ -115,6 +115,7 @@ fn plan(
             refresh: args.refresh,
             // A dry run caches nothing and records nothing.
             read_only: args.dry_run,
+            wizard: false,
         },
         &cancellation.token,
     )

@@ -4,7 +4,7 @@
 //! An Inno installer runs its own scripts and programs, so its package
 //! doesn't say every file it writes. Its journal names only the folder,
 //! nothing is ever deleted after a failed run, and finishing an interrupted
-//! install runs the full installers again. A run is judged by its exit code;
+//! install or update runs the full installers again. A run is judged by its exit code;
 //! afterwards the game's `goggame-<id>.info` says which language it
 //! installed in and how it starts.
 
@@ -262,7 +262,8 @@ pub(super) struct Job<'a> {
     pub(super) title: &'a str,
     /// Updated with each DLC that fails before changing anything.
     pub(super) target: &'a mut Target,
-    /// Each product's setup program, run in the target's order.
+    /// The setup program of each product that runs, in the target's order.
+    /// Other products are left as they are.
     pub(super) setups: &'a BTreeMap<u64, PathBuf>,
     pub(super) label: &'a dyn Fn(u64) -> String,
     /// The environment's operation lock, holding `prefix` too, taken before
@@ -280,6 +281,13 @@ pub(super) struct Job<'a> {
     pub(super) wizard: bool,
     /// Whether a default target gets a desktop entry.
     pub(super) desktop: bool,
+    /// What an update or reinstall starts from. A DLC whose installer
+    /// stopped before installing anything keeps its entry here.
+    pub(super) committed: Option<&'a Committed>,
+    /// Whether this attempt wrote the journal, so nothing ran before it.
+    /// Then an update whose game installer stopped before installing
+    /// anything drops the journal, since the game is as committed.
+    pub(super) fresh: bool,
 }
 
 /// What a Windows install found once its installers ran.
@@ -315,6 +323,8 @@ pub(super) fn install(
         requested,
         wizard,
         desktop,
+        committed,
+        fresh,
     } = job;
     // Passed through creation and each installer and back, so the
     // environment and its prefix stay reserved until the commit.
@@ -328,16 +338,16 @@ pub(super) fn install(
     let order: Vec<u64> = target
         .products
         .iter()
-        .filter(|product| product.status == ProductStatus::Installed)
+        .filter(|product| {
+            product.status == ProductStatus::Installed && setups.contains_key(&product.id)
+        })
         .map(|product| product.id)
         .collect();
     for id in order {
         if token.is_canceled() {
             return Err(UpdateError::Canceled { journal: true }.into());
         }
-        let Some(exe) = setups.get(&id) else {
-            bail!("{} has no downloaded installer", label(id));
-        };
+        let exe = &setups[&id];
         let exe_text = exe.to_string_lossy().into_owned();
         let base = id == gog_id;
         let interactive = base && wizard;
@@ -413,6 +423,7 @@ pub(super) fn install(
                 return Err(partway(detail).into());
             }
             SetupExit::NotStarted(code) if base => {
+                give_up(&lock, committed.filter(|_| fresh))?;
                 return Err(SetupError::NotStarted {
                     product: id,
                     label: label(id),
@@ -422,6 +433,7 @@ pub(super) fn install(
                 .into());
             }
             SetupExit::Canceled if base => {
+                give_up(&lock, committed.filter(|_| fresh))?;
                 return Err(SetupError::Canceled {
                     product: id,
                     label: label(id),
@@ -439,14 +451,28 @@ pub(super) fn install(
                     }
                     _ => "its installer was canceled before installing anything".to_owned(),
                 };
-                warnings.push(format!("{} failed and wasn't installed: {why}.", label(id)));
                 let product = target
                     .products
                     .iter_mut()
                     .find(|product| product.id == id)
                     .expect("in the target");
-                product.status = ProductStatus::Failed;
-                product.version = None;
+                // A DLC already installed is still there as it was.
+                match committed.and_then(|committed| {
+                    committed
+                        .products
+                        .iter()
+                        .find(|old| old.id == id && old.status == ProductStatus::Installed)
+                }) {
+                    Some(old) => {
+                        warnings.push(format!("{} wasn't updated: {why}.", label(id)));
+                        *product = old.clone();
+                    }
+                    None => {
+                        warnings.push(format!("{} failed and wasn't installed: {why}.", label(id)));
+                        product.status = ProductStatus::Failed;
+                        product.version = None;
+                    }
+                }
             }
         }
         failpoint(if base {
@@ -502,9 +528,10 @@ pub(super) fn install(
     if token.is_canceled() {
         return Err(UpdateError::Canceled { journal: true }.into());
     }
-    let added = match &launch {
-        Some(launch) => add_target(paths, name, title, launch, desktop)?,
-        None => None,
+    // An update leaves the targets you have as they are.
+    let added = match (&launch, committed) {
+        (Some(launch), None) => add_target(paths, name, title, launch, desktop)?,
+        _ => None,
     };
     // What the installers wrote reaches the disk before a state saying it's
     // installed does; a failure here leaves the journal.
@@ -531,6 +558,24 @@ pub(super) fn install(
         target: added,
         reported_language: reported.map(|(code, _)| code),
     })
+}
+
+/// After an update's game installer stopped before installing anything,
+/// drops the journal this attempt wrote, leaving the game as `committed`
+/// says and launchable. Without `committed` the journal stays for `wineo
+/// update` or installing again.
+fn give_up(lock: &FolderLock, committed: Option<&Committed>) -> Result<()> {
+    let Some(committed) = committed else {
+        return Ok(());
+    };
+    let Some(mut state) = lock.read()? else {
+        return Ok(());
+    };
+    if state.committed.as_ref() != Some(committed) {
+        return Ok(());
+    }
+    state.journal = None;
+    lock.write(&state)
 }
 
 /// Creates the environment and runs the base game's installer in it under

@@ -183,9 +183,6 @@ pub enum UpdateError {
     /// isn't taken for one that doesn't.
     #[error("{name} can't be checked: its config can't be read ({detail}).")]
     Unloadable { name: String, detail: String },
-    /// The same sentence `update --check` gives for these games.
-    #[error("Updating Windows installer games comes in a later release.")]
-    WindowsInstaller { name: String },
     #[error("Updating Galaxy builds comes in a later release.")]
     Galaxy { name: String },
     /// A journal of a kind this release can't finish yet, `repair`.

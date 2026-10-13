@@ -198,6 +198,9 @@ struct Gog {
     failing: Vec<u64>,
     /// Windows installers, each a setup program and its parts.
     windows: BTreeMap<u64, WindowsOffer>,
+    /// Windows patches GOG lists for a product, by name and version, like
+    /// `Patch (1.0 to 2.0)` and `2.0`. Their files are never served.
+    patches: BTreeMap<u64, Vec<(String, String)>>,
 }
 
 /// A product's Windows installer as GOG offers it.
@@ -258,10 +261,32 @@ impl Gog {
             })
             .chain(windows)
             .collect();
+        let patches: Vec<serde_json::Value> = self
+            .patches
+            .get(&id)
+            .into_iter()
+            .flatten()
+            .enumerate()
+            .map(|(number, (name, version))| {
+                serde_json::json!({
+                    "id": format!("en1patch{number}"),
+                    "name": name,
+                    "os": "windows",
+                    "language": "en",
+                    "version": version,
+                    "total_size": MIB,
+                    "files": [{
+                        "id": format!("en1patch{number}"),
+                        "size": MIB,
+                        "downlink": format!("{base}/downlink/patch_{id}_{number}.exe"),
+                    }],
+                })
+            })
+            .collect();
         serde_json::json!({
             "id": id,
             "title": offer.title,
-            "downloads": {"installers": installers},
+            "downloads": {"installers": installers, "patches": patches},
         })
     }
 
@@ -1645,18 +1670,12 @@ fn windows(fx: &Fixture, track: Track) {
 }
 
 #[test]
-fn windows_games_refuse_saying_updates_come_later() {
+fn galaxy_games_refuse_saying_updates_come_later() {
     let fx = Fixture::new();
-    for (track, said) in [
-        (
-            Track::Installer,
-            "Updating Windows installer games comes in a later release.",
-        ),
-        (
-            Track::Galaxy,
-            "Updating Galaxy builds comes in a later release.",
-        ),
-    ] {
+    for (track, said) in [(
+        Track::Galaxy,
+        "Updating Galaxy builds comes in a later release.",
+    )] {
         windows(&fx, track);
         let before = fx.state();
         for reinstall in [false, true] {

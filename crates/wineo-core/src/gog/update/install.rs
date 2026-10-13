@@ -1198,6 +1198,8 @@ fn run(
                 requested: &plan.language_name,
                 wizard: plan.wizard,
                 desktop: plan.desktop,
+                committed: None,
+                fresh: false,
             },
             token,
             events,
