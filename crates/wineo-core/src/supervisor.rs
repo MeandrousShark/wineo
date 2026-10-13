@@ -8,9 +8,7 @@ use std::io::{self, BufRead, BufReader, Read, Write};
 use std::os::unix::process::{CommandExt, ExitStatusExt};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Stdio};
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender, TryRecvError};
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
@@ -118,7 +116,6 @@ pub struct Supervisor {
     sender: Sender<Event>,
     signals: Option<Handle>,
     signal_thread: Option<JoinHandle<()>>,
-    signal_stop: Option<Arc<AtomicBool>>,
     token: Option<Token>,
 }
 
@@ -133,14 +130,12 @@ impl Supervisor {
         let handle = signals.handle();
         let (sender, events) = mpsc::channel();
         let signal_sender = sender.clone();
-        let signal_stop = Arc::new(AtomicBool::new(false));
-        let thread_stop = signal_stop.clone();
         let signal_thread = thread::spawn(move || {
-            while !thread_stop.load(Ordering::Relaxed) {
+            loop {
                 // Only SIGINT counts every delivery; other signals keep their
                 // original once-per-batch behavior.
                 let mut seen = BTreeSet::new();
-                for received in signals.pending() {
+                for received in signals.wait() {
                     let signal = received.si_signo;
                     if signal != SIGINT && !seen.insert(signal) {
                         continue;
@@ -154,7 +149,10 @@ impl Supervisor {
                         return;
                     }
                 }
-                thread::sleep(Duration::from_millis(20));
+                // Drop closes the handle, which wakes `wait` with an empty batch.
+                if signals.is_closed() {
+                    return;
+                }
             }
         });
         Ok(Self {
@@ -162,7 +160,6 @@ impl Supervisor {
             sender,
             signals: Some(handle),
             signal_thread: Some(signal_thread),
-            signal_stop: Some(signal_stop),
             token: None,
         })
     }
@@ -175,7 +172,6 @@ impl Supervisor {
             sender,
             signals: None,
             signal_thread: None,
-            signal_stop: None,
             token: Some(token.clone()),
         }
     }
@@ -275,24 +271,19 @@ impl Supervisor {
             let pid = i32::try_from(child.id()).ok().and_then(Pid::from_raw);
             if let Some(pid) = pid {
                 loop {
-                    match release_child.try_recv() {
-                        Ok(()) => {
-                            let _ = child.wait();
-                            let _ = reaped.send(());
-                            return;
-                        }
-                        Err(TryRecvError::Disconnected) => return,
-                        Err(TryRecvError::Empty) => {}
-                    }
+                    // NOWAIT keeps the child a zombie, so its pid can't be
+                    // reused while `watch` still checks the group and leader.
+                    // A child that outlives `watch` keeps this thread blocked,
+                    // which costs nothing, until it exits.
                     match waitid(
                         WaitId::Pid(pid),
-                        WaitIdOptions::EXITED | WaitIdOptions::NOHANG | WaitIdOptions::NOWAIT,
+                        WaitIdOptions::EXITED | WaitIdOptions::NOWAIT,
                     ) {
                         Ok(Some(status)) => {
                             let _ = sender.send(Event::Exited(Ok(wait_status(status))));
                             break;
                         }
-                        Ok(None) => thread::sleep(Duration::from_millis(20)),
+                        Ok(None) => {}
                         Err(err) => {
                             let err = io::Error::from(err);
                             if err.kind() == io::ErrorKind::Interrupted {
@@ -312,9 +303,8 @@ impl Supervisor {
                 )));
                 return;
             }
-            if release_child.recv().is_err() {
-                return;
-            }
+            // Either way `watch` is over, so the zombie can go.
+            let _ = release_child.recv();
             let _ = child.wait();
             let _ = reaped.send(());
         });
@@ -487,9 +477,6 @@ fn wait_status(status: rustix::process::WaitIdStatus) -> ExitStatus {
 
 impl Drop for Supervisor {
     fn drop(&mut self) {
-        if let Some(stop) = &self.signal_stop {
-            stop.store(true, Ordering::Relaxed);
-        }
         if let Some(signals) = &self.signals {
             signals.close();
         }
