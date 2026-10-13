@@ -494,9 +494,11 @@ pub struct Installed<S> {
 }
 
 /// Creates an environment, building or adopting its prefix, then runs `step`
-/// in it under the same lock. Creation failing or being canceled leaves
-/// nothing behind, like `run`. Once the config is saved the environment is
-/// kept however the step ends, and the caller reports how to recover.
+/// in it under the same lock. A failure or cancel before the config is saved
+/// leaves nothing behind. From `CreateEvent::Saved` on the environment is
+/// kept: an error from the work after it (the default target, components,
+/// desktop entries) still returns `Err`, and however the step ends, the
+/// caller reports how to recover.
 pub fn create_and_install<H: Hooks>(
     paths: &Paths,
     request: CreateRequest,
@@ -567,6 +569,11 @@ fn install<H: Hooks>(
             Ok(installer) => installer,
             Err(err) => return Stepped::NotPrepared(err),
         };
+    // Under the installer's lock, so the installer runs against the
+    // components the config asks for, like a launch does.
+    if let Err(err) = reconcile_components(paths, global, name, installer.launch(), hooks) {
+        return Stepped::NotPrepared(err);
+    }
     if let Err(stop) = hooks.ready(installer.launch()) {
         return Stepped::Stopped(stop);
     }
@@ -578,6 +585,50 @@ fn install<H: Hooks>(
     );
     let resolved = Runtime::new(paths, name).check_resolved(name).is_ok();
     Stepped::Ran { outcome, resolved }
+}
+
+fn reconcile_components<H: Hooks>(
+    paths: &Paths,
+    global: &GlobalConfig,
+    name: &str,
+    launch: &Launch,
+    hooks: &mut H,
+) -> crate::Result<()> {
+    let crate::launch::Host::Wine { runner, prefix } = &launch.host else {
+        return Ok(());
+    };
+    let environment = Environment::load(paths, name)?;
+    let wanted = Wanted::from_config(&environment.config);
+    let changes = install::reconcile(paths, global, name, runner, prefix, &wanted)?;
+    if !changes.is_empty() {
+        hooks.event(CreateEvent::Components(changes));
+    }
+    Ok(())
+}
+
+/// What every frontend does once an installer step has run.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AfterInstall {
+    /// Wine has settled, so offer what is installed as targets, whatever
+    /// the exit code.
+    Programs,
+    /// Canceled: keep the environment, skip the programs, and point to setup.
+    Canceled,
+    /// Something it started may still be running, so offer nothing and warn.
+    Unresolved,
+    /// It never started.
+    NotRun,
+}
+
+/// Decides what follows an installer run from how it ended.
+pub fn after_install(outcome: &crate::Result<installer::Outcome>, resolved: bool) -> AfterInstall {
+    match outcome {
+        _ if !resolved => AfterInstall::Unresolved,
+        Ok(installer::Outcome::Finished { .. }) => AfterInstall::Programs,
+        Ok(installer::Outcome::Canceled { .. }) => AfterInstall::Canceled,
+        Ok(installer::Outcome::Unresolved { .. }) => AfterInstall::Unresolved,
+        Err(_) => AfterInstall::NotRun,
+    }
 }
 
 fn add_default_target(
@@ -1256,6 +1307,8 @@ mod tests {
         events: Vec<&'static str>,
         token: Token,
         cancel_at: &'static str,
+        /// A config file and a line to add to it once the environment exists.
+        edit: Option<(PathBuf, &'static str)>,
     }
 
     impl Recorder {
@@ -1264,6 +1317,7 @@ mod tests {
                 events: Vec::new(),
                 token: token.clone(),
                 cancel_at,
+                edit: None,
             }
         }
 
@@ -1290,6 +1344,10 @@ mod tests {
         }
 
         fn created(&mut self, _created: &Created) -> Result<(), ()> {
+            if let Some((config, line)) = &self.edit {
+                let text = fs::read_to_string(config).unwrap();
+                fs::write(config, format!("{text}{line}\n")).unwrap();
+            }
             self.record("created");
             Ok(())
         }
@@ -1471,5 +1529,94 @@ mod tests {
                 .unwrap()
                 .is_none()
         );
+    }
+
+    #[test]
+    fn create_and_install_sets_up_components_before_the_installer() {
+        let root = tempfile::tempdir().unwrap();
+        let paths = paths(root.path());
+        installing_runner(&paths, "true");
+        fake_component(&paths, crate::components::Component::Dxvk, "2.6");
+        let setup = root.path().join("setup.exe");
+        fs::write(&setup, "").unwrap();
+        let token = Token::new();
+        let mut recorder = Recorder::new(&token, "");
+        // A change made after creation, like one made while art is picked,
+        // is what the installer gets.
+        recorder.edit = Some((paths.environment_config("game"), "dxvk = '2.6'"));
+        let log = root.path().join("install.log");
+        let step = Step::Installer {
+            program: setup.to_str().unwrap(),
+            output: Output::Log(&log),
+            token: &token,
+        };
+        let installed =
+            create_and_install(&paths, request("game"), Some(step), &token, &mut recorder).unwrap();
+        assert!(
+            matches!(installed.step, Stepped::Ran { outcome: Ok(_), .. }),
+            "{:?}",
+            installed.step
+        );
+        let created = recorder.events.iter().position(|event| *event == "created");
+        let components = recorder
+            .events
+            .iter()
+            .position(|event| *event == "components");
+        let ready = recorder.events.iter().position(|event| *event == "ready");
+        assert!(
+            created < components && components < ready,
+            "{:?}",
+            recorder.events
+        );
+    }
+
+    #[test]
+    fn after_install_offers_programs_once_wine_has_settled_whatever_the_exit_code() {
+        use installer::Outcome;
+        let unresolved = || Outcome::Unresolved {
+            exit_code: Some(0),
+            canceled: false,
+            error: Error::Unsettled("still running".to_owned()),
+        };
+        for (outcome, resolved, next) in [
+            (
+                Ok(Outcome::Finished { exit_code: Some(0) }),
+                true,
+                AfterInstall::Programs,
+            ),
+            (
+                Ok(Outcome::Finished { exit_code: Some(3) }),
+                true,
+                AfterInstall::Programs,
+            ),
+            (
+                Ok(Outcome::Finished { exit_code: None }),
+                true,
+                AfterInstall::Programs,
+            ),
+            (
+                Ok(Outcome::Finished { exit_code: Some(0) }),
+                false,
+                AfterInstall::Unresolved,
+            ),
+            (
+                Ok(Outcome::Canceled { exit_code: None }),
+                true,
+                AfterInstall::Canceled,
+            ),
+            (
+                Ok(Outcome::Canceled { exit_code: None }),
+                false,
+                AfterInstall::Unresolved,
+            ),
+            (Ok(unresolved()), false, AfterInstall::Unresolved),
+            (
+                Err(Error::Unsettled("no wine".to_owned())),
+                true,
+                AfterInstall::NotRun,
+            ),
+        ] {
+            assert_eq!(after_install(&outcome, resolved), next, "{outcome:?}");
+        }
     }
 }
