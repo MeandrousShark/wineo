@@ -25,7 +25,10 @@ pub(super) fn login(paths: &Paths) -> anyhow::Result<ExitCode> {
     };
     let account = Account::new();
     let logged_in = account::login(paths, account.keyring(), client, &pasted)?;
-    println!("Logged in to GOG as account {}.", logged_in.user_id);
+    match &logged_in.username {
+        Some(name) => println!("Logged in to GOG as {name}."),
+        None => println!("Logged in to GOG as account {}.", logged_in.user_id),
+    }
     if let Saved::File(path) = &logged_in.saved {
         eprintln!(
             "{}",
