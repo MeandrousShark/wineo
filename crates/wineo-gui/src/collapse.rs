@@ -28,6 +28,11 @@ const STACK_STEP: f32 = 26.0;
 pub(crate) const RESTORE_AFTER: Duration = Duration::from_secs(12);
 const FADE_OUT: Duration = Duration::from_secs(3);
 const FADE_IN: Duration = Duration::from_millis(800);
+/// Captions return over the end of a rebuild, once the posters are nearly
+/// home; a card turns back into its real self at this spring progress.
+const CAPTION_DELAY: Duration = Duration::from_millis(150);
+const CAPTION_FADE: Duration = Duration::from_millis(150);
+const HOME: f32 = 0.98;
 /// The poster's half size inside its 2 px selection frame.
 const HALF_POSTER: Vector = Vector::new(78.0, 118.0);
 const FRAME: f32 = 2.0;
@@ -68,12 +73,14 @@ struct Fall {
 }
 
 /// The view the heap lands in: its bottom edge and width in grid content
-/// coordinates, and how many columns the cards wrap at.
+/// coordinates, how many columns the cards wrap at, and the farthest any
+/// visible card's slot sits above the floor.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) struct Area {
     pub(crate) floor: f32,
     pub(crate) width: f32,
     pub(crate) columns: usize,
+    pub(crate) drop: f32,
 }
 
 #[derive(Debug, Default)]
@@ -89,6 +96,7 @@ enum Phase {
         resting: bool,
     },
     Rebuild {
+        started: Instant,
         area: Area,
         falls: Vec<Option<Fall>>,
         placeholder: image::Handle,
@@ -206,6 +214,7 @@ impl Collapse {
                 motion.snap(false, falls.len());
                 motion.retarget(true, falls.len(), now);
                 self.phase = Phase::Rebuild {
+                    started: now,
                     area,
                     falls,
                     placeholder,
@@ -240,7 +249,7 @@ impl Collapse {
                 let settle = falls
                     .iter()
                     .flatten()
-                    .map(|fall| fall.delay + fall.settle(area.floor))
+                    .map(|fall| fall.delay + fall.settle(area.drop))
                     .fold(0.0, f32::max);
                 if fall_seconds(*started, now) >= settle {
                     *resting = true;
@@ -318,14 +327,26 @@ impl Collapse {
 
     /// The whole card's opacity, for the faded version.
     pub(crate) fn alpha(&self) -> f32 {
-        let now = self.now.unwrap_or_else(Instant::now);
         match &self.phase {
-            Phase::FadeOut { started } => 1.0 - smooth(progress(*started, now, FADE_OUT)),
+            Phase::FadeOut { started } => {
+                1.0 - smooth(progress(*started, self.now.unwrap_or(*started), FADE_OUT))
+            }
             Phase::Gone => 0.0,
             Phase::FadeIn { started, from } => {
-                from + (1.0 - from) * smooth(progress(*started, now, FADE_IN))
+                from + (1.0 - from)
+                    * smooth(progress(*started, self.now.unwrap_or(*started), FADE_IN))
             }
             _ => 1.0,
+        }
+    }
+
+    /// Whether card `index` dropped, so it may be drawn as a lone poster.
+    pub(crate) fn fell(&self, index: usize) -> bool {
+        match &self.phase {
+            Phase::Down { falls, .. } | Phase::Rebuild { falls, .. } => {
+                falls.get(index).is_some_and(Option::is_some)
+            }
+            _ => false,
         }
     }
 
@@ -336,7 +357,10 @@ impl Collapse {
             Phase::Down { started, .. } => {
                 1.0 - progress(*started, self.now.unwrap_or(*started), SHAKE)
             }
-            Phase::Rebuild { .. } => 0.0,
+            Phase::Rebuild { started, .. } => {
+                let now = self.now.unwrap_or(*started);
+                progress(*started + CAPTION_DELAY, now, CAPTION_FADE)
+            }
             _ => 1.0,
         }
     }
@@ -374,12 +398,19 @@ impl Collapse {
                 Some(fall) => {
                     let (start, rotation) = fall.pose(slot, *area, *from);
                     let progress = motion.progress(index);
-                    Look::Loose {
-                        position: Point::new(
-                            bounded_axis(start.x, slot.x, progress),
-                            bounded_axis(start.y, slot.y, progress),
-                        ),
-                        rotation: rotation * (1.0 - progress.clamp(0.0, 1.0)),
+                    let position = Point::new(
+                        bounded_axis(start.x, slot.x, progress),
+                        bounded_axis(start.y, slot.y, progress),
+                    );
+                    // Nearly home the leftover tilt is under two degrees, so
+                    // the real card takes over and its caption can fade in.
+                    if progress >= HOME {
+                        Look::Normal(position - slot)
+                    } else {
+                        Look::Loose {
+                            position,
+                            rotation: rotation * (1.0 - progress.clamp(0.0, 1.0)),
+                        }
                     }
                 }
                 None => Look::Normal(Vector::ZERO),
@@ -416,12 +447,12 @@ impl Fall {
 
     /// An upper bound on the seconds from release until the last bounce
     /// ends. The slot isn't known here, so this takes the worse of the
-    /// longest drop (from the top of the content) and the longest climb
-    /// (a card whose slot sits at the floor, below where it rests).
-    fn settle(&self, floor: f32) -> f32 {
+    /// longest drop (`drop`, from the highest visible slot) and the longest
+    /// climb (a card whose slot sits at the floor, below where it rests).
+    fn settle(&self, drop: f32) -> f32 {
         let climb =
             -(2.0 * HALF_POSTER.y + 2.0 * FRAME + HALF_POSTER.x.hypot(HALF_POSTER.y) + self.stack);
-        [floor.max(0.0), climb]
+        [drop.max(0.0), climb]
             .into_iter()
             .map(|height| {
                 let (mut total, mut speed) = self.landing(height);
@@ -534,6 +565,7 @@ mod tests {
         floor: 700.0,
         width: 900.0,
         columns: 3,
+        drop: 700.0,
     };
 
     #[test]
@@ -594,11 +626,15 @@ mod tests {
         collapse.restore(start + Duration::from_secs(4));
         assert!(collapse.animating());
         let slot = Point::new(192.0, 16.0);
+        collapse.tick(generation, start + Duration::from_millis(4010));
+        assert!(matches!(collapse.look(1, slot), Look::Loose { .. }));
+        assert_eq!(collapse.caption_alpha(), 0.0);
         collapse.tick(generation, start + Duration::from_millis(4299));
-        let Look::Loose { position, .. } = collapse.look(1, slot) else {
-            panic!("a rebuilding card keeps its poster look");
+        let Look::Normal(offset) = collapse.look(1, slot) else {
+            panic!("a card nearly home turns back into the real card");
         };
-        assert!((position.x - slot.x).abs() < 1.0 && (position.y - slot.y).abs() < 1.0);
+        assert!(offset.x.abs() < 1.0 && offset.y.abs() < 1.0);
+        assert!(collapse.caption_alpha() > 0.9);
         collapse.tick(generation, start + Duration::from_millis(4400));
         assert!(collapse.idle());
         assert_eq!(collapse.look(1, slot), Look::Normal(Vector::ZERO));
@@ -747,6 +783,26 @@ mod tests {
             cards.push(card("game-new", State::Inactive, 0));
             let _ = app.update(Message::Loaded(Ok(cards)));
             assert!(app.collapse.idle());
+            click_library(&mut app, 10);
+            assert!(!app.collapse.idle());
+            app.scroll_offset = 40.0;
+            app.on_scroll_offset(40.0);
+            assert!(!app.collapse.idle());
+            app.on_scroll_offset(120.0);
+            assert!(app.collapse.idle());
+        }
+
+        #[test]
+        fn a_far_scrolled_heap_settles_as_fast_as_one_at_the_top() {
+            let mut top = library(200);
+            click_library(&mut top, 10);
+            let mut deep = library(200);
+            deep.scroll_offset = 6000.0;
+            click_library(&mut deep, 10);
+            tick(&mut top, Duration::from_secs(3));
+            tick(&mut deep, Duration::from_secs(3));
+            assert!(top.collapse.resting());
+            assert!(deep.collapse.resting());
         }
 
         #[test]

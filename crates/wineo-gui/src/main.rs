@@ -978,7 +978,7 @@ impl App {
             Message::Scrolled(viewport) => {
                 self.viewport_width = viewport.bounds().width;
                 self.viewport_height = viewport.bounds().height;
-                self.scroll_offset = viewport.absolute_offset().y;
+                self.on_scroll_offset(viewport.absolute_offset().y);
                 self.scroll_visible_until = Some(Instant::now() + Duration::from_millis(850));
                 self.load_visible_art()
             }
@@ -1621,6 +1621,14 @@ impl App {
             }
         }
     }
+    /// Records a new scroll offset. Scrolling moves the heap out of view, so
+    /// the cards go back at once rather than leaving nothing to click.
+    fn on_scroll_offset(&mut self, offset: f32) {
+        if offset != self.scroll_offset {
+            self.collapse.reset();
+        }
+        self.scroll_offset = offset;
+    }
     /// Drops the visible cards, or fades them with reduced motion. The panel
     /// closes without animating so the cards fall from their closed slots.
     fn start_collapse(&mut self, now: Instant) -> Task<Message> {
@@ -1669,6 +1677,8 @@ impl App {
                     floor,
                     width: self.viewport_width,
                     columns,
+                    // A partly visible top row can start a card height above.
+                    drop: self.viewport_height + heights.iter().copied().fold(0.0, f32::max),
                 },
                 placeholder,
                 seed,

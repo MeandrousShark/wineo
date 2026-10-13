@@ -73,7 +73,13 @@ impl App {
             collapse: &self.collapse,
             posters: filtered
                 .iter()
-                .map(|card| self.loose_poster(card))
+                .enumerate()
+                .map(|(index, card)| {
+                    self.collapse
+                        .fell(index)
+                        .then(|| self.loose_poster(card))
+                        .flatten()
+                })
                 .collect(),
             on_press: self.collapse.restorable().then_some(Message::Rebuild),
         });
