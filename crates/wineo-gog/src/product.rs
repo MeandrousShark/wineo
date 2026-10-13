@@ -38,6 +38,8 @@ pub struct Images {
 pub struct DownloadFile {
     /// GOG's file id, like `en1installer0`.
     pub id: String,
+    /// Rounded by GOG to whole MiB, so only an estimate. The download
+    /// learns the exact size.
     pub size: u64,
     /// An API link that `Client::resolve_link` turns into the real download.
     pub downlink: String,
@@ -54,6 +56,7 @@ pub struct Download {
     pub language: String,
     pub language_full: Option<String>,
     pub version: Option<String>,
+    /// Rounded like each file's size.
     pub total_size: u64,
     pub files: Vec<DownloadFile>,
 }

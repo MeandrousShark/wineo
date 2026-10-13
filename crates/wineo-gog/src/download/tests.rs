@@ -16,7 +16,7 @@ use tempfile::TempDir;
 use super::*;
 use crate::cache::{CachedFile, write_record};
 use crate::error::Class;
-use crate::fake::{self, FakeGog, Reply, Request, json as reply, response};
+use crate::fake::{self, FakeGog, Reply, Request, json as reply, response, unsized_response};
 use crate::product::DownloadFile;
 
 const ACCESS: &str = "ACCESSSECRET0123456789";
@@ -24,6 +24,18 @@ const PRODUCT: u64 = 1094900565;
 const DOWNLOAD: &str = "installer_windows_en";
 const SETUP: &str = "setup_game_(64bit)_(123).exe";
 const PART1: &str = "setup_game_(64bit)_(123)-1.bin";
+const MIB: u64 = 1024 * 1024;
+
+/// How product details list a file's size, from its real one. GOG rounds
+/// to whole MiB, so the fixtures' small files are listed rounded up.
+fn round_up(size: u64) -> u64 {
+    size.div_ceil(MIB) * MIB
+}
+
+/// Rounded down, as a file over a MiB usually is: smaller than it is.
+fn round_down(size: u64) -> u64 {
+    size / MIB * MIB
+}
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Sum {
@@ -33,6 +45,8 @@ enum Sum {
     Missing,
     Junk,
     WrongTotal,
+    /// A total five bytes short of the file.
+    ShortTotal,
     /// A 500 to every checksum request.
     ServerError,
     /// A 500 to the first checksum request, then the right one.
@@ -72,6 +86,8 @@ struct Script {
     redirect: bool,
     /// Where redirects go, when not back to this server.
     redirect_to: Option<String>,
+    /// Whole files are sent without a `Content-Length`.
+    no_length: bool,
 }
 
 struct Gog {
@@ -81,6 +97,7 @@ struct Gog {
     cache: DownloadCache,
     /// The installer's file list, as product details would give it.
     siblings: Vec<DownloadFile>,
+    listing: fn(u64) -> u64,
 }
 
 fn body(len: usize, seed: usize) -> Vec<u8> {
@@ -155,6 +172,7 @@ fn handle(script: &Mutex<Script>, request: &Request) -> Reply {
         let (md5, total) = match script.sum {
             Sum::Wrong => (md5_of(b"something else"), body.len()),
             Sum::WrongTotal => (md5_of(body), body.len() + 5),
+            Sum::ShortTotal => (md5_of(body), body.len() - 5),
             _ => (md5_of(body), body.len()),
         };
         return match script.sum {
@@ -201,6 +219,7 @@ fn handle(script: &Mutex<Script>, request: &Request) -> Reply {
                 &[],
             ))
         }
+        (_, None) if script.no_length => Reply::Send(unsized_response(200, &[], body)),
         (Ranges::Honor, _) | (_, None) => fake::file(request, body),
         (Ranges::Whole, Some(_)) => Reply::Send(response(200, &[], body)),
         (Ranges::WrongStart, Some(start)) => Reply::Send(response(
@@ -224,6 +243,10 @@ fn handle(script: &Mutex<Script>, request: &Request) -> Reply {
 
 impl Gog {
     fn start(files: &[(&str, &str, Vec<u8>)]) -> Self {
+        Self::start_listed(files, round_up)
+    }
+
+    fn start_listed(files: &[(&str, &str, Vec<u8>)], listing: fn(u64) -> u64) -> Self {
         let script = Arc::new(Mutex::new(Script {
             files: files
                 .iter()
@@ -241,6 +264,7 @@ impl Gog {
             file_status: None,
             redirect: false,
             redirect_to: None,
+            no_length: false,
         }));
         let handler = Arc::clone(&script);
         let server = FakeGog::start(move |request| handle(&handler, request));
@@ -255,11 +279,20 @@ impl Gog {
                 .iter()
                 .map(|(id, _, body)| DownloadFile {
                     id: (*id).to_owned(),
-                    size: body.len() as u64,
+                    size: listing(body.len() as u64),
                     downlink: String::new(),
                 })
                 .collect(),
+            listing,
         }
+    }
+
+    /// One installer file of 1.5 MiB and a bit, listed rounded down.
+    fn big() -> Self {
+        Self::start_listed(
+            &[("en1installer0", SETUP, body(MIB as usize * 3 / 2 + 123, 0))],
+            round_down,
+        )
     }
 
     /// One installer file of 600 KB, a few chunks long.
@@ -275,12 +308,17 @@ impl Gog {
         self.script.lock().unwrap().files[file_id].1.clone()
     }
 
+    /// The file's real size, which the listing only rounds.
+    fn size(&self, file_id: &str) -> u64 {
+        self.body(file_id).len() as u64
+    }
+
     fn package<'a>(&'a self, file_id: &'a str) -> Package<'a> {
         Package {
             product_id: PRODUCT,
             download_id: DOWNLOAD,
             file_id,
-            size: self.body(file_id).len() as u64,
+            size: (self.listing)(self.size(file_id)),
             siblings: &self.siblings,
         }
     }
@@ -642,34 +680,204 @@ fn a_checksum_that_fails_once_is_tried_again() {
 }
 
 #[test]
-fn a_file_that_isn_t_the_listed_size_fails() {
-    let gog = Gog::one();
-    let size = gog.body("en1installer0").len() as u64;
-    let bigger = Package {
-        size: size + 10,
-        ..gog.package("en1installer0")
-    };
-    let smaller = Package {
-        size: size - 10,
-        ..gog.package("en1installer0")
-    };
-    for (sum, package) in [
-        (Sum::Right, bigger),
-        (Sum::NoUrl, bigger),
-        (Sum::NoUrl, smaller),
-        (Sum::WrongTotal, gog.package("en1installer0")),
+fn a_listing_off_by_rounding_still_downloads_at_the_exact_size() {
+    for sum in [Sum::Right, Sum::NoUrl] {
+        for offset in [10, -10, MIB as i64 - 1, -500_000] {
+            let gog = Gog::one();
+            gog.set(|script| script.sum = sum);
+            let size = gog.size("en1installer0");
+            let package = Package {
+                size: size.saturating_add_signed(offset),
+                ..gog.package("en1installer0")
+            };
+            let downloaded = gog.get(&package).unwrap();
+            assert_eq!(downloaded.size, size, "{sum:?} {offset}");
+            assert_eq!(
+                fs::read(&downloaded.path).unwrap(),
+                gog.body("en1installer0")
+            );
+            let record = cache::read_record(&gog.folder(), "en1installer0").unwrap();
+            assert_eq!(record.size, size);
+        }
+    }
+}
+
+#[test]
+fn sizes_gog_s_own_answers_disagree_on_fail() {
+    for (sum, no_length) in [
+        (Sum::WrongTotal, false),
+        (Sum::ShortTotal, false),
+        // Only the body itself shows it runs past the checksum's total.
+        (Sum::ShortTotal, true),
     ] {
-        gog.set(|script| script.sum = sum);
-        let error = gog.get(&package).unwrap_err();
+        let gog = Gog::one();
+        gog.set(|script| {
+            script.sum = sum;
+            script.no_length = no_length;
+        });
+        let error = gog.get(&gog.package("en1installer0")).unwrap_err();
         assert_eq!(
             (error.endpoint(), error.kind()),
             (Endpoint::Download, ErrorKind::WrongSize),
-            "{sum:?} {}",
-            package.size
+            "{sum:?} {no_length}"
         );
         assert_clean(&error);
         assert!(!gog.folder().join(SETUP).exists());
     }
+}
+
+#[test]
+fn a_rounded_down_listing_with_a_checksum_gets_the_exact_size() {
+    let gog = Gog::big();
+    let size = gog.size("en1installer0");
+    let package = gog.package("en1installer0");
+    assert!(package.size < size);
+    let seen = Mutex::new(Vec::new());
+    let downloaded = gog
+        .get_with(&package, &|| false, &|have, total| {
+            seen.lock().unwrap().push((have, total))
+        })
+        .unwrap();
+    assert_eq!(downloaded.size, size);
+    assert_eq!(
+        fs::read(&downloaded.path).unwrap(),
+        gog.body("en1installer0")
+    );
+    assert!(matches!(downloaded.verification, Verification::Md5(_)));
+    let seen = seen.into_inner().unwrap();
+    assert_eq!(seen.first(), Some(&(0, size)));
+    assert_eq!(seen.last(), Some(&(size, size)));
+    let files = gog.cache.files(PRODUCT).unwrap();
+    assert_eq!((files[0].size, files[0].complete), (size, true));
+
+    // Found again from the rounded listing, and the journal's exact size.
+    let again = gog.get(&package).unwrap();
+    assert!(again.reused);
+    assert_eq!(again.size, size);
+    let exact = Package { size, ..package };
+    assert!(
+        gog.cache
+            .complete(&exact, None, &|| false)
+            .unwrap()
+            .is_some()
+    );
+}
+
+#[test]
+fn without_a_checksum_the_length_gives_the_exact_size() {
+    let gog = Gog::big();
+    gog.set(|script| script.sum = Sum::NoUrl);
+    let size = gog.size("en1installer0");
+    let package = gog.package("en1installer0");
+    let seen = Mutex::new(Vec::new());
+    let downloaded = gog
+        .get_with(&package, &|| false, &|have, total| {
+            seen.lock().unwrap().push((have, total))
+        })
+        .unwrap();
+    assert_eq!(downloaded.size, size);
+    assert_eq!(downloaded.verification, Verification::SizeOnly);
+    assert_eq!(
+        fs::read(&downloaded.path).unwrap(),
+        gog.body("en1installer0")
+    );
+    let seen = seen.into_inner().unwrap();
+    // The listed size until the server's answer gives the exact one.
+    assert_eq!(seen.first(), Some(&(0, package.size)));
+    assert_eq!(seen.last(), Some(&(size, size)));
+    let record = cache::read_record(&gog.folder(), "en1installer0").unwrap();
+    assert_eq!((record.size, record.md5), (size, None));
+    assert!(gog.get(&package).unwrap().reused);
+}
+
+#[test]
+fn a_download_with_a_rounded_listing_resumes_after_an_interruption() {
+    for sum in [Sum::Right, Sum::NoUrl] {
+        let gog = Gog::big();
+        gog.set(|script| script.sum = sum);
+        let package = gog.package("en1installer0");
+        let started = Cell::new(false);
+        let error = gog
+            .get_with(&package, &|| started.get(), &|have, _| {
+                started.set(have > 0)
+            })
+            .unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::Canceled, "{sum:?}");
+        let part = fs::read(gog.folder().join(format!("{SETUP}.part"))).unwrap();
+        assert!(!part.is_empty(), "{sum:?}");
+        let record = cache::read_record(&gog.folder(), "en1installer0").unwrap();
+        assert_eq!(record.size, gog.size("en1installer0"), "{sum:?}");
+
+        let downloaded = gog.get(&package).unwrap();
+        assert_eq!(downloaded.size, gog.size("en1installer0"));
+        assert_eq!(
+            fs::read(&downloaded.path).unwrap(),
+            gog.body("en1installer0")
+        );
+        let files = gog.file_requests();
+        assert_eq!(files.len(), 2, "{sum:?}");
+        assert_eq!(
+            files[1].header("range"),
+            Some(format!("bytes={}-", part.len()).as_str()),
+            "{sum:?}"
+        );
+    }
+}
+
+#[test]
+fn a_whole_partial_file_without_a_checksum_is_not_fetched_again() {
+    let gog = Gog::big();
+    gog.set(|script| script.sum = Sum::NoUrl);
+    let record = Record {
+        md5: None,
+        ..gog.record("en1installer0")
+    };
+    gog.leave_partial(record, &gog.body("en1installer0"));
+    let downloaded = gog.get(&gog.package("en1installer0")).unwrap();
+    assert_eq!(downloaded.size, gog.size("en1installer0"));
+    assert_eq!(downloaded.verification, Verification::SizeOnly);
+    assert!(gog.file_requests().is_empty());
+    assert_eq!(gog.names(), [".en1installer0.json", SETUP]);
+}
+
+#[test]
+fn a_record_far_from_the_listing_without_a_checksum_starts_over() {
+    let gog = Gog::big();
+    gog.set(|script| script.sum = Sum::NoUrl);
+    let record = Record {
+        size: gog.size("en1installer0") + 2 * MIB,
+        md5: None,
+        ..gog.record("en1installer0")
+    };
+    gog.leave_partial(record, &gog.body("en1installer0")[..1000]);
+    let downloaded = gog.get(&gog.package("en1installer0")).unwrap();
+    assert_eq!(downloaded.size, gog.size("en1installer0"));
+    assert_eq!(gog.file_requests()[0].header("range"), None);
+}
+
+#[test]
+fn a_file_of_no_known_size_is_refused() {
+    let gog = Gog::big();
+    gog.set(|script| {
+        script.sum = Sum::NoUrl;
+        script.no_length = true;
+    });
+    let error = gog.get(&gog.package("en1installer0")).unwrap_err();
+    assert_eq!(
+        (error.endpoint(), error.kind(), error.class()),
+        (Endpoint::Download, ErrorKind::UnknownSize, Class::Malformed)
+    );
+    assert_clean(&error);
+    assert!(gog.names().is_empty(), "{:?}", gog.names());
+
+    // GOG's checksum gives the size the server didn't.
+    gog.set(|script| script.sum = Sum::Right);
+    let downloaded = gog.get(&gog.package("en1installer0")).unwrap();
+    assert_eq!(downloaded.size, gog.size("en1installer0"));
+    assert_eq!(
+        fs::read(&downloaded.path).unwrap(),
+        gog.body("en1installer0")
+    );
 }
 
 #[test]
@@ -711,7 +919,8 @@ fn a_complete_file_is_reused_without_any_request() {
         (again.path, again.verification),
         (first.path.clone(), first.verification.clone())
     );
-    assert_eq!(seen.get(), (package.size, package.size));
+    let size = gog.size("en1installer0");
+    assert_eq!(seen.get(), (size, size));
     assert_eq!(gog.server.requests().len(), requests);
 
     let md5 = md5_of(&gog.body("en1installer0"));
@@ -722,8 +931,9 @@ fn a_complete_file_is_reused_without_any_request() {
         Some(first.path.clone())
     );
     assert_eq!(complete(Some(&md5_of(b"other"))), None);
+    // Further from the listed size than GOG's rounding goes.
     let other_size = Package {
-        size: package.size - 1,
+        size: size + 2 * MIB,
         ..package
     };
     assert_eq!(
