@@ -566,21 +566,9 @@ mod tests {
 
     #[test]
     fn input_counts_as_focus_when_no_focused_event_comes() {
-        let (_root, mut app) = shown(&["game"]);
-        let _ = app.update(Message::Window(iced::window::Event::Unfocused));
+        use iced::window::Event::{Focused, Unfocused};
         let press =
-            iced::Event::Mouse(iced::mouse::Event::ButtonPressed(iced::mouse::Button::Left));
-        let moved = iced::Event::Mouse(iced::mouse::Event::CursorMoved {
-            position: iced::Point::ORIGIN,
-        });
-        assert!(
-            crate::unfocused_input(&moved).is_none(),
-            "only presses count"
-        );
-        let message = crate::unfocused_input(&press).unwrap();
-        let _ = app.update(message);
-        assert!(app.focused);
-        assert!(app.refreshing && app.trash_refreshing);
+            || iced::Event::Mouse(iced::mouse::Event::ButtonPressed(iced::mouse::Button::Left));
         let key = iced::Event::Keyboard(iced::keyboard::Event::KeyPressed {
             key: iced::keyboard::Key::Named(iced::keyboard::key::Named::Enter),
             modified_key: iced::keyboard::Key::Named(iced::keyboard::key::Named::Enter),
@@ -592,7 +580,36 @@ mod tests {
             text: None,
             repeat: false,
         });
-        assert!(crate::unfocused_input(&key).is_some());
+        let moved = iced::Event::Mouse(iced::mouse::Event::CursorMoved {
+            position: iced::Point::ORIGIN,
+        });
+        assert!(
+            crate::window_or_press(moved).is_none(),
+            "only presses count"
+        );
+        assert!(matches!(
+            crate::window_or_press(key),
+            Some(Message::Pressed)
+        ));
+        // Events reach update in the order they happened, through one mapping.
+        let run = |events: Vec<iced::Event>| {
+            let (_root, mut app) = shown(&["game"]);
+            for event in events {
+                let _ = app.update(crate::window_or_press(event).unwrap());
+            }
+            (app.focused, app.refreshing && app.trash_refreshing)
+        };
+        let window = iced::Event::Window;
+        assert_eq!(
+            run(vec![window(Focused), window(Unfocused), press()]),
+            (true, true),
+            "a press after losing focus counts as focus"
+        );
+        assert_eq!(
+            run(vec![window(Focused), press(), window(Unfocused)]),
+            (false, false),
+            "a press before losing focus doesn't"
+        );
     }
 
     fn paused<F: Future>(future: F) -> F::Output {

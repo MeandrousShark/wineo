@@ -243,8 +243,8 @@ pub(crate) enum Message {
     /// The parts of a periodic rescan that differ from what is shown.
     Rescanned(Box<rescan::Scan>),
     SettingsTick,
-    /// A key or mouse button press while the window counts as unfocused.
-    InputWhileUnfocused,
+    /// A key or mouse button press, which counts as focus while unfocused.
+    Pressed,
     Loaded(Result<Vec<Card>, String>),
     LibraryReloaded(u64, Result<Vec<Card>, String>),
     TrashReloaded(u64, sidebar::TrashBadge),
@@ -602,19 +602,11 @@ impl App {
         } else {
             Subscription::none()
         };
-        // X11 maps windows unfocused, and without a window manager no Focused
-        // follows, so real input counts as focus.
-        let unfocused_input = if self.focused {
-            Subscription::none()
-        } else {
-            iced::event::listen_with(|event, _, _| unfocused_input(&event))
-        };
         Subscription::batch([
             rescan,
             settings_tick,
-            unfocused_input,
             iced::system::theme_changes().map(Message::ThemeChanged),
-            window::events().map(|(_, event)| Message::Window(event)),
+            iced::event::listen_with(|event, _, _| window_or_press(event)),
             iced::event::listen_with(|event, status, _| event_message(event, status)),
             panel_motion,
             grid_motion,
@@ -956,7 +948,7 @@ impl App {
             }
             Message::Rescanned(scan) => self.rescanned(*scan),
             Message::SettingsTick => self.settings_tick(),
-            Message::InputWhileUnfocused | Message::Window(window::Event::Focused) => {
+            Message::Pressed | Message::Window(window::Event::Focused) => {
                 if self.focused {
                     Task::none()
                 } else {
@@ -1964,13 +1956,16 @@ fn read_reduced_motion() -> Task<Message> {
 
 /// Maps a runtime event to an app message. The mouse Back button becomes an
 /// uncaptured Escape so every page's existing Escape handling runs unchanged.
-fn unfocused_input(event: &iced::Event) -> Option<Message> {
-    matches!(
-        event,
+/// Window events and presses share one subscription so focus changes and
+/// input arrive in the order they happened. X11 maps windows unfocused, and
+/// without a window manager no Focused follows, so a press counts as focus.
+pub(crate) fn window_or_press(event: iced::Event) -> Option<Message> {
+    match event {
+        iced::Event::Window(event) => Some(Message::Window(event)),
         iced::Event::Keyboard(keyboard::Event::KeyPressed { .. })
-            | iced::Event::Mouse(iced::mouse::Event::ButtonPressed(_))
-    )
-    .then_some(Message::InputWhileUnfocused)
+        | iced::Event::Mouse(iced::mouse::Event::ButtonPressed(_)) => Some(Message::Pressed),
+        _ => None,
+    }
 }
 
 pub(crate) fn event_message(event: iced::Event, status: iced::event::Status) -> Option<Message> {
