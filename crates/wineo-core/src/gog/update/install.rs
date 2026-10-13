@@ -224,6 +224,13 @@ impl Plan {
         &self.language
     }
 
+    /// GOG's name for the language the base game installs in, like
+    /// `English`. Finishing from saved packages without GOG's details, it's
+    /// the tag asked for or GOG's code instead.
+    pub fn language_name(&self) -> &str {
+        &self.language_name
+    }
+
     /// Whether this carries on the environment's own interrupted install
     /// instead of creating the environment.
     pub fn resumes(&self) -> bool {

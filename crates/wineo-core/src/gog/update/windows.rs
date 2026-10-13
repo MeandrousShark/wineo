@@ -119,8 +119,29 @@ pub enum Event {
     Watched(Watched),
 }
 
+#[cfg(any(test, feature = "test-support"))]
+thread_local! {
+    static GRAPHICAL_SESSION: std::cell::Cell<Option<bool>> = const { std::cell::Cell::new(None) };
+}
+
+/// Makes Windows installs on this thread see a graphical session, or not,
+/// whatever the environment says, so a frontend's tests needn't set
+/// `DISPLAY`. None goes back to asking the environment.
+#[cfg(any(test, feature = "test-support"))]
+pub fn set_graphical_session(graphical: Option<bool>) {
+    GRAPHICAL_SESSION.with(|cell| cell.set(graphical));
+}
+
 /// Whether a Windows installer has a session to show its windows in.
 pub(super) fn check_graphical() -> Result<()> {
+    #[cfg(any(test, feature = "test-support"))]
+    if let Some(graphical) = GRAPHICAL_SESSION.with(std::cell::Cell::get) {
+        return if graphical {
+            Ok(())
+        } else {
+            Err(SetupError::NoGraphicalSession.into())
+        };
+    }
     #[cfg(test)]
     if let Some(graphical) = tests::graphical() {
         return if graphical {
