@@ -755,13 +755,21 @@ fn resumed(
                 .sum(),
         })
         .collect();
+    // GOG's name for the language isn't known without its details, so the
+    // tag asked for, when it is the same language.
+    let language_name =
+        if language::installer_code(&requested).as_deref() == Ok(target.language.as_str()) {
+            requested.clone()
+        } else {
+            target.language.clone()
+        };
     Ok(Plan {
         environment: request.name.clone(),
         gog_id: request.gog_id,
         title,
         folder,
         requested,
-        language_name: target.language.clone(),
+        language_name,
         language: target.language.clone(),
         desktop: request.desktop,
         resume: true,
