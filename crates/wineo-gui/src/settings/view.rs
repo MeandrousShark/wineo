@@ -838,7 +838,12 @@ fn gog_row<'a>(
         if let Some(url) = &settings.login_url {
             rows = rows.push(
                 row![
-                    text(url).size(13).color(palette.foreground).width(Fill),
+                    // One long word, so it has to break mid-word to fit.
+                    text(url)
+                        .size(13)
+                        .color(palette.foreground)
+                        .width(Fill)
+                        .wrapping(iced::widget::text::Wrapping::WordOrGlyph),
                     secondary_button("Copy link", palette).on_press(gog_send(GogEvent::CopyLink)),
                 ]
                 .spacing(8)
