@@ -179,6 +179,12 @@ impl Paths {
         }
     }
 
+    /// Where GOG games go when `defaults.games_root` is unset. Always under
+    /// the home directory, since GOG games live in the host library.
+    pub fn default_games_root(&self) -> PathBuf {
+        self.home.join("Games")
+    }
+
     /// The XDG data dir, even in a portable folder, for what belongs to this
     /// machine rather than the folder, like the SteamGridDB key.
     pub fn host_data(&self) -> &Path {

@@ -82,7 +82,18 @@ pub struct GlobalConfig {
     #[serde(default)]
     pub art: ArtConfig,
     #[serde(default)]
+    pub gog: GogConfig,
+    #[serde(default)]
     pub env: BTreeMap<String, String>,
+}
+
+/// GOG settings.
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct GogConfig {
+    /// A BCP 47 locale tag, like `en-US`. Unset means
+    /// `gog::language::DEFAULT`.
+    pub language: Option<String>,
 }
 
 /// Art fetched while `new` and `import` create an environment.
@@ -229,6 +240,8 @@ pub struct Defaults {
     pub runner_root: Option<String>,
     pub dxvk_root: Option<String>,
     pub vkd3d_root: Option<String>,
+    /// Where GOG installs put new games. Unset means `~/Games`.
+    pub games_root: Option<String>,
 }
 
 #[derive(Debug)]
@@ -703,6 +716,7 @@ impl Default for GlobalConfig {
             steam: None,
             defaults: Defaults::default(),
             art: ArtConfig::default(),
+            gog: GogConfig::default(),
             env: BTreeMap::new(),
         }
     }
@@ -717,6 +731,7 @@ impl Default for Defaults {
             runner_root: None,
             dxvk_root: None,
             vkd3d_root: None,
+            games_root: None,
         }
     }
 }
@@ -746,6 +761,9 @@ impl GlobalConfig {
         check_schema(path, text)?;
         let config: Self = parse_toml(path, text)?;
         validate_env(&config.env).map_err(|message| invalid(path, message))?;
+        if let Some(language) = &config.gog.language {
+            crate::gog::language::validate(language).map_err(|message| invalid(path, message))?;
+        }
         Ok(config)
     }
 
@@ -761,6 +779,29 @@ impl GlobalConfig {
             Some(root) => paths.config_path(root),
             None => Ok(paths.default_runner_root()),
         }
+    }
+
+    /// Where new GOG games get their folders. GOG commands refuse a portable
+    /// root before they get here, so this never lands in one.
+    pub fn games_root(&self, paths: &Paths) -> Result<std::path::PathBuf> {
+        match &self.defaults.games_root {
+            Some(root) => paths.config_path(root),
+            None => Ok(paths.default_games_root()),
+        }
+    }
+
+    /// The locale tag GOG installs are asked for, as written.
+    pub fn gog_language(&self) -> &str {
+        self.gog
+            .language
+            .as_deref()
+            .unwrap_or(crate::gog::language::DEFAULT)
+    }
+
+    /// GOG's installer language code for `gog_language`.
+    pub fn gog_installer_language(&self) -> String {
+        crate::gog::language::installer_code(self.gog_language())
+            .expect("a loaded config's language was validated")
     }
 }
 
@@ -1031,6 +1072,54 @@ mod tests {
         assert_eq!(config.defaults.arch, Arch::Win32);
         assert_eq!(config.defaults.prefix_root.as_deref(), Some("~/Games"));
         assert_eq!(config.env["WINEDEBUG"], "-all");
+    }
+
+    #[test]
+    fn games_root_defaults_to_games_in_home_and_follows_the_config() {
+        let paths = Paths::from_lookup(|key| (key == "HOME").then(|| "/home/me".into())).unwrap();
+        let unset = global("").unwrap();
+        assert_eq!(unset.defaults.games_root, None);
+        assert_eq!(
+            unset.games_root(&paths).unwrap(),
+            Path::new("/home/me/Games")
+        );
+        let set = global("[defaults]\ngames_root = \"~/Library\"\n").unwrap();
+        assert_eq!(
+            set.games_root(&paths).unwrap(),
+            Path::new("/home/me/Library")
+        );
+        let absolute = global("[defaults]\ngames_root = \"/mnt/games\"\n").unwrap();
+        assert_eq!(
+            absolute.games_root(&paths).unwrap(),
+            Path::new("/mnt/games")
+        );
+        let relative = global("[defaults]\ngames_root = \"games\"\n").unwrap();
+        assert_eq!(
+            relative.games_root(&paths).unwrap(),
+            paths.absolute("games").unwrap()
+        );
+    }
+
+    #[test]
+    fn gog_language_defaults_to_us_english() {
+        let unset = global("").unwrap();
+        assert_eq!(unset.gog_language(), "en-US");
+        assert_eq!(unset.gog_installer_language(), "en");
+        let empty = global("[gog]\n").unwrap();
+        assert_eq!(empty.gog_language(), "en-US");
+        let set = global("[gog]\nlanguage = \"pt-br\"\n").unwrap();
+        assert_eq!(set.gog_language(), "pt-br");
+        assert_eq!(set.gog_installer_language(), "br");
+    }
+
+    #[test]
+    fn a_bad_gog_language_fails_the_global_config() {
+        let err = global("[gog]\nlanguage = \"english\"\n").unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "invalid config /test/config.toml: Invalid gog.language: use a locale tag like en-US."
+        );
+        assert!(global("[gog]\nlanguag = \"en\"\n").is_err());
     }
 
     #[test]

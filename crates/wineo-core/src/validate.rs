@@ -2291,6 +2291,15 @@ mod tests {
     }
 
     #[test]
+    fn a_bad_gog_language_is_a_global_config_error() {
+        let f = Fixture::new();
+        f.global("[gog]\nlanguage = \"english\"\n");
+        assert_eq!(f.codes(), [Code::GlobalConfigInvalid]);
+        f.global("[defaults]\ngames_root = \"~/Library\"\n[gog]\nlanguage = \"de-AT\"\n");
+        assert_eq!(f.codes(), []);
+    }
+
+    #[test]
     fn a_broken_global_config_is_an_error_and_the_rest_is_still_checked() {
         let f = Fixture::new();
         f.wine("game", "[targets.game]\nexe = 'C:\\Game\\missing.exe'\n");
