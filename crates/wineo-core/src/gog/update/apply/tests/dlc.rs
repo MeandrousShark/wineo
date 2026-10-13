@@ -157,10 +157,10 @@ fn without_the_owned_ids_nothing_new_is_claimed() {
         "{:?}",
         status.warnings
     );
-    assert!(matches!(
-        fx.plan_with(true, Options::default()).unwrap(),
-        Plan::UpToDate { .. }
-    ));
+    match fx.plan_with(true, Options::default()).unwrap() {
+        Plan::UpToDate { warnings, .. } => assert_eq!(warnings, status.warnings),
+        Plan::Update(_) => panic!("expected up to date"),
+    }
 
     // An update for the game itself still runs, without the DLC, and says
     // why.

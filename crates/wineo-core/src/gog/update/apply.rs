@@ -72,6 +72,9 @@ pub enum Plan {
     UpToDate {
         environment: String,
         version: Option<String>,
+        /// What checking found worth saying anyway, like DLC ownership that
+        /// couldn't be told.
+        warnings: Vec<String>,
     },
     Update(Pending),
 }
@@ -472,6 +475,7 @@ pub fn plan(
                 return Ok(Plan::UpToDate {
                     environment: name.to_owned(),
                     version: status.installed,
+                    warnings: status.warnings,
                 });
             }
             UpdateState::Available => {}
@@ -518,6 +522,7 @@ pub fn plan(
             return Ok(Plan::UpToDate {
                 environment: name.to_owned(),
                 version: installed_version(&state, committed.gog_id),
+                warnings: resolved.warnings,
             });
         }
     }

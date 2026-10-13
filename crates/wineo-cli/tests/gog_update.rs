@@ -411,3 +411,83 @@ fn an_interrupted_update_is_pointed_out() {
     let json: Value = serde_json::from_str(&stdout(&out)).unwrap();
     assert_eq!(json["environments"][0]["unfinished"], true, "{json}");
 }
+
+const BIOTECH: u64 = 1826322804;
+
+/// GOG lists Biotech as a third RimWorld DLC, which the folder has no record
+/// of, with every installer at `version`.
+fn biotech(api: &GogApi, version: &str) {
+    api.with(|config| {
+        config.products.insert(
+            RIMWORLD,
+            product(
+                RIMWORLD,
+                "RimWorld",
+                &[installer("linux", "en", version)],
+                &[
+                    product(
+                        RIMWORLD_DLC[0],
+                        "Royalty",
+                        &[installer("linux", "en", version)],
+                        &[],
+                    ),
+                    product(
+                        RIMWORLD_DLC[1],
+                        "Ideology",
+                        &[installer("linux", "en", version)],
+                        &[],
+                    ),
+                    product(
+                        BIOTECH,
+                        "Biotech",
+                        &[installer("linux", "en", version)],
+                        &[],
+                    ),
+                ],
+            ),
+        );
+    });
+}
+
+#[test]
+fn check_json_lists_newly_owned_dlc_as_not_installed() {
+    let (f, api) = world();
+    biotech(&api, "1.6.4900 rev600");
+    api.with(|config| {
+        config.owned_ids = Some(vec![RIMWORLD, RIMWORLD_DLC[0], RIMWORLD_DLC[1], BIOTECH]);
+    });
+    let out = f.gog(&api, &["update", "--check", "--json"]);
+    assert_success(&out);
+    let json: Value = serde_json::from_str(&stdout(&out)).unwrap();
+    assert_eq!(json["warnings"], json!([]));
+    assert_eq!(
+        json["environments"][0]["dlc"][2],
+        json!({"id": BIOTECH.to_string(), "title": "Biotech", "state": "not_installed"})
+    );
+}
+
+#[test]
+fn an_up_to_date_game_still_says_its_dlc_ownership_couldnt_be_told() {
+    let (f, api) = world();
+    // Everything installed matches GOG; the owned ids list is a 404.
+    biotech(&api, "1.6.4871 rev588");
+    let warning = "warning: Couldn't check which DLC you own";
+
+    let out = f.gog(&api, &["update", "rimworld", "--yes"]);
+    assert_success(&out);
+    assert_eq!(stdout(&out).trim(), "Up to date.");
+    assert!(stderr(&out).contains(warning), "{}", stderr(&out));
+
+    let out = f.gog(&api, &["update", "--all", "--yes"]);
+    assert_success(&out);
+    assert!(
+        stdout(&out).contains("Nothing to update."),
+        "{}",
+        stdout(&out)
+    );
+    assert!(
+        stderr(&out).contains("warning: rimworld: Couldn't check which DLC you own"),
+        "{}",
+        stderr(&out)
+    );
+}

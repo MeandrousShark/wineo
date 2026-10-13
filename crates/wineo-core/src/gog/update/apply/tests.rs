@@ -895,9 +895,11 @@ fn up_to_date_is_a_no_op_and_cant_compare_refuses() {
         Plan::UpToDate {
             environment,
             version,
+            warnings,
         } => {
             assert_eq!(environment, "rimworld");
             assert_eq!(version.as_deref(), Some("1.0"));
+            assert!(warnings.is_empty(), "{warnings:?}");
         }
         Plan::Update(_) => panic!("expected up to date"),
     }

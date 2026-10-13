@@ -30,6 +30,8 @@ pub struct Config {
     pub owned: Vec<Value>,
     /// The owned list fails with this status instead of answering.
     pub owned_status: Option<u16>,
+    /// Every id the account owns, DLC included. Unset, the list is a 404.
+    pub owned_ids: Option<Vec<u64>>,
     /// Owned games per page. All on one page when unset.
     pub page_size: Option<usize>,
     /// This page of the owned list fails with this status.
@@ -70,6 +72,7 @@ impl Default for Config {
             token_status: None,
             owned: Vec::new(),
             owned_status: None,
+            owned_ids: None,
             page_size: None,
             owned_page_status: None,
             products: BTreeMap::new(),
@@ -329,6 +332,15 @@ fn answer(config: &mut Config, base: &str, target: &str, bearer: Option<&str>) -
                 })
                 .to_string(),
             )
+        }
+        ["user", "data", "games"] => {
+            if !signed_in {
+                return unauthorized();
+            }
+            match &config.owned_ids {
+                Some(ids) => reply(200, &json!({ "owned": ids }).to_string()),
+                None => reply(404, "{}"),
+            }
         }
         ["account", "getFilteredProducts"] => {
             if !signed_in {
