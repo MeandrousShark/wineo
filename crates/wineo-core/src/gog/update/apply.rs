@@ -1031,6 +1031,10 @@ fn run_windows(
             if journal.target != target || journal.packages != packages {
                 journal.target = target.clone();
                 journal.packages = packages;
+                // The last check before the journal changes.
+                if token.is_canceled() {
+                    return Err(UpdateError::Canceled { journal: true }.into());
+                }
                 lock.write(&state)?;
             }
         }

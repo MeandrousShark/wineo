@@ -1486,3 +1486,77 @@ fn an_update_names_the_language_asked_for_like_an_install() {
         ["Requested en-US; the installed game reports French."]
     );
 }
+
+/// Finishing an update whose DLC installer stopped partway, when the retry
+/// never starts: the DLC may be half updated, so the journal stays.
+#[test]
+fn a_dlc_that_never_starts_while_finishing_keeps_the_journal() {
+    for (base_too, code) in [(true, 1), (false, 3), (true, 7), (false, 2)] {
+        let fx = installed_windows();
+        if base_too {
+            base_v2(&fx);
+        }
+        dlc_v2(&fx);
+        fx.exits(DLC, 5);
+        fx.try_update(Options::default()).unwrap_err();
+        let committed = fx.state().committed;
+        fx.exits(DLC, code);
+        let error = fx.try_update(Options::default()).unwrap_err();
+        let product = match error.downcast_ref() {
+            Some(SetupError::NotStarted {
+                product, wizard, ..
+            }) => {
+                assert!(!wizard);
+                *product
+            }
+            Some(SetupError::Canceled { product, .. }) => *product,
+            _ => panic!("{error:#}"),
+        };
+        assert_eq!(product, DLC);
+        let state = fx.state();
+        assert_eq!(state.journal.unwrap().kind, JournalKind::Update);
+        assert_eq!(state.committed, committed);
+        assert!(fx.launch_refused());
+        assert_eq!(fx.read("saves/mine.sav"), "mine");
+
+        fs::remove_file(fx.runs().join(format!("exit-{DLC}"))).unwrap();
+        fx.try_update(Options::default()).unwrap();
+        let base = if base_too { "2.0" } else { "1.0" };
+        assert_eq!(versions(&fx), [(RIMWORLD, v(base)), (DLC, v("2.0"))]);
+        assert_settled(&fx);
+    }
+}
+
+#[test]
+fn a_dlc_that_never_starts_while_finishing_an_install_keeps_the_journal() {
+    let fx = offered();
+    fx.exits(DLC, 5);
+    fx.install_windows(&request()).unwrap_err();
+    fx.exits(DLC, 1);
+    let error = fx.install_windows(&request()).unwrap_err();
+    assert!(
+        matches!(error.downcast_ref(), Some(SetupError::NotStarted { product, .. }) if *product == DLC),
+        "{error:#}"
+    );
+    assert_eq!(fx.state().journal.unwrap().kind, JournalKind::Install);
+    assert!(fx.launch_refused());
+    fs::remove_file(fx.runs().join(format!("exit-{DLC}"))).unwrap();
+    fx.finish_windows();
+    assert_installed(&fx);
+}
+
+#[test]
+fn an_update_or_reinstall_leaves_a_removed_default_target_removed() {
+    let fx = installed_windows();
+    let config = fx.paths.environment_config("rimworld");
+    let mut doc: toml_edit::DocumentMut = fs::read_to_string(&config).unwrap().parse().unwrap();
+    doc["targets"].as_table_mut().unwrap().remove("game");
+    fs::write(&config, doc.to_string()).unwrap();
+    base_v2(&fx);
+    fx.update();
+    fx.reinstall();
+    assert_eq!(ran_since_install(&fx).len(), 3);
+    let environment = Environment::load(&fx.paths, "rimworld").unwrap();
+    assert!(environment.config.targets.is_empty());
+    assert_settled(&fx);
+}

@@ -286,7 +286,9 @@ pub(super) struct Job<'a> {
     pub(super) committed: Option<&'a Committed>,
     /// Whether this attempt wrote the journal, so nothing ran before it.
     /// Then an update whose game installer stopped before installing
-    /// anything drops the journal, since the game is as committed.
+    /// anything drops the journal, since the game is as committed, and a DLC
+    /// whose installer did is failed or keeps its old entry. Otherwise an
+    /// earlier attempt may have changed files, so either keeps the journal.
     pub(super) fresh: bool,
 }
 
@@ -434,6 +436,24 @@ pub(super) fn install(
             }
             SetupExit::Canceled if base => {
                 give_up(&lock, committed.filter(|_| fresh))?;
+                return Err(SetupError::Canceled {
+                    product: id,
+                    label: label(id),
+                }
+                .into());
+            }
+            // An earlier attempt may have run this DLC's installer partway,
+            // so it isn't known to be as it was.
+            SetupExit::NotStarted(code) if !fresh => {
+                return Err(SetupError::NotStarted {
+                    product: id,
+                    label: label(id),
+                    code,
+                    wizard: false,
+                }
+                .into());
+            }
+            SetupExit::Canceled if !fresh => {
                 return Err(SetupError::Canceled {
                     product: id,
                     label: label(id),
