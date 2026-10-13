@@ -802,12 +802,12 @@ impl Page {
     }
 
     #[cfg(test)]
-    pub(crate) fn view(&self, palette: Palette, spin: f32) -> Element<'_, Event> {
-        self.view_at(palette, 900.0, spin)
+    pub(crate) fn view(&self, palette: Palette) -> Element<'_, Event> {
+        self.view_at(palette, 900.0)
     }
 
     /// `width` is the dialog's, which sets how many tiles fit across.
-    pub(crate) fn view_at(&self, palette: Palette, width: f32, spin: f32) -> Element<'_, Event> {
+    pub(crate) fn view_at(&self, palette: Palette, width: f32) -> Element<'_, Event> {
         let finished = self.step == Step::Finished
             || self
                 .install
@@ -820,7 +820,7 @@ impl Page {
             .max_width(heroic::PAGE_MAX_WIDTH)
             .height(Fill);
         if let (Step::Install, Some(install)) = (self.step, &self.install) {
-            let (body, footer) = install.view(column![].spacing(14).width(Fill), palette, spin);
+            let (body, footer) = install.view(column![].spacing(14).width(Fill), palette);
             let instance = self.install_instance;
             let body =
                 Element::from(body).map(move |event| Event::Installing(instance, Box::new(event)));
@@ -848,7 +848,7 @@ impl Page {
         if !self.status.is_empty() {
             body = body.push(
                 row![
-                    crate::spinner::spinner(palette, spin, 16.0),
+                    crate::spinner::spinner(palette, 16.0),
                     text(&self.status).color(palette.muted)
                 ]
                 .spacing(8)
@@ -1911,10 +1911,7 @@ mod tests {
         let _ = page.update(Event::Pick(0));
         assert_eq!(page.picked, Some(0));
         assert_eq!(page.status, "Checking RimWorld...");
-        crate::layout_probe::layout(
-            &mut page.view(Palette::DARK, 0.0),
-            iced::Size::new(680.0, 560.0),
-        );
+        crate::layout_probe::layout(&mut page.view(Palette::DARK), iced::Size::new(680.0, 560.0));
     }
 
     /// Copies the fixture's Heroic config to where native and Flatpak
@@ -2010,10 +2007,7 @@ mod tests {
         let mut page = fx.page();
         let generation = page.generation;
         let _ = page.update(Event::Listed(generation, Ok(listing)));
-        crate::layout_probe::layout(
-            &mut page.view(Palette::DARK, 0.0),
-            iced::Size::new(680.0, 560.0),
-        );
+        crate::layout_probe::layout(&mut page.view(Palette::DARK), iced::Size::new(680.0, 560.0));
     }
 
     #[test]
@@ -2077,7 +2071,7 @@ mod tests {
         page.picked = Some(0);
         page.prepared = Some(prepared);
         page.step = Step::Review;
-        let mut view = page.view(Palette::DARK, 0.0);
+        let mut view = page.view(Palette::DARK);
         let probe = crate::layout_probe::probe(&mut view, iced::Size::new(680.0, 560.0));
         let inset =
             iced::Rectangle::new(iced::Point::new(24.0, 24.0), iced::Size::new(632.0, 512.0));
@@ -2110,7 +2104,7 @@ mod tests {
                 iced::Point::new(24.0, 24.0),
                 iced::Size::new(width - 48.0, height - 48.0),
             );
-            let mut view = page.view(Palette::DARK, 0.0);
+            let mut view = page.view(Palette::DARK);
             let probe = crate::layout_probe::probe(&mut view, iced::Size::new(width, height));
             let spilled = probe.outside(inset);
             assert!(spilled.is_empty(), "{width}x{height}: {spilled:?}");
@@ -2538,7 +2532,7 @@ mod tests {
                 iced::Point::new(24.0, 24.0),
                 iced::Size::new(width - 48.0, height - 48.0),
             );
-            let mut view = page.view_at(Palette::DARK, width, 0.0);
+            let mut view = page.view_at(Palette::DARK, width);
             let probe = crate::layout_probe::probe(&mut view, iced::Size::new(width, height));
             assert!(probe.outside(inset).is_empty(), "{width}x{height}");
         }
@@ -2562,7 +2556,7 @@ mod tests {
         assert_eq!(page.step, Step::Install);
         assert!(page.waiting(), "it plans the install");
         {
-            let mut view = page.view_at(Palette::DARK, 680.0, 0.0);
+            let mut view = page.view_at(Palette::DARK, 680.0);
             let _ = crate::layout_probe::layout(&mut view, iced::Size::new(680.0, 560.0));
         }
         // Back from the review returns to the grid and reads it again.
@@ -2668,7 +2662,7 @@ mod tests {
                 iced::Point::new(24.0, 24.0),
                 iced::Size::new(width - 48.0, height - 48.0),
             );
-            let mut view = page.view_at(Palette::DARK, width, 0.0);
+            let mut view = page.view_at(Palette::DARK, width);
             let probe = crate::layout_probe::probe(&mut view, iced::Size::new(width, height));
             let spilled = probe.outside(inset);
             assert!(spilled.is_empty(), "{width}x{height}: {spilled:?}");
@@ -3022,10 +3016,7 @@ mod tests {
         assert!(page.poster("3").is_none());
         // What has a poster isn't loaded again.
         assert_eq!(page.poster_jobs().len(), 1);
-        crate::layout_probe::layout(
-            &mut page.view(Palette::DARK, 0.0),
-            iced::Size::new(680.0, 560.0),
-        );
+        crate::layout_probe::layout(&mut page.view(Palette::DARK), iced::Size::new(680.0, 560.0));
     }
 
     #[test]
@@ -3099,7 +3090,7 @@ mod tests {
             assert!(page.poster("7").is_none());
             // The tile keeps its title and still lays out.
             crate::layout_probe::layout(
-                &mut page.view(Palette::DARK, 0.0),
+                &mut page.view(Palette::DARK),
                 iced::Size::new(680.0, 560.0),
             );
         }

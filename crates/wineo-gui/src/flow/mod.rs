@@ -183,6 +183,7 @@ impl Page {
     }
 
     /// Background work that should show the spinner.
+    #[cfg(test)]
     pub(crate) fn spinning(&self) -> bool {
         match self {
             Self::Heroic(page) => page.waiting(),
@@ -198,13 +199,11 @@ impl Page {
         matches!(self, Self::New(page) if page.art_fetching())
     }
 
-    /// `width` is the dialog's width, for pages that lay out by it, and
-    /// `spin` is the spinner's angle.
+    /// `width` is the dialog's width, for pages that lay out by it.
     pub(crate) fn view_with_key_availability(
         &self,
         palette: Palette,
         width: f32,
-        spin: f32,
         key_available: bool,
     ) -> Element<'_, Event> {
         match self {
@@ -216,16 +215,16 @@ impl Page {
                 .map(|event| Event::Import(Box::new(event))),
             Self::Clone(page) => page.view(palette).map(|event| Event::Copy(Box::new(event))),
             Self::Heroic(page) => page
-                .view_with_key_availability(palette, width, spin, key_available)
+                .view_with_key_availability(palette, width, key_available)
                 .map(|event| Event::HeroicMessage(Box::new(event))),
             Self::Steam(page) => page
-                .view(palette, width, spin)
+                .view(palette, width)
                 .map(|event| Event::SteamMessage(Box::new(event))),
             Self::Gog(page) => page
-                .view_at(palette, width, spin)
+                .view_at(palette, width)
                 .map(|event| Event::GogMessage(Box::new(event))),
             Self::GogUpdate(page) => page
-                .view(palette, spin)
+                .view(palette)
                 .map(|event| Event::UpdateMessage(Box::new(event))),
             Self::Choose(_) => container(
                 column![
@@ -399,7 +398,7 @@ mod tests {
                 iced::Point::new(24.0, 24.0),
                 iced::Size::new(width - 48.0, height - 48.0),
             );
-            let mut view = page.view_with_key_availability(Palette::DARK, width, 0.0, false);
+            let mut view = page.view_with_key_availability(Palette::DARK, width, false);
             let probe = probe(&mut view, iced::Size::new(width, height));
             assert_eq!(probe.scrollables.len(), 1, "one scrolling region");
             let spilled = probe.outside(inset);

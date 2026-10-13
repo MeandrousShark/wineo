@@ -130,8 +130,6 @@ pub(crate) struct App {
     log_generation: u64,
     /// True while the log view shows install.log rather than output.log.
     pub(crate) log_install: bool,
-    pub(crate) spinner_angle: f32,
-    spinner_start: Instant,
     settings: Option<settings::Page>,
     settings_generation: u64,
     steamgriddb_sequence: u64,
@@ -250,7 +248,6 @@ pub(crate) enum Message {
     ScrollIdle,
     Window(window::Event),
     ThemeChanged(iced::theme::Mode),
-    SpinnerTick(Instant),
     PanelTick(u64, Instant),
     GridTick(u64, Instant),
     Key(keyboard::Key, keyboard::Modifiers, iced::event::Status),
@@ -357,8 +354,6 @@ impl App {
             log_token: None,
             log_generation: 0,
             log_install: false,
-            spinner_angle: 0.0,
-            spinner_start: Instant::now(),
             settings: None,
             settings_generation: 0,
             steamgriddb_sequence: 1,
@@ -468,6 +463,8 @@ impl App {
             || self.settings.as_ref().is_some_and(|page| page.saving)
     }
 
+    // Only tests ask now: spinners animate themselves while drawn.
+    #[cfg(test)]
     fn spinning(&self) -> bool {
         self.filesystem_busy()
             || self.tools_busy()
@@ -512,12 +509,6 @@ impl App {
         } else {
             Subscription::none()
         };
-        // Every message rebuilds the view, so an always-on tick keeps the app busy while idle.
-        let spinner = if self.spinning() {
-            window::frames().map(Message::SpinnerTick)
-        } else {
-            Subscription::none()
-        };
         let panel_motion = if !self.panel_hidden() && self.panel_motion.active() {
             let generation = self.panel_motion.generation();
             window::frames()
@@ -546,7 +537,6 @@ impl App {
             iced::system::theme_changes().map(Message::ThemeChanged),
             window::events().map(|(_, event)| Message::Window(event)),
             iced::event::listen_with(|event, status, _| event_message(event, status)),
-            spinner,
             panel_motion,
             grid_motion,
             collapse,
@@ -1038,12 +1028,6 @@ impl App {
             Message::Window(_) => Task::none(),
             Message::ThemeChanged(mode) => {
                 self.palette = Palette::from_mode(mode);
-                Task::none()
-            }
-            Message::SpinnerTick(now) => {
-                if self.spinning() {
-                    self.spinner_angle = spinner::angle(self.spinner_start, now);
-                }
                 Task::none()
             }
             Message::PanelTick(generation, now) => {

@@ -615,7 +615,7 @@ impl App {
         if running {
             content = content.push(
                 row![
-                    spinner::spinner(palette, self.spinner_angle, 16.0),
+                    spinner::spinner(palette, 16.0),
                     text(match &self.change {
                         Some(Change::Remove {
                             phase: Some(RemoveEvent::Moving),

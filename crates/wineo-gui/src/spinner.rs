@@ -1,24 +1,97 @@
 use std::f32::consts::TAU;
+use std::sync::OnceLock;
 use std::time::Instant;
 
-use iced::widget::svg;
-use iced::{Color, Element, Radians, Rotation};
+use iced::advanced::svg::{self, Svg};
+use iced::advanced::{Clipboard, Layout, Shell, Widget, layout, mouse, renderer, widget::tree};
+use iced::{Color, Element, Event, Length, Radians, Rectangle, Size, window};
 
 use crate::theme::Palette;
 
-/// A faint track with a rotating three-quarter arc.
-pub(crate) fn spinner<'a, Message: 'a>(
+/// Shared by every spinner so the ones on screen turn in step.
+static START: OnceLock<Instant> = OnceLock::new();
+
+fn start() -> Instant {
+    *START.get_or_init(Instant::now)
+}
+
+/// A faint track with a rotating three-quarter arc. It animates itself on
+/// redraws rather than through app messages, so only a spinner that is
+/// actually drawn keeps the window redrawing, and the view isn't rebuilt
+/// every frame.
+pub(crate) fn spinner<'a, Message: 'a, Theme: 'a, Renderer>(
     palette: Palette,
-    angle: f32,
     size: f32,
-) -> Element<'a, Message> {
-    // Same bytes for the same palette, so iced reuses the rasterized image
-    // and each frame only changes the rotation.
-    svg(svg::Handle::from_memory(source(palette).into_bytes()))
-        .width(size)
-        .height(size)
-        .rotation(Rotation::Floating(Radians(angle)))
-        .into()
+) -> Element<'a, Message, Theme, Renderer>
+where
+    Renderer: svg::Renderer + 'a,
+{
+    Element::new(Spinner {
+        // Same bytes for the same palette, so iced reuses the rasterized image
+        // and each frame only changes the rotation.
+        handle: svg::Handle::from_memory(source(palette).into_bytes()),
+        size,
+        angle: angle(start(), Instant::now()),
+    })
+}
+
+struct Spinner {
+    handle: svg::Handle,
+    size: f32,
+    angle: f32,
+}
+
+impl<Message, Theme, Renderer> Widget<Message, Theme, Renderer> for Spinner
+where
+    Renderer: svg::Renderer,
+{
+    fn size(&self) -> Size<Length> {
+        Size::new(Length::Fixed(self.size), Length::Fixed(self.size))
+    }
+
+    fn layout(
+        &mut self,
+        _tree: &mut tree::Tree,
+        _renderer: &Renderer,
+        limits: &layout::Limits,
+    ) -> layout::Node {
+        layout::Node::new(limits.resolve(self.size, self.size, Size::new(self.size, self.size)))
+    }
+
+    fn update(
+        &mut self,
+        _tree: &mut tree::Tree,
+        event: &Event,
+        _layout: Layout<'_>,
+        _cursor: mouse::Cursor,
+        _renderer: &Renderer,
+        _clipboard: &mut dyn Clipboard,
+        shell: &mut Shell<'_, Message>,
+        _viewport: &Rectangle,
+    ) {
+        if let Event::Window(window::Event::RedrawRequested(now)) = event {
+            self.angle = angle(start(), *now);
+            shell.request_redraw();
+        }
+    }
+
+    fn draw(
+        &self,
+        _tree: &tree::Tree,
+        renderer: &mut Renderer,
+        _theme: &Theme,
+        _style: &renderer::Style,
+        layout: Layout<'_>,
+        _cursor: mouse::Cursor,
+        _viewport: &Rectangle,
+    ) {
+        let bounds = layout.bounds();
+        renderer.draw_svg(
+            Svg::new(self.handle.clone()).rotation(Radians(self.angle)),
+            bounds,
+            bounds,
+        );
+    }
 }
 
 /// One full turn per second since `start`.
@@ -54,6 +127,34 @@ mod tests {
         assert!((quarter - TAU / 4.0).abs() < 1e-4);
         let wrapped = angle(start, start + Duration::from_millis(1250));
         assert!((wrapped - TAU / 4.0).abs() < 1e-3);
+    }
+
+    #[test]
+    fn redraws_turn_the_spinner_and_ask_for_the_next_frame() {
+        let mut spinner = Spinner {
+            handle: svg::Handle::from_memory(source(Palette::DARK).into_bytes()),
+            size: 16.0,
+            angle: 0.0,
+        };
+        let mut tree = tree::Tree::empty();
+        let node = layout::Node::new(Size::new(16.0, 16.0));
+        let now = start() + Duration::from_millis(250);
+        let mut messages: Vec<()> = Vec::new();
+        let mut shell = Shell::new(&mut messages);
+        Widget::<(), iced::Theme, ()>::update(
+            &mut spinner,
+            &mut tree,
+            &Event::Window(window::Event::RedrawRequested(now)),
+            Layout::new(&node),
+            mouse::Cursor::Unavailable,
+            &(),
+            &mut iced::advanced::clipboard::Null,
+            &mut shell,
+            &Rectangle::with_size(Size::new(16.0, 16.0)),
+        );
+        assert_eq!(shell.redraw_request(), window::RedrawRequest::NextFrame);
+        assert!(shell.is_empty());
+        assert_eq!(spinner.angle, angle(start(), now));
     }
 
     #[test]

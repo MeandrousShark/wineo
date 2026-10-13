@@ -946,7 +946,7 @@ impl App {
         if let Some(operation) = self.operation.as_ref().filter(|op| op.name == card.name) {
             inner = inner.push(
                 row![
-                    crate::spinner::spinner(palette, self.spinner_angle, 16.0),
+                    crate::spinner::spinner(palette, 16.0),
                     text(&operation.status).size(14).color(palette.muted)
                 ]
                 .spacing(8)
@@ -978,7 +978,7 @@ impl App {
         if self.steam_request.as_deref() == Some(&card.name) {
             inner = inner.push(
                 row![
-                    crate::spinner::spinner(palette, self.spinner_angle, 16.0),
+                    crate::spinner::spinner(palette, 16.0),
                     text("Asking Steam...").size(14).color(palette.muted)
                 ]
                 .spacing(8)

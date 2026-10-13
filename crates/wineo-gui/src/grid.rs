@@ -396,13 +396,8 @@ impl App {
             };
             let width = self.flow_width();
             let dialog = container(
-                flow.view_with_key_availability(
-                    palette,
-                    width,
-                    self.spinner_angle,
-                    self.steamgriddb_available,
-                )
-                .map(move |event| Message::Flow(generation, event)),
+                flow.view_with_key_availability(palette, width, self.steamgriddb_available)
+                    .map(move |event| Message::Flow(generation, event)),
             )
             .width(width)
             .height((self.window_size.height - 40.0).clamp(240.0, height))
@@ -711,7 +706,7 @@ impl App {
                 .map(move |event| Message::ArtPage(name.clone(), generation, event));
         }
         if let Some(page) = &self.settings {
-            return page.view(&self.paths, palette, self.spinner_angle);
+            return page.view(&self.paths, palette);
         }
         let mut page = column![
             self.top_bar(),

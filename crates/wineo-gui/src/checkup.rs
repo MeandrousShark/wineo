@@ -806,12 +806,9 @@ impl App {
         }
         if results.checking {
             body = body.push(
-                row![
-                    spinner::spinner(palette, self.spinner_angle, 16.0),
-                    text("Checking...")
-                ]
-                .spacing(8)
-                .align_y(Center),
+                row![spinner::spinner(palette, 16.0), text("Checking...")]
+                    .spacing(8)
+                    .align_y(Center),
             );
         } else if let Some(error) = &results.error {
             body = body.push(section(text(error).color(palette.danger), palette));
@@ -957,7 +954,7 @@ impl App {
         let palette = self.palette;
         let mut body = column![
             row![
-                spinner::spinner(palette, self.spinner_angle, 16.0),
+                spinner::spinner(palette, 16.0),
                 text(&change.status).size(14).color(palette.muted)
             ]
             .spacing(8)

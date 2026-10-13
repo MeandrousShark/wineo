@@ -731,13 +731,12 @@ impl Install {
         &'a self,
         mut body: iced::widget::Column<'a, Event>,
         palette: Palette,
-        spin: f32,
     ) -> (iced::widget::Column<'a, Event>, Option<Element<'a, Event>>) {
         body = body.push(crate::ui::page_title(self.title(), palette));
         if !self.status.is_empty() {
             body = body.push(
                 row![
-                    crate::spinner::spinner(palette, spin, 16.0),
+                    crate::spinner::spinner(palette, 16.0),
                     text(&self.status).color(palette.muted)
                 ]
                 .spacing(8)
@@ -1713,7 +1712,7 @@ pub(super) mod tests {
 
     fn fits(page: &Install, sizes: &[(f32, f32)]) {
         for &(width, height) in sizes {
-            let (body, footer) = page.view(iced::widget::column![], Palette::DARK, 0.0);
+            let (body, footer) = page.view(iced::widget::column![], Palette::DARK);
             let mut view =
                 iced::widget::column![super::heroic::scroll_body(body, None, Palette::DARK)]
                     .height(Fill);

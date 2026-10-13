@@ -539,7 +539,7 @@ impl App {
                 .spacing(12)
                 .align_y(Center);
                 if change.is_some_and(|change| change.affects(&entry.id)) {
-                    line = line.push(spinner::spinner(palette, self.spinner_angle, 16.0));
+                    line = line.push(spinner::spinner(palette, 16.0));
                 }
                 recovery = recovery.push(line);
                 if let Some(error) = page.recovery_errors.get(&entry.id) {
@@ -562,7 +562,7 @@ impl App {
                 .spacing(8)
                 .align_y(Center);
             if change.is_some_and(|change| change.affects(&entry.id)) {
-                label = label.push(spinner::spinner(palette, self.spinner_angle, 16.0));
+                label = label.push(spinner::spinner(palette, 16.0));
             }
             let mut entry_view = column![
                 tooltip(
@@ -626,7 +626,7 @@ impl App {
         if page.reviewing {
             content = content.push(section(
                 row![
-                    spinner::spinner(palette, self.spinner_angle, 16.0),
+                    spinner::spinner(palette, 16.0),
                     text("Reviewing trash entries...").color(palette.muted)
                 ]
                 .spacing(8)
