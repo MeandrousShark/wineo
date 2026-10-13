@@ -5480,6 +5480,7 @@ dependencies = [
  "tokio",
  "unicode-segmentation",
  "wineo-core",
+ "zip",
 ]
 
 [[package]]

@@ -164,6 +164,7 @@ pub(crate) enum Event {
     AddTarget,
     SkipTarget,
     TargetAdded(u64, Result<Vec<String>, String>),
+    BackToLibrary,
 }
 
 /// What the import page does after an event.
@@ -232,6 +233,10 @@ impl Install {
 
     pub(crate) fn waiting(&self) -> bool {
         !self.status.is_empty()
+    }
+
+    pub(crate) fn finished(&self) -> bool {
+        self.stage == Stage::Finished
     }
 
     pub(crate) fn take_leave(&mut self) -> Option<Leave> {
@@ -637,6 +642,10 @@ impl Install {
                 self.stage = Stage::Finished;
                 Task::none()
             }
+            Event::BackToLibrary if self.stage == Stage::Finished => {
+                self.exit();
+                Task::none()
+            }
             Event::TargetAdded(generation, result) if generation == self.generation => {
                 self.status.clear();
                 match result {
@@ -735,7 +744,11 @@ impl Install {
                 .vertical_spacing(8)
                 .into(),
             ),
-            Stage::Finished => None,
+            Stage::Finished => Some(
+                secondary_button("Back to library", palette)
+                    .on_press(Event::BackToLibrary)
+                    .into(),
+            ),
             Stage::Preparing => None,
         };
         (body, footer)
@@ -1260,6 +1273,11 @@ fn failure(
                 setup_window: wizard.then_some(label),
             }
         }
+        // Its own message names the CLI's way to finish it.
+        Some(SetupError::Partway { label, detail, .. }) => Failure::new(format!(
+            "{label}'s installer stopped partway ({detail}). {}",
+            hint()
+        )),
         _ => Failure::new(format!("{error:#}")),
     }
 }
@@ -1420,4 +1438,512 @@ fn add_program(paths: &Paths, name: &str, title: &str, exe: &str) -> Result<Vec<
             .into_iter()
             .collect(),
     )
+}
+
+#[cfg(test)]
+pub(super) mod tests {
+    use std::cell::RefCell;
+    use std::ffi::OsString;
+    use std::fs;
+    use std::sync::{Arc, Mutex};
+
+    use wineo_core::gog::update::windows::set_graphical_session;
+
+    use super::*;
+    use crate::gog_fake::{
+        Library, Server, inno_runner, library_server, owned_game, product, save_login,
+    };
+    use crate::settings::steam_key::tests::TestKeyring;
+
+    pub(in crate::flow) const RIMWORLD: u64 = 1094900565;
+    pub(in crate::flow) const ROYALTY: u64 = 1233017772;
+    pub(in crate::flow) const IDEOLOGY: u64 = 1827857764;
+    pub(in crate::flow) const DISCO: u64 = 1771589310;
+
+    /// A logged-in home and a fake GOG where RimWorld has a Linux installer
+    /// and a Windows one, with Royalty for Linux and Ideology only for
+    /// Windows, and Disco Elysium has only a Windows installer.
+    pub(in crate::flow) struct World {
+        pub(in crate::flow) root: tempfile::TempDir,
+        pub(in crate::flow) paths: Paths,
+        pub(in crate::flow) keyring: TestKeyring,
+        pub(in crate::flow) library: Arc<Mutex<Library>>,
+        pub(in crate::flow) server: Server,
+    }
+
+    impl World {
+        pub(in crate::flow) fn new() -> Self {
+            let root = tempfile::tempdir().unwrap();
+            let home = root.path().to_owned();
+            let paths =
+                Paths::from_lookup(|key| (key == "HOME").then(|| OsString::from(home.as_os_str())))
+                    .unwrap();
+            let keyring = TestKeyring(RefCell::new(None));
+            save_login(&paths, &keyring);
+            let library = Arc::new(Mutex::new(Library::default()));
+            {
+                let mut library = library.lock().unwrap();
+                library.owned = vec![
+                    owned_game(RIMWORLD, "RimWorld", true, true),
+                    owned_game(DISCO, "Disco Elysium", false, true),
+                ];
+                library.owned_ids = vec![RIMWORLD, ROYALTY, IDEOLOGY, DISCO];
+                let base = library.linux_installer(RIMWORLD, "1.0", &[("start.sh", "#!/bin/sh\n")]);
+                let windows = library.windows_installer(
+                    RIMWORLD,
+                    "1.0",
+                    "mkdir -p \"$DIR\"\n: > \"$DIR/RimWorldWin64.exe\"\nexit 0\n",
+                );
+                let royalty =
+                    library.linux_installer(ROYALTY, "1.0", &[("Data/Royalty/about.txt", "r")]);
+                let ideology = library.windows_installer(IDEOLOGY, "1.0", "exit 0\n");
+                let details = product(
+                    RIMWORLD,
+                    "RimWorld",
+                    vec![base, windows],
+                    vec![
+                        product(ROYALTY, "RimWorld - Royalty", vec![royalty], vec![]),
+                        product(IDEOLOGY, "RimWorld - Ideology", vec![ideology], vec![]),
+                    ],
+                );
+                library.offer(details);
+            }
+            let server = library_server(Arc::clone(&library));
+            inno_runner(&paths, &root.path().join("inno-runs"));
+            let world = Self {
+                root,
+                paths,
+                keyring,
+                library,
+                server,
+            };
+            world.disco("1", "", true);
+            world
+        }
+
+        /// Offers Disco Elysium at `version`, its setup running `before`
+        /// first, then installing the game and its info file, which names
+        /// `disco.exe` to start when `play_task`.
+        pub(in crate::flow) fn disco(&self, version: &str, before: &str, play_task: bool) {
+            let tasks = if play_task {
+                serde_json::json!([{
+                    "isPrimary": true, "type": "FileTask", "path": "disco.exe", "category": "game",
+                }])
+            } else {
+                serde_json::json!([])
+            };
+            let info = serde_json::json!({
+                "gameId": DISCO.to_string(),
+                "rootGameId": DISCO.to_string(),
+                "name": "Disco Elysium",
+                "language": "English",
+                "playTasks": tasks,
+                "version": 1,
+            });
+            let script = format!(
+                "{before}\nmkdir -p \"$DIR\"\nprintf '{version}' > \"$DIR/disco.exe\"\ncat > \"$DIR/goggame-{DISCO}.info\" <<'INFO'\n{info}\nINFO\nexit 0\n"
+            );
+            let mut library = self.library.lock().unwrap();
+            let installer = library.windows_installer(DISCO, version, &script);
+            library.offer(product(DISCO, "Disco Elysium", vec![installer], vec![]));
+        }
+
+        /// A setup script line that exits with `code` the first time only.
+        pub(in crate::flow) fn fails_once(&self, code: i32) -> String {
+            let flag = self.runs().join(format!("failed-once-{code}"));
+            format!(
+                "if [ ! -f '{flag}' ]; then : > '{flag}'; exit {code}; fi",
+                flag = flag.display()
+            )
+        }
+
+        pub(in crate::flow) fn runs(&self) -> PathBuf {
+            self.root.path().join("inno-runs")
+        }
+
+        pub(in crate::flow) fn games(&self) -> PathBuf {
+            fs::canonicalize(self.root.path()).unwrap().join("Games")
+        }
+
+        pub(in crate::flow) fn prepare(
+            &self,
+            offer: &Offer,
+            choices: &Choices,
+            wizard: bool,
+        ) -> Prepared {
+            prepare_with(
+                &self.paths,
+                &self.keyring,
+                self.server.client(),
+                offer,
+                choices,
+                wizard,
+                &Token::new(),
+            )
+            .unwrap()
+        }
+
+        pub(in crate::flow) fn install(&self, plan: &Plan, names: &Plan) -> Result<Done, Failure> {
+            install_with(
+                &self.paths,
+                &self.keyring,
+                self.server.client(),
+                plan,
+                names,
+                &Token::new(),
+                |_| {},
+                no_extras,
+            )
+        }
+
+        /// Installs `offer` with `choices`, as the review would.
+        pub(in crate::flow) fn installed(
+            &self,
+            offer: &Offer,
+            choices: &Choices,
+        ) -> Result<Done, Failure> {
+            let prepared = self.prepare(offer, choices, false);
+            let plan = prepared.plan.unwrap();
+            self.install(&plan, &plan)
+        }
+    }
+
+    fn no_extras(_: &Paths, _: &GlobalConfig, _: &str, _: u64, _: &str, _: &Token) -> Extras {
+        Extras::default()
+    }
+
+    pub(in crate::flow) fn rimworld() -> Offer {
+        Offer {
+            gog_id: RIMWORLD,
+            title: "RimWorld".to_owned(),
+            linux: true,
+            windows: true,
+            unfinished: None,
+        }
+    }
+
+    pub(in crate::flow) fn disco() -> Offer {
+        Offer {
+            gog_id: DISCO,
+            title: "Disco Elysium".to_owned(),
+            linux: false,
+            windows: true,
+            unfinished: None,
+        }
+    }
+
+    pub(in crate::flow) fn inno() -> Choices {
+        Choices {
+            runner: Some("inno".to_owned()),
+            ..Choices::default()
+        }
+    }
+
+    fn page(paths: &Paths, offer: Offer, prepared: Prepared) -> Install {
+        let (mut page, _) = Install::new(paths.clone(), offer);
+        let generation = page.generation;
+        let _ = page.update(Event::Prepared(generation, Ok(Box::new(prepared))));
+        page
+    }
+
+    fn fits(page: &Install, sizes: &[(f32, f32)]) {
+        for &(width, height) in sizes {
+            let (body, footer) = page.view(iced::widget::column![], Palette::DARK, 0.0);
+            let mut view =
+                iced::widget::column![super::heroic::scroll_body(body, None, Palette::DARK)]
+                    .height(Fill);
+            if let Some(footer) = footer {
+                view = view.push(footer);
+            }
+            let mut view: Element<'_, Event> = view.into();
+            let inset = iced::Rectangle::new(iced::Point::ORIGIN, iced::Size::new(width, height));
+            let probe = crate::layout_probe::probe(&mut view, iced::Size::new(width, height));
+            assert!(probe.outside(inset).is_empty(), "{width}x{height}");
+        }
+    }
+
+    #[test]
+    fn the_review_offers_platform_language_runner_and_folder_with_their_defaults() {
+        let world = World::new();
+        set_graphical_session(Some(true));
+        fs::create_dir_all(world.paths.global_config().parent().unwrap()).unwrap();
+        fs::write(world.paths.global_config(), "[gog]\nlanguage = \"fr-FR\"\n").unwrap();
+        let prepared = world.prepare(&rimworld(), &Choices::default(), false);
+        assert_eq!(prepared.name, "rimworld");
+        assert_eq!(prepared.default_language, "fr-FR");
+        assert_eq!(
+            prepared.default_folder,
+            world.root.path().join("Games/RimWorld")
+        );
+        let plan = prepared.plan.as_deref().unwrap();
+        assert_eq!(plan.platform(), Platform::Linux, "Linux when GOG has it");
+        assert_eq!(plan.requested_language(), "fr-FR");
+        assert_eq!(plan.language_name(), "English");
+        assert_eq!(
+            product_rows(plan),
+            [
+                ("Version", "1.0".to_owned()),
+                ("DLC", format!("Royalty ({ROYALTY}) 1.0")),
+                ("", format!("Ideology ({IDEOLOGY}) unavailable")),
+            ]
+        );
+        let notes = review_notes(plan);
+        assert!(
+            notes.contains(&"RimWorld has no Linux installer in fr-FR, so it installs in English."),
+            "{notes:?}"
+        );
+        assert!(
+            notes.iter().any(|note| note.contains("Ideology")),
+            "{notes:?}"
+        );
+        assert!(plan.creation().is_none());
+
+        let mut page = page(&world.paths, rimworld(), prepared);
+        assert_eq!(page.stage, Stage::Review);
+        assert!(page.ready());
+        fits(&page, &[(280.0, 240.0), (360.0, 480.0), (900.0, 720.0)]);
+        // A choice plans again; nothing changes until it lands.
+        let _ = page.update(Event::Platform(Platform::Windows));
+        assert_eq!(page.choices.platform, Some(Platform::Windows));
+        assert_eq!(page.status, "Checking RimWorld with GOG...");
+        assert!(!page.ready());
+        let _ = page.update(Event::Language("de-AT".to_owned()));
+        let _ = page.update(Event::Folder("~/Elsewhere".to_owned()));
+
+        let windows = world.prepare(
+            &rimworld(),
+            &Choices {
+                platform: Some(Platform::Windows),
+                language: "english".to_owned(),
+                ..inno()
+            },
+            false,
+        );
+        assert_eq!(
+            windows.plan.as_ref().unwrap_err(),
+            "Invalid gog.language: use a locale tag like en-US."
+        );
+        let windows = world.prepare(
+            &rimworld(),
+            &Choices {
+                platform: Some(Platform::Windows),
+                arch: Some(Arch::Win32),
+                dir: "~/Elsewhere".to_owned(),
+                ..inno()
+            },
+            false,
+        );
+        assert!(windows.runners.iter().any(|choice| choice.name == "inno"));
+        let plan = windows.plan.as_deref().unwrap();
+        assert_eq!(plan.platform(), Platform::Windows);
+        let creation = plan.creation().unwrap();
+        assert_eq!(creation.runner().name(), "inno");
+        assert_eq!(creation.resolved_arch(), Arch::Win32);
+        assert_eq!(plan.folder(), world.root.path().join("Elsewhere"));
+        // Ideology installs on Windows too.
+        assert_eq!(
+            product_rows(plan)[2],
+            ("", format!("Ideology ({IDEOLOGY}) 1.0"))
+        );
+        let generation = page.generation;
+        let _ = page.update(Event::Prepared(generation, Ok(Box::new(windows))));
+        assert!(page.ready());
+        fits(&page, &[(280.0, 240.0), (900.0, 720.0)]);
+        set_graphical_session(None);
+    }
+
+    #[test]
+    fn a_native_game_installs_end_to_end_and_returns_to_its_card() {
+        let world = World::new();
+        let prepared = world.prepare(&rimworld(), &Choices::default(), false);
+        let plan = prepared.plan.clone().unwrap();
+        let mut page = page(&world.paths, rimworld(), prepared);
+        let _ = page.update(Event::Install);
+        assert_eq!(page.stage, Stage::Working);
+        assert!(page.busy());
+        assert_eq!(page.status, "Installing RimWorld...");
+        let generation = page.generation;
+        let mut lines = Vec::new();
+        let done = install_with(
+            &world.paths,
+            &world.keyring,
+            world.server.client(),
+            &plan,
+            &plan,
+            &Token::new(),
+            |line| lines.push(line),
+            no_extras,
+        )
+        .unwrap();
+        assert!(
+            lines
+                .iter()
+                .any(|line| line.starts_with("Downloading RimWorld")),
+            "{lines:?}"
+        );
+        assert!(lines.contains(&"Adding GOG playtime and art for RimWorld...".to_owned()));
+        assert_eq!(done.lines, ["Installed RimWorld as rimworld."]);
+        assert!(done.programs.is_none());
+        let folder = world.games().join("RimWorld");
+        assert!(folder.join("start.sh").is_file());
+        assert!(folder.join("Data/Royalty/about.txt").is_file());
+        assert!(Environment::load(&world.paths, "rimworld").is_ok());
+
+        let _ = page.update(Event::Finished(generation, Ok(Box::new(done))));
+        assert_eq!(page.stage, Stage::Finished);
+        assert!(!page.busy());
+        fits(&page, &[(280.0, 240.0), (900.0, 720.0)]);
+        let _ = page.submit();
+        assert!(matches!(
+            page.take_leave(),
+            Some(Leave::Library(Some(name))) if name == "rimworld"
+        ));
+    }
+
+    #[test]
+    fn a_windows_game_that_names_no_program_offers_its_own_first() {
+        let world = World::new();
+        set_graphical_session(Some(true));
+        world.disco("1", "", false);
+        let prepared = world.prepare(&disco(), &inno(), false);
+        let plan = prepared.plan.clone().unwrap();
+        let done = world.install(&plan, &plan).unwrap();
+        assert_eq!(done.lines[0], "Installed Disco Elysium as disco-elysium.");
+        let args = fs::read_to_string(world.runs().join("setup_1771589310_1.exe.args")).unwrap();
+        assert!(args.contains("/SILENT"), "{args}");
+        let exe = world
+            .games()
+            .join("Disco Elysium/disco.exe")
+            .display()
+            .to_string();
+        let programs = done.programs.clone().unwrap();
+        assert_eq!(programs.first(), Some(&("disco".to_owned(), exe.clone())));
+
+        let mut page = page(&world.paths, disco(), prepared);
+        let _ = page.update(Event::Install);
+        let generation = page.generation;
+        let _ = page.update(Event::Finished(generation, Ok(Box::new(done))));
+        assert_eq!(page.stage, Stage::Target);
+        fits(&page, &[(280.0, 240.0), (900.0, 720.0)]);
+        let _ = page.update(Event::Program(exe.clone()));
+        assert_eq!(page.target_path, exe);
+        let _ = page.update(Event::AddTarget);
+        assert_eq!(page.status, "Adding the program...");
+        let added = add_program(&world.paths, "disco-elysium", "Disco Elysium", &exe);
+        let generation = page.generation;
+        let _ = page.update(Event::TargetAdded(generation, added));
+        assert_eq!(page.stage, Stage::Finished, "{:?}", page.error);
+        let config = Environment::load(&world.paths, "disco-elysium")
+            .unwrap()
+            .config;
+        let (name, target) = config.targets.iter().next().unwrap();
+        assert_eq!(name, "disco");
+        assert_eq!(target.exe, exe);
+        assert!(target.default);
+        set_graphical_session(None);
+    }
+
+    #[test]
+    fn an_installer_that_never_starts_offers_its_setup_window_once() {
+        let world = World::new();
+        set_graphical_session(Some(true));
+        world.disco("1", &world.fails_once(3), true);
+        let prepared = world.prepare(&disco(), &inno(), false);
+        let first = prepared.plan.clone().unwrap();
+        let failure = world.install(&first, &first).unwrap_err();
+        assert_eq!(failure.setup_window.as_deref(), Some("Disco Elysium"));
+
+        // Declining says how to finish it later.
+        let mut declined = page_after(&world, prepared.clone(), failure.clone());
+        let _ = declined.update(Event::SetupWindow(false));
+        assert_eq!(declined.stage, Stage::Finished);
+        assert_eq!(
+            declined.error.as_deref(),
+            Some(
+                "Disco Elysium's installer stopped before installing anything. Use Finish install on disco-elysium in the library."
+            )
+        );
+
+        let mut page = page_after(&world, prepared, failure);
+        assert_eq!(page.stage, Stage::Question);
+        assert_eq!(
+            setup_window_question(page.question.as_deref().unwrap()),
+            "Disco Elysium's installer didn't start. Run its own setup window?"
+        );
+        fits(&page, &[(280.0, 240.0), (900.0, 720.0)]);
+        let _ = page.update(Event::SetupWindow(true));
+        assert!(page.wizard);
+        assert_eq!(page.stage, Stage::Preparing);
+        // Planned again, it carries on the install as the setup window.
+        let again = world.prepare(&disco(), &inno(), true);
+        let plan = again.plan.clone().unwrap();
+        assert!(plan.resumes() && plan.wizard());
+        let generation = page.generation;
+        let _ = page.update(Event::Prepared(generation, Ok(Box::new(again))));
+        assert_eq!(page.stage, Stage::Working, "it runs without another review");
+        let done = world.install(&plan, &first).unwrap();
+        assert_eq!(done.lines[0], "Installed Disco Elysium as disco-elysium.");
+        let args = fs::read_to_string(world.runs().join("setup_1771589310_1.exe.args")).unwrap();
+        assert!(!args.contains("/SILENT"), "{args}");
+        set_graphical_session(None);
+    }
+
+    /// A page at the setup window question after `failure`.
+    fn page_after(world: &World, prepared: Prepared, failure: Failure) -> Install {
+        let mut page = page(&world.paths, disco(), prepared);
+        let _ = page.update(Event::Install);
+        let generation = page.generation;
+        let _ = page.update(Event::Finished(generation, Err(failure)));
+        page
+    }
+
+    #[test]
+    fn canceling_says_whether_the_install_is_left_to_finish() {
+        let world = World::new();
+        let prepared = world.prepare(&rimworld(), &Choices::default(), false);
+        let plan = prepared.plan.clone().unwrap();
+        let token = Token::new();
+        token.cancel();
+        let failure = install_with(
+            &world.paths,
+            &world.keyring,
+            world.server.client(),
+            &plan,
+            &plan,
+            &token,
+            |_| {},
+            no_extras,
+        )
+        .unwrap_err();
+        assert_eq!(failure.message, "Install canceled.");
+        let mut page = page(&world.paths, rimworld(), prepared);
+        let _ = page.update(Event::Install);
+        let _ = page.back();
+        assert_eq!(page.stage, Stage::Working, "Back waits for the work");
+        let _ = page.update(Event::Cancel);
+        assert_eq!(page.status, "Canceling...");
+        let _ = page.update(Event::Force);
+        assert_eq!(page.status, "Force stop requested...");
+        let generation = page.generation;
+        let _ = page.update(Event::Finished(generation, Err(failure)));
+        assert_eq!(page.stage, Stage::Finished);
+        assert_eq!(page.error.as_deref(), Some("Install canceled."));
+    }
+
+    #[test]
+    fn logged_out_says_to_log_in() {
+        let world = World::new();
+        let keyring = TestKeyring(RefCell::new(None));
+        let error = prepare_with(
+            &world.paths,
+            &keyring,
+            world.server.client(),
+            &rimworld(),
+            &Choices::default(),
+            false,
+            &Token::new(),
+        )
+        .unwrap_err();
+        assert_eq!(error, LOGGED_OUT);
+    }
 }

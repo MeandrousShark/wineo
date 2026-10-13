@@ -677,8 +677,13 @@ impl Page {
 
     /// `width` is the dialog's, which sets how many tiles fit across.
     pub(crate) fn view_at(&self, palette: Palette, width: f32, spin: f32) -> Element<'_, Event> {
+        let finished = self.step == Step::Finished
+            || self
+                .install
+                .as_ref()
+                .is_some_and(|install| install.finished());
         let back = secondary_button("Back", palette)
-            .on_press_maybe((!self.busy() && self.step != Step::Finished).then_some(Event::Back));
+            .on_press_maybe((!self.busy() && !finished).then_some(Event::Back));
         let mut page = column![]
             .spacing(12)
             .max_width(heroic::PAGE_MAX_WIDTH)
@@ -2272,5 +2277,201 @@ mod tests {
             ]
         );
         assert_eq!(duration(25 * 60), "25 min");
+    }
+
+    const CELESTE: u64 = 1452425640;
+    const HADES: u64 = 1477079530;
+
+    /// Writes an install of `id` that stopped before `owner`'s config was
+    /// written.
+    fn configless(paths: &Paths, folder: &std::path::Path, owner: &str, id: u64) {
+        use wineo_core::gog::folder::{FolderLock, FolderState, Journal, Platform, Target};
+        fs::create_dir_all(folder).unwrap();
+        let folder = fs::canonicalize(folder).unwrap();
+        let state = FolderState {
+            journal: Some(Journal {
+                operation: "op".to_owned(),
+                kind: JournalKind::Install,
+                target: Target {
+                    gog_id: id,
+                    platform: Platform::Linux,
+                    language: "en".to_owned(),
+                    track: Track::Installer,
+                    products: Vec::new(),
+                },
+                packages: Vec::new(),
+                attempted: Vec::new(),
+            }),
+            ..FolderState::new(folder.clone(), Some(owner.to_owned()))
+        };
+        FolderLock::exclusive(paths, &folder, &|| false)
+            .unwrap()
+            .write(&state)
+            .unwrap();
+    }
+
+    #[test]
+    fn the_grid_lists_every_owned_game_by_what_wineo_has_of_it() {
+        use super::super::gog_install::tests::{
+            DISCO, RIMWORLD as RIMWORLD_ID, World, disco, inno, rimworld,
+        };
+        use crate::gog_fake::{native_game, owned_game};
+        use wineo_core::gog::update::windows::set_graphical_session;
+
+        let world = World::new();
+        set_graphical_session(Some(true));
+        world.installed(&rimworld(), &Default::default()).unwrap();
+        // Disco's installer stops partway, which leaves its install to finish.
+        world.disco("1", "exit 4", true);
+        let failure = world.installed(&disco(), &inno()).unwrap_err();
+        assert!(
+            format!("{failure:?}").contains("stopped partway"),
+            "{failure:?}"
+        );
+        set_graphical_session(None);
+        native_game(
+            &world.paths,
+            world.root.path(),
+            "stardew",
+            STARDEW.parse().unwrap(),
+            "1.0",
+            false,
+        );
+        configless(
+            &world.paths,
+            &world.root.path().join("Games/Hades"),
+            "hades",
+            HADES,
+        );
+        world.library.lock().unwrap().owned.extend([
+            owned_game(STARDEW.parse().unwrap(), "Stardew Valley", true, true),
+            owned_game(CELESTE, "Celeste", true, false),
+            owned_game(HADES, "Hades", true, true),
+        ]);
+
+        let mut listing = Listing::default();
+        add_owned(
+            &world.paths,
+            &world.keyring,
+            world.server.client(),
+            &mut listing,
+        );
+        assert_eq!(listing.owned_note, None);
+        let states: Vec<(&str, &OwnedState, Option<&str>)> = listing
+            .owned
+            .iter()
+            .map(|owned| {
+                (
+                    owned.offer.title.as_str(),
+                    &owned.state,
+                    owned.offer.unfinished.as_deref(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            states,
+            [
+                ("Celeste", &OwnedState::NotInstalled, None),
+                (
+                    "Disco Elysium",
+                    &OwnedState::Unfinished,
+                    Some("disco-elysium")
+                ),
+                ("Hades", &OwnedState::Unfinished, Some("hades")),
+                (
+                    "RimWorld",
+                    &OwnedState::Installed("rimworld".to_owned()),
+                    None
+                ),
+                (
+                    "Stardew Valley",
+                    &OwnedState::Imported("stardew".to_owned()),
+                    None
+                ),
+            ]
+        );
+        assert_eq!(listing.owned[0].offer.gog_id, CELESTE);
+        assert!(listing.owned[0].offer.linux && !listing.owned[0].offer.windows);
+        assert_eq!(listing.owned[3].offer.gog_id, RIMWORLD_ID);
+        assert_eq!(listing.owned[1].offer.gog_id, DISCO);
+
+        let (mut page, _) = Page::new(world.paths.clone());
+        let generation = page.generation;
+        let _ = page.update(Event::Listed(generation, Ok(listing)));
+        // Narrow and short dialogs keep the grid scrolling inside them.
+        for (width, height) in [(280.0, 240.0), (360.0, 280.0), (680.0, 560.0)] {
+            let inset = iced::Rectangle::new(
+                iced::Point::new(24.0, 24.0),
+                iced::Size::new(width - 48.0, height - 48.0),
+            );
+            let mut view = page.view_at(Palette::DARK, width, 0.0);
+            let probe = crate::layout_probe::probe(&mut view, iced::Size::new(width, height));
+            assert!(probe.outside(inset).is_empty(), "{width}x{height}");
+        }
+        // Installed and migrated games can't be opened.
+        let _ = page.update(Event::Install(3));
+        let _ = page.update(Event::Install(4));
+        assert_eq!(page.step, Step::Games);
+        // The keyboard moves to Celeste first, and Enter opens its install.
+        let task = page.key(
+            &Key::Named(Named::ArrowRight),
+            keyboard::Modifiers::empty(),
+            680.0,
+        );
+        assert!(task.is_some());
+        assert_eq!(page.focus, Some(0));
+        let _ = page.key(
+            &Key::Named(Named::Enter),
+            keyboard::Modifiers::empty(),
+            680.0,
+        );
+        assert_eq!(page.step, Step::Install);
+        assert!(page.waiting(), "it plans the install");
+        {
+            let mut view = page.view_at(Palette::DARK, 680.0, 0.0);
+            let _ = crate::layout_probe::layout(&mut view, iced::Size::new(680.0, 560.0));
+        }
+        // Back from the review returns to the grid and reads it again.
+        let _ = page.back();
+        assert_eq!(page.step, Step::Games);
+        assert!(page.install.is_none());
+    }
+
+    #[test]
+    fn heroic_games_show_once_and_logged_out_still_migrates() {
+        use crate::gog_fake::{Library, library_server, owned_game, save_login};
+        use crate::settings::steam_key::tests::TestKeyring;
+
+        let mut fx = Fixture::new();
+        fx.native(RIMWORLD, "RimWorld", &[]);
+        let library = std::sync::Arc::new(std::sync::Mutex::new(Library {
+            owned: vec![
+                owned_game(RIMWORLD.parse().unwrap(), "RimWorld", true, true),
+                owned_game(CELESTE, "Celeste", true, false),
+            ],
+            ..Library::default()
+        }));
+        let server = library_server(library);
+        let keyring = TestKeyring(std::cell::RefCell::new(None));
+
+        let mut listing = fx.listing();
+        add_owned(&fx.paths, &keyring, server.client(), &mut listing);
+        assert_eq!(
+            listing.owned_note.as_deref(),
+            Some("Log in to GOG in Settings to install the games you own.")
+        );
+        assert!(listing.owned.is_empty());
+        assert_eq!(titles(&listing), ["RimWorld"]);
+
+        save_login(&fx.paths, &keyring);
+        let mut listing = fx.listing();
+        add_owned(&fx.paths, &keyring, server.client(), &mut listing);
+        let owned: Vec<&str> = listing
+            .owned
+            .iter()
+            .map(|owned| owned.offer.title.as_str())
+            .collect();
+        assert_eq!(owned, ["Celeste"], "Heroic's RimWorld shows once");
+        assert_eq!(Page::entries(&listing), [Entry::Owned(0), Entry::Heroic(0)]);
     }
 }

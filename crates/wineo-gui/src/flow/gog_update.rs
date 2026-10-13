@@ -631,6 +631,10 @@ fn setup_failure(error: &anyhow::Error, pending: &Pending) -> Option<Failure> {
                 Failure::Failed(message)
             })
         }
+        // Its own message names the CLI's way to finish it.
+        SetupError::Partway { label, detail, .. } => Some(Failure::Failed(format!(
+            "{label}'s installer stopped partway ({detail}). {finish}"
+        ))),
         _ => None,
     }
 }
@@ -1337,5 +1341,208 @@ mod tests {
         assert_eq!(page.step, Step::Planning);
         let _ = page.update(Event::Back);
         assert!(matches!(page.take_action(), Some(Action::Library { .. })));
+    }
+
+    #[test]
+    fn a_windows_update_shows_each_installer_and_offers_the_setup_window_once() {
+        use super::super::gog_install::tests::{World, disco, inno};
+        use wineo_core::gog::update::windows::set_graphical_session;
+
+        let world = World::new();
+        set_graphical_session(Some(true));
+        world.installed(&disco(), &inno()).unwrap();
+        world.disco("2", &world.fails_once(3), true);
+        let name = "disco-elysium";
+        // GOG's details are cached for an hour, so the newer ones are fetched.
+        let refresh = Options {
+            refresh: true,
+            ..Options::default()
+        };
+        let pending = match plan_with_options(
+            &world.paths,
+            &world.keyring,
+            world.server.client(),
+            name,
+            refresh,
+            &Token::new(),
+        )
+        .unwrap()
+        {
+            Planned::Update(pending) => pending,
+            Planned::UpToDate => panic!("expected an update"),
+        };
+        let first = apply_with(
+            &world.paths,
+            &world.keyring,
+            world.server.client(),
+            &pending,
+            &Token::new(),
+            |_| {},
+        )
+        .unwrap_err();
+        assert_eq!(
+            first,
+            Failure::NotStarted {
+                label: "Disco Elysium".to_owned(),
+                message:
+                    "Disco Elysium's installer never started (exit code 3), so nothing changed."
+                        .to_owned(),
+            }
+        );
+        let (mut page, _) = Page::new(world.paths.clone(), name.to_owned());
+        let generation = page.generation;
+        let _ = page.update(Event::Planned(generation, Ok(Planned::Update(pending))));
+        let _ = page.update(Event::Update);
+        let generation = page.generation;
+        let _ = page.update(Event::Finished(generation, Err(first)));
+        assert_eq!(page.step, Step::Question);
+        for (width, height) in [(280.0, 240.0), (900.0, 720.0)] {
+            let inset = iced::Rectangle::new(
+                iced::Point::new(24.0, 24.0),
+                iced::Size::new(width - 48.0, height - 48.0),
+            );
+            let mut view = page.view(Palette::DARK, 0.0);
+            let probe = crate::layout_probe::probe(&mut view, iced::Size::new(width, height));
+            assert!(probe.outside(inset).is_empty(), "{width}x{height}");
+        }
+        let _ = page.update(Event::SetupWindow(true));
+        assert_eq!(page.step, Step::Planning);
+        assert!(page.wizard);
+        let again = plan_with_options(
+            &world.paths,
+            &world.keyring,
+            world.server.client(),
+            name,
+            Options {
+                wizard: true,
+                ..Options::default()
+            },
+            &Token::new(),
+        )
+        .unwrap();
+        let generation = page.generation;
+        let _ = page.update(Event::Planned(generation, Ok(again)));
+        assert_eq!(page.step, Step::Working, "the setup window runs right away");
+        let pending = page.pending.clone().unwrap();
+        assert!(pending.wizard());
+        let mut lines = Vec::new();
+        let updated = apply_with(
+            &world.paths,
+            &world.keyring,
+            world.server.client(),
+            &pending,
+            &Token::new(),
+            |line| lines.push(line),
+        )
+        .unwrap();
+        assert!(
+            lines.contains(&"Opening Disco Elysium's setup window".to_owned()),
+            "{lines:?}"
+        );
+        let generation = page.generation;
+        let _ = page.update(Event::Finished(generation, Ok(Box::new(updated))));
+        assert_eq!(page.step, Step::Finished);
+        assert_eq!(page.take_updated().as_deref(), Some(name));
+
+        // A plain update runs the installer silently and says so.
+        world.disco("3", "", true);
+        let Planned::Update(pending) = plan_with_options(
+            &world.paths,
+            &world.keyring,
+            world.server.client(),
+            name,
+            refresh,
+            &Token::new(),
+        )
+        .unwrap() else {
+            panic!("expected an update");
+        };
+        let mut lines = Vec::new();
+        apply_with(
+            &world.paths,
+            &world.keyring,
+            world.server.client(),
+            &pending,
+            &Token::new(),
+            |line| lines.push(line),
+        )
+        .unwrap();
+        assert!(
+            lines.contains(&"Running Disco Elysium's installer".to_owned()),
+            "{lines:?}"
+        );
+        set_graphical_session(None);
+    }
+
+    #[test]
+    fn an_interrupted_install_shows_finish_install_and_finishes_here() {
+        use super::super::gog_install::tests::{World, disco, inno};
+        use crate::gog_library::{Badge, Folders, badge};
+        use wineo_core::environment::Environment;
+        use wineo_core::gog::update::windows::set_graphical_session;
+
+        let world = World::new();
+        set_graphical_session(Some(true));
+        world.disco("1", &world.fails_once(4), true);
+        let failure = world.installed(&disco(), &inno()).unwrap_err();
+        assert!(format!("{failure:?}").contains(
+            "Disco Elysium's installer stopped partway (exit code 4). Use Finish install on disco-elysium in the library."
+        ), "{failure:?}");
+        let name = "disco-elysium";
+        let env = Environment::load(&world.paths, name).unwrap();
+        let card = Folders::read(&world.paths)
+            .card(&world.paths, &env)
+            .unwrap();
+        assert!(card.unfinished && card.install);
+        assert_eq!(card.finish_label(), "Finish install");
+        assert_eq!(badge(Some(&card), None), Some(Badge::FinishInstall));
+        assert_eq!(Badge::FinishInstall.label(), "Finish install");
+
+        let Planned::Update(pending) = plan_with(
+            &world.paths,
+            &world.keyring,
+            world.server.client(),
+            name,
+            &Token::new(),
+        )
+        .unwrap() else {
+            panic!("expected the install to finish");
+        };
+        assert_eq!(action(&pending), "Finish the interrupted install of");
+        let (mut page, _) = Page::new(world.paths.clone(), name.to_owned());
+        let generation = page.generation;
+        let _ = page.update(Event::Planned(
+            generation,
+            Ok(Planned::Update(pending.clone())),
+        ));
+        let _ = page.update(Event::Update);
+        let generation = page.generation;
+        let _ = page.update(Event::Finished(
+            generation,
+            Err(Failure::Canceled { journal: true }),
+        ));
+        assert_eq!(
+            page.error.as_deref(),
+            Some("Install interrupted. Use Finish install on disco-elysium to finish it.")
+        );
+        let updated = apply_with(
+            &world.paths,
+            &world.keyring,
+            world.server.client(),
+            &pending,
+            &Token::new(),
+            |_| {},
+        )
+        .unwrap();
+        assert_eq!(
+            result_lines(&pending, &updated)[0],
+            "Finished the interrupted install of disco-elysium."
+        );
+        let env = Environment::load(&world.paths, name).unwrap();
+        let card = Folders::read(&world.paths)
+            .card(&world.paths, &env)
+            .unwrap();
+        assert!(!card.unfinished);
+        set_graphical_session(None);
     }
 }
