@@ -284,6 +284,13 @@ Step 4's choices (2026-10-13, provisional while the maintainer was away):
   (the old version is still installed) with a warning, not `failed`.
 - **Updates and reinstalls never add the default `game` target back**;
   only installs do.
+- **Only a first attempt may treat a never-started installer as harmless.**
+  When finishing an interrupted update or install, a game or DLC installer
+  that exits 1, 2, 3, or 7 keeps the journal, since an earlier attempt may
+  have run it partway. This relies on Inno's exit codes meaning what they
+  say, a limit to check in acceptance.
+- **`update --all` skips Windows games without a graphical session**, with
+  a note, and finishes interrupted Windows updates like native ones.
 
 Carried from 0049's acceptance (2026-10-12):
 
