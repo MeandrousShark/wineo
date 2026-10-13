@@ -112,6 +112,23 @@ wineo set --global steam=flatpak
 wineo set --global --unset steam
 ```
 
+Two global keys are for installing GOG games, and needed no schema bump:
+
+- `defaults.games_root`, where new GOG games install, each in a folder
+  named after its title. Default `~/Games`. GOG games live in the host
+  library, so it's stored as `~/...` or an absolute path, never relative to
+  a portable folder.
+- `gog.language`, the language to install in, as a locale tag like `en-US`,
+  `fr-FR`, or `pt-BR` (the default is `en-US`). wineo maps it to GOG's own
+  language codes. A tag needs a 2 or 3 letter language; script, region,
+  variant, and extension parts are fine. `english` or `en_US` is refused:
+  `invalid value for gog.language: use a locale tag like en-US`.
+
+```sh
+wineo set --global defaults.games_root=~/Spiele
+wineo set --global gog.language=de-DE
+```
+
 ## Launch options
 
 `mangohud`, `wayland`, and `[gamescope]` needed no schema bump either, for
