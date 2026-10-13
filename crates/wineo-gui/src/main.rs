@@ -1820,18 +1820,27 @@ impl App {
         let margin = 2.0 * (heights.iter().copied().fold(0.0, f32::max) + GAP);
         let top = self.scroll_offset - margin;
         let bottom = self.scroll_offset + self.viewport_height + margin;
+        let count = filtered.len();
         let mut ranges: Vec<_> = [false, true]
             .into_iter()
             .map(|open| {
                 let columns = grid_motion::columns_for_viewport(self.viewport_width, open);
-                grid_motion::cards_between(&heights, columns, top, bottom)
+                let range = grid_motion::cards_between(&heights, columns, top, bottom);
+                // The margin reaches above the first row, so an empty range
+                // means the viewport is past this layout's last row.
+                if range.is_empty() {
+                    count..count
+                } else {
+                    range
+                }
             })
-            .filter(|range| !range.is_empty())
             .collect();
         // A card moving between its two slots can cross the viewport while
         // neither slot is in it, but only cards between the two ranges move
-        // through it. Both layouts are known when the motion starts, so this
-        // holds for the whole motion; the tick that settles it narrows again.
+        // through it, or from the other range to the end of the list when
+        // one layout ends above the viewport. Both layouts are known when the
+        // motion starts, so this holds for the whole motion; the tick that
+        // settles it narrows again.
         if self.grid_motion.active()
             && let (Some(start), Some(end)) = (
                 ranges.iter().map(|range| range.start).min(),
@@ -3260,6 +3269,62 @@ mod tests {
         ));
         assert!(!app.grid_motion.active());
         assert!(!app.visible_art.contains(&key));
+    }
+
+    #[test]
+    fn closing_the_panel_near_the_bottom_keeps_art_for_cards_rising_into_view() {
+        let mut app = app();
+        app.viewport_width = 1000.0;
+        app.viewport_height = 800.0;
+        app.merge(
+            (0..300)
+                .map(|index| {
+                    let mut card = card(&format!("game-{index}"), State::Inactive, 0);
+                    card.art = Some(art_file(&format!("/tmp/art-{index}.png"), index as u64));
+                    card
+                })
+                .collect(),
+        );
+        let _ = app.update(Message::Select("game-250".into()));
+        let generation = app.grid_motion.generation();
+        let _ = app.update(Message::GridTick(
+            generation,
+            Instant::now() + Duration::from_secs(1),
+        ));
+        assert!(app.panel_open && !app.grid_motion.active());
+        app.scroll_offset = 25000.0;
+        let heights: Vec<f32> = app.cards.iter().map(grid::card_height).collect();
+        let margin = 2.0 * (heights[0] + GAP);
+        let range = |open| {
+            grid_motion::cards_between(
+                &heights,
+                grid_motion::columns_for_viewport(app.viewport_width, open),
+                app.scroll_offset - margin,
+                app.scroll_offset + app.viewport_height + margin,
+            )
+        };
+        // The closed layout ends above the viewport.
+        assert!(range(false).is_empty());
+        let open = range(true);
+        assert!(!open.is_empty() && open.end < 270);
+        let key = (app.cards[270].art.clone().unwrap(), artwork::Kind::Grid);
+        app.images = art_cache::ArtCache::with_budget(0);
+
+        let _ = app.update(Message::ClosePanel);
+        assert!(app.grid_motion.active());
+        assert!(app.visible_art.contains(&key));
+        assert!(app.loading.contains(&(key.clone(), false)));
+        let pixel = image::Handle::from_rgba(1, 1, vec![10, 80, 240, 255]);
+        let _ = app.update(Message::ArtLoaded(key.clone(), false, Ok(pixel)));
+        assert!(app.images.contains(&key, false));
+
+        let generation = app.grid_motion.generation();
+        let _ = app.update(Message::GridTick(
+            generation,
+            Instant::now() + Duration::from_secs(1),
+        ));
+        assert!(!app.visible_art.contains(&key));
+        assert!(!app.images.contains(&key, false));
     }
 
     #[test]
