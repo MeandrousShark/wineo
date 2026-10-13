@@ -530,6 +530,7 @@ fn a_switch_during_a_fetch_saves_nothing_for_either_account() {
             let theirs = account::StoredLogin {
                 refresh_token: "THEIRS".to_owned(),
                 user_id: UserId::new(OTHER_USER),
+                username: None,
             };
             account::store(paths, keyring, &theirs).unwrap();
             page(1, 1, &[(1, "Mine")])
@@ -558,6 +559,7 @@ fn a_session_left_from_another_account_never_reads_its_cache() {
     let theirs = account::StoredLogin {
         refresh_token: "THEIRS".to_owned(),
         user_id: UserId::new(OTHER_USER),
+        username: None,
     };
     account::store(&paths, &keyring, &theirs).unwrap();
     // The cache is fresh, but the session is for an account that left.

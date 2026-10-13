@@ -47,6 +47,10 @@ pub struct Config {
     /// Artwork links by game id, as `_links` holds them. A game not listed
     /// is a 404.
     pub art: BTreeMap<u64, Value>,
+    /// The account's public name. Without one the profile is a 404.
+    pub username: Option<String>,
+    /// The profile fails with this status instead of answering.
+    pub profile_status: Option<u16>,
     /// File names whose downloads GOG publishes no checksum for.
     pub no_checksum: BTreeSet<String>,
     renewals: u32,
@@ -75,6 +79,8 @@ impl Default for Config {
             no_checksum: BTreeSet::new(),
             playtime: BTreeMap::new(),
             art: BTreeMap::new(),
+            username: None,
+            profile_status: None,
             renewals: 0,
         }
     }
@@ -267,6 +273,15 @@ fn answer(config: &mut Config, base: &str, target: &str, bearer: Option<&str>) -
                     200,
                     &json!({"_embedded": {"product": {"id": id}}, "_links": links}).to_string(),
                 ),
+                None => reply(404, "{}"),
+            }
+        }
+        ["users", id] => {
+            if let Some(status) = config.profile_status {
+                return reply(status, "{}");
+            }
+            match &config.username {
+                Some(name) => reply(200, &json!({"id": id, "username": name}).to_string()),
                 None => reply(404, "{}"),
             }
         }

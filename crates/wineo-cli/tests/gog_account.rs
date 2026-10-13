@@ -66,6 +66,7 @@ fn library() -> GogApi {
 fn login_saves_the_login_and_prints_no_secret() {
     let f = Fixture::new();
     let api = GogApi::start();
+    api.with(|config| config.username = Some("Hunter42".to_owned()));
     let (status, output) = login(&f, &api, &success_address(CODE));
     assert!(status.success(), "{output}");
     assert!(
@@ -76,10 +77,8 @@ fn login_saves_the_login_and_prints_no_secret() {
         output.contains(&format!("{}/auth?client_id=", api.base)),
         "{output}"
     );
-    assert!(
-        output.contains(&format!("Logged in to GOG as account {USER}.")),
-        "{output}"
-    );
+    assert!(output.contains("Logged in to GOG as Hunter42."), "{output}");
+    assert!(!output.contains("as account"), "{output}");
     // The address was typed at a prompt that doesn't echo, and nothing
     // printed it back.
     assert_no_secrets("the terminal", output.raw());
@@ -91,6 +90,48 @@ fn login_saves_the_login_and_prints_no_secret() {
     assert!(stdout(&listed).contains("Hades"), "{}", stdout(&listed));
     assert_no_secrets("stdout", &stdout(&listed));
     assert_no_secrets("stderr", &stderr(&listed));
+}
+
+#[test]
+fn a_login_without_a_known_name_says_the_account_number() {
+    for status in [None, Some(503)] {
+        let f = Fixture::new();
+        let api = GogApi::start();
+        api.with(|config| config.profile_status = status);
+        let (status, output) = login(&f, &api, &success_address(CODE));
+        assert!(status.success(), "{output}");
+        assert!(
+            output.contains(&format!("Logged in to GOG as account {USER}.")),
+            "{output}"
+        );
+        // The login still works for the next command.
+        api.with(|config| config.owned = vec![owned_game(777, "Hades", true, true)]);
+        assert!(stdout(&f.gog(&api, &["import", "gog", "--list"])).contains("Hades"));
+    }
+}
+
+#[test]
+fn a_login_saved_without_a_name_gets_one_when_the_next_command_renews_it() {
+    let f = Fixture::new();
+    let api = GogApi::start();
+    let lookups = || {
+        api.requests()
+            .iter()
+            .filter(|line| line.starts_with(&format!("GET /users/{USER} ")))
+            .count()
+    };
+    // The login asked, and got no name.
+    logged_in(&f, &api);
+    assert_eq!(lookups(), 1);
+    api.with(|config| {
+        config.username = Some("Hunter42".to_owned());
+        config.owned = vec![owned_game(777, "Hades", true, true)];
+    });
+    assert_success(&f.gog(&api, &["import", "gog", "--list"]));
+    assert_eq!(lookups(), 2);
+    // Named now, so later commands don't ask again.
+    assert_success(&f.gog(&api, &["import", "gog", "--list"]));
+    assert_eq!(lookups(), 2);
 }
 
 #[test]

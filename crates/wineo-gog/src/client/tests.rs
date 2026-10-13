@@ -255,6 +255,7 @@ fn the_production_client_refuses_plain_http_and_defaults_to_gog() {
         &production.endpoints().api,
         &production.endpoints().content_system,
         &production.endpoints().gameplay,
+        &production.endpoints().users,
     ] {
         assert_eq!(url.scheme(), "https");
         assert!(url.host_str().unwrap().ends_with(".gog.com"));
@@ -838,6 +839,193 @@ fn art_body(id: u64) -> serde_json::Value {
         },
         "_embedded": {"product": {"id": id, "title": "RimWorld"}},
     })
+}
+
+fn profile_body() -> String {
+    json!({
+        "id": "48628349957132247",
+        "username": "  Hunter42 ",
+        "created_date": "2013-01-01T00:00:00+00:00",
+        "avatar": {"gog_image_id": "abc", "sdk_img_32": "https://images.gog.com/a_32.jpg"},
+        "is_employee": false,
+        "tags": [],
+    })
+    .to_string()
+}
+
+#[test]
+fn the_username_is_read_from_the_public_profile_without_a_token() {
+    let server = FakeGog::start(|_| reply(200, &profile_body()));
+    let name = server
+        .client()
+        .username(UserId::new(48628349957132247))
+        .unwrap();
+    assert_eq!(name, "Hunter42");
+    let request = &server.requests()[0];
+    assert_eq!(
+        (request.method.as_str(), request.path()),
+        ("GET", "/users/48628349957132247")
+    );
+    assert_eq!(request.header("authorization"), None);
+}
+
+#[test]
+fn a_missing_or_blank_username_is_malformed() {
+    for body in [
+        json!({"id": "1"}),
+        json!({"id": "1", "username": ""}),
+        json!({"id": "1", "username": "   "}),
+        json!({"id": "1", "username": 7}),
+        json!({"id": "1", "username": "Bad\u{1b}[2JName"}),
+        json!({"id": "1", "username": "x".repeat(500)}),
+        json!([]),
+    ] {
+        let server = FakeGog::start(move |_| reply(200, &body.to_string()));
+        let error = server.client().username(UserId::new(1)).unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::Malformed);
+        assert_eq!(error.class(), Class::Malformed);
+        assert_eq!(error.endpoint(), Endpoint::Profile);
+    }
+    let server = FakeGog::start(|_| reply(200, "not json"));
+    let error = server.client().username(UserId::new(1)).unwrap_err();
+    assert_eq!(error.kind(), ErrorKind::Json);
+}
+
+#[test]
+fn profile_errors_are_classified_like_the_other_endpoints() {
+    for (status, kind, class) in [
+        (404, ErrorKind::Status(404), Class::Other),
+        (401, ErrorKind::Unauthorized, Class::Other),
+        (429, ErrorKind::RateLimited, Class::Temporary),
+        (503, ErrorKind::Server(503), Class::Temporary),
+    ] {
+        let server = FakeGog::start(move |_| reply(status, "{}"));
+        let error = server.client().username(UserId::new(1)).unwrap_err();
+        assert_eq!((error.kind(), error.class()), (kind, class), "{status}");
+        assert_eq!(error.endpoint(), Endpoint::Profile);
+        assert_clean(&error);
+    }
+    let error = Client::with_base("wineo-test/1", &refused())
+        .unwrap()
+        .username(UserId::new(1))
+        .unwrap_err();
+    assert_eq!(error.class(), Class::Temporary);
+    assert_clean(&error);
+}
+
+const QUICK: Duration = Duration::from_millis(300);
+
+/// A lookup that must give up at its deadline, however the server holds it.
+#[track_caller]
+fn assert_gives_up_quickly(client: &Client) {
+    let started = std::time::Instant::now();
+    let error = client.username(UserId::new(1)).unwrap_err();
+    assert!(
+        started.elapsed() < Duration::from_millis(1500),
+        "took {:?}",
+        started.elapsed()
+    );
+    assert_eq!(
+        (error.kind(), error.class(), error.endpoint()),
+        (ErrorKind::Timeout, Class::Temporary, Endpoint::Profile)
+    );
+    assert_clean(&error);
+}
+
+#[test]
+fn a_profile_that_never_answers_gives_up_at_the_deadline() {
+    let server = FakeGog::start(|_| Reply::Stall(Vec::new(), Duration::from_secs(5)));
+    assert_gives_up_quickly(&server.client().with_profile_deadline(QUICK));
+}
+
+#[test]
+fn a_profile_body_that_stalls_gives_up_at_the_deadline() {
+    let cut = b"HTTP/1.1 200 OK\r\nContent-Length: 100\r\n\r\n{\"user".to_vec();
+    let server = FakeGog::start(move |_| Reply::Stall(cut.clone(), Duration::from_secs(5)));
+    assert_gives_up_quickly(&server.client().with_profile_deadline(QUICK));
+}
+
+#[test]
+fn a_profile_body_trickling_in_gives_up_at_the_deadline_not_per_read() {
+    use std::io::{Read, Write};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let base = format!("http://{}", listener.local_addr().unwrap());
+    let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let stopped = std::sync::Arc::clone(&stop);
+    std::thread::spawn(move || {
+        let Ok((mut stream, _)) = listener.accept() else {
+            return;
+        };
+        let mut head = [0_u8; 1024];
+        let _ = stream.read(&mut head);
+        let _ = stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 100000\r\n\r\n");
+        // One byte at a time, each well inside any per-read timeout.
+        for _ in 0..200 {
+            if stopped.load(std::sync::atomic::Ordering::Relaxed) || stream.write_all(b" ").is_err()
+            {
+                return;
+            }
+            let _ = stream.flush();
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    });
+    let client = Client::with_base("wineo-test/1", &base)
+        .unwrap()
+        .with_profile_deadline(QUICK);
+    assert_gives_up_quickly(&client);
+    stop.store(true, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// A name lookup that can't be canceled and takes `stall`, like the system's.
+struct StuckResolver(Duration);
+
+impl reqwest::dns::Resolve for StuckResolver {
+    fn resolve(&self, _name: reqwest::dns::Name) -> reqwest::dns::Resolving {
+        let stall = self.0;
+        Box::pin(async move {
+            let _ = tokio::task::spawn_blocking(move || std::thread::sleep(stall)).await;
+            Err("no such host".into())
+        })
+    }
+}
+
+#[test]
+fn a_stuck_name_lookup_gives_up_on_time_and_never_holds_up_dropping_the_client() {
+    let stall = Duration::from_secs(5);
+    let client = Client::with_resolver(
+        "wineo-test/1",
+        Endpoints::all_at("http://profile.test:9").unwrap(),
+        std::sync::Arc::new(StuckResolver(stall)),
+    )
+    .unwrap()
+    .with_profile_deadline(QUICK);
+    assert_gives_up_quickly(&client);
+
+    // The worker's own request has timed out by now but its lookup is still
+    // stuck. Were the client shared with it, this would be the last clone
+    // and dropping it would wait the lookup out.
+    std::thread::sleep(QUICK * 2);
+    let started = std::time::Instant::now();
+    drop(client);
+    assert!(
+        started.elapsed() < Duration::from_millis(1000),
+        "dropping took {:?}",
+        started.elapsed()
+    );
+}
+
+#[test]
+fn an_oversized_profile_is_refused() {
+    let body = format!(
+        r#"{{"username":"Hunter42","pad":"{}"}}"#,
+        "x".repeat(70_000)
+    );
+    let server = FakeGog::start(move |_| reply(200, &body));
+    let error = server.client().username(UserId::new(1)).unwrap_err();
+    assert_eq!(
+        (error.kind(), error.class()),
+        (ErrorKind::TooLarge, Class::Malformed)
+    );
 }
 
 #[test]

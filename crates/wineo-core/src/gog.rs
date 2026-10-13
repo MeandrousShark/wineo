@@ -78,7 +78,17 @@ pub(crate) mod test_support {
         client_at(&server.base)
     }
 
+    /// A client for a fake GOG whose profile service is somewhere nothing
+    /// listens, so looking up a name fails fast instead of spending the
+    /// answers a test scripted for its own requests.
     pub fn client_at(base: &str) -> super::api::Client {
+        let mut endpoints = super::api::Endpoints::all_at(base).unwrap();
+        endpoints.users = "http://127.0.0.1:9".parse().unwrap();
+        super::api::Client::with_endpoints("wineo-test", endpoints).unwrap()
+    }
+
+    /// A client for a fake GOG that serves profiles too.
+    pub fn client_with_profiles(base: &str) -> super::api::Client {
         super::api::Client::with_base("wineo-test", base).unwrap()
     }
 

@@ -1,5 +1,6 @@
 use std::io::{self, Read};
-use std::time::Duration;
+use std::sync::mpsc;
+use std::time::{Duration, Instant};
 
 use reqwest::Url;
 use serde_json::Value;
@@ -9,12 +10,19 @@ use crate::auth::{self, AuthCode, CLIENT_ID, CLIENT_SECRET, REDIRECT_URI, Tokens
 use crate::error::{Endpoint, Error, ErrorKind};
 use crate::owned::{self, OwnedPage, OwnedProduct};
 use crate::product::{self, Builds, Product, ResolvedLink};
+use crate::profile;
 
 /// Product details with every DLC expanded run to a few megabytes.
 const MAX_BODY: u64 = 16 * 1024 * 1024;
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 /// Applies to each read of a blocking response, not the whole body.
 const READ_TIMEOUT: Duration = Duration::from_secs(30);
+/// The whole profile lookup, connecting through the last byte. The name is
+/// only for show, and the lookup sits in front of saving a login, so a slow
+/// users.gog.com must not hold that up.
+const PROFILE_DEADLINE: Duration = Duration::from_secs(2);
+/// A profile is a few hundred bytes.
+const PROFILE_MAX_BODY: usize = 64 * 1024;
 
 /// The base URL of each GOG service the client talks to.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -24,6 +32,7 @@ pub struct Endpoints {
     pub api: Url,
     pub content_system: Url,
     pub gameplay: Url,
+    pub users: Url,
 }
 
 impl Endpoints {
@@ -35,6 +44,7 @@ impl Endpoints {
             api: parse("https://api.gog.com"),
             content_system: parse("https://content-system.gog.com"),
             gameplay: parse("https://gameplay.gog.com"),
+            users: parse("https://users.gog.com"),
         }
     }
 
@@ -46,8 +56,48 @@ impl Endpoints {
             embed: base.clone(),
             api: base.clone(),
             content_system: base.clone(),
-            gameplay: base,
+            gameplay: base.clone(),
+            users: base,
         })
+    }
+}
+
+/// What every HTTP client the `Client` makes is built from.
+#[derive(Clone)]
+struct HttpSettings {
+    user_agent: String,
+    https_only: bool,
+    connect_timeout: Duration,
+    /// Stands in for the system's DNS lookup in a test.
+    #[cfg(test)]
+    resolver: Option<std::sync::Arc<dyn reqwest::dns::Resolve>>,
+}
+
+impl HttpSettings {
+    fn builder(&self, timeout: Duration) -> reqwest::blocking::ClientBuilder {
+        let builder = reqwest::blocking::Client::builder()
+            .https_only(self.https_only)
+            .connect_timeout(self.connect_timeout)
+            .timeout(timeout)
+            .user_agent(&self.user_agent);
+        #[cfg(test)]
+        let builder = match &self.resolver {
+            Some(resolver) => builder.dns_resolver(std::sync::Arc::new(SharedResolver(
+                std::sync::Arc::clone(resolver),
+            ))),
+            None => builder,
+        };
+        builder
+    }
+}
+
+#[cfg(test)]
+struct SharedResolver(std::sync::Arc<dyn reqwest::dns::Resolve>);
+
+#[cfg(test)]
+impl reqwest::dns::Resolve for SharedResolver {
+    fn resolve(&self, name: reqwest::dns::Name) -> reqwest::dns::Resolving {
+        self.0.resolve(name)
     }
 }
 
@@ -58,6 +108,9 @@ pub struct Client {
     pub(crate) cdn: reqwest::blocking::Client,
     endpoints: Endpoints,
     max_body: u64,
+    /// For the profile lookup, which builds its own HTTP client.
+    settings: HttpSettings,
+    profile_deadline: Duration,
 }
 
 impl Client {
@@ -83,6 +136,13 @@ impl Client {
         Self::build(user_agent, endpoints, false, CONNECT_TIMEOUT, READ_TIMEOUT)
     }
 
+    /// `with_base` with each service placed separately, for a test that
+    /// needs one of them somewhere else.
+    #[cfg(any(test, debug_assertions, feature = "test-server"))]
+    pub fn with_endpoints(user_agent: &str, endpoints: Endpoints) -> Result<Self, Error> {
+        Self::build(user_agent, endpoints, false, CONNECT_TIMEOUT, READ_TIMEOUT)
+    }
+
     pub(crate) fn build(
         user_agent: &str,
         endpoints: Endpoints,
@@ -90,13 +150,22 @@ impl Client {
         connect_timeout: Duration,
         read_timeout: Duration,
     ) -> Result<Self, Error> {
-        let builder = || {
-            reqwest::blocking::Client::builder()
-                .https_only(https_only)
-                .connect_timeout(connect_timeout)
-                .timeout(read_timeout)
-                .user_agent(user_agent)
+        let settings = HttpSettings {
+            user_agent: user_agent.to_owned(),
+            https_only,
+            connect_timeout,
+            #[cfg(test)]
+            resolver: None,
         };
+        Self::build_with(settings, endpoints, read_timeout)
+    }
+
+    fn build_with(
+        settings: HttpSettings,
+        endpoints: Endpoints,
+        read_timeout: Duration,
+    ) -> Result<Self, Error> {
+        let builder = || settings.builder(read_timeout);
         let setup = |_| Error::new(Endpoint::Setup, ErrorKind::Request);
         let http = builder()
             // Every endpoint answers directly. A redirect could carry the
@@ -115,7 +184,33 @@ impl Client {
             cdn,
             endpoints,
             max_body: MAX_BODY,
+            settings,
+            profile_deadline: PROFILE_DEADLINE,
         })
+    }
+
+    /// A client whose every name lookup goes through `resolver`.
+    #[cfg(test)]
+    pub(crate) fn with_resolver(
+        user_agent: &str,
+        endpoints: Endpoints,
+        resolver: std::sync::Arc<dyn reqwest::dns::Resolve>,
+    ) -> Result<Self, Error> {
+        let settings = HttpSettings {
+            user_agent: user_agent.to_owned(),
+            https_only: false,
+            connect_timeout: CONNECT_TIMEOUT,
+            resolver: Some(resolver),
+        };
+        Self::build_with(settings, endpoints, READ_TIMEOUT)
+    }
+
+    /// Changes how long the profile lookup may take in all, so a test of the
+    /// deadline doesn't wait for the real one.
+    #[cfg(any(test, debug_assertions, feature = "test-server"))]
+    pub fn with_profile_deadline(mut self, deadline: Duration) -> Self {
+        self.profile_deadline = deadline;
+        self
     }
 
     pub fn endpoints(&self) -> &Endpoints {
@@ -264,6 +359,37 @@ impl Client {
         art::parse_game_art(&json, id)
     }
 
+    /// The public name on an account's profile. Public, so no token is sent.
+    pub fn username(&self, user_id: UserId) -> Result<String, Error> {
+        let url = join(
+            &self.endpoints.users,
+            &["users", &user_id.to_string()],
+            Endpoint::Profile,
+        )?;
+        let fail = |kind| Error::new(Endpoint::Profile, kind);
+        let (settings, deadline) = (self.settings.clone(), self.profile_deadline);
+        // The blocking client times out each read separately, so a server
+        // trickling bytes could go on forever. A worker does the request
+        // and this waits for it only as long as the deadline. One that is
+        // given up on stops itself at its next read.
+        //
+        // The worker has an HTTP client of its own, because a name lookup
+        // can't be canceled: dropping a client waits for one still running.
+        // With a stuck resolver that only holds up the worker, never this
+        // client or the process.
+        let (sender, receiver) = mpsc::channel();
+        std::thread::Builder::new()
+            .name("gog-profile".to_owned())
+            .spawn(move || {
+                let _ = sender.send(fetch_profile(&settings, url, deadline));
+            })
+            .map_err(|_| fail(ErrorKind::Request))?;
+        let json = receiver
+            .recv_timeout(deadline)
+            .map_err(|_| fail(ErrorKind::Timeout))??;
+        profile::parse_username(&json)
+    }
+
     fn get_json(&self, endpoint: Endpoint, url: Url, bearer: Option<&str>) -> Result<Value, Error> {
         self.fetch_json(endpoint, url, bearer, false)?
             .ok_or_else(|| Error::new(endpoint, ErrorKind::Status(404)))
@@ -303,6 +429,44 @@ impl Client {
     fn read_body(&self, response: reqwest::blocking::Response) -> Result<Vec<u8>, ErrorKind> {
         read_limited(response, self.max_body)
     }
+}
+
+/// A small public document, all within `deadline` and
+/// `PROFILE_MAX_BODY` bytes. Errors classify like `fetch_json`'s.
+fn fetch_profile(settings: &HttpSettings, url: Url, deadline: Duration) -> Result<Value, Error> {
+    let fail = |kind| Error::new(Endpoint::Profile, kind);
+    let started = Instant::now();
+    let http = settings
+        .builder(deadline)
+        // Same as the main client: no redirect may carry the request
+        // somewhere unexpected.
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .map_err(|_| fail(ErrorKind::Request))?;
+    let mut response = http
+        .get(url)
+        .send()
+        .map_err(|error| fail(send_error(&error)))?;
+    let status = response.status().as_u16();
+    if status != 200 {
+        return Err(fail(status_kind(Endpoint::Profile, status, None)));
+    }
+    let mut body = Vec::new();
+    let mut chunk = [0_u8; 4096];
+    loop {
+        if started.elapsed() >= deadline {
+            return Err(fail(ErrorKind::Timeout));
+        }
+        match response.read(&mut chunk) {
+            Ok(0) => break,
+            Ok(read) => body.extend_from_slice(&chunk[..read]),
+            Err(error) => return Err(fail(read_error(&error))),
+        }
+        if body.len() > PROFILE_MAX_BODY {
+            return Err(fail(ErrorKind::TooLarge));
+        }
+    }
+    serde_json::from_slice(&body).map_err(|_| fail(ErrorKind::Json))
 }
 
 /// Reads a whole body of at most `limit` bytes.
