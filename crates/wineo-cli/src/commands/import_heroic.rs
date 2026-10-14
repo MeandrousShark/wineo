@@ -523,8 +523,7 @@ fn guided<I: Input, W: Write>(
     if game.kind == HeroicGameKind::Native {
         return native::guided(paths, global, access, &source, &game, &args, prompt);
     }
-    let imported = source.inspect(&game.id)?;
-    let shared = source.shared_prefix_candidates(&game.id)?;
+    let (imported, shared) = source.inspect_with_shared_prefix(&game.id)?;
     show_game_summary(prompt, paths, &imported, verbose)?;
 
     let suggested_name =

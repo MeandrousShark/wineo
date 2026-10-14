@@ -168,11 +168,29 @@ impl HeroicSource {
     }
 
     pub fn list_candidates(&self) -> Result<HeroicListing> {
-        let library_path = self.library_path();
-        let library = read_json(&library_path)?;
-        let entries = library_entries(&library)
-            .ok_or_else(|| invalid_json(&library_path, "expected a games array"))?;
-        let global = self.global_settings()?;
+        self.list_loaded(&self.load()?)
+    }
+
+    /// Reads Heroic's sideload library and global settings once, for a caller
+    /// that inspects many games and shouldn't parse them again for each.
+    pub(crate) fn load(&self) -> Result<Loaded> {
+        let library = self.read_library()?;
+        library.entries()?;
+        Ok(Loaded {
+            library,
+            global: self.global_settings()?,
+        })
+    }
+
+    fn read_library(&self) -> Result<Library> {
+        let path = self.library_path();
+        let root = read_json(&path)?;
+        Ok(Library { path, root })
+    }
+
+    fn list_loaded(&self, loaded: &Loaded) -> Result<HeroicListing> {
+        let entries = loaded.library.entries()?;
+        let global = &loaded.global;
         let mut listing = HeroicListing {
             source: self.clone(),
             candidates: Vec::new(),
@@ -240,7 +258,7 @@ impl HeroicSource {
                 ));
             }
             if candidate.issues.is_empty() && candidate.kind == HeroicGameKind::Native {
-                match self.inspect_native_entry(raw_id, entry, &global, Store::Sideload) {
+                match self.inspect_native_entry(raw_id, entry, global, Store::Sideload) {
                     Ok(import) => {
                         candidate.executable = Some(import.exe.clone());
                         candidate.issues = import.issues.clone();
@@ -251,7 +269,7 @@ impl HeroicSource {
                     )),
                 }
             } else if candidate.issues.is_empty() {
-                match self.inspect_entry(raw_id, entry, &global, Store::Sideload) {
+                match self.inspect_entry(raw_id, entry, global, Store::Sideload) {
                     Ok(import) => {
                         candidate.prefix = Some(import.prefix.clone());
                         candidate.runner = Some(import.runner.clone());
@@ -269,45 +287,50 @@ impl HeroicSource {
     }
 
     pub fn inspect(&self, game_id: &str) -> Result<HeroicImport> {
-        if !valid_game_id(game_id) {
-            return Err(invalid_json(
-                &self.game_config_path(game_id),
-                "invalid game id",
-            ));
-        }
-        let library_path = self.library_path();
-        let library = read_json(&library_path)?;
-        let entries = library_entries(&library)
-            .ok_or_else(|| invalid_json(&library_path, "expected a games array"))?;
-        let entry = entries
-            .iter()
-            .filter_map(Value::as_object)
-            .find(|entry| string_field(entry, &["app_name", "id"]) == Some(game_id))
-            .ok_or_else(|| missing_file(&library_path, "game id is not in sideload library"))?;
+        self.check_game_id(game_id)?;
+        let library = self.read_library()?;
+        let entry = library.entry(game_id)?;
         let global = self.global_settings()?;
         self.inspect_entry(game_id, entry, &global, Store::Sideload)
+    }
+
+    /// `inspect` against a library that's already read.
+    pub(crate) fn inspect_in(&self, loaded: &Loaded, game_id: &str) -> Result<HeroicImport> {
+        self.check_game_id(game_id)?;
+        let entry = loaded.library.entry(game_id)?;
+        self.inspect_entry(game_id, entry, &loaded.global, Store::Sideload)
     }
 
     /// Inspects a native sideloaded game, which imports as a native
     /// environment. Heroic's Wine settings are ignored.
     pub fn inspect_native(&self, game_id: &str) -> Result<HeroicNativeImport> {
-        if !valid_game_id(game_id) {
-            return Err(invalid_json(
-                &self.game_config_path(game_id),
-                "invalid game id",
-            ));
-        }
-        let library_path = self.library_path();
-        let library = read_json(&library_path)?;
-        let entries = library_entries(&library)
-            .ok_or_else(|| invalid_json(&library_path, "expected a games array"))?;
-        let entry = entries
-            .iter()
-            .filter_map(Value::as_object)
-            .find(|entry| string_field(entry, &["app_name", "id"]) == Some(game_id))
-            .ok_or_else(|| missing_file(&library_path, "game id is not in sideload library"))?;
+        self.check_game_id(game_id)?;
+        let library = self.read_library()?;
+        let entry = library.entry(game_id)?;
         let global = self.global_settings()?;
         self.inspect_native_entry(game_id, entry, &global, Store::Sideload)
+    }
+
+    /// `inspect_native` against a library that's already read.
+    pub(crate) fn inspect_native_in(
+        &self,
+        loaded: &Loaded,
+        game_id: &str,
+    ) -> Result<HeroicNativeImport> {
+        self.check_game_id(game_id)?;
+        let entry = loaded.library.entry(game_id)?;
+        self.inspect_native_entry(game_id, entry, &loaded.global, Store::Sideload)
+    }
+
+    fn check_game_id(&self, game_id: &str) -> Result<()> {
+        if valid_game_id(game_id) {
+            Ok(())
+        } else {
+            Err(invalid_json(
+                &self.game_config_path(game_id),
+                "invalid game id",
+            ))
+        }
     }
 
     fn inspect_native_entry(
@@ -421,10 +444,21 @@ impl HeroicSource {
     }
 
     pub fn shared_prefix_candidates(&self, game_id: &str) -> Result<Vec<HeroicSharedPrefix>> {
-        let selected = self.inspect(game_id)?;
+        self.inspect_with_shared_prefix(game_id)
+            .map(|(_, shared)| shared)
+    }
+
+    /// `inspect` and `shared_prefix_candidates` from one read of the library.
+    pub fn inspect_with_shared_prefix(
+        &self,
+        game_id: &str,
+    ) -> Result<(HeroicImport, Vec<HeroicSharedPrefix>)> {
+        self.check_game_id(game_id)?;
+        let loaded = self.load()?;
+        let selected = self.inspect_in(&loaded, game_id)?;
         let selected_prefix = crate::paths::resolve(&selected.prefix);
         let mut shared = self
-            .list_candidates()?
+            .list_loaded(&loaded)?
             .candidates
             .into_iter()
             .filter(|candidate| candidate.id != game_id)
@@ -440,7 +474,7 @@ impl HeroicSource {
             })
             .collect::<Vec<_>>();
         shared.sort_by(|a, b| a.title.cmp(&b.title).then(a.id.cmp(&b.id)));
-        Ok(shared)
+        Ok((selected, shared))
     }
 
     pub fn fingerprint(&self, game_id: &str) -> Result<InputFingerprint> {
@@ -825,6 +859,33 @@ impl HeroicSource {
 
     fn expand_path_buf(&self, path: &Path) -> (PathBuf, bool) {
         self.expand_path(&path.to_string_lossy())
+    }
+}
+
+/// Heroic's sideload library as parsed, and the global settings every game's
+/// own settings sit over.
+pub(crate) struct Loaded {
+    library: Library,
+    global: Map<String, Value>,
+}
+
+struct Library {
+    path: PathBuf,
+    root: Value,
+}
+
+impl Library {
+    fn entries(&self) -> Result<&Vec<Value>> {
+        library_entries(&self.root)
+            .ok_or_else(|| invalid_json(&self.path, "expected a games array"))
+    }
+
+    fn entry(&self, game_id: &str) -> Result<&Map<String, Value>> {
+        self.entries()?
+            .iter()
+            .filter_map(Value::as_object)
+            .find(|entry| string_field(entry, &["app_name", "id"]) == Some(game_id))
+            .ok_or_else(|| missing_file(&self.path, "game id is not in sideload library"))
     }
 }
 
@@ -1317,7 +1378,21 @@ fn detect_prefix_layout(prefix: &Path) -> PrefixLayout {
     }
 }
 
+// How often each Heroic file was read for parsing on this thread, so a test
+// can hold a bulk plan to reading each one a fixed number of times.
+#[cfg(test)]
+thread_local! {
+    pub(crate) static PARSES: std::cell::RefCell<BTreeMap<String, usize>> = const {
+        std::cell::RefCell::new(BTreeMap::new())
+    };
+}
+
 fn read_optional_json(path: &Path) -> Result<Option<Value>> {
+    #[cfg(test)]
+    PARSES.with_borrow_mut(|parses| {
+        let name = path.file_name().unwrap_or_default().to_string_lossy();
+        *parses.entry(name.into_owned()).or_default() += 1;
+    });
     match fs::read(path) {
         Ok(bytes) => serde_json::from_slice(&bytes)
             .map(Some)

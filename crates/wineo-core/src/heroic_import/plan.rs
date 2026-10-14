@@ -239,8 +239,7 @@ pub fn plan_game(
     runner: &str,
     options: Options,
 ) -> anyhow::Result<GamePlan> {
-    let imported = source.inspect(id)?;
-    let shared = source.shared_prefix_candidates(id)?;
+    let (imported, shared) = source.inspect_with_shared_prefix(id)?;
     GamePlan::new(paths, global, imported, shared, runner, options)
 }
 
