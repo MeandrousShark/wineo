@@ -504,6 +504,13 @@ fn bulk(paths: &Paths, global: &GlobalConfig, args: &Args) -> anyhow::Result<Exi
     })
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Step {
+    Game,
+    Name,
+    Confirm,
+}
+
 fn guided<I: Input, W: Write>(
     paths: &Paths,
     global: &GlobalConfig,
@@ -530,22 +537,22 @@ fn guided<I: Input, W: Write>(
         };
         (label, entry.app_id.clone())
     }));
-    let mut step = 0;
+    let mut step = Step::Game;
     let mut game = String::new();
     let mut name = args.name.clone();
     loop {
-        out.set_first_question(step == 0 && first_question);
+        out.set_first_question(step == Step::Game && first_question);
         match step {
-            0 => match out.choose("Which Steam game?", "Game", &choices, None, true)? {
+            Step::Game => match out.choose("Which Steam game?", "Game", &choices, None, true)? {
                 Reply::Value(value) => {
                     game = value;
                     name = args.name.clone();
-                    step = 1;
+                    step = Step::Name;
                 }
                 Reply::Back if first_question => return Err(Canceled.into()),
                 Reply::Back => return Err(ReturnToSourceMenu.into()),
             },
-            1 => {
+            Step::Name => {
                 let entry = entries.iter().find(|entry| entry.app_id == game).unwrap();
                 let default = wineo_core::heroic_import::default_name(
                     entry.title.as_deref().unwrap_or(""),
@@ -562,12 +569,12 @@ fn guided<I: Input, W: Write>(
                 )? {
                     Reply::Value(value) => {
                         name = Some(value);
-                        step = 2;
+                        step = Step::Confirm;
                     }
-                    Reply::Back => step = 0,
+                    Reply::Back => step = Step::Game,
                 }
             }
-            _ => {
+            Step::Confirm => {
                 let plan = match steam_import::plan(paths, global, games, &game, name.as_deref())? {
                     PlanOutcome::Ready(plan) => plan,
                     PlanOutcome::AlreadyImported(name) => {
@@ -579,7 +586,7 @@ fn guided<I: Input, W: Write>(
                 review(&plan, key.is_some(), out)?;
                 out.say("Press Enter to import it, Esc to go back, Ctrl+C to cancel.")?;
                 match out.confirm("Import it?", true)? {
-                    Reply::Back => step = 1,
+                    Reply::Back => step = Step::Name,
                     Reply::Value(false) => return Err(Canceled.into()),
                     Reply::Value(true) => {
                         let cancellation = Cancellation::new()?;

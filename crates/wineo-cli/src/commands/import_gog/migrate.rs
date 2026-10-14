@@ -594,6 +594,12 @@ pub(super) fn all(paths: &Paths, args: &Args, verbose: bool) -> anyhow::Result<E
     })
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Step {
+    Game,
+    Confirm,
+}
+
 pub(super) fn guided(
     paths: &Paths,
     args: &Args,
@@ -639,20 +645,20 @@ pub(super) fn guided(
                 (format!("{} ({}, {platform})", game.title, game.id), index)
             }),
     );
-    let mut step = 0;
+    let mut step = Step::Game;
     let mut picked = 0;
     loop {
-        prompt.set_first_question(step == 0 && first_question);
+        prompt.set_first_question(step == Step::Game && first_question);
         match step {
-            0 => match prompt.choose("Which GOG game?", "Game", &choices, None, true)? {
+            Step::Game => match prompt.choose("Which GOG game?", "Game", &choices, None, true)? {
                 Reply::Value(index) => {
                     picked = index;
-                    step = 1;
+                    step = Step::Confirm;
                 }
                 Reply::Back if first_question => return Err(Canceled.into()),
                 Reply::Back => return Err(ReturnToSourceMenu.into()),
             },
-            _ => {
+            Step::Confirm => {
                 let (entry, planned) = &candidates[picked];
                 let mut migration = planned.clone();
                 // A dry run asks nothing that could write, and --yes
@@ -669,7 +675,7 @@ pub(super) fn guided(
                         return Err(error);
                     }
                     prompt.say(format!("Can't migrate: {error:#}"))?;
-                    step = 0;
+                    step = Step::Game;
                     continue;
                 }
                 for line in review_lines(paths, &migration, entry) {
@@ -686,7 +692,7 @@ pub(super) fn guided(
                     prompt.confirm("Migrate it?", true)?
                 };
                 match answer {
-                    Reply::Back => step = 0,
+                    Reply::Back => step = Step::Game,
                     Reply::Value(false) => return Err(Canceled.into()),
                     Reply::Value(true) => {
                         let outcome = apply(paths, &global, entry.source, &migration)?;

@@ -286,6 +286,17 @@ impl Input for NoInput {
     }
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Step {
+    Source,
+    Name,
+    /// Copy or adopt in place.
+    Mode,
+    Destination,
+    Runner,
+    Review,
+}
+
 fn guided_prefix<I: Input, W: Write>(
     paths: &Paths,
     global: &GlobalConfig,
@@ -300,11 +311,11 @@ fn guided_prefix<I: Input, W: Write>(
     let mut adopt = args.adopt;
     let mut dir = args.dir;
     let mut arch = args.arch;
-    let mut step = 0;
+    let mut step = Step::Source;
     loop {
-        prompt.set_first_question(step == 0 && first_question);
+        prompt.set_first_question(step == Step::Source && first_question);
         match step {
-            0 => {
+            Step::Source => {
                 match prompt.text("Existing prefix", Some(&source), |text| {
                     let path = paths
                         .absolute(&picker::clean_path(text))
@@ -317,13 +328,13 @@ fn guided_prefix<I: Input, W: Write>(
                 })? {
                     Reply::Value(value) => {
                         source = value;
-                        step = 1;
+                        step = Step::Name;
                     }
                     Reply::Back if first_question => return Err(Canceled.into()),
                     Reply::Back => return Err(ReturnToSourceMenu.into()),
                 }
             }
-            1 => {
+            Step::Name => {
                 let suggested = wineo_core::targets::suggest_name(
                     PathBuf::from(&source)
                         .file_name()
@@ -346,12 +357,12 @@ fn guided_prefix<I: Input, W: Write>(
                 )? {
                     Reply::Value(value) => {
                         name = value;
-                        step = 2;
+                        step = Step::Mode;
                     }
-                    Reply::Back => step = 0,
+                    Reply::Back => step = Step::Source,
                 }
             }
-            2 => {
+            Step::Mode => {
                 match prompt.choose(
                     "Copy the prefix, or use its original files?",
                     "Mode",
@@ -367,12 +378,16 @@ fn guided_prefix<I: Input, W: Write>(
                 )? {
                     Reply::Value(value) => {
                         adopt = value;
-                        step = if adopt { 4 } else { 3 };
+                        step = if adopt {
+                            Step::Runner
+                        } else {
+                            Step::Destination
+                        };
                     }
-                    Reply::Back => step = 1,
+                    Reply::Back => step = Step::Name,
                 }
             }
-            3 => {
+            Step::Destination => {
                 let default = global.prefix_root(paths)?.join(&name).display().to_string();
                 match prompt.text(
                     "Copy destination",
@@ -386,12 +401,12 @@ fn guided_prefix<I: Input, W: Write>(
                 )? {
                     Reply::Value(value) => {
                         dir = Some(value);
-                        step = 4;
+                        step = Step::Runner;
                     }
-                    Reply::Back => step = 2,
+                    Reply::Back => step = Step::Mode,
                 }
             }
-            4 => {
+            Step::Runner => {
                 let detected = import::inspect(&source, None, arch).ok();
                 let proton = detected
                     .as_ref()
@@ -399,12 +414,14 @@ fn guided_prefix<I: Input, W: Write>(
                 match choose_runner(prompt, paths, global, runner.as_deref(), proton, verbose)? {
                     Reply::Value(value) => {
                         runner = Some(value);
-                        step = 5;
+                        step = Step::Review;
                     }
-                    Reply::Back => step = if adopt { 2 } else { 3 },
+                    Reply::Back => {
+                        step = if adopt { Step::Mode } else { Step::Destination };
+                    }
                 }
             }
-            _ => {
+            Step::Review => {
                 let request = ImportRequest {
                     source: paths.absolute(&source)?,
                     name: name.clone(),
@@ -434,10 +451,10 @@ fn guided_prefix<I: Input, W: Write>(
                                 true,
                             )? {
                                 Reply::Value(value) => arch = Some(value),
-                                Reply::Back => step = 4,
+                                Reply::Back => step = Step::Runner,
                             }
                         } else {
-                            step = 4;
+                            step = Step::Runner;
                         }
                         continue;
                     }
@@ -464,10 +481,10 @@ fn guided_prefix<I: Input, W: Write>(
                     Some("1"),
                     true,
                 )? {
-                    Reply::Back | Reply::Value(Review::Runner) => step = 4,
-                    Reply::Value(Review::Source) => step = 0,
-                    Reply::Value(Review::Name) => step = 1,
-                    Reply::Value(Review::Mode) => step = 2,
+                    Reply::Back | Reply::Value(Review::Runner) => step = Step::Runner,
+                    Reply::Value(Review::Source) => step = Step::Source,
+                    Reply::Value(Review::Name) => step = Step::Name,
+                    Reply::Value(Review::Mode) => step = Step::Mode,
                     Reply::Value(Review::Import) => {
                         match import_reviewed(paths, global, request, &inspection, None) {
                             Ok(environment) => {
@@ -476,7 +493,7 @@ fn guided_prefix<I: Input, W: Write>(
                             Err(error) if error.is::<Canceled>() => return Err(error),
                             Err(error) => {
                                 prompt.say(format!("Import failed: {error:#}"))?;
-                                step = 0;
+                                step = Step::Source;
                             }
                         }
                     }
