@@ -6,7 +6,6 @@ use wineo_core::config::{Arch, GlobalConfig};
 use wineo_core::environment::Environment;
 use wineo_core::import::{self, ImportRequest, ImportedSettings, Inspection};
 use wineo_core::paths::Paths;
-use wineo_core::runner::Runner;
 use wineo_core::runners::Runners;
 
 use super::transfer::{self, Cancellation};
@@ -461,16 +460,12 @@ pub(crate) fn choose_runner<I: Input, W: Write>(
     loop {
         let runners = Runners::new(paths, global)?;
         let mut entries = Vec::new();
-        let mut candidates = runners.list()?.runners;
-        if let Ok(system) = Runner::system() {
-            candidates.insert(0, system);
-        }
-        for alias in wineo_core::runner_alias::ALIASES {
-            if let Ok(runner) = runners.resolve(alias) {
-                candidates.push(runner);
-            }
-        }
-        for runner in candidates {
+        let listing = runners.list()?;
+        let candidates = runners.candidates(&listing);
+        for runner in candidates
+            .into_iter()
+            .filter_map(|candidate| candidate.runner.ok())
+        {
             if proton.is_some_and(|expected| expected != runner.is_proton()) {
                 continue;
             }

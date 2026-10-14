@@ -15,8 +15,6 @@ use wineo_core::error::Error;
 use wineo_core::external_runners::Source;
 use wineo_core::install::Change;
 use wineo_core::paths::Paths;
-use wineo_core::runner::Runner;
-use wineo_core::runner_alias;
 use wineo_core::runners::Runners;
 use wineo_core::settings::{self, Applied, CheckError, ConfigFile};
 use wineo_core::{art, prefix, programs, target_path, winpath};
@@ -363,19 +361,22 @@ pub(crate) fn runner_choices(
             None,
         );
     };
-    let mut choices = vec![RunnerChoice {
-        name: Runner::SYSTEM.to_owned(),
-        launcher: None,
-        proton: Runner::system().ok().map(|runner| runner.is_proton()),
-    }];
-    if let Ok(listing) = runners.list() {
-        choices.extend(listing.runners.iter().map(|runner| RunnerChoice {
-            name: runner.name().to_owned(),
-            launcher: crate::runner_label::launcher(paths, runner),
-            proton: Some(runner.is_proton()),
-        }));
-    }
-    // An alias or a configured name is labeled by the build it resolves to.
+    let listing = runners.list().unwrap_or_default();
+    let mut choices: Vec<_> = runners
+        .candidates(&listing)
+        .into_iter()
+        .map(|candidate| {
+            let runner = candidate.runner.ok();
+            RunnerChoice {
+                name: candidate.name,
+                launcher: runner
+                    .as_ref()
+                    .and_then(|runner| crate::runner_label::launcher(paths, runner)),
+                proton: runner.map(|runner| runner.is_proton()),
+            }
+        })
+        .collect();
+    // A configured name is labeled by the build it resolves to.
     let resolved = |name: &str| {
         let runner = runners.resolve(name).ok();
         RunnerChoice {
@@ -386,9 +387,6 @@ pub(crate) fn runner_choices(
             proton: runner.map(|runner| runner.is_proton()),
         }
     };
-    for alias in runner_alias::ALIASES {
-        choices.push(resolved(alias));
-    }
     if !choices.iter().any(|choice| choice.name == configured) {
         choices.push(resolved(configured));
     }

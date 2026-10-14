@@ -868,22 +868,13 @@ impl Page {
 fn runner_choices(paths: &Paths) -> Result<RunnerListing, String> {
     let global = GlobalConfig::load(paths).map_err(|error| error.to_string())?;
     let runners = Runners::new(paths, &global).map_err(|error| error.to_string())?;
-    let mut choices = Vec::new();
-    if let Ok(runner) = Runner::system() {
-        choices.push(choice(paths, runner));
-    }
     let listing = runners.list().map_err(|error| error.to_string())?;
-    choices.extend(
-        listing
-            .runners
-            .into_iter()
-            .map(|runner| choice(paths, runner)),
-    );
-    for alias in wineo_core::runner_alias::ALIASES {
-        if let Ok(runner) = runners.resolve(alias) {
-            choices.push(choice(paths, runner));
-        }
-    }
+    let mut choices: Vec<_> = runners
+        .candidates(&listing)
+        .into_iter()
+        .filter_map(|candidate| candidate.runner.ok())
+        .map(|runner| choice(paths, runner))
+        .collect();
     choices.sort_by(|a, b| a.selection.cmp(&b.selection));
     choices.dedup_by(|a, b| a.selection == b.selection);
     let default = choices

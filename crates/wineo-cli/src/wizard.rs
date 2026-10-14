@@ -19,7 +19,7 @@ use wineo_core::paths::Paths;
 use wineo_core::prefix;
 use wineo_core::programs::{Program, Source};
 use wineo_core::runner::Runner;
-use wineo_core::runners::Runners;
+use wineo_core::runners::{CandidateKind, Runners};
 use wineo_core::runtime::Runtime;
 use wineo_core::steamgriddb::Key;
 use wineo_core::supervisor::Watched;
@@ -871,20 +871,17 @@ fn pick_runner<I: Input, W: Write>(
     let listing = runners.list()?;
     let mut entries = Vec::new();
     let mut unusable = Vec::new();
-    match Runner::system() {
-        Ok(runner) => entries.push((
-            format!("{}, the system wine", describe_runner(&runner)),
-            Runner::SYSTEM.to_owned(),
-        )),
-        Err(err) => unusable.push(format!("{}: {err}", Runner::SYSTEM)),
-    }
-    for runner in &listing.runners {
-        entries.push((describe_runner(runner), runner.name().to_owned()));
-    }
-    for alias in wineo_core::runner_alias::ALIASES {
-        match runners.resolve(alias) {
-            Ok(runner) => entries.push((describe_runner(&runner), alias.to_owned())),
-            Err(err) => unusable.push(err.to_string()),
+    for candidate in runners.candidates(&listing) {
+        match (candidate.kind, candidate.runner) {
+            (CandidateKind::System, Ok(runner)) => entries.push((
+                format!("{}, the system wine", describe_runner(&runner)),
+                candidate.name,
+            )),
+            (CandidateKind::System, Err(err)) => {
+                unusable.push(format!("{}: {err}", candidate.name));
+            }
+            (_, Ok(runner)) => entries.push((describe_runner(&runner), candidate.name)),
+            (_, Err(err)) => unusable.push(err.to_string()),
         }
     }
     for (name, reason) in &listing.skipped {

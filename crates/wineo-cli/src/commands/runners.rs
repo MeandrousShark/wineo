@@ -5,7 +5,7 @@ use wineo_core::config::GlobalConfig;
 use wineo_core::external_runners::Source;
 use wineo_core::paths::Paths;
 use wineo_core::runner::Runner;
-use wineo_core::runners::Runners;
+use wineo_core::runners::{CandidateKind, Runners};
 
 use crate::text;
 
@@ -64,45 +64,47 @@ pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
     let listing = runners.list()?;
 
     // The system wine leads, since that is what every config starts out using.
-    let mut rows = vec![match Runner::system() {
-        Ok(runner) => Row {
-            name: Runner::SYSTEM.to_owned(),
-            kind: runner.kind_name().to_owned(),
-            source: String::new(),
-            detail: version(&runner),
-            last: runner
-                .wine_path()
-                .map(|path| path.display().to_string())
-                .unwrap_or_default(),
-        },
-        Err(err) => Row {
-            name: Runner::SYSTEM.to_owned(),
-            kind: String::new(),
-            source: String::new(),
-            detail: err.to_string(),
-            last: String::new(),
-        },
-    }];
-    rows.extend(listing.runners.iter().map(|runner| Row {
-        name: runner.name().to_owned(),
-        kind: runner.kind_name().to_owned(),
-        source: runner.owner(paths).to_string(),
-        detail: version(runner),
-        last: different_note(&listing.different_builds(runner.name())),
-    }));
-    for alias in wineo_core::runner_alias::ALIASES {
-        let detail = match runners.resolve(alias) {
-            Ok(runner) => format!("-> {}", runner.name()),
-            Err(err) => err.to_string(),
-        };
-        rows.push(Row {
-            name: alias.to_owned(),
-            kind: "alias".to_owned(),
-            source: String::new(),
-            detail,
-            last: String::new(),
-        });
-    }
+    let mut rows: Vec<_> = runners
+        .candidates(&listing)
+        .into_iter()
+        .map(|candidate| match (candidate.kind, candidate.runner) {
+            (CandidateKind::System, Ok(runner)) => Row {
+                name: candidate.name,
+                kind: runner.kind_name().to_owned(),
+                source: String::new(),
+                detail: version(&runner),
+                last: runner
+                    .wine_path()
+                    .map(|path| path.display().to_string())
+                    .unwrap_or_default(),
+            },
+            (CandidateKind::Installed, Ok(runner)) => Row {
+                name: candidate.name,
+                kind: runner.kind_name().to_owned(),
+                source: runner.owner(paths).to_string(),
+                detail: version(&runner),
+                last: different_note(&listing.different_builds(runner.name())),
+            },
+            (CandidateKind::Alias, Ok(runner)) => Row {
+                name: candidate.name,
+                kind: "alias".to_owned(),
+                source: String::new(),
+                detail: format!("-> {}", runner.name()),
+                last: String::new(),
+            },
+            (kind, Err(err)) => Row {
+                name: candidate.name,
+                kind: if kind == CandidateKind::Alias {
+                    "alias".to_owned()
+                } else {
+                    String::new()
+                },
+                source: String::new(),
+                detail: err.to_string(),
+                last: String::new(),
+            },
+        })
+        .collect();
     if args.all {
         rows.extend(listing.skipped.iter().map(|(name, reason)| Row {
             name: name.clone(),
