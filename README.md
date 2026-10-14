@@ -72,9 +72,7 @@ git config filter.pkgver.smudge cat
 ### From source
 
 You need a recent stable Rust toolchain (the workspace uses the 2024
-edition), plus the D-Bus development files and `pkg-config` for keyring
-support: `dbus` on Arch, `libdbus-1-dev` on Debian and Ubuntu, `dbus-devel`
-on Fedora.
+edition) and `pkg-config`.
 
 ```sh
 cargo build --release -p wineo-cli
@@ -95,9 +93,9 @@ wineo manpages ~/.local/share/man/man1
 - `umu-launcher` to run Proton environments
 - `winetricks` for `wineo winetricks`
 - `gamemode`, `gamescope`, and `mangohud` for targets that turn them on
-- `dbus` and a Secret Service keyring (GNOME Keyring, KWallet) to store the
-  SteamGridDB and Steam Web API keys; without one, wineo falls back to
-  private files
+- a Secret Service keyring (GNOME Keyring, KWallet) on the D-Bus session bus
+  to store the SteamGridDB and Steam Web API keys; without one, wineo falls
+  back to private files
 
 ## Usage
 

@@ -23,7 +23,6 @@ xz2 = "0.1"
 zip = { version = "9", default-features = false, features = ["deflate-flate2"] }
 zstd = "0.13"
 clap = { version = "4.6", features = ["derive"] }
-dbus-secret-service = { version = "4.1", features = ["crypto-rust"] }
 clap_complete = { version = "4.6", features = ["unstable-dynamic"] }
 clap_mangen = "0.3"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "ico"] }
@@ -31,13 +30,18 @@ md-5 = "0.10"
 jiff = { version = "0.2", features = ["serde"] }
 rustix = { version = "1.1", features = ["event", "fs", "param", "process", "stdio"] }
 rustyline = { version = "18", default-features = false, features = ["custom-bindings"] }
+secret-service = { version = "5.2", default-features = false, features = ["rt-tokio-crypto-rust"] }
 serde = { version = "1", features = ["derive"] }
 signal-hook = "0.4"
 tempfile = "3"
 thiserror = "2"
 toml = "1.1"
 toml_edit = "0.25"
+# Each keyring call runs on its own current-thread runtime.
+tokio = { version = "1", features = ["rt", "net", "time"] }
 unicode-width = "0.2"
+# Only for matching the errors secret-service passes through.
+zbus = { version = "5", default-features = false }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
