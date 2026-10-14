@@ -328,13 +328,95 @@ impl<'a> Publisher<'a> {
         }
     }
 
-    /// Renames the temporary file `temp`, already written and synced in
-    /// `dir`, over `path`, the entry `dir` holds as its last component.
-    pub(super) fn place_file(&mut self, dir: &OwnedFd, temp: &str, path: &str) -> Result<()> {
-        rustix::fs::renameat(dir, temp, dir, leaf_of(path))
-            .with_context(|| format!("failed to publish {path}"))?;
-        self.changed.insert(parent_of(path).to_owned());
-        self.written.push(path.to_owned());
+    /// Puts the temporary file `temp`, already written and synced in `dir`,
+    /// at `path` without ever replacing what is there: whatever stands there
+    /// is first moved to an aside name, then deleted only when its content
+    /// matches one of `recorded`, the hashes wineo recorded for the path,
+    /// and moved to `<name>.wineo-saved` otherwise. So something another
+    /// program put there, or changed, since the path was last looked at is
+    /// never lost. Refused on a filesystem that can't rename without
+    /// replacing.
+    pub(super) fn place_new(
+        &mut self,
+        dir: &OwnedFd,
+        temp: &str,
+        path: &str,
+        recorded: &[String],
+    ) -> Result<()> {
+        let leaf = leaf_of(path);
+        // Each attempt either places the file or moves one entry out of the
+        // way, so only a program racing it on purpose keeps it going.
+        for _ in 0..8 {
+            match rename_new(dir, temp, dir, leaf) {
+                Ok(()) => {
+                    self.changed.insert(parent_of(path).to_owned());
+                    self.written.push(path.to_owned());
+                    return Ok(());
+                }
+                Err(Errno::EXIST) => {}
+                Err(error) => return Err(no_replace_error(error, path)),
+            }
+            let aside = aside_name(leaf, self.operation);
+            failpoint("galaxy.aside.before")?;
+            match rename_new(dir, leaf, dir, &aside) {
+                Ok(()) => {}
+                // Gone again meanwhile: the path is free.
+                Err(Errno::NOENT) => continue,
+                Err(error) => return Err(no_replace_error(error, path)),
+            }
+            self.changed.insert(parent_of(path).to_owned());
+            failpoint("galaxy.aside.after")?;
+            self.settle_aside(dir, &aside, path, recorded)?;
+        }
+        bail!("{path} kept changing while it was put in place")
+    }
+
+    /// Deals with an entry moved aside from `path` as `aside`: deleted when
+    /// it is a file holding one of `recorded`, else moved to
+    /// `<name>.wineo-saved` and listed.
+    pub(super) fn settle_aside(
+        &mut self,
+        dir: &OwnedFd,
+        aside: &str,
+        path: &str,
+        recorded: &[String],
+    ) -> Result<()> {
+        let hash = self.hash(dir, aside, path)?;
+        if hash.as_ref().is_some_and(|hash| recorded.contains(hash)) {
+            match rustix::fs::unlinkat(dir, aside, AtFlags::empty()) {
+                Ok(()) | Err(Errno::NOENT) => {}
+                Err(error) => {
+                    return Err(error).with_context(|| format!("failed to remove {path}"));
+                }
+            }
+            self.changed.insert(parent_of(path).to_owned());
+            return Ok(());
+        }
+        let leaf = leaf_of(path);
+        let mut number = 1;
+        let saved = loop {
+            let saved = if number == 1 {
+                format!("{leaf}.wineo-saved")
+            } else {
+                format!("{leaf}.wineo-saved-{number}")
+            };
+            number += 1;
+            match rename_new(dir, aside, dir, &saved) {
+                Ok(()) => break saved,
+                Err(Errno::EXIST) => {}
+                Err(error) => return Err(no_replace_error(error, path)),
+            }
+        };
+        let parent = parent_of(path);
+        self.changed.insert(parent.to_owned());
+        self.report.saved.push(SavedAside {
+            path: path.to_owned(),
+            saved_as: if parent.is_empty() {
+                saved
+            } else {
+                format!("{parent}/{saved}")
+            },
+        });
         Ok(())
     }
 
@@ -685,6 +767,42 @@ impl<'a> Publisher<'a> {
             saved_as,
         });
         failpoint("update.save.after")
+    }
+}
+
+/// What an entry moved out of the way at `leaf` is called while it waits to
+/// be deleted or saved. It isn't one of the operation's temporaries, so
+/// recovery never deletes it unchecked; `aside_origin` gives the name back.
+pub(super) fn aside_name(leaf: &str, operation: &str) -> String {
+    format!("{leaf}{}", aside_suffix(operation))
+}
+
+fn aside_suffix(operation: &str) -> String {
+    format!(".wineo-aside-{operation}")
+}
+
+/// The name an aside entry of `operation` was moved from, if `name` is one.
+pub(super) fn aside_origin<'a>(name: &'a str, operation: &str) -> Option<&'a str> {
+    name.strip_suffix(&aside_suffix(operation))
+        .filter(|origin| !origin.is_empty())
+}
+
+fn rename_new(
+    from_dir: &OwnedFd,
+    from: &str,
+    to_dir: &OwnedFd,
+    to: &str,
+) -> rustix::io::Result<()> {
+    rustix::fs::renameat_with(from_dir, from, to_dir, to, RenameFlags::NOREPLACE)
+}
+
+fn no_replace_error(error: Errno, path: &str) -> anyhow::Error {
+    if error == Errno::INVAL || error == Errno::NOSYS || error == Errno::NOTSUP {
+        anyhow!(
+            "{path}'s filesystem can't rename a file without replacing another, which wineo needs to install Galaxy builds safely"
+        )
+    } else {
+        anyhow::Error::from(error).context(format!("failed to put {path} in place"))
     }
 }
 

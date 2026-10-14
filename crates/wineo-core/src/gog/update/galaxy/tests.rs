@@ -6,11 +6,22 @@ use std::path::{Path, PathBuf};
 use crate::paths::Paths;
 
 type Hook = Box<dyn FnMut(&Paths)>;
+type PlaceHook = Box<dyn FnMut(&str)>;
 
 thread_local! {
     static AFTER_STORE: RefCell<Option<Hook>> = const { RefCell::new(None) };
+    static BEFORE_PLACE: RefCell<Option<PlaceHook>> = const { RefCell::new(None) };
     static FREE_AT: RefCell<Vec<(PathBuf, u64)>> = const { RefCell::new(Vec::new()) };
     static DEVICE_AT: RefCell<Vec<(PathBuf, u64)>> = const { RefCell::new(Vec::new()) };
+}
+
+/// Runs a test's hook right before a downloaded game file is put in place.
+pub(super) fn before_place(path: &str) {
+    BEFORE_PLACE.with(|hook| {
+        if let Some(hook) = hook.borrow_mut().as_mut() {
+            hook(path);
+        }
+    });
 }
 
 /// Runs a test's hook once the store versions are held and downloaded.
@@ -1219,4 +1230,221 @@ fn finishing_an_install_moves_your_files_aside() {
     );
     assert_eq!(fx.read("Data/core.dat.wineo-saved"), "yours");
     assert_eq!(fx.read("empty.txt.wineo-saved/note"), "mine");
+}
+
+fn set_before_place(hook: impl FnMut(&str) + 'static) {
+    BEFORE_PLACE.with(|cell| *cell.borrow_mut() = Some(Box::new(hook)));
+}
+
+fn clear_before_place() {
+    BEFORE_PLACE.with(|cell| *cell.borrow_mut() = None);
+}
+
+#[test]
+fn a_file_put_where_one_is_downloading_is_saved_not_overwritten() {
+    let fx = Fixture::new();
+    fx.content.add_build(Fixture::game("100"));
+    let target = fx.folder.join("bin/Game.exe");
+    set_before_place(move |path| {
+        if path == "bin/Game.exe" {
+            fs::write(&target, "put here meanwhile").unwrap();
+        }
+    });
+    let installed = fx.install();
+    clear_before_place();
+    assert_installed(&fx);
+    assert_eq!(
+        installed
+            .saved
+            .iter()
+            .map(|saved| (saved.path.as_str(), saved.saved_as.as_str()))
+            .collect::<Vec<_>>(),
+        [("bin/Game.exe", "bin/Game.exe.wineo-saved")]
+    );
+    assert_eq!(fx.read("bin/Game.exe.wineo-saved"), "put here meanwhile");
+}
+
+/// Build 100 in place but unfinished, its record lost, and GOG listing
+/// only build 200, whose info file differs: the one build 100's attempt
+/// wrote is wineo's own to replace.
+fn retargeted(fx: &Fixture) -> Plan {
+    fx.content.add_build(Fixture::game("100"));
+    interrupted(fx, "galaxy.files.after", 0);
+    fs::remove_file(folder::sidecar_file(&fx.paths, &fx.folder)).unwrap();
+    fx.hide("100");
+    fx.content.add_build(Fixture::game("200"));
+    fx.plan()
+}
+
+#[test]
+fn a_file_of_wineos_changed_while_downloading_is_saved() {
+    let fx = Fixture::new();
+    let plan = retargeted(&fx);
+    let info_file = format!("goggame-{GAME}.info");
+    let (path, watched) = (fx.folder.join(&info_file), info_file.clone());
+    set_before_place(move |placing| {
+        if placing == watched {
+            fs::write(&path, "changed by you").unwrap();
+        }
+    });
+    let installed = fx.apply(&plan).unwrap();
+    clear_before_place();
+    assert_eq!(installed.saved.len(), 1);
+    assert_eq!(installed.saved[0].path, info_file);
+    assert_eq!(
+        fx.read(&format!("{info_file}.wineo-saved")),
+        "changed by you"
+    );
+    assert_eq!(fx.read(&info_file), info(GAME, "200"));
+}
+
+#[test]
+fn a_crash_with_wineos_file_moved_aside_deletes_it_only_on_a_hash_match() {
+    for changed in [false, true] {
+        let fx = Fixture::new();
+        let plan = retargeted(&fx);
+        set_failpoint(Some("galaxy.aside.after"));
+        let error = fx.apply(&plan).unwrap_err();
+        set_failpoint(None);
+        assert!(format!("{error:#}").contains("injected"), "{error:#}");
+        let info_file = format!("goggame-{GAME}.info");
+        let aside = fx
+            .tree()
+            .into_iter()
+            .find(|path| path.contains(".wineo-aside-"))
+            .unwrap();
+        assert!(aside.starts_with(&info_file), "{aside}");
+        if changed {
+            fs::write(fx.folder.join(&aside), "changed by you").unwrap();
+        }
+        let installed = fx.install();
+        assert!(!fx.tree().iter().any(|path| path.contains(".wineo-aside-")));
+        assert_eq!(fx.read(&info_file), info(GAME, "200"));
+        let saved = fx.folder.join(format!("{info_file}.wineo-saved"));
+        assert_eq!(saved.exists(), changed);
+        assert_eq!(installed.saved.len(), usize::from(changed));
+        if changed {
+            assert_eq!(fs::read_to_string(saved).unwrap(), "changed by you");
+        }
+    }
+}
+
+#[test]
+fn same_size_damage_counts_toward_space() {
+    let fx = Fixture::new();
+    fx.content.add_build(Fixture::game("100"));
+    interrupted(&fx, "galaxy.files.after", 0);
+    let damaged = "core data, several chunks LONG";
+    assert_eq!(damaged.len(), "core data, several chunks long".len());
+    fs::write(fx.folder.join("Data/core.dat"), damaged).unwrap();
+    let state = fx.state();
+    let record = fs::read(folder::sidecar_file(&fx.paths, &fx.folder)).unwrap();
+    let plan = fx.plan();
+    FREE_AT.with(|list| list.borrow_mut().push((fx.folder.clone(), 10)));
+    let error = fx.apply(&plan).unwrap_err();
+    FREE_AT.with(|list| list.borrow_mut().clear());
+    assert!(error.to_string().starts_with("Not enough space"), "{error}");
+    assert!(error.to_string().contains("needs 30 B"), "{error}");
+    assert_eq!(fx.state(), state);
+    assert_eq!(
+        fs::read(folder::sidecar_file(&fx.paths, &fx.folder)).unwrap(),
+        record
+    );
+    assert_eq!(fx.read("Data/core.dat"), damaged);
+}
+
+#[test]
+fn finishing_syncs_support_folders_an_earlier_attempt_filled() {
+    let fx = Fixture::new();
+    fx.content.add_build(
+        Fixture::game("100").depot(
+            FakeDepot::new(GAME)
+                .file(FakeFile::new("__support\\setup.exe", b"setup program").flag("support")),
+        ),
+    );
+    interrupted(&fx, "galaxy.support.placed", 0);
+    assert!(fx.support(GAME, "__support/setup.exe").is_file());
+    let _ = crate::gog::update::publish::take_syncs();
+    fx.install();
+    assert_installed(&fx);
+    let syncs = crate::gog::update::publish::take_syncs();
+    let commit = syncs.iter().position(|event| event == "commit").unwrap();
+    for dir in [
+        format!("support:{GAME}/__support"),
+        format!("support:{GAME}"),
+        "support:".to_owned(),
+    ] {
+        let at = syncs.iter().position(|event| *event == dir);
+        assert!(at.is_some_and(|at| at < commit), "{dir}: {syncs:?}");
+    }
+}
+
+#[test]
+fn a_record_breaking_recovery_rules_reads_as_none() {
+    let fx = Fixture::new();
+    fx.content.add_build(Fixture::game("100"));
+    interrupted(&fx, "galaxy.files.after", 0);
+    let good: serde_json::Value =
+        serde_json::from_slice(&fs::read(folder::sidecar_file(&fx.paths, &fx.folder)).unwrap())
+            .unwrap();
+    assert!(Record::parse(good.to_string().as_bytes()).is_some());
+    let mut escaping = good.clone();
+    escaping["pending"]["manifest"]["links"][0]["target"] = value!("../../../etc");
+    assert!(Record::parse(escaping.to_string().as_bytes()).is_none());
+    let mut absolute = good.clone();
+    absolute["pending"]["manifest"]["links"][0]["target"] = value!("/etc");
+    assert!(Record::parse(absolute.to_string().as_bytes()).is_none());
+    let mut support = good.clone();
+    support["pending"]["manifest"]["support"] = value!([{
+        "path": "setup.exe",
+        "dependency": "DOSBOX",
+        "size": 0,
+        "chunks": [],
+    }]);
+    assert!(Record::parse(support.to_string().as_bytes()).is_none());
+    let mut drive = good.clone();
+    drive["pending"]["manifest"]["files"][0]["path"] = value!("C:/x");
+    assert!(Record::parse(drive.to_string().as_bytes()).is_none());
+
+    // Recovery with such a record falls back to fetching the build again.
+    fs::write(
+        folder::sidecar_file(&fx.paths, &fx.folder),
+        escaping.to_string(),
+    )
+    .unwrap();
+    fx.install();
+    assert_installed(&fx);
+}
+
+#[test]
+fn an_unstarted_operations_pending_never_makes_a_file_tracked() {
+    let fx = Fixture::new();
+    fx.content.add_build(Fixture::game("100"));
+    // The install's journal is written, nothing placed yet.
+    interrupted(&fx, "galaxy.journal.after", 0);
+    let state = fx.state();
+    // A file of yours, and a pending of an operation that never started
+    // claiming it as tracked at exactly that content.
+    fs::create_dir_all(fx.folder.join("Data")).unwrap();
+    fs::write(fx.folder.join("Data/core.dat"), "yours").unwrap();
+    let mut record = fx.record().unwrap();
+    let pending = record.pending.as_mut().unwrap();
+    pending.operation = "20261014T000000-9".to_owned();
+    for file in &mut pending.manifest.files {
+        if file.path == "Data/core.dat" {
+            file.md5 = Some(fake::content::md5_hex(b"yours"));
+        }
+    }
+    write_record(&fx, &record);
+    assert!(record::pending(&state, &fx.record().unwrap()).is_none());
+
+    let installed = fx.install();
+    assert_installed(&fx);
+    assert_eq!(fx.read("Data/core.dat.wineo-saved"), "yours");
+    assert!(
+        installed
+            .saved
+            .iter()
+            .any(|saved| saved.path == "Data/core.dat")
+    );
 }

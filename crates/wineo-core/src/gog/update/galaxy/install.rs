@@ -971,7 +971,7 @@ fn run(
         what: what.to_owned(),
     };
     let mut warnings = plan.warnings.clone();
-    check_space(paths, plan)?;
+    check_space(paths, plan, token)?;
 
     let prefix = match &plan.creation {
         Some(creation) => crate::paths::resolve(creation.prefix()),
@@ -1020,20 +1020,28 @@ fn run(
     };
     let root = package::open_folder(folder)?;
     let support_root = lock.support_dir().to_owned();
-    let operation = match &state.journal {
-        Some(journal) => {
-            // Whatever the interrupted attempt left half done goes first.
-            let dirs = publish::remove_temporaries(&root, &journal.operation)?;
-            publish::sync_folders(&root, dirs, token)?;
-            if support_root.is_dir() {
-                let support = package::open_folder(&support_root)?;
-                let dirs = publish::remove_temporaries(&support, &journal.operation)?;
-                publish::sync_folders(&support, dirs, token)?;
-            }
-            journal.operation.clone()
+    let operation = state
+        .journal
+        .as_ref()
+        .map_or_else(operation_id, |journal| journal.operation.clone());
+    let mut publisher = Publisher::new(root.try_clone()?, &operation, token);
+    if let Some(journal) = &state.journal {
+        // Whatever the interrupted attempt left half done goes first.
+        let dirs = publish::remove_temporaries(&root, &journal.operation)?;
+        publish::sync_folders(&root, dirs, token)?;
+        if support_root.is_dir() {
+            let support = package::open_folder(&support_root)?;
+            let dirs = publish::remove_temporaries(&support, &journal.operation)?;
+            publish::sync_folders(&support, dirs, token)?;
         }
-        None => operation_id(),
-    };
+        // What it had moved out of the way is deleted only on a hash match.
+        recover_asides(
+            &mut publisher,
+            &root,
+            &journal.operation,
+            &journal.attempted,
+        )?;
+    }
 
     // What GOG calls each path, spelled as it already is on disk.
     let mut manifest = on_disk(&root, &plan.manifest);
@@ -1128,7 +1136,6 @@ fn run(
         .expect("written above")
         .attempted
         .clone();
-    let mut publisher = Publisher::new(root.try_clone()?, &operation, token);
     publisher.note_folders(
         manifest
             .files
@@ -1182,7 +1189,9 @@ fn run(
     // doesn't match is simply replaced.
     let mut support_fetch = Vec::new();
     for (index, file) in manifest.support.clone().iter().enumerate() {
-        let product = file.product.expect("support files belong to a product");
+        let product = file
+            .product
+            .ok_or_else(|| anyhow!("support file {} has no product", file.path))?;
         let path = support_root.join(product.to_string()).join(&file.path);
         let dir = path.parent().expect("a file has a folder");
         folder::create_dir_durable(dir)?;
@@ -1259,7 +1268,9 @@ fn run(
     let mut support_names = Vec::new();
     for &index in &support_fetch {
         let file = &support_files[index];
-        let product = file.product.expect("support files belong to a product");
+        let product = file
+            .product
+            .ok_or_else(|| anyhow!("support file {} has no product", file.path))?;
         let relative = format!("{product}/{}", file.path);
         let parent = publish::parent_of(&relative).to_owned();
         let temp = publisher.temp_name();
@@ -1272,7 +1283,6 @@ fn run(
             links: links_of(file),
         });
     }
-    let mut support_dirs = BTreeSet::new();
     {
         let mut counted = |done: u64| report(base + done);
         fetch::run(
@@ -1288,7 +1298,6 @@ fn run(
                 let dir = fetch::open_dir(support_fd.as_ref().expect("opened"), parent)?;
                 rustix::fs::renameat(&dir, temp.as_str(), &dir, publish::leaf_of(&job.file.path))
                     .with_context(|| format!("failed to put {} in place", job.file.path))?;
-                support_dirs.insert(parent.clone());
                 manifest.support[*index].md5 = Some(md5);
                 Ok(())
             },
@@ -1298,14 +1307,31 @@ fn run(
             .map(|&index| support_files[index].size)
             .sum::<u64>();
     }
-    if let Some(fd) = &support_fd {
-        // Deepest first, so each folder's entries are durable before its
-        // parent's are.
-        let mut dirs: Vec<&String> = support_dirs.iter().collect();
-        dirs.sort_by_key(|dir| std::cmp::Reverse(dir.matches('/').count()));
+    failpoint("galaxy.support.placed")?;
+    // Every folder holding a support file, kept from an earlier attempt or
+    // written now, since an attempt that crashed may have renamed files
+    // into them without syncing. Deepest first, so each folder's entries
+    // are durable before its parent's are.
+    if !manifest.support.is_empty() {
+        let fd = package::open_folder(&support_root)?;
+        let mut dirs = BTreeSet::new();
+        for file in &manifest.support {
+            let product = file
+                .product
+                .ok_or_else(|| anyhow!("support file {} has no product", file.path))?;
+            let mut dir = format!("{product}/{}", file.path);
+            while let Some((up, _)) = dir.rsplit_once('/') {
+                dir = up.to_owned();
+                dirs.insert(dir.clone());
+            }
+        }
+        dirs.insert(String::new());
+        let mut dirs: Vec<String> = dirs.into_iter().collect();
+        dirs.sort_by_key(|dir| std::cmp::Reverse(publish_depth(dir)));
         for dir in dirs {
-            rustix::fs::fsync(fetch::open_dir(fd, dir)?)
-                .with_context(|| format!("failed to sync support folder {dir}"))?;
+            rustix::fs::fsync(fetch::open_dir(&fd, &dir)?)
+                .with_context(|| format!("failed to sync support folder {dir:?}"))?;
+            publish::record_sync(format!("support:{dir}"));
         }
     }
 
@@ -1335,7 +1361,7 @@ fn run(
             let known = manifest.files[index].md5.is_some();
             manifest.files[index].md5 = Some(md5.clone());
             if known {
-                place(&mut publisher, &job.name, &job.file.path)?;
+                place(&mut publisher, &state, &job.name, &job.file.path)?;
             } else {
                 waiting.push((job.file.path.clone(), job.name.clone(), md5));
                 if waiting.len() >= NAME_BATCH {
@@ -1382,6 +1408,7 @@ fn run(
     }
     record::write(&lock, &sidecar)?;
     failpoint("galaxy.installed.after")?;
+    publish::record_sync("commit".to_owned());
     lock.commit(expected)?;
     failpoint("galaxy.commit.after")?;
     sidecar.pending = None;
@@ -1437,17 +1464,82 @@ fn flush(
     lock.write(state)?;
     failpoint("galaxy.named.after")?;
     for (path, temp, _) in waiting.drain(..) {
-        place(publisher, &temp, &path)?;
+        place(publisher, state, &temp, &path)?;
     }
     Ok(())
 }
 
-/// Renames a downloaded file over its path.
-fn place(publisher: &mut Publisher, temp: &str, path: &str) -> Result<()> {
+/// Puts a downloaded file at its path. What stands there now is checked
+/// again, since a program may have put or changed it while downloading: only
+/// a file holding a hash the journal names for the path is replaced.
+fn place(publisher: &mut Publisher, state: &FolderState, temp: &str, path: &str) -> Result<()> {
+    #[cfg(test)]
+    super::tests::before_place(path);
     let dir = publisher
         .open_parent(path)?
         .ok_or_else(|| anyhow!("{path}'s folder is missing while publishing"))?;
-    publisher.place_file(&dir, temp, path)
+    let attempted = state
+        .journal
+        .as_ref()
+        .map_or(&[][..], |journal| journal.attempted.as_slice());
+    publisher.place_new(&dir, temp, path, &recorded(attempted, path))
+}
+
+/// The file hashes wineo recorded for `path`.
+fn recorded(attempted: &[Attempted], path: &str) -> Vec<String> {
+    attempted
+        .iter()
+        .filter(|entry| entry.path == path && entry.kind == EntryType::File)
+        .filter_map(|entry| entry.md5.clone())
+        .collect()
+}
+
+/// Settles every entry an interrupted attempt of `operation` moved aside
+/// while putting a file in place, anywhere in the game, without following
+/// symlinks.
+fn recover_asides(
+    publisher: &mut Publisher,
+    root: &OwnedFd,
+    operation: &str,
+    attempted: &[Attempted],
+) -> Result<()> {
+    let mut pending = vec![(String::new(), root.try_clone()?)];
+    while let Some((path, dir)) = pending.pop() {
+        let mut names = Vec::new();
+        let mut listing =
+            rustix::fs::Dir::read_from(&dir).with_context(|| format!("failed to read {path:?}"))?;
+        while let Some(entry) = listing.read() {
+            let entry = entry.with_context(|| format!("failed to read {path:?}"))?;
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if name != "." && name != ".." {
+                names.push(name);
+            }
+        }
+        for name in names {
+            let child = if path.is_empty() {
+                name.clone()
+            } else {
+                format!("{path}/{name}")
+            };
+            if let Some(origin) = publish::aside_origin(&name, operation) {
+                let origin = if path.is_empty() {
+                    origin.to_owned()
+                } else {
+                    format!("{path}/{origin}")
+                };
+                publisher.settle_aside(&dir, &name, &origin, &recorded(attempted, &origin))?;
+                continue;
+            }
+            match package::open_dir_at(&dir, name.as_str()) {
+                Ok(fd) => pending.push((child, fd)),
+                Err(
+                    rustix::io::Errno::NOTDIR | rustix::io::Errno::LOOP | rustix::io::Errno::NOENT,
+                ) => {}
+                Err(error) => return Err(error).with_context(|| format!("failed to open {child}")),
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Adds an entry to `attempted` unless it's there already.
@@ -1785,28 +1877,20 @@ fn list(root: &OwnedFd, relative: &str) -> Option<Vec<String>> {
 /// the game's files on the folder's, support files on the data directory's,
 /// and new redistributable versions on the store's, summed where they share
 /// one. Files already in place at their size aren't counted.
-fn check_space(paths: &Paths, plan: &Plan) -> Result<()> {
-    let present = |path: &Path, size: u64| {
-        std::fs::symlink_metadata(path).is_ok_and(|meta| meta.is_file() && meta.len() == size)
-    };
-    let game: u64 = plan
-        .manifest
-        .files
-        .iter()
-        .filter(|file| !present(&plan.folder.join(&file.path), file.size))
-        .map(|file| file.size)
-        .sum();
+fn check_space(paths: &Paths, plan: &Plan, token: &Token) -> Result<()> {
     let support_root = paths.gog_support_dir(&folder::key(&plan.folder));
-    let support: u64 = plan
-        .manifest
-        .support
-        .iter()
-        .filter(|file| {
-            let product = file.product.unwrap_or_default().to_string();
-            !present(&support_root.join(product).join(&file.path), file.size)
-        })
-        .map(|file| file.size)
-        .sum();
+    let game = unverified(
+        &plan.folder,
+        &plan.manifest.files,
+        |file| file.path.clone(),
+        token,
+    )?;
+    let support = unverified(
+        &support_root,
+        &plan.manifest.support,
+        |file| format!("{}/{}", file.product.unwrap_or_default(), file.path),
+        token,
+    )?;
     let store: u64 = plan
         .store
         .iter()
@@ -1822,6 +1906,40 @@ fn check_space(paths: &Paths, plan: &Plan) -> Result<()> {
             (paths.gog_redist_dir().as_path(), store),
         ],
     )
+}
+
+/// The size of every file in `files` that isn't already under `root` with
+/// the content the manifest gives, checked by hash: one that differs, even
+/// at the same size, is downloaded beside it before the old one goes.
+fn unverified(
+    root: &Path,
+    files: &[FileEntry],
+    path_of: impl Fn(&FileEntry) -> String,
+    token: &Token,
+) -> Result<u64> {
+    let fd = match package::open_folder(root) {
+        Ok(fd) => Some(fd),
+        Err(_) if !root.exists() => None,
+        Err(error) => return Err(error),
+    };
+    let mut needed = 0u64;
+    for file in files {
+        let path = path_of(file);
+        let matches = match &fd {
+            Some(fd) => match fetch::open_dir(fd, publish::parent_of(&path)) {
+                Ok(dir) => matches!(
+                    verify(&dir, publish::leaf_of(&path), &path, file, token)?,
+                    Some((_, true))
+                ),
+                Err(_) => false,
+            },
+            None => false,
+        };
+        if !matches {
+            needed = needed.saturating_add(file.size);
+        }
+    }
+    Ok(needed)
 }
 
 /// Checks each filesystem among `needs` holds what is needed on it.
@@ -1873,6 +1991,14 @@ pub(super) fn space_with(
         package::check_space_with(paths, path, needed, free(path)?)?;
     }
     Ok(())
+}
+
+fn publish_depth(dir: &str) -> usize {
+    if dir.is_empty() {
+        0
+    } else {
+        dir.matches('/').count() + 1
+    }
 }
 
 #[cfg(test)]
