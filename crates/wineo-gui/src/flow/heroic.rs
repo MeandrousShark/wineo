@@ -3154,35 +3154,22 @@ fn origin_label(origin: HeroicOrigin) -> &'static str {
 }
 
 fn hook_paths(review: &SettingsReview) -> Vec<(&'static str, String)> {
-    [("before hook", "Before hook"), ("after hook", "After hook")]
+    review
+        .hooks()
         .into_iter()
-        .filter_map(|(field, label)| {
-            review
-                .carried
-                .iter()
-                .find(|item| item.field == field)
-                .map(|item| (label, display_control_escaped(&item.detail)))
+        .map(|(field, path)| {
+            let label = if field == "before hook" {
+                "Before hook"
+            } else {
+                "After hook"
+            };
+            (label, path)
         })
         .collect()
 }
 
 fn hook_marker(review: &SettingsReview) -> Option<&'static str> {
-    ["before hook", "after hook"]
-        .into_iter()
-        .any(|field| review.carried.iter().any(|item| item.field == field))
-        .then_some("runs launch scripts")
-}
-
-fn display_control_escaped(value: &str) -> String {
-    let mut escaped = String::with_capacity(value.len());
-    for character in value.chars() {
-        if character.is_control() {
-            escaped.extend(character.escape_debug());
-        } else {
-            escaped.push(character);
-        }
-    }
-    escaped
+    (!review.hooks().is_empty()).then_some("runs launch scripts")
 }
 
 /// The review only calls out anti-cheat, once even when both EAC and
@@ -4282,7 +4269,7 @@ mod tests {
         );
         assert_eq!(hook_marker(&review), Some("runs launch scripts"));
         assert_eq!(
-            display_control_escaped("/scripts/a\r\u{1b} b.sh"),
+            wineo_core::heroic::display_control_escaped("/scripts/a\r\u{1b} b.sh"),
             "/scripts/a\\r\\u{1b} b.sh"
         );
     }
