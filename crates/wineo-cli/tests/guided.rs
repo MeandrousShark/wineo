@@ -843,6 +843,119 @@ fn esc_goes_back_from_the_guided_import_name_to_the_prefix() {
 }
 
 #[test]
+fn guided_import_prefix_walks_forward_and_back_through_every_question() {
+    let f = Fixture::new();
+    let source = f.root.path().join("prefix");
+    fs::create_dir_all(source.join("drive_c")).unwrap();
+    fs::write(
+        source.join("system.reg"),
+        "WINE REGISTRY Version 2\n\n#arch=win64\n",
+    )
+    .unwrap();
+    let mut command = f.wineo();
+    command
+        .args(["import", "prefix"])
+        .arg(&source)
+        .args(["--runner", "wine"]);
+    let mut pty = Pty::spawn(command);
+    pty.expect("Existing prefix [");
+    pty.send("");
+    pty.expect("Install name [prefix]: ");
+    pty.send("");
+    pty.expect("Copy the prefix, or use its original files?");
+    pty.expect("Mode [1]: ");
+    // Adopting skips the destination, in both directions.
+    pty.send("2");
+    pty.expect("Which runner?");
+    pty.esc();
+    pty.expect("Mode [2]: ");
+    pty.send("1");
+    pty.expect("Copy destination [");
+    pty.esc();
+    pty.expect("Mode [1]: ");
+    pty.esc();
+    pty.expect("Install name [prefix]: ");
+    pty.send("");
+    pty.expect("Mode [1]: ");
+    pty.send("");
+    pty.expect("Copy destination [");
+    pty.send("");
+    pty.expect("Which runner?");
+    pty.esc();
+    pty.expect("Copy destination [");
+    pty.send("");
+    pty.expect("Which runner?");
+    pty.send("");
+    pty.expect("Ready to import?");
+    pty.expect("Choice [1]: ");
+    pty.esc();
+    pty.expect("Which runner?");
+    pty.send("");
+    pty.expect("Ready to import?");
+    // The review's changes land on the question they name.
+    pty.send("3");
+    pty.expect("Install name [prefix]: ");
+    pty.send("");
+    pty.expect("Mode [1]: ");
+    pty.send("");
+    pty.expect("Copy destination [");
+    pty.send("");
+    pty.expect("Which runner?");
+    pty.send("");
+    pty.expect("Ready to import?");
+    pty.send("4");
+    pty.expect("Mode [1]: ");
+    pty.send("");
+    pty.expect("Copy destination [");
+    pty.send("");
+    pty.expect("Which runner?");
+    pty.send("");
+    pty.expect("Ready to import?");
+    pty.send("2");
+    pty.expect("Existing prefix [");
+    pty.ctrl_c();
+    let (status, output) = pty.finish();
+    assert_eq!(status.code(), Some(130), "{output}");
+    assert!(output.contains("Import canceled"), "{output}");
+    assert!(!f.registered("prefix"));
+}
+
+#[test]
+fn guided_import_prefix_esc_at_the_architecture_question_returns_to_the_runner() {
+    let f = Fixture::new();
+    let source = f.root.path().join("prefix");
+    fs::create_dir_all(source.join("drive_c")).unwrap();
+    fs::write(source.join("system.reg"), "WINE REGISTRY Version 2\n").unwrap();
+    let mut command = f.wineo();
+    command
+        .args(["import", "prefix"])
+        .arg(&source)
+        .args(["--runner", "wine"]);
+    let mut pty = Pty::spawn(command);
+    pty.expect("Existing prefix [");
+    pty.send("");
+    pty.expect("Install name [prefix]: ");
+    pty.send("");
+    pty.expect("Mode [1]: ");
+    pty.send("");
+    pty.expect("Copy destination [");
+    pty.send("");
+    pty.expect("Which runner?");
+    pty.send("");
+    pty.expect("Which architecture is it?");
+    pty.esc();
+    pty.expect("Which runner?");
+    pty.send("");
+    pty.expect("Which architecture is it?");
+    pty.send("1");
+    pty.expect("Ready to import?");
+    pty.ctrl_c();
+    let (status, output) = pty.finish();
+    assert_eq!(status.code(), Some(130), "{output}");
+    assert!(!f.registered("prefix"));
+}
+
+#[test]
 fn esc_at_the_first_import_source_question_cancels() {
     let f = Fixture::new();
     let mut command = f.wineo();
