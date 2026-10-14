@@ -10,7 +10,6 @@ use crate::art::StagedArt;
 use crate::build_lock;
 use crate::cancel::Token;
 use crate::config::{EnvironmentConfig, GlobalConfig, Kind};
-use crate::download::{InstallLock, publish};
 use crate::edit;
 use crate::environment::Environment;
 use crate::import::{self, ExternalDependency, ImportLayout, ImportProgress};
@@ -19,6 +18,7 @@ use crate::operation::{Locks, Operation};
 use crate::paths::{self, Paths};
 use crate::runners::Runners;
 use crate::runtime::Runtime;
+use crate::stage::PrefixCopy;
 
 pub use crate::import::Cancelled as Canceled;
 
@@ -167,51 +167,27 @@ pub fn execute_reviewed(
     }
     Runtime::new(paths, &reviewed.new_name).check_quiet(&reviewed.new_name)?;
     import::check_cancelled(cancel)?;
-    if reviewed.destination.exists() {
-        bail!(
-            "clone destination appeared during review: {}",
-            reviewed.destination.display()
-        );
+    let _publish_lock = PrefixCopy {
+        source: &reviewed.source_root,
+        destination: &reviewed.destination,
+        layout: reviewed.layout,
+        links: &import::Links::for_paths(paths),
+        staging_prefix: ".wineo-clone-",
+        label: "clone",
     }
-    let parent = reviewed.destination.parent().ok_or_else(|| {
-        anyhow!(
-            "destination has no parent: {}",
-            reviewed.destination.display()
-        )
+    .run(cancel, &mut progress, |_| {
+        if import::fingerprint(&reviewed.source_root)? != reviewed.prefix.fingerprint {
+            bail!(
+                "{} changed while it was being copied; try again",
+                reviewed.source_root.display()
+            );
+        }
+        let text = fs::read_to_string(paths.environment_config(&reviewed.source_name))?;
+        if text != reviewed.source_config {
+            bail!("source environment config changed while it was being copied; try again");
+        }
+        Ok(())
     })?;
-    fs::create_dir_all(parent).with_context(|| format!("failed to create {}", parent.display()))?;
-    let staging = import::Staging::new_in(".wineo-clone-", parent)
-        .with_context(|| format!("failed to create staging directory in {}", parent.display()))?;
-    let staging_path = staging.path().to_owned();
-    let _publish_lock = InstallLock::acquire(&reviewed.destination)?;
-    import::copy_tree_with(
-        &reviewed.source_root,
-        &staging_path,
-        &reviewed.destination,
-        &import::Links::for_paths(paths),
-        cancel,
-        &mut progress,
-    )?;
-    import::check_cancelled(cancel)?;
-    if import::fingerprint(&reviewed.source_root)? != reviewed.prefix.fingerprint {
-        bail!(
-            "{} changed while it was being copied; try again",
-            reviewed.source_root.display()
-        );
-    }
-    let text = fs::read_to_string(paths.environment_config(&reviewed.source_name))?;
-    if text != reviewed.source_config {
-        bail!("source environment config changed while it was being copied; try again");
-    }
-    import::validate_staged_prefix(&staging_path, &reviewed.destination, reviewed.layout)?;
-    if reviewed.destination.exists() {
-        bail!(
-            "clone destination appeared during publication: {}",
-            reviewed.destination.display()
-        );
-    }
-    publish(&staging_path, &reviewed.destination)?;
-    import::sync_filesystem(&reviewed.destination)?;
     progress(ImportProgress::Finished {
         entries: reviewed.prefix.fingerprint.entries,
     });

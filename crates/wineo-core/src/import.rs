@@ -36,6 +36,7 @@ use crate::runner::Runner;
 use crate::runner_alias;
 use crate::runners::Runners;
 use crate::runtime::Runtime;
+use crate::stage::PrefixCopy;
 
 /// The two layouts wineo can import. A Proton import includes its complete
 /// compatdata directory, while a Wine import is the prefix directory itself.
@@ -406,48 +407,25 @@ pub fn execute_reviewed(
 
     let mut published = false;
     if !request.adopt {
-        if destination.exists() {
-            bail!(
-                "import destination appeared during review: {}",
-                destination.display()
-            );
+        let _publish_lock = PrefixCopy {
+            source: &source_root,
+            destination: &destination,
+            layout: locked.layout,
+            links: &Links::for_paths(paths),
+            staging_prefix: ".wineo-import-",
+            label: "import",
         }
-        let parent = destination
-            .parent()
-            .ok_or_else(|| anyhow!("destination has no parent: {}", destination.display()))?;
-        fs::create_dir_all(parent)
-            .with_context(|| format!("failed to create {}", parent.display()))?;
-        let staging = Staging::new_in(".wineo-import-", parent).with_context(|| {
-            format!("failed to create staging directory in {}", parent.display())
+        .run(cancel, &mut progress, |progress| {
+            let after = import_fingerprint(&source_root, &mut Check::new(cancel, progress))?;
+            if after != locked.fingerprint {
+                bail!(
+                    "{} changed while it was being copied; try again",
+                    source_root.display()
+                );
+            }
+            Ok(())
         })?;
-        let staging_path = staging.path().to_owned();
-        let _publish_lock = InstallLock::acquire(&destination)?;
-        copy_tree_with(
-            &source_root,
-            &staging_path,
-            &destination,
-            &Links::for_paths(paths),
-            cancel,
-            &mut progress,
-        )?;
-        check_cancelled(cancel)?;
-        let after = import_fingerprint(&source_root, &mut Check::new(cancel, &mut progress))?;
-        if after != locked.fingerprint {
-            bail!(
-                "{} changed while it was being copied; try again",
-                source_root.display()
-            );
-        }
-        validate_staged_prefix(&staging_path, &destination, locked.layout)?;
-        if destination.exists() {
-            bail!(
-                "import destination appeared during publication: {}",
-                destination.display()
-            );
-        }
-        publish(&staging_path, &destination)?;
         published = true;
-        sync_filesystem(&destination)?;
         progress(ImportProgress::Finished {
             entries: locked.fingerprint.entries,
         });
@@ -1570,9 +1548,18 @@ impl Staging {
 impl Drop for Staging {
     fn drop(&mut self) {
         if let Some(dir) = self.0.take() {
+            #[cfg(test)]
+            ARMED_DROPS.with(|drops| drops.borrow_mut().push(dir.path().to_owned()));
             make_removable(dir.path());
         }
     }
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Every staging directory this thread dropped while it was still
+    /// armed to be removed, in order.
+    pub(crate) static ARMED_DROPS: std::cell::RefCell<Vec<PathBuf>> = const { std::cell::RefCell::new(Vec::new()) };
 }
 
 /// Best effort, since cleanup reports nothing either.

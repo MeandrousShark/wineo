@@ -19,6 +19,7 @@ use crate::paths::{self, Paths};
 use crate::runners::Runners;
 use crate::runtime::Runtime;
 use crate::snapshot;
+use crate::stage::Stage;
 use crate::stats;
 use crate::templates::{NEWEST_PROTON, Templates};
 
@@ -293,15 +294,7 @@ pub fn execute_reviewed_with(
     Runtime::new(to, name).check_quiet(name)?;
     import::check_cancelled(cancel)?;
 
-    let prefixes = reviewed.folder.join("prefixes");
-    fs::create_dir_all(&prefixes)
-        .with_context(|| format!("failed to create {}", prefixes.display()))?;
-    let staging = import::Staging::new_in(".wineo-copy-", &prefixes).with_context(|| {
-        format!(
-            "failed to create staging directory in {}",
-            prefixes.display()
-        )
-    })?;
+    let staging = Stage::new(".wineo-copy-", &reviewed.folder.join("prefixes"))?;
     let _publish_lock = InstallLock::acquire(&reviewed.destination)?;
 
     let destination_snapshots = to.snapshot_root(&reviewed.destination, name);
@@ -436,7 +429,7 @@ pub fn execute_reviewed_with(
             paths.join(", ")
         )
     };
-    publish(&staged_prefix, &reviewed.destination)?;
+    staging.publish_part(&staged_prefix, &reviewed.destination)?;
     published.push(reviewed.destination.clone());
     let result = (|| -> Result<()> {
         if !reviewed.snapshots.is_empty() {
@@ -444,7 +437,7 @@ pub fn execute_reviewed_with(
                 .parent()
                 .ok_or_else(|| anyhow!("snapshot storage has no parent"))?;
             fs::create_dir_all(parent)?;
-            publish(&staged_snapshots, &destination_snapshots)?;
+            staging.publish_part(&staged_snapshots, &destination_snapshots)?;
             published.push(destination_snapshots.clone());
         }
         if reviewed.templates_fingerprint.is_some() {
@@ -456,7 +449,7 @@ pub fn execute_reviewed_with(
             let destination_global = destination_global(to, reviewed.global_text.as_deref())?;
             let _template_guards =
                 template_build_guards(to, &destination_global, &staged_templates)?;
-            publish(&staged_templates, &to.templates_dir())?;
+            staging.publish_part(&staged_templates, &to.templates_dir())?;
             published.push(to.templates_dir());
         }
         published.extend(art.publish()?);
