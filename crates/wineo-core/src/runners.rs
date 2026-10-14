@@ -963,4 +963,46 @@ mod tests {
                 .contains("already exists")
         );
     }
+
+    #[test]
+    fn candidates_are_system_then_installed_then_aliases_keeping_failures() {
+        let root = tempfile::tempdir().unwrap();
+        wine_build(root.path(), "alpha");
+        proton_build(root.path(), "GE-Proton10-1", "GE-Proton10-1");
+        let installed = runners(root.path());
+        let listing = installed.list().unwrap();
+        let candidates = installed.candidates(&listing);
+
+        let shape: Vec<_> = candidates
+            .iter()
+            .map(|candidate| (candidate.kind, candidate.name.as_str()))
+            .collect();
+        let mut expected = vec![(CandidateKind::System, Runner::SYSTEM)];
+        expected.extend(
+            listing
+                .runners
+                .iter()
+                .map(|runner| (CandidateKind::Installed, runner.name())),
+        );
+        expected.extend([
+            (CandidateKind::Alias, "GE-Proton-Latest"),
+            (CandidateKind::Alias, "Proton-CachyOS-Latest"),
+        ]);
+        assert_eq!(shape, expected);
+        assert_eq!(listing.runners.len(), 2);
+        assert_eq!(candidates[0].runner.is_ok(), Runner::system().is_ok());
+
+        // An alias keeps its own name as the selection but runs its build.
+        let ge = candidates[3].runner.as_ref().unwrap();
+        assert_eq!(ge.selection(), "GE-Proton-Latest");
+        assert_eq!(ge.name(), "GE-Proton10-1");
+        let cachyos = candidates[4].runner.as_ref().unwrap_err();
+        assert_eq!(
+            cachyos.to_string(),
+            installed
+                .resolve("Proton-CachyOS-Latest")
+                .unwrap_err()
+                .to_string()
+        );
+    }
 }
