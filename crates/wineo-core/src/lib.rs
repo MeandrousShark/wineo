@@ -45,6 +45,7 @@ pub mod secret_service;
 pub mod settings;
 pub mod shortcut;
 pub mod snapshot;
+mod stage;
 pub mod stats;
 pub mod steam;
 pub mod steam_import;
