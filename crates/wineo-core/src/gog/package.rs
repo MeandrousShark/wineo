@@ -363,9 +363,15 @@ fn check_links(entries: &BTreeMap<String, Entry>) -> Result<(), PackageError> {
         .values()
         .filter_map(|entry| Some((entry.path.as_str(), entry.target.as_deref()?)))
         .collect();
-    for (&path, &target) in &links {
+    check_link_targets(&links)
+}
+
+/// Every link, by its path in the game, must resolve inside the game,
+/// following the others the way the kernel would.
+pub(crate) fn check_link_targets(links: &BTreeMap<&str, &str>) -> Result<(), PackageError> {
+    for (&path, &target) in links {
         let mut resolver = Resolver {
-            links: &links,
+            links,
             active: vec![path],
             hops: 0,
             link: path,

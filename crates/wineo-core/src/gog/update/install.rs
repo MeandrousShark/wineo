@@ -72,6 +72,9 @@ pub enum InstallError {
     /// The name's own install stopped in another folder.
     #[error("{name}'s install in {folder} didn't finish. Install it again there to finish it.")]
     PendingElsewhere { name: String, folder: PathBuf },
+    /// The name's own install is a Galaxy one, which this path can't finish.
+    #[error("{name}'s Galaxy install didn't finish, and finishing it comes in a later release.")]
+    GalaxyPending { name: String },
 }
 
 /// What to install, and where.
@@ -397,6 +400,7 @@ pub fn plan(
     // it names is still cached.
     let mut checked_cache = None;
     if let Some(pending) = own_pending(paths, request)? {
+        refuse_galaxy(&pending, name)?;
         if exists && super::recorded_gog_id(paths, name)? != Some(request.gog_id.to_string()) {
             environment::check_new_name(paths, name)?;
         }
@@ -485,6 +489,7 @@ pub fn plan(
 
     if resume {
         let seen = seen.expect("a resumed install has a state");
+        refuse_galaxy(&seen, name)?;
         let journal = seen
             .journal
             .as_ref()
@@ -627,6 +632,22 @@ pub fn plan(
     })
 }
 
+/// Refuses to carry on a Galaxy install with offline installers, which would
+/// run none of its files.
+fn refuse_galaxy(state: &FolderState, name: &str) -> Result<()> {
+    if state
+        .journal
+        .as_ref()
+        .is_some_and(|journal| journal.target.track == Track::Galaxy)
+    {
+        return Err(InstallError::GalaxyPending {
+            name: name.to_owned(),
+        }
+        .into());
+    }
+    Ok(())
+}
+
 fn os_name(platform: Platform) -> &'static str {
     match platform {
         Platform::Linux => "Linux",
@@ -636,7 +657,7 @@ fn os_name(platform: Platform) -> &'static str {
 
 /// How a Windows game's environment will be created, checked like `new`
 /// checks it, when it has no config yet.
-fn creation(
+pub(super) fn creation(
     paths: &Paths,
     request: &Request,
     platform: Platform,
@@ -667,7 +688,7 @@ fn creation(
 
 /// Refuses a name whose install stopped in another folder before its config
 /// was written: a state there still names it as owner.
-fn check_pending(paths: &Paths, name: &str, folder: &Path) -> Result<()> {
+pub(super) fn check_pending(paths: &Paths, name: &str, folder: &Path) -> Result<()> {
     for state in folder::owned_by(paths, name, true)? {
         if state.folder != folder {
             return Err(InstallError::PendingElsewhere {
@@ -682,7 +703,7 @@ fn check_pending(paths: &Paths, name: &str, folder: &Path) -> Result<()> {
 
 /// The state of the environment's own unfinished install of this game, in
 /// the folder `request.dir` names when it names one.
-fn own_pending(paths: &Paths, request: &Request) -> Result<Option<FolderState>> {
+pub(super) fn own_pending(paths: &Paths, request: &Request) -> Result<Option<FolderState>> {
     let wanted = match &request.dir {
         Some(dir) => match std::fs::canonicalize(dir) {
             Ok(dir) => Some(dir),

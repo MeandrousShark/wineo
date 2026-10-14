@@ -1232,6 +1232,14 @@ fn adopt_build(paths: &Paths, state: &FolderState) -> Result<Option<Adopted>> {
     }
     base.build = Some(build);
     lock.commit(committed.clone())?;
+    // The stored manifest was of the build just replaced. The info file's
+    // hash would catch it too, but an older wineo that adopts a build
+    // can't drop it, and this one can.
+    if let Some(mut record) = galaxy::record::read(&lock)?
+        && record.installed.take().is_some()
+    {
+        galaxy::record::write(&lock, &record)?;
+    }
     Ok(Some(Adopted {
         committed,
         recorded: true,
@@ -1280,6 +1288,7 @@ fn info_build(folder: &Path, gog_id: u64) -> Option<String> {
 }
 
 mod apply;
+pub mod galaxy;
 pub mod install;
 mod present;
 mod publish;

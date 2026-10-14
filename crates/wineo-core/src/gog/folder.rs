@@ -529,6 +529,8 @@ pub struct FolderLock {
     folder: PathBuf,
     state: PathBuf,
     dir: PathBuf,
+    /// The Galaxy support files kept for the folder.
+    support: PathBuf,
     exclusive: bool,
 }
 
@@ -557,12 +559,52 @@ impl FolderLock {
             folder: folder.to_owned(),
             state: state_path(paths, folder),
             dir: paths.gog_folders_dir(),
+            support: paths.gog_support_dir(&key(folder)),
             exclusive,
         })
     }
 
     pub fn folder(&self) -> &Path {
         &self.folder
+    }
+
+    /// Where a Galaxy game's support files go, `<productId>/<path>`.
+    pub fn support_dir(&self) -> &Path {
+        &self.support
+    }
+
+    /// The Galaxy record beside the state file, `<key>.galaxy.json`.
+    pub fn sidecar_path(&self) -> PathBuf {
+        sidecar_path(&self.dir, &self.folder)
+    }
+
+    /// The Galaxy record's bytes, if there is one.
+    pub fn read_sidecar(&self) -> Result<Option<Vec<u8>>> {
+        let path = self.sidecar_path();
+        files::read_optional(&path).with_context(|| format!("failed to read {}", path.display()))
+    }
+
+    /// Replaces the Galaxy record in one durable write, like the state.
+    pub fn write_sidecar(&self, text: &str) -> Result<()> {
+        self.require_exclusive()?;
+        failpoint("sidecar.before")?;
+        write_durable(
+            &self.dir,
+            &self.sidecar_path(),
+            &sidecar_temp_prefix(&key(&self.folder)),
+            text,
+        )?;
+        failpoint("sidecar.after")
+    }
+
+    /// Removes the Galaxy record, if there is one.
+    pub fn remove_sidecar(&self) -> Result<()> {
+        self.require_exclusive()?;
+        remove_stale_temps(&self.dir, &sidecar_temp_prefix(&key(&self.folder)))?;
+        if files::remove_if_present(&self.sidecar_path())? {
+            sync_dir(&self.dir)?;
+        }
+        Ok(())
     }
 
     /// The folder's state, if it has one.
@@ -594,7 +636,7 @@ impl FolderLock {
         write_durable(
             &self.dir,
             &self.state,
-            &key(&self.folder),
+            &temp_prefix(&key(&self.folder)),
             &state.to_toml()?,
         )?;
         failpoint("write.after")
@@ -658,12 +700,23 @@ impl FolderLock {
         Ok(state)
     }
 
-    /// Removes the state file.
+    /// Removes the state file, with the Galaxy record and support files that
+    /// go with it. Those go first: without them a state still stands, and
+    /// is treated as having no stored manifest.
     fn remove(&self) -> Result<()> {
         self.require_exclusive()?;
+        self.remove_sidecar()?;
+        match fs::remove_dir_all(&self.support) {
+            Ok(()) => {}
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => {
+                return Err(error)
+                    .with_context(|| format!("failed to remove {}", self.support.display()));
+            }
+        }
         // Temporaries first, so a cleanup failure never leaves the state
         // removed without the directory synced.
-        remove_stale_temps(&self.dir, &key(&self.folder))?;
+        remove_stale_temps(&self.dir, &temp_prefix(&key(&self.folder)))?;
         if files::remove_if_present(&self.state)? {
             sync_dir(&self.dir)?;
         }
@@ -686,7 +739,7 @@ impl Drop for FolderLock {
 }
 
 /// Opens and flocks `path`, polling so `cancel` still works.
-fn lock_file(path: &Path, exclusive: bool, cancel: &dyn Fn() -> bool) -> Result<File> {
+pub(crate) fn lock_file(path: &Path, exclusive: bool, cancel: &dyn Fn() -> bool) -> Result<File> {
     let dir = path.parent().expect("a lock has a parent");
     fs::create_dir_all(dir).with_context(|| format!("failed to create {}", dir.display()))?;
     let operation = if exclusive {
@@ -1182,13 +1235,14 @@ pub fn lock_owned(
     Ok(held)
 }
 
-/// Writes `text` to `path` through a synced temporary file, then syncs the
-/// directory, so a crash leaves either the old file or the new one.
-fn write_durable(dir: &Path, path: &Path, key: &str, text: &str) -> Result<()> {
+/// Writes `text` to `path` through a synced temporary file named with
+/// `prefix`, then syncs the directory, so a crash leaves either the old file
+/// or the new one.
+fn write_durable(dir: &Path, path: &Path, prefix: &str, text: &str) -> Result<()> {
     create_dir_durable(dir)?;
-    remove_stale_temps(dir, key)?;
+    remove_stale_temps(dir, prefix)?;
     let mut temp = tempfile::Builder::new()
-        .prefix(&temp_prefix(key))
+        .prefix(prefix)
         .tempfile_in(dir)
         .with_context(|| format!("failed to write in {}", dir.display()))?;
     temp.write_all(text.as_bytes())?;
@@ -1202,10 +1256,26 @@ fn temp_prefix(key: &str) -> String {
     format!(".state-{key}-")
 }
 
-/// Removes temporary files an interrupted write of this folder's state left.
+fn sidecar_temp_prefix(key: &str) -> String {
+    format!(".galaxy-{key}-")
+}
+
+/// Where a folder's Galaxy record is, beside its state file in `dir`.
+fn sidecar_path(dir: &Path, folder: &Path) -> PathBuf {
+    dir.join(format!("{}{SIDECAR_SUFFIX}", key(folder)))
+}
+
+/// Where a folder's Galaxy record is, for reading without its lock.
+pub fn sidecar_file(paths: &Paths, folder: &Path) -> PathBuf {
+    sidecar_path(&paths.gog_folders_dir(), folder)
+}
+
+/// What a Galaxy record's file name ends with, after the folder's key.
+pub const SIDECAR_SUFFIX: &str = ".galaxy.json";
+
+/// Removes temporary files an interrupted write named with `prefix` left.
 /// Only called under the folder's exclusive lock, so none is in use.
-fn remove_stale_temps(dir: &Path, key: &str) -> Result<()> {
-    let prefix = temp_prefix(key);
+fn remove_stale_temps(dir: &Path, prefix: &str) -> Result<()> {
     let entries = match fs::read_dir(dir) {
         Ok(entries) => entries,
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
@@ -1218,7 +1288,7 @@ fn remove_stale_temps(dir: &Path, key: &str) -> Result<()> {
         if entry
             .file_name()
             .to_str()
-            .is_some_and(|name| name.starts_with(&prefix))
+            .is_some_and(|name| name.starts_with(prefix))
         {
             fs::remove_file(entry.path())
                 .with_context(|| format!("failed to remove {}", entry.path().display()))?;

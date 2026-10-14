@@ -62,7 +62,7 @@ struct Recorded {
 
 /// What a path holds now.
 #[derive(Debug, Clone, PartialEq, Eq)]
-enum Current {
+pub(super) enum Current {
     File,
     Symlink(String),
     Directory,
@@ -319,8 +319,28 @@ impl<'a> Publisher<'a> {
         Ok(())
     }
 
-    /// Pass 3, for one entry.
-    fn publish_one(&mut self, entry: &WinningEntry) -> Result<()> {
+    /// Notes the folders of `paths` as ones an earlier, interrupted attempt
+    /// may have changed, so `finish` syncs each that is still a folder. For
+    /// callers placing entries themselves rather than through `publish`.
+    pub(super) fn note_folders<'p>(&mut self, paths: impl IntoIterator<Item = &'p str>) {
+        for path in paths {
+            self.recorded_folders.insert(parent_of(path).to_owned());
+        }
+    }
+
+    /// Renames the temporary file `temp`, already written and synced in
+    /// `dir`, over `path`, the entry `dir` holds as its last component.
+    pub(super) fn place_file(&mut self, dir: &OwnedFd, temp: &str, path: &str) -> Result<()> {
+        rustix::fs::renameat(dir, temp, dir, leaf_of(path))
+            .with_context(|| format!("failed to publish {path}"))?;
+        self.changed.insert(parent_of(path).to_owned());
+        self.written.push(path.to_owned());
+        Ok(())
+    }
+
+    /// Pass 3, for one entry. Directories and symlinks only need the entry
+    /// itself, so callers placing files themselves publish those with it.
+    pub(super) fn publish_one(&mut self, entry: &WinningEntry) -> Result<()> {
         let path = entry.path.as_str();
         let dir = self
             .open_parent(path)?
@@ -428,7 +448,7 @@ impl<'a> Publisher<'a> {
         Ok(())
     }
 
-    fn temp_name(&mut self) -> String {
+    pub(super) fn temp_name(&mut self) -> String {
         self.next_temp += 1;
         format!(".wineo-{}-{}", self.operation, self.next_temp)
     }
@@ -436,7 +456,7 @@ impl<'a> Publisher<'a> {
     /// The folder holding `path`, opened without following symlinks. None
     /// when a folder on the way is missing or isn't a real folder, since
     /// then nothing there can be wineo's.
-    fn open_parent(&self, path: &str) -> Result<Option<OwnedFd>> {
+    pub(super) fn open_parent(&self, path: &str) -> Result<Option<OwnedFd>> {
         let parent = parent_of(path);
         let mut dir = self.root.try_clone().context("failed to open the game")?;
         if parent.is_empty() {
@@ -544,7 +564,7 @@ impl<'a> Publisher<'a> {
         Ok(Some(crate::units::hex(hasher.finalize())))
     }
 
-    fn delete(&mut self, dir: &OwnedFd, leaf: &str, path: &str) -> Result<()> {
+    pub(super) fn delete(&mut self, dir: &OwnedFd, leaf: &str, path: &str) -> Result<()> {
         failpoint("update.delete.before")?;
         match rustix::fs::unlinkat(dir, leaf, AtFlags::empty()) {
             Ok(()) | Err(Errno::NOENT) => {}
@@ -555,7 +575,7 @@ impl<'a> Publisher<'a> {
     }
 
     /// Removes an empty folder. False when something is still in it.
-    fn remove_folder(&mut self, dir: &OwnedFd, leaf: &str, path: &str) -> Result<bool> {
+    pub(super) fn remove_folder(&mut self, dir: &OwnedFd, leaf: &str, path: &str) -> Result<bool> {
         failpoint("update.delete.before")?;
         match rustix::fs::unlinkat(dir, leaf, AtFlags::REMOVEDIR) {
             Ok(()) | Err(Errno::NOENT) => {}
@@ -573,7 +593,7 @@ impl<'a> Publisher<'a> {
 
     /// Moves what stands at `path` to `<name>.wineo-saved`, or with a number
     /// when that's taken, never replacing anything.
-    fn save_aside(&mut self, dir: &OwnedFd, leaf: &str, path: &str) -> Result<()> {
+    pub(super) fn save_aside(&mut self, dir: &OwnedFd, leaf: &str, path: &str) -> Result<()> {
         failpoint("update.save.before")?;
         // Changes already made inside a folder are made durable before it
         // moves, since a recovery looks for its folders under their old
@@ -676,7 +696,7 @@ fn content_of(kind: EntryType, md5: &Option<String>, target: &Option<String>) ->
     }
 }
 
-fn current(dir: &OwnedFd, leaf: &str, path: &str) -> Result<Option<Current>> {
+pub(super) fn current(dir: &OwnedFd, leaf: &str, path: &str) -> Result<Option<Current>> {
     let stat = match rustix::fs::statat(dir, leaf, AtFlags::SYMLINK_NOFOLLOW) {
         Ok(stat) => stat,
         Err(Errno::NOENT) => return Ok(None),
@@ -694,11 +714,11 @@ fn current(dir: &OwnedFd, leaf: &str, path: &str) -> Result<Option<Current>> {
     }))
 }
 
-fn parent_of(path: &str) -> &str {
+pub(super) fn parent_of(path: &str) -> &str {
     path.rsplit_once('/').map_or("", |(parent, _)| parent)
 }
 
-fn leaf_of(path: &str) -> &str {
+pub(super) fn leaf_of(path: &str) -> &str {
     path.rsplit_once('/').map_or(path, |(_, leaf)| leaf)
 }
 
