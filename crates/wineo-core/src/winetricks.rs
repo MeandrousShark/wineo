@@ -637,6 +637,8 @@ fn run_with_output(
     let mut escalation = Escalation::new(Duration::from_secs(stop_timeout.into()), None);
     // Only a log to follow needs waking up for.
     let tick = tail.is_some().then_some(POLL);
+    // Reported once the group is gone, so the stop still finishes.
+    let mut cleanup = Ok(());
     process::stop_group(&child, Signal::INT, &mut escalation, token, tick, |step| {
         match step {
             None => {
@@ -647,13 +649,17 @@ fn run_with_output(
             Some(process::Step::Ask) => events(WinetricksEvent::Stopping),
             Some(process::Step::Kill) => {
                 events(WinetricksEvent::Killing);
-                runner.kill(prefix, None)?;
+                cleanup = runner.kill(prefix, None).map(drop);
             }
             Some(process::Step::Rekill) => {}
         }
         anyhow::Ok(())
     })
     .context("failed to stop the winetricks process group")??;
+    if let Err(err) = cleanup {
+        let _ = child.wait();
+        return Err(err.into());
+    }
     if let Some(tail) = &mut tail {
         tail.pump(&mut events);
     }

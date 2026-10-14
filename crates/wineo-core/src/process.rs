@@ -388,7 +388,7 @@ pub fn leader_exited(leader: &Child) -> io::Result<bool> {
 
 /// Waits for `leader`, an unreaped child leading its own group, stopping the
 /// group as `token` and `escalation` say: `ask` first, then SIGKILL. `on`
-/// hears `None` each time round and each step before it is signaled. Returns
+/// hears `None` each time round and each step once it is signaled. Returns
 /// whether a stop was requested, once the leader exits and, after a stop,
 /// nothing in the group is left running. The leader stays unreaped for the
 /// caller. The outer error is the helper's own, the inner one `on`'s.
@@ -445,10 +445,12 @@ pub(crate) fn stop_group_probed<E>(
         let now = Instant::now();
         let mut next = escalation.follow(token, now);
         while let Some(step) = next {
+            // Signaled before `on` runs, so a failing cleanup there can never
+            // keep the group alive.
+            signal_led_group(leader, if step == Step::Ask { ask } else { Signal::KILL })?;
             if let Err(err) = on(Some(step)) {
                 return Ok(Err(err));
             }
-            signal_led_group(leader, if step == Step::Ask { ask } else { Signal::KILL })?;
             // A zero grace period kills along with the ask.
             next = (step == Step::Ask).then(|| escalation.poll(now)).flatten();
         }
@@ -1279,24 +1281,31 @@ mod tests {
     }
 
     #[test]
-    fn an_error_from_the_caller_ends_the_wait_without_signaling() {
-        let mut child = ready_group("echo ready; sleep 30");
+    fn a_failing_step_callback_never_keeps_the_group_from_its_signal() {
+        let mut child = ready_group("trap '' TERM; echo ready; sleep 30");
         let token = Token::new();
-        token.cancel();
-        let mut escalation = Escalation::new(Duration::ZERO, None);
+        token.force();
+        let mut escalation = Escalation::new(Duration::from_secs(30), None);
         let answer = stop_group(
             &child,
             Signal::TERM,
             &mut escalation,
             &token,
             None,
-            |step| step.map_or(Ok(()), |_| Err("refused")),
+            |step| step.map_or(Ok(()), |_| Err("cleanup failed")),
         );
-        let running = child.try_wait().unwrap().is_none();
-        let _ = signal_led_group(&child, Signal::KILL);
-        child.wait().unwrap();
-        assert_eq!(answer.unwrap(), Err("refused"));
-        assert!(running);
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while child.try_wait().unwrap().is_none() && Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(10));
+        }
+        let status = child.try_wait().unwrap();
+        if status.is_none() {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+        assert_eq!(answer.unwrap(), Err("cleanup failed"));
+        use std::os::unix::process::ExitStatusExt;
+        assert_eq!(status.and_then(|status| status.signal()), Some(9));
     }
 
     #[test]
