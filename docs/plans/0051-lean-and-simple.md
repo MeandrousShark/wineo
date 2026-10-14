@@ -281,6 +281,17 @@ Shipped in 0.31.1.
 
   Thin LTO came out larger than none, so it was never a candidate.
 
+- The toast and the scrollbar fade wake once at their deadline instead of
+  ticking every 100 ms and 250 ms. A hovered toast went from 10 wakeups a
+  second, for as long as it was hovered, to none (12 s hovered in Xvfb: 0
+  main-thread wakeups), with the same timing as before. The hook output
+  reader blocks instead of polling every 5 ms: 192 wakeups a second to 0.
+  The art picker awaits its decode slot together with cancellation
+  (`Token::canceled()`) instead of polling every 10 ms. The scrollbar fade
+  and the "what's new" notice now fire at their deadline, not up to 250 ms
+  or 100 ms after it. Undo's focus is checked on a click, a tap, a key
+  release, and when the toast's time runs out, instead of every 100 ms.
+
 The maintainer's machine (real GPU, library of 22, after scrolling the
 library), the 0050 acceptance build against main with everything above:
 
@@ -312,3 +323,6 @@ Limits accepted in review:
 - At most one periodic scan runs at a time, and an explicit reload makes
   scans read before it stale. A scan stuck on a hung filesystem holds that
   slot; there is no scan timeout.
+- If Undo loses keyboard focus with no click, tap, key release, or other
+  message (none is known to do this), the toast's countdown resumes at the
+  next one, or when its time would have run out.
