@@ -1,7 +1,11 @@
 use crate::test_script::write_script;
 use std::ffi::OsString;
 
+use super::restore::{
+    finish_entry, keep_changed, restore_locked_with, with_environment_build_locks,
+};
 use super::*;
+use crate::build_lock;
 
 struct Fixture {
     _root: tempfile::TempDir,
