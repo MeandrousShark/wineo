@@ -1548,9 +1548,18 @@ impl Staging {
 impl Drop for Staging {
     fn drop(&mut self) {
         if let Some(dir) = self.0.take() {
+            #[cfg(test)]
+            ARMED_DROPS.with(|drops| drops.borrow_mut().push(dir.path().to_owned()));
             make_removable(dir.path());
         }
     }
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Every staging directory this thread dropped while it was still
+    /// armed to be removed, in order.
+    pub(crate) static ARMED_DROPS: std::cell::RefCell<Vec<PathBuf>> = const { std::cell::RefCell::new(Vec::new()) };
 }
 
 /// Best effort, since cleanup reports nothing either.
