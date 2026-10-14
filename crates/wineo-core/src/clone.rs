@@ -175,8 +175,10 @@ pub fn execute_reviewed(
         staging_prefix: ".wineo-clone-",
         label: "clone",
     }
-    .run(cancel, &mut progress, |_| {
-        if import::fingerprint(&reviewed.source_root)? != reviewed.prefix.fingerprint {
+    .run(cancel, &mut progress, |progress| {
+        if import::fingerprint_with(&reviewed.source_root, cancel, progress)?
+            != reviewed.prefix.fingerprint
+        {
             bail!(
                 "{} changed while it was being copied; try again",
                 reviewed.source_root.display()
@@ -807,6 +809,36 @@ mod tests {
         );
         fs::create_dir(&destination).unwrap();
         assert!(inspect(&paths, &global, "source", "copy", Some(&destination)).is_err());
+    }
+
+    #[test]
+    fn cancel_during_verification_publishes_nothing() {
+        let root = tempfile::tempdir().unwrap();
+        let (paths, _source, _) = setup(root.path(), false);
+        let global = GlobalConfig::default();
+        let destination = root.path().join("copy");
+        let review = inspect(&paths, &global, "source", "copy", Some(&destination)).unwrap();
+        let cancel = Token::new();
+        let mut copying = false;
+        let mut checks = 0;
+        let err = execute_reviewed(&paths, &global, &review, &cancel, |event| match event {
+            ImportProgress::Started { .. } => copying = true,
+            ImportProgress::Checking { .. } if copying => {
+                checks += 1;
+                cancel.cancel();
+            }
+            ImportProgress::Finished { .. } => panic!("published a canceled clone"),
+            _ => {}
+        })
+        .unwrap_err();
+        assert!(err.is::<Canceled>(), "{err}");
+        assert!(checks > 0);
+        assert!(!destination.exists());
+        assert!(!paths.environment_config("copy").exists());
+        for entry in fs::read_dir(root.path()).unwrap() {
+            let name = entry.unwrap().file_name();
+            assert!(!name.to_string_lossy().starts_with(".wineo-clone-"));
+        }
     }
 
     #[test]

@@ -294,6 +294,12 @@ pub fn execute_reviewed_with(
     Runtime::new(to, name).check_quiet(name)?;
     import::check_cancelled(cancel)?;
 
+    if reviewed.destination.exists() {
+        bail!(
+            "portable copy destination appeared during review: {}",
+            reviewed.destination.display()
+        );
+    }
     let staging = Stage::new(".wineo-copy-", &reviewed.folder.join("prefixes"))?;
     let _publish_lock = InstallLock::acquire(&reviewed.destination)?;
 
@@ -429,6 +435,12 @@ pub fn execute_reviewed_with(
             paths.join(", ")
         )
     };
+    if reviewed.destination.exists() {
+        bail!(
+            "portable copy destination appeared during publication: {}",
+            reviewed.destination.display()
+        );
+    }
     staging.publish_part(&staged_prefix, &reviewed.destination)?;
     published.push(reviewed.destination.clone());
     let result = (|| -> Result<()> {
@@ -1032,6 +1044,20 @@ mod tests {
                 }
             }
         }
+
+        fn assert_no_staging(&self) {
+            for directory in [
+                self.to.default_prefix_root(),
+                self.to.portable_root().unwrap().to_owned(),
+            ] {
+                for entry in fs::read_dir(directory).unwrap() {
+                    let name = entry.unwrap().file_name();
+                    assert!(!name.to_string_lossy().starts_with(".wineo-copy-"));
+                    assert!(!name.to_string_lossy().starts_with(".wineo-art-"));
+                }
+            }
+            assert!(!self.to.environment_config("game").exists());
+        }
     }
 
     #[test]
@@ -1134,6 +1160,73 @@ mod tests {
                 f.assert_unpublished();
             }
         }
+    }
+
+    #[test]
+    fn destination_appearing_during_review_is_not_replaced() {
+        let f = Fixture::new(false);
+        let mut checks = 0;
+        let review = inspect_with(&f.from, &f.to, &f.global, "game", &Token::new(), |event| {
+            if let ImportProgress::Checking { .. } = event {
+                checks += 1;
+            }
+        })
+        .unwrap();
+        let destination = review.destination.clone();
+        // The last check of the locked review runs after its destination
+        // test, so creating it then is only caught by the copy itself.
+        let mut seen = 0;
+        let err = execute_reviewed(&f.from, &f.to, &f.global, &review, &Token::new(), |event| {
+            if let ImportProgress::Checking { .. } = event {
+                seen += 1;
+                if seen == checks {
+                    fs::create_dir_all(&destination).unwrap();
+                    fs::write(destination.join("theirs"), "keep").unwrap();
+                }
+            }
+        })
+        .unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            format!(
+                "portable copy destination appeared during review: {}",
+                destination.display()
+            )
+        );
+        assert_eq!(
+            fs::read_to_string(destination.join("theirs")).unwrap(),
+            "keep"
+        );
+        f.assert_no_staging();
+    }
+
+    #[test]
+    fn destination_appearing_during_publication_is_not_replaced() {
+        let f = Fixture::new(false);
+        let review = inspect(&f.from, &f.to, &f.global, "game").unwrap();
+        let destination = review.destination.clone();
+        let err =
+            execute_reviewed_with(&f.from, &f.to, &f.global, &review, &Token::new(), |event| {
+                if event == CopyEvent::Publishing {
+                    fs::create_dir(&destination).unwrap();
+                    fs::write(destination.join("theirs"), "keep").unwrap();
+                }
+            })
+            .unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            format!(
+                "portable copy destination appeared during publication: {}",
+                destination.display()
+            )
+        );
+        assert_eq!(
+            fs::read_to_string(destination.join("theirs")).unwrap(),
+            "keep"
+        );
+        assert!(!f.to.art_dir("game").exists());
+        assert!(!f.to.templates_dir().exists());
+        f.assert_no_staging();
     }
 
     #[test]
