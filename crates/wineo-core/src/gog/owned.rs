@@ -3,7 +3,6 @@
 //! to the last complete list with a warning, like Steam's.
 
 use std::fs;
-use std::io;
 use std::path::Path;
 
 use serde::{Deserialize, Serialize};
@@ -11,7 +10,7 @@ use wineo_gog::{OwnedProduct, UserId};
 
 use super::account::{AccountError, CallError, Session};
 use crate::error::IoContext;
-use crate::files::write_unique;
+use crate::files::{self, write_unique};
 use crate::paths::Paths;
 
 /// How long a fetched list is used before asking again.
@@ -115,11 +114,7 @@ fn load_at(session: &mut Session, refresh: bool, now: i64) -> Result<Owned, Load
 /// Deletes an account's cached list. Returns whether there was one.
 pub fn remove_cache(paths: &Paths, user_id: UserId) -> crate::Result<bool> {
     let path = paths.gog_owned_cache(user_id.get());
-    match fs::remove_file(&path) {
-        Ok(()) => Ok(true),
-        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(false),
-        Err(error) => Err(error).context(|| format!("failed to remove {}", path.display())),
-    }
+    files::remove_if_present(&path).context(|| format!("failed to remove {}", path.display()))
 }
 
 /// A cache that is missing or unreadable is the same as none.

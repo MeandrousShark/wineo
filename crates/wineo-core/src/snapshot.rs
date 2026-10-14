@@ -13,6 +13,7 @@ use crate::build_lock;
 use crate::cancel::Token;
 use crate::config::{EnvironmentConfig, GlobalConfig};
 use crate::environment::{self, Environment};
+use crate::files;
 use crate::gog;
 use crate::import::{self, ExternalDependency, ImportLayout, ImportProgress, SourceFingerprint};
 use crate::name;
@@ -943,10 +944,7 @@ fn write_config_atomic(path: &Path, content: &str) -> Result<()> {
     let parent = path
         .parent()
         .ok_or_else(|| anyhow!("config has no parent"))?;
-    let mut temp = tempfile::NamedTempFile::new_in(parent)?;
-    temp.write_all(content.as_bytes())?;
-    temp.as_file().sync_all()?;
-    temp.persist(path).map_err(|err| anyhow!(err.error))?;
+    files::persist_synced(parent, path, content.as_bytes())?;
     sync_dir(parent)
 }
 

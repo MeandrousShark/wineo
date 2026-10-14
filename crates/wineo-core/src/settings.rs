@@ -1,6 +1,4 @@
 use std::collections::BTreeSet;
-use std::fs;
-use std::io;
 use std::path::PathBuf;
 
 use anyhow::bail;
@@ -16,7 +14,7 @@ use crate::desktop;
 use crate::edit::{self, Scope};
 use crate::environment::Environment;
 use crate::error::{Error, IoContext, Result};
-use crate::files::write_atomic;
+use crate::files::{self, write_atomic};
 use crate::gog;
 use crate::install::{self, Change, Wanted};
 use crate::launch;
@@ -529,16 +527,13 @@ fn update_with_writer(
     // Read under the lock, so a change or a removal that lands in the meantime
     // is built on or refused rather than overwritten.
     let _guard = Locks::new(paths).config(&path)?;
-    let text = match fs::read_to_string(&path) {
-        Ok(text) => Some(text),
-        Err(err) if err.kind() == io::ErrorKind::NotFound => match file {
-            ConfigFile::Global => None,
-            ConfigFile::Environment(env) => {
-                return Err(Error::UnknownEnvironment(env.to_owned()));
-            }
-        },
-        Err(err) => return Err(err).context(|| format!("failed to read {}", path.display())),
-    };
+    let text = files::read_to_string_optional(&path)
+        .context(|| format!("failed to read {}", path.display()))?;
+    if text.is_none()
+        && let ConfigFile::Environment(env) = file
+    {
+        return Err(Error::UnknownEnvironment(env.to_owned()));
+    }
     let mut doc = match &text {
         Some(text) => {
             config::check_schema(&path, text)?;
@@ -702,6 +697,7 @@ fn config_path(paths: &Paths, file: ConfigFile) -> Result<(Scope, PathBuf)> {
 mod tests {
     use crate::test_script::write_script;
     use std::ffi::OsString;
+    use std::fs;
     use std::path::Path;
 
     use super::*;

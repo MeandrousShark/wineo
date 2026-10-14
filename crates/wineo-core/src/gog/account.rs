@@ -23,7 +23,7 @@ use wineo_gog::{Class, Client, ErrorKind, PasteError, Secret, Tokens, UserId};
 
 use super::owned;
 use crate::error::IoContext;
-use crate::files::write_atomic;
+use crate::files::{self, write_atomic};
 use crate::key_store::{self, KeySource, KeySpec, Keyring, Removed, Saved};
 use crate::paths::Paths;
 
@@ -228,11 +228,9 @@ impl Drop for CredentialsLock {
 /// zero, which the next bump moves past.
 fn read_generation(paths: &Paths) -> crate::Result<u64> {
     let path = paths.gog_credentials_generation();
-    match fs::read_to_string(&path) {
-        Ok(text) => Ok(text.trim().parse().unwrap_or(0)),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(0),
-        Err(error) => Err(error).context(|| format!("failed to read {}", path.display())),
-    }
+    let text = files::read_to_string_optional(&path)
+        .context(|| format!("failed to read {}", path.display()))?;
+    Ok(text.map_or(0, |text| text.trim().parse().unwrap_or(0)))
 }
 
 /// Moves the generation on. Only called holding the credentials lock, and

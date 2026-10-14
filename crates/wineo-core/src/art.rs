@@ -19,7 +19,7 @@ use crate::cancel::Token;
 use crate::config;
 use crate::environment::{Environment, EnvironmentIdentity};
 use crate::error::{Error, IoContext, Result};
-use crate::files::write_atomic;
+use crate::files::{self, write_atomic};
 use crate::name;
 use crate::operation::{ConfigGuard, Locks};
 use crate::paths::Paths;
@@ -1236,10 +1236,11 @@ impl ArtConfig {
     /// that records nothing.
     pub fn load(art_dir: &Path) -> Result<Self> {
         let path = art_dir.join(ART_FILE);
-        match fs::read_to_string(&path) {
-            Ok(text) => Self::parse(&path, &text),
-            Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(Self::default()),
-            Err(err) => Err(err).context(|| format!("failed to read {}", path.display())),
+        match files::read_to_string_optional(&path)
+            .context(|| format!("failed to read {}", path.display()))?
+        {
+            Some(text) => Self::parse(&path, &text),
+            None => Ok(Self::default()),
         }
     }
 

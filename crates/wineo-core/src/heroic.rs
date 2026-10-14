@@ -2,7 +2,6 @@
 //! games Heroic installed.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
@@ -13,6 +12,7 @@ use sha2::{Digest, Sha256};
 
 use crate::config::{Hooks, HooksSetting};
 use crate::error::{Error, Result};
+use crate::files;
 use crate::gamescope::{Filter, Gamescope, GamescopeSetting, Scaler, Window};
 
 mod gog;
@@ -1502,14 +1502,10 @@ thread_local! {
 }
 
 fn read_optional_bytes(path: &Path) -> Result<Option<Vec<u8>>> {
-    match fs::read(path) {
-        Ok(bytes) => Ok(Some(bytes)),
-        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
-        Err(error) => Err(Error::Io {
-            context: format!("failed to read {}", path.display()),
-            source: error,
-        }),
-    }
+    files::read_optional(path).map_err(|error| Error::Io {
+        context: format!("failed to read {}", path.display()),
+        source: error,
+    })
 }
 
 fn parse_json(path: &Path, bytes: &[u8]) -> Result<Value> {

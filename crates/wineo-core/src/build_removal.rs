@@ -1,7 +1,7 @@
 //! References and removal shared by runners and downloaded components.
 
 use std::collections::HashMap;
-use std::fs::{self, File};
+use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
@@ -13,6 +13,7 @@ use crate::config::GlobalConfig;
 use crate::download::InstallLock;
 use crate::environment::{self, Environment};
 use crate::error::{Error, IoContext, Result};
+use crate::files;
 use crate::paths::Paths;
 use crate::report::OverviewError;
 use crate::runners::Runners;
@@ -388,9 +389,7 @@ pub fn sweep(paths: &Paths, kind: Kind, root: &Path) -> Result<()> {
 }
 
 fn sync(dir: &Path) -> Result<()> {
-    File::open(dir)
-        .and_then(|file| file.sync_all())
-        .context(|| format!("failed to sync {}", dir.display()))
+    files::sync_dir(dir).context(|| format!("failed to sync {}", dir.display()))
 }
 
 fn move_out(directory: &Path) -> Result<PathBuf> {

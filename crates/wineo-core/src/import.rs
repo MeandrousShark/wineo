@@ -27,6 +27,7 @@ use crate::config::{
 use crate::download::{InstallLock, publish};
 use crate::environment::Environment;
 use crate::error::Error;
+use crate::files;
 use crate::gamescope::GamescopeSetting;
 use crate::install::{self, Wanted};
 use crate::name;
@@ -1645,9 +1646,7 @@ pub(crate) fn write_config_once(path: &Path, contents: &str) -> Result<()> {
 fn sync_config_dir(dir: &Path) -> Result<()> {
     #[cfg(test)]
     SYNCED_DIRS.with(|synced| synced.borrow_mut().push(dir.to_owned()));
-    File::open(dir)
-        .and_then(|dir| dir.sync_all())
-        .with_context(|| format!("failed to sync {}", dir.display()))
+    files::sync_dir(dir).with_context(|| format!("failed to sync {}", dir.display()))
 }
 
 #[cfg(test)]

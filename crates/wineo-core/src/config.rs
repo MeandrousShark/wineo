@@ -1,7 +1,5 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
-use std::fs;
-use std::io;
 use std::path::Path;
 use std::str::FromStr;
 
@@ -9,6 +7,7 @@ use serde::{Deserialize, Serialize};
 use toml_edit::{DocumentMut, Item, Table, value};
 
 use crate::error::{Error, IoContext, NoPrefix, PrefixOwner, Result};
+use crate::files;
 pub use crate::gamescope::GamescopeSetting;
 use crate::name;
 use crate::paths::Paths;
@@ -742,10 +741,11 @@ impl GlobalConfig {
         let path = paths.global_config();
         #[cfg(test)]
         crate::read_log::note(&path);
-        match fs::read_to_string(&path) {
-            Ok(text) => Self::parse(&path, &text),
-            Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(Self::default()),
-            Err(err) => Err(err).context(|| format!("failed to read {}", path.display())),
+        match files::read_to_string_optional(&path)
+            .context(|| format!("failed to read {}", path.display()))?
+        {
+            Some(text) => Self::parse(&path, &text),
+            None => Ok(Self::default()),
         }
     }
 
@@ -1012,6 +1012,8 @@ pub fn validate_env_var(key: &str, value: &str) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
+
     use super::*;
 
     const PATH: &str = "/test/config.toml";

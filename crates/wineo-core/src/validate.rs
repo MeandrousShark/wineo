@@ -21,6 +21,7 @@ use crate::config::{EnvironmentConfig, GlobalConfig, Kind};
 use crate::desktop::{self, Entry, Pending};
 use crate::environment::{self, Environment};
 use crate::error::{Error, IoContext, Result, chain};
+use crate::files;
 use crate::gog::folder::{self, DeviceOf, FolderState};
 use crate::install::{self, Wanted};
 use crate::installer::{self, Cleaned};
@@ -888,11 +889,11 @@ fn check_one(
     }
 
     let path = paths.environment_config(name);
-    let text = match fs::read_to_string(&path) {
-        Ok(text) => text,
+    let Some(text) = files::read_to_string_optional(&path)
+        .context(|| format!("failed to read {}", path.display()))?
+    else {
         // Removed since it was listed.
-        Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(()),
-        Err(err) => return Err(err).context(|| format!("failed to read {}", path.display())),
+        return Ok(());
     };
     let config = match EnvironmentConfig::parse(&path, &text) {
         Ok(config) => config,
@@ -1714,11 +1715,9 @@ fn remove_stats_log(paths: &Paths, name: &str) -> Result<()> {
         return Err(Error::EnvironmentExists(name.to_owned()));
     }
     let path = paths.stats_log(name);
-    match fs::remove_file(&path) {
-        Ok(()) => Ok(()),
-        Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(()),
-        Err(err) => Err(err).context(|| format!("failed to remove {}", path.display())),
-    }
+    files::remove_if_present(&path)
+        .map(drop)
+        .context(|| format!("failed to remove {}", path.display()))
 }
 
 fn remove_desktop_entry(paths: &Paths, entry: &Entry) -> Result<()> {

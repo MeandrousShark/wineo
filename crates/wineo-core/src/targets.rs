@@ -8,8 +8,6 @@
 //! value and its formatting.
 
 use std::collections::BTreeMap;
-use std::fs;
-use std::io;
 
 use toml_edit::{Array, DocumentMut, Value};
 
@@ -17,7 +15,7 @@ use crate::art::TargetCleanup;
 use crate::config::{self, EnvironmentConfig, Target};
 use crate::edit::{ensure_table, existing_table, store_value};
 use crate::error::{Error, IoContext, Result};
-use crate::files::write_atomic;
+use crate::files::{self, write_atomic};
 use crate::name;
 use crate::operation::Locks;
 use crate::paths::Paths;
@@ -394,12 +392,10 @@ pub fn write(paths: &Paths, environment: &str, batch: &Batch) -> Result<Written>
     }
     let path = paths.environment_config(environment);
     let _guard = Locks::new(paths).config(&path)?;
-    let text = match fs::read_to_string(&path) {
-        Ok(text) => text,
-        Err(err) if err.kind() == io::ErrorKind::NotFound => {
-            return Err(Error::UnknownEnvironment(environment.to_owned()));
-        }
-        Err(err) => return Err(err).context(|| format!("failed to read {}", path.display())),
+    let Some(text) = files::read_to_string_optional(&path)
+        .context(|| format!("failed to read {}", path.display()))?
+    else {
+        return Err(Error::UnknownEnvironment(environment.to_owned()));
     };
     let current = EnvironmentConfig::parse(&path, &text)?;
     if batch.is_stale(&current.targets) {
@@ -484,6 +480,7 @@ pub fn free_name(name: &str, taken: impl Fn(&str) -> bool) -> String {
 #[cfg(test)]
 mod tests {
     use std::ffi::OsString;
+    use std::fs;
     use std::path::Path;
 
     use super::*;
