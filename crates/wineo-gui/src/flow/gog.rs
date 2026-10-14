@@ -3153,8 +3153,10 @@ mod tests {
         let covers = leaked(Covers::new(200, png_bytes()));
         let slots = crate::flow::posters::import_decode_slots();
         let all = crate::flow::posters::import_limit() as u32;
-        let held =
-            iced::futures::executor::block_on(slots.clone().acquire_many_owned(all)).unwrap();
+        // Dropped before any assert can fail, since the scope below joins a
+        // worker that is blocked until the permits come back.
+        let mut held =
+            Some(iced::futures::executor::block_on(slots.clone().acquire_many_owned(all)).unwrap());
         let token = Token::new();
 
         std::thread::scope(|scope| {
@@ -3166,8 +3168,9 @@ mod tests {
             // Both permits are out, so the cover waits instead of decoding.
             assert!(receiver.recv_timeout(Duration::from_millis(200)).is_err());
             token.cancel();
-            let sent = receiver.recv_timeout(Duration::from_secs(5)).unwrap();
-            assert!(sent.is_empty());
+            let sent = receiver.recv_timeout(Duration::from_secs(5));
+            drop(held.take_if(|_| sent.is_err()));
+            assert!(sent.unwrap().is_empty());
         });
 
         std::thread::scope(|scope| {
@@ -3176,8 +3179,9 @@ mod tests {
             scope.spawn(move || {
                 let _ = sender.send(load(paths, jobs, &Token::new(), None, covers));
             });
-            assert!(receiver.recv_timeout(Duration::from_millis(200)).is_err());
-            drop(held);
+            let early = receiver.recv_timeout(Duration::from_millis(200));
+            drop(held.take());
+            assert!(early.is_err());
             let sent = receiver.recv_timeout(Duration::from_secs(5)).unwrap();
             assert_eq!(sent.len(), 1);
             assert!(sent[0].1.is_ok());
