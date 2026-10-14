@@ -97,7 +97,9 @@ impl Input for NoInput {
 
 /// Whether both ends are a terminal, which every guided flow needs.
 pub fn interactive() -> bool {
-    io::stdin().is_terminal() && io::stdout().is_terminal()
+    // Unit tests inherit the terminal cargo runs in, as under makepkg, and
+    // would wait on it for an answer.
+    !cfg!(test) && io::stdin().is_terminal() && io::stdout().is_terminal()
 }
 
 /// Reads one line without echoing it, for a secret like an API key. A signal
