@@ -2,6 +2,7 @@
 
 use std::collections::HashMap;
 use std::future::Future;
+use std::time::Duration;
 
 use secret_service::{EncryptionType, Error, Item, SecretService};
 
@@ -40,11 +41,23 @@ impl SecretServiceKeyring {
 ///
 /// Each call gets its own connection: secret-service never closes the
 /// encrypted session it opens, and the daemon only drops it on disconnect.
+///
+/// Method calls time out like the libdbus client's did, so a daemon that
+/// stops answering can't hang a command. Waiting on an unlock prompt is a
+/// signal, not a method call, so the user still gets as long as they need.
 async fn connect<'a>() -> Result<SecretService<'a>, KeyringError> {
-    SecretService::connect(EncryptionType::Dh)
+    let bus = zbus::connection::Builder::session()
+        .map_err(|_| KeyringError::Unavailable)?
+        .method_timeout(METHOD_TIMEOUT)
+        .build()
+        .await
+        .map_err(|_| KeyringError::Unavailable)?;
+    SecretService::connect_with_existing(EncryptionType::Dh, bus)
         .await
         .map_err(|_| KeyringError::Unavailable)
 }
+
+const METHOD_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// Runs one keyring operation on a runtime of its own on this thread, so no
 /// worker threads outlive it. zbus's blocking API would instead start a
