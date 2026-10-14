@@ -29,6 +29,26 @@ pub struct Spec {
     // Tiles are decoded in bulk on a first open, where a cheaper filter
     // matters more than the last bit of sharpness at this size.
     filter: image::imageops::FilterType,
+    /// Trusts a raster's content over its extension. The library keeps the
+    /// extension, since core accepts formats per kind by file name.
+    sniff: bool,
+}
+
+impl Spec {
+    /// What a cached copy is filed under. The library's Lanczos3 keeps the bare
+    /// name so its existing copies stay valid; any other filter is named, since
+    /// a copy resized another way is a different picture.
+    fn label(self) -> String {
+        use image::imageops::FilterType;
+        let filter = match self.filter {
+            FilterType::Lanczos3 => return self.name.to_owned(),
+            FilterType::Nearest => "nearest",
+            FilterType::Triangle => "triangle",
+            FilterType::CatmullRom => "catmullrom",
+            FilterType::Gaussian => "gaussian",
+        };
+        format!("{}-{filter}", self.name)
+    }
 }
 
 impl From<Kind> for Spec {
@@ -46,6 +66,7 @@ impl From<Kind> for Spec {
             max_size,
             contain,
             filter: image::imageops::FilterType::Lanczos3,
+            sniff: false,
         }
     }
 }
@@ -60,6 +81,7 @@ pub const TILE: Spec = Spec {
     ),
     contain: true,
     filter: image::imageops::FilterType::Triangle,
+    sniff: true,
 };
 
 type Pixels = (u32, u32, Vec<u8>);
@@ -114,7 +136,7 @@ pub fn decode_as(
         let entry = entry((width, height)).filter(|_| scale < 1.0);
         cached(entry, || render_svg(&tree, width, height, scale))?
     } else {
-        let (source_width, source_height) = reader(path)
+        let (source_width, source_height) = reader(path, spec)
             .and_then(|reader| reader.into_dimensions().map_err(Into::into))
             .with_context(|| format!("failed to decode {}", path.display()))?;
         let (width, height, _) = fit_size(f64::from(source_width), f64::from(source_height), spec);
@@ -174,7 +196,9 @@ impl Entry {
         let dir = cache.join(hex(&Sha256::digest(source.as_os_str().as_bytes())));
         let file = dir.join(format!(
             "{identity}-{}-{}x{}.png",
-            spec.name, size.0, size.1
+            spec.label(),
+            size.0,
+            size.1
         ));
         Self {
             dir,
@@ -285,15 +309,20 @@ fn prune_dir(dir: &Path) {
     }
 }
 
-/// Opens a raster by its content before its extension, since a file's name
-/// can be missing or wrong.
-fn reader(path: &Path) -> Result<ImageReader<io::BufReader<fs::File>>> {
-    Ok(ImageReader::open(path)?.with_guessed_format()?)
+/// Opens a raster by its extension, or by its content first for a spec that
+/// sniffs, since a cached file's name can be missing or wrong.
+fn reader(path: &Path, spec: Spec) -> Result<ImageReader<io::BufReader<fs::File>>> {
+    let reader = ImageReader::open(path)?;
+    Ok(if spec.sniff {
+        reader.with_guessed_format()?
+    } else {
+        reader
+    })
 }
 
 fn decode_raster(path: &Path, spec: impl Into<Spec>) -> Result<Pixels> {
     let spec = spec.into();
-    let image = reader(path)
+    let image = reader(path, spec)
         .and_then(|reader| reader.decode().map_err(Into::into))
         .with_context(|| format!("failed to decode {}", path.display()))?;
     let (width, height) = image.dimensions();
@@ -469,6 +498,41 @@ mod tests {
         assert_eq!((width, height), (1, 1));
         assert_eq!(pixels, [88, 88, 88, 123]);
         assert_eq!(pixel(&original).2, [20, 100, 180, 123]);
+    }
+
+    #[test]
+    fn a_cached_copy_is_only_served_to_the_filter_that_made_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = dir.path().join("cache");
+        let source = dir.path().join("poster.png");
+        save_png(&source, 600, 900, [40, 100, 180]);
+        let sharp = Spec {
+            filter: image::imageops::FilterType::Lanczos3,
+            ..TILE
+        };
+
+        decode(&source, sharp, Some(&cache)).unwrap();
+        let found = entries(&cache);
+        assert_eq!(found.len(), 1);
+        save_png(&found[0], 152, 228, [200, 10, 10]);
+
+        let same = pixel(&decode(&source, sharp, Some(&cache)).unwrap());
+        assert_eq!(&same.2[..4], &[200, 10, 10, 255]);
+        let other = pixel(&decode(&source, TILE, Some(&cache)).unwrap());
+        assert_ne!(&other.2[..4], &[200, 10, 10, 255]);
+        assert_eq!(entries(&cache).len(), 2);
+    }
+
+    #[test]
+    fn only_the_import_spec_trusts_content_over_the_extension() {
+        let dir = tempfile::tempdir().unwrap();
+        // JPEG bytes under the name core would only accept for a PNG.
+        let source = dir.path().join("grid.png");
+        image::RgbImage::from_pixel(8, 12, image::Rgb([40, 100, 180]))
+            .save_with_format(&source, image::ImageFormat::Jpeg)
+            .unwrap();
+        assert!(decode(&source, Kind::Grid, None).is_err());
+        assert!(decode(&source, TILE, None).is_ok());
     }
 
     #[test]
