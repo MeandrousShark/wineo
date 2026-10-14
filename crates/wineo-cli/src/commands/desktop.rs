@@ -8,6 +8,8 @@ use wineo_core::environment::{self, Environment};
 use wineo_core::paths::Paths;
 use wineo_core::runner::Runner;
 
+use crate::text;
+
 #[derive(clap::Args)]
 pub struct Args {}
 
@@ -53,7 +55,7 @@ pub fn run(paths: &Paths, _args: Args) -> anyhow::Result<ExitCode> {
         eprintln!(
             "{} entr{} belong to an environment that no longer exists. Remove with `wineo validate`:",
             strays.len(),
-            if strays.len() == 1 { "y" } else { "ies" }
+            text::plural(strays.len(), "y", "ies")
         );
         for entry in strays {
             eprintln!("  {}", entry.path.display());

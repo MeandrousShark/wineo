@@ -35,6 +35,7 @@ mod output;
 mod picker;
 mod prompt;
 mod style;
+mod text;
 mod wizard;
 
 // Shared with the integration tests, which include the same file.

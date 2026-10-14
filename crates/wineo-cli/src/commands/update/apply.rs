@@ -20,6 +20,7 @@ use crate::commands::gog_support::{
 use crate::commands::transfer::Cancellation;
 use crate::prompt::{self, Canceled, Prompt, Reply, Terminal};
 use crate::style;
+use crate::text;
 
 type Ask = Prompt<Terminal, crate::output::Stream<io::Stdout>>;
 
@@ -307,7 +308,7 @@ fn all(paths: &Paths, args: &Args) -> anyhow::Result<ExitCode> {
         return Ok(failure_code(&failures));
     }
     if !ready.is_empty() && asking {
-        let noun = noun(total);
+        let noun = text::plural(total, "game", "games");
         match terminal()?.confirm(&format!("Update {total} {noun}?"), true)? {
             Reply::Value(true) => {}
             _ => return Err(Canceled.into()),
@@ -339,7 +340,7 @@ fn all(paths: &Paths, args: &Args) -> anyhow::Result<ExitCode> {
         eprintln!("Failed {name}: {reason}");
     }
     if total > 0 {
-        println!("Updated {done} of {total} {}.", noun(total));
+        println!("{}", text::games_summary("Updated", done, total));
     }
     if let Some(error) = stop {
         return Err(error);
@@ -349,10 +350,6 @@ fn all(paths: &Paths, args: &Args) -> anyhow::Result<ExitCode> {
         println!("{} failed: {}", failures.len(), names.join(", "));
     }
     Ok(failure_code(&failures))
-}
-
-fn noun(count: usize) -> &'static str {
-    if count == 1 { "game" } else { "games" }
 }
 
 fn failure_code(failures: &[(String, String)]) -> ExitCode {

@@ -11,6 +11,7 @@ use super::{components, json};
 use crate::cancel;
 use crate::prompt::{self, Input, Prompt, Reply, Terminal, numbered};
 use crate::style;
+use crate::text;
 
 /// The shell's code for a command ended by Ctrl+C.
 #[derive(clap::Args)]
@@ -313,18 +314,14 @@ fn print_report(
     Ok(())
 }
 
-fn plural(count: usize, one: &str, many: &str) -> String {
-    format!("{count} {}", if count == 1 { one } else { many })
-}
-
 /// Like `1 error, 2 warnings`, leaving out a level with none.
 fn counts(report: &Report) -> String {
     let mut parts = Vec::new();
     if report.errors() > 0 {
-        parts.push(plural(report.errors(), "error", "errors"));
+        parts.push(text::counted(report.errors(), "error", "errors"));
     }
     if report.warnings() > 0 {
-        parts.push(plural(report.warnings(), "warning", "warnings"));
+        parts.push(text::counted(report.warnings(), "warning", "warnings"));
     }
     parts.join(", ")
 }
@@ -338,7 +335,7 @@ fn clean(report: &Report, name: Option<&str>) -> String {
         Some(name) => format!("No problems in {name}."),
         None => format!(
             "No problems in {}.",
-            plural(report.environments.len(), "environment", "environments")
+            text::counted(report.environments.len(), "environment", "environments")
         ),
     }
 }
@@ -347,7 +344,7 @@ fn fixed_line(fixed: usize, after: &Report) -> String {
     let done = if fixed == 0 {
         "Nothing was fixed.".to_owned()
     } else {
-        format!("Fixed {}.", plural(fixed, "problem", "problems"))
+        format!("Fixed {}.", text::counted(fixed, "problem", "problems"))
     };
     if after.problems.is_empty() {
         done

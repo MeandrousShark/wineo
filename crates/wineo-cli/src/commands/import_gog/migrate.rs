@@ -28,6 +28,7 @@ use crate::commands::transfer::Cancellation;
 use crate::picker;
 use crate::prompt::{self, Canceled, Prompt, Reply, Terminal, numbered};
 use crate::style;
+use crate::text;
 
 type Ask = Prompt<Terminal, crate::output::Stream<io::Stdout>>;
 
@@ -549,7 +550,7 @@ pub(super) fn all(paths: &Paths, args: &Args, verbose: bool) -> anyhow::Result<E
     }
     if !ready.is_empty() {
         if let Some(prompt) = prompt.as_mut() {
-            let noun = if total == 1 { "game" } else { "games" };
+            let noun = text::plural(total, "game", "games");
             match prompt.confirm(&format!("Migrate {total} {noun}?"), true)? {
                 Reply::Value(true) => {}
                 _ => return Err(Canceled.into()),
@@ -575,8 +576,7 @@ pub(super) fn all(paths: &Paths, args: &Args, verbose: bool) -> anyhow::Result<E
         eprintln!("Failed {title}: {reason}");
     }
     if total > 0 {
-        let noun = if total == 1 { "game" } else { "games" };
-        println!("Migrated {done} of {total} {noun}.");
+        println!("{}", text::games_summary("Migrated", done, total));
     } else if failures.is_empty() && already.is_empty() {
         println!("Nothing to migrate.");
     }

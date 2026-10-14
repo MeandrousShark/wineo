@@ -34,6 +34,7 @@ use crate::cancel;
 use crate::picker;
 use crate::prompt::{self, Canceled, Input, Prompt, Reply, Terminal, numbered};
 use crate::style;
+use crate::text;
 
 mod dry_run;
 mod native;
@@ -972,15 +973,15 @@ fn resolve_pending_with<I: Input, W: Write>(
             format!(
                 "No matching {} build is installed for {count} game{}. Download the latest release?",
                 component.label(),
-                if count == 1 { "" } else { "s" }
+                text::plural(count, "", "s")
             )
         } else {
             format!(
                 "{} is missing for {count} game{} ({}). Download the exact requested version{}?",
                 component.label(),
-                if count == 1 { "" } else { "s" },
+                text::plural(count, "", "s"),
                 pinned.join(", "),
-                if pinned.len() == 1 { "" } else { "s" }
+                text::plural(pinned.len(), "", "s")
             )
         };
         if !matches!(prompt.confirm(&question, true)?, Reply::Value(true)) {
@@ -1040,16 +1041,21 @@ fn bulk_rows(library: &LibraryPlan) -> Vec<BulkRow> {
 /// The text a warning has in the bulk table and the final review. Core only
 /// says what the warning is, this is the wording.
 fn warning_text(warning: &Warning, adopt: bool) -> String {
-    let plural = |count: &usize| if *count == 1 { "" } else { "s" };
     match warning {
         Warning::SharedPrefix(shared) => shared_prefix_lines(shared, adopt, false).join(" "),
         Warning::UmuDisabled(message) | Warning::NvapiNotInstalled(message) => message.clone(),
         Warning::AntiCheatNotImported => "EAC/BattlEye runtimes aren't imported".to_owned(),
         Warning::Omitted(count) => {
-            format!("{count} unsupported setting{} omitted", plural(count))
+            format!(
+                "{count} unsupported setting{} omitted",
+                text::plural(*count, "", "s")
+            )
         }
         Warning::Dropped(count) => {
-            format!("{count} managed conflict{} dropped", plural(count))
+            format!(
+                "{count} managed conflict{} dropped",
+                text::plural(*count, "", "s")
+            )
         }
         Warning::NeedsAttention(_) => "settings need attention, see -v".to_owned(),
     }
@@ -1120,7 +1126,7 @@ fn render_bulk_table(
         })
         .max()
         .unwrap_or(0);
-    let noun = if rows.len() == 1 { "game" } else { "games" };
+    let noun = text::plural(rows.len(), "game", "games");
     let heading = if runner_name.is_empty() {
         format!("Import {} Heroic {noun}:", rows.len())
     } else {
@@ -1226,20 +1232,15 @@ fn import_all(bulk: &Bulk, games: Vec<Game>) -> anyhow::Result<ExitCode> {
             Err(_) => failed.push(name),
         }
     }
-    let noun = if total == 1 { "game" } else { "games" };
+    let summary = text::games_summary("Imported", done, total);
     if failed.is_empty() {
-        println!("Imported {done} of {total} {noun}.");
+        println!("{summary}");
     } else {
-        println!(
-            "Imported {done} of {total} {noun}. {} failed: {}",
-            failed.len(),
-            failed.join(", ")
-        );
+        println!("{summary} {} failed: {}", failed.len(), failed.join(", "));
     }
     if canceled {
         let remaining = total - done - failed.len();
-        let noun = if remaining == 1 { "game" } else { "games" };
-        println!("{remaining} {noun} canceled.");
+        println!("{} canceled.", text::counted(remaining, "game", "games"));
         return Ok(cancel::exit_code());
     }
     Ok(if failed.is_empty() {
@@ -2135,11 +2136,7 @@ fn show_game_summary<I: Input, W: Write>(
     if !verbose && hidden > 0 {
         warnings.push(format!(
             "{hidden} more Heroic {} not imported, -v lists them",
-            if hidden == 1 {
-                "setting is"
-            } else {
-                "settings are"
-            }
+            text::plural(hidden, "setting is", "settings are")
         ));
     }
     if !warnings.is_empty() {
@@ -2405,7 +2402,7 @@ fn link_lines(
         .map(|(label, count)| {
             format!(
                 "{count} prefix file{} point into {label}",
-                if count == 1 { "" } else { "s" }
+                text::plural(count, "", "s")
             )
         })
         .collect()
@@ -3378,7 +3375,7 @@ mod tests {
                         launch_scripts: false,
                     })
                     .collect();
-                let noun = if count == 1 { "game" } else { "games" };
+                let noun = text::plural(count, "game", "games");
                 let suffix = if runner.is_empty() {
                     String::new()
                 } else {

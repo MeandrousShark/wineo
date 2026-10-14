@@ -10,6 +10,8 @@ use wineo_core::view::{CollectionError, StatsCollectionOutput, StatsOutput, TagB
 use super::{json, table};
 use wineo_core::time::{LocalZone, Zone, day_label, duration_hm};
 
+use crate::text;
+
 /// Width of the label column in `stats <name>`'s detail lines, wide enough
 /// for `this month`, the longest one there is.
 const LABEL_WIDTH: usize = 10;
@@ -292,11 +294,7 @@ fn render_named(
         lines.push(label_line("played", "never"));
         return lines.join("\n") + "\n";
     }
-    let sessions_word = if summary.sessions == 1 {
-        "1 session".to_owned()
-    } else {
-        format!("{} sessions", summary.sessions)
-    };
+    let sessions_word = text::counted(summary.sessions, "session", "sessions");
     let mut played = format!("{} over {sessions_word}", duration_hm(summary.seconds));
     if summary.sessions == 0 {
         played = format!("{}, all from Heroic", duration_hm(summary.seconds));

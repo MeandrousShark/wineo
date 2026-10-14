@@ -14,6 +14,8 @@ use super::json;
 use super::table;
 use wineo_core::time::{LocalZone, Zone, absolute, day_label, duration_hm, relative};
 
+use crate::text;
+
 /// Width of the label column in `status <name>`'s detail lines. Wide enough
 /// for the longest label there is, so no line pushes its value out of line.
 const LABEL_WIDTH: usize = 10;
@@ -296,11 +298,7 @@ fn played_value(played: &report::Played, now: Timestamp, tz: &dyn Zone) -> Strin
             format!("{} on Steam", duration_hm(played.seconds))
         };
     }
-    let sessions = if played.sessions == 1 {
-        "1 session".to_owned()
-    } else {
-        format!("{} sessions", played.sessions)
-    };
+    let sessions = text::counted(played.sessions, "session", "sessions");
     // With no sessions, all of it came from a Heroic import.
     let mut value = if played.sessions == 0 {
         format!("{} from Heroic", duration_hm(played.seconds))

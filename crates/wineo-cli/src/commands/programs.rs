@@ -6,6 +6,8 @@ use wineo_core::paths::Paths;
 use wineo_core::prefix;
 use wineo_core::programs::{self, Listing};
 
+use crate::text;
+
 #[derive(clap::Args)]
 pub struct Args {
     /// Environment to look in
@@ -63,7 +65,7 @@ pub fn report(name: &str, listing: &Listing, all: bool) {
     }
     if !all && !listing.filtered.is_empty() {
         let held = listing.filtered.len();
-        let plural = if held == 1 { "" } else { "s" };
+        let plural = text::plural(held, "", "s");
         eprintln!("{held} executable{plural} looked like noise. Pass --all to see them");
     }
     if let Some(row) = rows.first() {

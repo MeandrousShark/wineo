@@ -23,6 +23,7 @@ use super::transfer::Cancellation;
 use crate::cancel;
 use crate::prompt::{self, Canceled, Input, Prompt, Reply, Terminal, numbered};
 use crate::style;
+use crate::text;
 
 /// Flags that mean nothing next to `--key` or `--remove-key`.
 const KEY_CONFLICTS: [&str; 9] = [
@@ -434,11 +435,7 @@ fn bulk(paths: &Paths, global: &GlobalConfig, args: &Args) -> anyhow::Result<Exi
             let mut out =
                 Prompt::new(Terminal::open()?, crate::output::stdout()).with_first_question(true);
             match out.confirm(
-                &format!(
-                    "Import {} {}?",
-                    ready.len(),
-                    if ready.len() == 1 { "game" } else { "games" }
-                ),
+                &format!("Import {}?", text::counted(ready.len(), "game", "games")),
                 true,
             )? {
                 Reply::Value(true) => {}
@@ -479,8 +476,7 @@ fn bulk(paths: &Paths, global: &GlobalConfig, args: &Args) -> anyhow::Result<Exi
         eprintln!("Failed {app_id}: {reason}");
     }
     if !args.dry_run {
-        let noun = if total == 1 { "game" } else { "games" };
-        println!("Imported {done} of {total} {noun}.");
+        println!("{}", text::games_summary("Imported", done, total));
         if !already_imported.is_empty() {
             println!(
                 "{} already imported: {}",
