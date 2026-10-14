@@ -306,7 +306,7 @@ fn run(
     .context("failed to stop exec process group")
     .and_then(|pumped| Ok(pumped?));
     if let Err(err) = ended {
-        if child.try_wait().ok().flatten().is_none() {
+        if matches!(child.try_wait(), Ok(None)) {
             let _ = crate::process::signal_led_group(&child, Signal::KILL);
             let _ = child.wait();
         }
