@@ -35,6 +35,9 @@ From 0049 and 0050 (2026-10-10):
   Galaxy has no Linux builds (its content system answers 404), so native
   games stay on offline installers.
 
+On 2026-10-14 the maintainer answered questions 1 to 11 below with A
+each.
+
 ## What GOG offers
 
 From reading heroic-gogdl 1.3.1, Heroic, and lgogdownloader 3.19
@@ -108,7 +111,8 @@ From reading heroic-gogdl 1.3.1, Heroic, and lgogdownloader 3.19
 
 ## Questions for the maintainer
 
-Recommendations first. The design below assumes them.
+Recommendations first. All answered A (2026-10-14); the design below
+follows them.
 
 ### 1. Track for a new Windows install
 
