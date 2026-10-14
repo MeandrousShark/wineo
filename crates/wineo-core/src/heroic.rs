@@ -168,29 +168,29 @@ impl HeroicSource {
     }
 
     pub fn list_candidates(&self) -> Result<HeroicListing> {
-        self.list_loaded(&self.load()?)
-    }
-
-    /// Reads Heroic's sideload library and global settings once, for a caller
-    /// that inspects many games and shouldn't parse them again for each.
-    pub(crate) fn load(&self) -> Result<Loaded> {
         let library = self.read_library()?;
         library.entries()?;
-        Ok(Loaded {
-            library,
-            global: self.global_settings()?,
+        let global = self.read_global()?;
+        self.list_loaded(Inputs {
+            library: &library,
+            global: &global,
         })
     }
 
-    fn read_library(&self) -> Result<Library> {
+    /// Reads Heroic's sideload library, keeping the digest of the bytes it
+    /// parsed so a plan built from it is fingerprinted by what it read.
+    pub(crate) fn read_library(&self) -> Result<Library> {
         let path = self.library_path();
-        let root = read_json(&path)?;
-        Ok(Library { path, root })
+        let bytes = read_optional_bytes(&path)?
+            .ok_or_else(|| missing_file(&path, "file does not exist"))?;
+        let root = parse_json(&path, &bytes)?;
+        let file = file_fingerprint(path.clone(), Some(&bytes));
+        Ok(Library { path, root, file })
     }
 
-    fn list_loaded(&self, loaded: &Loaded) -> Result<HeroicListing> {
-        let entries = loaded.library.entries()?;
-        let global = &loaded.global;
+    fn list_loaded(&self, inputs: Inputs<'_>) -> Result<HeroicListing> {
+        let entries = inputs.library.entries()?;
+        let global = &inputs.global.settings;
         let mut listing = HeroicListing {
             source: self.clone(),
             candidates: Vec::new(),
@@ -258,7 +258,12 @@ impl HeroicSource {
                 ));
             }
             if candidate.issues.is_empty() && candidate.kind == HeroicGameKind::Native {
-                match self.inspect_native_entry(raw_id, entry, global, Store::Sideload) {
+                match self.inspect_native_entry(
+                    raw_id,
+                    entry,
+                    global,
+                    Store::Sideload(Some(inputs)),
+                ) {
                     Ok(import) => {
                         candidate.executable = Some(import.exe.clone());
                         candidate.issues = import.issues.clone();
@@ -269,7 +274,7 @@ impl HeroicSource {
                     )),
                 }
             } else if candidate.issues.is_empty() {
-                match self.inspect_entry(raw_id, entry, global, Store::Sideload) {
+                match self.inspect_entry(raw_id, entry, global, Store::Sideload(Some(inputs))) {
                     Ok(import) => {
                         candidate.prefix = Some(import.prefix.clone());
                         candidate.runner = Some(import.runner.clone());
@@ -291,14 +296,21 @@ impl HeroicSource {
         let library = self.read_library()?;
         let entry = library.entry(game_id)?;
         let global = self.global_settings()?;
-        self.inspect_entry(game_id, entry, &global, Store::Sideload)
+        self.inspect_entry(game_id, entry, &global, Store::Sideload(None))
     }
 
-    /// `inspect` against a library that's already read.
-    pub(crate) fn inspect_in(&self, loaded: &Loaded, game_id: &str) -> Result<HeroicImport> {
+    /// `inspect` against files that are already read. The import is
+    /// fingerprinted by the bytes `inputs` parsed, so a change made since
+    /// then fails the check before applying.
+    pub(crate) fn inspect_in(&self, inputs: Inputs<'_>, game_id: &str) -> Result<HeroicImport> {
         self.check_game_id(game_id)?;
-        let entry = loaded.library.entry(game_id)?;
-        self.inspect_entry(game_id, entry, &loaded.global, Store::Sideload)
+        let entry = inputs.library.entry(game_id)?;
+        self.inspect_entry(
+            game_id,
+            entry,
+            &inputs.global.settings,
+            Store::Sideload(Some(inputs)),
+        )
     }
 
     /// Inspects a native sideloaded game, which imports as a native
@@ -308,18 +320,23 @@ impl HeroicSource {
         let library = self.read_library()?;
         let entry = library.entry(game_id)?;
         let global = self.global_settings()?;
-        self.inspect_native_entry(game_id, entry, &global, Store::Sideload)
+        self.inspect_native_entry(game_id, entry, &global, Store::Sideload(None))
     }
 
-    /// `inspect_native` against a library that's already read.
+    /// `inspect_native` against files that are already read.
     pub(crate) fn inspect_native_in(
         &self,
-        loaded: &Loaded,
+        inputs: Inputs<'_>,
         game_id: &str,
     ) -> Result<HeroicNativeImport> {
         self.check_game_id(game_id)?;
-        let entry = loaded.library.entry(game_id)?;
-        self.inspect_native_entry(game_id, entry, &loaded.global, Store::Sideload)
+        let entry = inputs.library.entry(game_id)?;
+        self.inspect_native_entry(
+            game_id,
+            entry,
+            &inputs.global.settings,
+            Store::Sideload(Some(inputs)),
+        )
     }
 
     fn check_game_id(&self, game_id: &str) -> Result<()> {
@@ -350,7 +367,9 @@ impl HeroicSource {
                 "only Linux native games import as native environments",
             ));
         }
-        if store == Store::Sideload && string_field(entry, &["runner"]) != Some("sideload") {
+        if matches!(store, Store::Sideload(_))
+            && string_field(entry, &["runner"]) != Some("sideload")
+        {
             issues.push(HeroicIssue::unsupported(
                 Some("runner".to_owned()),
                 "only manually added sideloaded games can be imported",
@@ -458,14 +477,15 @@ impl HeroicSource {
         // settings are read, as `inspect` does.
         let library = self.read_library()?;
         library.entry(game_id)?;
-        let loaded = Loaded {
-            global: self.global_settings()?,
-            library,
+        let global = self.read_global()?;
+        let inputs = Inputs {
+            library: &library,
+            global: &global,
         };
-        let selected = self.inspect_in(&loaded, game_id)?;
+        let selected = self.inspect_in(inputs, game_id)?;
         let selected_prefix = crate::paths::resolve(&selected.prefix);
         let mut shared = self
-            .list_loaded(&loaded)?
+            .list_loaded(inputs)?
             .candidates
             .into_iter()
             .filter(|candidate| candidate.id != game_id)
@@ -514,7 +534,21 @@ impl HeroicSource {
 
     fn store_fingerprint(&self, game_id: &str, store: Store<'_>) -> Result<InputFingerprint> {
         match store {
-            Store::Sideload => self.fingerprint(game_id),
+            Store::Sideload(None) => self.fingerprint(game_id),
+            // The library and global settings are the bytes `inputs` parsed.
+            // Only the game's own config is read now, as `inspect_entry` reads
+            // it now.
+            Store::Sideload(Some(inputs)) => {
+                let [game] = fingerprint_files([self.game_config_path(game_id)])?
+                    .files
+                    .try_into()
+                    .expect("one path gives one file");
+                Ok(combine_fingerprints(vec![
+                    inputs.global.file.clone(),
+                    inputs.library.file.clone(),
+                    game,
+                ]))
+            }
             Store::Gog { info } => fingerprint_files([
                 self.config_path(),
                 self.gog_installed_path(),
@@ -567,7 +601,9 @@ impl HeroicSource {
                 "only Windows sideloads can be imported",
             ));
         }
-        if store == Store::Sideload && string_field(entry, &["runner"]) != Some("sideload") {
+        if matches!(store, Store::Sideload(_))
+            && string_field(entry, &["runner"]) != Some("sideload")
+        {
             issues.push(HeroicIssue::unsupported(
                 Some("runner".to_owned()),
                 "only manually added sideloaded games can be imported",
@@ -819,10 +855,21 @@ impl HeroicSource {
     }
 
     fn global_settings(&self) -> Result<Map<String, Value>> {
+        self.read_global().map(|global| global.settings)
+    }
+
+    /// The global settings, with the digest of the bytes they came from.
+    pub(crate) fn read_global(&self) -> Result<Global> {
         let path = self.config_path();
-        let Some(root) = read_optional_json(&path)? else {
-            return Ok(Map::new());
+        let bytes = read_optional_bytes(&path)?;
+        let file = file_fingerprint(path.clone(), bytes.as_deref());
+        let Some(bytes) = bytes else {
+            return Ok(Global {
+                settings: Map::new(),
+                file,
+            });
         };
+        let root = parse_json(&path, &bytes)?;
         let version = schema_version(&root);
         if !supported_global_schema_root(&root) {
             return Err(invalid_json(
@@ -833,7 +880,7 @@ impl HeroicSource {
                 ),
             ));
         }
-        let stored = root
+        let settings = root
             .get("defaultSettings")
             .or_else(|| {
                 root.get("settings")
@@ -843,7 +890,7 @@ impl HeroicSource {
             .and_then(Value::as_object)
             .cloned()
             .unwrap_or_default();
-        Ok(stored)
+        Ok(Global { settings, file })
     }
 
     fn expand_path(&self, value: &str) -> (PathBuf, bool) {
@@ -869,25 +916,35 @@ impl HeroicSource {
     }
 }
 
-/// Heroic's sideload library as parsed, and the global settings every game's
-/// own settings sit over.
-pub(crate) struct Loaded {
-    library: Library,
-    global: Map<String, Value>,
-}
-
-struct Library {
+/// Heroic's sideload library as parsed.
+#[derive(Debug)]
+pub(crate) struct Library {
     path: PathBuf,
     root: Value,
+    file: InputFileFingerprint,
+}
+
+/// The global settings every game's own settings sit over.
+#[derive(Debug)]
+pub(crate) struct Global {
+    settings: Map<String, Value>,
+    file: InputFileFingerprint,
+}
+
+/// What a bulk plan reads once and inspects every game against.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Inputs<'a> {
+    pub(crate) library: &'a Library,
+    pub(crate) global: &'a Global,
 }
 
 impl Library {
-    fn entries(&self) -> Result<&Vec<Value>> {
+    pub(crate) fn entries(&self) -> Result<&Vec<Value>> {
         library_entries(&self.root)
             .ok_or_else(|| invalid_json(&self.path, "expected a games array"))
     }
 
-    fn entry(&self, game_id: &str) -> Result<&Map<String, Value>> {
+    pub(crate) fn entry(&self, game_id: &str) -> Result<&Map<String, Value>> {
         self.entries()?
             .iter()
             .filter_map(Value::as_object)
@@ -1086,14 +1143,14 @@ pub fn parse_launcher_args(value: &str) -> std::result::Result<Vec<String>, Stri
 }
 
 /// Which of Heroic's stores a game is inspected from.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy)]
 enum Store<'a> {
-    Sideload,
+    /// A sideloaded game. With `Some`, its library and global settings were
+    /// read already and are fingerprinted as they were read.
+    Sideload(Option<Inputs<'a>>),
     /// A GOG game, with the game folder's own info file, whose id was
     /// checked against Heroic's.
-    Gog {
-        info: &'a Path,
-    },
+    Gog { info: &'a Path },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1108,35 +1165,35 @@ enum PrefixLayout {
 /// one.
 fn fingerprint_files(paths: impl IntoIterator<Item = PathBuf>) -> Result<InputFingerprint> {
     let mut files = Vec::new();
-    let mut hasher = Sha256::new();
     for path in paths {
-        let (digest, size) = match fs::read(&path) {
-            Ok(bytes) => {
-                let mut file_hasher = Sha256::new();
-                file_hasher.update(&bytes);
-                (
-                    Some(hex_digest(file_hasher.finalize())),
-                    Some(bytes.len() as u64),
-                )
-            }
-            Err(error) if error.kind() == io::ErrorKind::NotFound => (None, None),
-            Err(error) => {
-                return Err(Error::Io {
-                    context: format!("failed to read {}", path.display()),
-                    source: error,
-                });
-            }
-        };
-        hasher.update(path.to_string_lossy().as_bytes());
-        hasher.update([0]);
-        hasher.update(digest.as_deref().unwrap_or("missing").as_bytes());
-        hasher.update([0]);
-        files.push(InputFileFingerprint { path, digest, size });
+        let bytes = read_optional_bytes(&path)?;
+        files.push(file_fingerprint(path, bytes.as_deref()));
     }
-    Ok(InputFingerprint {
+    Ok(combine_fingerprints(files))
+}
+
+/// One file's digest and size from bytes already read, `None` for a missing
+/// file.
+fn file_fingerprint(path: PathBuf, bytes: Option<&[u8]>) -> InputFileFingerprint {
+    InputFileFingerprint {
+        path,
+        digest: bytes.map(|bytes| hex_digest(Sha256::digest(bytes))),
+        size: bytes.map(|bytes| bytes.len() as u64),
+    }
+}
+
+fn combine_fingerprints(files: Vec<InputFileFingerprint>) -> InputFingerprint {
+    let mut hasher = Sha256::new();
+    for file in &files {
+        hasher.update(file.path.to_string_lossy().as_bytes());
+        hasher.update([0]);
+        hasher.update(file.digest.as_deref().unwrap_or("missing").as_bytes());
+        hasher.update([0]);
+    }
+    InputFingerprint {
         digest: hex_digest(hasher.finalize()),
         files,
-    })
+    }
 }
 
 fn review_item(field: impl Into<String>, detail: impl Into<String>) -> ReviewItem {
@@ -1394,16 +1451,9 @@ thread_local! {
     };
 }
 
-fn read_optional_json(path: &Path) -> Result<Option<Value>> {
-    #[cfg(test)]
-    PARSES.with_borrow_mut(|parses| {
-        let name = path.file_name().unwrap_or_default().to_string_lossy();
-        *parses.entry(name.into_owned()).or_default() += 1;
-    });
+fn read_optional_bytes(path: &Path) -> Result<Option<Vec<u8>>> {
     match fs::read(path) {
-        Ok(bytes) => serde_json::from_slice(&bytes)
-            .map(Some)
-            .map_err(|source| invalid_json_source(path, source.to_string())),
+        Ok(bytes) => Ok(Some(bytes)),
         Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
         Err(error) => Err(Error::Io {
             context: format!("failed to read {}", path.display()),
@@ -1412,8 +1462,19 @@ fn read_optional_json(path: &Path) -> Result<Option<Value>> {
     }
 }
 
-fn read_json(path: &Path) -> Result<Value> {
-    read_optional_json(path)?.ok_or_else(|| missing_file(path, "file does not exist"))
+fn parse_json(path: &Path, bytes: &[u8]) -> Result<Value> {
+    #[cfg(test)]
+    PARSES.with_borrow_mut(|parses| {
+        let name = path.file_name().unwrap_or_default().to_string_lossy();
+        *parses.entry(name.into_owned()).or_default() += 1;
+    });
+    serde_json::from_slice(bytes).map_err(|source| invalid_json_source(path, source.to_string()))
+}
+
+fn read_optional_json(path: &Path) -> Result<Option<Value>> {
+    read_optional_bytes(path)?
+        .map(|bytes| parse_json(path, &bytes))
+        .transpose()
 }
 
 fn invalid_json(path: &Path, message: impl Into<String>) -> Error {
@@ -2426,6 +2487,91 @@ mod tests {
         assert!(source.unchanged("hades", &first).unwrap());
         fs::write(source.library_path(), library.replace("Hades", "Changed")).unwrap();
         assert!(!source.unchanged("hades", &first).unwrap());
+    }
+
+    /// A Windows pair and a native game in one library, with the library text.
+    fn three_games(root: &Path, source: &HeroicSource) -> String {
+        let prefix = wine_prefix(root);
+        let global = format!(
+            r#"{{"defaultSettings":{{"winePrefix":"{}","wineVersion":{{"type":"wine","name":"System","bin":"wine"}}}}}}"#,
+            prefix.display()
+        );
+        let exe = prefix.join("game.exe").display().to_string();
+        let library = format!(
+            r#"{{"games":[
+                {{"app_name":"hades","title":"Hades","runner":"sideload","install":{{"platform":"Windows","executable":"{exe}"}}}},
+                {{"app_name":"other","title":"Other","runner":"sideload","install":{{"platform":"Windows","executable":"{exe}"}}}},
+                {{"app_name":"dusk","title":"Dusk","runner":"sideload","install":{{"platform":"linux","executable":"/usr/bin/dusk"}}}}
+            ]}}"#
+        );
+        write_fixture(source, &global, "", &library);
+        library
+    }
+
+    fn read_inputs(source: &HeroicSource) -> (Library, Global) {
+        (
+            source.read_library().unwrap(),
+            source.read_global().unwrap(),
+        )
+    }
+
+    #[test]
+    fn an_import_from_files_read_earlier_is_fingerprinted_by_what_was_read() {
+        let (root, source) = fixture();
+        let library = three_games(root.path(), &source);
+        let (read_library, read_global) = read_inputs(&source);
+        let inputs = Inputs {
+            library: &read_library,
+            global: &read_global,
+        };
+        // Nothing changed, so it fingerprints like a fresh read.
+        assert_eq!(
+            source.inspect_in(inputs, "other").unwrap().fingerprint,
+            source.fingerprint("other").unwrap()
+        );
+
+        // Heroic renames one game and drops another after the read. Both are
+        // still planned from what was read, and neither passes the check
+        // that apply makes.
+        let changed = library
+            .replace("Other", "Renamed")
+            .replace("\"dusk\"", "\"gone\"");
+        fs::write(source.library_path(), changed).unwrap();
+        let other = source.inspect_in(inputs, "other").unwrap();
+        assert_eq!(other.title, "Other");
+        assert!(!source.unchanged("other", &other.fingerprint).unwrap());
+        let dusk = source.inspect_native_in(inputs, "dusk").unwrap();
+        assert_eq!(dusk.title, "Dusk");
+        assert!(!source.unchanged("dusk", &dusk.fingerprint).unwrap());
+    }
+
+    #[test]
+    fn a_change_to_the_global_settings_after_they_were_read_fails_the_check() {
+        let (root, source) = fixture();
+        three_games(root.path(), &source);
+        let (read_library, read_global) = read_inputs(&source);
+        let inputs = Inputs {
+            library: &read_library,
+            global: &read_global,
+        };
+        let config = fs::read_to_string(source.config_path()).unwrap();
+        fs::write(
+            source.config_path(),
+            config.replace(
+                r#""defaultSettings":{"#,
+                r#""defaultSettings":{"showFps":true,"#,
+            ),
+        )
+        .unwrap();
+        for fingerprint in [
+            source.inspect_in(inputs, "other").unwrap().fingerprint,
+            source
+                .inspect_native_in(inputs, "dusk")
+                .unwrap()
+                .fingerprint,
+        ] {
+            assert!(!source.unchanged("other", &fingerprint).unwrap());
+        }
     }
 
     #[test]

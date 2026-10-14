@@ -8,8 +8,9 @@ use crate::components::Component;
 use crate::config::{Arch, GlobalConfig};
 use crate::environment::{self, Environment, HeroicIdSnapshot};
 use crate::heroic::{
-    HeroicCandidate, HeroicGameKind, HeroicImport, HeroicIssue, HeroicIssueKind, HeroicListing,
-    HeroicNativeImport, HeroicRunnerKind, HeroicSharedPrefix, HeroicSource, Loaded,
+    Global, HeroicCandidate, HeroicGameKind, HeroicImport, HeroicIssue, HeroicIssueKind,
+    HeroicListing, HeroicNativeImport, HeroicRunnerKind, HeroicSharedPrefix, HeroicSource, Inputs,
+    Library,
 };
 use crate::paths::{self, Paths};
 use crate::runners::Runners;
@@ -747,39 +748,61 @@ fn plan_native(
     Entry::Ready(Game::Native(NativePlan::new(imported, name)))
 }
 
-/// Heroic's library for a bulk plan, parsed once for all its games. A failure
-/// to read it is kept as the message every game's skip shows.
+/// Heroic's library and global settings for a bulk plan, each read once for
+/// all its games. A failure to read one is kept as the message every game it
+/// applies to is skipped with, in the order inspecting a game would hit them:
+/// the library, then the game's place in it, then the global settings.
 struct LazyLibrary<'a> {
     source: &'a HeroicSource,
-    loaded: OnceCell<Result<Loaded, String>>,
+    library: OnceCell<Result<Library, String>>,
+    global: OnceCell<Result<Global, String>>,
 }
 
 impl<'a> LazyLibrary<'a> {
     fn new(source: &'a HeroicSource) -> Self {
         Self {
             source,
-            loaded: OnceCell::new(),
+            library: OnceCell::new(),
+            global: OnceCell::new(),
         }
     }
 
-    fn loaded(&self) -> Result<&Loaded, String> {
-        self.loaded
-            .get_or_init(|| self.source.load().map_err(|error| format!("{error:#}")))
+    fn inputs(&self, id: &str) -> Result<Inputs<'_>, String> {
+        let library = self
+            .library
+            .get_or_init(|| {
+                self.source
+                    .read_library()
+                    .and_then(|library| {
+                        library.entries()?;
+                        Ok(library)
+                    })
+                    .map_err(|error| format!("{error:#}"))
+            })
             .as_ref()
-            .map_err(Clone::clone)
+            .map_err(Clone::clone)?;
+        library.entry(id).map_err(|error| format!("{error:#}"))?;
+        let global = self
+            .global
+            .get_or_init(|| {
+                self.source
+                    .read_global()
+                    .map_err(|error| format!("{error:#}"))
+            })
+            .as_ref()
+            .map_err(Clone::clone)?;
+        Ok(Inputs { library, global })
     }
 
     fn inspect(&self, id: &str) -> Result<HeroicImport, String> {
-        let loaded = self.loaded()?;
         self.source
-            .inspect_in(loaded, id)
+            .inspect_in(self.inputs(id)?, id)
             .map_err(|error| format!("{error:#}"))
     }
 
     fn inspect_native(&self, id: &str) -> Result<HeroicNativeImport, String> {
-        let loaded = self.loaded()?;
         self.source
-            .inspect_native_in(loaded, id)
+            .inspect_native_in(self.inputs(id)?, id)
             .map_err(|error| format!("{error:#}"))
     }
 }
@@ -1881,5 +1904,63 @@ mod tests {
         .unwrap();
         assert_eq!(plan.already(), ["fox"]);
         assert_eq!(parses("library.json"), 0);
+    }
+
+    #[test]
+    fn a_game_gone_from_the_library_is_reported_before_a_broken_global_config() {
+        let root = tempdir().unwrap();
+        let mut library = Library::new(root.path());
+        library.windows("a", "Alpha", "p1", "");
+        library.windows("b", "Bravo", "p2", "");
+        library.native("n", "Native");
+        let (paths, global, listing) = library.write();
+        // Heroic drops two games and breaks its config after the listing.
+        let kept: Vec<&String> = library
+            .games
+            .iter()
+            .filter(|g| g.contains("\"b\""))
+            .collect();
+        let kept = kept
+            .iter()
+            .map(|g| g.as_str())
+            .collect::<Vec<_>>()
+            .join(",");
+        let heroic = root.path().join("heroic");
+        fs::write(
+            heroic.join("sideload_apps/library.json"),
+            format!(r#"{{"games":[{kept}]}}"#),
+        )
+        .unwrap();
+        fs::write(heroic.join("config.json"), "{").unwrap();
+
+        let plan = plan_library(
+            &paths,
+            &global,
+            &listing,
+            Some("fake"),
+            &LibraryOptions::default(),
+        )
+        .unwrap();
+        let reasons: Vec<String> = plan
+            .entries()
+            .iter()
+            .map(|entry| match entry {
+                Entry::Skipped(skipped) => match &skipped.reason {
+                    SkipReason::Unreadable(message) => message.clone(),
+                    other => panic!("{other:?}"),
+                },
+                _ => panic!("expected a skip"),
+            })
+            .collect();
+        assert_eq!(reasons.len(), 3);
+        assert!(
+            reasons[0].contains("not in sideload library"),
+            "{reasons:?}"
+        );
+        assert!(
+            reasons[1].contains("not in sideload library"),
+            "{reasons:?}"
+        );
+        assert!(reasons[2].contains("invalid Heroic JSON"), "{reasons:?}");
     }
 }
