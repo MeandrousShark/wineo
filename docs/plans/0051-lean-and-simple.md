@@ -371,6 +371,14 @@ Shipped in 0.31.1.
   published prefix is never cleaned up. Snapshot create and restore keep
   their own staging.
 
+- C7a: the app's Heroic, Steam, and GOG import pages share one import grid
+  (`flow/import_grid.rs`: selection, keys, focus, scroll to reveal, poster
+  bookkeeping, progress bar, footer) and one pinned step footer. Each page
+  keeps only its own listing, rules, and steps. Screenshots of every page,
+  wide and narrow, match the old build pixel for pixel. Lines roughly break
+  even (+56): about 190 duplicated lines left the pages, and the shared
+  grid's API added about the same.
+
 The maintainer's machine (real GPU, library of 22, after scrolling the
 library), the 0050 acceptance build against main with everything above:
 
