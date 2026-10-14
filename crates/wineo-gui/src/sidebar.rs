@@ -81,7 +81,10 @@ pub(crate) fn shortcut(key: &Key, modifiers: Modifiers) -> Option<Section> {
 }
 
 impl App {
-    pub(crate) fn load_trash_badge(paths: Paths) -> Task<Message> {
+    pub(crate) fn load_trash_badge(
+        paths: Paths,
+        done: impl FnOnce(TrashBadge) -> Message + Send + 'static,
+    ) -> Task<Message> {
         Task::perform(
             async move {
                 tokio::task::spawn_blocking(move || TrashBadge::read(&paths))
@@ -91,7 +94,7 @@ impl App {
                         warning: true,
                     })
             },
-            Message::TrashBadgeLoaded,
+            done,
         )
     }
 

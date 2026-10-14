@@ -466,29 +466,33 @@ impl App {
     fn theme(&self) -> Theme {
         self.palette.theme()
     }
-    fn load(paths: Paths) -> Task<Message> {
-        task::blocking(
-            move || load_library(&paths).map_err(|e| e.to_string()),
-            Message::Loaded,
-        )
-    }
     fn reload_library(&mut self) -> Task<Message> {
         self.library_generation = self.library_generation.wrapping_add(1);
         self.shown.reloading_library();
         let generation = self.library_generation;
-        Self::load(self.paths.clone()).map(move |message| match message {
-            Message::Loaded(result) => Message::LibraryReloaded(generation, result),
-            message => message,
-        })
+        let paths = self.paths.clone();
+        task::blocking(
+            move || load_library(&paths).map_err(|e| e.to_string()),
+            move |result| Message::LibraryReloaded(generation, result),
+        )
+    }
+
+    /// A library reload unless one is already in flight.
+    fn reload_library_once(&mut self) -> Task<Message> {
+        if self.refreshing {
+            Task::none()
+        } else {
+            self.refreshing = true;
+            self.reload_library()
+        }
     }
 
     fn reload_badge(&mut self) -> Task<Message> {
         self.trash_generation = self.trash_generation.wrapping_add(1);
         self.shown.reloading_trash();
         let generation = self.trash_generation;
-        Self::load_trash_badge(self.paths.clone()).map(move |message| match message {
-            Message::TrashBadgeLoaded(badge) => Message::TrashReloaded(generation, badge),
-            message => message,
+        Self::load_trash_badge(self.paths.clone(), move |badge| {
+            Message::TrashReloaded(generation, badge)
         })
     }
 
@@ -820,12 +824,7 @@ impl App {
                         Err(error) => self.panel_error = Some(error),
                     }
                 }
-                if self.refreshing {
-                    Task::none()
-                } else {
-                    self.refreshing = true;
-                    self.reload_library()
-                }
+                self.reload_library_once()
             }
             Message::Stop | Message::CleanUp => self.stop_selected(),
             Message::ConfirmHookStop => self.confirm_hook_stop(),
@@ -903,12 +902,7 @@ impl App {
                 {
                     self.panel_error = Some(error);
                 }
-                if self.refreshing {
-                    Task::none()
-                } else {
-                    self.refreshing = true;
-                    self.reload_library()
-                }
+                self.reload_library_once()
             }
             Message::StopFinished(name, result) => {
                 if self.operation.as_ref().is_some_and(|operation| {
@@ -931,12 +925,7 @@ impl App {
                         Err(error) => self.panel_error = Some(error),
                     }
                 }
-                if self.refreshing {
-                    Task::none()
-                } else {
-                    self.refreshing = true;
-                    self.reload_library()
-                }
+                self.reload_library_once()
             }
             Message::OpenLog => self.open_log(),
             Message::CloseLog => {
@@ -968,12 +957,7 @@ impl App {
                 Task::none()
             }
             Message::Refresh => {
-                let library = if self.refreshing {
-                    Task::none()
-                } else {
-                    self.refreshing = true;
-                    self.reload_library()
-                };
+                let library = self.reload_library_once();
                 let badge = if self.trash_refreshing {
                     Task::none()
                 } else {
