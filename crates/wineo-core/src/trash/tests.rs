@@ -1,6 +1,9 @@
 use crate::test_script::write_script;
 use std::ffi::OsString;
+use std::os::unix::fs::MetadataExt;
+use std::process::Command;
 
+use super::identity::{rename_owned, subvolume_property};
 use super::payload::{make_payload, reserve_copy, return_payload};
 use super::restore::{
     finish_entry, keep_changed, restore_locked_with, with_environment_build_locks,

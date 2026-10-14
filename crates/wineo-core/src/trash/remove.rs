@@ -16,11 +16,11 @@ use crate::paths::{self, Paths};
 use crate::prefix;
 use crate::runtime::Runtime;
 
+use super::identity::{create_storage, delete_owned, identity, parent, sync};
 use super::payload::{make_payload, move_out};
 use super::{
-    Entry, Intent, Kind, Manifest, Payload, Phase, VERSION, create_storage, delete_owned,
-    entry_dir, failpoint, finish_marker, identity, info, parent, retire_marker, start_marker,
-    stored, sync, write_manifest,
+    Entry, Intent, Kind, Manifest, Payload, Phase, VERSION, entry_dir, failpoint, finish_marker,
+    info, retire_marker, start_marker, stored, write_manifest,
 };
 
 /// Moves owned data into a unique entry. A failure after publication leaves a
