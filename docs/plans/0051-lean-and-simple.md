@@ -324,5 +324,5 @@ Limits accepted in review:
   scans read before it stale. A scan stuck on a hung filesystem holds that
   slot; there is no scan timeout.
 - If Undo loses keyboard focus with no click, tap, key release, or other
-  message (none is known to do this), the toast's countdown resumes at the
-  next one, or when its time would have run out.
+  message (none is known to do this), the toast stays paused until the
+  next one.
