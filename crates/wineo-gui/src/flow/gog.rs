@@ -4,6 +4,7 @@
 //! art, which never fails the migration.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
 
@@ -19,9 +20,11 @@ use wineo_core::download::{Https, Provider};
 use wineo_core::gog::account::Session;
 use wineo_core::gog::api::Client;
 use wineo_core::gog::extras::{self, Request};
-use wineo_core::gog::folder::{self, JournalKind, Source as FolderSource, Track};
-use wineo_core::gog::migrate::{self, MigrateError, Migration, Outcome, Plan, StateChange, Target};
-use wineo_core::heroic::{HeroicGogEntry, HeroicGogGame, HeroicOrigin, HeroicSource, gog_games};
+use wineo_core::gog::folder::{self, JournalKind, Source as FolderSource};
+use wineo_core::gog::migrate::{
+    self, MigrateError, Migration, Outcome, Plan, ReviewLabel, StateChange, Target,
+};
+use wineo_core::heroic::{HeroicGogGame, HeroicSource, gog_games};
 use wineo_core::heroic_import::{self, Policy, RunnerSuggestion};
 use wineo_core::key_store::Keyring;
 use wineo_core::paths::Paths;
@@ -1113,70 +1116,32 @@ fn windows_plan(migration: &Migration) -> Option<&heroic_import::GamePlan> {
     }
 }
 
-/// The review's rows, the same ones `wineo import gog` prints.
+/// The review's rows, the same ones `wineo import gog` prints, except the
+/// runner, which the review picks below them.
 fn review_rows(migration: &Migration, heroic: Option<&str>) -> Vec<(&'static str, String)> {
-    let committed = migration.committed();
-    let kind = match migration.target() {
-        Target::Existing { .. } => "existing",
-        Target::Windows { .. } => "new Windows environment",
-        Target::Native(_) => "new native environment",
-    };
-    let environment = migration.environment().unwrap_or("?");
-    let version = committed
-        .products
-        .iter()
-        .find(|product| product.id == committed.gog_id)
-        .and_then(|product| match committed.track {
-            Track::Installer => product.version.clone(),
-            Track::Galaxy => product.build.clone().map(|build| format!("build {build}")),
+    let show = |path: &Path| path.display().to_string();
+    migration
+        .review_rows(heroic.map(str::to_owned), show)
+        .into_iter()
+        .filter_map(|(label, value)| {
+            let label = match label {
+                ReviewLabel::Environment => "Environment",
+                ReviewLabel::Folder => "Folder",
+                ReviewLabel::Heroic => "Heroic",
+                ReviewLabel::Track => "Track",
+                ReviewLabel::Version => "Version",
+                ReviewLabel::Language => "Language",
+                ReviewLabel::Dlc => "DLC",
+                // One DLC per row; the rest have no label, so they sit under
+                // the first.
+                ReviewLabel::MoreDlc => "",
+                ReviewLabel::Runner => return None,
+                ReviewLabel::Prefix => "Prefix",
+                ReviewLabel::FolderState => "Folder state",
+            };
+            Some((label, value))
         })
-        .unwrap_or_else(|| "unknown".to_owned());
-    let mut rows = vec![
-        ("Environment", format!("{environment} ({kind})")),
-        ("Folder", migration.folder().display().to_string()),
-    ];
-    if let Some(heroic) = heroic {
-        rows.push(("Heroic", heroic.to_owned()));
-    }
-    rows.extend([
-        (
-            "Track",
-            match committed.track {
-                Track::Installer => "installer",
-                Track::Galaxy => "galaxy",
-            }
-            .to_owned(),
-        ),
-        ("Version", version),
-        ("Language", committed.language.clone()),
-    ]);
-    // One DLC per row; the rest have no label, so they sit under the first.
-    let mut dlc = migration.dlc_labels().into_iter();
-    if let Some(first) = dlc.next() {
-        rows.push(("DLC", first));
-        rows.extend(dlc.map(|label| ("", label)));
-    }
-    if let Some(plan) = windows_plan(migration) {
-        rows.push((
-            "Prefix",
-            format!(
-                "{} (Heroic's, kept where it is)",
-                plan.destination().display()
-            ),
-        ));
-    }
-    if let StateChange::Reclaim { journal } = migration.state() {
-        rows.push((
-            "Folder state",
-            if journal {
-                "kept from before, with an interrupted update"
-            } else {
-                "kept from before"
-            }
-            .to_owned(),
-        ));
-    }
-    rows
+        .collect()
 }
 
 fn load_listing(paths: &Paths) -> Result<Listing, String> {
@@ -1342,7 +1307,7 @@ pub(crate) fn listing_from(paths: &Paths, sources: &[HeroicSource]) -> Listing {
         }));
     for entry in found.games {
         let source = entry.source;
-        let heroic = heroic_row(&entry);
+        let heroic = migrate::heroic_note(&entry, |path| path.display().to_string());
         let standing = match migrate::plan(paths, source, &entry.game.id) {
             Ok(Plan::Migrate(migration)) => Standing::Ready(Box::new(migration)),
             Ok(Plan::AlreadyMigrated { environment, .. }) => Standing::Already { environment },
@@ -1360,41 +1325,6 @@ pub(crate) fn listing_from(paths: &Paths, sources: &[HeroicSource]) -> Listing {
         .games
         .sort_by_cached_key(|candidate| candidate.game.title.to_lowercase());
     listing
-}
-
-/// Which Heroic a migration reads from, in `import gog`'s words, when
-/// another config lists the same game and was set aside.
-fn heroic_row(entry: &HeroicGogEntry) -> Option<String> {
-    if entry.also_listed_by.is_empty() {
-        return None;
-    }
-    let used = entry.source.origin();
-    let others: Vec<String> = entry
-        .also_listed_by
-        .iter()
-        .map(|other| {
-            // Two configs of one kind need the folder to tell them apart.
-            if other.origin() == used {
-                format!(
-                    "{} ({})",
-                    other.origin().label(),
-                    other.config_dir().display()
-                )
-            } else {
-                other.origin().label().to_owned()
-            }
-        })
-        .collect();
-    let name = match used {
-        HeroicOrigin::Native => "native",
-        HeroicOrigin::Flatpak => "Flatpak",
-        HeroicOrigin::Explicit => "Heroic",
-    };
-    Some(format!(
-        "{name} ({}), also listed by {}",
-        entry.source.config_dir().display(),
-        others.join(" and ")
-    ))
 }
 
 /// Settles what the review shows: the runner for a new Windows environment,
@@ -1679,6 +1609,8 @@ mod tests {
     use std::path::PathBuf;
 
     use wineo_core::gog::extras::{Filled, Playtime};
+    use wineo_core::gog::folder::Track;
+    use wineo_core::heroic::HeroicOrigin;
 
     use super::*;
 

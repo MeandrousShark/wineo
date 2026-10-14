@@ -9,7 +9,7 @@ use wineo_core::gog::update::{self, Batch, Status};
 use wineo_core::paths::Paths;
 
 use super::gog_support::{
-    Account, dlc_json, dlc_notes, error_json, error_subject, reason_json, reason_note, track_label,
+    Account, dlc_json, dlc_notes, error_json, error_subject, reason_json, reason_note,
     update_label, warn,
 };
 use super::table::render_columns;
@@ -98,7 +98,7 @@ fn status_json(status: &Status) -> serde_json::Value {
     json!({
         "name": status.environment,
         "id": status.gog_id.to_string(),
-        "track": track_label(status.track),
+        "track": status.track.as_str(),
         "installed": status.installed,
         "available": status.available,
         "update": status.state.as_str(),

@@ -6,11 +6,13 @@ use std::path::Path;
 use std::process::ExitCode;
 
 use wineo_core::config::GlobalConfig;
-use wineo_core::gog::folder::{self, Platform, Track};
-use wineo_core::gog::migrate::{self, MigrateError, Migration, Outcome, Plan, StateChange, Target};
+use wineo_core::gog::folder::{self, Platform};
+use wineo_core::gog::migrate::{
+    self, MigrateError, Migration, Outcome, Plan, ReviewLabel, StateChange, Target,
+};
 use wineo_core::heroic::{
-    self, HeroicGogConflict, HeroicGogEntry, HeroicGogLookup, HeroicImport, HeroicOrigin,
-    HeroicRunnerKind, HeroicSource,
+    self, HeroicGogConflict, HeroicGogEntry, HeroicGogLookup, HeroicImport, HeroicRunnerKind,
+    HeroicSource,
 };
 use wineo_core::heroic_import::{self, RunnerSuggestion, suggest_runner};
 use wineo_core::paths::Paths;
@@ -122,41 +124,6 @@ fn conflict_text(paths: &Paths, conflict: &HeroicGogConflict) -> String {
     )
 }
 
-/// Which Heroic a migration reads from, when another config lists the same
-/// game and was set aside. None when only one does.
-fn heroic_row(paths: &Paths, entry: &HeroicGogEntry) -> Option<String> {
-    if entry.also_listed_by.is_empty() {
-        return None;
-    }
-    let used = entry.source.origin();
-    let others: Vec<String> = entry
-        .also_listed_by
-        .iter()
-        .map(|other| {
-            // Two configs of one kind need the folder to tell them apart.
-            if other.origin() == used {
-                format!(
-                    "{} ({})",
-                    other.origin().label(),
-                    style::path(paths, other.config_dir())
-                )
-            } else {
-                other.origin().label().to_owned()
-            }
-        })
-        .collect();
-    let name = match used {
-        HeroicOrigin::Native => "native",
-        HeroicOrigin::Flatpak => "Flatpak",
-        HeroicOrigin::Explicit => "Heroic",
-    };
-    Some(format!(
-        "{name} ({}), also listed by {}",
-        style::path(paths, entry.source.config_dir()),
-        others.join(" and ")
-    ))
-}
-
 /// Something in Heroic's records that can't be used, and what it is.
 struct Unreadable {
     subject: String,
@@ -264,78 +231,33 @@ fn automatic_runner(
 }
 
 fn review_lines(paths: &Paths, migration: &Migration, entry: &HeroicGogEntry) -> Vec<String> {
+    let show = |path: &Path| style::path(paths, path);
     let game = migration.game();
-    let committed = migration.committed();
-    let environment = migration.environment().unwrap_or("?");
-    let kind = match migration.target() {
-        Target::Existing { .. } => "existing",
-        Target::Windows { .. } => "new Windows environment",
-        Target::Native(_) => "new native environment",
-    };
-    let version = committed
-        .products
-        .iter()
-        .find(|product| product.id == committed.gog_id)
-        .and_then(|product| match committed.track {
-            Track::Installer => product.version.clone(),
-            Track::Galaxy => product.build.clone().map(|build| format!("build {build}")),
-        })
-        .unwrap_or_else(|| "unknown".to_owned());
-    let mut rows = vec![
-        ("environment", format!("{environment} ({kind})")),
-        ("folder", style::path(paths, migration.folder())),
-    ];
-    if let Some(row) = heroic_row(paths, entry) {
-        rows.push(("heroic", row));
-    }
-    rows.extend([
-        (
-            "track",
-            match committed.track {
-                Track::Installer => "installer",
-                Track::Galaxy => "galaxy",
-            }
-            .to_owned(),
-        ),
-        ("version", version),
-        ("language", committed.language.clone()),
-    ]);
-    // One DLC per line; the rest sit under the first one's value.
-    let mut dlc = migration.dlc_labels().into_iter();
-    if let Some(first) = dlc.next() {
-        rows.push(("dlc", first));
-        rows.extend(dlc.map(|label| ("", label)));
-    }
-    if let Target::Windows {
-        plan: Some(plan), ..
-    } = migration.target()
-    {
-        rows.push(("runner", plan.runner().name().to_owned()));
-        rows.push((
-            "prefix",
-            format!(
-                "{} (Heroic's, kept where it is)",
-                style::path(paths, plan.destination())
-            ),
-        ));
-    }
-    if let StateChange::Reclaim { journal } = migration.state() {
-        rows.push((
-            "folder state",
-            if journal {
-                "kept from before, with an interrupted update"
-            } else {
-                "kept from before"
-            }
-            .to_owned(),
-        ));
-    }
     let mut lines = vec![format!("Migrate {} ({})", game.title, game.id)];
     lines.extend(
-        rows.into_iter()
-            .map(|(label, value)| format!("  {label:<13}{value}")),
+        migration
+            .review_rows(migrate::heroic_note(entry, show), show)
+            .into_iter()
+            .map(|(label, value)| format!("  {:<13}{value}", review_label(label))),
     );
     lines
+}
+
+fn review_label(label: ReviewLabel) -> &'static str {
+    match label {
+        ReviewLabel::Environment => "environment",
+        ReviewLabel::Folder => "folder",
+        ReviewLabel::Heroic => "heroic",
+        ReviewLabel::Track => "track",
+        ReviewLabel::Version => "version",
+        ReviewLabel::Language => "language",
+        ReviewLabel::Dlc => "dlc",
+        // One DLC per line; the rest sit under the first one's value.
+        ReviewLabel::MoreDlc => "",
+        ReviewLabel::Runner => "runner",
+        ReviewLabel::Prefix => "prefix",
+        ReviewLabel::FolderState => "folder state",
+    }
 }
 
 fn print_review(paths: &Paths, migration: &Migration, entry: &HeroicGogEntry) {

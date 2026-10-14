@@ -9,7 +9,6 @@ use std::time::{Duration, Instant};
 use serde_json::{Value, json};
 use wineo_core::gog;
 use wineo_core::gog::account::Session;
-use wineo_core::gog::folder::Track;
 use wineo_core::gog::update::windows::SetupError;
 use wineo_core::gog::update::{
     DlcState, DlcStatus, GameError, Progress, Reason, Status, UpdateState,
@@ -63,13 +62,6 @@ pub fn usage_error(message: impl std::fmt::Display) -> ExitCode {
 
 pub fn warn(message: impl std::fmt::Display) {
     eprintln!("{}", style::warning_stderr(format!("warning: {message}")));
-}
-
-pub fn track_label(track: Track) -> &'static str {
-    match track {
-        Track::Installer => "installer",
-        Track::Galaxy => "galaxy",
-    }
 }
 
 /// How a game's update state reads in a table.

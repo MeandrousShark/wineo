@@ -121,6 +121,16 @@ pub enum Track {
     Galaxy,
 }
 
+impl Track {
+    /// The word for it, as stored.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Installer => "installer",
+            Self::Galaxy => "galaxy",
+        }
+    }
+}
+
 /// A base game or DLC in a folder.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

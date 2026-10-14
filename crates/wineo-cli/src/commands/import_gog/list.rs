@@ -12,7 +12,7 @@ use wineo_core::paths::Paths;
 
 use super::Args;
 use crate::commands::gog_support::{
-    Account, dlc_json, error_json, error_subject, reason_json, track_label, update_label, warn,
+    Account, dlc_json, error_json, error_subject, reason_json, update_label, warn,
 };
 use crate::commands::table::render_columns;
 
@@ -193,7 +193,7 @@ fn game_json(row: &Row) -> Value {
         "platforms": platforms,
         "state": row.state.json(),
         "environment": row.environment,
-        "track": status.map(|status| track_label(status.track)),
+        "track": status.map(|status| status.track.as_str()),
         "version": status.and_then(|status| status.installed.as_deref()),
         "update": status.map(|status| status.state.as_str()),
         "applicable": status.is_some_and(|status| status.applicable),
@@ -228,7 +228,7 @@ fn print_table(rows: &[Row]) {
             row.state.label().to_owned(),
             row.environment.clone().unwrap_or_default(),
             status
-                .map(|status| track_label(status.track).to_owned())
+                .map(|status| status.track.as_str().to_owned())
                 .unwrap_or_default(),
             status
                 .and_then(|status| status.installed.clone())

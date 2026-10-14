@@ -27,7 +27,9 @@ use crate::cancel::Token;
 use crate::config::{Arch, GlobalConfig};
 use crate::environment::{self, Environment, GogIdRecord};
 use crate::files;
-use crate::heroic::{HeroicGogGame, HeroicImport, HeroicSource, InputFingerprint};
+use crate::heroic::{
+    HeroicGogEntry, HeroicGogGame, HeroicImport, HeroicOrigin, HeroicSource, InputFingerprint,
+};
 use crate::heroic_import::{self, GamePlan, NativePlan, Options, Registered, default_name};
 use crate::import::ImportProgress;
 use crate::launch;
@@ -325,6 +327,130 @@ impl Migration {
             _ => None,
         }
     }
+
+    /// What a review of the migration shows, row by row. `heroic` is
+    /// `heroic_note`'s text, and `show_path` writes a path the way the
+    /// frontend writes paths.
+    pub fn review_rows(
+        &self,
+        heroic: Option<String>,
+        show_path: impl Fn(&Path) -> String,
+    ) -> Vec<(ReviewLabel, String)> {
+        let committed = &self.committed;
+        let kind = match &self.target {
+            Target::Existing { .. } => "existing",
+            Target::Windows { .. } => "new Windows environment",
+            Target::Native(_) => "new native environment",
+        };
+        let environment = self.environment().unwrap_or("?");
+        let version = committed
+            .products
+            .iter()
+            .find(|product| product.id == committed.gog_id)
+            .and_then(|product| match committed.track {
+                Track::Installer => product.version.clone(),
+                Track::Galaxy => product.build.clone().map(|build| format!("build {build}")),
+            })
+            .unwrap_or_else(|| "unknown".to_owned());
+        let mut rows = vec![
+            (ReviewLabel::Environment, format!("{environment} ({kind})")),
+            (ReviewLabel::Folder, show_path(&self.folder)),
+        ];
+        if let Some(heroic) = heroic {
+            rows.push((ReviewLabel::Heroic, heroic));
+        }
+        rows.extend([
+            (ReviewLabel::Track, committed.track.as_str().to_owned()),
+            (ReviewLabel::Version, version),
+            (ReviewLabel::Language, committed.language.clone()),
+        ]);
+        let mut dlc = self.dlc_labels().into_iter();
+        if let Some(first) = dlc.next() {
+            rows.push((ReviewLabel::Dlc, first));
+            rows.extend(dlc.map(|label| (ReviewLabel::MoreDlc, label)));
+        }
+        if let Target::Windows {
+            plan: Some(plan), ..
+        } = &self.target
+        {
+            rows.push((ReviewLabel::Runner, plan.runner().name().to_owned()));
+            rows.push((
+                ReviewLabel::Prefix,
+                format!(
+                    "{} (Heroic's, kept where it is)",
+                    show_path(plan.destination())
+                ),
+            ));
+        }
+        if let StateChange::Reclaim { journal } = self.state {
+            rows.push((
+                ReviewLabel::FolderState,
+                if journal {
+                    "kept from before, with an interrupted update"
+                } else {
+                    "kept from before"
+                }
+                .to_owned(),
+            ));
+        }
+        rows
+    }
+}
+
+/// What a row of `Migration::review_rows` is about. Each frontend words the
+/// labels its own way.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReviewLabel {
+    Environment,
+    Folder,
+    /// Which Heroic the game is read from, when more than one lists it.
+    Heroic,
+    Track,
+    Version,
+    Language,
+    /// The first DLC.
+    Dlc,
+    /// Each DLC after the first, which sits under the first one's label.
+    MoreDlc,
+    /// A new Windows environment's runner.
+    Runner,
+    Prefix,
+    FolderState,
+}
+
+/// Which Heroic a migration reads from, when another config lists the same
+/// game and was set aside. None when only one does.
+pub fn heroic_note(entry: &HeroicGogEntry, show_path: impl Fn(&Path) -> String) -> Option<String> {
+    if entry.also_listed_by.is_empty() {
+        return None;
+    }
+    let used = entry.source.origin();
+    let others: Vec<String> = entry
+        .also_listed_by
+        .iter()
+        .map(|other| {
+            // Two configs of one kind need the folder to tell them apart.
+            if other.origin() == used {
+                format!(
+                    "{} ({})",
+                    other.origin().label(),
+                    show_path(other.config_dir())
+                )
+            } else {
+                other.origin().label().to_owned()
+            }
+        })
+        .collect();
+    let name = match used {
+        HeroicOrigin::Native => "native",
+        HeroicOrigin::Flatpak => "Flatpak",
+        HeroicOrigin::Explicit => "Heroic",
+    };
+    Some(format!(
+        "{name} ({}), also listed by {}",
+        show_path(entry.source.config_dir()),
+        others.join(" and ")
+    ))
 }
 
 /// Works out what migrating the GOG game `gog_id` from `source` does. Reads
