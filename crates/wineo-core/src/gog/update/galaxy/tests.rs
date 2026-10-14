@@ -868,7 +868,8 @@ fn without_pending_the_journal_builds_are_fetched_again() {
 fn without_pending_a_build_no_longer_listed_is_retargeted_to_the_latest() {
     let fx = Fixture::new();
     fx.content.add_build(Fixture::game("100"));
-    interrupted(&fx, "galaxy.file.after", 1);
+    // Every file of build 100 is in place, named in the journal.
+    interrupted(&fx, "galaxy.files.after", 0);
     // A crash that also lost the record, and GOG moved on.
     fs::write(folder::sidecar_file(&fx.paths, &fx.folder), b"garbage").unwrap();
     fx.hide("100");
@@ -888,7 +889,22 @@ fn without_pending_a_build_no_longer_listed_is_retargeted_to_the_latest() {
             .iter()
             .any(|warning| warning.contains("200"))
     );
-    fx.apply(&plan).unwrap();
+    let info_file = format!("goggame-{GAME}.info");
+    let expected: usize = plan
+        .manifest_for_tests()
+        .files
+        .iter()
+        .filter(|file| file.path == info_file || file.path == "new.txt")
+        .map(|file| file.chunks.len())
+        .sum();
+    let before = fx.chunk_requests().len();
+    let installed = fx.apply(&plan).unwrap();
+    // Files that match build 200 stay, the info file the interrupted
+    // attempt wrote is replaced as its own, and nothing is moved aside.
+    assert_eq!(fx.chunk_requests().len() - before, expected);
+    assert!(installed.saved.is_empty());
+    assert!(!fx.tree().iter().any(|path| path.contains(".wineo-saved")));
+    assert_eq!(fx.read(&info_file), info(GAME, "200"));
     assert_eq!(fx.read("new.txt"), "new");
     let state = fx.state();
     assert_eq!(
