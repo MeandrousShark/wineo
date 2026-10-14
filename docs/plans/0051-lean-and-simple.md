@@ -486,6 +486,14 @@ Shipped in 0.31.1.
   SteamGridDB key and word failures differently on purpose. 18 files,
   net -214 lines.
 
+- Track B, import logic into core: `import::preflight` (the CLI's checks,
+  now also used by the app and by `execute_reviewed`, checking a given
+  destination where it resolves), `steam_import::{plan_batch,
+  apply_batch}`, `SettingsReview::hooks()`, and `Runners::candidates()`
+  replace copies in the CLI and app, with core tests for each. A 300-game
+  Heroic dry run, `list`, `status`, `runners`, and `validate` print the
+  same as before.
+
 The maintainer's machine (real GPU, library of 22, after scrolling the
 library), the 0050 acceptance build against main with everything above:
 
