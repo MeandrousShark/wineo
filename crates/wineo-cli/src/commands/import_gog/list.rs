@@ -1,10 +1,9 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 use std::process::ExitCode;
 
 use serde_json::{Value, json};
-use wineo_core::environment;
 use wineo_core::gog::api::OwnedProduct;
-use wineo_core::gog::folder::{self, Source};
+use wineo_core::gog::folder;
 use wineo_core::gog::owned;
 use wineo_core::gog::update::{self, Batch, Status};
 use wineo_core::heroic_import;
@@ -72,7 +71,7 @@ pub(super) fn run(paths: &Paths, args: &Args) -> anyhow::Result<ExitCode> {
     let in_heroic = heroic_ids(paths, &mut warnings);
     // Migrated is decided by what the environments record, so a game whose
     // update check failed is still listed as imported.
-    let recorded = recorded_games(paths);
+    let recorded = update::recorded_games(paths);
 
     let mut games: Vec<&OwnedProduct> = owned.games.iter().collect();
     games.sort_by_cached_key(|game| (game.title.to_lowercase(), game.id));
@@ -129,31 +128,13 @@ pub(super) fn run(paths: &Paths, args: &Args) -> anyhow::Result<ExitCode> {
     })
 }
 
-/// The environment that records each GOG game, by game id. A config that
-/// can't be read doesn't say.
-fn recorded_games(paths: &Paths) -> BTreeMap<u64, String> {
-    let mut recorded = BTreeMap::new();
-    if paths.portable_root().is_some() {
-        return recorded;
-    }
-    for name in environment::names(paths).unwrap_or_default() {
-        if let Ok(Some(id)) = update::recorded_gog_id(paths, &name)
-            && let Ok(id) = id.parse()
-        {
-            recorded.entry(id).or_insert(name);
-        }
-    }
-    recorded
-}
-
 /// Whether `name`'s folder for game `id` records that wineo installed it.
 /// A state that can't be read doesn't say, so the game reads as imported.
 fn installed_by_wineo(paths: &Paths, name: &str, id: u64) -> bool {
     folder::find(paths, name, &id.to_string())
         .ok()
         .flatten()
-        .and_then(|state| state.committed)
-        .is_some_and(|committed| committed.source == Some(Source::Install))
+        .is_some_and(|state| state.installed_by_wineo())
 }
 
 /// The ids of the GOG games Heroic installed. A Heroic that can't be read

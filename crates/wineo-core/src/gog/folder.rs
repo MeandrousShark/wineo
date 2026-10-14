@@ -263,6 +263,14 @@ impl FolderState {
             .or_else(|| self.journal.as_ref().map(|journal| journal.target.gog_id))
     }
 
+    /// Whether the committed state says wineo installed the game, rather
+    /// than adopting a folder another tool installed.
+    pub fn installed_by_wineo(&self) -> bool {
+        self.committed
+            .as_ref()
+            .is_some_and(|committed| committed.source == Some(Source::Install))
+    }
+
     /// Whether this is the game `gog_id`, a config's value.
     pub fn is_game(&self, gog_id: &str) -> bool {
         gog_id

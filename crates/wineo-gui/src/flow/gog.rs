@@ -20,7 +20,7 @@ use wineo_core::download::{Https, Provider};
 use wineo_core::gog::account::Session;
 use wineo_core::gog::api::Client;
 use wineo_core::gog::extras::{self, Request};
-use wineo_core::gog::folder::{self, JournalKind, Source as FolderSource};
+use wineo_core::gog::folder::{self, FolderState, JournalKind};
 use wineo_core::gog::migrate::{
     self, MigrateError, Migration, Outcome, Plan, ReviewLabel, StateChange, Target,
 };
@@ -1192,7 +1192,7 @@ pub(crate) fn add_owned(
         .iter()
         .map(|candidate| candidate.game.id.as_str())
         .collect();
-    let recorded = recorded_games(paths);
+    let recorded = wineo_core::gog::update::recorded_games(paths);
     let configless = configless_installs(paths);
     let mut games: Vec<Owned> = owned
         .games
@@ -1225,20 +1225,6 @@ pub(crate) fn add_owned(
     listing.owned = games;
 }
 
-/// The environment that records each GOG game, by game id. A config that
-/// can't be read doesn't say.
-fn recorded_games(paths: &Paths) -> BTreeMap<u64, String> {
-    let mut recorded = BTreeMap::new();
-    for name in wineo_core::environment::names(paths).unwrap_or_default() {
-        if let Ok(Some(id)) = wineo_core::gog::update::recorded_gog_id(paths, &name)
-            && let Ok(id) = id.parse()
-        {
-            recorded.entry(id).or_insert(name);
-        }
-    }
-    recorded
-}
-
 /// What `name`'s folder for game `id` says: an install to finish, one wineo
 /// made, or a migrated game. A state that can't be read reads as migrated.
 fn recorded_state(paths: &Paths, name: &str, id: u64) -> OwnedState {
@@ -1247,9 +1233,7 @@ fn recorded_state(paths: &Paths, name: &str, id: u64) -> OwnedState {
         .as_ref()
         .and_then(|state| state.journal.as_ref())
         .is_some_and(|journal| journal.kind == JournalKind::Install);
-    let installed = state
-        .and_then(|state| state.committed)
-        .is_some_and(|committed| committed.source == Some(FolderSource::Install));
+    let installed = state.as_ref().is_some_and(FolderState::installed_by_wineo);
     if installing {
         OwnedState::Unfinished
     } else if installed {

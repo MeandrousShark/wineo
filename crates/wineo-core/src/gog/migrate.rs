@@ -1132,7 +1132,12 @@ fn match_environment(
                 // game's, so it can't be skipped; it can't be attached
                 // either. A file that isn't TOML at all can't say, so it
                 // is skipped, which is a known limit.
-                if recorded_gog_id(paths, &name).as_deref() == Some(game.id.as_str()) {
+                if super::update::recorded_gog_id(paths, &name)
+                    .ok()
+                    .flatten()
+                    .as_deref()
+                    == Some(game.id.as_str())
+                {
                     by_id.push(name.clone());
                     unloadable.push((name, error.to_string()));
                 }
@@ -1190,17 +1195,6 @@ fn resolved(prefixes: &[PathBuf]) -> Vec<PathBuf> {
         .iter()
         .map(|prefix| paths::resolve(prefix))
         .collect()
-}
-
-/// The `gog_id` a config records, read as plain TOML.
-fn recorded_gog_id(paths: &Paths, name: &str) -> Option<String> {
-    fs::read_to_string(paths.environment_config(name))
-        .ok()?
-        .parse::<toml_edit::DocumentMut>()
-        .ok()?
-        .get("gog_id")?
-        .as_str()
-        .map(str::to_owned)
 }
 
 /// Whether `environment`'s default target runs `exe`, and for a Windows

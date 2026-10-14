@@ -10,7 +10,7 @@
 //! so a read is always a whole file, and a check mustn't leave lock files
 //! behind.
 
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -417,6 +417,24 @@ pub fn check_all_with(session: &mut Session, how: Check) -> Result<Batch> {
         .errors
         .sort_by(|a, b| a.environment.cmp(&b.environment));
     Ok(batch)
+}
+
+/// The environment that records each GOG game, by game id, the first by
+/// name when several do. A config that can't be read doesn't say. GOG games
+/// live in the host library, so a portable root records none.
+pub fn recorded_games(paths: &Paths) -> BTreeMap<u64, String> {
+    let mut recorded = BTreeMap::new();
+    if paths.portable_root().is_some() {
+        return recorded;
+    }
+    for name in environment::names(paths).unwrap_or_default() {
+        if let Ok(Some(id)) = recorded_gog_id(paths, &name)
+            && let Ok(id) = id.parse()
+        {
+            recorded.entry(id).or_insert(name);
+        }
+    }
+    recorded
 }
 
 /// The `gog_id` an environment's config records, read as plain TOML. None
