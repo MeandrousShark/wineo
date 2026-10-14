@@ -4,10 +4,10 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use iced::futures::channel::mpsc::unbounded;
-use iced::keyboard::{self, Key, key::Named};
+use iced::keyboard::{self, Key};
 use iced::widget::operation::RelativeOffset;
 use iced::widget::{
-    Row, checkbox, column, container, image, pick_list, row, scrollable, text, text_input,
+    checkbox, column, container, image, pick_list, row, scrollable, text, text_input,
 };
 use iced::{Center, Element, Fill, Task};
 use wineo_core::art::{Format, Kind};
@@ -29,13 +29,9 @@ use wineo_core::import;
 use wineo_core::paths::Paths;
 use wineo_core::runners::Runners;
 
-use super::import_grid::{
-    TILE_GAP, Tile, grid_columns, grid_scroll, import_label, move_focus, reveal_row, tile,
-};
+use super::import_grid::{GridKey, ImportGrid, Tile, import_label};
 use super::{Action, artwork, posters};
 use crate::chips::Chips;
-use crate::ends::{MIN_LEFT, ends};
-use crate::progress::Delayed;
 use crate::runner_label::{self, Choice};
 use crate::theme::Palette;
 use crate::ui::{
@@ -316,17 +312,11 @@ pub(crate) struct Page {
     source: Option<usize>,
     listing: Option<HeroicListing>,
     already: HashMap<String, String>,
-    /// Heroic ids picked in the grid, kept while the user goes back and forth.
-    chosen: BTreeSet<String>,
-    focus: Option<usize>,
-    /// Whether `focus` came from the keyboard. A click moves focus too, but
-    /// like CSS :focus-visible only keyboard focus draws the ring.
-    focus_visible: bool,
+    /// Picks Heroic ids.
+    grid: ImportGrid<Event>,
     /// Decoded posters by Heroic id, with their format. None when the file
     /// couldn't be decoded, so it's never stored as art either.
     posters: HashMap<String, Option<(image::Handle, Format)>>,
-    poster_generation: u64,
-    progress: Delayed<Event>,
     selected: Option<usize>,
     prepared: Option<Prepared>,
     batch_options: Option<BatchOptions>,
@@ -362,12 +352,8 @@ impl Page {
             source: None,
             listing: None,
             already: HashMap::new(),
-            chosen: BTreeSet::new(),
-            focus: None,
-            focus_visible: false,
+            grid: ImportGrid::new(GRID_ID, Event::ProgressDue, 0),
             posters: HashMap::new(),
-            poster_generation: 0,
-            progress: Delayed::new(Event::ProgressDue),
             selected: None,
             prepared: None,
             batch_options: None,
@@ -647,12 +633,8 @@ impl Page {
         self.error = None;
         self.listing = None;
         self.already.clear();
-        self.chosen.clear();
-        self.focus = None;
-        self.focus_visible = false;
+        self.grid.clear();
         self.posters.clear();
-        self.poster_generation = self.poster_generation.wrapping_add(1);
-        self.progress.reset();
         self.prepared = None;
         self.batch_options = None;
         self.review = None;
@@ -731,7 +713,7 @@ impl Page {
         self.selected = None;
         self.draft = Draft {
             batch: true,
-            games: self.chosen.clone(),
+            games: self.grid.chosen.clone(),
             ..Draft::default()
         };
         self.prepared = None;
@@ -753,27 +735,17 @@ impl Page {
     /// Decodes each cached poster on a worker. A game without one keeps its
     /// title placeholder.
     fn load_posters(&mut self, listing: &HeroicListing) -> Task<Event> {
-        let generation = self.poster_generation;
-        let cache = self.paths.art_cache_dir();
-        let decodes: Vec<_> = listing
+        let jobs = listing
             .candidates
             .iter()
-            .filter_map(|candidate| {
-                let path = candidate.poster.clone()?;
-                let id = candidate.id.clone();
-                let cache = cache.clone();
-                Some(Task::perform(
-                    async move {
-                        posters::bounded(move || posters::decode(&path, &cache))
-                            .await
-                            .and_then(|result| result)
-                    },
-                    move |result| Event::Poster(generation, id, result),
-                ))
-            })
+            .filter_map(|candidate| Some((candidate.id.clone(), candidate.poster.clone()?)))
             .collect();
-        let shown = self.progress.add(decodes.len(), Instant::now());
-        Task::batch(decodes.into_iter().chain([shown]))
+        self.grid.decode_posters(
+            self.paths.art_cache_dir(),
+            jobs,
+            |_, path, cache| posters::decode(path, cache),
+            Event::Poster,
+        )
     }
 
     fn poster(&self, id: &str) -> Option<&image::Handle> {
@@ -859,9 +831,7 @@ impl Page {
         else {
             return;
         };
-        if !self.chosen.remove(&candidate.id) {
-            self.chosen.insert(candidate.id.clone());
-        }
+        self.grid.toggle(&candidate.id);
         self.selection_changed();
     }
 
@@ -885,7 +855,7 @@ impl Page {
             .candidates
             .iter()
             .enumerate()
-            .filter(|(_, candidate)| self.chosen.contains(&candidate.id))
+            .filter(|(_, candidate)| self.grid.chosen.contains(&candidate.id))
             .map(|(index, _)| index)
             .collect();
         match chosen[..] {
@@ -907,40 +877,18 @@ impl Page {
             return None;
         }
         let count = self.listing.as_ref()?.candidates.len();
-        let columns = grid_columns(width);
-        match key.as_ref() {
-            Key::Named(
-                named @ (Named::ArrowLeft | Named::ArrowRight | Named::ArrowUp | Named::ArrowDown),
-            ) => {
-                self.focus = move_focus(self.focus, named, columns, count);
-                self.focus_visible = true;
-                Some(self.reveal_focus(columns, count))
-            }
-            Key::Named(Named::Space) | Key::Character(" ") => {
-                if let Some(index) = self.focus {
+        Some(match self.grid.key(key, modifiers, width, count)? {
+            GridKey::Moved(task) => task,
+            GridKey::Toggle(focus) => {
+                if let Some(index) = focus {
                     self.toggle(index);
-                    self.focus_visible = true;
+                    self.grid.focus_visible = true;
                 }
-                Some(Task::none())
+                Task::none()
             }
-            Key::Character("a" | "A") if modifiers.control() => Some(self.update(Event::SelectAll)),
-            Key::Named(Named::Enter) if !modifiers.control() => Some(self.import_chosen()),
-            _ => None,
-        }
-    }
-
-    fn focus_ring(&self, index: usize) -> bool {
-        self.focus_visible && self.focus == Some(index)
-    }
-
-    /// Scrolls so the focused row shows, wherever the header above the grid
-    /// ends.
-    fn reveal_focus(&self, columns: usize, count: usize) -> Task<Event> {
-        let Some(index) = self.focus else {
-            return Task::none();
-        };
-        let columns = columns.max(1);
-        reveal_row(GRID_ID, index / columns, count.div_ceil(columns))
+            GridKey::SelectAll => self.update(Event::SelectAll),
+            GridKey::Import => self.import_chosen(),
+        })
     }
 
     /// The body scrollable keeps its offset across steps, so without the snap
@@ -1228,7 +1176,7 @@ impl Page {
         match event {
             Event::Back => {
                 // The Back button is a click, so the grid it returns to shows no ring.
-                self.focus_visible = false;
+                self.grid.focus_visible = false;
                 self.back()
             }
             Event::Discard => {
@@ -1323,29 +1271,28 @@ impl Page {
                 Task::none()
             }
             Event::ProgressDue(generation) => {
-                self.progress.reveal(generation);
+                self.grid.progress.reveal(generation);
                 Task::none()
             }
-            Event::Poster(generation, id, result) if generation == self.poster_generation => {
-                self.progress.finish_one();
+            Event::Poster(generation, id, result) if generation == self.grid.poster_generation => {
+                self.grid.progress.finish_one();
                 self.posters.insert(id, result.ok());
                 // The game's details may have opened before its poster decoded.
                 self.prefill_poster();
                 Task::none()
             }
             Event::Toggle(index) => {
-                self.focus = Some(index);
-                self.focus_visible = false;
+                self.grid.click(index);
                 self.toggle(index);
                 Task::none()
             }
             Event::SelectAll => {
-                self.chosen = self.eligible().collect();
+                self.grid.chosen = self.eligible().collect();
                 self.selection_changed();
                 Task::none()
             }
             Event::SelectNone => {
-                self.chosen.clear();
+                self.grid.chosen.clear();
                 self.selection_changed();
                 Task::none()
             }
@@ -1909,33 +1856,25 @@ impl Page {
         width: f32,
         header: Element<'a, Event>,
     ) -> Element<'a, Event> {
-        let columns = grid_columns(width);
-        let mut rows = column![].spacing(TILE_GAP);
-        let tiles: Vec<Element<'a, Event>> = listing
+        let tiles = listing
             .candidates
             .iter()
             .enumerate()
             .map(|(index, candidate)| {
-                tile(
+                (
                     Tile {
                         title: &candidate.title,
                         poster: self.poster(&candidate.id),
                         reason: self.ineligible(index),
                         note: None,
-                        chosen: self.chosen.contains(&candidate.id),
-                        focus_ring: self.focus_ring(index),
+                        chosen: self.grid.chosen.contains(&candidate.id),
+                        focus_ring: self.grid.focus_ring(index),
                         dimmed: false,
                     },
-                    palette,
                     Event::Toggle(index),
                 )
-            })
-            .collect();
-        let mut tiles = tiles.into_iter().peekable();
-        while tiles.peek().is_some() {
-            rows = rows.push(Row::with_children(tiles.by_ref().take(columns)).spacing(TILE_GAP));
-        }
-        grid_scroll(GRID_ID, header, rows.into(), palette)
+            });
+        self.grid.view(header, tiles, width, palette)
     }
 
     pub(crate) fn view_with_key_availability(
@@ -2006,31 +1945,14 @@ impl Page {
                     for issue in &listing.issues {
                         body = body.push(text(&issue.message).size(12).color(palette.warning));
                     }
-                    let count = self.chosen.len();
+                    let count = self.grid.chosen.len();
                     let idle = !self.busy();
-                    let mut others = row![
-                        secondary_button("Select all", palette)
-                            .on_press_maybe(idle.then_some(Event::SelectAll)),
-                        secondary_button("Select none", palette)
-                            .on_press_maybe((idle && count > 0).then_some(Event::SelectNone)),
-                    ]
-                    .spacing(12)
-                    .align_y(Center);
-                    if self.status_by_action() {
-                        others = others.push(self.working(palette));
-                    }
-                    if let Some(bar) = posters::progress_bar(&self.progress, palette) {
-                        others = others.push(bar);
-                    }
-                    let import = accent_base(import_label(count), palette.primary).on_press_maybe(
+                    actions = Some(self.grid.footer(
+                        idle.then_some(Event::SelectAll),
+                        (idle && count > 0).then_some(Event::SelectNone),
+                        self.status_by_action().then(|| self.working(palette)),
                         (!self.waiting() && count > 0).then_some(Event::ImportSelected),
-                    );
-                    // A narrow dialog stacks the import button under the rest.
-                    actions = Some(ends(
-                        others.wrap().vertical_spacing(8),
-                        import,
-                        12.0,
-                        MIN_LEFT,
+                        palette,
                     ));
                 }
             }
@@ -3405,6 +3327,7 @@ pub(super) fn install_prerequisite(
 mod tests {
     use crate::flow::import_grid::measure;
     use crate::test_script::write_script;
+    use iced::keyboard::key::Named;
     use std::ffi::OsString;
     use std::fs;
 
@@ -3729,7 +3652,7 @@ mod tests {
     }
 
     fn chosen(page: &Page) -> Vec<&str> {
-        page.chosen.iter().map(String::as_str).collect()
+        page.grid.chosen.iter().map(String::as_str).collect()
     }
 
     /// Every file under `dir` with its bytes, to show nothing there changed.
@@ -3752,16 +3675,16 @@ mod tests {
         let mut page = grid_page(root.path());
         let none = keyboard::Modifiers::empty();
         let _ = page.update(Event::Toggle(DUSK));
-        assert_eq!(page.focus, Some(DUSK));
-        assert!(!page.focus_ring(DUSK));
+        assert_eq!(page.grid.focus, Some(DUSK));
+        assert!(!page.grid.focus_ring(DUSK));
         let _ = page.key(&Key::Named(Named::ArrowRight), none, 900.0);
-        let focus = page.focus.unwrap();
-        assert!(page.focus_ring(focus));
+        let focus = page.grid.focus.unwrap();
+        assert!(page.grid.focus_ring(focus));
         let _ = page.update(Event::Toggle(focus));
-        assert!(!page.focus_ring(focus));
+        assert!(!page.grid.focus_ring(focus));
         // Space after a click is keyboard use, so the ring comes back.
         let _ = page.key(&Key::Named(Named::Space), none, 900.0);
-        assert!(page.focus_ring(focus));
+        assert!(page.grid.focus_ring(focus));
     }
 
     /// A page at each step, filled in the way a real import fills it.
@@ -4093,16 +4016,16 @@ mod tests {
         let none = keyboard::Modifiers::empty();
         let mut page = grid_page(root.path());
         let _ = page.key(&Key::Named(Named::ArrowRight), none, 900.0);
-        let focus = page.focus.unwrap();
-        assert!(page.focus_ring(focus));
+        let focus = page.grid.focus.unwrap();
+        assert!(page.grid.focus_ring(focus));
         // Space chooses the focused game, and Import opens its details.
         let _ = page.key(&Key::Named(Named::Space), none, 900.0);
         open_details(&mut page, focus);
         let _ = page.update(Event::Back);
         assert_eq!(page.step, Step::Games);
-        assert!(!page.focus_ring(focus));
+        assert!(!page.grid.focus_ring(focus));
         let _ = page.key(&Key::Named(Named::ArrowRight), none, 900.0);
-        assert!(page.focus_ring(page.focus.unwrap()));
+        assert!(page.grid.focus_ring(page.grid.focus.unwrap()));
 
         // Leaving from the grid closes the page, and Add opens a fresh one.
         let mut flow = super::super::Page::Choose(page.paths.clone());
@@ -4114,12 +4037,12 @@ mod tests {
         reopened.listing = page.listing.clone();
         reopened.status.clear();
         let count = reopened.listing.as_ref().unwrap().candidates.len();
-        assert!((0..count).all(|index| !reopened.focus_ring(index)));
+        assert!((0..count).all(|index| !reopened.grid.focus_ring(index)));
         let _ = flow.key(&Key::Named(Named::ArrowDown), none, 900.0);
         let super::super::Page::Heroic(reopened) = &flow else {
             unreachable!()
         };
-        assert!(reopened.focus_ring(reopened.focus.unwrap()));
+        assert!(reopened.grid.focus_ring(reopened.grid.focus.unwrap()));
     }
 
     /// Prepares the chosen game the way the background task does.
@@ -4148,17 +4071,17 @@ mod tests {
         assert!(page.ineligible(STORE).is_some());
         let _ = page.update(Event::Toggle(OLD));
         let _ = page.update(Event::Toggle(STORE));
-        assert!(page.chosen.is_empty());
+        assert!(page.grid.chosen.is_empty());
         let _ = page.update(Event::Toggle(DUSK));
         assert_eq!(chosen(&page), ["dusk"]);
         let _ = page.update(Event::Toggle(DUSK));
-        assert!(page.chosen.is_empty());
+        assert!(page.grid.chosen.is_empty());
         let _ = page.update(Event::SelectAll);
         assert_eq!(chosen(&page), ["dawn", "dusk", "noon"]);
         let _ = page.update(Event::Toggle(DAWN));
         assert_eq!(chosen(&page), ["dusk", "noon"]);
         let _ = page.update(Event::SelectNone);
-        assert!(page.chosen.is_empty());
+        assert!(page.grid.chosen.is_empty());
     }
 
     #[test]
@@ -4416,14 +4339,18 @@ mod tests {
             .collect();
         assert!(ids.len() >= 2);
         let total = ids.len();
-        assert_eq!(page.progress.pending_wakeup(), None, "idle owns no timer");
+        assert_eq!(
+            page.grid.progress.pending_wakeup(),
+            None,
+            "idle owns no timer"
+        );
 
         let _ = page.load_posters(&listing);
-        let generation = page.poster_generation;
-        assert_eq!(page.progress.shown(), None, "not before the delay");
-        assert!(page.progress.pending_wakeup().is_some());
-        let _ = page.update(Event::ProgressDue(page.progress.wakeup_generation()));
-        assert_eq!(page.progress.shown(), Some((0, total)));
+        let generation = page.grid.poster_generation;
+        assert_eq!(page.grid.progress.shown(), None, "not before the delay");
+        assert!(page.grid.progress.pending_wakeup().is_some());
+        let _ = page.update(Event::ProgressDue(page.grid.progress.wakeup_generation()));
+        assert_eq!(page.grid.progress.shown(), Some((0, total)));
         for width in [900.0, 360.0] {
             crate::layout_probe::layout(
                 &mut page.view_with_key_availability(Palette::DARK, width, false),
@@ -4438,9 +4365,9 @@ mod tests {
             ids[0].clone(),
             Err("late".into()),
         ));
-        assert_eq!(page.progress.shown(), Some((0, total)));
+        assert_eq!(page.grid.progress.shown(), Some((0, total)));
         let _ = page.update(Event::Poster(generation, ids[0].clone(), Err("bad".into())));
-        assert_eq!(page.progress.shown(), Some((1, total)));
+        assert_eq!(page.grid.progress.shown(), Some((1, total)));
         for id in &ids[1..] {
             let _ = page.update(Event::Poster(
                 generation,
@@ -4451,8 +4378,8 @@ mod tests {
                 )),
             ));
         }
-        assert_eq!(page.progress.shown(), None, "hidden at completion");
-        assert_eq!(page.progress.pending_wakeup(), None);
+        assert_eq!(page.grid.progress.shown(), None, "hidden at completion");
+        assert_eq!(page.grid.progress.pending_wakeup(), None);
     }
 
     #[test]
@@ -4461,8 +4388,8 @@ mod tests {
         let mut page = grid_page(root.path());
         let listing = page.listing.clone().unwrap();
         let _ = page.load_posters(&listing);
-        let generation = page.poster_generation;
-        let late = page.progress.wakeup_generation();
+        let generation = page.grid.poster_generation;
+        let late = page.grid.progress.wakeup_generation();
         for candidate in &listing.candidates {
             if candidate.poster.is_some() {
                 let _ = page.update(Event::Poster(
@@ -4472,9 +4399,9 @@ mod tests {
                 ));
             }
         }
-        assert_eq!(page.progress.pending_wakeup(), None);
+        assert_eq!(page.grid.progress.pending_wakeup(), None);
         let _ = page.update(Event::ProgressDue(late));
-        assert_eq!(page.progress.shown(), None);
+        assert_eq!(page.grid.progress.shown(), None);
     }
 
     #[test]
@@ -4483,11 +4410,11 @@ mod tests {
         let mut page = grid_page(root.path());
         let listing = page.listing.clone().unwrap();
         let _ = page.load_posters(&listing);
-        let _ = page.update(Event::ProgressDue(page.progress.wakeup_generation()));
-        assert!(page.progress.shown().is_some());
+        let _ = page.update(Event::ProgressDue(page.grid.progress.wakeup_generation()));
+        assert!(page.grid.progress.shown().is_some());
         let _ = page.list(listing.source.clone());
-        assert_eq!(page.progress.shown(), None);
-        assert_eq!(page.progress.pending_wakeup(), None);
+        assert_eq!(page.grid.progress.shown(), None);
+        assert_eq!(page.grid.progress.pending_wakeup(), None);
     }
 
     /// Feeds the page each listed poster's decode, as the grid's workers would.
@@ -4496,7 +4423,7 @@ mod tests {
         for candidate in &listing.candidates {
             if let Some(path) = &candidate.poster {
                 let _ = page.update(Event::Poster(
-                    page.poster_generation,
+                    page.grid.poster_generation,
                     candidate.id.clone(),
                     artwork::preview_with_format(path, Kind::Grid),
                 ));
@@ -4535,7 +4462,7 @@ mod tests {
         // A reply for an earlier listing is dropped.
         let dusk = listing.candidates[DUSK].poster.clone().unwrap();
         let _ = page.update(Event::Poster(
-            page.poster_generation.wrapping_sub(1),
+            page.grid.poster_generation.wrapping_sub(1),
             "noon".to_owned(),
             artwork::preview_with_format(&dusk, Kind::Grid),
         ));
@@ -4604,36 +4531,19 @@ mod tests {
     }
 
     #[test]
-    fn arrows_move_focus_across_rows() {
-        assert_eq!(move_focus(None, Named::ArrowRight, 3, 0), None);
-        assert_eq!(move_focus(None, Named::ArrowDown, 3, 5), Some(0));
-        assert_eq!(move_focus(Some(0), Named::ArrowLeft, 3, 5), Some(0));
-        assert_eq!(move_focus(Some(0), Named::ArrowRight, 3, 5), Some(1));
-        assert_eq!(move_focus(Some(4), Named::ArrowRight, 3, 5), Some(4));
-        assert_eq!(move_focus(Some(1), Named::ArrowDown, 3, 5), Some(4));
-        // The last row has two tiles, so Down from its right lands on its end.
-        assert_eq!(move_focus(Some(2), Named::ArrowDown, 3, 5), Some(4));
-        assert_eq!(move_focus(Some(4), Named::ArrowDown, 3, 5), Some(4));
-        assert_eq!(move_focus(Some(4), Named::ArrowUp, 3, 5), Some(1));
-        assert_eq!(move_focus(Some(1), Named::ArrowUp, 3, 5), Some(1));
-        assert!(grid_columns(900.0) >= 4);
-        assert_eq!(grid_columns(280.0), 1);
-    }
-
-    #[test]
     fn grid_keys_toggle_select_all_and_import() {
         let root = tempdir().unwrap();
         let mut page = grid_page(root.path());
         let none = keyboard::Modifiers::empty();
         let key = |page: &mut Page, key: Key, modifiers| page.key(&key, modifiers, 900.0);
         assert!(key(&mut page, Key::Named(Named::ArrowRight), none).is_some());
-        assert_eq!(page.focus, Some(DUSK));
+        assert_eq!(page.grid.focus, Some(DUSK));
         assert!(key(&mut page, Key::Named(Named::Space), none).is_some());
         assert_eq!(chosen(&page), ["dusk"]);
         let _ = key(&mut page, Key::Named(Named::ArrowRight), none);
         let _ = key(&mut page, Key::Named(Named::ArrowRight), none);
         let _ = key(&mut page, Key::Named(Named::ArrowRight), none);
-        assert_eq!(page.focus, Some(OLD));
+        assert_eq!(page.grid.focus, Some(OLD));
         let _ = key(&mut page, Key::Named(Named::Space), none);
         assert_eq!(chosen(&page), ["dusk"]);
         let _ = key(

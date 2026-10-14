@@ -1,12 +1,232 @@
 //! The poster grid the Heroic, Steam, and GOG import pages share.
 
-use iced::keyboard::key::Named;
-use iced::widget::{column, container, image, mouse_area, scrollable, stack, text};
-use iced::{Color, ContentFit, Element, Fill, Font, Task, border, mouse};
+use std::collections::BTreeSet;
+use std::path::{Path, PathBuf};
+use std::time::Instant;
+
+use iced::keyboard::{self, Key, key::Named};
+use iced::widget::{Row, column, container, image, mouse_area, row, scrollable, stack, text};
+use iced::{Center, Color, ContentFit, Element, Fill, Font, Task, border, mouse};
 
 use super::heroic::{PAGE_MAX_WIDTH, PAGE_PADDING, SCROLL_GUTTER};
+use super::posters;
+use crate::ends::{MIN_LEFT, ends};
+use crate::progress::Delayed;
 use crate::theme::Palette;
-use crate::ui::ScrollStyle;
+use crate::ui::{ScrollStyle, accent_base, secondary_button};
+
+/// One import page's grid: what is picked, where keyboard focus is, and how
+/// far its posters have come. The page owns its listing and posters.
+pub(super) struct ImportGrid<Message> {
+    id: &'static str,
+    /// The ids picked, kept while the person goes back and forth.
+    pub chosen: BTreeSet<String>,
+    pub focus: Option<usize>,
+    /// Whether `focus` came from the keyboard. A click moves focus too, but
+    /// like CSS :focus-visible only keyboard focus draws the ring.
+    pub focus_visible: bool,
+    /// The poster load replies must match to count.
+    pub poster_generation: u64,
+    pub progress: Delayed<Message>,
+}
+
+/// A grid key the page acts on itself.
+pub(super) enum GridKey<Message> {
+    /// An arrow moved focus; the task scrolls it into view.
+    Moved(Task<Message>),
+    /// Space, on the focused tile if there is one.
+    Toggle(Option<usize>),
+    SelectAll,
+    Import,
+}
+
+impl<Message: Send + 'static> ImportGrid<Message> {
+    /// `id` names the grid's scrollable, and `progress_due` is the page's
+    /// message for the progress bar's delay.
+    pub(super) fn new(
+        id: &'static str,
+        progress_due: fn(u64) -> Message,
+        poster_generation: u64,
+    ) -> Self {
+        Self {
+            id,
+            chosen: BTreeSet::new(),
+            focus: None,
+            focus_visible: false,
+            poster_generation,
+            progress: Delayed::new(progress_due),
+        }
+    }
+
+    /// Forgets the old listing's picks and focus, and starts a new poster
+    /// load.
+    pub(super) fn clear(&mut self) {
+        self.chosen.clear();
+        self.focus = None;
+        self.focus_visible = false;
+        self.restart_posters(self.poster_generation.wrapping_add(1));
+    }
+
+    /// Drops the poster load in flight, so its replies no longer count.
+    pub(super) fn restart_posters(&mut self, generation: u64) {
+        self.poster_generation = generation;
+        self.progress.reset();
+    }
+
+    /// Decodes each poster in `jobs` on a worker, under the import decode
+    /// permits, and replies with `message`.
+    pub(super) fn decode_posters<K, T>(
+        &mut self,
+        cache: PathBuf,
+        jobs: Vec<(K, PathBuf)>,
+        decode: fn(&K, &Path, &Path) -> Result<T, String>,
+        message: fn(u64, K, Result<T, String>) -> Message,
+    ) -> Task<Message>
+    where
+        K: Clone + Send + 'static,
+        T: Send + 'static,
+    {
+        let generation = self.poster_generation;
+        let shown = self.progress.add(jobs.len(), Instant::now());
+        Task::batch(
+            jobs.into_iter()
+                .map(|(key, path)| {
+                    let cache = cache.clone();
+                    let job = key.clone();
+                    Task::perform(
+                        async move {
+                            posters::bounded(move || decode(&job, &path, &cache))
+                                .await
+                                .and_then(|result| result)
+                        },
+                        move |result| message(generation, key, result),
+                    )
+                })
+                .chain([shown]),
+        )
+    }
+
+    /// A click moves focus without drawing the ring.
+    pub(super) fn click(&mut self, index: usize) {
+        self.focus = Some(index);
+        self.focus_visible = false;
+    }
+
+    pub(super) fn toggle(&mut self, id: &str) {
+        if !self.chosen.remove(id) {
+            self.chosen.insert(id.to_owned());
+        }
+    }
+
+    pub(super) fn focus_ring(&self, index: usize) -> bool {
+        self.focus_visible && self.focus == Some(index)
+    }
+
+    /// Arrows move focus over `count` tiles and scroll its row into view,
+    /// wherever the header above the grid ends. None for any other key.
+    pub(super) fn arrow(&mut self, key: &Key, width: f32, count: usize) -> Option<Task<Message>> {
+        let Key::Named(
+            named @ (Named::ArrowLeft | Named::ArrowRight | Named::ArrowUp | Named::ArrowDown),
+        ) = key.as_ref()
+        else {
+            return None;
+        };
+        let columns = grid_columns(width);
+        self.focus = move_focus(self.focus, named, columns, count);
+        self.focus_visible = true;
+        let Some(index) = self.focus else {
+            return Some(Task::none());
+        };
+        let columns = columns.max(1);
+        Some(reveal_row(
+            self.id,
+            index / columns,
+            count.div_ceil(columns),
+        ))
+    }
+
+    /// The keys of a grid that picks games: arrows, Space, Ctrl+A, and
+    /// Enter. None leaves the key to the flow's shared handling.
+    pub(super) fn key(
+        &mut self,
+        key: &Key,
+        modifiers: keyboard::Modifiers,
+        width: f32,
+        count: usize,
+    ) -> Option<GridKey<Message>> {
+        if let Some(task) = self.arrow(key, width, count) {
+            return Some(GridKey::Moved(task));
+        }
+        match key.as_ref() {
+            Key::Named(Named::Space) | Key::Character(" ") => Some(GridKey::Toggle(self.focus)),
+            Key::Character("a" | "A") if modifiers.control() => Some(GridKey::SelectAll),
+            Key::Named(Named::Enter) if !modifiers.control() => Some(GridKey::Import),
+            _ => None,
+        }
+    }
+
+    /// The tiles in rows as wide as the dialog allows, scrolling with
+    /// `header` above them.
+    pub(super) fn view<'a>(
+        &self,
+        header: Element<'a, Message>,
+        tiles: impl IntoIterator<Item = (Tile<'a>, Message)>,
+        width: f32,
+        palette: Palette,
+    ) -> Element<'a, Message>
+    where
+        Message: Clone + 'a,
+    {
+        let columns = grid_columns(width);
+        let mut rows = column![].spacing(TILE_GAP);
+        let mut tiles = tiles
+            .into_iter()
+            .map(|(item, on_press)| tile(item, palette, on_press))
+            .peekable();
+        while tiles.peek().is_some() {
+            rows = rows.push(Row::with_children(tiles.by_ref().take(columns)).spacing(TILE_GAP));
+        }
+        grid_scroll(self.id, header, rows.into(), palette)
+    }
+
+    /// The bar for the posters still being prepared, once it's worth showing.
+    pub(super) fn progress_bar<'a>(&self, palette: Palette) -> Option<Element<'a, Message>>
+    where
+        Message: 'a,
+    {
+        posters::progress_bar(&self.progress, palette)
+    }
+
+    /// The pinned row under a grid that picks games: Select all, Select none,
+    /// the page's `extras`, the poster progress, and Import at the right. A
+    /// None message disables its button.
+    pub(super) fn footer<'a>(
+        &self,
+        select_all: Option<Message>,
+        select_none: Option<Message>,
+        extras: impl IntoIterator<Item = Element<'a, Message>>,
+        import: Option<Message>,
+        palette: Palette,
+    ) -> Element<'a, Message>
+    where
+        Message: Clone + 'a,
+    {
+        let mut others = row![
+            secondary_button("Select all", palette).on_press_maybe(select_all),
+            secondary_button("Select none", palette).on_press_maybe(select_none),
+        ]
+        .spacing(12)
+        .align_y(Center)
+        .extend(extras);
+        if let Some(bar) = self.progress_bar(palette) {
+            others = others.push(bar);
+        }
+        let import =
+            accent_base(import_label(self.chosen.len()), palette.primary).on_press_maybe(import);
+        // A narrow dialog stacks the import button under the rest.
+        ends(others.wrap().vertical_spacing(8), import, 12.0, MIN_LEFT)
+    }
+}
 
 const TILE_WIDTH: f32 = 120.0;
 /// With room for the focus ring on either side.
@@ -467,5 +687,22 @@ mod tests {
         // The first row shows the header when both fit.
         assert_eq!(reveal_offset(80.0, 100.0, 30.0, 70.0, true), 0.0);
         assert_eq!(reveal_offset(80.0, 40.0, 30.0, 70.0, true), 30.0);
+    }
+
+    #[test]
+    fn arrows_move_focus_across_rows() {
+        assert_eq!(move_focus(None, Named::ArrowRight, 3, 0), None);
+        assert_eq!(move_focus(None, Named::ArrowDown, 3, 5), Some(0));
+        assert_eq!(move_focus(Some(0), Named::ArrowLeft, 3, 5), Some(0));
+        assert_eq!(move_focus(Some(0), Named::ArrowRight, 3, 5), Some(1));
+        assert_eq!(move_focus(Some(4), Named::ArrowRight, 3, 5), Some(4));
+        assert_eq!(move_focus(Some(1), Named::ArrowDown, 3, 5), Some(4));
+        // The last row has two tiles, so Down from its right lands on its end.
+        assert_eq!(move_focus(Some(2), Named::ArrowDown, 3, 5), Some(4));
+        assert_eq!(move_focus(Some(4), Named::ArrowDown, 3, 5), Some(4));
+        assert_eq!(move_focus(Some(4), Named::ArrowUp, 3, 5), Some(1));
+        assert_eq!(move_focus(Some(1), Named::ArrowUp, 3, 5), Some(1));
+        assert!(grid_columns(900.0) >= 4);
+        assert_eq!(grid_columns(280.0), 1);
     }
 }
