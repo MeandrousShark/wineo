@@ -292,6 +292,17 @@ Shipped in 0.31.1.
   or 100 ms after it. Undo's focus is checked on a click, a tap, a key
   release, and when the toast's time runs out, instead of every 100 ms.
 
+- A Heroic import plan parses Heroic's library and settings once instead
+  of once per game (a 21-game bulk plan: 21 parses of each file to 1; 300
+  games planned in 48 ms instead of 121 ms). Each game's fingerprint now
+  hashes the same bytes its settings were parsed from, which also closes an
+  older gap where a game's own config could change between being read and
+  being fingerprinted. A bulk dry run of 300 fake games prints the same
+  plan as before, verbose included. GOG builds its download client on the
+  first download, so a login or listing builds one HTTP client instead of
+  two. `validate` lists desktop entries once instead of once per
+  environment (7 directory reads to 1 with 6 environments).
+
 The maintainer's machine (real GPU, library of 22, after scrolling the
 library), the 0050 acceptance build against main with everything above:
 
@@ -326,3 +337,10 @@ Limits accepted in review:
 - If Undo loses keyboard focus with no click, tap, key release, or other
   message (none is known to do this), the toast stays paused until the
   next one.
+- Removing a runner build reads every environment's config twice: once to
+  refuse an in-use build before taking any lock, and once under the locks.
+  Both stay; dropping the first would let an in-use build take the install
+  lock before being refused. The interactive CLI reads it a third time to
+  show warnings before its prompt.
+- Heroic's GOG-store files are still parsed and fingerprinted from separate
+  reads, as before; only sideload files share their bytes.
