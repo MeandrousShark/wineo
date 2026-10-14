@@ -29,6 +29,9 @@ mod tests {
     fn sizes_use_binary_units() {
         assert_eq!(size(0), "0 B");
         assert_eq!(size(1023), "1023 B");
+        assert_eq!(size(1024), "1 KiB");
+        assert_eq!(size(1_288_490_189), "1.2 GiB");
+        assert_eq!(size(320 * 1024 * 1024), "320 MiB");
         assert_eq!(size(1536 * 1024), "1.5 MiB");
         assert_eq!(size(2_254_857_830), "2.1 GiB");
     }
