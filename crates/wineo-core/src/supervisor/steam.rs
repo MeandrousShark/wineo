@@ -198,7 +198,7 @@ impl Supervisor {
         let mut next_scan = dispatched;
         let mut next_manifest = dispatched;
         let mut heartbeat = Instant::now();
-        let scan_interval = test_timeout(
+        let fast_scan = test_timeout(
             "WINEO_TEST_STEAM_SCAN_INTERVAL_MS",
             Duration::from_millis(250),
         );
@@ -225,7 +225,7 @@ impl Supervisor {
                 }
                 continue;
             }
-            next_scan = now + scan_interval;
+            next_scan = now + scan_interval(now - dispatched, fast_scan);
             let candidates = steam::eligible_reapers(install, app_id, baseline)
                 .context(|| "failed to inspect Steam processes".to_owned())?;
             if candidates.len() > 1 {
@@ -392,6 +392,16 @@ fn ambiguous(name: &str) -> Error {
     Error::StartFailed(format!("More than one Steam process matches {name}."))
 }
 
+/// A launch usually lands within seconds, but Steam can spend minutes
+/// updating the game first, so scans slow down after the first 10 s.
+fn scan_interval(waited: Duration, fast: Duration) -> Duration {
+    if waited < Duration::from_secs(10) {
+        fast
+    } else {
+        fast.max(Duration::from_secs(1))
+    }
+}
+
 fn test_timeout(variable: &str, fallback: Duration) -> Duration {
     if cfg!(debug_assertions) {
         std::env::var(variable)
@@ -442,6 +452,19 @@ mod tests {
         supervisor.sender.send(Event::Pulse).unwrap();
         supervisor.sender.send(Event::Force).unwrap();
         assert_eq!(supervisor.stop_request(Some(Event::Pulse)), Some(true));
+    }
+
+    #[test]
+    fn scans_slow_to_once_a_second_after_ten_seconds() {
+        let fast = Duration::from_millis(250);
+        assert_eq!(scan_interval(Duration::ZERO, fast), fast);
+        assert_eq!(scan_interval(Duration::from_millis(9_999), fast), fast);
+        assert_eq!(
+            scan_interval(Duration::from_secs(10), fast),
+            Duration::from_secs(1)
+        );
+        let slow = Duration::from_secs(2);
+        assert_eq!(scan_interval(Duration::from_secs(30), slow), slow);
     }
 
     fn progress(flags: u32, staged: u64) -> steam::Progress {

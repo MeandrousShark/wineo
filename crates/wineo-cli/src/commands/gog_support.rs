@@ -85,9 +85,6 @@ pub fn update_label(state: UpdateState) -> &'static str {
 /// Why an update can't be applied, or can't be told, as a sentence.
 pub fn reason_note(reason: &Reason) -> String {
     match reason {
-        Reason::WindowsInstaller => {
-            "Updating Windows installer games comes in a later release.".to_owned()
-        }
         Reason::Galaxy => "Updating Galaxy builds comes in a later release.".to_owned(),
         Reason::CantCompare(why) => why.clone(),
     }

@@ -172,8 +172,6 @@ pub(crate) fn state_label(state: UpdateState) -> &'static str {
 /// says it.
 pub(crate) fn reason_note(reason: &Reason) -> String {
     match reason {
-        // Older releases' reason, which core no longer gives.
-        Reason::WindowsInstaller => "This game can't be updated here.".to_owned(),
         Reason::Galaxy => "Updating Galaxy builds comes in a later release.".to_owned(),
         Reason::CantCompare(why) => why.clone(),
     }
@@ -351,7 +349,7 @@ mod tests {
             available: Some("1.1".to_owned()),
             state,
             applicable,
-            reason: (!applicable).then_some(Reason::WindowsInstaller),
+            reason: (!applicable).then_some(Reason::Galaxy),
             unfinished: false,
             warnings: Vec::new(),
             dlc: Vec::new(),
@@ -387,8 +385,8 @@ mod tests {
         assert_eq!(Badge::FinishUpdate.label(), "Finish update");
         assert_eq!(state_label(UpdateState::OnGog), "Update on GOG");
         assert_eq!(
-            reason_note(&Reason::WindowsInstaller),
-            "This game can't be updated here."
+            reason_note(&Reason::Galaxy),
+            "Updating Galaxy builds comes in a later release."
         );
     }
 
