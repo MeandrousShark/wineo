@@ -1,0 +1,1107 @@
+use crate::test_script::{write_executable, write_script};
+
+use std::os::unix::fs::symlink;
+
+use super::*;
+use crate::config::EnvironmentConfig;
+
+struct Fixture {
+    _root: tempfile::TempDir,
+    paths: Paths,
+    prefix: PathBuf,
+}
+
+fn fixture() -> Fixture {
+    let root = tempfile::tempdir().unwrap();
+    let home = root.path().canonicalize().unwrap();
+    let prefix = home.join("prefix");
+    let app = prefix.join("drive_c/Program Files/App");
+    fs::create_dir_all(&app).unwrap();
+    fs::write(app.join("app.exe"), "").unwrap();
+    fs::create_dir_all(prefix.join("dosdevices")).unwrap();
+    symlink("../drive_c", prefix.join("dosdevices/c:")).unwrap();
+    symlink("/", prefix.join("dosdevices/z:")).unwrap();
+    fs::write(home.join("setup.exe"), "").unwrap();
+    fs::write(home.join("setup.msi"), "").unwrap();
+
+    let lookup_home = home.clone();
+    let paths = Paths::from_lookup(move |key| {
+        (key == "HOME").then(|| OsString::from(lookup_home.as_os_str()))
+    })
+    .unwrap();
+    Fixture {
+        _root: root,
+        paths,
+        prefix,
+    }
+}
+
+#[test]
+fn launch_snapshots_the_concrete_prefix_while_environment_keeps_its_alias() {
+    let f = fixture();
+    fs::write(f.prefix.join("system.reg"), "WINE REGISTRY Version 2\n").unwrap();
+    let alias = f.prefix.parent().unwrap().join("prefix-alias");
+    symlink(&f.prefix, &alias).unwrap();
+
+    let wine_dir = f.prefix.parent().unwrap().join("runners/fake/bin");
+    fs::create_dir_all(&wine_dir).unwrap();
+    for name in ["wine", "wineserver"] {
+        let path = wine_dir.join(name);
+        write_script(&path, "#!/bin/sh\n");
+    }
+
+    let config_text = format!(
+        "prefix = \"{}\"\nrunner = \"fake\"\narch = \"win64\"\n",
+        alias.display()
+    );
+    let environment = Environment {
+        name: "app".to_owned(),
+        path: PathBuf::from("/app.toml"),
+        config: EnvironmentConfig::parse(Path::new("/app.toml"), &config_text).unwrap(),
+    };
+    let mut global = GlobalConfig::default();
+    global.defaults.runner_root = Some("~/runners".to_owned());
+
+    let configured_prefix = environment.prefix(&f.paths).unwrap();
+    let (_, launch_prefix, _guards) = open(&f.paths, &global, &environment).unwrap();
+    assert_eq!(configured_prefix, alias);
+    assert_eq!(launch_prefix, f.prefix.canonicalize().unwrap());
+}
+
+fn environment(text: &str) -> Environment {
+    let text = format!("prefix = \"/p\"\nrunner = \"wine\"\narch = \"win64\"\n{text}");
+    Environment {
+        name: "app".to_owned(),
+        path: PathBuf::from("/app.toml"),
+        config: EnvironmentConfig::parse(Path::new("/app.toml"), &text).unwrap(),
+    }
+}
+
+#[test]
+fn gamemode_takes_the_most_specific_setting() {
+    let off = GlobalConfig::default();
+    let on = GlobalConfig {
+        gamemode: Some(true),
+        ..GlobalConfig::default()
+    };
+    let quiet = environment("[targets.app]\nexe = \"app\"\n");
+    let loud = environment("gamemode = true\n\n[targets.app]\nexe = \"app\"\n");
+    let mixed = environment("gamemode = true\n\n[targets.app]\nexe = \"app\"\ngamemode = false\n");
+    let target = |env: &Environment| env.config.targets.get("app").cloned();
+
+    // Unset everywhere is off.
+    assert!(!gamemode(&off, &quiet, target(&quiet).as_ref()));
+    // Each level turns it on for the one below.
+    assert!(gamemode(&on, &quiet, target(&quiet).as_ref()));
+    assert!(gamemode(&off, &loud, target(&loud).as_ref()));
+    // And the more specific level can turn it back off.
+    assert!(!gamemode(&on, &mixed, target(&mixed).as_ref()));
+    assert!(!gamemode(&off, &mixed, target(&mixed).as_ref()));
+    // With no target in play, the environment decides.
+    assert!(gamemode(&off, &mixed, None));
+    assert!(!gamemode(&off, &quiet, None));
+}
+
+#[test]
+fn target_resolution_order() {
+    let env = environment(
+        "[targets.a]\nexe = \"a\"\n[targets.b]\nexe = \"b\"\ndefault = true\n[targets.c]\nexe = \"c\"\n",
+    );
+    assert_eq!(resolve_target(&env, Some("c")).unwrap().0, "c");
+    assert_eq!(resolve_target(&env, None).unwrap().0, "b");
+    assert_eq!(default_target(&env).unwrap(), "b");
+    assert!(matches!(
+        resolve_target(&env, Some("zzz")),
+        Err(Error::UnknownTarget { .. })
+    ));
+
+    let single = environment("[targets.only]\nexe = \"x\"\n");
+    assert_eq!(resolve_target(&single, None).unwrap().0, "only");
+    assert_eq!(default_target(&single).unwrap(), "only");
+
+    let none = environment("");
+    assert!(matches!(
+        resolve_target(&none, None),
+        Err(Error::NoTargets(_))
+    ));
+
+    let ambiguous = environment("[targets.a]\nexe = \"a\"\n[targets.b]\nexe = \"b\"\n");
+    let err = resolve_target(&ambiguous, None).unwrap_err();
+    assert!(err.to_string().contains("a, b"), "{err}");
+}
+
+#[test]
+fn windows_paths_resolve_inside_the_prefix() {
+    let f = fixture();
+    let program =
+        resolve_program(&f.paths, &f.prefix, r"c:\program files\app\APP.exe", false).unwrap();
+    assert_eq!(program.wine_args, [r"c:\program files\app\APP.exe"]);
+    assert_eq!(
+        program.dir.as_deref(),
+        Some(f.prefix.join("drive_c/Program Files/App").as_path())
+    );
+    assert!(matches!(
+        resolve_program(
+            &f.paths,
+            &f.prefix,
+            r"C:\Program Files\App\missing.exe",
+            false
+        ),
+        Err(Error::ExeNotFound(_))
+    ));
+    assert!(matches!(
+        resolve_program(&f.paths, &f.prefix, r"C:\Program Files\App", false),
+        Err(Error::ExeNotFound(_))
+    ));
+}
+
+#[test]
+fn bare_names_go_straight_to_wine() {
+    let f = fixture();
+    let program = resolve_program(&f.paths, &f.prefix, "notepad", false).unwrap();
+    assert_eq!(
+        program,
+        Program {
+            wine_args: vec!["notepad".to_owned()],
+            dir: None
+        }
+    );
+    assert_eq!(program.default_cwd(&f.prefix), f.prefix.join("drive_c"));
+}
+
+#[test]
+fn unix_paths_expand_and_must_exist() {
+    let f = fixture();
+    let program = resolve_program(&f.paths, &f.prefix, "~/setup.exe", false).unwrap();
+    let home = f.prefix.parent().unwrap();
+    assert_eq!(
+        program.wine_args,
+        [home.join("setup.exe").to_str().unwrap()]
+    );
+    assert_eq!(program.dir.as_deref(), Some(home));
+    assert!(matches!(
+        resolve_program(&f.paths, &f.prefix, "~/nope.exe", false),
+        Err(Error::ExeNotFound(_))
+    ));
+}
+
+#[test]
+fn msi_files_go_through_msiexec() {
+    let f = fixture();
+    let home = f.prefix.parent().unwrap();
+    let program = resolve_program(&f.paths, &f.prefix, "~/setup.msi", false).unwrap();
+    let dos = format!(
+        "Z:{}",
+        home.join("setup.msi").to_str().unwrap().replace('/', "\\")
+    );
+    assert_eq!(program.wine_args, ["msiexec", "/i", dos.as_str()]);
+
+    let bare = resolve_program(&f.paths, &f.prefix, "thing.MSI", false).unwrap();
+    assert_eq!(bare.wine_args, ["msiexec", "/i", "thing.MSI"]);
+}
+
+#[test]
+fn check_program_path_passes_bare_names_and_windows_paths() {
+    let f = fixture();
+    assert!(check_program_path(&f.paths, "notepad").is_ok());
+    assert!(check_program_path(&f.paths, r"C:\Program Files\App\missing.exe").is_ok());
+}
+
+#[test]
+fn check_program_path_requires_existing_unix_paths() {
+    let f = fixture();
+    let home = f.prefix.parent().unwrap();
+    assert!(check_program_path(&f.paths, "~/setup.exe").is_ok());
+    assert!(matches!(
+        check_program_path(&f.paths, "~/nope.exe"),
+        Err(Error::ExeNotFound(_))
+    ));
+
+    let existing = home.join("setup.exe");
+    assert!(check_program_path(&f.paths, existing.to_str().unwrap()).is_ok());
+    let missing = home.join("nope.exe");
+    assert!(matches!(
+        check_program_path(&f.paths, missing.to_str().unwrap()),
+        Err(Error::ExeNotFound(_))
+    ));
+}
+
+#[test]
+fn target_checks_need_no_prefix() {
+    let f = fixture();
+    let global = GlobalConfig::default();
+    let runner = Runner::fake("wine");
+    let check = |text: &str, target: Option<&str>| {
+        let overrides = Overrides {
+            target: target.map(str::to_owned),
+            ..Default::default()
+        };
+        Launch::check_target(&f.paths, &global, &environment(text), &runner, &overrides)
+    };
+    let windows = "[targets.app]\nexe = 'C:\\Games\\app.exe'\ncwd = 'C:\\Games'\n";
+    assert!(check(windows, None).is_ok());
+    assert!(check("[targets.app]\nexe = \"~/setup.exe\"\n", None).is_ok());
+    assert!(matches!(check("", None), Err(Error::NoTargets(_))));
+    assert!(matches!(
+        check(windows, Some("nope")),
+        Err(Error::UnknownTarget { .. })
+    ));
+    assert!(matches!(
+        check("[targets.app]\nexe = \"~/missing.exe\"\n", None),
+        Err(Error::ExeNotFound(_))
+    ));
+    assert!(matches!(
+        check("[targets.app]\nexe = \"app\"\ncwd = \"~/missing\"\n", None),
+        Err(Error::CwdNotFound(_))
+    ));
+}
+
+#[test]
+fn exec_checks_need_no_prefix() {
+    let f = fixture();
+    let check = |program: &str| {
+        Launch::check_exec(
+            &f.paths,
+            &GlobalConfig::default(),
+            &environment(""),
+            &Runner::fake("wine"),
+            program,
+            &BTreeMap::new(),
+        )
+    };
+    assert!(check("notepad").is_ok());
+    assert!(check(r"C:\missing.exe").is_ok());
+    assert!(matches!(
+        check("/nonexistent/setup.exe"),
+        Err(Error::ExeNotFound(_))
+    ));
+}
+
+#[test]
+fn cwd_accepts_windows_and_unix_paths() {
+    let f = fixture();
+    assert_eq!(
+        resolve_cwd(&f.paths, &f.prefix, r"C:\Program Files").unwrap(),
+        f.prefix.join("drive_c/Program Files")
+    );
+    assert_eq!(
+        resolve_cwd(&f.paths, &f.prefix, "~/prefix").unwrap(),
+        f.prefix
+    );
+    assert!(matches!(
+        resolve_cwd(&f.paths, &f.prefix, r"C:\nope"),
+        Err(Error::CwdNotFound(_))
+    ));
+}
+
+#[test]
+fn env_precedence_is_global_then_environment_then_overrides() {
+    let global = GlobalConfig::parse(
+        Path::new("/g.toml"),
+        "[env]\nA = \"global\"\nB = \"global\"\nC = \"global\"\n",
+    )
+    .unwrap();
+    let env = environment("[env]\nB = \"env\"\nC = \"env\"\n");
+    let overrides = BTreeMap::from([("C".to_owned(), "cli".to_owned())]);
+    let merged = merge_env(&Runner::fake("wine"), &global, &env, &overrides).unwrap();
+    assert_eq!(merged["A"], "global");
+    assert_eq!(merged["B"], "env");
+    assert_eq!(merged["C"], "cli");
+}
+
+#[test]
+fn merged_wine_dll_overrides_disables_the_menu_builder() {
+    let global = GlobalConfig::default();
+    let env = environment("[env]\nWINEDLLOVERRIDES = \"foo.dll=n\"\n");
+    let merged = merge_env(&Runner::fake("wine"), &global, &env, &BTreeMap::new()).unwrap();
+    assert_eq!(
+        merged["WINEDLLOVERRIDES"],
+        "foo.dll=n;winemenubuilder.exe=d"
+    );
+
+    let opted_in = BTreeMap::from([(
+        "WINEDLLOVERRIDES".to_owned(),
+        "winemenubuilder.exe=n".to_owned(),
+    )]);
+    let merged = merge_env(&Runner::fake("wine"), &global, &env, &opted_in).unwrap();
+    assert_eq!(merged["WINEDLLOVERRIDES"], "winemenubuilder.exe=n");
+
+    let none = environment("");
+    let merged = merge_env(&Runner::fake("wine"), &global, &none, &BTreeMap::new()).unwrap();
+    assert!(!merged.contains_key("WINEDLLOVERRIDES"));
+}
+
+#[test]
+fn env_assignments_are_validated() {
+    assert_eq!(
+        parse_env_assignment("DXVK_HUD=fps=1").unwrap(),
+        ("DXVK_HUD".to_owned(), "fps=1".to_owned())
+    );
+    assert!(matches!(
+        parse_env_assignment("NOEQUALS"),
+        Err(Error::InvalidEnvAssignment(_))
+    ));
+    assert!(parse_env_assignment("=x").is_err());
+    assert!(parse_env_assignment("WINEPREFIX=/x").is_err());
+}
+
+fn native(name: &str, text: &str) -> Environment {
+    let text = format!("kind = \"native\"\n{text}");
+    Environment {
+        name: name.to_owned(),
+        path: PathBuf::from(format!("/{name}.toml")),
+        config: EnvironmentConfig::parse(Path::new(&format!("/{name}.toml")), &text).unwrap(),
+    }
+}
+
+fn script(path: &Path, mode: u32) {
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    write_executable(path, "#!/bin/sh\n", mode);
+}
+
+fn native_launch(paths: &Paths, exe: &str) -> Result<Launch> {
+    let env = native("dusk", &format!("[targets.game]\nexe = '{exe}'\n"));
+    Launch::target(paths, &GlobalConfig::default(), &env, &Overrides::default())
+}
+
+#[test]
+fn a_native_exe_by_absolute_or_home_path_runs_in_its_own_dir() {
+    let f = fixture();
+    let home = f.prefix.parent().unwrap();
+    let exe = home.join("Games/Dusk/dusk.sh");
+    script(&exe, 0o755);
+
+    let launch = native_launch(&f.paths, exe.to_str().unwrap()).unwrap();
+    assert!(matches!(&launch.host, Host::Native { exe: found } if *found == exe));
+    assert_eq!(launch.cwd, home.join("Games/Dusk"));
+    assert!(launch.host.runner().is_none());
+    assert!(launch.host.prefix().is_none());
+
+    let launch = native_launch(&f.paths, "~/Games/Dusk/dusk.sh").unwrap();
+    assert!(matches!(&launch.host, Host::Native { exe: found } if *found == exe));
+    assert_eq!(launch.cwd, home.join("Games/Dusk"));
+
+    assert!(matches!(
+        native_launch(&f.paths, "~/Games/Dusk/missing.sh"),
+        Err(Error::ExeNotFound(_))
+    ));
+}
+
+#[test]
+fn a_bare_native_name_is_looked_up_on_path_and_runs_in_home() {
+    let f = fixture();
+    let home = f.prefix.parent().unwrap();
+    let first = home.join("first");
+    let second = home.join("second");
+    script(&second.join("dusk"), 0o755);
+    // Not executable, so a shell would skip it too.
+    script(&first.join("dusk"), 0o644);
+    let path_var =
+        std::env::join_paths([PathBuf::from("relative"), first.clone(), second.clone()]).unwrap();
+    assert_eq!(native_on_path(&path_var, "dusk"), Some(second.join("dusk")));
+    assert_eq!(native_on_path(&path_var, "nope"), None);
+
+    // Something every system has on PATH.
+    let launch = native_launch(&f.paths, "sh").unwrap();
+    let Host::Native { exe } = &launch.host else {
+        panic!("not native");
+    };
+    assert!(exe.is_absolute() && exe.ends_with("sh"), "{exe:?}");
+    assert_eq!(launch.cwd, home);
+    assert!(matches!(
+        native_launch(&f.paths, "wineo-surely-not-installed"),
+        Err(Error::NotOnPath(_))
+    ));
+}
+
+#[test]
+fn a_native_exe_that_is_not_executable_is_refused() {
+    let f = fixture();
+    let home = f.prefix.parent().unwrap();
+    script(&home.join("Games/foo/start.sh"), 0o644);
+    let err = native_launch(&f.paths, "~/Games/foo/start.sh").unwrap_err();
+    assert_eq!(
+        err.to_string(),
+        "~/Games/foo/start.sh is not executable. Run chmod +x on it."
+    );
+}
+
+#[test]
+fn a_native_target_cannot_be_a_windows_program() {
+    let f = fixture();
+    let home = f.prefix.parent().unwrap();
+    // Even an executable one on disk.
+    script(&home.join("game.EXE"), 0o755);
+    for exe in [
+        r"C:\Games\game.exe",
+        "c:/games/game",
+        "~/game.EXE",
+        "setup.msi",
+        "~/run.bat",
+        "/x/Game.Lnk",
+    ] {
+        let err = native_launch(&f.paths, exe).unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "dusk is native, so its target can't be a Windows program",
+            "{exe}"
+        );
+    }
+}
+
+#[test]
+fn a_relative_native_exe_only_works_in_a_portable_folder() {
+    let f = fixture();
+    assert!(matches!(
+        native_launch(&f.paths, "bin/game"),
+        Err(Error::RelativeExe(_))
+    ));
+
+    let root = f.prefix.parent().unwrap().join("usb");
+    script(&root.join("bin/game"), 0o755);
+    let home = f.prefix.parent().unwrap().to_owned();
+    let portable = Paths::select(
+        move |key| (key == "HOME").then(|| OsString::from(home.as_os_str())),
+        Some(&root),
+    )
+    .unwrap();
+    let launch = native_launch(&portable, "bin/game").unwrap();
+    let root = root.canonicalize().unwrap();
+    assert!(
+        matches!(&launch.host, Host::Native { exe } if crate::paths::resolve(exe) == root.join("bin/game")),
+        "{:?}",
+        launch.host
+    );
+}
+
+#[test]
+fn a_native_launch_applies_env_and_args_and_adds_no_wine_variables() {
+    let f = fixture();
+    let home = f.prefix.parent().unwrap();
+    let exe = home.join("dusk.sh");
+    script(&exe, 0o755);
+    let global = GlobalConfig::parse(
+        Path::new("/g.toml"),
+        "[env]\nA = \"global\"\nB = \"global\"\n",
+    )
+    .unwrap();
+    let env = native(
+        "dusk",
+        &format!(
+            "[env]\nB = \"env\"\nWINEPREFIX = \"/mine\"\nWINEDLLOVERRIDES = \"x=n\"\n[targets.game]\nexe = '{}'\nargs = [\"-a\"]\ncwd = '~'\n",
+            exe.display()
+        ),
+    );
+    let overrides = Overrides {
+        env: BTreeMap::from([("C".to_owned(), "cli".to_owned())]),
+        args: vec!["-b".to_owned()],
+        ..Default::default()
+    };
+    let launch = Launch::target(&f.paths, &global, &env, &overrides).unwrap();
+    assert_eq!(launch.args, ["-a", "-b"]);
+    assert_eq!(launch.cwd, home);
+    assert_eq!(launch.env["A"], "global");
+    assert_eq!(launch.env["B"], "env");
+    assert_eq!(launch.env["C"], "cli");
+    // Passed through as written, with nothing wineo adds or rewrites.
+    assert_eq!(launch.env["WINEPREFIX"], "/mine");
+    assert_eq!(launch.env["WINEDLLOVERRIDES"], "x=n");
+
+    let command = launch.command();
+    assert_eq!(command.get_program(), exe.as_os_str());
+    let args: Vec<_> = command.get_args().collect();
+    assert_eq!(args, ["-a", "-b"]);
+    assert_eq!(command.get_current_dir(), Some(home));
+    let set: BTreeMap<_, _> = command
+        .get_envs()
+        .map(|(key, value)| (key.to_owned(), value.map(|v| v.to_owned())))
+        .collect();
+    let wine: Vec<_> = set
+        .keys()
+        .filter(|key| key.to_string_lossy().starts_with("WINE"))
+        .collect();
+    assert_eq!(wine, ["WINEDLLOVERRIDES", "WINEPREFIX"]);
+    assert_eq!(
+        set[OsStr::new("WINEDLLOVERRIDES")].as_deref(),
+        Some(OsStr::new("x=n"))
+    );
+    assert!(!set.contains_key(OsStr::new("PROTONPATH")));
+}
+
+/// Every wrapper resolves to `/bin/<name>`.
+fn found(program: &str) -> Option<PathBuf> {
+    Some(PathBuf::from("/bin").join(program))
+}
+
+fn command_line(command: &Command) -> Vec<String> {
+    std::iter::once(command.get_program())
+        .chain(command.get_args())
+        .map(|arg| arg.to_string_lossy().into_owned())
+        .collect()
+}
+
+/// A native launch of `/usr/bin/dusklight -x` under whatever `text`
+/// turns on, with `global` underneath.
+fn wrapped_native(global: &str, text: &str) -> Result<Vec<String>> {
+    let f = fixture();
+    let global = GlobalConfig::parse(Path::new("/g.toml"), global).unwrap();
+    let env = native(
+        "dusk",
+        &format!("{text}\n[targets.game]\nexe = '/bin/sh'\nargs = [\"-x\"]\n"),
+    );
+    let launch = Launch::target_in(&f.paths, &global, &env, &Overrides::default(), true, found)?;
+    Ok(command_line(&launch.command()))
+}
+
+#[test]
+fn wrappers_run_in_heroic_order() {
+    let line = |global: &str, text: &str| wrapped_native(global, text).unwrap().join(" ");
+    assert_eq!(line("", ""), "/bin/sh -x");
+    assert_eq!(line("gamemode = true", ""), "/bin/gamemoderun /bin/sh -x");
+    assert_eq!(
+        line("mangohud = true", ""),
+        "/bin/mangohud --dlsym /bin/sh -x"
+    );
+    assert_eq!(line("", "[gamescope]"), "/bin/gamescope -- /bin/sh -x");
+    assert_eq!(
+        line("gamemode = true\nmangohud = true", ""),
+        "/bin/mangohud --dlsym /bin/gamemoderun /bin/sh -x"
+    );
+    assert_eq!(
+        line(
+            "gamemode = true",
+            "[gamescope]\nwidth = 1280\nheight = 720\nwindow = \"fullscreen\"\nargs = [\"--hdr-enabled\"]"
+        ),
+        "/bin/gamescope -w 1280 -h 720 -f --hdr-enabled -- /bin/gamemoderun /bin/sh -x"
+    );
+    // Under gamescope, MangoHud is its flag rather than a wrapper.
+    assert_eq!(
+        line("mangohud = true", "[gamescope]\nfps_limit = 60"),
+        "/bin/gamescope -r 60 --mangoapp -- /bin/sh -x"
+    );
+    assert_eq!(
+        line(
+            "gamemode = true\nmangohud = true",
+            "[gamescope]\nargs = [\"--expose-wayland\"]"
+        ),
+        "/bin/gamescope --mangoapp --expose-wayland -- /bin/gamemoderun /bin/sh -x"
+    );
+}
+
+#[test]
+fn wrappers_go_in_front_of_wine() {
+    let launch = Launch {
+        host: Host::Wine {
+            runner: Runner::fake("wine"),
+            prefix: PathBuf::from("/p"),
+        },
+        target: Some("app".to_owned()),
+        args: vec!["app.exe".to_owned()],
+        cwd: PathBuf::from("/"),
+        env: BTreeMap::new(),
+        wrappers: Wrappers {
+            gamescope: Some(PathBuf::from("/bin/gamescope")),
+            gamescope_args: vec!["-f".to_owned(), "--mangoapp".to_owned()],
+            mangohud: None,
+            gamemode: Some(PathBuf::from("/bin/gamemoderun")),
+            env: None,
+            sh: Some(PathBuf::from("/bin/sh")),
+            wineserver: Runner::fake("wine").wineserver_path().map(Path::to_owned),
+        },
+        wayland: Wayland::Off,
+        gameid: None,
+        store: None,
+        build_guards: Vec::new(),
+    };
+    let wine = Runner::fake("wine")
+        .wine_path()
+        .unwrap()
+        .display()
+        .to_string();
+    assert_eq!(
+        command_line(&launch.command()),
+        [
+            "/bin/gamescope",
+            "-f",
+            "--mangoapp",
+            "--",
+            "/bin/sh",
+            "-c",
+            "\"$@\"; status=$?; \"$0\" -w; exit $status",
+            &Runner::fake("wine")
+                .wineserver_path()
+                .unwrap()
+                .display()
+                .to_string(),
+            "/bin/gamemoderun",
+            &wine,
+            "app.exe"
+        ]
+    );
+}
+
+#[test]
+fn only_plain_wine_under_gamescope_waits_for_its_prefix() {
+    let f = fixture();
+    let wine = wine_launch(&f, true, "gamemode = true\n[gamescope]", true).unwrap();
+    let Host::Wine { runner, .. } = &wine.host else {
+        panic!("expected Wine");
+    };
+    let wine_path = runner.wine_path().unwrap().display().to_string();
+    let wineserver = runner.wineserver_path().unwrap().display().to_string();
+    let program = r"C:\Program Files\App\app.exe";
+    let script = "\"$@\"; status=$?; \"$0\" -w; exit $status";
+    assert_eq!(
+        command_line(&wine.command()),
+        [
+            "/bin/gamescope",
+            "--",
+            "/bin/sh",
+            "-c",
+            script,
+            &wineserver,
+            "/bin/gamemoderun",
+            &wine_path,
+            program,
+        ]
+    );
+    let wayland = wine_launch(&f, true, "wayland = true\n[gamescope]", true).unwrap();
+    assert_eq!(
+        command_line(&wayland.command()),
+        [
+            "/bin/gamescope",
+            "--expose-wayland",
+            "--",
+            "/bin/env",
+            "-u",
+            "DISPLAY",
+            "/bin/sh",
+            "-c",
+            script,
+            &wineserver,
+            &wine_path,
+            program,
+        ]
+    );
+    let no_gamescope = wine_launch(&f, true, "", true).unwrap();
+    assert_eq!(
+        command_line(&no_gamescope.command()),
+        [wine_path.as_str(), program]
+    );
+
+    let proton = Wrappers {
+        gamescope: Some(PathBuf::from("/bin/gamescope")),
+        gamescope_args: vec!["--mangoapp".to_owned()],
+        ..Wrappers::default()
+    };
+    let mut command = runner::wrapped(Path::new("/bin/umu-run"), &proton.command_line());
+    command.arg(program);
+    assert_eq!(
+        command_line(&command),
+        [
+            "/bin/gamescope",
+            "--mangoapp",
+            "--",
+            "/bin/umu-run",
+            program
+        ]
+    );
+}
+
+#[test]
+fn a_missing_wrapper_refuses_the_launch() {
+    let f = fixture();
+    let launch = |text: &str, missing: &'static str| {
+        let env = native(
+            "dusk",
+            &format!("{text}\n[targets.game]\nexe = '/bin/sh'\n"),
+        );
+        Launch::target_in(
+            &f.paths,
+            &GlobalConfig::default(),
+            &env,
+            &Overrides::default(),
+            true,
+            move |program: &str| (program != missing).then(|| found(program)).flatten(),
+        )
+        .map(|_| ())
+    };
+    assert!(matches!(
+        launch("[gamescope]", "gamescope"),
+        Err(Error::GamescopeMissing(name)) if name == "dusk"
+    ));
+    assert!(matches!(
+        launch("mangohud = true", "mangohud"),
+        Err(Error::MangohudMissing(_))
+    ));
+    // Under gamescope it's mangoapp that has to be there.
+    assert!(launch("mangohud = true\n[gamescope]", "mangohud").is_ok());
+    assert!(matches!(
+        launch("mangohud = true\n[gamescope]", "mangoapp"),
+        Err(Error::MangohudMissing(_))
+    ));
+    assert!(matches!(
+        launch("gamemode = true", "gamemoderun"),
+        Err(Error::GamemodeMissing(_))
+    ));
+    assert!(launch("gamemode = false\nmangohud = false", "gamemoderun").is_ok());
+}
+
+#[test]
+fn mangohud_and_wayland_take_the_most_specific_setting() {
+    let off = GlobalConfig::default();
+    let on = GlobalConfig {
+        mangohud: Some(true),
+        wayland: Some(true),
+        ..GlobalConfig::default()
+    };
+    let quiet = environment("[targets.app]\nexe = \"app\"\n");
+    let loud = environment("mangohud = true\nwayland = true\n\n[targets.app]\nexe = \"app\"\n");
+    let mixed = environment(
+        "mangohud = true\nwayland = true\n\n[targets.app]\nexe = \"app\"\nmangohud = false\nwayland = false\n",
+    );
+    let target = |env: &Environment| env.config.targets.get("app").cloned();
+    for setting in [mangohud, wayland] {
+        assert!(!setting(&off, &quiet, target(&quiet).as_ref()));
+        assert!(setting(&on, &quiet, target(&quiet).as_ref()));
+        assert!(setting(&off, &loud, target(&loud).as_ref()));
+        assert!(!setting(&on, &mixed, target(&mixed).as_ref()));
+        assert!(setting(&off, &mixed, None));
+    }
+    // A native environment has no Wine to switch, whatever the global says.
+    let native = native("dusk", "[targets.game]\nexe = \"dusk\"\n");
+    assert!(!wayland(&on, &native, native.config.targets.get("game")));
+    assert!(mangohud(&on, &native, native.config.targets.get("game")));
+}
+
+#[test]
+fn a_target_gamescope_replaces_the_environments_whole() {
+    let env = environment(
+        "[gamescope]\nwidth = 1920\nfilter = \"fsr\"\n\n[targets.plain]\nexe = \"a\"\n\n[targets.own]\nexe = \"b\"\n[targets.own.gamescope]\nwindow = \"borderless\"\n\n[targets.off]\nexe = \"c\"\ngamescope = false\n",
+    );
+    let args = |name: &str| {
+        gamescope(&env, env.config.targets.get(name)).map(|gamescope| gamescope.args(false))
+    };
+    assert_eq!(args("plain").unwrap(), ["-w", "1920", "-F", "fsr"]);
+    // No field merging: the target's table is all there is.
+    assert_eq!(args("own").unwrap(), ["-b"]);
+    assert_eq!(args("off"), None);
+    assert!(gamescope(&env, None).is_some());
+
+    let bare = environment("[targets.app]\nexe = \"a\"\n");
+    assert!(gamescope(&bare, bare.config.targets.get("app")).is_none());
+    let only_target =
+        environment("gamescope = false\n[targets.app]\nexe = \"a\"\n[targets.app.gamescope]\n");
+    assert!(gamescope(&only_target, only_target.config.targets.get("app")).is_some());
+}
+
+/// A launchable Wine environment on a fake runner at `runners/fake`,
+/// which has the Wayland driver when `driver` says so.
+fn wine_launch(f: &Fixture, driver: bool, text: &str, session: bool) -> Result<Launch> {
+    fs::write(f.prefix.join("system.reg"), "WINE REGISTRY Version 2\n").unwrap();
+    let root = f.prefix.parent().unwrap().join("runners/fake");
+    for name in ["wine", "wineserver"] {
+        script(&root.join("bin").join(name), 0o755);
+    }
+    let so = root.join("lib/wine/x86_64-unix/winewayland.so");
+    if driver {
+        fs::create_dir_all(so.parent().unwrap()).unwrap();
+        fs::write(&so, "").unwrap();
+    } else {
+        let _ = fs::remove_file(&so);
+    }
+    let text = format!(
+        "prefix = \"{}\"\nrunner = \"fake\"\narch = \"win64\"\n{text}\n[targets.app]\nexe = 'C:\\Program Files\\App\\app.exe'\n",
+        f.prefix.display()
+    );
+    let environment = Environment {
+        name: "palworld".to_owned(),
+        path: PathBuf::from("/palworld.toml"),
+        config: EnvironmentConfig::parse(Path::new("/palworld.toml"), &text).unwrap(),
+    };
+    let mut global = GlobalConfig::default();
+    global.defaults.runner_root = Some("~/runners".to_owned());
+    Launch::target_in(
+        &f.paths,
+        &global,
+        &environment,
+        &Overrides::default(),
+        session,
+        found,
+    )
+}
+
+fn envs(command: &Command) -> BTreeMap<String, Option<String>> {
+    command
+        .get_envs()
+        .map(|(key, value)| {
+            (
+                key.to_string_lossy().into_owned(),
+                value.map(|value| value.to_string_lossy().into_owned()),
+            )
+        })
+        .collect()
+}
+
+#[test]
+fn wayland_on_wine_takes_display_away_even_from_env() {
+    let f = fixture();
+    let launch = wine_launch(&f, true, "wayland = true\n[env]\nDISPLAY = \":1\"\n", true).unwrap();
+    assert_eq!(launch.wayland, Wayland::On);
+    let set = envs(&launch.command());
+    assert_eq!(set.get("DISPLAY"), Some(&None));
+    assert!(!set.contains_key("PROTON_ENABLE_WAYLAND"));
+
+    let launch = wine_launch(&f, true, "[env]\nDISPLAY = \":1\"\n", true).unwrap();
+    assert_eq!(launch.wayland, Wayland::Off);
+    assert_eq!(envs(&launch.command())["DISPLAY"].as_deref(), Some(":1"));
+}
+
+#[test]
+fn wayland_under_gamescope_exposes_it_and_drops_display_inside() {
+    let f = fixture();
+    let launch = wine_launch(
+        &f,
+        true,
+        "wayland = true\n[gamescope]\nwindow = \"fullscreen\"",
+        true,
+    )
+    .unwrap();
+    let line = command_line(&launch.command()).join(" ");
+    assert!(
+            line.starts_with("/bin/gamescope -f --expose-wayland -- /bin/env -u DISPLAY /bin/sh -c \"$@\"; status=$?; \"$0\" -w; exit $status "),
+            "{line}"
+        );
+    assert!(line.contains("runners/fake/bin/wine "), "{line}");
+
+    // Already in args, it isn't passed twice.
+    let launch = wine_launch(
+        &f,
+        true,
+        "wayland = true\n[gamescope]\nargs = [\"--expose-wayland\"]",
+        true,
+    )
+    .unwrap();
+    let line = command_line(&launch.command());
+    assert_eq!(
+        line.iter().filter(|arg| *arg == "--expose-wayland").count(),
+        1
+    );
+
+    // Off, or outside a session, gamescope runs as configured.
+    for (text, session) in [("", true), ("wayland = true\n", false)] {
+        let launch = wine_launch(&f, true, &format!("{text}[gamescope]"), session).unwrap();
+        let line = command_line(&launch.command()).join(" ");
+        assert!(
+            line.starts_with(
+                "/bin/gamescope -- /bin/sh -c \"$@\"; status=$?; \"$0\" -w; exit $status "
+            ),
+            "{line}"
+        );
+        assert!(!line.contains("DISPLAY"), "{line}");
+    }
+}
+
+#[test]
+fn outside_a_wayland_session_wine_launches_on_x11() {
+    let f = fixture();
+    let launch = wine_launch(&f, true, "wayland = true\n", false).unwrap();
+    assert_eq!(launch.wayland, Wayland::NoSession);
+    assert!(!envs(&launch.command()).contains_key("DISPLAY"));
+}
+
+#[test]
+fn a_runner_without_the_driver_refuses_wayland() {
+    let f = fixture();
+    for session in [true, false] {
+        let err = wine_launch(&f, false, "wayland = true\n", session).unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "wayland is on for palworld, but fake doesn't support it"
+        );
+    }
+    assert!(wine_launch(&f, false, "wayland = false\n", true).is_ok());
+}
+
+#[test]
+fn check_target_refuses_what_a_launch_would() {
+    let f = fixture();
+    // Not Runner::fake, whose `true` may sit next to a real Wayland driver.
+    let bin = f.prefix.parent().unwrap().join("runners/bare/bin");
+    let runner = Runner::wine_build("bare".to_owned(), bin.join("wine"), bin.join("wineserver"));
+    let check = |text: &str| {
+        Launch::check_target(
+            &f.paths,
+            &GlobalConfig::default(),
+            &environment(&format!("{text}\n[targets.app]\nexe = \"app\"\n")),
+            &runner,
+            &Overrides::default(),
+        )
+    };
+    assert!(matches!(
+        check("wayland = true"),
+        Err(Error::WaylandUnsupported { .. })
+    ));
+    assert!(check("wayland = false").is_ok());
+}
+
+#[test]
+fn wayland_on_proton_sets_its_variable() {
+    let mut command = Command::new("umu-run");
+    command.env("DISPLAY", ":0");
+    with_wayland(&mut command, &Runner::fake_proton("GE-Proton11-7"));
+    let set = envs(&command);
+    assert_eq!(set["PROTON_ENABLE_WAYLAND"].as_deref(), Some("1"));
+    assert_eq!(set["DISPLAY"].as_deref(), Some(":0"));
+
+    let mut command = Command::new("wine");
+    with_wayland(&mut command, &Runner::fake("wine"));
+    let set = envs(&command);
+    assert_eq!(set.get("DISPLAY"), Some(&None));
+    assert!(!set.contains_key("PROTON_ENABLE_WAYLAND"));
+}
+
+#[test]
+fn exec_gets_no_wrappers_or_wayland() {
+    let f = fixture();
+    fs::write(f.prefix.join("system.reg"), "WINE REGISTRY Version 2\n").unwrap();
+    let root = f.prefix.parent().unwrap().join("runners/fake");
+    for name in ["wine", "wineserver"] {
+        script(&root.join("bin").join(name), 0o755);
+    }
+    let text = format!(
+        "prefix = \"{}\"\nrunner = \"fake\"\narch = \"win64\"\ngamemode = true\nmangohud = true\nwayland = true\n[gamescope]\n",
+        f.prefix.display()
+    );
+    let environment = Environment {
+        name: "app".to_owned(),
+        path: PathBuf::from("/app.toml"),
+        config: EnvironmentConfig::parse(Path::new("/app.toml"), &text).unwrap(),
+    };
+    let mut global = GlobalConfig::default();
+    global.defaults.runner_root = Some("~/runners".to_owned());
+    let launch = Launch::exec(
+        &f.paths,
+        &global,
+        &environment,
+        "winecfg",
+        &[],
+        &BTreeMap::new(),
+    )
+    .unwrap();
+    assert_eq!(launch.wrappers, Wrappers::default());
+    assert_eq!(launch.wayland, Wayland::Off);
+    assert_eq!(
+        command_line(&launch.command()),
+        [
+            root.join("bin/wine").display().to_string(),
+            "winecfg".to_owned()
+        ]
+    );
+}
+
+#[test]
+fn native_target_checks_cover_the_exe_without_a_runner() {
+    let f = fixture();
+    let env = native("dusk", "[targets.game]\nexe = 'game.exe'\n");
+    assert!(matches!(
+        Launch::check_target(
+            &f.paths,
+            &GlobalConfig::default(),
+            &env,
+            &Runner::fake("wine"),
+            &Overrides::default()
+        ),
+        Err(Error::NativeWindowsTarget(_))
+    ));
+    assert!(matches!(
+        Launch::check_native_target(
+            &f.paths,
+            &GlobalConfig::default(),
+            &native("dusk", ""),
+            &Overrides::default()
+        ),
+        Err(Error::NoTargets(_))
+    ));
+}
+
+#[test]
+fn exec_still_needs_a_prefix() {
+    let f = fixture();
+    let env = native("dusk", "");
+    assert!(matches!(
+        Launch::exec(
+            &f.paths,
+            &GlobalConfig::default(),
+            &env,
+            "sh",
+            &[],
+            &BTreeMap::new()
+        ),
+        Err(Error::NoPrefix(_))
+    ));
+}
+
+#[test]
+fn a_bare_native_name_uses_the_path_the_game_gets() {
+    let f = fixture();
+    let home = f.prefix.parent().unwrap();
+    let from_global = home.join("global-bin");
+    let from_env = home.join("env-bin");
+    let from_cli = home.join("cli-bin");
+    for dir in [&from_global, &from_env, &from_cli] {
+        script(&dir.join("dusk"), 0o755);
+    }
+    script(&from_global.join("only-global"), 0o755);
+    let global = GlobalConfig::parse(
+        Path::new("/g.toml"),
+        &format!("[env]\nPATH = \"{}\"\n", from_global.display()),
+    )
+    .unwrap();
+    let launch = |env_path: Option<&Path>, cli_path: Option<&Path>, exe: &str| {
+        let table = env_path
+            .map(|dir| format!("[env]\nPATH = \"{}\"\n", dir.display()))
+            .unwrap_or_default();
+        let env = native("dusk", &format!("{table}[targets.game]\nexe = '{exe}'\n"));
+        let overrides = Overrides {
+            env: cli_path
+                .map(|dir| BTreeMap::from([("PATH".to_owned(), dir.display().to_string())]))
+                .unwrap_or_default(),
+            ..Default::default()
+        };
+        Launch::target(&f.paths, &global, &env, &overrides).map(|launch| launch.host)
+    };
+    let exe_of = |host: Result<Host>| match host.unwrap() {
+        Host::Native { exe } => exe,
+        Host::Wine { .. } | Host::Proxied { .. } => panic!("not native"),
+    };
+    assert_eq!(exe_of(launch(None, None, "dusk")), from_global.join("dusk"));
+    assert_eq!(
+        exe_of(launch(Some(&from_env), None, "dusk")),
+        from_env.join("dusk")
+    );
+    assert_eq!(
+        exe_of(launch(Some(&from_env), Some(&from_cli), "dusk")),
+        from_cli.join("dusk")
+    );
+    assert!(matches!(
+        launch(Some(&from_env), None, "only-global"),
+        Err(Error::NotOnPath(_))
+    ));
+}
+
+#[test]
+fn wineprefix_overrides_are_refused_only_for_wine() {
+    let overrides = BTreeMap::from([("WINEPREFIX".to_owned(), "/x".to_owned())]);
+    let global = GlobalConfig::default();
+    assert!(parse_launch_env_assignment("WINEPREFIX=/x").is_ok());
+    assert!(parse_launch_env_assignment("A=B=C").is_ok());
+    assert!(parse_launch_env_assignment("=x").is_err());
+    let err = merge_env(&Runner::fake("wine"), &global, &environment(""), &overrides).unwrap_err();
+    assert!(
+        err.to_string().contains("WINEPREFIX is managed by wineo"),
+        "{err}"
+    );
+    let merged = merge(None, &global, &native("dusk", ""), &overrides).unwrap();
+    assert_eq!(merged["WINEPREFIX"], "/x");
+}
