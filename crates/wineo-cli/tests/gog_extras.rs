@@ -105,6 +105,39 @@ fn a_bulk_migration_logs_in_to_gog_once_for_all_its_games() {
 }
 
 #[test]
+fn a_login_revoked_during_a_bulk_migration_reads_as_logged_out_for_later_games() {
+    let (f, api) = world();
+    f.install_proton("GE-Proton10-4");
+    f.heroic_disco(json!({
+        "type": "proton",
+        "name": "GE-Proton10-4",
+        "bin": "/nowhere/GE-Proton10-4/proton",
+    }));
+    logged_in(&f, &api);
+    api.with(|config| {
+        config.revoked = true;
+        config.art.insert(RIMWORLD, json!({}));
+        config.art.insert(DISCO, json!({}));
+    });
+    let out = f.gog(&api, &["import", "gog", "--all", "--yes"]);
+    assert_success(&out);
+    let warnings: Vec<_> = stderr(&out)
+        .lines()
+        .filter(|line| line.contains("playtime"))
+        .map(str::to_owned)
+        .collect();
+    assert_eq!(
+        warnings,
+        [
+            "warning: Couldn't import GOG playtime: Log in to GOG again: wineo import gog --login.",
+            "warning: Skipped GOG playtime: not logged in to GOG.",
+        ],
+        "{}",
+        stderr(&out)
+    );
+}
+
+#[test]
 fn a_gog_outage_only_warns() {
     let (f, api) = world();
     logged_in(&f, &api);

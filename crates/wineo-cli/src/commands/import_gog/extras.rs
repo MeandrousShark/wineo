@@ -49,6 +49,13 @@ impl<'a> Batch<'a> {
         // Playtime needs the login and art doesn't, so a login that can't be
         // read only costs the playtime.
         let account = self.account;
+        // A login that was revoked, cleared, or switched since the last game
+        // is read fresh, as opening a session per game used to.
+        if let Some(Ok(Some(session))) = &mut self.session
+            && session.check().is_err()
+        {
+            self.session = None;
+        }
         let session = self
             .session
             .get_or_insert_with(|| account.open(paths).map_err(|error| format!("{error:#}")));
