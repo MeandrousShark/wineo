@@ -6,7 +6,7 @@ Status: draft
 
 Install and update GOG Windows games through GOG's Galaxy content system,
 so an update downloads only what changed, and a game can follow a beta
-branch or roll back to an older build. Third of the three GOG plans, after
+branch or roll back to a recent build. Third of the three GOG plans, after
 [0049](0049-gog-games.md) (account, migration, native updates) and
 [0050](0050-gog-installs.md) (offline installers). It also closes 1.0
 criterion 8 in [features.md](../features.md): Galaxy builds ship as a
@@ -36,58 +36,100 @@ From 0049 and 0050 (2026-10-10):
   games stay on offline installers.
 
 On 2026-10-14 the maintainer answered questions 1 to 11 below with A
-each.
+each, and allowed a read-only probe with their GOG login.
+
+After the first plan review (2026-10-14), the maintainer settled four
+more points:
+
+- **a.** Galaxy follows 0049's file rules exactly: an old file is deleted
+  only when its content still matches what GOG shipped, your files are
+  moved aside to `<name>.wineo-saved`, and files wineo never wrote are
+  never touched.
+- **b.** When the installed build's manifest can't be had (a generation 1
+  build, no `buildId`, a build GOG no longer lists, or a game moving over
+  from the installer track), the target build's manifest is the starting
+  point and nothing is deleted. A file that already matches the target is
+  kept; anything else at a target path is moved aside and downloaded fresh.
+- **c.** Plain `wineo update NAME` on a pinned game changes nothing,
+  exits 0, and says how to unpin.
+- **d.** Logging out, or logging in as another account, removes saved
+  private-branch passwords.
 
 ## What GOG offers
 
-From reading heroic-gogdl 1.3.1, Heroic, and lgogdownloader 3.19
-(2026-10-14). None of this is official documentation. Items marked
-*inferred* weren't read in source; step 1 checks them live.
+From reading heroic-gogdl 1.3.1, Heroic, and lgogdownloader 3.19, then a
+read-only probe on 2026-10-14 with the maintainer's login: Disco Elysium,
+SimCity 4, The Witcher Enhanced Edition, Papers, Please, HuniePop 2, and
+Prison Architect, plus the dependency repository. None of this is official
+documentation. Items marked *probed* were checked live.
 
 - **Builds.** `content-system.gog.com/products/<id>/os/windows/builds?generation=2`
-  lists builds newest first (*inferred* from the docs and one game, Disco
-  Elysium). Each has `build_id`, `version_name`, `branch` (null for the
-  default branch), `generation` (1 or 2), `date_published`, and `link`. The
-  same list mixes generation 1 and 2 builds. Private branches need a
-  password (`&password=`), and `has_private_branches` says some exist.
-  Rollback is installing an older `build_id`.
+  lists builds with `build_id`, `version_name`, `branch` (null for the
+  default branch), `generation` (1 or 2), `date_published`, `public`,
+  `tags`, and `link`. *Probed:*
+  - The list holds only the newest few builds of each branch: 5 of Disco's
+    31, 10 of Prison Architect's 393. `limit`, `page`, and `offset` change
+    nothing, so older builds can't be reached.
+  - Within a branch, builds are newest first. Across the list, the default
+    branch comes first and named branches after, so the list as a whole
+    isn't in date order (Papers, Please), and one build can be listed on
+    two branches.
+  - Old games list generation 1 builds among generation 2 ones (SimCity 4,
+    The Witcher, Papers, Please), but every probed game's latest default
+    build is generation 2.
+  - `has_private_branches` is true for four of the six. Private branches
+    need `&password=`.
+  - Disco's installed build, `59781086834418085`, is its latest.
 - **Generation 2 manifests.** The build's `link` is zlib-compressed JSON:
-  `depots[]` (each with `productId`, `languages` that may include `*`,
-  optional `osBitness`, and a manifest hash), `dependencies[]` (ids like
-  `MSVC2017`, `DirectX`), `scriptInterpreter`, `installDirectory`, and
-  `products[]`. Each depot manifest, at `cdn.gog.com/content-system/v2/meta/ab/cd/<hash>`,
-  lists files (`DepotFile`: path with backslashes, chunks with `md5`,
-  `compressedMd5`, sizes, and an optional whole-file `md5` or `sha256`,
-  flags like `support` and `executable`), directories, and links.
-- **Chunks.** Files are cut into chunks of about 10 MiB, zlib-compressed,
-  and fetched by `compressedMd5` from a CDN whose URL template comes from a
-  `secure_link` call per product. Links expire (*inferred*); gogdl never
-  refreshes them.
-- **Small-file containers.** Some depots bundle small files into one
-  container (`sfcRef`). gogdl ignores it and those items still list their
-  own chunks (*inferred* from lgogdownloader falling back to them).
-- **Generation 1.** Older builds use a different, uncompressed format:
-  byte ranges of one big `main.bin`, with no per-chunk hashes. gogdl keeps
-  a second downloader for it.
-- **Updates.** Tools diff the old and new manifests by lowercased path:
-  new, changed, and deleted files. A changed file reuses matching chunks
-  from the old copy. GOG also offers xdelta3 patches between some builds;
-  gogdl falls back to chunks when there is none.
-- **Setup.** A Galaxy download is bare files. The installer's own work
-  (registry keys, redistributables) has to be done separately. For a
-  `scriptInterpreter` game, Heroic runs GOG's script interpreter (ISI)
-  from the dependency repository with the game's `goggame-<id>.script`,
-  then each redistributable the manifest lists (VC++, DirectX, PhysX),
-  silently, in the prefix. Games without the interpreter run their
-  products' `temp_executable` instead. The ISI's registry writes are
-  *inferred*.
-- **Dependencies** come from `content-system.gog.com/dependencies/repository?generation=2`,
-  a separate repository of depots in the same format. Ones under `__redist`
-  are shared between games; the rest belong in the game folder.
+  `depots[]` (each with `productId`, `languages` that may be `*`, optional
+  `osBitness`, and a manifest hash), `dependencies[]`, `scriptInterpreter`,
+  `installDirectory`, `products[]` (each with `temp_executable` and
+  `temp_arguments`), and an `offlineDepot`. Each depot manifest, at
+  `cdn.gog.com/content-system/v2/meta/ab/cd/<hash>`, lists `DepotFile`s
+  (backslash paths, chunks with `md5`, `compressedMd5`, and sizes, an
+  optional whole-file `md5` or `sha256`, and flags), `DepotDirectory`s,
+  and `DepotLink`s. *Probed:* the largest depot manifest was 1.4 MB
+  unpacked; `osBitness` splits depots into 32-bit and 64-bit sets in two of
+  six games; the `offlineDepot` holds only a `project.json` and is skipped.
+- **Files that aren't game files.** *Probed:* `goggame-<id>.info`,
+  `.hashdb`, `.script`, and `.ico` are ordinary depot files. Files flagged
+  `support` don't belong in the game folder: SimCity 4 has 433 (graphics
+  rules, a `userdocs\` template tree), and The Witcher's setup program
+  (`temp_executable`) is one. Tools keep them in a separate support folder
+  per product and hand it to setup, which copies what it needs.
+- **Chunks.** Files are cut into chunks of up to 10 MiB, zlib-compressed,
+  and fetched by `compressedMd5`. *Probed:* `secure_link` (per product)
+  returns two CDNs, fastly (priority 10) and gcore (`fallback_only`), each
+  a URL template with a token that expires about 24 hours later. Chunks
+  downloaded from fastly matched both their compressed and unpacked MD5s.
+- **Small-file containers.** Depots bundle small files into a container
+  (`sfcRef`). *Probed:* every one of 2,376 such items in the six games also
+  lists its own chunks, so the container can be ignored, as gogdl does.
+- **Generation 1.** Older builds use another format: byte ranges of one
+  big `main.bin`, with no per-chunk hashes.
+- **Updates.** Tools diff the old and new manifests by lowercased path. A
+  changed file reuses matching chunks from the old copy. GOG also offers
+  xdelta3 patches between some builds.
+- **Setup.** A Galaxy download is bare files; what an installer would do
+  happens separately. For a `scriptInterpreter` game, Heroic runs GOG's
+  script interpreter (ISI) with `/DIR`, `/supportDir`, `/ProductId`,
+  `/buildId`, `/versionName`, and language arguments; ISI reads the
+  game's `goggame-<id>.script`. Games without it run each product's
+  `temp_executable` from the support folder. Then each listed
+  redistributable runs silently in the prefix. What ISI writes (registry
+  keys, copied support files) isn't documented; step 5 checks it in a
+  throwaway prefix.
+- **Dependencies** come from `content-system.gog.com/dependencies/repository?generation=2`.
+  *Probed:* 68 entries, each with `dependencyId`, `executable` (`path` and
+  `arguments`), `internal`, a manifest hash, and sizes. ISI is one
+  (`__redist/ISI/scriptinterpreter.exe`). Some have no executable at all
+  (DOSBox, ScummVM, nGlide, `language_setup`); some are `.msi` packages
+  (XNA, PhysX Legacy) that need `msiexec`; MSVC 2005's arguments nest
+  quoted commands. Games list ids like `MSVC2017`, `DirectX`, and
+  `language_setup`.
 - **A game installed by another tool** has no stored manifest. gogdl
-  re-downloads every file. Heroic rebuilds a manifest from the build in
-  `goggame-<id>.info`; lgogdownloader skips files whose size and MD5
-  already match.
+  re-downloads every file; Heroic rebuilds a manifest from the build in
+  `goggame-<id>.info`.
 
 ## Existing foundation
 
@@ -97,17 +139,22 @@ From reading heroic-gogdl 1.3.1, Heroic, and lgogdownloader 3.19
   answers a placeholder link).
 - **Core** has 0049 and 0050's folder state files, journals, locks, launch
   protection, download cache, space checks, Inno runs in a prefix, and
-  launch targets from `goggame-<id>.info`. The state file already knows
-  `Track::Galaxy` and a product's `build`; only Heroic migration creates
-  that track today.
+  launch targets from `goggame-<id>.info`. 0049's publishing rules
+  (`update/publish.rs`) already delete old files only on a hash match and
+  move collisions aside.
+- **The version 1 state file already fits Galaxy.** `Track::Galaxy`
+  exists; a product records its `build`; a journal's `target` names the
+  track and each product's build; and `attempted` lists each entry an
+  operation will write with its type and MD5. Only Heroic migration
+  creates the Galaxy track today.
 - **What this plan turns on.** Galaxy is refused or skipped in core
   (`UpdateError::Galaxy`, `Reason::Galaxy`, `installer_only`, the
   `adopt_build` gate, `by_build`), the CLI (`update --all` skips with a
   note), the app (**Update on GOG** with no action), and the docs
   (`gog.md`, `json-output.md`, `core-api.md`). Each becomes a working
   path, or a narrower refusal for what stays out of scope.
-- **Not there yet:** redistributables. 0050's Windows installs never needed
-  them, since Inno runs its own.
+- **Not there yet:** redistributables and support files. 0050's Windows
+  installs never needed them, since Inno does that work itself.
 
 ## Questions for the maintainer
 
@@ -235,186 +282,331 @@ the plan can split there if a review asks.
 
 - Builds (existing), repository and depot manifests, the dependency
   repository, secure links, and chunk downloads, all in `wineo-gog`. zlib
-  through `flate2`'s pure-Rust backend. Manifests get their own size cap,
-  since a big depot manifest can pass the JSON cap of 16 MiB.
+  through `flate2`'s pure-Rust backend. Manifests get their own size cap
+  (64 MiB unpacked), well above the probed 1.4 MB.
 - A secure link is fetched per product (base game, each DLC, and the
-  dependency store) and fetched again on a 401 or 403, instead of retrying
-  a dead link like gogdl. CDN endpoints are tried in GOG's priority order,
-  moving to the next on failure.
+  dependency store), kept until a minute before its `expires_at`, and
+  fetched again on a 401 or 403 instead of retrying a dead link like
+  gogdl. Endpoints are tried by priority, with `fallback_only` ones only
+  after the others fail.
 - Each chunk is checked twice: the compressed bytes against
-  `compressedMd5` while downloading, and the decompressed bytes against
-  `md5` before they're written. A whole-file `md5` or `sha256` is checked
-  when the manifest has one.
+  `compressedMd5` while downloading, and the unpacked bytes against `md5`
+  before they're written. A whole-file `md5` or `sha256` is checked when
+  the manifest has one.
 - Small-file containers are ignored; files are built from their own
-  chunks. Step 1's probe confirms those items carry chunks, and a
-  manifest item with neither is refused with a clear error rather than
-  written empty.
+  chunks. A file item with no chunks but a nonzero size is refused with a
+  clear error rather than written empty.
+- Secure-link URLs, their tokens, and private-branch passwords never
+  appear in output, errors, logs, or `Debug` output, following 0049's rule
+  for tokens; tests assert it for each error path.
 
 ### Choosing a build
 
-- The latest build is the first generation 2 build in GOG's list on the
-  branch the game follows (the default branch unless question 7 set one).
-  Step 1 also checks the newest-first order against `date_published` on a
-  few games; if it doesn't hold, the plan sorts by date and says so here.
+- A game follows a branch: the default branch unless question 7 set
+  another. Its latest build is the first generation 2 build GOG lists on
+  that branch. Builds GOG no longer lists can't be installed, so rollback
+  reaches only the few recent builds GOG returns, and `--build` names one
+  of those: `GOG no longer lists build 5978... of Disco Elysium.`
 - Depots are kept when they belong to the base game or an owned DLC,
   match the language (or `*`), and match the prefix's arch where
-  `osBitness` is given (gogdl downloads both).
+  `osBitness` is given.
+
+### Files: game, support, and redistributables
+
+- **Game files** go into the install folder. Backslashes become slashes,
+  and a path that matches an existing entry case-insensitively reuses
+  that entry's name, since Windows games mix cases freely.
+- **Support files** (flag `support`) go into a per-game support folder,
+  `gog/support/<folder key>/<productId>/`, in wineo's data directory,
+  beside the folder's state file. Setup reads them from there. The folder
+  is removed with the game's state.
+- **Redistributables** live in a shared store, `gog/redist/` in wineo's
+  data directory, one folder per dependency and manifest hash
+  (`<dependencyId>/<hash>/`), so a newer version never replaces files a
+  running setup is using. A version is downloaded into a temporary
+  folder, verified, and renamed into place under that dependency's lock.
+  Running one takes the same lock shared. After a successful install or
+  update, versions no Galaxy game's record names are removed, each only
+  when its lock can be taken at once.
+- Dependencies outside `__redist`, and those with no executable, are
+  downloaded but not run. ISI comes from the same store.
+
+### The Galaxy record (question 10)
+
+The state file stays at version 1 and stays authoritative. Its journal's
+`target` already names the target build, so the sidecar,
+`<folder key>.galaxy.json` beside it, holds only what version 1 has no
+room for:
+
+- `installed`: the filtered manifest of the committed build (every file,
+  support file, directory, and link with its chunks and hashes), and the
+  build it describes.
+- `pending`: the target build's filtered manifest, and the journal
+  `operation` it belongs to.
+- `follow`: the branch followed and the pinned build, if any.
+- `setup`: which setup steps finished, each with what identifies it
+  (below).
+
+How the two files stay consistent:
+
+- **Write order.** Before an operation's journal is written, the sidecar
+  is replaced with `pending` set for the new operation. The journal comes
+  next (0049's write-ahead rule), then the work. Before the state's commit,
+  the sidecar is replaced again with `installed` set to the target's
+  manifest and `pending` kept. Then the state commits, clearing its
+  journal. The next sidecar write drops `pending`. Each write is a
+  synced atomic replace, as the state file's is.
+- **Reading.** `installed` counts only when its build matches the state's
+  committed base build. `pending` counts only when its `operation`
+  matches the state's journal. A `pending` whose build is the committed
+  one (a crash between the commit and the cleanup) is promoted. Anything
+  else is stale and ignored.
+- **When the sidecar is missing, corrupt, or stale,** the game is treated
+  as having no stored manifest (answer b for repairs and track moves,
+  question 4's manifest fetch for updates). Since b never deletes, losing
+  the sidecar can't cost a file. A lost `follow` falls back to the default
+  branch, unpinned, and the next check says so.
+- **Another tool's build.** When `adopt_build` records a build that
+  `goggame-<id>.info` reports, the sidecar's `installed` no longer matches
+  and is ignored from then on, including after a downgrade to a wineo
+  that doesn't know the sidecar.
+- **Track moves** commit the new track first, then remove the sidecar. A
+  sidecar left behind by a crash is ignored, since only the Galaxy track
+  reads it.
+- **Recovery** finishes from the journal and `pending`: files already
+  published are checked against `pending`'s hashes and kept, the rest are
+  fetched again. Offline recovery succeeds only when nothing is left to
+  fetch.
 
 ### Installing
 
 - `import gog --game ID` on the Galaxy track: resolve the build, fetch and
   filter manifests, check space, then create the environment and the
   folder's state with an `install` journal, as 0050 does.
-- Unlike an Inno install, the manifest names every file, so the journal's
-  `attempted` lists every entry wineo will write, like native installs,
-  and cleanup after a failure is exact.
-- Chunks download in parallel (4 at a time) and are written straight into
-  place under temporary names, then renamed when a file is complete.
-  Directories and links are created; links that would leave the folder are
-  refused. Executable flags are ignored, since Wine doesn't need them.
-- Paths: backslashes become slashes, and a path that matches an existing
-  entry case-insensitively reuses that entry's name, like gogdl, since
-  Windows games mix cases freely.
+- The manifest names every file, so the journal's `attempted` lists every
+  entry wineo will write, as native installs do, and cleanup after a
+  failure is exact.
+- Chunks download 4 at a time into temporary files in the target folder,
+  which are renamed into place when complete. Links that would leave the
+  folder are refused. Executable flags are ignored; Wine doesn't use them.
 - The default target comes from `goggame-<id>.info`, as in 0050.
 
 ### Setup in the prefix (question 5)
 
-- Dependencies download through the same chunk code into
-  `<data>/gog/redist`, shared by every game and verified like game files.
-  Ones outside `__redist` go into the game folder with the game's files.
-- After the files, setup runs in the environment's prefix: ISI for each
-  installed product when the manifest sets `scriptInterpreter`, else each
-  product's `temp_executable`, then each listed redistributable with its
-  own arguments, in the order the manifest lists them. Each run is
-  supervised like 0050's installer runs, with a log in the run directory.
-- A setup step that fails leaves the journal, so the game stays blocked
-  and `wineo update NAME` retries setup without downloading again.
+- **Steps,** in order: ISI for each installed product when the manifest
+  sets `scriptInterpreter`, with Heroic's arguments and the product's
+  support folder as `/supportDir`; otherwise each product's
+  `temp_executable` with its `temp_arguments`, run from its support
+  folder; then each listed redistributable with its own arguments, `.msi`
+  packages through `msiexec /i`. Each run is supervised like 0050's
+  installer runs, with a log in the run directory.
+- **Success.** 0 is success. For redistributables, 3010 and 1641 (a
+  restart is needed) and 1638 (a newer version is already installed) are
+  success, and the first two are listed as "needs a restart" in the result,
+  since Wine has nothing to restart. Anything else is a failure: the
+  journal stays, the game stays blocked, and `wineo update NAME` retries
+  from the first unfinished step without downloading again.
+- **Recording.** A step is recorded in the sidecar's `setup` after it
+  exits successfully. A crash between a step finishing and its record
+  reruns that step, which is safe since these are installers built to run
+  again.
+- **What identifies a step,** so a change reruns it: for ISI, the product's
+  build and the hash of its `goggame-<id>.script`; for a
+  `temp_executable`, its path, arguments, and file hash; for a
+  redistributable, its dependency id and manifest hash. An update reruns
+  the steps whose identity changed, plus any new ones. `--reinstall` and
+  `--repair` rerun all of them, which also sets up a replaced prefix.
+- **Shared prefixes.** Setup runs under the environment's operation lock,
+  so two GOG games can't set up one prefix at once.
 
 ### Updating
 
 - Diff the installed manifest against the target's by lowercased path.
-  New and changed files download, reusing chunks that match the old
-  copy. Deleted files are removed, then folders left empty by those
-  deletions (gogdl added this because The Witcher 3 hangs on empty content
-  folders).
-- Changed files are staged under temporary names and renamed over the old
-  ones, so the space check counts the staged copies, the chunk cache, and
-  the downloads, minus deleted files.
-- Setup reruns only when the dependency list or a product's script
-  changed.
+  New and changed files download, reusing chunks that match the old copy
+  (read and checked against their `md5` before reuse).
+- **0049's publishing rules apply unchanged (answer a).** An old file is
+  deleted only when its content matches a hash recorded for it; otherwise
+  it's kept and listed. A changed game file you edited is overwritten and
+  listed. A new path taken by something wineo doesn't track, or a type
+  change over a changed entry, moves yours aside to `<name>.wineo-saved`
+  and lists it. Folders emptied by deletions are removed (gogdl added this
+  because The Witcher 3 hangs on empty content folders).
+- **Space.** Changed files are staged beside the originals and renamed
+  over them, and deletions happen only after publishing, so the check
+  counts each filesystem's peak with no credit for deletions: staged new
+  and changed files plus the chunk cache in the game folder's filesystem,
+  new support files in the data directory's, and new redistributable
+  versions in the store's, summed when they share one. Setup's own writes
+  in the prefix can't be known ahead, so the review leaves them out and
+  says so.
 - DLC follows 0050: newly owned DLC installs with the update, and failed
   or unavailable DLC is retried.
-- Interrupted updates resume from the journal and the sidecar. Files
-  already renamed into place are checked against the target and kept.
 
-### Games with no stored manifest (question 4)
+### Games with no stored manifest (question 4, answer b)
 
-- The installed build's manifest becomes the starting point, then the
-  normal update runs with a size check on kept files. Heroic migration
-  keeps the Galaxy track it already sets and stores nothing more until the
-  first update.
+- **The installed build is known and listed** (Disco Elysium): its
+  manifest becomes the starting point, and files the update keeps are
+  checked by size. Old files are deleted only on a hash match, as above,
+  so a size check can't cost a file.
+- **Otherwise** (generation 1, no `buildId`, an unlisted build, or a move
+  from the installer track): the target's manifest is the starting point.
+  Each existing file at a target path is hashed; a match is kept, anything
+  else is moved aside and downloaded. Nothing is deleted, so files of the
+  old build that the new one doesn't list stay. The review says so.
 
 ### Repair (question 9)
 
-- `wineo update NAME --repair` hashes each file against its chunks, then
-  downloads and rewrites the ones that don't match, under a `Repair`
-  journal, and reruns setup. Progress shows files and bytes checked.
+- `wineo update NAME --repair` hashes every file of the installed
+  manifest, including support files, rewrites the ones that don't match
+  under a `Repair` journal, and reruns setup. A file you changed is
+  rewritten and listed, as an update would. Progress shows files and
+  bytes checked.
+- Same-size damage that question 4's size check lets through is found
+  here; a test shows both.
+
+### Concurrency
+
+- A Galaxy install, update, repair, or track move holds the folder's state
+  lock exclusively and the folder's in-use lock (0049), so it waits for or
+  refuses a running launch, and a launch refuses while it runs.
+- A snapshot restore or prefix replacement during setup is refused by the
+  environment's operation lock, as in 0050.
+- Two games updating to the same redistributable version share it; two
+  different versions get separate folders.
 
 ### Branches, rollback, and private branches (part B)
 
-- `--branch NAME` installs or updates from that branch and remembers it.
-  `--build ID` installs that exact build and pins it. `--latest` returns
-  to following the branch.
-- `update --check` shows a pinned game's newer builds as available, with
-  "pinned to build ID" as its note, and `update --all` leaves it alone.
-- Private branch passwords are asked for at a terminal or read from
-  `--password-stdin`, and stored in the keyring per game, beside the GOG
-  login.
+- `--branch NAME` installs or updates from that branch and follows it.
+  `--default-branch` returns to the default branch. `--build ID` installs
+  a listed build and pins the game to it. `--latest` unpins and installs
+  the latest build of the branch followed.
+- **Pinned games (answer c).** `update --check` shows a newer build on the
+  branch as `available` with `applicable: false` and reason `pinned`.
+  `update --all` skips the game, and plain `update NAME` changes nothing:
+  `disco is pinned to build 5978... (WINkay16062026_memfix). Run wineo
+  update disco --latest to follow its branch again.` Exit 0.
+- **Private branches.** `--branch NAME` on a private branch asks for its
+  password at a terminal, or reads `--password-stdin`, and saves it in the
+  keyring per game and branch (`account=gog-branch`, attributes `game` and
+  `branch`). Entering it again replaces it. A refused password removes the
+  saved one and says `GOG refused the password for branch NAME.`
+  Logging out or switching accounts removes them all (answer d).
 
-### State and journals (question 10)
-
-- The state file stays at version 1. The installed manifest (filtered to
-  what's installed), a Galaxy journal's target build and branch, and
-  which setup steps ran go in a sidecar file beside it, replaced
-  atomically and written before the state's commit like 0049's publishing
-  order.
-
-### Commands
+### Commands and flag rules
 
 - `import gog --game ID [--track galaxy|installer] [--branch NAME | --build ID] [--password-stdin]`.
-- `update NAME [--reinstall [--track ...]] [--repair] [--branch NAME | --build ID | --latest] [--password-stdin]`.
-- Reviews add the track, build, version name, branch, and setup steps.
-  Progress shows bytes and files, as 0050's downloads do.
+- `update NAME [--reinstall [--track galaxy|installer]] [--repair] [--branch NAME | --default-branch | --build ID | --latest] [--password-stdin]`.
+- Conflicts are usage errors (exit 2): `--branch`, `--default-branch`,
+  `--build`, and `--latest` exclude each other; `--repair` excludes
+  `--reinstall`, `--track`, and the branch flags; `--track` on `update`
+  needs `--reinstall`; `--password-stdin` needs `--branch`; `--all` takes
+  none of `--repair`, `--track`, or the branch flags; branch flags and
+  `--track installer` exclude each other.
+- On a game on the installer track, the branch flags and `--repair` say
+  `Only Galaxy games have branches. Move it with --reinstall --track
+  galaxy.`
+- Reviews add the track, build, version name, branch, support files, and
+  setup steps. Progress shows bytes and files, as 0050's downloads do.
 
 ### Desktop app (question 11)
 
 - The install review shows the track (Galaxy or Installer) when both are
   possible. Galaxy games update from the panel like installer games.
-- A **Version** picker in the game's panel lists branches and recent
-  builds, marks the installed one, and offers **Repair**.
+- A **Version** picker in the game's panel lists branches and the builds
+  GOG returns for each, marks the installed one and a pin, and offers
+  **Repair**. A private branch asks for its password in the panel.
 
 ### 1.0 contract impact
 
-- New flags: `--track`, `--branch`, `--build`, `--latest`,
-  `--password-stdin`, `--repair`.
-- JSON: `applicable` becomes true for Galaxy updates. `update: galaxy`
-  and `reason: galaxy` stay in the vocabulary for games whose only builds
-  are generation 1 (question 3A); if 3 is B, they're removed like
-  `windows_installer` was. New fields: `branch` and `pinned` on GOG games
-  in `update --check --json` and `import gog --list --json`.
-- No new exit codes.
-- Not promised and changed: the folder state's sidecar, the redist
-  folder, and the GOG keyring items.
+- **New flags:** `--track`, `--branch`, `--default-branch`, `--build`,
+  `--latest`, `--password-stdin`, `--repair`, with the conflicts above.
+- **JSON,** on GOG games in `update --check --json` and `import gog --list
+  --json`:
+  - `branch`: a string, or `null` for the default branch and for games on
+    the installer track.
+  - `pinned`: the pinned build id as a string, or `null`.
+  - `applicable` becomes true for Galaxy updates wineo can apply, and is
+    false for a pinned game, with the new `reason` value `pinned`.
+  - `update: galaxy` and `reason: galaxy` stay, for a Galaxy game whose
+    branch has no generation 2 build (question 3A).
+- **No new exit codes.** A pinned `update NAME` exits 0.
+- **Not promised:** the sidecar, the support and redistributable stores,
+  and the GOG keyring items (the login and branch passwords), as with the
+  rest of GOG's managed files in [stability.md](../stability.md).
 
 ## Implementation sequence
 
 Part A:
 
-1. A read-only live probe with the maintainer's login, on Disco Elysium's
-   build `59781086834418085` and two or three other games: manifest
-   shape, the secure link's `urls[]`, `sfcRef` items, build order, and
-   how long a link lasts. Findings are recorded here before any code.
+1. Done (2026-10-14): the read-only probe, recorded in "What GOG offers".
 2. The fake GOG server gains a content system: builds, zlib manifests,
-   depots, secure links, chunks, and the dependency repository, with
-   failure modes (expired link, bad hash, missing chunk).
+   depots with support files and links, secure links with expiry, chunks,
+   and the dependency repository, with failure modes (expired link, bad
+   hash, missing chunk, a fallback-only CDN).
 3. `wineo-gog`: manifests, secure links, chunk downloads, verification.
-4. Core: Galaxy installs with the sidecar, journal, and exact cleanup.
-5. Core: setup in the prefix (dependencies, ISI, redistributables).
-6. Core: differential updates, games with no stored manifest, and resume.
+4. Core: the sidecar and its consistency rules, Galaxy installs with exact
+   cleanup, support files, and the redistributable store.
+5. Core: setup in the prefix. Before writing it, run ISI for SimCity 4 and
+   The Witcher in a throwaway prefix and record what it writes (registry,
+   copied support files, exit codes) here.
+6. Core: differential updates on 0049's publishing rules, games with no
+   stored manifest, the space check, and resume.
 7. Core: `--repair` and track moves.
 8. CLI: flags, reviews, progress, JSON.
 9. Desktop app: track in the install review and Galaxy updates.
-10. Docs: `gog.md`, `json-output.md`, `core-api.md`, `stability.md` if it
-    changes, and README.
+10. Docs: `gog.md`, `json-output.md`, `core-api.md`, and README.
 
 Part B:
 
-11. Branches and pinned builds in core and the CLI.
+11. Branches, pinned builds, and `--default-branch` in core and the CLI.
 12. Private branch passwords.
 13. The app's **Version** picker.
 14. Docs for part B.
 
 ## Testing and acceptance
 
-Unit and CLI tests run against the fake content system: an install
-interrupted at each step, a chunk failing its hash, an expired link
-refreshed mid-download, an update with new, changed, deleted, and
-case-mismatched files, a game with no stored manifest, a failed setup step
-retried, a repair that finds a damaged file, and a track move both ways. A
-stub ISI and stub redistributables report their arguments and exit codes.
+Unit and CLI tests run against the fake content system. A stub ISI and
+stub redistributables report their arguments and exit with chosen codes.
+They cover:
+
+- **Installs:** interrupted at each step; a chunk failing its hash; an
+  expired link refreshed mid-download; a fallback-only CDN used after the
+  first fails; support files landing in the support folder; 32-bit and
+  64-bit depots filtered by arch.
+- **The sidecar:** a crash between each sidecar and state write, in both
+  orders; a missing, corrupt, and stale sidecar; a build adopted from
+  another tool; a sidecar left after a track move.
+- **Updates:** new, changed, deleted, and case-mismatched files; a deleted
+  file you modified (kept and listed); an untracked file at a new path
+  (moved aside); a type change; a game with no stored manifest of each
+  kind; a low-space update with large deletions, with the folder and the
+  data directory on separate filesystems.
+- **Setup:** each exit code class; a crash between a step and its record;
+  a changed dependency version and a changed script rerunning only their
+  steps; two games installing different versions of one dependency at
+  once.
+- **Repair:** same-size damage that an update's size check keeps, then
+  `--repair` fixing it.
+- **Concurrency:** a launch during an update, an update during a launch,
+  and a snapshot restore during setup.
+- **Part B:** each flag conflict; a pinned game under `update NAME`,
+  `--all`, and `--check --json`; a refused, replaced, and logged-out
+  password; no URL token or password in any error.
 
 `--ignored` tests with `WINEO_TEST_GOG_LOGIN` install a small real Galaxy
-game, update it across two builds by `--build`, and repair a file damaged
-on purpose.
+game, update it across two listed builds with `--build`, and repair a file
+damaged on purpose.
 
 Acceptance, drafted after implementation, will include: Disco Elysium
 going from **Update on GOG** to an update that applies, in the CLI, the
 app, and `--json`; installing a small Windows game on Galaxy and checking
-it starts; moving a game between tracks; rolling back and following a beta
+it starts; moving a game between tracks; rolling back and following a
 branch; and repairing a damaged file.
 
 ## Scope limits
 
 - Generation 1 builds (question 3), delta patches (question 6), Mac games,
   cloud saves, bonus content, and posting playtime aren't supported.
-- wineo never deletes files a manifest doesn't list.
+- Builds GOG no longer lists can't be installed.
+- wineo never deletes a file whose content doesn't match what GOG shipped,
+  and never touches files it didn't write.
