@@ -606,3 +606,48 @@ fn a_stale_refusal_never_discards_a_fresh_link() {
     });
     assert_eq!(link_requests(&server).len(), 3);
 }
+
+#[test]
+fn secure_link_fields_fail_when_malformed_and_default_only_when_null() {
+    for (field, wrong) in [
+        ("priority", json!("10")),
+        ("priority", json!(1.5)),
+        ("max_fails", json!(-1)),
+        ("fallback_only", json!("true")),
+    ] {
+        let mut json = link_json();
+        json["urls"][1][field] = wrong.clone();
+        assert!(parse_secure_link(&json).is_none(), "{field} = {wrong}");
+        json["urls"][1][field] = json!(null);
+        assert!(parse_secure_link(&json).is_some(), "{field} = null");
+    }
+    let mut json = link_json();
+    json["urls"][1]["parameters"]["dirs"] = json!([1]);
+    assert!(parse_secure_link(&json).is_none());
+    json["urls"][1]["parameters"]["dirs"] = json!(null);
+    let link = parse_secure_link(&json).unwrap();
+    assert!(!link.endpoints[1].parameters.contains_key("dirs"));
+    // A null `fallback_only` is false, so the backup now goes by priority.
+    let mut json = link_json();
+    json["urls"][0]["fallback_only"] = json!(null);
+    assert_eq!(
+        parse_secure_link(&json).unwrap().endpoint_names(),
+        ["backup", "high", "low", "same"]
+    );
+}
+
+#[test]
+fn a_null_product_id_on_a_secure_link_counts_as_missing() {
+    let server = FakeGog::start(|_| {
+        reply(
+            200,
+            &json!({"product_id": null, "urls": link_json()["urls"]}).to_string(),
+        )
+    });
+    assert!(
+        server
+            .client()
+            .secure_link(ACCESS, LinkScope::Product(7))
+            .is_ok()
+    );
+}

@@ -163,6 +163,7 @@ pub(crate) fn parse_secure_link(json: &Value) -> Option<SecureLink> {
                 .get("parameters")?
                 .as_object()?
                 .iter()
+                .filter(|(_, value)| !value.is_null())
                 .map(|(key, value)| {
                     let value = match value {
                         Value::String(text) => text.clone(),
@@ -176,12 +177,10 @@ pub(crate) fn parse_secure_link(json: &Value) -> Option<SecureLink> {
                 name: json::text(endpoint, "endpoint_name")?,
                 url_format: json::text(endpoint, "url_format")?,
                 parameters,
-                priority: endpoint
-                    .get("priority")
-                    .and_then(Value::as_i64)
-                    .unwrap_or(0),
-                max_fails: endpoint.get("max_fails").and_then(Value::as_u64),
-                fallback_only: json::flag(endpoint, "fallback_only"),
+                priority: json::optional(endpoint, "priority", Value::as_i64)?.unwrap_or(0),
+                max_fails: json::optional(endpoint, "max_fails", Value::as_u64)?,
+                fallback_only: json::optional(endpoint, "fallback_only", Value::as_bool)?
+                    .unwrap_or(false),
             })
         })
         .collect::<Option<Vec<_>>>()?;
@@ -296,6 +295,7 @@ impl Client {
         url.set_query(Some(query));
         let json = self.get_json(Endpoint::SecureLink, url, Some(access_token))?;
         if let (LinkScope::Product(id), Some(answered)) = (scope, json.get("product_id"))
+            && !answered.is_null()
             && json::id(answered) != Some(id)
         {
             return Err(fail(ErrorKind::Malformed));

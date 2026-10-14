@@ -745,3 +745,224 @@ fn the_manifest_cap_holds_over_http_packed_and_unpacked() {
         assert!(client.depot_manifest(MD5_A).unwrap().items.is_empty());
     }
 }
+
+#[test]
+fn a_dependency_executable_that_is_not_an_object_fails_the_manifest() {
+    for executable in [json!(123), json!(true), json!([]), json!("setup.exe")] {
+        let mut json = dependency_manifest_json();
+        json["depots"][1]["executable"] = executable.clone();
+        assert_eq!(parse_dependency_manifest(&json), None, "{executable}");
+    }
+    let mut json = dependency_manifest_json();
+    json["depots"][1]["executable"] = json!(null);
+    json["depots"][0]
+        .as_object_mut()
+        .unwrap()
+        .remove("executable");
+    let manifest = parse_dependency_manifest(&json).unwrap();
+    assert_eq!(manifest.dependencies[0].executable, None);
+    assert_eq!(manifest.dependencies[1].executable, None);
+}
+
+#[test]
+fn a_chunkless_file_with_a_malformed_size_fails_the_manifest() {
+    let sizes = [
+        json!(-1),
+        json!(1.5),
+        json!("18446744073709551616"),
+        json!("3"),
+        json!(true),
+    ];
+    for size in sizes {
+        for item in [
+            json!({"path": "a", "chunks": [], "size": size, "type": "DepotFile"}),
+            json!({"path": "a", "chunks": [], "sfcRef": {"offset": 0, "size": size}, "type": "DepotFile"}),
+        ] {
+            assert_eq!(
+                parse_depot_manifest(&depot_json(json!([item]))),
+                None,
+                "{item}"
+            );
+        }
+    }
+    for sfc in [json!(5), json!("x"), json!([])] {
+        let item = json!({"path": "a", "chunks": [], "sfcRef": sfc, "type": "DepotFile"});
+        assert_eq!(
+            parse_depot_manifest(&depot_json(json!([item]))),
+            None,
+            "{item}"
+        );
+    }
+    for item in [
+        json!({"path": "a", "chunks": [], "size": null, "sfcRef": null, "type": "DepotFile"}),
+        json!({"path": "a", "chunks": [], "size": 0, "sfcRef": {"size": null}, "type": "DepotFile"}),
+    ] {
+        let manifest = parse_depot_manifest(&depot_json(json!([item.clone()]))).unwrap();
+        assert!(
+            matches!(&manifest.items[0], DepotItem::File(file) if file.size() == 0),
+            "{item}"
+        );
+    }
+}
+
+/// Sets the field at `path` in a copy of `base`.
+fn with(base: &Value, path: &[&str], value: Value) -> Value {
+    let mut json = base.clone();
+    let mut field = &mut json;
+    for key in &path[..path.len() - 1] {
+        field = match key.parse::<usize>() {
+            Ok(index) => &mut field[index],
+            Err(_) => &mut field[*key],
+        };
+    }
+    field[path[path.len() - 1]] = value;
+    json
+}
+
+#[test]
+fn every_optional_field_fails_when_malformed_and_defaults_only_when_null() {
+    let repository = repository_json();
+    let depot = depot_json(json!([
+        {"path": "a", "chunks": [chunk_json()], "type": "DepotFile", "sfcRef": {"offset": 0, "size": 11}},
+    ]));
+    // Without an `sfcRef`, so a null `chunks` is an empty file.
+    let plain_depot = depot_json(json!([
+        {"path": "a", "chunks": [chunk_json()], "type": "DepotFile"},
+    ]));
+    let dependencies = dependency_manifest_json();
+    type Parse = fn(&Value) -> bool;
+    let parse_repo: Parse = |json| parse_repository(json).is_some();
+    let parse_depot: Parse = |json| parse_depot_manifest(json).is_some();
+    let parse_dependencies: Parse = |json| parse_dependency_manifest(json).is_some();
+    let cases: Vec<(&Value, Parse, &[&str], Value)> = vec![
+        (&repository, parse_repo, &["installDirectory"], json!(5)),
+        (
+            &repository,
+            parse_repo,
+            &["scriptInterpreter"],
+            json!("yes"),
+        ),
+        (
+            &repository,
+            parse_repo,
+            &["dependencies"],
+            json!("MSVC2017"),
+        ),
+        (&repository, parse_repo, &["products"], json!({})),
+        (
+            &repository,
+            parse_repo,
+            &["products", "0", "name"],
+            json!(5),
+        ),
+        (
+            &repository,
+            parse_repo,
+            &["products", "0", "temp_executable"],
+            json!([]),
+        ),
+        (
+            &repository,
+            parse_repo,
+            &["products", "0", "temp_arguments"],
+            json!(1),
+        ),
+        (
+            &repository,
+            parse_repo,
+            &["depots", "0", "osBitness"],
+            json!("64"),
+        ),
+        (
+            &repository,
+            parse_repo,
+            &["depots", "0", "isGogDepot"],
+            json!(1),
+        ),
+        (
+            &plain_depot,
+            parse_depot,
+            &["depot", "items", "0", "chunks"],
+            json!({}),
+        ),
+        (
+            &depot,
+            parse_depot,
+            &["depot", "items", "0", "size"],
+            json!(-1),
+        ),
+        (
+            &depot,
+            parse_depot,
+            &["depot", "items", "0", "sfcRef"],
+            json!(5),
+        ),
+        (
+            &depot,
+            parse_depot,
+            &["depot", "items", "0", "sfcRef", "size"],
+            json!(1.5),
+        ),
+        (
+            &depot,
+            parse_depot,
+            &["depot", "items", "0", "md5"],
+            json!(5),
+        ),
+        (
+            &depot,
+            parse_depot,
+            &["depot", "items", "0", "sha256"],
+            json!(5),
+        ),
+        (
+            &depot,
+            parse_depot,
+            &["depot", "items", "0", "flags"],
+            json!("executable"),
+        ),
+        (
+            &dependencies,
+            parse_dependencies,
+            &["depots", "0", "readableName"],
+            json!(5),
+        ),
+        (
+            &dependencies,
+            parse_dependencies,
+            &["depots", "0", "internal"],
+            json!(1),
+        ),
+        (
+            &dependencies,
+            parse_dependencies,
+            &["depots", "0", "languages"],
+            json!("*"),
+        ),
+        (
+            &dependencies,
+            parse_dependencies,
+            &["depots", "0", "executable"],
+            json!(123),
+        ),
+        (
+            &dependencies,
+            parse_dependencies,
+            &["depots", "0", "executable", "path"],
+            json!(1),
+        ),
+        (
+            &dependencies,
+            parse_dependencies,
+            &["depots", "0", "executable", "arguments"],
+            json!(1),
+        ),
+    ];
+    for (base, parse, path, wrong) in cases {
+        assert!(
+            !parse(&with(base, path, wrong.clone())),
+            "{path:?} = {wrong}"
+        );
+        assert!(parse(&with(base, path, json!(null))), "{path:?} = null");
+    }
+}

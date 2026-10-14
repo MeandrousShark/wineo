@@ -342,14 +342,13 @@ pub(crate) fn parse_repository(json: &Value) -> Option<Repository> {
         .iter()
         .map(parse_depot)
         .collect::<Option<_>>()?;
-    let dependencies = match json.get("dependencies") {
-        None | Some(Value::Null) => Vec::new(),
-        Some(list) => list
-            .as_array()?
+    let dependencies = json::optional(json, "dependencies", |list| {
+        list.as_array()?
             .iter()
             .map(|id| id.as_str().filter(|id| !id.is_empty()).map(str::to_owned))
-            .collect::<Option<_>>()?,
-    };
+            .collect::<Option<_>>()
+    })?
+    .unwrap_or_default();
     let products = match json.get("products") {
         None | Some(Value::Null) => Vec::new(),
         Some(list) => list
@@ -358,12 +357,12 @@ pub(crate) fn parse_repository(json: &Value) -> Option<Repository> {
             .map(|product| {
                 Some(RepositoryProduct {
                     product_id: json::id(product.get("productId")?)?,
-                    name: json::text(product, "name"),
-                    temp_executable: match optional_text(product, "temp_executable")? {
+                    name: json::optional_text(product, "name")?,
+                    temp_executable: match json::optional_text(product, "temp_executable")? {
                         Some(path) if !safe_path(&path) => return None,
                         path => path,
                     },
-                    temp_arguments: optional_text(product, "temp_arguments")?,
+                    temp_arguments: json::optional_text(product, "temp_arguments")?,
                 })
             })
             .collect::<Option<_>>()?,
@@ -371,8 +370,8 @@ pub(crate) fn parse_repository(json: &Value) -> Option<Repository> {
     Some(Repository {
         build_id: json.get("buildId").and_then(id_text)?,
         base_product_id: json::id(json.get("baseProductId")?)?,
-        install_directory: json::text(json, "installDirectory"),
-        script_interpreter: json::flag(json, "scriptInterpreter"),
+        install_directory: json::optional_text(json, "installDirectory")?,
+        script_interpreter: flag(json, "scriptInterpreter")?,
         depots,
         dependencies,
         products,
@@ -383,14 +382,11 @@ fn parse_depot(json: &Value) -> Option<Depot> {
     Some(Depot {
         product_id: json::id(json.get("productId")?)?,
         languages: strings(json.get("languages")?)?,
-        os_bitness: match json.get("osBitness") {
-            None | Some(Value::Null) => Vec::new(),
-            Some(list) => strings(list)?,
-        },
+        os_bitness: json::optional(json, "osBitness", strings)?.unwrap_or_default(),
         manifest: hex(json.get("manifest")?.as_str()?, 32)?,
         size: size(json, "size")?,
         compressed_size: size(json, "compressedSize")?,
-        is_gog_depot: json::flag(json, "isGogDepot"),
+        is_gog_depot: flag(json, "isGogDepot")?,
     })
 }
 
@@ -409,31 +405,25 @@ fn parse_item(json: &Value) -> Option<DepotItem> {
     let path = json.get("path")?.as_str().filter(|path| safe_path(path))?;
     match json.get("type")?.as_str()? {
         "DepotFile" => {
-            let chunks: Vec<Chunk> = match json.get("chunks") {
-                None | Some(Value::Null) => Vec::new(),
-                Some(list) => list
-                    .as_array()?
-                    .iter()
-                    .map(parse_chunk)
-                    .collect::<Option<_>>()?,
+            let chunks: Vec<Chunk> = json::optional(json, "chunks", |list| {
+                list.as_array()?.iter().map(parse_chunk).collect()
+            })?
+            .unwrap_or_default();
+            let listed_size = json::optional(json, "size", size_value)?.unwrap_or(0);
+            let container = json::optional(json, "sfcRef", |sfc| sfc.is_object().then_some(sfc))?;
+            let container_size = match container {
+                Some(sfc) => json::optional(sfc, "size", size_value)?.unwrap_or(0),
+                None => 0,
             };
             // A file that only lives in the small-file container would be
             // written empty, so it's refused instead.
-            let listed_size = |value: Option<&Value>| value.and_then(json::id).unwrap_or(0);
-            if chunks.is_empty()
-                && (listed_size(json.get("size")) > 0
-                    || listed_size(json.get("sfcRef").and_then(|sfc| sfc.get("size"))) > 0)
-            {
+            if chunks.is_empty() && (listed_size > 0 || container_size > 0) {
                 return None;
             }
-            let hash = |name: &str, length| match json.get(name) {
-                None | Some(Value::Null) => Some(None),
-                Some(value) => hex(value.as_str()?, length).map(Some),
+            let hash = |name: &str, length| {
+                json::optional(json, name, |value| hex(value.as_str()?, length))
             };
-            let flags = match json.get("flags") {
-                None | Some(Value::Null) => Vec::new(),
-                Some(list) => strings(list)?,
-            };
+            let flags = json::optional(json, "flags", strings)?.unwrap_or_default();
             Some(DepotItem::File(DepotFile {
                 path: path.to_owned(),
                 chunks,
@@ -483,8 +473,9 @@ fn parse_dependency(json: &Value) -> Option<Dependency> {
     let executable = match json.get("executable") {
         None | Some(Value::Null) => None,
         Some(executable) => {
-            let arguments = optional_text(executable, "arguments")?;
-            match optional_text(executable, "path")? {
+            executable.as_object()?;
+            let arguments = json::optional_text(executable, "arguments")?;
+            match json::optional_text(executable, "path")? {
                 None => None,
                 Some(path) if safe_path(&path) => Some(DependencyExecutable {
                     path,
@@ -496,13 +487,10 @@ fn parse_dependency(json: &Value) -> Option<Dependency> {
     };
     Some(Dependency {
         id: json::text(json, "dependencyId")?,
-        readable_name: json::text(json, "readableName"),
+        readable_name: json::optional_text(json, "readableName")?,
         executable,
-        internal: json::flag(json, "internal"),
-        languages: match json.get("languages") {
-            None | Some(Value::Null) => Vec::new(),
-            Some(list) => strings(list)?,
-        },
+        internal: flag(json, "internal")?,
+        languages: json::optional(json, "languages", strings)?.unwrap_or_default(),
         manifest: hex(json.get("manifest")?.as_str()?, 32)?,
         size: size(json, "size")?,
         compressed_size: size(json, "compressedSize")?,
@@ -524,18 +512,16 @@ fn strings(value: &Value) -> Option<Vec<String>> {
 }
 
 fn size(json: &Value, name: &str) -> Option<u64> {
-    json::id(json.get(name)?).filter(|&size| size <= MAX_SIZE)
+    size_value(json.get(name)?)
 }
 
-/// A string field that may be missing, null, or empty, which are all None.
-/// Anything else that isn't a string makes the outer Option None, so a
-/// malformed field fails the manifest.
-fn optional_text(json: &Value, name: &str) -> Option<Option<String>> {
-    match json.get(name) {
-        None | Some(Value::Null) => Some(None),
-        Some(Value::String(text)) => Some((!text.is_empty()).then(|| text.clone())),
-        Some(_) => None,
-    }
+fn size_value(value: &Value) -> Option<u64> {
+    json::id(value).filter(|&size| size <= MAX_SIZE)
+}
+
+/// An optional boolean, false when missing or null. None when malformed.
+fn flag(json: &Value, name: &str) -> Option<bool> {
+    json::optional(json, name, Value::as_bool).map(Option::unwrap_or_default)
 }
 
 /// Lowercase hex of exactly `length` digits.
