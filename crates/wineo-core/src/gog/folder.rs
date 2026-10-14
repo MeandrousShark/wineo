@@ -121,6 +121,16 @@ pub enum Track {
     Galaxy,
 }
 
+impl Track {
+    /// The word for it, as stored.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Installer => "installer",
+            Self::Galaxy => "galaxy",
+        }
+    }
+}
+
 /// A base game or DLC in a folder.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -251,6 +261,14 @@ impl FolderState {
             .as_ref()
             .map(|committed| committed.gog_id)
             .or_else(|| self.journal.as_ref().map(|journal| journal.target.gog_id))
+    }
+
+    /// Whether the committed state says wineo installed the game, rather
+    /// than adopting a folder another tool installed.
+    pub fn installed_by_wineo(&self) -> bool {
+        self.committed
+            .as_ref()
+            .is_some_and(|committed| committed.source == Some(Source::Install))
     }
 
     /// Whether this is the game `gog_id`, a config's value.

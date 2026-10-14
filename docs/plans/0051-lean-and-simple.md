@@ -225,6 +225,21 @@ recommended calls to be made and reviewed later. Each is listed here.
   `restore_locked_noting`). Their public callers don't take it and release
   builds pass no-ops; moving them behind `cfg(test)` would mean rewriting
   four integrity tests to own all their data. Kept as is.
+- Track B, import logic: the app's prefix import review now runs the CLI's
+  full preflight checks (core `import::preflight`), so it refuses a few
+  things it used to let through to a later failure: a destination another
+  environment already names, a prefix that nests with another one when
+  adopting, an unreadable environment config, and a dangling config
+  symlink; its overlap message now reads like the CLI's. The CLI's checks
+  were the reference.
+- Track B, Heroic playtime notes: the CLI says "could not read Heroic's
+  playtime" and the app "Heroic playtime could not be read"; unifying them
+  would change one frontend's wording, so both stay.
+- Track B, GOG update progress: the shared core `Reporter` starts its
+  1-second pacing when it builds a line, where the CLI used to start it
+  after printing. Only visible when stderr is so slow that printing one
+  line takes over a second; then the next line prints at once. Kept, since
+  matching it exactly would add a step to the shared API.
 
 ## Possible bugs (fix as patches if confirmed)
 
@@ -462,6 +477,14 @@ Shipped in 0.31.1.
   line editor switched the terminal to raw mode, so the terminal could turn
   it into a signal and the test hung (about 1 run in 15). They now wait for
   the prompt itself, and their wait for exit is bounded.
+
+- Track B, GOG logic into core: migrate and update review rows, recorded
+  games, update reasons, labels, product names, and change lists, the
+  progress reporter, and the extras result lines live in core; the CLI and
+  app keep their own wording (lowercase vs sentence case) over the same
+  data. The extras import driver stays per frontend: they look up the
+  SteamGridDB key and word failures differently on purpose. 18 files,
+  net -214 lines.
 
 The maintainer's machine (real GPU, library of 22, after scrolling the
 library), the 0050 acceptance build against main with everything above:

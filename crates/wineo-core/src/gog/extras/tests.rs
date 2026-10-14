@@ -1481,3 +1481,53 @@ fn a_cancel_before_saving_the_steamgriddb_game_saves_nothing() {
         report.notes
     );
 }
+
+fn art(kind: Kind, source: Source) -> Filled {
+    Filled { kind, source }
+}
+
+#[test]
+fn playtime_and_art_each_get_a_short_line() {
+    let report = Report {
+        playtime: Some(Playtime {
+            gog_seconds: 41 * 3600 + 600,
+            before_seconds: 0,
+            after_seconds: 41 * 3600 + 600,
+        }),
+        art: vec![
+            art(Kind::Icon, Source::Gog(1)),
+            art(Kind::Grid, Source::Gog(1)),
+            art(Kind::Hero, Source::Gog(1)),
+            art(Kind::Logo, Source::SteamGridDb(9)),
+        ],
+        notes: Vec::new(),
+    };
+    assert_eq!(
+        report.lines(),
+        [
+            "Imported 41 h of GOG playtime.",
+            "Added GOG art: poster, hero, icon.",
+            "Added SteamGridDB art: logo.",
+        ]
+    );
+}
+
+#[test]
+fn playtime_that_didnt_rise_and_no_art_say_nothing() {
+    let report = Report {
+        playtime: Some(Playtime {
+            gog_seconds: 600,
+            before_seconds: 3600,
+            after_seconds: 3600,
+        }),
+        ..Report::default()
+    };
+    assert!(report.lines().is_empty());
+}
+
+#[test]
+fn short_playtime_is_in_minutes() {
+    assert_eq!(duration(25 * 60 + 30), "25 min");
+    assert_eq!(duration(25 * 60), "25 min");
+    assert_eq!(duration(3600), "1 h");
+}

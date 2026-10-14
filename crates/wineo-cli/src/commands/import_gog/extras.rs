@@ -1,11 +1,11 @@
 //! What GOG adds to a game once it is migrated: its playtime and artwork.
 //! This runs after the migration has succeeded, so nothing here fails it.
 
-use wineo_core::art::{Kind, Source};
+use wineo_core::art::Kind;
 use wineo_core::config::GlobalConfig;
 use wineo_core::download::{Https, Lazy};
 use wineo_core::gog::account::Session;
-use wineo_core::gog::extras::{self, Report, Request};
+use wineo_core::gog::extras::{self, Request};
 use wineo_core::paths::Paths;
 use wineo_core::steamgriddb;
 
@@ -101,7 +101,7 @@ impl<'a> Batch<'a> {
         let token = wineo_core::cancel::Token::new();
         match extras::import_with(paths, session, &request, gog, &token) {
             Ok(report) => {
-                for line in lines(&report) {
+                for line in report.lines() {
                     println!("{line}");
                 }
                 for note in &report.notes {
@@ -127,105 +127,4 @@ pub(super) fn import(
 ) -> bool {
     let account = Account::new();
     Batch::new(&account).import(paths, global, environment, gog_id, title)
-}
-
-/// What the report says happened, in a line or two.
-fn lines(report: &Report) -> Vec<String> {
-    let mut lines = Vec::new();
-    if let Some(playtime) = report.playtime.filter(|playtime| playtime.raised()) {
-        lines.push(format!(
-            "Imported {} of GOG playtime.",
-            duration(playtime.gog_seconds)
-        ));
-    }
-    let gog: fn(&Source) -> bool = |source| matches!(source, Source::Gog(_));
-    let grid: fn(&Source) -> bool = |source| matches!(source, Source::SteamGridDb(_));
-    for (name, wanted) in [("GOG", gog), ("SteamGridDB", grid)] {
-        let kinds: Vec<&str> = [Kind::Grid, Kind::Hero, Kind::Logo, Kind::Icon]
-            .into_iter()
-            .filter(|kind| {
-                report
-                    .art
-                    .iter()
-                    .any(|filled| filled.kind == *kind && wanted(&filled.source))
-            })
-            .map(kind_name)
-            .collect();
-        if !kinds.is_empty() {
-            lines.push(format!("Added {name} art: {}.", kinds.join(", ")));
-        }
-    }
-    lines
-}
-
-fn kind_name(kind: Kind) -> &'static str {
-    match kind {
-        Kind::Grid => "poster",
-        other => other.as_str(),
-    }
-}
-
-/// Whole hours, or minutes for under an hour.
-fn duration(seconds: i64) -> String {
-    if seconds >= 3600 {
-        format!("{} h", (seconds + 1800) / 3600)
-    } else {
-        format!("{} min", seconds / 60)
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use wineo_core::gog::extras::{Filled, Playtime};
-
-    use super::*;
-
-    fn filled(kind: Kind, source: Source) -> Filled {
-        Filled { kind, source }
-    }
-
-    #[test]
-    fn playtime_and_art_each_get_a_short_line() {
-        let report = Report {
-            playtime: Some(Playtime {
-                gog_seconds: 41 * 3600 + 600,
-                before_seconds: 0,
-                after_seconds: 41 * 3600 + 600,
-            }),
-            art: vec![
-                filled(Kind::Icon, Source::Gog(1)),
-                filled(Kind::Grid, Source::Gog(1)),
-                filled(Kind::Hero, Source::Gog(1)),
-                filled(Kind::Logo, Source::SteamGridDb(9)),
-            ],
-            notes: Vec::new(),
-        };
-        assert_eq!(
-            lines(&report),
-            [
-                "Imported 41 h of GOG playtime.",
-                "Added GOG art: poster, hero, icon.",
-                "Added SteamGridDB art: logo.",
-            ]
-        );
-    }
-
-    #[test]
-    fn playtime_that_didnt_rise_and_no_art_say_nothing() {
-        let report = Report {
-            playtime: Some(Playtime {
-                gog_seconds: 600,
-                before_seconds: 3600,
-                after_seconds: 3600,
-            }),
-            ..Report::default()
-        };
-        assert!(lines(&report).is_empty());
-    }
-
-    #[test]
-    fn short_playtime_is_in_minutes() {
-        assert_eq!(duration(25 * 60 + 30), "25 min");
-        assert_eq!(duration(3600), "1 h");
-    }
 }
