@@ -184,16 +184,11 @@ pub(crate) fn check_task(paths: Paths) -> iced::Task<crate::Message> {
     if paths.portable_root().is_some() {
         return iced::Task::none();
     }
-    iced::Task::perform(
-        async move {
-            tokio::task::spawn_blocking(move || {
-                let keyring = wineo_core::secret_service::SecretServiceKeyring::gog();
-                let client =
-                    wineo_core::gog::client_from_env().map_err(|error| error.to_string())?;
-                check_with(&paths, &keyring, client)
-            })
-            .await
-            .map_err(|error| error.to_string())?
+    crate::task::blocking(
+        move || {
+            let keyring = wineo_core::secret_service::SecretServiceKeyring::gog();
+            let client = wineo_core::gog::client_from_env().map_err(|error| error.to_string())?;
+            check_with(&paths, &keyring, client)
         },
         crate::Message::GogChecked,
     )

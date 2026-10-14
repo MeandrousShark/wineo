@@ -34,6 +34,7 @@ use super::gog_posters::{self, Job, Network, Source as PosterSource};
 use super::heroic::{self, Prerequisite};
 use super::import_grid::{ImportGrid, Tile};
 use crate::runner_label::Choice;
+use crate::task;
 use crate::theme::Palette;
 use crate::ui::{PickListStyle, accent_base, secondary_button};
 
@@ -432,12 +433,8 @@ impl Page {
         self.status = "Reading your GOG games...".to_owned();
         let generation = self.next_generation();
         let paths = self.paths.clone();
-        Task::perform(
-            async move {
-                tokio::task::spawn_blocking(move || load_listing(&paths))
-                    .await
-                    .map_err(|error| error.to_string())?
-            },
+        task::blocking(
+            move || load_listing(&paths),
             move |result| Event::Listed(generation, result),
         )
     }
@@ -540,14 +537,8 @@ impl Page {
         self.status = format!("Checking {}...", candidate.game.title);
         let generation = self.next_generation();
         let paths = self.paths.clone();
-        Task::perform(
-            async move {
-                tokio::task::spawn_blocking(move || {
-                    prepare(&paths, source, heroic, migration, runner).map(Box::new)
-                })
-                .await
-                .map_err(|error| error.to_string())?
-            },
+        task::blocking(
+            move || prepare(&paths, source, heroic, migration, runner).map(Box::new),
             move |result| Event::Prepared(generation, result),
         )
     }
@@ -561,15 +552,11 @@ impl Page {
         let generation = self.next_generation();
         let paths = self.paths.clone();
         let (sender, receiver) = unbounded();
-        let work = Task::perform(
-            async move {
-                tokio::task::spawn_blocking(move || {
-                    heroic::install_prerequisite(&paths, operation, &token, &|line| {
-                        let _ = sender.unbounded_send(Event::Progress(generation, line));
-                    })
+        let work = task::blocking(
+            move || {
+                heroic::install_prerequisite(&paths, operation, &token, &|line| {
+                    let _ = sender.unbounded_send(Event::Progress(generation, line));
                 })
-                .await
-                .map_err(|error| error.to_string())?
             },
             move |result| Event::PrerequisiteFinished(generation, result),
         );
@@ -591,21 +578,17 @@ impl Page {
         let generation = self.next_generation();
         let paths = self.paths.clone();
         let (sender, receiver) = unbounded();
-        let work = Task::perform(
-            async move {
-                tokio::task::spawn_blocking(move || {
-                    run(
-                        &paths,
-                        &prepared,
-                        &token,
-                        |line| {
-                            let _ = sender.unbounded_send(Event::Progress(generation, line));
-                        },
-                        import_extras,
-                    )
-                })
-                .await
-                .map_err(|error| error.to_string())?
+        let work = task::blocking(
+            move || {
+                run(
+                    &paths,
+                    &prepared,
+                    &token,
+                    |line| {
+                        let _ = sender.unbounded_send(Event::Progress(generation, line));
+                    },
+                    import_extras,
+                )
             },
             move |result| Event::Finished(generation, result),
         );

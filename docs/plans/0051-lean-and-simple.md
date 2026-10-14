@@ -217,6 +217,15 @@ Follow-up answers (2026-10-13, all recommended):
   import's; portable copies give the same "appeared" messages as clone and
   import. The `Finished` event timing difference stays.
 
+Calls made for review (2026-10-13 night): the maintainer asked for
+recommended calls to be made and reviewed later. Each is listed here.
+
+- Track B, test hooks: two private functions keep a test-only closure
+  parameter (`build_removal::remove_after_check`, trash's
+  `restore_locked_noting`). Their public callers don't take it and release
+  builds pass no-ops; moving them behind `cfg(test)` would mean rewriting
+  four integrity tests to own all their data. Kept as is.
+
 ## Possible bugs (fix as patches if confirmed)
 
 - The Art page re-reads and re-decodes every preview every 2 s, flashing
@@ -425,6 +434,12 @@ Shipped in 0.31.1.
   2 s method timeout, and error texts; keys saved by either version read in
   the other. Threads match libdbus (CLI 1, app 55 after opening Settings);
   `wineo` grows from 15.0 to 16.9 MB.
+
+- Track B, app: one `task` module replaces about 70 hand-written
+  `spawn_blocking` wrappers (the rest hold permits, check cancel tokens, or
+  fall back to a default on purpose); the last identity `map_err` joins
+  are gone; the app's byte-size formatter is core's; one library reload
+  guard instead of four copies. Net -258 lines.
 
 The maintainer's machine (real GPU, library of 22, after scrolling the
 library), the 0050 acceptance build against main with everything above:

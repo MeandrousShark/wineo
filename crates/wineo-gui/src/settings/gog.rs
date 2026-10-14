@@ -14,6 +14,7 @@ use wineo_core::secret_service::SecretServiceKeyring;
 
 use super::steamgriddb::{Secret, one_line};
 use crate::Message;
+use crate::task;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Busy {
@@ -421,11 +422,7 @@ pub(crate) fn logout_with(paths: &Paths, keyring: &dyn Keyring) -> Result<Logged
 
 pub(crate) fn status_task(paths: Paths, generation: u64, sequence: u64) -> Task<Message> {
     Task::perform(
-        async move {
-            tokio::task::spawn_blocking(move || status_with(&paths, &keyring()))
-                .await
-                .unwrap_or_else(|error| Err(one_line(error)))
-        },
+        task::join(move || status_with(&paths, &keyring()), one_line),
         move |result| gog_message(Event::StatusLoaded(generation, sequence, result)),
     )
 }
@@ -434,16 +431,15 @@ pub(crate) fn status_task(paths: Paths, generation: u64, sequence: u64) -> Task<
 /// is best effort, since the address is shown too.
 fn open_task(generation: u64, sequence: u64) -> Task<Message> {
     Task::perform(
-        async move {
-            tokio::task::spawn_blocking(|| {
+        task::join(
+            || {
                 let client = wineo_core::gog::client_from_env().map_err(one_line)?;
                 let url = client.login_url();
                 open_browser(&client, &url);
                 Ok(url)
-            })
-            .await
-            .unwrap_or_else(|error| Err(one_line(error)))
-        },
+            },
+            one_line,
+        ),
         move |result| gog_message(Event::LoginReady(generation, sequence, result)),
     )
 }
@@ -476,14 +472,13 @@ fn login_task(
     pasted: Secret,
 ) -> Task<Message> {
     Task::perform(
-        async move {
-            tokio::task::spawn_blocking(move || {
+        task::join(
+            move || {
                 let client = wineo_core::gog::client_from_env().map_err(one_line)?;
                 login_with(&paths, &keyring(), client, pasted.as_str())
-            })
-            .await
-            .unwrap_or_else(|error| Err(one_line(error)))
-        },
+            },
+            one_line,
+        ),
         move |result| gog_message(Event::LoggedIn(generation, sequence, input_session, result)),
     )
 }
@@ -495,11 +490,7 @@ fn logout_task(
     input_session: Option<u64>,
 ) -> Task<Message> {
     Task::perform(
-        async move {
-            tokio::task::spawn_blocking(move || logout_with(&paths, &keyring()))
-                .await
-                .unwrap_or_else(|error| Err(one_line(error)))
-        },
+        task::join(move || logout_with(&paths, &keyring()), one_line),
         move |result| {
             gog_message(Event::LoggedOut(
                 generation,

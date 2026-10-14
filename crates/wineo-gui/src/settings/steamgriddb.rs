@@ -10,6 +10,7 @@ use wineo_core::steamgriddb::{self, KeySource, Keyring, Saved as CoreSaved};
 
 use super::Event;
 use crate::Message;
+use crate::task;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Busy {
@@ -181,11 +182,7 @@ pub(super) use wineo_core::error::one_line;
 
 pub(crate) fn status_task(paths: Paths, generation: u64, sequence: u64) -> Task<Message> {
     Task::perform(
-        async move {
-            tokio::task::spawn_blocking(move || status(&paths))
-                .await
-                .unwrap_or_else(|error| Err(one_line(error)))
-        },
+        task::join(move || status(&paths), one_line),
         move |result| {
             Message::Settings(Event::SteamGridDbKeyStatusLoaded(
                 generation, sequence, result,
@@ -215,8 +212,8 @@ pub(crate) fn save_task(
     key: Secret,
 ) -> Task<Message> {
     Task::perform(
-        async move {
-            tokio::task::spawn_blocking(move || {
+        task::join(
+            move || {
                 let keyring = SecretServiceKeyring::steamgriddb();
                 let transport = Https::new().map_err(one_line)?;
                 save_with(
@@ -226,10 +223,9 @@ pub(crate) fn save_task(
                     &transport,
                     key.as_str(),
                 )
-            })
-            .await
-            .unwrap_or_else(|error| Err(one_line(error)))
-        },
+            },
+            one_line,
+        ),
         move |result| {
             Message::Settings(Event::SteamGridDbKeySaved(
                 generation,
@@ -248,14 +244,13 @@ pub(crate) fn remove_task(
     input_session: Option<u64>,
 ) -> Task<Message> {
     Task::perform(
-        async move {
-            tokio::task::spawn_blocking(move || {
+        task::join(
+            move || {
                 let keyring = SecretServiceKeyring::steamgriddb();
                 remove_with(&paths, |name| std::env::var_os(name), &keyring)
-            })
-            .await
-            .unwrap_or_else(|error| Err(one_line(error)))
-        },
+            },
+            one_line,
+        ),
         move |result| {
             Message::Settings(Event::SteamGridDbKeyRemoved(
                 generation,

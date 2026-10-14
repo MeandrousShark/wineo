@@ -11,6 +11,7 @@ use wineo_core::paths::Paths;
 use wineo_core::trash::{self, Entry, RemoveEvent};
 
 use crate::Message;
+use crate::task;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum RemoveError {
@@ -40,12 +41,8 @@ impl fmt::Display for RemoveError {
 }
 
 pub(crate) fn measure(generation: u64, path: PathBuf, token: Token) -> Task<Message> {
-    Task::perform(
-        async move {
-            tokio::task::spawn_blocking(move || measure_size(&path, &token))
-                .await
-                .map_err(|error| error.to_string())?
-        },
+    task::blocking(
+        move || measure_size(&path, &token),
         move |result| Message::RemoveSize(generation, result),
     )
 }
@@ -85,49 +82,47 @@ async fn remove_worker(
     token: Token,
     events: impl Fn(RemoveEvent) + Send + 'static,
 ) -> Result<Entry, RemoveError> {
-    tokio::task::spawn_blocking(move || {
-        let mut previous_ids = None;
-        let result = trash::remove_with(&paths, &name, include_prefix, &token, |event| {
-            if event == RemoveEvent::Moving {
-                // Core holds the removal locks here, before publishing this attempt's entry.
-                previous_ids = trash::pending_entries(&paths)
-                    .ok()
-                    .map(|entries| entries.into_iter().map(|entry| entry.id).collect());
-            }
-            events(event);
-        });
-        match result {
-            Ok(entry) => Ok(entry),
-            Err(error) => {
-                if matches!(
-                    error.downcast_ref::<wineo_core::error::Error>(),
-                    Some(wineo_core::error::Error::Canceled(_))
-                ) {
-                    return Err(RemoveError::Canceled);
+    task::join(
+        move || {
+            let mut previous_ids = None;
+            let result = trash::remove_with(&paths, &name, include_prefix, &token, |event| {
+                if event == RemoveEvent::Moving {
+                    // Core holds the removal locks here, before publishing this attempt's entry.
+                    previous_ids = trash::pending_entries(&paths)
+                        .ok()
+                        .map(|entries| entries.into_iter().map(|entry| entry.id).collect());
                 }
+                events(event);
+            });
+            match result {
+                Ok(entry) => Ok(entry),
+                Err(error) => {
+                    if matches!(
+                        error.downcast_ref::<wineo_core::error::Error>(),
+                        Some(wineo_core::error::Error::Canceled(_))
+                    ) {
+                        return Err(RemoveError::Canceled);
+                    }
 
-                let message = error.to_string();
-                let pending_created = trash::pending_entries(&paths).is_ok_and(|entries| {
-                    has_new_pending_entry(&name, previous_ids.as_ref(), &entries)
-                });
-                Err(RemoveError::Failed(pending_error(
-                    &name,
-                    pending_created,
-                    message,
-                )))
+                    let message = error.to_string();
+                    let pending_created = trash::pending_entries(&paths).is_ok_and(|entries| {
+                        has_new_pending_entry(&name, previous_ids.as_ref(), &entries)
+                    });
+                    Err(RemoveError::Failed(pending_error(
+                        &name,
+                        pending_created,
+                        message,
+                    )))
+                }
             }
-        }
-    })
+        },
+        |error| RemoveError::Failed(error.to_string()),
+    )
     .await
-    .map_err(|error| RemoveError::Failed(error.to_string()))?
 }
 
 async fn restore_worker(paths: Paths, id: String) -> Result<(), String> {
-    tokio::task::spawn_blocking(move || {
-        trash::restore(&paths, &id).map_err(|error| error.to_string())
-    })
-    .await
-    .map_err(|error| error.to_string())?
+    task::join_string(move || trash::restore(&paths, &id).map_err(|error| error.to_string())).await
 }
 
 fn measure_size(root: &Path, token: &Token) -> Result<u64, String> {

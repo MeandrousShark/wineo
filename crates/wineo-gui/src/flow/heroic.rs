@@ -33,6 +33,7 @@ use super::import_grid::{GridKey, ImportGrid, Tile, import_label};
 use super::{Action, artwork, posters};
 use crate::chips::Chips;
 use crate::runner_label::{self, Choice};
+use crate::task;
 use crate::theme::Palette;
 use crate::ui::{
     PickListStyle, ScrollStyle, accent_base, list_group, list_row, list_row_text, secondary_button,
@@ -490,16 +491,12 @@ impl Page {
                 Some((listing.source.clone(), candidate))
             })
             .flatten();
-        Task::perform(
-            async move {
-                tokio::task::spawn_blocking(move || {
-                    if let Some(on) = answer {
-                        runner_label::answer(&paths, on)?;
-                    }
-                    refresh(&paths, single)
-                })
-                .await
-                .map_err(|e| e.to_string())?
+        task::blocking(
+            move || {
+                if let Some(on) = answer {
+                    runner_label::answer(&paths, on)?;
+                }
+                refresh(&paths, single)
             },
             move |result| Event::Offered(sequence, session, result),
         )
@@ -612,14 +609,8 @@ impl Page {
     fn discover(&mut self) -> Task<Event> {
         let generation = self.next_generation();
         let paths = self.paths.clone();
-        Task::perform(
-            async move {
-                tokio::task::spawn_blocking(move || {
-                    heroic_import::sources(&paths, None).map_err(|e| e.to_string())
-                })
-                .await
-                .map_err(|e| e.to_string())?
-            },
+        task::blocking(
+            move || heroic_import::sources(&paths, None).map_err(|e| e.to_string()),
             move |result| Event::SourcesLoaded(generation, result),
         )
     }
@@ -640,38 +631,33 @@ impl Page {
         self.review = None;
         let generation = self.next_generation();
         let paths = self.paths.clone();
-        Task::perform(
-            async move {
-                tokio::task::spawn_blocking(move || {
-                    let global = GlobalConfig::load(&paths).map_err(|e| e.to_string())?;
-                    let listing = heroic_import::listing(&paths, &global, &source)
-                        .map_err(|e| e.to_string())?;
-                    let mut already = HashMap::new();
-                    let mut existing = Vec::new();
-                    for name in environment::names(&paths).map_err(|e| e.to_string())? {
-                        if let Ok((environment, _)) =
-                            Environment::load_for_heroic_match(&paths, &name)
-                        {
-                            existing.push(environment);
-                        }
+        task::blocking(
+            move || {
+                let global = GlobalConfig::load(&paths).map_err(|e| e.to_string())?;
+                let listing =
+                    heroic_import::listing(&paths, &global, &source).map_err(|e| e.to_string())?;
+                let mut already = HashMap::new();
+                let mut existing = Vec::new();
+                for name in environment::names(&paths).map_err(|e| e.to_string())? {
+                    if let Ok((environment, _)) = Environment::load_for_heroic_match(&paths, &name)
+                    {
+                        existing.push(environment);
                     }
-                    for candidate in &listing.candidates {
-                        let default = heroic_import::default_name(
-                            &candidate.title,
-                            candidate.executable.as_deref(),
-                        );
-                        if let Some(environment) = existing.iter().find(|environment| {
-                            environment.config.heroic_id.as_deref() == Some(&candidate.id)
-                                || (environment.config.heroic_id.is_none()
-                                    && environment.name == default)
-                        }) {
-                            already.insert(candidate.id.clone(), environment.name.clone());
-                        }
+                }
+                for candidate in &listing.candidates {
+                    let default = heroic_import::default_name(
+                        &candidate.title,
+                        candidate.executable.as_deref(),
+                    );
+                    if let Some(environment) = existing.iter().find(|environment| {
+                        environment.config.heroic_id.as_deref() == Some(&candidate.id)
+                            || (environment.config.heroic_id.is_none()
+                                && environment.name == default)
+                    }) {
+                        already.insert(candidate.id.clone(), environment.name.clone());
                     }
-                    Ok((listing, already))
-                })
-                .await
-                .map_err(|e| e.to_string())?
+                }
+                Ok((listing, already))
             },
             move |result| Event::Listed(generation, result),
         )
@@ -696,14 +682,8 @@ impl Page {
         let paths = self.paths.clone();
         let source = listing.source.clone();
         let generation = self.next_generation();
-        Task::perform(
-            async move {
-                tokio::task::spawn_blocking(move || {
-                    prepare_game(&paths, &source, candidate).map(Box::new)
-                })
-                .await
-                .map_err(|e| e.to_string())?
-            },
+        task::blocking(
+            move || prepare_game(&paths, &source, candidate).map(Box::new),
             move |result| Event::Prepared(generation, result),
         )
     }
@@ -722,12 +702,8 @@ impl Page {
         self.status = "Checking installed runners...".to_owned();
         let paths = self.paths.clone();
         let generation = self.next_generation();
-        Task::perform(
-            async move {
-                tokio::task::spawn_blocking(move || batch_options(&paths))
-                    .await
-                    .map_err(|e| e.to_string())?
-            },
+        task::blocking(
+            move || batch_options(&paths),
             move |result| Event::BatchPrepared(generation, result),
         )
     }
@@ -936,14 +912,8 @@ impl Page {
         let paths = self.paths.clone();
         let selected = self.selected;
         let generation = self.next_generation();
-        Task::perform(
-            async move {
-                tokio::task::spawn_blocking(move || {
-                    plan_review(&paths, &listing, selected, &draft).map(Box::new)
-                })
-                .await
-                .map_err(|e| e.to_string())?
-            },
+        task::blocking(
+            move || plan_review(&paths, &listing, selected, &draft).map(Box::new),
             move |result| Event::Planned(generation, result),
         )
     }
@@ -957,15 +927,11 @@ impl Page {
         let generation = self.next_generation();
         let paths = self.paths.clone();
         let (sender, receiver) = unbounded();
-        let work = Task::perform(
-            async move {
-                tokio::task::spawn_blocking(move || {
-                    install_prerequisite(&paths, operation, &token, &|line| {
-                        let _ = sender.unbounded_send(Event::Progress(generation, line));
-                    })
+        let work = task::blocking(
+            move || {
+                install_prerequisite(&paths, operation, &token, &|line| {
+                    let _ = sender.unbounded_send(Event::Progress(generation, line));
                 })
-                .await
-                .map_err(|e| e.to_string())?
             },
             move |result| Event::PrerequisiteFinished(generation, result),
         );
@@ -1001,8 +967,8 @@ impl Page {
             Review::Single { game, .. } => {
                 let (sender, receiver) = unbounded();
                 let work = Task::perform(
-                    async move {
-                        tokio::task::spawn_blocking(move || {
+                    task::join(
+                        move || {
                             let global =
                                 GlobalConfig::load(&paths).map_err(|error| ImportFailure {
                                     message: error.to_string(),
@@ -1023,111 +989,102 @@ impl Page {
                                 source_changed: error.is::<heroic_import::ApplyError>(),
                                 message: format!("{error:#}"),
                             })
-                        })
-                        .await
-                        .map_err(|error| ImportFailure {
+                        },
+                        |error| ImportFailure {
                             message: error.to_string(),
                             source_changed: false,
-                        })?
-                    },
+                        },
+                    ),
                     move |result| Event::SingleRegistered(generation, result),
                 );
                 Task::batch([Task::run(receiver, |event| event), work])
             }
             Review::Batch(library) => {
                 let (sender, receiver) = unbounded();
-                let work = Task::perform(
-                    async move {
-                        tokio::task::spawn_blocking(move || {
-                            let global = GlobalConfig::load(&paths).map_err(|e| e.to_string())?;
-                            if let Err(error) = library.record_backfills(&paths) {
-                                let _ = sender.unbounded_send(Event::Progress(
-                                    generation,
-                                    format!("Heroic ID backfill: {error}"),
+                let work = task::blocking(
+                    move || {
+                        let global = GlobalConfig::load(&paths).map_err(|e| e.to_string())?;
+                        if let Err(error) = library.record_backfills(&paths) {
+                            let _ = sender.unbounded_send(Event::Progress(
+                                generation,
+                                format!("Heroic ID backfill: {error}"),
+                            ));
+                        }
+                        let mut source_changed = false;
+                        // One client for every game's art, not one per game.
+                        let https = Lazy::new();
+                        let ready = library.into_ready();
+                        let count = ready.len();
+                        for (index, mut game) in ready.into_iter().enumerate() {
+                            if token.is_canceled() {
+                                break;
+                            }
+                            match &mut game {
+                                Game::Windows(plan) => plan.set_desktop_enabled(batch_desktop),
+                                Game::Native(plan) => plan.set_desktop_enabled(batch_desktop),
+                            }
+                            let name = game.name().to_owned();
+                            let title = game.title().to_owned();
+                            let position = Some((index + 1, count));
+                            let status = |phase: Option<&str>| {
+                                Event::Progress(generation, import_status(&title, position, phase))
+                            };
+                            let _ = sender.unbounded_send(status(None));
+                            let mut copy = CopyProgress::default();
+                            let result = (|| {
+                                let registered = apply_game(
+                                    &paths,
+                                    &global,
+                                    &source,
+                                    &game,
+                                    &token,
+                                    |progress| {
+                                        if let Some(phase) = copy.record(&progress, Instant::now())
+                                        {
+                                            let _ = sender.unbounded_send(status(Some(&phase)));
+                                        }
+                                    },
+                                )?;
+                                let mut notes = Vec::new();
+                                if let Some(note) = playtime_note(&registered.playtime) {
+                                    notes.push(note);
+                                }
+                                let _ = sender.unbounded_send(status(Some("adding artwork")));
+                                let app = heroic_id(&game);
+                                notes.extend(store_heroic_poster(
+                                    &paths,
+                                    &name,
+                                    app,
+                                    posters.get(app),
                                 ));
-                            }
-                            let mut source_changed = false;
-                            // One client for every game's art, not one per game.
-                            let https = Lazy::new();
-                            let ready = library.into_ready();
-                            let count = ready.len();
-                            for (index, mut game) in ready.into_iter().enumerate() {
-                                if token.is_canceled() {
-                                    break;
+                                if fetch_batch_art {
+                                    notes.extend(
+                                        artwork::fetch_default(&paths, &name, &title, &https)
+                                            .unwrap_or_else(|error| {
+                                                vec![format!("Artwork: {error}")]
+                                            }),
+                                    );
                                 }
-                                match &mut game {
-                                    Game::Windows(plan) => plan.set_desktop_enabled(batch_desktop),
-                                    Game::Native(plan) => plan.set_desktop_enabled(batch_desktop),
-                                }
-                                let name = game.name().to_owned();
-                                let title = game.title().to_owned();
-                                let position = Some((index + 1, count));
-                                let status = |phase: Option<&str>| {
-                                    Event::Progress(
-                                        generation,
-                                        import_status(&title, position, phase),
-                                    )
-                                };
-                                let _ = sender.unbounded_send(status(None));
-                                let mut copy = CopyProgress::default();
-                                let result = (|| {
-                                    let registered = apply_game(
-                                        &paths,
-                                        &global,
-                                        &source,
-                                        &game,
-                                        &token,
-                                        |progress| {
-                                            if let Some(phase) =
-                                                copy.record(&progress, Instant::now())
-                                            {
-                                                let _ = sender.unbounded_send(status(Some(&phase)));
-                                            }
-                                        },
-                                    )?;
-                                    let mut notes = Vec::new();
-                                    if let Some(note) = playtime_note(&registered.playtime) {
-                                        notes.push(note);
-                                    }
-                                    let _ = sender.unbounded_send(status(Some("adding artwork")));
-                                    let app = heroic_id(&game);
-                                    notes.extend(store_heroic_poster(
-                                        &paths,
-                                        &name,
-                                        app,
-                                        posters.get(app),
-                                    ));
-                                    if fetch_batch_art {
-                                        notes.extend(
-                                            artwork::fetch_default(&paths, &name, &title, &https)
-                                                .unwrap_or_else(|error| {
-                                                    vec![format!("Artwork: {error}")]
-                                                }),
-                                        );
-                                    }
-                                    let _ = sender
-                                        .unbounded_send(status(Some("finalizing desktop entries")));
-                                    if let Err(error) = registered.finish(&paths, &global) {
-                                        notes.push(format!("Desktop entry: {error}"));
-                                    }
-                                    Ok::<_, anyhow::Error>(notes)
-                                })()
-                                .map_err(|error| {
-                                    if error.is::<heroic_import::ApplyError>() {
-                                        source_changed = true;
-                                    }
-                                    format!("{error:#}")
-                                });
                                 let _ = sender
-                                    .unbounded_send(Event::GameResult(generation, name, result));
-                                if source_changed {
-                                    break;
+                                    .unbounded_send(status(Some("finalizing desktop entries")));
+                                if let Err(error) = registered.finish(&paths, &global) {
+                                    notes.push(format!("Desktop entry: {error}"));
                                 }
+                                Ok::<_, anyhow::Error>(notes)
+                            })()
+                            .map_err(|error| {
+                                if error.is::<heroic_import::ApplyError>() {
+                                    source_changed = true;
+                                }
+                                format!("{error:#}")
+                            });
+                            let _ =
+                                sender.unbounded_send(Event::GameResult(generation, name, result));
+                            if source_changed {
+                                break;
                             }
-                            Ok::<_, String>((source_changed, token.is_canceled()))
-                        })
-                        .await
-                        .map_err(|e| e.to_string())?
+                        }
+                        Ok::<_, String>((source_changed, token.is_canceled()))
                     },
                     move |result| Event::BatchFinished(generation, result),
                 );
@@ -1143,22 +1100,18 @@ impl Page {
         let paths = self.paths.clone();
         let generation = self.next_generation();
         self.status = "Finalizing desktop entries...".to_owned();
-        Task::perform(
-            async move {
-                tokio::task::spawn_blocking(move || {
-                    let global = GlobalConfig::load(&paths).map_err(|e| e.to_string())?;
-                    registered
-                        .finish(&paths, &global)
-                        .map(|changes| {
-                            changes
-                                .into_iter()
-                                .map(|change| crate::settings::desktop_line(&change))
-                                .collect()
-                        })
-                        .map_err(|e| e.to_string())
-                })
-                .await
-                .map_err(|e| e.to_string())?
+        task::blocking(
+            move || {
+                let global = GlobalConfig::load(&paths).map_err(|e| e.to_string())?;
+                registered
+                    .finish(&paths, &global)
+                    .map(|changes| {
+                        changes
+                            .into_iter()
+                            .map(|change| crate::settings::desktop_line(&change))
+                            .collect()
+                    })
+                    .map_err(|e| e.to_string())
             },
             move |result| Event::FinishedRegistered(generation, result),
         )
@@ -1720,12 +1673,8 @@ impl Page {
                         self.registered = Some(registered);
                         let art = self.art.clone();
                         let paths = self.paths.clone();
-                        Task::perform(
-                            async move {
-                                tokio::task::spawn_blocking(move || art.apply(&paths, &name))
-                                    .await
-                                    .map_err(|e| e.to_string())?
-                            },
+                        task::blocking(
+                            move || art.apply(&paths, &name),
                             move |result| Event::ArtFinished(generation, result),
                         )
                     }
@@ -1791,12 +1740,8 @@ impl Page {
                 let generation = self.generation;
                 self.token = Some(Token::new());
                 self.error = None;
-                Task::perform(
-                    async move {
-                        tokio::task::spawn_blocking(move || art.apply(&paths, &name))
-                            .await
-                            .map_err(|e| e.to_string())?
-                    },
+                task::blocking(
+                    move || art.apply(&paths, &name),
                     move |result| Event::ArtFinished(generation, result),
                 )
             }

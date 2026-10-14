@@ -13,6 +13,7 @@ use wineo_core::report::OverviewError;
 use wineo_core::runners::{self, Runners};
 
 use crate::downloads_page::{Build, Event, ReleasePage, Snapshot};
+use crate::task;
 use crate::{Message, download_progress, runner_label};
 
 pub(crate) fn warnings(paths: &Paths, errors: &[OverviewError]) -> Vec<String> {
@@ -240,12 +241,5 @@ fn work<T: Send + 'static>(
     run: impl FnOnce() -> Result<T, String> + Send + 'static,
     done: impl Fn(Result<T, String>) -> Event + Send + 'static,
 ) -> Task<Message> {
-    Task::perform(
-        async move {
-            tokio::task::spawn_blocking(run)
-                .await
-                .map_err(|error| error.to_string())?
-        },
-        move |result| Message::Downloads(done(result)),
-    )
+    task::blocking(run, move |result| Message::Downloads(done(result)))
 }

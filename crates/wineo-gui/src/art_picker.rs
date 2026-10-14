@@ -15,6 +15,7 @@ use wineo_core::steamgriddb::{self, Api, Filters, Image};
 use crate::artwork;
 use crate::ends::{MIN_LEFT, ends};
 use crate::keys::{self, Direction};
+use crate::task;
 use crate::theme::Palette;
 use crate::ui::{ScrollStyle, accent_base, secondary_button};
 
@@ -503,14 +504,8 @@ impl Picker {
         let filters = request_filters(self.filters, kind);
         let paths = paths.clone();
         let client = self.client.clone();
-        let listing = Task::perform(
-            async move {
-                tokio::task::spawn_blocking(move || {
-                    list_images(&paths, &client, game, kind, filters)
-                })
-                .await
-                .unwrap_or_else(|error| Err(error.to_string()))
-            },
+        let listing = task::blocking(
+            move || list_images(&paths, &client, game, kind, filters),
             move |result| Event::Listed(sequence, result),
         );
         Task::batch([

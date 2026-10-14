@@ -526,6 +526,7 @@ fn the_picker_lists_the_games_to_migrate() {
     command.args(["import", "gog"]);
     let mut pty = Pty::spawn(command);
     pty.expect("RimWorld (1094900565, Linux)");
+    pty.expect("Game: ");
     pty.ctrl_c();
     let (status, output) = pty.finish();
     assert_eq!(status.code(), Some(130), "{output}");

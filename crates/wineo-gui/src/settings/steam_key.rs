@@ -14,6 +14,7 @@ use wineo_core::steam::{self, key, owned};
 use super::Event;
 use super::steamgriddb::{Busy, Secret, one_line, plain_text_warning};
 use crate::Message;
+use crate::task;
 
 pub(crate) const KEY_PAGE: &str = "https://steamcommunity.com/dev/apikey";
 
@@ -159,13 +160,10 @@ fn check_online(paths: &Paths, key: &str) -> Result<(), String> {
 
 pub(crate) fn status_task(paths: Paths, generation: u64, sequence: u64) -> Task<Message> {
     Task::perform(
-        async move {
-            tokio::task::spawn_blocking(move || {
-                status_with(&paths, |name| std::env::var_os(name), &keyring())
-            })
-            .await
-            .unwrap_or_else(|error| Err(one_line(error)))
-        },
+        task::join(
+            move || status_with(&paths, |name| std::env::var_os(name), &keyring()),
+            one_line,
+        ),
         move |result| Message::Settings(Event::SteamKeyStatusLoaded(generation, sequence, result)),
     )
 }
@@ -178,8 +176,8 @@ pub(crate) fn save_task(
     key: Secret,
 ) -> Task<Message> {
     Task::perform(
-        async move {
-            tokio::task::spawn_blocking(move || {
+        task::join(
+            move || {
                 save_with(
                     &paths,
                     |name| std::env::var_os(name),
@@ -187,10 +185,9 @@ pub(crate) fn save_task(
                     |key| check_online(&paths, key),
                     key.as_str(),
                 )
-            })
-            .await
-            .unwrap_or_else(|error| Err(one_line(error)))
-        },
+            },
+            one_line,
+        ),
         move |result| {
             Message::Settings(Event::SteamKeySaved(
                 generation,
@@ -209,13 +206,10 @@ pub(crate) fn remove_task(
     input_session: Option<u64>,
 ) -> Task<Message> {
     Task::perform(
-        async move {
-            tokio::task::spawn_blocking(move || {
-                remove_with(&paths, |name| std::env::var_os(name), &keyring())
-            })
-            .await
-            .unwrap_or_else(|error| Err(one_line(error)))
-        },
+        task::join(
+            move || remove_with(&paths, |name| std::env::var_os(name), &keyring()),
+            one_line,
+        ),
         move |result| {
             Message::Settings(Event::SteamKeyRemoved(
                 generation,
