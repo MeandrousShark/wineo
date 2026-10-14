@@ -609,6 +609,33 @@ How the two files stay consistent:
   and the GOG keyring items (the login and branch passwords), as with the
   rest of GOG's managed files in [stability.md](../stability.md).
 
+## Decisions during implementation
+
+Steps 2 and 3 (2026-10-14):
+
+- **Strict parsing.** Every Galaxy parser refuses a whole manifest over one
+  unusable item, unlike product details, which skip odd entries: a skipped
+  file would be a quietly incomplete install. A field that's present must
+  have the expected type and range; `null` counts as absent. Unknown item
+  types are refused. Every probed manifest parses.
+- **Paths** are checked when parsed: both separators are accepted (Papers,
+  Please uses `/`), and empty, `.`, and `..` parts, leading separators,
+  `:`, and NUL are refused, in files, setup programs, and dependency
+  executables. Link targets are kept as written for core to judge.
+- **Size limits:** a chunk is at most 1 GiB (the largest seen is about 20
+  MB, and a chunk is held in memory whole), other sizes at most 2^50
+  bytes, and a chunk's compressed size must match exactly.
+- **Refusals.** A CDN's 401 or 403, on a chunk or a manifest, is an HTTP
+  status, never `Unauthorized`, so a dead CDN link can't make wineo renew
+  the GOG login. A chunk refused again after one fresh link fails.
+- **Bad data moves to the next CDN.** A hash, size, or unpacking failure
+  counts as that CDN failing; when all fail, the last error is returned.
+- **Expiry.** Only fastly's parameters carry `expires_at`. The earliest one
+  given is used; with none, a link lasts until a CDN refuses it. One that
+  can't be read refuses the link.
+- **Not used:** the repository's `clientId` and `clientSecret` aren't kept,
+  and `max_fails` is parsed but not acted on.
+
 ## Implementation sequence
 
 Part A:
