@@ -294,9 +294,13 @@ pub fn overview_with_options(paths: &Paths, options: OverviewOptions<'_>) -> Res
     let mut errors = Vec::new();
     // One reading of Steam's files for every Steam game in the overview.
     let steam = SteamPlaytimes::new(paths);
-    for name in environment::names(paths)? {
-        let (environment_tags, loaded) = if options.tags.is_some() || options.load_tags {
-            match Environment::load(paths, &name) {
+    let names = environment::names(paths)?;
+    let loads_configs = options.tags.is_some() || options.load_tags;
+    // Nothing here trashes or restores, so one trash scan serves every load.
+    let pending = loads_configs.then(|| crate::trash::PendingScan::new(paths));
+    for name in names {
+        let (environment_tags, loaded) = if let Some(pending) = &pending {
+            match Environment::load_with_pending(paths, &name, pending) {
                 Ok(environment) => {
                     let tags = &environment.config.tags;
                     if options
@@ -448,8 +452,11 @@ pub fn import_heroic_all(
     sources: &[HeroicSource],
 ) -> Result<Vec<HeroicImportResult>> {
     let mut results = Vec::new();
-    for name in environment::names(paths)? {
-        let environment = match Environment::load(paths, &name) {
+    let names = environment::names(paths)?;
+    // Imports only append to play logs, so one trash scan serves every load.
+    let pending = crate::trash::PendingScan::new(paths);
+    for name in names {
+        let environment = match Environment::load_with_pending(paths, &name, &pending) {
             Ok(environment) => environment,
             Err(error) => {
                 results.push(HeroicImportResult::EnvironmentError { name, error });
@@ -1296,6 +1303,40 @@ mod tests {
                 last_played: None
             })
         );
+    }
+
+    #[test]
+    fn config_loading_batches_read_each_trash_manifest_once() {
+        let root = tempfile::tempdir().unwrap();
+        let paths = tag_paths(root.path());
+        for index in 0..5 {
+            let name = format!("gone-{index}");
+            tagged_environment(&paths, &name, &["game"]);
+            crate::trash::remove(&paths, &name, false).unwrap();
+        }
+        for index in 0..4 {
+            tagged_environment(&paths, &format!("kept-{index}"), &["game"]);
+        }
+        let tags = vec!["game".to_owned()];
+        for options in [
+            OverviewOptions {
+                tags: Some(&tags),
+                load_tags: false,
+            },
+            OverviewOptions {
+                tags: None,
+                load_tags: true,
+            },
+        ] {
+            crate::trash::take_manifest_reads();
+            let overview = overview_with_options(&paths, options).unwrap();
+            assert_eq!(overview.rows.len(), 4);
+            assert!(overview.errors.is_empty());
+            assert_eq!(crate::trash::take_manifest_reads(), 5);
+        }
+        crate::trash::take_manifest_reads();
+        assert!(import_heroic_all(&paths, &[]).unwrap().is_empty());
+        assert_eq!(crate::trash::take_manifest_reads(), 5);
     }
 
     #[test]
