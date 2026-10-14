@@ -232,7 +232,7 @@ recommended calls to be made and reviewed later. Each is listed here.
   "Loading...".
 - `list`, `status`, and the app's overview clean up a lost Steam run from a
   read path (`report.rs:481`). Possibly intended.
-- CLI tables pad by bytes, so non-ASCII titles misalign
+- Fixed: CLI tables padded by bytes, so non-ASCII titles misaligned
   (`table::render_columns`, `render_bulk_table`).
 - The app's `recorded_games` lacks the CLI's portable guard (harmless today).
 - Two test fake-wine processes from an earlier test run were still alive
@@ -451,6 +451,17 @@ Shipped in 0.31.1.
   one scripted fake GOG server. About +450/-570 lines. `list`, `status`,
   `validate`, `stats`, `trash`, and `runners` print the same JSON as before
   on the maintainer's library.
+
+- Track B, CLI: one helper each for cancellation and exit code 130,
+  plurals and "X of Y games." summaries, prompt plumbing (`Ask`,
+  `terminal()`, one no-input stub, one key save/remove flow), aligned
+  label rows, and completion setup. Tables now pad by display width, so
+  accented and CJK titles line up (plan bug fixed). The CLI's tables print
+  the same on the maintainer's (ASCII) library.
+- The PTY tests sent Ctrl+C right after a question's heading, before the
+  line editor switched the terminal to raw mode, so the terminal could turn
+  it into a signal and the test hung (about 1 run in 15). They now wait for
+  the prompt itself, and their wait for exit is bounded.
 
 The maintainer's machine (real GPU, library of 22, after scrolling the
 library), the 0050 acceptance build against main with everything above:
