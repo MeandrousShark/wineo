@@ -11,9 +11,25 @@ use wineo_core::heroic_import::{PendingGame, Resolution};
 use wineo_core::import;
 use wineo_core::runner::Runner;
 
+use super::bulk::{
+    Bulk, BulkRow, RowStatus, bulk_art, bulk_desktop_choice, bulk_rows, import_one,
+    import_progress, render_bulk_table, resolve_pending, resolve_pending_with,
+    shared_ready_warning,
+};
+use super::review::{edit_executable, edit_working_directory};
+use super::runner::ensure_components_available_with;
+use super::summary::{link_lines, warnings_line};
 use super::*;
 use crate::commands::art::fake::Fake;
 use crate::prompt::Script;
+use crate::text;
+use std::collections::BTreeMap;
+use std::path::Path;
+use wineo_core::components::Component;
+use wineo_core::heroic::{HeroicImport, HeroicIssueKind, HeroicRunnerKind, SettingsReview};
+use wineo_core::heroic_import::{Entry, Game, LibraryOptions, LibraryPlan, plan_library};
+use wineo_core::import::ExternalDependency;
+use wineo_core::runners::Runners;
 
 fn paths(home: &Path) -> Paths {
     Paths::from_lookup(|key| (key == "HOME").then(|| home.as_os_str().to_owned())).unwrap()

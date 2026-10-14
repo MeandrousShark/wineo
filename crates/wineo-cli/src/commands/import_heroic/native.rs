@@ -10,10 +10,10 @@ use wineo_core::heroic::{HeroicCandidate, HeroicIssueKind, HeroicNativeImport, H
 use wineo_core::heroic_import::{NativePlan, apply_native, plan_native, redact_env_value};
 use wineo_core::paths::Paths;
 
-use super::{
-    Args, ArtChoice, Block, Bulk, display_args, edit_art, edit_desktop, fetch_art,
-    gamescope_display, on_off, print_issue, render_blocks, review_art,
-};
+use super::bulk::Bulk;
+use super::review::{edit_art, edit_desktop};
+use super::summary::{Block, display_args, gamescope_display, hook_blocks, on_off, render_blocks};
+use super::{Args, ArtChoice, fetch_art, print_issue, review_art};
 use crate::cancel;
 use crate::commands::art::{Access, Pick};
 use crate::commands::import::finish_guided;
@@ -83,7 +83,7 @@ fn summary(paths: &Paths, imported: &HeroicNativeImport, name: &str) -> String {
             lines: vec![gamescope_display(gamescope)],
         });
     }
-    blocks.extend(super::hook_blocks(&imported.settings_review));
+    blocks.extend(hook_blocks(&imported.settings_review));
     let warnings: Vec<String> = imported
         .issues
         .iter()
