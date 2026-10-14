@@ -441,6 +441,17 @@ Shipped in 0.31.1.
   are gone; the app's byte-size formatter is core's; one library reload
   guard instead of four copies. Net -258 lines.
 
+- Track B, core: one copy each of hex encoding, one-line errors, the
+  runner build lock for a Wine config, the pidfd and boot-id readers, and
+  the GOG and Steam keyring constructors; `files::read_optional`,
+  `remove_if_present`, `sync_dir`, and `persist_synced` replace about 30
+  hand-written NotFound and fsync sites (variants whose order or errors
+  differ were left as they are). Test-only hooks are out of release builds
+  (`strings` finds no `WINEO_TEST_` in `wineo`), and core and the app share
+  one scripted fake GOG server. About +450/-570 lines. `list`, `status`,
+  `validate`, `stats`, `trash`, and `runners` print the same JSON as before
+  on the maintainer's library.
+
 The maintainer's machine (real GPU, library of 22, after scrolling the
 library), the 0050 acceptance build against main with everything above:
 
