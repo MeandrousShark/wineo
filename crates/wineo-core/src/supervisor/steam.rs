@@ -283,7 +283,9 @@ impl Supervisor {
                 .context(|| "failed to stop Steam's game processes".to_owned())?;
                 return Ok(RunStatus::Stopped);
             }
-            if steam::pidfd_exited(&fd).context(|| "failed to watch Steam process".to_owned())? {
+            if crate::process::pidfd_exited(&fd)
+                .context(|| "failed to watch Steam process".to_owned())?
+            {
                 return Ok(RunStatus::Exited);
             }
             heartbeat_state(runtime, state, &mut heartbeat, notify);
