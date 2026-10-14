@@ -12,10 +12,11 @@ use crate::download::{InstallLock, publish};
 use crate::name;
 use crate::runner_alias;
 
+use super::copy::{Staging, copy_tree, lexical_normalize, sync_filesystem};
 use super::{
     Check, ExternalDependency, FingerprintKind, ImportProgress, RunnerCopyInspection,
-    RunnerCopyReceipt, RunnerProvenance, Staging, canonical_source, check_cancelled, copy_tree,
-    import_fingerprint, lexical_normalize, reject_overlapping_paths, scan, sync_filesystem,
+    RunnerCopyReceipt, RunnerProvenance, canonical_source, check_cancelled, import_fingerprint,
+    reject_overlapping_paths, scan,
 };
 
 /// Copy an existing runner tree into a wineo runner root without replacing an

@@ -1,13 +1,15 @@
 use crate::test_script::write_script;
 use std::ffi::OsString;
-use std::os::unix::fs::symlink;
+use std::os::unix::fs::{PermissionsExt, symlink};
 
 use super::config_text::BEFORE_CONFIG_WRITE;
+use super::copy::{copy_regular_file_with, copy_regular_file_with_mode, relative_path};
 use super::runner_copy::{copy_runner_with_review, staged_path_if_exists};
 use super::*;
 use crate::components::Component;
 use crate::config::Defaults;
 use crate::download::InstallLock;
+use rustix::io::Errno;
 
 // The unreviewed forms, which only tests call.
 fn execute(
