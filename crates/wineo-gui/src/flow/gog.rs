@@ -31,7 +31,8 @@ use wineo_core::steamgriddb;
 use super::Action;
 use super::gog_install::{self, Install, Leave, Offer};
 use super::gog_posters::{self, Job, Network, Source as PosterSource};
-use super::heroic::{self, Prerequisite, Tile};
+use super::heroic::{self, Prerequisite};
+use super::import_grid::{self, Tile};
 use super::posters;
 use crate::progress::Delayed;
 use crate::runner_label::Choice;
@@ -410,16 +411,16 @@ impl Page {
             return None;
         }
         let count = Self::entries(self.listing.as_ref()?).len();
-        let columns = heroic::grid_columns(width);
+        let columns = import_grid::grid_columns(width);
         match key.as_ref() {
             Key::Named(
                 named @ (Named::ArrowLeft | Named::ArrowRight | Named::ArrowUp | Named::ArrowDown),
             ) => {
-                self.focus = heroic::move_focus(self.focus, named, columns, count);
+                self.focus = import_grid::move_focus(self.focus, named, columns, count);
                 self.focus_visible = true;
                 let index = self.focus?;
                 let columns = columns.max(1);
-                Some(heroic::reveal_row(
+                Some(import_grid::reveal_row(
                     GRID_ID,
                     index / columns,
                     count.div_ceil(columns),
@@ -970,7 +971,7 @@ impl Page {
             };
             return heroic::scroll_body(body.push(text(empty).color(palette.muted)), None, palette);
         }
-        let columns = heroic::grid_columns(width);
+        let columns = import_grid::grid_columns(width);
         let tiles: Vec<Element<'a, Event>> = entries
             .iter()
             .enumerate()
@@ -1016,7 +1017,7 @@ impl Page {
                         )
                     }
                 };
-                heroic::tile(
+                import_grid::tile(
                     Tile {
                         title,
                         poster: self.poster(&id),
@@ -1034,13 +1035,14 @@ impl Page {
                 )
             })
             .collect();
-        let mut rows = column![].spacing(heroic::TILE_GAP);
+        let mut rows = column![].spacing(import_grid::TILE_GAP);
         let mut tiles = tiles.into_iter().peekable();
         while tiles.peek().is_some() {
-            rows = rows
-                .push(Row::with_children(tiles.by_ref().take(columns)).spacing(heroic::TILE_GAP));
+            rows = rows.push(
+                Row::with_children(tiles.by_ref().take(columns)).spacing(import_grid::TILE_GAP),
+            );
         }
-        heroic::grid_scroll(GRID_ID, body.into(), rows.into(), palette)
+        import_grid::grid_scroll(GRID_ID, body.into(), rows.into(), palette)
     }
 
     fn review_view<'a>(

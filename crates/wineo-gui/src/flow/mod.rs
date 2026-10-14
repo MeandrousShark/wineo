@@ -5,6 +5,7 @@ mod gog_install;
 mod gog_posters;
 mod gog_update;
 mod heroic;
+mod import_grid;
 pub(crate) mod new;
 mod posters;
 mod prefix;

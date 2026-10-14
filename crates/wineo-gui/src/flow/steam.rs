@@ -16,7 +16,8 @@ use wineo_core::steam_import::{
     self, ApplyOutcome, EntryState, NO_KEY_HINT, OwnedData, Plan, PlanOutcome,
 };
 
-use super::heroic::{self, Tile};
+use super::heroic;
+use super::import_grid::{self, Tile};
 use super::{Action, posters};
 use crate::ends::{MIN_LEFT, ends};
 use crate::progress::Delayed;
@@ -613,12 +614,12 @@ impl Page {
             return None;
         }
         let count = self.listing.as_ref()?.games.len();
-        let columns = heroic::grid_columns(width);
+        let columns = import_grid::grid_columns(width);
         match key.as_ref() {
             Key::Named(
                 named @ (Named::ArrowLeft | Named::ArrowRight | Named::ArrowUp | Named::ArrowDown),
             ) => {
-                self.focus = heroic::move_focus(self.focus, named, columns, count);
+                self.focus = import_grid::move_focus(self.focus, named, columns, count);
                 self.focus_visible = true;
                 Some(self.reveal_focus(columns, count))
             }
@@ -644,7 +645,7 @@ impl Page {
             return Task::none();
         };
         let columns = columns.max(1);
-        heroic::reveal_row(GRID_ID, index / columns, count.div_ceil(columns))
+        import_grid::reveal_row(GRID_ID, index / columns, count.div_ceil(columns))
     }
 
     fn grid<'a>(
@@ -654,14 +655,14 @@ impl Page {
         width: f32,
         header: Element<'a, Event>,
     ) -> Element<'a, Event> {
-        let columns = heroic::grid_columns(width);
-        let mut rows = column![].spacing(heroic::TILE_GAP);
+        let columns = import_grid::grid_columns(width);
+        let mut rows = column![].spacing(import_grid::TILE_GAP);
         let tiles: Vec<Element<'a, Event>> = listing
             .games
             .iter()
             .enumerate()
             .map(|(index, game)| {
-                heroic::tile(
+                import_grid::tile(
                     Tile {
                         title: &game.title,
                         poster: self
@@ -681,10 +682,11 @@ impl Page {
             .collect();
         let mut tiles = tiles.into_iter().peekable();
         while tiles.peek().is_some() {
-            rows = rows
-                .push(Row::with_children(tiles.by_ref().take(columns)).spacing(heroic::TILE_GAP));
+            rows = rows.push(
+                Row::with_children(tiles.by_ref().take(columns)).spacing(import_grid::TILE_GAP),
+            );
         }
-        heroic::grid_scroll(GRID_ID, header, rows.into(), palette)
+        import_grid::grid_scroll(GRID_ID, header, rows.into(), palette)
     }
 
     pub(crate) fn view(&self, palette: Palette, width: f32) -> Element<'_, Event> {
@@ -773,7 +775,7 @@ impl Page {
                         if let Some(bar) = posters::progress_bar(&self.progress, palette) {
                             others = others.push(bar);
                         }
-                        let import = accent_base(heroic::import_label(count), palette.primary)
+                        let import = accent_base(import_grid::import_label(count), palette.primary)
                             .on_press_maybe((count > 0).then_some(Event::ImportSelected));
                         // A narrow dialog stacks the import button under the rest.
                         games_actions = Some(ends(
