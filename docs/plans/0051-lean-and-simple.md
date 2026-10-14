@@ -588,6 +588,15 @@ Limits accepted in review:
   when done, as the libdbus one did. The secret itself was never wiped by
   either.
 
+Found during acceptance:
+
+- `makepkg` run from a terminal hung and then failed two `art fetch` unit
+  tests: they inherit the terminal cargo runs in, so a "no matches" result
+  asked the real terminal for a new search. Since 0.7.1, not this plan.
+  `prompt::interactive()` is now false in unit-test builds; the PTY tests
+  run the real binary and still cover the prompts. The full PKGBUILD test
+  command passes under a pseudo-terminal.
+
 ## Acceptance checklist
 
 Nothing should look different except where a step says so. Use a small
