@@ -1,12 +1,12 @@
 use std::collections::VecDeque;
 use std::fs::File;
 use std::io::{self, Read, Write};
+use std::net::Shutdown;
 use std::os::fd::OwnedFd;
 use std::os::unix::net::UnixStream;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
-use std::time::Duration;
 
 use anyhow::Context;
 use iced::Task;
@@ -213,11 +213,14 @@ fn after_stop_messages(outcome: launch::StopOutcome) -> Vec<String> {
 }
 
 const HOOK_CAPTURE_LIMIT: usize = 64 * 1024;
+const READER_NAME: &str = "hook-capture";
 
 struct HookCapture {
     writer: Option<File>,
     state: Arc<Mutex<CaptureState>>,
     done: Arc<AtomicBool>,
+    /// Shares the reader's socket, to cut its wait short at the end.
+    wake: UnixStream,
     reader: Option<JoinHandle<io::Result<()>>>,
 }
 
@@ -252,8 +255,35 @@ impl CaptureState {
     }
 }
 
+fn stream_clone(state: &Mutex<CaptureState>) -> io::Result<UnixStream> {
+    state
+        .lock()
+        .map_err(|_| io::Error::other("hook capture lock poisoned"))?
+        .stream
+        .try_clone()
+}
+
+/// Sleeps until the stream has bytes, has hit its end, or was shut down.
+fn wait_readable(stream: &UnixStream) -> io::Result<()> {
+    use rustix::event::{PollFd, PollFlags, poll};
+    loop {
+        let mut fds = [PollFd::new(stream, PollFlags::IN)];
+        match poll(&mut fds, None) {
+            Ok(_) => return Ok(()),
+            Err(rustix::io::Errno::INTR) => {}
+            Err(error) => return Err(error.into()),
+        }
+    }
+}
+
 impl HookCapture {
     fn new() -> io::Result<Self> {
+        Self::named(READER_NAME)
+    }
+
+    /// A distinct name lets a test find its own reader thread among the
+    /// others running in parallel.
+    fn named(name: &str) -> io::Result<Self> {
         let (stream, writer) = UnixStream::pair()?;
         stream.set_nonblocking(true)?;
         let state = Arc::new(Mutex::new(CaptureState {
@@ -264,8 +294,12 @@ impl HookCapture {
         let done = Arc::new(AtomicBool::new(false));
         let read_state = state.clone();
         let read_done = done.clone();
-        let reader = thread::spawn(move || {
+        let wake = stream_clone(&state)?;
+        let watch = stream_clone(&state)?;
+        let reader = thread::Builder::new().name(name.into()).spawn(move || {
             loop {
+                // Read before draining: whatever was written before the
+                // flag was set is then in the socket for the last drain.
                 let finished = read_done.load(Ordering::Acquire);
                 read_state
                     .lock()
@@ -274,15 +308,27 @@ impl HookCapture {
                 if finished {
                     return Ok(());
                 }
-                thread::sleep(Duration::from_millis(5));
+                wait_readable(&watch)?;
             }
-        });
+        })?;
         Ok(Self {
             writer: Some(OwnedFd::from(writer).into()),
             state,
             done,
+            wake,
             reader: Some(reader),
         })
+    }
+
+    /// Ends the reader's wait. A hook's grandchild can keep the write end
+    /// open long after the hook exits, so no end of file may be coming.
+    fn stop_reader(&mut self) {
+        self.done.store(true, Ordering::Release);
+        drop(self.writer.take());
+        // Shutting the read side makes the socket readable for good, which
+        // wakes the reader. It fails only if the peer is already gone, and
+        // then the reader was woken by that.
+        let _ = self.wake.shutdown(Shutdown::Read);
     }
 
     fn try_clone(&self) -> io::Result<File> {
@@ -299,8 +345,7 @@ impl HookCapture {
     }
 
     fn finish(mut self) -> io::Result<CaptureSnapshot> {
-        drop(self.writer.take());
-        self.done.store(true, Ordering::Release);
+        self.stop_reader();
         self.reader
             .take()
             .expect("capture reader is active")
@@ -319,8 +364,7 @@ impl HookCapture {
 
 impl Drop for HookCapture {
     fn drop(&mut self) {
-        drop(self.writer.take());
-        self.done.store(true, Ordering::Release);
+        self.stop_reader();
         if let Some(reader) = self.reader.take() {
             let _ = reader.join();
         }
@@ -479,6 +523,7 @@ pub(crate) fn log(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::Duration;
 
     #[test]
     fn finished_after_hook_reports_a_panel_note() {
@@ -695,6 +740,102 @@ mod tests {
                 .unwrap()
                 .ends_with("last line")
         );
+    }
+
+    /// Voluntary context switches of the capture reader thread called `name`.
+    fn reader_wakeups(name: &str) -> u64 {
+        let mut total = 0;
+        for task in std::fs::read_dir("/proc/self/task").unwrap().flatten() {
+            let path = task.path();
+            if std::fs::read_to_string(path.join("comm")).is_ok_and(|comm| comm.trim() == name)
+                && let Ok(status) = std::fs::read_to_string(path.join("status"))
+            {
+                total += status
+                    .lines()
+                    .find_map(|line| line.strip_prefix("voluntary_ctxt_switches:"))
+                    .and_then(|count| count.trim().parse::<u64>().ok())
+                    .unwrap_or(0);
+            }
+        }
+        total
+    }
+
+    #[test]
+    fn an_idle_capture_reader_does_not_wake() {
+        let capture = HookCapture::named("idle-capture").unwrap();
+        thread::sleep(Duration::from_millis(100));
+        let before = reader_wakeups("idle-capture");
+        thread::sleep(Duration::from_secs(1));
+        let woke = reader_wakeups("idle-capture") - before;
+        eprintln!("reader wakeups in 1 s idle: {woke}");
+        drop(capture);
+        assert!(woke < 5, "reader woke {woke} times while idle");
+    }
+
+    #[test]
+    fn the_reader_picks_up_output_without_being_asked() {
+        let capture = HookCapture::new().unwrap();
+        let mut writer = capture.try_clone().unwrap();
+        writer.write_all(b"hello\n").unwrap();
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        // Looks at the shared state only, so position() cannot do the read.
+        while capture.state.lock().unwrap().total < 6 {
+            assert!(std::time::Instant::now() < deadline, "reader never woke");
+            thread::sleep(Duration::from_millis(5));
+        }
+        assert_eq!(capture.state.lock().unwrap().bytes, b"hello\n");
+    }
+
+    #[test]
+    fn position_counts_everything_written_before_the_call() {
+        let capture = HookCapture::new().unwrap();
+        let mut writer = capture.try_clone().unwrap();
+        let mut written = 0;
+        for round in 0..200 {
+            let line = format!("line {round}\n");
+            writer.write_all(line.as_bytes()).unwrap();
+            written += line.len() as u64;
+            assert_eq!(capture.position().unwrap(), written);
+        }
+        let snapshot = capture.finish().unwrap();
+        assert_eq!(snapshot.total, written);
+    }
+
+    /// Runs `end` on another thread and fails instead of hanging.
+    fn finishes_promptly(end: impl FnOnce() + Send + 'static) {
+        let (sender, receiver) = std::sync::mpsc::channel();
+        thread::spawn(move || {
+            end();
+            let _ = sender.send(());
+        });
+        receiver
+            .recv_timeout(Duration::from_secs(5))
+            .expect("the reader stayed blocked");
+    }
+
+    #[test]
+    fn finish_ends_the_reader_while_a_grandchild_holds_the_write_end() {
+        let capture = HookCapture::new().unwrap();
+        let mut held = capture.try_clone().unwrap();
+        held.write_all(b"before\n").unwrap();
+        // Let the reader block in its wait first.
+        thread::sleep(Duration::from_millis(50));
+        held.write_all(b"last\n").unwrap();
+        finishes_promptly(move || {
+            let mut snapshot = capture.finish().unwrap();
+            assert_eq!(snapshot.size().unwrap(), 12);
+            assert_eq!(snapshot.tail().unwrap(), "before\nlast");
+        });
+        drop(held);
+    }
+
+    #[test]
+    fn dropping_the_capture_ends_the_reader_while_a_grandchild_holds_the_write_end() {
+        let capture = HookCapture::new().unwrap();
+        let held = capture.try_clone().unwrap();
+        thread::sleep(Duration::from_millis(50));
+        finishes_promptly(move || drop(capture));
+        drop(held);
     }
 
     #[test]
