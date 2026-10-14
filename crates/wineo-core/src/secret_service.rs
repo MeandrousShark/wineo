@@ -5,6 +5,7 @@ use std::future::Future;
 use std::time::Duration;
 
 use secret_service::{EncryptionType, Error, Item, SecretService};
+use zbus::DBusError;
 
 use crate::key_store::{KeySpec, Keyring, KeyringError};
 
@@ -76,15 +77,11 @@ fn block_on<T>(
 /// Keeps the messages the libdbus client gave, which users may have seen.
 fn failed(err: Error) -> KeyringError {
     let message = match err {
+        // The only decryption failure secret-service reports: bad padding.
+        Error::Crypto("message decryption failed") => "Crypto error: Unpad Error".to_owned(),
         Error::Crypto(err) => format!("Crypto error: {err}"),
-        Error::Zbus(zbus::Error::MethodError(name, description, _)) => {
-            format!(
-                "DBus error: {}",
-                description.as_deref().unwrap_or(name.as_str())
-            )
-        }
-        Error::Zbus(err) => format!("DBus error: {err}"),
-        Error::ZbusFdo(err) => format!("DBus error: {err}"),
+        Error::Zbus(err) => format!("DBus error: {}", zbus_message(&err)),
+        Error::ZbusFdo(err) => format!("DBus error: {}", fdo_message(&err)),
         Error::Locked => "Secret Service: object locked".to_owned(),
         Error::NoResult => "Secret Service: no result found".to_owned(),
         Error::Prompt => "Secret Service: unlock prompt was dismissed".to_owned(),
@@ -95,6 +92,22 @@ fn failed(err: Error) -> KeyringError {
         err => format!("Unexpected Error: {err}"),
     };
     KeyringError::Failed(message)
+}
+
+/// libdbus showed only an error reply's description, never its name.
+fn zbus_message(err: &zbus::Error) -> String {
+    match err {
+        zbus::Error::MethodError(_, description, _) => description.clone().unwrap_or_default(),
+        zbus::Error::FDO(err) => fdo_message(err),
+        err => err.to_string(),
+    }
+}
+
+fn fdo_message(err: &zbus::fdo::Error) -> String {
+    match err {
+        zbus::fdo::Error::ZBus(err) => zbus_message(err),
+        err => err.description().unwrap_or_default().to_owned(),
+    }
 }
 
 impl Keyring for SecretServiceKeyring {
@@ -173,6 +186,73 @@ async fn unlock_item(item: &Item<'_>) -> Result<(), KeyringError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn message(err: Error) -> String {
+        match failed(err) {
+            KeyringError::Failed(message) => message,
+            KeyringError::Unavailable => panic!("expected a failure"),
+        }
+    }
+
+    fn denied() -> zbus::fdo::Error {
+        zbus::fdo::Error::AccessDenied("denied".to_owned())
+    }
+
+    #[test]
+    fn a_bad_padding_reads_as_libdbus_did() {
+        assert_eq!(
+            message(Error::Crypto("message decryption failed")),
+            "Crypto error: Unpad Error"
+        );
+        assert_eq!(
+            message(Error::Crypto("secret has an invalid initialization vector")),
+            "Crypto error: secret has an invalid initialization vector"
+        );
+    }
+
+    #[test]
+    fn dbus_errors_show_only_their_description() {
+        assert_eq!(message(Error::ZbusFdo(denied())), "DBus error: denied");
+        assert_eq!(
+            message(Error::Zbus(zbus::Error::FDO(Box::new(denied())))),
+            "DBus error: denied"
+        );
+        assert_eq!(
+            message(Error::ZbusFdo(zbus::fdo::Error::ZBus(zbus::Error::FDO(
+                Box::new(denied())
+            )))),
+            "DBus error: denied"
+        );
+
+        let call = zbus::message::Message::method_call("/", "Unlock")
+            .unwrap()
+            .build(&())
+            .unwrap();
+        let name = "org.freedesktop.Secret.Error.IsLocked";
+        let locked = |description: Option<&str>| {
+            Error::Zbus(zbus::Error::MethodError(
+                name.try_into().unwrap(),
+                description.map(str::to_owned),
+                call.clone(),
+            ))
+        };
+        assert_eq!(message(locked(Some("locked"))), "DBus error: locked");
+        assert_eq!(message(locked(None)), "DBus error: ");
+    }
+
+    #[test]
+    fn secret_service_states_keep_their_messages() {
+        assert_eq!(message(Error::Locked), "Secret Service: object locked");
+        assert_eq!(message(Error::NoResult), "Secret Service: no result found");
+        assert_eq!(
+            message(Error::Prompt),
+            "Secret Service: unlock prompt was dismissed"
+        );
+        assert_eq!(
+            message(Error::Unavailable),
+            "No DBus session or Secret Service provider found"
+        );
+    }
 
     /// Writes to whatever Secret Service the session bus reaches, so it only
     /// runs when `WINEO_TEST_SECRET_SERVICE` says that bus is a throwaway
