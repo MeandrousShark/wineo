@@ -14,7 +14,7 @@ use wineo_core::gog::api::Client;
 use wineo_core::gog::covers::{self, CoverError};
 use wineo_core::paths::Paths;
 
-use super::artwork::preview_with_format;
+use super::posters;
 
 /// Where a game's poster comes from.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -71,7 +71,7 @@ pub(super) fn run(
         }
         match job.source {
             Source::Stored(environment) => match stored_grid(paths, &environment) {
-                Ok(Some(path)) => emit(job.id, decode(&path)),
+                Ok(Some(path)) => emit(job.id, decode(paths, &path)),
                 Ok(None) => {}
                 Err(error) => emit(job.id, Err(error)),
             },
@@ -127,15 +127,15 @@ fn stored_grid(paths: &Paths, environment: &str) -> Result<Option<PathBuf>, Stri
     Ok(resolved.map(|resolved| resolved.found.path))
 }
 
-fn decode(path: &Path) -> Result<Handle, String> {
-    preview_with_format(path, Kind::Grid).map(|(handle, _)| handle)
+fn decode(paths: &Paths, path: &Path) -> Result<Handle, String> {
+    posters::decode(path, &paths.art_cache_dir()).map(|(handle, _)| handle)
 }
 
 /// Decodes a cached cover. One that can't be decoded, like a truncated
 /// download, is removed so the next load fetches it again instead of failing
 /// on it forever. Art an environment stored is never removed.
 fn decode_cover(paths: &Paths, gog_id: u64, path: &Path) -> Result<Handle, String> {
-    let poster = decode(path);
+    let poster = decode(paths, path);
     if poster.is_err() {
         let _ = covers::discard(paths, gog_id);
     }

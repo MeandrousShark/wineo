@@ -30,7 +30,7 @@ use wineo_core::import;
 use wineo_core::paths::Paths;
 use wineo_core::runners::Runners;
 
-use super::{Action, artwork};
+use super::{Action, artwork, posters};
 use crate::chips::Chips;
 use crate::runner_label::{self, Choice};
 use crate::theme::Palette;
@@ -745,16 +745,16 @@ impl Page {
     /// title placeholder.
     fn load_posters(&self, listing: &HeroicListing) -> Task<Event> {
         let generation = self.poster_generation;
+        let cache = self.paths.art_cache_dir();
         Task::batch(listing.candidates.iter().filter_map(|candidate| {
             let path = candidate.poster.clone()?;
             let id = candidate.id.clone();
+            let cache = cache.clone();
             Some(Task::perform(
                 async move {
-                    tokio::task::spawn_blocking(move || {
-                        artwork::preview_with_format(&path, Kind::Grid)
-                    })
-                    .await
-                    .map_err(|e| e.to_string())?
+                    posters::bounded(move || posters::decode(&path, &cache))
+                        .await
+                        .and_then(|result| result)
                 },
                 move |result| Event::Poster(generation, id, result),
             ))
@@ -3452,7 +3452,7 @@ fn store_heroic_poster(
 ) -> Option<String> {
     let poster = poster?;
     // Core only checks the signature, so the image has to decode first.
-    if !poster.decoded && artwork::preview_with_format(&poster.path, Kind::Grid).is_err() {
+    if !poster.decoded && posters::decode(&poster.path, &paths.art_cache_dir()).is_err() {
         return None;
     }
     heroic_import::store_poster(paths, name, app, &poster.path)

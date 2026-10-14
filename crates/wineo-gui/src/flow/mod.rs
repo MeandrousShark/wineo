@@ -6,6 +6,7 @@ mod gog_posters;
 mod gog_update;
 mod heroic;
 pub(crate) mod new;
+mod posters;
 mod prefix;
 mod steam;
 

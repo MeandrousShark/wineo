@@ -17,7 +17,7 @@ use wineo_core::steam_import::{
 };
 
 use super::heroic::{self, Tile};
-use super::{Action, artwork};
+use super::{Action, posters};
 use crate::theme::Palette;
 use crate::ui::{accent_base, secondary_button};
 
@@ -332,16 +332,17 @@ impl Page {
 
     fn load_posters(&self, listing: &Listing) -> Task<Event> {
         let generation = self.poster_generation;
+        let cache = self.paths.art_cache_dir();
         Task::batch(
             self.posters_to_load(listing)
                 .into_iter()
                 .map(|(key, path)| {
                     let dim = key.1;
+                    let cache = cache.clone();
                     Task::perform(
                         async move {
-                            tokio::task::spawn_blocking(move || {
-                                let handle = artwork::preview_with_format(&path, Kind::Grid)
-                                    .map(|(handle, _)| handle)?;
+                            posters::bounded(move || {
+                                let (handle, _) = posters::decode(&path, &cache)?;
                                 // Grayscale like an uninstalled card in the library.
                                 Ok(if dim {
                                     crate::artwork::grayscale(&handle).unwrap_or(handle)
@@ -350,7 +351,7 @@ impl Page {
                                 })
                             })
                             .await
-                            .map_err(|error| error.to_string())?
+                            .and_then(|result| result)
                         },
                         move |result| Event::Poster(generation, key, result),
                     )
