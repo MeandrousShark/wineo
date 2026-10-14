@@ -13,7 +13,6 @@
 
 use std::fs::{self, File, OpenOptions};
 use std::io;
-use std::os::fd::OwnedFd;
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 
@@ -48,6 +47,16 @@ pub(super) fn version_dir(paths: &Paths, version: &StoreVersion) -> PathBuf {
         .gog_redist_dir()
         .join(&version.dependency)
         .join(&version.manifest)
+}
+
+/// A lock held until dropped, then let go of explicitly, since a forked
+/// child holding a copy of the descriptor would otherwise keep it.
+struct Flock(File);
+
+impl Drop for Flock {
+    fn drop(&mut self) {
+        let _ = flock(&self.0, FlockOperation::Unlock);
+    }
 }
 
 /// A version an operation uses, its lock held shared until dropped.
@@ -116,11 +125,11 @@ pub(super) fn publish(
     progress: &mut dyn FnMut(u64),
 ) -> Result<()> {
     let version = &held.version;
-    let _lock = lock_file(
+    let _lock = Flock(lock_file(
         &paths.gog_redist_dependency_lock(&version.dependency),
         true,
         &|| token.is_canceled(),
-    )?;
+    )?);
     if held.present() {
         return Ok(());
     }
@@ -199,7 +208,7 @@ fn remove_any(path: &Path) -> Result<()> {
 }
 
 /// Takes a lock exclusively without waiting. None when anything holds it.
-fn try_exclusive(path: &Path) -> Result<Option<OwnedFd>> {
+fn try_exclusive(path: &Path) -> Result<Option<Flock>> {
     let dir = path.parent().expect("a lock has a parent");
     fs::create_dir_all(dir).with_context(|| format!("failed to create {}", dir.display()))?;
     let file = OpenOptions::new()
@@ -225,8 +234,11 @@ fn try_exclusive(path: &Path) -> Result<Option<OwnedFd>> {
     // else sees, so that counts as held.
     let held = file.metadata()?;
     match fs::metadata(path) {
-        Ok(now) if now.dev() == held.dev() && now.ino() == held.ino() => Ok(Some(file.into())),
-        _ => Ok(None),
+        Ok(now) if now.dev() == held.dev() && now.ino() == held.ino() => Ok(Some(Flock(file))),
+        _ => {
+            let _ = flock(&file, FlockOperation::Unlock);
+            Ok(None)
+        }
     }
 }
 
@@ -272,8 +284,6 @@ pub(super) fn clean(paths: &Paths) -> Result<Vec<StoreVersion>> {
             else {
                 continue;
             };
-            #[cfg(test)]
-            super::tests::store_step("locked");
             // Read under the lock: a record naming it from here on is one
             // whose operation will wait for the lock and find it gone.
             if record::all(&paths.gog_folders_dir())?

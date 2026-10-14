@@ -250,6 +250,11 @@ impl Plan {
     pub fn warnings(&self) -> &[String] {
         &self.warnings
     }
+
+    #[cfg(test)]
+    pub(super) fn manifest_for_tests(&self) -> &Manifest {
+        &self.manifest
+    }
 }
 
 fn sizes(files: &[FileEntry]) -> u64 {
@@ -854,7 +859,8 @@ fn manifests(
         .iter()
         .map(|(owner, manifest)| (owner.clone(), manifest))
         .collect();
-    let manifest = build::assemble(&repository.build_id, &sources, setup)?;
+    let manifest =
+        build::assemble(&repository.build_id, &sources, setup).map_err(GalaxyError::Layout)?;
     let store = complete_store(session, store)?;
     Ok(Built {
         manifest,
@@ -886,7 +892,8 @@ fn store_files(session: &Session, version: &StoreVersion) -> Result<Vec<FileEntr
         "",
         &[(Owner::Dependency(version.dependency.clone()), &manifest)],
         SetupInfo::default(),
-    )?;
+    )
+    .map_err(GalaxyError::Layout)?;
     Ok(built.files)
 }
 
@@ -1428,6 +1435,7 @@ fn flush(
         name_entry(&mut journal.attempted, path, EntryType::File, Some(md5));
     }
     lock.write(state)?;
+    failpoint("galaxy.named.after")?;
     for (path, temp, _) in waiting.drain(..) {
         place(publisher, &temp, &path)?;
     }
@@ -1865,4 +1873,109 @@ pub(super) fn space_with(
         package::check_space_with(paths, path, needed, free(path)?)?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::gog::update::galaxy::record::{DirEntry, LinkEntry};
+
+    fn file(path: &str) -> FileEntry {
+        FileEntry {
+            path: path.to_owned(),
+            product: Some(1),
+            dependency: None,
+            size: 0,
+            md5: None,
+            sha256: None,
+            chunks: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn paths_reuse_the_spelling_entries_already_have_on_disk() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("DATA/Maps")).unwrap();
+        std::fs::write(dir.path().join("DATA/Core.DAT"), "x").unwrap();
+        std::fs::write(dir.path().join("readme.txt"), "x").unwrap();
+        let manifest = Manifest {
+            build: "1".to_owned(),
+            files: vec![
+                file("Data/core.dat"),
+                file("Data/maps/new.map"),
+                file("Data/fresh.dat"),
+                file("README.TXT"),
+                file("bin/game.exe"),
+            ],
+            directories: ["Data", "Data/maps", "bin"]
+                .iter()
+                .map(|path| DirEntry {
+                    path: (*path).to_owned(),
+                    product: Some(1),
+                    dependency: None,
+                })
+                .collect(),
+            links: vec![LinkEntry {
+                path: "data/link".to_owned(),
+                target: "Core.DAT".to_owned(),
+                product: Some(1),
+                dependency: None,
+            }],
+            ..Manifest::default()
+        };
+        let root = package::open_folder(dir.path()).unwrap();
+        let spelled = on_disk(&root, &manifest);
+        let files: Vec<&str> = spelled.files.iter().map(|f| f.path.as_str()).collect();
+        assert_eq!(
+            files,
+            [
+                "DATA/Core.DAT",
+                "DATA/Maps/new.map",
+                "DATA/fresh.dat",
+                "bin/game.exe",
+                "readme.txt",
+            ]
+        );
+        let dirs: Vec<&str> = spelled
+            .directories
+            .iter()
+            .map(|d| d.path.as_str())
+            .collect();
+        assert_eq!(dirs, ["DATA", "DATA/Maps", "bin"]);
+        assert_eq!(spelled.links[0].path, "DATA/link");
+    }
+
+    #[test]
+    fn space_is_checked_per_filesystem_and_summed_where_they_share_one() {
+        let (_root, paths) = crate::gog::test_support::setup();
+        let folder = Path::new("/games/Game");
+        let support = Path::new("/data/gog/support/k");
+        let store = Path::new("/data/gog/redist");
+        let needs = [(folder, 100), (support, 30), (store, 30)];
+        let split = |path: &Path| Ok(if path.starts_with("/games") { 1 } else { 2 });
+        let free_of = |games: u64, data: u64| {
+            move |path: &Path| {
+                Ok(if path.starts_with("/games") {
+                    games
+                } else {
+                    data
+                })
+            }
+        };
+        // Each filesystem holds its own.
+        assert!(space_with(&paths, &needs, &split, &free_of(100, 60)).is_ok());
+        // The game folder's is short.
+        let error = space_with(&paths, &needs, &split, &free_of(99, 1000)).unwrap_err();
+        assert!(error.to_string().contains("/games"), "{error}");
+        // The data directory's holds neither the support files and the
+        // store together.
+        let error = space_with(&paths, &needs, &split, &free_of(1000, 59)).unwrap_err();
+        assert!(error.to_string().contains("needs 60 B"), "{error}");
+        assert!(error.to_string().contains("/data/gog/support"), "{error}");
+        // All on one: summed.
+        let one = |_: &Path| Ok(7);
+        assert!(space_with(&paths, &needs, &one, &|_: &Path| Ok(160)).is_ok());
+        let error = space_with(&paths, &needs, &one, &|_: &Path| Ok(159)).unwrap_err();
+        assert!(error.to_string().contains("needs 160 B"), "{error}");
+    }
 }
