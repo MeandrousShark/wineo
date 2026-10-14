@@ -136,6 +136,23 @@ impl Environment {
         check_name(name)?;
         crate::trash::check_pending(paths, name, &[])
             .map_err(|err| Error::Unsettled(err.to_string()))?;
+        Self::read(paths, name)
+    }
+
+    /// `load` against a trash scan shared by a batch of loads.
+    pub fn load_with_pending(
+        paths: &Paths,
+        name: &str,
+        pending: &crate::trash::PendingScan,
+    ) -> Result<Self> {
+        check_name(name)?;
+        pending
+            .check(paths, name, &[])
+            .map_err(|err| Error::Unsettled(err.to_string()))?;
+        Self::read(paths, name)
+    }
+
+    fn read(paths: &Paths, name: &str) -> Result<Self> {
         crate::snapshot::check_recovery_marker(paths, name)?;
         let path = paths.environment_config(name);
         #[cfg(test)]
