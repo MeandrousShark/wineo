@@ -354,6 +354,19 @@ Shipped in 0.31.1.
   steps. Prompts, order, and back navigation are unchanged, and new tests
   walk each flow forward and back.
 
+- C3: one `list`, `status`, app library load, or `stats --tag` read checks
+  the trash once instead of once per environment, keeping every check
+  (each manifest is still fully validated). `wineo list` with 20
+  environments and 50 trash entries: 43 ms to 4.5 ms. An app library load
+  with 4 environments and 5 trash entries reads 5 manifests instead of 45.
+  The Heroic playtime import, which writes play logs, still checks each
+  environment as it goes.
+- C7c: clone, portable copy, and prefix import stage, verify, and publish
+  through one helper (`stage.rs`), with tests that a failed or cancelled
+  copy, a failed rename, or a panic leaves nothing behind, and that a
+  published prefix is never cleaned up. Snapshot create and restore keep
+  their own staging.
+
 The maintainer's machine (real GPU, library of 22, after scrolling the
 library), the 0050 acceptance build against main with everything above:
 
