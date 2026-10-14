@@ -324,8 +324,9 @@ pub(crate) enum Message {
     UndoFinished(u64, Result<(), String>),
     /// The toast or feature notice deadline, tagged with its wakeup.
     ToastTick(u64),
-    /// A key came up, by which time any focus move it caused has happened.
-    KeyReleased,
+    /// A key came up or a finger went down, by which time any focus move it
+    /// caused has happened.
+    FocusRecheck,
     ToastHover(bool),
     ToastFocus(bool, Instant),
     Trash(trash_page::Event),
@@ -623,7 +624,7 @@ impl App {
             collapse,
             // Only a toast has focus to recheck.
             if self.toast.is_some() {
-                iced::event::listen_with(|event, _, _| key_released(event))
+                iced::event::listen_with(|event, _, _| focus_input(event))
             } else {
                 Subscription::none()
             },
@@ -1105,7 +1106,7 @@ impl App {
                 )
             }
             // Handled in `update`, which polls the toast's focus for it.
-            Message::KeyReleased => Task::none(),
+            Message::FocusRecheck => Task::none(),
             Message::ScrollIdle(generation) => {
                 if self.scroll_wake.fired(generation)
                     && self
@@ -2066,12 +2067,15 @@ pub(crate) fn window_or_press(event: iced::Event) -> Option<Message> {
 
 /// Focus moves by key (Tab, a dialog opening) finish before the key comes up,
 /// unlike at the press, so this is when the toast re-checks its Undo focus.
-fn key_released(event: iced::Event) -> Option<Message> {
+/// A touch is the other way focus leaves it, and the widgets have handled the
+/// press by the time a listener sees it.
+fn focus_input(event: iced::Event) -> Option<Message> {
     matches!(
         event,
         iced::Event::Keyboard(keyboard::Event::KeyReleased { .. })
+            | iced::Event::Touch(iced::touch::Event::FingerPressed { .. })
     )
-    .then_some(Message::KeyReleased)
+    .then_some(Message::FocusRecheck)
 }
 
 pub(crate) fn event_message(event: iced::Event, status: iced::event::Status) -> Option<Message> {
@@ -4548,5 +4552,35 @@ mod tests {
         let _ = app.update(Message::ScrollIdle(live));
         assert_eq!(app.scroll_visible_until, Some(later));
         assert_eq!(app.scroll_wake.due(), Some(later));
+    }
+
+    #[test]
+    fn a_touch_or_a_key_release_rechecks_toast_focus_but_a_move_does_not() {
+        let finger = iced::touch::Finger(0);
+        let at = iced::Point::ORIGIN;
+        assert!(matches!(
+            focus_input(iced::Event::Touch(iced::touch::Event::FingerPressed {
+                id: finger,
+                position: at
+            })),
+            Some(Message::FocusRecheck)
+        ));
+        assert!(
+            focus_input(iced::Event::Touch(iced::touch::Event::FingerMoved {
+                id: finger,
+                position: at
+            }))
+            .is_none()
+        );
+        assert!(
+            focus_input(iced::Event::Keyboard(keyboard::Event::KeyReleased {
+                key: keyboard::Key::Named(keyboard::key::Named::Tab),
+                modified_key: keyboard::Key::Named(keyboard::key::Named::Tab),
+                physical_key: keyboard::key::Physical::Code(keyboard::key::Code::Tab),
+                location: keyboard::Location::Standard,
+                modifiers: keyboard::Modifiers::empty(),
+            }))
+            .is_some()
+        );
     }
 }
