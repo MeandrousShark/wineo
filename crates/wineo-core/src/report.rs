@@ -521,11 +521,14 @@ fn overview_with(paths: &Paths, filter: OverviewFilter<'_>, scan: &ReaperScan) -
     let locks = Locks::new(paths);
     let global = GlobalConfig::load(paths).ok();
     let mut overview = Overview::default();
+    let names = environment::names(paths)?;
+    // Nothing here trashes or restores, so one trash scan serves every load.
+    let pending = crate::trash::PendingScan::new(paths);
     // Loaded up front so one process sweep can look for every Steam game.
-    let environments: Vec<_> = environment::names(paths)?
+    let environments: Vec<_> = names
         .into_iter()
         .map(|name| {
-            let environment = Environment::load(paths, &name);
+            let environment = Environment::load_with_pending(paths, &name, &pending);
             (name, environment)
         })
         .collect();
@@ -905,6 +908,31 @@ mod tests {
         steam_library(&paths, &[("idle", "555")]);
         overview_with(&paths, OverviewFilter::default(), &scan).unwrap();
         assert_eq!(calls.get(), 1);
+    }
+
+    #[test]
+    fn overview_reads_each_trash_manifest_once() {
+        let root = tempfile::tempdir().unwrap();
+        let paths = test_paths(root.path());
+        fs::create_dir_all(paths.environments_dir()).unwrap();
+        for index in 0..5 {
+            let name = format!("gone-{index}");
+            fs::write(paths.environment_config(&name), "kind = 'native'\n").unwrap();
+            crate::trash::remove(&paths, &name, false).unwrap();
+        }
+        for index in 0..4 {
+            fs::write(
+                paths.environment_config(&format!("kept-{index}")),
+                "kind = 'native'\n",
+            )
+            .unwrap();
+        }
+        let scan = |_: &crate::steam::Install, _: &[String]| Ok(HashMap::new());
+
+        crate::trash::MANIFEST_READS.with(|reads| reads.set(0));
+        let overview = overview_with(&paths, OverviewFilter::default(), &scan).unwrap();
+        assert_eq!(overview.environments.len(), 4);
+        assert_eq!(crate::trash::MANIFEST_READS.with(|reads| reads.get()), 5);
     }
 
     #[test]

@@ -601,7 +601,12 @@ fn write_manifest(paths: &Paths, manifest: &Manifest) -> Result<()> {
     sync(&paths.trash_dir())
 }
 
+#[cfg(test)]
+thread_local! { pub(crate) static MANIFEST_READS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }
+
 fn read_manifest(paths: &Paths, id: &str) -> Result<Manifest> {
+    #[cfg(test)]
+    MANIFEST_READS.with(|reads| reads.set(reads.get() + 1));
     identity(&paths.trash_dir())?.ok_or_else(|| anyhow!("trash storage unavailable"))?;
     let dir = entry_dir(paths, id)?;
     if !fs::symlink_metadata(&dir)?.file_type().is_dir() {
@@ -823,8 +828,112 @@ pub fn inspect(paths: &Paths, id: &str) -> Result<Entry> {
 /// Called under ordinary operation/config locks as well as before config
 /// lookup. A missing config cannot hide an unfinished operation.
 pub fn check_pending(paths: &Paths, name: &str, affected: &[&Path]) -> Result<()> {
-    for (_, marker) in markers(paths)? {
-        let locations = marker_paths(paths, &marker)?;
+    let scan = PendingScan::new(paths);
+    match scan.find(paths, name, affected) {
+        Ok(()) => Ok(()),
+        Err(Blocked::Found(err)) => Err(err),
+        Err(Blocked::Stored(slot)) => Err(scan.take(slot)),
+    }
+}
+
+/// One read of the pending markers and trash manifests, so a command that
+/// loads every environment reads the trash once instead of once per load.
+/// It is a snapshot: keep it only for a batch of reads that cannot itself
+/// trash, restore, or prune anything, and never hold it across commands.
+pub struct PendingScan {
+    markers: Result<Vec<PendingMarker>>,
+    /// Read only once the markers allow it, matching the order a single
+    /// check has always read them in.
+    manifests: std::cell::OnceCell<Result<Vec<Result<Manifest>>>>,
+}
+
+enum Blocked {
+    Found(anyhow::Error),
+    Stored(Slot),
+}
+
+#[derive(Clone, Copy)]
+enum Slot {
+    Markers,
+    Manifests,
+    Manifest(usize),
+}
+
+impl PendingScan {
+    pub fn new(paths: &Paths) -> Self {
+        Self {
+            markers: markers(paths)
+                .map(|found| found.into_iter().map(|(_, marker)| marker).collect()),
+            manifests: std::cell::OnceCell::new(),
+        }
+    }
+
+    /// The same answer `check_pending` gives for this snapshot. A stored
+    /// read error keeps only its top-level message, so callers that need the
+    /// full context chain should use `check_pending`.
+    pub fn check(&self, paths: &Paths, name: &str, affected: &[&Path]) -> Result<()> {
+        match self.find(paths, name, affected) {
+            Ok(()) => Ok(()),
+            Err(Blocked::Found(err)) => Err(err),
+            // Errors can't be cloned, and every load that hits a stored one
+            // must still fail with its message.
+            Err(Blocked::Stored(slot)) => Err(anyhow!("{}", self.stored(slot))),
+        }
+    }
+
+    fn stored(&self, slot: Slot) -> &anyhow::Error {
+        let manifests = self.manifests.get();
+        match (slot, manifests) {
+            (Slot::Markers, _) => self.markers.as_ref().err(),
+            (Slot::Manifests, Some(manifests)) => manifests.as_ref().err(),
+            (Slot::Manifest(index), Some(Ok(manifests))) => manifests[index].as_ref().err(),
+            _ => None,
+        }
+        .expect("slot names a stored error")
+    }
+
+    fn take(self, slot: Slot) -> anyhow::Error {
+        match slot {
+            Slot::Markers => self.markers.err(),
+            Slot::Manifests => self.manifests.into_inner().and_then(Result::err),
+            Slot::Manifest(index) => self
+                .manifests
+                .into_inner()
+                .and_then(Result::ok)
+                .and_then(|mut manifests| manifests.swap_remove(index).err()),
+        }
+        .expect("slot names a stored error")
+    }
+
+    fn find(&self, paths: &Paths, name: &str, affected: &[&Path]) -> Result<(), Blocked> {
+        let markers = self
+            .markers
+            .as_ref()
+            .map_err(|_| Blocked::Stored(Slot::Markers))?;
+        for marker in markers {
+            Self::check_marker(paths, marker, name, affected).map_err(Blocked::Found)?;
+        }
+        let manifests = self
+            .manifests
+            .get_or_init(|| scan_manifests(paths))
+            .as_ref()
+            .map_err(|_| Blocked::Stored(Slot::Manifests))?;
+        for (index, manifest) in manifests.iter().enumerate() {
+            let manifest = manifest
+                .as_ref()
+                .map_err(|_| Blocked::Stored(Slot::Manifest(index)))?;
+            Self::check_manifest(paths, manifest, name, affected).map_err(Blocked::Found)?;
+        }
+        Ok(())
+    }
+
+    fn check_marker(
+        paths: &Paths,
+        marker: &PendingMarker,
+        name: &str,
+        affected: &[&Path],
+    ) -> Result<()> {
+        let locations = marker_paths(paths, marker)?;
         let mut overlap = affected.iter().any(|candidate| {
             locations
                 .iter()
@@ -832,8 +941,8 @@ pub fn check_pending(paths: &Paths, name: &str, affected: &[&Path]) -> Result<()
         });
         if !overlap {
             for candidate in affected {
-                if let Some(root) = relocated_marker_root(&marker, candidate)? {
-                    overlap = marker_paths_at(&marker, &root)?
+                if let Some(root) = relocated_marker_root(marker, candidate)? {
+                    overlap = marker_paths_at(marker, &root)?
                         .iter()
                         .any(|location| path_overlap(candidate, location));
                     if overlap {
@@ -842,7 +951,7 @@ pub fn check_pending(paths: &Paths, name: &str, affected: &[&Path]) -> Result<()
                 }
             }
         }
-        if (marker_matches(paths, &marker)? && marker.manifest.name == name) || overlap {
+        if (marker_matches(paths, marker)? && marker.manifest.name == name) || overlap {
             bail!(
                 "trash entry {} has pending {:?} for {}; recover with `wineo validate --fix`",
                 marker.manifest.id,
@@ -850,12 +959,16 @@ pub fn check_pending(paths: &Paths, name: &str, affected: &[&Path]) -> Result<()
                 marker.manifest.name
             );
         }
+        Ok(())
     }
-    if identity(&paths.trash_dir())?.is_none() {
-        return Ok(());
-    }
-    for id in raw_entries(paths)? {
-        let manifest = read_manifest(paths, &id)?;
+
+    fn check_manifest(
+        paths: &Paths,
+        manifest: &Manifest,
+        name: &str,
+        affected: &[&Path],
+    ) -> Result<()> {
+        let id = &manifest.id;
         let overlaps = (manifest.phase != Phase::Trashed && manifest.name == name)
             || manifest
                 .payloads
@@ -890,8 +1003,18 @@ pub fn check_pending(paths: &Paths, name: &str, affected: &[&Path]) -> Result<()
                 manifest.name
             );
         }
+        Ok(())
     }
-    Ok(())
+}
+
+fn scan_manifests(paths: &Paths) -> Result<Vec<Result<Manifest>>> {
+    if identity(&paths.trash_dir())?.is_none() {
+        return Ok(Vec::new());
+    }
+    Ok(raw_entries(paths)?
+        .iter()
+        .map(|id| read_manifest(paths, id))
+        .collect())
 }
 
 /// Marks digests written in the unambiguous encoding. Older manifests hold
@@ -3279,6 +3402,76 @@ mod tests {
         assert!(pending_entries(&f.paths).unwrap().is_empty());
         restore(&f.paths, &entry.id).unwrap();
         assert!(f.paths.environment_config("game").exists());
+    }
+
+    fn assert_scan_matches(paths: &Paths, affected: &[&Path]) {
+        let scan = PendingScan::new(paths);
+        for name in ["game", "other", "game", "other"] {
+            assert_eq!(
+                scan.check(paths, name, affected)
+                    .map_err(|err| err.to_string()),
+                check_pending(paths, name, affected).map_err(|err| err.to_string()),
+                "{name}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_shared_scan_answers_like_check_pending() {
+        let f = Fixture::new();
+        let prefix = f.wine("game");
+        let elsewhere = f.paths.default_prefix_root().join("elsewhere");
+        assert_scan_matches(&f.paths, &[]);
+        let entry = remove(&f.paths, "game", true).unwrap();
+        let retained = prefix
+            .parent()
+            .unwrap()
+            .join(".wineo-trash")
+            .join(&entry.id)
+            .join("prefix");
+        f.config("other", "kind = 'native'\n");
+        for affected in [&[][..], &[retained.as_path()], &[elsewhere.as_path()]] {
+            assert_scan_matches(&f.paths, affected);
+        }
+        assert!(check_pending(&f.paths, "other", &[&retained]).is_err());
+
+        let mut manifest = read_manifest(&f.paths, &entry.id).unwrap();
+        manifest.phase = Phase::Removing;
+        write_manifest(&f.paths, &manifest).unwrap();
+        for affected in [&[][..], &[prefix.as_path()], &[elsewhere.as_path()]] {
+            assert_scan_matches(&f.paths, affected);
+        }
+        assert!(check_pending(&f.paths, "game", &[]).is_err());
+        assert!(check_pending(&f.paths, "other", &[]).is_ok());
+
+        start_marker(&f.paths, &manifest, Intent::Remove).unwrap();
+        for affected in [&[][..], &[prefix.as_path()], &[elsewhere.as_path()]] {
+            assert_scan_matches(&f.paths, affected);
+        }
+
+        let manifest_path = entry_dir(&f.paths, &entry.id).unwrap().join(MANIFEST);
+        let saved = fs::read(&manifest_path).unwrap();
+        fs::write(&manifest_path, "not toml").unwrap();
+        // The marker is checked first, so it still names the entry for its owner.
+        assert_scan_matches(&f.paths, &[]);
+        for (path, _) in markers(&f.paths).unwrap() {
+            fs::remove_file(path).unwrap();
+        }
+        assert_scan_matches(&f.paths, &[]);
+        assert!(check_pending(&f.paths, "other", &[]).is_err());
+
+        fs::write(markers_dir_file(&f.paths), "not toml").unwrap();
+        assert_scan_matches(&f.paths, &[]);
+        assert!(check_pending(&f.paths, "other", &[]).is_err());
+        fs::remove_file(markers_dir_file(&f.paths)).unwrap();
+        fs::write(&manifest_path, saved).unwrap();
+        assert_scan_matches(&f.paths, &[]);
+    }
+
+    fn markers_dir_file(paths: &Paths) -> PathBuf {
+        let dir = marker_dir(paths);
+        fs::create_dir_all(&dir).unwrap();
+        dir.join("trash-broken.toml")
     }
 
     #[test]
