@@ -846,11 +846,7 @@ impl Page {
             Step::Games => None,
         };
         if let Some(footer) = footer {
-            page = page.push(container(footer).padding(12).width(Fill).style(move |_| {
-                container::Style::default()
-                    .background(palette.surface)
-                    .border(border::rounded(8).width(1).color(palette.border))
-            }));
+            page = page.push(heroic::pinned(footer, palette));
         }
         heroic::page_frame(page)
     }

@@ -9,7 +9,7 @@ use iced::widget::operation::RelativeOffset;
 use iced::widget::{
     checkbox, column, container, image, pick_list, row, scrollable, text, text_input,
 };
-use iced::{Center, Element, Fill, Task};
+use iced::{Center, Element, Fill, Task, border};
 use wineo_core::art::{Format, Kind};
 use wineo_core::cancel::Token;
 use wineo_core::components::Component;
@@ -2507,6 +2507,22 @@ pub(super) fn page_frame<'a, Message: 'a>(
         .width(Fill)
         .height(Fill)
         .center_x(Fill)
+        .into()
+}
+
+/// A step's action row, pinned under the scrolling content.
+pub(super) fn pinned<'a, Message: 'a>(
+    footer: impl Into<Element<'a, Message>>,
+    palette: Palette,
+) -> Element<'a, Message> {
+    container(footer)
+        .padding(12)
+        .width(Fill)
+        .style(move |_| {
+            container::Style::default()
+                .background(palette.surface)
+                .border(border::rounded(8).width(1).color(palette.border))
+        })
         .into()
 }
 

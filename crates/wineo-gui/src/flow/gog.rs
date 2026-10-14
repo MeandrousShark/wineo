@@ -832,7 +832,7 @@ impl Page {
                 .push(row![back].align_y(Center))
                 .push(heroic::scroll_body(body, None, palette));
             if let Some(footer) = footer {
-                page = page.push(pinned(
+                page = page.push(heroic::pinned(
                     footer.map(move |event| Event::Installing(instance, Box::new(event))),
                     palette,
                 ));
@@ -922,7 +922,7 @@ impl Page {
             Step::Install => None,
         };
         if let Some(footer) = footer {
-            page = page.push(pinned(footer, palette));
+            page = page.push(heroic::pinned(footer, palette));
         }
         heroic::page_frame(page)
     }
@@ -1121,19 +1121,6 @@ impl Page {
         }
         body
     }
-}
-
-/// A step's action row, pinned under the scrolling content.
-fn pinned<'a>(footer: Element<'a, Event>, palette: Palette) -> Element<'a, Event> {
-    container(footer)
-        .padding(12)
-        .width(Fill)
-        .style(move |_| {
-            container::Style::default()
-                .background(palette.surface)
-                .border(border::rounded(8).width(1).color(palette.border))
-        })
-        .into()
 }
 
 fn windows_plan(migration: &Migration) -> Option<&heroic_import::GamePlan> {
