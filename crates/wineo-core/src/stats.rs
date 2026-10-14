@@ -452,11 +452,10 @@ pub fn import_heroic_all(
     sources: &[HeroicSource],
 ) -> Result<Vec<HeroicImportResult>> {
     let mut results = Vec::new();
-    let names = environment::names(paths)?;
-    // Imports only append to play logs, so one trash scan serves every load.
-    let pending = crate::trash::PendingScan::new(paths);
-    for name in names {
-        let environment = match Environment::load_with_pending(paths, &name, &pending) {
+    for name in environment::names(paths)? {
+        // Each import appends to a play log a removal could be moving, so the
+        // trash is checked right before it rather than once for the batch.
+        let environment = match Environment::load(paths, &name) {
             Ok(environment) => environment,
             Err(error) => {
                 results.push(HeroicImportResult::EnvironmentError { name, error });
@@ -1306,7 +1305,7 @@ mod tests {
     }
 
     #[test]
-    fn config_loading_batches_read_each_trash_manifest_once() {
+    fn tag_loads_share_a_trash_scan_but_imports_check_each_time() {
         let root = tempfile::tempdir().unwrap();
         let paths = tag_paths(root.path());
         for index in 0..5 {
@@ -1334,9 +1333,10 @@ mod tests {
             assert!(overview.errors.is_empty());
             assert_eq!(crate::trash::take_manifest_reads(), 5);
         }
+        // Imports write, so each one checks the trash fresh.
         crate::trash::take_manifest_reads();
         assert!(import_heroic_all(&paths, &[]).unwrap().is_empty());
-        assert_eq!(crate::trash::take_manifest_reads(), 5);
+        assert_eq!(crate::trash::take_manifest_reads(), 4 * 5);
     }
 
     #[test]
