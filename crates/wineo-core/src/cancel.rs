@@ -1,7 +1,10 @@
 //! Cancellation shared by callers and long-running core operations.
 
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
+use std::task::{Context, Poll, Waker as TaskWaker};
 use std::time::Duration;
 
 type Waker = Arc<dyn Fn() + Send + Sync>;
@@ -77,6 +80,44 @@ impl Drop for Subscription {
     }
 }
 
+/// Completes once the token is canceled; see [`Token::canceled`].
+#[must_use = "futures do nothing unless polled"]
+pub struct Canceled {
+    token: Token,
+    waiting: Arc<Mutex<Option<TaskWaker>>>,
+    subscription: Option<Subscription>,
+}
+
+impl Future for Canceled {
+    type Output = ();
+
+    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<()> {
+        if self.token.is_canceled() {
+            return Poll::Ready(());
+        }
+        *self.waiting.lock().unwrap_or_else(PoisonError::into_inner) = Some(cx.waker().clone());
+        if self.subscription.is_none() {
+            let waiting = self.waiting.clone();
+            self.subscription = Some(self.token.subscribe(move || {
+                let task = waiting
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .take();
+                if let Some(task) = task {
+                    task.wake();
+                }
+            }));
+        }
+        // A cancel that landed before the subscription existed announced
+        // nothing, so look once more now that it does.
+        if self.token.is_canceled() {
+            Poll::Ready(())
+        } else {
+            Poll::Pending
+        }
+    }
+}
+
 impl Token {
     pub fn new() -> Self {
         Self::default()
@@ -98,6 +139,16 @@ impl Token {
 
     pub fn is_forced(&self) -> bool {
         self.0.level.load(Ordering::Relaxed) >= 2
+    }
+
+    /// A future that completes once the token is canceled, for awaiting
+    /// something while staying ready to stop.
+    pub fn canceled(&self) -> Canceled {
+        Canceled {
+            token: self.clone(),
+            waiting: Arc::default(),
+            subscription: None,
+        }
     }
 
     /// Calls `wake` whenever the level rises, so a waiter can block rather
@@ -201,6 +252,66 @@ mod tests {
             drop(inner.subscribe(|| {}));
         });
         token.cancel();
+    }
+
+    struct Flag(AtomicUsize);
+
+    impl std::task::Wake for Flag {
+        fn wake(self: Arc<Self>) {
+            self.0.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+
+    fn poll_once(future: &mut Canceled, flag: &Arc<Flag>) -> Poll<()> {
+        let waker = TaskWaker::from(flag.clone());
+        Pin::new(future).poll(&mut Context::from_waker(&waker))
+    }
+
+    #[test]
+    fn canceled_future_wakes_its_task_when_the_token_is_canceled() {
+        let token = Token::new();
+        let flag = Arc::new(Flag(AtomicUsize::new(0)));
+        let mut future = token.canceled();
+        assert_eq!(poll_once(&mut future, &flag), Poll::Pending);
+        assert_eq!(flag.0.load(Ordering::SeqCst), 0);
+        token.cancel();
+        assert_eq!(flag.0.load(Ordering::SeqCst), 1);
+        assert_eq!(poll_once(&mut future, &flag), Poll::Ready(()));
+    }
+
+    #[test]
+    fn canceled_future_is_ready_at_once_for_a_canceled_token() {
+        let token = Token::new();
+        token.cancel();
+        let flag = Arc::new(Flag(AtomicUsize::new(0)));
+        assert_eq!(poll_once(&mut token.canceled(), &flag), Poll::Ready(()));
+        assert_eq!(flag.0.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn canceled_future_follows_the_task_that_polled_it_last() {
+        let token = Token::new();
+        let (first, second) = (
+            Arc::new(Flag(AtomicUsize::new(0))),
+            Arc::new(Flag(AtomicUsize::new(0))),
+        );
+        let mut future = token.canceled();
+        assert_eq!(poll_once(&mut future, &first), Poll::Pending);
+        assert_eq!(poll_once(&mut future, &second), Poll::Pending);
+        token.cancel();
+        assert_eq!(first.0.load(Ordering::SeqCst), 0);
+        assert_eq!(second.0.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn dropping_the_canceled_future_unsubscribes_it() {
+        let token = Token::new();
+        let flag = Arc::new(Flag(AtomicUsize::new(0)));
+        let mut future = token.canceled();
+        assert_eq!(poll_once(&mut future, &flag), Poll::Pending);
+        drop(future);
+        token.cancel();
+        assert_eq!(flag.0.load(Ordering::SeqCst), 0);
     }
 
     #[test]
