@@ -313,7 +313,7 @@ impl HeroicSource {
         game: &HeroicGogGame,
         info: &Path,
     ) -> Result<super::InputFingerprint> {
-        self.store_fingerprint(&game.id, Store::Gog { info })
+        self.store_fingerprint(&game.id, Store::Gog { info }, None)
     }
 
     /// The prefixes Heroic's `winePrefix` for `game` may mean, read without
@@ -323,7 +323,7 @@ impl HeroicSource {
     /// is known, so both are given then. Empty when Heroic names none.
     pub(crate) fn gog_prefixes(&self, game: &HeroicGogGame) -> Result<Vec<PathBuf>> {
         let global = self.global_settings()?;
-        let (effective, _) = self.effective_settings(&game.id, &global)?;
+        let effective = self.effective_settings(&game.id, &global)?.effective;
         let Some(prefix) = effective
             .get("winePrefix")
             .and_then(Value::as_str)

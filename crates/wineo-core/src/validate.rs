@@ -601,9 +601,10 @@ pub fn check_all(paths: &Paths) -> Result<Report> {
     let global = check_global(paths, &mut report);
     check_templates(paths, &global, &mut report)?;
     let names = environment::names(paths)?;
+    let entries = listed_entries(paths)?;
     for name in &names {
         if !pending.contains(name) {
-            check_one(paths, &global, name, &mut report)?;
+            check_one(paths, &global, name, &entries, &mut report)?;
         }
     }
     check_gog(
@@ -621,7 +622,7 @@ pub fn check_all(paths: &Paths) -> Result<Report> {
         .iter()
         .any(|problem| problem.code == Code::TrashInvalid)
     {
-        check_strays(paths, &protected, &mut report)?;
+        check_strays(paths, &protected, &entries, &mut report)?;
     }
     report.environments = names;
     contract(paths, &mut report);
@@ -655,7 +656,8 @@ pub fn check_environment(paths: &Paths, name: &str) -> Result<Report> {
     // A broken global config is only reported by `check_all`. Here it means
     // defaults, as it does for most commands.
     let global = GlobalConfig::load(paths).unwrap_or_default();
-    check_one(paths, &global, name, &mut report)?;
+    let entries = listed_entries(paths)?;
+    check_one(paths, &global, name, &entries, &mut report)?;
     let names = environment::names(paths)?;
     check_gog(
         paths,
@@ -991,7 +993,22 @@ struct WineState {
     usable: bool,
 }
 
-fn check_one(paths: &Paths, global: &GlobalConfig, name: &str, report: &mut Report) -> Result<()> {
+/// The desktop entries wineo wrote, read once for every check that needs them.
+fn listed_entries(paths: &Paths) -> Result<Vec<Entry>> {
+    if desktop::supported(paths).is_ok() {
+        desktop::list(paths)
+    } else {
+        Ok(Vec::new())
+    }
+}
+
+fn check_one(
+    paths: &Paths,
+    global: &GlobalConfig,
+    name: &str,
+    entries: &[Entry],
+    report: &mut Report,
+) -> Result<()> {
     // Every command refuses the environment until it is recovered, and the
     // config may be half restored, so nothing else is worth checking.
     let marker = paths.restore_marker(name);
@@ -1056,7 +1073,14 @@ fn check_one(paths: &Paths, global: &GlobalConfig, name: &str, report: &mut Repo
         Kind::Proxied(_) => {
             check_runtime(paths, name, report)?;
             check_proxied_steam(paths, global, &environment, report);
-            check_desktop(paths, global, &environment, &WineState::default(), report)?;
+            check_desktop(
+                paths,
+                global,
+                &environment,
+                &WineState::default(),
+                entries,
+                report,
+            )?;
             check_art(paths, name, report);
             return Ok(());
         }
@@ -1064,7 +1088,7 @@ fn check_one(paths: &Paths, global: &GlobalConfig, name: &str, report: &mut Repo
     let wine = check_wine(paths, global, &environment, report);
     check_targets(paths, global, &environment, &wine, report);
     check_runtime(paths, name, report)?;
-    check_desktop(paths, global, &environment, &wine, report)?;
+    check_desktop(paths, global, &environment, &wine, entries, report)?;
     check_art(paths, name, report);
     Ok(())
 }
@@ -1406,6 +1430,7 @@ fn check_desktop(
     global: &GlobalConfig,
     environment: &Environment,
     wine: &WineState,
+    entries: &[Entry],
     report: &mut Report,
 ) -> Result<()> {
     let name = environment.name.as_str();
@@ -1422,11 +1447,17 @@ fn check_desktop(
         return Ok(());
     }
     let pending = match (&environment.config.kind, &wine.prefix) {
-        (Kind::Native, _) => desktop::pending_native(paths, global, environment)?,
-        (Kind::Proxied(_), _) => desktop::pending_proxied(paths, global, environment)?,
-        (Kind::Wine(_), Some(dir)) => {
-            desktop::pending(paths, global, environment, wine.runner.as_ref(), dir)?
+        (Kind::Native | Kind::Proxied(_), _) => {
+            desktop::pending_in(paths, global, environment, None, None, entries)?
         }
+        (Kind::Wine(_), Some(dir)) => desktop::pending_in(
+            paths,
+            global,
+            environment,
+            wine.runner.as_ref(),
+            Some(dir),
+            entries,
+        )?,
         // No prefix to check against means no entries to compare either.
         (Kind::Wine(_), None) => return Ok(()),
     };
@@ -1526,7 +1557,12 @@ fn check_art(paths: &Paths, name: &str, report: &mut Report) {
 
 /// State dirs, desktop entries, and art dirs left by environments that no
 /// longer exist.
-fn check_strays(paths: &Paths, names: &[String], report: &mut Report) -> Result<()> {
+fn check_strays(
+    paths: &Paths,
+    names: &[String],
+    entries: &[Entry],
+    report: &mut Report,
+) -> Result<()> {
     let known: BTreeSet<&str> = names.iter().map(String::as_str).collect();
     // Named after an environment, but not one.
     let imports = paths.import_log("x");
@@ -1548,7 +1584,7 @@ fn check_strays(paths: &Paths, names: &[String], report: &mut Report) -> Result<
     }
 
     if desktop::supported(paths).is_ok() {
-        for entry in desktop::list(paths)? {
+        for entry in entries {
             if known.contains(entry.environment.as_str()) {
                 continue;
             }
@@ -3004,6 +3040,27 @@ mod tests {
         let problem = f.only(Code::DesktopOutdated);
         apply(&f.paths, fix(&problem), no_download).unwrap();
         assert_eq!(f.codes(), []);
+    }
+
+    #[test]
+    fn checking_every_environment_reads_the_desktop_entries_once() {
+        let f = Fixture::new();
+        for index in 0..6 {
+            f.wine(
+                &format!("game{index}"),
+                &format!("{HEALTHY}desktop = true\n"),
+            );
+        }
+        f.stray_entry("oldgame", "oldgame");
+        desktop::LISTS.set(0);
+        let report = f.check();
+        assert_eq!(desktop::LISTS.get(), 1);
+        assert!(
+            report
+                .problems
+                .iter()
+                .any(|problem| problem.code == Code::DesktopEntryStray)
+        );
     }
 
     #[test]

@@ -1176,3 +1176,15 @@ fn owned_ids_failures_are_classified() {
         assert_clean(&error);
     }
 }
+
+#[test]
+fn the_download_client_is_built_on_first_use_and_then_kept() {
+    let server = FakeGog::start(|_| reply(200, &tokens_body(REFRESH)));
+    let client = server.client();
+    client.refresh(REFRESH).unwrap();
+    assert!(client.cdn.get().is_none());
+
+    let first: *const _ = client.cdn().unwrap();
+    assert!(client.cdn.get().is_some());
+    assert!(std::ptr::eq(first, client.cdn().unwrap()));
+}

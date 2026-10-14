@@ -1,5 +1,6 @@
 //! Planning the import of a whole Heroic library.
 
+use std::cell::OnceCell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
@@ -7,8 +8,9 @@ use crate::components::Component;
 use crate::config::{Arch, GlobalConfig};
 use crate::environment::{self, Environment, HeroicIdSnapshot};
 use crate::heroic::{
-    HeroicCandidate, HeroicGameKind, HeroicIssue, HeroicIssueKind, HeroicListing, HeroicRunnerKind,
-    HeroicSharedPrefix, HeroicSource,
+    Global, HeroicCandidate, HeroicGameKind, HeroicImport, HeroicIssue, HeroicIssueKind,
+    HeroicListing, HeroicNativeImport, HeroicRunnerKind, HeroicSharedPrefix, HeroicSource, Inputs,
+    Library,
 };
 use crate::paths::{self, Paths};
 use crate::runners::Runners;
@@ -560,7 +562,9 @@ fn plan_candidates(
     options: &LibraryOptions,
     selected: impl Fn(&HeroicCandidate) -> bool,
 ) -> anyhow::Result<LibraryPlan> {
-    let source = &listing.source;
+    // Read when the first game needs inspecting, so a library that's all
+    // imported already reads nothing, and then reused for every other game.
+    let library = LazyLibrary::new(&listing.source);
     let all_windows: Vec<&HeroicCandidate> = listing
         .candidates
         .iter()
@@ -604,7 +608,7 @@ fn plan_candidates(
             existing.iter().any(|environment| environment.name == name)
                 || ready_natives.iter().any(|(taken, _)| taken == name)
         };
-        let entry = plan_native(paths, global, source, candidate, taken);
+        let entry = plan_native(paths, global, &library, candidate, taken);
         if let Entry::Ready(game) = &entry {
             ready_natives.push((game.name().to_owned(), candidate.id.clone()));
         }
@@ -655,7 +659,7 @@ fn plan_candidates(
             entries.push(plan_windows(
                 paths,
                 global,
-                source,
+                &library,
                 candidate,
                 &WindowsContext {
                     runner_name: name,
@@ -701,7 +705,7 @@ fn shared_prefixes(candidates: &[&HeroicCandidate]) -> BTreeMap<PathBuf, Vec<Her
 fn plan_native(
     paths: &Paths,
     global: &GlobalConfig,
-    source: &HeroicSource,
+    library: &LazyLibrary,
     candidate: &HeroicCandidate,
     taken: impl Fn(&str) -> bool,
 ) -> Entry {
@@ -716,9 +720,9 @@ fn plan_native(
     if let Some(issue) = native_blocker(candidate) {
         return skip(default, SkipReason::Blocked(issue.message.clone()));
     }
-    let imported = match source.inspect_native(&candidate.id) {
+    let imported = match library.inspect_native(&candidate.id) {
         Ok(imported) => imported,
-        Err(error) => return skip(default, SkipReason::Unreadable(format!("{error:#}"))),
+        Err(error) => return skip(default, SkipReason::Unreadable(error)),
     };
     if imported
         .issues
@@ -744,6 +748,65 @@ fn plan_native(
     Entry::Ready(Game::Native(NativePlan::new(imported, name)))
 }
 
+/// Heroic's library and global settings for a bulk plan, each read once for
+/// all its games. A failure to read one is kept as the message every game it
+/// applies to is skipped with, in the order inspecting a game would hit them:
+/// the library, then the game's place in it, then the global settings.
+struct LazyLibrary<'a> {
+    source: &'a HeroicSource,
+    library: OnceCell<Result<Library, String>>,
+    global: OnceCell<Result<Global, String>>,
+}
+
+impl<'a> LazyLibrary<'a> {
+    fn new(source: &'a HeroicSource) -> Self {
+        Self {
+            source,
+            library: OnceCell::new(),
+            global: OnceCell::new(),
+        }
+    }
+
+    fn inputs(&self, id: &str) -> Result<Inputs<'_>, String> {
+        let library = self
+            .library
+            .get_or_init(|| {
+                self.source
+                    .read_library()
+                    .and_then(|library| {
+                        library.entries()?;
+                        Ok(library)
+                    })
+                    .map_err(|error| format!("{error:#}"))
+            })
+            .as_ref()
+            .map_err(Clone::clone)?;
+        library.entry(id).map_err(|error| format!("{error:#}"))?;
+        let global = self
+            .global
+            .get_or_init(|| {
+                self.source
+                    .read_global()
+                    .map_err(|error| format!("{error:#}"))
+            })
+            .as_ref()
+            .map_err(Clone::clone)?;
+        Ok(Inputs { library, global })
+    }
+
+    fn inspect(&self, id: &str) -> Result<HeroicImport, String> {
+        self.source
+            .inspect_in(self.inputs(id)?, id)
+            .map_err(|error| format!("{error:#}"))
+    }
+
+    fn inspect_native(&self, id: &str) -> Result<HeroicNativeImport, String> {
+        self.source
+            .inspect_native_in(self.inputs(id)?, id)
+            .map_err(|error| format!("{error:#}"))
+    }
+}
+
 /// What every Windows game in a bulk plan is planned with.
 struct WindowsContext<'a> {
     runner_name: &'a str,
@@ -760,7 +823,7 @@ struct WindowsContext<'a> {
 fn plan_windows(
     paths: &Paths,
     global: &GlobalConfig,
-    source: &HeroicSource,
+    library: &LazyLibrary,
     candidate: &HeroicCandidate,
     context: &WindowsContext,
     used_names: &mut BTreeSet<String>,
@@ -780,13 +843,13 @@ fn plan_windows(
             SkipReason::Blocked(issue.message.clone()),
         );
     }
-    let imported = match source.inspect(&candidate.id) {
+    let imported = match library.inspect(&candidate.id) {
         Ok(imported) => imported,
         Err(error) => {
             return skip(
                 default,
                 candidate.title.clone(),
-                SkipReason::Unreadable(format!("{error:#}")),
+                SkipReason::Unreadable(error),
             );
         }
     };
@@ -1747,5 +1810,157 @@ mod tests {
         assert_eq!(library.ready_count(), 1);
 
         assert_unchanged(&tree_before, &snapshot_tree(root.path()));
+    }
+
+    fn parses(file: &str) -> usize {
+        crate::heroic::PARSES.with_borrow(|parses| parses.get(file).copied().unwrap_or(0))
+    }
+
+    fn clear_parses() {
+        crate::heroic::PARSES.with_borrow_mut(|parses| parses.clear());
+    }
+
+    #[test]
+    fn a_bulk_plan_parses_heroics_library_and_settings_once() {
+        let root = tempdir().unwrap();
+        let mut library = Library::new(root.path());
+        for index in 0..20 {
+            library.windows(
+                &format!("g{index:02}"),
+                &format!("Game {index:02}"),
+                &format!("p{index:02}"),
+                "",
+            );
+        }
+        library.native("n", "Native");
+        let (paths, global, listing) = library.write();
+
+        clear_parses();
+        let plan = plan_library(
+            &paths,
+            &global,
+            &listing,
+            Some("fake"),
+            &LibraryOptions::default(),
+        )
+        .unwrap();
+        assert_eq!(plan.ready_count(), 21);
+        assert_eq!(parses("library.json"), 1);
+        assert_eq!(parses("config.json"), 1);
+    }
+
+    #[test]
+    fn planning_one_game_parses_heroics_library_once() {
+        let root = tempdir().unwrap();
+        let mut library = Library::new(root.path());
+        library.windows("a", "Alpha", "p1", "");
+        library.windows("b", "Beta", "p1", "");
+        library.windows("c", "Gamma", "p2", "");
+        let (paths, global, listing) = library.write();
+
+        clear_parses();
+        let plan = crate::heroic_import::plan_game(
+            &paths,
+            &global,
+            &listing.source,
+            "a",
+            "fake",
+            crate::heroic_import::Options::default(),
+        )
+        .unwrap();
+        assert_eq!(parses("library.json"), 1);
+        assert_eq!(parses("config.json"), 1);
+        assert_eq!(
+            plan.warnings(),
+            vec![Warning::SharedPrefix(vec![HeroicSharedPrefix {
+                id: "b".to_owned(),
+                title: "Beta".to_owned()
+            }])]
+        );
+    }
+
+    #[test]
+    fn a_library_that_is_all_imported_already_is_not_read_to_plan() {
+        let root = tempdir().unwrap();
+        let mut library = Library::new(root.path());
+        library.windows("f", "Fox", "p1", "");
+        let (paths, global, listing) = library.write();
+        let legacy = paths.environment_config("fox");
+        fs::create_dir_all(legacy.parent().unwrap()).unwrap();
+        fs::write(
+            &legacy,
+            "prefix = \"/somewhere\"\nrunner = \"wine\"\narch = \"win64\"\n",
+        )
+        .unwrap();
+
+        clear_parses();
+        let plan = plan_library(
+            &paths,
+            &global,
+            &listing,
+            Some("fake"),
+            &LibraryOptions::default(),
+        )
+        .unwrap();
+        assert_eq!(plan.already(), ["fox"]);
+        assert_eq!(parses("library.json"), 0);
+    }
+
+    #[test]
+    fn a_game_gone_from_the_library_is_reported_before_a_broken_global_config() {
+        let root = tempdir().unwrap();
+        let mut library = Library::new(root.path());
+        library.windows("a", "Alpha", "p1", "");
+        library.windows("b", "Bravo", "p2", "");
+        library.native("n", "Native");
+        let (paths, global, listing) = library.write();
+        // Heroic drops two games and breaks its config after the listing.
+        let kept: Vec<&String> = library
+            .games
+            .iter()
+            .filter(|g| g.contains("\"b\""))
+            .collect();
+        let kept = kept
+            .iter()
+            .map(|g| g.as_str())
+            .collect::<Vec<_>>()
+            .join(",");
+        let heroic = root.path().join("heroic");
+        fs::write(
+            heroic.join("sideload_apps/library.json"),
+            format!(r#"{{"games":[{kept}]}}"#),
+        )
+        .unwrap();
+        fs::write(heroic.join("config.json"), "{").unwrap();
+
+        let plan = plan_library(
+            &paths,
+            &global,
+            &listing,
+            Some("fake"),
+            &LibraryOptions::default(),
+        )
+        .unwrap();
+        let reasons: Vec<String> = plan
+            .entries()
+            .iter()
+            .map(|entry| match entry {
+                Entry::Skipped(skipped) => match &skipped.reason {
+                    SkipReason::Unreadable(message) => message.clone(),
+                    other => panic!("{other:?}"),
+                },
+                _ => panic!("expected a skip"),
+            })
+            .collect();
+        assert_eq!(reasons.len(), 3);
+        assert!(
+            reasons[0].contains("not in sideload library"),
+            "{reasons:?}"
+        );
+        assert!(
+            reasons[1].contains("not in sideload library"),
+            "{reasons:?}"
+        );
+        assert!(reasons[2].contains("invalid Heroic JSON"), "{reasons:?}");
     }
 }

@@ -351,7 +351,7 @@ impl Client {
             return Ok((hasher, have));
         }
 
-        let mut request = self.cdn.get(url);
+        let mut request = self.cdn().map_err(Stop::Failed)?.get(url);
         if have > 0 {
             request = request.header(RANGE, format!("bytes={have}-"));
         }
@@ -452,7 +452,8 @@ impl Client {
         let mut tried = false;
         loop {
             let result = self
-                .cdn
+                .cdn()
+                .map_err(Stop::Failed)?
                 .get(url.clone())
                 .send()
                 .map_err(|error| client::send_error(&error))
