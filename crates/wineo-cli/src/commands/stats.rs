@@ -7,16 +7,11 @@ use wineo_core::paths::Paths;
 use wineo_core::stats::{self, HeroicImportResult, Log, Overview, OverviewOptions, Summary};
 use wineo_core::view::{CollectionError, StatsCollectionOutput, StatsOutput, TagBreakdownOutput};
 
+use super::table::label_line;
 use super::{json, table};
 use wineo_core::time::{LocalZone, Zone, day_label, duration_hm};
 
 use crate::text;
-
-/// Width of the label column in `stats <name>`'s detail lines, wide enough
-/// for `this month`, the longest one there is.
-const LABEL_WIDTH: usize = 10;
-const LABEL_INDENT: usize = 2;
-const LABEL_GAP: usize = 2;
 
 #[derive(clap::Args)]
 pub struct Args {
@@ -356,16 +351,6 @@ fn render_named(
         lines.push(label_line("targets", &targets));
     }
     lines.join("\n") + "\n"
-}
-
-fn label_line(label: &str, value: &str) -> String {
-    format!(
-        "{}{:width$}{}{value}",
-        " ".repeat(LABEL_INDENT),
-        label,
-        " ".repeat(LABEL_GAP),
-        width = LABEL_WIDTH,
-    )
 }
 
 /// `wineo stats --import-heroic`: refreshes the `imported` line of every

@@ -191,6 +191,41 @@ pub fn render_columns<const N: usize>(rows: &[[String; N]]) -> Vec<String> {
         .collect()
 }
 
+/// Width of the label column in the detail lines of `status <name>` and
+/// `stats <name>`, wide enough for the longest label either has.
+pub const LABEL_WIDTH: usize = 10;
+/// Spaces before the label, and between the label and its value.
+pub const LABEL_INDENT: usize = 2;
+pub const LABEL_GAP: usize = 2;
+
+pub fn label_line(label: &str, value: &str) -> String {
+    format!(
+        "{}{:width$}{}{value}",
+        " ".repeat(LABEL_INDENT),
+        label,
+        " ".repeat(LABEL_GAP),
+        width = LABEL_WIDTH,
+    )
+}
+
+/// Indented `label  value` lines with the labels padded to the longest.
+pub fn aligned_rows(rows: Vec<(String, String)>) -> Vec<String> {
+    let width = rows
+        .iter()
+        .map(|(label, _)| label.chars().count())
+        .max()
+        .unwrap_or(0);
+    rows.into_iter()
+        .map(|(label, value)| format!("  {label:<width$}  {value}"))
+        .collect()
+}
+
+/// The width of a label column whose values follow directly, two spaces past
+/// the longest label.
+pub fn label_column<'a>(labels: impl IntoIterator<Item = &'a str>) -> usize {
+    labels.into_iter().map(str::len).max().unwrap_or(0) + 2
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;

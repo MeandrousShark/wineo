@@ -25,6 +25,7 @@ use crate::commands::gog_support::{
     Account, Reporter, ask_wizard, offers_wizard, usage_error, warn,
 };
 use crate::commands::setup::{self, watched_message};
+use crate::commands::table;
 use crate::commands::transfer::Cancellation;
 use crate::commands::{components, desktop};
 use crate::picker::{self, Place};
@@ -419,21 +420,13 @@ fn review_lines(paths: &Paths, plan: &Plan) -> Vec<String> {
             style::size(plan.installed_estimate())
         ),
     ));
-    let width = rows
-        .iter()
-        .map(|(label, _)| label.chars().count())
-        .max()
-        .unwrap_or(0);
     let action = if plan.resumes() {
         "Finish the interrupted install of"
     } else {
         "Install"
     };
     let mut lines = vec![format!("{action} {} ({})", plan.title(), plan.gog_id())];
-    lines.extend(
-        rows.into_iter()
-            .map(|(label, value)| format!("  {label:<width$}  {value}")),
-    );
+    lines.extend(table::aligned_rows(rows));
     lines
 }
 

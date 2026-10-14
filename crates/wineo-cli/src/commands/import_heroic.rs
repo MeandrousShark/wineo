@@ -31,6 +31,7 @@ use super::external_runners;
 use super::import::{ReturnToSourceMenu, choose_runner, finish_guided};
 use super::transfer::Cancellation;
 use crate::cancel;
+use crate::commands::table;
 use crate::picker;
 use crate::prompt::{self, Canceled, Input, NoInput, Prompt, Reply, Terminal, numbered};
 use crate::style;
@@ -1373,12 +1374,7 @@ fn final_review<I: Input, W: Write>(
         if art.key.is_some() {
             items.push(("art", art.display(), EditField::Art));
         }
-        let width = items
-            .iter()
-            .map(|(label, _, _)| label.len())
-            .max()
-            .unwrap_or(0)
-            + 2;
+        let width = table::label_column(items.iter().map(|(label, _, _)| *label));
         if art.key.is_none() {
             // Unnumbered without a key, lined up with the numbered rows.
             let indent = " ".repeat(items.len().to_string().len() + 4);
@@ -1849,12 +1845,7 @@ struct Block {
 }
 
 fn render_blocks(blocks: &[Block]) -> String {
-    let width = blocks
-        .iter()
-        .map(|block| block.label.len())
-        .max()
-        .unwrap_or(0)
-        + 2;
+    let width = table::label_column(blocks.iter().map(|block| block.label));
     let mut out = String::new();
     for block in blocks {
         for (index, line) in block.lines.iter().enumerate() {

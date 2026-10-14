@@ -17,6 +17,7 @@ use super::{
 use crate::cancel;
 use crate::commands::art::{Access, Pick};
 use crate::commands::import::finish_guided;
+use crate::commands::table;
 use crate::picker;
 use crate::prompt::{self, Canceled, Input, NoInput, Prompt, Reply, Terminal, numbered};
 use crate::style;
@@ -232,12 +233,7 @@ pub(super) fn guided<I: Input, W: Write>(
         if art.key.is_some() {
             items.push(("art", art.display(), Field::Art));
         }
-        let width = items
-            .iter()
-            .map(|(label, _, _)| label.len())
-            .max()
-            .unwrap_or(0)
-            + 2;
+        let width = table::label_column(items.iter().map(|(label, _, _)| *label));
         let choices = numbered(
             items
                 .into_iter()

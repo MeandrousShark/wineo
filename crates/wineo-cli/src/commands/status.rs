@@ -11,17 +11,10 @@ use wineo_core::stats::Source;
 use wineo_core::view::NamedOutput;
 
 use super::json;
-use super::table;
+use super::table::{self, LABEL_GAP, LABEL_INDENT, LABEL_WIDTH, label_line};
 use wineo_core::time::{LocalZone, Zone, absolute, day_label, duration_hm, relative};
 
 use crate::text;
-
-/// Width of the label column in `status <name>`'s detail lines. Wide enough
-/// for the longest label there is, so no line pushes its value out of line.
-const LABEL_WIDTH: usize = 10;
-/// Spaces before the label, and between the label and its value.
-const LABEL_INDENT: usize = 2;
-const LABEL_GAP: usize = 2;
 
 #[derive(clap::Args)]
 pub struct Args {
@@ -340,16 +333,6 @@ fn pid_lines(name: &str, run: &RunState, now: Timestamp) -> Vec<String> {
             ]
         }
     }
-}
-
-fn label_line(label: &str, value: &str) -> String {
-    format!(
-        "{}{:width$}{}{value}",
-        " ".repeat(LABEL_INDENT),
-        label,
-        " ".repeat(LABEL_GAP),
-        width = LABEL_WIDTH,
-    )
 }
 
 fn continuation_line(text: &str) -> String {

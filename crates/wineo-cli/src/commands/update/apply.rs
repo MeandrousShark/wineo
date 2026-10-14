@@ -16,6 +16,7 @@ use crate::cancel;
 use crate::commands::gog_support::{
     Account, LOGGED_OUT, Reporter, ask_wizard, offers_wizard, reason_note, usage_error, warn,
 };
+use crate::commands::table;
 use crate::commands::transfer::Cancellation;
 use crate::prompt::{self, Ask, Canceled, Reply, terminal};
 use crate::style;
@@ -430,16 +431,8 @@ fn review_lines(paths: &Paths, pending: &Pending) -> Vec<String> {
             style::size(pending.unpacked_estimate())
         ),
     ));
-    let width = rows
-        .iter()
-        .map(|(label, _)| label.chars().count())
-        .max()
-        .unwrap_or(0);
     let mut lines = vec![format!("{} {}", action(pending), pending.environment())];
-    lines.extend(
-        rows.into_iter()
-            .map(|(label, value)| format!("  {label:<width$}  {value}")),
-    );
+    lines.extend(table::aligned_rows(rows));
     lines
 }
 
@@ -561,13 +554,8 @@ fn report(paths: &Paths, pending: &Pending, updated: &Updated) {
             Some((label, change(installed, version)))
         })
         .collect();
-    let width = rows
-        .iter()
-        .map(|(label, _)| label.chars().count())
-        .max()
-        .unwrap_or(0);
-    for (label, value) in rows {
-        println!("  {label:<width$}  {value}");
+    for line in table::aligned_rows(rows) {
+        println!("{line}");
     }
     if updated.claimed {
         println!(
