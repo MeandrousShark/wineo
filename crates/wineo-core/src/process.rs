@@ -279,6 +279,17 @@ impl Identity {
     }
 }
 
+/// How a group stop ended.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Ended {
+    /// The leader exited without a stop being requested.
+    Exited,
+    /// Stopped, with nothing in the group left running.
+    Stopped,
+    /// Stopped and killed, but the group couldn't be inspected to confirm it.
+    Unconfirmed,
+}
+
 /// What a stop does next.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Step {
@@ -391,9 +402,9 @@ pub fn leader_exited(leader: &Child) -> io::Result<bool> {
 /// Waits for `leader`, an unreaped child leading its own group, stopping the
 /// group as `token` and `escalation` say: `ask` first, then SIGKILL. `on`
 /// hears `None` each time round and each step once it is signaled. Returns
-/// whether a stop was requested, once the leader exits and, after a stop,
-/// nothing in the group is left running. The leader stays unreaped for the
-/// caller. The outer error is the helper's own, the inner one `on`'s.
+/// once the leader exits and, after a stop, nothing in the group is left
+/// running or that can't be inspected after a kill. The leader stays unreaped
+/// for the caller. The outer error is the helper's own, the inner one `on`'s.
 ///
 /// It sleeps until the leader exits, the token rises, or a stop deadline
 /// passes. `tick` adds a wakeup for a caller with work of its own, such as
@@ -405,7 +416,7 @@ pub fn stop_group<E>(
     token: &Token,
     tick: Option<Duration>,
     on: impl FnMut(Option<Step>) -> Result<(), E>,
-) -> io::Result<Result<bool, E>> {
+) -> io::Result<Result<Ended, E>> {
     stop_group_probed(
         leader,
         ask,
@@ -425,7 +436,7 @@ pub(crate) fn stop_group_probed<E>(
     tick: Option<Duration>,
     on: impl FnMut(Option<Step>) -> Result<(), E>,
     members: impl Fn(u32) -> Option<bool>,
-) -> io::Result<Result<bool, E>> {
+) -> io::Result<Result<Ended, E>> {
     let wake = Wake::open(leader, token);
     stop_group_with(leader, ask, escalation, token, tick, on, members, wake)
 }
@@ -470,7 +481,7 @@ pub(crate) fn stop_group_with<E>(
     mut on: impl FnMut(Option<Step>) -> Result<(), E>,
     members: impl Fn(u32) -> Option<bool>,
     wake: io::Result<Wake>,
-) -> io::Result<Result<bool, E>> {
+) -> io::Result<Result<Ended, E>> {
     let wake = wake.ok();
     let mut settle_poll = SETTLE_POLL;
     loop {
@@ -496,12 +507,13 @@ pub(crate) fn stop_group_with<E>(
         let mut shorten = |by: Duration| timeout = Some(timeout.map_or(by, |t| t.min(by)));
         if exited {
             if !escalation.stopping() {
-                return Ok(Ok(false));
+                return Ok(Ok(Ended::Exited));
             }
-            // Without `/proc`, a kill that reached the whole group is enough.
             match members(leader.id()) {
-                Some(false) => return Ok(Ok(true)),
-                None if escalation.killed_at().is_some() => return Ok(Ok(true)),
+                Some(false) => return Ok(Ok(Ended::Stopped)),
+                // A delivered SIGKILL doesn't prove a member in uninterruptible
+                // sleep is gone, so the caller decides what that means.
+                None if escalation.killed_at().is_some() => return Ok(Ok(Ended::Unconfirmed)),
                 _ => {}
             }
             shorten(settle_poll);
@@ -789,7 +801,7 @@ fn parse_stat_read(read: io::Result<String>) -> ProcRead {
     }
 }
 
-fn group_exists(group: u32) -> Option<bool> {
+pub(crate) fn group_exists(group: u32) -> Option<bool> {
     let pid = i32::try_from(group).ok().and_then(Pid::from_raw)?;
     match rustix::process::test_kill_process_group(pid) {
         Ok(()) | Err(Errno::PERM) => Some(true),
@@ -1200,7 +1212,7 @@ mod tests {
         mut child: Child,
         grace: Duration,
         stop: impl FnOnce(&Token) + Send + 'static,
-    ) -> (bool, Vec<Step>, Duration) {
+    ) -> (Ended, Vec<Step>, Duration) {
         let token = Token::new();
         let stopper = token.clone();
         let started = Instant::now();
@@ -1233,7 +1245,7 @@ mod tests {
     fn a_group_that_closes_when_asked_is_never_killed() {
         let child = ready_group("sleep 30 & echo ready; wait");
         let (stopped, steps, elapsed) = stopped(child, Duration::from_secs(30), Token::cancel);
-        assert!(stopped);
+        assert_eq!(stopped, Ended::Stopped);
         assert_eq!(steps, [Step::Ask]);
         assert!(elapsed < Duration::from_secs(5));
     }
@@ -1243,7 +1255,7 @@ mod tests {
         let grace = Duration::from_millis(300);
         let child = ready_group("trap '' TERM; sleep 30 & echo ready; wait");
         let (stopped, steps, elapsed) = stopped(child, grace, Token::cancel);
-        assert!(stopped);
+        assert_eq!(stopped, Ended::Stopped);
         assert_eq!(steps, [Step::Ask, Step::Kill]);
         assert!(elapsed >= grace);
         assert!(elapsed < Duration::from_secs(5));
@@ -1254,7 +1266,7 @@ mod tests {
         // The leader would exit cleanly after the ask if given any time.
         let child = ready_group("sleep 30 & trap '' TERM; echo ready; wait; exit 0");
         let (stopped, steps, _) = stopped(child, Duration::ZERO, Token::cancel);
-        assert!(stopped);
+        assert_eq!(stopped, Ended::Stopped);
         assert_eq!(steps, [Step::Ask, Step::Kill]);
     }
 
@@ -1262,7 +1274,7 @@ mod tests {
     fn forcing_a_stop_kills_without_asking_or_waiting() {
         let child = ready_group("trap '' TERM; sleep 30 & echo ready; wait");
         let (stopped, steps, elapsed) = stopped(child, Duration::from_secs(30), Token::force);
-        assert!(stopped);
+        assert_eq!(stopped, Ended::Stopped);
         assert_eq!(steps, [Step::Kill]);
         assert!(elapsed < Duration::from_secs(5));
     }
@@ -1274,7 +1286,7 @@ mod tests {
         let child =
             ready_group("trap 'exit 0' TERM; sh -c 'trap \"\" TERM; echo ready; sleep 30' & wait");
         let (stopped, steps, elapsed) = stopped(child, grace, Token::cancel);
-        assert!(stopped);
+        assert_eq!(stopped, Ended::Stopped);
         assert_eq!(steps, [Step::Ask, Step::Kill]);
         assert!(elapsed >= grace);
     }
@@ -1298,7 +1310,7 @@ mod tests {
         let live = group_has_live_members(child.id());
         let _ = signal_led_group(&child, Signal::KILL);
         child.wait().unwrap();
-        assert!(!stopped.unwrap().unwrap());
+        assert_eq!(stopped.unwrap().unwrap(), Ended::Exited);
         assert_eq!(live, Some(true));
     }
 
@@ -1316,7 +1328,7 @@ mod tests {
             Ok::<_, ()>(())
         });
         child.wait().unwrap();
-        assert!(!stopped.unwrap().unwrap());
+        assert_eq!(stopped.unwrap().unwrap(), Ended::Exited);
         // Once on the way in and once when the exit wakes it.
         assert!(rounds <= 3, "woke {rounds} times");
     }
@@ -1349,9 +1361,29 @@ mod tests {
         let live = group_has_live_members(child.id());
         let _ = signal_led_group(&child, Signal::KILL);
         child.wait().unwrap();
-        assert!(answer.unwrap().unwrap());
+        assert_eq!(answer.unwrap().unwrap(), Ended::Stopped);
         assert_eq!(steps, [Step::Ask, Step::Kill]);
         assert_eq!(live, Some(false));
+    }
+
+    #[test]
+    fn a_killed_group_that_cant_be_inspected_is_never_called_stopped() {
+        let mut child = ready_group("trap '' TERM; sleep 30 & echo ready; wait");
+        let token = Token::new();
+        token.force();
+        let mut escalation = Escalation::new(Duration::from_secs(30), None);
+        let answer = stop_group_probed(
+            &child,
+            Signal::TERM,
+            &mut escalation,
+            &token,
+            None,
+            |_| Ok::<_, ()>(()),
+            |_| None,
+        );
+        let _ = signal_led_group(&child, Signal::KILL);
+        child.wait().unwrap();
+        assert_eq!(answer.unwrap().unwrap(), Ended::Unconfirmed);
     }
 
     #[test]

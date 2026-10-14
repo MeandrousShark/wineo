@@ -17,7 +17,7 @@ use crate::environment::Environment;
 use crate::error::Error;
 use crate::operation::{Locks, Operation};
 use crate::paths::Paths;
-use crate::process::{Escalation, Step};
+use crate::process::{Ended, Escalation, Step};
 use crate::runtime::{Runtime, exit_code};
 use crate::supervisor::{Notice, Settle, Supervisor, Watched};
 
@@ -314,14 +314,23 @@ fn run(
     )
     .context("failed to stop exec process group")
     .and_then(|pumped| Ok(pumped?));
-    if let Err(err) = ended {
-        if matches!(child.try_wait(), Ok(None)) {
-            let _ = crate::process::signal_led_group(&child, Signal::KILL);
-            let _ = child.wait();
+    let ended = match ended {
+        Ok(ended) => ended,
+        Err(err) => {
+            if matches!(child.try_wait(), Ok(None)) {
+                let _ = crate::process::signal_led_group(&child, Signal::KILL);
+                let _ = child.wait();
+            }
+            return Err(err);
         }
-        return Err(err);
-    }
+    };
     let status = child.wait().context("failed to wait for exec")?;
+    if ended == Ended::Unconfirmed {
+        return Err(Error::Unsettled(
+            "the program's processes could not be confirmed stopped".to_owned(),
+        )
+        .into());
+    }
     // Read only what is present now; handed-off programs can keep writing,
     // and must not extend the lifetime of this worker.
     let end = log.metadata()?.len();

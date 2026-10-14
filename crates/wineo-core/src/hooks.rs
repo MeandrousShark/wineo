@@ -282,6 +282,8 @@ fn wait_for_exit_requested(
         group_members,
     )
     .context(|| "failed to stop the hook process group".to_owned())?
+    // A kill that reached an uninspectable group counts as done, as it always has.
+    .map(|ended| ended != process::Ended::Exited)
 }
 
 struct Spawned {

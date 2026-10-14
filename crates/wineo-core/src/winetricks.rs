@@ -639,7 +639,7 @@ fn run_with_output(
     let tick = tail.is_some().then_some(POLL);
     // Reported once the group is gone, so the stop still finishes.
     let mut cleanup = Ok(());
-    process::stop_group(&child, Signal::INT, &mut escalation, token, tick, |step| {
+    let ended = process::stop_group(&child, Signal::INT, &mut escalation, token, tick, |step| {
         match step {
             None => {
                 if let Some(tail) = &mut tail {
@@ -659,6 +659,13 @@ fn run_with_output(
     if let Err(err) = cleanup {
         let _ = child.wait();
         return Err(err.into());
+    }
+    if ended == process::Ended::Unconfirmed {
+        let _ = child.wait();
+        return Err(Error::Unsettled(
+            "winetricks' processes could not be confirmed stopped".to_owned(),
+        )
+        .into());
     }
     if let Some(tail) = &mut tail {
         tail.pump(&mut events);

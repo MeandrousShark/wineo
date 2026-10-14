@@ -12,9 +12,10 @@ use crate::config::Arch;
 use crate::error::{Error, IoContext, Result};
 use crate::installer::Output;
 use crate::paths::{self, Paths};
-use crate::process::Escalation;
+use crate::process::{Ended, Escalation};
 use crate::runner::Runner;
 
+const CHILD_POLL: Duration = Duration::from_millis(25);
 const CANCEL_GRACE: Duration = Duration::from_secs(2);
 
 #[derive(Debug)]
@@ -279,7 +280,7 @@ pub(crate) fn wait_for_child(
 ) -> Result<ExitStatus> {
     let mut escalation = Escalation::new(CANCEL_GRACE, None);
     let mut canceled = false;
-    let stopped =
+    let ended =
         crate::process::stop_group(&child, Signal::TERM, &mut escalation, token, None, |step| {
             if step.is_none() || std::mem::replace(&mut canceled, true) {
                 return Ok(());
@@ -287,13 +288,27 @@ pub(crate) fn wait_for_child(
             on_cancel()
         })
         .context(|| "failed to stop the prefix process group".to_owned())??;
+    let group = child.id();
     let status = child
         .wait()
         .context(|| "failed to wait for wineboot".to_owned())?;
-    if stopped {
-        return Err(Error::Canceled("prefix creation"));
+    match ended {
+        Ended::Exited => Ok(status),
+        Ended::Stopped => Err(Error::Canceled("prefix creation")),
+        // Without `/proc`, wait for the group number itself to go, which needs
+        // none, as this always did.
+        Ended::Unconfirmed => loop {
+            match crate::process::group_exists(group) {
+                Some(false) => return Err(Error::Canceled("prefix creation")),
+                Some(true) => token.wait_timeout(CHILD_POLL),
+                None => {
+                    return Err(Error::Unsettled(
+                        "the canceled prefix process group could not be inspected".to_owned(),
+                    ));
+                }
+            }
+        },
     }
-    Ok(status)
 }
 
 /// Writes `HKCU\Software\Wine\DllOverrides\winemenubuilder.exe=""`, so wine
