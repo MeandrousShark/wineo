@@ -1,6 +1,6 @@
 use crate::test_script::write_script;
 use std::ffi::OsString;
-use std::os::unix::fs::{PermissionsExt, symlink};
+use std::os::unix::fs::{MetadataExt, PermissionsExt, symlink};
 
 use super::config_text::BEFORE_CONFIG_WRITE;
 use super::copy::{copy_regular_file_with, copy_regular_file_with_mode, relative_path};

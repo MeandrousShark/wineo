@@ -13,10 +13,10 @@ use crate::name;
 use crate::runner_alias;
 
 use super::copy::{Staging, copy_tree, lexical_normalize, sync_filesystem};
+use super::fingerprint::{Check, FingerprintKind, import_fingerprint, scan};
 use super::{
-    Check, ExternalDependency, FingerprintKind, ImportProgress, RunnerCopyInspection,
-    RunnerCopyReceipt, RunnerProvenance, canonical_source, check_cancelled, import_fingerprint,
-    reject_overlapping_paths, scan,
+    ExternalDependency, ImportProgress, RunnerCopyInspection, RunnerCopyReceipt, RunnerProvenance,
+    canonical_source, check_cancelled, reject_overlapping_paths,
 };
 
 /// Copy an existing runner tree into a wineo runner root without replacing an

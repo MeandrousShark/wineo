@@ -13,7 +13,8 @@ use rustix::io::Errno;
 use crate::cancel::Token;
 use crate::paths::Paths;
 
-use super::{ImportProgress, check_cancelled, walk_no_follow};
+use super::fingerprint::walk_no_follow;
+use super::{ImportProgress, check_cancelled};
 
 pub(crate) fn copy_tree(
     source: &Path,
