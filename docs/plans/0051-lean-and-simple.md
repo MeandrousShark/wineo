@@ -152,7 +152,14 @@ answer and confirmed separately.
    Integrity code, so it gets its own review. **Answer: recommended.**
 4. **GOG package hashing.** Cached packages are MD5-hashed twice per update
    (on reuse, and again when pinned under the lock). Recommended: one full
-   verify, under the lock. **Answer: recommended.**
+   verify, under the lock. **Answer: recommended**, then revised to keep
+   both hashes. The double only happens when resuming an interrupted
+   update from cached packages: the first hash decides the plan needs no
+   download, the second confirms the bytes under the lock. A size-only first
+   check would let a same-size corrupted package through to a "game changed"
+   error that repeats on every retry, since nothing would clear the file.
+   Fresh downloads are hashed while streaming and again at the pin, which
+   stays too: another process could replace the file between the two locks.
 5. **Content vs metadata fingerprints** for clone and portable copies, which
    read the whole prefix 3-4 times today. Recommended: keep content
    fingerprints, since they guard against data loss, and only drop the
