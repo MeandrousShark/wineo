@@ -355,7 +355,6 @@ Limits accepted in review:
   show warnings before its prompt.
 - Heroic's GOG-store files are still parsed and fingerprinted from separate
   reads, as before; only sideload files share their bytes.
-
 - A restore started or a prefix symlink retargeted outside wineo, with no
   library change, shows in action reasons once what is on screen changes
   (a menu, dialog, page, panel, or result opening). Actions are unaffected:
