@@ -9,7 +9,7 @@ use std::time::Instant;
 
 use iced::futures::channel::mpsc::unbounded;
 use iced::keyboard::{self, Key, key::Named};
-use iced::widget::{Row, column, container, image, pick_list, row, text};
+use iced::widget::{column, container, image, pick_list, row, text};
 use iced::{Center, Element, Fill, Task, border};
 use wineo_core::art::{Kind, Source};
 use wineo_core::cancel::Token;
@@ -31,9 +31,8 @@ use wineo_core::steamgriddb;
 use super::Action;
 use super::gog_install::{self, Install, Leave, Offer};
 use super::gog_posters::{self, Job, Network, Source as PosterSource};
-use super::heroic::{self, Prerequisite, Tile};
-use super::posters;
-use crate::progress::Delayed;
+use super::heroic::{self, Prerequisite};
+use super::import_grid::{ImportGrid, Tile};
 use crate::runner_label::Choice;
 use crate::theme::Palette;
 use crate::ui::{PickListStyle, accent_base, secondary_button};
@@ -198,15 +197,12 @@ pub(crate) struct Page {
     install: Option<Box<Install>>,
     /// Which opened review `install` is; each one gets a new number.
     install_instance: u64,
-    /// The tile the keyboard is on, in grid order.
-    focus: Option<usize>,
-    /// Whether `focus` came from the keyboard, which draws the ring.
-    focus_visible: bool,
+    /// Its focus is the tile the keyboard is on, in grid order. Nothing is
+    /// picked here, since a tile opens its game.
+    grid: ImportGrid<Event>,
     /// Decoded posters by tile id. None when a game's poster failed to load,
     /// which keeps its text tile.
     posters: HashMap<String, Option<image::Handle>>,
-    poster_generation: u64,
-    progress: Delayed<Event>,
     /// Stops the worker loading posters for a listing that is gone.
     poster_token: Option<Token>,
 }
@@ -237,11 +233,8 @@ impl Page {
             action: None,
             install: None,
             install_instance: 0,
-            focus: None,
-            focus_visible: false,
+            grid: ImportGrid::new(GRID_ID, Event::ProgressDue, next_poster_load()),
             posters: HashMap::new(),
-            poster_generation: next_poster_load(),
-            progress: Delayed::new(Event::ProgressDue),
             poster_token: None,
         };
         let task = page.list();
@@ -391,7 +384,7 @@ impl Page {
         let entry = self
             .listing
             .as_ref()
-            .zip(self.focus)
+            .zip(self.grid.focus)
             .and_then(|(listing, focus)| Self::entries(listing).get(focus).copied());
         match entry {
             Some(entry) => self.open(entry),
@@ -410,21 +403,10 @@ impl Page {
             return None;
         }
         let count = Self::entries(self.listing.as_ref()?).len();
-        let columns = heroic::grid_columns(width);
+        if let Some(task) = self.grid.arrow(key, width, count) {
+            return Some(task);
+        }
         match key.as_ref() {
-            Key::Named(
-                named @ (Named::ArrowLeft | Named::ArrowRight | Named::ArrowUp | Named::ArrowDown),
-            ) => {
-                self.focus = heroic::move_focus(self.focus, named, columns, count);
-                self.focus_visible = true;
-                let index = self.focus?;
-                let columns = columns.max(1);
-                Some(heroic::reveal_row(
-                    GRID_ID,
-                    index / columns,
-                    count.div_ceil(columns),
-                ))
-            }
             Key::Named(Named::Space | Named::Enter) | Key::Character(" ") => {
                 Some(self.open_focused())
             }
@@ -466,8 +448,7 @@ impl Page {
         if let Some(token) = self.poster_token.take() {
             token.cancel();
         }
-        self.poster_generation = next_poster_load();
-        self.progress.reset();
+        self.grid.restart_posters(next_poster_load());
     }
 
     /// Loads the listing's posters that aren't decoded yet on one worker,
@@ -480,7 +461,7 @@ impl Page {
         }
         let token = Token::new();
         self.poster_token = Some(token.clone());
-        let generation = self.poster_generation;
+        let generation = self.grid.poster_generation;
         let paths = self.paths.clone();
         let (sender, receiver) = unbounded();
         let count = jobs.len();
@@ -493,7 +474,7 @@ impl Page {
             .await;
             Event::PostersEnded(generation)
         });
-        let shown = self.progress.add(count, Instant::now());
+        let shown = self.grid.progress.add(count, Instant::now());
         Task::batch([Task::run(receiver, |event| event), work, shown])
     }
 
@@ -685,17 +666,17 @@ impl Page {
                 }
                 Task::none()
             }
-            Event::Poster(generation, id, result) if generation == self.poster_generation => {
-                self.progress.finish_one();
+            Event::Poster(generation, id, result) if generation == self.grid.poster_generation => {
+                self.grid.progress.finish_one();
                 self.posters.insert(id, result.ok());
                 Task::none()
             }
-            Event::PostersEnded(generation) if generation == self.poster_generation => {
-                self.progress.finish_all();
+            Event::PostersEnded(generation) if generation == self.grid.poster_generation => {
+                self.grid.progress.finish_all();
                 Task::none()
             }
             Event::ProgressDue(generation) => {
-                self.progress.reveal(generation);
+                self.grid.progress.reveal(generation);
                 Task::none()
             }
             Event::Pick(index) if self.step == Step::Games && !self.waiting() => {
@@ -709,8 +690,8 @@ impl Page {
                 }
                 self.leave_prompt = false;
                 self.picked = Some(index);
-                self.focus_visible = false;
-                self.focus = self.listing.as_ref().and_then(|listing| {
+                self.grid.focus_visible = false;
+                self.grid.focus = self.listing.as_ref().and_then(|listing| {
                     Self::entries(listing)
                         .iter()
                         .position(|entry| *entry == Entry::Heroic(index))
@@ -851,7 +832,7 @@ impl Page {
                 .push(row![back].align_y(Center))
                 .push(heroic::scroll_body(body, None, palette));
             if let Some(footer) = footer {
-                page = page.push(pinned(
+                page = page.push(heroic::pinned(
                     footer.map(move |event| Event::Installing(instance, Box::new(event))),
                     palette,
                 ));
@@ -937,11 +918,11 @@ impl Page {
             ),
             // Only while the art is still being prepared, so the grid keeps
             // its room otherwise.
-            Step::Games => posters::progress_bar(&self.progress, palette),
+            Step::Games => self.grid.progress_bar(palette),
             Step::Install => None,
         };
         if let Some(footer) = footer {
-            page = page.push(pinned(footer, palette));
+            page = page.push(heroic::pinned(footer, palette));
         }
         heroic::page_frame(page)
     }
@@ -970,77 +951,63 @@ impl Page {
             };
             return heroic::scroll_body(body.push(text(empty).color(palette.muted)), None, palette);
         }
-        let columns = heroic::grid_columns(width);
-        let tiles: Vec<Element<'a, Event>> = entries
-            .iter()
-            .enumerate()
-            .map(|(position, entry)| {
-                let (id, title, reason, note, event) = match *entry {
-                    Entry::Heroic(index) => {
-                        let candidate = &listing.games[index];
-                        let (reason, note) = match &candidate.standing {
-                            Standing::Ready(_) => (None, Some("In Heroic".to_owned())),
-                            Standing::Already { environment } => {
-                                (Some(format!("Already migrated as {environment}.")), None)
-                            }
-                            Standing::Failed(reason) => (Some(reason.clone()), None),
-                        };
-                        (
-                            candidate.game.id.clone(),
-                            candidate.game.title.as_str(),
-                            reason,
-                            note,
-                            Event::Pick(index),
-                        )
-                    }
-                    Entry::Owned(index) => {
-                        let owned = &listing.owned[index];
-                        let (reason, note) = match &owned.state {
-                            OwnedState::NotInstalled => (None, Some("Not installed".to_owned())),
-                            OwnedState::Unfinished => {
-                                (None, Some("Install didn't finish".to_owned()))
-                            }
-                            OwnedState::Installed(name) => {
-                                (Some(format!("Installed as {name}.")), None)
-                            }
-                            OwnedState::Imported(name) => {
-                                (Some(format!("Already migrated as {name}.")), None)
-                            }
-                        };
-                        (
-                            owned.offer.gog_id.to_string(),
-                            owned.offer.title.as_str(),
-                            reason,
-                            note,
-                            Event::Install(index),
-                        )
-                    }
-                };
-                heroic::tile(
-                    Tile {
-                        title,
-                        poster: self.poster(&id),
+        let tiles = entries.iter().enumerate().map(|(position, entry)| {
+            let (id, title, reason, note, event) = match *entry {
+                Entry::Heroic(index) => {
+                    let candidate = &listing.games[index];
+                    let (reason, note) = match &candidate.standing {
+                        Standing::Ready(_) => (None, Some("In Heroic".to_owned())),
+                        Standing::Already { environment } => {
+                            (Some(format!("Already migrated as {environment}.")), None)
+                        }
+                        Standing::Failed(reason) => (Some(reason.clone()), None),
+                    };
+                    (
+                        candidate.game.id.clone(),
+                        candidate.game.title.as_str(),
                         reason,
                         note,
-                        chosen: false,
-                        focus_ring: self.focus_visible && self.focus == Some(position),
-                        // Nearly every game here isn't installed, so
-                        // dimming those like the library would wash out
-                        // the whole grid.
-                        dimmed: false,
-                    },
-                    palette,
-                    event,
-                )
-            })
-            .collect();
-        let mut rows = column![].spacing(heroic::TILE_GAP);
-        let mut tiles = tiles.into_iter().peekable();
-        while tiles.peek().is_some() {
-            rows = rows
-                .push(Row::with_children(tiles.by_ref().take(columns)).spacing(heroic::TILE_GAP));
-        }
-        heroic::grid_scroll(GRID_ID, body.into(), rows.into(), palette)
+                        Event::Pick(index),
+                    )
+                }
+                Entry::Owned(index) => {
+                    let owned = &listing.owned[index];
+                    let (reason, note) = match &owned.state {
+                        OwnedState::NotInstalled => (None, Some("Not installed".to_owned())),
+                        OwnedState::Unfinished => (None, Some("Install didn't finish".to_owned())),
+                        OwnedState::Installed(name) => {
+                            (Some(format!("Installed as {name}.")), None)
+                        }
+                        OwnedState::Imported(name) => {
+                            (Some(format!("Already migrated as {name}.")), None)
+                        }
+                    };
+                    (
+                        owned.offer.gog_id.to_string(),
+                        owned.offer.title.as_str(),
+                        reason,
+                        note,
+                        Event::Install(index),
+                    )
+                }
+            };
+            (
+                Tile {
+                    title,
+                    poster: self.poster(&id),
+                    reason,
+                    note,
+                    chosen: false,
+                    focus_ring: self.grid.focus_ring(position),
+                    // Nearly every game here isn't installed, so
+                    // dimming those like the library would wash out
+                    // the whole grid.
+                    dimmed: false,
+                },
+                event,
+            )
+        });
+        self.grid.view(body.into(), tiles, width, palette)
     }
 
     fn review_view<'a>(
@@ -1154,19 +1121,6 @@ impl Page {
         }
         body
     }
-}
-
-/// A step's action row, pinned under the scrolling content.
-fn pinned<'a>(footer: Element<'a, Event>, palette: Palette) -> Element<'a, Event> {
-    container(footer)
-        .padding(12)
-        .width(Fill)
-        .style(move |_| {
-            container::Style::default()
-                .background(palette.surface)
-                .border(border::rounded(8).width(1).color(palette.border))
-        })
-        .into()
 }
 
 fn windows_plan(migration: &Migration) -> Option<&heroic_import::GamePlan> {
@@ -2573,7 +2527,7 @@ mod tests {
             680.0,
         );
         assert!(task.is_some());
-        assert_eq!(page.focus, Some(0));
+        assert_eq!(page.grid.focus, Some(0));
         let _ = page.key(
             &Key::Named(Named::Enter),
             keyboard::Modifiers::empty(),
@@ -2907,7 +2861,7 @@ mod tests {
     fn a_stale_poster_event_is_ignored() {
         let fx = Fixture::new();
         let mut page = fx.page();
-        let generation = page.poster_generation;
+        let generation = page.grid.poster_generation;
         let _ = page.update(Event::Poster(
             generation.wrapping_sub(1),
             RIMWORLD.to_owned(),
@@ -2919,14 +2873,14 @@ mod tests {
 
         // A relist starts over: the old load's reply lands nowhere.
         let _ = page.list();
-        assert_ne!(page.poster_generation, generation);
+        assert_ne!(page.grid.poster_generation, generation);
         let _ = page.update(Event::Poster(generation, STARDEW.to_owned(), Ok(handle())));
         assert!(page.posters.is_empty());
 
         // A page opened later never shares a load number with this one.
         let (next, _) = Page::new(fx.paths.clone());
-        assert_ne!(next.poster_generation, page.poster_generation);
-        assert_ne!(next.poster_generation, generation);
+        assert_ne!(next.grid.poster_generation, page.grid.poster_generation);
+        assert_ne!(next.grid.poster_generation, generation);
     }
 
     #[test]
@@ -2936,21 +2890,21 @@ mod tests {
         let mut page = fx.page();
         let total = page.poster_jobs().len();
         assert!(total >= 1);
-        assert_eq!(page.progress.shown(), None, "not before the delay");
-        assert!(page.progress.pending_wakeup().is_some());
-        let _ = page.update(Event::ProgressDue(page.progress.wakeup_generation()));
-        assert_eq!(page.progress.shown(), Some((0, total)));
+        assert_eq!(page.grid.progress.shown(), None, "not before the delay");
+        assert!(page.grid.progress.pending_wakeup().is_some());
+        let _ = page.update(Event::ProgressDue(page.grid.progress.wakeup_generation()));
+        assert_eq!(page.grid.progress.shown(), Some((0, total)));
         crate::layout_probe::layout(&mut page.view(Palette::DARK), iced::Size::new(680.0, 560.0));
 
         // A reply from an earlier load moves nothing.
-        let generation = page.poster_generation;
+        let generation = page.grid.poster_generation;
         let _ = page.update(Event::Poster(
             generation.wrapping_sub(1),
             RIMWORLD.to_owned(),
             Ok(handle()),
         ));
         let _ = page.update(Event::PostersEnded(generation.wrapping_sub(1)));
-        assert_eq!(page.progress.shown(), Some((0, total)));
+        assert_eq!(page.grid.progress.shown(), Some((0, total)));
 
         // Failures count, and a game that got no poster still ends with the
         // worker.
@@ -2959,10 +2913,13 @@ mod tests {
             RIMWORLD.to_owned(),
             Err("x".into()),
         ));
-        assert_eq!(page.progress.shown(), (total > 1).then_some((1, total)));
+        assert_eq!(
+            page.grid.progress.shown(),
+            (total > 1).then_some((1, total))
+        );
         let _ = page.update(Event::PostersEnded(generation));
-        assert_eq!(page.progress.shown(), None);
-        assert_eq!(page.progress.pending_wakeup(), None);
+        assert_eq!(page.grid.progress.shown(), None);
+        assert_eq!(page.grid.progress.pending_wakeup(), None);
     }
 
     #[test]
@@ -2970,12 +2927,12 @@ mod tests {
         let mut fx = Fixture::new();
         fx.native(RIMWORLD, "RimWorld", &[]);
         let mut page = fx.page();
-        let late = page.progress.wakeup_generation();
-        let generation = page.poster_generation;
+        let late = page.grid.progress.wakeup_generation();
+        let generation = page.grid.poster_generation;
         let _ = page.update(Event::PostersEnded(generation));
-        assert_eq!(page.progress.pending_wakeup(), None);
+        assert_eq!(page.grid.progress.pending_wakeup(), None);
         let _ = page.update(Event::ProgressDue(late));
-        assert_eq!(page.progress.shown(), None);
+        assert_eq!(page.grid.progress.shown(), None);
     }
 
     #[test]
@@ -2983,11 +2940,11 @@ mod tests {
         let mut fx = Fixture::new();
         fx.native(RIMWORLD, "RimWorld", &[]);
         let mut page = fx.page();
-        let _ = page.update(Event::ProgressDue(page.progress.wakeup_generation()));
-        assert!(page.progress.shown().is_some());
+        let _ = page.update(Event::ProgressDue(page.grid.progress.wakeup_generation()));
+        assert!(page.grid.progress.shown().is_some());
         let _ = page.back();
-        assert_eq!(page.progress.shown(), None);
-        assert_eq!(page.progress.pending_wakeup(), None);
+        assert_eq!(page.grid.progress.shown(), None);
+        assert_eq!(page.grid.progress.pending_wakeup(), None);
     }
 
     #[test]
@@ -2996,11 +2953,11 @@ mod tests {
         fx.native(RIMWORLD, "RimWorld", &[]);
         let mut page = fx.page();
         let token = page.poster_token.clone().expect("a load started");
-        let generation = page.poster_generation;
+        let generation = page.grid.poster_generation;
         let _ = page.back();
         assert!(matches!(page.take_action(), Some(Action::Choose)));
         assert!(token.is_canceled());
-        assert_ne!(page.poster_generation, generation);
+        assert_ne!(page.grid.poster_generation, generation);
         let _ = page.update(Event::Poster(generation, RIMWORLD.to_owned(), Ok(handle())));
         assert!(page.poster(RIMWORLD).is_none());
 
@@ -3018,18 +2975,18 @@ mod tests {
         fx.native(RIMWORLD, "RimWorld", &[]);
         let mut page = fx.page();
         let old = page.poster_token.clone().unwrap();
-        let generation = page.poster_generation;
+        let generation = page.grid.poster_generation;
         page.step = Step::Review;
         let _ = page.back();
         assert_eq!(page.step, Step::Games);
         assert!(old.is_canceled());
         let token = page.poster_token.as_ref().expect("loading again");
         assert!(!token.is_canceled());
-        assert_ne!(page.poster_generation, generation);
+        assert_ne!(page.grid.poster_generation, generation);
         // The old load's reply is dropped; the new one's is kept.
         let _ = page.update(Event::Poster(generation, RIMWORLD.to_owned(), Ok(handle())));
         assert!(page.poster(RIMWORLD).is_none());
-        let current = page.poster_generation;
+        let current = page.grid.poster_generation;
         let _ = page.update(Event::Poster(current, RIMWORLD.to_owned(), Ok(handle())));
         assert!(page.poster(RIMWORLD).is_some());
     }
@@ -3086,7 +3043,7 @@ mod tests {
         // The worker never asks for a connection, and a game without stored
         // art simply has no poster.
         let covers = leaked(Covers::new(500, Vec::new()));
-        let generation = page.poster_generation;
+        let generation = page.grid.poster_generation;
         let sent = load(&fx.paths, page.poster_jobs(), &Token::new(), None, covers);
         assert_eq!(covers.count(), 0);
         assert!(covers_dir_is_empty(&fx.paths));
@@ -3138,7 +3095,7 @@ mod tests {
         assert_eq!(server.requests().len(), 2);
         assert_eq!(covers.count(), 2);
 
-        let generation = page.poster_generation;
+        let generation = page.grid.poster_generation;
         for (id, poster) in again {
             let _ = page.update(Event::Poster(generation, id, poster));
         }
@@ -3170,7 +3127,7 @@ mod tests {
             assert_eq!(sent.len(), 1);
             assert!(sent[0].1.is_err());
             assert!(covers_dir_is_empty(&fx.paths));
-            let generation = page.poster_generation;
+            let generation = page.grid.poster_generation;
             for (id, poster) in sent {
                 let _ = page.update(Event::Poster(generation, id, poster));
             }
@@ -3327,7 +3284,7 @@ mod tests {
             .map(|(id, _)| id.as_str())
             .collect();
         assert_eq!(loaded, ["6"]);
-        let generation = page.poster_generation;
+        let generation = page.grid.poster_generation;
         for (id, poster) in sent {
             let _ = page.update(Event::Poster(generation, id, poster));
         }
