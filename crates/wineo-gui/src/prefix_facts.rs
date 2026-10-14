@@ -222,6 +222,33 @@ mod tests {
     }
 
     #[test]
+    fn selecting_a_card_refreshes_the_facts() {
+        let root = tempfile::tempdir().unwrap();
+        let real = root.path().join("real");
+        let other = root.path().join("other");
+        let link = root.path().join("link");
+        std::fs::create_dir_all(&real).unwrap();
+        std::fs::create_dir_all(&other).unwrap();
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        let mut app = booted(root.path());
+        app.cards = [("a", real), ("b", link.clone())]
+            .into_iter()
+            .map(|(name, prefix)| {
+                let mut card = card(name, State::Inactive, 0);
+                card.prefix = Some(prefix);
+                card
+            })
+            .collect();
+        app.refresh_facts();
+        std::fs::remove_file(&link).unwrap();
+        std::os::unix::fs::symlink(&other, &link).unwrap();
+        assert!(app.same_prefix_with(&app.facts, "a", "b"));
+
+        let _ = app.update(Message::Select("b".into()));
+        assert!(!app.same_prefix_with(&app.facts, "a", "b"));
+    }
+
+    #[test]
     fn a_default_app_has_no_stored_facts() {
         let app = app();
         assert!(!app.facts.restore_pending("anything"));

@@ -756,6 +756,9 @@ impl App {
                 ])
             }
             Message::Select(name) => {
+                // The panel's Launch state reads these, and it can open on any
+                // environment.
+                self.refresh_facts();
                 if self.selected.as_deref() == Some(&name) && self.panel_open {
                     self.card_click_target = Some((name, self.target.clone()));
                     self.close_panel();
