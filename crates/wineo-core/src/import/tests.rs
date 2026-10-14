@@ -2,6 +2,7 @@ use crate::test_script::write_script;
 use std::ffi::OsString;
 use std::os::unix::fs::symlink;
 
+use super::config_text::BEFORE_CONFIG_WRITE;
 use super::runner_copy::{copy_runner_with_review, staged_path_if_exists};
 use super::*;
 use crate::components::Component;
