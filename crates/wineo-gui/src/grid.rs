@@ -462,11 +462,11 @@ impl App {
         }
         if let Some(name) = &self.action_menu {
             let palette = self.palette;
-            let wine_actions = self.wine_actions(name);
+            let wine_actions = self.wine_actions_with(&self.facts, name);
             let transfer_actions = self.transfer_actions(name);
             let uninstall_action = self.uninstall_action(name);
             let update_action = self.gog_update_action(name);
-            let removal_reason = self.remove_reason(name);
+            let removal_reason = self.remove_reason_with(&self.facts, name);
             let menu_buttons = 4
                 + usize::from(wine_actions) * 3
                 + usize::from(transfer_actions) * 2
@@ -497,7 +497,7 @@ impl App {
                     .cards
                     .iter()
                     .find(|card| &card.name == name)
-                    .is_some_and(|card| self.gog_update_enabled(card));
+                    .is_some_and(|card| self.gog_update_enabled_with(&self.facts, card));
                 scroll_items = scroll_items.push(context_menu_button(
                     "Update",
                     palette,
@@ -658,7 +658,7 @@ impl App {
             let reason = if page.busy() {
                 None
             } else {
-                self.tool_start_reason(&name, kind)
+                self.tool_start_reason_with(&self.facts, &name, kind)
             };
             let blocked = reason.is_some();
             let content: Element<'_, crate::tools_page::Event> = column![
@@ -675,7 +675,7 @@ impl App {
             return page
                 .view(
                     palette,
-                    self.management_busy() || self.remove_reason(&name).is_some(),
+                    self.management_busy() || self.remove_reason_with(&self.facts, &name).is_some(),
                 )
                 .map(move |event| Message::Portable(name.clone(), event));
         }
@@ -683,9 +683,9 @@ impl App {
             && let Some(page) = &self.snapshots_page
         {
             let blocked = self.management_busy()
-                || page
-                    .selected_name()
-                    .is_some_and(|name| self.prefix_change_reason(name).is_some());
+                || page.selected_name().is_some_and(|name| {
+                    self.prefix_change_reason_with(&self.facts, name).is_some()
+                });
             return page.view(palette, blocked).map(Message::Snapshots);
         }
         if let Some(name) = &self.art_page

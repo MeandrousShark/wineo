@@ -1,8 +1,8 @@
 use iced::Task;
 use iced::keyboard::{Key, Modifiers, key::Named};
-use wineo_core::paths::resolve;
 
 use crate::library::CardKind;
+use crate::prefix_facts::{Facts, Live};
 use crate::{App, Message, portable_page, sidebar::Section, snapshots_page, tools_page};
 
 impl App {
@@ -23,7 +23,7 @@ impl App {
             || self.section == Section::Snapshots
     }
 
-    pub(crate) fn same_prefix(&self, first: &str, second: &str) -> bool {
+    pub(crate) fn same_prefix_with(&self, facts: &dyn Facts, first: &str, second: &str) -> bool {
         if first == second {
             return true;
         }
@@ -32,31 +32,47 @@ impl App {
                 .iter()
                 .find(|card| card.name == name)
                 .and_then(|card| card.prefix.as_deref())
-                .map(resolve)
+                .and_then(|prefix| facts.resolved(prefix))
         };
         matches!((prefix(first), prefix(second)), (Some(a), Some(b)) if a == b)
     }
 
     pub(crate) fn tool_prefix_busy(&self, name: &str) -> bool {
+        self.tool_prefix_busy_with(&Live(&self.paths), name)
+    }
+
+    pub(crate) fn tool_prefix_busy_with(&self, facts: &dyn Facts, name: &str) -> bool {
         self.tool_pages
             .iter()
-            .any(|(key, page)| page.busy() && self.tool_matches_prefix(name, key))
+            .any(|(key, page)| page.busy() && self.tool_matches_prefix(facts, name, key))
     }
 
     pub(crate) fn tool_reason(&self, name: &str) -> Option<String> {
-        self.tool_prefix_busy(name)
+        self.tool_reason_with(&Live(&self.paths), name)
+    }
+
+    pub(crate) fn tool_reason_with(&self, facts: &dyn Facts, name: &str) -> Option<String> {
+        self.tool_prefix_busy_with(facts, name)
             .then(|| "Busy: a tool is running in this prefix.".to_owned())
     }
 
     pub(crate) fn tool_blocks_launch(&self, name: &str) -> bool {
+        self.tool_blocks_launch_with(&Live(&self.paths), name)
+    }
+
+    pub(crate) fn tool_blocks_launch_with(&self, facts: &dyn Facts, name: &str) -> bool {
         self.tool_pages
             .iter()
-            .any(|(key, page)| page.blocks_launch() && self.tool_matches_prefix(name, key))
+            .any(|(key, page)| page.blocks_launch() && self.tool_matches_prefix(facts, name, key))
     }
 
     /// Whether the Wine-only actions apply: Snapshots, Run program, and
     /// Winetricks. A pending restore keeps them, so it can be finished.
     pub(crate) fn wine_actions(&self, name: &str) -> bool {
+        self.wine_actions_with(&Live(&self.paths), name)
+    }
+
+    pub(crate) fn wine_actions_with(&self, facts: &dyn Facts, name: &str) -> bool {
         self.cards.iter().any(|card| {
             card.name == name
                 && card.prefix.is_some()
@@ -64,7 +80,7 @@ impl App {
                     Some(CardKind::Wine) | None => true,
                     Some(CardKind::Native | CardKind::Proxied) => false,
                 }
-        }) || self.restore_pending(name)
+        }) || facts.restore_pending(name)
     }
 
     /// Whether Clone and Copy to portable apply. Native environments have
@@ -88,10 +104,15 @@ impl App {
     }
 
     pub(crate) fn restore_pending(&self, name: &str) -> bool {
-        wineo_core::snapshot::check_recovery_marker(&self.paths, name).is_err()
+        Live(&self.paths).restore_pending(name)
     }
 
-    fn tool_matches_prefix(&self, name: &str, key: &(String, tools_page::Kind)) -> bool {
+    fn tool_matches_prefix(
+        &self,
+        facts: &dyn Facts,
+        name: &str,
+        key: &(String, tools_page::Kind),
+    ) -> bool {
         if name == key.0 {
             return true;
         }
@@ -100,10 +121,10 @@ impl App {
             .iter()
             .find(|card| card.name == name)
             .and_then(|card| card.prefix.as_deref())
-            .map(resolve);
+            .and_then(|prefix| facts.resolved(prefix));
         match (current, self.tool_prefixes.get(key)) {
-            (Some(current), Some(active)) => current == *active,
-            _ => self.same_prefix(name, &key.0),
+            (Some(current), Some(active)) => *current == **active,
+            _ => self.same_prefix_with(facts, name, &key.0),
         }
     }
 
@@ -115,34 +136,41 @@ impl App {
             .and_then(|card| card.prefix.as_deref())
         {
             self.tool_prefixes
-                .insert((name.to_owned(), kind), resolve(prefix));
+                .insert((name.to_owned(), kind), wineo_core::paths::resolve(prefix));
         }
     }
 
     pub(crate) fn tool_start_reason(&self, name: &str, kind: tools_page::Kind) -> Option<String> {
-        if self.restore_pending(name) {
+        self.tool_start_reason_with(&Live(&self.paths), name, kind)
+    }
+
+    pub(crate) fn tool_start_reason_with(
+        &self,
+        facts: &dyn Facts,
+        name: &str,
+        kind: tools_page::Kind,
+    ) -> Option<String> {
+        if facts.restore_pending(name) {
             return Some("Roll back restore first.".into());
         }
         if self.management_busy() {
             return Some("Busy: changing files.".into());
         }
-        if let Some(reason) = self.tool_reason(name) {
+        if let Some(reason) = self.tool_reason_with(facts, name) {
             return Some(reason);
         }
         if kind == tools_page::Kind::Winetricks {
-            return self.remove_reason(name);
+            return self.remove_reason_with(facts, name);
         }
-        if self
-            .cards
-            .iter()
-            .any(|card| self.same_prefix(name, &card.name) && (card.lost || card.unresolved))
-        {
+        if self.cards.iter().any(|card| {
+            self.same_prefix_with(facts, name, &card.name) && (card.lost || card.unresolved)
+        }) {
             return Some("Stop it first. Use Clean up in the panel.".into());
         }
         if self
             .operation
             .as_ref()
-            .is_some_and(|operation| self.same_prefix(name, &operation.name))
+            .is_some_and(|operation| self.same_prefix_with(facts, name, &operation.name))
         {
             return Some("Busy: starting or stopping this prefix.".into());
         }

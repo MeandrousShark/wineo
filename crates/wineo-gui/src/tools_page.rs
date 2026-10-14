@@ -175,6 +175,11 @@ impl Page {
         self.token.is_some()
     }
 
+    #[cfg(test)]
+    pub(crate) fn generation(&self) -> u64 {
+        self.generation
+    }
+
     pub(crate) fn blocks_launch(&self) -> bool {
         self.busy() && self.kind == Kind::Winetricks
     }

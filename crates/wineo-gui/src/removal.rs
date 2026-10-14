@@ -8,6 +8,7 @@ use wineo_core::cancel::Token;
 use wineo_core::runtime::State;
 use wineo_core::trash::{Entry, RemoveEvent};
 
+use crate::prefix_facts::{Facts, Live};
 use crate::ui::{accent_base, secondary_button};
 use crate::{App, Message, focus_button, remove_work, spinner};
 
@@ -396,17 +397,30 @@ impl App {
     }
 
     pub(crate) fn remove_reason(&self, name: &str) -> Option<String> {
-        if self.restore_pending(name) {
+        self.remove_reason_with(&Live(&self.paths), name)
+    }
+
+    /// `view` passes the stored facts so a redraw never touches the disk.
+    pub(crate) fn remove_reason_with(&self, facts: &dyn Facts, name: &str) -> Option<String> {
+        if facts.restore_pending(name) {
             return Some("Roll back restore first.".into());
         }
-        self.prefix_change_reason(name)
+        self.prefix_change_reason_with(facts, name)
     }
 
     pub(crate) fn prefix_change_reason(&self, name: &str) -> Option<String> {
+        self.prefix_change_reason_with(&Live(&self.paths), name)
+    }
+
+    pub(crate) fn prefix_change_reason_with(
+        &self,
+        facts: &dyn Facts,
+        name: &str,
+    ) -> Option<String> {
         if self.filesystem_busy() {
             return Some("Busy: changing files.".into());
         }
-        if let Some(reason) = self.tool_reason(name) {
+        if let Some(reason) = self.tool_reason_with(facts, name) {
             return Some(reason);
         }
         if let Some(change) = &self.change {
@@ -414,7 +428,7 @@ impl App {
         }
         if let Some(other) = self.cards.iter().find(|card| {
             card.name != name
-                && self.same_prefix(name, &card.name)
+                && self.same_prefix_with(facts, name, &card.name)
                 && (card.lost || card.unresolved || card.active() || card.busy)
         }) {
             return Some(if other.lost || other.unresolved {
@@ -426,7 +440,7 @@ impl App {
         if self
             .operation
             .as_ref()
-            .is_some_and(|operation| self.same_prefix(name, &operation.name))
+            .is_some_and(|operation| self.same_prefix_with(facts, name, &operation.name))
         {
             return Some("Stop it first".into());
         }
@@ -733,7 +747,7 @@ impl App {
                 .align_y(Center),
             );
         }
-        let reason = self.remove_reason(&dialog.name);
+        let reason = self.remove_reason_with(&self.facts, &dialog.name);
         if !running && let Some(reason) = &reason {
             content = content.push(text(reason.clone()).size(13).color(palette.muted));
         }

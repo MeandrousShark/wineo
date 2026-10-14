@@ -67,6 +67,20 @@ pub fn decode(path: &Path, kind: Kind, cache: Option<&Path>) -> Result<iced_imag
     Ok(iced_image::Handle::from_rgba(width, height, pixels))
 }
 
+/// Decodes art held in memory, to the same sizes and with the same SVG handling
+/// as `decode`. Nothing is cached, since there is no source file to key on.
+pub fn decode_bytes(bytes: &[u8], kind: Kind) -> Result<iced_image::Handle> {
+    let (width, height, pixels) =
+        if wineo_core::art::detect(bytes) == Some(wineo_core::art::Format::Svg) {
+            let (tree, width, height, scale) = parse_svg(bytes, kind, "the SVG")?;
+            render_svg(&tree, width, height, scale)?
+        } else {
+            let image = image::load_from_memory(bytes).context("failed to decode the image")?;
+            fit_raster(image, kind)
+        };
+    Ok(iced_image::Handle::from_rgba(width, height, pixels))
+}
+
 pub(crate) fn grayscale(handle: &iced_image::Handle) -> Option<iced_image::Handle> {
     let iced_image::Handle::Rgba {
         width,
@@ -232,6 +246,10 @@ fn prune_dir(dir: &Path) {
 fn decode_raster(path: &Path, kind: Kind) -> Result<Pixels> {
     let image =
         image::open(path).with_context(|| format!("failed to decode {}", path.display()))?;
+    Ok(fit_raster(image, kind))
+}
+
+fn fit_raster(image: image::DynamicImage, kind: Kind) -> Pixels {
     let (width, height) = image.dimensions();
     let (target_width, target_height, _) = fit_size(f64::from(width), f64::from(height), kind);
     let image = if (target_width, target_height) == (width, height) {
@@ -244,7 +262,7 @@ fn decode_raster(path: &Path, kind: Kind) -> Result<Pixels> {
         )
     }
     .into_rgba8();
-    Ok((target_width, target_height, image.into_raw()))
+    (target_width, target_height, image.into_raw())
 }
 
 fn fit_size(width: f64, height: f64, kind: Kind) -> (u32, u32, f64) {
@@ -267,8 +285,12 @@ fn fit_size(width: f64, height: f64, kind: Kind) -> (u32, u32, f64) {
 fn open_svg(path: &Path, kind: Kind) -> Result<(resvg::usvg::Tree, u32, u32, f64)> {
     let bytes =
         std::fs::read(path).with_context(|| format!("failed to read {}", path.display()))?;
-    let tree = resvg::usvg::Tree::from_data(&bytes, &resvg::usvg::Options::default())
-        .with_context(|| format!("failed to parse {}", path.display()))?;
+    parse_svg(&bytes, kind, &path.display().to_string())
+}
+
+fn parse_svg(bytes: &[u8], kind: Kind, name: &str) -> Result<(resvg::usvg::Tree, u32, u32, f64)> {
+    let tree = resvg::usvg::Tree::from_data(bytes, &resvg::usvg::Options::default())
+        .with_context(|| format!("failed to parse {name}"))?;
     let size = tree.size();
     let (width, height, scale) = fit_size(f64::from(size.width()), f64::from(size.height()), kind);
     Ok((tree, width, height, scale))
@@ -369,6 +391,56 @@ mod tests {
         let (tree, width, height, scale) = open_svg(&svg_path, Kind::Hero).unwrap();
         let svg = render_svg(&tree, width, height, scale).unwrap();
         assert_eq!((svg.0, svg.1), (880, 440));
+    }
+
+    #[test]
+    fn decoding_bytes_matches_decoding_the_same_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let svg = "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"2000\" height=\"1000\"><rect width=\"1000\" height=\"1000\" fill=\"red\"/></svg>";
+        let mut png = Vec::new();
+        image::RgbaImage::from_pixel(2000, 1000, image::Rgba([40, 100, 180, 255]))
+            .write_to(&mut io::Cursor::new(&mut png), image::ImageFormat::Png)
+            .unwrap();
+        let mut small = Vec::new();
+        image::RgbaImage::from_pixel(3, 2, image::Rgba([1, 2, 3, 255]))
+            .write_to(&mut io::Cursor::new(&mut small), image::ImageFormat::Png)
+            .unwrap();
+        let encode = |format| {
+            let mut bytes = Vec::new();
+            image::DynamicImage::ImageRgba8(image::RgbaImage::from_pixel(
+                60,
+                90,
+                image::Rgba([200, 30, 90, 255]),
+            ))
+            .write_to(&mut io::Cursor::new(&mut bytes), format)
+            .unwrap();
+            bytes
+        };
+        let (jpeg, webp, ico) = (
+            encode(image::ImageFormat::Jpeg),
+            encode(image::ImageFormat::WebP),
+            encode(image::ImageFormat::Ico),
+        );
+        for (name, bytes) in [
+            ("large.png", png.as_slice()),
+            ("small.png", small.as_slice()),
+            ("art.jpg", jpeg.as_slice()),
+            ("art.webp", webp.as_slice()),
+            ("art.ico", ico.as_slice()),
+            ("art.svg", svg.as_bytes()),
+        ] {
+            let path = dir.path().join(name);
+            fs::write(&path, bytes).unwrap();
+            for kind in [Kind::Grid, Kind::Hero, Kind::Logo] {
+                assert_eq!(
+                    pixel(&decode_bytes(bytes, kind).unwrap()),
+                    pixel(&decode(&path, kind, None).unwrap()),
+                    "{name} {kind:?}"
+                );
+            }
+        }
+        assert!(decode_bytes(b"not an image", Kind::Grid).is_err());
+        assert!(decode_bytes(b"<svg", Kind::Grid).is_err());
     }
 
     fn save_png(path: &Path, width: u32, height: u32, color: [u8; 3]) {
