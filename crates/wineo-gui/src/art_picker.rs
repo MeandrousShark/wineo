@@ -1,7 +1,6 @@
 use std::collections::{HashMap, HashSet};
 use std::io::Write;
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
 
 use iced::advanced::widget::Operation;
 use iced::advanced::widget::operation::{Outcome, Scrollable, scrollable as scrollable_operation};
@@ -732,18 +731,15 @@ where
     if token.is_canceled() {
         return None;
     }
-    let acquire = decodes.acquire_owned();
-    tokio::pin!(acquire);
-    let permit = loop {
-        if token.is_canceled() {
-            return None;
+    // Waiting for a slot ends as soon as the picker moves on.
+    let canceled = std::pin::pin!(token.canceled());
+    let acquire = std::pin::pin!(decodes.acquire_owned());
+    let permit = match iced::futures::future::select(acquire, canceled).await {
+        iced::futures::future::Either::Left((Ok(permit), _)) => permit,
+        iced::futures::future::Either::Left((Err(error), _)) => {
+            return Some(Err(error.to_string()));
         }
-        if let Ok(result) = tokio::time::timeout(Duration::from_millis(10), &mut acquire).await {
-            break match result {
-                Ok(permit) => permit,
-                Err(error) => return Some(Err(error.to_string())),
-            };
-        }
+        iced::futures::future::Either::Right(_) => return None,
     };
     if token.is_canceled() {
         return None;
@@ -972,6 +968,7 @@ mod tests {
     use super::*;
     use std::io::{Cursor, Read};
     use std::sync::Mutex;
+    use std::time::Duration;
     use wineo_core::download::Response;
 
     struct FakeTransport {
@@ -1149,6 +1146,61 @@ mod tests {
             .await
             .unwrap();
             assert!(result.is_none());
+        });
+    }
+
+    #[test]
+    fn canceling_while_queued_for_a_decode_slot_ends_the_wait() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_time()
+            .build()
+            .unwrap();
+        let token = Token::new();
+        let cancel = token.clone();
+        runtime.block_on(async {
+            let work = thumbnail_work(
+                || Ok(vec![0; 4]),
+                Kind::Grid,
+                Arc::new(tokio::sync::Semaphore::new(0)),
+                token,
+            );
+            let canceler = async {
+                tokio::time::sleep(Duration::from_millis(50)).await;
+                cancel.cancel();
+            };
+            let (result, ()) = tokio::time::timeout(
+                Duration::from_secs(2),
+                iced::futures::future::join(work, canceler),
+            )
+            .await
+            .expect("the wait for a slot outlived the cancel");
+            assert!(result.is_none());
+        });
+    }
+
+    #[test]
+    fn a_freed_decode_slot_lets_a_queued_thumbnail_decode() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_time()
+            .build()
+            .unwrap();
+        let decodes = Arc::new(tokio::sync::Semaphore::new(0));
+        let release = decodes.clone();
+        runtime.block_on(async {
+            let work = thumbnail_work(|| Ok(vec![0; 4]), Kind::Grid, decodes, Token::new());
+            let freer = async {
+                tokio::time::sleep(Duration::from_millis(50)).await;
+                release.add_permits(1);
+            };
+            let (result, ()) = tokio::time::timeout(
+                Duration::from_secs(2),
+                iced::futures::future::join(work, freer),
+            )
+            .await
+            .expect("the queued thumbnail never got its slot");
+            // The bytes are not an image, but reaching the decode proves the
+            // permit arrived.
+            assert!(matches!(result, Some(Err(_))));
         });
     }
 

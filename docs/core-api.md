@@ -40,6 +40,9 @@ UI and call:
   to close, and a stop timeout still kills them if they hang.
 - `force()` to kill now, like a second Ctrl+C.
 
+Async code can await `canceled()`, which completes once the token is
+canceled, instead of polling `is_canceled()`.
+
 A canceled operation cleans up after itself the way the CLI always has: a
 half-built prefix is removed, a copy's staging directory is deleted, an
 installer's record is resolved. Most return `Error::Canceled`, with the

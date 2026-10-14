@@ -50,6 +50,7 @@ mod tools_page;
 mod trash_page;
 mod trash_work;
 mod ui;
+mod wake;
 mod wheel;
 mod worker;
 
@@ -118,6 +119,7 @@ pub(crate) struct App {
     viewport_height: f32,
     scroll_offset: f32,
     scroll_visible_until: Option<Instant>,
+    scroll_wake: wake::Wake,
     pub(crate) operation: Option<Operation>,
     /// The game an install or uninstall request is being handed to Steam for.
     pub(crate) steam_request: Option<String>,
@@ -178,6 +180,7 @@ pub(crate) struct App {
     remove_generation: u64,
     change: Option<removal::Change>,
     toast: Option<removal::Toast>,
+    toast_wake: wake::Wake,
     feature_notice: Option<(String, Instant)>,
     change_generation: u64,
     library_generation: u64,
@@ -262,7 +265,8 @@ pub(crate) enum Message {
     ArtLoaded(ArtKey, bool, Result<image::Handle, String>),
     Scrolled(scrollable::Viewport),
     GridCardLocated(String, u64, grid_motion::CardBounds),
-    ScrollIdle,
+    /// The scrollbar fade deadline, tagged with the wakeup that scheduled it.
+    ScrollIdle(u64),
     Window(window::Event),
     ThemeChanged(iced::theme::Mode),
     PanelTick(u64, Instant),
@@ -318,9 +322,15 @@ pub(crate) enum Message {
     RemoveFocus(iced::event::Status, bool, bool),
     Undo,
     UndoFinished(u64, Result<(), String>),
-    ToastTick(Instant),
+    /// The toast or feature notice deadline, tagged with its wakeup.
+    ToastTick(u64),
+    /// A key came up or a finger went down, by which time any focus move it
+    /// caused has happened.
+    FocusRecheck,
     ToastHover(bool),
     ToastFocus(bool, Instant),
+    /// A focus answer for the toast with this serial.
+    ToastAnswer(u64, bool, Instant),
     Trash(trash_page::Event),
     Downloads(downloads_page::Event),
     Checkup(checkup::Event),
@@ -358,6 +368,7 @@ impl App {
             viewport_height: 750.0,
             scroll_offset: 0.0,
             scroll_visible_until: None,
+            scroll_wake: wake::Wake::default(),
             operation: None,
             steam_request: None,
             panel_error: None,
@@ -412,6 +423,7 @@ impl App {
             remove_generation: 0,
             change: None,
             toast: None,
+            toast_wake: wake::Wake::default(),
             feature_notice: None,
             change_generation: 0,
             library_generation: 0,
@@ -559,11 +571,6 @@ impl App {
     }
 
     fn subscription(&self) -> Subscription<Message> {
-        let idle = if self.scroll_visible_until.is_some() {
-            iced::time::every(Duration::from_millis(250)).map(|_| Message::ScrollIdle)
-        } else {
-            Subscription::none()
-        };
         let panel_motion = if !self.panel_hidden() && self.panel_motion.active() {
             let generation = self.panel_motion.generation();
             window::frames()
@@ -617,15 +624,34 @@ impl App {
             panel_motion,
             grid_motion,
             collapse,
-            idle,
-            if self.toast.is_some() || self.feature_notice.is_some() {
-                iced::time::every(Duration::from_millis(100)).map(Message::ToastTick)
+            // Only a toast has focus to recheck.
+            if self.toast.is_some() {
+                iced::event::listen_with(|event, _, _| focus_input(event))
             } else {
                 Subscription::none()
             },
         ])
     }
     fn update(&mut self, message: Message) -> Task<Message> {
+        let poll_focus = self.toast_focus_may_have_changed(&message);
+        let task = self.update_message(message);
+        self.settle_toast();
+        let focus = if poll_focus {
+            self.poll_toast_focus()
+        } else {
+            Task::none()
+        };
+        // Armed after every update so each deadline change is seen.
+        let wakes = Task::batch([
+            self.scroll_wake
+                .arm(self.scroll_visible_until, Message::ScrollIdle),
+            self.toast_wake
+                .arm(self.next_toast_deadline(), Message::ToastTick),
+        ]);
+        Task::batch([task, focus, wakes])
+    }
+
+    fn update_message(&mut self, message: Message) -> Task<Message> {
         let panel_was_open = self.panel_open;
         if self
             .feature_notice
@@ -708,7 +734,8 @@ impl App {
             | Message::UndoFinished(..)
             | Message::ToastHover(_)
             | Message::ToastTick(_)
-            | Message::ToastFocus(..)) => removal::update(self, message),
+            | Message::ToastFocus(..)
+            | Message::ToastAnswer(..)) => removal::update(self, message),
             Message::SearchChanged(search) => {
                 self.search = search;
                 self.collapse.reset();
@@ -1081,10 +1108,13 @@ impl App {
                     },
                 )
             }
-            Message::ScrollIdle => {
-                if self
-                    .scroll_visible_until
-                    .is_some_and(|until| Instant::now() >= until)
+            // Handled in `update`, which polls the toast's focus for it.
+            Message::FocusRecheck => Task::none(),
+            Message::ScrollIdle(generation) => {
+                if self.scroll_wake.fired(generation)
+                    && self
+                        .scroll_visible_until
+                        .is_some_and(|until| Instant::now() >= until)
                 {
                     self.scroll_visible_until = None;
                 }
@@ -2036,6 +2066,19 @@ pub(crate) fn window_or_press(event: iced::Event) -> Option<Message> {
         | iced::Event::Mouse(iced::mouse::Event::ButtonPressed(_)) => Some(Message::Pressed),
         _ => None,
     }
+}
+
+/// Focus moves by key (Tab, a dialog opening) finish before the key comes up,
+/// unlike at the press, so this is when the toast re-checks its Undo focus.
+/// A touch is the other way focus leaves it, and the widgets have handled the
+/// press by the time a listener sees it.
+fn focus_input(event: iced::Event) -> Option<Message> {
+    matches!(
+        event,
+        iced::Event::Keyboard(keyboard::Event::KeyReleased { .. })
+            | iced::Event::Touch(iced::touch::Event::FingerPressed { .. })
+    )
+    .then_some(Message::FocusRecheck)
 }
 
 pub(crate) fn event_message(event: iced::Event, status: iced::event::Status) -> Option<Message> {
@@ -4476,5 +4519,71 @@ mod tests {
             false,
         );
         assert_eq!(app.selected.as_deref(), Some("amber"));
+    }
+
+    #[test]
+    fn scrollbar_fade_wakes_once_at_its_deadline() {
+        let mut app = app();
+        let until = Instant::now() + Duration::from_millis(850);
+        app.scroll_visible_until = Some(until);
+        let _ = app.update(Message::Hover(None));
+        assert_eq!(app.scroll_wake.due(), Some(until));
+        let stale = app.scroll_wake.generation().wrapping_sub(1);
+
+        // A wakeup from before the deadline moved does nothing.
+        app.scroll_visible_until = Some(Instant::now() - Duration::from_millis(1));
+        let _ = app.update(Message::ScrollIdle(stale));
+        assert!(app.scroll_visible_until.is_some());
+        assert!(app.scroll_wake.due().is_some());
+
+        let live = app.scroll_wake.generation();
+        let _ = app.update(Message::ScrollIdle(live));
+        assert!(app.scroll_visible_until.is_none());
+        assert!(app.scroll_wake.due().is_none());
+    }
+
+    #[test]
+    fn scrollbar_fade_rearms_when_woken_before_a_later_deadline() {
+        let mut app = app();
+        let _ = app.update(Message::Hover(None));
+        app.scroll_visible_until = Some(Instant::now() + Duration::from_millis(100));
+        let _ = app.update(Message::Hover(None));
+        let live = app.scroll_wake.generation();
+        // Scrolling again moved the deadline out while the sleeper waited.
+        let later = Instant::now() + Duration::from_secs(5);
+        app.scroll_visible_until = Some(later);
+        let _ = app.update(Message::ScrollIdle(live));
+        assert_eq!(app.scroll_visible_until, Some(later));
+        assert_eq!(app.scroll_wake.due(), Some(later));
+    }
+
+    #[test]
+    fn a_touch_or_a_key_release_rechecks_toast_focus_but_a_move_does_not() {
+        let finger = iced::touch::Finger(0);
+        let at = iced::Point::ORIGIN;
+        assert!(matches!(
+            focus_input(iced::Event::Touch(iced::touch::Event::FingerPressed {
+                id: finger,
+                position: at
+            })),
+            Some(Message::FocusRecheck)
+        ));
+        assert!(
+            focus_input(iced::Event::Touch(iced::touch::Event::FingerMoved {
+                id: finger,
+                position: at
+            }))
+            .is_none()
+        );
+        assert!(
+            focus_input(iced::Event::Keyboard(keyboard::Event::KeyReleased {
+                key: keyboard::Key::Named(keyboard::key::Named::Tab),
+                modified_key: keyboard::Key::Named(keyboard::key::Named::Tab),
+                physical_key: keyboard::key::Physical::Code(keyboard::key::Code::Tab),
+                location: keyboard::Location::Standard,
+                modifiers: keyboard::Modifiers::empty(),
+            }))
+            .is_some()
+        );
     }
 }
