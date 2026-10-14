@@ -368,6 +368,13 @@ pub fn signal_led_group(leader: &Child, signal: Signal) -> io::Result<()> {
     }
 }
 
+/// Whether a child has exited, leaving it unreaped. A reaped one is an error.
+pub fn leader_exited(leader: &Child) -> io::Result<bool> {
+    let pid = Pid::from_raw(leader.id() as i32).ok_or(Errno::INVAL)?;
+    let options = WaitIdOptions::EXITED | WaitIdOptions::NOHANG | WaitIdOptions::NOWAIT;
+    Ok(waitid(WaitId::Pid(pid), options)?.is_some())
+}
+
 /// Waits for `leader`, an unreaped child leading its own group, stopping the
 /// group as `token` and `escalation` say: `ask` first, then SIGKILL. `on`
 /// hears `None` each time round and each step before it is signaled. Returns
@@ -392,19 +399,20 @@ pub(crate) fn stop_group_probed<E>(
     mut on: impl FnMut(Option<Step>) -> Result<(), E>,
     members: impl Fn(u32) -> Option<bool>,
 ) -> io::Result<Result<bool, E>> {
-    let pid = Pid::from_raw(leader.id() as i32).ok_or(Errno::INVAL)?;
-    let exited = WaitIdOptions::EXITED | WaitIdOptions::NOHANG | WaitIdOptions::NOWAIT;
     loop {
         if let Err(err) = on(None) {
             return Ok(Err(err));
         }
+        // Checked before signaling, so a reaped leader is an error, not a
+        // signal to whatever reused its number.
+        let exited = leader_exited(leader)?;
         if let Some(step) = escalation.follow(token, Instant::now()) {
             if let Err(err) = on(Some(step)) {
                 return Ok(Err(err));
             }
             signal_led_group(leader, if step == Step::Ask { ask } else { Signal::KILL })?;
         }
-        if waitid(WaitId::Pid(pid), exited)?.is_some() {
+        if exited {
             if !escalation.stopping() {
                 return Ok(Ok(false));
             }

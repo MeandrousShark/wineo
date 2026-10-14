@@ -350,16 +350,15 @@ impl Runner {
         };
         let command = quietly(command.arg("-w"));
         command.stdin(Stdio::null()).process_group(0);
-        let mut child = command
+        let child = command
             .spawn()
             .context(|| "failed to run wineserver -w".to_owned())?;
         crate::process::quiet_core_dumps(&child);
         let deadline = Instant::now() + IDLE_NOTE_AFTER;
+        // Left unreaped, so a cancel can still signal its group safely.
         while !token.is_canceled()
-            && child
-                .try_wait()
+            && !crate::process::leader_exited(&child)
                 .context(|| "failed to wait for wineserver -w".to_owned())?
-                .is_none()
         {
             if Instant::now() >= deadline {
                 on_wait();
