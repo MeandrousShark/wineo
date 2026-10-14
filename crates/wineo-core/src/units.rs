@@ -21,6 +21,15 @@ pub fn size(bytes: u64) -> String {
     }
 }
 
+/// Lowercase hex, as checksums and cache keys are written.
+pub fn hex(bytes: impl AsRef<[u8]>) -> String {
+    bytes
+        .as_ref()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

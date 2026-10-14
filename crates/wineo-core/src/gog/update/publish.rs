@@ -29,7 +29,7 @@ use rustix::io::Errno;
 use super::UpdateError;
 use crate::cancel;
 use crate::gog::folder::{Attempted, EntryType, WinningEntry, failpoint};
-use crate::gog::package::{self, lowercase_hex, open_dir_at, remove_at};
+use crate::gog::package::{self, open_dir_at, remove_at};
 
 const BUFFER: usize = 256 * 1024;
 
@@ -541,7 +541,7 @@ impl<'a> Publisher<'a> {
             };
             hasher.update(&buffer[..read]);
         }
-        Ok(Some(lowercase_hex(hasher)))
+        Ok(Some(crate::units::hex(hasher.finalize())))
     }
 
     fn delete(&mut self, dir: &OwnedFd, leaf: &str, path: &str) -> Result<()> {

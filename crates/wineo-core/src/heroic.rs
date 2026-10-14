@@ -866,7 +866,7 @@ impl HeroicSource {
     pub fn cached_image(&self, url: &str) -> PathBuf {
         self.config_dir
             .join("images-cache")
-            .join(hex_digest(Sha256::digest(url.as_bytes())))
+            .join(crate::units::hex(Sha256::digest(url.as_bytes())))
     }
 
     fn config_path(&self) -> PathBuf {
@@ -1218,7 +1218,7 @@ fn read_file_fingerprint(path: PathBuf) -> Result<InputFileFingerprint> {
 fn file_fingerprint(path: PathBuf, bytes: Option<&[u8]>) -> InputFileFingerprint {
     InputFileFingerprint {
         path,
-        digest: bytes.map(|bytes| hex_digest(Sha256::digest(bytes))),
+        digest: bytes.map(|bytes| crate::units::hex(Sha256::digest(bytes))),
         size: bytes.map(|bytes| bytes.len() as u64),
     }
 }
@@ -1232,7 +1232,7 @@ fn combine_fingerprints(files: Vec<InputFileFingerprint>) -> InputFingerprint {
         hasher.update([0]);
     }
     InputFingerprint {
-        digest: hex_digest(hasher.finalize()),
+        digest: crate::units::hex(hasher.finalize()),
         files,
     }
 }
@@ -1543,14 +1543,6 @@ fn missing_file(path: &Path, message: impl Into<String>) -> Error {
         context: format!("{}: {}", path.display(), message.into()),
         source: io::Error::new(io::ErrorKind::NotFound, "Heroic metadata is missing"),
     }
-}
-
-fn hex_digest(digest: impl AsRef<[u8]>) -> String {
-    digest
-        .as_ref()
-        .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect()
 }
 
 /// `managed` drops the variables wineo sets itself for a Windows game.
