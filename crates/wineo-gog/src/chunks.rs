@@ -365,6 +365,9 @@ impl Client {
                 other => other,
             })
         })?;
+        if compressed.len() as u64 != chunk.compressed_size {
+            return Err(fail(ErrorKind::WrongSize));
+        }
         if hex_md5(&compressed) != chunk.compressed_md5 {
             return Err(fail(ErrorKind::WrongChecksum));
         }

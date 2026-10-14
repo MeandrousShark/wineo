@@ -117,6 +117,8 @@ pub struct Client {
     read_timeout: Duration,
     endpoints: Endpoints,
     max_body: u64,
+    /// Galaxy's manifests, packed and unpacked.
+    pub(crate) max_manifest: u64,
     /// For the profile lookup, which builds its own HTTP client.
     settings: HttpSettings,
     profile_deadline: Duration,
@@ -187,6 +189,7 @@ impl Client {
             read_timeout,
             endpoints,
             max_body: MAX_BODY,
+            max_manifest: crate::manifest::MAX_MANIFEST,
             settings,
             profile_deadline: PROFILE_DEADLINE,
         })
@@ -514,7 +517,7 @@ pub(crate) fn read_limited(
 ) -> Result<Vec<u8>, ErrorKind> {
     let mut body = Vec::new();
     response
-        .take(limit + 1)
+        .take(limit.saturating_add(1))
         .read_to_end(&mut body)
         .map_err(|error| read_error(&error))?;
     if body.len() as u64 > limit {

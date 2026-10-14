@@ -6,6 +6,7 @@
 //! item missing what makes it usable fails the whole manifest, since
 //! skipping it would quietly install an incomplete game.
 
+use std::fmt;
 use std::io::Read;
 
 use flate2::read::ZlibDecoder;
@@ -19,6 +20,11 @@ use crate::product::id_text;
 
 /// Well above the largest depot manifest seen, 1.4 MB unpacked.
 pub(crate) const MAX_MANIFEST: u64 = 64 * 1024 * 1024;
+/// Far above any real depot (the largest seen is 14 GB), and low enough that
+/// adding up every size in a manifest can't overflow.
+pub(crate) const MAX_SIZE: u64 = 1 << 50;
+/// Far above the largest chunk seen, 20 MB.
+pub(crate) const MAX_CHUNK: u64 = 1 << 30;
 
 /// What a build installs, from the build list's `link`.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -108,7 +114,9 @@ pub struct DepotFile {
 
 impl DepotFile {
     pub fn size(&self) -> u64 {
-        self.chunks.iter().map(|chunk| chunk.size).sum()
+        self.chunks
+            .iter()
+            .fold(0, |total, chunk| total.saturating_add(chunk.size))
     }
 
     pub fn parts(&self) -> Vec<&str> {
@@ -161,11 +169,22 @@ pub struct Chunk {
     pub compressed_size: u64,
 }
 
-/// Where the current redistributables manifest is.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// Where the current redistributables manifest is. `Debug` hides the URL,
+/// like every other link the client is handed.
+#[derive(Clone, PartialEq, Eq)]
 pub struct DependencyRepository {
     pub build_id: String,
     pub manifest_url: String,
+}
+
+impl fmt::Debug for DependencyRepository {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("DependencyRepository")
+            .field("build_id", &self.build_id)
+            .field("manifest_url", &"<redacted>")
+            .finish()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -268,11 +287,16 @@ impl Client {
             .send()
             .map_err(|error| fail(client::send_error(&error)))?;
         let status = response.status().as_u16();
+        // No login goes to the CDN, so its refusal must not read as one and
+        // get the login renewed.
+        if matches!(status, 401 | 403) {
+            return Err(fail(ErrorKind::Status(status)));
+        }
         if status != 200 {
             return Err(fail(client::status_kind(endpoint, status, None)));
         }
-        let body = client::read_limited(response, MAX_MANIFEST).map_err(fail)?;
-        decode_manifest(&body, MAX_MANIFEST).map_err(fail)
+        let body = client::read_limited(response, self.max_manifest).map_err(fail)?;
+        decode_manifest(&body, self.max_manifest).map_err(fail)
     }
 }
 
@@ -335,8 +359,11 @@ pub(crate) fn parse_repository(json: &Value) -> Option<Repository> {
                 Some(RepositoryProduct {
                     product_id: json::id(product.get("productId")?)?,
                     name: json::text(product, "name"),
-                    temp_executable: json::text(product, "temp_executable"),
-                    temp_arguments: json::text(product, "temp_arguments"),
+                    temp_executable: match optional_text(product, "temp_executable")? {
+                        Some(path) if !safe_path(&path) => return None,
+                        path => path,
+                    },
+                    temp_arguments: optional_text(product, "temp_arguments")?,
                 })
             })
             .collect::<Option<_>>()?,
@@ -429,9 +456,9 @@ fn parse_item(json: &Value) -> Option<DepotItem> {
 fn parse_chunk(json: &Value) -> Option<Chunk> {
     Some(Chunk {
         md5: hex(json.get("md5")?.as_str()?, 32)?,
-        size: size(json, "size")?,
+        size: chunk_size(json, "size")?,
         compressed_md5: hex(json.get("compressedMd5")?.as_str()?, 32)?,
-        compressed_size: size(json, "compressedSize")?,
+        compressed_size: chunk_size(json, "compressedSize")?,
     })
 }
 
@@ -455,18 +482,17 @@ pub(crate) fn parse_dependency_manifest(json: &Value) -> Option<DependencyManife
 fn parse_dependency(json: &Value) -> Option<Dependency> {
     let executable = match json.get("executable") {
         None | Some(Value::Null) => None,
-        Some(executable) => match json::text(executable, "path") {
-            None => None,
-            Some(path) if safe_path(&path) => Some(DependencyExecutable {
-                path,
-                arguments: executable
-                    .get("arguments")
-                    .and_then(Value::as_str)
-                    .unwrap_or_default()
-                    .to_owned(),
-            }),
-            Some(_) => return None,
-        },
+        Some(executable) => {
+            let arguments = optional_text(executable, "arguments")?;
+            match optional_text(executable, "path")? {
+                None => None,
+                Some(path) if safe_path(&path) => Some(DependencyExecutable {
+                    path,
+                    arguments: arguments.unwrap_or_default(),
+                }),
+                Some(_) => return None,
+            }
+        }
     };
     Some(Dependency {
         id: json::text(json, "dependencyId")?,
@@ -483,6 +509,12 @@ fn parse_dependency(json: &Value) -> Option<Dependency> {
     })
 }
 
+/// A chunk is held in memory whole, and GOG cuts files into pieces of
+/// 10 MiB or so, with whole small files up to a few tens of MB.
+fn chunk_size(json: &Value, name: &str) -> Option<u64> {
+    size(json, name).filter(|&size| size <= MAX_CHUNK)
+}
+
 fn strings(value: &Value) -> Option<Vec<String>> {
     value
         .as_array()?
@@ -492,7 +524,18 @@ fn strings(value: &Value) -> Option<Vec<String>> {
 }
 
 fn size(json: &Value, name: &str) -> Option<u64> {
-    json::id(json.get(name)?)
+    json::id(json.get(name)?).filter(|&size| size <= MAX_SIZE)
+}
+
+/// A string field that may be missing, null, or empty, which are all None.
+/// Anything else that isn't a string makes the outer Option None, so a
+/// malformed field fails the manifest.
+fn optional_text(json: &Value, name: &str) -> Option<Option<String>> {
+    match json.get(name) {
+        None | Some(Value::Null) => Some(None),
+        Some(Value::String(text)) => Some((!text.is_empty()).then(|| text.clone())),
+        Some(_) => None,
+    }
 }
 
 /// Lowercase hex of exactly `length` digits.

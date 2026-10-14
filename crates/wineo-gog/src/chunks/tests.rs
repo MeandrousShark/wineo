@@ -444,6 +444,14 @@ fn a_chunk_failing_its_unpacked_checksum_or_size_is_refused() {
             },
             ErrorKind::WrongSize,
         ),
+        // The server sends fewer bytes than the manifest says.
+        (
+            Chunk {
+                compressed_size: good.compressed_size + 1,
+                ..good.clone()
+            },
+            ErrorKind::WrongSize,
+        ),
     ] {
         let error = client.chunk(&links, ACCESS, &chunk).unwrap_err();
         assert_eq!((error.endpoint(), error.kind()), (Endpoint::Chunk, kind));
@@ -565,4 +573,36 @@ fn a_secure_link_for_another_product_or_without_urls_is_malformed() {
             (Endpoint::SecureLink, ErrorKind::Malformed, Class::Malformed)
         );
     }
+}
+
+#[test]
+fn a_stale_refusal_never_discards_a_fresh_link() {
+    let (content, server, files) = serve(ContentSystem::new());
+    let client = server.client();
+    let links = ChunkLinks::new(LinkScope::Product(7));
+    // Two threads hold the first link. One is refused and fetches a new
+    // one; the other's refusal of the old link arrives after that.
+    let (first, _) = links.get(&client, ACCESS).unwrap();
+    links.invalidate(first);
+    let (second, fresh) = links.get(&client, ACCESS).unwrap();
+    assert_ne!(first, second);
+    links.invalidate(first);
+    let (kept, link) = links.get(&client, ACCESS).unwrap();
+    assert_eq!(kept, second);
+    assert!(Arc::ptr_eq(&link, &fresh));
+    assert_eq!(link_requests(&server).len(), 2);
+
+    // Across real threads: every download refused at once drops the
+    // revoked link, but only the first refusal fetches a new one.
+    content.revoke_links(403);
+    std::thread::scope(|scope| {
+        for _ in 0..8 {
+            scope.spawn(|| {
+                for chunk in &files[0].chunks {
+                    client.chunk(&links, ACCESS, chunk).unwrap();
+                }
+            });
+        }
+    });
+    assert_eq!(link_requests(&server).len(), 3);
 }

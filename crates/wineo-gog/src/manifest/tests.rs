@@ -4,7 +4,9 @@ use serde_json::json;
 
 use super::*;
 use crate::error::Class;
-use crate::fake::content::{ContentSystem, FakeBuild, FakeDependency, FakeDepot, FakeFile, zlib};
+use crate::fake::content::{
+    ContentSystem, FakeBuild, FakeDependency, FakeDepot, FakeFile, md5_hex, zlib,
+};
 use crate::fake::{FakeGog, Reply, json as reply, response};
 
 const MD5_A: &str = "0123456789abcdef0123456789abcdef";
@@ -560,4 +562,186 @@ fn a_manifest_answer_that_is_not_a_manifest_is_malformed() {
             Class::Malformed
         )
     );
+}
+
+#[test]
+fn absurd_sizes_fail_the_manifest() {
+    let mut depot = repository_json();
+    depot["depots"][0]["size"] = json!(u64::MAX);
+    assert_eq!(parse_repository(&depot), None);
+    let mut depot = repository_json();
+    depot["depots"][0]["compressedSize"] = json!(MAX_SIZE + 1);
+    assert_eq!(parse_repository(&depot), None);
+    for (name, size) in [
+        ("compressedSize", u64::MAX),
+        ("compressedSize", MAX_CHUNK + 1),
+        ("size", u64::MAX),
+        ("size", MAX_CHUNK + 1),
+    ] {
+        let mut chunk = chunk_json();
+        chunk[name] = json!(size);
+        let item = json!({"path": "a", "chunks": [chunk], "type": "DepotFile"});
+        assert_eq!(
+            parse_depot_manifest(&depot_json(json!([item]))),
+            None,
+            "{name}"
+        );
+    }
+    let mut chunk = chunk_json();
+    chunk["size"] = json!(MAX_CHUNK);
+    let item = json!({"path": "a", "chunks": [chunk], "type": "DepotFile"});
+    assert!(parse_depot_manifest(&depot_json(json!([item]))).is_some());
+    let mut dependency = dependency_manifest_json();
+    dependency["depots"][0]["size"] = json!(u64::MAX);
+    assert_eq!(parse_dependency_manifest(&dependency), None);
+}
+
+#[test]
+fn a_product_s_setup_program_must_be_a_safe_path() {
+    for bad in [
+        json!("..\\setup.exe"),
+        json!("C:\\setup.exe"),
+        json!("/setup.exe"),
+        json!("a\u{0}.exe"),
+        json!(7),
+    ] {
+        let mut json = repository_json();
+        json["products"][1]["temp_executable"] = bad.clone();
+        assert_eq!(parse_repository(&json), None, "{bad}");
+    }
+    let mut json = repository_json();
+    json["products"][1]["temp_arguments"] = json!(["/S"]);
+    assert_eq!(parse_repository(&json), None);
+    let mut json = repository_json();
+    json["products"][1]["temp_executable"] = json!("support\\setup.exe");
+    let repository = parse_repository(&json).unwrap();
+    assert_eq!(
+        repository.products[1].temp_executable.as_deref(),
+        Some("support\\setup.exe")
+    );
+}
+
+#[test]
+fn a_malformed_dependency_executable_fails_the_manifest() {
+    for executable in [
+        json!({"path": 123, "arguments": ""}),
+        json!({"path": "__redist/a.exe", "arguments": 5}),
+        json!({"path": "", "arguments": ["/q"]}),
+    ] {
+        let mut json = dependency_manifest_json();
+        json["depots"][0]["executable"] = executable.clone();
+        assert_eq!(parse_dependency_manifest(&json), None, "{executable}");
+    }
+    for executable in [json!({}), json!({"arguments": "/q"}), json!(null)] {
+        let mut json = dependency_manifest_json();
+        json["depots"][0]["executable"] = executable.clone();
+        let manifest = parse_dependency_manifest(&json).unwrap();
+        assert_eq!(manifest.dependencies[0].executable, None, "{executable}");
+    }
+    let mut json = dependency_manifest_json();
+    json["depots"][0]["executable"] = json!({"path": "__redist/a.exe"});
+    let manifest = parse_dependency_manifest(&json).unwrap();
+    assert_eq!(
+        manifest.dependencies[0]
+            .executable
+            .as_ref()
+            .unwrap()
+            .arguments,
+        ""
+    );
+}
+
+#[test]
+fn odd_but_legal_file_names_are_accepted() {
+    let names = [
+        "My Game\\Game Launcher.exe",
+        "データ\\файл ünïcødé.txt",
+        "a.b.c.d",
+        ".hashdb",
+        "goggame-1207664593.hashdb",
+        "Data\\.hidden\\..config",
+        "trailing..",
+        "with ' quote & (brackets) [1].txt",
+    ];
+    let items: Vec<Value> = names
+        .iter()
+        .map(|path| json!({"path": path, "chunks": [chunk_json()], "type": "DepotFile"}))
+        .collect();
+    let manifest = parse_depot_manifest(&depot_json(json!(items))).unwrap();
+    let paths: Vec<&str> = manifest
+        .items
+        .iter()
+        .map(|item| match item {
+            DepotItem::File(file) => file.path.as_str(),
+            other => panic!("{other:?}"),
+        })
+        .collect();
+    assert_eq!(paths, names);
+}
+
+#[test]
+fn the_dependency_repository_hides_its_url_in_debug() {
+    let repository = DependencyRepository {
+        build_id: "1".to_owned(),
+        manifest_url: "https://cdn.example/secret/path".to_owned(),
+    };
+    let shown = format!("{repository:?} {repository:#?}");
+    assert!(!shown.contains("cdn.example") && !shown.contains("secret"));
+    assert!(shown.contains("build_id"));
+}
+
+#[test]
+fn a_cdn_refusal_is_a_status_never_a_login_problem() {
+    for status in [401, 403] {
+        let server = FakeGog::start(move |_| reply(status, "{}"));
+        let client = server.client();
+        let repository = DependencyRepository {
+            build_id: "1".to_owned(),
+            manifest_url: format!(
+                "{}/content-system/v2/dependencies/meta/ab/cd/x",
+                server.base
+            ),
+        };
+        for error in [
+            client.depot_manifest(MD5_A).unwrap_err(),
+            client.dependency_depot_manifest(MD5_A).unwrap_err(),
+            client
+                .repository(&format!("{}/content-system/v2/meta/ab/cd/x", server.base))
+                .unwrap_err(),
+            client.dependency_manifest(&repository).unwrap_err(),
+        ] {
+            assert_eq!(error.kind(), ErrorKind::Status(status));
+            assert_eq!(error.class(), Class::Other);
+        }
+    }
+}
+
+#[test]
+fn the_manifest_cap_holds_over_http_packed_and_unpacked() {
+    let manifest = |pad: &str| format!("{{\"depot\":{{\"items\":[]}},\"pad\":\"{pad}\"}}");
+    let plain = manifest(&"x".repeat(8000)).into_bytes();
+    let packed = zlib(&plain);
+    // Hex of chained MD5s barely compresses, so packed it's still large.
+    let mut noise = String::new();
+    let mut digest = md5_hex(b"seed");
+    while noise.len() < 8000 {
+        digest = md5_hex(digest.as_bytes());
+        noise.push_str(&digest);
+    }
+    let noisy = zlib(manifest(&noise).as_bytes());
+    let cap = 3000;
+    assert!(noisy.len() as u64 > cap && (packed.len() as u64) < cap);
+    for body in [plain, packed, noisy] {
+        let served = body.clone();
+        let server = FakeGog::start(move |_| Reply::Send(response(200, &[], &served)));
+        let mut client = server.client();
+        client.max_manifest = cap;
+        let error = client.depot_manifest(MD5_A).unwrap_err();
+        assert_eq!(
+            (error.endpoint(), error.kind()),
+            (Endpoint::DepotManifest, ErrorKind::TooLarge)
+        );
+        client.max_manifest = 20_000;
+        assert!(client.depot_manifest(MD5_A).unwrap().items.is_empty());
+    }
 }
