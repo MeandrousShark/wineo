@@ -402,6 +402,23 @@ Shipped in 0.31.1.
   was tried and dropped: the pages' methods take different arguments, so
   it would have added adapters without removing code.
 
+- C6: one stop helper (`process::stop_group`, `Escalation`) replaces the
+  five TERM-wait-KILL-settle loops in the supervisor, exec, winetricks,
+  prefix creation, and hooks, and one `Identity` carries a run's process
+  group, boot, and start time. The loops shrank by about 40% (hooks 53 to
+  18 lines, prefix 52 to 23). The helper sleeps until the program exits or
+  a stop is asked for, wakes only at stop deadlines, and falls back to
+  polling only when it can't open a pidfd. It fixes two places that could
+  signal a reused group number after reaping its leader, kills a group
+  before running any cleanup that might fail, never reports a stop it
+  couldn't confirm as complete, and gives up cleanup after 10 s instead of
+  hanging on a process the kernel won't let die. The supervisor still
+  wakes about once a second during a game.
+- C7c follow-ups: import holds the install lock through registration like
+  clone; clone's final check can be cancelled; portable copies say
+  "portable copy destination appeared during review/publication" instead
+  of a raw rename error.
+
 The maintainer's machine (real GPU, library of 22, after scrolling the
 library), the 0050 acceptance build against main with everything above:
 
@@ -451,3 +468,9 @@ Limits accepted in review:
   login revoked, later games report "not logged in" as before; a login,
   logout, or credentials change made by another process during the batch
   takes effect on the next command.
+- After a failed stop, cleanup waits at most 10 s for a killed group; a
+  process stuck in uninterruptible sleep (a hung disk or network mount) is
+  left to the kernel and the stop is reported as unconfirmed.
+- Exec and hooks still wake every 50 ms and 20 ms while their program runs:
+  exec streams output from a file and hooks read stop requests from a lock
+  file, and neither has anything to block on.
