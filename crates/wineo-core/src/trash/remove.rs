@@ -18,10 +18,10 @@ use crate::runtime::Runtime;
 
 use super::identity::{create_storage, delete_owned, identity, parent, sync};
 use super::manifest::write_manifest;
+use super::markers::{finish_marker, retire_marker, start_marker};
 use super::payload::{make_payload, move_out};
 use super::{
-    Entry, Intent, Kind, Manifest, Payload, Phase, VERSION, entry_dir, failpoint, finish_marker,
-    info, retire_marker, start_marker, stored,
+    Entry, Intent, Kind, Manifest, Payload, Phase, VERSION, entry_dir, failpoint, info, stored,
 };
 
 /// Moves owned data into a unique entry. A failure after publication leaves a

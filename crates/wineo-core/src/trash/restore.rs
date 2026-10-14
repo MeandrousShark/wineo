@@ -15,10 +15,11 @@ use crate::paths::Paths;
 use super::digest::{copy_verified, digest, digest_matches};
 use super::identity::{identity, parent, require, sync};
 use super::manifest::write_manifest;
+use super::markers::{finish_marker, marker_for, retire_marker, start_marker};
 use super::payload::{retained_identity, return_payload, verified_retained, verify_parents};
 use super::{
-    Intent, Kind, MANIFEST, Manifest, Payload, Phase, Step, entry_dir, failpoint, finish_marker,
-    locked, marker_for, resolved, retire_marker, start_marker, stored,
+    Intent, Kind, MANIFEST, Manifest, Payload, Phase, Step, entry_dir, failpoint, locked, resolved,
+    stored,
 };
 
 fn reconcile(paths: &Paths, name: &str) -> Result<()> {

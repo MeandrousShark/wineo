@@ -4,7 +4,8 @@ use std::os::unix::fs::MetadataExt;
 use std::process::Command;
 
 use super::digest::{copy_verified, digest, digest_matches, digest_v1, same_tree};
-use super::identity::{rename_owned, subvolume_property};
+use super::identity::{create_storage, rename_owned, subvolume_property};
+use super::markers::{marker_dir, publish_marker};
 use super::payload::{make_payload, reserve_copy, return_payload};
 use super::restore::{
     finish_entry, keep_changed, restore_locked_with, with_environment_build_locks,
