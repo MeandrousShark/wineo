@@ -341,6 +341,14 @@ Shipped in 0.31.1.
 - `validate::Code` is generated from one table (one line per code), pinned
   by a test of every code's name, level, and area.
 
+- Bulk imports build one HTTP client for the batch instead of one (or two)
+  per game, in the CLI's Steam and Heroic imports and the app's Heroic
+  import. A bulk GOG migration opens the GOG login once for its extras
+  instead of once per game: N token refreshes and N account lookups to 1.
+  `stats` reads the global config and Steam's account files once per
+  overview instead of once per Steam game. `stats`, `list`, and `status`
+  print the same output as before on the maintainer's library.
+
 The maintainer's machine (real GPU, library of 22, after scrolling the
 library), the 0050 acceptance build against main with everything above:
 
@@ -386,3 +394,7 @@ Limits accepted in review:
   library change, shows in action reasons once what is on screen changes
   (a menu, dialog, page, panel, or result opening). Actions are unaffected:
   they check the disk when chosen.
+- A bulk GOG migration reads the login once. If one of its games finds the
+  login revoked, later games report "not logged in" as before; a login,
+  logout, or credentials change made by another process during the batch
+  takes effect on the next command.
