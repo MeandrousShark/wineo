@@ -328,11 +328,14 @@ pub fn preflight(
     paths.check_prefix(&destination)?;
     if !request.adopt {
         reject_overlapping_paths(source, &destination)?;
-        if destination.exists() {
-            bail!(
-                "import destination already exists: {}",
-                destination.display()
-            );
+        // Resolved as the copy will be, so `missing/../existing` or a
+        // symlink is checked and named as the directory it lands in.
+        let target = match &request.destination {
+            Some(destination) => paths::resolve(destination),
+            None => destination.clone(),
+        };
+        if target.exists() {
+            bail!("import destination already exists: {}", target.display());
         }
     }
     if paths
@@ -3227,6 +3230,140 @@ mod tests {
                 0
             );
         }
+    }
+    struct Preflight {
+        _root: tempfile::TempDir,
+        root: PathBuf,
+        paths: Paths,
+        global: GlobalConfig,
+        inspection: Inspection,
+    }
+
+    impl Preflight {
+        fn new() -> Self {
+            let dir = tempfile::tempdir().unwrap();
+            let root = fs::canonicalize(dir.path()).unwrap();
+            let source = root.join("source");
+            prefix(&source, "win64");
+            Self {
+                paths: paths(&root),
+                global: base_global(&root.join("runners"), &root.join("prefixes")),
+                inspection: inspect(&source, None, None).unwrap(),
+                root,
+                _root: dir,
+            }
+        }
+
+        fn request(&self, name: &str, destination: Option<PathBuf>, adopt: bool) -> ImportRequest {
+            ImportRequest {
+                source: self.inspection.source_root.clone(),
+                name: name.to_owned(),
+                runner: "wine-build".to_owned(),
+                destination,
+                adopt,
+                arch: None,
+            }
+        }
+
+        fn check(&self, request: &ImportRequest) -> Result<PathBuf> {
+            preflight(&self.paths, &self.global, request, &self.inspection)
+        }
+
+        fn error(&self, request: &ImportRequest) -> String {
+            self.check(request).unwrap_err().to_string()
+        }
+    }
+
+    #[test]
+    fn preflight_returns_the_destination_as_given() {
+        let f = Preflight::new();
+        let given = f.root.join("missing/../new");
+        assert_eq!(
+            f.check(&f.request("game", Some(given.clone()), false))
+                .unwrap(),
+            given
+        );
+        assert_eq!(
+            f.check(&f.request("game", None, false)).unwrap(),
+            f.root.join("prefixes/game")
+        );
+        assert_eq!(
+            f.check(&f.request("game", None, true)).unwrap(),
+            f.inspection.source_root
+        );
+    }
+
+    #[test]
+    fn preflight_checks_a_destination_where_it_resolves() {
+        let f = Preflight::new();
+        let taken = f.root.join("taken");
+        fs::create_dir(&taken).unwrap();
+        let expected = format!("import destination already exists: {}", taken.display());
+
+        let dotted = f.root.join("missing/../taken");
+        assert!(!dotted.exists());
+        assert_eq!(f.error(&f.request("game", Some(dotted), false)), expected);
+
+        let link = f.root.join("link");
+        symlink(&taken, &link).unwrap();
+        assert_eq!(f.error(&f.request("game", Some(link), false)), expected);
+    }
+
+    #[test]
+    fn preflight_refuses_in_order() {
+        let f = Preflight::new();
+        let source = f.inspection.source_root.clone();
+        let config = f.paths.environment_config("game");
+        fs::create_dir_all(config.parent().unwrap()).unwrap();
+        fs::write(&config, "").unwrap();
+
+        // An invalid name is refused before anything about the paths.
+        let error = f.error(&f.request("bad/name", Some(source.clone()), false));
+        assert_eq!(error, "invalid environment name `bad/name`");
+        // Overlap is refused before the existing destination and environment.
+        let error = f.error(&f.request("game", Some(source.join("inside")), false));
+        assert!(error.contains("overlaps destination"), "{error}");
+        let taken = f.root.join("taken");
+        fs::create_dir(&taken).unwrap();
+        let error = f.error(&f.request("game", Some(taken), false));
+        assert!(
+            error.starts_with("import destination already exists"),
+            "{error}"
+        );
+        let error = f.error(&f.request("game", Some(f.root.join("free")), false));
+        assert_eq!(error, "environment `game` already exists");
+    }
+
+    #[test]
+    fn preflight_refuses_a_dangling_config_symlink_as_an_existing_environment() {
+        let f = Preflight::new();
+        let config = f.paths.environment_config("game");
+        fs::create_dir_all(config.parent().unwrap()).unwrap();
+        symlink(f.root.join("nowhere.toml"), &config).unwrap();
+        assert_eq!(
+            f.error(&f.request("game", None, false)),
+            "environment `game` already exists"
+        );
+    }
+
+    #[test]
+    fn preflight_refuses_a_destination_another_environment_names() {
+        let f = Preflight::new();
+        let other = f.paths.environment_config("other");
+        fs::create_dir_all(other.parent().unwrap()).unwrap();
+        let claimed = f.root.join("claimed");
+        fs::write(
+            &other,
+            format!(
+                "schema_version = 1\nprefix = \"{}\"\nrunner = \"wine\"\narch = \"win64\"\n",
+                claimed.display()
+            ),
+        )
+        .unwrap();
+        let error = f.error(&f.request("game", Some(claimed), false));
+        assert!(error.contains("other"), "{error}");
+        f.check(&f.request("game", Some(f.root.join("free")), false))
+            .unwrap();
     }
 }
 
