@@ -220,6 +220,7 @@ pub(crate) enum Event {
 pub(crate) fn update(app: &mut App, event: Event) -> Task<Message> {
     match event {
         Event::Open(Scope::Global) => {
+            app.refresh_facts();
             if app.section != crate::sidebar::Section::Checkup {
                 return Task::none();
             }
@@ -257,6 +258,7 @@ pub(crate) fn update(app: &mut App, event: Event) -> Task<Message> {
             task
         }
         Event::Open(Scope::Environment(name)) => {
+            app.refresh_facts();
             if app.flow.is_some()
                 || app.removal.is_some()
                 || app.trash_confirm_open()
@@ -366,6 +368,8 @@ pub(crate) fn update(app: &mut App, event: Event) -> Task<Message> {
             checkup_work::apply(app.change_generation, app.paths.clone(), fixes, token)
         }
         Event::ReviewRecovery(scope, fix) => {
+            // The confirmation's Roll back button reads these.
+            app.refresh_facts();
             if app.management_busy()
                 || app.close_prompt
                 || !matches!(fix, Fix::RecoverSnapshot { .. })

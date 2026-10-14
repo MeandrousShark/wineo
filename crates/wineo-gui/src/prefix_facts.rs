@@ -249,6 +249,66 @@ mod tests {
     }
 
     #[test]
+    fn opening_checkup_or_its_recovery_confirmation_refreshes_the_facts() {
+        use crate::checkup::{Event, Scope};
+        use wineo_core::validate::Fix;
+
+        let root = tempfile::tempdir().unwrap();
+        let real = root.path().join("real");
+        let other = root.path().join("other");
+        let link = root.path().join("link");
+        std::fs::create_dir_all(&real).unwrap();
+        std::fs::create_dir_all(&other).unwrap();
+        let mut app = booted(root.path());
+        app.cards = [("a", real), ("b", link.clone())]
+            .into_iter()
+            .map(|(name, prefix)| {
+                let mut card = card(name, State::Inactive, 0);
+                card.prefix = Some(prefix);
+                card
+            })
+            .collect();
+        let recover = Fix::RecoverSnapshot {
+            environment: "b".into(),
+        };
+        let _ = app.update(Message::OpenTool("a".into(), tools_page::Kind::Winetricks));
+        let _ = app.update(Message::Tool(
+            "a".into(),
+            tools_page::Kind::Winetricks,
+            tools_page::Event::OpenWinetricks,
+        ));
+        app.section = crate::sidebar::Section::Checkup;
+        let retarget = |to: &Path| {
+            let _ = std::fs::remove_file(&link);
+            std::os::unix::fs::symlink(to, &link).unwrap();
+        };
+        let busy = |app: &App| app.tool_prefix_busy_with(&app.facts, "b");
+
+        retarget(&root.path().join("real"));
+        app.refresh_facts();
+        assert!(busy(&app));
+
+        // Reopening the global page sees the retarget with no card change.
+        retarget(&other);
+        assert!(busy(&app));
+        let _ = app.update(Message::Checkup(Event::Open(Scope::Global)));
+        assert!(!busy(&app));
+
+        retarget(&root.path().join("real"));
+        let _ = app.update(Message::Checkup(Event::Open(Scope::Environment(
+            "b".into(),
+        ))));
+        assert!(busy(&app));
+
+        retarget(&other);
+        let _ = app.update(Message::Checkup(Event::ReviewRecovery(
+            Scope::Global,
+            recover,
+        )));
+        assert!(!busy(&app));
+    }
+
+    #[test]
     fn a_default_app_has_no_stored_facts() {
         let app = app();
         assert!(!app.facts.restore_pending("anything"));
