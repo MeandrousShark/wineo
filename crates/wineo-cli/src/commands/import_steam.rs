@@ -4,6 +4,7 @@ use std::process::ExitCode;
 
 use wineo_core::cancel::Token;
 use wineo_core::config::GlobalConfig;
+use wineo_core::download::{Https, Lazy};
 use wineo_core::key_store::{Keyring, Saved};
 use wineo_core::paths::Paths;
 use wineo_core::secret_service::SecretServiceKeyring;
@@ -144,6 +145,7 @@ fn single(
                     games,
                     &plan,
                     key.as_ref(),
+                    &Lazy::new(),
                     &cancellation.token,
                 )?;
             }
@@ -308,6 +310,7 @@ fn apply(
     games: OwnedGames<'_>,
     plan: &Plan,
     key: Option<&Key>,
+    https: &Lazy<Https>,
     cancel: &Token,
 ) -> anyhow::Result<ApplyOutcome> {
     let outcome = steam_import::apply(paths, global, games, plan, cancel)?;
@@ -326,7 +329,7 @@ fn apply(
         return Err(Canceled.into());
     }
     if let Some(key) = key {
-        fetch_art(paths, global, plan, key, cancel)?;
+        fetch_art(paths, global, plan, key, https, cancel)?;
     }
     Ok(outcome)
 }
@@ -336,14 +339,14 @@ fn fetch_art(
     global: &GlobalConfig,
     plan: &Plan,
     key: &Key,
+    https: &Lazy<Https>,
     cancel: &Token,
 ) -> anyhow::Result<()> {
     if cancel.is_canceled() {
         return Err(Canceled.into());
     }
     let result = (|| {
-        let transport = wineo_core::download::Https::new()?;
-        let api = wineo_core::steamgriddb::Api::new(&transport, &key.value);
+        let api = wineo_core::steamgriddb::Api::new(https.https()?, &key.value);
         let language = wineo_core::steamgriddb::language(|var| std::env::var_os(var));
         wineo_core::art_fetch::fetch_steam(
             paths,
@@ -447,6 +450,8 @@ fn bulk(paths: &Paths, global: &GlobalConfig, args: &Args) -> anyhow::Result<Exi
             }
         }
         let cancellation = Cancellation::new()?;
+        // One client for every game's art, not one per game.
+        let https = Lazy::new();
         for plan in ready {
             if cancellation.token.is_canceled() {
                 return Err(Canceled.into());
@@ -457,6 +462,7 @@ fn bulk(paths: &Paths, global: &GlobalConfig, args: &Args) -> anyhow::Result<Exi
                 games,
                 &plan,
                 key.as_ref(),
+                &https,
                 &cancellation.token,
             ) {
                 Ok(ApplyOutcome::Imported(_)) => done += 1,
@@ -498,6 +504,13 @@ fn bulk(paths: &Paths, global: &GlobalConfig, args: &Args) -> anyhow::Result<Exi
     })
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Step {
+    Game,
+    Name,
+    Confirm,
+}
+
 fn guided<I: Input, W: Write>(
     paths: &Paths,
     global: &GlobalConfig,
@@ -524,22 +537,22 @@ fn guided<I: Input, W: Write>(
         };
         (label, entry.app_id.clone())
     }));
-    let mut step = 0;
+    let mut step = Step::Game;
     let mut game = String::new();
     let mut name = args.name.clone();
     loop {
-        out.set_first_question(step == 0 && first_question);
+        out.set_first_question(step == Step::Game && first_question);
         match step {
-            0 => match out.choose("Which Steam game?", "Game", &choices, None, true)? {
+            Step::Game => match out.choose("Which Steam game?", "Game", &choices, None, true)? {
                 Reply::Value(value) => {
                     game = value;
                     name = args.name.clone();
-                    step = 1;
+                    step = Step::Name;
                 }
                 Reply::Back if first_question => return Err(Canceled.into()),
                 Reply::Back => return Err(ReturnToSourceMenu.into()),
             },
-            1 => {
+            Step::Name => {
                 let entry = entries.iter().find(|entry| entry.app_id == game).unwrap();
                 let default = wineo_core::heroic_import::default_name(
                     entry.title.as_deref().unwrap_or(""),
@@ -556,12 +569,12 @@ fn guided<I: Input, W: Write>(
                 )? {
                     Reply::Value(value) => {
                         name = Some(value);
-                        step = 2;
+                        step = Step::Confirm;
                     }
-                    Reply::Back => step = 0,
+                    Reply::Back => step = Step::Game,
                 }
             }
-            _ => {
+            Step::Confirm => {
                 let plan = match steam_import::plan(paths, global, games, &game, name.as_deref())? {
                     PlanOutcome::Ready(plan) => plan,
                     PlanOutcome::AlreadyImported(name) => {
@@ -573,7 +586,7 @@ fn guided<I: Input, W: Write>(
                 review(&plan, key.is_some(), out)?;
                 out.say("Press Enter to import it, Esc to go back, Ctrl+C to cancel.")?;
                 match out.confirm("Import it?", true)? {
-                    Reply::Back => step = 1,
+                    Reply::Back => step = Step::Name,
                     Reply::Value(false) => return Err(Canceled.into()),
                     Reply::Value(true) => {
                         let cancellation = Cancellation::new()?;
@@ -583,6 +596,7 @@ fn guided<I: Input, W: Write>(
                             games,
                             &plan,
                             key.as_ref(),
+                            &Lazy::new(),
                             &cancellation.token,
                         )?;
                         return Ok(ExitCode::SUCCESS);

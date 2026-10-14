@@ -292,18 +292,20 @@ pub fn overview_with_options(paths: &Paths, options: OverviewOptions<'_>) -> Res
     let mut tags = BTreeMap::new();
     let mut warnings = Vec::new();
     let mut errors = Vec::new();
+    // One reading of Steam's files for every Steam game in the overview.
+    let steam = SteamPlaytimes::new(paths);
     for name in environment::names(paths)? {
-        let environment_tags = if options.tags.is_some() || options.load_tags {
+        let (environment_tags, loaded) = if options.tags.is_some() || options.load_tags {
             match Environment::load(paths, &name) {
                 Ok(environment) => {
-                    let tags = environment.config.tags;
+                    let tags = &environment.config.tags;
                     if options
                         .tags
                         .is_some_and(|filter| !filter.iter().all(|tag| tags.contains(tag)))
                     {
                         continue;
                     }
-                    Some(tags)
+                    (Some(tags.clone()), Some(environment.config))
                 }
                 Err(err) => {
                     errors.push(OverviewError {
@@ -314,10 +316,12 @@ pub fn overview_with_options(paths: &Paths, options: OverviewOptions<'_>) -> Res
                 }
             }
         } else {
-            None
+            (None, None)
         };
-        match summary(paths, &name, now, &tz) {
-            Ok((summary, warns)) => {
+        // A config the tags already loaded isn't read and parsed again.
+        let config = loaded.or_else(|| lenient_config(paths, &name));
+        match summary_of(paths, &name, config.as_ref(), &steam, now, &tz) {
+            Ok((summary, _, warns)) => {
                 warnings.extend(warns);
                 if let Some(environment_tags) = environment_tags {
                     tags.insert(name.clone(), environment_tags);
@@ -607,18 +611,45 @@ pub fn summary_with_log(
     now: Timestamp,
     tz: &dyn Zone,
 ) -> Result<(Summary, Option<Log>, Vec<String>)> {
+    let config = lenient_config(paths, name);
+    summary_of(
+        paths,
+        name,
+        config.as_ref(),
+        &SteamPlaytimes::new(paths),
+        now,
+        tz,
+    )
+}
+
+/// The environment's config as far as it parses. A config that can't be read
+/// is treated as a Wineo game, whose log is read all the same.
+fn lenient_config(paths: &Paths, name: &str) -> Option<crate::config::EnvironmentConfig> {
     let config_path = paths.environment_config(name);
-    if let Ok(text) = fs::read_to_string(&config_path)
-        && let Ok(config) = crate::config::EnvironmentConfig::parse(&config_path, &text)
-        && let crate::config::Kind::Proxied(proxied) = config.kind
+    #[cfg(test)]
+    crate::read_log::note(&config_path);
+    let text = fs::read_to_string(&config_path).ok()?;
+    crate::config::EnvironmentConfig::parse(&config_path, &text).ok()
+}
+
+/// `summary_with_log` for a config already read, with Steam's files shared
+/// with the other environments of the same overview.
+fn summary_of(
+    paths: &Paths,
+    name: &str,
+    config: Option<&crate::config::EnvironmentConfig>,
+    steam: &SteamPlaytimes<'_>,
+    now: Timestamp,
+    tz: &dyn Zone,
+) -> Result<(Summary, Option<Log>, Vec<String>)> {
+    if let Some(config) = config
+        && let crate::config::Kind::Proxied(proxied) = &config.kind
     {
-        let playtime = match GlobalConfig::load(paths) {
-            Ok(global) => steam::active_for(paths, &global)
-                .map(|install| steam::playtime(&install, &proxied.app_id))
-                .unwrap_or_else(|| steam::Playtime::Unknown("Steam was not found".to_owned())),
-            Err(error) => steam::Playtime::Unknown(format!("global config can't be read: {error}")),
-        };
-        return Ok((summarize_steam(playtime), None, Vec::new()));
+        return Ok((
+            summarize_steam(steam.playtime(&proxied.app_id)),
+            None,
+            Vec::new(),
+        ));
     }
     let log = read(&paths.stats_log(name))?;
     let running = running_session(paths, name)?;
@@ -628,6 +659,39 @@ pub fn summary_with_log(
         Some(log),
         warnings,
     ))
+}
+
+/// Steam's playtime for the games of one overview. The global config, the
+/// install, and the account's `localconfig.vdf` are found and read once, on
+/// the first Steam game that asks, not again for each one.
+struct SteamPlaytimes<'a> {
+    paths: &'a Paths,
+    /// The reason nothing can be read, or the parsed playtime file.
+    playtimes: std::cell::OnceCell<std::result::Result<steam::Playtimes, String>>,
+}
+
+impl<'a> SteamPlaytimes<'a> {
+    fn new(paths: &'a Paths) -> Self {
+        Self {
+            paths,
+            playtimes: std::cell::OnceCell::new(),
+        }
+    }
+
+    fn playtime(&self, app_id: &str) -> steam::Playtime {
+        let playtimes = self
+            .playtimes
+            .get_or_init(|| match GlobalConfig::load(self.paths) {
+                Ok(global) => steam::active_for(self.paths, &global)
+                    .map(|install| steam::Playtimes::load(&install))
+                    .ok_or_else(|| "Steam was not found".to_owned()),
+                Err(error) => Err(format!("global config can't be read: {error}")),
+            });
+        match playtimes {
+            Ok(playtimes) => playtimes.get(app_id),
+            Err(reason) => steam::Playtime::Unknown(reason.clone()),
+        }
+    }
 }
 
 fn summarize_steam(playtime: steam::Playtime) -> Summary {
@@ -1029,6 +1093,93 @@ mod tests {
         assert_eq!(overview.never_played, 1);
         assert_eq!(overview.total_seconds, 18_000);
         assert!(overview.errors.is_empty());
+    }
+
+    /// Steam under `paths`' home, signed in as account 1, with these
+    /// `(app id, minutes)` played.
+    fn steam_played(paths: &Paths, played: &[(&str, u64)]) {
+        let root = paths.home().join(".local/share/Steam");
+        fs::create_dir_all(root.join("config")).unwrap();
+        fs::create_dir_all(root.join("userdata/1/config")).unwrap();
+        fs::write(
+            root.join("config/loginusers.vdf"),
+            "\"users\" { \"76561197960265729\" { \"MostRecent\" \"1\" } }",
+        )
+        .unwrap();
+        let apps: String = played
+            .iter()
+            .map(|(app_id, minutes)| {
+                format!("\"{app_id}\" {{ \"Playtime\" \"{minutes}\" \"LastPlayed\" \"5\" }} ")
+            })
+            .collect();
+        fs::write(
+            root.join("userdata/1/config/localconfig.vdf"),
+            format!(
+                "\"UserLocalConfigStore\" {{ \"Software\" {{ \"Valve\" {{ \"Steam\" {{ \"apps\" {{ {apps} }} }} }} }} }}"
+            ),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn an_overview_reads_each_file_once_however_many_steam_games_it_has() {
+        for options in [
+            OverviewOptions::default(),
+            OverviewOptions {
+                load_tags: true,
+                ..OverviewOptions::default()
+            },
+        ] {
+            let root = tempfile::tempdir().unwrap();
+            let paths = tag_paths(root.path());
+            fs::create_dir_all(paths.environments_dir()).unwrap();
+            for (name, app_id) in [("one", "10"), ("two", "20"), ("three", "30")] {
+                fs::write(
+                    paths.environment_config(name),
+                    format!("kind = 'proxied'\nlauncher = 'steam'\napp_id = '{app_id}'\n"),
+                )
+                .unwrap();
+            }
+            tagged_environment(&paths, "wine", &[]);
+            steam_played(&paths, &[("10", 60), ("20", 120)]);
+
+            crate::read_log::clear();
+            let overview = overview_with_options(&paths, options).unwrap();
+
+            let seconds: Vec<_> = overview
+                .rows
+                .iter()
+                .map(|(name, summary)| (name.as_str(), summary.seconds, summary.source))
+                .collect();
+            assert_eq!(
+                seconds,
+                [
+                    ("one", 3600, Source::Steam),
+                    ("three", 0, Source::Steam),
+                    ("two", 7200, Source::Steam),
+                    ("wine", 0, Source::Wineo),
+                ]
+            );
+            assert_eq!(overview.steam_games, 3);
+            // Steam's files and the global config are read for the whole
+            // overview, and each environment's config once.
+            for (file, reads) in [
+                ("loginusers.vdf", 1),
+                ("localconfig.vdf", 1),
+                ("config.toml", 1),
+                ("one.toml", 1),
+                ("two.toml", 1),
+                ("three.toml", 1),
+                ("wine.toml", 1),
+            ] {
+                assert_eq!(
+                    crate::read_log::count(file),
+                    reads,
+                    "{file} with load_tags {}",
+                    options.load_tags
+                );
+            }
+        }
     }
 
     fn tag_paths(root: &Path) -> Paths {

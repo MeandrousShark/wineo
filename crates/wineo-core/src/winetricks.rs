@@ -1168,7 +1168,9 @@ mod tests {
         let script = bin.join("winetricks");
         write_script(
             &script,
-            "#!/bin/sh\ntouch \"$WINEPREFIX/partial\"\ntrap 'rm -f \"$WINEPREFIX/partial\"; exit 130' INT\nwhile :; do sleep 0.05; done\n",
+            // The trap goes first: cancellation wakes as soon as the marker
+            // exists, before a later trap line would have run.
+            "#!/bin/sh\ntrap 'rm -f \"$WINEPREFIX/partial\"; exit 130' INT\ntouch \"$WINEPREFIX/partial\"\nwhile :; do sleep 0.05; done\n",
         );
         let path = std::env::join_paths(std::iter::once(bin.clone()).chain(std::env::split_paths(
             &std::env::var_os("PATH").unwrap_or_default(),

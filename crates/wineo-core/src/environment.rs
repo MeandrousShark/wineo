@@ -155,6 +155,8 @@ impl Environment {
     fn read(paths: &Paths, name: &str) -> Result<Self> {
         crate::snapshot::check_recovery_marker(paths, name)?;
         let path = paths.environment_config(name);
+        #[cfg(test)]
+        crate::read_log::note(&path);
         let text = match fs::read_to_string(&path) {
             Ok(text) => text,
             Err(err) if err.kind() == io::ErrorKind::NotFound => {

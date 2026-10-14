@@ -141,14 +141,8 @@ pub fn execute_reviewed(
     cancel: &Token,
     mut progress: impl FnMut(ImportProgress),
 ) -> Result<Environment> {
-    let current = inspect(
-        paths,
-        global,
-        &reviewed.source_name,
-        &reviewed.new_name,
-        Some(&reviewed.destination),
-    )?;
-    ensure_same(reviewed, &current)?;
+    // The review is checked once, under the locks. A second full read before
+    // locking would only repeat that check.
     let locks = Locks::new(paths);
     let mut operation = locks.acquire(
         Operation::Create,
@@ -963,5 +957,22 @@ mod tests {
         assert!(error.contains("move it aside and retry clone"), "{error}");
         assert!(destination.join("drive_c/game.exe").is_file());
         assert_eq!(fs::read(&config_path).unwrap(), b"occupied");
+    }
+
+    #[test]
+    fn a_prefix_change_after_review_is_refused_under_the_lock() {
+        let root = tempfile::tempdir().unwrap();
+        let (paths, source, _) = setup(root.path(), false);
+        let global = GlobalConfig::default();
+        let destination = root.path().join("copy");
+        let review = inspect(&paths, &global, "source", "copy", Some(&destination)).unwrap();
+        fs::write(source.join("drive_c/game.exe"), b"edit").unwrap();
+        let error = execute_reviewed(&paths, &global, &review, &Token::new(), |_| {}).unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "the reviewed prefix changed; inspect it again before importing"
+        );
+        assert!(!destination.exists());
+        assert!(!paths.environment_config("copy").exists());
     }
 }

@@ -330,6 +330,30 @@ Shipped in 0.31.1.
   art... 34 of 300") shows in the pinned footer, with Import moved to the
   right of that row (approved). The bar is a reusable `progress` component.
 
+- C5: clone, portable copy, snapshot create, and snapshot restore no longer
+  inspect the whole prefix before taking their locks; the inspection under
+  the lock and the check after copying stay, and nothing is written before
+  the one under the lock. Full-prefix reads per operation: 3 to 2 (restore
+  6 to 4). On a 376 MB, 3,000-file prefix: snapshot create 0.87 s to 0.63 s,
+  restore 2.4 s to 2.0 s, clone 1.6 s to 1.4 s. When a review is stale and
+  a lock also refuses, the lock's error now shows first, as native copies
+  already did.
+- `validate::Code` is generated from one table (one line per code), pinned
+  by a test of every code's name, level, and area.
+
+- Bulk imports build one HTTP client for the batch instead of one (or two)
+  per game, in the CLI's Steam and Heroic imports and the app's Heroic
+  import. A bulk GOG migration opens the GOG login once for its extras
+  instead of once per game: N token refreshes and N account lookups to 1.
+  `stats` reads the global config and Steam's account files once per
+  overview instead of once per Steam game. `stats`, `list`, and `status`
+  print the same output as before on the maintainer's library.
+
+- C12: the CLI's guided Steam import, GOG migration, and prefix import use
+  typed step enums like the new-environment wizard, instead of numbered
+  steps. Prompts, order, and back navigation are unchanged, and new tests
+  walk each flow forward and back.
+
 The maintainer's machine (real GPU, library of 22, after scrolling the
 library), the 0050 acceptance build against main with everything above:
 
@@ -375,3 +399,7 @@ Limits accepted in review:
   library change, shows in action reasons once what is on screen changes
   (a menu, dialog, page, panel, or result opening). Actions are unaffected:
   they check the disk when chosen.
+- A bulk GOG migration reads the login once. If one of its games finds the
+  login revoked, later games report "not logged in" as before; a login,
+  logout, or credentials change made by another process during the batch
+  takes effect on the next command.

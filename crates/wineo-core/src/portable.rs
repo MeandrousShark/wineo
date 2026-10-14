@@ -266,12 +266,10 @@ pub fn execute_reviewed_with(
     mut events: impl FnMut(CopyEvent),
 ) -> Result<Environment> {
     let name = &reviewed.name;
-    ensure_same(
-        reviewed,
-        &inspect_with(from, to, global, name, cancel, |event| {
-            events(CopyEvent::Progress(event))
-        })?,
-    )?;
+    // The review is checked once, under the locks. This cheap check keeps an
+    // interrupted restore of the source reported as one, since the copy lock
+    // would otherwise refuse it first with a busy error.
+    Environment::ensure_exists(from, name)?;
     let source_locks = Locks::new(from);
     // The prefix locks are shared by every root, so they are only taken once.
     let _source = source_locks.acquire(Operation::Copy, name, &[])?;
@@ -1260,5 +1258,45 @@ mod tests {
             assert!(message.contains("move them aside and retry"), "{message}");
             assert!(!f.to.environment_config("game").exists());
         }
+    }
+
+    #[test]
+    fn a_prefix_change_after_review_is_refused_under_the_lock() {
+        let f = Fixture::new(false);
+        let review = inspect(&f.from, &f.to, &f.global, "game").unwrap();
+        // Same size and mtime, so only the content fingerprint can see it.
+        let data = f.prefix.join("drive_c/data");
+        let modified = fs::metadata(&data).unwrap().modified().unwrap();
+        fs::write(&data, "edit").unwrap();
+        fs::File::options()
+            .write(true)
+            .open(&data)
+            .unwrap()
+            .set_modified(modified)
+            .unwrap();
+        let err = execute_reviewed(&f.from, &f.to, &f.global, &review, &Token::new(), |_| {})
+            .unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "the reviewed prefix changed; inspect it again before importing"
+        );
+        f.assert_unpublished();
+    }
+
+    #[test]
+    fn an_interrupted_restore_after_review_is_reported_as_one() {
+        let f = Fixture::new(false);
+        let review = inspect(&f.from, &f.to, &f.global, "game").unwrap();
+        let marker = f.from.restore_marker("game");
+        fs::create_dir_all(marker.parent().unwrap()).unwrap();
+        fs::write(&marker, "{}").unwrap();
+        let err = execute_reviewed(&f.from, &f.to, &f.global, &review, &Token::new(), |_| {})
+            .unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("interrupted snapshot restore; run `wineo snapshot recover game`"),
+            "{err}"
+        );
+        f.assert_unpublished();
     }
 }
