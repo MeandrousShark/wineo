@@ -218,7 +218,8 @@ Follow-up answers (2026-10-13, all recommended):
   import. The `Finished` event timing difference stays.
 
 Calls made for review (2026-10-13 night): the maintainer asked for
-recommended calls to be made and reviewed later. Each is listed here.
+recommended calls to be made and reviewed later. Each is listed here. The
+maintainer approved all of them on 2026-10-14.
 
 - Track B, test hooks: two private functions keep a test-only closure
   parameter (`build_removal::remove_after_check`, trash's
@@ -586,3 +587,63 @@ Limits accepted in review:
 - The new keyring crate doesn't wipe its session encryption key from memory
   when done, as the libdbus one did. The secret itself was never wiped by
   either.
+
+## Acceptance checklist
+
+Nothing should look different except where a step says so. Use a small
+existing environment as SMALL; the steps make a throwaway copy, `accept51`,
+so your real ones are only read. Pick a Steam game as STEAM and any other
+game as GAME.
+
+1. `wineo list`, `status`, `stats`, `validate`, and `trash` look as they
+   did on 0.31.1 and come back noticeably quicker. If any title has
+   accented or CJK characters, its columns line up.
+2. `wineo clone SMALL accept51`, then `wineo snapshot create accept51
+   before`. Change something in it (`wineo exec accept51 winecfg`, flip a
+   setting), `wineo snapshot restore accept51 before`, and the setting is
+   back. `wineo portable copy accept51 --to ~/wineo-0051-portable` copies
+   it, and running the same command again says the destination exists.
+3. Clone a bigger environment and press Ctrl+C partway through: exit 130,
+   and neither `wineo list` nor the prefix folder shows anything left
+   behind.
+4. `wineo exec accept51 winecfg`, then Ctrl+C in the terminal: winecfg
+   closes and the command exits 130. `wineo run GAME`, Ctrl+C: the game
+   closes. `wineo start GAME`, `wineo stop GAME`: it closes and `status`
+   says stopped. Start it again and `wineo stop --force GAME`: it dies at
+   once.
+5. `wineo start STEAM`: Steam launches it and `status` shows it running
+   within about a second of the game appearing. `wineo stop STEAM` stops
+   it.
+6. Keyring (now zbus): `wineo art key`, paste your SteamGridDB key, and
+   `wineo art fetch accept51` finds art. Lock the keyring (Seahorse, or log
+   out and back in), run `wineo art key --remove`, and it asks you to
+   unlock first; save the key again afterwards. `wineo import gog --list
+   --refresh` still uses your saved GOG login.
+7. App, idle: open it, then focus another window for a minute or two (it
+   should sit at about 0% CPU in `top`). Meanwhile run `wineo rm accept51`
+   in a terminal. Focus the app: the library drops `accept51` right away.
+   Bring it back with `wineo restore` (`wineo trash` shows the entry).
+8. App, art: scroll the library fast to the bottom and back; posters come
+   back as you go (a card can show its title alone for a moment). Open a
+   card's panel and close it: the art stays through the fade. Open the Art
+   page for `accept51` and set new art from the terminal (`wineo art set`):
+   the page picks it up.
+9. App, import pages: **Add**, **Import from Steam** and **Import from GOG**.
+   Posters fill in, a "Preparing art..." bar shows in the footer if they
+   take a moment, and reopening a page is near instant. Selection, arrow
+   keys, Ctrl+A, and scrolling work as before. Shrink the window and check
+   both pages in light and dark themes if you use both.
+10. App, prefix import (now stricter): **Add**, **Import prefix**, pick
+    `accept51`'s prefix, choose adopt: the review refuses it, since
+    `accept51` already uses that prefix, in the same words as `wineo import
+    prefix --adopt`. It used to get further and fail later.
+11. App, toasts: remove `accept51` in the app. The toast with **Undo**
+    pauses while hovered and runs out about 10 s after you leave it.
+    Remove it again and press **Undo**: it comes back.
+12. If you use hooks, start something with a hook that prints output: the
+    output shows as before.
+13. Build and install the package (`makepkg -si`): it builds, and
+    `pacman -Qi wineo` lists no `dbus` dependency.
+
+Afterwards: `wineo rm accept51 --delete-prefix`, delete
+`~/wineo-0051-portable`, and prune the test entries from the trash.
