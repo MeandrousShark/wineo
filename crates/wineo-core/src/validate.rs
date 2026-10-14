@@ -109,243 +109,86 @@ impl fmt::Display for Area {
     }
 }
 
-/// Which check found a problem. Fixed, so a script or the GUI can match on it
-/// without parsing messages.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum Code {
-    GlobalConfigInvalid,
-    TemplateInvalid,
-    TemplateUnresolved,
-    EnvironmentConfigInvalid,
-    RunnerMissing,
-    BuildMissing,
-    WinetricksMissing,
-    WinetricksUnavailable,
-    PrefixMissing,
-    PrefixRefused,
-    ExeMissing,
-    CwdMissing,
-    GamemodeMissing,
-    GamescopeMissing,
-    MangohudMissing,
-    WaylandUnsupported,
-    NativeExeInvalid,
-    TargetAmbiguous,
-    LostRun,
-    InstallerUnresolved,
-    RestoreInterrupted,
-    StateDirStray,
-    DesktopEntryStray,
-    DesktopOutdated,
-    DesktopPortable,
-    SteamNotFound,
-    SteamInstallMissing,
-    SteamLibraryUnavailable,
-    SteamDataUnknown,
-    ArtConfigInvalid,
-    ArtFileMissing,
-    ArtTargetUnknown,
-    ArtDuplicates,
-    ArtDirStray,
-    StatsStray,
-    TrashInterrupted,
-    TrashInvalid,
-    GogStateInvalid,
-    GogStateMissing,
-    GogFolderMissing,
-    GogFolderTaken,
-    GogMidUpdate,
-    GogOwnerMissing,
+/// One list generates the enum, `ALL`, and the accessors, so they can't drift apart.
+macro_rules! codes {
+    ($($variant:ident => $text:literal, $level:path, $area:path;)*) => {
+        /// Which check found a problem. Fixed, so a script or the GUI can match on it
+        /// without parsing messages.
+        #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+        #[serde(rename_all = "snake_case")]
+        pub enum Code {
+            $($variant,)*
+        }
+
+        impl Code {
+            pub const ALL: [Code; [$(stringify!($variant)),*].len()] = [$(Code::$variant),*];
+
+            pub fn as_str(self) -> &'static str {
+                match self {
+                    $(Code::$variant => $text,)*
+                }
+            }
+
+            /// Every check has one level, so it is decided here rather than per problem.
+            pub fn level(self) -> Level {
+                match self {
+                    $(Code::$variant => $level,)*
+                }
+            }
+
+            pub fn area(self) -> Area {
+                match self {
+                    $(Code::$variant => $area,)*
+                }
+            }
+        }
+    };
 }
 
-impl Code {
-    pub const ALL: [Code; 43] = [
-        Code::GlobalConfigInvalid,
-        Code::TemplateInvalid,
-        Code::TemplateUnresolved,
-        Code::EnvironmentConfigInvalid,
-        Code::RunnerMissing,
-        Code::BuildMissing,
-        Code::WinetricksMissing,
-        Code::WinetricksUnavailable,
-        Code::PrefixMissing,
-        Code::PrefixRefused,
-        Code::ExeMissing,
-        Code::CwdMissing,
-        Code::GamemodeMissing,
-        Code::GamescopeMissing,
-        Code::MangohudMissing,
-        Code::WaylandUnsupported,
-        Code::NativeExeInvalid,
-        Code::TargetAmbiguous,
-        Code::LostRun,
-        Code::InstallerUnresolved,
-        Code::RestoreInterrupted,
-        Code::StateDirStray,
-        Code::DesktopEntryStray,
-        Code::DesktopOutdated,
-        Code::DesktopPortable,
-        Code::SteamNotFound,
-        Code::SteamInstallMissing,
-        Code::SteamLibraryUnavailable,
-        Code::SteamDataUnknown,
-        Code::ArtConfigInvalid,
-        Code::ArtFileMissing,
-        Code::ArtTargetUnknown,
-        Code::ArtDuplicates,
-        Code::ArtDirStray,
-        Code::StatsStray,
-        Code::TrashInterrupted,
-        Code::TrashInvalid,
-        Code::GogStateInvalid,
-        Code::GogStateMissing,
-        Code::GogFolderMissing,
-        Code::GogFolderTaken,
-        Code::GogMidUpdate,
-        Code::GogOwnerMissing,
-    ];
-
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Code::GlobalConfigInvalid => "global_config_invalid",
-            Code::TemplateInvalid => "template_invalid",
-            Code::TemplateUnresolved => "template_unresolved",
-            Code::EnvironmentConfigInvalid => "environment_config_invalid",
-            Code::RunnerMissing => "runner_missing",
-            Code::BuildMissing => "build_missing",
-            Code::WinetricksMissing => "winetricks_missing",
-            Code::WinetricksUnavailable => "winetricks_unavailable",
-            Code::PrefixMissing => "prefix_missing",
-            Code::PrefixRefused => "prefix_refused",
-            Code::ExeMissing => "exe_missing",
-            Code::CwdMissing => "cwd_missing",
-            Code::GamemodeMissing => "gamemode_missing",
-            Code::GamescopeMissing => "gamescope_missing",
-            Code::MangohudMissing => "mangohud_missing",
-            Code::WaylandUnsupported => "wayland_unsupported",
-            Code::NativeExeInvalid => "native_exe_invalid",
-            Code::TargetAmbiguous => "target_ambiguous",
-            Code::LostRun => "lost_run",
-            Code::InstallerUnresolved => "installer_unresolved",
-            Code::RestoreInterrupted => "restore_interrupted",
-            Code::StateDirStray => "state_dir_stray",
-            Code::DesktopEntryStray => "desktop_entry_stray",
-            Code::DesktopOutdated => "desktop_outdated",
-            Code::DesktopPortable => "desktop_portable",
-            Code::SteamNotFound => "steam_not_found",
-            Code::SteamInstallMissing => "steam_install_missing",
-            Code::SteamLibraryUnavailable => "steam_library_unavailable",
-            Code::SteamDataUnknown => "steam_data_unknown",
-            Code::ArtConfigInvalid => "art_config_invalid",
-            Code::ArtFileMissing => "art_file_missing",
-            Code::ArtTargetUnknown => "art_target_unknown",
-            Code::ArtDuplicates => "art_duplicates",
-            Code::ArtDirStray => "art_dir_stray",
-            Code::StatsStray => "stats_stray",
-            Code::TrashInterrupted => "trash_interrupted",
-            Code::TrashInvalid => "trash_invalid",
-            Code::GogStateInvalid => "gog_state_invalid",
-            Code::GogStateMissing => "gog_state_missing",
-            Code::GogFolderMissing => "gog_folder_missing",
-            Code::GogFolderTaken => "gog_folder_taken",
-            Code::GogMidUpdate => "gog_mid_update",
-            Code::GogOwnerMissing => "gog_owner_missing",
-        }
-    }
-
-    /// Every check has one level, so it is decided here rather than per problem.
-    pub fn level(self) -> Level {
-        match self {
-            Code::GlobalConfigInvalid
-            | Code::TemplateInvalid
-            | Code::EnvironmentConfigInvalid
-            | Code::RunnerMissing
-            | Code::BuildMissing
-            | Code::WinetricksUnavailable
-            | Code::PrefixRefused
-            | Code::ExeMissing
-            | Code::CwdMissing
-            | Code::GamemodeMissing
-            | Code::GamescopeMissing
-            | Code::MangohudMissing
-            | Code::WaylandUnsupported
-            | Code::NativeExeInvalid
-            | Code::SteamNotFound
-            | Code::SteamInstallMissing
-            | Code::SteamDataUnknown
-            | Code::RestoreInterrupted
-            | Code::ArtConfigInvalid => Level::Error,
-            Code::TrashInterrupted | Code::TrashInvalid => Level::Error,
-            Code::GogStateInvalid
-            | Code::GogStateMissing
-            | Code::GogFolderTaken
-            | Code::GogMidUpdate => Level::Error,
-            Code::GogFolderMissing | Code::GogOwnerMissing => Level::Warning,
-            Code::TemplateUnresolved
-            | Code::PrefixMissing
-            | Code::WinetricksMissing
-            | Code::TargetAmbiguous
-            | Code::LostRun
-            | Code::InstallerUnresolved
-            | Code::StateDirStray
-            | Code::DesktopEntryStray
-            | Code::DesktopOutdated
-            | Code::DesktopPortable
-            | Code::ArtFileMissing
-            | Code::ArtTargetUnknown
-            | Code::ArtDuplicates
-            | Code::ArtDirStray
-            | Code::StatsStray
-            | Code::SteamLibraryUnavailable => Level::Warning,
-        }
-    }
-
-    pub fn area(self) -> Area {
-        match self {
-            Code::GlobalConfigInvalid => Area::GlobalConfig,
-            Code::TemplateInvalid | Code::TemplateUnresolved => Area::Template,
-            Code::EnvironmentConfigInvalid => Area::EnvironmentConfig,
-            Code::RunnerMissing
-            | Code::BuildMissing
-            | Code::WinetricksMissing
-            | Code::WinetricksUnavailable
-            | Code::PrefixMissing
-            | Code::PrefixRefused => Area::Wine,
-            Code::ExeMissing
-            | Code::CwdMissing
-            | Code::GamemodeMissing
-            | Code::GamescopeMissing
-            | Code::MangohudMissing
-            | Code::WaylandUnsupported => Area::Target,
-            Code::NativeExeInvalid => Area::NativeTarget,
-            Code::TargetAmbiguous => Area::Environment,
-            Code::LostRun
-            | Code::InstallerUnresolved
-            | Code::RestoreInterrupted
-            | Code::StateDirStray
-            | Code::StatsStray => Area::Runtime,
-            Code::DesktopEntryStray | Code::DesktopOutdated | Code::DesktopPortable => {
-                Area::Desktop
-            }
-            Code::SteamNotFound
-            | Code::SteamInstallMissing
-            | Code::SteamLibraryUnavailable
-            | Code::SteamDataUnknown => Area::Steam,
-            Code::ArtConfigInvalid
-            | Code::ArtFileMissing
-            | Code::ArtTargetUnknown
-            | Code::ArtDuplicates
-            | Code::ArtDirStray => Area::Art,
-            Code::TrashInterrupted | Code::TrashInvalid => Area::Trash,
-            Code::GogStateInvalid
-            | Code::GogStateMissing
-            | Code::GogFolderMissing
-            | Code::GogFolderTaken
-            | Code::GogMidUpdate
-            | Code::GogOwnerMissing => Area::Gog,
-        }
-    }
+codes! {
+    GlobalConfigInvalid => "global_config_invalid", Level::Error, Area::GlobalConfig;
+    TemplateInvalid => "template_invalid", Level::Error, Area::Template;
+    TemplateUnresolved => "template_unresolved", Level::Warning, Area::Template;
+    EnvironmentConfigInvalid => "environment_config_invalid", Level::Error, Area::EnvironmentConfig;
+    RunnerMissing => "runner_missing", Level::Error, Area::Wine;
+    BuildMissing => "build_missing", Level::Error, Area::Wine;
+    WinetricksMissing => "winetricks_missing", Level::Warning, Area::Wine;
+    WinetricksUnavailable => "winetricks_unavailable", Level::Error, Area::Wine;
+    PrefixMissing => "prefix_missing", Level::Warning, Area::Wine;
+    PrefixRefused => "prefix_refused", Level::Error, Area::Wine;
+    ExeMissing => "exe_missing", Level::Error, Area::Target;
+    CwdMissing => "cwd_missing", Level::Error, Area::Target;
+    GamemodeMissing => "gamemode_missing", Level::Error, Area::Target;
+    GamescopeMissing => "gamescope_missing", Level::Error, Area::Target;
+    MangohudMissing => "mangohud_missing", Level::Error, Area::Target;
+    WaylandUnsupported => "wayland_unsupported", Level::Error, Area::Target;
+    NativeExeInvalid => "native_exe_invalid", Level::Error, Area::NativeTarget;
+    TargetAmbiguous => "target_ambiguous", Level::Warning, Area::Environment;
+    LostRun => "lost_run", Level::Warning, Area::Runtime;
+    InstallerUnresolved => "installer_unresolved", Level::Warning, Area::Runtime;
+    RestoreInterrupted => "restore_interrupted", Level::Error, Area::Runtime;
+    StateDirStray => "state_dir_stray", Level::Warning, Area::Runtime;
+    DesktopEntryStray => "desktop_entry_stray", Level::Warning, Area::Desktop;
+    DesktopOutdated => "desktop_outdated", Level::Warning, Area::Desktop;
+    DesktopPortable => "desktop_portable", Level::Warning, Area::Desktop;
+    SteamNotFound => "steam_not_found", Level::Error, Area::Steam;
+    SteamInstallMissing => "steam_install_missing", Level::Error, Area::Steam;
+    SteamLibraryUnavailable => "steam_library_unavailable", Level::Warning, Area::Steam;
+    SteamDataUnknown => "steam_data_unknown", Level::Error, Area::Steam;
+    ArtConfigInvalid => "art_config_invalid", Level::Error, Area::Art;
+    ArtFileMissing => "art_file_missing", Level::Warning, Area::Art;
+    ArtTargetUnknown => "art_target_unknown", Level::Warning, Area::Art;
+    ArtDuplicates => "art_duplicates", Level::Warning, Area::Art;
+    ArtDirStray => "art_dir_stray", Level::Warning, Area::Art;
+    StatsStray => "stats_stray", Level::Warning, Area::Runtime;
+    TrashInterrupted => "trash_interrupted", Level::Error, Area::Trash;
+    TrashInvalid => "trash_invalid", Level::Error, Area::Trash;
+    GogStateInvalid => "gog_state_invalid", Level::Error, Area::Gog;
+    GogStateMissing => "gog_state_missing", Level::Error, Area::Gog;
+    GogFolderMissing => "gog_folder_missing", Level::Warning, Area::Gog;
+    GogFolderTaken => "gog_folder_taken", Level::Error, Area::Gog;
+    GogMidUpdate => "gog_mid_update", Level::Error, Area::Gog;
+    GogOwnerMissing => "gog_owner_missing", Level::Warning, Area::Gog;
 }
 
 impl fmt::Display for Code {
