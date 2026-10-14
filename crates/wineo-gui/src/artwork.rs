@@ -26,6 +26,9 @@ pub struct Spec {
     name: &'static str,
     max_size: (u32, u32),
     contain: bool,
+    // Tiles are decoded in bulk on a first open, where a cheaper filter
+    // matters more than the last bit of sharpness at this size.
+    filter: image::imageops::FilterType,
 }
 
 impl From<Kind> for Spec {
@@ -42,6 +45,7 @@ impl From<Kind> for Spec {
             name,
             max_size,
             contain,
+            filter: image::imageops::FilterType::Lanczos3,
         }
     }
 }
@@ -55,6 +59,7 @@ pub const TILE: Spec = Spec {
         crate::flow::artwork::POSTER_HEIGHT,
     ),
     contain: true,
+    filter: image::imageops::FilterType::Triangle,
 };
 
 type Pixels = (u32, u32, Vec<u8>);
@@ -287,6 +292,7 @@ fn reader(path: &Path) -> Result<ImageReader<io::BufReader<fs::File>>> {
 }
 
 fn decode_raster(path: &Path, spec: impl Into<Spec>) -> Result<Pixels> {
+    let spec = spec.into();
     let image = reader(path)
         .and_then(|reader| reader.decode().map_err(Into::into))
         .with_context(|| format!("failed to decode {}", path.display()))?;
@@ -295,11 +301,7 @@ fn decode_raster(path: &Path, spec: impl Into<Spec>) -> Result<Pixels> {
     let image = if (target_width, target_height) == (width, height) {
         image
     } else {
-        image.resize_exact(
-            target_width,
-            target_height,
-            image::imageops::FilterType::Lanczos3,
-        )
+        image.resize_exact(target_width, target_height, spec.filter)
     }
     .into_rgba8();
     Ok((target_width, target_height, image.into_raw()))
