@@ -200,15 +200,14 @@ pub enum End {
 /// Once a second. Debug builds let tests shorten it with
 /// `WINEO_TEST_STEAM_FOLLOW_INTERVAL_MS`.
 fn poll_interval() -> Duration {
-    const DEFAULT: Duration = Duration::from_secs(1);
-    if cfg!(debug_assertions) {
-        std::env::var("WINEO_TEST_STEAM_FOLLOW_INTERVAL_MS")
-            .ok()
-            .and_then(|value| value.parse().ok())
-            .map_or(DEFAULT, Duration::from_millis)
-    } else {
-        DEFAULT
+    #[cfg(debug_assertions)]
+    if let Some(millis) = std::env::var("WINEO_TEST_STEAM_FOLLOW_INTERVAL_MS")
+        .ok()
+        .and_then(|value| value.parse().ok())
+    {
+        return Duration::from_millis(millis);
     }
+    Duration::from_secs(1)
 }
 
 /// Follows one game's install or uninstall through its manifest. It takes no
