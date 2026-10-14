@@ -330,6 +330,17 @@ Shipped in 0.31.1.
   art... 34 of 300") shows in the pinned footer, with Import moved to the
   right of that row (approved). The bar is a reusable `progress` component.
 
+- C5: clone, portable copy, snapshot create, and snapshot restore no longer
+  inspect the whole prefix before taking their locks; the inspection under
+  the lock and the check after copying stay, and nothing is written before
+  the one under the lock. Full-prefix reads per operation: 3 to 2 (restore
+  6 to 4). On a 376 MB, 3,000-file prefix: snapshot create 0.87 s to 0.63 s,
+  restore 2.4 s to 2.0 s, clone 1.6 s to 1.4 s. When a review is stale and
+  a lock also refuses, the lock's error now shows first, as native copies
+  already did.
+- `validate::Code` is generated from one table (one line per code), pinned
+  by a test of every code's name, level, and area.
+
 The maintainer's machine (real GPU, library of 22, after scrolling the
 library), the 0050 acceptance build against main with everything above:
 
