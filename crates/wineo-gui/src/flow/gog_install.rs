@@ -38,6 +38,7 @@ use super::gog_update::{LOGGED_OUT, Reporter, setup_window_buttons, setup_window
 use super::heroic::{self, Prerequisite};
 use crate::runner_label::Choice;
 use crate::size::format_bytes;
+use crate::task;
 use crate::theme::Palette;
 use crate::ui::{
     PickListStyle, accent_base, list_group, list_row, list_row_text, secondary_button,
@@ -373,16 +374,12 @@ impl Install {
         // GOG's answers can't be interrupted, so the token only drops a plan
         // that arrives after Back.
         let token = Token::new();
-        Task::perform(
-            async move {
-                tokio::task::spawn_blocking(move || {
-                    let client =
-                        wineo_core::gog::client_from_env().map_err(|error| error.to_string())?;
-                    prepare_with(&paths, &keyring(), client, &offer, &choices, wizard, &token)
-                        .map(Box::new)
-                })
-                .await
-                .map_err(|error| error.to_string())?
+        task::blocking(
+            move || {
+                let client =
+                    wineo_core::gog::client_from_env().map_err(|error| error.to_string())?;
+                prepare_with(&paths, &keyring(), client, &offer, &choices, wizard, &token)
+                    .map(Box::new)
             },
             move |result| Event::Prepared(generation, result),
         )
@@ -413,8 +410,8 @@ impl Install {
         let paths = self.paths.clone();
         let (sender, receiver) = unbounded();
         let work = Task::perform(
-            async move {
-                tokio::task::spawn_blocking(move || {
+            task::join(
+                move || {
                     let client = wineo_core::gog::client_from_env()
                         .map_err(|error| Failure::new(error.to_string()))?;
                     install_with(
@@ -430,10 +427,9 @@ impl Install {
                         import_extras,
                     )
                     .map(Box::new)
-                })
-                .await
-                .map_err(|error| Failure::new(error.to_string()))?
-            },
+                },
+                |error| Failure::new(error.to_string()),
+            ),
             move |result| Event::Finished(generation, result),
         );
         Task::batch([Task::run(receiver, |event| event), work])
@@ -448,15 +444,11 @@ impl Install {
         let generation = self.next_generation();
         let paths = self.paths.clone();
         let (sender, receiver) = unbounded();
-        let work = Task::perform(
-            async move {
-                tokio::task::spawn_blocking(move || {
-                    heroic::install_prerequisite(&paths, operation, &token, &|line| {
-                        let _ = sender.unbounded_send(Event::Progress(generation, line));
-                    })
+        let work = task::blocking(
+            move || {
+                heroic::install_prerequisite(&paths, operation, &token, &|line| {
+                    let _ = sender.unbounded_send(Event::Progress(generation, line));
                 })
-                .await
-                .map_err(|error| error.to_string())?
             },
             move |result| Event::PrerequisiteFinished(generation, result),
         );
@@ -486,12 +478,8 @@ impl Install {
         self.error = None;
         self.status = "Adding the program...".to_owned();
         let generation = self.next_generation();
-        Task::perform(
-            async move {
-                tokio::task::spawn_blocking(move || add_program(&paths, &name, &title, &exe))
-                    .await
-                    .map_err(|error| error.to_string())?
-            },
+        task::blocking(
+            move || add_program(&paths, &name, &title, &exe),
             move |result| Event::TargetAdded(generation, result),
         )
     }

@@ -217,6 +217,11 @@ Follow-up answers (2026-10-13, all recommended):
   import's; portable copies give the same "appeared" messages as clone and
   import. The `Finished` event timing difference stays.
 
+Calls made for review (2026-10-13 night): the maintainer asked for
+recommended calls to be made and reviewed later. Each is listed here.
+
+- (none yet)
+
 ## Possible bugs (fix as patches if confirmed)
 
 - The Art page re-reads and re-decodes every preview every 2 s, flashing
@@ -419,6 +424,19 @@ Shipped in 0.31.1.
   "portable copy destination appeared during review/publication" instead
   of a raw rename error.
 
+- C9: the keyring goes through the zbus-based `secret-service` crate on a
+  current-thread runtime made per call, so the app has one D-Bus stack and
+  the build no longer needs libdbus. Same items, attributes, unlock prompts,
+  2 s method timeout, and error texts; keys saved by either version read in
+  the other. Threads match libdbus (CLI 1, app 55 after opening Settings);
+  `wineo` grows from 15.0 to 16.9 MB.
+
+- Track B, app: one `task` module replaces about 70 hand-written
+  `spawn_blocking` wrappers (the rest hold permits, check cancel tokens, or
+  fall back to a default on purpose); the last identity `map_err` joins
+  are gone; the app's byte-size formatter is core's; one library reload
+  guard instead of four copies. Net -258 lines.
+
 The maintainer's machine (real GPU, library of 22, after scrolling the
 library), the 0050 acceptance build against main with everything above:
 
@@ -474,3 +492,6 @@ Limits accepted in review:
 - Exec and hooks still wake every 50 ms and 20 ms while their program runs:
   exec streams output from a file and hooks read stop requests from a lock
   file, and neither has anything to block on.
+- The new keyring crate doesn't wipe its session encryption key from memory
+  when done, as the libdbus one did. The secret itself was never wiped by
+  either.

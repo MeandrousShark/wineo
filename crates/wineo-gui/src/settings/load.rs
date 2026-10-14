@@ -26,6 +26,7 @@ use super::form::{Edits, Inherited, Values};
 use super::global;
 use crate::Message;
 use crate::panel::PanelError;
+use crate::task;
 
 /// A runner the page offers. `proton` is `None` when it doesn't resolve, so
 /// the kind can't be checked until save.
@@ -525,27 +526,13 @@ pub(crate) fn save_global(paths: &Paths, edits: &Edits) -> Result<Report, String
         .map_err(|error| PanelError::from_error(&error).text)
 }
 
-fn blocking<T: Send + 'static>(
-    work: impl FnOnce() -> T + Send + 'static,
-    done: impl FnOnce(Result<T, String>) -> Message + Send + 'static,
-) -> Task<Message> {
-    Task::perform(
-        async move {
-            tokio::task::spawn_blocking(work)
-                .await
-                .map_err(|error| error.to_string())
-        },
-        done,
-    )
-}
-
 pub(crate) fn load_task(
     paths: Paths,
     name: String,
     global: bool,
     generation: u64,
 ) -> Task<Message> {
-    blocking(
+    task::blocking_value(
         move || {
             if global {
                 snapshot_global(&paths)
@@ -572,7 +559,7 @@ pub(crate) fn check_task(
     generation: u64,
     sequence: u64,
 ) -> Task<Message> {
-    blocking(
+    task::blocking_value(
         move || {
             if global {
                 Texts::read_global(&paths)
@@ -597,7 +584,7 @@ pub(crate) fn save_task(
     edits: Edits,
     generation: u64,
 ) -> Task<Message> {
-    blocking(
+    task::blocking_value(
         move || {
             if global {
                 save_global(&paths, &edits)
@@ -610,7 +597,7 @@ pub(crate) fn save_task(
 }
 
 pub(crate) fn open_task(path: PathBuf) -> Task<Message> {
-    blocking(
+    task::blocking_value(
         move || {
             // Waited on here, so the child is reaped rather than left a zombie.
             std::process::Command::new("xdg-open")
@@ -635,7 +622,7 @@ pub(crate) fn scan_task(
     generation: u64,
     sequence: u64,
 ) -> Task<Message> {
-    blocking(
+    task::blocking_value(
         move || scan(&paths, &name),
         move |result| {
             Message::Settings(Event::Scanned(
@@ -654,7 +641,7 @@ pub(crate) fn resolve_task(
     generation: u64,
     sequence: u64,
 ) -> Task<Message> {
-    blocking(
+    task::blocking_value(
         move || resolve_exe(&paths, &name, &typed),
         move |result| {
             Message::Settings(Event::Resolved(

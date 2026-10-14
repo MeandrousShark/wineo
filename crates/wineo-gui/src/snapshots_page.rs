@@ -15,6 +15,7 @@ use wineo_core::snapshot::{
 };
 
 use crate::logview::{self, LogView};
+use crate::task;
 use crate::theme::Palette;
 use crate::ui::{
     PickListStyle, ScrollStyle, accent_button, page_title, secondary_button, section,
@@ -446,12 +447,8 @@ impl Page {
         let generation = self.generation;
         self.loading = true;
         let paths = self.paths.clone();
-        Task::perform(
-            async move {
-                tokio::task::spawn_blocking(move || read_choices(&paths))
-                    .await
-                    .unwrap_or_else(|error| Err(error.to_string()))
-            },
+        task::blocking(
+            move || read_choices(&paths),
             move |result| Event::EnvironmentsLoaded(generation, result),
         )
     }
@@ -466,12 +463,8 @@ impl Page {
         let generation = self.generation;
         self.loading = true;
         let paths = self.paths.clone();
-        Task::perform(
-            async move {
-                tokio::task::spawn_blocking(move || read_selected(&paths, &name))
-                    .await
-                    .unwrap_or_else(|error| Err(error.to_string()))
-            },
+        task::blocking(
+            move || read_selected(&paths, &name),
             move |result| Event::Loaded(generation, result),
         )
     }
@@ -553,29 +546,25 @@ impl Page {
         let (generation, token) = self.begin_work("Waiting for the prefix, then checking...", true);
         let paths = self.paths.clone();
         let (sender, receiver) = unbounded();
-        let work = Task::perform(
-            async move {
-                tokio::task::spawn_blocking(move || -> Result<Review, String> {
-                    let global = GlobalConfig::load(&paths).map_err(|error| error.to_string())?;
-                    wait_idle(&paths, &global, &name, &token).map_err(|error| error.to_string())?;
-                    let review = snapshot::inspect_create_with(
-                        &paths,
-                        &global,
-                        &name,
-                        &label,
-                        &token,
-                        |progress| {
-                            let _ = sender.unbounded_send(Event::Progress(
-                                generation,
-                                progress_status(&progress),
-                            ));
-                        },
-                    )
-                    .map_err(|error| error.to_string())?;
-                    Ok(Review::Create(review))
-                })
-                .await
-                .unwrap_or_else(|error| Err(error.to_string()))
+        let work = task::blocking(
+            move || -> Result<Review, String> {
+                let global = GlobalConfig::load(&paths).map_err(|error| error.to_string())?;
+                wait_idle(&paths, &global, &name, &token).map_err(|error| error.to_string())?;
+                let review = snapshot::inspect_create_with(
+                    &paths,
+                    &global,
+                    &name,
+                    &label,
+                    &token,
+                    |progress| {
+                        let _ = sender.unbounded_send(Event::Progress(
+                            generation,
+                            progress_status(&progress),
+                        ));
+                    },
+                )
+                .map_err(|error| error.to_string())?;
+                Ok(Review::Create(review))
             },
             move |result| Event::Reviewed(generation, result),
         );
@@ -590,29 +579,25 @@ impl Page {
         let (generation, token) = self.begin_work("Waiting for the prefix, then checking...", true);
         let paths = self.paths.clone();
         let (sender, receiver) = unbounded();
-        let work = Task::perform(
-            async move {
-                tokio::task::spawn_blocking(move || -> Result<Review, String> {
-                    let global = GlobalConfig::load(&paths).map_err(|error| error.to_string())?;
-                    wait_idle(&paths, &global, &name, &token).map_err(|error| error.to_string())?;
-                    let review = snapshot::inspect_restore_with(
-                        &paths,
-                        &global,
-                        &name,
-                        &label,
-                        &token,
-                        |progress| {
-                            let _ = sender.unbounded_send(Event::Progress(
-                                generation,
-                                progress_status(&progress),
-                            ));
-                        },
-                    )
-                    .map_err(|error| error.to_string())?;
-                    Ok(Review::Restore(review))
-                })
-                .await
-                .unwrap_or_else(|error| Err(error.to_string()))
+        let work = task::blocking(
+            move || -> Result<Review, String> {
+                let global = GlobalConfig::load(&paths).map_err(|error| error.to_string())?;
+                wait_idle(&paths, &global, &name, &token).map_err(|error| error.to_string())?;
+                let review = snapshot::inspect_restore_with(
+                    &paths,
+                    &global,
+                    &name,
+                    &label,
+                    &token,
+                    |progress| {
+                        let _ = sender.unbounded_send(Event::Progress(
+                            generation,
+                            progress_status(&progress),
+                        ));
+                    },
+                )
+                .map_err(|error| error.to_string())?;
+                Ok(Review::Restore(review))
             },
             move |result| Event::Reviewed(generation, result),
         );
@@ -635,54 +620,38 @@ impl Page {
         let (generation, token) = self.begin_work(status, cancellable);
         let paths = self.paths.clone();
         let (sender, receiver) = unbounded();
-        let work = Task::perform(
-            async move {
-                tokio::task::spawn_blocking(move || -> Result<Outcome, String> {
-                    let result = match review {
-                        Review::Create(review) => {
-                            let global =
-                                GlobalConfig::load(&paths).map_err(|error| error.to_string())?;
-                            snapshot::create_reviewed_with(
-                                &paths,
-                                &global,
-                                &review,
-                                &token,
-                                |event| {
-                                    let _ = sender.unbounded_send(event_message(generation, event));
-                                },
-                            )
-                            .map(|info| Outcome::Created(info.label))
-                            .map_err(|error| error.to_string())
-                        }
-                        Review::Restore(review) => {
-                            let global =
-                                GlobalConfig::load(&paths).map_err(|error| error.to_string())?;
-                            snapshot::restore_reviewed_with(
-                                &paths,
-                                &global,
-                                &review,
-                                &token,
-                                |event| {
-                                    let _ = sender.unbounded_send(event_message(generation, event));
-                                },
-                            )
-                            .map(|outcome| Outcome::Restored {
-                                label: review.label,
-                                retained_old_prefix: outcome.retained_old_prefix,
-                            })
-                            .map_err(|error| error.to_string())
-                        }
-                        Review::Delete(label) => snapshot::delete(&paths, &name, &label)
-                            .map(|()| Outcome::Deleted(label))
-                            .map_err(|error| error.to_string()),
-                        Review::Recover => snapshot::recover(&paths, &name)
-                            .map(|()| Outcome::Recovered)
-                            .map_err(|error| error.to_string()),
-                    };
-                    result.map_err(|error| paths.contract_text(&error))
-                })
-                .await
-                .unwrap_or_else(|error| Err(error.to_string()))
+        let work = task::blocking(
+            move || -> Result<Outcome, String> {
+                let result = match review {
+                    Review::Create(review) => {
+                        let global =
+                            GlobalConfig::load(&paths).map_err(|error| error.to_string())?;
+                        snapshot::create_reviewed_with(&paths, &global, &review, &token, |event| {
+                            let _ = sender.unbounded_send(event_message(generation, event));
+                        })
+                        .map(|info| Outcome::Created(info.label))
+                        .map_err(|error| error.to_string())
+                    }
+                    Review::Restore(review) => {
+                        let global =
+                            GlobalConfig::load(&paths).map_err(|error| error.to_string())?;
+                        snapshot::restore_reviewed_with(&paths, &global, &review, &token, |event| {
+                            let _ = sender.unbounded_send(event_message(generation, event));
+                        })
+                        .map(|outcome| Outcome::Restored {
+                            label: review.label,
+                            retained_old_prefix: outcome.retained_old_prefix,
+                        })
+                        .map_err(|error| error.to_string())
+                    }
+                    Review::Delete(label) => snapshot::delete(&paths, &name, &label)
+                        .map(|()| Outcome::Deleted(label))
+                        .map_err(|error| error.to_string()),
+                    Review::Recover => snapshot::recover(&paths, &name)
+                        .map(|()| Outcome::Recovered)
+                        .map_err(|error| error.to_string()),
+                };
+                result.map_err(|error| paths.contract_text(&error))
             },
             move |result| Event::Finished(generation, result),
         );

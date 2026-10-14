@@ -23,6 +23,7 @@ use wineo_core::winetricks::WinetricksEvent;
 
 use crate::Message;
 use crate::panel::{PanelError, event_status};
+use crate::task;
 
 pub(crate) const AFTER_HOOK_ENDED_NOTE: &str = "The after hook already ended.";
 
@@ -48,91 +49,95 @@ pub(crate) fn start(
     let finish_name = name.clone();
     let work = Task::perform(
         async move {
-            tokio::task::spawn_blocking(move || {
-                let work = || -> anyhow::Result<_> {
-                    let exe = std::env::current_exe().context("failed to find wineo-gui binary")?;
-                    let log = Runtime::new(&paths, &name).install_log_path();
-                    if let Some(parent) = log.parent() {
-                        std::fs::create_dir_all(parent)?;
-                    }
-                    let capture = hook_capture(&paths, &name, &target)?;
-                    let hook_output = match &capture {
-                        Some(capture) => wineo_core::hooks::Output::File(
-                            capture
-                                .try_clone()
-                                .context("failed to capture hook output")?,
-                        ),
-                        None => wineo_core::hooks::Output::Inherit,
+            task::join(
+                move || {
+                    let work = || -> anyhow::Result<_> {
+                        let exe =
+                            std::env::current_exe().context("failed to find wineo-gui binary")?;
+                        let log = Runtime::new(&paths, &name).install_log_path();
+                        if let Some(parent) = log.parent() {
+                            std::fs::create_dir_all(parent)?;
+                        }
+                        let capture = hook_capture(&paths, &name, &target)?;
+                        let hook_output = match &capture {
+                            Some(capture) => wineo_core::hooks::Output::File(
+                                capture
+                                    .try_clone()
+                                    .context("failed to capture hook output")?,
+                            ),
+                            None => wineo_core::hooks::Output::Inherit,
+                        };
+                        let mut after_output_start = None;
+                        let result = launch::start(
+                            &paths,
+                            &name,
+                            Overrides {
+                                target: Some(target),
+                                ..Overrides::default()
+                            },
+                            &exe,
+                            &token,
+                            hook_output,
+                            Output::Log(&log),
+                            |event| {
+                                if let Some(status) = event_status(&event) {
+                                    let _ = sender.unbounded_send(Message::LaunchProgress(
+                                        progress_name.clone(),
+                                        status,
+                                    ));
+                                }
+                                if matches!(event, launch::LaunchEvent::NoWaylandSession) {
+                                    let _ = sender.unbounded_send(Message::LaunchNote(
+                                        progress_name.clone(),
+                                        "No Wayland session is available".to_owned(),
+                                    ));
+                                }
+                                // LogStarted comes after install.log was emptied, so
+                                // the panel never tails a previous run's text.
+                                match &event {
+                                    launch::LaunchEvent::Winetricks(
+                                        WinetricksEvent::LogStarted,
+                                    ) => {
+                                        let _ = sender.unbounded_send(Message::InstallPhase(
+                                            progress_name.clone(),
+                                            true,
+                                        ));
+                                    }
+                                    launch::LaunchEvent::Winetricks(WinetricksEvent::Done(_)) => {
+                                        install_done.cancel();
+                                        let _ = sender.unbounded_send(Message::InstallPhase(
+                                            progress_name.clone(),
+                                            false,
+                                        ));
+                                    }
+                                    launch::LaunchEvent::AfterHook(token) => {
+                                        after_output_start = capture
+                                            .as_ref()
+                                            .and_then(|capture| capture.position().ok());
+                                        let _ = sender.unbounded_send(Message::AfterHookPhase(
+                                            progress_name.clone(),
+                                            token.clone(),
+                                        ));
+                                    }
+                                    _ => {}
+                                }
+                            },
+                        );
+                        // An error before Done still ends the install phase.
+                        install_done.cancel();
+                        let capture = capture.and_then(|capture| capture.finish().ok());
+                        Ok((result, capture, after_output_start))
                     };
-                    let mut after_output_start = None;
-                    let result = launch::start(
-                        &paths,
-                        &name,
-                        Overrides {
-                            target: Some(target),
-                            ..Overrides::default()
-                        },
-                        &exe,
-                        &token,
-                        hook_output,
-                        Output::Log(&log),
-                        |event| {
-                            if let Some(status) = event_status(&event) {
-                                let _ = sender.unbounded_send(Message::LaunchProgress(
-                                    progress_name.clone(),
-                                    status,
-                                ));
-                            }
-                            if matches!(event, launch::LaunchEvent::NoWaylandSession) {
-                                let _ = sender.unbounded_send(Message::LaunchNote(
-                                    progress_name.clone(),
-                                    "No Wayland session is available".to_owned(),
-                                ));
-                            }
-                            // LogStarted comes after install.log was emptied, so
-                            // the panel never tails a previous run's text.
-                            match &event {
-                                launch::LaunchEvent::Winetricks(WinetricksEvent::LogStarted) => {
-                                    let _ = sender.unbounded_send(Message::InstallPhase(
-                                        progress_name.clone(),
-                                        true,
-                                    ));
-                                }
-                                launch::LaunchEvent::Winetricks(WinetricksEvent::Done(_)) => {
-                                    install_done.cancel();
-                                    let _ = sender.unbounded_send(Message::InstallPhase(
-                                        progress_name.clone(),
-                                        false,
-                                    ));
-                                }
-                                launch::LaunchEvent::AfterHook(token) => {
-                                    after_output_start = capture
-                                        .as_ref()
-                                        .and_then(|capture| capture.position().ok());
-                                    let _ = sender.unbounded_send(Message::AfterHookPhase(
-                                        progress_name.clone(),
-                                        token.clone(),
-                                    ));
-                                }
-                                _ => {}
-                            }
-                        },
-                    );
-                    // An error before Done still ends the install phase.
-                    install_done.cancel();
-                    let capture = capture.and_then(|capture| capture.finish().ok());
-                    Ok((result, capture, after_output_start))
-                };
-                match work() {
-                    Ok((result, mut capture, after_output_start)) => result.map_err(|error| {
-                        launch_error(&error, capture.as_mut(), after_output_start)
-                    }),
-                    Err(error) => Err(PanelError::from_error(&error)),
-                }
-            })
+                    match work() {
+                        Ok((result, mut capture, after_output_start)) => result.map_err(|error| {
+                            launch_error(&error, capture.as_mut(), after_output_start)
+                        }),
+                        Err(error) => Err(PanelError::from_error(&error)),
+                    }
+                },
+                |error| PanelError::from_error(&anyhow::Error::from(error)),
+            )
             .await
-            .map_err(|error| PanelError::from_error(&anyhow::Error::from(error)))
-            .and_then(|result| result)
         },
         move |result| Message::StartFinished(finish_name, result),
     );
@@ -143,12 +148,13 @@ pub(crate) fn stop(paths: Paths, name: String, force: bool) -> Task<Message> {
     let finish_name = name.clone();
     Task::perform(
         async move {
-            tokio::task::spawn_blocking(move || launch::stop(&paths, &name, force))
-                .await
-                .map_err(anyhow::Error::from)
-                .and_then(|result| result)
-                .map(|outcome| outcome.messages().to_vec())
-                .map_err(|error| PanelError::from_error(&error))
+            task::join(
+                move || launch::stop(&paths, &name, force),
+                anyhow::Error::from,
+            )
+            .await
+            .map(|outcome| outcome.messages().to_vec())
+            .map_err(|error| PanelError::from_error(&error))
         },
         move |result| Message::StopFinished(finish_name, result),
     )
@@ -159,11 +165,12 @@ pub(crate) fn steam_request(paths: Paths, name: String, action: Action) -> Task<
     let finish_name = name.clone();
     Task::perform(
         async move {
-            tokio::task::spawn_blocking(move || steam_request_now(&paths, &name, action))
-                .await
-                .map_err(anyhow::Error::from)
-                .and_then(|result| result)
-                .map_err(|error| PanelError::from_error(&error))
+            task::join(
+                move || steam_request_now(&paths, &name, action),
+                anyhow::Error::from,
+            )
+            .await
+            .map_err(|error| PanelError::from_error(&error))
         },
         move |result| Message::SteamRequested(finish_name, result),
     )
@@ -194,12 +201,13 @@ pub(crate) fn stop_after(
             let Some(expected) = expected else {
                 return Ok(vec![AFTER_HOOK_ENDED_NOTE.to_owned()]);
             };
-            tokio::task::spawn_blocking(move || launch::force_stop_after(&paths, &name, &expected))
-                .await
-                .map_err(anyhow::Error::from)
-                .and_then(|result| result)
-                .map(after_stop_messages)
-                .map_err(|error| PanelError::from_error(&error))
+            task::join(
+                move || launch::force_stop_after(&paths, &name, &expected),
+                anyhow::Error::from,
+            )
+            .await
+            .map(after_stop_messages)
+            .map_err(|error| PanelError::from_error(&error))
         },
         move |result| Message::StopFinished(finish_name, result),
     )
@@ -481,38 +489,40 @@ pub(crate) fn log(
     let (sender, receiver) = unbounded();
     let work = Task::perform(
         async move {
-            tokio::task::spawn_blocking(move || {
-                let runtime = Runtime::new(&paths, &name);
-                let path = match &source {
-                    LogSource::Output => runtime.log_path(),
-                    LogSource::Install(_) => runtime.install_log_path(),
-                };
-                let file = File::open(&path)
-                    .with_context(|| format!("failed to open {}", path.display()))?;
-                // Only output.log is capped and cleared by a supervisor, so
-                // only it has a reset counter to honor.
-                let session = matches!(source, LogSource::Output).then(|| Log::new(path.clone()));
-                let mut tail = Tail::new(file, session);
-                tail.seek_to_last_lines(2000)?;
-                let mut writer = ChannelWriter(sender, generation);
-                if let LogSource::Install(done) = &source {
-                    if tail.stream(&mut writer)? && !done.is_canceled() {
-                        tail.follow_until(&mut writer, &token, |_| Ok(done.is_canceled()))?;
+            task::join(
+                move || {
+                    let runtime = Runtime::new(&paths, &name);
+                    let path = match &source {
+                        LogSource::Output => runtime.log_path(),
+                        LogSource::Install(_) => runtime.install_log_path(),
+                    };
+                    let file = File::open(&path)
+                        .with_context(|| format!("failed to open {}", path.display()))?;
+                    // Only output.log is capped and cleared by a supervisor, so
+                    // only it has a reset counter to honor.
+                    let session =
+                        matches!(source, LogSource::Output).then(|| Log::new(path.clone()));
+                    let mut tail = Tail::new(file, session);
+                    tail.seek_to_last_lines(2000)?;
+                    let mut writer = ChannelWriter(sender, generation);
+                    if let LogSource::Install(done) = &source {
+                        if tail.stream(&mut writer)? && !done.is_canceled() {
+                            tail.follow_until(&mut writer, &token, |_| Ok(done.is_canceled()))?;
+                        }
+                        return Ok(());
                     }
-                    return Ok(());
-                }
-                let attached = runtime.status().is_ok_and(|status| {
-                    status.state == State::Running
-                        && status.run.is_some_and(|run| run.mode == RunMode::Attached)
-                });
-                if tail.stream(&mut writer)? && !attached && runtime.is_running()? {
-                    tail.follow(&runtime, &path, &mut writer, &token)?;
-                }
-                Ok::<_, anyhow::Error>(())
-            })
+                    let attached = runtime.status().is_ok_and(|status| {
+                        status.state == State::Running
+                            && status.run.is_some_and(|run| run.mode == RunMode::Attached)
+                    });
+                    if tail.stream(&mut writer)? && !attached && runtime.is_running()? {
+                        tail.follow(&runtime, &path, &mut writer, &token)?;
+                    }
+                    Ok::<_, anyhow::Error>(())
+                },
+                anyhow::Error::from,
+            )
             .await
-            .map_err(anyhow::Error::from)
-            .and_then(|result| result)
             .map_err(|error| error.to_string())
         },
         move |result| Message::LogFinished(generation, result),

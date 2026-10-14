@@ -14,7 +14,7 @@ The primary session reads `docs/workflow.md` at the start of each session.
 
 ## Build and verification
 
-- Build on Linux with stable Rust supporting edition 2024, `pkg-config`, and D-Bus development files (`dbus` on Arch, `libdbus-1-dev` on Debian/Ubuntu).
+- Build on Linux with stable Rust supporting edition 2024 and `pkg-config`.
 - Build: `cargo build --release -p wineo-cli`. Run locally: `cargo run -p wineo-cli -- <args>`.
 - Checks: `cargo fmt`, `cargo clippy --all-targets -- -D warnings`, `cargo test`. Both crates inherit `unsafe_code = "forbid"`.
 - Focused tests: `cargo test -p wineo-core <filter>` or `cargo test -p wineo-cli --test lifecycle <test_name> -- --exact`.

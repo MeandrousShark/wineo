@@ -5,6 +5,7 @@ use wineo_core::trash::{self, Phase, PruneReview};
 use wineo_core::validate::{self, Fix};
 
 use crate::Message;
+use crate::task;
 use crate::trash_page::{Event, Outcome, Selection, Snapshot};
 
 pub(crate) fn read(paths: &Paths) -> Result<Snapshot, String> {
@@ -116,12 +117,5 @@ fn work<T: Send + 'static>(
     run: impl FnOnce() -> Result<T, String> + Send + 'static,
     done: impl Fn(Result<T, String>) -> Event + Send + 'static,
 ) -> Task<Message> {
-    Task::perform(
-        async move {
-            tokio::task::spawn_blocking(run)
-                .await
-                .map_err(|error| error.to_string())?
-        },
-        move |result| Message::Trash(done(result)),
-    )
+    task::blocking(run, move |result| Message::Trash(done(result)))
 }

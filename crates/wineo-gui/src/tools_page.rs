@@ -18,6 +18,7 @@ use wineo_core::winetricks::{self, EnsureEvent, EnsureOutput, WinetricksEvent};
 
 use crate::chips::{self, Chips};
 use crate::logview::{self, LogView};
+use crate::task;
 use crate::theme::Palette;
 use crate::ui::{ScrollStyle, accent_base, secondary_button};
 
@@ -367,13 +368,8 @@ impl Page {
         let generation = self.load_generation;
         let paths = paths.clone();
         let name = self.name.clone();
-        Task::perform(
-            async move {
-                tokio::task::spawn_blocking(move || declared(&paths, &name))
-                    .await
-                    .map_err(|error| error.to_string())
-                    .and_then(|value| value)
-            },
+        task::blocking(
+            move || declared(&paths, &name),
             move |result| Event::Loaded(generation, result),
         )
     }
@@ -420,8 +416,8 @@ impl Page {
         let variables = self.variables.clone();
         let (sender, receiver) = iced::futures::channel::mpsc::unbounded();
         let worker = Task::perform(
-            async move {
-                tokio::task::spawn_blocking(move || {
+            task::join(
+                move || {
                     let result = match work {
                         Work::Exec => launch::exec(
                             &paths,
@@ -470,14 +466,12 @@ impl Page {
                             .is_some_and(|error| matches!(error, Error::Canceled(_))),
                         message: error.to_string(),
                     })
-                })
-                .await
-                .map_err(|error| Failure {
+                },
+                |error| Failure {
                     canceled: false,
                     message: error.to_string(),
-                })
-                .and_then(|value| value)
-            },
+                },
+            ),
             move |result| Event::Finished(generation, result),
         );
         Task::batch([Task::run(receiver, |event| event), worker])
