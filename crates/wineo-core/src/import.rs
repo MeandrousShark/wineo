@@ -406,8 +406,10 @@ pub fn execute_reviewed(
     )?;
 
     let mut published = false;
-    if !request.adopt {
-        let _publish_lock = PrefixCopy {
+    // Held through registration, like clone, so nothing else can claim the
+    // destination before its config is written.
+    let _publish_lock = if !request.adopt {
+        let publish_lock = PrefixCopy {
             source: &source_root,
             destination: &destination,
             layout: locked.layout,
@@ -429,6 +431,7 @@ pub fn execute_reviewed(
         progress(ImportProgress::Finished {
             entries: locked.fingerprint.entries,
         });
+        Some(publish_lock)
     } else {
         check_cancelled(cancel)?;
         let after = import_fingerprint(&source_root, &mut Check::new(cancel, &mut progress))?;
@@ -438,7 +441,8 @@ pub fn execute_reviewed(
                 source_root.display()
             );
         }
-    }
+        None
+    };
 
     // Config writes happen after the prefix is complete. Keep the operation
     // lock while rechecking the name and writing the atomically-created file.
@@ -1592,6 +1596,12 @@ pub(crate) fn sync_filesystem(path: &Path) -> Result<()> {
 }
 
 pub(crate) fn write_config_once(path: &Path, contents: &str) -> Result<()> {
+    #[cfg(test)]
+    BEFORE_CONFIG_WRITE.with(|hook| {
+        if let Some(hook) = hook.borrow_mut().as_mut() {
+            hook(path);
+        }
+    });
     let parent = path
         .parent()
         .ok_or_else(|| anyhow!("config has no parent: {}", path.display()))?;
@@ -1644,6 +1654,17 @@ fn sync_config_dir(dir: &Path) -> Result<()> {
     File::open(dir)
         .and_then(|dir| dir.sync_all())
         .with_context(|| format!("failed to sync {}", dir.display()))
+}
+
+#[cfg(test)]
+type ConfigWriteHook = Box<dyn FnMut(&Path)>;
+
+#[cfg(test)]
+thread_local! {
+    /// Runs as `write_config_once` starts on this thread, so a test can look
+    /// at what registration still holds.
+    static BEFORE_CONFIG_WRITE: std::cell::RefCell<Option<ConfigWriteHook>> =
+        const { std::cell::RefCell::new(None) };
 }
 
 #[cfg(test)]
@@ -2818,6 +2839,47 @@ mod tests {
         );
         assert!(prefix_root.join("game/system.reg").is_file());
         assert!(paths.environment_config("game").is_file());
+    }
+
+    #[test]
+    fn import_holds_the_install_lock_through_registration() {
+        let root = tempfile::tempdir().unwrap();
+        let paths = paths(root.path());
+        let runner_root = root.path().join("runners");
+        let prefix_root = root.path().join("prefixes");
+        wine_runner(&runner_root, "wine-build");
+        let source = root.path().join("old-prefix");
+        prefix(&source, "win64");
+        let global = base_global(&runner_root, &prefix_root);
+        let destination = prefix_root.join("game");
+        let checked = std::rc::Rc::new(std::cell::Cell::new(false));
+        BEFORE_CONFIG_WRITE.with(|hook| {
+            let destination = destination.clone();
+            let checked = checked.clone();
+            *hook.borrow_mut() = Some(Box::new(move |_| {
+                assert!(destination.join("system.reg").is_file());
+                assert!(InstallLock::acquire(&destination).is_err());
+                checked.set(true);
+            }));
+        });
+        let result = execute(
+            &paths,
+            &global,
+            ImportRequest {
+                source,
+                name: "game".to_owned(),
+                runner: "wine-build".to_owned(),
+                destination: None,
+                adopt: false,
+                arch: None,
+            },
+            &Token::new(),
+            |_| {},
+        );
+        BEFORE_CONFIG_WRITE.with(|hook| hook.borrow_mut().take());
+        result.unwrap();
+        assert!(checked.get());
+        assert!(InstallLock::acquire(&destination).is_ok());
     }
 
     #[test]
