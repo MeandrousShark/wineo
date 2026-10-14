@@ -303,6 +303,17 @@ Shipped in 0.31.1.
   two. `validate` lists desktop entries once instead of once per
   environment (7 directory reads to 1 with 6 environments).
 
+- The art picker builds one HTTP client per picker instead of one per
+  thumbnail, stops opening the keyring for thumbnails (downloads never sent
+  the key), and decodes thumbnails from memory instead of a temp file: per
+  30 thumbnails, 30 keyring lookups, 30 clients, and 30 temp files to none,
+  one, and none. The client is dropped off the UI thread.
+- Views no longer touch the filesystem for action reasons. The two facts
+  behind them (whether a restore is pending, and each prefix's resolved
+  path) are read whenever what is on screen changes and when the library
+  changes, and views read the stored copy; every action still checks the
+  disk itself.
+
 The maintainer's machine (real GPU, library of 22, after scrolling the
 library), the 0050 acceptance build against main with everything above:
 
@@ -344,3 +355,8 @@ Limits accepted in review:
   show warnings before its prompt.
 - Heroic's GOG-store files are still parsed and fingerprinted from separate
   reads, as before; only sideload files share their bytes.
+
+- A restore started or a prefix symlink retargeted outside wineo, with no
+  library change, shows in action reasons once what is on screen changes
+  (a menu, dialog, page, panel, or result opening). Actions are unaffected:
+  they check the disk when chosen.
