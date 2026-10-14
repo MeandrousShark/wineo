@@ -490,8 +490,9 @@ fn finishing_an_install_keeps_the_files_already_in_place() {
     let fx = Fixture::new();
     fx.content.add_build(Fixture::game("100"));
     let total = chunks_in(&fx.plan());
-    // Three files done, so at least one with chunks was put in place.
-    interrupted(&fx, "galaxy.file.after", 2);
+    // Every file downloaded: those whose MD5 was known are in place, the
+    // rest still wait to be named.
+    interrupted(&fx, "galaxy.file.after", 4);
     let before = fx.chunk_requests().len();
     let left = chunks_left(&fx, &fx.plan());
     assert!(left < total, "{left} of {total}");
@@ -850,7 +851,7 @@ fn a_build_adopted_from_another_tool_drops_the_installed_record() {
 fn without_pending_the_journal_builds_are_fetched_again() {
     let fx = Fixture::new();
     fx.content.add_build(Fixture::game("100"));
-    interrupted(&fx, "galaxy.file.after", 2);
+    interrupted(&fx, "galaxy.file.after", 4);
     fs::remove_file(folder::sidecar_file(&fx.paths, &fx.folder)).unwrap();
     let before = fx.chunk_requests().len();
     let plan = fx.plan();
