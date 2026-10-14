@@ -494,6 +494,170 @@ pub fn apply(
     }))
 }
 
+/// A game a batch couldn't plan or import, and the name it would have had.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Failure {
+    pub app_id: String,
+    pub name: String,
+    pub reason: String,
+}
+
+/// One game asked for in a batch.
+#[derive(Debug, Clone)]
+pub struct Wanted {
+    pub app_id: String,
+    /// Names a game that fails before a plan names it.
+    pub title: Option<String>,
+    /// What the listing already found it imported as, so it isn't planned.
+    pub imported_as: Option<String>,
+}
+
+/// A batch planned for review, before anything is written.
+#[derive(Debug, Clone, Default)]
+pub struct Batch {
+    pub ready: Vec<Plan>,
+    pub already: Vec<String>,
+    pub failures: Vec<Failure>,
+}
+
+/// What `plan_batch` found for one game, as it goes.
+pub enum Planned<'a> {
+    Ready(&'a Plan),
+    AlreadyImported(&'a str),
+}
+
+/// Plans each game in order, calling `planned` for each one that will import
+/// or already has. `name` applies to every game, so it only suits a batch of
+/// one. When two games land on the same name the first keeps it and the rest
+/// fail, as they would once it exists. An error from `planned` stops the batch.
+pub fn plan_batch(
+    paths: &Paths,
+    global: &GlobalConfig,
+    owned: OwnedGames<'_>,
+    games: impl IntoIterator<Item = Wanted>,
+    name: Option<&str>,
+    mut planned: impl FnMut(Planned<'_>) -> anyhow::Result<()>,
+) -> anyhow::Result<Batch> {
+    let mut batch = Batch::default();
+    let mut names = HashSet::new();
+    for game in games {
+        if let Some(existing) = game.imported_as {
+            planned(Planned::AlreadyImported(&existing))?;
+            batch.already.push(existing);
+            continue;
+        }
+        match plan(paths, global, owned, &game.app_id, name) {
+            Ok(PlanOutcome::Ready(plan)) if names.insert(plan.name().to_owned()) => {
+                planned(Planned::Ready(&plan))?;
+                batch.ready.push(plan);
+            }
+            Ok(PlanOutcome::Ready(plan)) => batch.failures.push(Failure {
+                app_id: game.app_id,
+                reason: crate::Error::EnvironmentExists(plan.name.clone()).to_string(),
+                name: plan.name,
+            }),
+            Ok(PlanOutcome::AlreadyImported(existing)) => {
+                planned(Planned::AlreadyImported(&existing))?;
+                batch.already.push(existing);
+            }
+            Err(error) => {
+                let name = match (name, &game.title) {
+                    (Some(name), _) => name.to_owned(),
+                    (None, Some(title)) => default_name(title, None),
+                    (None, None) => game.app_id.clone(),
+                };
+                batch.failures.push(Failure {
+                    app_id: game.app_id,
+                    name,
+                    reason: format!("{error:#}"),
+                });
+            }
+        }
+    }
+    Ok(batch)
+}
+
+/// What `apply_batch` is doing with one game, as it goes.
+pub enum Applying<'a> {
+    Starting(&'a Plan),
+    Imported(&'a Plan, &'a Applied),
+    /// Something else imported it since it was planned.
+    AlreadyImported(&'a str),
+}
+
+/// How a batch went. Games found already imported while applying leave the
+/// total, so it only counts what this batch could have imported.
+#[derive(Debug, Clone, Default)]
+pub struct BatchReport {
+    pub done: Vec<String>,
+    pub total: usize,
+    pub already: Vec<String>,
+    pub failures: Vec<Failure>,
+    pub warnings: Vec<String>,
+    pub canceled: bool,
+}
+
+impl From<Batch> for BatchReport {
+    /// A batch with nothing applied yet, keeping its planning failures.
+    fn from(batch: Batch) -> Self {
+        Self {
+            total: batch.ready.len(),
+            failures: batch.failures,
+            ..Self::default()
+        }
+    }
+}
+
+/// Imports each ready game in order, calling `each` as it goes. Cancellation
+/// stops at the next game and reports what finished. An error from `each`
+/// stops the batch and is returned instead of a report.
+pub fn apply_batch(
+    paths: &Paths,
+    global: &GlobalConfig,
+    owned: OwnedGames<'_>,
+    mut batch: Batch,
+    cancel: &Token,
+    mut each: impl FnMut(Applying<'_>) -> anyhow::Result<()>,
+) -> anyhow::Result<BatchReport> {
+    let ready = std::mem::take(&mut batch.ready);
+    let mut report = BatchReport {
+        total: ready.len(),
+        ..batch.into()
+    };
+    for plan in ready {
+        if cancel.is_canceled() {
+            report.canceled = true;
+            break;
+        }
+        each(Applying::Starting(&plan))?;
+        match apply(paths, global, owned, &plan, cancel) {
+            Ok(ApplyOutcome::Imported(applied)) => {
+                each(Applying::Imported(&plan, &applied))?;
+                report.done.push(applied.environment.name);
+                report.warnings.extend(applied.warnings);
+            }
+            Ok(ApplyOutcome::AlreadyImported(name)) => {
+                each(Applying::AlreadyImported(&name))?;
+                report.total -= 1;
+                report.already.push(name);
+            }
+            Err(_) if cancel.is_canceled() => {
+                report.canceled = true;
+                break;
+            }
+            Err(error) => report.failures.push(Failure {
+                app_id: plan.app_id,
+                name: plan.name,
+                reason: format!("{error:#}"),
+            }),
+        }
+    }
+    if cancel.is_canceled() {
+        report.canceled = true;
+    }
+    Ok(report)
+}
+
 fn check_portable(paths: &Paths) -> anyhow::Result<()> {
     if paths.portable_root().is_some() {
         anyhow::bail!("Steam games can't be imported into a portable folder.");

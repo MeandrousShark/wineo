@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::path::PathBuf;
 
 use iced::futures::channel::mpsc::unbounded;
@@ -13,7 +13,7 @@ use wineo_core::paths::Paths;
 use wineo_core::steam;
 use wineo_core::steam::InstallState;
 use wineo_core::steam_import::{
-    self, ApplyOutcome, EntryState, NO_KEY_HINT, OwnedData, Plan, PlanOutcome,
+    self, Applying, EntryState, Failure, NO_KEY_HINT, OwnedData, Wanted,
 };
 
 use super::heroic;
@@ -62,58 +62,36 @@ pub(crate) struct Listing {
     issues: Vec<String>,
 }
 
-#[derive(Debug, Clone)]
-struct Failure {
-    app_id: String,
-    name: String,
-    reason: String,
-}
+pub(crate) type Review = steam_import::Batch;
+pub(crate) type Report = steam_import::BatchReport;
 
-#[derive(Debug, Clone, Default)]
-pub(crate) struct Review {
-    ready: Vec<Plan>,
-    already: Vec<String>,
-    failures: Vec<Failure>,
-}
-
-#[derive(Debug, Clone, Default)]
-pub(crate) struct Report {
-    done: Vec<String>,
-    total: usize,
-    already: Vec<String>,
-    failures: Vec<Failure>,
-    warnings: Vec<String>,
-    canceled: bool,
-}
-
-impl Report {
-    fn lines(&self) -> Vec<String> {
-        let noun = if self.total == 1 { "game" } else { "games" };
-        let mut lines = vec![format!(
-            "Imported {} of {} {noun}.",
-            self.done.len(),
-            self.total
-        )];
-        if !self.already.is_empty() {
-            lines.push(format!(
-                "{} already imported: {}",
-                self.already.len(),
-                self.already.join(", ")
-            ));
-        }
-        if !self.failures.is_empty() {
-            lines.push(format!(
-                "{} failed: {}",
-                self.failures.len(),
-                self.failures
-                    .iter()
-                    .map(|failure| failure.name.as_str())
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            ));
-        }
-        lines
+fn report_lines(report: &Report) -> Vec<String> {
+    let noun = if report.total == 1 { "game" } else { "games" };
+    let mut lines = vec![format!(
+        "Imported {} of {} {noun}.",
+        report.done.len(),
+        report.total
+    )];
+    if !report.already.is_empty() {
+        lines.push(format!(
+            "{} already imported: {}",
+            report.already.len(),
+            report.already.join(", ")
+        ));
     }
+    if !report.failures.is_empty() {
+        lines.push(format!(
+            "{} failed: {}",
+            report.failures.len(),
+            report
+                .failures
+                .iter()
+                .map(|failure| failure.name.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
+    }
+    lines
 }
 
 #[derive(Debug, Clone)]
@@ -771,7 +749,7 @@ impl Page {
                     if report.canceled {
                         body = body.push(text("Completed imports remain after canceling."));
                     }
-                    for line in report.lines() {
+                    for line in report_lines(report) {
                         body = body.push(text(line));
                     }
                     for failure in &report.failures {
@@ -926,29 +904,29 @@ fn plan_review(
             return review;
         }
     };
-    let mut names = HashSet::new();
-    for game in selected {
-        let wanted_name = name.as_deref();
-        match steam_import::plan(paths, &global, owned.games(), &game.app_id, wanted_name) {
-            Ok(PlanOutcome::Ready(plan)) if names.insert(plan.name().to_owned()) => {
-                review.ready.push(plan);
-            }
-            Ok(PlanOutcome::Ready(plan)) => review.failures.push(Failure {
-                app_id: game.app_id,
-                name: plan.name().to_owned(),
-                reason: wineo_core::Error::EnvironmentExists(plan.name().to_owned()).to_string(),
-            }),
-            Ok(PlanOutcome::AlreadyImported(existing)) => review.already.push(existing),
-            Err(error) => review.failures.push(Failure {
-                app_id: game.app_id,
-                name: wanted_name
-                    .map(str::to_owned)
-                    .unwrap_or_else(|| default_name(&game.title, None)),
-                reason: format!("{error:#}"),
-            }),
-        }
+    let games = selected.into_iter().map(|game| Wanted {
+        app_id: game.app_id,
+        title: Some(game.title),
+        imported_as: None,
+    });
+    match steam_import::plan_batch(
+        paths,
+        &global,
+        owned.games(),
+        games,
+        name.as_deref(),
+        |_| Ok(()),
+    ) {
+        Ok(review) => review,
+        Err(error) => Review {
+            failures: vec![Failure {
+                app_id: String::new(),
+                name: "Steam import".to_owned(),
+                reason: error.to_string(),
+            }],
+            ..Review::default()
+        },
     }
-    review
 }
 
 fn run_import(
@@ -959,41 +937,13 @@ fn run_import(
     mut progress: impl FnMut(String),
 ) -> Result<Report, String> {
     let global = GlobalConfig::load(paths).map_err(|error| error.to_string())?;
-    let mut report = Report {
-        total: review.ready.len(),
-        failures: review.failures,
-        ..Report::default()
-    };
-    for plan in review.ready {
-        if token.is_canceled() {
-            report.canceled = true;
-            break;
+    steam_import::apply_batch(paths, &global, owned.games(), review, token, |applying| {
+        if let Applying::Starting(plan) = applying {
+            progress(format!("Importing {}...", plan.title()));
         }
-        progress(format!("Importing {}...", plan.title()));
-        match steam_import::apply(paths, &global, owned.games(), &plan, token) {
-            Ok(ApplyOutcome::Imported(applied)) => {
-                report.done.push(applied.environment.name);
-                report.warnings.extend(applied.warnings);
-            }
-            Ok(ApplyOutcome::AlreadyImported(name)) => {
-                report.total -= 1;
-                report.already.push(name);
-            }
-            Err(_) if token.is_canceled() => {
-                report.canceled = true;
-                break;
-            }
-            Err(error) => report.failures.push(Failure {
-                app_id: plan.app_id().to_owned(),
-                name: plan.name().to_owned(),
-                reason: format!("{error:#}"),
-            }),
-        }
-    }
-    if token.is_canceled() {
-        report.canceled = true;
-    }
-    Ok(report)
+        Ok(())
+    })
+    .map_err(|error| error.to_string())
 }
 
 #[cfg(test)]
@@ -1006,6 +956,7 @@ mod tests {
     use ::image::{ImageFormat, Rgba, RgbaImage};
     use iced::keyboard::key::Named;
     use tempfile::TempDir;
+    use wineo_core::steam_import::PlanOutcome;
 
     use super::*;
 
@@ -1095,7 +1046,7 @@ mod tests {
         assert!(!page.busy());
         assert!(!page.waiting());
         assert_eq!(
-            page.report.as_ref().unwrap().lines(),
+            report_lines(page.report.as_ref().unwrap()),
             ["Imported 1 of 1 game."]
         );
         assert!(paths.environment_config("alpha").is_file());
@@ -1226,7 +1177,7 @@ mod tests {
         assert_eq!(review.ready.len(), 2);
         let report =
             run_import(&paths, review, &OwnedData::Unloaded, &Token::new(), |_| {}).unwrap();
-        assert_eq!(report.lines(), ["Imported 2 of 2 games."]);
+        assert_eq!(report_lines(&report), ["Imported 2 of 2 games."]);
         assert!(paths.environment_config("alpha").is_file());
         assert!(paths.environment_config("beta").is_file());
         assert!(paths.art_dir("alpha").join("grid.png").is_file());
@@ -1484,7 +1435,10 @@ mod tests {
         assert_eq!(review.failures.len(), 1);
         let report =
             run_import(&paths, review, &OwnedData::Unloaded, &Token::new(), |_| {}).unwrap();
-        assert_eq!(report.lines(), ["Imported 1 of 1 game.", "1 failed: alpha"]);
+        assert_eq!(
+            report_lines(&report),
+            ["Imported 1 of 1 game.", "1 failed: alpha"]
+        );
     }
 
     #[test]
@@ -1514,7 +1468,7 @@ mod tests {
         let report =
             run_import(&paths, review, &OwnedData::Unloaded, &Token::new(), |_| {}).unwrap();
         assert_eq!(
-            report.lines(),
+            report_lines(&report),
             ["Imported 1 of 1 game.", "1 already imported: alpha"]
         );
     }
@@ -1543,7 +1497,7 @@ mod tests {
             ..Report::default()
         };
         assert_eq!(
-            report.lines(),
+            report_lines(&report),
             [
                 "Imported 1 of 2 games.",
                 "1 already imported: beta",
@@ -1684,7 +1638,7 @@ mod tests {
             |_| {},
         )
         .unwrap();
-        assert_eq!(report.lines(), ["Imported 3 of 3 games."]);
+        assert_eq!(report_lines(&report), ["Imported 3 of 3 games."]);
         let config = fs::read_to_string(paths.environment_config("beta")).unwrap();
         assert!(config.contains("app_id = \"2\""));
         assert!(config.contains("title = \"Beta\""));
