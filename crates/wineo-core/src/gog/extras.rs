@@ -84,6 +84,49 @@ pub struct Report {
     pub notes: Vec<String>,
 }
 
+impl Report {
+    /// What happened, in a line or two: GOG playtime that raised the total,
+    /// then the art added from each source.
+    pub fn lines(&self) -> Vec<String> {
+        let mut lines = Vec::new();
+        if let Some(playtime) = self.playtime.filter(|playtime| playtime.raised()) {
+            lines.push(format!(
+                "Imported {} of GOG playtime.",
+                duration(playtime.gog_seconds)
+            ));
+        }
+        let gog: fn(&Source) -> bool = |source| matches!(source, Source::Gog(_));
+        let grid: fn(&Source) -> bool = |source| matches!(source, Source::SteamGridDb(_));
+        for (name, wanted) in [("GOG", gog), ("SteamGridDB", grid)] {
+            let kinds: Vec<&str> = [Kind::Grid, Kind::Hero, Kind::Logo, Kind::Icon]
+                .into_iter()
+                .filter(|kind| {
+                    self.art
+                        .iter()
+                        .any(|filled| filled.kind == *kind && wanted(&filled.source))
+                })
+                .map(|kind| match kind {
+                    Kind::Grid => "poster",
+                    other => other.as_str(),
+                })
+                .collect();
+            if !kinds.is_empty() {
+                lines.push(format!("Added {name} art: {}.", kinds.join(", ")));
+            }
+        }
+        lines
+    }
+}
+
+/// Whole hours, or minutes for under an hour.
+fn duration(seconds: i64) -> String {
+    if seconds >= 3600 {
+        format!("{} h", (seconds + 1800) / 3600)
+    } else {
+        format!("{} min", seconds / 60)
+    }
+}
+
 /// Imports GOG's playtime (with a login) and artwork (without one) for the
 /// environment that runs `request.gog_id`. Read-only toward GOG.
 ///

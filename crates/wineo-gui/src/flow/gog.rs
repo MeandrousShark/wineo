@@ -12,7 +12,7 @@ use iced::futures::channel::mpsc::unbounded;
 use iced::keyboard::{self, Key, key::Named};
 use iced::widget::{column, container, image, pick_list, row, text};
 use iced::{Center, Element, Fill, Task, border};
-use wineo_core::art::{Kind, Source};
+use wineo_core::art::Kind;
 use wineo_core::cancel::Token;
 use wineo_core::components::Component;
 use wineo_core::config::GlobalConfig;
@@ -1532,7 +1532,7 @@ pub(super) fn import_extras(
     };
     match extras::import(paths, session.as_mut(), &request, token) {
         Ok(report) => {
-            out.lines = extras_lines(&report);
+            out.lines = report.lines();
             out.notes.extend(report.notes.iter().cloned());
             out.icon = report.art.iter().any(|filled| filled.kind == Kind::Icon);
         }
@@ -1543,47 +1543,6 @@ pub(super) fn import_extras(
     out
 }
 
-/// What the extras report says happened, in `import gog`'s words.
-fn extras_lines(report: &extras::Report) -> Vec<String> {
-    let mut lines = Vec::new();
-    if let Some(playtime) = report.playtime.filter(|playtime| playtime.raised()) {
-        lines.push(format!(
-            "Imported {} of GOG playtime.",
-            duration(playtime.gog_seconds)
-        ));
-    }
-    let gog: fn(&Source) -> bool = |source| matches!(source, Source::Gog(_));
-    let grid: fn(&Source) -> bool = |source| matches!(source, Source::SteamGridDb(_));
-    for (name, wanted) in [("GOG", gog), ("SteamGridDB", grid)] {
-        let kinds: Vec<&str> = [Kind::Grid, Kind::Hero, Kind::Logo, Kind::Icon]
-            .into_iter()
-            .filter(|kind| {
-                report
-                    .art
-                    .iter()
-                    .any(|filled| filled.kind == *kind && wanted(&filled.source))
-            })
-            .map(|kind| match kind {
-                Kind::Grid => "poster",
-                other => other.as_str(),
-            })
-            .collect();
-        if !kinds.is_empty() {
-            lines.push(format!("Added {name} art: {}.", kinds.join(", ")));
-        }
-    }
-    lines
-}
-
-/// Whole hours, or minutes for under an hour.
-fn duration(seconds: i64) -> String {
-    if seconds >= 3600 {
-        format!("{} h", (seconds + 1800) / 3600)
-    } else {
-        format!("{} min", seconds / 60)
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use crate::test_script::write_script;
@@ -1592,6 +1551,7 @@ mod tests {
 
     use std::path::PathBuf;
 
+    use wineo_core::art::Source;
     use wineo_core::gog::extras::{Filled, Playtime};
     use wineo_core::gog::folder::Track;
     use wineo_core::heroic::HeroicOrigin;
@@ -2276,14 +2236,13 @@ mod tests {
             notes: Vec::new(),
         };
         assert_eq!(
-            extras_lines(&report),
+            report.lines(),
             [
                 "Imported 41 h of GOG playtime.",
                 "Added GOG art: poster, icon.",
                 "Added SteamGridDB art: logo.",
             ]
         );
-        assert_eq!(duration(25 * 60), "25 min");
     }
 
     const CELESTE: u64 = 1452425640;
