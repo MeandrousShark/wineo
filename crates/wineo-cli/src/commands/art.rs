@@ -9,7 +9,7 @@ use clap_complete::ArgValueCompleter;
 use wineo_core::art::{self, Kind, Listing, Resolved, Source, Warning};
 use wineo_core::art_fetch::{self, Fetched, Mode};
 use wineo_core::config::ArtFetch;
-use wineo_core::download::{Https, Transport};
+use wineo_core::download::{Https, Lazy, Transport};
 use wineo_core::environment::Environment;
 use wineo_core::paths::Paths;
 use wineo_core::secret_service::SecretServiceKeyring;
@@ -412,9 +412,12 @@ pub struct Access<'a> {
 
 impl<'a> Access<'a> {
     pub fn steamgriddb(paths: &'a Paths) -> Self {
+        // Bulk imports ask for a transport per game; the clones share one
+        // client instead of each starting its own.
+        let https = Lazy::new();
         Self {
             check_key: Box::new(|| check_key(paths)),
-            transport: Box::new(|| Ok(Box::new(Https::new()?))),
+            transport: Box::new(move || Ok(Box::new(https.https()?.clone()))),
         }
     }
 
