@@ -740,6 +740,8 @@ impl GlobalConfig {
     /// Loads the global config, treating a missing file as all defaults.
     pub fn load(paths: &Paths) -> Result<Self> {
         let path = paths.global_config();
+        #[cfg(test)]
+        crate::read_log::note(&path);
         match fs::read_to_string(&path) {
             Ok(text) => Self::parse(&path, &text),
             Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(Self::default()),

@@ -138,6 +138,8 @@ impl Environment {
             .map_err(|err| Error::Unsettled(err.to_string()))?;
         crate::snapshot::check_recovery_marker(paths, name)?;
         let path = paths.environment_config(name);
+        #[cfg(test)]
+        crate::read_log::note(&path);
         let text = match fs::read_to_string(&path) {
             Ok(text) => text,
             Err(err) if err.kind() == io::ErrorKind::NotFound => {

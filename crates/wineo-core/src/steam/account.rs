@@ -30,6 +30,8 @@ pub fn active_account(install: &Install) -> Result<u64, String> {
 /// The SteamID64 of the same account, which the Web API takes.
 pub fn active_steam_id(install: &Install) -> Result<u64, String> {
     let path = install.root().join("config/loginusers.vdf");
+    #[cfg(test)]
+    crate::read_log::note(&path);
     let text = fs::read_to_string(&path)
         .map_err(|error| format!("{} can't be read: {error}", path.display()))?;
     let document = vdf::parse(&text)
@@ -64,24 +66,55 @@ pub fn active_steam_id(install: &Install) -> Result<u64, String> {
 /// Steam's own playtime for an app, from the active account's
 /// `localconfig.vdf`. A readable file with no entry for the app is zero hours.
 pub fn playtime(install: &Install, app_id: &str) -> Playtime {
-    match read_playtime(install, app_id) {
-        Ok(playtime) => playtime,
-        Err(reason) => Playtime::Unknown(reason),
+    Playtimes::load(install).get(app_id)
+}
+
+/// The active account's `localconfig.vdf`, read and parsed once, for
+/// looking up several apps. `playtime` for each would read `loginusers.vdf`
+/// and `localconfig.vdf` again every time.
+pub struct Playtimes {
+    /// The file and its path, or why it can't be had.
+    file: Result<(std::path::PathBuf, vdf::Object), String>,
+}
+
+impl Playtimes {
+    pub fn load(install: &Install) -> Self {
+        Self {
+            file: read_localconfig(install),
+        }
+    }
+
+    pub fn get(&self, app_id: &str) -> Playtime {
+        match &self.file {
+            Ok((path, document)) => {
+                lookup(path, document, app_id).unwrap_or_else(Playtime::Unknown)
+            }
+            Err(reason) => Playtime::Unknown(reason.clone()),
+        }
     }
 }
 
-fn read_playtime(install: &Install, app_id: &str) -> Result<Playtime, String> {
+fn read_localconfig(install: &Install) -> Result<(std::path::PathBuf, vdf::Object), String> {
     let account = active_account(install)?;
     let path = install
         .root()
         .join("userdata")
         .join(account.to_string())
         .join("config/localconfig.vdf");
+    #[cfg(test)]
+    crate::read_log::note(&path);
     let text = fs::read_to_string(&path)
         .map_err(|error| format!("{} can't be read: {error}", path.display()))?;
     let document = vdf::parse(&text)
         .map_err(|error| format!("{} can't be parsed: {error}", path.display()))?;
+    Ok((path, document))
+}
 
+fn lookup(
+    path: &std::path::Path,
+    document: &vdf::Object,
+    app_id: &str,
+) -> Result<Playtime, String> {
     let Some(app) = document.path(&[
         "UserLocalConfigStore",
         "Software",
