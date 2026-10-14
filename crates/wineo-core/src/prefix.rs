@@ -271,8 +271,8 @@ pub fn create(
     result
 }
 
-/// Waits for `child`, which leads its own group. A cancel runs `on_cancel`,
-/// which makes a waiter's target stop too, before the group is asked to stop.
+/// Waits for `child`, which leads its own group. A cancel asks the group to
+/// stop and then runs `on_cancel`, which makes a waiter's target stop too.
 pub(crate) fn wait_for_child(
     mut child: Child,
     token: &Token,
