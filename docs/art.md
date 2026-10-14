@@ -87,8 +87,8 @@ and `art key --remove` add `note: WINEO_STEAMGRIDDB_KEY is set and overrides
 the saved key`. A command that needs the key and finds none says to run
 `wineo art key` or set the variable, in one short line.
 
-Keyring access needs `dbus` (`libdbus-1`) at runtime; the Arch package
-already depends on it.
+Keyring access needs a Secret Service keyring, such as GNOME Keyring or
+KWallet, on the D-Bus session bus.
 
 The [Steam Web API key](steam.md#owned-games) works the same way, through
 `wineo import steam --key` and `--remove-key`, with `WINEO_STEAM_KEY` and a
