@@ -3,20 +3,20 @@ use std::io::{self, BufRead, BufReader};
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, ExitStatus, Stdio};
-use std::thread;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
-use rustix::io::Errno;
-use rustix::process::{Pid, Signal, kill_process_group, test_kill_process_group};
+use rustix::process::Signal;
 
 use crate::cancel::Token;
 use crate::config::Arch;
 use crate::error::{Error, IoContext, Result};
 use crate::installer::Output;
 use crate::paths::{self, Paths};
+use crate::process::{Ended, Escalation};
 use crate::runner::Runner;
 
 const CHILD_POLL: Duration = Duration::from_millis(25);
+const UNCONFIRMED: &str = "the prefix processes could not be confirmed stopped";
 const CANCEL_GRACE: Duration = Duration::from_secs(2);
 
 #[derive(Debug)]
@@ -272,58 +272,59 @@ pub fn create(
     result
 }
 
+/// Waits for `child`, which leads its own group. A cancel asks the group to
+/// stop and then runs `on_cancel`, which makes a waiter's target stop too.
 pub(crate) fn wait_for_child(
     mut child: Child,
     token: &Token,
     mut on_cancel: impl FnMut() -> Result<()>,
 ) -> Result<ExitStatus> {
-    let group = child.id();
-    let pid = i32::try_from(group)
-        .ok()
-        .and_then(Pid::from_raw)
-        .ok_or_else(|| Error::Unsettled("invalid prefix process group".to_owned()))?;
-    let mut canceled_at = None;
-    let mut sent_term = false;
-    let mut sent_kill = false;
-    loop {
-        let status = child
-            .try_wait()
-            .context(|| "failed to wait for wineboot".to_owned())?;
-        if token.is_canceled() {
-            let started = *canceled_at.get_or_insert_with(Instant::now);
-            if !sent_term {
-                on_cancel()?;
-                signal_group(pid, Signal::TERM)?;
-                sent_term = true;
+    let mut escalation = Escalation::new(CANCEL_GRACE, None);
+    let mut canceled = false;
+    let stopped =
+        crate::process::stop_group(&child, Signal::TERM, &mut escalation, token, None, |step| {
+            if step.is_none() || std::mem::replace(&mut canceled, true) {
+                return Ok(());
             }
-            if (token.is_forced() || started.elapsed() >= CANCEL_GRACE) && !sent_kill {
-                signal_group(pid, Signal::KILL)?;
-                sent_kill = true;
-            }
-            if status.is_some() && !group_is_running(pid)? {
-                return Err(Error::Canceled("prefix creation"));
-            }
-        } else if let Some(status) = status {
-            return Ok(status);
+            on_cancel()
+        })
+        .context(|| "failed to stop the prefix process group".to_owned());
+    let failed = match stopped {
+        Ok(Ok(ended)) => Ok(ended),
+        Ok(Err((err, ended))) => Err((err, ended == Ended::Stopped)),
+        Err(err) => Err((err, false)),
+    };
+    let ended = match failed {
+        Ok(ended) => ended,
+        Err((err, settled)) => {
+            let reaped = crate::process::kill_and_reap(&mut child);
+            return Err(crate::process::failed_stop(
+                err,
+                settled && reaped,
+                UNCONFIRMED,
+            ));
         }
-        thread::sleep(CHILD_POLL);
-    }
-}
-
-fn signal_group(group: Pid, signal: Signal) -> Result<()> {
-    match kill_process_group(group, signal) {
-        Ok(()) | Err(Errno::SRCH) => Ok(()),
-        Err(err) => Err(io::Error::from(err))
-            .context(|| format!("failed to signal prefix process group {group:?}")),
-    }
-}
-
-fn group_is_running(group: Pid) -> Result<bool> {
-    match test_kill_process_group(group) {
-        Ok(()) | Err(Errno::PERM) => Ok(true),
-        Err(Errno::SRCH) => Ok(false),
-        Err(err) => Err(io::Error::from(err))
-            .context(|| format!("failed to inspect prefix process group {group:?}")),
+    };
+    let group = child.id();
+    let status = child
+        .wait()
+        .context(|| "failed to wait for wineboot".to_owned())?;
+    match ended {
+        Ended::Exited => Ok(status),
+        Ended::Stopped => Err(Error::Canceled("prefix creation")),
+        // Without `/proc`, wait for the group number itself to go, which needs
+        // none, as this always did.
+        Ended::Unconfirmed => loop {
+            match crate::process::group_exists(group) {
+                Some(false) => return Err(Error::Canceled("prefix creation")),
+                Some(true) => token.wait_timeout(CHILD_POLL),
+                None => {
+                    return Err(Error::Unsettled(
+                        "the canceled prefix process group could not be inspected".to_owned(),
+                    ));
+                }
+            }
+        },
     }
 }
 

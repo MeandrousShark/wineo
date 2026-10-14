@@ -7,14 +7,13 @@ use std::fs::{self, File};
 use std::io::{self, Read};
 use std::os::unix::process::CommandExt;
 use std::path::Path;
-use std::process::{Command, ExitStatus, Stdio};
+use std::process::{Child, Command, ExitStatus, Stdio};
 use std::sync::mpsc::{self, RecvTimeoutError};
 use std::thread;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, bail};
-use rustix::io::Errno;
-use rustix::process::{Pid, Signal, kill_process_group};
+use rustix::process::Signal;
 
 use crate::build_lock;
 use crate::cancel::Token;
@@ -27,6 +26,7 @@ use crate::launch::{self, LaunchEvent, merge_env};
 use crate::operation::{Locks, Operation};
 use crate::paths::Paths;
 use crate::prefix;
+use crate::process::{self, Escalation};
 use crate::runner::{self, Runner, with_menu_builder_disabled};
 use crate::runners::Runners;
 use crate::runtime::Runtime;
@@ -34,6 +34,7 @@ use crate::runtime::Runtime;
 const MANAGED: [&str; 3] = ["WINEPREFIX", "WINE", "WINESERVER"];
 const MANAGED_PROTON: [&str; 1] = ["WINEPREFIX"];
 const POLL: Duration = Duration::from_millis(100);
+const UNCONFIRMED: &str = "winetricks' processes could not be confirmed stopped";
 
 #[derive(Debug)]
 pub enum WinetricksEvent {
@@ -629,49 +630,64 @@ fn run_with_output(
     }
 
     let mut child = command.spawn().context("failed to run winetricks")?;
-    crate::process::quiet_core_dumps(&child);
+    process::quiet_core_dumps(&child);
     if tail.is_some() {
         events(WinetricksEvent::LogStarted);
     }
-    let group = child.id();
-    let mut stopping = None;
-    let mut killing = false;
-    let status = loop {
-        if let Some(tail) = &mut tail {
-            tail.pump(&mut events);
+    // SIGINT, the way Ctrl+C asks a shell script to stop.
+    let mut escalation = Escalation::new(Duration::from_secs(stop_timeout.into()), None);
+    // Only a log to follow needs waking up for.
+    let tick = tail.is_some().then_some(POLL);
+    // Reported once the group is gone, so the stop still finishes.
+    let mut cleanup = Ok(());
+    let stopped = process::stop_group(&child, Signal::INT, &mut escalation, token, tick, |step| {
+        match step {
+            None => {
+                if let Some(tail) = &mut tail {
+                    tail.pump(&mut events);
+                }
+            }
+            Some(process::Step::Ask) => events(WinetricksEvent::Stopping),
+            Some(process::Step::Kill) => {
+                events(WinetricksEvent::Killing);
+                cleanup = runner.kill(prefix, None).map(drop);
+            }
+            Some(process::Step::Rekill) => {}
         }
-        if token.is_canceled() && stopping.is_none() {
-            stopping = Some(Instant::now());
-            events(WinetricksEvent::Stopping);
-            signal_group(group, Signal::INT)?;
-        }
-        if stopping.is_some_and(|started| {
-            token.is_forced() || started.elapsed() >= Duration::from_secs(stop_timeout.into())
-        }) && !killing
-        {
-            killing = true;
-            events(WinetricksEvent::Killing);
-            signal_group(group, Signal::KILL)?;
-            runner.kill(prefix, None)?;
-        }
-        if let Some(status) = child.try_wait().context("failed to wait for winetricks")? {
-            break status;
-        }
-        token.wait_timeout(POLL);
+        anyhow::Ok(())
+    });
+    let failed = match stopped {
+        Ok(Ok(ended)) => Ok(ended),
+        Ok(Err((err, ended))) => Err((err, ended == process::Ended::Stopped)),
+        Err(err) => Err((
+            anyhow::Error::from(err).context("failed to stop the winetricks process group"),
+            false,
+        )),
     };
+    let ended = match failed {
+        Ok(ended) => ended,
+        Err((err, settled)) => {
+            let reaped = process::kill_and_reap(&mut child);
+            return Err(if settled && reaped {
+                err
+            } else {
+                err.context(UNCONFIRMED)
+            });
+        }
+    };
+    if let Err(err) = cleanup {
+        let _ = child.wait();
+        return Err(err.into());
+    }
+    if ended == process::Ended::Unconfirmed {
+        let _ = child.wait();
+        return Err(Error::Unsettled(UNCONFIRMED.to_owned()).into());
+    }
     if let Some(tail) = &mut tail {
         tail.pump(&mut events);
     }
-    settle(
-        runner,
-        prefix,
-        group,
-        token,
-        stop_timeout,
-        stopping,
-        killing,
-        &mut events,
-    )?;
+    settle(runner, prefix, &child, token, &mut escalation, &mut events)?;
+    let status = child.wait().context("failed to wait for winetricks")?;
     events(WinetricksEvent::Done(status));
     if token.is_canceled() {
         return Err(Error::Canceled("winetricks").into());
@@ -751,14 +767,14 @@ fn install_unattended_with_output(
     Ok(())
 }
 
+/// Waits for wine to go idle once winetricks is gone, with the leader still
+/// unreaped so its group can be killed by number.
 fn settle(
     runner: &Runner,
     prefix: &Path,
-    group: u32,
+    leader: &Child,
     token: &Token,
-    stop_timeout: u32,
-    mut stopping: Option<Instant>,
-    mut killing: bool,
+    escalation: &mut Escalation,
     events: &mut impl FnMut(WinetricksEvent),
 ) -> anyhow::Result<()> {
     if runner.is_proton() {
@@ -782,11 +798,17 @@ fn settle(
         } else {
             token.wait_timeout(POLL);
         }
-        if token.is_canceled() && stopping.is_none() {
-            stopping = Some(Instant::now());
-            events(WinetricksEvent::Stopping);
+        match escalation.follow(token, Instant::now()) {
+            Some(process::Step::Ask) => events(WinetricksEvent::Stopping),
+            Some(process::Step::Kill) => {
+                events(WinetricksEvent::Killing);
+                process::signal_led_group(leader, Signal::KILL)
+                    .context("failed to signal the winetricks process group")?;
+                runner.kill(prefix, None)?;
+            }
+            Some(process::Step::Rekill) | None => {}
         }
-        if stopping.is_some() && !ending_started {
+        if escalation.stopping() && !ending_started {
             ending_started = true;
             let (sender, receiver) = mpsc::channel();
             let (ending_runner, ending_prefix) = (runner.clone(), prefix.to_owned());
@@ -794,15 +816,6 @@ fn settle(
                 let _ = sender.send(ending_runner.end_session(&ending_prefix, None));
             });
             ending = Some(receiver);
-        }
-        if stopping.is_some_and(|started| {
-            token.is_forced() || started.elapsed() >= Duration::from_secs(stop_timeout.into())
-        }) && !killing
-        {
-            killing = true;
-            events(WinetricksEvent::Killing);
-            signal_group(group, Signal::KILL)?;
-            runner.kill(prefix, None)?;
         }
         if let Some(receiver) = ending.as_ref() {
             match receiver.try_recv() {
@@ -821,15 +834,6 @@ fn settle(
         }
     }
     Ok(())
-}
-
-fn signal_group(group: u32, signal: Signal) -> anyhow::Result<()> {
-    let pid = Pid::from_raw(i32::try_from(group)?).context("invalid winetricks process group")?;
-    match kill_process_group(pid, signal) {
-        Ok(()) | Err(Errno::SRCH) => Ok(()),
-        Err(err) => Err(io::Error::from(err))
-            .with_context(|| format!("failed to signal winetricks process group {group}")),
-    }
 }
 
 #[cfg(test)]

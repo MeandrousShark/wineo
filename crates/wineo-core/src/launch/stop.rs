@@ -6,10 +6,11 @@ use crate::cancel::Token;
 use crate::config::{DEFAULT_STOP_TIMEOUT, GlobalConfig};
 use crate::environment::Environment;
 use crate::error::Result;
-use crate::hooks::{Phase, Running};
+use crate::hooks::Phase;
 use crate::installer::{self, Cleaned};
 use crate::operation::{Locks, Operation};
 use crate::paths::Paths;
+use crate::process::Identity;
 use crate::runtime::{LostRunCleanup, Runtime};
 use crate::steam;
 use crate::supervisor;
@@ -56,7 +57,7 @@ pub enum StopAction {
 pub fn force_stop_after(
     paths: &Paths,
     name: &str,
-    expected: &Running,
+    expected: &Identity,
 ) -> anyhow::Result<StopOutcome> {
     let locks = Locks::new(paths);
     if !locks.request_hook_force_for(name, expected)? {
@@ -291,7 +292,9 @@ fn wait_hook(
         {
             requested = Some(phase);
             if force {
-                running.kill_now()?;
+                crate::error::IoContext::context(running.kill_now(), || {
+                    "failed to signal the hook process group".to_owned()
+                })?;
             }
             action = Some(match phase {
                 Phase::Before => StopAction::BeforeCanceled,
@@ -424,7 +427,7 @@ mod tests {
         let guard = locks
             .acquire(Operation::Hook(Phase::Before), "app", &[])
             .unwrap();
-        let running = Running {
+        let running = Identity {
             group: 123,
             boot_id: "boot".to_owned(),
             leader_start: 456,

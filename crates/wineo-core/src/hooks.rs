@@ -4,19 +4,18 @@ use std::fs::File;
 use std::os::unix::process::CommandExt;
 use std::path::Path;
 use std::process::{Child, Command, ExitStatus, Stdio};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
-use rustix::process::{Pid, Signal, WaitId, WaitIdOptions, kill_process_group, waitid};
+use rustix::process::Signal;
 use serde::{Deserialize, Serialize};
 
 use crate::cancel::Token;
 use crate::error::{Error, IoContext, Result};
 use crate::operation::Guard;
 use crate::paths::{PORTABLE_VAR, Paths};
-use crate::process::{self, GroupOwnership};
+use crate::process::{self, Identity};
 use crate::runner::Runner;
 
-const POLL: Duration = Duration::from_millis(20);
 const VARIABLES: [&str; 11] = [
     "WINEO_LAUNCHER",
     "WINEO_APP_ID",
@@ -135,41 +134,6 @@ pub enum Outcome {
     Canceled(ExitStatus),
 }
 
-/// Identity stored in the active operation lock, independent of game state.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Running {
-    pub group: u32,
-    pub boot_id: String,
-    pub leader_start: u64,
-}
-
-impl Running {
-    fn signal(&self, signal: Signal) -> Result<GroupOwnership> {
-        let ownership = process::signal_group_if_owned(
-            Some(self.group),
-            Some(&self.boot_id),
-            Some(self.leader_start),
-            signal,
-        )
-        .context(|| "failed to signal the hook process group".to_owned())?;
-        if ownership != GroupOwnership::Unknown {
-            return Ok(ownership);
-        }
-        process::signal_group_if_live(
-            Some(self.group),
-            Some(&self.boot_id),
-            Some(self.leader_start),
-            signal,
-        )
-        .context(|| "failed to signal the hook process group".to_owned())
-    }
-
-    /// Used with an identity read from an active Hook lock by `stop --force`.
-    pub fn kill_now(&self) -> Result<GroupOwnership> {
-        self.signal(Signal::KILL)
-    }
-}
-
 fn command(paths: &Paths, context: &Context<'_>, text: &str) -> Command {
     let mut command = Command::new("sh");
     configure(&mut command, paths, context, text);
@@ -257,7 +221,7 @@ pub fn run(
         finished: false,
     };
     let group = spawned.child.id();
-    let running = Running {
+    let running = Identity {
         group,
         boot_id: process::boot_id()
             .ok_or_else(|| Error::Unsettled("could not read hook boot identity".to_owned()))?,
@@ -265,9 +229,8 @@ pub fn run(
             .ok_or_else(|| Error::Unsettled("could not read hook process identity".to_owned()))?,
     };
     guard.record_hook(context.hook.phase(), Some(&running))?;
-    let pid = Pid::from_raw(group as i32).expect("a spawned child has a positive pid");
     let stopped = wait_for_exit_requested(
-        pid,
+        &spawned.child,
         token,
         stop_timeout,
         process::group_has_live_members,
@@ -288,69 +251,48 @@ pub fn run(
 
 #[cfg(test)]
 fn wait_for_exit(
-    pid: Pid,
+    child: &Child,
     token: &Token,
     stop_timeout: Duration,
     group_members: impl Fn(u32) -> Option<bool>,
 ) -> Result<bool> {
-    wait_for_exit_requested(pid, token, stop_timeout, group_members, || Ok(()))
+    wait_for_exit_requested(child, token, stop_timeout, group_members, || Ok(()))
 }
 
+const REQUEST_POLL: Duration = Duration::from_millis(20);
+const UNCONFIRMED: &str = "the hook's processes could not be confirmed stopped";
+
+/// The unreaped child pins its group number until the whole group settles,
+/// so stopping it needs no `/proc` identity check.
 fn wait_for_exit_requested(
-    pid: Pid,
+    child: &Child,
     token: &Token,
     stop_timeout: Duration,
     group_members: impl Fn(u32) -> Option<bool>,
     mut request: impl FnMut() -> Result<()>,
 ) -> Result<bool> {
-    let mut stopping = None;
-    let mut killed = false;
-    loop {
-        request()?;
-        // The unreaped child pins its PGID, so local signals need no /proc
-        // identity checks and still work when process inspection is unavailable.
-        if token.is_forced() && !killed {
-            signal_group(pid, Signal::KILL)?;
-            killed = true;
-            stopping.get_or_insert_with(Instant::now);
-        } else if token.is_canceled() && stopping.is_none() {
-            signal_group(pid, Signal::TERM)?;
-            stopping = Some(Instant::now());
-        }
-        if let Some(started) = stopping
-            && !killed
-            && started.elapsed() >= stop_timeout
-        {
-            signal_group(pid, Signal::KILL)?;
-            killed = true;
-        }
-        let exited = waitid(
-            WaitId::Pid(pid),
-            WaitIdOptions::EXITED | WaitIdOptions::NOHANG | WaitIdOptions::NOWAIT,
-        )
-        .map_err(std::io::Error::from)
-        .context(|| "failed to observe hook exit".to_owned())?
-        .is_some();
-        if exited {
-            if stopping.is_none() {
-                return Ok(false);
-            }
-            match group_members(pid.as_raw_nonzero().get() as u32) {
-                Some(false) => return Ok(true),
-                None if killed => return Ok(true),
-                _ => {}
-            }
-        }
-        // Keep the PGID pinned until cancellation settles the whole group.
-        token.wait_timeout(POLL);
-    }
-}
-
-fn signal_group(pid: Pid, signal: Signal) -> Result<()> {
-    match kill_process_group(pid, signal) {
-        Ok(()) | Err(rustix::io::Errno::SRCH) => Ok(()),
-        Err(error) => Err(std::io::Error::from(error))
-            .context(|| "failed to signal the hook process group".to_owned()),
+    let mut escalation = process::Escalation::new(stop_timeout, None);
+    let ended = process::stop_group_probed(
+        child,
+        Signal::TERM,
+        &mut escalation,
+        token,
+        // A stop can also be asked for through the lock file.
+        Some(REQUEST_POLL),
+        |step| step.map_or_else(&mut request, |_| Ok(())),
+        group_members,
+    )
+    .context(|| "failed to stop the hook process group".to_owned())?
+    // `Spawned` kills and reaps the group as `run` returns an error.
+    .map_err(|(err, ended)| {
+        process::failed_stop(err, ended == process::Ended::Stopped, UNCONFIRMED)
+    })?;
+    match ended {
+        process::Ended::Exited => Ok(false),
+        process::Ended::Stopped => Ok(true),
+        // The leader is still unreaped here, so `Spawned` can kill the group
+        // again safely as `run` returns this.
+        process::Ended::Unconfirmed => Err(Error::Unsettled(UNCONFIRMED.to_owned())),
     }
 }
 
@@ -364,10 +306,8 @@ impl Drop for Spawned {
         if !self.finished {
             // This child is never reaped before cleanup, so its group number
             // cannot have been reused even if saving its identity failed.
-            if let Some(pid) = Pid::from_raw(self.child.id() as i32) {
-                let _ = kill_process_group(pid, Signal::KILL);
-            }
-            let _ = self.child.wait();
+            // Bounded, so a leader stuck in uninterruptible sleep can't hang.
+            process::kill_and_reap(&mut self.child);
         }
     }
 }
@@ -379,9 +319,14 @@ mod tests {
     use std::os::unix::process::ExitStatusExt;
     use std::sync::Arc;
     use std::thread;
+    use std::time::Instant;
 
     use super::*;
     use crate::operation::{Locks, Operation};
+    use crate::process::GroupOwnership;
+    use rustix::process::Pid;
+
+    const POLL: Duration = Duration::from_millis(20);
 
     fn paths(root: &Path, portable: bool) -> Paths {
         Paths::select(
@@ -525,7 +470,7 @@ mod tests {
         assert!(locks.hook_group("hades").unwrap().is_none());
     }
 
-    fn wait_ready(root: &Path, locks: &Locks) -> Running {
+    fn wait_ready(root: &Path, locks: &Locks) -> Identity {
         let deadline = Instant::now() + Duration::from_secs(5);
         loop {
             if root.join("ready").exists()
@@ -542,7 +487,7 @@ mod tests {
     fn interrupted(
         text: &str,
         timeout: Duration,
-        stop: impl FnOnce(&Token, &Running),
+        stop: impl FnOnce(&Token, &Identity),
     ) -> (ExitStatus, Duration) {
         let root = Arc::new(tempfile::tempdir().unwrap());
         let paths = paths(root.path(), false);
@@ -574,14 +519,7 @@ mod tests {
             })
         };
         let running = wait_ready(root.path(), &locks);
-        assert_eq!(
-            process::group_ownership(
-                Some(running.group),
-                Some(&running.boot_id),
-                Some(running.leader_start)
-            ),
-            GroupOwnership::Owned
-        );
+        assert_eq!(running.ownership(), GroupOwnership::Owned);
         let started = Instant::now();
         stop(&token, &running);
         let outcome = join_with_watchdog(task, &running);
@@ -601,7 +539,7 @@ mod tests {
         (status, elapsed)
     }
 
-    fn join_with_watchdog<T>(task: thread::JoinHandle<T>, running: &Running) -> T {
+    fn join_with_watchdog<T>(task: thread::JoinHandle<T>, running: &Identity) -> T {
         let deadline = Instant::now() + Duration::from_secs(5);
         while !task.is_finished() {
             if Instant::now() >= deadline {
@@ -692,31 +630,24 @@ mod tests {
             child,
             finished: false,
         };
-        let running = Running {
+        let running = Identity {
             group: spawned.child.id(),
             boot_id: process::boot_id().unwrap(),
             leader_start: process::start_time(spawned.child.id()).unwrap(),
         };
         for stale in [
-            Running {
+            Identity {
                 boot_id: "wrong-boot".to_owned(),
                 ..running.clone()
             },
-            Running {
+            Identity {
                 leader_start: running.leader_start + 1,
                 ..running.clone()
             },
         ] {
             assert_eq!(stale.kill_now().unwrap(), GroupOwnership::Gone);
             assert!(spawned.child.try_wait().unwrap().is_none());
-            assert_eq!(
-                process::group_ownership(
-                    Some(running.group),
-                    Some(&running.boot_id),
-                    Some(running.leader_start)
-                ),
-                GroupOwnership::Owned
-            );
+            assert_eq!(running.ownership(), GroupOwnership::Owned);
         }
     }
 
@@ -733,7 +664,7 @@ mod tests {
             child,
             finished: false,
         };
-        let running = Running {
+        let running = Identity {
             group: spawned.child.id(),
             boot_id: process::boot_id().unwrap(),
             leader_start: process::start_time(spawned.child.id()).unwrap(),
@@ -749,8 +680,12 @@ mod tests {
         let started = Instant::now();
         let task = thread::spawn(move || {
             let _root = root;
-            let pid = Pid::from_raw(spawned.child.id() as i32).unwrap();
-            assert!(wait_for_exit(pid, &token, timeout, |_| None).unwrap());
+            // Killed, but with nothing to inspect it can't be called stopped.
+            let unconfirmed = wait_for_exit(&spawned.child, &token, timeout, |_| None);
+            assert!(
+                matches!(&unconfirmed, Err(Error::Unsettled(message)) if message == UNCONFIRMED),
+                "{unconfirmed:?}"
+            );
             let status = spawned.child.wait().unwrap();
             spawned.finished = true;
             drop(spawned);

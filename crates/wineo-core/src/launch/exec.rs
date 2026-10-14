@@ -9,8 +9,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use anyhow::Context;
-use rustix::io::Errno;
-use rustix::process::{Pid, Signal, kill_process_group};
+use rustix::process::Signal;
 
 use crate::cancel::Token;
 use crate::config::GlobalConfig;
@@ -18,6 +17,7 @@ use crate::environment::Environment;
 use crate::error::Error;
 use crate::operation::{Locks, Operation};
 use crate::paths::Paths;
+use crate::process::{Ended, Escalation, Step};
 use crate::runtime::{Runtime, exit_code};
 use crate::supervisor::{Notice, Settle, Supervisor, Watched};
 
@@ -31,6 +31,7 @@ const NOTE_AFTER: Duration = Duration::from_millis(250);
 /// How long kills keep being retried before a stopped exec gives up waiting,
 /// as for installers.
 const GIVE_UP: Duration = Duration::from_secs(10);
+const UNCONFIRMED: &str = "the program's processes could not be confirmed stopped";
 
 #[derive(Debug)]
 pub enum ExecEvent {
@@ -217,19 +218,15 @@ pub fn watch_settled(
     stop_timeout: Duration,
     mut seen: impl FnMut(Settling),
 ) -> Settled {
-    let group = child.id();
     // Read while the program is at least a zombie, which the watch only
     // reaps at the end, so its identity can't be lost to a fast exit.
-    let boot_id = crate::process::boot_id();
-    let leader_start = crate::process::start_time(group);
+    let identity = crate::process::Identity::of(child.id());
     let host = host.clone();
     let (sender, watched) = mpsc::channel();
     let watcher = thread::spawn(move || {
         supervisor.watch(
             &host,
-            Some(group),
-            boot_id,
-            leader_start,
+            identity,
             child,
             stop_timeout,
             Settle::Confirmed,
@@ -298,57 +295,58 @@ fn run(
         .with_context(|| format!("failed to start {}", launch.host.launcher()))?;
     crate::process::quiet_core_dumps(&child);
     events(ExecEvent::Started);
-    let group = child.id();
-    let mut stopping = None;
-    let mut killing = false;
-    let mut exited = false;
-    let result = (|| {
-        loop {
-            if let Some(status) = child.try_wait().context("failed to wait for exec")? {
-                exited = true;
-                // Read only what is present now; handed-off programs can keep
-                // writing, and must not extend the lifetime of this worker.
-                let end = log.metadata()?.len();
-                lines.pump(end.saturating_sub(lines.read), events)?;
-                if !lines.pending.is_empty() {
-                    lines.finish(events);
-                }
-                events(ExecEvent::Exited {
-                    code: exit_code(status),
-                });
-                return Ok(status);
+    let mut escalation = Escalation::new(Duration::from_secs(stop_timeout.into()), None);
+    // Output lands in a file, which has nothing to wait on.
+    let stopped = crate::process::stop_group(
+        &child,
+        Signal::TERM,
+        &mut escalation,
+        token,
+        Some(POLL),
+        |step| {
+            match step {
+                None => return lines.pump(READ_BATCH, events),
+                Some(Step::Ask) => events(ExecEvent::Stopping),
+                Some(Step::Kill) => events(ExecEvent::Killing),
+                Some(Step::Rekill) => {}
             }
-            if token.is_canceled() && stopping.is_none() {
-                stopping = Some(Instant::now());
-                events(ExecEvent::Stopping);
-                signal(group, Signal::TERM)?;
-            }
-            if !killing
-                && stopping.is_some_and(|at| {
-                    token.is_forced() || at.elapsed() >= Duration::from_secs(stop_timeout.into())
-                })
-            {
-                killing = true;
-                events(ExecEvent::Killing);
-                signal(group, Signal::KILL)?;
-            }
-            lines.pump(READ_BATCH, events)?;
-            token.wait_timeout(POLL);
+            Ok(())
+        },
+    );
+    let failed = match stopped {
+        Ok(Ok(ended)) => Ok(ended),
+        Ok(Err((err, ended))) => Err((anyhow::Error::from(err), ended == Ended::Stopped)),
+        Err(err) => Err((
+            anyhow::Error::from(err).context("failed to stop exec process group"),
+            false,
+        )),
+    };
+    let ended = match failed {
+        Ok(ended) => ended,
+        Err((err, settled)) => {
+            let reaped = crate::process::kill_and_reap(&mut child);
+            return Err(if settled && reaped {
+                err
+            } else {
+                err.context(UNCONFIRMED)
+            });
         }
-    })();
-    if result.is_err() && !exited {
-        let _ = signal(group, Signal::KILL);
-        let _ = child.wait();
+    };
+    let status = child.wait().context("failed to wait for exec")?;
+    if ended == Ended::Unconfirmed {
+        return Err(Error::Unsettled(UNCONFIRMED.to_owned()).into());
     }
-    result
-}
-
-fn signal(group: u32, signal: Signal) -> anyhow::Result<()> {
-    let pid = Pid::from_raw(group as i32).context("invalid exec process group")?;
-    match kill_process_group(pid, signal) {
-        Ok(()) | Err(Errno::SRCH) => Ok(()),
-        Err(err) => Err(io::Error::from(err)).context("failed to stop exec process group"),
+    // Read only what is present now; handed-off programs can keep writing,
+    // and must not extend the lifetime of this worker.
+    let end = log.metadata()?.len();
+    lines.pump(end.saturating_sub(lines.read), events)?;
+    if !lines.pending.is_empty() {
+        lines.finish(events);
     }
+    events(ExecEvent::Exited {
+        code: exit_code(status),
+    });
+    Ok(status)
 }
 
 struct Lines {

@@ -25,6 +25,7 @@ use crate::launch::{Host, Launch, Overrides};
 use crate::log::{Cap, Log};
 use crate::operation::{Locks, Operation};
 use crate::prefix;
+use crate::process::{Escalation, Step};
 use crate::runtime::{RunMode, RunState, RunStatus, Runtime, exit_code};
 
 mod steam;
@@ -216,15 +217,12 @@ impl Supervisor {
         stats_log: &Path,
         mut notify: impl FnMut(Notice),
     ) -> Result<()> {
-        let group = state.group;
         let outlives = launch.host.outlives_program();
         // A run is over once the prefix looks idle, whether or not that could
         // be confirmed, so `settled` is not looked at.
         let ending = self.watch(
             &launch.host,
-            group,
-            state.boot_id.clone(),
-            state.leader_start,
+            state.identity(),
             child,
             stop_timeout,
             Settle::Idle,
@@ -281,9 +279,7 @@ impl Supervisor {
     pub(crate) fn watch(
         &self,
         host: &Host,
-        group: Option<u32>,
-        boot_id: Option<String>,
-        leader_start: Option<u64>,
+        identity: Option<crate::process::Identity>,
         mut child: Child,
         stop_timeout: Duration,
         settle: Settle,
@@ -338,29 +334,22 @@ impl Supervisor {
         let mut exit = None;
         let mut exit_status = None;
         let mut observed_exit = false;
-        let mut stopping = false;
-        let mut saw_cancel = false;
-        let mut saw_force = false;
         let mut heartbeat_at = Instant::now() + HEARTBEAT_INTERVAL;
-        let mut killing_since: Option<Instant> = None;
+        let mut escalation = Escalation::new(stop_timeout, Some(KILL_RETRY));
         // Tells when the request to close is done, since it runs wine too.
         let mut ending_session: Option<Receiver<()>> = None;
-        // When the clean stop gives up, or the next kill is due.
-        let mut deadline: Option<Instant> = None;
         let lost = || Err(Error::Unsettled("lost track of the program".to_owned()));
         let settled = loop {
-            let event = if self.token.as_ref().is_some_and(Token::is_forced) && !saw_force {
-                saw_force = true;
-                saw_cancel = true;
-                Event::Force
-            } else if self.token.as_ref().is_some_and(Token::is_canceled) && !saw_cancel {
-                saw_cancel = true;
-                Event::Stop
+            let followed =
+                (self.token.as_ref()).and_then(|token| escalation.follow(token, Instant::now()));
+            let step = if followed.is_some() {
+                followed
             } else {
                 // Heartbeats continue through a stop, since a lost run's end
                 // time comes from the last one.
+                let deadline = escalation.deadline();
                 let until = deadline.map_or(heartbeat_at, |d| d.min(heartbeat_at));
-                match self
+                let event = match self
                     .events
                     .recv_timeout(until.saturating_duration_since(Instant::now()))
                 {
@@ -369,62 +358,64 @@ impl Supervisor {
                         timed_out(deadline, &mut heartbeat_at, Instant::now())
                     }
                     Err(RecvTimeoutError::Disconnected) => break lost(),
+                };
+                match event {
+                    Event::Pulse | Event::ReaperExited => continue,
+                    Event::Heartbeat => {
+                        watched(Watched::Notice(Notice::Heartbeat));
+                        continue;
+                    }
+                    Event::Exited(status) => {
+                        observed_exit = true;
+                        exit_status = status.ok();
+                        exit = exit_status.map(exit_code);
+                        watched(Watched::Exited(exit));
+                        // Launchers often hand off to another process and exit, so
+                        // this lasts until nothing is left running in the prefix.
+                        let sender = self.sender.clone();
+                        let (host, identity) = (host.clone(), identity.clone());
+                        let unbounded = give_up.is_none();
+                        thread::spawn(move || {
+                            let result = match settle {
+                                Settle::Idle => host.wait_idle(identity.as_ref(), unbounded),
+                                Settle::Confirmed => {
+                                    host.wait_settled_live(identity.as_ref(), unbounded)
+                                }
+                            };
+                            let _ = sender.send(Event::Idle(result));
+                        });
+                        continue;
+                    }
+                    Event::WaitFailed(error) => break Err(error),
+                    Event::Idle(result) => break result,
+                    Event::Stop => escalation.request(false, Instant::now()),
+                    Event::Force => escalation.request(true, Instant::now()),
+                    Event::StopTimeout => escalation.poll(Instant::now()),
                 }
             };
-            match event {
-                Event::Pulse | Event::ReaperExited => continue,
-                Event::Heartbeat => watched(Watched::Notice(Notice::Heartbeat)),
-                Event::Exited(status) => {
-                    observed_exit = true;
-                    exit_status = status.ok();
-                    exit = exit_status.map(exit_code);
-                    watched(Watched::Exited(exit));
-                    // Launchers often hand off to another process and exit, so
-                    // this lasts until nothing is left running in the prefix.
-                    let sender = self.sender.clone();
-                    let (host, boot_id) = (host.clone(), boot_id.clone());
-                    let unbounded = give_up.is_none();
-                    thread::spawn(move || {
-                        let result = match settle {
-                            Settle::Idle => {
-                                host.wait_idle(group, boot_id.as_deref(), leader_start, unbounded)
-                            }
-                            Settle::Confirmed => host.wait_settled_live(
-                                group,
-                                boot_id.as_deref(),
-                                leader_start,
-                                unbounded,
-                            ),
-                        };
-                        let _ = sender.send(Event::Idle(result));
-                    });
-                }
-                Event::WaitFailed(error) => break Err(error),
-                Event::Idle(result) => break result,
-                Event::Stop if !stopping => {
-                    stopping = true;
-                    deadline = Some(Instant::now() + stop_timeout);
+            match step {
+                Some(Step::Ask) => {
                     watched(Watched::Notice(Notice::Stopping));
-                    let (host, boot_id) = (host.clone(), boot_id.clone());
+                    let (host, identity) = (host.clone(), identity.clone());
                     let (done, ended) = mpsc::channel();
                     ending_session = Some(ended);
                     thread::spawn(move || {
-                        let _ = host.end_session_live(group, boot_id.as_deref(), leader_start);
+                        let _ = host.end_session_live(identity.as_ref());
                         let _ = done.send(());
                     });
                 }
-                Event::Stop | Event::Force | Event::StopTimeout => {
-                    stopping = true;
-                    let since = *killing_since.get_or_insert_with(|| {
+                Some(step @ (Step::Kill | Step::Rekill)) => {
+                    if step == Step::Kill {
                         watched(Watched::Notice(Notice::Killing));
-                        Instant::now()
-                    });
+                    }
                     if let Some(limit) = give_up
-                        && since.elapsed() >= limit
+                        && escalation
+                            .killed_at()
+                            .is_some_and(|since| since.elapsed() >= limit)
                     {
                         break Err(Error::StillRunning((stop_timeout + limit).as_secs().max(1)));
                     }
-                    match host.kill_live(group, boot_id.as_deref(), leader_start) {
+                    match host.kill_live(identity.as_ref()) {
                         Ok(
                             crate::process::GroupOwnership::Owned
                             | crate::process::GroupOwnership::Gone,
@@ -436,8 +427,8 @@ impl Supervisor {
                         }
                         Err(err) => watched(Watched::Notice(Notice::Warning(err))),
                     }
-                    deadline = Some(Instant::now() + KILL_RETRY);
                 }
+                None => {}
             }
         };
         // The request to close can still be starting wine when the prefix
@@ -452,7 +443,7 @@ impl Supervisor {
         Ending {
             exit_code: exit,
             exit_status,
-            stopped: stopping,
+            stopped: escalation.stopping(),
             settled,
         }
     }

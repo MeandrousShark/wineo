@@ -19,8 +19,9 @@ use rustix::io::Errno;
 use serde::{Deserialize, Serialize};
 
 use crate::error::{Error, IoContext, Result};
-use crate::hooks::{Phase, Running};
+use crate::hooks::Phase;
 use crate::paths::{self, Paths, fnv1a, label};
+use crate::process::Identity;
 
 /// A probe holds a shared lock for a moment, so taking one retries for about
 /// this long before deciding another command really holds it.
@@ -197,7 +198,7 @@ impl Guard {
                         return None;
                     }
                     recorded.next()?;
-                    Some(Running {
+                    Some(Identity {
                         group: recorded.next()?.parse().ok()?,
                         boot_id: recorded.next()?.to_owned(),
                         leader_start: recorded.next()?.parse().ok()?,
@@ -209,7 +210,7 @@ impl Guard {
                         return false;
                     }
                     let request = (|| {
-                        Some(Running {
+                        Some(Identity {
                             group: words.next()?.parse().ok()?,
                             boot_id: words.next()?.to_owned(),
                             leader_start: words.next()?.parse().ok()?,
@@ -250,7 +251,7 @@ impl Guard {
         Ok(())
     }
 
-    pub(crate) fn record_hook(&self, phase: Phase, running: Option<&Running>) -> Result<()> {
+    pub(crate) fn record_hook(&self, phase: Phase, running: Option<&Identity>) -> Result<()> {
         if self.operation != Operation::Hook(phase) {
             return Err(Error::Unsettled(format!(
                 "{} hook requires its matching operation guard",
@@ -358,7 +359,7 @@ impl Locks {
         name: &str,
         expected: Phase,
         force: bool,
-    ) -> Result<Option<Running>> {
+    ) -> Result<Option<Identity>> {
         let Some((phase, running)) = self.hook_group(name)? else {
             return Ok(None);
         };
@@ -382,7 +383,7 @@ impl Locks {
     }
 
     /// A stale confirmation cannot force a later after hook using the same lock.
-    pub fn request_hook_force_for(&self, name: &str, expected: &Running) -> Result<bool> {
+    pub fn request_hook_force_for(&self, name: &str, expected: &Identity) -> Result<bool> {
         if self.hook_group(name)? != Some((Phase::After, expected.clone())) {
             return Ok(false);
         }
@@ -665,7 +666,7 @@ impl Locks {
     }
 
     /// Only active Hook holders expose a group; stale lock contents are ignored.
-    pub fn hook_group(&self, name: &str) -> Result<Option<(Phase, Running)>> {
+    pub fn hook_group(&self, name: &str) -> Result<Option<(Phase, Identity)>> {
         let path = self.name_path(name);
         if !path.exists() {
             return Ok(None);
@@ -682,7 +683,7 @@ impl Locks {
         };
         let _holder = words.next();
         let running = (|| {
-            Some(Running {
+            Some(Identity {
                 group: words.next()?.parse().ok()?,
                 boot_id: words.next()?.to_owned(),
                 leader_start: words.next()?.parse().ok()?,
@@ -970,7 +971,7 @@ mod tests {
         let held = locks
             .acquire(Operation::Hook(Phase::Before), "hades", &[])
             .unwrap();
-        let running = Running {
+        let running = Identity {
             group: 123,
             boot_id: "boot".to_owned(),
             leader_start: 456,
@@ -993,7 +994,7 @@ mod tests {
         let guard = locks
             .acquire(Operation::Hook(Phase::After), "app", &[])
             .unwrap();
-        let running = Running {
+        let running = Identity {
             group: 123,
             boot_id: "boot".to_owned(),
             leader_start: 456,
@@ -1032,12 +1033,12 @@ mod tests {
         let guard = locks
             .acquire(Operation::Hook(Phase::After), "app", &[])
             .unwrap();
-        let first = Running {
+        let first = Identity {
             group: 123,
             boot_id: "boot".to_owned(),
             leader_start: 456,
         };
-        let later = Running {
+        let later = Identity {
             group: 124,
             boot_id: "boot".to_owned(),
             leader_start: 789,

@@ -391,12 +391,7 @@ fn run_parts(
     record.boot_id = process::boot_id();
     record.leader_start = process::start_time(child.id());
     if let Err(err) = write_operation(&runtime, &record) {
-        let cleanup = runner.kill_owned(
-            prefix,
-            record.group,
-            record.boot_id.as_deref(),
-            record.leader_start,
-        );
+        let cleanup = runner.kill_owned(prefix, record.identity().as_ref());
         let _ = child.kill();
         let exit_code = child.wait().ok().map(crate::runtime::exit_code);
         let settled = match cleanup {
@@ -429,9 +424,7 @@ fn run_parts(
 
     let ending = supervisor.watch(
         &launch.host,
-        record.group,
-        record.boot_id.clone(),
-        record.leader_start,
+        record.identity(),
         child,
         stop_timeout,
         Settle::Confirmed,
@@ -564,12 +557,10 @@ fn clean_up_with(
             Cleaned::Gone
         }
         process::GroupOwnership::Owned => {
-            match target.runner.kill_owned(
-                &target.prefix,
-                target.group,
-                target.boot_id.as_deref(),
-                target.leader_start,
-            )? {
+            match target
+                .runner
+                .kill_owned(&target.prefix, target.identity().as_ref())?
+            {
                 process::GroupOwnership::Unknown => return Ok(Some(Cleaned::Unresolved)),
                 process::GroupOwnership::Gone => {
                     settle(&target, timeout)?;
@@ -647,20 +638,13 @@ fn cleanup_target(runtime: &Runtime) -> Result<Option<OperationState>> {
 /// Waits for a kill to take, giving up after `timeout` rather than hanging.
 fn settle(record: &OperationState, timeout: Duration) -> Result<()> {
     let (sender, settled) = mpsc::channel();
-    let (runner, prefix, group, boot_id, leader_start) = (
+    let (runner, prefix, identity) = (
         record.runner.clone(),
         record.prefix.clone(),
-        record.group,
-        record.boot_id.clone(),
-        record.leader_start,
+        record.identity(),
     );
     thread::spawn(move || {
-        let _ = sender.send(runner.wait_settled_owned(
-            &prefix,
-            group,
-            boot_id.as_deref(),
-            leader_start,
-        ));
+        let _ = sender.send(runner.wait_settled_owned(&prefix, identity.as_ref()));
     });
     settled
         .recv_timeout(timeout)
@@ -892,7 +876,12 @@ mod tests {
             panic!("the launched child's full identity should be available");
         };
         assert_eq!(
-            process::group_ownership(Some(group), Some(&boot), Some(leader_start)),
+            process::Identity {
+                group,
+                boot_id: boot,
+                leader_start
+            }
+            .ownership(),
             process::GroupOwnership::Gone
         );
     }

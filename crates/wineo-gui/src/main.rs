@@ -129,7 +129,7 @@ pub(crate) struct App {
     pub(crate) steam_request: Option<String>,
     pub(crate) panel_error: Option<PanelError>,
     pub(crate) hook_stop_confirm: Option<String>,
-    pub(crate) hook_stop_identity: Option<wineo_core::hooks::Running>,
+    pub(crate) hook_stop_identity: Option<wineo_core::process::Identity>,
     /// When the panel's polite Stop may turn into Force stop, by name.
     pub(crate) force_stop_at: Option<(String, Instant)>,
     pub(crate) panel_note: Option<String>,
@@ -3958,7 +3958,7 @@ mod tests {
     }
 
     fn record_after_hook_identity(paths: &Paths, name: &str) {
-        let running = wineo_core::hooks::Running {
+        let running = wineo_core::process::Identity {
             group: 12345,
             boot_id: "test-boot".into(),
             leader_start: 67890,
