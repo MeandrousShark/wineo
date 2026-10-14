@@ -55,6 +55,9 @@ more points:
 - **d.** Logging out, or logging in as another account, removes saved
   private-branch passwords.
 
+After the second plan review (2026-10-14), the maintainer answered
+questions 12 and 13 with A.
+
 ## What GOG offers
 
 From reading heroic-gogdl 1.3.1, Heroic, and lgogdownloader 3.19, then a
@@ -159,8 +162,8 @@ documentation. Items marked *probed* were checked live.
 ## Questions for the maintainer
 
 Recommendations first. Questions 1 to 11 were answered A (2026-10-14).
-Questions 12 and 13 came from the second plan review and are open; the
-design below assumes their recommendations.
+Questions 12 and 13 came from the second plan review and were answered A
+the same day. The design below follows every answer.
 
 ### 1. Track for a new Windows install
 
