@@ -58,6 +58,16 @@ more points:
 After the second plan review (2026-10-14), the maintainer answered
 questions 12 and 13 with A.
 
+After the third plan review (2026-10-14), the maintainer bounded the
+sidecar's crash windows with one rule: the sidecar is evidence, never
+authority. `installed` counts only when it matches the state's selection
+digest and the info file's hash, `pending` only with a matching journal,
+nothing is ever promoted, and deleting a file or overwriting it as tracked
+needs a content hash match; whatever can't be shown falls back to answer
+b. A window that only ends in answer b (a lost manifest, an extra download
+or rehash) is an accepted limit; one that deletes or overwrites without a
+hash match is a defect.
+
 ## What GOG offers
 
 From reading heroic-gogdl 1.3.1, Heroic, and lgogdownloader 3.19, then a
@@ -689,3 +699,6 @@ branch; and repairing a damaged file.
 - Builds GOG no longer lists can't be installed.
 - wineo never deletes a file whose content doesn't match what GOG shipped,
   and never touches files it didn't write.
+- A crash at the wrong moment can make wineo forget a game's stored
+  manifest, which costs a rehash or a download on the next update. It
+  never costs a file (the bounding rule above).
