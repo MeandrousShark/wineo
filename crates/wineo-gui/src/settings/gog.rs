@@ -363,7 +363,7 @@ impl Settings {
 }
 
 fn keyring() -> SecretServiceKeyring {
-    SecretServiceKeyring::for_spec(&KEY_SPEC)
+    SecretServiceKeyring::gog()
 }
 
 /// Who is logged in, read from what's saved without asking GOG.

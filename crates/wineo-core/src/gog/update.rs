@@ -25,6 +25,7 @@ use super::migrate::{host_only, id_text};
 use super::names;
 use super::product;
 use crate::environment::{self, Environment};
+use crate::files;
 use crate::paths::Paths;
 
 /// Whether a game is behind GOG.
@@ -425,10 +426,10 @@ pub fn recorded_gog_id(paths: &Paths, name: &str) -> Result<Option<String>, Upda
         name: name.to_owned(),
         detail,
     };
-    let text = match fs::read_to_string(paths.environment_config(name)) {
-        Ok(text) => text,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(error) => return Err(unloadable(error.to_string())),
+    let Some(text) = files::read_to_string_optional(&paths.environment_config(name))
+        .map_err(|error| unloadable(error.to_string()))?
+    else {
+        return Ok(None);
     };
     let doc: toml_edit::DocumentMut = text
         .parse()

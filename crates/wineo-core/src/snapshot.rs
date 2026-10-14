@@ -13,6 +13,7 @@ use crate::build_lock;
 use crate::cancel::Token;
 use crate::config::{EnvironmentConfig, GlobalConfig};
 use crate::environment::{self, Environment};
+use crate::files;
 use crate::gog;
 use crate::import::{self, ExternalDependency, ImportLayout, ImportProgress, SourceFingerprint};
 use crate::name;
@@ -874,14 +875,7 @@ fn rollback_locked(paths: &Paths, marker_path: &Path, marker: &RestoreMarker) ->
         .and_then(|config| {
             let wine = config.wine()?;
             let global = GlobalConfig::load(paths).ok()?;
-            build_lock::config(
-                paths,
-                &global,
-                Some(&wine.runner),
-                wine.dxvk.as_deref(),
-                wine.vkd3d.as_deref(),
-            )
-            .ok()
+            build_lock::wine(paths, &global, wine).ok()
         })
         .unwrap_or_default();
     write_config_atomic(&config_path, &marker.old_config)?;
@@ -905,13 +899,7 @@ fn with_config_build_locks<T>(
 ) -> Result<T> {
     let config = EnvironmentConfig::parse(config_path, contents)?;
     let _guards = match config.wine() {
-        Some(wine) => build_lock::config(
-            paths,
-            global,
-            Some(&wine.runner),
-            wine.dxvk.as_deref(),
-            wine.vkd3d.as_deref(),
-        )?,
+        Some(wine) => build_lock::wine(paths, global, wine)?,
         None => Vec::new(),
     };
     publish()
@@ -956,10 +944,7 @@ fn write_config_atomic(path: &Path, content: &str) -> Result<()> {
     let parent = path
         .parent()
         .ok_or_else(|| anyhow!("config has no parent"))?;
-    let mut temp = tempfile::NamedTempFile::new_in(parent)?;
-    temp.write_all(content.as_bytes())?;
-    temp.as_file().sync_all()?;
-    temp.persist(path).map_err(|err| anyhow!(err.error))?;
+    files::persist_synced(parent, path, content.as_bytes())?;
     sync_dir(parent)
 }
 

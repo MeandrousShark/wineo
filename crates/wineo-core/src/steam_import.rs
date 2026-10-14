@@ -74,7 +74,7 @@ impl OwnedData {
         refresh: bool,
         save: bool,
     ) -> anyhow::Result<Self> {
-        let keyring = SecretServiceKeyring::for_spec(&steam::key::KEY_SPEC);
+        let keyring = SecretServiceKeyring::steam();
         Self::load_with(
             paths,
             global,

@@ -53,8 +53,13 @@ enum ProcRead {
 
 /// This boot's id. A process recorded under another one is long gone.
 pub fn boot_id() -> Option<String> {
-    let id = fs::read_to_string("/proc/sys/kernel/random/boot_id").ok()?;
-    Some(id.trim().to_owned())
+    read_boot_id().ok()
+}
+
+pub(crate) fn read_boot_id() -> io::Result<String> {
+    Ok(fs::read_to_string("/proc/sys/kernel/random/boot_id")?
+        .trim()
+        .to_owned())
 }
 
 /// When a process started, in clock ticks since boot, as `/proc/<pid>/stat`
@@ -782,7 +787,8 @@ fn denied(err: &io::Error) -> bool {
     )
 }
 
-fn pidfd_exited(pidfd: &OwnedFd) -> io::Result<bool> {
+/// A pidfd can watch a process wineo did not spawn; waitid cannot.
+pub fn pidfd_exited(pidfd: &OwnedFd) -> io::Result<bool> {
     let mut descriptors = [PollFd::new(pidfd, PollFlags::IN)];
     // poll is never restarted after a signal handler runs, even with a zero
     // timeout, so a Ctrl+C mid-scan would otherwise surface as an error.

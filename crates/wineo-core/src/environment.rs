@@ -12,7 +12,7 @@ use crate::cancel::Token;
 use crate::config::{self, Arch, EnvironmentConfig, GlobalConfig, WineConfig};
 use crate::edit;
 use crate::error::{Error, IoContext, Result};
-use crate::files::{write_atomic, write_atomic_synced};
+use crate::files::{self, write_atomic, write_atomic_synced};
 use crate::installer::Output;
 use crate::name;
 use crate::operation::{LaunchReservation, Locks, Operation};
@@ -157,12 +157,10 @@ impl Environment {
         let path = paths.environment_config(name);
         #[cfg(test)]
         crate::read_log::note(&path);
-        let text = match fs::read_to_string(&path) {
-            Ok(text) => text,
-            Err(err) if err.kind() == io::ErrorKind::NotFound => {
-                return Err(Error::UnknownEnvironment(name.to_owned()));
-            }
-            Err(err) => return Err(err).context(|| format!("failed to read {}", path.display())),
+        let Some(text) = files::read_to_string_optional(&path)
+            .context(|| format!("failed to read {}", path.display()))?
+        else {
+            return Err(Error::UnknownEnvironment(name.to_owned()));
         };
         let config = EnvironmentConfig::parse(&path, &text)?;
         Ok(Self {
@@ -549,12 +547,10 @@ impl Environment {
         crate::snapshot::check_recovery_marker(paths, name)?;
         let path = paths.environment_config(name);
         let _guard = Locks::new(paths).config(&path)?;
-        let text = match fs::read_to_string(&path) {
-            Ok(text) => text,
-            Err(err) if err.kind() == io::ErrorKind::NotFound => {
-                return Err(Error::UnknownEnvironment(name.to_owned()));
-            }
-            Err(err) => return Err(err).context(|| format!("failed to read {}", path.display())),
+        let Some(text) = files::read_to_string_optional(&path)
+            .context(|| format!("failed to read {}", path.display()))?
+        else {
+            return Err(Error::UnknownEnvironment(name.to_owned()));
         };
         let environment = Self {
             name: name.to_owned(),

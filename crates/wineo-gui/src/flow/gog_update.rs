@@ -483,7 +483,7 @@ impl Page {
 }
 
 fn keyring() -> SecretServiceKeyring {
-    SecretServiceKeyring::for_spec(&wineo_core::gog::account::KEY_SPEC)
+    SecretServiceKeyring::gog()
 }
 
 /// The question offered when a Windows installer never started.

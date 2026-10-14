@@ -3,7 +3,7 @@
 #![allow(clippy::too_many_arguments)]
 
 use std::collections::{BTreeMap, HashSet};
-use std::fs::{self, File};
+use std::fs::File;
 use std::io::{self, Read};
 use std::os::unix::process::CommandExt;
 use std::path::Path;
@@ -20,6 +20,7 @@ use crate::cancel::Token;
 use crate::config::GlobalConfig;
 use crate::environment::Environment;
 use crate::error::Error;
+use crate::files;
 use crate::install::{self, Wanted};
 use crate::installer::Output;
 use crate::launch::{self, LaunchEvent, merge_env};
@@ -409,10 +410,8 @@ fn install_missing_for_context(
 /// Read winetricks' installed record from the actual Wine prefix. For Proton,
 /// pass `runner.wine_prefix(configured_prefix)` so this reads `pfx/`.
 pub fn installed(wine_prefix: &Path) -> io::Result<HashSet<String>> {
-    let log = match fs::read_to_string(wine_prefix.join("winetricks.log")) {
-        Ok(log) => log,
-        Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(HashSet::new()),
-        Err(err) => return Err(err),
+    let Some(log) = files::read_to_string_optional(&wine_prefix.join("winetricks.log"))? else {
+        return Ok(HashSet::new());
     };
     Ok(log
         .lines()
@@ -838,6 +837,8 @@ fn settle(
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
+
     use crate::test_script::write_script;
 
     use super::*;

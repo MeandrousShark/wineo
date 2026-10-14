@@ -24,6 +24,16 @@ impl SecretServiceKeyring {
         Self::for_spec(&crate::steamgriddb::KEY_SPEC)
     }
 
+    /// The item holding the GOG login.
+    pub fn gog() -> Self {
+        Self::for_spec(&crate::gog::account::KEY_SPEC)
+    }
+
+    /// The item holding the Steam key.
+    pub fn steam() -> Self {
+        Self::for_spec(&crate::steam::key::KEY_SPEC)
+    }
+
     /// The item holding the key a spec describes.
     pub fn for_spec(spec: &KeySpec) -> Self {
         Self {

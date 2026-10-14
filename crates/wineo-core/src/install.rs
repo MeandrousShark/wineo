@@ -6,7 +6,6 @@
 
 use std::collections::BTreeMap;
 use std::fs;
-use std::io;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 
@@ -16,7 +15,7 @@ use crate::build_lock;
 use crate::components::{Build, Builds, Component};
 use crate::config::{EnvironmentConfig, GlobalConfig};
 use crate::error::{Error, IoContext, Result};
-use crate::files::write_atomic;
+use crate::files::{self, write_atomic};
 use crate::paths::Paths;
 use crate::runner::Runner;
 
@@ -99,10 +98,10 @@ struct Entry {
 impl Manifest {
     fn read(wine_prefix: &Path) -> Result<Self> {
         let path = wine_prefix.join(MANIFEST);
-        let text = match fs::read_to_string(&path) {
-            Ok(text) => text,
-            Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(Self::default()),
-            Err(err) => return Err(err).context(|| format!("failed to read {}", path.display())),
+        let Some(text) = files::read_to_string_optional(&path)
+            .context(|| format!("failed to read {}", path.display()))?
+        else {
+            return Ok(Self::default());
         };
         toml::from_str(&text).map_err(|source| Error::StateSyntax {
             path,
@@ -113,11 +112,9 @@ impl Manifest {
     fn write(&self, wine_prefix: &Path) -> Result<()> {
         let path = wine_prefix.join(MANIFEST);
         if self.components.is_empty() {
-            return match fs::remove_file(&path) {
-                Ok(()) => Ok(()),
-                Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(()),
-                Err(err) => Err(err).context(|| format!("failed to remove {}", path.display())),
-            };
+            return files::remove_if_present(&path)
+                .map(drop)
+                .context(|| format!("failed to remove {}", path.display()));
         }
         let text = toml::to_string(self).expect("the manifest always serializes");
         write_atomic(&path, &text)
@@ -351,14 +348,9 @@ fn remove(
             fs::rename(&backup, &path)
                 .context(|| format!("failed to restore {}", path.display()))?;
         } else {
-            match fs::remove_file(&path) {
-                Ok(()) => {}
-                // Already gone is the state this is trying to reach.
-                Err(err) if err.kind() == io::ErrorKind::NotFound => {}
-                Err(err) => {
-                    return Err(err).context(|| format!("failed to remove {}", path.display()));
-                }
-            }
+            // Already gone is the state this is trying to reach.
+            files::remove_if_present(&path)
+                .context(|| format!("failed to remove {}", path.display()))?;
         }
     }
     for dll in component.overrides() {

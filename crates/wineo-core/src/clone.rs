@@ -235,13 +235,7 @@ pub fn execute_reviewed(
     }
     let config = EnvironmentConfig::parse(&config_path, &reviewed.config_text)?;
     let wine = config.require_wine(&reviewed.new_name)?;
-    let _build_guards = build_lock::config(
-        paths,
-        global,
-        Some(&wine.runner),
-        wine.dxvk.as_deref(),
-        wine.vkd3d.as_deref(),
-    )?;
+    let _build_guards = build_lock::wine(paths, global, wine)?;
     import::write_config_once(&config_path, &reviewed.config_text)
         .map_err(|err| anyhow!("{}; registration failed: {err}", recovery()))?;
     operation.relabel(Operation::Configure).map_err(|err| {

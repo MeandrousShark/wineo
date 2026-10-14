@@ -17,7 +17,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::config::Launcher;
 use crate::error::{Error, IoContext, Result, chain};
-use crate::files::write_atomic;
+use crate::files::{self, write_atomic};
 use crate::launch::{Host, Overrides};
 use crate::operation::Operation;
 use crate::paths::Paths;
@@ -413,11 +413,9 @@ impl Runtime {
     /// writing it, or when nothing ran yet.
     pub fn holder_pid(&self) -> Result<Option<u32>> {
         let path = self.lock_path();
-        match fs::read_to_string(&path) {
-            Ok(text) => Ok(text.trim().parse().ok()),
-            Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(None),
-            Err(err) => Err(err).context(|| format!("failed to read {}", path.display())),
-        }
+        let text = files::read_to_string_optional(&path)
+            .context(|| format!("failed to read {}", path.display()))?;
+        Ok(text.and_then(|text| text.trim().parse().ok()))
     }
 
     pub fn status(&self) -> Result<Status> {
@@ -465,10 +463,10 @@ impl Runtime {
 
     pub fn read_state(&self) -> Result<Option<RunState>> {
         let path = self.state_path();
-        let text = match fs::read_to_string(&path) {
-            Ok(text) => text,
-            Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(None),
-            Err(err) => return Err(err).context(|| format!("failed to read {}", path.display())),
+        let Some(text) = files::read_to_string_optional(&path)
+            .context(|| format!("failed to read {}", path.display()))?
+        else {
+            return Ok(None);
         };
         toml::from_str(&text)
             .map(Some)
@@ -488,10 +486,10 @@ impl Runtime {
     /// without having confirmed that everything it started has stopped.
     pub fn read_operation(&self) -> Result<Option<OperationState>> {
         let path = self.operation_path();
-        let text = match fs::read_to_string(&path) {
-            Ok(text) => text,
-            Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(None),
-            Err(err) => return Err(err).context(|| format!("failed to read {}", path.display())),
+        let Some(text) = files::read_to_string_optional(&path)
+            .context(|| format!("failed to read {}", path.display()))?
+        else {
+            return Ok(None);
         };
         toml::from_str(&text)
             .map(Some)
@@ -508,11 +506,9 @@ impl Runtime {
 
     pub fn clear_operation(&self) -> Result<()> {
         let path = self.operation_path();
-        match fs::remove_file(&path) {
-            Ok(()) => Ok(()),
-            Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(()),
-            Err(err) => Err(err).context(|| format!("failed to remove {}", path.display())),
-        }
+        files::remove_if_present(&path)
+            .map(drop)
+            .context(|| format!("failed to remove {}", path.display()))
     }
 
     /// Refuses work that needs the prefix to itself: a run going on, a run

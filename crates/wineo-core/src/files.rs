@@ -1,5 +1,5 @@
-use std::fs::{self, OpenOptions};
-use std::io::Write;
+use std::fs::{self, File, OpenOptions};
+use std::io::{self, Write};
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -24,8 +24,47 @@ pub(crate) fn write_atomic_synced(path: &Path, contents: impl AsRef<[u8]>) -> Re
     };
     let dir = path.parent().unwrap_or(Path::new("."));
     write_with(path, contents.as_ref(), &COUNTER, options)
-        .and_then(|()| fs::File::open(dir)?.sync_all())
+        .and_then(|()| sync_dir(dir))
         .context(|| format!("failed to write {}", path.display()))
+}
+
+/// Reads a file, or `None` when there is none.
+pub(crate) fn read_optional(path: &Path) -> io::Result<Option<Vec<u8>>> {
+    found(fs::read(path))
+}
+
+/// Reads a text file, or `None` when there is none.
+pub(crate) fn read_to_string_optional(path: &Path) -> io::Result<Option<String>> {
+    found(fs::read_to_string(path))
+}
+
+/// Removes a file, returning whether there was one.
+pub(crate) fn remove_if_present(path: &Path) -> io::Result<bool> {
+    Ok(found(fs::remove_file(path))?.is_some())
+}
+
+fn found<T>(result: io::Result<T>) -> io::Result<Option<T>> {
+    match result {
+        Ok(value) => Ok(Some(value)),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error),
+    }
+}
+
+/// Makes the entries in `dir` durable: a created, renamed, or removed name
+/// is only on disk once its directory is synced.
+pub(crate) fn sync_dir(dir: &Path) -> io::Result<()> {
+    File::open(dir)?.sync_all()
+}
+
+/// Replaces `path` through a synced temp file in `dir`, which must be on the
+/// same filesystem. The caller syncs the directory afterwards.
+pub(crate) fn persist_synced(dir: &Path, path: &Path, contents: &[u8]) -> io::Result<()> {
+    let mut temp = tempfile::NamedTempFile::new_in(dir)?;
+    temp.write_all(contents)?;
+    temp.as_file().sync_all()?;
+    temp.persist(path).map_err(|error| error.error)?;
+    Ok(())
 }
 
 /// One counter for every kind of writer, so they never race for a temp name.
@@ -42,13 +81,13 @@ struct Options {
 /// Writes through a temp file no other writer can share, then renames it
 /// into place. Concurrent writers of one path each get their own file, so
 /// neither can rename a half-written one into place or delete the other's.
-pub(crate) fn write_unique(path: &Path, contents: &[u8]) -> std::io::Result<()> {
+pub(crate) fn write_unique(path: &Path, contents: &[u8]) -> io::Result<()> {
     write_unique_with(path, contents, &COUNTER)
 }
 
 /// Like `write_unique`, for secrets: the temp file is created `0600` and
 /// synced before the rename.
-pub(crate) fn write_unique_private(path: &Path, contents: &[u8]) -> std::io::Result<()> {
+pub(crate) fn write_unique_private(path: &Path, contents: &[u8]) -> io::Result<()> {
     let options = Options {
         mode: Some(0o600),
         sync: true,
@@ -60,7 +99,7 @@ pub(crate) fn write_unique_with(
     path: &Path,
     contents: &[u8],
     counter: &AtomicU64,
-) -> std::io::Result<()> {
+) -> io::Result<()> {
     write_with(path, contents, counter, Options::default())
 }
 
@@ -69,16 +108,13 @@ fn write_with(
     contents: &[u8],
     counter: &AtomicU64,
     options: Options,
-) -> std::io::Result<()> {
+) -> io::Result<()> {
     const TRIES: usize = 8;
     let dir = path.parent().unwrap_or(Path::new(""));
     fs::create_dir_all(dir)?;
-    let base = path.file_name().ok_or_else(|| {
-        std::io::Error::new(
-            std::io::ErrorKind::InvalidInput,
-            "the path has no file name",
-        )
-    })?;
+    let base = path
+        .file_name()
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "the path has no file name"))?;
     for _ in 0..TRIES {
         let mut name = base.to_owned();
         name.push(format!(
@@ -95,7 +131,7 @@ fn write_with(
         let mut file = match open.open(&tmp) {
             Ok(file) => file,
             // Someone else's file, maybe a crash leftover. Leave it alone.
-            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
             Err(error) => return Err(error),
         };
         // From here the temp file is this writer's own to clean up.
@@ -114,8 +150,8 @@ fn write_with(
         }
         return result;
     }
-    Err(std::io::Error::new(
-        std::io::ErrorKind::AlreadyExists,
+    Err(io::Error::new(
+        io::ErrorKind::AlreadyExists,
         "no free temp file name",
     ))
 }
