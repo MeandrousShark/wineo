@@ -21,6 +21,9 @@ use crate::cancel::{Subscription, Token};
 /// since they have nothing to wait on. Backs off to the max.
 const SETTLE_POLL: Duration = Duration::from_millis(20);
 const SETTLE_POLL_MAX: Duration = Duration::from_millis(250);
+/// How long cleanup after a failure waits for a killed group, so a process
+/// stuck in uninterruptible sleep can't hang the caller.
+pub const CLEANUP_BOUND: Duration = Duration::from_secs(10);
 /// How often a stop looks around when it has nothing to block on.
 const FALLBACK_POLL: Duration = Duration::from_millis(20);
 
@@ -402,7 +405,7 @@ pub fn leader_exited(leader: &Child) -> io::Result<bool> {
 /// Waits for `leader`, an unreaped child leading its own group, stopping the
 /// group as `token` and `escalation` say: `ask` first, then SIGKILL. `on`
 /// hears `None` each time round and each step once it is signaled; an error
-/// from it kills the group before it is returned. Returns
+/// from it kills the group, and comes back with how the group ended. Returns
 /// once the leader exits and, after a stop, nothing in the group is left
 /// running or that can't be inspected after a kill. The leader stays unreaped
 /// for the caller. The outer error is the helper's own, the inner one `on`'s.
@@ -417,7 +420,7 @@ pub fn stop_group<E>(
     token: &Token,
     tick: Option<Duration>,
     on: impl FnMut(Option<Step>) -> Result<(), E>,
-) -> io::Result<Result<Ended, E>> {
+) -> io::Result<Result<Ended, (E, Ended)>> {
     stop_group_probed(
         leader,
         ask,
@@ -437,7 +440,7 @@ pub(crate) fn stop_group_probed<E>(
     tick: Option<Duration>,
     on: impl FnMut(Option<Step>) -> Result<(), E>,
     members: impl Fn(u32) -> Option<bool>,
-) -> io::Result<Result<Ended, E>> {
+) -> io::Result<Result<Ended, (E, Ended)>> {
     let wake = Wake::open(leader, token);
     stop_group_with(leader, ask, escalation, token, tick, on, members, wake)
 }
@@ -482,12 +485,12 @@ pub(crate) fn stop_group_with<E>(
     mut on: impl FnMut(Option<Step>) -> Result<(), E>,
     members: impl Fn(u32) -> Option<bool>,
     wake: io::Result<Wake>,
-) -> io::Result<Result<Ended, E>> {
+) -> io::Result<Result<Ended, (E, Ended)>> {
     let wake = wake.ok();
     let mut settle_poll = SETTLE_POLL;
     loop {
         if let Err(err) = on(None) {
-            return abandon(leader, &members, err);
+            return abandon(leader, &members, err, CLEANUP_BOUND);
         }
         // Checked before signaling, so a reaped leader is an error, not a
         // signal to whatever reused its number.
@@ -499,7 +502,7 @@ pub(crate) fn stop_group_with<E>(
             // keep the group alive.
             signal_led_group(leader, if step == Step::Ask { ask } else { Signal::KILL })?;
             if let Err(err) = on(Some(step)) {
-                return abandon(leader, &members, err);
+                return abandon(leader, &members, err, CLEANUP_BOUND);
             }
             // A zero grace period kills along with the ask.
             next = (step == Step::Ask).then(|| escalation.poll(now)).flatten();
@@ -531,28 +534,83 @@ pub(crate) fn stop_group_with<E>(
     }
 }
 
-/// Ends a stop whose caller failed: kills the whole group and waits until
-/// nothing in it is left running, as far as it can be inspected, so an error
-/// never leaves the group behind. The leader stays unreaped.
+/// Ends a stop whose caller failed: kills the whole group and waits, up to
+/// `bound`, until nothing in it is left running. Returns the error with how
+/// the group ended, `Unconfirmed` if that couldn't be seen in time, since a
+/// process in uninterruptible sleep can outlast SIGKILL. The leader stays
+/// unreaped.
 fn abandon<E>(
     leader: &Child,
     members: &impl Fn(u32) -> Option<bool>,
     err: E,
-) -> io::Result<Result<Ended, E>> {
+    bound: Duration,
+) -> io::Result<Result<Ended, (E, Ended)>> {
     signal_led_group(leader, Signal::KILL)?;
+    let deadline = Instant::now() + bound;
     let mut poll = SETTLE_POLL;
-    while !leader_exited(leader)? || members(leader.id()) == Some(true) {
-        std::thread::sleep(poll);
+    loop {
+        if leader_exited(leader)? {
+            match members(leader.id()) {
+                Some(false) => return Ok(Err((err, Ended::Stopped))),
+                None => return Ok(Err((err, Ended::Unconfirmed))),
+                Some(true) => {}
+            }
+        }
+        let left = deadline.saturating_duration_since(Instant::now());
+        if left.is_zero() {
+            return Ok(Err((err, Ended::Unconfirmed)));
+        }
+        std::thread::sleep(poll.min(left));
         poll = (poll * 2).min(SETTLE_POLL_MAX);
     }
-    Ok(Err(err))
 }
 
-/// Kills the group `leader` leads and reaps it, for a caller giving up on a
-/// stop. Only for a child nothing has reaped yet.
-pub fn kill_and_reap(leader: &mut Child) {
+/// Kills the group `leader` leads and reaps the leader, for a caller giving
+/// up on a stop. Only for a child nothing has reaped yet. Gives up after
+/// `CLEANUP_BOUND`, leaving a leader stuck in uninterruptible sleep unreaped
+/// rather than hanging; false then.
+pub fn kill_and_reap(leader: &mut Child) -> bool {
     let _ = signal_led_group(leader, Signal::KILL);
-    let _ = leader.wait();
+    reap_within(leader, CLEANUP_BOUND, |leader| {
+        leader.try_wait().map(|status| status.is_some())
+    })
+}
+
+/// A failed stop's error, saying `unconfirmed` too unless its group was seen
+/// to stop and its leader reaped.
+pub(crate) fn failed_stop(
+    err: crate::error::Error,
+    settled: bool,
+    unconfirmed: &str,
+) -> crate::error::Error {
+    if settled {
+        return err;
+    }
+    crate::error::Error::Unsettled(format!(
+        "{unconfirmed} after: {}",
+        crate::error::chain(&err)
+    ))
+}
+
+/// Reaps `leader` through `reap` once it can be, for up to `bound`.
+fn reap_within(
+    leader: &mut Child,
+    bound: Duration,
+    mut reap: impl FnMut(&mut Child) -> io::Result<bool>,
+) -> bool {
+    let deadline = Instant::now() + bound;
+    let mut poll = SETTLE_POLL;
+    loop {
+        if reap(leader).unwrap_or(false) {
+            return true;
+        }
+        let left = deadline.saturating_duration_since(Instant::now());
+        if left.is_zero() {
+            return false;
+        }
+        std::thread::sleep(poll.min(left));
+        poll = (poll * 2).min(SETTLE_POLL_MAX);
+    }
 }
 
 /// Sleeps until `exit` or `raised` is readable or `timeout` passes, then
@@ -1434,8 +1492,59 @@ mod tests {
         let live = group_has_live_members(child.id());
         let _ = signal_led_group(&child, Signal::KILL);
         child.wait().unwrap();
-        assert_eq!(answer.unwrap(), Err("output read failed"));
+        assert_eq!(answer.unwrap(), Err(("output read failed", Ended::Stopped)));
         assert_eq!(live, Some(false));
+    }
+
+    /// Runs `cleanup` on another thread and fails rather than hangs if it
+    /// outlasts `limit`.
+    fn finishes_within<T: Send + 'static>(
+        limit: Duration,
+        cleanup: impl FnOnce() -> T + Send + 'static,
+    ) -> (T, Duration) {
+        let (sender, finished) = std::sync::mpsc::channel();
+        let started = Instant::now();
+        thread::spawn(move || {
+            let _ = sender.send(cleanup());
+        });
+        let value = finished
+            .recv_timeout(limit)
+            .expect("cleanup did not finish within its bound");
+        (value, started.elapsed())
+    }
+
+    #[test]
+    fn cleanup_of_a_group_that_never_settles_gives_up_unconfirmed() {
+        // Stands in for a member stuck in uninterruptible sleep after SIGKILL.
+        let child = ready_group("echo ready; sleep 30");
+        let bound = Duration::from_millis(300);
+        let child = std::sync::Arc::new(std::sync::Mutex::new(child));
+        let leader = child.clone();
+        let (answer, elapsed) = finishes_within(bound + Duration::from_secs(3), move || {
+            let leader = leader.lock().unwrap();
+            abandon(&leader, &|_| Some(true), "read failed", bound).map_err(|err| err.kind())
+        });
+        child.lock().unwrap().wait().unwrap();
+        assert_eq!(answer, Ok(Err(("read failed", Ended::Unconfirmed))));
+        assert!(elapsed >= bound);
+    }
+
+    #[test]
+    fn reaping_a_leader_that_never_becomes_waitable_gives_up() {
+        let bound = Duration::from_millis(300);
+        let (reaped, elapsed) = finishes_within(bound + Duration::from_secs(3), move || {
+            let mut leader = process_group(&mut Command::new("sleep"))
+                .arg("30")
+                .spawn()
+                .unwrap();
+            // A reap that never succeeds, as for a leader in uninterruptible sleep.
+            let reaped = reap_within(&mut leader, bound, |_| Ok(false));
+            let _ = leader.kill();
+            let _ = leader.wait();
+            reaped
+        });
+        assert!(!reaped);
+        assert!(elapsed >= bound);
     }
 
     #[test]
@@ -1461,7 +1570,7 @@ mod tests {
             let _ = child.kill();
             let _ = child.wait();
         }
-        assert_eq!(answer.unwrap(), Err("cleanup failed"));
+        assert_eq!(answer.unwrap(), Err(("cleanup failed", Ended::Stopped)));
         use std::os::unix::process::ExitStatusExt;
         assert_eq!(status.and_then(|status| status.signal()), Some(9));
     }

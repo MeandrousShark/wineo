@@ -34,6 +34,7 @@ use crate::runtime::Runtime;
 const MANAGED: [&str; 3] = ["WINEPREFIX", "WINE", "WINESERVER"];
 const MANAGED_PROTON: [&str; 1] = ["WINEPREFIX"];
 const POLL: Duration = Duration::from_millis(100);
+const UNCONFIRMED: &str = "winetricks' processes could not be confirmed stopped";
 
 #[derive(Debug)]
 pub enum WinetricksEvent {
@@ -639,7 +640,7 @@ fn run_with_output(
     let tick = tail.is_some().then_some(POLL);
     // Reported once the group is gone, so the stop still finishes.
     let mut cleanup = Ok(());
-    let ended = process::stop_group(&child, Signal::INT, &mut escalation, token, tick, |step| {
+    let stopped = process::stop_group(&child, Signal::INT, &mut escalation, token, tick, |step| {
         match step {
             None => {
                 if let Some(tail) = &mut tail {
@@ -654,14 +655,24 @@ fn run_with_output(
             Some(process::Step::Rekill) => {}
         }
         anyhow::Ok(())
-    })
-    .context("failed to stop the winetricks process group")
-    .and_then(|ended| ended);
-    let ended = match ended {
+    });
+    let failed = match stopped {
+        Ok(Ok(ended)) => Ok(ended),
+        Ok(Err((err, ended))) => Err((err, ended == process::Ended::Stopped)),
+        Err(err) => Err((
+            anyhow::Error::from(err).context("failed to stop the winetricks process group"),
+            false,
+        )),
+    };
+    let ended = match failed {
         Ok(ended) => ended,
-        Err(err) => {
-            process::kill_and_reap(&mut child);
-            return Err(err);
+        Err((err, settled)) => {
+            let reaped = process::kill_and_reap(&mut child);
+            return Err(if settled && reaped {
+                err
+            } else {
+                err.context(UNCONFIRMED)
+            });
         }
     };
     if let Err(err) = cleanup {
@@ -670,10 +681,7 @@ fn run_with_output(
     }
     if ended == process::Ended::Unconfirmed {
         let _ = child.wait();
-        return Err(Error::Unsettled(
-            "winetricks' processes could not be confirmed stopped".to_owned(),
-        )
-        .into());
+        return Err(Error::Unsettled(UNCONFIRMED.to_owned()).into());
     }
     if let Some(tail) = &mut tail {
         tail.pump(&mut events);

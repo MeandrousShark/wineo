@@ -16,6 +16,7 @@ use crate::process::{Ended, Escalation};
 use crate::runner::Runner;
 
 const CHILD_POLL: Duration = Duration::from_millis(25);
+const UNCONFIRMED: &str = "the prefix processes could not be confirmed stopped";
 const CANCEL_GRACE: Duration = Duration::from_secs(2);
 
 #[derive(Debug)]
@@ -280,20 +281,28 @@ pub(crate) fn wait_for_child(
 ) -> Result<ExitStatus> {
     let mut escalation = Escalation::new(CANCEL_GRACE, None);
     let mut canceled = false;
-    let ended =
+    let stopped =
         crate::process::stop_group(&child, Signal::TERM, &mut escalation, token, None, |step| {
             if step.is_none() || std::mem::replace(&mut canceled, true) {
                 return Ok(());
             }
             on_cancel()
         })
-        .context(|| "failed to stop the prefix process group".to_owned())
-        .and_then(|ended| ended);
-    let ended = match ended {
+        .context(|| "failed to stop the prefix process group".to_owned());
+    let failed = match stopped {
+        Ok(Ok(ended)) => Ok(ended),
+        Ok(Err((err, ended))) => Err((err, ended == Ended::Stopped)),
+        Err(err) => Err((err, false)),
+    };
+    let ended = match failed {
         Ok(ended) => ended,
-        Err(err) => {
-            crate::process::kill_and_reap(&mut child);
-            return Err(err);
+        Err((err, settled)) => {
+            let reaped = crate::process::kill_and_reap(&mut child);
+            return Err(crate::process::failed_stop(
+                err,
+                settled && reaped,
+                UNCONFIRMED,
+            ));
         }
     };
     let group = child.id();

@@ -31,6 +31,7 @@ const NOTE_AFTER: Duration = Duration::from_millis(250);
 /// How long kills keep being retried before a stopped exec gives up waiting,
 /// as for installers.
 const GIVE_UP: Duration = Duration::from_secs(10);
+const UNCONFIRMED: &str = "the program's processes could not be confirmed stopped";
 
 #[derive(Debug)]
 pub enum ExecEvent {
@@ -296,7 +297,7 @@ fn run(
     events(ExecEvent::Started);
     let mut escalation = Escalation::new(Duration::from_secs(stop_timeout.into()), None);
     // Output lands in a file, which has nothing to wait on.
-    let ended = crate::process::stop_group(
+    let stopped = crate::process::stop_group(
         &child,
         Signal::TERM,
         &mut escalation,
@@ -311,22 +312,29 @@ fn run(
             }
             Ok(())
         },
-    )
-    .context("failed to stop exec process group")
-    .and_then(|pumped| Ok(pumped?));
-    let ended = match ended {
+    );
+    let failed = match stopped {
+        Ok(Ok(ended)) => Ok(ended),
+        Ok(Err((err, ended))) => Err((anyhow::Error::from(err), ended == Ended::Stopped)),
+        Err(err) => Err((
+            anyhow::Error::from(err).context("failed to stop exec process group"),
+            false,
+        )),
+    };
+    let ended = match failed {
         Ok(ended) => ended,
-        Err(err) => {
-            crate::process::kill_and_reap(&mut child);
-            return Err(err);
+        Err((err, settled)) => {
+            let reaped = crate::process::kill_and_reap(&mut child);
+            return Err(if settled && reaped {
+                err
+            } else {
+                err.context(UNCONFIRMED)
+            });
         }
     };
     let status = child.wait().context("failed to wait for exec")?;
     if ended == Ended::Unconfirmed {
-        return Err(Error::Unsettled(
-            "the program's processes could not be confirmed stopped".to_owned(),
-        )
-        .into());
+        return Err(Error::Unsettled(UNCONFIRMED.to_owned()).into());
     }
     // Read only what is present now; handed-off programs can keep writing,
     // and must not extend the lifetime of this worker.

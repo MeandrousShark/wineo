@@ -6,7 +6,7 @@ use std::path::Path;
 use std::process::{Child, Command, ExitStatus, Stdio};
 use std::time::Duration;
 
-use rustix::process::{Pid, Signal, kill_process_group};
+use rustix::process::Signal;
 use serde::{Deserialize, Serialize};
 
 use crate::cancel::Token;
@@ -282,7 +282,11 @@ fn wait_for_exit_requested(
         |step| step.map_or_else(&mut request, |_| Ok(())),
         group_members,
     )
-    .context(|| "failed to stop the hook process group".to_owned())??;
+    .context(|| "failed to stop the hook process group".to_owned())?
+    // `Spawned` kills and reaps the group as `run` returns an error.
+    .map_err(|(err, ended)| {
+        process::failed_stop(err, ended == process::Ended::Stopped, UNCONFIRMED)
+    })?;
     match ended {
         process::Ended::Exited => Ok(false),
         process::Ended::Stopped => Ok(true),
@@ -302,10 +306,8 @@ impl Drop for Spawned {
         if !self.finished {
             // This child is never reaped before cleanup, so its group number
             // cannot have been reused even if saving its identity failed.
-            if let Some(pid) = Pid::from_raw(self.child.id() as i32) {
-                let _ = kill_process_group(pid, Signal::KILL);
-            }
-            let _ = self.child.wait();
+            // Bounded, so a leader stuck in uninterruptible sleep can't hang.
+            process::kill_and_reap(&mut self.child);
         }
     }
 }
@@ -322,6 +324,7 @@ mod tests {
     use super::*;
     use crate::operation::{Locks, Operation};
     use crate::process::GroupOwnership;
+    use rustix::process::Pid;
 
     const POLL: Duration = Duration::from_millis(20);
 
