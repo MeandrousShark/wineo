@@ -195,15 +195,8 @@ pub fn create_reviewed_with(
     cancel: &Token,
     mut events: impl FnMut(SnapshotEvent),
 ) -> Result<SnapshotInfo> {
-    let current = inspect_create_with(
-        paths,
-        global,
-        &reviewed.name,
-        &reviewed.label,
-        cancel,
-        |progress| events(SnapshotEvent::Progress(progress)),
-    )?;
-    ensure_create_same(reviewed, &current)?;
+    // The review is checked once, under the locks. A second full read before
+    // locking would only repeat that check.
     let locks = Locks::new(paths);
     let _operation = locks.acquire(Operation::Snapshot, &reviewed.name, &[&reviewed.prefix])?;
     let _config_lock = locks.config(&paths.environment_config(&reviewed.name))?;
@@ -396,15 +389,8 @@ pub fn restore_reviewed_with(
     cancel: &Token,
     mut events: impl FnMut(SnapshotEvent),
 ) -> Result<RestoreOutcome> {
-    let current = inspect_restore_with(
-        paths,
-        global,
-        &reviewed.name,
-        &reviewed.label,
-        cancel,
-        |progress| events(SnapshotEvent::Progress(progress)),
-    )?;
-    ensure_restore_same(reviewed, &current)?;
+    // The review is checked once, under the locks. A second full read before
+    // locking would only repeat that check.
     let locks = Locks::new(paths);
     let _operation = locks.acquire(Operation::Snapshot, &reviewed.name, &[&reviewed.prefix])?;
     let _config_lock = locks.config(&paths.environment_config(&reviewed.name))?;
@@ -2016,5 +2002,38 @@ mod tests {
         assert!(marker_path(&paths, "game").exists());
         fs::remove_file(&broken).unwrap();
         recover(&paths, "game").unwrap();
+    }
+
+    #[test]
+    fn a_prefix_change_after_review_is_refused_under_the_lock() {
+        let (_root, paths, prefix, _) = fixture(false);
+        let global = GlobalConfig::default();
+        let review = inspect_create(&paths, &global, "game", "one").unwrap();
+        // Same size, so only the content fingerprint can see it.
+        fs::write(prefix.join("drive_c/game.exe"), "after!").unwrap();
+        let error = create_reviewed(&paths, &global, &review, &Token::new(), |_| {}).unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "reviewed environment changed; inspect it again"
+        );
+        assert!(!review.snapshot.exists());
+
+        if !reflinks_supported(&prefix) {
+            return;
+        }
+        let create = inspect_create(&paths, &global, "game", "one").unwrap();
+        create_reviewed(&paths, &global, &create, &Token::new(), |_| {}).unwrap();
+        let review = inspect_restore(&paths, &global, "game", "one").unwrap();
+        fs::write(prefix.join("drive_c/game.exe"), "later!").unwrap();
+        let error = restore_reviewed(&paths, &global, &review, &Token::new(), |_| {}).unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "reviewed restore changed; inspect it again"
+        );
+        assert_eq!(
+            fs::read_to_string(prefix.join("drive_c/game.exe")).unwrap(),
+            "later!"
+        );
+        assert!(!marker_path(&paths, "game").exists());
     }
 }
