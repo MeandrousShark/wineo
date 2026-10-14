@@ -3,12 +3,13 @@ use std::fs;
 use std::io::{self, BufWriter, Write};
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, OnceLock};
 use std::time::UNIX_EPOCH;
 
 use anyhow::{Context, Result};
 use iced::widget::image as iced_image;
 use image::codecs::png::{CompressionType, FilterType as PngFilter, PngEncoder};
-use image::{ExtendedColorType, GenericImageView, ImageEncoder};
+use image::{ExtendedColorType, GenericImageView, ImageEncoder, ImageReader};
 use sha2::{Digest, Sha256};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -18,30 +19,81 @@ pub enum Kind {
     Logo,
 }
 
-impl Kind {
-    fn name(self) -> &'static str {
-        match self {
-            Self::Grid => "grid",
-            Self::Hero => "hero",
-            Self::Logo => "logo",
-        }
-    }
+/// How art is capped when decoded: a name for the cache, the largest size,
+/// and whether the cap is the box the art fits inside or the box it fills.
+#[derive(Clone, Copy, Debug)]
+pub struct Spec {
+    name: &'static str,
+    max_size: (u32, u32),
+    contain: bool,
+}
 
-    fn max_size(self) -> (u32, u32) {
-        match self {
-            Self::Grid => (320, 480),
-            Self::Hero => (840, 440),
-            Self::Logo => (720, 128),
+impl From<Kind> for Spec {
+    fn from(kind: Kind) -> Self {
+        // Grid and hero art is drawn cover-fit, so it has to fill the box in
+        // both directions or a wide hero ends up upscaled and blurry in the
+        // banner.
+        let (name, max_size, contain) = match kind {
+            Kind::Grid => ("grid", (320, 480), false),
+            Kind::Hero => ("hero", (840, 440), false),
+            Kind::Logo => ("logo", (720, 128), true),
+        };
+        Self {
+            name,
+            max_size,
+            contain,
         }
     }
 }
 
+/// A poster in an import grid. These tiles are small and every poster of a
+/// long list stays decoded, so the cap is the preview size, not the library's.
+pub const TILE: Spec = Spec {
+    name: "tile",
+    max_size: (
+        crate::flow::artwork::POSTER_WIDTH,
+        crate::flow::artwork::POSTER_HEIGHT,
+    ),
+    contain: true,
+};
+
 type Pixels = (u32, u32, Vec<u8>);
+
+/// The permits for decoding art off the UI thread, shared by the library and
+/// the import grids, since a huge source costs far more memory than a small
+/// one and two decoders' worth is already enough to keep up.
+pub fn decode_slots() -> Arc<tokio::sync::Semaphore> {
+    static SLOTS: OnceLock<Arc<tokio::sync::Semaphore>> = OnceLock::new();
+    SLOTS
+        .get_or_init(|| Arc::new(tokio::sync::Semaphore::new(crate::MAX_DECODES)))
+        .clone()
+}
 
 /// Decodes art to at most the size its kind is drawn at. Art that has to be
 /// shrunk is cached as a thumbnail under `cache`, since decoding a huge source
 /// on every start costs far more than reading back the small copy.
-pub fn decode(path: &Path, kind: Kind, cache: Option<&Path>) -> Result<iced_image::Handle> {
+pub fn decode(
+    path: &Path,
+    spec: impl Into<Spec>,
+    cache: Option<&Path>,
+) -> Result<iced_image::Handle> {
+    decode_as(
+        path,
+        spec,
+        cache,
+        path.extension().is_some_and(|ext| ext == "svg"),
+    )
+}
+
+/// `decode` for a file whose kind is already known, since some files have no
+/// extension to tell an SVG from a raster, like Heroic's cached images.
+pub fn decode_as(
+    path: &Path,
+    spec: impl Into<Spec>,
+    cache: Option<&Path>,
+    svg: bool,
+) -> Result<iced_image::Handle> {
+    let spec = spec.into();
     // Taken before anything reads the source, so a file replaced mid-decode is
     // stored under its old identity and never served for the new one.
     let identity = cache
@@ -50,19 +102,20 @@ pub fn decode(path: &Path, kind: Kind, cache: Option<&Path>) -> Result<iced_imag
     let entry = |size| {
         cache
             .zip(identity.as_deref())
-            .map(|(cache, identity)| Entry::new(cache, path, identity, kind, size))
+            .map(|(cache, identity)| Entry::new(cache, path, identity, spec, size))
     };
-    let (width, height, pixels) = if path.extension().is_some_and(|ext| ext == "svg") {
-        let (tree, width, height, scale) = open_svg(path, kind)?;
+    let (width, height, pixels) = if svg {
+        let (tree, width, height, scale) = open_svg(path, spec)?;
         let entry = entry((width, height)).filter(|_| scale < 1.0);
         cached(entry, || render_svg(&tree, width, height, scale))?
     } else {
-        let (source_width, source_height) = image::image_dimensions(path)
+        let (source_width, source_height) = reader(path)
+            .and_then(|reader| reader.into_dimensions().map_err(Into::into))
             .with_context(|| format!("failed to decode {}", path.display()))?;
-        let (width, height, _) = fit_size(f64::from(source_width), f64::from(source_height), kind);
+        let (width, height, _) = fit_size(f64::from(source_width), f64::from(source_height), spec);
         let entry =
             entry((width, height)).filter(|_| (width, height) != (source_width, source_height));
-        cached(entry, || decode_raster(path, kind))?
+        cached(entry, || decode_raster(path, spec))?
     };
     Ok(iced_image::Handle::from_rgba(width, height, pixels))
 }
@@ -110,15 +163,13 @@ struct Entry {
 }
 
 impl Entry {
-    // The kind is in the name because two kinds can round to the same size
-    // with different scales, which renders an SVG differently.
-    fn new(cache: &Path, source: &Path, identity: &str, kind: Kind, size: (u32, u32)) -> Self {
+    // The spec is in the name because two can round to the same size with
+    // different scales, which renders an SVG differently.
+    fn new(cache: &Path, source: &Path, identity: &str, spec: Spec, size: (u32, u32)) -> Self {
         let dir = cache.join(hex(&Sha256::digest(source.as_os_str().as_bytes())));
         let file = dir.join(format!(
             "{identity}-{}-{}x{}.png",
-            kind.name(),
-            size.0,
-            size.1
+            spec.name, size.0, size.1
         ));
         Self {
             dir,
@@ -229,11 +280,18 @@ fn prune_dir(dir: &Path) {
     }
 }
 
-fn decode_raster(path: &Path, kind: Kind) -> Result<Pixels> {
-    let image =
-        image::open(path).with_context(|| format!("failed to decode {}", path.display()))?;
+/// Opens a raster by its content before its extension, since a file's name
+/// can be missing or wrong.
+fn reader(path: &Path) -> Result<ImageReader<io::BufReader<fs::File>>> {
+    Ok(ImageReader::open(path)?.with_guessed_format()?)
+}
+
+fn decode_raster(path: &Path, spec: impl Into<Spec>) -> Result<Pixels> {
+    let image = reader(path)
+        .and_then(|reader| reader.decode().map_err(Into::into))
+        .with_context(|| format!("failed to decode {}", path.display()))?;
     let (width, height) = image.dimensions();
-    let (target_width, target_height, _) = fit_size(f64::from(width), f64::from(height), kind);
+    let (target_width, target_height, _) = fit_size(f64::from(width), f64::from(height), spec);
     let image = if (target_width, target_height) == (width, height) {
         image
     } else {
@@ -247,13 +305,12 @@ fn decode_raster(path: &Path, kind: Kind) -> Result<Pixels> {
     Ok((target_width, target_height, image.into_raw()))
 }
 
-fn fit_size(width: f64, height: f64, kind: Kind) -> (u32, u32, f64) {
-    let (max_width, max_height) = kind.max_size();
+fn fit_size(width: f64, height: f64, spec: impl Into<Spec>) -> (u32, u32, f64) {
+    let spec = spec.into();
+    let (max_width, max_height) = spec.max_size;
     let (width_ratio, height_ratio) =
         (f64::from(max_width) / width, f64::from(max_height) / height);
-    // Grid and hero art is drawn cover-fit, so it has to fill the box in both
-    // directions or a wide hero ends up upscaled and blurry in the banner.
-    let fit = if kind == Kind::Logo {
+    let fit = if spec.contain {
         width_ratio.min(height_ratio)
     } else {
         width_ratio.max(height_ratio)
@@ -264,13 +321,13 @@ fn fit_size(width: f64, height: f64, kind: Kind) -> (u32, u32, f64) {
     (width, height, scale)
 }
 
-fn open_svg(path: &Path, kind: Kind) -> Result<(resvg::usvg::Tree, u32, u32, f64)> {
+fn open_svg(path: &Path, spec: impl Into<Spec>) -> Result<(resvg::usvg::Tree, u32, u32, f64)> {
     let bytes =
         std::fs::read(path).with_context(|| format!("failed to read {}", path.display()))?;
     let tree = resvg::usvg::Tree::from_data(&bytes, &resvg::usvg::Options::default())
         .with_context(|| format!("failed to parse {}", path.display()))?;
     let size = tree.size();
-    let (width, height, scale) = fit_size(f64::from(size.width()), f64::from(size.height()), kind);
+    let (width, height, scale) = fit_size(f64::from(size.width()), f64::from(size.height()), spec);
     Ok((tree, width, height, scale))
 }
 
