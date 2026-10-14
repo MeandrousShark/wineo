@@ -43,6 +43,14 @@ impl Stage {
         self.staging.keep();
         import::sync_filesystem(destination)
     }
+
+    /// Publishes `staged`, a tree inside the staging directory, as
+    /// `destination`. The rest stays staged and is still removed on drop.
+    /// Nothing is flushed, so the caller syncs once everything has landed.
+    pub(crate) fn publish_part(&self, staged: &Path, destination: &Path) -> Result<()> {
+        debug_assert!(staged.starts_with(self.path()));
+        download::publish(staged, destination)
+    }
 }
 
 /// Copies a whole prefix to a new destination by way of a staging directory
@@ -355,6 +363,21 @@ mod tests {
                 destination.display()
             )
         );
+        assert_eq!(left_behind(&parent), ["game"]);
+    }
+
+    #[test]
+    fn unpublished_parts_are_removed_on_drop() {
+        let temp = tempfile::tempdir().unwrap();
+        let parent = temp.path().join("prefixes");
+        let stage = Stage::new(".wineo-test-", &parent).unwrap();
+        fs::create_dir(stage.path().join("prefix")).unwrap();
+        fs::create_dir(stage.path().join("snapshots")).unwrap();
+        let destination = parent.join("game");
+        stage
+            .publish_part(&stage.path().join("prefix"), &destination)
+            .unwrap();
+        drop(stage);
         assert_eq!(left_behind(&parent), ["game"]);
     }
 }
