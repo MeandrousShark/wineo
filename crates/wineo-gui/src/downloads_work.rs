@@ -26,11 +26,7 @@ pub(crate) fn warnings(paths: &Paths, errors: &[OverviewError]) -> Vec<String> {
             paths.contract_text(&format!(
                 "Skipped {}: {}",
                 path.display(),
-                error
-                    .message
-                    .split_whitespace()
-                    .collect::<Vec<_>>()
-                    .join(" ")
+                wineo_core::error::one_line(&error.message)
             ))
         })
         .collect()

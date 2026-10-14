@@ -177,13 +177,7 @@ pub(super) fn plain_text_warning(path: &Path) -> String {
     )
 }
 
-pub(super) fn one_line(error: impl std::fmt::Display) -> String {
-    error
-        .to_string()
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ")
-}
+pub(super) use wineo_core::error::one_line;
 
 pub(crate) fn status_task(paths: Paths, generation: u64, sequence: u64) -> Task<Message> {
     Task::perform(
