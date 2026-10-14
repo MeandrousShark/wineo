@@ -1,5 +1,5 @@
 use std::io::{self, Read};
-use std::sync::mpsc;
+use std::sync::{OnceLock, mpsc};
 use std::time::{Duration, Instant};
 
 use reqwest::Url;
@@ -106,8 +106,11 @@ impl reqwest::dns::Resolve for SharedResolver {
 pub struct Client {
     http: reqwest::blocking::Client,
     /// For GOG's download servers. Their links are signed, so no token ever
-    /// goes there, and redirects can be followed.
-    pub(crate) cdn: reqwest::blocking::Client,
+    /// goes there, and redirects can be followed. Built on first use, since
+    /// each blocking client starts its own thread and TLS setup and most
+    /// sessions never download.
+    cdn: OnceLock<reqwest::blocking::Client>,
+    read_timeout: Duration,
     endpoints: Endpoints,
     max_body: u64,
     /// For the profile lookup, which builds its own HTTP client.
@@ -167,23 +170,17 @@ impl Client {
         endpoints: Endpoints,
         read_timeout: Duration,
     ) -> Result<Self, Error> {
-        let builder = || settings.builder(read_timeout);
-        let setup = |_| Error::new(Endpoint::Setup, ErrorKind::Request);
-        let http = builder()
+        let http = settings
+            .builder(read_timeout)
             // Every endpoint answers directly. A redirect could carry the
             // bearer token or the client secret somewhere unexpected.
             .redirect(reqwest::redirect::Policy::none())
             .build()
-            .map_err(setup)?;
-        let cdn = builder()
-            .redirect(reqwest::redirect::Policy::limited(5))
-            // The signed link works like a password while it lasts.
-            .referer(false)
-            .build()
-            .map_err(setup)?;
+            .map_err(|_| Error::new(Endpoint::Setup, ErrorKind::Request))?;
         Ok(Self {
             http,
-            cdn,
+            cdn: OnceLock::new(),
+            read_timeout,
             endpoints,
             max_body: MAX_BODY,
             settings,
@@ -213,6 +210,23 @@ impl Client {
     pub fn with_profile_deadline(mut self, deadline: Duration) -> Self {
         self.profile_deadline = deadline;
         self
+    }
+
+    /// The download servers' client, built the first time it's asked for.
+    pub(crate) fn cdn(&self) -> Result<&reqwest::blocking::Client, Error> {
+        if let Some(cdn) = self.cdn.get() {
+            return Ok(cdn);
+        }
+        let cdn = self
+            .settings
+            .builder(self.read_timeout)
+            .redirect(reqwest::redirect::Policy::limited(5))
+            // The signed link works like a password while it lasts.
+            .referer(false)
+            .build()
+            .map_err(|_| Error::new(Endpoint::Setup, ErrorKind::Request))?;
+        // Two threads can race to build one; the loser's is dropped.
+        Ok(self.cdn.get_or_init(|| cdn))
     }
 
     pub fn endpoints(&self) -> &Endpoints {
