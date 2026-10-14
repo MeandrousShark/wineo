@@ -1,5 +1,6 @@
 pub(crate) mod artwork;
 mod clone;
+mod frame;
 mod gog;
 mod gog_install;
 mod gog_posters;

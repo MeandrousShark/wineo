@@ -6,10 +6,8 @@ use std::time::{Duration, Instant};
 use iced::futures::channel::mpsc::unbounded;
 use iced::keyboard::{self, Key};
 use iced::widget::operation::RelativeOffset;
-use iced::widget::{
-    checkbox, column, container, image, pick_list, row, scrollable, text, text_input,
-};
-use iced::{Center, Element, Fill, Task, border};
+use iced::widget::{checkbox, column, image, pick_list, row, text, text_input};
+use iced::{Center, Element, Fill, Task};
 use wineo_core::art::{Format, Kind};
 use wineo_core::cancel::Token;
 use wineo_core::components::Component;
@@ -29,6 +27,9 @@ use wineo_core::import;
 use wineo_core::paths::Paths;
 use wineo_core::runners::Runners;
 
+pub(super) use super::frame::{
+    PAGE_MAX_WIDTH, PAGE_PADDING, SCROLL_GUTTER, page_frame, pinned, scroll_body,
+};
 use super::import_grid::{GridKey, ImportGrid, Tile, import_label};
 use super::{Action, artwork, posters};
 use crate::chips::Chips;
@@ -36,7 +37,7 @@ use crate::runner_label::{self, Choice};
 use crate::task;
 use crate::theme::Palette;
 use crate::ui::{
-    PickListStyle, ScrollStyle, accent_base, list_group, list_row, list_row_text, secondary_button,
+    PickListStyle, accent_base, list_group, list_row, list_row_text, secondary_button,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -2434,56 +2435,6 @@ impl Page {
         }
         page_frame(page.push(row![back].align_y(Center)).push(content))
     }
-}
-
-/// The widest an import page's content grows in a wide dialog.
-pub(super) const PAGE_MAX_WIDTH: f32 = 780.0;
-pub(super) const PAGE_PADDING: f32 = 24.0;
-/// Keeps scrolled text clear of the scrollbar, which draws over its content.
-pub(super) const SCROLL_GUTTER: f32 = crate::ui::SCROLLBAR_WIDTH + 6.0;
-
-/// Insets an import page from the dialog's rounded border on every side, so
-/// Back sits inside the corner and scrolled content ends above the bottom.
-pub(super) fn page_frame<'a, Message: 'a>(
-    page: impl Into<Element<'a, Message>>,
-) -> Element<'a, Message> {
-    container(page)
-        .padding(PAGE_PADDING)
-        .width(Fill)
-        .height(Fill)
-        .center_x(Fill)
-        .into()
-}
-
-/// A step's action row, pinned under the scrolling content.
-pub(super) fn pinned<'a, Message: 'a>(
-    footer: impl Into<Element<'a, Message>>,
-    palette: Palette,
-) -> Element<'a, Message> {
-    container(footer)
-        .padding(12)
-        .width(Fill)
-        .style(move |_| {
-            container::Style::default()
-                .background(palette.surface)
-                .border(border::rounded(8).width(1).color(palette.border))
-        })
-        .into()
-}
-
-pub(super) fn scroll_body<'a, Message: 'a>(
-    body: impl Into<Element<'a, Message>>,
-    id: Option<&'static str>,
-    palette: Palette,
-) -> Element<'a, Message> {
-    let mut body = scrollable(container(body).padding(iced::Padding::ZERO.right(SCROLL_GUTTER)))
-        .wineo_style(palette)
-        .width(Fill)
-        .height(Fill);
-    if let Some(id) = id {
-        body = body.id(iced::widget::Id::new(id));
-    }
-    body.into()
 }
 
 fn field<'a>(
