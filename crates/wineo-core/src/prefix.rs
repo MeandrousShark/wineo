@@ -287,7 +287,15 @@ pub(crate) fn wait_for_child(
             }
             on_cancel()
         })
-        .context(|| "failed to stop the prefix process group".to_owned())??;
+        .context(|| "failed to stop the prefix process group".to_owned())
+        .and_then(|ended| ended);
+    let ended = match ended {
+        Ok(ended) => ended,
+        Err(err) => {
+            crate::process::kill_and_reap(&mut child);
+            return Err(err);
+        }
+    };
     let group = child.id();
     let status = child
         .wait()

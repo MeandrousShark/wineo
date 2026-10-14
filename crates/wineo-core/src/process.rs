@@ -401,7 +401,8 @@ pub fn leader_exited(leader: &Child) -> io::Result<bool> {
 
 /// Waits for `leader`, an unreaped child leading its own group, stopping the
 /// group as `token` and `escalation` say: `ask` first, then SIGKILL. `on`
-/// hears `None` each time round and each step once it is signaled. Returns
+/// hears `None` each time round and each step once it is signaled; an error
+/// from it kills the group before it is returned. Returns
 /// once the leader exits and, after a stop, nothing in the group is left
 /// running or that can't be inspected after a kill. The leader stays unreaped
 /// for the caller. The outer error is the helper's own, the inner one `on`'s.
@@ -486,7 +487,7 @@ pub(crate) fn stop_group_with<E>(
     let mut settle_poll = SETTLE_POLL;
     loop {
         if let Err(err) = on(None) {
-            return Ok(Err(err));
+            return abandon(leader, &members, err);
         }
         // Checked before signaling, so a reaped leader is an error, not a
         // signal to whatever reused its number.
@@ -498,7 +499,7 @@ pub(crate) fn stop_group_with<E>(
             // keep the group alive.
             signal_led_group(leader, if step == Step::Ask { ask } else { Signal::KILL })?;
             if let Err(err) = on(Some(step)) {
-                return Ok(Err(err));
+                return abandon(leader, &members, err);
             }
             // A zero grace period kills along with the ask.
             next = (step == Step::Ask).then(|| escalation.poll(now)).flatten();
@@ -528,6 +529,30 @@ pub(crate) fn stop_group_with<E>(
             None => token.wait_timeout(timeout.map_or(FALLBACK_POLL, |t| t.min(FALLBACK_POLL))),
         }
     }
+}
+
+/// Ends a stop whose caller failed: kills the whole group and waits until
+/// nothing in it is left running, as far as it can be inspected, so an error
+/// never leaves the group behind. The leader stays unreaped.
+fn abandon<E>(
+    leader: &Child,
+    members: &impl Fn(u32) -> Option<bool>,
+    err: E,
+) -> io::Result<Result<Ended, E>> {
+    signal_led_group(leader, Signal::KILL)?;
+    let mut poll = SETTLE_POLL;
+    while !leader_exited(leader)? || members(leader.id()) == Some(true) {
+        std::thread::sleep(poll);
+        poll = (poll * 2).min(SETTLE_POLL_MAX);
+    }
+    Ok(Err(err))
+}
+
+/// Kills the group `leader` leads and reaps it, for a caller giving up on a
+/// stop. Only for a child nothing has reaped yet.
+pub fn kill_and_reap(leader: &mut Child) {
+    let _ = signal_led_group(leader, Signal::KILL);
+    let _ = leader.wait();
 }
 
 /// Sleeps until `exit` or `raised` is readable or `timeout` passes, then
@@ -1384,6 +1409,33 @@ mod tests {
         let _ = signal_led_group(&child, Signal::KILL);
         child.wait().unwrap();
         assert_eq!(answer.unwrap().unwrap(), Ended::Unconfirmed);
+    }
+
+    #[test]
+    fn a_failing_output_read_after_the_leader_exits_still_kills_its_group() {
+        // The leader hands off to a descendant and exits, and then reading
+        // its output fails, with no stop requested.
+        let mut child = ready_group("sleep 30 & echo ready; exit 0");
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while !leader_exited(&child).unwrap() && Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(10));
+        }
+        let token = Token::new();
+        let mut escalation = Escalation::new(Duration::from_secs(30), None);
+        let answer = stop_group(
+            &child,
+            Signal::TERM,
+            &mut escalation,
+            &token,
+            None,
+            |step| step.map_or(Err("output read failed"), |_| Ok(())),
+        );
+        // Checked before reaping, while the group number is still pinned.
+        let live = group_has_live_members(child.id());
+        let _ = signal_led_group(&child, Signal::KILL);
+        child.wait().unwrap();
+        assert_eq!(answer.unwrap(), Err("output read failed"));
+        assert_eq!(live, Some(false));
     }
 
     #[test]

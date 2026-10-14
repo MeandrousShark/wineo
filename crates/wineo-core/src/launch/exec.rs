@@ -317,10 +317,7 @@ fn run(
     let ended = match ended {
         Ok(ended) => ended,
         Err(err) => {
-            if matches!(child.try_wait(), Ok(None)) {
-                let _ = crate::process::signal_led_group(&child, Signal::KILL);
-                let _ = child.wait();
-            }
+            crate::process::kill_and_reap(&mut child);
             return Err(err);
         }
     };

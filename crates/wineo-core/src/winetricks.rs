@@ -655,7 +655,15 @@ fn run_with_output(
         }
         anyhow::Ok(())
     })
-    .context("failed to stop the winetricks process group")??;
+    .context("failed to stop the winetricks process group")
+    .and_then(|ended| ended);
+    let ended = match ended {
+        Ok(ended) => ended,
+        Err(err) => {
+            process::kill_and_reap(&mut child);
+            return Err(err);
+        }
+    };
     if let Err(err) = cleanup {
         let _ = child.wait();
         return Err(err.into());
