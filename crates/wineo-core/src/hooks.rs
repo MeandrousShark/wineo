@@ -260,6 +260,7 @@ fn wait_for_exit(
 }
 
 const REQUEST_POLL: Duration = Duration::from_millis(20);
+const UNCONFIRMED: &str = "the hook's processes could not be confirmed stopped";
 
 /// The unreaped child pins its group number until the whole group settles,
 /// so stopping it needs no `/proc` identity check.
@@ -271,7 +272,7 @@ fn wait_for_exit_requested(
     mut request: impl FnMut() -> Result<()>,
 ) -> Result<bool> {
     let mut escalation = process::Escalation::new(stop_timeout, None);
-    process::stop_group_probed(
+    let ended = process::stop_group_probed(
         child,
         Signal::TERM,
         &mut escalation,
@@ -281,9 +282,14 @@ fn wait_for_exit_requested(
         |step| step.map_or_else(&mut request, |_| Ok(())),
         group_members,
     )
-    .context(|| "failed to stop the hook process group".to_owned())?
-    // A kill that reached an uninspectable group counts as done, as it always has.
-    .map(|ended| ended != process::Ended::Exited)
+    .context(|| "failed to stop the hook process group".to_owned())??;
+    match ended {
+        process::Ended::Exited => Ok(false),
+        process::Ended::Stopped => Ok(true),
+        // The leader is still unreaped here, so `Spawned` can kill the group
+        // again safely as `run` returns this.
+        process::Ended::Unconfirmed => Err(Error::Unsettled(UNCONFIRMED.to_owned())),
+    }
 }
 
 struct Spawned {
@@ -671,7 +677,12 @@ mod tests {
         let started = Instant::now();
         let task = thread::spawn(move || {
             let _root = root;
-            assert!(wait_for_exit(&spawned.child, &token, timeout, |_| None).unwrap());
+            // Killed, but with nothing to inspect it can't be called stopped.
+            let unconfirmed = wait_for_exit(&spawned.child, &token, timeout, |_| None);
+            assert!(
+                matches!(&unconfirmed, Err(Error::Unsettled(message)) if message == UNCONFIRMED),
+                "{unconfirmed:?}"
+            );
             let status = spawned.child.wait().unwrap();
             spawned.finished = true;
             drop(spawned);
