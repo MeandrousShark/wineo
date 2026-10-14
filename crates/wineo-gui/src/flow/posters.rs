@@ -1,6 +1,7 @@
 //! How the import grids turn a poster file into a tile image: capped to the
-//! tile size, kept as a small copy in the art cache, and decoded under the
-//! same permits as the library's art so a long list never decodes at once.
+//! tile size, kept as a small copy in the art cache, and decoded under their
+//! own pool of permits, apart from the library's, so a long list never
+//! decodes all at once.
 
 use std::io::Read;
 use std::path::Path;
