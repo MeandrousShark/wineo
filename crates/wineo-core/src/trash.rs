@@ -25,7 +25,6 @@ use crate::build_lock;
 use crate::config::{self, EnvironmentConfig, GlobalConfig};
 use crate::desktop;
 use crate::environment::{self, Environment};
-use crate::files;
 use crate::gog::folder::{self, FolderError, FolderLock};
 use crate::name;
 use crate::operation::{Locks, Operation};
@@ -513,8 +512,10 @@ fn marker_for(paths: &Paths, id: &str) -> Result<Option<(PathBuf, PendingMarker)
 
 fn publish_marker(path: &Path, marker: &PendingMarker) -> Result<()> {
     create_storage(parent(path)?)?;
-    let text = toml::to_string_pretty(marker)?;
-    files::persist_synced(parent(path)?, path, text.as_bytes())?;
+    let mut temp = tempfile::NamedTempFile::new_in(parent(path)?)?;
+    temp.write_all(toml::to_string_pretty(marker)?.as_bytes())?;
+    temp.as_file().sync_all()?;
+    temp.persist(path).map_err(|err| anyhow!(err.error))?;
     sync(parent(path)?)
 }
 
