@@ -119,6 +119,21 @@ impl ThumbnailCache {
     }
 }
 
+// A blocking reqwest client joins its runtime thread when dropped, which can
+// wait on a slow DNS lookup, so the last owner must not be the UI thread.
+impl Drop for Client {
+    fn drop(&mut self) {
+        let built = self
+            .built
+            .get_mut()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
+        if let Some(transport) = built {
+            std::thread::spawn(move || drop(transport));
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Filter {
     Animated,
@@ -1530,6 +1545,34 @@ mod tests {
         let seen = transport.seen.lock().unwrap();
         assert_eq!(seen.len(), 30);
         assert!(seen.iter().all(|(_, bearer)| bearer.is_none()));
+    }
+
+    struct DropThread(std::sync::mpsc::Sender<std::thread::ThreadId>);
+
+    impl Drop for DropThread {
+        fn drop(&mut self) {
+            let _ = self.0.send(std::thread::current().id());
+        }
+    }
+
+    impl Transport for DropThread {
+        fn get(&self, _: &str) -> anyhow::Result<Box<dyn std::io::Read>> {
+            unreachable!()
+        }
+    }
+
+    #[test]
+    fn the_last_client_owner_drops_the_transport_off_the_calling_thread() {
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let sender = Mutex::new(sender);
+        let client =
+            Client::with_builder(move || Ok(Arc::new(DropThread(sender.lock().unwrap().clone()))));
+        client.get().unwrap();
+        drop(client);
+        let dropped_on = receiver
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .unwrap();
+        assert_ne!(dropped_on, std::thread::current().id());
     }
 
     #[test]
