@@ -23,6 +23,26 @@ pub(crate) fn text(value: &Value, name: &str) -> Option<String> {
         .map(str::to_owned)
 }
 
+/// An optional field read strictly: Some(None) when it's missing or null,
+/// None when it's there but `read` refuses it, so a caller can fail on a
+/// malformed field instead of quietly taking the default.
+pub(crate) fn optional<'a, T>(
+    value: &'a Value,
+    name: &str,
+    read: impl FnOnce(&'a Value) -> Option<T>,
+) -> Option<Option<T>> {
+    match value.get(name) {
+        None | Some(Value::Null) => Some(None),
+        Some(field) => read(field).map(Some),
+    }
+}
+
+/// `optional` for a string, where an empty one counts as missing.
+pub(crate) fn optional_text(value: &Value, name: &str) -> Option<Option<String>> {
+    optional(value, name, |field| field.as_str().map(str::to_owned))
+        .map(|text| text.filter(|text| !text.is_empty()))
+}
+
 pub(crate) fn flag(value: &Value, name: &str) -> bool {
     value.get(name).and_then(Value::as_bool).unwrap_or(false)
 }

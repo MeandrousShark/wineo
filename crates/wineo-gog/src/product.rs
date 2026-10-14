@@ -202,7 +202,7 @@ fn parse_download(json: &Value) -> Option<Download> {
 }
 
 /// File and installer ids are usually strings, sometimes numbers.
-fn id_text(value: &Value) -> Option<String> {
+pub(crate) fn id_text(value: &Value) -> Option<String> {
     match value {
         Value::String(text) if !text.is_empty() => Some(text.clone()),
         Value::Number(number) => number.as_u64().map(|id| id.to_string()),

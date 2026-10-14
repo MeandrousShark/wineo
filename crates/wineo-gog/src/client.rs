@@ -35,6 +35,8 @@ pub struct Endpoints {
     pub content_system: Url,
     pub gameplay: Url,
     pub users: Url,
+    /// GOG's CDN, for Galaxy's depot and redistributable manifests.
+    pub cdn: Url,
 }
 
 impl Endpoints {
@@ -47,6 +49,7 @@ impl Endpoints {
             content_system: parse("https://content-system.gog.com"),
             gameplay: parse("https://gameplay.gog.com"),
             users: parse("https://users.gog.com"),
+            cdn: parse("https://cdn.gog.com"),
         }
     }
 
@@ -59,7 +62,8 @@ impl Endpoints {
             api: base.clone(),
             content_system: base.clone(),
             gameplay: base.clone(),
-            users: base,
+            users: base.clone(),
+            cdn: base,
         })
     }
 }
@@ -113,6 +117,8 @@ pub struct Client {
     read_timeout: Duration,
     endpoints: Endpoints,
     max_body: u64,
+    /// Galaxy's manifests, packed and unpacked.
+    pub(crate) max_manifest: u64,
     /// For the profile lookup, which builds its own HTTP client.
     settings: HttpSettings,
     profile_deadline: Duration,
@@ -183,6 +189,7 @@ impl Client {
             read_timeout,
             endpoints,
             max_body: MAX_BODY,
+            max_manifest: crate::manifest::MAX_MANIFEST,
             settings,
             profile_deadline: PROFILE_DEADLINE,
         })
@@ -419,7 +426,12 @@ impl Client {
         profile::parse_username(&json)
     }
 
-    fn get_json(&self, endpoint: Endpoint, url: Url, bearer: Option<&str>) -> Result<Value, Error> {
+    pub(crate) fn get_json(
+        &self,
+        endpoint: Endpoint,
+        url: Url,
+        bearer: Option<&str>,
+    ) -> Result<Value, Error> {
         self.fetch_json(endpoint, url, bearer, false)?
             .ok_or_else(|| Error::new(endpoint, ErrorKind::Status(404)))
     }
@@ -505,7 +517,7 @@ pub(crate) fn read_limited(
 ) -> Result<Vec<u8>, ErrorKind> {
     let mut body = Vec::new();
     response
-        .take(limit + 1)
+        .take(limit.saturating_add(1))
         .read_to_end(&mut body)
         .map_err(|error| read_error(&error))?;
     if body.len() as u64 > limit {
@@ -535,7 +547,7 @@ pub(crate) fn read_error(error: &io::Error) -> ErrorKind {
 }
 
 /// Appends path segments to a base, which may itself have a path.
-fn join(base: &Url, segments: &[&str], endpoint: Endpoint) -> Result<Url, Error> {
+pub(crate) fn join(base: &Url, segments: &[&str], endpoint: Endpoint) -> Result<Url, Error> {
     let mut url = base.clone();
     url.path_segments_mut()
         .map_err(|()| Error::new(endpoint, ErrorKind::Request))?

@@ -1,6 +1,8 @@
 //! Local HTTP servers standing in for GOG. A handler answers each request,
 //! and every request is recorded.
 
+pub mod content;
+
 use std::io::{ErrorKind, Read, Write};
 use std::net::TcpListener;
 use std::sync::atomic::{AtomicBool, Ordering};
