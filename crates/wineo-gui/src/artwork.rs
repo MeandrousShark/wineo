@@ -405,9 +405,28 @@ mod tests {
         image::RgbaImage::from_pixel(3, 2, image::Rgba([1, 2, 3, 255]))
             .write_to(&mut io::Cursor::new(&mut small), image::ImageFormat::Png)
             .unwrap();
+        let encode = |format| {
+            let mut bytes = Vec::new();
+            image::DynamicImage::ImageRgba8(image::RgbaImage::from_pixel(
+                60,
+                90,
+                image::Rgba([200, 30, 90, 255]),
+            ))
+            .write_to(&mut io::Cursor::new(&mut bytes), format)
+            .unwrap();
+            bytes
+        };
+        let (jpeg, webp, ico) = (
+            encode(image::ImageFormat::Jpeg),
+            encode(image::ImageFormat::WebP),
+            encode(image::ImageFormat::Ico),
+        );
         for (name, bytes) in [
             ("large.png", png.as_slice()),
             ("small.png", small.as_slice()),
+            ("art.jpg", jpeg.as_slice()),
+            ("art.webp", webp.as_slice()),
+            ("art.ico", ico.as_slice()),
             ("art.svg", svg.as_bytes()),
         ] {
             let path = dir.path().join(name);
