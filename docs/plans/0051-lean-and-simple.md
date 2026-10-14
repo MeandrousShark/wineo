@@ -512,6 +512,11 @@ Shipped in 0.31.1.
   the app's `flow/heroic.rs` 3,275 to 1,125 (update, view, work, and the
   shared page frame in `flow/frame.rs`), `settings/mod.rs` 2,528 to 991
   (editor, handle), and `main.rs` 2,095 to 1,703 (art, library, flow).
+  Core's `trash.rs` 2,846 to 829 (restore, payload, remove, identity,
+  digest, manifest, markers; every fsync stays in its function, 28 before
+  and after) and `import.rs` 2,137 to 791 (runner copy, config text, copy,
+  fingerprint). An end-to-end import, clone, trash, and restore on a
+  throwaway root gives byte-identical prefixes.
 
 The maintainer's machine (real GPU, library of 22, after scrolling the
 library), the 0050 acceptance build against main with everything above:
