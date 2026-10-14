@@ -13,7 +13,6 @@ use crate::prompt::{self, Input, Prompt, Reply, Terminal, numbered};
 use crate::style;
 use crate::text;
 
-/// The shell's code for a command ended by Ctrl+C.
 #[derive(clap::Args)]
 pub struct Args {
     /// Environment to check, instead of everything

@@ -23,7 +23,6 @@ use crate::cancel;
 use crate::prompt::{self, Canceled, Prompt, Terminal};
 use crate::wizard::{self, Guided, Prefill};
 
-/// The shell's code for a command ended by Ctrl+C.
 const NEEDS_NAME: &str = "wineo new needs a terminal without -n. Use: wineo new -n <name> [-t <template>] [--native] [--exe <path> [-d]] [--install-exe <path>]";
 
 #[derive(clap::Args)]

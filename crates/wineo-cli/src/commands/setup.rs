@@ -24,7 +24,6 @@ use crate::picker::{self, Place};
 use crate::prompt::{self, Canceled, Input, Prompt, Reply, numbered};
 use crate::text;
 
-/// The shell's code for a command ended by Ctrl+C.
 #[derive(clap::Args)]
 pub struct Args {
     /// Environment to set up
