@@ -54,6 +54,8 @@ impl Change {
 
 pub(crate) struct Toast {
     pub(crate) id: String,
+    /// Tells this toast from a later one, for answers still in flight.
+    serial: u64,
     pub(crate) name: String,
     pub(crate) text: String,
     pub(crate) remaining: Duration,
@@ -88,8 +90,10 @@ impl Toast {
         {
             text.push_str(" Snapshots kept.");
         }
+        static NEXT_SERIAL: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         Self {
             id: entry.id,
+            serial: NEXT_SERIAL.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
             name: entry.name,
             text,
             remaining: Duration::from_secs(10),
@@ -294,6 +298,18 @@ pub(crate) fn update(app: &mut App, message: Message) -> Task<Message> {
                 Task::none()
             }
         }
+        // An answer about a toast that has since been replaced is dropped.
+        Message::ToastAnswer(serial, focused, now) => {
+            if app
+                .toast
+                .as_ref()
+                .is_some_and(|toast| toast.serial == serial)
+            {
+                update(app, Message::ToastFocus(focused, now))
+            } else {
+                Task::none()
+            }
+        }
         Message::ToastFocus(focused, now) => {
             if let Some(toast) = &mut app.toast {
                 // Focus operations run before this message, so preserve the interval that gained focus.
@@ -324,7 +340,10 @@ impl App {
         };
         match message {
             Message::Pressed | Message::FocusRecheck => true,
-            Message::ToastTick(_) | Message::ToastHover(_) | Message::ToastFocus(..) => false,
+            Message::ToastTick(_)
+            | Message::ToastHover(_)
+            | Message::ToastFocus(..)
+            | Message::ToastAnswer(..) => false,
             // Frame-rate and timer messages never move focus.
             Message::PanelTick(..)
             | Message::GridTick(..)
@@ -348,8 +367,12 @@ impl App {
     }
 
     fn query_toast_focus(&self, now: Instant) -> Task<Message> {
-        iced::widget::operation::is_focused(iced::widget::Id::new(crate::focus_button::UNDO_ID))
-            .map(move |focused| Message::ToastFocus(focused, now))
+        let Some(toast) = &self.toast else {
+            return Task::none();
+        };
+        let serial = toast.serial;
+        iced::advanced::widget::operate(crate::focus_button::undo_focused())
+            .map(move |focused| Message::ToastAnswer(serial, focused, now))
     }
 
     /// Drops a toast that ran out while a change blocked its removal, once
@@ -1391,6 +1414,29 @@ mod tests {
         let _ = app.update(Message::ToastTick(live));
         let _ = app.update(Message::ToastFocus(false, Instant::now()));
         assert!(app.toast.is_none());
+    }
+
+    #[test]
+    fn a_focus_answer_for_a_replaced_toast_is_ignored() {
+        let (_root, mut app) = fixture(false);
+        let entry = removed(&mut app);
+        let old = app.toast.as_ref().unwrap().serial;
+        app.toast = Some(Toast::new(entry));
+        let toast = app.toast.as_ref().unwrap();
+        assert_ne!(toast.serial, old);
+        let (remaining, last) = (toast.remaining, toast.last);
+
+        let _ = app.update(Message::ToastAnswer(
+            old,
+            true,
+            last + Duration::from_secs(30),
+        ));
+        let toast = app.toast.as_ref().unwrap();
+        assert!(!toast.focused && toast.remaining == remaining && toast.last == last);
+
+        let live = toast.serial;
+        let _ = app.update(Message::ToastAnswer(live, true, last));
+        assert!(app.toast.as_ref().unwrap().focused);
     }
 
     #[test]

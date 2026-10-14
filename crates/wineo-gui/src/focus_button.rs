@@ -28,6 +28,39 @@ pub(crate) fn control<'a, M: Clone + 'a>(
     })
 }
 
+/// Asks whether the Undo control has focus. Unlike `is_focused`, which says
+/// nothing when the id is not in the tree, this always answers, with false
+/// for an Undo that is absent or disabled (a disabled one does not register).
+pub(crate) fn undo_focused() -> impl iced::advanced::widget::Operation<bool> {
+    UndoFocused(false)
+}
+
+struct UndoFocused(bool);
+
+impl iced::advanced::widget::Operation<bool> for UndoFocused {
+    fn traverse(
+        &mut self,
+        operate: &mut dyn FnMut(&mut dyn iced::advanced::widget::Operation<bool>),
+    ) {
+        operate(self);
+    }
+
+    fn focusable(
+        &mut self,
+        id: Option<&iced::widget::Id>,
+        _bounds: Rectangle,
+        state: &mut dyn Focusable,
+    ) {
+        if id == Some(&iced::widget::Id::new(UNDO_ID)) && state.is_focused() {
+            self.0 = true;
+        }
+    }
+
+    fn finish(&self) -> iced::advanced::widget::operation::Outcome<bool> {
+        iced::advanced::widget::operation::Outcome::Some(self.0)
+    }
+}
+
 pub(crate) fn cycle<S: AsRef<str>>(
     ids: &[S],
     reverse: bool,
@@ -312,6 +345,45 @@ where
 mod tests {
     use super::*;
     use iced::keyboard::{self, Key, key::Named};
+
+    /// Runs the real query the way the runtime does and returns every
+    /// answer it gave.
+    fn run_undo_focused(enabled: bool, focus: bool) -> Vec<bool> {
+        let button = iced::widget::button::Button::<crate::Message, iced::Theme, ()>::new("Undo");
+        let mut widget: Element<'_, crate::Message, iced::Theme, ()> = Element::new(FocusControl {
+            content: button.into(),
+            enabled,
+            id: UNDO_ID.into(),
+            on_press: crate::Message::Undo,
+        });
+        let mut tree = tree::Tree::new(widget.as_widget());
+        let bounds = Size::new(100.0, 32.0);
+        let node =
+            widget
+                .as_widget_mut()
+                .layout(&mut tree, &(), &layout::Limits::new(Size::ZERO, bounds));
+        if focus {
+            tree.state.downcast_mut::<State>().focused = true;
+        }
+        let answers = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let sink = answers.clone();
+        let mut operation = iced::advanced::widget::operation::map(undo_focused(), move |value| {
+            sink.lock().unwrap().push(value);
+        });
+        widget
+            .as_widget_mut()
+            .operate(&mut tree, Layout::new(&node), &(), &mut operation);
+        let _ = iced::advanced::widget::Operation::finish(&operation);
+        answers.lock().unwrap().to_vec()
+    }
+
+    #[test]
+    fn the_undo_focus_query_answers_for_focused_unfocused_and_disabled() {
+        assert_eq!(run_undo_focused(true, true), [true]);
+        assert_eq!(run_undo_focused(true, false), [false]);
+        // A disabled control does not register, and still gets an answer.
+        assert_eq!(run_undo_focused(false, true), [false]);
+    }
 
     #[test]
     fn focus_operation_registers_the_undo_id_and_enter_activates_it() {

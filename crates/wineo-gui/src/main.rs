@@ -329,6 +329,8 @@ pub(crate) enum Message {
     FocusRecheck,
     ToastHover(bool),
     ToastFocus(bool, Instant),
+    /// A focus answer for the toast with this serial.
+    ToastAnswer(u64, bool, Instant),
     Trash(trash_page::Event),
     Downloads(downloads_page::Event),
     Checkup(checkup::Event),
@@ -732,7 +734,8 @@ impl App {
             | Message::UndoFinished(..)
             | Message::ToastHover(_)
             | Message::ToastTick(_)
-            | Message::ToastFocus(..)) => removal::update(self, message),
+            | Message::ToastFocus(..)
+            | Message::ToastAnswer(..)) => removal::update(self, message),
             Message::SearchChanged(search) => {
                 self.search = search;
                 self.collapse.reset();
