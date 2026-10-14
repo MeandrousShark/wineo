@@ -258,12 +258,7 @@ impl HeroicSource {
                 ));
             }
             if candidate.issues.is_empty() && candidate.kind == HeroicGameKind::Native {
-                match self.inspect_native_entry(
-                    raw_id,
-                    entry,
-                    global,
-                    Store::Sideload(Some(inputs)),
-                ) {
+                match self.inspect_native_entry(raw_id, entry, global, Store::Sideload(inputs)) {
                     Ok(import) => {
                         candidate.executable = Some(import.exe.clone());
                         candidate.issues = import.issues.clone();
@@ -274,7 +269,7 @@ impl HeroicSource {
                     )),
                 }
             } else if candidate.issues.is_empty() {
-                match self.inspect_entry(raw_id, entry, global, Store::Sideload(Some(inputs))) {
+                match self.inspect_entry(raw_id, entry, global, Store::Sideload(inputs)) {
                     Ok(import) => {
                         candidate.prefix = Some(import.prefix.clone());
                         candidate.runner = Some(import.runner.clone());
@@ -294,9 +289,15 @@ impl HeroicSource {
     pub fn inspect(&self, game_id: &str) -> Result<HeroicImport> {
         self.check_game_id(game_id)?;
         let library = self.read_library()?;
-        let entry = library.entry(game_id)?;
-        let global = self.global_settings()?;
-        self.inspect_entry(game_id, entry, &global, Store::Sideload(None))
+        library.entry(game_id)?;
+        let global = self.read_global()?;
+        self.inspect_in(
+            Inputs {
+                library: &library,
+                global: &global,
+            },
+            game_id,
+        )
     }
 
     /// `inspect` against files that are already read. The import is
@@ -309,7 +310,7 @@ impl HeroicSource {
             game_id,
             entry,
             &inputs.global.settings,
-            Store::Sideload(Some(inputs)),
+            Store::Sideload(inputs),
         )
     }
 
@@ -318,9 +319,15 @@ impl HeroicSource {
     pub fn inspect_native(&self, game_id: &str) -> Result<HeroicNativeImport> {
         self.check_game_id(game_id)?;
         let library = self.read_library()?;
-        let entry = library.entry(game_id)?;
-        let global = self.global_settings()?;
-        self.inspect_native_entry(game_id, entry, &global, Store::Sideload(None))
+        library.entry(game_id)?;
+        let global = self.read_global()?;
+        self.inspect_native_in(
+            Inputs {
+                library: &library,
+                global: &global,
+            },
+            game_id,
+        )
     }
 
     /// `inspect_native` against files that are already read.
@@ -335,7 +342,7 @@ impl HeroicSource {
             game_id,
             entry,
             &inputs.global.settings,
-            Store::Sideload(Some(inputs)),
+            Store::Sideload(inputs),
         )
     }
 
@@ -358,7 +365,11 @@ impl HeroicSource {
         store: Store<'_>,
     ) -> Result<HeroicNativeImport> {
         let game_path = self.game_config_path(game_id);
-        let (effective, overrides) = self.effective_settings(game_id, global)?;
+        let EffectiveSettings {
+            effective,
+            overrides,
+            file: game_file,
+        } = self.effective_settings(game_id, global)?;
         let mut review = SettingsReview::default();
         let mut issues = Vec::new();
         if game_kind(entry) != HeroicGameKind::Native || platform(entry) != Some("linux") {
@@ -457,7 +468,7 @@ impl HeroicSource {
             gamescope,
             hooks,
             issues,
-            fingerprint: self.store_fingerprint(game_id, store)?,
+            fingerprint: self.store_fingerprint(game_id, store, Some(game_file))?,
             settings_review: review,
         })
     }
@@ -532,40 +543,50 @@ impl HeroicSource {
         Ok(fingerprint_files(files)?.digest == expected.digest)
     }
 
-    fn store_fingerprint(&self, game_id: &str, store: Store<'_>) -> Result<InputFingerprint> {
+    /// `game` is the game's config as `effective_settings` read it, so the
+    /// fingerprint holds the bytes the settings came from.
+    fn store_fingerprint(
+        &self,
+        game_id: &str,
+        store: Store<'_>,
+        game: Option<InputFileFingerprint>,
+    ) -> Result<InputFingerprint> {
+        let game = match game {
+            Some(game) => game,
+            None => read_file_fingerprint(self.game_config_path(game_id))?,
+        };
         match store {
-            Store::Sideload(None) => self.fingerprint(game_id),
             // The library and global settings are the bytes `inputs` parsed.
-            // Only the game's own config is read now, as `inspect_entry` reads
-            // it now.
-            Store::Sideload(Some(inputs)) => {
-                let [game] = fingerprint_files([self.game_config_path(game_id)])?
-                    .files
-                    .try_into()
-                    .expect("one path gives one file");
-                Ok(combine_fingerprints(vec![
-                    inputs.global.file.clone(),
-                    inputs.library.file.clone(),
-                    game,
-                ]))
-            }
-            Store::Gog { info } => fingerprint_files([
-                self.config_path(),
-                self.gog_installed_path(),
-                self.game_config_path(game_id),
-                info.to_owned(),
-            ]),
+            Store::Sideload(inputs) => Ok(combine_fingerprints(vec![
+                inputs.global.file.clone(),
+                inputs.library.file.clone(),
+                game,
+            ])),
+            Store::Gog { info } => Ok(combine_fingerprints(vec![
+                read_file_fingerprint(self.config_path())?,
+                read_file_fingerprint(self.gog_installed_path())?,
+                game,
+                read_file_fingerprint(info.to_owned())?,
+            ])),
         }
     }
 
-    /// The game's settings over the global ones, and the game's own.
+    /// The game's settings over the global ones, the game's own, and the
+    /// digest of the config they came from.
     fn effective_settings(
         &self,
         game_id: &str,
         global: &Map<String, Value>,
-    ) -> Result<(Map<String, Value>, Map<String, Value>)> {
+    ) -> Result<EffectiveSettings> {
         let game_path = self.game_config_path(game_id);
-        let game_root = read_optional_json(&game_path)?.unwrap_or(Value::Object(Map::new()));
+        let bytes = read_optional_bytes(&game_path)?;
+        #[cfg(test)]
+        AFTER_GAME_READ.with_borrow_mut(|hook| hook.take().map(|hook| hook()));
+        let file = file_fingerprint(game_path.clone(), bytes.as_deref());
+        let game_root = match bytes {
+            Some(bytes) => parse_json(&game_path, &bytes)?,
+            None => Value::Object(Map::new()),
+        };
         if !supported_schema_root(&game_root) {
             return Err(invalid_json(
                 &game_path,
@@ -580,7 +601,11 @@ impl HeroicSource {
         for (key, value) in &overrides {
             effective.insert(key.clone(), value.clone());
         }
-        Ok((effective, overrides))
+        Ok(EffectiveSettings {
+            effective,
+            overrides,
+            file,
+        })
     }
 
     fn inspect_entry(
@@ -591,7 +616,11 @@ impl HeroicSource {
         store: Store<'_>,
     ) -> Result<HeroicImport> {
         let game_path = self.game_config_path(game_id);
-        let (effective, overrides) = self.effective_settings(game_id, global)?;
+        let EffectiveSettings {
+            effective,
+            overrides,
+            file: game_file,
+        } = self.effective_settings(game_id, global)?;
         let mut review = SettingsReview::default();
         let mut issues = Vec::new();
         let kind = game_kind(entry);
@@ -827,7 +856,7 @@ impl HeroicSource {
             vkd3d: None,
             issues,
             external_dependencies,
-            fingerprint: self.store_fingerprint(game_id, store)?,
+            fingerprint: self.store_fingerprint(game_id, store, Some(game_file))?,
             settings_review: review,
         })
     }
@@ -914,6 +943,12 @@ impl HeroicSource {
     fn expand_path_buf(&self, path: &Path) -> (PathBuf, bool) {
         self.expand_path(&path.to_string_lossy())
     }
+}
+
+struct EffectiveSettings {
+    effective: Map<String, Value>,
+    overrides: Map<String, Value>,
+    file: InputFileFingerprint,
 }
 
 /// Heroic's sideload library as parsed.
@@ -1145,9 +1180,9 @@ pub fn parse_launcher_args(value: &str) -> std::result::Result<Vec<String>, Stri
 /// Which of Heroic's stores a game is inspected from.
 #[derive(Debug, Clone, Copy)]
 enum Store<'a> {
-    /// A sideloaded game. With `Some`, its library and global settings were
-    /// read already and are fingerprinted as they were read.
-    Sideload(Option<Inputs<'a>>),
+    /// A sideloaded game, with the library and global settings it was
+    /// inspected from, which are fingerprinted as they were read.
+    Sideload(Inputs<'a>),
     /// A GOG game, with the game folder's own info file, whose id was
     /// checked against Heroic's.
     Gog { info: &'a Path },
@@ -1170,6 +1205,12 @@ fn fingerprint_files(paths: impl IntoIterator<Item = PathBuf>) -> Result<InputFi
         files.push(file_fingerprint(path, bytes.as_deref()));
     }
     Ok(combine_fingerprints(files))
+}
+
+/// `file_fingerprint` for a file read now.
+fn read_file_fingerprint(path: PathBuf) -> Result<InputFileFingerprint> {
+    let bytes = read_optional_bytes(&path)?;
+    Ok(file_fingerprint(path, bytes.as_deref()))
 }
 
 /// One file's digest and size from bytes already read, `None` for a missing
@@ -1448,6 +1489,15 @@ fn detect_prefix_layout(prefix: &Path) -> PrefixLayout {
 thread_local! {
     pub(crate) static PARSES: std::cell::RefCell<BTreeMap<String, usize>> = const {
         std::cell::RefCell::new(BTreeMap::new())
+    };
+}
+
+// Runs once, after a game's config was read and before it is parsed, so a test
+// can change the file in between.
+#[cfg(test)]
+thread_local! {
+    pub(crate) static AFTER_GAME_READ: std::cell::RefCell<Option<Box<dyn FnOnce()>>> = const {
+        std::cell::RefCell::new(None)
     };
 }
 
@@ -2571,6 +2621,52 @@ mod tests {
                 .fingerprint,
         ] {
             assert!(!source.unchanged("other", &fingerprint).unwrap());
+        }
+    }
+
+    /// Has Heroic change the game's launcher args after its config was read
+    /// and before it is parsed.
+    fn change_args_mid_inspection(source: &HeroicSource) {
+        let path = source.game_config_path("hades");
+        AFTER_GAME_READ.set(Some(Box::new(move || {
+            let text = fs::read_to_string(&path).unwrap();
+            fs::write(&path, text.replace("--old", "--new")).unwrap();
+        })));
+    }
+
+    #[test]
+    fn a_game_config_changed_during_inspection_fails_the_check() {
+        for native in [false, true] {
+            let (root, source) = fixture();
+            game_fixture(&source, root.path(), r#"{"launcherArgs":"--old"}"#, native);
+            change_args_mid_inspection(&source);
+            let (launcher_args, fingerprint) = if native {
+                let import = source.inspect_native("hades").unwrap();
+                (import.launcher_args, import.fingerprint)
+            } else {
+                let import = source.inspect("hades").unwrap();
+                (import.launcher_args, import.fingerprint)
+            };
+            // The settings are what was read, so the fingerprint must be too.
+            assert_eq!(launcher_args, "--old");
+            assert!(
+                !source.unchanged("hades", &fingerprint).unwrap(),
+                "native: {native}"
+            );
+        }
+    }
+
+    #[test]
+    fn an_unchanged_import_fingerprints_like_a_fresh_read() {
+        for native in [false, true] {
+            let (root, source) = fixture();
+            game_fixture(&source, root.path(), r#"{"launcherArgs":"--old"}"#, native);
+            let fingerprint = if native {
+                source.inspect_native("hades").unwrap().fingerprint
+            } else {
+                source.inspect("hades").unwrap().fingerprint
+            };
+            assert_eq!(fingerprint, source.fingerprint("hades").unwrap());
         }
     }
 
