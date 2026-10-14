@@ -2,7 +2,8 @@
 
 use std::collections::HashMap;
 
-use dbus_secret_service::{EncryptionType, Error, SecretService};
+use secret_service::blocking::{Item, SecretService};
+use secret_service::{EncryptionType, Error};
 
 use crate::key_store::{KeySpec, Keyring, KeyringError};
 
@@ -36,12 +37,32 @@ impl SecretServiceKeyring {
 
 /// Connects, treating any failure as no keyring: nothing has been asked of
 /// one yet, so there is no request of the user's to have failed.
-fn connect() -> Result<SecretService, KeyringError> {
+fn connect<'a>() -> Result<SecretService<'a>, KeyringError> {
     SecretService::connect(EncryptionType::Dh).map_err(|_| KeyringError::Unavailable)
 }
 
+/// Keeps the messages the libdbus client gave, which users may have seen.
 fn failed(err: Error) -> KeyringError {
-    KeyringError::Failed(err.to_string())
+    let message = match err {
+        Error::Crypto(err) => format!("Crypto error: {err}"),
+        Error::Zbus(zbus::Error::MethodError(name, description, _)) => {
+            format!(
+                "DBus error: {}",
+                description.as_deref().unwrap_or(name.as_str())
+            )
+        }
+        Error::Zbus(err) => format!("DBus error: {err}"),
+        Error::ZbusFdo(err) => format!("DBus error: {err}"),
+        Error::Locked => "Secret Service: object locked".to_owned(),
+        Error::NoResult => "Secret Service: no result found".to_owned(),
+        Error::Prompt => "Secret Service: unlock prompt was dismissed".to_owned(),
+        Error::PromptDisconnected => {
+            "Secret Service: connection closed before the prompt completed".to_owned()
+        }
+        Error::Unavailable => "No DBus session or Secret Service provider found".to_owned(),
+        err => format!("Unexpected Error: {err}"),
+    };
+    KeyringError::Failed(message)
 }
 
 impl Keyring for SecretServiceKeyring {
@@ -51,7 +72,7 @@ impl Keyring for SecretServiceKeyring {
         let Some(item) = found.unlocked.first().or(found.locked.first()) else {
             return Ok(None);
         };
-        item.ensure_unlocked().map_err(failed)?;
+        unlock_item(item)?;
         let secret = item.get_secret().map_err(failed)?;
         String::from_utf8(secret)
             .map(Some)
@@ -65,7 +86,11 @@ impl Keyring for SecretServiceKeyring {
             Err(Error::NoResult) => return Err(KeyringError::Unavailable),
             Err(err) => return Err(failed(err)),
         };
-        collection.ensure_unlocked().map_err(failed)?;
+        // This crate's ensure_unlocked only reports a lock; asking to unlock
+        // shows the keyring's prompt, as before.
+        if collection.is_locked().map_err(failed)? {
+            collection.unlock().map_err(failed)?;
+        }
         collection
             .create_item(
                 &self.label,
@@ -83,8 +108,56 @@ impl Keyring for SecretServiceKeyring {
         let found = service.search_items(self.attributes()).map_err(failed)?;
         let items: Vec<_> = found.unlocked.iter().chain(&found.locked).collect();
         for item in &items {
+            // This crate refuses to delete a locked item rather than letting
+            // the keyring decide, so unlock it first.
+            unlock_item(item)?;
             item.delete().map_err(failed)?;
         }
         Ok(!items.is_empty())
+    }
+}
+
+/// Unlocks the item if it is locked, which may show the keyring's prompt.
+fn unlock_item(item: &Item<'_>) -> Result<(), KeyringError> {
+    if item.is_locked().map_err(failed)? {
+        item.unlock().map_err(failed)?;
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Writes to whatever Secret Service the session bus reaches, so it only
+    /// runs when `WINEO_TEST_SECRET_SERVICE` says that bus is a throwaway
+    /// one, such as gnome-keyring under `dbus-run-session`.
+    #[test]
+    #[ignore = "writes to a real Secret Service"]
+    fn round_trips_through_a_real_secret_service() {
+        assert!(
+            std::env::var_os("WINEO_TEST_SECRET_SERVICE").is_some(),
+            "set WINEO_TEST_SECRET_SERVICE to run this against a throwaway session bus"
+        );
+        let keyring = SecretServiceKeyring::for_spec(&KeySpec {
+            env_var: None,
+            account: "test-round-trip",
+            file_name: "test-round-trip",
+            label: "wineo test key",
+        });
+        assert_eq!(
+            keyring.get(),
+            Ok(None),
+            "refusing to replace an existing item"
+        );
+
+        keyring.set("first").unwrap();
+        assert_eq!(keyring.get(), Ok(Some("first".to_owned())));
+        keyring.set("second").unwrap();
+        assert_eq!(keyring.get(), Ok(Some("second".to_owned())));
+
+        assert_eq!(keyring.delete(), Ok(true));
+        assert_eq!(keyring.get(), Ok(None));
+        assert_eq!(keyring.delete(), Ok(false));
     }
 }
