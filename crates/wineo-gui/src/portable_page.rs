@@ -96,6 +96,11 @@ pub(crate) struct Page {
 }
 
 impl Page {
+    /// Which step is up, which is when its review or confirmation arrives.
+    pub(crate) fn screen(&self) -> impl std::hash::Hash {
+        (std::mem::discriminant(&self.step), self.discard_prompt)
+    }
+
     pub(crate) fn new(paths: Paths, name: String) -> (Self, Task<Event>) {
         let page = Self {
             paths: paths.clone(),

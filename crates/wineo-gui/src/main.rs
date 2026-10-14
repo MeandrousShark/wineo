@@ -638,7 +638,12 @@ impl App {
     }
     fn update(&mut self, message: Message) -> Task<Message> {
         let poll_focus = self.toast_focus_may_have_changed(&message);
+        let screen = self.screen_key();
         let task = self.update_message(message);
+        // One rule for every way a screen opens: see `prefix_facts`.
+        if self.screen_key() != screen {
+            self.refresh_facts();
+        }
         self.settle_toast();
         let focus = if poll_focus {
             self.poll_toast_focus()
@@ -756,9 +761,6 @@ impl App {
                 ])
             }
             Message::Select(name) => {
-                // The panel's Launch state reads these, and it can open on any
-                // environment.
-                self.refresh_facts();
                 if self.selected.as_deref() == Some(&name) && self.panel_open {
                     self.card_click_target = Some((name, self.target.clone()));
                     self.close_panel();
@@ -1397,7 +1399,6 @@ impl App {
                 ])
             }
             Message::Context(name) => {
-                self.refresh_facts();
                 self.action_menu_position = self.menu_anchor;
                 self.action_menu = if self.action_menu.as_deref() == Some(&name) {
                     None

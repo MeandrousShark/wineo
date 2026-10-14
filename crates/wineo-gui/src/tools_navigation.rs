@@ -222,7 +222,6 @@ impl App {
     }
 
     pub(crate) fn open_snapshots(&mut self, name: Option<String>) -> Task<Message> {
-        self.refresh_facts();
         if self.feature_navigation_blocked()
             || name.as_deref().is_some_and(|name| {
                 self.cards
@@ -290,7 +289,6 @@ impl App {
     }
 
     pub(crate) fn open_portable(&mut self, name: String) -> Task<Message> {
-        self.refresh_facts();
         if self.feature_navigation_blocked() || !self.transfer_actions(&name) {
             return Task::none();
         }
@@ -344,7 +342,6 @@ impl App {
     }
 
     pub(crate) fn open_tool(&mut self, name: String, kind: tools_page::Kind) -> Task<Message> {
-        self.refresh_facts();
         if self.feature_navigation_blocked() || !self.wine_actions(&name) {
             return Task::none();
         }

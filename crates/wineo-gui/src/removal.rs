@@ -461,7 +461,6 @@ impl App {
     }
 
     pub(crate) fn open_remove(&mut self, name: String) -> Task<Message> {
-        self.refresh_facts();
         if self.removal.is_some()
             || self.flow.is_some()
             || self.settings.is_some()
