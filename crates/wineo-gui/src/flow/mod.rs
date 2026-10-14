@@ -67,6 +67,46 @@ pub(crate) enum Event {
     UpdateMessage(Box<gog_update::Event>),
 }
 
+/// Boxes each page's own event into the flow's, so `.map(Event::from)` replaces
+/// a closure per page.
+macro_rules! wrap_events {
+    ($($event:ty => $variant:ident),* $(,)?) => {$(
+        impl From<$event> for Event {
+            fn from(event: $event) -> Self {
+                Self::$variant(Box::new(event))
+            }
+        }
+    )*};
+}
+
+wrap_events! {
+    new::Event => Create,
+    prefix::Event => Import,
+    clone::Event => Copy,
+    heroic::Event => HeroicMessage,
+    steam::Event => SteamMessage,
+    gog::Event => GogMessage,
+    gog_update::Event => UpdateMessage,
+}
+
+/// Runs `$body` with `$page` bound to whichever page is open. The pages' event
+/// types differ, so one match has to be spelled out per call; this spells it
+/// once. `Choose` has no page and takes `$choose`.
+macro_rules! on_page {
+    ($flow:expr, $page:ident => $body:expr, Choose => $choose:expr) => {
+        match $flow {
+            Self::New($page) => $body,
+            Self::Prefix($page) => $body,
+            Self::Clone($page) => $body,
+            Self::Heroic($page) => $body,
+            Self::Steam($page) => $body,
+            Self::Gog($page) => $body,
+            Self::GogUpdate($page) => $body,
+            Self::Choose(_) => $choose,
+        }
+    };
+}
+
 pub(crate) enum Page {
     Choose(Paths),
     New(Box<new::Page>),
@@ -85,19 +125,13 @@ impl Page {
 
     pub(crate) fn clone(paths: Paths, name: String) -> (Self, Task<Event>) {
         let (page, task) = clone::Page::new(paths, name);
-        (
-            Self::Clone(Box::new(page)),
-            task.map(|event| Event::Copy(Box::new(event))),
-        )
+        (Self::Clone(Box::new(page)), task.map(Event::from))
     }
 
     /// Updates `name`'s GOG game, or finishes its interrupted update.
     pub(crate) fn gog_update(paths: Paths, name: String) -> (Self, Task<Event>) {
         let (page, task) = gog_update::Page::new(paths, name);
-        (
-            Self::GogUpdate(Box::new(page)),
-            task.map(|event| Event::UpdateMessage(Box::new(event))),
-        )
+        (Self::GogUpdate(Box::new(page)), task.map(Event::from))
     }
 
     /// The environment a GOG update just finished for, once.
@@ -108,78 +142,58 @@ impl Page {
         }
     }
 
-    pub(crate) fn update(&mut self, event: Event) -> Task<Event> {
-        self.update_with_key_availability(event, false)
+    /// The page a Choose event opens, with its first task.
+    fn open(paths: &Paths, event: &Event) -> Option<(Self, Task<Event>)> {
+        let paths = paths.clone();
+        Some(match event {
+            Event::New => {
+                let (page, task) = new::Page::new(paths);
+                (Self::New(Box::new(page)), task.map(Event::from))
+            }
+            Event::Prefix => {
+                let (page, task) = prefix::Page::new(paths);
+                (Self::Prefix(Box::new(page)), task.map(Event::from))
+            }
+            Event::Heroic => {
+                let (page, task) = heroic::Page::new(paths);
+                (Self::Heroic(Box::new(page)), task.map(Event::from))
+            }
+            Event::Steam => {
+                let (page, task) = steam::Page::new(paths);
+                (Self::Steam(Box::new(page)), task.map(Event::from))
+            }
+            Event::Gog => {
+                let (page, task) = gog::Page::new(paths);
+                (Self::Gog(Box::new(page)), task.map(Event::from))
+            }
+            _ => return None,
+        })
     }
 
-    pub(crate) fn update_with_key_availability(
-        &mut self,
-        event: Event,
-        key_available: bool,
-    ) -> Task<Event> {
+    pub(crate) fn update(&mut self, event: Event, key_available: bool) -> Task<Event> {
+        if let Self::Choose(paths) = self
+            && let Some((next, task)) = Self::open(paths, &event)
+        {
+            *self = next;
+            return task;
+        }
         match (self, event) {
-            (page @ Self::Choose(_), Event::New) => {
-                let Self::Choose(paths) = page else {
-                    unreachable!()
-                };
-                let (next, task) = new::Page::new(paths.clone());
-                *page = Self::New(Box::new(next));
-                task.map(|event| Event::Create(Box::new(event)))
-            }
-            (page @ Self::Choose(_), Event::Prefix) => {
-                let Self::Choose(paths) = page else {
-                    unreachable!()
-                };
-                let (next, task) = prefix::Page::new(paths.clone());
-                *page = Self::Prefix(Box::new(next));
-                task.map(|event| Event::Import(Box::new(event)))
-            }
-            (page @ Self::Choose(_), Event::Heroic) => {
-                let Self::Choose(paths) = page else {
-                    unreachable!()
-                };
-                let (next, task) = heroic::Page::new(paths.clone());
-                *page = Self::Heroic(Box::new(next));
-                task.map(|event| Event::HeroicMessage(Box::new(event)))
-            }
-            (page @ Self::Choose(_), Event::Steam) => {
-                let Self::Choose(paths) = page else {
-                    unreachable!()
-                };
-                let (next, task) = steam::Page::new(paths.clone());
-                *page = Self::Steam(Box::new(next));
-                task.map(|event| Event::SteamMessage(Box::new(event)))
-            }
-            (page @ Self::Choose(_), Event::Gog) => {
-                let Self::Choose(paths) = page else {
-                    unreachable!()
-                };
-                let (next, task) = gog::Page::new(paths.clone());
-                *page = Self::Gog(Box::new(next));
-                task.map(|event| Event::GogMessage(Box::new(event)))
-            }
+            (page, Event::Back) => page.back(),
             (Self::New(page), Event::Create(event)) => page
                 .update_with_key_availability(*event, key_available)
-                .map(|event| Event::Create(Box::new(event))),
+                .map(Event::from),
             (Self::Prefix(page), Event::Import(event)) => page
                 .update_with_key_availability(*event, key_available)
-                .map(|event| Event::Import(Box::new(event))),
-            (Self::Clone(page), Event::Copy(event)) => page
-                .update(*event)
-                .map(|event| Event::Copy(Box::new(event))),
+                .map(Event::from),
+            (Self::Clone(page), Event::Copy(event)) => page.update(*event).map(Event::from),
             (Self::Heroic(page), Event::HeroicMessage(event)) => page
                 .update_with_key_availability(*event, key_available)
-                .map(|event| Event::HeroicMessage(Box::new(event))),
-            (Self::Steam(page), Event::SteamMessage(event)) => page
-                .update(*event)
-                .map(|event| Event::SteamMessage(Box::new(event))),
-            (Self::Gog(page), Event::GogMessage(event)) => page
-                .update(*event)
-                .map(|event| Event::GogMessage(Box::new(event))),
-            (Self::GogUpdate(page), Event::UpdateMessage(event)) => page
-                .update(*event)
-                .map(|event| Event::UpdateMessage(Box::new(event))),
-            (page, Event::Back) => page.back(),
+                .map(Event::from),
+            (Self::Steam(page), Event::SteamMessage(event)) => page.update(*event).map(Event::from),
+            (Self::Gog(page), Event::GogMessage(event)) => page.update(*event).map(Event::from),
+            (Self::GogUpdate(page), Event::UpdateMessage(event)) => {
+                page.update(*event).map(Event::from)
+            }
             _ => Task::none(),
         }
     }
@@ -202,7 +216,7 @@ impl Page {
     }
 
     /// `width` is the dialog's width, for pages that lay out by it.
-    pub(crate) fn view_with_key_availability(
+    pub(crate) fn view(
         &self,
         palette: Palette,
         width: f32,
@@ -211,23 +225,17 @@ impl Page {
         match self {
             Self::New(page) => page
                 .view_with_key_availability(palette, key_available)
-                .map(|event| Event::Create(Box::new(event))),
+                .map(Event::from),
             Self::Prefix(page) => page
                 .view_with_key_availability(palette, key_available)
-                .map(|event| Event::Import(Box::new(event))),
-            Self::Clone(page) => page.view(palette).map(|event| Event::Copy(Box::new(event))),
+                .map(Event::from),
+            Self::Clone(page) => page.view(palette).map(Event::from),
             Self::Heroic(page) => page
                 .view_with_key_availability(palette, width, key_available)
-                .map(|event| Event::HeroicMessage(Box::new(event))),
-            Self::Steam(page) => page
-                .view(palette, width)
-                .map(|event| Event::SteamMessage(Box::new(event))),
-            Self::Gog(page) => page
-                .view_at(palette, width)
-                .map(|event| Event::GogMessage(Box::new(event))),
-            Self::GogUpdate(page) => page
-                .view(palette)
-                .map(|event| Event::UpdateMessage(Box::new(event))),
+                .map(Event::from),
+            Self::Steam(page) => page.view(palette, width).map(Event::from),
+            Self::Gog(page) => page.view_at(palette, width).map(Event::from),
+            Self::GogUpdate(page) => page.view(palette).map(Event::from),
             Self::Choose(_) => container(
                 column![
                     secondary_button("Back", palette).on_press(Event::Back),
@@ -287,96 +295,31 @@ impl Page {
         width: f32,
     ) -> Option<Task<Event>> {
         match self {
-            Self::Heroic(page) => page
-                .key(key, modifiers, width)
-                .map(|task| task.map(|event| Event::HeroicMessage(Box::new(event)))),
-            Self::Steam(page) => page
-                .key(key, modifiers, width)
-                .map(|task| task.map(|event| Event::SteamMessage(Box::new(event)))),
-            Self::Gog(page) => page
-                .key(key, modifiers, width)
-                .map(|task| task.map(|event| Event::GogMessage(Box::new(event)))),
+            Self::Heroic(page) => page.key(key, modifiers, width).map(|t| t.map(Event::from)),
+            Self::Steam(page) => page.key(key, modifiers, width).map(|t| t.map(Event::from)),
+            Self::Gog(page) => page.key(key, modifiers, width).map(|t| t.map(Event::from)),
             _ => None,
         }
     }
 
     pub(crate) fn busy(&self) -> bool {
-        match self {
-            Self::New(page) => page.busy(),
-            Self::Prefix(page) => page.busy(),
-            Self::Clone(page) => page.busy(),
-            Self::Heroic(page) => page.busy(),
-            Self::Steam(page) => page.busy(),
-            Self::Gog(page) => page.busy(),
-            Self::GogUpdate(page) => page.busy(),
-            Self::Choose(_) => false,
-        }
+        on_page!(self, page => page.busy(), Choose => false)
     }
 
     pub(crate) fn cancel(&mut self, force: bool) {
-        match self {
-            Self::New(page) => page.cancel(force),
-            Self::Prefix(page) => page.cancel(force),
-            Self::Clone(page) => page.cancel(force),
-            Self::Heroic(page) => page.cancel(force),
-            Self::Steam(page) => page.cancel(force),
-            Self::Gog(page) => page.cancel(force),
-            Self::GogUpdate(page) => page.cancel(force),
-            Self::Choose(_) => {}
-        }
+        on_page!(self, page => page.cancel(force), Choose => {})
     }
 
     pub(crate) fn submit(&mut self) -> Task<Event> {
-        match self {
-            Self::New(page) => page.submit().map(|event| Event::Create(Box::new(event))),
-            Self::Prefix(page) => page.submit().map(|event| Event::Import(Box::new(event))),
-            Self::Clone(page) => page.submit().map(|event| Event::Copy(Box::new(event))),
-            Self::Heroic(page) => page
-                .submit()
-                .map(|event| Event::HeroicMessage(Box::new(event))),
-            Self::Steam(page) => page
-                .submit()
-                .map(|event| Event::SteamMessage(Box::new(event))),
-            Self::Gog(page) => page
-                .submit()
-                .map(|event| Event::GogMessage(Box::new(event))),
-            Self::GogUpdate(page) => page
-                .submit()
-                .map(|event| Event::UpdateMessage(Box::new(event))),
-            Self::Choose(_) => self.update(Event::New),
-        }
+        on_page!(self, page => page.submit().map(Event::from), Choose => self.update(Event::New, false))
     }
 
     pub(crate) fn back(&mut self) -> Task<Event> {
-        match self {
-            Self::New(page) => page.back().map(|event| Event::Create(Box::new(event))),
-            Self::Prefix(page) => page.back().map(|event| Event::Import(Box::new(event))),
-            Self::Clone(page) => page.back().map(|event| Event::Copy(Box::new(event))),
-            Self::Heroic(page) => page
-                .back()
-                .map(|event| Event::HeroicMessage(Box::new(event))),
-            Self::Steam(page) => page
-                .back()
-                .map(|event| Event::SteamMessage(Box::new(event))),
-            Self::Gog(page) => page.back().map(|event| Event::GogMessage(Box::new(event))),
-            Self::GogUpdate(page) => page
-                .back()
-                .map(|event| Event::UpdateMessage(Box::new(event))),
-            Self::Choose(_) => Task::none(),
-        }
+        on_page!(self, page => page.back().map(Event::from), Choose => Task::none())
     }
 
     pub(crate) fn take_action(&mut self) -> Option<Action> {
-        match self {
-            Self::New(page) => page.take_action(),
-            Self::Prefix(page) => page.take_action(),
-            Self::Clone(page) => page.take_action(),
-            Self::Heroic(page) => page.take_action(),
-            Self::Steam(page) => page.take_action(),
-            Self::Gog(page) => page.take_action(),
-            Self::GogUpdate(page) => page.take_action(),
-            Self::Choose(_) => None,
-        }
+        on_page!(self, page => page.take_action(), Choose => None)
     }
 }
 
@@ -400,7 +343,7 @@ mod tests {
                 iced::Point::new(24.0, 24.0),
                 iced::Size::new(width - 48.0, height - 48.0),
             );
-            let mut view = page.view_with_key_availability(Palette::DARK, width, false);
+            let mut view = page.view(Palette::DARK, width, false);
             let probe = probe(&mut view, iced::Size::new(width, height));
             assert_eq!(probe.scrollables.len(), 1, "one scrolling region");
             let spilled = probe.outside(inset);

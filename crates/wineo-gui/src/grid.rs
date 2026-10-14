@@ -388,7 +388,7 @@ impl App {
             };
             let width = self.flow_width();
             let dialog = container(
-                flow.view_with_key_availability(palette, width, self.steamgriddb_available)
+                flow.view(palette, width, self.steamgriddb_available)
                     .map(move |event| Message::Flow(generation, event)),
             )
             .width(width)
