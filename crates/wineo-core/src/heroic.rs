@@ -454,7 +454,14 @@ impl HeroicSource {
         game_id: &str,
     ) -> Result<(HeroicImport, Vec<HeroicSharedPrefix>)> {
         self.check_game_id(game_id)?;
-        let loaded = self.load()?;
+        // A game that isn't in the library is reported before the global
+        // settings are read, as `inspect` does.
+        let library = self.read_library()?;
+        library.entry(game_id)?;
+        let loaded = Loaded {
+            global: self.global_settings()?,
+            library,
+        };
         let selected = self.inspect_in(&loaded, game_id)?;
         let selected_prefix = crate::paths::resolve(&selected.prefix);
         let mut shared = self
