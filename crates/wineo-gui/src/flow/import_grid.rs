@@ -122,8 +122,10 @@ impl<Message: Send + 'static> ImportGrid<Message> {
         self.focus_visible && self.focus == Some(index)
     }
 
-    /// Arrows move focus over `count` tiles and scroll its row into view,
-    /// wherever the header above the grid ends. None for any other key.
+    /// Arrows move focus over `count` tiles and scroll its row into view.
+    /// None for any other key. The header sits inside the scrolled content
+    /// with a height that depends on how its text wraps, so the first pass
+    /// measures it and the second scrolls.
     pub(super) fn arrow(&mut self, key: &Key, width: f32, count: usize) -> Option<Task<Message>> {
         let Key::Named(
             named @ (Named::ArrowLeft | Named::ArrowRight | Named::ArrowUp | Named::ArrowDown),
@@ -138,11 +140,11 @@ impl<Message: Send + 'static> ImportGrid<Message> {
             return Some(Task::none());
         };
         let columns = columns.max(1);
-        Some(reveal_row(
+        Some(iced::advanced::widget::operate(measure(
             self.id,
             index / columns,
             count.div_ceil(columns),
-        ))
+        )))
     }
 
     /// The keys of a grid that picks games: arrows, Space, Ctrl+A, and
@@ -241,11 +243,11 @@ const TILE_POSTER_HEIGHT: f32 = 180.0;
 const TILE_HEIGHT: f32 = 262.0;
 const TILE_TITLE_SIZE: f32 = 13.0;
 const TILE_REASON_SIZE: f32 = 11.0;
-pub(super) const TILE_GAP: f32 = 12.0;
+const TILE_GAP: f32 = 12.0;
 
 /// How many tiles fit across a flow dialog `width` wide, after the page's
 /// padding, max width, and the scrollbar.
-pub(super) fn grid_columns(width: f32) -> usize {
+fn grid_columns(width: f32) -> usize {
     let content = (width - 2.0 * PAGE_PADDING).min(PAGE_MAX_WIDTH) - SCROLL_GUTTER;
     ((content + TILE_GAP) / (TILE_OUTER_WIDTH + TILE_GAP))
         .floor()
@@ -256,7 +258,7 @@ const ROWS_ID: &str = "import-grid-rows";
 
 /// The import grid page's one scrolling region: the title, notes, and tile
 /// rows scroll together, so a short dialog can still reach every game.
-pub(super) fn grid_scroll<'a, Message: 'a>(
+fn grid_scroll<'a, Message: 'a>(
     id: &'static str,
     header: Element<'a, Message>,
     rows: Element<'a, Message>,
@@ -289,17 +291,6 @@ fn reveal_offset(current: f32, viewport: f32, top: f32, bottom: f32, first: bool
         return top;
     }
     current.clamp(lowest, top)
-}
-
-/// Scrolls the grid named `grid` so its row `row` of `rows` shows. The header
-/// sits inside the scrolled content with a height that depends on how its text
-/// wraps, so the first pass measures it and the second scrolls.
-pub(super) fn reveal_row<T: Send + 'static>(
-    grid: &'static str,
-    row: usize,
-    rows: usize,
-) -> Task<T> {
-    iced::advanced::widget::operate(measure(grid, row, rows))
 }
 
 pub(super) fn measure(grid: &'static str, row: usize, rows: usize) -> Measure {
@@ -378,12 +369,7 @@ impl<T: Send + 'static> iced::advanced::widget::Operation<T> for Measure {
     }
 }
 
-pub(super) fn move_focus(
-    focus: Option<usize>,
-    key: Named,
-    columns: usize,
-    count: usize,
-) -> Option<usize> {
+fn move_focus(focus: Option<usize>, key: Named, columns: usize, count: usize) -> Option<usize> {
     if count == 0 {
         return None;
     }
@@ -438,7 +424,7 @@ fn focus_ring_style(palette: Palette, shown: bool) -> container::Style {
     )
 }
 
-pub(super) fn tile<'a, Message: Clone + 'a>(
+fn tile<'a, Message: Clone + 'a>(
     tile: Tile<'a>,
     palette: Palette,
     on_press: Message,
