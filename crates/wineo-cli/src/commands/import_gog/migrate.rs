@@ -18,7 +18,8 @@ use wineo_core::paths::Paths;
 use wineo_core::runners::Runners;
 
 use super::Args;
-use crate::commands::gog_support::{usage_error, warn};
+use super::extras::Batch;
+use crate::commands::gog_support::{Account, usage_error, warn};
 use crate::commands::import::{ReturnToSourceMenu, check_review};
 use crate::commands::import_heroic::{
     ChosenRunner, ensure_components_available, finish_registered, pick_runner, report_playtime,
@@ -369,6 +370,7 @@ fn report(
     global: &GlobalConfig,
     migration: &Migration,
     outcome: Outcome,
+    extras: &mut super::extras::Batch<'_>,
 ) -> anyhow::Result<bool> {
     match outcome {
         Outcome::AlreadyMigrated {
@@ -385,7 +387,7 @@ fn report(
             // Before the desktop entries, so a new icon is in them.
             let game = migration.game();
             let icon = game.id.parse().is_ok_and(|gog_id| {
-                super::extras::import(paths, global, &migrated.environment, gog_id, &game.title)
+                extras.import(paths, global, &migrated.environment, gog_id, &game.title)
             });
             match &migrated.registered {
                 Some(registered) => finish_registered(paths, global, registered)?,
@@ -468,7 +470,14 @@ pub(super) fn one(paths: &Paths, args: &Args, id: &str, verbose: bool) -> anyhow
         confirm(prompt)?;
     }
     let outcome = apply(paths, &global, source, &migration)?;
-    report(paths, &global, &migration, outcome)?;
+    let account = Account::new();
+    report(
+        paths,
+        &global,
+        &migration,
+        outcome,
+        &mut Batch::new(&account),
+    )?;
     Ok(ExitCode::SUCCESS)
 }
 
@@ -546,9 +555,12 @@ pub(super) fn all(paths: &Paths, args: &Args, verbose: bool) -> anyhow::Result<E
                 _ => return Err(Canceled.into()),
             }
         }
+        // One login session and one set of HTTP clients for every game's extras.
+        let account = Account::new();
+        let mut extras = Batch::new(&account);
         for (entry, migration) in &ready {
             match apply(paths, &global, entry.source, migration)
-                .and_then(|outcome| report(paths, &global, migration, outcome))
+                .and_then(|outcome| report(paths, &global, migration, outcome, &mut extras))
             {
                 Ok(true) => done += 1,
                 Ok(false) => {
@@ -678,7 +690,14 @@ pub(super) fn guided(
                     Reply::Value(false) => return Err(Canceled.into()),
                     Reply::Value(true) => {
                         let outcome = apply(paths, &global, entry.source, &migration)?;
-                        report(paths, &global, &migration, outcome)?;
+                        let account = Account::new();
+                        report(
+                            paths,
+                            &global,
+                            &migration,
+                            outcome,
+                            &mut Batch::new(&account),
+                        )?;
                         return Ok(ExitCode::SUCCESS);
                     }
                 }

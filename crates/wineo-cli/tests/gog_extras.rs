@@ -4,7 +4,7 @@
 mod common;
 
 use common::gog_api::{CODE, GogApi, success_address};
-use common::gog_world::RIMWORLD;
+use common::gog_world::{DISCO, RIMWORLD};
 use common::pty::Pty;
 use common::{Fixture, assert_success, stderr, stdout, write_script};
 use serde_json::json;
@@ -64,6 +64,44 @@ fn a_migration_imports_gogs_playtime() {
     let again = migrate(&f, &api, &[]);
     assert_success(&again);
     assert!(!stdout(&again).contains("playtime"), "{}", stdout(&again));
+}
+
+#[test]
+fn a_bulk_migration_logs_in_to_gog_once_for_all_its_games() {
+    let (f, api) = world();
+    f.install_proton("GE-Proton10-4");
+    f.heroic_disco(json!({
+        "type": "proton",
+        "name": "GE-Proton10-4",
+        "bin": "/nowhere/GE-Proton10-4/proton",
+    }));
+    logged_in(&f, &api);
+    let renewals = |api: &GogApi| {
+        api.requests()
+            .iter()
+            .filter(|line| line.contains("grant_type=refresh_token"))
+            .count()
+    };
+    let before = renewals(&api);
+    api.with(|config| {
+        config.playtime.insert(RIMWORLD, 600);
+        config.playtime.insert(DISCO, 1200);
+        config.art.insert(RIMWORLD, json!({}));
+        config.art.insert(DISCO, json!({}));
+    });
+    let out = f.gog(&api, &["import", "gog", "--all", "--yes"]);
+    assert_success(&out);
+    let text = stdout(&out);
+    assert!(text.contains("Imported 10 h of GOG playtime."), "{text}");
+    assert!(text.contains("Imported 20 h of GOG playtime."), "{text}");
+    // Each game still asked GOG for its own playtime and art.
+    let requests = api.requests();
+    let asked = |part: &str| requests.iter().filter(|line| line.contains(part)).count();
+    assert_eq!(asked("/sessions"), 2, "{requests:?}");
+    assert_eq!(asked("/v2/games/"), 2, "{requests:?}");
+    // The access token lasts the whole batch, so it is fetched once, not
+    // once per game.
+    assert_eq!(renewals(&api) - before, 1, "{requests:?}");
 }
 
 #[test]
