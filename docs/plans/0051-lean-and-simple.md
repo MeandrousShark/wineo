@@ -211,6 +211,10 @@ answer and confirmed separately.
 - The app's `recorded_games` lacks the CLI's portable guard (harmless today).
 - Two test fake-wine processes from an earlier test run were still alive
   11 hours later: a fixture misses cleanup.
+- The supervisor settles a stopped run with `Settle::Idle` (`supervisor.rs`),
+  and Proton's idle wait returns at once, so when a launcher exits during a
+  cancel, a run can read `Stopped` while a non-Wine descendant still runs.
+  Found in the C6 review; predates it.
 
 ## Sequencing
 
