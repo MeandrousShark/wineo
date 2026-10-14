@@ -18,6 +18,7 @@ use crate::artwork;
 use crate::focus_button;
 use crate::library::Card;
 use crate::logview::{self, LogView};
+use crate::prefix_facts::{Facts, Live};
 use crate::theme::Palette;
 use crate::ui::{self, PickListStyle, ScrollStyle, secondary_button};
 use crate::worker::LogSource;
@@ -229,12 +230,16 @@ pub(crate) fn install_enabled(card: &Card, request_busy: bool) -> bool {
 impl App {
     /// Whether Update or Finish update can start for `card` now.
     pub(crate) fn gog_update_enabled(&self, card: &Card) -> bool {
+        self.gog_update_enabled_with(&Live(&self.paths), card)
+    }
+
+    pub(crate) fn gog_update_enabled_with(&self, facts: &dyn Facts, card: &Card) -> bool {
         card.error.is_none()
             && !card.busy
             && !card.active()
             && self.operation.is_none()
             && !self.management_busy()
-            && self.remove_reason(&card.name).is_none()
+            && self.remove_reason_with(facts, &card.name).is_none()
     }
 
     /// Whether the menu offers Update: a native GOG game the background
@@ -816,7 +821,8 @@ impl App {
             heading = heading.push(text(&card.name).size(13).color(palette.muted));
         }
         body = body.push(container(heading).width(Fill).padding([12, 16]));
-        let operation_busy = self.operation.is_some() || self.tool_blocks_launch(&card.name);
+        let operation_busy =
+            self.operation.is_some() || self.tool_blocks_launch_with(&self.facts, &card.name);
         let mut actions = row![].spacing(8).align_y(Center);
         let mut target_picker: Option<Element<'_, Message>> = None;
         if card.error.is_none() {
@@ -832,7 +838,7 @@ impl App {
                 panel_action_button(
                     gog.finish_label(),
                     palette.primary,
-                    self.gog_update_enabled(card),
+                    self.gog_update_enabled_with(&self.facts, card),
                     Message::GogUpdate(card.name.clone()),
                     PANEL_PLAY_ID,
                 )

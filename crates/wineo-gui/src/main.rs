@@ -30,6 +30,7 @@ mod panel;
 mod panel_motion;
 mod picker;
 mod portable_page;
+mod prefix_facts;
 mod removal;
 mod remove_work;
 mod rescan;
@@ -88,6 +89,8 @@ pub(crate) struct App {
     search: String,
     search_focused: bool,
     cards: Vec<Card>,
+    /// What `view` reads in place of the disk; see `prefix_facts`.
+    facts: prefix_facts::Stored,
     pub(crate) selected: Option<String>,
     panel_open: bool,
     panel_motion: panel_motion::PanelMotion,
@@ -344,6 +347,7 @@ impl App {
             search: String::new(),
             search_focused: false,
             cards: Vec::new(),
+            facts: prefix_facts::Stored::default(),
             selected: None,
             panel_open: false,
             panel_motion: panel_motion::PanelMotion::default(),
@@ -1390,6 +1394,7 @@ impl App {
                 ])
             }
             Message::Context(name) => {
+                self.refresh_facts();
                 self.action_menu_position = self.menu_anchor;
                 self.action_menu = if self.action_menu.as_deref() == Some(&name) {
                     None
@@ -1634,6 +1639,12 @@ impl App {
         }
         Task::batch(tasks)
     }
+    /// Rereads the disk facts `view` shows reasons from. Cheap enough to run
+    /// per user action: one lstat and one canonicalize per environment.
+    pub(crate) fn refresh_facts(&mut self) {
+        self.facts = prefix_facts::Stored::read(&self.paths, &self.cards);
+    }
+
     fn merge(&mut self, cards: Vec<Card>) {
         let needle = self.search.to_lowercase();
         let old_layout: Vec<_> = self
@@ -1671,6 +1682,7 @@ impl App {
         }
         self.shown.show_library(Ok(cards.clone()));
         self.cards = cards;
+        self.refresh_facts();
         if layout_changed {
             self.grid_motion
                 .snap(self.panel_open, self.filtered().len());

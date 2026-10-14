@@ -7,6 +7,7 @@ use wineo_core::cancel::Token;
 use wineo_core::validate::{Fix, Level, Problem, Report};
 use wineo_core::winetricks::WinetricksEvent;
 
+use crate::prefix_facts::{Facts, Live};
 use crate::removal::Change as RunningChange;
 use crate::theme::Palette;
 use crate::ui::{ScrollStyle, secondary_button, section, section_heading};
@@ -698,13 +699,21 @@ impl App {
     }
 
     fn checkup_can_fix(&self, results: &Results) -> bool {
+        self.checkup_can_fix_with(&Live(&self.paths), results)
+    }
+
+    fn checkup_can_fix_with(&self, facts: &dyn Facts, results: &Results) -> bool {
         !results.checking
             && !self.management_busy()
-            && !self.checkup_tool_conflict(results)
+            && !self.checkup_tool_conflict_with(facts, results)
             && !results.selected().is_empty()
     }
 
     fn checkup_tool_conflict(&self, results: &Results) -> bool {
+        self.checkup_tool_conflict_with(&Live(&self.paths), results)
+    }
+
+    fn checkup_tool_conflict_with(&self, facts: &dyn Facts, results: &Results) -> bool {
         let selected = results.selected();
         results.report.as_ref().is_some_and(|report| {
             report.problems.iter().any(|problem| {
@@ -715,7 +724,7 @@ impl App {
                     && problem
                         .environment
                         .as_deref()
-                        .is_some_and(|name| self.tool_prefix_busy(name))
+                        .is_some_and(|name| self.tool_prefix_busy_with(facts, name))
             })
         })
     }
@@ -855,7 +864,7 @@ impl App {
                         if let Fix::RecoverSnapshot { environment } = fix {
                             let allowed = !running
                                 && !self.management_busy()
-                                && !self.tool_prefix_busy(environment);
+                                && !self.tool_prefix_busy_with(&self.facts, environment);
                             issue_rows = issue_rows.push(control(
                                 "Roll back restore".into(),
                                 scope.id(&format!("fix-{index}")),
@@ -863,7 +872,7 @@ impl App {
                                 Event::ReviewRecovery(scope.clone(), fix.clone()),
                                 palette,
                             ));
-                            if let Some(reason) = self.tool_reason(environment) {
+                            if let Some(reason) = self.tool_reason_with(&self.facts, environment) {
                                 issue_rows =
                                     issue_rows.push(text(reason).size(12).color(palette.muted));
                             }
@@ -901,7 +910,7 @@ impl App {
                 text("This restores the old prefix and config. The rollback must finish before closing.").color(palette.warning),
                 row![
                     control("Cancel".into(), scope.id("recover-cancel"), true, Event::DismissRecovery(scope.clone()), palette),
-                    control("Roll back restore".into(), scope.id("recover-confirm"), !self.management_busy() && !self.tool_prefix_busy(environment), Event::ConfirmRecovery(scope.clone()), palette),
+                    control("Roll back restore".into(), scope.id("recover-confirm"), !self.management_busy() && !self.tool_prefix_busy_with(&self.facts, environment), Event::ConfirmRecovery(scope.clone()), palette),
                 ].spacing(8)
             ].spacing(8), palette));
         }
@@ -909,7 +918,7 @@ impl App {
             control(
                 format!("Fix {}", plural(count, "problem", "problems")),
                 scope.id("apply"),
-                self.checkup_can_fix(results),
+                self.checkup_can_fix_with(&self.facts, results),
                 Event::Fix(scope.clone()),
                 palette
             ),
