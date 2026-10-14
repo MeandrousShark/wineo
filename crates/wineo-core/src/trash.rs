@@ -3476,6 +3476,88 @@ mod tests {
         assert_scan_matches(&f.paths, &[]);
     }
 
+    fn expect_scan(paths: &Paths, expected: &[(&str, Result<(), String>)]) {
+        let scan = PendingScan::new(paths);
+        for _ in 0..2 {
+            for (name, want) in expected {
+                let got = scan.check(paths, name, &[]).map_err(|err| err.to_string());
+                assert_eq!(&got, want, "shared scan, {name}");
+                let single = check_pending(paths, name, &[]).map_err(|err| err.to_string());
+                assert_eq!(&single, want, "check_pending, {name}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_shared_scan_reports_restore_and_prune_work_to_its_owner_only() {
+        for (phase, intent) in [
+            (Phase::Restoring, Intent::Restore),
+            (Phase::Pruning, Intent::Prune),
+        ] {
+            let f = Fixture::new();
+            f.config("game", "kind = 'native'\n");
+            let entry = remove(&f.paths, "game", false).unwrap();
+            let mut manifest = read_manifest(&f.paths, &entry.id).unwrap();
+            manifest.phase = phase;
+            write_manifest(&f.paths, &manifest).unwrap();
+            let interrupted = format!(
+                "trash entry {} has interrupted {phase:?} for game; recover with `wineo validate --fix`",
+                entry.id
+            );
+            expect_scan(
+                &f.paths,
+                &[
+                    ("game", Err(interrupted.clone())),
+                    ("other", Ok(())),
+                    ("game", Err(interrupted.clone())),
+                ],
+            );
+
+            start_marker(&f.paths, &manifest, intent).unwrap();
+            let pending = format!(
+                "trash entry {} has pending {intent:?} for game; recover with `wineo validate --fix`",
+                entry.id
+            );
+            expect_scan(
+                &f.paths,
+                &[("other", Ok(())), ("game", Err(pending)), ("other", Ok(()))],
+            );
+        }
+    }
+
+    #[test]
+    fn a_shared_scan_keeps_an_early_blocker_ahead_of_a_later_corrupt_manifest() {
+        let f = Fixture::new();
+        f.config("alpha", "kind = 'native'\n");
+        f.config("beta", "kind = 'native'\n");
+        let mut ids = [
+            remove(&f.paths, "alpha", false).unwrap(),
+            remove(&f.paths, "beta", false).unwrap(),
+        ];
+        ids.sort_by(|a, b| a.id.cmp(&b.id));
+        let [first, second] = ids;
+        let mut manifest = read_manifest(&f.paths, &first.id).unwrap();
+        manifest.phase = Phase::Removing;
+        write_manifest(&f.paths, &manifest).unwrap();
+        let manifest_path = entry_dir(&f.paths, &second.id).unwrap().join(MANIFEST);
+        fs::write(&manifest_path, "not toml").unwrap();
+        let corrupt = read_manifest(&f.paths, &second.id).unwrap_err().to_string();
+        let blocked = format!(
+            "trash entry {} has interrupted Removing for {}; recover with `wineo validate --fix`",
+            first.id, first.name
+        );
+        expect_scan(
+            &f.paths,
+            &[
+                (first.name.as_str(), Err(blocked.clone())),
+                (second.name.as_str(), Err(corrupt.clone())),
+                ("gamma", Err(corrupt.clone())),
+                (first.name.as_str(), Err(blocked)),
+                (second.name.as_str(), Err(corrupt)),
+            ],
+        );
+    }
+
     fn markers_dir_file(paths: &Paths) -> PathBuf {
         let dir = marker_dir(paths);
         fs::create_dir_all(&dir).unwrap();
