@@ -24,6 +24,16 @@ pub enum Endpoint {
     Checksum,
     /// Reading or removing files already in the download cache.
     Cache,
+    /// A Galaxy build's repository manifest, from the build list's link.
+    Repository,
+    /// A Galaxy depot's file list.
+    DepotManifest,
+    /// The list of redistributables GOG offers, and its manifest.
+    Dependencies,
+    /// A signed link to a product's or the dependency store's chunks.
+    SecureLink,
+    /// Fetching one piece of a Galaxy file, or assembling a file from them.
+    Chunk,
 }
 
 impl fmt::Display for Endpoint {
@@ -42,6 +52,11 @@ impl fmt::Display for Endpoint {
             Self::Download => "GOG file download",
             Self::Checksum => "GOG checksum request",
             Self::Cache => "GOG download cache",
+            Self::Repository => "GOG build manifest request",
+            Self::DepotManifest => "GOG depot manifest request",
+            Self::Dependencies => "GOG redistributables request",
+            Self::SecureLink => "GOG secure link request",
+            Self::Chunk => "GOG chunk download",
         })
     }
 }
