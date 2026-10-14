@@ -118,8 +118,16 @@ paths stay complete and wrap or scroll. Keep Back/Create outside the scrolling
 summary so they remain reachable in a short window. Import pages work the
 same way: Back stays at the top, the content scrolls (on grid pages the title
 and notes scroll with the posters), and each step's main action row is pinned
-at the bottom. The art picker matches: Back and Filters stay at the top, the
-title, filters, and images scroll, and only progress and **Use** are pinned.
+at the bottom. On grid pages the main action sits at the right of that row
+(`ends`), and posters still decoding half a second after the page opens show
+a progress bar on the left. The art picker matches: Back and Filters stay at
+the top, the title, filters, and images scroll, and only progress and **Use**
+are pinned.
+
+Determinate progress uses `progress::bar` (in `progress.rs`): a thin bar with
+its state in words beside it, which changes only when its counts do. Work that
+is often quick uses `progress::Delayed`, which shows the bar only if the work
+is still running after 500 ms, so a fast load never flashes it.
 
 A header or card with a left group and a right group uses `ends` (in
 `ends.rs`), not a row with a fill spacer. It keeps the right group at the

@@ -30,8 +30,10 @@ use wineo_core::import;
 use wineo_core::paths::Paths;
 use wineo_core::runners::Runners;
 
-use super::{Action, artwork};
+use super::{Action, artwork, posters};
 use crate::chips::Chips;
+use crate::ends::{MIN_LEFT, ends};
+use crate::progress::Delayed;
 use crate::runner_label::{self, Choice};
 use crate::theme::Palette;
 use crate::ui::{
@@ -241,6 +243,8 @@ pub(crate) enum Event {
     SelectNone,
     ImportSelected,
     Poster(u64, String, Result<(image::Handle, Format), String>),
+    /// The delay before the art progress bar shows has passed.
+    ProgressDue(u64),
     Prepared(u64, Result<Box<Prepared>, String>),
     BatchPrepared(u64, Result<BatchOptions, String>),
     Name(String),
@@ -320,6 +324,7 @@ pub(crate) struct Page {
     /// couldn't be decoded, so it's never stored as art either.
     posters: HashMap<String, Option<(image::Handle, Format)>>,
     poster_generation: u64,
+    progress: Delayed<Event>,
     selected: Option<usize>,
     prepared: Option<Prepared>,
     batch_options: Option<BatchOptions>,
@@ -360,6 +365,7 @@ impl Page {
             focus_visible: false,
             posters: HashMap::new(),
             poster_generation: 0,
+            progress: Delayed::new(Event::ProgressDue),
             selected: None,
             prepared: None,
             batch_options: None,
@@ -644,6 +650,7 @@ impl Page {
         self.focus_visible = false;
         self.posters.clear();
         self.poster_generation = self.poster_generation.wrapping_add(1);
+        self.progress.reset();
         self.prepared = None;
         self.batch_options = None;
         self.review = None;
@@ -743,22 +750,28 @@ impl Page {
 
     /// Decodes each cached poster on a worker. A game without one keeps its
     /// title placeholder.
-    fn load_posters(&self, listing: &HeroicListing) -> Task<Event> {
+    fn load_posters(&mut self, listing: &HeroicListing) -> Task<Event> {
         let generation = self.poster_generation;
-        Task::batch(listing.candidates.iter().filter_map(|candidate| {
-            let path = candidate.poster.clone()?;
-            let id = candidate.id.clone();
-            Some(Task::perform(
-                async move {
-                    tokio::task::spawn_blocking(move || {
-                        artwork::preview_with_format(&path, Kind::Grid)
-                    })
-                    .await
-                    .map_err(|e| e.to_string())?
-                },
-                move |result| Event::Poster(generation, id, result),
-            ))
-        }))
+        let cache = self.paths.art_cache_dir();
+        let decodes: Vec<_> = listing
+            .candidates
+            .iter()
+            .filter_map(|candidate| {
+                let path = candidate.poster.clone()?;
+                let id = candidate.id.clone();
+                let cache = cache.clone();
+                Some(Task::perform(
+                    async move {
+                        posters::bounded(move || posters::decode(&path, &cache))
+                            .await
+                            .and_then(|result| result)
+                    },
+                    move |result| Event::Poster(generation, id, result),
+                ))
+            })
+            .collect();
+        let shown = self.progress.add(decodes.len(), Instant::now());
+        Task::batch(decodes.into_iter().chain([shown]))
     }
 
     fn poster(&self, id: &str) -> Option<&image::Handle> {
@@ -1305,7 +1318,12 @@ impl Page {
                 }
                 Task::none()
             }
+            Event::ProgressDue(generation) => {
+                self.progress.reveal(generation);
+                Task::none()
+            }
             Event::Poster(generation, id, result) if generation == self.poster_generation => {
+                self.progress.finish_one();
                 self.posters.insert(id, result.ok());
                 // The game's details may have opened before its poster decoded.
                 self.prefill_poster();
@@ -1986,22 +2004,30 @@ impl Page {
                     }
                     let count = self.chosen.len();
                     let idle = !self.busy();
-                    let mut row_actions = row![
+                    let mut others = row![
                         secondary_button("Select all", palette)
                             .on_press_maybe(idle.then_some(Event::SelectAll)),
                         secondary_button("Select none", palette)
                             .on_press_maybe((idle && count > 0).then_some(Event::SelectNone)),
-                        accent_base(import_label(count), palette.primary).on_press_maybe(
-                            (!self.waiting() && count > 0).then_some(Event::ImportSelected)
-                        ),
                     ]
                     .spacing(12)
                     .align_y(Center);
                     if self.status_by_action() {
-                        row_actions = row_actions.push(self.working(palette));
+                        others = others.push(self.working(palette));
                     }
-                    // A narrow dialog would squeeze the last control away.
-                    actions = Some(row_actions.wrap().vertical_spacing(8).into());
+                    if let Some(bar) = posters::progress_bar(&self.progress, palette) {
+                        others = others.push(bar);
+                    }
+                    let import = accent_base(import_label(count), palette.primary).on_press_maybe(
+                        (!self.waiting() && count > 0).then_some(Event::ImportSelected),
+                    );
+                    // A narrow dialog stacks the import button under the rest.
+                    actions = Some(ends(
+                        others.wrap().vertical_spacing(8),
+                        import,
+                        12.0,
+                        MIN_LEFT,
+                    ));
                 }
             }
             Step::Details => {
@@ -3452,7 +3478,10 @@ fn store_heroic_poster(
 ) -> Option<String> {
     let poster = poster?;
     // Core only checks the signature, so the image has to decode first.
-    if !poster.decoded && artwork::preview_with_format(&poster.path, Kind::Grid).is_err() {
+    if !poster.decoded
+        && !posters::decode_waiting(&poster.path, &paths.art_cache_dir(), None)
+            .is_some_and(|decoded| decoded.is_ok())
+    {
         return None;
     }
     heroic_import::store_poster(paths, name, app, &poster.path)
@@ -4823,6 +4852,93 @@ mod tests {
             display_control_escaped("/scripts/a\r\u{1b} b.sh"),
             "/scripts/a\\r\\u{1b} b.sh"
         );
+    }
+
+    #[test]
+    fn art_progress_counts_the_current_listings_posters_after_the_delay() {
+        let root = tempdir().unwrap();
+        let mut page = grid_page(root.path());
+        let listing = page.listing.clone().unwrap();
+        let ids: Vec<_> = listing
+            .candidates
+            .iter()
+            .filter(|candidate| candidate.poster.is_some())
+            .map(|candidate| candidate.id.clone())
+            .collect();
+        assert!(ids.len() >= 2);
+        let total = ids.len();
+        assert_eq!(page.progress.pending_wakeup(), None, "idle owns no timer");
+
+        let _ = page.load_posters(&listing);
+        let generation = page.poster_generation;
+        assert_eq!(page.progress.shown(), None, "not before the delay");
+        assert!(page.progress.pending_wakeup().is_some());
+        let _ = page.update(Event::ProgressDue(page.progress.wakeup_generation()));
+        assert_eq!(page.progress.shown(), Some((0, total)));
+        for width in [900.0, 360.0] {
+            crate::layout_probe::layout(
+                &mut page.view_with_key_availability(Palette::DARK, width, false),
+                iced::Size::new(width, 600.0),
+            );
+        }
+
+        // A failure counts like a success; a reply for an older listing counts
+        // for nothing.
+        let _ = page.update(Event::Poster(
+            generation.wrapping_sub(1),
+            ids[0].clone(),
+            Err("late".into()),
+        ));
+        assert_eq!(page.progress.shown(), Some((0, total)));
+        let _ = page.update(Event::Poster(generation, ids[0].clone(), Err("bad".into())));
+        assert_eq!(page.progress.shown(), Some((1, total)));
+        for id in &ids[1..] {
+            let _ = page.update(Event::Poster(
+                generation,
+                id.clone(),
+                Ok((
+                    image::Handle::from_rgba(1, 1, vec![1, 2, 3, 255]),
+                    Format::Png,
+                )),
+            ));
+        }
+        assert_eq!(page.progress.shown(), None, "hidden at completion");
+        assert_eq!(page.progress.pending_wakeup(), None);
+    }
+
+    #[test]
+    fn art_progress_never_shows_when_the_posters_finish_before_the_delay() {
+        let root = tempdir().unwrap();
+        let mut page = grid_page(root.path());
+        let listing = page.listing.clone().unwrap();
+        let _ = page.load_posters(&listing);
+        let generation = page.poster_generation;
+        let late = page.progress.wakeup_generation();
+        for candidate in &listing.candidates {
+            if candidate.poster.is_some() {
+                let _ = page.update(Event::Poster(
+                    generation,
+                    candidate.id.clone(),
+                    Err("x".into()),
+                ));
+            }
+        }
+        assert_eq!(page.progress.pending_wakeup(), None);
+        let _ = page.update(Event::ProgressDue(late));
+        assert_eq!(page.progress.shown(), None);
+    }
+
+    #[test]
+    fn a_new_listing_drops_the_old_listings_progress() {
+        let root = tempdir().unwrap();
+        let mut page = grid_page(root.path());
+        let listing = page.listing.clone().unwrap();
+        let _ = page.load_posters(&listing);
+        let _ = page.update(Event::ProgressDue(page.progress.wakeup_generation()));
+        assert!(page.progress.shown().is_some());
+        let _ = page.list(listing.source.clone());
+        assert_eq!(page.progress.shown(), None);
+        assert_eq!(page.progress.pending_wakeup(), None);
     }
 
     /// Feeds the page each listed poster's decode, as the grid's workers would.

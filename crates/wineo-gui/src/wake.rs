@@ -5,6 +5,7 @@
 use iced::Task;
 use std::time::Instant;
 
+#[cfg(test)]
 use crate::Message;
 
 #[derive(Default)]
@@ -20,11 +21,11 @@ impl Wake {
     /// earlier is kept, since firing re-arms for whatever deadline is then
     /// current; this keeps a burst of scroll events from spawning a sleeper
     /// each.
-    pub(crate) fn arm(
+    pub(crate) fn arm<M: Send + 'static>(
         &mut self,
         want: Option<Instant>,
-        message: fn(u64) -> Message,
-    ) -> Task<Message> {
+        message: fn(u64) -> M,
+    ) -> Task<M> {
         match (self.due, want) {
             (None, None) => return Task::none(),
             (Some(due), Some(want)) if want >= due => return Task::none(),

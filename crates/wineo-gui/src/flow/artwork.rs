@@ -26,7 +26,7 @@ const LOGO_HEIGHT: u32 = 80;
 const LOGO_MAX_WIDTH: u32 = 280;
 /// Tall enough to line up with the collapsed creation form beside it.
 pub(crate) const POSTER_WIDTH: u32 = 152;
-const POSTER_HEIGHT: u32 = 228;
+pub(crate) const POSTER_HEIGHT: u32 = 228;
 /// About the height of a labelled text input, so it sits in the Name row.
 const ICON_SIZE: u32 = 56;
 

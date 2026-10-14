@@ -31,6 +31,7 @@ mod panel_motion;
 mod picker;
 mod portable_page;
 mod prefix_facts;
+mod progress;
 mod removal;
 mod remove_work;
 mod rescan;

@@ -14,7 +14,7 @@ use wineo_core::gog::api::Client;
 use wineo_core::gog::covers::{self, CoverError};
 use wineo_core::paths::Paths;
 
-use super::artwork::preview_with_format;
+use super::posters;
 
 /// Where a game's poster comes from.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -71,12 +71,18 @@ pub(super) fn run(
         }
         match job.source {
             Source::Stored(environment) => match stored_grid(paths, &environment) {
-                Ok(Some(path)) => emit(job.id, decode(&path)),
+                Ok(Some(path)) => match decode(paths, token, &path) {
+                    Some(poster) => emit(job.id, poster),
+                    None => return,
+                },
                 Ok(None) => {}
                 Err(error) => emit(job.id, Err(error)),
             },
             Source::Cover(gog_id) => match covers::cached(paths, gog_id) {
-                Some(path) => emit(job.id, decode_cover(paths, gog_id, &path)),
+                Some(path) => match decode_cover(paths, token, gog_id, &path) {
+                    Some(poster) => emit(job.id, poster),
+                    None => return,
+                },
                 None => missing.push((job.id, gog_id)),
             },
         }
@@ -102,7 +108,10 @@ pub(super) fn run(
         {
             Ok(path) => {
                 outages = 0;
-                decode_cover(paths, gog_id, &path)
+                match decode_cover(paths, token, gog_id, &path) {
+                    Some(poster) => poster,
+                    None => return,
+                }
             }
             Err(error) => {
                 if matches!(error, CoverError::Unavailable(_)) {
@@ -127,17 +136,24 @@ fn stored_grid(paths: &Paths, environment: &str) -> Result<Option<PathBuf>, Stri
     Ok(resolved.map(|resolved| resolved.found.path))
 }
 
-fn decode(path: &Path) -> Result<Handle, String> {
-    preview_with_format(path, Kind::Grid).map(|(handle, _)| handle)
+/// `None` when `token` is canceled before a decode permit frees up.
+fn decode(paths: &Paths, token: &Token, path: &Path) -> Option<Result<Handle, String>> {
+    posters::decode_waiting(path, &paths.art_cache_dir(), Some(token))
+        .map(|poster| poster.map(|(handle, _)| handle))
 }
 
 /// Decodes a cached cover. One that can't be decoded, like a truncated
 /// download, is removed so the next load fetches it again instead of failing
 /// on it forever. Art an environment stored is never removed.
-fn decode_cover(paths: &Paths, gog_id: u64, path: &Path) -> Result<Handle, String> {
-    let poster = decode(path);
+fn decode_cover(
+    paths: &Paths,
+    token: &Token,
+    gog_id: u64,
+    path: &Path,
+) -> Option<Result<Handle, String>> {
+    let poster = decode(paths, token, path)?;
     if poster.is_err() {
         let _ = covers::discard(paths, gog_id);
     }
-    poster
+    Some(poster)
 }

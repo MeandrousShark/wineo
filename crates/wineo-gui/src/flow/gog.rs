@@ -5,6 +5,7 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Instant;
 
 use iced::futures::channel::mpsc::unbounded;
 use iced::keyboard::{self, Key, key::Named};
@@ -31,6 +32,8 @@ use super::Action;
 use super::gog_install::{self, Install, Leave, Offer};
 use super::gog_posters::{self, Job, Network, Source as PosterSource};
 use super::heroic::{self, Prerequisite, Tile};
+use super::posters;
+use crate::progress::Delayed;
 use crate::runner_label::Choice;
 use crate::theme::Palette;
 use crate::ui::{PickListStyle, accent_base, secondary_button};
@@ -163,6 +166,11 @@ pub(crate) enum Event {
     Installing(u64, Box<gog_install::Event>),
     /// A decoded poster, with the load it belongs to and the id of its tile.
     Poster(u64, String, Result<image::Handle, String>),
+    /// The poster worker of this load has stopped, with or without a poster
+    /// for every game it was given.
+    PostersEnded(u64),
+    /// The delay before the art progress bar shows has passed.
+    ProgressDue(u64),
 }
 
 /// Numbers each poster load across pages, so a late reply from a page that
@@ -198,6 +206,7 @@ pub(crate) struct Page {
     /// which keeps its text tile.
     posters: HashMap<String, Option<image::Handle>>,
     poster_generation: u64,
+    progress: Delayed<Event>,
     /// Stops the worker loading posters for a listing that is gone.
     poster_token: Option<Token>,
 }
@@ -232,6 +241,7 @@ impl Page {
             focus_visible: false,
             posters: HashMap::new(),
             poster_generation: next_poster_load(),
+            progress: Delayed::new(Event::ProgressDue),
             poster_token: None,
         };
         let task = page.list();
@@ -457,6 +467,7 @@ impl Page {
             token.cancel();
         }
         self.poster_generation = next_poster_load();
+        self.progress.reset();
     }
 
     /// Loads the listing's posters that aren't decoded yet on one worker,
@@ -472,6 +483,7 @@ impl Page {
         let generation = self.poster_generation;
         let paths = self.paths.clone();
         let (sender, receiver) = unbounded();
+        let count = jobs.len();
         let work = Task::future(async move {
             let _ = tokio::task::spawn_blocking(move || {
                 gog_posters::run(&paths, jobs, &token, Network::open, |id, poster| {
@@ -479,8 +491,10 @@ impl Page {
                 });
             })
             .await;
+            Event::PostersEnded(generation)
         });
-        Task::batch([Task::run(receiver, |event| event), work.discard()])
+        let shown = self.progress.add(count, Instant::now());
+        Task::batch([Task::run(receiver, |event| event), work, shown])
     }
 
     /// A poster to load for every tile that has none yet, in grid order. A
@@ -672,7 +686,16 @@ impl Page {
                 Task::none()
             }
             Event::Poster(generation, id, result) if generation == self.poster_generation => {
+                self.progress.finish_one();
                 self.posters.insert(id, result.ok());
+                Task::none()
+            }
+            Event::PostersEnded(generation) if generation == self.poster_generation => {
+                self.progress.finish_all();
+                Task::none()
+            }
+            Event::ProgressDue(generation) => {
+                self.progress.reveal(generation);
                 Task::none()
             }
             Event::Pick(index) if self.step == Step::Games && !self.waiting() => {
@@ -912,7 +935,10 @@ impl Page {
                     .on_press(Event::BackToLibrary)
                     .into(),
             ),
-            Step::Games | Step::Install => None,
+            // Only while the art is still being prepared, so the grid keeps
+            // its room otherwise.
+            Step::Games => posters::progress_bar(&self.progress, palette),
+            Step::Install => None,
         };
         if let Some(footer) = footer {
             page = page.push(pinned(footer, palette));
@@ -2904,6 +2930,67 @@ mod tests {
     }
 
     #[test]
+    fn art_progress_follows_the_worker_and_ends_with_it() {
+        let mut fx = Fixture::new();
+        fx.native(RIMWORLD, "RimWorld", &[]);
+        let mut page = fx.page();
+        let total = page.poster_jobs().len();
+        assert!(total >= 1);
+        assert_eq!(page.progress.shown(), None, "not before the delay");
+        assert!(page.progress.pending_wakeup().is_some());
+        let _ = page.update(Event::ProgressDue(page.progress.wakeup_generation()));
+        assert_eq!(page.progress.shown(), Some((0, total)));
+        crate::layout_probe::layout(&mut page.view(Palette::DARK), iced::Size::new(680.0, 560.0));
+
+        // A reply from an earlier load moves nothing.
+        let generation = page.poster_generation;
+        let _ = page.update(Event::Poster(
+            generation.wrapping_sub(1),
+            RIMWORLD.to_owned(),
+            Ok(handle()),
+        ));
+        let _ = page.update(Event::PostersEnded(generation.wrapping_sub(1)));
+        assert_eq!(page.progress.shown(), Some((0, total)));
+
+        // Failures count, and a game that got no poster still ends with the
+        // worker.
+        let _ = page.update(Event::Poster(
+            generation,
+            RIMWORLD.to_owned(),
+            Err("x".into()),
+        ));
+        assert_eq!(page.progress.shown(), (total > 1).then_some((1, total)));
+        let _ = page.update(Event::PostersEnded(generation));
+        assert_eq!(page.progress.shown(), None);
+        assert_eq!(page.progress.pending_wakeup(), None);
+    }
+
+    #[test]
+    fn art_progress_never_shows_when_the_worker_ends_before_the_delay() {
+        let mut fx = Fixture::new();
+        fx.native(RIMWORLD, "RimWorld", &[]);
+        let mut page = fx.page();
+        let late = page.progress.wakeup_generation();
+        let generation = page.poster_generation;
+        let _ = page.update(Event::PostersEnded(generation));
+        assert_eq!(page.progress.pending_wakeup(), None);
+        let _ = page.update(Event::ProgressDue(late));
+        assert_eq!(page.progress.shown(), None);
+    }
+
+    #[test]
+    fn leaving_the_grid_clears_the_art_progress() {
+        let mut fx = Fixture::new();
+        fx.native(RIMWORLD, "RimWorld", &[]);
+        let mut page = fx.page();
+        let _ = page.update(Event::ProgressDue(page.progress.wakeup_generation()));
+        assert!(page.progress.shown().is_some());
+        let _ = page.back();
+        assert_eq!(page.progress.shown(), None);
+        assert_eq!(page.progress.pending_wakeup(), None);
+    }
+
+    #[test]
     fn leaving_the_grid_stops_and_invalidates_the_poster_load() {
         let mut fx = Fixture::new();
         fx.native(RIMWORLD, "RimWorld", &[]);
@@ -3138,6 +3225,54 @@ mod tests {
         assert!(second[0].1.is_ok());
         assert_eq!(server.requests().len(), 1);
         assert!(cached.is_file());
+    }
+
+    #[test]
+    fn the_worker_decodes_only_when_a_shared_permit_is_free_and_stops_when_canceled() {
+        use std::sync::mpsc::channel;
+        use std::time::Duration;
+
+        let fx = Fixture::new();
+        let listing = owned_listing(vec![owned_game_in(7, "Celeste", OwnedState::NotInstalled)]);
+        let page = page_with(&fx.paths, listing);
+        fs::create_dir_all(fx.paths.gog_covers_dir()).unwrap();
+        fs::write(fx.paths.gog_covers_dir().join("7.png"), png_bytes()).unwrap();
+        let covers = leaked(Covers::new(200, png_bytes()));
+        let slots = crate::flow::posters::import_decode_slots();
+        let all = crate::flow::posters::import_limit() as u32;
+        // Dropped before any assert can fail, since the scope below joins a
+        // worker that is blocked until the permits come back.
+        let mut held =
+            Some(iced::futures::executor::block_on(slots.clone().acquire_many_owned(all)).unwrap());
+        let token = Token::new();
+
+        std::thread::scope(|scope| {
+            let (sender, receiver) = channel();
+            let (done, paths, jobs) = (&token, &fx.paths, page.poster_jobs());
+            scope.spawn(move || {
+                let _ = sender.send(load(paths, jobs, done, None, covers));
+            });
+            // Both permits are out, so the cover waits instead of decoding.
+            assert!(receiver.recv_timeout(Duration::from_millis(200)).is_err());
+            token.cancel();
+            let sent = receiver.recv_timeout(Duration::from_secs(5));
+            drop(held.take_if(|_| sent.is_err()));
+            assert!(sent.unwrap().is_empty());
+        });
+
+        std::thread::scope(|scope| {
+            let (sender, receiver) = channel();
+            let (paths, jobs) = (&fx.paths, page.poster_jobs());
+            scope.spawn(move || {
+                let _ = sender.send(load(paths, jobs, &Token::new(), None, covers));
+            });
+            let early = receiver.recv_timeout(Duration::from_millis(200));
+            drop(held.take());
+            assert!(early.is_err());
+            let sent = receiver.recv_timeout(Duration::from_secs(5)).unwrap();
+            assert_eq!(sent.len(), 1);
+            assert!(sent[0].1.is_ok());
+        });
     }
 
     #[test]
