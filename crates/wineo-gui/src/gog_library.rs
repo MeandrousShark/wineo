@@ -187,9 +187,7 @@ pub(crate) fn check_task(paths: Paths) -> iced::Task<crate::Message> {
     iced::Task::perform(
         async move {
             tokio::task::spawn_blocking(move || {
-                let keyring = wineo_core::secret_service::SecretServiceKeyring::for_spec(
-                    &wineo_core::gog::account::KEY_SPEC,
-                );
+                let keyring = wineo_core::secret_service::SecretServiceKeyring::gog();
                 let client =
                     wineo_core::gog::client_from_env().map_err(|error| error.to_string())?;
                 check_with(&paths, &keyring, client)

@@ -31,7 +31,7 @@ pub struct Account {
 impl Account {
     pub fn new() -> Self {
         Self {
-            keyring: SecretServiceKeyring::for_spec(&gog::account::KEY_SPEC),
+            keyring: SecretServiceKeyring::gog(),
         }
     }
 

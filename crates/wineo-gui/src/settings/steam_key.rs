@@ -67,7 +67,7 @@ pub(crate) struct Removed {
 }
 
 fn keyring() -> SecretServiceKeyring {
-    SecretServiceKeyring::for_spec(&key::KEY_SPEC)
+    SecretServiceKeyring::steam()
 }
 
 fn overridden(

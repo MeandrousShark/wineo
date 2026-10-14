@@ -1075,7 +1075,7 @@ impl Install {
 }
 
 fn keyring() -> SecretServiceKeyring {
-    SecretServiceKeyring::for_spec(&wineo_core::gog::account::KEY_SPEC)
+    SecretServiceKeyring::gog()
 }
 
 fn platform_name(platform: Platform) -> &'static str {
