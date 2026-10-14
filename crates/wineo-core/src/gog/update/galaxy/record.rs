@@ -243,7 +243,12 @@ impl Manifest {
     fn check(&self) -> Result<(), String> {
         let owned = |product: &Option<u64>, dependency: &Option<String>| {
             product.is_some() != dependency.is_some()
+                && dependency.as_deref().is_none_or(super::store::valid_id)
         };
+        // Setup reads support files from their product's folder.
+        if let Some(file) = self.support.iter().find(|file| file.product.is_none()) {
+            return Err(format!("support file {} has no product", file.path));
+        }
         for file in self.files.iter().chain(&self.support) {
             check_path(&file.path)?;
             if !owned(&file.product, &file.dependency)
@@ -273,7 +278,17 @@ impl Manifest {
             if !owned(&link.product, &link.dependency) || link.target.is_empty() {
                 return Err(format!("link {} is incomplete", link.path));
             }
+            if link.target.starts_with('/') || link.target.contains([':', '\\', '\0']) {
+                return Err(format!("link {} points outside the game", link.path));
+            }
         }
+        // The same rule a fresh build's links are held to.
+        let links: std::collections::BTreeMap<&str, &str> = self
+            .links
+            .iter()
+            .map(|link| (link.path.as_str(), link.target.as_str()))
+            .collect();
+        crate::gog::package::check_link_targets(&links).map_err(|error| error.to_string())?;
         for redist in &self.setup.redist {
             if !super::store::valid_id(&redist.dependency) || !is_hex(&redist.manifest, 32) {
                 return Err(format!("redistributable {} is invalid", redist.dependency));
@@ -287,9 +302,9 @@ impl Manifest {
 /// has once it's on disk.
 fn check_path(path: &str) -> Result<(), String> {
     let fine = !path.is_empty()
-        && path
-            .split('/')
-            .all(|part| !part.is_empty() && part != "." && part != ".." && !part.contains('\0'));
+        && path.split('/').all(|part| {
+            !part.is_empty() && part != "." && part != ".." && !part.contains(['\0', ':', '\\'])
+        });
     if fine {
         Ok(())
     } else {
@@ -334,6 +349,11 @@ impl Record {
                     .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
             {
                 return Err("invalid operation id".to_owned());
+            }
+            if pending.store.iter().any(|version| {
+                !super::store::valid_id(&version.dependency) || !is_hex(&version.manifest, 32)
+            }) {
+                return Err("invalid redistributable version".to_owned());
             }
         }
         Ok(())
