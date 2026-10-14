@@ -844,13 +844,7 @@ fn write_environment_once(
     let path = paths.environment_config(name);
     let config = EnvironmentConfig::parse(&path, text)?;
     let _guards = match config.wine() {
-        Some(wine) => build_lock::config(
-            paths,
-            global,
-            Some(&wine.runner),
-            wine.dxvk.as_deref(),
-            wine.vkd3d.as_deref(),
-        )?,
+        Some(wine) => build_lock::wine(paths, global, wine)?,
         None => Vec::new(),
     };
     import::write_config_once(&path, text)

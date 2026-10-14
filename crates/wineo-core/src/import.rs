@@ -470,13 +470,7 @@ pub fn execute_reviewed(
     }
     let config = EnvironmentConfig::parse(&config_path, &config_text)?;
     let wine = config.require_wine(&request.name)?;
-    let _build_guards = build_lock::config(
-        paths,
-        global,
-        Some(&wine.runner),
-        wine.dxvk.as_deref(),
-        wine.vkd3d.as_deref(),
-    )?;
+    let _build_guards = build_lock::wine(paths, global, wine)?;
     if let Err(err) = install::check_available(
         paths,
         global,

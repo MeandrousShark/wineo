@@ -874,14 +874,7 @@ fn rollback_locked(paths: &Paths, marker_path: &Path, marker: &RestoreMarker) ->
         .and_then(|config| {
             let wine = config.wine()?;
             let global = GlobalConfig::load(paths).ok()?;
-            build_lock::config(
-                paths,
-                &global,
-                Some(&wine.runner),
-                wine.dxvk.as_deref(),
-                wine.vkd3d.as_deref(),
-            )
-            .ok()
+            build_lock::wine(paths, &global, wine).ok()
         })
         .unwrap_or_default();
     write_config_atomic(&config_path, &marker.old_config)?;
@@ -905,13 +898,7 @@ fn with_config_build_locks<T>(
 ) -> Result<T> {
     let config = EnvironmentConfig::parse(config_path, contents)?;
     let _guards = match config.wine() {
-        Some(wine) => build_lock::config(
-            paths,
-            global,
-            Some(&wine.runner),
-            wine.dxvk.as_deref(),
-            wine.vkd3d.as_deref(),
-        )?,
+        Some(wine) => build_lock::wine(paths, global, wine)?,
         None => Vec::new(),
     };
     publish()

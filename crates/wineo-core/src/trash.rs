@@ -2612,14 +2612,7 @@ fn with_environment_build_locks<T>(
     publish: impl FnOnce() -> Result<T>,
 ) -> Result<T> {
     let _guards = match (global, config.and_then(EnvironmentConfig::wine)) {
-        (Some(global), Some(wine)) => build_lock::config(
-            paths,
-            global,
-            Some(&wine.runner),
-            wine.dxvk.as_deref(),
-            wine.vkd3d.as_deref(),
-        )
-        .unwrap_or_default(),
+        (Some(global), Some(wine)) => build_lock::wine(paths, global, wine).unwrap_or_default(),
         _ => Vec::new(),
     };
     publish()
