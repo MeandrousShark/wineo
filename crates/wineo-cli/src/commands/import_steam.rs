@@ -4,6 +4,7 @@ use std::process::ExitCode;
 
 use wineo_core::cancel::Token;
 use wineo_core::config::GlobalConfig;
+use wineo_core::download::{Https, Lazy};
 use wineo_core::key_store::{Keyring, Saved};
 use wineo_core::paths::Paths;
 use wineo_core::secret_service::SecretServiceKeyring;
@@ -144,6 +145,7 @@ fn single(
                     games,
                     &plan,
                     key.as_ref(),
+                    &Lazy::new(),
                     &cancellation.token,
                 )?;
             }
@@ -308,6 +310,7 @@ fn apply(
     games: OwnedGames<'_>,
     plan: &Plan,
     key: Option<&Key>,
+    https: &Lazy<Https>,
     cancel: &Token,
 ) -> anyhow::Result<ApplyOutcome> {
     let outcome = steam_import::apply(paths, global, games, plan, cancel)?;
@@ -326,7 +329,7 @@ fn apply(
         return Err(Canceled.into());
     }
     if let Some(key) = key {
-        fetch_art(paths, global, plan, key, cancel)?;
+        fetch_art(paths, global, plan, key, https, cancel)?;
     }
     Ok(outcome)
 }
@@ -336,14 +339,14 @@ fn fetch_art(
     global: &GlobalConfig,
     plan: &Plan,
     key: &Key,
+    https: &Lazy<Https>,
     cancel: &Token,
 ) -> anyhow::Result<()> {
     if cancel.is_canceled() {
         return Err(Canceled.into());
     }
     let result = (|| {
-        let transport = wineo_core::download::Https::new()?;
-        let api = wineo_core::steamgriddb::Api::new(&transport, &key.value);
+        let api = wineo_core::steamgriddb::Api::new(https.https()?, &key.value);
         let language = wineo_core::steamgriddb::language(|var| std::env::var_os(var));
         wineo_core::art_fetch::fetch_steam(
             paths,
@@ -447,6 +450,8 @@ fn bulk(paths: &Paths, global: &GlobalConfig, args: &Args) -> anyhow::Result<Exi
             }
         }
         let cancellation = Cancellation::new()?;
+        // One client for every game's art, not one per game.
+        let https = Lazy::new();
         for plan in ready {
             if cancellation.token.is_canceled() {
                 return Err(Canceled.into());
@@ -457,6 +462,7 @@ fn bulk(paths: &Paths, global: &GlobalConfig, args: &Args) -> anyhow::Result<Exi
                 games,
                 &plan,
                 key.as_ref(),
+                &https,
                 &cancellation.token,
             ) {
                 Ok(ApplyOutcome::Imported(_)) => done += 1,
@@ -583,6 +589,7 @@ fn guided<I: Input, W: Write>(
                             games,
                             &plan,
                             key.as_ref(),
+                            &Lazy::new(),
                             &cancellation.token,
                         )?;
                         return Ok(ExitCode::SUCCESS);

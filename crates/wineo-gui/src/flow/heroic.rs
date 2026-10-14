@@ -15,7 +15,7 @@ use wineo_core::art::{Format, Kind};
 use wineo_core::cancel::Token;
 use wineo_core::components::Component;
 use wineo_core::config::GlobalConfig;
-use wineo_core::download::{Client, Provider};
+use wineo_core::download::{Client, Lazy, Provider};
 use wineo_core::environment::{self, Environment};
 use wineo_core::gamescope::{Filter, Gamescope, GamescopeSetting, Scaler, Window};
 use wineo_core::heroic::{
@@ -1097,6 +1097,8 @@ impl Page {
                                 ));
                             }
                             let mut source_changed = false;
+                            // One client for every game's art, not one per game.
+                            let https = Lazy::new();
                             let ready = library.into_ready();
                             let count = ready.len();
                             for (index, mut game) in ready.into_iter().enumerate() {
@@ -1147,7 +1149,7 @@ impl Page {
                                     ));
                                     if fetch_batch_art {
                                         notes.extend(
-                                            artwork::fetch_default(&paths, &name, &title)
+                                            artwork::fetch_default(&paths, &name, &title, &https)
                                                 .unwrap_or_else(|error| {
                                                     vec![format!("Artwork: {error}")]
                                                 }),

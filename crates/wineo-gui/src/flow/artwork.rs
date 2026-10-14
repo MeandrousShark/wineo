@@ -10,7 +10,7 @@ use iced::{Color, ContentFit, Element, Fill, Padding, Radians, Task, border, gra
 use wineo_core::art::{self, Kind};
 use wineo_core::art_fetch::{self, Mode};
 use wineo_core::config::{ArtFetch, GlobalConfig};
-use wineo_core::download::Https;
+use wineo_core::download::{Https, Lazy};
 use wineo_core::paths::Paths;
 use wineo_core::secret_service::SecretServiceKeyring;
 use wineo_core::steamgriddb::{self, Api, Game};
@@ -547,7 +547,7 @@ impl Draft {
                         }
                     }
                     if !missing.is_empty() {
-                        match fetch(paths, name, &game.0, missing.into_iter()) {
+                        match fetch(paths, name, &game.0, missing.into_iter(), &Lazy::new()) {
                             Ok(fetched) => notes.extend(fetched),
                             Err(error) => failures.push(format!("Art fetching failed: {error}")),
                         }
@@ -1130,14 +1130,18 @@ fn decode_if_current<T, U>(
 }
 
 pub(crate) fn search(paths: &Paths, term: &str) -> Result<Vec<Game>, String> {
+    search_with(paths, term, &Lazy::new())
+}
+
+fn search_with(paths: &Paths, term: &str, https: &Lazy<Https>) -> Result<Vec<Game>, String> {
     let key = steamgriddb::require_key(
         paths,
         |key| std::env::var_os(key),
         &SecretServiceKeyring::steamgriddb(),
     )
     .map_err(|e| e.to_string())?;
-    let https = Https::new().map_err(|e| e.to_string())?;
-    Api::new(&https, &key.value)
+    let https = https.https().map_err(|e| e.to_string())?;
+    Api::new(https, &key.value)
         .search(term)
         .map_err(|e| e.to_string())
 }
@@ -1147,6 +1151,7 @@ fn fetch(
     name: &str,
     game: &Game,
     kinds: impl Iterator<Item = Kind>,
+    https: &Lazy<Https>,
 ) -> Result<Vec<String>, String> {
     let key = steamgriddb::require_key(
         paths,
@@ -1154,8 +1159,8 @@ fn fetch(
         &SecretServiceKeyring::steamgriddb(),
     )
     .map_err(|e| e.to_string())?;
-    let https = Https::new().map_err(|e| e.to_string())?;
-    let api = Api::new(&https, &key.value);
+    let https = https.https().map_err(|e| e.to_string())?;
+    let api = Api::new(https, &key.value);
     let language = steamgriddb::language(|key| std::env::var_os(key));
     let mut notes = Vec::new();
     let mut failures = Vec::new();
@@ -1185,14 +1190,21 @@ fn fetch(
     }
 }
 
-pub(crate) fn fetch_default(paths: &Paths, name: &str, title: &str) -> Result<Vec<String>, String> {
+/// Looks `title` up and fetches the configured kinds for `name`. A batch
+/// passes the same `https` for every game, so they share one client.
+pub(crate) fn fetch_default(
+    paths: &Paths,
+    name: &str,
+    title: &str,
+    https: &Lazy<Https>,
+) -> Result<Vec<String>, String> {
     let global = GlobalConfig::load_or_default(paths).map_err(|e| e.to_string())?;
     let kinds = global.art.fetch.kinds();
     if kinds.is_empty() {
         return Ok(Vec::new());
     }
-    match search(paths, title)?.into_iter().next() {
-        Some(game) => fetch(paths, name, &game, kinds.into_iter()),
+    match search_with(paths, title, https)?.into_iter().next() {
+        Some(game) => fetch(paths, name, &game, kinds.into_iter(), https),
         None => Ok(vec![format!("No artwork match for {title}")]),
     }
 }

@@ -96,7 +96,8 @@ pub fn import(
     request: &Request<'_>,
     token: &Token,
 ) -> Result<Report> {
-    run(paths, session, request, super::client_from_env(), token)
+    let client = super::client_from_env();
+    import_with(paths, session, request, client.as_ref(), token)
 }
 
 /// The note for a part a cancel skipped.
@@ -104,11 +105,25 @@ fn canceled(what: &str) -> String {
     format!("Skipped {what}: canceled.")
 }
 
+#[cfg(test)]
 fn run(
     paths: &Paths,
     session: Option<&mut Session<'_>>,
     request: &Request<'_>,
     client: Result<Client, wineo_gog::Error>,
+    token: &Token,
+) -> Result<Report> {
+    import_with(paths, session, request, client.as_ref(), token)
+}
+
+/// `import` with GOG's artwork client supplied, so a batch of games builds
+/// it once instead of once per game. A batch builds it with
+/// `client_from_env`, as `import` does.
+pub fn import_with(
+    paths: &Paths,
+    session: Option<&mut Session<'_>>,
+    request: &Request<'_>,
+    client: Result<&Client, &wineo_gog::Error>,
     token: &Token,
 ) -> Result<Report> {
     host_only(paths)?;
@@ -141,7 +156,7 @@ fn run(
     }
     match client {
         Ok(_) if token.is_canceled() => report.notes.push(canceled("GOG artwork")),
-        Ok(client) => artwork(paths, request, &client, identity, token, &mut report),
+        Ok(client) => artwork(paths, request, client, identity, token, &mut report),
         Err(error) => report.notes.push(format!("Skipped GOG artwork: {error}.")),
     }
     Ok(report)
