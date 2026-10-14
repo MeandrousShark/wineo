@@ -9,14 +9,14 @@ use crate::paths::Paths;
 
 #[cfg(test)]
 use super::BEFORE_RETAINED_DROP;
+use super::digest::{contained_in, copy_verified, digest, digest_matches, same_tree};
 use super::identity::{
     check_tree_mounts, create_storage, delete_owned, identity, parent, rename_owned, require,
     require_same_mount_as_parent, sync,
 };
 use super::{
-    Identity, Kind, Manifest, Payload, Stage, Step, contained_in, copy_verified, digest,
-    digest_matches, entry_dir, failpoint, matches_identity, resolved, same_tree, stored,
-    write_manifest,
+    Identity, Kind, Manifest, Payload, Stage, Step, entry_dir, failpoint, matches_identity,
+    resolved, stored, write_manifest,
 };
 
 fn stage_location(paths: &Paths, stage: &Stage) -> Result<PathBuf> {
