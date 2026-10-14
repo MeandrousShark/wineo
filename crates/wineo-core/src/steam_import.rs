@@ -494,6 +494,170 @@ pub fn apply(
     }))
 }
 
+/// A game a batch couldn't plan or import, and the name it would have had.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Failure {
+    pub app_id: String,
+    pub name: String,
+    pub reason: String,
+}
+
+/// One game asked for in a batch.
+#[derive(Debug, Clone)]
+pub struct Wanted {
+    pub app_id: String,
+    /// Names a game that fails before a plan names it.
+    pub title: Option<String>,
+    /// What the listing already found it imported as, so it isn't planned.
+    pub imported_as: Option<String>,
+}
+
+/// A batch planned for review, before anything is written.
+#[derive(Debug, Clone, Default)]
+pub struct Batch {
+    pub ready: Vec<Plan>,
+    pub already: Vec<String>,
+    pub failures: Vec<Failure>,
+}
+
+/// What `plan_batch` found for one game, as it goes.
+pub enum Planned<'a> {
+    Ready(&'a Plan),
+    AlreadyImported(&'a str),
+}
+
+/// Plans each game in order, calling `planned` for each one that will import
+/// or already has. `name` applies to every game, so it only suits a batch of
+/// one. When two games land on the same name the first keeps it and the rest
+/// fail, as they would once it exists. An error from `planned` stops the batch.
+pub fn plan_batch(
+    paths: &Paths,
+    global: &GlobalConfig,
+    owned: OwnedGames<'_>,
+    games: impl IntoIterator<Item = Wanted>,
+    name: Option<&str>,
+    mut planned: impl FnMut(Planned<'_>) -> anyhow::Result<()>,
+) -> anyhow::Result<Batch> {
+    let mut batch = Batch::default();
+    let mut names = HashSet::new();
+    for game in games {
+        if let Some(existing) = game.imported_as {
+            planned(Planned::AlreadyImported(&existing))?;
+            batch.already.push(existing);
+            continue;
+        }
+        match plan(paths, global, owned, &game.app_id, name) {
+            Ok(PlanOutcome::Ready(plan)) if names.insert(plan.name().to_owned()) => {
+                planned(Planned::Ready(&plan))?;
+                batch.ready.push(plan);
+            }
+            Ok(PlanOutcome::Ready(plan)) => batch.failures.push(Failure {
+                app_id: game.app_id,
+                reason: crate::Error::EnvironmentExists(plan.name.clone()).to_string(),
+                name: plan.name,
+            }),
+            Ok(PlanOutcome::AlreadyImported(existing)) => {
+                planned(Planned::AlreadyImported(&existing))?;
+                batch.already.push(existing);
+            }
+            Err(error) => {
+                let name = match (name, &game.title) {
+                    (Some(name), _) => name.to_owned(),
+                    (None, Some(title)) => default_name(title, None),
+                    (None, None) => game.app_id.clone(),
+                };
+                batch.failures.push(Failure {
+                    app_id: game.app_id,
+                    name,
+                    reason: format!("{error:#}"),
+                });
+            }
+        }
+    }
+    Ok(batch)
+}
+
+/// What `apply_batch` is doing with one game, as it goes.
+pub enum Applying<'a> {
+    Starting(&'a Plan),
+    Imported(&'a Plan, &'a Applied),
+    /// Something else imported it since it was planned.
+    AlreadyImported(&'a str),
+}
+
+/// How a batch went. Games found already imported while applying leave the
+/// total, so it only counts what this batch could have imported.
+#[derive(Debug, Clone, Default)]
+pub struct BatchReport {
+    pub done: Vec<String>,
+    pub total: usize,
+    pub already: Vec<String>,
+    pub failures: Vec<Failure>,
+    pub warnings: Vec<String>,
+    pub canceled: bool,
+}
+
+impl From<Batch> for BatchReport {
+    /// A batch with nothing applied yet, keeping its planning failures.
+    fn from(batch: Batch) -> Self {
+        Self {
+            total: batch.ready.len(),
+            failures: batch.failures,
+            ..Self::default()
+        }
+    }
+}
+
+/// Imports each ready game in order, calling `each` as it goes. Cancellation
+/// stops at the next game and reports what finished. An error from `each`
+/// stops the batch and is returned instead of a report.
+pub fn apply_batch(
+    paths: &Paths,
+    global: &GlobalConfig,
+    owned: OwnedGames<'_>,
+    mut batch: Batch,
+    cancel: &Token,
+    mut each: impl FnMut(Applying<'_>) -> anyhow::Result<()>,
+) -> anyhow::Result<BatchReport> {
+    let ready = std::mem::take(&mut batch.ready);
+    let mut report = BatchReport {
+        total: ready.len(),
+        ..batch.into()
+    };
+    for plan in ready {
+        if cancel.is_canceled() {
+            report.canceled = true;
+            break;
+        }
+        each(Applying::Starting(&plan))?;
+        match apply(paths, global, owned, &plan, cancel) {
+            Ok(ApplyOutcome::Imported(applied)) => {
+                each(Applying::Imported(&plan, &applied))?;
+                report.done.push(applied.environment.name);
+                report.warnings.extend(applied.warnings);
+            }
+            Ok(ApplyOutcome::AlreadyImported(name)) => {
+                each(Applying::AlreadyImported(&name))?;
+                report.total -= 1;
+                report.already.push(name);
+            }
+            Err(_) if cancel.is_canceled() => {
+                report.canceled = true;
+                break;
+            }
+            Err(error) => report.failures.push(Failure {
+                app_id: plan.app_id,
+                name: plan.name,
+                reason: format!("{error:#}"),
+            }),
+        }
+    }
+    if cancel.is_canceled() {
+        report.canceled = true;
+    }
+    Ok(report)
+}
+
 fn check_portable(paths: &Paths) -> anyhow::Result<()> {
     if paths.portable_root().is_some() {
         anyhow::bail!("Steam games can't be imported into a portable folder.");
@@ -1498,5 +1662,249 @@ mod tests {
         assert!(write_new(&path, "kind = 'other'\n").is_err());
         assert_eq!(fs::read_to_string(&path).unwrap(), "kind = 'native'\n");
         assert_eq!(fs::read_dir(path.parent().unwrap()).unwrap().count(), 1);
+    }
+
+    fn wanted(app_id: &str, title: Option<&str>, imported_as: Option<&str>) -> Wanted {
+        Wanted {
+            app_id: app_id.to_owned(),
+            title: title.map(str::to_owned),
+            imported_as: imported_as.map(str::to_owned),
+        }
+    }
+
+    fn events(planned: Planned<'_>) -> String {
+        match planned {
+            Planned::Ready(plan) => format!("ready {}", plan.name()),
+            Planned::AlreadyImported(name) => format!("already {name}"),
+        }
+    }
+
+    #[test]
+    fn plan_batch_reports_in_order_and_fails_a_repeated_name() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = paths(temp.path(), false);
+        let root = steam_root(&paths, false);
+        manifest(&root, "1", "Alpha", 4, 1);
+        manifest(&root, "2", "Alpha", 4, 1);
+        manifest(&root, "3", "Done Game", 4, 1);
+        let global = GlobalConfig::default();
+        imported(&paths, &ready(&paths, &global, "3", Some("done")));
+
+        let mut seen = Vec::new();
+        let batch = plan_batch(
+            &paths,
+            &global,
+            OwnedGames::Unloaded,
+            [
+                wanted("1", Some("Alpha"), None),
+                wanted("9", Some("Gone Game"), Some("listed")),
+                wanted("2", Some("Alpha"), None),
+                wanted("3", Some("Done Game"), None),
+                wanted("4", Some("Gone Game"), None),
+                wanted("5", None, None),
+            ],
+            None,
+            |planned| {
+                seen.push(events(planned));
+                Ok(())
+            },
+        )
+        .unwrap();
+
+        let alpha = default_name("Alpha", None);
+        assert_eq!(
+            seen,
+            [
+                format!("ready {alpha}"),
+                "already listed".to_owned(),
+                "already done".to_owned()
+            ]
+        );
+        assert_eq!(batch.ready.len(), 1);
+        assert_eq!(batch.ready[0].app_id(), "1");
+        assert_eq!(batch.already, ["listed", "done"]);
+        let failures: Vec<_> = batch
+            .failures
+            .iter()
+            .map(|failure| (failure.app_id.as_str(), failure.name.as_str()))
+            .collect();
+        let gone = default_name("Gone Game", None);
+        assert_eq!(
+            failures,
+            [("2", alpha.as_str()), ("4", gone.as_str()), ("5", "5")]
+        );
+        assert_eq!(
+            batch.failures[0].reason,
+            format!("environment `{alpha}` already exists")
+        );
+    }
+
+    #[test]
+    fn plan_batch_names_a_failure_by_the_wanted_name() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = paths(temp.path(), false);
+        steam_root(&paths, false);
+        let batch = plan_batch(
+            &paths,
+            &GlobalConfig::default(),
+            OwnedGames::Unloaded,
+            [wanted("4", Some("Gone Game"), None)],
+            Some("mine"),
+            |_| Ok(()),
+        )
+        .unwrap();
+        assert_eq!(batch.failures[0].name, "mine");
+    }
+
+    #[test]
+    fn a_callback_error_stops_planning() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = paths(temp.path(), false);
+        let root = steam_root(&paths, false);
+        manifest(&root, "1", "One", 4, 1);
+        manifest(&root, "2", "Two", 4, 1);
+        let mut calls = 0;
+        let error = plan_batch(
+            &paths,
+            &GlobalConfig::default(),
+            OwnedGames::Unloaded,
+            [wanted("1", None, None), wanted("2", None, None)],
+            None,
+            |_| {
+                calls += 1;
+                anyhow::bail!("stop")
+            },
+        )
+        .unwrap_err();
+        assert_eq!(error.to_string(), "stop");
+        assert_eq!(calls, 1);
+    }
+
+    fn two_ready(paths: &Paths) -> Batch {
+        let root = steam_root(paths, false);
+        manifest(&root, "1", "One", 4, 1);
+        manifest(&root, "2", "Two", 4, 1);
+        let global = GlobalConfig::default();
+        Batch {
+            ready: vec![
+                ready(paths, &global, "1", Some("one")),
+                ready(paths, &global, "2", Some("two")),
+            ],
+            already: vec!["planned".to_owned()],
+            failures: vec![Failure {
+                app_id: "0".to_owned(),
+                name: "zero".to_owned(),
+                reason: "planning failed".to_owned(),
+            }],
+        }
+    }
+
+    #[test]
+    fn apply_batch_reports_in_order_and_leaves_skips_out_of_the_total() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = paths(temp.path(), false);
+        let batch = two_ready(&paths);
+        let global = GlobalConfig::default();
+        imported(&paths, &ready(&paths, &global, "2", Some("elsewhere")));
+
+        let mut seen = Vec::new();
+        let report = apply_batch(
+            &paths,
+            &global,
+            OwnedGames::Unloaded,
+            batch,
+            &Token::new(),
+            |applying| {
+                seen.push(match applying {
+                    Applying::Starting(plan) => format!("start {}", plan.name()),
+                    Applying::Imported(plan, applied) => {
+                        format!("imported {} {}", plan.name(), applied.environment.name)
+                    }
+                    Applying::AlreadyImported(name) => format!("already {name}"),
+                });
+                Ok(())
+            },
+        )
+        .unwrap();
+
+        assert_eq!(
+            seen,
+            [
+                "start one",
+                "imported one one",
+                "start two",
+                "already elsewhere"
+            ]
+        );
+        assert_eq!(report.done, ["one"]);
+        assert_eq!(report.total, 1);
+        assert_eq!(report.already, ["elsewhere"]);
+        assert_eq!(report.failures.len(), 1);
+        assert_eq!(report.failures[0].name, "zero");
+        assert!(!report.canceled);
+    }
+
+    #[test]
+    fn a_callback_error_stops_applying() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = paths(temp.path(), false);
+        let batch = two_ready(&paths);
+        let error = apply_batch(
+            &paths,
+            &GlobalConfig::default(),
+            OwnedGames::Unloaded,
+            batch,
+            &Token::new(),
+            |applying| match applying {
+                Applying::Imported(..) => anyhow::bail!("stop"),
+                _ => Ok(()),
+            },
+        )
+        .unwrap_err();
+        assert_eq!(error.to_string(), "stop");
+        assert!(paths.environment_config("one").exists());
+        assert!(!paths.environment_config("two").exists());
+    }
+
+    #[test]
+    fn cancellation_stops_at_the_next_game_and_keeps_what_finished() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = paths(temp.path(), false);
+        let batch = two_ready(&paths);
+        let token = Token::new();
+        let report = apply_batch(
+            &paths,
+            &GlobalConfig::default(),
+            OwnedGames::Unloaded,
+            batch.clone(),
+            &token,
+            |applying| {
+                if let Applying::Imported(..) = applying {
+                    token.cancel();
+                }
+                Ok(())
+            },
+        )
+        .unwrap();
+        assert!(report.canceled);
+        assert_eq!(report.done, ["one"]);
+        assert_eq!(report.total, 2);
+        assert!(!paths.environment_config("two").exists());
+
+        let report = apply_batch(
+            &paths,
+            &GlobalConfig::default(),
+            OwnedGames::Unloaded,
+            Batch {
+                ready: batch.ready[1..].to_vec(),
+                ..Batch::default()
+            },
+            &token,
+            |_| panic!("nothing starts once canceled"),
+        )
+        .unwrap();
+        assert!(report.canceled);
+        assert!(report.done.is_empty());
+        assert!(!paths.environment_config("two").exists());
     }
 }

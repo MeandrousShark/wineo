@@ -1005,7 +1005,7 @@ fn bulk_rows(library: &LibraryPlan) -> Vec<BulkRow> {
                 status: RowStatus::Ready {
                     warn: warnings_line(&plan.warnings(), plan.is_adopt()),
                 },
-                launch_scripts: has_hooks(&plan.heroic().settings_review),
+                launch_scripts: !plan.heroic().settings_review.hooks().is_empty(),
             },
             Entry::Ready(Game::Native(plan)) => BulkRow {
                 name: plan.name().to_owned(),
@@ -1013,7 +1013,7 @@ fn bulk_rows(library: &LibraryPlan) -> Vec<BulkRow> {
                 status: RowStatus::ReadyNative {
                     warn: warnings_line(&plan.warnings(), false),
                 },
-                launch_scripts: has_hooks(&plan.heroic().settings_review),
+                launch_scripts: !plan.heroic().settings_review.hooks().is_empty(),
             },
             Entry::Pending(game) => BulkRow {
                 name: game.plan().name().to_owned(),
@@ -1917,37 +1917,14 @@ fn sync_block(review: &SettingsReview) -> Option<Block> {
 }
 
 fn hook_blocks(review: &SettingsReview) -> Vec<Block> {
-    ["before hook", "after hook"]
+    review
+        .hooks()
         .into_iter()
-        .filter_map(|label| {
-            review
-                .carried
-                .iter()
-                .find(|item| item.field == label)
-                .map(|item| Block {
-                    label,
-                    lines: vec![display_control_escaped(&item.detail)],
-                })
+        .map(|(label, path)| Block {
+            label,
+            lines: vec![path],
         })
         .collect()
-}
-
-fn has_hooks(review: &SettingsReview) -> bool {
-    ["before hook", "after hook"]
-        .into_iter()
-        .any(|field| review.carried.iter().any(|item| item.field == field))
-}
-
-fn display_control_escaped(value: &str) -> String {
-    let mut escaped = String::with_capacity(value.len());
-    for character in value.chars() {
-        if character.is_control() {
-            escaped.extend(character.escape_debug());
-        } else {
-            escaped.push(character);
-        }
-    }
-    escaped
 }
 
 fn gamescope_display(setting: &GamescopeSetting) -> String {
@@ -3337,11 +3314,13 @@ mod tests {
     #[test]
     fn control_characters_are_escaped_only_for_hook_display() {
         assert_eq!(
-            display_control_escaped("/Heroic scripts/a\nreview\r\u{1b}.sh"),
+            wineo_core::heroic::display_control_escaped("/Heroic scripts/a\nreview\r\u{1b}.sh"),
             "/Heroic scripts/a\\nreview\\r\\u{1b}.sh"
         );
         assert_eq!(
-            display_control_escaped("/Heroic scripts/a 'quoted' $dollar; ok.sh"),
+            wineo_core::heroic::display_control_escaped(
+                "/Heroic scripts/a 'quoted' $dollar; ok.sh"
+            ),
             "/Heroic scripts/a 'quoted' $dollar; ok.sh"
         );
     }

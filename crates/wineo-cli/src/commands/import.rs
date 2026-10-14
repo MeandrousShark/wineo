@@ -6,7 +6,6 @@ use wineo_core::config::{Arch, GlobalConfig};
 use wineo_core::environment::Environment;
 use wineo_core::import::{self, ImportRequest, ImportedSettings, Inspection};
 use wineo_core::paths::Paths;
-use wineo_core::runner::Runner;
 use wineo_core::runners::Runners;
 
 use super::transfer::{self, Cancellation};
@@ -224,60 +223,13 @@ pub(super) fn check_name(paths: &Paths, name: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-// Apply repeats these checks under locks; a dry run must catch them without locks.
 pub(super) fn check_review(
     paths: &Paths,
     global: &GlobalConfig,
     request: &ImportRequest,
     inspection: &Inspection,
 ) -> anyhow::Result<()> {
-    anyhow::ensure!(
-        wineo_core::name::is_valid(&request.name),
-        "invalid environment name `{}`",
-        request.name
-    );
-    let source = &inspection.source_root;
-    let destination = if request.adopt {
-        source.clone()
-    } else {
-        request
-            .destination
-            .clone()
-            .unwrap_or(global.prefix_root(paths)?.join(&request.name))
-    };
-    paths.check_prefix(&destination)?;
-    if !request.adopt {
-        let source = wineo_core::paths::resolve(source);
-        let destination = wineo_core::paths::resolve(&destination);
-        anyhow::ensure!(
-            source != destination
-                && !source.starts_with(&destination)
-                && !destination.starts_with(&source),
-            "import source {} overlaps destination {}",
-            source.display(),
-            destination.display()
-        );
-        anyhow::ensure!(
-            !destination.exists(),
-            "import destination already exists: {}",
-            destination.display()
-        );
-    }
-    check_name(paths, &request.name)?;
-    for prefix in [source, &destination] {
-        let sharing = wineo_core::environment::sharing_prefix(paths, &request.name, prefix)?;
-        anyhow::ensure!(
-            sharing.unreadable.is_empty(),
-            "could not inspect existing environments: {}",
-            sharing.unreadable.join(", ")
-        );
-    }
-    if request.adopt {
-        wineo_core::environment::check_nesting(paths, &request.name, &destination)?;
-    } else {
-        wineo_core::environment::check_destination(paths, &request.name, &destination)?;
-    }
-    Ok(())
+    import::preflight(paths, global, request, inspection).map(|_| ())
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -508,16 +460,12 @@ pub(crate) fn choose_runner<I: Input, W: Write>(
     loop {
         let runners = Runners::new(paths, global)?;
         let mut entries = Vec::new();
-        let mut candidates = runners.list()?.runners;
-        if let Ok(system) = Runner::system() {
-            candidates.insert(0, system);
-        }
-        for alias in wineo_core::runner_alias::ALIASES {
-            if let Ok(runner) = runners.resolve(alias) {
-                candidates.push(runner);
-            }
-        }
-        for runner in candidates {
+        let listing = runners.list()?;
+        let candidates = runners.candidates(&listing);
+        for runner in candidates
+            .into_iter()
+            .filter_map(|candidate| candidate.runner.ok())
+        {
             if proton.is_some_and(|expected| expected != runner.is_proton()) {
                 continue;
             }

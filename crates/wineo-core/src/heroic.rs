@@ -1159,6 +1159,36 @@ pub struct SettingsReview {
     pub unsupported: Vec<ReviewItem>,
 }
 
+impl SettingsReview {
+    /// The carried launch scripts by field, `before hook` then `after hook`,
+    /// with control characters escaped so a path can't break the review.
+    pub fn hooks(&self) -> Vec<(&'static str, String)> {
+        ["before hook", "after hook"]
+            .into_iter()
+            .filter_map(|field| {
+                self.carried
+                    .iter()
+                    .find(|item| item.field == field)
+                    .map(|item| (field, display_control_escaped(&item.detail)))
+            })
+            .collect()
+    }
+}
+
+/// `value` with control characters written as escapes, for showing a path
+/// that came from another launcher.
+pub fn display_control_escaped(value: &str) -> String {
+    let mut escaped = String::with_capacity(value.len());
+    for character in value.chars() {
+        if character.is_control() {
+            escaped.extend(character.escape_debug());
+        } else {
+            escaped.push(character);
+        }
+    }
+    escaped
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct InputFileFingerprint {
     pub path: PathBuf,

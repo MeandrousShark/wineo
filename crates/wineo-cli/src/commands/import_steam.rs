@@ -1,4 +1,3 @@
-use std::collections::HashSet;
 use std::io::{self, Write};
 use std::process::ExitCode;
 
@@ -12,7 +11,8 @@ use wineo_core::steam::api::SteamApi;
 use wineo_core::steam::owned;
 use wineo_core::steam::{self, InstallState};
 use wineo_core::steam_import::{
-    self, ApplyOutcome, EntryState, NO_KEY_HINT, OwnedData as Data, OwnedGames, Plan, PlanOutcome,
+    self, Applied, ApplyOutcome, Applying, BatchReport, EntryState, NO_KEY_HINT, OwnedData as Data,
+    OwnedGames, Plan, PlanOutcome, Planned, Wanted,
 };
 use wineo_core::steamgriddb::Key;
 
@@ -287,15 +287,28 @@ fn apply(
     key: Option<&Key>,
     https: &Lazy<Https>,
     cancel: &Token,
-) -> anyhow::Result<ApplyOutcome> {
-    let outcome = steam_import::apply(paths, global, games, plan, cancel)?;
-    let applied = match &outcome {
-        ApplyOutcome::Imported(applied) => applied,
+) -> anyhow::Result<()> {
+    match steam_import::apply(paths, global, games, plan, cancel)? {
+        ApplyOutcome::Imported(applied) => {
+            imported(paths, global, plan, &applied, key, https, cancel)
+        }
         ApplyOutcome::AlreadyImported(name) => {
             println!("Already imported as {name}.");
-            return Ok(outcome);
+            Ok(())
         }
-    };
+    }
+}
+
+/// Reports an imported game, then fetches its art.
+fn imported(
+    paths: &Paths,
+    global: &GlobalConfig,
+    plan: &Plan,
+    applied: &Applied,
+    key: Option<&Key>,
+    https: &Lazy<Https>,
+    cancel: &Token,
+) -> anyhow::Result<()> {
     for warning in &applied.warnings {
         eprintln!("warning: {warning}");
     }
@@ -306,7 +319,7 @@ fn apply(
     if let Some(key) = key {
         fetch_art(paths, global, plan, key, https, cancel)?;
     }
-    Ok(outcome)
+    Ok(())
 }
 
 fn fetch_art(
@@ -370,103 +383,88 @@ fn bulk(paths: &Paths, global: &GlobalConfig, args: &Args) -> anyhow::Result<Exi
     };
     let games = data.games();
     let key = art_key(paths, global, args.art);
-    let mut ready = Vec::new();
-    let mut failures = Vec::new();
-    let mut done = 0;
-    let mut already_imported = Vec::new();
-    let mut names = HashSet::new();
     let mut out = Prompt::new(NoInput, crate::output::stdout());
-    for entry in steam_import::listing(paths, global, games)? {
-        if let Some(name) = entry.imported_as {
-            println!("Already imported as {name}.");
-            continue;
+    let wanted = steam_import::listing(paths, global, games)?
+        .into_iter()
+        .map(|entry| Wanted {
+            app_id: entry.app_id,
+            title: entry.title,
+            imported_as: entry.imported_as,
+        });
+    let batch = steam_import::plan_batch(paths, global, games, wanted, None, |planned| {
+        match planned {
+            Planned::Ready(plan) => review(plan, key.is_some(), &mut out)?,
+            Planned::AlreadyImported(name) => println!("Already imported as {name}."),
         }
-        match steam_import::plan(paths, global, games, &entry.app_id, None) {
-            Ok(PlanOutcome::Ready(plan)) => {
-                if names.insert(plan.name().to_owned()) {
-                    review(&plan, key.is_some(), &mut out)?;
-                    ready.push(plan);
-                } else {
-                    failures.push((
-                        entry.app_id,
-                        plan.name().to_owned(),
-                        wineo_core::Error::EnvironmentExists(plan.name().to_owned()).to_string(),
-                    ));
+        Ok(())
+    })?;
+    let report =
+        if args.dry_run {
+            println!("Dry run, nothing was imported.");
+            BatchReport::from(batch)
+        } else if batch.ready.is_empty() {
+            BatchReport::from(batch)
+        } else {
+            if !args.yes {
+                let mut out = prompt::terminal()?;
+                match out.confirm(
+                    &format!(
+                        "Import {}?",
+                        text::counted(batch.ready.len(), "game", "games")
+                    ),
+                    true,
+                )? {
+                    Reply::Value(true) => {}
+                    _ => return Err(Canceled.into()),
                 }
             }
-            Ok(PlanOutcome::AlreadyImported(name)) => println!("Already imported as {name}."),
-            Err(error) => {
-                let name = entry
-                    .title
-                    .as_deref()
-                    .map(|title| wineo_core::heroic_import::default_name(title, None))
-                    .unwrap_or_else(|| entry.app_id.clone());
-                failures.push((entry.app_id, name, format!("{error:#}")));
-            }
-        }
-    }
-    let mut total = ready.len();
-    if args.dry_run {
-        println!("Dry run, nothing was imported.");
-    } else if !ready.is_empty() {
-        if !args.yes {
-            let mut out = prompt::terminal()?;
-            match out.confirm(
-                &format!("Import {}?", text::counted(ready.len(), "game", "games")),
-                true,
-            )? {
-                Reply::Value(true) => {}
-                _ => return Err(Canceled.into()),
-            }
-        }
-        let cancellation = Cancellation::new()?;
-        // One client for every game's art, not one per game.
-        let https = Lazy::new();
-        for plan in ready {
-            if cancellation.token.is_canceled() {
+            let cancellation = Cancellation::new()?;
+            let cancel = &cancellation.token;
+            // One client for every game's art, not one per game.
+            let https = Lazy::new();
+            let report =
+                steam_import::apply_batch(paths, global, games, batch, cancel, |applying| {
+                    match applying {
+                        Applying::Starting(_) => Ok(()),
+                        Applying::Imported(plan, applied) => {
+                            imported(paths, global, plan, applied, key.as_ref(), &https, cancel)
+                        }
+                        Applying::AlreadyImported(name) => {
+                            println!("Already imported as {name}.");
+                            Ok(())
+                        }
+                    }
+                })?;
+            if report.canceled {
                 return Err(Canceled.into());
             }
-            match apply(
-                paths,
-                global,
-                games,
-                &plan,
-                key.as_ref(),
-                &https,
-                &cancellation.token,
-            ) {
-                Ok(ApplyOutcome::Imported(_)) => done += 1,
-                Ok(ApplyOutcome::AlreadyImported(name)) => {
-                    total -= 1;
-                    already_imported.push(name);
-                }
-                Err(error) if canceled(&error) => return Err(error),
-                Err(error) => failures.push((
-                    plan.app_id().to_owned(),
-                    plan.name().to_owned(),
-                    format!("{error:#}"),
-                )),
-            }
-        }
-    }
-    for (app_id, _, reason) in &failures {
-        eprintln!("Failed {app_id}: {reason}");
+            report
+        };
+    for failure in &report.failures {
+        eprintln!("Failed {}: {}", failure.app_id, failure.reason);
     }
     if !args.dry_run {
-        println!("{}", text::games_summary("Imported", done, total));
-        if !already_imported.is_empty() {
+        println!(
+            "{}",
+            text::games_summary("Imported", report.done.len(), report.total)
+        );
+        if !report.already.is_empty() {
             println!(
                 "{} already imported: {}",
-                already_imported.len(),
-                already_imported.join(", ")
+                report.already.len(),
+                report.already.join(", ")
             );
         }
-        if !failures.is_empty() {
-            let names: Vec<_> = failures.iter().map(|(_, name, _)| name.as_str()).collect();
-            println!("{} failed: {}", failures.len(), names.join(", "));
+        if !report.failures.is_empty() {
+            let names: Vec<_> = report
+                .failures
+                .iter()
+                .map(|failure| failure.name.as_str())
+                .collect();
+            println!("{} failed: {}", report.failures.len(), names.join(", "));
         }
     }
-    Ok(if failures.is_empty() {
+    Ok(if report.failures.is_empty() {
         ExitCode::SUCCESS
     } else {
         ExitCode::FAILURE

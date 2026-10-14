@@ -38,6 +38,22 @@ impl Skipped {
     }
 }
 
+/// Where a runner offered by `Runners::candidates` comes from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CandidateKind {
+    System,
+    Installed,
+    Alias,
+}
+
+/// A runner a picker can offer, by the name a config stores for it.
+#[derive(Debug)]
+pub struct Candidate {
+    pub kind: CandidateKind,
+    pub name: String,
+    pub runner: Result<Runner>,
+}
+
 /// Every runner wineo can use, usable or not.
 #[derive(Debug, Default)]
 pub struct Listing {
@@ -224,6 +240,28 @@ impl Runners {
             }
         }
         unreachable!("the second missing build returns an error")
+    }
+
+    /// The system wine, then each runner in `listing`, then each alias, the
+    /// order every runner picker offers them in. Ones that don't resolve are
+    /// kept, so a caller can say why or leave them out.
+    pub fn candidates(&self, listing: &Listing) -> Vec<Candidate> {
+        let mut candidates = vec![Candidate {
+            kind: CandidateKind::System,
+            name: Runner::SYSTEM.to_owned(),
+            runner: Runner::system(),
+        }];
+        candidates.extend(listing.runners.iter().map(|runner| Candidate {
+            kind: CandidateKind::Installed,
+            name: runner.name().to_owned(),
+            runner: Ok(runner.clone()),
+        }));
+        candidates.extend(crate::runner_alias::ALIASES.iter().map(|alias| Candidate {
+            kind: CandidateKind::Alias,
+            name: (*alias).to_owned(),
+            runner: self.resolve(alias),
+        }));
+        candidates
     }
 
     /// Every runner, one per name and sorted by name, with whatever hides
@@ -923,6 +961,48 @@ mod tests {
                 .unwrap_err()
                 .to_string()
                 .contains("already exists")
+        );
+    }
+
+    #[test]
+    fn candidates_are_system_then_installed_then_aliases_keeping_failures() {
+        let root = tempfile::tempdir().unwrap();
+        wine_build(root.path(), "alpha");
+        proton_build(root.path(), "GE-Proton10-1", "GE-Proton10-1");
+        let installed = runners(root.path());
+        let listing = installed.list().unwrap();
+        let candidates = installed.candidates(&listing);
+
+        let shape: Vec<_> = candidates
+            .iter()
+            .map(|candidate| (candidate.kind, candidate.name.as_str()))
+            .collect();
+        let mut expected = vec![(CandidateKind::System, Runner::SYSTEM)];
+        expected.extend(
+            listing
+                .runners
+                .iter()
+                .map(|runner| (CandidateKind::Installed, runner.name())),
+        );
+        expected.extend([
+            (CandidateKind::Alias, "GE-Proton-Latest"),
+            (CandidateKind::Alias, "Proton-CachyOS-Latest"),
+        ]);
+        assert_eq!(shape, expected);
+        assert_eq!(listing.runners.len(), 2);
+        assert_eq!(candidates[0].runner.is_ok(), Runner::system().is_ok());
+
+        // An alias keeps its own name as the selection but runs its build.
+        let ge = candidates[3].runner.as_ref().unwrap();
+        assert_eq!(ge.selection(), "GE-Proton-Latest");
+        assert_eq!(ge.name(), "GE-Proton10-1");
+        let cachyos = candidates[4].runner.as_ref().unwrap_err();
+        assert_eq!(
+            cachyos.to_string(),
+            installed
+                .resolve("Proton-CachyOS-Latest")
+                .unwrap_err()
+                .to_string()
         );
     }
 }
