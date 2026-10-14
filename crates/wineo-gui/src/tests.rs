@@ -1,4 +1,6 @@
 use super::*;
+use crate::app_art::decode_art;
+use crate::library::load_library;
 use std::time::SystemTime;
 
 #[test]
