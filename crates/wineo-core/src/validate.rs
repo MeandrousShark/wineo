@@ -3274,6 +3274,67 @@ mod tests {
         ));
     }
 
+    // The JSON output depends on these values, so changing one is a contract change.
+    #[rustfmt::skip]
+    const RECORDED_CODES: [(Code, &str, &str, &str); 43] = [
+        (Code::GlobalConfigInvalid, "global_config_invalid", "error", "global_config"),
+        (Code::TemplateInvalid, "template_invalid", "error", "template"),
+        (Code::TemplateUnresolved, "template_unresolved", "warning", "template"),
+        (Code::EnvironmentConfigInvalid, "environment_config_invalid", "error", "environment_config"),
+        (Code::RunnerMissing, "runner_missing", "error", "wine"),
+        (Code::BuildMissing, "build_missing", "error", "wine"),
+        (Code::WinetricksMissing, "winetricks_missing", "warning", "wine"),
+        (Code::WinetricksUnavailable, "winetricks_unavailable", "error", "wine"),
+        (Code::PrefixMissing, "prefix_missing", "warning", "wine"),
+        (Code::PrefixRefused, "prefix_refused", "error", "wine"),
+        (Code::ExeMissing, "exe_missing", "error", "target"),
+        (Code::CwdMissing, "cwd_missing", "error", "target"),
+        (Code::GamemodeMissing, "gamemode_missing", "error", "target"),
+        (Code::GamescopeMissing, "gamescope_missing", "error", "target"),
+        (Code::MangohudMissing, "mangohud_missing", "error", "target"),
+        (Code::WaylandUnsupported, "wayland_unsupported", "error", "target"),
+        (Code::NativeExeInvalid, "native_exe_invalid", "error", "native_target"),
+        (Code::TargetAmbiguous, "target_ambiguous", "warning", "environment"),
+        (Code::LostRun, "lost_run", "warning", "runtime"),
+        (Code::InstallerUnresolved, "installer_unresolved", "warning", "runtime"),
+        (Code::RestoreInterrupted, "restore_interrupted", "error", "runtime"),
+        (Code::StateDirStray, "state_dir_stray", "warning", "runtime"),
+        (Code::DesktopEntryStray, "desktop_entry_stray", "warning", "desktop"),
+        (Code::DesktopOutdated, "desktop_outdated", "warning", "desktop"),
+        (Code::DesktopPortable, "desktop_portable", "warning", "desktop"),
+        (Code::SteamNotFound, "steam_not_found", "error", "steam"),
+        (Code::SteamInstallMissing, "steam_install_missing", "error", "steam"),
+        (Code::SteamLibraryUnavailable, "steam_library_unavailable", "warning", "steam"),
+        (Code::SteamDataUnknown, "steam_data_unknown", "error", "steam"),
+        (Code::ArtConfigInvalid, "art_config_invalid", "error", "art"),
+        (Code::ArtFileMissing, "art_file_missing", "warning", "art"),
+        (Code::ArtTargetUnknown, "art_target_unknown", "warning", "art"),
+        (Code::ArtDuplicates, "art_duplicates", "warning", "art"),
+        (Code::ArtDirStray, "art_dir_stray", "warning", "art"),
+        (Code::StatsStray, "stats_stray", "warning", "runtime"),
+        (Code::TrashInterrupted, "trash_interrupted", "error", "trash"),
+        (Code::TrashInvalid, "trash_invalid", "error", "trash"),
+        (Code::GogStateInvalid, "gog_state_invalid", "error", "gog"),
+        (Code::GogStateMissing, "gog_state_missing", "error", "gog"),
+        (Code::GogFolderMissing, "gog_folder_missing", "warning", "gog"),
+        (Code::GogFolderTaken, "gog_folder_taken", "error", "gog"),
+        (Code::GogMidUpdate, "gog_mid_update", "error", "gog"),
+        (Code::GogOwnerMissing, "gog_owner_missing", "warning", "gog"),
+    ];
+
+    #[test]
+    fn codes_match_the_recorded_table() {
+        let listed = Code::ALL.map(|code| {
+            (
+                code,
+                code.as_str(),
+                code.level().as_str(),
+                code.area().as_str(),
+            )
+        });
+        assert_eq!(listed, RECORDED_CODES);
+    }
+
     #[test]
     fn codes_levels_and_areas_serialize_as_decision_six_shows() {
         for code in Code::ALL {
