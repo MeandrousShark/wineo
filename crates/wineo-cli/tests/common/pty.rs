@@ -117,6 +117,11 @@ impl Pty {
         self.master.write_all(b"\x03").unwrap();
     }
 
+    /// Esc pressed by itself, which the line editor finishes with its timeout.
+    pub fn esc(&mut self) {
+        self.master.write_all(b"\x1b").unwrap();
+    }
+
     /// Waits up to 20 seconds for wineo to exit. The status, and everything
     /// it printed.
     pub fn finish(self) -> (ExitStatus, Seen) {

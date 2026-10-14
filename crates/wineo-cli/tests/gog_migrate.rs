@@ -556,6 +556,36 @@ fn the_guided_import_menu_offers_gog() {
     );
 }
 
+#[test]
+fn esc_walks_back_from_the_question_to_the_picker_and_out() {
+    let f = fixture();
+    let folder = f.heroic_rimworld();
+    let before = Snapshot::capture(f.root.path()).unwrap();
+    let mut command = f.gog_offline_command();
+    command.args(["import", "gog"]);
+    let mut pty = Pty::spawn(command);
+    pty.expect("Which GOG game?");
+    pty.expect("Esc or Ctrl+C to cancel.");
+    pty.expect("Game: ");
+    pty.send("1");
+    pty.expect("Migrate it? [Y/n]: ");
+    pty.esc();
+    pty.expect("Which GOG game?");
+    pty.expect("Game: ");
+    pty.send("1");
+    pty.expect("Migrate it? [Y/n]: ");
+    pty.esc();
+    pty.expect("Which GOG game?");
+    pty.expect("Game: ");
+    pty.esc();
+    let (status, output) = pty.finish();
+    assert_eq!(status.code(), Some(130), "{output}");
+    assert!(output.contains("Import canceled."), "{output}");
+    assert!(f.created_config("rimworld").is_empty());
+    before.assert_unchanged(f.root.path());
+    assert!(f.gog_state(&folder).is_none());
+}
+
 /// Heroic's own Proton, which wineo doesn't have, so it can be copied.
 fn copyable_proton(f: &Fixture) -> serde_json::Value {
     f.install_external_proton("heroic-proton", "GE-Proton9-1", "9-1");
