@@ -26,7 +26,9 @@ impl crate::App {
     /// stored facts: the page, the selected card and whether its panel is up,
     /// the open context menu, remove dialog, and tool page, the snapshot and
     /// portable steps (so a review or confirmation arriving counts), and the
-    /// Checkup scope with its rollback confirmation. It hashes ids and
+    /// Checkup scope, phase and rollback confirmation target, and whether a
+    /// log has replaced the controls. Phases are discrete (loading, working,
+    /// finished), never progress values. It hashes ids and
     /// discriminants only, so it is cheap to take on every message.
     pub(crate) fn screen_key(&self) -> u64 {
         let mut hasher = DefaultHasher::new();
@@ -52,8 +54,14 @@ impl crate::App {
         self.art_page.hash(&mut hasher);
         self.settings.is_some().hash(&mut hasher);
         self.flow.is_some().hash(&mut hasher);
-        self.checkup_scope().hash(&mut hasher);
-        self.checkup_recovery_open().hash(&mut hasher);
+        self.checkup_screen().hash(&mut hasher);
+        self.log_view.hash(&mut hasher);
+        self.checkup_log_scope.hash(&mut hasher);
+        self.tool_page
+            .as_ref()
+            .and_then(|key| self.tool_pages.get(key))
+            .map(crate::tools_page::Page::busy)
+            .hash(&mut hasher);
         hasher.finish()
     }
 }
@@ -247,6 +255,51 @@ mod tests {
         assert!(!app.same_prefix_with(&app.facts, "a", "b"));
     }
 
+    fn recovery_report(app: &mut App, environments: &[&str]) {
+        use crate::checkup::{Event, Scope};
+        use wineo_core::validate::{Code, Fix, Problem, Report};
+
+        app.section = crate::sidebar::Section::Checkup;
+        let _ = app.update(Message::Checkup(Event::Open(Scope::Global)));
+        let generation = app.checkup_generation(&Scope::Global);
+        let problems = environments
+            .iter()
+            .map(|environment| Problem {
+                environment: Some((*environment).into()),
+                template: None,
+                stray: None,
+                area: Code::RestoreInterrupted.area(),
+                level: Code::RestoreInterrupted.level(),
+                code: Code::RestoreInterrupted,
+                message: "interrupted".into(),
+                fix: Some(Fix::RecoverSnapshot {
+                    environment: (*environment).into(),
+                }),
+            })
+            .collect();
+        let report = Report {
+            problems,
+            ..Report::default()
+        };
+        let _ = app.update(Message::Checkup(Event::Checked(
+            Scope::Global,
+            generation,
+            Ok(report),
+        )));
+    }
+
+    fn review_recovery(app: &mut App, environment: &str) {
+        use crate::checkup::{Event, Scope};
+        use wineo_core::validate::Fix;
+
+        let _ = app.update(Message::Checkup(Event::ReviewRecovery(
+            Scope::Global,
+            Fix::RecoverSnapshot {
+                environment: environment.into(),
+            },
+        )));
+    }
+
     type Step = fn(&mut App);
 
     /// Every way a screen showing a reason can open. `prepare` reaches the
@@ -256,7 +309,7 @@ mod tests {
         use crate::checkup::{Event as Checkup, Scope};
         use crate::sidebar::Section;
         use crate::snapshots_page::{Event as Snapshots, Review};
-        use wineo_core::validate::{Code, Fix, Problem, Report};
+        use wineo_core::validate::Report;
 
         fn none(_: &mut App) {}
         vec![
@@ -358,39 +411,92 @@ mod tests {
             }),
             (
                 "rollback confirmation",
+                |app| recovery_report(app, &["b"]),
+                |app| {
+                    review_recovery(app, "b");
+                    assert!(app.checkup_recovery_open(), "the confirmation did not open");
+                },
+            ),
+            (
+                "rollback confirmation target",
+                |app| {
+                    recovery_report(app, &["a", "b"]);
+                    review_recovery(app, "a");
+                },
+                |app| {
+                    review_recovery(app, "b");
+                    assert_eq!(app.checkup_screen().3, Some("b"));
+                },
+            ),
+            (
+                "panel log closing",
+                |app| {
+                    app.selected = Some("b".into());
+                    app.panel_open = true;
+                    app.log_view = true;
+                },
+                |app| {
+                    let _ = app.update(Message::CloseLog);
+                },
+            ),
+            (
+                "Checkup log closing",
+                |app| {
+                    app.section = Section::Checkup;
+                    app.log_view = true;
+                    app.checkup_log_scope = Some(Scope::Global);
+                },
+                |app| {
+                    let _ = app.update(Message::CloseLog);
+                },
+            ),
+            (
+                "Checkup report arriving",
                 |app| {
                     app.section = Section::Checkup;
                     let _ = app.update(Message::Checkup(Checkup::Open(Scope::Global)));
+                },
+                |app| {
                     let generation = app.checkup_generation(&Scope::Global);
-                    let report = Report {
-                        problems: vec![Problem {
-                            environment: Some("b".into()),
-                            template: None,
-                            stray: None,
-                            area: Code::RestoreInterrupted.area(),
-                            level: Code::RestoreInterrupted.level(),
-                            code: Code::RestoreInterrupted,
-                            message: "interrupted".into(),
-                            fix: Some(Fix::RecoverSnapshot {
-                                environment: "b".into(),
-                            }),
-                        }],
-                        ..Report::default()
-                    };
                     let _ = app.update(Message::Checkup(Checkup::Checked(
                         Scope::Global,
                         generation,
-                        Ok(report),
+                        Ok(Report::default()),
                     )));
                 },
+            ),
+            (
+                "snapshots loading",
                 |app| {
-                    let _ = app.update(Message::Checkup(Checkup::ReviewRecovery(
-                        Scope::Global,
-                        Fix::RecoverSnapshot {
-                            environment: "b".into(),
-                        },
+                    let _ = app.update(Message::SnapshotsEnvironment("b".into()));
+                },
+                |app| {
+                    let generation = app.snapshots_page.as_ref().unwrap().generation();
+                    let _ = app.update(Message::Snapshots(Snapshots::Loaded(
+                        generation,
+                        Err("unreadable".into()),
                     )));
-                    assert!(app.checkup_recovery_open(), "the confirmation did not open");
+                },
+            ),
+            (
+                "tool run finishing",
+                |app| {
+                    let _ = app.update(Message::OpenTool("a".into(), tools_page::Kind::Winetricks));
+                    let _ = app.update(Message::Tool(
+                        "a".into(),
+                        tools_page::Kind::Winetricks,
+                        tools_page::Event::OpenWinetricks,
+                    ));
+                    assert!(app.tool_pages.values().any(tools_page::Page::busy));
+                },
+                |app| {
+                    let key = ("a".to_owned(), tools_page::Kind::Winetricks);
+                    let generation = app.tool_pages[&key].generation();
+                    let _ = app.update(Message::Tool(
+                        "a".into(),
+                        tools_page::Kind::Winetricks,
+                        tools_page::Event::Finished(generation, Ok(Some(0))),
+                    ));
                 },
             ),
         ]

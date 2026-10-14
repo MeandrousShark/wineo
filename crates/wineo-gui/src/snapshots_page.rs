@@ -165,12 +165,15 @@ pub(crate) struct Page {
 
 impl Page {
     /// What the page shows that a reason can sit beside: the environment,
-    /// which review or confirmation is up, and whether work is running.
+    /// which review or confirmation is up, and whether it is loading or
+    /// working.
     pub(crate) fn screen(&self) -> impl std::hash::Hash {
         (
             self.selected.as_deref(),
             self.review.as_ref().map(std::mem::discriminant),
             self.working,
+            self.loading,
+            self.loaded.is_some(),
         )
     }
 

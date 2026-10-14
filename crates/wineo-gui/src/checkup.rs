@@ -659,10 +659,27 @@ impl App {
     }
 
     /// Whether the visible Checkup is asking to confirm a rollback.
+    #[cfg(test)]
     pub(crate) fn checkup_recovery_open(&self) -> bool {
-        self.checkup_scope()
-            .and_then(|scope| self.checkups.get(&scope))
-            .is_some_and(|results| results.recovery_confirm.is_some())
+        self.checkup_screen().3.is_some()
+    }
+
+    /// The visible Checkup's scope, whether it is checking or showing a
+    /// report, and the environment a rollback confirmation is asking about.
+    pub(crate) fn checkup_screen(&self) -> (Option<Scope>, bool, bool, Option<&str>) {
+        let scope = self.checkup_scope();
+        let results = scope.as_ref().and_then(|scope| self.checkups.get(scope));
+        (
+            scope.clone(),
+            results.is_some_and(|results| results.checking),
+            results.is_some_and(|results| results.report.is_some()),
+            results
+                .and_then(|results| results.recovery_confirm.as_ref())
+                .map(|fix| match fix {
+                    Fix::RecoverSnapshot { environment } => environment.as_str(),
+                    _ => "",
+                }),
+        )
     }
 
     pub(crate) fn checkup_visible(&self) -> bool {
