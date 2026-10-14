@@ -406,11 +406,14 @@ How the two files stay consistent:
   changes it, even when the base build stays the same.
 - **Reading.** `installed` counts only when its digest matches the state's
   current `committed` and the info file's hash still matches.
-  `pending` counts only when its `operation` matches the state's journal.
-  With no journal, a `pending` whose target digest matches the current
-  `committed` (a crash between the commit and the cleanup) is promoted;
-  any other `pending` is from an operation whose journal never got
-  written, and is dropped. Anything else is stale and ignored.
+  `pending` counts only when its `operation` matches the state's journal;
+  with no journal it is dropped, whatever its target. Nothing is ever
+  promoted from `pending`: a crash between the commit and the cleanup
+  already finds `installed` matching the new `committed`, since it was
+  written before the commit, and a `pending` whose journal never got
+  written belongs to an operation that never started, even when its
+  selection is the current one (a repair or reinstall). Anything else is
+  stale and ignored.
 - **When the sidecar is missing, corrupt, or stale,** the game is treated
   as having no stored manifest (answer b for repairs and track moves,
   question 4's manifest fetch for updates). Since b never deletes, losing
@@ -424,9 +427,10 @@ How the two files stay consistent:
   to A, an old record of A can match again. That's safe: every deletion
   is gated by a content hash (answer a), so a stale record can at worst
   keep a file it should have replaced, which `--repair` finds.
-- **Track moves** commit the new track first, then remove the sidecar. A
-  sidecar left behind by a crash is ignored, since only the Galaxy track
-  reads it.
+- **Track moves.** A move to the installer track commits the new track
+  first, then removes the sidecar; a sidecar left behind by a crash is
+  ignored, since only the Galaxy track reads it. A move onto Galaxy is an
+  ordinary Galaxy operation that writes its record as above.
 - **Recovery** finishes from the journal and `pending`: files already
   published are checked against `pending`'s hashes and kept, the rest are
   fetched again. Offline recovery succeeds only when nothing is left to
@@ -609,7 +613,9 @@ Part A:
    cleanup, support files, and the redistributable store.
 5. Core: setup in the prefix. Before writing it, run ISI for SimCity 4 and
    The Witcher in a throwaway prefix and record what it writes (registry,
-   copied support files, exit codes) here.
+   copied support files, exit codes) here, and check the batch file's
+   full exit codes and nested quoting under both Wine and Proton, since
+   host-side stubs can't show either.
 6. Core: differential updates on 0049's publishing rules, games with no
    stored manifest, the space check, and resume.
 7. Core: `--repair` and track moves.
@@ -642,6 +648,10 @@ They cover:
   (moved aside); a type change; a game with no stored manifest of each
   kind; a low-space update with large deletions, with the folder and the
   data directory on separate filesystems.
+- **Unstarted operations:** a repair and a reinstall of the current
+  selection, each with no prior sidecar and a file that doesn't match,
+  interrupted after `pending` but before the journal; the file must be
+  handled by answer b afterwards, not treated as tracked.
 - **Selection changes:** a DLC-only update interrupted before its
   journal, between the journal and the commit, and after the commit; an
   adopted build going A to B to A; a lost `pending` during an install and
