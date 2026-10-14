@@ -3151,8 +3151,10 @@ mod tests {
         fs::create_dir_all(fx.paths.gog_covers_dir()).unwrap();
         fs::write(fx.paths.gog_covers_dir().join("7.png"), png_bytes()).unwrap();
         let covers = leaked(Covers::new(200, png_bytes()));
-        let slots = crate::artwork::decode_slots();
-        let held = iced::futures::executor::block_on(slots.clone().acquire_many_owned(2)).unwrap();
+        let slots = crate::flow::posters::import_decode_slots();
+        let all = crate::flow::posters::import_limit() as u32;
+        let held =
+            iced::futures::executor::block_on(slots.clone().acquire_many_owned(all)).unwrap();
         let token = Token::new();
 
         std::thread::scope(|scope| {

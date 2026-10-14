@@ -357,7 +357,7 @@ impl App {
             images: art_cache::ArtCache::default(),
             loading: HashSet::new(),
             visible_art: HashSet::new(),
-            decodes: artwork::decode_slots(),
+            decodes: Arc::new(tokio::sync::Semaphore::new(MAX_DECODES)),
             thumbnails: Arc::new(Mutex::new(art_picker::ThumbnailCache::default())),
             failed_images: HashSet::new(),
             current_art: HashMap::new(),

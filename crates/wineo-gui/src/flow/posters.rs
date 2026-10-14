@@ -5,7 +5,7 @@
 use std::io::Read;
 use std::path::Path;
 use std::pin::pin;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use iced::futures::executor::block_on;
 use iced::futures::future::{Either, select};
@@ -48,12 +48,34 @@ pub(super) fn decode(path: &Path, cache: &Path) -> Result<(Handle, Format), Stri
     Ok((handle, format))
 }
 
-/// Runs `work` on a blocking thread once one of the shared decode permits is
+/// The most posters the import grids decode at once, however many cores.
+const MAX_IMPORT_DECODES: usize = 8;
+
+/// The permits for decoding import posters, apart from the library's two so a
+/// long list opens quickly without starving the library's art. Half the cores,
+/// since the app's other work needs the rest.
+pub(super) fn import_decode_slots() -> Arc<Semaphore> {
+    static SLOTS: OnceLock<Arc<Semaphore>> = OnceLock::new();
+    SLOTS
+        .get_or_init(|| Arc::new(Semaphore::new(import_limit())))
+        .clone()
+}
+
+/// How many import decodes may run at once on this machine.
+pub(super) fn import_limit() -> usize {
+    import_pool_size(std::thread::available_parallelism().map_or(1, usize::from))
+}
+
+fn import_pool_size(cores: usize) -> usize {
+    (cores / 2).clamp(2, MAX_IMPORT_DECODES)
+}
+
+/// Runs `work` on a blocking thread once one of the import decode permits is
 /// free, holding it until `work` returns.
 pub(super) async fn bounded<T: Send + 'static>(
     work: impl FnOnce() -> T + Send + 'static,
 ) -> Result<T, String> {
-    bounded_by(artwork::decode_slots(), work).await
+    bounded_by(import_decode_slots(), work).await
 }
 
 async fn bounded_by<T: Send + 'static>(
@@ -70,7 +92,7 @@ async fn bounded_by<T: Send + 'static>(
     .map_err(|e| e.to_string())
 }
 
-/// `decode` for a caller already on a worker thread, once a shared permit is
+/// `decode` for a caller already on a worker thread, once an import permit is
 /// free, so it counts against the same limit as the grids' own decodes. Gives
 /// up with `None` if `token` is canceled while it waits. Take no permit before
 /// a download and none is held across one.
@@ -79,7 +101,7 @@ pub(super) fn decode_waiting(
     cache: &Path,
     token: Option<&Token>,
 ) -> Option<Result<(Handle, Format), String>> {
-    waiting(artwork::decode_slots(), token, || decode(path, cache))
+    waiting(import_decode_slots(), token, || decode(path, cache))
 }
 
 fn waiting<T>(slots: Arc<Semaphore>, token: Option<&Token>, work: impl FnOnce() -> T) -> Option<T> {
@@ -104,6 +126,16 @@ mod tests {
     use std::time::Duration;
 
     use super::*;
+
+    #[test]
+    fn the_import_pool_scales_with_the_cores_within_bounds() {
+        let sizes: Vec<_> = [1, 2, 4, 8, 16, 64]
+            .into_iter()
+            .map(import_pool_size)
+            .collect();
+        assert_eq!(sizes, [2, 2, 2, 4, 8, 8]);
+        assert!(Arc::ptr_eq(&import_decode_slots(), &import_decode_slots()));
+    }
 
     #[test]
     fn no_more_decodes_run_at_once_than_there_are_permits() {

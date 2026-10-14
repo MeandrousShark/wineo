@@ -3,7 +3,6 @@ use std::fs;
 use std::io::{self, BufWriter, Write};
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, OnceLock};
 use std::time::UNIX_EPOCH;
 
 use anyhow::{Context, Result};
@@ -85,16 +84,6 @@ pub const TILE: Spec = Spec {
 };
 
 type Pixels = (u32, u32, Vec<u8>);
-
-/// The permits for decoding art off the UI thread, shared by the library and
-/// the import grids, since a huge source costs far more memory than a small
-/// one and two decoders' worth is already enough to keep up.
-pub fn decode_slots() -> Arc<tokio::sync::Semaphore> {
-    static SLOTS: OnceLock<Arc<tokio::sync::Semaphore>> = OnceLock::new();
-    SLOTS
-        .get_or_init(|| Arc::new(tokio::sync::Semaphore::new(crate::MAX_DECODES)))
-        .clone()
-}
 
 /// Decodes art to at most the size its kind is drawn at. Art that has to be
 /// shrunk is cached as a thumbnail under `cache`, since decoding a huge source
