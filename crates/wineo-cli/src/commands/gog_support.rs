@@ -2,16 +2,16 @@
 //! states read, the JSON for them, progress lines, and the question that
 //! offers a Windows installer's own setup window.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::process::ExitCode;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use serde_json::{Value, json};
 use wineo_core::gog;
 use wineo_core::gog::account::Session;
 use wineo_core::gog::update::windows::SetupError;
 use wineo_core::gog::update::{
-    DlcState, DlcStatus, GameError, Progress, Reason, Status, UpdateState,
+    self, DlcState, DlcStatus, GameError, Progress, Reason, Status, UpdateState,
 };
 use wineo_core::paths::Paths;
 use wineo_core::secret_service::SecretServiceKeyring;
@@ -71,14 +71,6 @@ pub fn update_label(state: UpdateState) -> &'static str {
         UpdateState::Available => "update available",
         UpdateState::OnGog => "update on GOG",
         UpdateState::CantCompare => "can't compare",
-    }
-}
-
-/// Why an update can't be applied, or can't be told, as a sentence.
-pub fn reason_note(reason: &Reason) -> String {
-    match reason {
-        Reason::Galaxy => "Updating Galaxy builds comes in a later release.".to_owned(),
-        Reason::CantCompare(why) => why.clone(),
     }
 }
 
@@ -142,117 +134,19 @@ pub fn error_json(error: &GameError) -> Value {
     })
 }
 
-/// Names a failed game for a line on stderr.
-pub fn error_subject(error: &GameError) -> String {
-    match (&error.environment, error.id) {
-        (Some(name), _) => name.clone(),
-        (None, Some(id)) => id.to_string(),
-        (None, None) => "A GOG game folder".to_owned(),
-    }
-}
-
 /// Prints one line per stage and a progress line about once a second, the
 /// way other downloads do.
-pub struct Reporter {
-    labels: HashMap<u64, String>,
-    last: Option<Instant>,
-    file: Option<(u64, String)>,
-    verified: HashSet<u64>,
-    unpacking: HashSet<u64>,
-    publishing: bool,
-}
+pub struct Reporter(update::Reporter);
 
 impl Reporter {
     /// `labels` names each product, by id, the way the review does.
     pub fn new(labels: HashMap<u64, String>) -> Self {
-        Self {
-            labels,
-            last: None,
-            file: None,
-            verified: HashSet::new(),
-            unpacking: HashSet::new(),
-            publishing: false,
-        }
-    }
-
-    fn label(&self, product: u64) -> String {
-        self.labels
-            .get(&product)
-            .cloned()
-            .unwrap_or_else(|| format!("GOG product {product}"))
-    }
-
-    /// Whether a second has passed since the last progress line.
-    fn due(&self) -> bool {
-        self.last
-            .is_none_or(|last| last.elapsed() >= Duration::from_secs(1))
-    }
-
-    fn say(&mut self, line: String) {
-        eprintln!("{line}");
-        self.last = Some(Instant::now());
+        Self(update::Reporter::new(labels, Duration::from_secs(1)))
     }
 
     pub fn show(&mut self, step: &Progress) {
-        match step {
-            Progress::Download {
-                product,
-                file_id,
-                done,
-                total,
-            } => {
-                let key = (*product, file_id.clone());
-                let first = self.file.as_ref() != Some(&key);
-                self.file = Some(key);
-                if first || done == total || self.due() {
-                    self.say(format!(
-                        "Downloading {}: {} / {}",
-                        self.label(*product),
-                        style::size(*done),
-                        style::size(*total)
-                    ));
-                }
-            }
-            Progress::Verify { product } => {
-                if self.verified.insert(*product) {
-                    self.say(format!("Verifying {}", self.label(*product)));
-                }
-            }
-            Progress::Stage {
-                product,
-                done,
-                total,
-            } => {
-                if self.unpacking.insert(*product) {
-                    self.say(format!("Unpacking {}", self.label(*product)));
-                } else if self.due() {
-                    self.say(format!(
-                        "Unpacking {}: {} / {}",
-                        self.label(*product),
-                        style::size(*done),
-                        style::size(*total)
-                    ));
-                }
-            }
-            Progress::Publish { done, total } => {
-                if !self.publishing {
-                    self.publishing = true;
-                    self.say(format!("Publishing {total} files"));
-                } else if done == total || self.due() {
-                    self.say(format!("Published {done} of {total} files"));
-                }
-            }
-            Progress::Installing {
-                product,
-                interactive,
-            } => {
-                let line = if *interactive {
-                    format!("Opening {}'s setup window", self.label(*product))
-                } else {
-                    format!("Running {}'s installer", self.label(*product))
-                };
-                self.say(line);
-            }
+        if let Some(line) = self.0.line(step) {
+            eprintln!("{line}");
         }
     }
 }

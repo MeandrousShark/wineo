@@ -1281,10 +1281,12 @@ fn info_build(folder: &Path, gog_id: u64) -> Option<String> {
 
 mod apply;
 pub mod install;
+mod present;
 mod publish;
 pub mod windows;
 
 pub use apply::{Options, Pending, Plan, PlannedProduct, Progress, Updated, apply, plan};
+pub use present::{Reporter, ReviewLabel};
 pub use publish::SavedAside;
 
 #[cfg(test)]

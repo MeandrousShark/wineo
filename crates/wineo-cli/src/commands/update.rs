@@ -9,8 +9,7 @@ use wineo_core::gog::update::{self, Batch, Status};
 use wineo_core::paths::Paths;
 
 use super::gog_support::{
-    Account, dlc_json, dlc_notes, error_json, error_subject, reason_json, reason_note,
-    update_label, warn,
+    Account, dlc_json, dlc_notes, error_json, reason_json, update_label, warn,
 };
 use super::table::render_columns;
 
@@ -81,7 +80,7 @@ fn check(paths: &Paths, args: &Args) -> anyhow::Result<ExitCode> {
     } else {
         print_table(&batch.statuses);
         for error in &batch.errors {
-            eprintln!("Failed {}: {}", error_subject(error), error.message);
+            eprintln!("Failed {}: {}", error.subject(), error.message);
         }
         if batch.statuses.is_empty() && batch.errors.is_empty() {
             println!("No GOG games to check.");
@@ -128,7 +127,7 @@ fn print_table(statuses: &[Status]) {
     for (status, line) in statuses.iter().zip(lines) {
         println!("{line}");
         if let Some(reason) = &status.reason {
-            println!("  {}", reason_note(reason));
+            println!("  {}", reason.note());
         }
         if status.unfinished {
             println!(

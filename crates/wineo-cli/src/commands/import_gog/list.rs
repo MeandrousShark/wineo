@@ -11,7 +11,7 @@ use wineo_core::paths::Paths;
 
 use super::Args;
 use crate::commands::gog_support::{
-    Account, dlc_json, error_json, error_subject, reason_json, update_label, warn,
+    Account, dlc_json, error_json, reason_json, update_label, warn,
 };
 use crate::commands::table::render_columns;
 
@@ -118,7 +118,7 @@ pub(super) fn run(paths: &Paths, args: &Args) -> anyhow::Result<ExitCode> {
     } else {
         print_table(&rows);
         for error in &batch.errors {
-            eprintln!("Failed {}: {}", error_subject(error), error.message);
+            eprintln!("Failed {}: {}", error.subject(), error.message);
         }
     }
     Ok(if batch.errors.is_empty() {
