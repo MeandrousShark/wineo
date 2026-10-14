@@ -1,5 +1,4 @@
 use std::collections::{HashMap, HashSet};
-use std::io::Write;
 use std::sync::{Arc, Mutex};
 
 use iced::advanced::widget::Operation;
@@ -24,6 +23,43 @@ const PAGE_WIDTH: f32 = 1120.0;
 const THUMBNAIL_CACHE_BYTES: usize = 64 * 1024 * 1024;
 
 type ThumbnailKey = (Kind, String);
+type SharedTransport = Arc<dyn Transport + Send + Sync>;
+
+/// One HTTPS client for everything a picker fetches. Building one starts a
+/// thread and sets up TLS, which is too much to repeat per thumbnail. It is
+/// built on first use, off the UI thread, and a failed build is retried.
+struct Client {
+    build: Box<dyn Fn() -> Result<SharedTransport, String> + Send + Sync>,
+    built: Mutex<Option<SharedTransport>>,
+}
+
+impl Client {
+    fn new() -> Self {
+        Self::with_builder(|| {
+            let https = Https::new().map_err(|error| error.to_string())?;
+            Ok(Arc::new(https))
+        })
+    }
+
+    fn with_builder(
+        build: impl Fn() -> Result<SharedTransport, String> + Send + Sync + 'static,
+    ) -> Self {
+        Self {
+            build: Box::new(build),
+            built: Mutex::new(None),
+        }
+    }
+
+    fn get(&self) -> Result<SharedTransport, String> {
+        let mut built = self.built.lock().unwrap();
+        if let Some(transport) = &*built {
+            return Ok(transport.clone());
+        }
+        let transport = (self.build)()?;
+        *built = Some(transport.clone());
+        Ok(transport)
+    }
+}
 
 struct CachedThumbnail {
     handle: image::Handle,
@@ -143,6 +179,7 @@ pub(crate) struct Picker {
     failed_thumbnails: HashSet<String>,
     thumbnails: Arc<Mutex<ThumbnailCache>>,
     thumbnail_token: Token,
+    client: Arc<Client>,
     pub(crate) error: Option<String>,
     scroll_id: iced::widget::Id,
 }
@@ -176,6 +213,7 @@ impl Picker {
             failed_thumbnails: HashSet::new(),
             thumbnails,
             thumbnail_token: Token::new(),
+            client: Arc::new(Client::new()),
             error: None,
             scroll_id: iced::widget::Id::unique(),
         }
@@ -233,7 +271,7 @@ impl Picker {
                         self.images = images;
                         self.rebuild_indices();
                         self.visible_count = self.filtered_indices.len().min(page_size(self.kind));
-                        self.thumbnail_tasks(0, self.visible_count, paths, decodes)
+                        self.thumbnail_tasks(0, self.visible_count, decodes)
                     }
                     Err(error) => {
                         self.error = Some(error);
@@ -249,7 +287,7 @@ impl Picker {
                 let old_count = self.visible_count;
                 self.visible_count =
                     (old_count + page_size(self.kind)).min(self.filtered_indices.len());
-                self.thumbnail_tasks(old_count, self.visible_count, paths, decodes)
+                self.thumbnail_tasks(old_count, self.visible_count, decodes)
             }
             Event::Thumbnail(sequence, url, result) => {
                 if sequence != self.list_sequence || self.thumbnail_token.is_canceled() {
@@ -287,8 +325,7 @@ impl Picker {
                 let old_count = self.visible_count;
                 let next_count = ((index / page_size) + 1) * page_size;
                 self.visible_count = self.visible_count.max(next_count.min(count));
-                let thumbnails =
-                    self.thumbnail_tasks(old_count, self.visible_count, paths, decodes);
+                let thumbnails = self.thumbnail_tasks(old_count, self.visible_count, decodes);
                 // The rows above and the filters differ in height, so the scroll
                 // target is measured from the laid out page.
                 Task::batch([
@@ -450,11 +487,14 @@ impl Picker {
         let kind = self.kind;
         let filters = request_filters(self.filters, kind);
         let paths = paths.clone();
+        let client = self.client.clone();
         let listing = Task::perform(
             async move {
-                tokio::task::spawn_blocking(move || list_images(&paths, game, kind, filters))
-                    .await
-                    .unwrap_or_else(|error| Err(error.to_string()))
+                tokio::task::spawn_blocking(move || {
+                    list_images(&paths, &client, game, kind, filters)
+                })
+                .await
+                .unwrap_or_else(|error| Err(error.to_string()))
             },
             move |result| Event::Listed(sequence, result),
         );
@@ -630,7 +670,6 @@ impl Picker {
         &mut self,
         start: usize,
         end: usize,
-        paths: &Paths,
         decodes: Arc<tokio::sync::Semaphore>,
     ) -> Task<Event> {
         let sequence = self.list_sequence;
@@ -653,13 +692,13 @@ impl Picker {
             {
                 continue;
             }
-            let paths = paths.clone();
+            let client = self.client.clone();
             let url_for_result = url.clone();
             let kind = self.kind;
             let decodes = decodes.clone();
             let token = self.thumbnail_token.clone();
             tasks.push(Task::perform(
-                thumbnail_work(move || fetch_thumbnail(&paths, &url), kind, decodes, token),
+                thumbnail_work(move || fetch_thumbnail(&client, &url), kind, decodes, token),
                 move |result| Event::Thumbnail(sequence, url_for_result, result),
             ));
         }
@@ -675,6 +714,7 @@ impl Drop for Picker {
 
 fn list_images(
     paths: &Paths,
+    client: &Client,
     game: u64,
     kind: Kind,
     filters: Filters,
@@ -685,8 +725,8 @@ fn list_images(
         &SecretServiceKeyring::steamgriddb(),
     )
     .map_err(|error| error.to_string())?;
-    let https = Https::new().map_err(|error| error.to_string())?;
-    list_images_with(&https, &key.value, game, kind, filters)
+    let https = client.get()?;
+    list_images_with(&*https, &key.value, game, kind, filters)
 }
 
 fn list_images_with(
@@ -754,44 +794,23 @@ where
     (!token.is_canceled()).then_some(result).flatten()
 }
 
-fn fetch_thumbnail(paths: &Paths, url: &str) -> Result<Vec<u8>, String> {
-    let key = steamgriddb::require_key(
-        paths,
-        |variable| std::env::var_os(variable),
-        &SecretServiceKeyring::steamgriddb(),
-    )
-    .map_err(|error| error.to_string())?;
-    let https = Https::new().map_err(|error| error.to_string())?;
-    Api::new(&https, &key.value)
+fn fetch_thumbnail(client: &Client, url: &str) -> Result<Vec<u8>, String> {
+    let https = client.get()?;
+    // Thumbnails come from a CDN and `download` never sends the key, so none is
+    // looked up.
+    Api::new(&*https, "")
         .download(url)
         .map_err(|error| error.to_string())
 }
 
 fn decode_thumbnail_bytes(bytes: &[u8], kind: Kind) -> Result<image::Handle, String> {
-    let suffix = thumbnail_suffix(bytes);
-    let mut file = tempfile::Builder::new()
-        .suffix(&suffix)
-        .tempfile()
-        .map_err(|error| error.to_string())?;
-    file.write_all(bytes).map_err(|error| error.to_string())?;
     let kind = match kind {
         Kind::Icon => artwork::Kind::Logo,
         Kind::Grid => artwork::Kind::Grid,
         Kind::Hero => artwork::Kind::Hero,
         Kind::Logo => artwork::Kind::Logo,
     };
-    artwork::decode(file.path(), kind, None).map_err(|error| error.to_string())
-}
-
-fn thumbnail_suffix(bytes: &[u8]) -> String {
-    let extension = if wineo_core::art::detect(bytes) == Some(wineo_core::art::Format::Svg) {
-        Some("svg")
-    } else {
-        ::image::guess_format(bytes)
-            .ok()
-            .and_then(|format| format.extensions_str().first().copied())
-    };
-    extension.map_or_else(|| ".img".to_owned(), |extension| format!(".{extension}"))
+    artwork::decode_bytes(bytes, kind).map_err(|error| error.to_string())
 }
 
 fn filtered_indices(kind: Kind, images: &[Image], filters: FilterState) -> Vec<usize> {
@@ -1458,12 +1477,79 @@ mod tests {
             .encode_frames(frames)
             .unwrap();
 
-        assert_eq!(thumbnail_suffix(&bytes), ".gif");
         let handle = decode_thumbnail_bytes(&bytes, Kind::Grid).unwrap();
         let image::Handle::Rgba { pixels, .. } = handle else {
             panic!("artwork decode should return pixels");
         };
         assert_eq!(&pixels[..4], &[255, 0, 0, 255]);
+    }
+
+    #[derive(Default)]
+    struct RecordingTransport {
+        seen: Mutex<Vec<(String, Option<String>)>>,
+    }
+
+    impl Transport for RecordingTransport {
+        fn get(&self, _: &str) -> anyhow::Result<Box<dyn std::io::Read>> {
+            unreachable!("thumbnails use request")
+        }
+
+        fn request(
+            &self,
+            url: &str,
+            bearer: Option<&str>,
+        ) -> anyhow::Result<wineo_core::download::Response> {
+            self.seen
+                .lock()
+                .unwrap()
+                .push((url.to_owned(), bearer.map(str::to_owned)));
+            Ok(wineo_core::download::Response {
+                status: 200,
+                body: Box::new(std::io::Cursor::new(b"bytes".to_vec())),
+            })
+        }
+    }
+
+    #[test]
+    fn thumbnails_share_one_client_and_send_no_key() {
+        let transport = Arc::new(RecordingTransport::default());
+        let builds = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let client = {
+            let transport = transport.clone();
+            let builds = builds.clone();
+            Client::with_builder(move || {
+                builds.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                Ok(transport.clone())
+            })
+        };
+        for number in 0..30 {
+            let url = format!("https://cdn.example/{number}.png");
+            assert_eq!(fetch_thumbnail(&client, &url).unwrap(), b"bytes");
+        }
+        assert_eq!(builds.load(std::sync::atomic::Ordering::SeqCst), 1);
+        let seen = transport.seen.lock().unwrap();
+        assert_eq!(seen.len(), 30);
+        assert!(seen.iter().all(|(_, bearer)| bearer.is_none()));
+    }
+
+    #[test]
+    fn a_failed_client_build_is_retried() {
+        let attempts = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let client = {
+            let attempts = attempts.clone();
+            Client::with_builder(move || {
+                if attempts.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0 {
+                    Err("no tls".to_owned())
+                } else {
+                    Ok(Arc::new(RecordingTransport::default()))
+                }
+            })
+        };
+        assert_eq!(
+            fetch_thumbnail(&client, "https://cdn.example/a.png").unwrap_err(),
+            "no tls"
+        );
+        assert!(fetch_thumbnail(&client, "https://cdn.example/a.png").is_ok());
     }
 
     #[test]
