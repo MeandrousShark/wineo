@@ -240,6 +240,12 @@ recommended calls to be made and reviewed later. Each is listed here.
   after printing. Only visible when stderr is so slow that printing one
   line takes over a second; then the next line prints at once. Kept, since
   matching it exactly would add a step to the shared API.
+- Track B, splitting the app's big dispatchers: the Heroic flow's `update`,
+  settings' `handle` (now `settings/handle.rs`, 1,327 lines), and the app's
+  `update_message` (in `main.rs`, now 1,703 lines) are each one large
+  `match`. Splitting them further means pulling groups of arms into new
+  methods, a refactor rather than a move, so it wasn't done. Worth a
+  separate, reviewed step if wanted.
 
 ## Possible bugs (fix as patches if confirmed)
 
@@ -500,6 +506,12 @@ Shipped in 0.31.1.
   `settings/mod.rs` 6,049 to 2,529 lines and `main.rs` 4,582 to 2,096,
   core's `trash.rs` 5,206 to 2,847, the CLI's `import_heroic.rs` 4,000 to
   2,441.
+
+- Track B, file splits (moves only, checked line for line): the CLI's
+  `import_heroic.rs` 2,441 to 748 lines (bulk, review, runner, summary);
+  the app's `flow/heroic.rs` 3,275 to 1,125 (update, view, work, and the
+  shared page frame in `flow/frame.rs`), `settings/mod.rs` 2,528 to 991
+  (editor, handle), and `main.rs` 2,095 to 1,703 (art, library, flow).
 
 The maintainer's machine (real GPU, library of 22, after scrolling the
 library), the 0050 acceptance build against main with everything above:
