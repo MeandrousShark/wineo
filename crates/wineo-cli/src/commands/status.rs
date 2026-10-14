@@ -201,12 +201,7 @@ fn render(report: &EnvironmentReport, now: Timestamp, tz: &dyn Zone) -> String {
 fn header(report: &EnvironmentReport, now: Timestamp, tz: &dyn Zone) -> String {
     let name = &report.name;
     let status = &report.status;
-    if !matches!(
-        status.state,
-        State::Starting | State::Running | State::SteamRunning
-    ) && let KindReport::Proxied { install, .. } = &report.kind
-        && install.state != "installed"
-    {
+    if let Some(install) = table::unfinished_install(status.state, &report.kind) {
         return match &install.problem {
             Some(reason) => format!("{name}: {} ({reason})", install.label()),
             None => format!("{name}: {}", install.label()),

@@ -1,6 +1,6 @@
 use jiff::Timestamp;
 use wineo_core::operation::Operation;
-use wineo_core::report::{KindReport, Overview};
+use wineo_core::report::{InstallReport, KindReport, Overview};
 use wineo_core::runtime::{State, Status};
 use wineo_core::view::{CollectionError, CollectionOutput, StatusOutput};
 
@@ -111,14 +111,12 @@ pub fn format_overview(overview: Overview, now: Timestamp, tz: &dyn Zone) -> Gat
             row.kind = environment.kind.clone();
             if environment.busy.is_none()
                 && !environment.unresolved
-                && !matches!(
-                    environment.status.state,
-                    State::Starting | State::Running | State::SteamRunning
-                )
-                && let Some(KindReport::Proxied { install, .. }) = &row.kind
-                && install.state != "installed"
+                && let Some(install) = row
+                    .kind
+                    .as_ref()
+                    .and_then(|kind| unfinished_install(environment.status.state, kind))
             {
-                row.state = install.label().to_owned();
+                row.state = install.label();
             }
             row
         })
@@ -132,6 +130,22 @@ pub fn format_overview(overview: Overview, now: Timestamp, tz: &dyn Zone) -> Gat
         })
         .collect();
     Gathered { rows, errors }
+}
+
+/// The install of a Steam game to show in place of its run state, when Steam
+/// isn't running it and the game isn't installed yet.
+pub fn unfinished_install(state: State, kind: &KindReport) -> Option<&InstallReport> {
+    match kind {
+        KindReport::Proxied { install, .. }
+            if !matches!(
+                state,
+                State::Starting | State::Running | State::SteamRunning
+            ) && install.state != "installed" =>
+        {
+            Some(install)
+        }
+        _ => None,
+    }
 }
 
 fn time_column(status: &Status, now: Timestamp, tz: &dyn Zone) -> String {
