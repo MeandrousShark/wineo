@@ -2009,8 +2009,7 @@ mod tests {
         let (_root, paths, prefix, _) = fixture(false);
         let global = GlobalConfig::default();
         let review = inspect_create(&paths, &global, "game", "one").unwrap();
-        // Same size, so only the content fingerprint can see it.
-        fs::write(prefix.join("drive_c/game.exe"), "after!").unwrap();
+        rewrite_keeping_mtime(&prefix.join("drive_c/game.exe"), "after!");
         let error = create_reviewed(&paths, &global, &review, &Token::new(), |_| {}).unwrap_err();
         assert_eq!(
             error.to_string(),
@@ -2024,16 +2023,43 @@ mod tests {
         let create = inspect_create(&paths, &global, "game", "one").unwrap();
         create_reviewed(&paths, &global, &create, &Token::new(), |_| {}).unwrap();
         let review = inspect_restore(&paths, &global, "game", "one").unwrap();
-        fs::write(prefix.join("drive_c/game.exe"), "later!").unwrap();
-        let error = restore_reviewed(&paths, &global, &review, &Token::new(), |_| {}).unwrap_err();
+        rewrite_keeping_mtime(&prefix.join("drive_c/game.exe"), "later!");
+        let mut copying = false;
+        let error = restore_reviewed_with(&paths, &global, &review, &Token::new(), |event| {
+            if matches!(
+                event,
+                SnapshotEvent::Progress(
+                    ImportProgress::Started { .. } | ImportProgress::Copied { .. }
+                )
+            ) {
+                copying = true;
+            }
+        })
+        .unwrap_err();
         assert_eq!(
             error.to_string(),
             "reviewed restore changed; inspect it again"
         );
+        // The post-copy check gives the same error, so this proves the
+        // under-lock check refused it.
+        assert!(!copying);
         assert_eq!(
             fs::read_to_string(prefix.join("drive_c/game.exe")).unwrap(),
             "later!"
         );
         assert!(!marker_path(&paths, "game").exists());
+    }
+
+    /// Same size and mtime, so only the content fingerprint can see it.
+    fn rewrite_keeping_mtime(path: &Path, text: &str) {
+        let modified = fs::metadata(path).unwrap().modified().unwrap();
+        assert_eq!(fs::metadata(path).unwrap().len(), text.len() as u64);
+        fs::write(path, text).unwrap();
+        File::options()
+            .write(true)
+            .open(path)
+            .unwrap()
+            .set_modified(modified)
+            .unwrap();
     }
 }

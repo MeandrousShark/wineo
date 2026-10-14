@@ -1264,8 +1264,16 @@ mod tests {
     fn a_prefix_change_after_review_is_refused_under_the_lock() {
         let f = Fixture::new(false);
         let review = inspect(&f.from, &f.to, &f.global, "game").unwrap();
-        // Same size, so only the content fingerprint can see it.
-        fs::write(f.prefix.join("drive_c/data"), "edit").unwrap();
+        // Same size and mtime, so only the content fingerprint can see it.
+        let data = f.prefix.join("drive_c/data");
+        let modified = fs::metadata(&data).unwrap().modified().unwrap();
+        fs::write(&data, "edit").unwrap();
+        fs::File::options()
+            .write(true)
+            .open(&data)
+            .unwrap()
+            .set_modified(modified)
+            .unwrap();
         let err = execute_reviewed(&f.from, &f.to, &f.global, &review, &Token::new(), |_| {})
             .unwrap_err();
         assert_eq!(
