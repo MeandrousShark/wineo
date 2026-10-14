@@ -3,7 +3,7 @@ use std::ffi::OsString;
 use std::os::unix::fs::MetadataExt;
 use std::process::Command;
 
-use super::digest::{copy_verified, digest, digest_v1, same_tree};
+use super::digest::{copy_verified, digest, digest_matches, digest_v1, same_tree};
 use super::identity::{rename_owned, subvolume_property};
 use super::payload::{make_payload, reserve_copy, return_payload};
 use super::restore::{
@@ -11,7 +11,7 @@ use super::restore::{
 };
 use super::*;
 use crate::build_lock;
-use crate::config::GlobalConfig;
+use crate::config::{EnvironmentConfig, GlobalConfig};
 use crate::environment::Environment;
 
 struct Fixture {

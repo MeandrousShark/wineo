@@ -14,9 +14,10 @@ use super::identity::{
     check_tree_mounts, create_storage, delete_owned, identity, parent, rename_owned, require,
     require_same_mount_as_parent, sync,
 };
+use super::manifest::write_manifest;
 use super::{
     Identity, Kind, Manifest, Payload, Stage, Step, entry_dir, failpoint, matches_identity,
-    resolved, stored, write_manifest,
+    resolved, stored,
 };
 
 fn stage_location(paths: &Paths, stage: &Stage) -> Result<PathBuf> {
