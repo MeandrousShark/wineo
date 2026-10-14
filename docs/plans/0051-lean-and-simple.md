@@ -518,6 +518,16 @@ Shipped in 0.31.1.
   fingerprint). An end-to-end import, clone, trash, and restore on a
   throwaway root gives byte-identical prefixes.
 
+Final release builds (full LTO, 40 runs, the maintainer's library),
+against the installed build from the 0050 acceptance merge:
+
+| | Before | After |
+|---|---|---|
+| `wineo list` | 16.6 ms, 11.9 MiB, 25.0 M instructions | 6.4 ms, 9.1 MiB, 9.3 M |
+| `wineo status` | 16.0 ms, 11.7 MiB, 21.9 M instructions | 5.8 ms, 8.8 MiB, 6.3 M |
+| `wineo` binary | 17.4 MB | 16.9 MB |
+| `wineo-gui` binary | 44.2 MB | 34.8 MB |
+
 The maintainer's machine (real GPU, library of 22, after scrolling the
 library), the 0050 acceptance build against main with everything above:
 
