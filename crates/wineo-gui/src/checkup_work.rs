@@ -17,19 +17,16 @@ use wineo_core::winetricks::{EnsureOutput, WinetricksEvent};
 
 use crate::Message;
 use crate::checkup::{Event, Outcome, Scope};
+use crate::task;
 
 const PROGRESS_INTERVAL: Duration = Duration::from_millis(250);
 
 pub(crate) fn check(scope: Scope, generation: u64, paths: Paths) -> Task<Message> {
     let event_scope = scope.clone();
-    Task::perform(
-        async move {
-            tokio::task::spawn_blocking(move || {
-                let result = check_report(&paths, &scope);
-                result.map_err(|error| paths.contract_text(&format!("{error:#}")))
-            })
-            .await
-            .map_err(|error| error.to_string())?
+    task::blocking(
+        move || {
+            let result = check_report(&paths, &scope);
+            result.map_err(|error| paths.contract_text(&format!("{error:#}")))
         },
         move |result| Message::Checkup(Event::Checked(event_scope, generation, result)),
     )
@@ -44,19 +41,15 @@ pub(crate) fn check_report(paths: &Paths, scope: &Scope) -> wineo_core::Result<v
 
 pub(crate) fn apply(generation: u64, paths: Paths, fixes: Vec<Fix>, token: Token) -> Task<Message> {
     let (sender, receiver) = unbounded();
-    let work = Task::perform(
-        async move {
-            tokio::task::spawn_blocking(move || {
-                let mut outcome = run_fixes(&fixes, &token, |fix, token| {
-                    apply_one(&paths, fix, token, generation, &sender)
-                });
-                for (_, message) in &mut outcome.failed {
-                    *message = paths.contract_text(message);
-                }
-                outcome
-            })
-            .await
-            .map_err(|error| error.to_string())
+    let work = task::blocking_value(
+        move || {
+            let mut outcome = run_fixes(&fixes, &token, |fix, token| {
+                apply_one(&paths, fix, token, generation, &sender)
+            });
+            for (_, message) in &mut outcome.failed {
+                *message = paths.contract_text(message);
+            }
+            outcome
         },
         move |result| Message::Checkup(Event::Finished(generation, result)),
     );
@@ -64,37 +57,33 @@ pub(crate) fn apply(generation: u64, paths: Paths, fixes: Vec<Fix>, token: Token
 }
 
 pub(crate) fn recover_snapshot(generation: u64, paths: Paths, fix: Fix) -> Task<Message> {
-    Task::perform(
-        async move {
-            tokio::task::spawn_blocking(move || {
-                let result = validate::apply_single(
-                    &paths,
-                    &fix,
-                    &Token::new(),
-                    EnsureOutput::Stderr,
-                    |_| {},
-                    |_, _| unreachable!("snapshot recovery does not download builds"),
-                );
-                let outcome = match result {
-                    Ok(notes) => Outcome {
-                        applied: vec![fix],
-                        warnings: notes
-                            .into_iter()
-                            .map(|note| match note {
-                                Note::Warning(message) => message,
-                            })
-                            .collect(),
-                        ..Outcome::default()
-                    },
-                    Err(error) => Outcome {
-                        failed: vec![(fix, paths.contract_text(&format!("{error:#}")))],
-                        ..Outcome::default()
-                    },
-                };
-                Ok::<_, String>(outcome)
-            })
-            .await
-            .map_err(|error| error.to_string())?
+    task::blocking(
+        move || {
+            let result = validate::apply_single(
+                &paths,
+                &fix,
+                &Token::new(),
+                EnsureOutput::Stderr,
+                |_| {},
+                |_, _| unreachable!("snapshot recovery does not download builds"),
+            );
+            let outcome = match result {
+                Ok(notes) => Outcome {
+                    applied: vec![fix],
+                    warnings: notes
+                        .into_iter()
+                        .map(|note| match note {
+                            Note::Warning(message) => message,
+                        })
+                        .collect(),
+                    ..Outcome::default()
+                },
+                Err(error) => Outcome {
+                    failed: vec![(fix, paths.contract_text(&format!("{error:#}")))],
+                    ..Outcome::default()
+                },
+            };
+            Ok::<_, String>(outcome)
         },
         move |result| Message::Checkup(Event::Finished(generation, result)),
     )

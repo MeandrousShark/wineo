@@ -34,6 +34,7 @@ use super::{Action, artwork};
 use crate::logview::{self, LogView};
 use crate::picker;
 use crate::runner_label::{self, Choice};
+use crate::task;
 use crate::theme::Palette;
 use crate::ui::{self, PickListStyle, ScrollStyle};
 
@@ -335,14 +336,7 @@ impl Page {
     fn load_options(&mut self) -> Task<Event> {
         self.generation = self.generation.wrapping_add(1);
         let paths = self.paths.clone();
-        Task::perform(
-            async move {
-                tokio::task::spawn_blocking(move || read_options(&paths))
-                    .await
-                    .map_err(|error| error.to_string())?
-            },
-            Event::Options,
-        )
+        task::blocking(move || read_options(&paths), Event::Options)
     }
 
     /// The question shows for a game, which is where Steam, Heroic, and
@@ -476,12 +470,8 @@ impl Page {
         let draft = self.draft.clone();
         self.reviewing = Some(generation);
         self.status = "Checking creation choices...".to_owned();
-        Task::perform(
-            async move {
-                tokio::task::spawn_blocking(move || prepare(&paths, &draft))
-                    .await
-                    .map_err(|error| error.to_string())?
-            },
+        task::blocking(
+            move || prepare(&paths, &draft),
             move |result| Event::Reviewed(generation, result.map(Box::new)),
         )
     }
@@ -572,40 +562,36 @@ impl Page {
         self.stage = Stage::Working;
         self.status = format!("Finding {provider} release...");
         let (sender, receiver) = unbounded();
-        let work = Task::perform(
-            async move {
-                tokio::task::spawn_blocking(move || {
-                    let client = Client::new().map_err(|e| e.to_string())?;
-                    let global = GlobalConfig::load(&paths).map_err(|e| e.to_string())?;
-                    let release = match prerequisite {
-                        Prerequisite::Component {
-                            version: Some(version),
-                            ..
-                        } => client.select_pinned(provider, &version),
-                        _ => client.select(provider, None),
-                    }
-                    .map_err(|e| e.to_string())?;
-                    let name = release.installed_name.clone();
-                    let _ = sender.unbounded_send(Event::Progress(
-                        generation,
-                        format!("Downloading {} ({})", release.tag, release.verification()),
-                    ));
-                    crate::download_progress::install(
-                        &client,
-                        &paths,
-                        &global,
-                        &release,
-                        &token,
-                        Duration::from_millis(250),
-                        |line| {
-                            let _ = sender.unbounded_send(Event::Progress(generation, line));
-                        },
-                    )
-                    .map_err(|e| e.to_string())?;
-                    Ok::<_, String>(name)
-                })
-                .await
-                .map_err(|e| e.to_string())?
+        let work = task::blocking(
+            move || {
+                let client = Client::new().map_err(|e| e.to_string())?;
+                let global = GlobalConfig::load(&paths).map_err(|e| e.to_string())?;
+                let release = match prerequisite {
+                    Prerequisite::Component {
+                        version: Some(version),
+                        ..
+                    } => client.select_pinned(provider, &version),
+                    _ => client.select(provider, None),
+                }
+                .map_err(|e| e.to_string())?;
+                let name = release.installed_name.clone();
+                let _ = sender.unbounded_send(Event::Progress(
+                    generation,
+                    format!("Downloading {} ({})", release.tag, release.verification()),
+                ));
+                crate::download_progress::install(
+                    &client,
+                    &paths,
+                    &global,
+                    &release,
+                    &token,
+                    Duration::from_millis(250),
+                    |line| {
+                        let _ = sender.unbounded_send(Event::Progress(generation, line));
+                    },
+                )
+                .map_err(|e| e.to_string())?;
+                Ok::<_, String>(name)
             },
             move |result| Event::Downloaded(generation, result),
         );
@@ -649,55 +635,50 @@ impl Page {
         let generation = self.generation;
         self.stage = Stage::Working;
         self.status = "Adding game target...".to_owned();
-        Task::perform(
-            async move {
-                tokio::task::spawn_blocking(move || {
-                    let environment =
-                        Environment::load(&paths, &name).map_err(|e| e.to_string())?;
-                    let global = GlobalConfig::load(&paths).map_err(|e| e.to_string())?;
-                    if let Some(wine) = environment.config.wine() {
-                        let runner = Runners::new(&paths, &global)
-                            .and_then(|runners| runners.resolve(&wine.runner))
-                            .map_err(|e| e.to_string())?;
-                        let prefix = environment.prefix(&paths).map_err(|e| e.to_string())?;
-                        desktop::check(&paths, &runner.wine_prefix(&prefix), &exe)
-                            .map_err(|e| e.to_string())?;
-                    } else {
-                        launch::check_native_exe(&paths, &global, &name, &Default::default(), &exe)
-                            .map_err(|e| e.to_string())?;
-                    }
-                    let mut batch = Batch::new(environment.config.targets);
-                    batch
-                        .add(&name, target_spec(exe, title, desktop))
+        task::blocking(
+            move || {
+                let environment = Environment::load(&paths, &name).map_err(|e| e.to_string())?;
+                let global = GlobalConfig::load(&paths).map_err(|e| e.to_string())?;
+                if let Some(wine) = environment.config.wine() {
+                    let runner = Runners::new(&paths, &global)
+                        .and_then(|runners| runners.resolve(&wine.runner))
                         .map_err(|e| e.to_string())?;
-                    batch.set_default(Some(&name));
-                    match targets::write(&paths, &name, &batch).map_err(|e| e.to_string())? {
-                        Written::Saved => {}
-                        Written::Changed(_) => {
-                            return Err("Targets changed on disk. Open Settings and review them."
-                                .to_owned());
-                        }
+                    let prefix = environment.prefix(&paths).map_err(|e| e.to_string())?;
+                    desktop::check(&paths, &runner.wine_prefix(&prefix), &exe)
+                        .map_err(|e| e.to_string())?;
+                } else {
+                    launch::check_native_exe(&paths, &global, &name, &Default::default(), &exe)
+                        .map_err(|e| e.to_string())?;
+                }
+                let mut batch = Batch::new(environment.config.targets);
+                batch
+                    .add(&name, target_spec(exe, title, desktop))
+                    .map_err(|e| e.to_string())?;
+                batch.set_default(Some(&name));
+                match targets::write(&paths, &name, &batch).map_err(|e| e.to_string())? {
+                    Written::Saved => {}
+                    Written::Changed(_) => {
+                        return Err(
+                            "Targets changed on disk. Open Settings and review them.".to_owned()
+                        );
                     }
-                    let environment =
-                        Environment::load(&paths, &name).map_err(|e| e.to_string())?;
-                    let global = GlobalConfig::load(&paths).map_err(|e| e.to_string())?;
-                    let note = if let Some(wine) = environment.config.wine() {
-                        let runner = Runners::new(&paths, &global)
-                            .and_then(|runners| runners.resolve(&wine.runner))
-                            .map_err(|e| e.to_string())?;
-                        let prefix = environment.prefix(&paths).map_err(|e| e.to_string())?;
-                        desktop::reconcile(&paths, &global, &environment, Some(&runner), &prefix)
-                            .err()
-                            .map(|error| format!("Desktop entry: {error}"))
-                    } else {
-                        desktop::reconcile_native(&paths, &global, &environment)
-                            .err()
-                            .map(|error| format!("Desktop entry: {error}"))
-                    };
-                    Ok::<_, String>(note.into_iter().collect())
-                })
-                .await
-                .map_err(|e| e.to_string())?
+                }
+                let environment = Environment::load(&paths, &name).map_err(|e| e.to_string())?;
+                let global = GlobalConfig::load(&paths).map_err(|e| e.to_string())?;
+                let note = if let Some(wine) = environment.config.wine() {
+                    let runner = Runners::new(&paths, &global)
+                        .and_then(|runners| runners.resolve(&wine.runner))
+                        .map_err(|e| e.to_string())?;
+                    let prefix = environment.prefix(&paths).map_err(|e| e.to_string())?;
+                    desktop::reconcile(&paths, &global, &environment, Some(&runner), &prefix)
+                        .err()
+                        .map(|error| format!("Desktop entry: {error}"))
+                } else {
+                    desktop::reconcile_native(&paths, &global, &environment)
+                        .err()
+                        .map(|error| format!("Desktop entry: {error}"))
+                };
+                Ok::<_, String>(note.into_iter().collect())
             },
             move |result| Event::TargetAdded(generation, result),
         )
@@ -1006,26 +987,20 @@ impl Page {
                 let name = self.draft.environment_name();
                 self.stage = Stage::Working;
                 self.status = "Cleaning up installer...".to_owned();
-                return Task::perform(
-                    async move {
-                        tokio::task::spawn_blocking(move || {
-                            let global = GlobalConfig::load(&paths).map_err(|e| e.to_string())?;
-                            let outcome = installer::clean_up(
-                                &paths,
-                                &global,
-                                &name,
-                                installer::clean_up_timeout(&global),
-                            )
-                            .map_err(|e| e.to_string())?;
-                            Ok::<_, String>(!matches!(
-                                outcome,
-                                Some(
-                                    installer::Cleaned::Unresolved | installer::Cleaned::Untracked
-                                )
-                            ))
-                        })
-                        .await
-                        .map_err(|e| e.to_string())?
+                return task::blocking(
+                    move || {
+                        let global = GlobalConfig::load(&paths).map_err(|e| e.to_string())?;
+                        let outcome = installer::clean_up(
+                            &paths,
+                            &global,
+                            &name,
+                            installer::clean_up_timeout(&global),
+                        )
+                        .map_err(|e| e.to_string())?;
+                        Ok::<_, String>(!matches!(
+                            outcome,
+                            Some(installer::Cleaned::Unresolved | installer::Cleaned::Untracked)
+                        ))
                     },
                     move |result| Event::Cleaned(generation, result),
                 );
@@ -1073,22 +1048,18 @@ impl Page {
                 let art = self.art.clone();
                 self.stage = Stage::Working;
                 self.status = "Applying artwork...".to_owned();
-                return Task::perform(
-                    async move {
-                        tokio::task::spawn_blocking(move || {
-                            let result = art.apply(&paths, &name);
-                            let desktop = desktop::apply(&paths, &name, false)
-                                .map_err(|error| error.to_string());
-                            match (result, desktop) {
-                                (Ok(notes), Ok(_)) => Ok(notes),
-                                (Err(error), Ok(_)) | (Ok(_), Err(error)) => Err(error),
-                                (Err(art_error), Err(desktop_error)) => {
-                                    Err(format!("{art_error}; desktop entry: {desktop_error}"))
-                                }
+                return task::blocking(
+                    move || {
+                        let result = art.apply(&paths, &name);
+                        let desktop =
+                            desktop::apply(&paths, &name, false).map_err(|error| error.to_string());
+                        match (result, desktop) {
+                            (Ok(notes), Ok(_)) => Ok(notes),
+                            (Err(error), Ok(_)) | (Ok(_), Err(error)) => Err(error),
+                            (Err(art_error), Err(desktop_error)) => {
+                                Err(format!("{art_error}; desktop entry: {desktop_error}"))
                             }
-                        })
-                        .await
-                        .map_err(|e| e.to_string())?
+                        }
                     },
                     move |result| Event::ArtApplied(generation, result),
                 );
@@ -1113,12 +1084,8 @@ impl Page {
                 self.offer_sequence = self.offer_sequence.wrapping_add(1);
                 let sequence = self.offer_sequence;
                 let paths = self.paths.clone();
-                return Task::perform(
-                    async move {
-                        tokio::task::spawn_blocking(move || answer_offer(&paths, on))
-                            .await
-                            .map_err(|error| error.to_string())?
-                    },
+                return task::blocking(
+                    move || answer_offer(&paths, on),
                     move |result| Event::Offered(sequence, result),
                 );
             }

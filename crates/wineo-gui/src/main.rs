@@ -42,6 +42,7 @@ mod sidebar;
 mod size;
 mod snapshots_page;
 mod spinner;
+mod task;
 #[cfg(test)]
 #[path = "../../wineo-core/tests/common/test_script.rs"]
 mod test_script;
@@ -466,12 +467,8 @@ impl App {
         self.palette.theme()
     }
     fn load(paths: Paths) -> Task<Message> {
-        Task::perform(
-            async move {
-                tokio::task::spawn_blocking(move || load_library(&paths).map_err(|e| e.to_string()))
-                    .await
-                    .map_err(|e| e.to_string())?
-            },
+        task::blocking(
+            move || load_library(&paths).map_err(|e| e.to_string()),
             Message::Loaded,
         )
     }
@@ -1567,14 +1564,8 @@ impl App {
             let paths = self.paths.clone();
             // An explicit library reload like `reload_library`.
             self.shown.reloading_library();
-            return Task::perform(
-                async move {
-                    tokio::task::spawn_blocking(move || {
-                        load_library(&paths).map_err(|e| e.to_string())
-                    })
-                    .await
-                    .unwrap_or_else(|e| Err(e.to_string()))
-                },
+            return task::blocking(
+                move || load_library(&paths).map_err(|e| e.to_string()),
                 move |cards| Message::FlowReturned(generation, action.clone(), cards),
             );
         }

@@ -19,6 +19,7 @@ use wineo_core::steam_import::{
 use super::heroic;
 use super::import_grid::{GridKey, ImportGrid, Tile};
 use super::{Action, posters};
+use crate::task;
 use crate::theme::Palette;
 use crate::ui::{accent_base, secondary_button};
 
@@ -270,12 +271,8 @@ impl Page {
         self.generation = self.generation.wrapping_add(1);
         let generation = self.generation;
         let paths = self.paths.clone();
-        Task::perform(
-            async move {
-                tokio::task::spawn_blocking(move || load_listing(&paths))
-                    .await
-                    .map_err(|error| error.to_string())?
-            },
+        task::blocking(
+            move || load_listing(&paths),
             move |result| Event::Listed(generation, result),
         )
     }
@@ -287,15 +284,11 @@ impl Page {
         self.owned_generation = self.owned_generation.wrapping_add(1);
         let generation = self.owned_generation;
         let paths = self.paths.clone();
-        Task::perform(
-            async move {
-                tokio::task::spawn_blocking(move || {
-                    load_owned(&paths, refresh, |paths, global, refresh| {
-                        OwnedData::load(paths, global, refresh, true)
-                    })
+        task::blocking(
+            move || {
+                load_owned(&paths, refresh, |paths, global, refresh| {
+                    OwnedData::load(paths, global, refresh, true)
                 })
-                .await
-                .map_err(|error| error.to_string())?
             },
             move |result| Event::OwnedListed(generation, result),
         )
@@ -418,15 +411,11 @@ impl Page {
         let paths = self.paths.clone();
         let owned = self.owned_games();
         let (sender, receiver) = unbounded();
-        let work = Task::perform(
-            async move {
-                tokio::task::spawn_blocking(move || {
-                    run_import(&paths, review, &owned, &token, |message| {
-                        let _ = sender.unbounded_send(Event::Progress(generation, message));
-                    })
+        let work = task::blocking(
+            move || {
+                run_import(&paths, review, &owned, &token, |message| {
+                    let _ = sender.unbounded_send(Event::Progress(generation, message));
                 })
-                .await
-                .map_err(|error| error.to_string())?
             },
             move |result| Event::Finished(generation, result),
         );

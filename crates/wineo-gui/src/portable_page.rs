@@ -11,6 +11,7 @@ use wineo_core::portable::{self, CopyEvent, CopyInspection, NativeCopyInspection
 use wineo_core::runners::Runners;
 
 use crate::chips::input_style;
+use crate::task;
 use crate::theme::Palette;
 use crate::ui::{ScrollStyle, accent_base, secondary_button};
 
@@ -120,21 +121,15 @@ impl Page {
             action: None,
             outcome: None,
         };
-        let load = Task::perform(
-            async move {
-                tokio::task::spawn_blocking(move || {
-                    Environment::load(&paths, &name)
-                        .map_err(|error| error.to_string())
-                        .and_then(|environment| match &environment.config.kind {
-                            Kind::Wine(_) => Ok(false),
-                            Kind::Native => Ok(true),
-                            Kind::Proxied(_) => {
-                                Err(environment.config.no_prefix(&name).to_string())
-                            }
-                        })
-                })
-                .await
-                .unwrap_or_else(|error| Err(error.to_string()))
+        let load = task::blocking(
+            move || {
+                Environment::load(&paths, &name)
+                    .map_err(|error| error.to_string())
+                    .and_then(|environment| match &environment.config.kind {
+                        Kind::Wine(_) => Ok(false),
+                        Kind::Native => Ok(true),
+                        Kind::Proxied(_) => Err(environment.config.no_prefix(&name).to_string()),
+                    })
             },
             Event::SourceLoaded,
         );

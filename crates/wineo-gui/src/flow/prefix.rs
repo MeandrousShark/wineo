@@ -12,6 +12,7 @@ use wineo_core::runners::Runners;
 
 use crate::chips::input_style;
 use crate::runner_label;
+use crate::task;
 use crate::theme::Palette;
 use crate::ui::{PickListStyle, ScrollStyle, accent_base, secondary_button};
 
@@ -146,12 +147,8 @@ impl Page {
             recovery_path: None,
         };
         let load_paths = paths.clone();
-        let load = Task::perform(
-            async move {
-                tokio::task::spawn_blocking(move || runner_choices(&load_paths))
-                    .await
-                    .map_err(|error| error.to_string())?
-            },
+        let load = task::blocking(
+            move || runner_choices(&load_paths),
             |result| Event::RunnersLoaded(result.map(Box::new)),
         );
         let art = page.art.configure(paths, String::new()).map(Event::Art);
@@ -727,14 +724,8 @@ impl Page {
         let adopt = self.adopt;
         let destination = self.destination.clone();
         let arch = self.arch;
-        let task = Task::perform(
-            async move {
-                tokio::task::spawn_blocking(move || {
-                    inspect_review(&paths, &source, &name, &runner, adopt, &destination, arch)
-                })
-                .await
-                .map_err(|error| error.to_string())?
-            },
+        let task = task::blocking(
+            move || inspect_review(&paths, &source, &name, &runner, adopt, &destination, arch),
             move |result| Event::ReviewLoaded(generation, result.map(Box::new)),
         );
         let art = self
@@ -835,12 +826,8 @@ impl Page {
         let generation = self.generation;
         let paths = self.paths.clone();
         let art = self.art.clone();
-        Task::perform(
-            async move {
-                tokio::task::spawn_blocking(move || apply_art(&paths, &name, &art))
-                    .await
-                    .map_err(|error| error.to_string())?
-            },
+        task::blocking(
+            move || apply_art(&paths, &name, &art),
             move |result| Event::ArtRetried(generation, result),
         )
     }
@@ -857,15 +844,11 @@ impl Page {
         self.generation = self.generation.wrapping_add(1);
         let generation = self.generation;
         let paths = self.paths.clone();
-        Task::perform(
-            async move {
-                tokio::task::spawn_blocking(move || {
-                    wineo_core::desktop::apply(&paths, &name, false)
-                        .map(|_| ())
-                        .map_err(|error| error.to_string())
-                })
-                .await
-                .map_err(|error| error.to_string())?
+        task::blocking(
+            move || {
+                wineo_core::desktop::apply(&paths, &name, false)
+                    .map(|_| ())
+                    .map_err(|error| error.to_string())
             },
             move |result| Event::ArtSkipped(generation, result),
         )

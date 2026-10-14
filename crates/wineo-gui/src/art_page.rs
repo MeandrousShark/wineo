@@ -20,6 +20,7 @@ use wineo_core::{art_fetch, desktop};
 
 use crate::ends::{MIN_LEFT, ends};
 use crate::flow::artwork::{self as flow_artwork, Match};
+use crate::task;
 use crate::theme::Palette;
 use crate::ui::PickListStyle;
 use crate::ui::{ScrollStyle, accent_base, secondary_button};
@@ -309,12 +310,8 @@ impl Page {
         self.loading = true;
         let paths = paths.clone();
         let name = self.name.clone();
-        Task::perform(
-            async move {
-                tokio::task::spawn_blocking(move || load_snapshot(&paths, &name))
-                    .await
-                    .unwrap_or_else(|error| Err(error.to_string()))
-            },
+        task::blocking(
+            move || load_snapshot(&paths, &name),
             move |result| Event::Loaded(sequence, result),
         )
     }
@@ -685,12 +682,8 @@ impl Page {
                 let term = change.search.clone();
                 let sequence = change.sequence;
                 let paths = paths.clone();
-                Step::task(Task::perform(
-                    async move {
-                        tokio::task::spawn_blocking(move || flow_artwork::search(&paths, &term))
-                            .await
-                            .unwrap_or_else(|error| Err(error.to_string()))
-                    },
+                Step::task(task::blocking(
+                    move || flow_artwork::search(&paths, &term),
                     move |result| Event::Searched(sequence, result),
                 ))
             }
@@ -734,19 +727,12 @@ impl Page {
                 let name = self.name.clone();
                 let identity = self.identity;
                 let paths = paths.clone();
-                Step::task(Task::perform(
-                    async move {
-                        tokio::task::spawn_blocking(move || {
-                            if EnvironmentIdentity::read(&paths, &name) != Some(identity) {
-                                return Err(
-                                    "environment changed before its game could be saved".into()
-                                );
-                            }
-                            art::save_game(&paths, &name, game.id)
-                                .map_err(|error| error.to_string())
-                        })
-                        .await
-                        .unwrap_or_else(|error| Err(error.to_string()))
+                Step::task(task::blocking(
+                    move || {
+                        if EnvironmentIdentity::read(&paths, &name) != Some(identity) {
+                            return Err("environment changed before its game could be saved".into());
+                        }
+                        art::save_game(&paths, &name, game.id).map_err(|error| error.to_string())
                     },
                     move |result| Event::GameSaved(sequence, game.clone(), result),
                 ))
@@ -910,12 +896,8 @@ impl Page {
         self.lookup_sequence = self.lookup_sequence.wrapping_add(1);
         let sequence = self.lookup_sequence;
         let paths = paths.clone();
-        Task::perform(
-            async move {
-                tokio::task::spawn_blocking(move || lookup_game(&paths, id))
-                    .await
-                    .unwrap_or_else(|error| Err(error.to_string()))
-            },
+        task::blocking(
+            move || lookup_game(&paths, id),
             move |result| Event::GameLoaded(sequence, id, result),
         )
     }

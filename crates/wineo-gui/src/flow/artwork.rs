@@ -15,6 +15,7 @@ use wineo_core::paths::Paths;
 use wineo_core::secret_service::SecretServiceKeyring;
 use wineo_core::steamgriddb::{self, Api, Game};
 
+use crate::task;
 use crate::theme::Palette;
 use crate::ui::{PickListStyle, secondary_button};
 
@@ -158,15 +159,10 @@ impl Draft {
         }
         self.configuration_sequence = self.configuration_sequence.wrapping_add(1);
         let sequence = self.configuration_sequence;
-        Task::perform(
-            async move {
-                tokio::task::spawn_blocking(move || {
-                    let global =
-                        GlobalConfig::load_or_default(&paths).map_err(|e| e.to_string())?;
-                    Ok(global.art.fetch)
-                })
-                .await
-                .unwrap_or_else(|e| Err(e.to_string()))
+        task::blocking(
+            move || {
+                let global = GlobalConfig::load_or_default(&paths).map_err(|e| e.to_string())?;
+                Ok(global.art.fetch)
             },
             move |result| Event::Configured(sequence, result),
         )
@@ -197,14 +193,10 @@ impl Draft {
                 if value.is_empty() {
                     return Task::none();
                 }
-                return Task::perform(
-                    async move {
-                        tokio::task::spawn_blocking(move || {
-                            let path = resolve(paths.as_ref(), &value)?;
-                            preview(&path, kind)
-                        })
-                        .await
-                        .unwrap_or_else(|e| Err(e.to_string()))
+                return task::blocking(
+                    move || {
+                        let path = resolve(paths.as_ref(), &value)?;
+                        preview(&path, kind)
                     },
                     move |result| Event::Preview(kind, sequence, result),
                 );
@@ -287,12 +279,8 @@ impl Draft {
                 let term = self.search.clone();
                 self.searching = true;
                 self.error = None;
-                return Task::perform(
-                    async move {
-                        tokio::task::spawn_blocking(move || search(&paths, &term))
-                            .await
-                            .unwrap_or_else(|e| Err(e.to_string()))
-                    },
+                return task::blocking(
+                    move || search(&paths, &term),
                     move |result| Event::Searched(sequence, result),
                 );
             }
@@ -374,14 +362,8 @@ impl Draft {
             let paths = paths.clone();
             let game = game.clone();
             let generation = generation.clone();
-            let (task, handle) = Task::perform(
-                async move {
-                    tokio::task::spawn_blocking(move || {
-                        fetch_preview(&paths, game.0.id, kind, &generation, sequence)
-                    })
-                    .await
-                    .unwrap_or_else(|e| Err(e.to_string()))
-                },
+            let (task, handle) = task::blocking(
+                move || fetch_preview(&paths, game.0.id, kind, &generation, sequence),
                 move |result| Event::Fetched(kind, sequence, result),
             )
             .abortable();
