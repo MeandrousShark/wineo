@@ -200,6 +200,23 @@ answer and confirmed separately.
     to it one at a time, not in one rewrite.
     **Answer: recommended.**
 
+Follow-up answers (2026-10-13, all recommended):
+
+- C9: the keyring uses the zbus-based `secret-service` crate through a
+  current-thread runtime made per call, not zbus's own multi-thread runtime
+  (which added 16 threads to both binaries). Removing a key from a locked
+  keyring prompts to unlock first, like reading and saving. The real-keyring
+  test skips quietly when it isn't set up. `dbus` is not an optional
+  package dependency.
+- C6: the stop helper's behavior changes are accepted: a force kills at
+  once, a cancelled tool waits until its whole group is gone and kills a
+  stubborn child at the stop timeout, and a stop that can't be confirmed
+  says so instead of reporting success.
+- C7c: import and portable copies hold the install lock as long as clone
+  does; clone's final check is cancellable and shows progress like
+  import's; portable copies give the same "appeared" messages as clone and
+  import. The `Finished` event timing difference stays.
+
 ## Possible bugs (fix as patches if confirmed)
 
 - The Art page re-reads and re-decodes every preview every 2 s, flashing
