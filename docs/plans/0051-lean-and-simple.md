@@ -314,6 +314,22 @@ Shipped in 0.31.1.
   changes, and views read the stored copy; every action still checks the
   disk itself.
 
+- The Heroic, Steam, and GOG import grids decode posters capped to the
+  tile size, cached on disk beside the library's art, and at most 8 at a
+  time (half the cores, 2 to 8) in their own pool, so the library keeps
+  its 2. Before, a 300-game Heroic or Steam page started 300 full-size
+  decodes at once. 300 large posters:
+
+  | | Peak threads | Peak RSS | First open | Later opens |
+  |---|---|---|---|---|
+  | Before | 305 | 1079 MB | 1.2 s | 1.2 s |
+  | After (8 at a time) | 13 | 153 MB | 2.1 s | 0.05 s |
+
+  The maintainer picked 8 from measured 2, 4, 8, and 16. When posters are
+  still decoding half a second after a page opens, a progress bar ("Preparing
+  art... 34 of 300") shows in the pinned footer, with Import moved to the
+  right of that row (approved). The bar is a reusable `progress` component.
+
 The maintainer's machine (real GPU, library of 22, after scrolling the
 library), the 0050 acceptance build against main with everything above:
 
