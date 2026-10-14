@@ -4,13 +4,19 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::io;
 use std::process::Child;
+use std::time::{Duration, Instant};
 
 use rustix::event::{PollFd, PollFlags, Timespec, poll};
 use rustix::fd::OwnedFd;
 use rustix::io::Errno;
 use rustix::process::{
-    Pid, PidfdFlags, Resource, Rlimit, Signal, getrlimit, pidfd_open, pidfd_send_signal, prlimit,
+    Pid, PidfdFlags, Resource, Rlimit, Signal, WaitId, WaitIdOptions, getrlimit,
+    kill_process_group, pidfd_open, pidfd_send_signal, prlimit, waitid,
 };
+
+use crate::cancel::Token;
+
+const STOP_POLL: Duration = Duration::from_millis(20);
 
 /// Telling a recorded process group apart from one that reused its number.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -264,6 +270,152 @@ impl Identity {
     fn leader_is_recorded(&self) -> bool {
         boot_id().as_deref() == Some(self.boot_id.as_str())
             && matches!(read_stat(self.group), ProcRead::Found(stat) if stat.start_time == self.leader_start && stat.group == self.group)
+    }
+}
+
+/// What a stop does next.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Step {
+    /// Ask programs to close.
+    Ask,
+    /// Kill what is left, the first time.
+    Kill,
+    /// Kill again, for a kill that can miss a program still starting.
+    Rekill,
+}
+
+/// How far a stop has gone: the first request asks programs to close, and a
+/// forced or repeated one, or the end of `grace`, kills them.
+#[derive(Debug)]
+pub struct Escalation {
+    grace: Duration,
+    retry: Option<Duration>,
+    asked: bool,
+    killed: Option<Instant>,
+    due: Option<Instant>,
+    /// The token level already acted on.
+    seen: u8,
+}
+
+impl Escalation {
+    pub fn new(grace: Duration, retry: Option<Duration>) -> Self {
+        Self {
+            grace,
+            retry,
+            asked: false,
+            killed: None,
+            due: None,
+            seen: 0,
+        }
+    }
+
+    pub fn request(&mut self, forced: bool, now: Instant) -> Option<Step> {
+        if forced || self.stopping() {
+            let step = if self.killed.is_some() {
+                Step::Rekill
+            } else {
+                Step::Kill
+            };
+            self.killed.get_or_insert(now);
+            self.due = self.retry.map(|retry| now + retry);
+            return Some(step);
+        }
+        self.asked = true;
+        self.due = Some(now + self.grace);
+        Some(Step::Ask)
+    }
+
+    /// The kill that falls due at the end of the grace period or a retry.
+    pub fn poll(&mut self, now: Instant) -> Option<Step> {
+        let due = self.due.is_some_and(|due| due <= now);
+        due.then(|| self.request(true, now)).flatten()
+    }
+
+    /// A request for each new token level, or else `poll`.
+    pub fn follow(&mut self, token: &Token, now: Instant) -> Option<Step> {
+        let level = u8::from(token.is_canceled()) + u8::from(token.is_forced());
+        if level <= self.seen {
+            return self.poll(now);
+        }
+        self.seen = level;
+        self.request(level == 2, now)
+    }
+
+    pub fn stopping(&self) -> bool {
+        self.asked || self.killed.is_some()
+    }
+
+    pub fn killed_at(&self) -> Option<Instant> {
+        self.killed
+    }
+
+    pub fn deadline(&self) -> Option<Instant> {
+        self.due
+    }
+}
+
+/// Signals the group `leader` leads. Only for an unreaped child: even as a
+/// zombie it keeps the group number from being reused, so this needs no
+/// `/proc` check and still works when processes can't be inspected.
+pub fn signal_led_group(leader: &Child, signal: Signal) -> io::Result<()> {
+    let group = i32::try_from(leader.id())
+        .ok()
+        .and_then(Pid::from_raw)
+        .ok_or(Errno::INVAL)?;
+    match kill_process_group(group, signal) {
+        Ok(()) | Err(Errno::SRCH) => Ok(()),
+        Err(err) => Err(err.into()),
+    }
+}
+
+/// Waits for `leader`, an unreaped child leading its own group, stopping the
+/// group as `token` and `escalation` say: `ask` first, then SIGKILL. `on`
+/// hears `None` each time round and each step before it is signaled. Returns
+/// whether a stop was requested, once the leader exits and, after a stop,
+/// nothing in the group is left running. The leader stays unreaped for the
+/// caller. The outer error is the helper's own, the inner one `on`'s.
+pub fn stop_group<E>(
+    leader: &Child,
+    ask: Signal,
+    escalation: &mut Escalation,
+    token: &Token,
+    on: impl FnMut(Option<Step>) -> Result<(), E>,
+) -> io::Result<Result<bool, E>> {
+    stop_group_probed(leader, ask, escalation, token, on, group_has_live_members)
+}
+
+pub(crate) fn stop_group_probed<E>(
+    leader: &Child,
+    ask: Signal,
+    escalation: &mut Escalation,
+    token: &Token,
+    mut on: impl FnMut(Option<Step>) -> Result<(), E>,
+    members: impl Fn(u32) -> Option<bool>,
+) -> io::Result<Result<bool, E>> {
+    let pid = Pid::from_raw(leader.id() as i32).ok_or(Errno::INVAL)?;
+    let exited = WaitIdOptions::EXITED | WaitIdOptions::NOHANG | WaitIdOptions::NOWAIT;
+    loop {
+        if let Err(err) = on(None) {
+            return Ok(Err(err));
+        }
+        if let Some(step) = escalation.follow(token, Instant::now()) {
+            if let Err(err) = on(Some(step)) {
+                return Ok(Err(err));
+            }
+            signal_led_group(leader, if step == Step::Ask { ask } else { Signal::KILL })?;
+        }
+        if waitid(WaitId::Pid(pid), exited)?.is_some() {
+            if !escalation.stopping() {
+                return Ok(Ok(false));
+            }
+            // Without `/proc`, a kill that reached the whole group is enough.
+            match members(leader.id()) {
+                Some(false) => return Ok(Ok(true)),
+                None if escalation.killed_at().is_some() => return Ok(Ok(true)),
+                _ => {}
+            }
+        }
+        token.wait_timeout(STOP_POLL);
     }
 }
 
@@ -678,7 +830,7 @@ mod tests {
             .stderr(Stdio::null())
     }
 
-    fn stop_group(child: &mut Child, group: u32, boot: &str, start: u64) {
+    fn kill_group(child: &mut Child, group: u32, boot: &str, start: u64) {
         let _ = id(group, boot, start).signal_if_owned(Signal::KILL);
         let _ = child.wait();
         let deadline = Instant::now() + Duration::from_secs(2);
@@ -790,7 +942,7 @@ mod tests {
         let foreign_id = foreign.id();
         let foreign_boot = boot_id().unwrap();
         let foreign_start = start_time(foreign_id).unwrap();
-        stop_group(&mut foreign, foreign_id, &foreign_boot, foreign_start);
+        kill_group(&mut foreign, foreign_id, &foreign_boot, foreign_start);
     }
 
     #[test]
@@ -902,6 +1054,186 @@ mod tests {
         assert_eq!(has_live_child, Some(true));
         assert_eq!(signaled.unwrap(), GroupOwnership::Owned);
         assert_eq!(settled_members, Some(false));
+    }
+
+    /// Starts `script` leading its own group and waits for it to print a line.
+    fn ready_group(script: &str) -> Child {
+        let mut child = process_group(&mut Command::new("sh"))
+            .args(["-c", script])
+            .stdout(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let mut ready = String::new();
+        use std::io::BufRead;
+        std::io::BufReader::new(child.stdout.take().unwrap())
+            .read_line(&mut ready)
+            .unwrap();
+        assert_eq!(ready, "ready\n");
+        child
+    }
+
+    /// Runs `stop_group` on `child`, with `stop` applied to the token from
+    /// another thread, and returns its answer, the steps taken, and how long
+    /// it took.
+    fn stopped(
+        mut child: Child,
+        grace: Duration,
+        stop: impl FnOnce(&Token) + Send + 'static,
+    ) -> (bool, Vec<Step>, Duration) {
+        let token = Token::new();
+        let stopper = token.clone();
+        let started = Instant::now();
+        thread::spawn(move || {
+            thread::sleep(Duration::from_millis(50));
+            stop(&stopper);
+        });
+        let mut steps = Vec::new();
+        let mut escalation = Escalation::new(grace, None);
+        let answer = stop_group(&child, Signal::TERM, &mut escalation, &token, |step| {
+            steps.extend(step);
+            Ok::<_, ()>(())
+        });
+        let elapsed = started.elapsed();
+        let live = group_has_live_members(child.id());
+        let _ = signal_led_group(&child, Signal::KILL);
+        child.wait().unwrap();
+        assert_eq!(live, Some(false), "the group outlived the stop");
+        (answer.unwrap().unwrap(), steps, elapsed)
+    }
+
+    #[test]
+    fn a_group_that_closes_when_asked_is_never_killed() {
+        let child = ready_group("sleep 30 & echo ready; wait");
+        let (stopped, steps, elapsed) = stopped(child, Duration::from_secs(30), Token::cancel);
+        assert!(stopped);
+        assert_eq!(steps, [Step::Ask]);
+        assert!(elapsed < Duration::from_secs(5));
+    }
+
+    #[test]
+    fn a_group_that_ignores_the_ask_is_killed_after_the_grace_period() {
+        let grace = Duration::from_millis(300);
+        let child = ready_group("trap '' TERM; sleep 30 & echo ready; wait");
+        let (stopped, steps, elapsed) = stopped(child, grace, Token::cancel);
+        assert!(stopped);
+        assert_eq!(steps, [Step::Ask, Step::Kill]);
+        assert!(elapsed >= grace);
+        assert!(elapsed < Duration::from_secs(5));
+    }
+
+    #[test]
+    fn forcing_a_stop_kills_without_asking_or_waiting() {
+        let child = ready_group("trap '' TERM; sleep 30 & echo ready; wait");
+        let (stopped, steps, elapsed) = stopped(child, Duration::from_secs(30), Token::force);
+        assert!(stopped);
+        assert_eq!(steps, [Step::Kill]);
+        assert!(elapsed < Duration::from_secs(5));
+    }
+
+    #[test]
+    fn a_stop_waits_for_the_whole_group_after_the_leader_exits() {
+        // The leader exits at once, but its child ignores the ask.
+        let grace = Duration::from_millis(300);
+        let child =
+            ready_group("trap 'exit 0' TERM; sh -c 'trap \"\" TERM; echo ready; sleep 30' & wait");
+        let (stopped, steps, elapsed) = stopped(child, grace, Token::cancel);
+        assert!(stopped);
+        assert_eq!(steps, [Step::Ask, Step::Kill]);
+        assert!(elapsed >= grace);
+    }
+
+    #[test]
+    fn a_leader_exiting_on_its_own_leaves_its_group_alone() {
+        let mut child = ready_group("sleep 30 & echo ready; exit 0");
+        let token = Token::new();
+        let mut escalation = Escalation::new(Duration::ZERO, None);
+        let stopped = stop_group(&child, Signal::TERM, &mut escalation, &token, |step| {
+            assert_eq!(step, None);
+            Ok::<_, ()>(())
+        });
+        let live = group_has_live_members(child.id());
+        let _ = signal_led_group(&child, Signal::KILL);
+        child.wait().unwrap();
+        assert!(!stopped.unwrap().unwrap());
+        assert_eq!(live, Some(true));
+    }
+
+    #[test]
+    fn an_error_from_the_caller_ends_the_wait_without_signaling() {
+        let mut child = ready_group("echo ready; sleep 30");
+        let token = Token::new();
+        token.cancel();
+        let mut escalation = Escalation::new(Duration::ZERO, None);
+        let answer = stop_group(&child, Signal::TERM, &mut escalation, &token, |step| {
+            step.map_or(Ok(()), |_| Err("refused"))
+        });
+        let running = child.try_wait().unwrap().is_none();
+        let _ = signal_led_group(&child, Signal::KILL);
+        child.wait().unwrap();
+        assert_eq!(answer.unwrap(), Err("refused"));
+        assert!(running);
+    }
+
+    #[test]
+    fn a_reused_group_number_is_never_signaled() {
+        let mut child = process_group(&mut Command::new("sleep"))
+            .arg("30")
+            .spawn()
+            .unwrap();
+        let real = Identity::of(child.id()).unwrap();
+        for stale in [
+            Identity {
+                leader_start: real.leader_start + 1,
+                ..real.clone()
+            },
+            Identity {
+                boot_id: "another-boot".to_owned(),
+                ..real.clone()
+            },
+        ] {
+            assert_eq!(stale.ownership(), GroupOwnership::Gone);
+            assert_eq!(stale.kill_now().unwrap(), GroupOwnership::Gone);
+            assert_eq!(
+                stale.signal_if_live(Signal::KILL).unwrap(),
+                GroupOwnership::Gone
+            );
+        }
+        let running = child.try_wait().unwrap().is_none();
+        let _ = child.kill();
+        child.wait().unwrap();
+        assert!(running);
+    }
+
+    #[test]
+    fn escalation_asks_then_kills_and_retries_only_when_told_to() {
+        let start = Instant::now();
+        let grace = Duration::from_secs(5);
+        let mut once = Escalation::new(grace, None);
+        assert_eq!(once.poll(start), None);
+        assert_eq!(once.request(false, start), Some(Step::Ask));
+        assert_eq!(once.deadline(), Some(start + grace));
+        assert_eq!(once.poll(start + grace / 2), None);
+        assert_eq!(once.poll(start + grace), Some(Step::Kill));
+        assert_eq!(once.poll(start + grace * 4), None);
+        assert_eq!(once.request(false, start + grace * 4), Some(Step::Rekill));
+
+        let retry = Duration::from_secs(1);
+        let mut repeating = Escalation::new(grace, Some(retry));
+        assert_eq!(repeating.request(true, start), Some(Step::Kill));
+        assert!(repeating.stopping());
+        assert_eq!(repeating.killed_at(), Some(start));
+        assert_eq!(repeating.poll(start + retry), Some(Step::Rekill));
+        assert_eq!(repeating.killed_at(), Some(start));
+
+        let token = Token::new();
+        let mut following = Escalation::new(grace, None);
+        assert_eq!(following.follow(&token, start), None);
+        token.cancel();
+        assert_eq!(following.follow(&token, start), Some(Step::Ask));
+        assert_eq!(following.follow(&token, start), None);
+        token.force();
+        assert_eq!(following.follow(&token, start), Some(Step::Kill));
+        assert_eq!(following.follow(&token, start), None);
     }
 
     #[test]
