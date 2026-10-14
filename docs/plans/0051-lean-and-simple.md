@@ -217,6 +217,11 @@ Follow-up answers (2026-10-13, all recommended):
   import's; portable copies give the same "appeared" messages as clone and
   import. The `Finished` event timing difference stays.
 
+Calls made for review (2026-10-13 night): the maintainer asked for
+recommended calls to be made and reviewed later. Each is listed here.
+
+- (none yet)
+
 ## Possible bugs (fix as patches if confirmed)
 
 - The Art page re-reads and re-decodes every preview every 2 s, flashing
