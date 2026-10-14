@@ -304,6 +304,49 @@ fn inspect_impl(
     })
 }
 
+/// The checks an import must pass before anything is written, without
+/// taking locks, so a review or dry run can refuse what `execute_reviewed`
+/// would. Returns the destination prefix as given, not resolved.
+pub fn preflight(
+    paths: &Paths,
+    global: &GlobalConfig,
+    request: &ImportRequest,
+    inspection: &Inspection,
+) -> Result<PathBuf> {
+    if !name::is_valid(&request.name) {
+        bail!("invalid environment name `{}`", request.name);
+    }
+    let source = &inspection.source_root;
+    let destination = if request.adopt {
+        source.clone()
+    } else {
+        match &request.destination {
+            Some(destination) => destination.clone(),
+            None => global.prefix_root(paths)?.join(&request.name),
+        }
+    };
+    paths.check_prefix(&destination)?;
+    if !request.adopt {
+        reject_overlapping_paths(source, &destination)?;
+        if destination.exists() {
+            bail!(
+                "import destination already exists: {}",
+                destination.display()
+            );
+        }
+    }
+    if paths
+        .environment_config(&request.name)
+        .symlink_metadata()
+        .is_ok()
+    {
+        return Err(Error::EnvironmentExists(request.name.clone()).into());
+    }
+    check_shared_configs(paths, &request.name, [source, &destination])?;
+    check_destination(paths, &request.name, request.adopt, &destination)?;
+    Ok(destination)
+}
+
 /// Execute a reviewed import. If `reviewed` is supplied, its source and
 /// fingerprint must still match when locks are held and immediately before
 /// publication.
@@ -335,6 +378,7 @@ pub fn execute_reviewed(
     if let Some(reviewed) = reviewed {
         ensure_same_review(reviewed, &first)?;
     }
+    preflight(paths, global, &request, &first)?;
     let source_root = first.source_root.clone();
     let destination = if request.adopt {
         source_root.clone()
@@ -344,21 +388,6 @@ pub fn execute_reviewed(
             None => global.prefix_root(paths)?.join(&request.name),
         }
     };
-    paths.check_prefix(&destination)?;
-    if !request.adopt {
-        reject_overlapping_paths(&source_root, &destination)?;
-    }
-    if !request.adopt && destination.exists() {
-        bail!(
-            "import destination already exists: {}",
-            destination.display()
-        );
-    }
-    if Environment::ensure_exists(paths, &request.name).is_ok() {
-        return Err(Error::EnvironmentExists(request.name.clone()).into());
-    }
-    check_shared_configs(paths, &request.name, [&source_root, &destination])?;
-    check_destination(paths, &request.name, request.adopt, &destination)?;
 
     let lock = Locks::new(paths);
     let mut operation = lock.acquire(

@@ -934,41 +934,24 @@ fn inspect_review(
         }
         Err(error) => return Err(error.to_string()),
     };
-    let destination = if adopt {
-        inspection.0.source_root.clone()
-    } else if destination.trim().is_empty() {
-        global
-            .prefix_root(paths)
-            .map_err(|error| error.to_string())?
-            .join(name)
-    } else {
-        paths
-            .absolute(destination)
-            .map_err(|error| error.to_string())?
+    let request = ImportRequest {
+        source,
+        name: name.to_owned(),
+        runner: runner_selection.to_owned(),
+        destination: if adopt || destination.trim().is_empty() {
+            None
+        } else {
+            Some(
+                paths
+                    .absolute(destination)
+                    .map_err(|error| error.to_string())?,
+            )
+        },
+        adopt,
+        arch,
     };
-    if !wineo_core::name::is_valid(name) {
-        return Err(format!("invalid environment name `{name}`"));
-    }
-    if paths.environment_config(name).exists() {
-        return Err(format!("environment `{name}` already exists"));
-    }
-    if !adopt && destination.exists() {
-        return Err(format!(
-            "import destination already exists: {}",
-            destination.display()
-        ));
-    }
-    paths
-        .check_prefix(&destination)
+    let destination = import::preflight(paths, &global, &request, &inspection.0)
         .map_err(|error| error.to_string())?;
-    if !adopt {
-        let source_root = wineo_core::paths::resolve(&inspection.0.source_root);
-        let destination_root = wineo_core::paths::resolve(&destination);
-        if source_root.starts_with(&destination_root) || destination_root.starts_with(&source_root)
-        {
-            return Err("source and destination overlap".to_owned());
-        }
-    }
     Ok(Review {
         inspection: inspection.0,
         destination,
