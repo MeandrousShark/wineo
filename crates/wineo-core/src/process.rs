@@ -4,9 +4,10 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::io;
 use std::process::Child;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use rustix::event::{PollFd, PollFlags, Timespec, poll};
+use rustix::event::{EventfdFlags, PollFd, PollFlags, Timespec, eventfd, poll};
 use rustix::fd::OwnedFd;
 use rustix::io::Errno;
 use rustix::process::{
@@ -16,7 +17,10 @@ use rustix::process::{
 
 use crate::cancel::Token;
 
-const STOP_POLL: Duration = Duration::from_millis(20);
+/// How often a stopped group's members are checked once its leader is gone,
+/// since they have nothing to wait on. Backs off to the max.
+const SETTLE_POLL: Duration = Duration::from_millis(20);
+const SETTLE_POLL_MAX: Duration = Duration::from_millis(250);
 
 /// Telling a recorded process group apart from one that reused its number.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -388,14 +392,27 @@ pub fn leader_exited(leader: &Child) -> io::Result<bool> {
 /// whether a stop was requested, once the leader exits and, after a stop,
 /// nothing in the group is left running. The leader stays unreaped for the
 /// caller. The outer error is the helper's own, the inner one `on`'s.
+///
+/// It sleeps until the leader exits, the token rises, or a stop deadline
+/// passes. `tick` adds a wakeup for a caller with work of its own, such as
+/// reading output.
 pub fn stop_group<E>(
     leader: &Child,
     ask: Signal,
     escalation: &mut Escalation,
     token: &Token,
+    tick: Option<Duration>,
     on: impl FnMut(Option<Step>) -> Result<(), E>,
 ) -> io::Result<Result<bool, E>> {
-    stop_group_probed(leader, ask, escalation, token, on, group_has_live_members)
+    stop_group_probed(
+        leader,
+        ask,
+        escalation,
+        token,
+        tick,
+        on,
+        group_has_live_members,
+    )
 }
 
 pub(crate) fn stop_group_probed<E>(
@@ -403,9 +420,21 @@ pub(crate) fn stop_group_probed<E>(
     ask: Signal,
     escalation: &mut Escalation,
     token: &Token,
+    tick: Option<Duration>,
     mut on: impl FnMut(Option<Step>) -> Result<(), E>,
     members: impl Fn(u32) -> Option<bool>,
 ) -> io::Result<Result<bool, E>> {
+    let pid = Pid::from_raw(leader.id() as i32).ok_or(Errno::INVAL)?;
+    let exit = pidfd_open(pid, PidfdFlags::empty())?;
+    let raised = Arc::new(eventfd(0, EventfdFlags::CLOEXEC | EventfdFlags::NONBLOCK)?);
+    // Subscribed before the first look at the token, so no rise is missed.
+    let _subscription = {
+        let raised = raised.clone();
+        token.subscribe(move || {
+            let _ = rustix::io::write(&*raised, &1u64.to_ne_bytes());
+        })
+    };
+    let mut settle_poll = SETTLE_POLL;
     loop {
         if let Err(err) = on(None) {
             return Ok(Err(err));
@@ -423,6 +452,8 @@ pub(crate) fn stop_group_probed<E>(
             // A zero grace period kills along with the ask.
             next = (step == Step::Ask).then(|| escalation.poll(now)).flatten();
         }
+        let mut timeout = tick;
+        let mut shorten = |by: Duration| timeout = Some(timeout.map_or(by, |t| t.min(by)));
         if exited {
             if !escalation.stopping() {
                 return Ok(Ok(false));
@@ -433,8 +464,36 @@ pub(crate) fn stop_group_probed<E>(
                 None if escalation.killed_at().is_some() => return Ok(Ok(true)),
                 _ => {}
             }
+            shorten(settle_poll);
+            settle_poll = (settle_poll * 2).min(SETTLE_POLL_MAX);
         }
-        token.wait_timeout(STOP_POLL);
+        if let Some(due) = escalation.deadline() {
+            shorten(due.saturating_duration_since(now));
+        }
+        // An exited leader's pidfd stays readable, so it is left out then.
+        wait_either((!exited).then_some(&exit), &raised, timeout)?;
+    }
+}
+
+/// Sleeps until `exit` or `raised` is readable or `timeout` passes, then
+/// clears `raised`.
+fn wait_either(
+    exit: Option<&OwnedFd>,
+    raised: &OwnedFd,
+    timeout: Option<Duration>,
+) -> io::Result<()> {
+    let timeout = timeout.map(|timeout| Timespec::try_from(timeout).unwrap_or(Timespec::default()));
+    let mut descriptors = vec![PollFd::new(raised, PollFlags::IN)];
+    descriptors.extend(exit.map(|exit| PollFd::new(exit, PollFlags::IN)));
+    match poll(&mut descriptors, timeout.as_ref()) {
+        // A signal handler only cuts the wait short; the caller looks again.
+        Ok(_) | Err(Errno::INTR) => {}
+        Err(error) => return Err(error.into()),
+    }
+    let mut count = [0u8; 8];
+    match rustix::io::read(raised, &mut count) {
+        Ok(_) | Err(Errno::AGAIN) => Ok(()),
+        Err(error) => Err(error.into()),
     }
 }
 
@@ -1108,10 +1167,17 @@ mod tests {
         });
         let mut steps = Vec::new();
         let mut escalation = Escalation::new(grace, None);
-        let answer = stop_group(&child, Signal::TERM, &mut escalation, &token, |step| {
-            steps.extend(step);
-            Ok::<_, ()>(())
-        });
+        let answer = stop_group(
+            &child,
+            Signal::TERM,
+            &mut escalation,
+            &token,
+            None,
+            |step| {
+                steps.extend(step);
+                Ok::<_, ()>(())
+            },
+        );
         let elapsed = started.elapsed();
         let live = group_has_live_members(child.id());
         let _ = signal_led_group(&child, Signal::KILL);
@@ -1175,10 +1241,17 @@ mod tests {
         let mut child = ready_group("sleep 30 & echo ready; exit 0");
         let token = Token::new();
         let mut escalation = Escalation::new(Duration::ZERO, None);
-        let stopped = stop_group(&child, Signal::TERM, &mut escalation, &token, |step| {
-            assert_eq!(step, None);
-            Ok::<_, ()>(())
-        });
+        let stopped = stop_group(
+            &child,
+            Signal::TERM,
+            &mut escalation,
+            &token,
+            None,
+            |step| {
+                assert_eq!(step, None);
+                Ok::<_, ()>(())
+            },
+        );
         let live = group_has_live_members(child.id());
         let _ = signal_led_group(&child, Signal::KILL);
         child.wait().unwrap();
@@ -1187,14 +1260,38 @@ mod tests {
     }
 
     #[test]
+    fn a_wait_with_nothing_happening_sleeps_until_the_leader_exits() {
+        let mut child = process_group(&mut Command::new("sleep"))
+            .arg("1")
+            .spawn()
+            .unwrap();
+        let token = Token::new();
+        let mut escalation = Escalation::new(Duration::ZERO, None);
+        let mut rounds = 0;
+        let stopped = stop_group(&child, Signal::TERM, &mut escalation, &token, None, |_| {
+            rounds += 1;
+            Ok::<_, ()>(())
+        });
+        child.wait().unwrap();
+        assert!(!stopped.unwrap().unwrap());
+        // Once on the way in and once when the exit wakes it.
+        assert!(rounds <= 3, "woke {rounds} times");
+    }
+
+    #[test]
     fn an_error_from_the_caller_ends_the_wait_without_signaling() {
         let mut child = ready_group("echo ready; sleep 30");
         let token = Token::new();
         token.cancel();
         let mut escalation = Escalation::new(Duration::ZERO, None);
-        let answer = stop_group(&child, Signal::TERM, &mut escalation, &token, |step| {
-            step.map_or(Ok(()), |_| Err("refused"))
-        });
+        let answer = stop_group(
+            &child,
+            Signal::TERM,
+            &mut escalation,
+            &token,
+            None,
+            |step| step.map_or(Ok(()), |_| Err("refused")),
+        );
         let running = child.try_wait().unwrap().is_none();
         let _ = signal_led_group(&child, Signal::KILL);
         child.wait().unwrap();

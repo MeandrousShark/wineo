@@ -280,7 +280,7 @@ pub(crate) fn wait_for_child(
     let mut escalation = Escalation::new(CANCEL_GRACE, None);
     let mut canceled = false;
     let stopped =
-        crate::process::stop_group(&child, Signal::TERM, &mut escalation, token, |step| {
+        crate::process::stop_group(&child, Signal::TERM, &mut escalation, token, None, |step| {
             if step.is_none() || std::mem::replace(&mut canceled, true) {
                 return Ok(());
             }

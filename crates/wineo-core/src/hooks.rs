@@ -259,6 +259,8 @@ fn wait_for_exit(
     wait_for_exit_requested(child, token, stop_timeout, group_members, || Ok(()))
 }
 
+const REQUEST_POLL: Duration = Duration::from_millis(20);
+
 /// The unreaped child pins its group number until the whole group settles,
 /// so stopping it needs no `/proc` identity check.
 fn wait_for_exit_requested(
@@ -274,6 +276,8 @@ fn wait_for_exit_requested(
         Signal::TERM,
         &mut escalation,
         token,
+        // A stop can also be asked for through the lock file.
+        Some(REQUEST_POLL),
         |step| step.map_or_else(&mut request, |_| Ok(())),
         group_members,
     )

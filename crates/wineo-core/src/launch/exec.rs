@@ -295,15 +295,23 @@ fn run(
     crate::process::quiet_core_dumps(&child);
     events(ExecEvent::Started);
     let mut escalation = Escalation::new(Duration::from_secs(stop_timeout.into()), None);
-    let ended = crate::process::stop_group(&child, Signal::TERM, &mut escalation, token, |step| {
-        match step {
-            None => return lines.pump(READ_BATCH, events),
-            Some(Step::Ask) => events(ExecEvent::Stopping),
-            Some(Step::Kill) => events(ExecEvent::Killing),
-            Some(Step::Rekill) => {}
-        }
-        Ok(())
-    })
+    // Output lands in a file, which has nothing to wait on.
+    let ended = crate::process::stop_group(
+        &child,
+        Signal::TERM,
+        &mut escalation,
+        token,
+        Some(POLL),
+        |step| {
+            match step {
+                None => return lines.pump(READ_BATCH, events),
+                Some(Step::Ask) => events(ExecEvent::Stopping),
+                Some(Step::Kill) => events(ExecEvent::Killing),
+                Some(Step::Rekill) => {}
+            }
+            Ok(())
+        },
+    )
     .context("failed to stop exec process group")
     .and_then(|pumped| Ok(pumped?));
     if let Err(err) = ended {

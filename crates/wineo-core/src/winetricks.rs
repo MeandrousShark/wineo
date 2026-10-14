@@ -635,7 +635,9 @@ fn run_with_output(
     }
     // SIGINT, the way Ctrl+C asks a shell script to stop.
     let mut escalation = Escalation::new(Duration::from_secs(stop_timeout.into()), None);
-    process::stop_group(&child, Signal::INT, &mut escalation, token, |step| {
+    // Only a log to follow needs waking up for.
+    let tick = tail.is_some().then_some(POLL);
+    process::stop_group(&child, Signal::INT, &mut escalation, token, tick, |step| {
         match step {
             None => {
                 if let Some(tail) = &mut tail {
