@@ -11,6 +11,7 @@ use wineo_core::launch;
 use wineo_core::paths::Paths;
 use wineo_core::report::{self, OverviewFilter};
 use wineo_core::runtime::State;
+use wineo_core::trash::PendingScan;
 use wineo_core::{stats, steam, time};
 
 use crate::theme::Palette;
@@ -253,7 +254,10 @@ fn fallback_stats(kind: Option<CardKind>) -> (String, String, String) {
 }
 
 pub(super) fn load_library(paths: &Paths) -> anyhow::Result<Vec<Card>> {
-    let overview = report::overview(paths, OverviewFilter::default())?;
+    // Building cards never trashes or restores, so the overview and every
+    // card's config load share one read of the trash.
+    let pending = PendingScan::new(paths);
+    let overview = report::overview_with_pending(paths, OverviewFilter::default(), &pending)?;
     let tools = overview
         .steam
         .as_ref()
@@ -309,7 +313,7 @@ pub(super) fn load_library(paths: &Paths) -> anyhow::Result<Vec<Card>> {
         let mut title = item.name.clone();
         let mut panel_art = HashMap::new();
         let mut gog_card = None;
-        let (error, art) = match Environment::load(paths, &item.name) {
+        let (error, art) = match Environment::load_with_pending(paths, &item.name, &pending) {
             Ok(env) => {
                 kind = Some(CardKind::new(&env.config.kind));
                 gog_card = gog.card(paths, &env);
@@ -679,6 +683,33 @@ mod tests {
         assert_eq!(missing.state_label(), "not installed");
         assert!(missing.installable());
         assert!(!missing.uninstallable());
+    }
+
+    #[test]
+    fn load_library_reads_each_trash_manifest_once() {
+        let root = tempfile::tempdir().unwrap();
+        let paths =
+            Paths::from_lookup(|key| (key == "HOME").then(|| root.path().as_os_str().to_owned()))
+                .unwrap();
+        fs::create_dir_all(paths.environments_dir()).unwrap();
+        for index in 0..5 {
+            let name = format!("gone-{index}");
+            fs::write(paths.environment_config(&name), "kind = 'native'\n").unwrap();
+            wineo_core::trash::remove(&paths, &name, false).unwrap();
+        }
+        for index in 0..4 {
+            fs::write(
+                paths.environment_config(&format!("kept-{index}")),
+                "kind = 'native'\n",
+            )
+            .unwrap();
+        }
+
+        wineo_core::trash::take_manifest_reads();
+        let cards = load_library(&paths).unwrap();
+        assert_eq!(cards.len(), 4);
+        assert!(cards.iter().all(|card| card.kind == Some(CardKind::Native)));
+        assert_eq!(wineo_core::trash::take_manifest_reads(), 5);
     }
 
     #[test]

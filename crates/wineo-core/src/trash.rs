@@ -601,11 +601,19 @@ fn write_manifest(paths: &Paths, manifest: &Manifest) -> Result<()> {
     sync(&paths.trash_dir())
 }
 
-#[cfg(test)]
-thread_local! { pub(crate) static MANIFEST_READS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }
+// Batch callers are tested by how many manifests one batch reads.
+#[cfg(any(test, feature = "test-support"))]
+thread_local! { static MANIFEST_READS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }
+
+/// Manifest reads on this thread since the last call.
+#[cfg(any(test, feature = "test-support"))]
+#[doc(hidden)]
+pub fn take_manifest_reads() -> usize {
+    MANIFEST_READS.with(|reads| reads.replace(0))
+}
 
 fn read_manifest(paths: &Paths, id: &str) -> Result<Manifest> {
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     MANIFEST_READS.with(|reads| reads.set(reads.get() + 1));
     identity(&paths.trash_dir())?.ok_or_else(|| anyhow!("trash storage unavailable"))?;
     let dir = entry_dir(paths, id)?;

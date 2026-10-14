@@ -517,18 +517,44 @@ pub fn overview(paths: &Paths, filter: OverviewFilter<'_>) -> Result<Overview> {
     overview_with(paths, filter, &crate::steam::reapers_by_app)
 }
 
+/// `overview` against a trash scan the caller also uses for its own loads of
+/// the same environments, so one batch reads the trash once.
+pub fn overview_with_pending(
+    paths: &Paths,
+    filter: OverviewFilter<'_>,
+    pending: &crate::trash::PendingScan,
+) -> Result<Overview> {
+    overview_from(paths, filter, &crate::steam::reapers_by_app, Some(pending))
+}
+
 fn overview_with(paths: &Paths, filter: OverviewFilter<'_>, scan: &ReaperScan) -> Result<Overview> {
+    overview_from(paths, filter, scan, None)
+}
+
+fn overview_from(
+    paths: &Paths,
+    filter: OverviewFilter<'_>,
+    scan: &ReaperScan,
+    pending: Option<&crate::trash::PendingScan>,
+) -> Result<Overview> {
     let locks = Locks::new(paths);
     let global = GlobalConfig::load(paths).ok();
     let mut overview = Overview::default();
     let names = environment::names(paths)?;
     // Nothing here trashes or restores, so one trash scan serves every load.
-    let pending = crate::trash::PendingScan::new(paths);
+    let own;
+    let pending = match pending {
+        Some(pending) => pending,
+        None => {
+            own = crate::trash::PendingScan::new(paths);
+            &own
+        }
+    };
     // Loaded up front so one process sweep can look for every Steam game.
     let environments: Vec<_> = names
         .into_iter()
         .map(|name| {
-            let environment = Environment::load_with_pending(paths, &name, &pending);
+            let environment = Environment::load_with_pending(paths, &name, pending);
             (name, environment)
         })
         .collect();
@@ -929,10 +955,10 @@ mod tests {
         }
         let scan = |_: &crate::steam::Install, _: &[String]| Ok(HashMap::new());
 
-        crate::trash::MANIFEST_READS.with(|reads| reads.set(0));
+        crate::trash::take_manifest_reads();
         let overview = overview_with(&paths, OverviewFilter::default(), &scan).unwrap();
         assert_eq!(overview.environments.len(), 4);
-        assert_eq!(crate::trash::MANIFEST_READS.with(|reads| reads.get()), 5);
+        assert_eq!(crate::trash::take_manifest_reads(), 5);
     }
 
     #[test]
