@@ -4,9 +4,9 @@ use std::fs::File;
 use std::os::unix::process::CommandExt;
 use std::path::Path;
 use std::process::{Child, Command, ExitStatus, Stdio};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
-use rustix::process::{Pid, Signal, WaitId, WaitIdOptions, kill_process_group, waitid};
+use rustix::process::{Pid, Signal, kill_process_group};
 use serde::{Deserialize, Serialize};
 
 use crate::cancel::Token;
@@ -16,7 +16,6 @@ use crate::paths::{PORTABLE_VAR, Paths};
 use crate::process::{self, Identity};
 use crate::runner::Runner;
 
-const POLL: Duration = Duration::from_millis(20);
 const VARIABLES: [&str; 11] = [
     "WINEO_LAUNCHER",
     "WINEO_APP_ID",
@@ -230,9 +229,8 @@ pub fn run(
             .ok_or_else(|| Error::Unsettled("could not read hook process identity".to_owned()))?,
     };
     guard.record_hook(context.hook.phase(), Some(&running))?;
-    let pid = Pid::from_raw(group as i32).expect("a spawned child has a positive pid");
     let stopped = wait_for_exit_requested(
-        pid,
+        &spawned.child,
         token,
         stop_timeout,
         process::group_has_live_members,
@@ -253,70 +251,33 @@ pub fn run(
 
 #[cfg(test)]
 fn wait_for_exit(
-    pid: Pid,
+    child: &Child,
     token: &Token,
     stop_timeout: Duration,
     group_members: impl Fn(u32) -> Option<bool>,
 ) -> Result<bool> {
-    wait_for_exit_requested(pid, token, stop_timeout, group_members, || Ok(()))
+    wait_for_exit_requested(child, token, stop_timeout, group_members, || Ok(()))
 }
 
+/// The unreaped child pins its group number until the whole group settles,
+/// so stopping it needs no `/proc` identity check.
 fn wait_for_exit_requested(
-    pid: Pid,
+    child: &Child,
     token: &Token,
     stop_timeout: Duration,
     group_members: impl Fn(u32) -> Option<bool>,
     mut request: impl FnMut() -> Result<()>,
 ) -> Result<bool> {
-    let mut stopping = None;
-    let mut killed = false;
-    loop {
-        request()?;
-        // The unreaped child pins its PGID, so local signals need no /proc
-        // identity checks and still work when process inspection is unavailable.
-        if token.is_forced() && !killed {
-            signal_group(pid, Signal::KILL)?;
-            killed = true;
-            stopping.get_or_insert_with(Instant::now);
-        } else if token.is_canceled() && stopping.is_none() {
-            signal_group(pid, Signal::TERM)?;
-            stopping = Some(Instant::now());
-        }
-        if let Some(started) = stopping
-            && !killed
-            && started.elapsed() >= stop_timeout
-        {
-            signal_group(pid, Signal::KILL)?;
-            killed = true;
-        }
-        let exited = waitid(
-            WaitId::Pid(pid),
-            WaitIdOptions::EXITED | WaitIdOptions::NOHANG | WaitIdOptions::NOWAIT,
-        )
-        .map_err(std::io::Error::from)
-        .context(|| "failed to observe hook exit".to_owned())?
-        .is_some();
-        if exited {
-            if stopping.is_none() {
-                return Ok(false);
-            }
-            match group_members(pid.as_raw_nonzero().get() as u32) {
-                Some(false) => return Ok(true),
-                None if killed => return Ok(true),
-                _ => {}
-            }
-        }
-        // Keep the PGID pinned until cancellation settles the whole group.
-        token.wait_timeout(POLL);
-    }
-}
-
-fn signal_group(pid: Pid, signal: Signal) -> Result<()> {
-    match kill_process_group(pid, signal) {
-        Ok(()) | Err(rustix::io::Errno::SRCH) => Ok(()),
-        Err(error) => Err(std::io::Error::from(error))
-            .context(|| "failed to signal the hook process group".to_owned()),
-    }
+    let mut escalation = process::Escalation::new(stop_timeout, None);
+    process::stop_group_probed(
+        child,
+        Signal::TERM,
+        &mut escalation,
+        token,
+        |step| step.map_or_else(&mut request, |_| Ok(())),
+        group_members,
+    )
+    .context(|| "failed to stop the hook process group".to_owned())?
 }
 
 struct Spawned {
@@ -344,10 +305,13 @@ mod tests {
     use std::os::unix::process::ExitStatusExt;
     use std::sync::Arc;
     use std::thread;
+    use std::time::Instant;
 
     use super::*;
     use crate::operation::{Locks, Operation};
     use crate::process::GroupOwnership;
+
+    const POLL: Duration = Duration::from_millis(20);
 
     fn paths(root: &Path, portable: bool) -> Paths {
         Paths::select(
@@ -701,8 +665,7 @@ mod tests {
         let started = Instant::now();
         let task = thread::spawn(move || {
             let _root = root;
-            let pid = Pid::from_raw(spawned.child.id() as i32).unwrap();
-            assert!(wait_for_exit(pid, &token, timeout, |_| None).unwrap());
+            assert!(wait_for_exit(&spawned.child, &token, timeout, |_| None).unwrap());
             let status = spawned.child.wait().unwrap();
             spawned.finished = true;
             drop(spawned);
