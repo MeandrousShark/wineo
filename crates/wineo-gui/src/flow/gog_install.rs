@@ -21,9 +21,9 @@ use wineo_core::gog::account::Session;
 use wineo_core::gog::api::Client;
 use wineo_core::gog::folder::{Platform, ProductStatus};
 use wineo_core::gog::install_dir::install_folder;
-use wineo_core::gog::update::UpdateError;
 use wineo_core::gog::update::install::{self, Installed, Plan, Request};
 use wineo_core::gog::update::windows::{Event as WindowsEvent, SetupError};
+use wineo_core::gog::update::{Reporter, UpdateError};
 use wineo_core::gog::{language, product};
 use wineo_core::key_store::Keyring;
 use wineo_core::paths::Paths;
@@ -34,7 +34,9 @@ use wineo_core::supervisor::{Notice, Watched};
 use wineo_core::targets::{self, Batch, Spec, Written};
 
 use super::gog::{Extras, import_extras};
-use super::gog_update::{LOGGED_OUT, Reporter, setup_window_buttons, setup_window_question};
+use super::gog_update::{
+    LOGGED_OUT, PROGRESS_INTERVAL, setup_window_buttons, setup_window_question,
+};
 use super::heroic::{self, Prerequisite};
 use crate::runner_label::Choice;
 use crate::size::format_bytes;
@@ -1223,20 +1225,9 @@ pub(crate) fn install_with(
     let mut session = Session::open(paths, keyring, client)
         .map_err(|error| Failure::new(error.to_string()))?
         .ok_or_else(|| Failure::new(LOGGED_OUT))?;
-    let labels: HashMap<u64, String> = names
-        .products()
-        .iter()
-        .map(|product| {
-            let label = if product.id == names.gog_id() {
-                names.title().to_owned()
-            } else {
-                names.dlc_label(product.id)
-            };
-            (product.id, label)
-        })
-        .collect();
+    let labels = names.product_labels();
     let say = std::cell::RefCell::new(&mut say);
-    let mut reporter = Reporter::with_labels(labels.clone());
+    let mut reporter = Reporter::new(labels.clone(), PROGRESS_INTERVAL);
     let installed = install::apply_with_events(
         paths,
         &mut session,

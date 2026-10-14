@@ -8,13 +8,15 @@ use wineo_core::gog::account::{AccountError, Session};
 use wineo_core::gog::folder::{FolderError, JournalKind, Platform, Track};
 use wineo_core::gog::migrate::MigrateError;
 use wineo_core::gog::update::windows::SetupError;
-use wineo_core::gog::update::{self, Check, Options, Pending, Plan, UpdateError, Updated};
+use wineo_core::gog::update::{
+    self, Check, Options, Pending, Plan, ReviewLabel, UpdateError, Updated,
+};
 use wineo_core::paths::Paths;
 
 use super::Args;
 use crate::cancel;
 use crate::commands::gog_support::{
-    Account, LOGGED_OUT, Reporter, ask_wizard, offers_wizard, reason_note, usage_error, warn,
+    Account, LOGGED_OUT, Reporter, ask_wizard, offers_wizard, usage_error, warn,
 };
 use crate::commands::table;
 use crate::commands::transfer::Cancellation;
@@ -230,12 +232,7 @@ fn all(paths: &Paths, args: &Args) -> anyhow::Result<ExitCode> {
     let mut failures: Vec<(String, String)> = batch
         .errors
         .iter()
-        .map(|error| {
-            (
-                crate::commands::gog_support::error_subject(error),
-                error.message.clone(),
-            )
-        })
+        .map(|error| (error.subject(), error.message.clone()))
         .collect();
     let mut names = Vec::new();
     let mut skipped = Vec::new();
@@ -248,11 +245,7 @@ fn all(paths: &Paths, args: &Args) -> anyhow::Result<ExitCode> {
         } else if status.applicable || finishes {
             names.push(status.environment.clone());
         } else if let Some(reason) = &status.reason {
-            skipped.push(format!(
-                "Skipped {}: {}",
-                status.environment,
-                reason_note(reason)
-            ));
+            skipped.push(format!("Skipped {}: {}", status.environment, reason.note()));
         }
     }
 
@@ -371,67 +364,22 @@ fn confirm(prompt: &mut Ask, pending: &Pending) -> anyhow::Result<()> {
     }
 }
 
-/// How the review and the result name what is being done.
-fn action(pending: &Pending) -> &'static str {
-    match (pending.kind(), pending.is_recovery()) {
-        (JournalKind::Reinstall, false) => "Reinstall",
-        (JournalKind::Reinstall, true) => "Finish the interrupted reinstall of",
-        (JournalKind::Install, true) => "Finish the interrupted install of",
-        (_, true) => "Finish the interrupted update of",
-        (_, false) => "Update",
-    }
-}
-
-/// The base game's title, which a recovery from saved packages doesn't
-/// have: then the game is named by its environment. A DLC is `NAME [ID]`.
-fn product_label(pending: &Pending, id: u64, title: Option<&str>) -> String {
-    if id != pending.target().gog_id {
-        return pending.dlc_label(id);
-    }
-    title.map_or_else(|| pending.environment().to_owned(), str::to_owned)
-}
-
-/// `1.0 -> 1.1`, or the version alone when a rebuild installs the same one.
-fn change(installed: Option<&str>, version: &str) -> String {
-    match installed {
-        Some(installed) if installed == version => format!("{version} (rebuilt)"),
-        Some(installed) => format!("{installed} -> {version}"),
-        None => format!("unknown -> {version}"),
-    }
-}
-
 fn review_lines(paths: &Paths, pending: &Pending) -> Vec<String> {
-    let mut rows = vec![("folder".to_owned(), style::path(paths, pending.folder()))];
-    for product in pending.products() {
-        let label = product_label(pending, product.id, product.title.as_deref());
-        let value = match &product.version {
-            Some(version) => change(product.installed.as_deref(), version),
-            None => "left as it is".to_owned(),
-        };
-        rows.push((label, value));
-    }
-    if pending.claims() {
-        rows.push((
-            "owner".to_owned(),
-            format!("none yet, {} takes this folder", pending.environment()),
-        ));
-    }
-    if pending.is_offline() {
-        rows.push((
-            "download".to_owned(),
-            "none, uses the packages already downloaded".to_owned(),
-        ));
-    } else {
-        rows.push(("download".to_owned(), style::size(pending.download_size())));
-    }
-    rows.push((
-        "unpacked".to_owned(),
-        format!(
-            "about {} (an estimate)",
-            style::size(pending.unpacked_estimate())
-        ),
-    ));
-    let mut lines = vec![format!("{} {}", action(pending), pending.environment())];
+    let rows: Vec<(String, String)> = pending
+        .review_rows(|path| style::path(paths, path))
+        .into_iter()
+        .map(|(label, value)| {
+            let label = match label {
+                ReviewLabel::Folder => "folder".to_owned(),
+                ReviewLabel::Product(label) => label,
+                ReviewLabel::Owner => "owner".to_owned(),
+                ReviewLabel::Download => "download".to_owned(),
+                ReviewLabel::Unpacked => "unpacked".to_owned(),
+            };
+            (label, value)
+        })
+        .collect();
+    let mut lines = vec![format!("{} {}", pending.action(), pending.environment())];
     lines.extend(table::aligned_rows(rows));
     lines
 }
@@ -475,18 +423,7 @@ fn apply_raw(
     pending: &Pending,
     cancellation: &Cancellation,
 ) -> anyhow::Result<Updated> {
-    let mut progress = Reporter::new(
-        pending
-            .products()
-            .iter()
-            .map(|product| {
-                (
-                    product.id,
-                    product_label(pending, product.id, product.title.as_deref()),
-                )
-            })
-            .collect(),
-    );
+    let mut progress = Reporter::new(pending.product_labels());
     update::apply(
         paths,
         session.as_mut(),
@@ -538,23 +475,8 @@ fn setup_stopped(error: anyhow::Error, name: &str, recovery: bool) -> anyhow::Er
 
 /// Says what an update changed, and the files of yours it touched.
 fn report(paths: &Paths, pending: &Pending, updated: &Updated) {
-    println!("{}.", finished(pending));
-    let rows: Vec<(String, String)> = updated
-        .products
-        .iter()
-        .filter_map(|product| {
-            let version = product.version.as_ref()?;
-            let planned = pending.products().iter().find(|p| p.id == product.id);
-            let label = product_label(
-                pending,
-                product.id,
-                planned.and_then(|p| p.title.as_deref()),
-            );
-            let installed = planned.and_then(|p| p.installed.as_deref());
-            Some((label, change(installed, version)))
-        })
-        .collect();
-    for line in table::aligned_rows(rows) {
+    println!("{}.", pending.finished());
+    for line in table::aligned_rows(pending.changes(updated)) {
         println!("{line}");
     }
     if updated.claimed {
@@ -585,17 +507,6 @@ fn report(paths: &Paths, pending: &Pending, updated: &Updated) {
     // The plan's warnings came first, and the review already showed them.
     for warning in updated.warnings.iter().skip(pending.warnings().len()) {
         warn(warning);
-    }
-}
-
-fn finished(pending: &Pending) -> String {
-    let name = pending.environment();
-    match (pending.kind(), pending.is_recovery()) {
-        (JournalKind::Reinstall, false) => format!("Reinstalled {name}"),
-        (JournalKind::Reinstall, true) => format!("Finished the interrupted reinstall of {name}"),
-        (JournalKind::Install, true) => format!("Finished the interrupted install of {name}"),
-        (_, true) => format!("Finished the interrupted update of {name}"),
-        (_, false) => format!("Updated {name}"),
     }
 }
 

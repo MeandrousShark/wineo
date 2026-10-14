@@ -5,7 +5,7 @@
 use wineo_core::config::Kind;
 use wineo_core::environment::Environment;
 use wineo_core::gog::folder::{self, FolderState, JournalKind};
-use wineo_core::gog::update::{self, Reason, Status, UpdateState};
+use wineo_core::gog::update::{self, Status, UpdateState};
 use wineo_core::paths::Paths;
 
 /// What a card knows about GOG without asking GOG.
@@ -168,15 +168,6 @@ pub(crate) fn state_label(state: UpdateState) -> &'static str {
     }
 }
 
-/// Why an update can't be applied, or can't be told, as `update --check`
-/// says it.
-pub(crate) fn reason_note(reason: &Reason) -> String {
-    match reason {
-        Reason::Galaxy => "Updating Galaxy builds comes in a later release.".to_owned(),
-        Reason::CantCompare(why) => why.clone(),
-    }
-}
-
 /// Checks every GOG game for updates, once after start. Logged out, or in a
 /// portable session, there is nothing to check. Changes nothing a user
 /// didn't ask for beyond what `check_all` records itself.
@@ -219,13 +210,9 @@ pub(crate) fn checked(
     match result {
         Ok(Some(batch)) => {
             for error in &batch.errors {
-                let subject = match (&error.environment, error.id) {
-                    (Some(name), _) => name.clone(),
-                    (None, Some(id)) => id.to_string(),
-                    (None, None) => "A GOG game folder".to_owned(),
-                };
                 eprintln!(
-                    "wineo-gui: couldn't check {subject} for GOG updates: {}",
+                    "wineo-gui: couldn't check {} for GOG updates: {}",
+                    error.subject(),
                     error.message
                 );
             }
@@ -245,6 +232,7 @@ mod tests {
     use std::ffi::OsString;
 
     use wineo_core::gog::folder::{Platform, Track};
+    use wineo_core::gog::update::Reason;
     use wineo_core::runtime::State;
 
     use super::*;
@@ -378,7 +366,7 @@ mod tests {
         assert_eq!(Badge::FinishUpdate.label(), "Finish update");
         assert_eq!(state_label(UpdateState::OnGog), "Update on GOG");
         assert_eq!(
-            reason_note(&Reason::Galaxy),
+            Reason::Galaxy.note(),
             "Updating Galaxy builds comes in a later release."
         );
     }

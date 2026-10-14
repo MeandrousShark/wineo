@@ -4,8 +4,7 @@
 //! Windows installer that never started is offered once as its own setup
 //! window.
 
-use std::collections::{HashMap, HashSet};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use iced::futures::channel::mpsc::unbounded;
 use iced::widget::{column, container, row, text};
@@ -15,14 +14,15 @@ use wineo_core::gog::account::{AccountError, Session};
 use wineo_core::gog::api::Client;
 use wineo_core::gog::folder::JournalKind;
 use wineo_core::gog::update::windows::SetupError;
-use wineo_core::gog::update::{self, Options, Pending, Plan, Progress, UpdateError, Updated};
+use wineo_core::gog::update::{
+    self, Options, Pending, Plan, Reporter, ReviewLabel, UpdateError, Updated,
+};
 use wineo_core::key_store::Keyring;
 use wineo_core::paths::Paths;
 use wineo_core::secret_service::SecretServiceKeyring;
 
 use super::Action;
 use super::heroic;
-use crate::size::format_bytes;
 use crate::task;
 use crate::theme::Palette;
 use crate::ui::{accent_base, secondary_button};
@@ -32,7 +32,7 @@ pub(crate) const LOGGED_OUT: &str = "Log in to GOG first, in Settings.";
 
 const CANCELED: &str = "Update canceled.";
 
-const PROGRESS_INTERVAL: Duration = Duration::from_millis(100);
+pub(super) const PROGRESS_INTERVAL: Duration = Duration::from_millis(100);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Step {
@@ -243,7 +243,7 @@ impl Page {
         self.token = Some(token.clone());
         self.step = Step::Working;
         self.error = None;
-        self.status = format!("{} {}...", action(&pending), self.name);
+        self.status = format!("{} {}...", pending.action(), self.name);
         let generation = self.next_generation();
         let paths = self.paths.clone();
         let (sender, receiver) = unbounded();
@@ -370,7 +370,7 @@ impl Page {
     pub(crate) fn view(&self, palette: Palette) -> Element<'_, Event> {
         let title = match (self.step, self.pending.as_deref()) {
             (Step::Planning, _) => format!("Update {}", self.name),
-            (_, Some(pending)) => format!("{} {}", action(pending), self.name),
+            (_, Some(pending)) => format!("{} {}", pending.action(), self.name),
             (_, None) => format!("Update {}", self.name),
         };
         let heading = text(title)
@@ -567,7 +567,7 @@ pub(crate) fn apply_with(
     let mut session = Session::open(paths, keyring, client)
         .map_err(|error| Failure::Failed(error.to_string()))?;
     let logged_out = session.is_none();
-    let mut reporter = Reporter::new(pending);
+    let mut reporter = Reporter::new(pending.product_labels(), PROGRESS_INTERVAL);
     update::apply(paths, session.as_mut(), pending, token, |step| {
         if let Some(line) = reporter.line(&step) {
             say(line);
@@ -635,93 +635,33 @@ fn setup_failure(error: &anyhow::Error, pending: &Pending) -> Option<Failure> {
     }
 }
 
-/// How the review and the result name what is being done.
-fn action(pending: &Pending) -> &'static str {
-    match (pending.kind(), pending.is_recovery()) {
-        (JournalKind::Reinstall, false) => "Reinstall",
-        (JournalKind::Reinstall, true) => "Finish the interrupted reinstall of",
-        (JournalKind::Install, true) => "Finish the interrupted install of",
-        (_, true) => "Finish the interrupted update of",
-        (_, false) => "Update",
-    }
-}
-
-/// The base game's title, which a recovery from saved packages doesn't
-/// have: then the game is named by its environment. A DLC is `NAME (ID)`.
-fn product_label(pending: &Pending, id: u64, title: Option<&str>) -> String {
-    if id != pending.target().gog_id {
-        return pending.dlc_label(id);
-    }
-    title.map_or_else(|| pending.environment().to_owned(), str::to_owned)
-}
-
-/// `1.0 -> 1.1`, or the version alone when a rebuild installs the same one.
-fn change(installed: Option<&str>, version: &str) -> String {
-    match installed {
-        Some(installed) if installed == version => format!("{version} (rebuilt)"),
-        Some(installed) => format!("{installed} -> {version}"),
-        None => format!("unknown -> {version}"),
-    }
-}
-
 /// The review's rows, the ones `wineo update NAME` prints.
 pub(crate) fn review_rows(pending: &Pending) -> Vec<(String, String)> {
-    let mut rows = vec![("Folder".to_owned(), pending.folder().display().to_string())];
-    for product in pending.products() {
-        let label = product_label(pending, product.id, product.title.as_deref());
-        let value = match &product.version {
-            Some(version) => change(product.installed.as_deref(), version),
-            None => "left as it is".to_owned(),
-        };
-        rows.push((label, value));
-    }
-    if pending.claims() {
-        rows.push((
-            "Owner".to_owned(),
-            format!("none yet, {} takes this folder", pending.environment()),
-        ));
-    }
-    rows.push((
-        "Download".to_owned(),
-        if pending.is_offline() {
-            "none, uses the packages already downloaded".to_owned()
-        } else {
-            format_bytes(pending.download_size())
-        },
-    ));
-    rows.push((
-        "Unpacked".to_owned(),
-        format!(
-            "about {} (an estimate)",
-            format_bytes(pending.unpacked_estimate())
-        ),
-    ));
-    rows
+    pending
+        .review_rows(|path| path.display().to_string())
+        .into_iter()
+        .map(|(label, value)| {
+            let label = match label {
+                ReviewLabel::Folder => "Folder".to_owned(),
+                ReviewLabel::Product(label) => label,
+                ReviewLabel::Owner => "Owner".to_owned(),
+                ReviewLabel::Download => "Download".to_owned(),
+                ReviewLabel::Unpacked => "Unpacked".to_owned(),
+            };
+            (label, value)
+        })
+        .collect()
 }
 
 /// What a finished update says, before the lists of your files.
 pub(crate) fn result_lines(pending: &Pending, updated: &Updated) -> Vec<String> {
-    let name = pending.environment();
-    let mut lines = vec![match (pending.kind(), pending.is_recovery()) {
-        (JournalKind::Reinstall, false) => format!("Reinstalled {name}."),
-        (JournalKind::Reinstall, true) => format!("Finished the interrupted reinstall of {name}."),
-        (JournalKind::Install, true) => format!("Finished the interrupted install of {name}."),
-        (_, true) => format!("Finished the interrupted update of {name}."),
-        (_, false) => format!("Updated {name}."),
-    }];
-    for product in &updated.products {
-        let Some(version) = &product.version else {
-            continue;
-        };
-        let planned = pending.products().iter().find(|p| p.id == product.id);
-        let label = product_label(
-            pending,
-            product.id,
-            planned.and_then(|p| p.title.as_deref()),
-        );
-        let installed = planned.and_then(|p| p.installed.as_deref());
-        lines.push(format!("{label}: {}", change(installed, version)));
-    }
+    let mut lines = vec![format!("{}.", pending.finished())];
+    lines.extend(
+        pending
+            .changes(updated)
+            .into_iter()
+            .map(|(label, change)| format!("{label}: {change}")),
+    );
     if updated.claimed {
         lines.push(format!(
             "{} now owns {}.",
@@ -760,138 +700,15 @@ pub(crate) fn result_lists(updated: &Updated) -> Vec<(&'static str, Vec<String>)
     lists
 }
 
-/// Turns progress into status lines like the CLI's, one per stage and the
-/// rest paced.
-pub(super) struct Reporter {
-    labels: HashMap<u64, String>,
-    last: Option<Instant>,
-    file: Option<(u64, String)>,
-    verified: HashSet<u64>,
-    unpacking: HashSet<u64>,
-    publishing: bool,
-}
-
-impl Reporter {
-    fn new(pending: &Pending) -> Self {
-        Self::with_labels(
-            pending
-                .products()
-                .iter()
-                .map(|product| {
-                    (
-                        product.id,
-                        product_label(pending, product.id, product.title.as_deref()),
-                    )
-                })
-                .collect(),
-        )
-    }
-
-    /// Names each product, by id, the way the review does.
-    pub(super) fn with_labels(labels: HashMap<u64, String>) -> Self {
-        Self {
-            labels,
-            last: None,
-            file: None,
-            verified: HashSet::new(),
-            unpacking: HashSet::new(),
-            publishing: false,
-        }
-    }
-
-    fn label(&self, product: u64) -> String {
-        self.labels
-            .get(&product)
-            .cloned()
-            .unwrap_or_else(|| format!("GOG product {product}"))
-    }
-
-    fn due(&self) -> bool {
-        self.last
-            .is_none_or(|last| last.elapsed() >= PROGRESS_INTERVAL)
-    }
-
-    fn said(&mut self, line: String) -> Option<String> {
-        self.last = Some(Instant::now());
-        Some(line)
-    }
-
-    pub(super) fn line(&mut self, step: &Progress) -> Option<String> {
-        match step {
-            Progress::Download {
-                product,
-                file_id,
-                done,
-                total,
-            } => {
-                let key = (*product, file_id.clone());
-                let first = self.file.as_ref() != Some(&key);
-                self.file = Some(key);
-                (first || done == total || self.due()).then_some(())?;
-                let line = format!(
-                    "Downloading {}: {} / {}",
-                    self.label(*product),
-                    format_bytes(*done),
-                    format_bytes(*total)
-                );
-                self.said(line)
-            }
-            Progress::Verify { product } => {
-                self.verified.insert(*product).then_some(())?;
-                let line = format!("Verifying {}", self.label(*product));
-                self.said(line)
-            }
-            Progress::Stage {
-                product,
-                done,
-                total,
-            } => {
-                let line = if self.unpacking.insert(*product) {
-                    format!("Unpacking {}", self.label(*product))
-                } else {
-                    self.due().then_some(())?;
-                    format!(
-                        "Unpacking {}: {} / {}",
-                        self.label(*product),
-                        format_bytes(*done),
-                        format_bytes(*total)
-                    )
-                };
-                self.said(line)
-            }
-            Progress::Publish { done, total } => {
-                let line = if !self.publishing {
-                    self.publishing = true;
-                    format!("Publishing {total} files")
-                } else {
-                    (done == total || self.due()).then_some(())?;
-                    format!("Published {done} of {total} files")
-                };
-                self.said(line)
-            }
-            Progress::Installing {
-                product,
-                interactive,
-            } => {
-                let line = if *interactive {
-                    format!("Opening {}'s setup window", self.label(*product))
-                } else {
-                    format!("Running {}'s installer", self.label(*product))
-                };
-                self.said(line)
-            }
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use std::cell::RefCell;
     use std::ffi::OsString;
     use std::fs;
+    use std::time::Instant;
 
     use wineo_core::gog::folder::{Product, ProductStatus};
-    use wineo_core::gog::update::SavedAside;
+    use wineo_core::gog::update::{Progress, SavedAside};
 
     use super::*;
     use crate::gog_fake::{
@@ -899,6 +716,7 @@ mod tests {
         save_login,
     };
     use crate::settings::steam_key::tests::TestKeyring;
+    use crate::size::format_bytes;
 
     const RIMWORLD: u64 = 1094900565;
 
@@ -946,7 +764,7 @@ mod tests {
                 format!("about {} (an estimate)", format_bytes(7340032))
             )
         );
-        assert_eq!(action(&pending), "Update");
+        assert_eq!(pending.action(), "Update");
     }
 
     const ROYALTY: u64 = 1233017772;
@@ -1276,7 +1094,7 @@ mod tests {
     #[test]
     fn progress_lines_read_like_the_cli_and_are_paced() {
         let (_root, _paths, pending) = planned();
-        let mut reporter = Reporter::new(&pending);
+        let mut reporter = Reporter::new(pending.product_labels(), PROGRESS_INTERVAL);
         let download = |done| Progress::Download {
             product: RIMWORLD,
             file_id: "f".to_owned(),
@@ -1504,7 +1322,7 @@ mod tests {
         .unwrap() else {
             panic!("expected the install to finish");
         };
-        assert_eq!(action(&pending), "Finish the interrupted install of");
+        assert_eq!(pending.action(), "Finish the interrupted install of");
         let (mut page, _) = Page::new(world.paths.clone(), name.to_owned());
         let generation = page.generation;
         let _ = page.update(Event::Planned(

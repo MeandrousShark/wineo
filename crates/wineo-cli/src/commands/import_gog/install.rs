@@ -2,7 +2,6 @@
 //! installers: a review, progress while it downloads and installs, and GOG's
 //! playtime and art after, like a migration.
 
-use std::collections::HashMap;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
@@ -452,19 +451,7 @@ fn apply(
     plan: &Plan,
     names: &Plan,
 ) -> anyhow::Result<Installed> {
-    let labels: HashMap<u64, String> = names
-        .products()
-        .iter()
-        .map(|product| {
-            let label = if product.id == names.gog_id() {
-                names.title().to_owned()
-            } else {
-                names.dlc_label(product.id)
-            };
-            (product.id, label)
-        })
-        .collect();
-    let progress = std::cell::RefCell::new(Reporter::new(labels));
+    let progress = std::cell::RefCell::new(Reporter::new(names.product_labels()));
     let cancellation = Cancellation::new()?;
     let name = plan.environment();
     install::apply_with_events(
@@ -550,11 +537,7 @@ fn stopped(error: anyhow::Error, plan: &Plan, names: &Plan) -> anyhow::Result<Ex
         // A plan resumed from cached packages may only know the game by its
         // id, so it is named as `names` names it.
         Some(SetupError::NotStarted { product, code, .. }) => {
-            let label = if *product == names.gog_id() {
-                names.title().to_owned()
-            } else {
-                names.dlc_label(*product)
-            };
+            let label = names.product_label(*product);
             eprintln!(
                 "{}",
                 style::error_stderr(format!(

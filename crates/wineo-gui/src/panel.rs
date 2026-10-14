@@ -943,11 +943,7 @@ impl App {
                     palette,
                 ));
                 if let Some(reason) = &status.reason {
-                    inner = inner.push(
-                        text(crate::gog_library::reason_note(reason))
-                            .size(13)
-                            .color(palette.muted),
-                    );
+                    inner = inner.push(text(reason.note()).size(13).color(palette.muted));
                 }
             }
             inner = inner.push(detail_row("Playtime", &card.playtime, palette));
