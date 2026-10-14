@@ -3141,6 +3141,48 @@ mod tests {
     }
 
     #[test]
+    fn the_worker_decodes_only_when_a_shared_permit_is_free_and_stops_when_canceled() {
+        use std::sync::mpsc::channel;
+        use std::time::Duration;
+
+        let fx = Fixture::new();
+        let listing = owned_listing(vec![owned_game_in(7, "Celeste", OwnedState::NotInstalled)]);
+        let page = page_with(&fx.paths, listing);
+        fs::create_dir_all(fx.paths.gog_covers_dir()).unwrap();
+        fs::write(fx.paths.gog_covers_dir().join("7.png"), png_bytes()).unwrap();
+        let covers = leaked(Covers::new(200, png_bytes()));
+        let slots = crate::artwork::decode_slots();
+        let held = iced::futures::executor::block_on(slots.clone().acquire_many_owned(2)).unwrap();
+        let token = Token::new();
+
+        std::thread::scope(|scope| {
+            let (sender, receiver) = channel();
+            let (done, paths, jobs) = (&token, &fx.paths, page.poster_jobs());
+            scope.spawn(move || {
+                let _ = sender.send(load(paths, jobs, done, None, covers));
+            });
+            // Both permits are out, so the cover waits instead of decoding.
+            assert!(receiver.recv_timeout(Duration::from_millis(200)).is_err());
+            token.cancel();
+            let sent = receiver.recv_timeout(Duration::from_secs(5)).unwrap();
+            assert!(sent.is_empty());
+        });
+
+        std::thread::scope(|scope| {
+            let (sender, receiver) = channel();
+            let (paths, jobs) = (&fx.paths, page.poster_jobs());
+            scope.spawn(move || {
+                let _ = sender.send(load(paths, jobs, &Token::new(), None, covers));
+            });
+            assert!(receiver.recv_timeout(Duration::from_millis(200)).is_err());
+            drop(held);
+            let sent = receiver.recv_timeout(Duration::from_secs(5)).unwrap();
+            assert_eq!(sent.len(), 1);
+            assert!(sent[0].1.is_ok());
+        });
+    }
+
+    #[test]
     fn stored_art_that_wont_decode_is_never_removed() {
         let fx = Fixture::new();
         let dir = fx.paths.art_dir("rimworld");

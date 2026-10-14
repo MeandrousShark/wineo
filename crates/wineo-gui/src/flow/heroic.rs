@@ -3452,7 +3452,10 @@ fn store_heroic_poster(
 ) -> Option<String> {
     let poster = poster?;
     // Core only checks the signature, so the image has to decode first.
-    if !poster.decoded && posters::decode(&poster.path, &paths.art_cache_dir()).is_err() {
+    if !poster.decoded
+        && !posters::decode_waiting(&poster.path, &paths.art_cache_dir(), None)
+            .is_some_and(|decoded| decoded.is_ok())
+    {
         return None;
     }
     heroic_import::store_poster(paths, name, app, &poster.path)

@@ -4,11 +4,15 @@
 
 use std::io::Read;
 use std::path::Path;
+use std::pin::pin;
 use std::sync::Arc;
 
+use iced::futures::executor::block_on;
+use iced::futures::future::{Either, select};
 use iced::widget::image::Handle;
 use tokio::sync::Semaphore;
 use wineo_core::art::{self, Format, Kind};
+use wineo_core::cancel::Token;
 
 use crate::artwork;
 
@@ -66,6 +70,34 @@ async fn bounded_by<T: Send + 'static>(
     .map_err(|e| e.to_string())
 }
 
+/// `decode` for a caller already on a worker thread, once a shared permit is
+/// free, so it counts against the same limit as the grids' own decodes. Gives
+/// up with `None` if `token` is canceled while it waits. Take no permit before
+/// a download and none is held across one.
+pub(super) fn decode_waiting(
+    path: &Path,
+    cache: &Path,
+    token: Option<&Token>,
+) -> Option<Result<(Handle, Format), String>> {
+    waiting(artwork::decode_slots(), token, || decode(path, cache))
+}
+
+fn waiting<T>(slots: Arc<Semaphore>, token: Option<&Token>, work: impl FnOnce() -> T) -> Option<T> {
+    let permit = block_on(async {
+        let acquire = pin!(slots.acquire_owned());
+        match token {
+            None => acquire.await.ok(),
+            Some(token) => match select(acquire, pin!(token.canceled())).await {
+                Either::Left((permit, _)) => permit.ok(),
+                Either::Right(_) => None,
+            },
+        }
+    })?;
+    let done = work();
+    drop(permit);
+    Some(done)
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -99,6 +131,67 @@ mod tests {
         assert_eq!(done, (0..40).collect::<Vec<_>>());
         assert_eq!(peak.load(Ordering::SeqCst), 2);
         assert_eq!(slots.available_permits(), 2);
+    }
+
+    #[test]
+    fn worker_thread_decodes_share_the_limit_with_the_grids() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap();
+        let slots = Arc::new(Semaphore::new(2));
+        let running = Arc::new(AtomicUsize::new(0));
+        let peak = Arc::new(AtomicUsize::new(0));
+        let work = |running: Arc<AtomicUsize>, peak: Arc<AtomicUsize>| {
+            move || {
+                let now = running.fetch_add(1, Ordering::SeqCst) + 1;
+                peak.fetch_max(now, Ordering::SeqCst);
+                std::thread::sleep(Duration::from_millis(5));
+                running.fetch_sub(1, Ordering::SeqCst);
+            }
+        };
+        let threads: Vec<_> = (0..20)
+            .map(|_| {
+                let (slots, run) = (slots.clone(), work(running.clone(), peak.clone()));
+                std::thread::spawn(move || waiting(slots, None, run).unwrap())
+            })
+            .collect();
+        let jobs: Vec<_> = (0..20)
+            .map(|_| bounded_by(slots.clone(), work(running.clone(), peak.clone())))
+            .collect();
+        for done in runtime.block_on(iced::futures::future::join_all(jobs)) {
+            done.unwrap();
+        }
+        for thread in threads {
+            thread.join().unwrap();
+        }
+        assert_eq!(peak.load(Ordering::SeqCst), 2);
+        assert_eq!(slots.available_permits(), 2);
+    }
+
+    #[test]
+    fn a_canceled_worker_gives_up_its_place_in_line() {
+        let slots = Arc::new(Semaphore::new(0));
+        let token = Token::new();
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let waiter = {
+            let (slots, token) = (slots.clone(), token.clone());
+            std::thread::spawn(move || {
+                let ran = waiting(slots, Some(&token), || ());
+                sender.send(ran).unwrap();
+            })
+        };
+        assert!(receiver.recv_timeout(Duration::from_millis(100)).is_err());
+        token.cancel();
+        let ran = receiver
+            .recv_timeout(Duration::from_secs(2))
+            .expect("the wait outlived the cancel");
+        assert_eq!(ran, None);
+        waiter.join().unwrap();
+        // A freed permit lets a waiting worker decode.
+        let release = slots.clone();
+        let late = std::thread::spawn(move || waiting(slots, None, || 7));
+        release.add_permits(1);
+        assert_eq!(late.join().unwrap(), Some(7));
     }
 
     #[test]
