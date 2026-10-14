@@ -426,6 +426,12 @@ Shipped in 0.31.1.
   the other. Threads match libdbus (CLI 1, app 55 after opening Settings);
   `wineo` grows from 15.0 to 16.9 MB.
 
+- Track B, app: one `task` module replaces about 70 hand-written
+  `spawn_blocking` wrappers (the rest hold permits, check cancel tokens, or
+  fall back to a default on purpose); the last identity `map_err` joins
+  are gone; the app's byte-size formatter is core's; one library reload
+  guard instead of four copies. Net -258 lines.
+
 The maintainer's machine (real GPU, library of 22, after scrolling the
 library), the 0050 acceptance build against main with everything above:
 
