@@ -15,12 +15,14 @@ use rustix::process::{
     kill_process_group, pidfd_open, pidfd_send_signal, prlimit, waitid,
 };
 
-use crate::cancel::Token;
+use crate::cancel::{Subscription, Token};
 
 /// How often a stopped group's members are checked once its leader is gone,
 /// since they have nothing to wait on. Backs off to the max.
 const SETTLE_POLL: Duration = Duration::from_millis(20);
 const SETTLE_POLL_MAX: Duration = Duration::from_millis(250);
+/// How often a stop looks around when it has nothing to block on.
+const FALLBACK_POLL: Duration = Duration::from_millis(20);
 
 /// Telling a recorded process group apart from one that reused its number.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -421,19 +423,55 @@ pub(crate) fn stop_group_probed<E>(
     escalation: &mut Escalation,
     token: &Token,
     tick: Option<Duration>,
-    mut on: impl FnMut(Option<Step>) -> Result<(), E>,
+    on: impl FnMut(Option<Step>) -> Result<(), E>,
     members: impl Fn(u32) -> Option<bool>,
 ) -> io::Result<Result<bool, E>> {
-    let pid = Pid::from_raw(leader.id() as i32).ok_or(Errno::INVAL)?;
-    let exit = pidfd_open(pid, PidfdFlags::empty())?;
-    let raised = Arc::new(eventfd(0, EventfdFlags::CLOEXEC | EventfdFlags::NONBLOCK)?);
-    // Subscribed before the first look at the token, so no rise is missed.
-    let _subscription = {
-        let raised = raised.clone();
-        token.subscribe(move || {
-            let _ = rustix::io::write(&*raised, &1u64.to_ne_bytes());
+    let wake = Wake::open(leader, token);
+    stop_group_with(leader, ask, escalation, token, tick, on, members, wake)
+}
+
+/// What wakes a waiting stop: the leader's pidfd, and an eventfd the token
+/// writes to when it rises.
+pub(crate) struct Wake {
+    exit: OwnedFd,
+    raised: Arc<OwnedFd>,
+    _subscription: Subscription,
+}
+
+impl Wake {
+    fn open(leader: &Child, token: &Token) -> io::Result<Self> {
+        let pid = Pid::from_raw(leader.id() as i32).ok_or(Errno::INVAL)?;
+        let exit = pidfd_open(pid, PidfdFlags::empty())?;
+        let raised = Arc::new(eventfd(0, EventfdFlags::CLOEXEC | EventfdFlags::NONBLOCK)?);
+        // Subscribed before the first look at the token, so no rise is missed.
+        let subscription = {
+            let raised = raised.clone();
+            token.subscribe(move || {
+                let _ = rustix::io::write(&*raised, &1u64.to_ne_bytes());
+            })
+        };
+        Ok(Self {
+            exit,
+            raised,
+            _subscription: subscription,
         })
-    };
+    }
+}
+
+/// `stop_group_probed` with its wake source given. Without one it polls,
+/// so a spawned leader is never left behind over a missing pidfd or eventfd.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn stop_group_with<E>(
+    leader: &Child,
+    ask: Signal,
+    escalation: &mut Escalation,
+    token: &Token,
+    tick: Option<Duration>,
+    mut on: impl FnMut(Option<Step>) -> Result<(), E>,
+    members: impl Fn(u32) -> Option<bool>,
+    wake: io::Result<Wake>,
+) -> io::Result<Result<bool, E>> {
+    let wake = wake.ok();
     let mut settle_poll = SETTLE_POLL;
     loop {
         if let Err(err) = on(None) {
@@ -472,8 +510,11 @@ pub(crate) fn stop_group_probed<E>(
         if let Some(due) = escalation.deadline() {
             shorten(due.saturating_duration_since(now));
         }
-        // An exited leader's pidfd stays readable, so it is left out then.
-        wait_either((!exited).then_some(&exit), &raised, timeout)?;
+        match &wake {
+            // An exited leader's pidfd stays readable, so it is left out then.
+            Some(wake) => wait_either((!exited).then_some(&wake.exit), &wake.raised, timeout)?,
+            None => token.wait_timeout(timeout.map_or(FALLBACK_POLL, |t| t.min(FALLBACK_POLL))),
+        }
     }
 }
 
@@ -1278,6 +1319,39 @@ mod tests {
         assert!(!stopped.unwrap().unwrap());
         // Once on the way in and once when the exit wakes it.
         assert!(rounds <= 3, "woke {rounds} times");
+    }
+
+    #[test]
+    fn a_stop_without_pidfd_or_eventfd_still_stops_and_settles_the_group() {
+        let mut child = ready_group("trap '' TERM; sleep 30 & echo ready; wait");
+        let token = Token::new();
+        let stopper = token.clone();
+        thread::spawn(move || {
+            thread::sleep(Duration::from_millis(50));
+            stopper.cancel();
+        });
+        let grace = Duration::from_millis(200);
+        let mut escalation = Escalation::new(grace, None);
+        let mut steps = Vec::new();
+        let answer = stop_group_with(
+            &child,
+            Signal::TERM,
+            &mut escalation,
+            &token,
+            None,
+            |step| {
+                steps.extend(step);
+                Ok::<_, ()>(())
+            },
+            group_has_live_members,
+            Err(io::Error::from_raw_os_error(Errno::NOSYS.raw_os_error())),
+        );
+        let live = group_has_live_members(child.id());
+        let _ = signal_led_group(&child, Signal::KILL);
+        child.wait().unwrap();
+        assert!(answer.unwrap().unwrap());
+        assert_eq!(steps, [Step::Ask, Step::Kill]);
+        assert_eq!(live, Some(false));
     }
 
     #[test]
