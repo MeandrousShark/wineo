@@ -124,6 +124,12 @@ impl<Message: Send + 'static> Delayed<Message> {
     pub(crate) fn pending_wakeup(&self) -> Option<Instant> {
         self.wake.due()
     }
+
+    /// The generation the live wakeup would send.
+    #[cfg(test)]
+    pub(crate) fn wakeup_generation(&self) -> u64 {
+        self.wake.generation()
+    }
 }
 
 #[cfg(test)]

@@ -16,6 +16,8 @@ use wineo_core::art::{self, Format, Kind};
 use wineo_core::cancel::Token;
 
 use crate::artwork;
+use crate::progress::{self, Delayed};
+use crate::theme::Palette;
 
 /// Enough to recognise every format by its start, short of a long SVG prolog.
 const HEAD: u64 = 64 * 1024;
@@ -69,6 +71,21 @@ pub(super) fn import_limit() -> usize {
 
 fn import_pool_size(cores: usize) -> usize {
     (cores / 2).clamp(2, MAX_IMPORT_DECODES)
+}
+
+/// The bar for the posters still being prepared, once decoding has run long
+/// enough to be worth showing.
+pub(super) fn progress_bar<'a, Event: Send + 'static, Message: 'a>(
+    delayed: &Delayed<Event>,
+    palette: Palette,
+) -> Option<iced::Element<'a, Message>> {
+    let (done, total) = delayed.shown()?;
+    Some(progress::bar(
+        done,
+        total,
+        format!("Preparing art... {done} of {total}"),
+        palette,
+    ))
 }
 
 /// Runs `work` on a blocking thread once one of the import decode permits is

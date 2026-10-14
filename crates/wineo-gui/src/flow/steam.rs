@@ -18,8 +18,11 @@ use wineo_core::steam_import::{
 
 use super::heroic::{self, Tile};
 use super::{Action, posters};
+use crate::ends::{MIN_LEFT, ends};
+use crate::progress::Delayed;
 use crate::theme::Palette;
 use crate::ui::{accent_base, secondary_button};
+use std::time::Instant;
 
 const GRID_ID: &str = "steam-import-grid";
 
@@ -133,6 +136,8 @@ pub(crate) enum Event {
     OpenSteamKey,
     OwnedListed(u64, Result<(OwnedData, Listing), String>),
     Poster(u64, PosterKey, Result<image::Handle, String>),
+    /// The delay before the art progress bar shows has passed.
+    ProgressDue(u64),
     Planned(u64, Review),
     Progress(u64, String),
     Finished(u64, Result<Report, String>),
@@ -156,6 +161,7 @@ pub(crate) struct Page {
     /// like CSS :focus-visible only keyboard focus draws the ring.
     focus_visible: bool,
     posters: HashMap<PosterKey, Option<image::Handle>>,
+    progress: Delayed<Event>,
     name: String,
     review: Option<Review>,
     report: Option<Report>,
@@ -181,6 +187,7 @@ impl Page {
             focus: None,
             focus_visible: false,
             posters: HashMap::new(),
+            progress: Delayed::new(Event::ProgressDue),
             name: String::new(),
             review: None,
             report: None,
@@ -270,6 +277,7 @@ impl Page {
         self.focus_visible = false;
         self.posters.clear();
         self.poster_generation = self.poster_generation.wrapping_add(1);
+        self.progress.reset();
         self.review = None;
         self.report = None;
         self.error = None;
@@ -330,11 +338,13 @@ impl Page {
             .collect()
     }
 
-    fn load_posters(&self, listing: &Listing) -> Task<Event> {
+    fn load_posters(&mut self, listing: &Listing) -> Task<Event> {
         let generation = self.poster_generation;
         let cache = self.paths.art_cache_dir();
+        let wanted = self.posters_to_load(listing);
+        let shown = self.progress.add(wanted.len(), Instant::now());
         Task::batch(
-            self.posters_to_load(listing)
+            wanted
                 .into_iter()
                 .map(|(key, path)| {
                     let dim = key.1;
@@ -355,7 +365,8 @@ impl Page {
                         },
                         move |result| Event::Poster(generation, key, result),
                     )
-                }),
+                })
+                .chain([shown]),
         )
     }
 
@@ -554,7 +565,12 @@ impl Page {
                     }
                 }
             }
+            Event::ProgressDue(generation) => {
+                self.progress.reveal(generation);
+                Task::none()
+            }
             Event::Poster(generation, key, result) if generation == self.poster_generation => {
+                self.progress.finish_one();
                 self.posters.insert(key, result.ok());
                 Task::none()
             }
@@ -746,22 +762,26 @@ impl Page {
                         }
                     } else {
                         let count = self.chosen.len();
-                        games_actions = Some(
-                            row![
-                                secondary_button("Select all", palette).on_press(Event::SelectAll),
-                                secondary_button("Select none", palette)
-                                    .on_press_maybe((count > 0).then_some(Event::SelectNone)),
-                                accent_base(heroic::import_label(count), palette.primary)
-                                    .on_press_maybe((count > 0).then_some(Event::ImportSelected)),
-                                refresh,
-                            ]
-                            .spacing(12)
-                            .align_y(Center)
-                            // A narrow dialog would squeeze the last button away.
-                            .wrap()
-                            .vertical_spacing(8)
-                            .into(),
-                        );
+                        let mut others = row![
+                            secondary_button("Select all", palette).on_press(Event::SelectAll),
+                            secondary_button("Select none", palette)
+                                .on_press_maybe((count > 0).then_some(Event::SelectNone)),
+                            refresh,
+                        ]
+                        .spacing(12)
+                        .align_y(Center);
+                        if let Some(bar) = posters::progress_bar(&self.progress, palette) {
+                            others = others.push(bar);
+                        }
+                        let import = accent_base(heroic::import_label(count), palette.primary)
+                            .on_press_maybe((count > 0).then_some(Event::ImportSelected));
+                        // A narrow dialog stacks the import button under the rest.
+                        games_actions = Some(ends(
+                            others.wrap().vertical_spacing(8),
+                            import,
+                            12.0,
+                            MIN_LEFT,
+                        ));
                     }
                 }
             }
@@ -1834,6 +1854,60 @@ mod tests {
         );
         assert_eq!(page.listing.as_ref().unwrap().games.len(), 1);
         assert!(page.owned.is_none());
+    }
+
+    #[test]
+    fn art_progress_counts_posters_after_the_delay_and_ignores_stale_ones() {
+        let temp = TempDir::new().unwrap();
+        let (paths, steam) = owned_fixture(&temp);
+        let cache = steam.join("appcache/librarycache/1");
+        fs::create_dir_all(&cache).unwrap();
+        fs::write(cache.join("library_600x900.jpg"), b"art").unwrap();
+        let mut page = listed_page(&paths);
+        let wanted = page.posters_to_load(page.listing.as_ref().unwrap());
+        let total = wanted.len();
+        assert!(total >= 1);
+
+        assert_eq!(page.progress.shown(), None, "not before the delay");
+        assert!(page.progress.pending_wakeup().is_some());
+        let _ = page.update(Event::ProgressDue(page.progress.wakeup_generation()));
+        assert_eq!(page.progress.shown(), Some((0, total)));
+        crate::layout_probe::layout(
+            &mut page.view(Palette::DARK, 680.0),
+            iced::Size::new(680.0, 560.0),
+        );
+
+        let generation = page.poster_generation;
+        let _ = page.update(Event::Poster(
+            generation.wrapping_sub(1),
+            wanted[0].0.clone(),
+            Err("late".into()),
+        ));
+        assert_eq!(page.progress.shown(), Some((0, total)));
+        for (key, _) in wanted {
+            let _ = page.update(Event::Poster(generation, key, Err("bad".into())));
+        }
+        assert_eq!(page.progress.shown(), None, "hidden at completion");
+        assert_eq!(page.progress.pending_wakeup(), None);
+    }
+
+    #[test]
+    fn art_progress_never_shows_when_the_posters_finish_before_the_delay() {
+        let temp = TempDir::new().unwrap();
+        let (paths, steam) = owned_fixture(&temp);
+        let cache = steam.join("appcache/librarycache/1");
+        fs::create_dir_all(&cache).unwrap();
+        fs::write(cache.join("library_600x900.jpg"), b"art").unwrap();
+        let mut page = listed_page(&paths);
+        let wanted = page.posters_to_load(page.listing.as_ref().unwrap());
+        let late = page.progress.wakeup_generation();
+        let generation = page.poster_generation;
+        for (key, _) in wanted {
+            let _ = page.update(Event::Poster(generation, key, Err("bad".into())));
+        }
+        assert_eq!(page.progress.pending_wakeup(), None);
+        let _ = page.update(Event::ProgressDue(late));
+        assert_eq!(page.progress.shown(), None);
     }
 
     #[test]
