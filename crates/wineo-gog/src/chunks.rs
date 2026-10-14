@@ -159,7 +159,7 @@ pub(crate) fn parse_secure_link(json: &Value) -> Option<SecureLink> {
         .as_array()?
         .iter()
         .map(|endpoint| {
-            let parameters = endpoint
+            let parameters: BTreeMap<String, String> = endpoint
                 .get("parameters")?
                 .as_object()?
                 .iter()
@@ -173,6 +173,13 @@ pub(crate) fn parse_secure_link(json: &Value) -> Option<SecureLink> {
                     Some((key.clone(), value))
                 })
                 .collect::<Option<_>>()?;
+            // An expiry that can't be read would keep the link forever
+            // instead of renewing it before it lapses.
+            if let Some(expires) = parameters.get("expires_at")
+                && expires.parse::<u64>().is_err()
+            {
+                return None;
+            }
             Some(LinkEndpoint {
                 name: json::text(endpoint, "endpoint_name")?,
                 url_format: json::text(endpoint, "url_format")?,

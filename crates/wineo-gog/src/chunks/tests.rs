@@ -637,6 +637,33 @@ fn secure_link_fields_fail_when_malformed_and_default_only_when_null() {
 }
 
 #[test]
+fn a_secure_link_expiry_must_be_a_whole_timestamp() {
+    for wrong in [
+        json!(-1),
+        json!(1.5),
+        json!("18446744073709551616"),
+        json!("bad"),
+    ] {
+        let mut json = link_json();
+        json["urls"][1]["parameters"]["expires_at"] = wrong.clone();
+        assert!(parse_secure_link(&json).is_none(), "expires_at = {wrong}");
+    }
+    for right in [json!(1792088159), json!("1792088159")] {
+        let mut json = link_json();
+        json["urls"][1]["parameters"]["expires_at"] = right.clone();
+        assert!(parse_secure_link(&json).is_some(), "expires_at = {right}");
+    }
+    let mut json = link_json();
+    json["urls"][1]["parameters"]["expires_at"] = json!(null);
+    assert!(parse_secure_link(&json).is_some());
+    json["urls"][1]["parameters"]
+        .as_object_mut()
+        .unwrap()
+        .remove("expires_at");
+    assert!(parse_secure_link(&json).is_some());
+}
+
+#[test]
 fn a_null_product_id_on_a_secure_link_counts_as_missing() {
     let server = FakeGog::start(|_| {
         reply(
