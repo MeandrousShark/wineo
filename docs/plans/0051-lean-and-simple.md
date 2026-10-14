@@ -266,6 +266,21 @@ Shipped in 0.31.1.
 - C8: the `windows_installer` update reason is gone from core, the CLI,
   the app, and the JSON docs.
 
+- C11: releases build with full LTO and one codegen unit. Measured on
+  main (40 runs each, real library; wall time is within noise since these
+  commands are mostly I/O):
+
+  | | No LTO | Thin | Full | Full, 1 unit |
+  |---|---|---|---|---|
+  | `wineo` | 17.0 MiB | 17.3 MiB | 14.9 MiB | 14.3 MiB |
+  | `wineo-gui` | 43.0 MiB | 43.5 MiB | 35.4 MiB | 32.7 MiB |
+  | `list` instructions | 11.28 M | 10.88 M | 10.63 M | 10.55 M |
+  | `list` peak RSS | 12.0 MiB | 11.5 MiB | 10.6 MiB | 9.2 MiB |
+  | `status` peak RSS | 11.8 MiB | 11.2 MiB | 10.2 MiB | 8.8 MiB |
+  | Release build | 123 s | 152 s | 376 s | 374 s |
+
+  Thin LTO came out larger than none, so it was never a candidate.
+
 The maintainer's machine (real GPU, library of 22, after scrolling the
 library), the 0050 acceptance build against main with everything above:
 
