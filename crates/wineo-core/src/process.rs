@@ -406,11 +406,15 @@ pub(crate) fn stop_group_probed<E>(
         // Checked before signaling, so a reaped leader is an error, not a
         // signal to whatever reused its number.
         let exited = leader_exited(leader)?;
-        if let Some(step) = escalation.follow(token, Instant::now()) {
+        let now = Instant::now();
+        let mut next = escalation.follow(token, now);
+        while let Some(step) = next {
             if let Err(err) = on(Some(step)) {
                 return Ok(Err(err));
             }
             signal_led_group(leader, if step == Step::Ask { ask } else { Signal::KILL })?;
+            // A zero grace period kills along with the ask.
+            next = (step == Step::Ask).then(|| escalation.poll(now)).flatten();
         }
         if exited {
             if !escalation.stopping() {
@@ -1127,6 +1131,15 @@ mod tests {
         assert_eq!(steps, [Step::Ask, Step::Kill]);
         assert!(elapsed >= grace);
         assert!(elapsed < Duration::from_secs(5));
+    }
+
+    #[test]
+    fn a_zero_grace_period_kills_along_with_the_ask() {
+        // The leader would exit cleanly after the ask if given any time.
+        let child = ready_group("sleep 30 & trap '' TERM; echo ready; wait; exit 0");
+        let (stopped, steps, _) = stopped(child, Duration::ZERO, Token::cancel);
+        assert!(stopped);
+        assert_eq!(steps, [Step::Ask, Step::Kill]);
     }
 
     #[test]

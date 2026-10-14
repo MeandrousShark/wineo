@@ -9,8 +9,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use anyhow::Context;
-use rustix::io::Errno;
-use rustix::process::{Pid, Signal, kill_process_group};
+use rustix::process::Signal;
 
 use crate::cancel::Token;
 use crate::config::GlobalConfig;
@@ -18,6 +17,7 @@ use crate::environment::Environment;
 use crate::error::Error;
 use crate::operation::{Locks, Operation};
 use crate::paths::Paths;
+use crate::process::{Escalation, Step};
 use crate::runtime::{Runtime, exit_code};
 use crate::supervisor::{Notice, Settle, Supervisor, Watched};
 
@@ -294,57 +294,36 @@ fn run(
         .with_context(|| format!("failed to start {}", launch.host.launcher()))?;
     crate::process::quiet_core_dumps(&child);
     events(ExecEvent::Started);
-    let group = child.id();
-    let mut stopping = None;
-    let mut killing = false;
-    let mut exited = false;
-    let result = (|| {
-        loop {
-            if let Some(status) = child.try_wait().context("failed to wait for exec")? {
-                exited = true;
-                // Read only what is present now; handed-off programs can keep
-                // writing, and must not extend the lifetime of this worker.
-                let end = log.metadata()?.len();
-                lines.pump(end.saturating_sub(lines.read), events)?;
-                if !lines.pending.is_empty() {
-                    lines.finish(events);
-                }
-                events(ExecEvent::Exited {
-                    code: exit_code(status),
-                });
-                return Ok(status);
-            }
-            if token.is_canceled() && stopping.is_none() {
-                stopping = Some(Instant::now());
-                events(ExecEvent::Stopping);
-                signal(group, Signal::TERM)?;
-            }
-            if !killing
-                && stopping.is_some_and(|at| {
-                    token.is_forced() || at.elapsed() >= Duration::from_secs(stop_timeout.into())
-                })
-            {
-                killing = true;
-                events(ExecEvent::Killing);
-                signal(group, Signal::KILL)?;
-            }
-            lines.pump(READ_BATCH, events)?;
-            token.wait_timeout(POLL);
+    let mut escalation = Escalation::new(Duration::from_secs(stop_timeout.into()), None);
+    let ended = crate::process::stop_group(&child, Signal::TERM, &mut escalation, token, |step| {
+        match step {
+            None => return lines.pump(READ_BATCH, events),
+            Some(Step::Ask) => events(ExecEvent::Stopping),
+            Some(_) => events(ExecEvent::Killing),
         }
-    })();
-    if result.is_err() && !exited {
-        let _ = signal(group, Signal::KILL);
-        let _ = child.wait();
+        Ok(())
+    })
+    .context("failed to stop exec process group")
+    .and_then(|pumped| Ok(pumped?));
+    if let Err(err) = ended {
+        if child.try_wait().ok().flatten().is_none() {
+            let _ = crate::process::signal_led_group(&child, Signal::KILL);
+            let _ = child.wait();
+        }
+        return Err(err);
     }
-    result
-}
-
-fn signal(group: u32, signal: Signal) -> anyhow::Result<()> {
-    let pid = Pid::from_raw(group as i32).context("invalid exec process group")?;
-    match kill_process_group(pid, signal) {
-        Ok(()) | Err(Errno::SRCH) => Ok(()),
-        Err(err) => Err(io::Error::from(err)).context("failed to stop exec process group"),
+    let status = child.wait().context("failed to wait for exec")?;
+    // Read only what is present now; handed-off programs can keep writing,
+    // and must not extend the lifetime of this worker.
+    let end = log.metadata()?.len();
+    lines.pump(end.saturating_sub(lines.read), events)?;
+    if !lines.pending.is_empty() {
+        lines.finish(events);
     }
+    events(ExecEvent::Exited {
+        code: exit_code(status),
+    });
+    Ok(status)
 }
 
 struct Lines {
