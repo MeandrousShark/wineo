@@ -126,7 +126,23 @@ impl Pty {
     }
 
     fn finish(mut self) -> (ExitStatus, String) {
-        let status = self.child.wait().unwrap();
+        // A bounded wait, so a key lost to a race fails the test instead of
+        // hanging the suite.
+        let deadline = Instant::now() + Duration::from_secs(20);
+        let status = loop {
+            if let Some(status) = self.child.try_wait().unwrap() {
+                break status;
+            }
+            if Instant::now() >= deadline {
+                let _ = self.child.kill();
+                let _ = self.child.wait();
+                panic!(
+                    "wineo didn't exit; output so far:\n{}",
+                    strip_escapes(&self.seen.lock().unwrap())
+                );
+            }
+            thread::sleep(Duration::from_millis(20));
+        };
         if let Some(reader) = self.reader.take() {
             let _ = reader.join();
         }
@@ -943,12 +959,17 @@ fn guided_import_prefix_esc_at_the_architecture_question_returns_to_the_runner()
     pty.expect("Which runner?");
     pty.send("");
     pty.expect("Which architecture is it?");
+    // Keys go in only once the line editor shows its prompt: before that the
+    // terminal is still cooked and turns Ctrl+C into a signal.
+    pty.expect("Architecture: ");
     pty.esc();
     pty.expect("Which runner?");
     pty.send("");
     pty.expect("Which architecture is it?");
+    pty.expect("Architecture: ");
     pty.send("1");
     pty.expect("Ready to import?");
+    pty.expect("Choice [1]: ");
     pty.ctrl_c();
     let (status, output) = pty.finish();
     assert_eq!(status.code(), Some(130), "{output}");
@@ -2162,6 +2183,7 @@ fn picking_the_gaming_template_asks_once_and_the_runner_choice_sees_a_yes() {
     pty.send("3");
     pty.expect("Ready to create game:");
     pty.expect("  runner    GE-Proton11-3 (Proton, Steam)");
+    pty.expect("Create it? ");
     pty.ctrl_c();
     let (status, output) = pty.finish();
     assert_eq!(status.code(), Some(130), "{output}");
@@ -2408,6 +2430,7 @@ fn heroic_import_skips_the_question_when_answered_flagged_or_all() {
     pty.expect("Mode [1]: ");
     pty.send("2");
     pty.expect("heroic-wine (Heroic)");
+    pty.expect("Choice: ");
     pty.ctrl_c();
     let (_, output) = pty.finish();
     assert!(!output.contains("Use Proton and Wine builds"), "{output}");
