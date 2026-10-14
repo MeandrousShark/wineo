@@ -12,11 +12,11 @@ use crate::environment::{self, Environment};
 use crate::gog::folder::{FolderError, FolderLock};
 use crate::paths::Paths;
 
+use super::payload::{retained_identity, return_payload, verified_retained, verify_parents};
 use super::{
     Intent, Kind, MANIFEST, Manifest, Payload, Phase, Step, copy_verified, digest, digest_matches,
     entry_dir, failpoint, finish_marker, identity, locked, marker_for, parent, require, resolved,
-    retained_identity, retire_marker, return_payload, start_marker, stored, sync,
-    verified_retained, verify_parents, write_manifest,
+    retire_marker, start_marker, stored, sync, write_manifest,
 };
 
 fn reconcile(paths: &Paths, name: &str) -> Result<()> {

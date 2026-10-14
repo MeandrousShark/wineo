@@ -1,6 +1,7 @@
 use crate::test_script::write_script;
 use std::ffi::OsString;
 
+use super::payload::{reserve_copy, return_payload};
 use super::restore::{
     finish_entry, keep_changed, restore_locked_with, with_environment_build_locks,
 };
