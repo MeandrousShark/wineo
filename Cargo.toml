@@ -37,6 +37,8 @@ tempfile = "3"
 thiserror = "2"
 toml = "1.1"
 toml_edit = "0.25"
+# Each keyring call runs on its own current-thread runtime.
+tokio = { version = "1", features = ["rt", "net", "time"] }
 unicode-width = "0.2"
 # Only for matching the errors secret-service passes through.
 zbus = { version = "5", default-features = false }

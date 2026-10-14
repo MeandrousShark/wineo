@@ -1,9 +1,9 @@
 //! The system keyring, through the freedesktop Secret Service API.
 
 use std::collections::HashMap;
+use std::future::Future;
 
-use secret_service::blocking::{Item, SecretService};
-use secret_service::{EncryptionType, Error};
+use secret_service::{EncryptionType, Error, Item, SecretService};
 
 use crate::key_store::{KeySpec, Keyring, KeyringError};
 
@@ -37,8 +37,27 @@ impl SecretServiceKeyring {
 
 /// Connects, treating any failure as no keyring: nothing has been asked of
 /// one yet, so there is no request of the user's to have failed.
-fn connect<'a>() -> Result<SecretService<'a>, KeyringError> {
-    SecretService::connect(EncryptionType::Dh).map_err(|_| KeyringError::Unavailable)
+///
+/// Each call gets its own connection: secret-service never closes the
+/// encrypted session it opens, and the daemon only drops it on disconnect.
+async fn connect<'a>() -> Result<SecretService<'a>, KeyringError> {
+    SecretService::connect(EncryptionType::Dh)
+        .await
+        .map_err(|_| KeyringError::Unavailable)
+}
+
+/// Runs one keyring operation on a runtime of its own on this thread, so no
+/// worker threads outlive it. zbus's blocking API would instead start a
+/// multi-thread runtime that lives as long as the process. Like any
+/// `block_on`, it must not be called from async code.
+fn block_on<T>(
+    operation: impl Future<Output = Result<T, KeyringError>>,
+) -> Result<T, KeyringError> {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|_| KeyringError::Unavailable)?;
+    runtime.block_on(operation)
 }
 
 /// Keeps the messages the libdbus client gave, which users may have seen.
@@ -67,60 +86,73 @@ fn failed(err: Error) -> KeyringError {
 
 impl Keyring for SecretServiceKeyring {
     fn get(&self) -> Result<Option<String>, KeyringError> {
-        let service = connect()?;
-        let found = service.search_items(self.attributes()).map_err(failed)?;
-        let Some(item) = found.unlocked.first().or(found.locked.first()) else {
-            return Ok(None);
-        };
-        unlock_item(item)?;
-        let secret = item.get_secret().map_err(failed)?;
-        String::from_utf8(secret)
-            .map(Some)
-            .map_err(|_| KeyringError::Failed("the saved key is not text".to_owned()))
+        block_on(async {
+            let service = connect().await?;
+            let found = service
+                .search_items(self.attributes())
+                .await
+                .map_err(failed)?;
+            let Some(item) = found.unlocked.first().or(found.locked.first()) else {
+                return Ok(None);
+            };
+            unlock_item(item).await?;
+            let secret = item.get_secret().await.map_err(failed)?;
+            String::from_utf8(secret)
+                .map(Some)
+                .map_err(|_| KeyringError::Failed("the saved key is not text".to_owned()))
+        })
     }
 
     fn set(&self, key: &str) -> Result<(), KeyringError> {
-        let service = connect()?;
-        let collection = match service.get_default_collection() {
-            Ok(collection) => collection,
-            Err(Error::NoResult) => return Err(KeyringError::Unavailable),
-            Err(err) => return Err(failed(err)),
-        };
-        // This crate's ensure_unlocked only reports a lock; asking to unlock
-        // shows the keyring's prompt, as before.
-        if collection.is_locked().map_err(failed)? {
-            collection.unlock().map_err(failed)?;
-        }
-        collection
-            .create_item(
-                &self.label,
-                self.attributes(),
-                key.as_bytes(),
-                true,
-                "text/plain",
-            )
-            .map_err(failed)?;
-        Ok(())
+        block_on(async {
+            let service = connect().await?;
+            let collection = match service.get_default_collection().await {
+                Ok(collection) => collection,
+                Err(Error::NoResult) => return Err(KeyringError::Unavailable),
+                Err(err) => return Err(failed(err)),
+            };
+            // This crate's ensure_unlocked only reports a lock; asking to unlock
+            // shows the keyring's prompt, as before.
+            if collection.is_locked().await.map_err(failed)? {
+                collection.unlock().await.map_err(failed)?;
+            }
+            collection
+                .create_item(
+                    &self.label,
+                    self.attributes(),
+                    key.as_bytes(),
+                    true,
+                    "text/plain",
+                )
+                .await
+                .map_err(failed)?;
+            Ok(())
+        })
     }
 
     fn delete(&self) -> Result<bool, KeyringError> {
-        let service = connect()?;
-        let found = service.search_items(self.attributes()).map_err(failed)?;
-        let items: Vec<_> = found.unlocked.iter().chain(&found.locked).collect();
-        for item in &items {
-            // This crate refuses to delete a locked item rather than letting
-            // the keyring decide, so unlock it first.
-            unlock_item(item)?;
-            item.delete().map_err(failed)?;
-        }
-        Ok(!items.is_empty())
+        block_on(async {
+            let service = connect().await?;
+            let found = service
+                .search_items(self.attributes())
+                .await
+                .map_err(failed)?;
+            let items: Vec<_> = found.unlocked.iter().chain(&found.locked).collect();
+            for item in &items {
+                // This crate refuses to delete a locked item rather than letting
+                // the keyring decide, so unlock it first.
+                unlock_item(item).await?;
+                item.delete().await.map_err(failed)?;
+            }
+            Ok(!items.is_empty())
+        })
     }
 }
 
 /// Unlocks the item if it is locked, which may show the keyring's prompt.
-fn unlock_item(item: &Item<'_>) -> Result<(), KeyringError> {
-    if item.is_locked().map_err(failed)? {
-        item.unlock().map_err(failed)?;
+async fn unlock_item(item: &Item<'_>) -> Result<(), KeyringError> {
+    if item.is_locked().await.map_err(failed)? {
+        item.unlock().await.map_err(failed)?;
     }
     Ok(())
 }
