@@ -8,6 +8,7 @@ use wineo_core::build_removal::{self, Removed};
 use wineo_core::paths::Paths;
 use wineo_core::report::OverviewError;
 
+use crate::cancel;
 use crate::{prompt, style};
 
 pub fn run(
@@ -37,7 +38,7 @@ pub fn run(
         io::stdin().read_line(&mut answer)?;
         if !matches!(answer.trim().to_ascii_lowercase().as_str(), "y" | "yes") {
             println!("Canceled. Nothing was removed.");
-            return Ok(ExitCode::from(130));
+            return Ok(cancel::exit_code());
         }
     }
 

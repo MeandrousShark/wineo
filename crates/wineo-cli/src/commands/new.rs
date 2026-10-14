@@ -9,7 +9,6 @@ use wineo_core::create::{
     self, AfterInstall, CreateEvent, CreateRequest, ExeCheck, Hooks, Step, Stepped, TargetOutcome,
 };
 use wineo_core::environment::Environment;
-use wineo_core::error::Error;
 use wineo_core::installer::{Outcome, Output};
 use wineo_core::launch::{self, Launch};
 use wineo_core::paths::Paths;
@@ -20,11 +19,10 @@ use wineo_core::supervisor::{Notice, Watched};
 use super::art::{Access, AutoFetch, KeyCheck, Pick};
 use super::transfer::Cancellation;
 use super::{components, desktop, external_runners, programs, setup};
+use crate::cancel;
 use crate::prompt::{self, Canceled, Prompt, Terminal};
 use crate::wizard::{self, Guided, Prefill};
 
-/// The shell's code for a command ended by Ctrl+C.
-const CANCELED: u8 = 130;
 const NEEDS_NAME: &str = "wineo new needs a terminal without -n. Use: wineo new -n <name> [-t <template>] [--native] [--exe <path> [-d]] [--install-exe <path>]";
 
 #[derive(clap::Args)]
@@ -133,13 +131,9 @@ pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
     };
     let created = match create::create_and_install(paths, request, step, &token, &mut hooks) {
         Ok(created) => created,
-        Err(err)
-            if err
-                .downcast_ref::<Error>()
-                .is_some_and(|err| matches!(err, Error::Canceled(_))) =>
-        {
+        Err(err) if cancel::core(&err) => {
             eprintln!("Canceled. Nothing was created.");
-            return Ok(ExitCode::from(CANCELED));
+            return Ok(cancel::exit_code());
         }
         Err(err) => return Err(err),
     };
@@ -194,7 +188,7 @@ pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
         Outcome::Canceled { .. } => {
             note("Installer canceled.");
             note(&setup::recovery_message(paths, name));
-            Ok(ExitCode::from(CANCELED))
+            Ok(cancel::exit_code())
         }
         Outcome::Unresolved {
             exit_code, error, ..
@@ -295,7 +289,7 @@ impl Hooks for WineHooks<'_> {
         // Before the installer, so the pick list isn't left waiting behind it.
         if self.art && fetch_art(self.paths, &created.global, name).is_err() {
             eprintln!("Canceled. Kept {name}, continue with `wineo setup {name}`.");
-            return Err(Ok(ExitCode::from(CANCELED)));
+            return Err(Ok(cancel::exit_code()));
         }
         Ok(())
     }
@@ -454,7 +448,7 @@ fn new_native(
     desktop::reconcile_native(paths, &global, &environment)?;
     if art && fetch_art(paths, &global, name).is_err() {
         eprintln!("Canceled. Kept {name}, continue with `wineo setup {name}`.");
-        return Ok(ExitCode::from(CANCELED));
+        return Ok(cancel::exit_code());
     }
     Ok(ExitCode::SUCCESS)
 }
@@ -499,19 +493,18 @@ fn guided(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
         native: args.native,
         exe: args.exe,
     };
-    let mut prompt =
-        Prompt::new(Terminal::open()?, crate::output::stdout()).with_first_question(true);
+    let mut prompt = prompt::terminal()?;
     let mut guided = Guided { registered: None };
     let access = Access::steamgriddb(paths);
     match wizard::run(paths, &global, &prefill, &mut prompt, &mut guided, &access) {
-        Err(err) if err.is::<Canceled>() => {
+        Err(err) if cancel::prompted(&err) => {
             match guided.registered {
                 Some(name) => {
                     eprintln!("Canceled. Kept {name}, continue with `wineo setup {name}`.")
                 }
                 None => eprintln!("Canceled. Nothing was created."),
             }
-            Ok(ExitCode::from(CANCELED))
+            Ok(cancel::exit_code())
         }
         other => other,
     }

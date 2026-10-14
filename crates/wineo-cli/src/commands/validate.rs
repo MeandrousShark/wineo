@@ -8,11 +8,10 @@ use wineo_core::paths::Paths;
 use wineo_core::validate::{self, Fix, Level, Note, Problem, Report};
 
 use super::{components, json};
-use crate::prompt::{self, Canceled, Input, Prompt, Reply, Terminal, numbered};
+use crate::cancel;
+use crate::prompt::{self, Input, Prompt, Reply, Terminal, numbered};
 use crate::style;
-
-/// The shell's code for a command ended by Ctrl+C.
-const CANCELED: u8 = 130;
+use crate::text;
 
 #[derive(clap::Args)]
 pub struct Args {
@@ -84,9 +83,9 @@ pub fn run(paths: &Paths, args: Args, verbose: bool) -> anyhow::Result<ExitCode>
     } else if prompt::interactive() {
         let mut prompt = Prompt::new(Terminal::open()?, crate::output::stdout()).with_color(color);
         match review(&mut prompt, &summary(&report), fixes) {
-            Err(err) if err.is::<Canceled>() => {
+            Err(err) if cancel::prompted(&err) => {
                 eprintln!("Canceled. Nothing was fixed.");
-                return Ok(ExitCode::from(CANCELED));
+                return Ok(cancel::exit_code());
             }
             other => other?,
         }
@@ -314,18 +313,14 @@ fn print_report(
     Ok(())
 }
 
-fn plural(count: usize, one: &str, many: &str) -> String {
-    format!("{count} {}", if count == 1 { one } else { many })
-}
-
 /// Like `1 error, 2 warnings`, leaving out a level with none.
 fn counts(report: &Report) -> String {
     let mut parts = Vec::new();
     if report.errors() > 0 {
-        parts.push(plural(report.errors(), "error", "errors"));
+        parts.push(text::counted(report.errors(), "error", "errors"));
     }
     if report.warnings() > 0 {
-        parts.push(plural(report.warnings(), "warning", "warnings"));
+        parts.push(text::counted(report.warnings(), "warning", "warnings"));
     }
     parts.join(", ")
 }
@@ -339,7 +334,7 @@ fn clean(report: &Report, name: Option<&str>) -> String {
         Some(name) => format!("No problems in {name}."),
         None => format!(
             "No problems in {}.",
-            plural(report.environments.len(), "environment", "environments")
+            text::counted(report.environments.len(), "environment", "environments")
         ),
     }
 }
@@ -348,7 +343,7 @@ fn fixed_line(fixed: usize, after: &Report) -> String {
     let done = if fixed == 0 {
         "Nothing was fixed.".to_owned()
     } else {
-        format!("Fixed {}.", plural(fixed, "problem", "problems"))
+        format!("Fixed {}.", text::counted(fixed, "problem", "problems"))
     };
     if after.problems.is_empty() {
         done
@@ -575,6 +570,6 @@ mod tests {
     fn cancel_fixes_nothing() {
         let mut prompt = Prompt::new(Script::new(&["q"]), Vec::new());
         let err = review(&mut prompt, "h", vec![art_fix()]).unwrap_err();
-        assert!(err.is::<Canceled>());
+        assert!(cancel::prompted(&err));
     }
 }

@@ -30,9 +30,12 @@ use super::download;
 use super::external_runners;
 use super::import::{ReturnToSourceMenu, choose_runner, finish_guided};
 use super::transfer::Cancellation;
+use crate::cancel;
+use crate::commands::table;
 use crate::picker;
-use crate::prompt::{self, Canceled, Input, Prompt, Reply, Terminal, numbered};
+use crate::prompt::{self, Canceled, Input, NoInput, Prompt, Reply, Terminal, numbered};
 use crate::style;
+use crate::text;
 
 mod dry_run;
 mod native;
@@ -97,14 +100,6 @@ impl Args {
             || self.desktop
             || self.art
             || self.yes
-    }
-}
-
-struct OutputOnly;
-
-impl Input for OutputOnly {
-    fn line(&mut self, _: &str) -> io::Result<crate::prompt::Line> {
-        unreachable!("Heroic review should not prompt in noninteractive mode")
     }
 }
 
@@ -227,9 +222,9 @@ fn run_with_access(
     if args.all {
         return match run_all(paths, &global, access, args, verbose) {
             Ok(code) => Ok(code),
-            Err(error) if error.is::<Canceled>() => {
+            Err(error) if cancel::prompted(&error) => {
                 eprintln!("Import canceled");
-                Ok(ExitCode::from(130))
+                Ok(cancel::exit_code())
             }
             Err(error) => Err(error),
         };
@@ -271,7 +266,7 @@ fn run_with_access(
         } else {
             ArtChoice::off()
         };
-        let mut output = Prompt::new(OutputOnly, crate::output::stdout());
+        let mut output = Prompt::new(NoInput, crate::output::stdout());
         show_game_summary(&mut output, paths, plan.resolved(), verbose)?;
         let ctx = ReviewContext {
             paths,
@@ -298,9 +293,9 @@ fn run_with_access(
         let log_body = verbose.then(|| plan.log_text(&global, &source) + &art.log_line());
         let registered = match apply_plan(paths, &global, &source, &plan) {
             Ok(registered) => registered,
-            Err(error) if error.is::<Canceled>() => {
+            Err(error) if cancel::prompted(&error) => {
                 eprintln!("Import canceled");
-                return Ok(ExitCode::from(130));
+                return Ok(cancel::exit_code());
             }
             Err(error) => return Err(error),
         };
@@ -329,7 +324,7 @@ fn run_with_access(
         if fetched.is_err() {
             let name = &environment.name;
             eprintln!("Canceled. Kept {name}, continue with `wineo setup {name}`.");
-            return Ok(ExitCode::from(130));
+            return Ok(cancel::exit_code());
         }
         println!(
             "Imported {}. Add or edit targets with wineo setup {}",
@@ -371,9 +366,9 @@ fn run_with_access(
     .and_then(|source| guided(paths, &global, access, source, args, &mut prompt, verbose));
     match result {
         Ok(code) => Ok(code),
-        Err(error) if error.is::<Canceled>() => {
+        Err(error) if cancel::prompted(&error) => {
             eprintln!("Import canceled");
-            Ok(ExitCode::from(130))
+            Ok(cancel::exit_code())
         }
         Err(error) => Err(error),
     }
@@ -971,15 +966,15 @@ fn resolve_pending_with<I: Input, W: Write>(
             format!(
                 "No matching {} build is installed for {count} game{}. Download the latest release?",
                 component.label(),
-                if count == 1 { "" } else { "s" }
+                text::plural(count, "", "s")
             )
         } else {
             format!(
                 "{} is missing for {count} game{} ({}). Download the exact requested version{}?",
                 component.label(),
-                if count == 1 { "" } else { "s" },
+                text::plural(count, "", "s"),
                 pinned.join(", "),
-                if pinned.len() == 1 { "" } else { "s" }
+                text::plural(pinned.len(), "", "s")
             )
         };
         if !matches!(prompt.confirm(&question, true)?, Reply::Value(true)) {
@@ -1039,16 +1034,21 @@ fn bulk_rows(library: &LibraryPlan) -> Vec<BulkRow> {
 /// The text a warning has in the bulk table and the final review. Core only
 /// says what the warning is, this is the wording.
 fn warning_text(warning: &Warning, adopt: bool) -> String {
-    let plural = |count: &usize| if *count == 1 { "" } else { "s" };
     match warning {
         Warning::SharedPrefix(shared) => shared_prefix_lines(shared, adopt, false).join(" "),
         Warning::UmuDisabled(message) | Warning::NvapiNotInstalled(message) => message.clone(),
         Warning::AntiCheatNotImported => "EAC/BattlEye runtimes aren't imported".to_owned(),
         Warning::Omitted(count) => {
-            format!("{count} unsupported setting{} omitted", plural(count))
+            format!(
+                "{count} unsupported setting{} omitted",
+                text::plural(*count, "", "s")
+            )
         }
         Warning::Dropped(count) => {
-            format!("{count} managed conflict{} dropped", plural(count))
+            format!(
+                "{count} managed conflict{} dropped",
+                text::plural(*count, "", "s")
+            )
         }
         Warning::NeedsAttention(_) => "settings need attention, see -v".to_owned(),
     }
@@ -1108,8 +1108,8 @@ fn render_bulk_table(
     already: &[String],
 ) -> String {
     let shared_warning = shared_ready_warning(rows);
-    let name_width = rows.iter().map(|row| row.name.len()).max().unwrap_or(0);
-    let title_width = rows.iter().map(|row| row.title.len()).max().unwrap_or(0);
+    let name_width = text::widest(rows.iter().map(|row| row.name.as_str()));
+    let title_width = text::widest(rows.iter().map(|row| row.title.as_str()));
     let mode_width = rows
         .iter()
         .filter_map(|row| match row.status {
@@ -1119,7 +1119,7 @@ fn render_bulk_table(
         })
         .max()
         .unwrap_or(0);
-    let noun = if rows.len() == 1 { "game" } else { "games" };
+    let noun = text::plural(rows.len(), "game", "games");
     let heading = if runner_name.is_empty() {
         format!("Import {} Heroic {noun}:", rows.len())
     } else {
@@ -1149,10 +1149,10 @@ fn render_bulk_table(
         } else {
             format!("{mode:mode_width$}   {}", parts.join("   "))
         };
-        let name = &row.name;
-        let title = &row.title;
         out.push_str(&format!(
-            "  {name:name_width$}  {title:title_width$}  {status}\n"
+            "  {}  {}  {status}\n",
+            text::pad(&row.name, name_width),
+            text::pad(&row.title, title_width)
         ));
     }
     if !already.is_empty() {
@@ -1196,7 +1196,7 @@ fn import_all(bulk: &Bulk, games: Vec<Game>) -> anyhow::Result<ExitCode> {
         let imported = match &game {
             Game::Windows(plan) => {
                 if verbose {
-                    let mut output = Prompt::new(OutputOnly, crate::output::stdout());
+                    let mut output = Prompt::new(NoInput, crate::output::stdout());
                     show_game_summary(&mut output, paths, plan.resolved(), verbose)?;
                 }
                 import_progress(&mut crate::output::stdout().lock(), &name, || {
@@ -1218,28 +1218,23 @@ fn import_all(bulk: &Bulk, games: Vec<Game>) -> anyhow::Result<ExitCode> {
                 }
                 done += 1;
             }
-            Err(error) if error.is::<Canceled>() => {
+            Err(error) if cancel::prompted(&error) => {
                 canceled = true;
                 break;
             }
             Err(_) => failed.push(name),
         }
     }
-    let noun = if total == 1 { "game" } else { "games" };
+    let summary = text::games_summary("Imported", done, total);
     if failed.is_empty() {
-        println!("Imported {done} of {total} {noun}.");
+        println!("{summary}");
     } else {
-        println!(
-            "Imported {done} of {total} {noun}. {} failed: {}",
-            failed.len(),
-            failed.join(", ")
-        );
+        println!("{summary} {} failed: {}", failed.len(), failed.join(", "));
     }
     if canceled {
         let remaining = total - done - failed.len();
-        let noun = if remaining == 1 { "game" } else { "games" };
-        println!("{remaining} {noun} canceled.");
-        return Ok(ExitCode::from(130));
+        println!("{} canceled.", text::counted(remaining, "game", "games"));
+        return Ok(cancel::exit_code());
     }
     Ok(if failed.is_empty() {
         ExitCode::SUCCESS
@@ -1258,7 +1253,7 @@ fn import_progress<W: Write, T>(
     let result = operation();
     match &result {
         Ok(_) => writeln!(output, " done")?,
-        Err(error) if error.is::<Canceled>() => writeln!(output, " canceled")?,
+        Err(error) if cancel::prompted(error) => writeln!(output, " canceled")?,
         Err(error) => writeln!(output, " failed: {error:#}")?,
     }
     output.flush()?;
@@ -1288,7 +1283,7 @@ fn import_one(
     let registered = apply_plan_with_cancellation(paths, global, bulk.source, &plan, cancellation)?;
     report_playtime(&registered.playtime);
     let environment = &registered.environment;
-    let top = Pick::<OutputOnly, Vec<u8>>::Top(out);
+    let top = Pick::<NoInput, Vec<u8>>::Top(out);
     // A top match can't be canceled.
     let _ = fetch_art(
         paths,
@@ -1379,12 +1374,7 @@ fn final_review<I: Input, W: Write>(
         if art.key.is_some() {
             items.push(("art", art.display(), EditField::Art));
         }
-        let width = items
-            .iter()
-            .map(|(label, _, _)| label.len())
-            .max()
-            .unwrap_or(0)
-            + 2;
+        let width = table::label_column(items.iter().map(|(label, _, _)| *label));
         if art.key.is_none() {
             // Unnumbered without a key, lined up with the numbered rows.
             let indent = " ".repeat(items.len().to_string().len() + 4);
@@ -1855,12 +1845,7 @@ struct Block {
 }
 
 fn render_blocks(blocks: &[Block]) -> String {
-    let width = blocks
-        .iter()
-        .map(|block| block.label.len())
-        .max()
-        .unwrap_or(0)
-        + 2;
+    let width = table::label_column(blocks.iter().map(|block| block.label));
     let mut out = String::new();
     for block in blocks {
         for (index, line) in block.lines.iter().enumerate() {
@@ -2134,11 +2119,7 @@ fn show_game_summary<I: Input, W: Write>(
     if !verbose && hidden > 0 {
         warnings.push(format!(
             "{hidden} more Heroic {} not imported, -v lists them",
-            if hidden == 1 {
-                "setting is"
-            } else {
-                "settings are"
-            }
+            text::plural(hidden, "setting is", "settings are")
         ));
     }
     if !warnings.is_empty() {
@@ -2404,7 +2385,7 @@ fn link_lines(
         .map(|(label, count)| {
             format!(
                 "{count} prefix file{} point into {label}",
-                if count == 1 { "" } else { "s" }
+                text::plural(count, "", "s")
             )
         })
         .collect()
@@ -3377,7 +3358,7 @@ mod tests {
                         launch_scripts: false,
                     })
                     .collect();
-                let noun = if count == 1 { "game" } else { "games" };
+                let noun = text::plural(count, "game", "games");
                 let suffix = if runner.is_empty() {
                     String::new()
                 } else {
@@ -3390,6 +3371,31 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn render_bulk_table_lines_up_accented_and_wide_titles() {
+        let row = |name: &str, title: &str| BulkRow {
+            name: name.to_owned(),
+            title: title.to_owned(),
+            status: RowStatus::ReadyNative { warn: None },
+            launch_scripts: false,
+        };
+        let rows = vec![
+            row("cafe", "Caf\u{e9}"),
+            row("genshin", "\u{539f}\u{795e}"),
+            row("dwarf", "Dwarf"),
+        ];
+        let text = render_bulk_table("", "copy", &rows, &[]);
+        // Each CJK character takes two columns, so the title takes four.
+        assert_eq!(
+            text.lines().skip(1).collect::<Vec<_>>(),
+            [
+                "  cafe     Caf\u{e9}   native",
+                "  genshin  \u{539f}\u{795e}   native",
+                "  dwarf    Dwarf  native",
+            ]
+        );
     }
 
     #[test]

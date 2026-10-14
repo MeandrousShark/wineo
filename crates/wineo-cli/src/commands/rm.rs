@@ -3,6 +3,8 @@ use std::process::ExitCode;
 use wineo_core::paths::Paths;
 use wineo_core::trash;
 
+use crate::text;
+
 #[derive(clap::Args)]
 pub struct Args {
     /// Environment to remove
@@ -38,11 +40,7 @@ pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
         eprintln!(
             "Removed {} desktop entr{}",
             entry.desktop_removed,
-            if entry.desktop_removed == 1 {
-                "y"
-            } else {
-                "ies"
-            }
+            text::plural(entry.desktop_removed, "y", "ies")
         );
     }
     let prefix_was_left = !args.delete_prefix && entry.prefix_present == Some(true);

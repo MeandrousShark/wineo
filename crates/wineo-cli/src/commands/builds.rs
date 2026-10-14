@@ -5,6 +5,8 @@ use wineo_core::components::{Builds, Component};
 use wineo_core::config::GlobalConfig;
 use wineo_core::paths::Paths;
 
+use crate::text;
+
 #[derive(clap::Args)]
 pub struct Args {
     /// Also list directories that aren't usable builds, and why
@@ -63,9 +65,12 @@ pub fn run(paths: &Paths, component: Component, args: Args) -> anyhow::Result<Ex
         }));
     }
 
-    let names = rows.iter().map(|(name, _)| name.len()).max().unwrap_or(0);
+    let names = text::widest(rows.iter().map(|(name, _)| name.as_str()));
     for (name, detail) in &rows {
-        println!("{}", format!("{name:names$}  {detail}").trim_end());
+        println!(
+            "{}",
+            format!("{}  {detail}", text::pad(name, names)).trim_end()
+        );
     }
 
     if listing.builds.is_empty() {

@@ -19,11 +19,10 @@ use wineo_core::targets::{Batch, Written};
 
 use super::transfer::Cancellation;
 use super::{build, components, desktop};
+use crate::cancel;
 use crate::picker::{self, Place};
-use crate::prompt::{self, Canceled, Input, Prompt, Reply, Terminal, numbered};
-
-/// The shell's code for a command ended by Ctrl+C.
-const CANCELED: u8 = 130;
+use crate::prompt::{self, Canceled, Input, Prompt, Reply, numbered};
+use crate::text;
 
 #[derive(clap::Args)]
 pub struct Args {
@@ -46,12 +45,11 @@ pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
     // A broken config is reported with its path, before anything is asked.
     Environment::load(paths, name)?;
     let global = GlobalConfig::load(paths)?;
-    let mut prompt =
-        Prompt::new(Terminal::open()?, crate::output::stdout()).with_first_question(true);
+    let mut prompt = prompt::terminal()?;
     match setup(paths, &global, name, &mut prompt) {
-        Err(err) if err.is::<Canceled>() => {
+        Err(err) if cancel::prompted(&err) => {
             eprintln!("Canceled. Unsaved changes were dropped.");
-            Ok(ExitCode::from(CANCELED))
+            Ok(cancel::exit_code())
         }
         other => other,
     }
@@ -443,7 +441,7 @@ fn list<I: Input, W: Write>(prompt: &mut Prompt<I, W>, batch: &Batch) -> anyhow:
     }
     prompt.say("Targets:")?;
     let default = batch.default();
-    let width = targets.keys().map(String::len).max().unwrap_or(0);
+    let width = text::widest(targets.keys().map(String::as_str));
     for (target, spec) in &targets {
         let mut notes = Vec::new();
         if default.as_deref() == Some(target.as_str()) {
@@ -460,7 +458,11 @@ fn list<I: Input, W: Write>(prompt: &mut Prompt<I, W>, batch: &Batch) -> anyhow:
         } else {
             format!("  {}", notes.join(", "))
         };
-        prompt.say(format!("  {target:width$}  {}{notes}", spec.exe))?;
+        prompt.say(format!(
+            "  {}  {}{notes}",
+            text::pad(target, width),
+            spec.exe
+        ))?;
     }
     Ok(())
 }
@@ -710,7 +712,7 @@ pub(crate) fn report_installer<I: Input, W: Write>(
         Outcome::Canceled { .. } => {
             prompt.say("The installer was canceled.")?;
             report_recovery(paths, name, prompt)?;
-            Ran::Ended(ExitCode::from(CANCELED))
+            Ran::Ended(cancel::exit_code())
         }
         Outcome::Unresolved {
             exit_code, error, ..

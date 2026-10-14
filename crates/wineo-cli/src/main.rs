@@ -28,12 +28,14 @@ macro_rules! eprintln {
     ($($arg:tt)*) => { eprint!("{}\n", format_args!($($arg)*)) };
 }
 
+mod cancel;
 mod commands;
 mod completion;
 mod output;
 mod picker;
 mod prompt;
 mod style;
+mod text;
 mod wizard;
 
 // Shared with the integration tests, which include the same file.

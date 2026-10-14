@@ -14,6 +14,7 @@ use wineo_core::targets::{self, Batch, Change, Spec};
 use wineo_core::winpath;
 
 use crate::prompt::{Choice, Input, Picked, Prompt, Reply, numbered};
+use crate::text;
 
 /// Why `answer` can't be a name, or None when it can.
 pub fn name_problem(answer: &str) -> Option<String> {
@@ -161,7 +162,7 @@ pub fn pick<I: Input, W: Write>(
 
 /// Program rows lined up in columns, noting what is already a target.
 fn rows(programs: &[Program], batch: &Batch) -> Vec<String> {
-    let names = programs.iter().map(|p| p.name.len()).max().unwrap_or(0);
+    let names = text::widest(programs.iter().map(|p| p.name.as_str()));
     programs
         .iter()
         .map(|program| {
@@ -172,8 +173,8 @@ fn rows(programs: &[Program], batch: &Batch) -> Vec<String> {
                 many => format!("  (targets {})", many.join(", ")),
             };
             format!(
-                "{:names$}  {:8}  {}{note}",
-                program.name,
+                "{}  {:8}  {}{note}",
+                text::pad(&program.name, names),
                 program.source.as_str(),
                 program.exe
             )
@@ -330,12 +331,13 @@ pub fn choose_default<I: Input, W: Write>(
     heading: &str,
 ) -> anyhow::Result<Reply<()>> {
     let targets = batch.targets();
-    let width = targets.keys().map(String::len).max().unwrap_or(0);
-    let choices = numbered(
-        targets
-            .iter()
-            .map(|(target, spec)| (format!("{target:width$}  {}", spec.exe), target.clone())),
-    );
+    let width = text::widest(targets.keys().map(String::as_str));
+    let choices = numbered(targets.iter().map(|(target, spec)| {
+        (
+            format!("{}  {}", text::pad(target, width), spec.exe),
+            target.clone(),
+        )
+    }));
     match prompt.choose(heading, "Default", &choices, None, true)? {
         Reply::Value(target) => {
             batch.set_default(Some(&target));
@@ -357,12 +359,13 @@ fn which<I: Input, W: Write>(
         prompt.say(format!("{} has no targets yet.", place.name))?;
         return Ok(Reply::Back);
     }
-    let width = targets.keys().map(String::len).max().unwrap_or(0);
-    let choices = numbered(
-        targets
-            .iter()
-            .map(|(target, spec)| (format!("{target:width$}  {}", spec.exe), target.clone())),
-    );
+    let width = text::widest(targets.keys().map(String::as_str));
+    let choices = numbered(targets.iter().map(|(target, spec)| {
+        (
+            format!("{}  {}", text::pad(target, width), spec.exe),
+            target.clone(),
+        )
+    }));
     let default = (default_single && choices.len() == 1).then_some("1");
     prompt.choose(heading, "Target", &choices, default, true)
 }
@@ -563,7 +566,7 @@ pub fn review(batch: &Batch) -> Vec<String> {
         .filter_map(|change| match change {
             Change::Added { target, .. }
             | Change::Edited { target, .. }
-            | Change::Removed { target, .. } => Some(target.len()),
+            | Change::Removed { target, .. } => Some(text::width(target)),
             Change::Default { .. } => None,
         })
         .max()
@@ -572,7 +575,7 @@ pub fn review(batch: &Batch) -> Vec<String> {
     for change in summary {
         match change {
             Change::Added { target, spec } => {
-                let mut line = format!("  + {target:width$}  {}", spec.exe);
+                let mut line = format!("  + {}  {}", text::pad(&target, width), spec.exe);
                 if !spec.args.is_empty() {
                     line.push_str(&format!(" {}", show_args(&spec.args)));
                 }
@@ -611,7 +614,10 @@ pub fn review(batch: &Batch) -> Vec<String> {
                     ));
                 }
                 for (field, from, to) in fields {
-                    lines.push(format!("  ~ {target:width$}  {field}: {from} -> {to}"));
+                    lines.push(format!(
+                        "  ~ {}  {field}: {from} -> {to}",
+                        text::pad(&target, width)
+                    ));
                 }
             }
             Change::Removed { target, spec } => {
@@ -620,7 +626,11 @@ pub fn review(batch: &Batch) -> Vec<String> {
                 } else {
                     ""
                 };
-                lines.push(format!("  - {target:width$}  {}{entry}", spec.exe));
+                lines.push(format!(
+                    "  - {}  {}{entry}",
+                    text::pad(&target, width),
+                    spec.exe
+                ));
             }
             Change::Default { before, after } => lines.push(format!(
                 "  default: {} (was {})",

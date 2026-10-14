@@ -11,13 +11,15 @@ use wineo_core::heroic_import::{NativePlan, apply_native, plan_native, redact_en
 use wineo_core::paths::Paths;
 
 use super::{
-    Args, ArtChoice, Block, Bulk, OutputOnly, display_args, edit_art, edit_desktop, fetch_art,
+    Args, ArtChoice, Block, Bulk, display_args, edit_art, edit_desktop, fetch_art,
     gamescope_display, on_off, print_issue, render_blocks, review_art,
 };
+use crate::cancel;
 use crate::commands::art::{Access, Pick};
 use crate::commands::import::finish_guided;
+use crate::commands::table;
 use crate::picker;
-use crate::prompt::{self, Canceled, Input, Prompt, Reply, Terminal, numbered};
+use crate::prompt::{self, Canceled, Input, NoInput, Prompt, Reply, Terminal, numbered};
 use crate::style;
 
 /// Refuses the flags that only mean something for a Windows game.
@@ -171,7 +173,7 @@ pub(super) fn direct(
     if fetched.is_err() {
         let name = &environment.name;
         eprintln!("Canceled. Kept {name}, continue with `wineo setup {name}`.");
-        return Ok(ExitCode::from(130));
+        return Ok(cancel::exit_code());
     }
     println!(
         "Imported {}. Add or edit targets with wineo setup {}",
@@ -231,12 +233,7 @@ pub(super) fn guided<I: Input, W: Write>(
         if art.key.is_some() {
             items.push(("art", art.display(), Field::Art));
         }
-        let width = items
-            .iter()
-            .map(|(label, _, _)| label.len())
-            .max()
-            .unwrap_or(0)
-            + 2;
+        let width = table::label_column(items.iter().map(|(label, _, _)| *label));
         let choices = numbered(
             items
                 .into_iter()
@@ -322,7 +319,7 @@ pub(super) fn import_one(
     };
     let registered = apply_native(paths, bulk.source, &plan)?;
     super::report_playtime(&registered.playtime);
-    let top = Pick::<OutputOnly, Vec<u8>>::Top(out);
+    let top = Pick::<NoInput, Vec<u8>>::Top(out);
     // A top match can't be canceled.
     let _ = fetch_art(
         paths,

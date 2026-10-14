@@ -1,4 +1,4 @@
-use std::io::{self, Write};
+use std::io::Write;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
@@ -11,8 +11,9 @@ use wineo_core::runners::Runners;
 
 use super::transfer::{self, Cancellation};
 use super::{download, external_runners, import_gog, import_heroic, import_steam, setup};
+use crate::cancel;
 use crate::picker;
-use crate::prompt::{self, Canceled, Choice, Input, Prompt, Reply, Terminal, numbered};
+use crate::prompt::{self, Canceled, Choice, Input, NoInput, Prompt, Reply, Terminal, numbered};
 
 #[derive(clap::Args)]
 pub struct Args {
@@ -131,11 +132,11 @@ pub fn run(paths: &Paths, args: Args, verbose: bool) -> anyhow::Result<ExitCode>
                     }
                     Ok(Reply::Back) => {
                         eprintln!("Import canceled");
-                        return Ok(ExitCode::from(130));
+                        return Ok(cancel::exit_code());
                     }
-                    Err(error) if error.is::<Canceled>() => {
+                    Err(error) if cancel::prompted(&error) => {
                         eprintln!("Import canceled");
-                        return Ok(ExitCode::from(130));
+                        return Ok(cancel::exit_code());
                     }
                     Err(error) => return Err(error),
                 }
@@ -189,9 +190,9 @@ fn prefix(
                 );
                 Ok(ExitCode::SUCCESS)
             }
-            Err(error) if error.is::<Canceled>() => {
+            Err(error) if cancel::prompted(&error) => {
                 eprintln!("Import canceled");
-                Ok(ExitCode::from(130))
+                Ok(cancel::exit_code())
             }
             Err(error) => Err(error),
         };
@@ -204,9 +205,9 @@ fn prefix(
         Prompt::new(Terminal::open()?, crate::output::stdout()).with_first_question(first_question);
     let result = guided_prefix(paths, &global, args, &mut prompt, verbose, first_question);
     match result {
-        Err(error) if error.is::<Canceled>() => {
+        Err(error) if cancel::prompted(&error) => {
             eprintln!("Import canceled");
-            Ok(ExitCode::from(130))
+            Ok(cancel::exit_code())
         }
         other => other,
     }
@@ -277,13 +278,6 @@ pub(super) fn check_review(
         wineo_core::environment::check_destination(paths, &request.name, &destination)?;
     }
     Ok(())
-}
-
-struct NoInput;
-impl Input for NoInput {
-    fn line(&mut self, _: &str) -> io::Result<crate::prompt::Line> {
-        unreachable!("review has no prompts")
-    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -490,7 +484,7 @@ fn guided_prefix<I: Input, W: Write>(
                             Ok(environment) => {
                                 return finish_guided(paths, global, &environment, prompt);
                             }
-                            Err(error) if error.is::<Canceled>() => return Err(error),
+                            Err(error) if cancel::prompted(&error) => return Err(error),
                             Err(error) => {
                                 prompt.say(format!("Import failed: {error:#}"))?;
                                 step = Step::Source;

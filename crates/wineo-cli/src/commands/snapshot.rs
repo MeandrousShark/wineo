@@ -10,6 +10,7 @@ use wineo_core::paths::Paths;
 use wineo_core::snapshot::{self, CreateInspection, RestoreInspection};
 
 use super::transfer::{self, Cancellation};
+use crate::cancel;
 use crate::prompt;
 
 #[derive(clap::Args)]
@@ -116,7 +117,7 @@ fn create(paths: &Paths, env: &str, label: &str, verbose: bool) -> anyhow::Resul
         }
         Err(error) if error.is::<snapshot::Canceled>() => {
             eprintln!("Snapshot canceled");
-            Ok(ExitCode::from(130))
+            Ok(cancel::exit_code())
         }
         Err(error) => Err(error),
     }
@@ -137,7 +138,7 @@ fn restore(paths: &Paths, env: &str, label: &str, yes: bool) -> anyhow::Result<E
         io::stdin().read_line(&mut answer)?;
         if !matches!(answer.trim().to_ascii_lowercase().as_str(), "y" | "yes") {
             println!("Restore canceled");
-            return Ok(ExitCode::from(130));
+            return Ok(cancel::exit_code());
         }
     }
     let cancellation = Cancellation::new()?;
@@ -164,7 +165,7 @@ fn restore(paths: &Paths, env: &str, label: &str, yes: bool) -> anyhow::Result<E
         }
         Err(error) if error.is::<snapshot::Canceled>() => {
             eprintln!("Restore canceled");
-            Ok(ExitCode::from(130))
+            Ok(cancel::exit_code())
         }
         Err(error) => Err(error),
     }

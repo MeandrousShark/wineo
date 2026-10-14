@@ -11,12 +11,30 @@ use wineo_core::runners::Runners;
 use wineo_core::snapshot;
 use wineo_core::trash;
 
+/// What every completer starts from: the word being completed, the words
+/// before it, and the storage the command would use. None when any of them
+/// can't be read, so nothing is offered.
+struct Completing<'a> {
+    prefix: &'a str,
+    words: Vec<String>,
+    paths: Paths,
+}
+
+impl<'a> Completing<'a> {
+    fn new(current: &'a OsStr) -> Option<Self> {
+        let prefix = current.to_str()?;
+        let (portable, words) = split_portable(words_before_current());
+        let paths = Paths::from_env(portable.as_deref()).ok()?;
+        Some(Self {
+            prefix,
+            words,
+            paths,
+        })
+    }
+}
+
 pub fn trash_ids(current: &OsStr) -> Vec<CompletionCandidate> {
-    let Some(prefix) = current.to_str() else {
-        return Vec::new();
-    };
-    let (portable, _) = split_portable(words_before_current());
-    let Ok(paths) = Paths::from_env(portable.as_deref()) else {
+    let Some(Completing { prefix, paths, .. }) = Completing::new(current) else {
         return Vec::new();
     };
     trash::list(&paths)
@@ -28,19 +46,20 @@ pub fn trash_ids(current: &OsStr) -> Vec<CompletionCandidate> {
 }
 
 pub fn removable_build_names(current: &OsStr) -> Vec<CompletionCandidate> {
-    let Some(prefix) = current.to_str() else {
+    let Some(Completing {
+        prefix,
+        words,
+        paths,
+    }) = Completing::new(current)
+    else {
         return Vec::new();
     };
-    let (portable, words) = split_portable(words_before_current());
     let Some((command, args)) = command_args(&words) else {
         return Vec::new();
     };
     if !args.iter().any(|arg| arg == "remove") {
         return Vec::new();
     }
-    let Ok(paths) = Paths::from_env(portable.as_deref()) else {
-        return Vec::new();
-    };
     let names = match command {
         "runners" => {
             let Ok(global) = GlobalConfig::load(&paths) else {
@@ -97,10 +116,14 @@ pub fn removable_build_names(current: &OsStr) -> Vec<CompletionCandidate> {
 }
 
 pub fn environments(current: &OsStr) -> Vec<CompletionCandidate> {
-    let Some(prefix) = current.to_str() else {
+    let Some(Completing {
+        prefix,
+        words,
+        paths,
+    }) = Completing::new(current)
+    else {
         return Vec::new();
     };
-    let (portable, words) = split_portable(words_before_current());
     let Some((command, args)) = command_args(&words) else {
         return Vec::new();
     };
@@ -110,9 +133,6 @@ pub fn environments(current: &OsStr) -> Vec<CompletionCandidate> {
     if command == "winetricks" && !first_winetricks_value(args) {
         return Vec::new();
     }
-    let Ok(paths) = Paths::from_env(portable.as_deref()) else {
-        return Vec::new();
-    };
     environment::names(&paths)
         .unwrap_or_default()
         .into_iter()
@@ -123,11 +143,7 @@ pub fn environments(current: &OsStr) -> Vec<CompletionCandidate> {
 
 /// Completes the environments that record a GOG game.
 pub fn gog_environments(current: &OsStr) -> Vec<CompletionCandidate> {
-    let Some(prefix) = current.to_str() else {
-        return Vec::new();
-    };
-    let (portable, _) = split_portable(words_before_current());
-    let Ok(paths) = Paths::from_env(portable.as_deref()) else {
+    let Some(Completing { prefix, paths, .. }) = Completing::new(current) else {
         return Vec::new();
     };
     environment::names(&paths)
@@ -143,11 +159,7 @@ pub fn gog_environments(current: &OsStr) -> Vec<CompletionCandidate> {
 }
 
 pub fn tags(current: &OsStr) -> Vec<CompletionCandidate> {
-    let Some(prefix) = current.to_str() else {
-        return Vec::new();
-    };
-    let (portable, _) = split_portable(words_before_current());
-    let Ok(paths) = Paths::from_env(portable.as_deref()) else {
+    let Some(Completing { prefix, paths, .. }) = Completing::new(current) else {
         return Vec::new();
     };
     environment::tags(&paths)
@@ -159,10 +171,14 @@ pub fn tags(current: &OsStr) -> Vec<CompletionCandidate> {
 }
 
 pub fn targets(current: &OsStr) -> Vec<CompletionCandidate> {
-    let Some(prefix) = current.to_str() else {
+    let Some(Completing {
+        prefix,
+        words,
+        paths,
+    }) = Completing::new(current)
+    else {
         return Vec::new();
     };
-    let (portable, words) = split_portable(words_before_current());
     let Some((command, args)) = command_args(&words) else {
         return Vec::new();
     };
@@ -170,9 +186,6 @@ pub fn targets(current: &OsStr) -> Vec<CompletionCandidate> {
         return Vec::new();
     }
     let Some(name) = selected_environment(args) else {
-        return Vec::new();
-    };
-    let Ok(paths) = Paths::from_env(portable.as_deref()) else {
         return Vec::new();
     };
     let Ok(environment) = Environment::load(&paths, name) else {
@@ -190,11 +203,7 @@ pub fn targets(current: &OsStr) -> Vec<CompletionCandidate> {
 
 /// Completes `ENV`, and `ENV.TARGET` once a dot is typed.
 pub fn spots(current: &OsStr) -> Vec<CompletionCandidate> {
-    let Some(prefix) = current.to_str() else {
-        return Vec::new();
-    };
-    let (portable, _) = split_portable(words_before_current());
-    let Ok(paths) = Paths::from_env(portable.as_deref()) else {
+    let Some(Completing { prefix, paths, .. }) = Completing::new(current) else {
         return Vec::new();
     };
     let Some((name, target)) = prefix.split_once('.') else {
@@ -218,10 +227,14 @@ pub fn spots(current: &OsStr) -> Vec<CompletionCandidate> {
 }
 
 pub fn snapshots(current: &OsStr) -> Vec<CompletionCandidate> {
-    let Some(prefix) = current.to_str() else {
+    let Some(Completing {
+        prefix,
+        words,
+        paths,
+    }) = Completing::new(current)
+    else {
         return Vec::new();
     };
-    let (portable, words) = split_portable(words_before_current());
     let Some(("snapshot", args)) = command_args(&words) else {
         return Vec::new();
     };
@@ -231,9 +244,6 @@ pub fn snapshots(current: &OsStr) -> Vec<CompletionCandidate> {
     if !matches!(action.as_str(), "restore" | "delete") {
         return Vec::new();
     }
-    let Ok(paths) = Paths::from_env(portable.as_deref()) else {
-        return Vec::new();
-    };
     snapshot::list(&paths, name)
         .unwrap_or_default()
         .into_iter()

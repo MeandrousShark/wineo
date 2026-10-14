@@ -9,7 +9,6 @@ use anyhow::Context;
 use signal_hook::consts::SIGINT;
 use wineo_core::config::GlobalConfig;
 use wineo_core::environment::Environment;
-use wineo_core::error::Error;
 use wineo_core::launch::{self, Host, Launch, Settling, parse_env_assignment};
 use wineo_core::operation::{Locks, Operation};
 use wineo_core::paths::Paths;
@@ -17,6 +16,7 @@ use wineo_core::process;
 use wineo_core::runtime::{Runtime, exit_code};
 use wineo_core::supervisor::Supervisor;
 
+use crate::cancel;
 use crate::commands::build;
 use crate::commands::transfer::Cancellation;
 
@@ -54,12 +54,8 @@ pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
         &cancellation.token,
         |event| build::print_event(paths, &environment.name, event),
     ) {
-        Err(err)
-            if err
-                .downcast_ref::<Error>()
-                .is_some_and(|err| matches!(err, Error::Canceled(_))) =>
-        {
-            return Ok(ExitCode::from(130));
+        Err(err) if cancel::core(&err) => {
+            return Ok(cancel::exit_code());
         }
         Err(err) => return Err(err),
         Ok(()) => {}
@@ -86,8 +82,8 @@ pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
     let folders = launch::protect(paths, &environment, &launch, &cancellation.token);
     drop(cancellation);
     let folders = match folders {
-        Err(err) if matches!(err.downcast_ref(), Some(Error::Canceled(_))) => {
-            return Ok(ExitCode::from(130));
+        Err(err) if cancel::core(&err) => {
+            return Ok(cancel::exit_code());
         }
         result => result?,
     };

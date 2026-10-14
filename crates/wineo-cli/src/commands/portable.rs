@@ -9,6 +9,7 @@ use wineo_core::paths::Paths;
 use wineo_core::portable::{self, CopyInspection, Storage};
 
 use super::transfer::{self, Cancellation};
+use crate::cancel;
 
 #[derive(clap::Args)]
 pub struct Args {
@@ -74,7 +75,7 @@ fn copy(
         }
         Err(error) if error.is::<portable::Canceled>() => {
             eprintln!("Copy canceled");
-            Ok(ExitCode::from(130))
+            Ok(cancel::exit_code())
         }
         Err(error) => Err(error),
     }
@@ -127,7 +128,7 @@ fn copy_native(paths: &Paths, folder: &Paths, name: &str) -> anyhow::Result<Exit
         }
         Err(error) if error.is::<portable::Canceled>() => {
             eprintln!("Copy canceled");
-            Ok(ExitCode::from(130))
+            Ok(cancel::exit_code())
         }
         Err(error) => Err(error),
     }

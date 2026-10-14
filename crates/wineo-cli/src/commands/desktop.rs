@@ -8,21 +8,29 @@ use wineo_core::environment::{self, Environment};
 use wineo_core::paths::Paths;
 use wineo_core::runner::Runner;
 
+use crate::text;
+
 #[derive(clap::Args)]
 pub struct Args {}
+
+fn line(entry: &desktop::Entry, stray: bool, environments: usize, targets: usize) -> String {
+    format!(
+        "{}  {}  {}  {}",
+        text::pad(&entry.environment, environments),
+        text::pad(&entry.target, targets),
+        entry.name,
+        if stray { "stray" } else { "" }
+    )
+    .trim_end()
+    .to_owned()
+}
 
 pub fn run(paths: &Paths, _args: Args) -> anyhow::Result<ExitCode> {
     desktop::supported(paths)?;
     let entries = desktop::list(paths)?;
     let known: BTreeSet<String> = environment::names(paths)?.into_iter().collect();
 
-    let width = |column: fn(&desktop::Entry) -> &str| {
-        entries
-            .iter()
-            .map(|entry| column(entry).len())
-            .max()
-            .unwrap_or(0)
-    };
+    let width = |column: fn(&desktop::Entry) -> &str| text::widest(entries.iter().map(column));
     let (environments, targets) = (
         width(|entry| entry.environment.as_str()),
         width(|entry| entry.target.as_str()),
@@ -34,14 +42,7 @@ pub fn run(paths: &Paths, _args: Args) -> anyhow::Result<ExitCode> {
         if stray {
             strays.push(entry);
         }
-        let line = format!(
-            "{:environments$}  {:targets$}  {}  {}",
-            entry.environment,
-            entry.target,
-            entry.name,
-            if stray { "stray" } else { "" }
-        );
-        println!("{}", line.trim_end());
+        println!("{}", line(entry, stray, environments, targets));
     }
 
     if entries.is_empty() {
@@ -53,7 +54,7 @@ pub fn run(paths: &Paths, _args: Args) -> anyhow::Result<ExitCode> {
         eprintln!(
             "{} entr{} belong to an environment that no longer exists. Remove with `wineo validate`:",
             strays.len(),
-            if strays.len() == 1 { "y" } else { "ies" }
+            text::plural(strays.len(), "y", "ies")
         );
         for entry in strays {
             eprintln!("  {}", entry.path.display());
@@ -112,5 +113,36 @@ pub(crate) fn describe(change: &Change, name: &str) -> String {
         Change::Skipped { target, reason } => {
             format!("No desktop entry for {target} in {name}: {reason}")
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::PathBuf;
+
+    use super::*;
+
+    #[test]
+    fn lines_pad_environment_and_target_by_display_width() {
+        let entry = |environment: &str, target: &str| desktop::Entry {
+            environment: environment.to_owned(),
+            target: target.to_owned(),
+            name: "Name".to_owned(),
+            path: PathBuf::new(),
+        };
+        let wide = entry("\u{539f}\u{795e}", "\u{6e38}\u{620f}");
+        let plain = entry("abcd", "xy");
+        let (environments, targets) = (
+            text::widest([wide.environment.as_str(), plain.environment.as_str()]),
+            text::widest([wide.target.as_str(), plain.target.as_str()]),
+        );
+        assert_eq!(
+            line(&wide, false, environments, targets),
+            "\u{539f}\u{795e}  \u{6e38}\u{620f}  Name"
+        );
+        assert_eq!(
+            line(&plain, true, environments, targets),
+            "abcd  xy    Name  stray"
+        );
     }
 }

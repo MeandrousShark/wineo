@@ -7,14 +7,11 @@ use wineo_core::paths::Paths;
 use wineo_core::stats::{self, HeroicImportResult, Log, Overview, OverviewOptions, Summary};
 use wineo_core::view::{CollectionError, StatsCollectionOutput, StatsOutput, TagBreakdownOutput};
 
+use super::table::label_line;
 use super::{json, table};
 use wineo_core::time::{LocalZone, Zone, day_label, duration_hm};
 
-/// Width of the label column in `stats <name>`'s detail lines, wide enough
-/// for `this month`, the longest one there is.
-const LABEL_WIDTH: usize = 10;
-const LABEL_INDENT: usize = 2;
-const LABEL_GAP: usize = 2;
+use crate::text;
 
 #[derive(clap::Args)]
 pub struct Args {
@@ -182,7 +179,7 @@ fn print_overview(overview: &Overview, tz: &dyn Zone) {
         .map(|&index| &overview.rows[index])
         .collect();
     if !played.is_empty() {
-        let name_w = played.iter().map(|(name, _)| name.len()).max().unwrap_or(0);
+        let name_w = text::widest(played.iter().map(|(name, _)| name.as_str()));
         let played_w = played
             .iter()
             .map(|(_, s)| duration_hm(s.seconds).len())
@@ -196,8 +193,10 @@ fn print_overview(overview: &Overview, tz: &dyn Zone) {
             .unwrap_or(0)
             .max("sessions".len());
         println!(
-            "{:name_w$}  {:played_w$}  {:>sessions_w$}  last played",
-            "", "played", "sessions"
+            "{}  {:played_w$}  {:>sessions_w$}  last played",
+            text::pad("", name_w),
+            "played",
+            "sessions"
         );
         for (name, summary) in &played {
             let mut last = summary
@@ -208,7 +207,8 @@ fn print_overview(overview: &Overview, tz: &dyn Zone) {
                 last.push_str(" (running)");
             }
             println!(
-                "{name:name_w$}  {:played_w$}  {:>sessions_w$}  {last}",
+                "{}  {:played_w$}  {:>sessions_w$}  {last}",
+                text::pad(name, name_w),
                 duration_hm(summary.seconds),
                 overview_sessions(summary),
             );
@@ -292,11 +292,7 @@ fn render_named(
         lines.push(label_line("played", "never"));
         return lines.join("\n") + "\n";
     }
-    let sessions_word = if summary.sessions == 1 {
-        "1 session".to_owned()
-    } else {
-        format!("{} sessions", summary.sessions)
-    };
+    let sessions_word = text::counted(summary.sessions, "session", "sessions");
     let mut played = format!("{} over {sessions_word}", duration_hm(summary.seconds));
     if summary.sessions == 0 {
         played = format!("{}, all from Heroic", duration_hm(summary.seconds));
@@ -358,16 +354,6 @@ fn render_named(
         lines.push(label_line("targets", &targets));
     }
     lines.join("\n") + "\n"
-}
-
-fn label_line(label: &str, value: &str) -> String {
-    format!(
-        "{}{:width$}{}{value}",
-        " ".repeat(LABEL_INDENT),
-        label,
-        " ".repeat(LABEL_GAP),
-        width = LABEL_WIDTH,
-    )
 }
 
 /// `wineo stats --import-heroic`: refreshes the `imported` line of every

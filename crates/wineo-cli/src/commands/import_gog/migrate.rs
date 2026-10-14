@@ -2,7 +2,6 @@
 //! or picked from a list, and forgetting a game folder's saved state.
 
 use std::collections::HashSet;
-use std::io;
 use std::path::Path;
 use std::process::ExitCode;
 
@@ -26,10 +25,9 @@ use crate::commands::import_heroic::{
 };
 use crate::commands::transfer::Cancellation;
 use crate::picker;
-use crate::prompt::{self, Canceled, Prompt, Reply, Terminal, numbered};
+use crate::prompt::{self, Ask, Canceled, Prompt, Reply, Terminal, numbered, terminal};
 use crate::style;
-
-type Ask = Prompt<Terminal, crate::output::Stream<io::Stdout>>;
+use crate::text;
 
 const NEEDS_YES: &str = "Migrating without a terminal needs --yes.";
 const HEROIC_NOTE: &str =
@@ -427,10 +425,6 @@ fn confirm(prompt: &mut Ask) -> anyhow::Result<()> {
     }
 }
 
-fn terminal() -> anyhow::Result<Ask> {
-    Ok(Prompt::new(Terminal::open()?, crate::output::stdout()).with_first_question(true))
-}
-
 pub(super) fn one(paths: &Paths, args: &Args, id: &str, verbose: bool) -> anyhow::Result<ExitCode> {
     host_only(paths)?;
     let global = GlobalConfig::load(paths)?;
@@ -549,7 +543,7 @@ pub(super) fn all(paths: &Paths, args: &Args, verbose: bool) -> anyhow::Result<E
     }
     if !ready.is_empty() {
         if let Some(prompt) = prompt.as_mut() {
-            let noun = if total == 1 { "game" } else { "games" };
+            let noun = text::plural(total, "game", "games");
             match prompt.confirm(&format!("Migrate {total} {noun}?"), true)? {
                 Reply::Value(true) => {}
                 _ => return Err(Canceled.into()),
@@ -575,8 +569,7 @@ pub(super) fn all(paths: &Paths, args: &Args, verbose: bool) -> anyhow::Result<E
         eprintln!("Failed {title}: {reason}");
     }
     if total > 0 {
-        let noun = if total == 1 { "game" } else { "games" };
-        println!("Migrated {done} of {total} {noun}.");
+        println!("{}", text::games_summary("Migrated", done, total));
     } else if failures.is_empty() && already.is_empty() {
         println!("Nothing to migrate.");
     }

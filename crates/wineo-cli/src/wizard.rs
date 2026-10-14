@@ -27,6 +27,7 @@ use wineo_core::targets::Batch;
 use wineo_core::templates::{NEWEST_PROTON, Template, Templates};
 use wineo_core::winpath;
 
+use crate::cancel;
 use crate::commands::art::{Access, AutoFetch, KeyCheck, Pick};
 use crate::commands::setup::{self, Ran};
 use crate::commands::transfer::Cancellation;
@@ -1221,11 +1222,7 @@ fn create<I: Input, W: Write>(
     let created = match created {
         Ok(created) => created,
         Err(err) => {
-            if err
-                .downcast_ref::<Error>()
-                .is_some_and(|err| matches!(err, Error::Canceled(_)))
-                || prompt.input().interrupted()
-            {
+            if cancel::core(&err) || prompt.input().interrupted() {
                 return Err(Canceled.into());
             }
             if guided.registered.is_some() {

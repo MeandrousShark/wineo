@@ -1,10 +1,12 @@
 use jiff::Timestamp;
 use wineo_core::operation::Operation;
-use wineo_core::report::{KindReport, Overview};
+use wineo_core::report::{InstallReport, KindReport, Overview};
 use wineo_core::runtime::{State, Status};
 use wineo_core::view::{CollectionError, CollectionOutput, StatusOutput};
 
 use wineo_core::time::{Zone, clock, relative};
+
+use crate::text;
 
 /// One line of `wineo status` or `wineo list`: name, state, target, and time.
 pub struct Row {
@@ -111,14 +113,12 @@ pub fn format_overview(overview: Overview, now: Timestamp, tz: &dyn Zone) -> Gat
             row.kind = environment.kind.clone();
             if environment.busy.is_none()
                 && !environment.unresolved
-                && !matches!(
-                    environment.status.state,
-                    State::Starting | State::Running | State::SteamRunning
-                )
-                && let Some(KindReport::Proxied { install, .. }) = &row.kind
-                && install.state != "installed"
+                && let Some(install) = row
+                    .kind
+                    .as_ref()
+                    .and_then(|kind| unfinished_install(environment.status.state, kind))
             {
-                row.state = install.label().to_owned();
+                row.state = install.label();
             }
             row
         })
@@ -132,6 +132,22 @@ pub fn format_overview(overview: Overview, now: Timestamp, tz: &dyn Zone) -> Gat
         })
         .collect();
     Gathered { rows, errors }
+}
+
+/// The install of a Steam game to show in place of its run state, when Steam
+/// isn't running it and the game isn't installed yet.
+pub fn unfinished_install(state: State, kind: &KindReport) -> Option<&InstallReport> {
+    match kind {
+        KindReport::Proxied { install, .. }
+            if !matches!(
+                state,
+                State::Starting | State::Running | State::SteamRunning
+            ) && install.state != "installed" =>
+        {
+            Some(install)
+        }
+        _ => None,
+    }
 }
 
 fn time_column(status: &Status, now: Timestamp, tz: &dyn Zone) -> String {
@@ -173,7 +189,7 @@ pub fn render(rows: &[Row]) -> Vec<String> {
 /// Aligns arbitrary fixed-width rows with two spaces between columns.
 pub fn render_columns<const N: usize>(rows: &[[String; N]]) -> Vec<String> {
     let widths: [usize; N] =
-        std::array::from_fn(|column| rows.iter().map(|row| row[column].len()).max().unwrap_or(0));
+        std::array::from_fn(|column| text::widest(rows.iter().map(|row| row[column].as_str())));
     rows.iter()
         .map(|row| {
             let mut line = String::new();
@@ -181,14 +197,46 @@ pub fn render_columns<const N: usize>(rows: &[[String; N]]) -> Vec<String> {
                 if column > 0 {
                     line.push_str("  ");
                 }
-                line.push_str(value);
                 if column + 1 < N {
-                    line.push_str(&" ".repeat(widths[column] - value.len()));
+                    line.push_str(&text::pad(value, widths[column]));
+                } else {
+                    line.push_str(value);
                 }
             }
             line.trim_end().to_owned()
         })
         .collect()
+}
+
+/// Width of the label column in the detail lines of `status <name>` and
+/// `stats <name>`, wide enough for the longest label either has.
+pub const LABEL_WIDTH: usize = 10;
+/// Spaces before the label, and between the label and its value.
+pub const LABEL_INDENT: usize = 2;
+pub const LABEL_GAP: usize = 2;
+
+pub fn label_line(label: &str, value: &str) -> String {
+    format!(
+        "{}{:width$}{}{value}",
+        " ".repeat(LABEL_INDENT),
+        label,
+        " ".repeat(LABEL_GAP),
+        width = LABEL_WIDTH,
+    )
+}
+
+/// Indented `label  value` lines with the labels padded to the longest.
+pub fn aligned_rows(rows: Vec<(String, String)>) -> Vec<String> {
+    let width = text::widest(rows.iter().map(|(label, _)| label.as_str()));
+    rows.into_iter()
+        .map(|(label, value)| format!("  {}  {value}", text::pad(&label, width)))
+        .collect()
+}
+
+/// The width of a label column whose values follow directly, two spaces past
+/// the longest label.
+pub fn label_column<'a>(labels: impl IntoIterator<Item = &'a str>) -> usize {
+    labels.into_iter().map(str::len).max().unwrap_or(0) + 2
 }
 
 #[cfg(test)]
@@ -202,6 +250,19 @@ mod tests {
 
     fn ts(s: &str) -> Timestamp {
         s.parse().unwrap()
+    }
+
+    #[test]
+    fn columns_line_up_by_display_width() {
+        let rows = [
+            ["Caf\u{e9}".to_owned(), "a".to_owned()],
+            ["\u{539f}\u{795e}".to_owned(), "b".to_owned()],
+            ["Plain".to_owned(), "c".to_owned()],
+        ];
+        assert_eq!(
+            render_columns(&rows),
+            ["Caf\u{e9}   a", "\u{539f}\u{795e}   b", "Plain  c"]
+        );
     }
 
     fn run(status: RunStatus, target: &str) -> RunState {

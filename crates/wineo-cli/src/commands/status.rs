@@ -11,15 +11,10 @@ use wineo_core::stats::Source;
 use wineo_core::view::NamedOutput;
 
 use super::json;
-use super::table;
+use super::table::{self, LABEL_GAP, LABEL_INDENT, LABEL_WIDTH, label_line};
 use wineo_core::time::{LocalZone, Zone, absolute, day_label, duration_hm, relative};
 
-/// Width of the label column in `status <name>`'s detail lines. Wide enough
-/// for the longest label there is, so no line pushes its value out of line.
-const LABEL_WIDTH: usize = 10;
-/// Spaces before the label, and between the label and its value.
-const LABEL_INDENT: usize = 2;
-const LABEL_GAP: usize = 2;
+use crate::text;
 
 #[derive(clap::Args)]
 pub struct Args {
@@ -206,12 +201,7 @@ fn render(report: &EnvironmentReport, now: Timestamp, tz: &dyn Zone) -> String {
 fn header(report: &EnvironmentReport, now: Timestamp, tz: &dyn Zone) -> String {
     let name = &report.name;
     let status = &report.status;
-    if !matches!(
-        status.state,
-        State::Starting | State::Running | State::SteamRunning
-    ) && let KindReport::Proxied { install, .. } = &report.kind
-        && install.state != "installed"
-    {
+    if let Some(install) = table::unfinished_install(status.state, &report.kind) {
         return match &install.problem {
             Some(reason) => format!("{name}: {} ({reason})", install.label()),
             None => format!("{name}: {}", install.label()),
@@ -296,11 +286,7 @@ fn played_value(played: &report::Played, now: Timestamp, tz: &dyn Zone) -> Strin
             format!("{} on Steam", duration_hm(played.seconds))
         };
     }
-    let sessions = if played.sessions == 1 {
-        "1 session".to_owned()
-    } else {
-        format!("{} sessions", played.sessions)
-    };
+    let sessions = text::counted(played.sessions, "session", "sessions");
     // With no sessions, all of it came from a Heroic import.
     let mut value = if played.sessions == 0 {
         format!("{} from Heroic", duration_hm(played.seconds))
@@ -342,16 +328,6 @@ fn pid_lines(name: &str, run: &RunState, now: Timestamp) -> Vec<String> {
             ]
         }
     }
-}
-
-fn label_line(label: &str, value: &str) -> String {
-    format!(
-        "{}{:width$}{}{value}",
-        " ".repeat(LABEL_INDENT),
-        label,
-        " ".repeat(LABEL_GAP),
-        width = LABEL_WIDTH,
-    )
 }
 
 fn continuation_line(text: &str) -> String {

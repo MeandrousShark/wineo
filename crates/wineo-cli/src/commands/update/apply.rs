@@ -2,7 +2,6 @@
 //! native game with an update, with a review first, progress while it works,
 //! and what changed after.
 
-use std::io;
 use std::process::ExitCode;
 
 use wineo_core::gog::account::{AccountError, Session};
@@ -13,14 +12,15 @@ use wineo_core::gog::update::{self, Check, Options, Pending, Plan, UpdateError, 
 use wineo_core::paths::Paths;
 
 use super::Args;
+use crate::cancel;
 use crate::commands::gog_support::{
     Account, LOGGED_OUT, Reporter, ask_wizard, offers_wizard, reason_note, usage_error, warn,
 };
+use crate::commands::table;
 use crate::commands::transfer::Cancellation;
-use crate::prompt::{self, Canceled, Prompt, Reply, Terminal};
+use crate::prompt::{self, Ask, Canceled, Reply, terminal};
 use crate::style;
-
-type Ask = Prompt<Terminal, crate::output::Stream<io::Stdout>>;
+use crate::text;
 
 const NEEDS_YES: &str = "Updating without a terminal needs --yes.";
 const NAME_A_GAME: &str = "Name a game to update, or use --all.";
@@ -60,16 +60,16 @@ pub(super) fn run(paths: &Paths, args: &Args) -> anyhow::Result<ExitCode> {
             Some(Stop::Interrupted(name)) => {
                 eprintln!("Update interrupted.");
                 eprintln!("Finish the interrupted update with: wineo update {name}");
-                Ok(ExitCode::from(130))
+                Ok(cancel::exit_code())
             }
             Some(Stop::InstallInterrupted(name)) => {
                 eprintln!("Install interrupted.");
                 eprintln!("Finish the interrupted install with: wineo update {name}");
-                Ok(ExitCode::from(130))
+                Ok(cancel::exit_code())
             }
             Some(Stop::Canceled) => {
                 eprintln!("Update canceled.");
-                Ok(ExitCode::from(130))
+                Ok(cancel::exit_code())
             }
             None => Err(error),
         },
@@ -93,7 +93,7 @@ fn stopped(error: &anyhow::Error) -> Option<Stop> {
             Stop::Interrupted(name.clone())
         });
     }
-    let canceled = error.is::<Canceled>()
+    let canceled = cancel::prompted(error)
         || matches!(
             error.downcast_ref::<UpdateError>(),
             Some(UpdateError::Canceled { .. })
@@ -106,10 +106,7 @@ fn stopped(error: &anyhow::Error) -> Option<Stop> {
             error.downcast_ref::<FolderError>(),
             Some(FolderError::Canceled)
         )
-        || matches!(
-            error.downcast_ref::<wineo_core::Error>(),
-            Some(wineo_core::Error::Canceled(_))
-        );
+        || cancel::core(error);
     canceled.then_some(Stop::Canceled)
 }
 
@@ -309,7 +306,7 @@ fn all(paths: &Paths, args: &Args) -> anyhow::Result<ExitCode> {
         return Ok(failure_code(&failures));
     }
     if !ready.is_empty() && asking {
-        let noun = noun(total);
+        let noun = text::plural(total, "game", "games");
         match terminal()?.confirm(&format!("Update {total} {noun}?"), true)? {
             Reply::Value(true) => {}
             _ => return Err(Canceled.into()),
@@ -341,7 +338,7 @@ fn all(paths: &Paths, args: &Args) -> anyhow::Result<ExitCode> {
         eprintln!("Failed {name}: {reason}");
     }
     if total > 0 {
-        println!("Updated {done} of {total} {}.", noun(total));
+        println!("{}", text::games_summary("Updated", done, total));
     }
     if let Some(error) = stop {
         return Err(error);
@@ -353,20 +350,12 @@ fn all(paths: &Paths, args: &Args) -> anyhow::Result<ExitCode> {
     Ok(failure_code(&failures))
 }
 
-fn noun(count: usize) -> &'static str {
-    if count == 1 { "game" } else { "games" }
-}
-
 fn failure_code(failures: &[(String, String)]) -> ExitCode {
     if failures.is_empty() {
         ExitCode::SUCCESS
     } else {
         ExitCode::FAILURE
     }
-}
-
-fn terminal() -> anyhow::Result<Ask> {
-    Ok(Prompt::new(Terminal::open()?, crate::output::stdout()).with_first_question(true))
 }
 
 fn confirm(prompt: &mut Ask, pending: &Pending) -> anyhow::Result<()> {
@@ -442,16 +431,8 @@ fn review_lines(paths: &Paths, pending: &Pending) -> Vec<String> {
             style::size(pending.unpacked_estimate())
         ),
     ));
-    let width = rows
-        .iter()
-        .map(|(label, _)| label.chars().count())
-        .max()
-        .unwrap_or(0);
     let mut lines = vec![format!("{} {}", action(pending), pending.environment())];
-    lines.extend(
-        rows.into_iter()
-            .map(|(label, value)| format!("  {label:<width$}  {value}")),
-    );
+    lines.extend(table::aligned_rows(rows));
     lines
 }
 
@@ -573,13 +554,8 @@ fn report(paths: &Paths, pending: &Pending, updated: &Updated) {
             Some((label, change(installed, version)))
         })
         .collect();
-    let width = rows
-        .iter()
-        .map(|(label, _)| label.chars().count())
-        .max()
-        .unwrap_or(0);
-    for (label, value) in rows {
-        println!("  {label:<width$}  {value}");
+    for line in table::aligned_rows(rows) {
+        println!("{line}");
     }
     if updated.claimed {
         println!(

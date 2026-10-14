@@ -78,6 +78,23 @@ pub trait Input {
     }
 }
 
+/// The prompt every guided command opens on the terminal.
+pub type Ask = Prompt<Terminal, crate::output::Stream<io::Stdout>>;
+
+/// Opens an `Ask` at its flow's first question, where going back cancels.
+pub fn terminal() -> anyhow::Result<Ask> {
+    Ok(Prompt::new(Terminal::open()?, crate::output::stdout()).with_first_question(true))
+}
+
+/// Input for a flow that only prints, like a review that never asks.
+pub struct NoInput;
+
+impl Input for NoInput {
+    fn line(&mut self, _: &str) -> io::Result<Line> {
+        unreachable!("this flow has no prompts")
+    }
+}
+
 /// Whether both ends are a terminal, which every guided flow needs.
 pub fn interactive() -> bool {
     io::stdin().is_terminal() && io::stdout().is_terminal()
@@ -129,7 +146,7 @@ impl Hooks {
             set_modes: Arc::new(|fd, modes| tcsetattr(fd, OptionalActions::Now, modes)),
             exit: Arc::new(|| {
                 println!();
-                std::process::exit(130)
+                std::process::exit(i32::from(crate::cancel::EXIT))
             }),
             before_echo_off: Arc::new(|| {}),
             signals: vec![SIGINT, SIGTERM, SIGHUP],

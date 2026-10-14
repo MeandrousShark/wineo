@@ -6,6 +6,8 @@ use wineo_core::paths::Paths;
 use wineo_core::prefix;
 use wineo_core::programs::{self, Listing};
 
+use crate::text;
+
 #[derive(clap::Args)]
 pub struct Args {
     /// Environment to look in
@@ -37,18 +39,16 @@ pub fn report(name: &str, listing: &Listing, all: bool) {
     } else {
         listing.programs.clone()
     };
-    let width = |column: fn(&programs::Program) -> &str| {
-        rows.iter().map(|row| column(row).len()).max().unwrap_or(0)
-    };
+    let width = |column: fn(&programs::Program) -> &str| text::widest(rows.iter().map(column));
     let (sources, names) = (
         width(|row| row.source.as_str()),
         width(|row| row.name.as_str()),
     );
     for row in &rows {
         println!(
-            "{:sources$}  {:names$}  {}",
-            row.source.as_str(),
-            row.name,
+            "{}  {}  {}",
+            text::pad(row.source.as_str(), sources),
+            text::pad(&row.name, names),
             row.exe
         );
     }
@@ -63,7 +63,7 @@ pub fn report(name: &str, listing: &Listing, all: bool) {
     }
     if !all && !listing.filtered.is_empty() {
         let held = listing.filtered.len();
-        let plural = if held == 1 { "" } else { "s" };
+        let plural = text::plural(held, "", "s");
         eprintln!("{held} executable{plural} looked like noise. Pass --all to see them");
     }
     if let Some(row) = rows.first() {

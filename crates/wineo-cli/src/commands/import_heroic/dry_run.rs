@@ -9,6 +9,7 @@ use wineo_core::steamgriddb::{Api, Game as ArtGame};
 
 use super::{Access, ArtChoice};
 use crate::style;
+use crate::text;
 
 #[cfg(test)]
 use crate::snapshot;
@@ -68,11 +69,7 @@ pub(super) fn library(
             .map(|backfill| backfill.environment.as_str())
             .collect::<Vec<_>>()
             .join(", ");
-        let noun = if backfills.len() == 1 {
-            "environment"
-        } else {
-            "environments"
-        };
+        let noun = text::plural(backfills.len(), "environment", "environments");
         println!(
             "Would record the Heroic id for {} existing {noun}: {names}",
             backfills.len()
@@ -88,8 +85,8 @@ pub(super) fn library(
                 || format!("the latest {}", component.label()),
                 |version| format!("{} {version}", component.label()),
             );
-            let noun = if count == 1 { "game" } else { "games" };
-            let target = if count == 1 { "it" } else { "them" };
+            let noun = text::plural(count, "game", "games");
+            let target = text::plural(count, "it", "them");
             println!(
                 "Would offer to download {build} for {count} {noun}. Declining skips {target}."
             );

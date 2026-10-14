@@ -5,6 +5,7 @@ use anyhow::bail;
 use wineo_core::paths::Paths;
 use wineo_core::trash::{self, Selector};
 
+use crate::cancel;
 use crate::prompt;
 
 #[derive(clap::Args)]
@@ -84,7 +85,7 @@ pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
         io::stdin().read_line(&mut answer)?;
         if !matches!(answer.trim(), "y" | "Y" | "yes" | "YES") {
             println!("Canceled. Nothing was deleted.");
-            return Ok(ExitCode::from(130));
+            return Ok(cancel::exit_code());
         }
     }
     let mut failed = review.errors.len();
