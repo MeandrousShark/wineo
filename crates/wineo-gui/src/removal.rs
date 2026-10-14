@@ -315,6 +315,11 @@ impl App {
         match message {
             Message::Pressed | Message::KeyReleased => true,
             Message::ToastTick(_) | Message::ToastHover(_) | Message::ToastFocus(..) => false,
+            // Frame-rate and timer messages never move focus.
+            Message::PanelTick(..)
+            | Message::GridTick(..)
+            | Message::CollapseTick(..)
+            | Message::ScrollIdle(_) => false,
             _ => toast.focused,
         }
     }
@@ -1343,6 +1348,7 @@ mod tests {
         app.toast.as_mut().unwrap().focused = true;
         assert!(app.toast_focus_may_have_changed(&Message::Rebuild));
         assert!(!app.toast_focus_may_have_changed(&Message::ToastFocus(true, Instant::now())));
+        assert!(!app.toast_focus_may_have_changed(&Message::ScrollIdle(0)));
     }
 
     #[test]

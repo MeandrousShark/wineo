@@ -621,7 +621,12 @@ impl App {
             panel_motion,
             grid_motion,
             collapse,
-            iced::event::listen_with(|event, _, _| key_released(event)),
+            // Only a toast has focus to recheck.
+            if self.toast.is_some() {
+                iced::event::listen_with(|event, _, _| key_released(event))
+            } else {
+                Subscription::none()
+            },
         ])
     }
     fn update(&mut self, message: Message) -> Task<Message> {
