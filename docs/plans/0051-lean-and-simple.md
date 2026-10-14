@@ -494,6 +494,13 @@ Shipped in 0.31.1.
   Heroic dry run, `list`, `status`, `runners`, and `validate` print the
   same as before.
 
+- Track B, tests: every inline test module over 300 lines moved to its
+  own `tests.rs` (73 files across core, the CLI, and the app; test counts
+  and names unchanged). The biggest files shrank most: the app's
+  `settings/mod.rs` 6,049 to 2,529 lines and `main.rs` 4,582 to 2,096,
+  core's `trash.rs` 5,206 to 2,847, the CLI's `import_heroic.rs` 4,000 to
+  2,441.
+
 The maintainer's machine (real GPU, library of 22, after scrolling the
 library), the 0050 acceptance build against main with everything above:
 
