@@ -14,7 +14,7 @@ use super::extras::{fetch_image, link};
 use crate::art::{Format, Kind};
 use crate::cancel::Token;
 use crate::download::Transport;
-use crate::files::write_atomic;
+use crate::files::{self, write_atomic};
 use crate::paths::Paths;
 use crate::steamgriddb::{DownloadRead, DownloadStatus};
 
@@ -52,10 +52,7 @@ pub fn discard(paths: &Paths, gog_id: u64) -> io::Result<()> {
         .into_iter()
         .filter(|format| Kind::Grid.accepts(*format))
     {
-        match fs::remove_file(dir.join(format!("{gog_id}.{}", format.extension()))) {
-            Err(error) if error.kind() != io::ErrorKind::NotFound => return Err(error),
-            _ => {}
-        }
+        files::remove_if_present(&dir.join(format!("{gog_id}.{}", format.extension())))?;
     }
     Ok(())
 }

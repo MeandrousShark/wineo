@@ -27,6 +27,7 @@ use crate::config::{
 use crate::download::{InstallLock, publish};
 use crate::environment::Environment;
 use crate::error::Error;
+use crate::files;
 use crate::gamescope::GamescopeSetting;
 use crate::install::{self, Wanted};
 use crate::name;
@@ -470,13 +471,7 @@ pub fn execute_reviewed(
     }
     let config = EnvironmentConfig::parse(&config_path, &config_text)?;
     let wine = config.require_wine(&request.name)?;
-    let _build_guards = build_lock::config(
-        paths,
-        global,
-        Some(&wine.runner),
-        wine.dxvk.as_deref(),
-        wine.vkd3d.as_deref(),
-    )?;
+    let _build_guards = build_lock::wine(paths, global, wine)?;
     if let Err(err) = install::check_available(
         paths,
         global,
@@ -1241,34 +1236,53 @@ fn copy_entry(
 }
 
 fn copy_regular_file(source: &Path, destination: &Path) -> Result<()> {
-    copy_regular_file_with(source, destination, |output, input| {
-        ioctl_ficlone(output, input)
-    })
+    copy_regular_file_mode(source, destination, false)
 }
 
+fn copy_regular_file_strict(source: &Path, destination: &Path) -> Result<()> {
+    copy_regular_file_mode(source, destination, true)
+}
+
+#[cfg(test)]
+type Reflink = Box<dyn FnOnce(&mut File, &mut File) -> rustix::io::Result<()>>;
+
+#[cfg(test)]
+thread_local! {
+    /// Stands in for the next reflink on this thread.
+    static FAKE_REFLINK: std::cell::Cell<Option<Reflink>> = const { std::cell::Cell::new(None) };
+}
+
+#[cfg(test)]
 fn copy_regular_file_with(
     source: &Path,
     destination: &Path,
-    reflink: impl FnOnce(&mut File, &mut File) -> rustix::io::Result<()>,
+    reflink: impl FnOnce(&mut File, &mut File) -> rustix::io::Result<()> + 'static,
 ) -> Result<()> {
     copy_regular_file_with_mode(source, destination, reflink, false)
 }
 
-fn copy_regular_file_strict(source: &Path, destination: &Path) -> Result<()> {
-    copy_regular_file_with_mode(
-        source,
-        destination,
-        |output, input| ioctl_ficlone(output, input),
-        true,
-    )
-}
-
+#[cfg(test)]
 fn copy_regular_file_with_mode(
     source: &Path,
     destination: &Path,
-    reflink: impl FnOnce(&mut File, &mut File) -> rustix::io::Result<()>,
+    reflink: impl FnOnce(&mut File, &mut File) -> rustix::io::Result<()> + 'static,
     strict_reflink: bool,
 ) -> Result<()> {
+    FAKE_REFLINK.with(|fake| fake.set(Some(Box::new(reflink))));
+    let result = copy_regular_file_mode(source, destination, strict_reflink);
+    FAKE_REFLINK.with(|fake| fake.set(None));
+    result
+}
+
+fn reflink(output: &mut File, input: &mut File) -> rustix::io::Result<()> {
+    #[cfg(test)]
+    if let Some(fake) = FAKE_REFLINK.with(std::cell::Cell::take) {
+        return fake(output, input);
+    }
+    ioctl_ficlone(output, input)
+}
+
+fn copy_regular_file_mode(source: &Path, destination: &Path, strict_reflink: bool) -> Result<()> {
     let mut input =
         File::open(source).with_context(|| format!("failed to open {}", source.display()))?;
     let mut output = OpenOptions::new()
@@ -1651,9 +1665,7 @@ pub(crate) fn write_config_once(path: &Path, contents: &str) -> Result<()> {
 fn sync_config_dir(dir: &Path) -> Result<()> {
     #[cfg(test)]
     SYNCED_DIRS.with(|synced| synced.borrow_mut().push(dir.to_owned()));
-    File::open(dir)
-        .and_then(|dir| dir.sync_all())
-        .with_context(|| format!("failed to sync {}", dir.display()))
+    files::sync_dir(dir).with_context(|| format!("failed to sync {}", dir.display()))
 }
 
 #[cfg(test)]

@@ -223,7 +223,7 @@ fn state_label(entry: &steam_import::Entry) -> String {
 }
 
 fn keyring() -> Box<dyn Keyring> {
-    Box::new(SecretServiceKeyring::for_spec(&steam::key::KEY_SPEC))
+    Box::new(SecretServiceKeyring::steam())
 }
 
 /// Saves or removes the Steam Web API key, like `art key` does for

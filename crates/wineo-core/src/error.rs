@@ -444,6 +444,14 @@ pub fn chain(err: &dyn std::error::Error) -> String {
     text
 }
 
+/// Collapses every run of whitespace, newlines included, to one space.
+pub fn one_line(text: impl std::fmt::Display) -> String {
+    text.to_string()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 pub(crate) trait IoContext<T> {
     fn context(self, context: impl FnOnce() -> String) -> Result<T>;
 }

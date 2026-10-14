@@ -487,6 +487,8 @@ impl Locks {
         }
     }
 
+    /// Locks in one directory, with no `Paths` behind them, for tests.
+    #[cfg(any(test, feature = "test-support"))]
     pub fn at(dir: PathBuf) -> Self {
         Self {
             prefix_dir: dir.clone(),

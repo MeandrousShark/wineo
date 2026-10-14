@@ -6,7 +6,7 @@ use rustix::io::Errno;
 use serde::{Deserialize, Serialize};
 
 use crate::components::{Builds, Component};
-use crate::config::GlobalConfig;
+use crate::config::{GlobalConfig, WineConfig};
 use crate::error::{Error, IoContext, Result};
 use crate::paths::{Paths, fnv1a, label};
 use crate::runner::Runner;
@@ -188,6 +188,17 @@ pub fn config(
         }
     }
     Ok(guards)
+}
+
+/// `config` for every build a wine environment's config selects.
+pub fn wine(paths: &Paths, global: &GlobalConfig, wine: &WineConfig) -> Result<Vec<Guard>> {
+    config(
+        paths,
+        global,
+        Some(&wine.runner),
+        wine.dxvk.as_deref(),
+        wine.vkd3d.as_deref(),
+    )
 }
 
 #[cfg(test)]

@@ -5540,6 +5540,7 @@ dependencies = [
  "tokio",
  "unicode-segmentation",
  "wineo-core",
+ "wineo-gog",
  "zip",
 ]
 

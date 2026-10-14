@@ -10,12 +10,13 @@ use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use rustix::event::{PollFd, PollFlags, Timespec, poll};
+use rustix::event::{PollFd, PollFlags, poll};
 use rustix::fd::OwnedFd;
 use rustix::param::clock_ticks_per_second;
 use rustix::process::{Pid, PidfdFlags, Signal, pidfd_open, pidfd_send_signal};
 
 use super::{Install, InstallKind};
+use crate::process::{pidfd_exited, read_boot_id};
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
 pub struct Reaper {
@@ -59,7 +60,7 @@ pub fn reapers_by_app(
     if app_ids.is_empty() {
         return Ok(HashMap::new());
     }
-    let boot_id = current_boot_id()?;
+    let boot_id = read_boot_id()?;
     scan_reapers(&Proc, proc_pids()?, install, app_ids, &boot_id)
 }
 
@@ -239,7 +240,7 @@ fn permission_denied(error: &io::Error) -> bool {
 /// that check. The latter protects against accepting an old reaper that was
 /// missed by a clock tick's limited precision.
 pub fn baseline(install: &Install, app_id: &str) -> io::Result<(Baseline, Vec<Reaper>)> {
-    let boot_id = current_boot_id()?;
+    let boot_id = read_boot_id()?;
     let start_ticks = uptime_ticks()?;
     let existing = matching_reapers(install, app_id)?;
     let baseline = Baseline {
@@ -257,7 +258,7 @@ pub fn eligible_reapers(
     app_id: &str,
     baseline: &Baseline,
 ) -> io::Result<Vec<Reaper>> {
-    if current_boot_id()? != baseline.boot_id {
+    if read_boot_id()? != baseline.boot_id {
         return Ok(Vec::new());
     }
     Ok(matching_reapers(install, app_id)?
@@ -270,7 +271,7 @@ pub fn eligible_reapers(
 
 /// Open a pidfd only while the recorded pid still has its recorded identity.
 pub fn open_reaper(reaper: &Reaper) -> io::Result<Option<OwnedFd>> {
-    if current_boot_id()? != reaper.boot_id {
+    if read_boot_id()? != reaper.boot_id {
         return Ok(None);
     }
     let Some(process) = inspect_stat(&Proc, reaper.pid)? else {
@@ -280,20 +281,6 @@ pub fn open_reaper(reaper: &Reaper) -> io::Result<Option<OwnedFd>> {
         return Ok(None);
     }
     Ok(Some(process.fd))
-}
-
-/// A pidfd can watch a process wineo did not spawn; waitid cannot.
-pub fn pidfd_exited(pidfd: &OwnedFd) -> io::Result<bool> {
-    let mut descriptors = [PollFd::new(pidfd, PollFlags::IN)];
-    // poll is never restarted after a signal handler runs, even with a zero
-    // timeout, so a Ctrl+C mid-scan would otherwise surface as an error.
-    loop {
-        match poll(&mut descriptors, Some(&Timespec::default())) {
-            Ok(_) => return Ok(!descriptors[0].revents().is_empty()),
-            Err(rustix::io::Errno::INTR) => {}
-            Err(error) => return Err(error.into()),
-        }
-    }
 }
 
 /// Blocks until the process behind the pidfd exits.
@@ -388,7 +375,7 @@ struct Member<F = OwnedFd> {
 }
 
 fn capture_tree(reaper: &Reaper, seen: &mut BTreeMap<(u32, u64), Member>) -> io::Result<()> {
-    if current_boot_id()? != reaper.boot_id {
+    if read_boot_id()? != reaper.boot_id {
         return Ok(());
     }
     let mut processes = Vec::new();
@@ -707,12 +694,6 @@ fn proc_pids() -> io::Result<Vec<u32>> {
         }
     }
     Ok(pids)
-}
-
-fn current_boot_id() -> io::Result<String> {
-    Ok(fs::read_to_string("/proc/sys/kernel/random/boot_id")?
-        .trim()
-        .to_owned())
 }
 
 fn uptime_ticks() -> io::Result<u64> {
@@ -1367,7 +1348,7 @@ mod tests {
         let reaper = Reaper {
             pid: root.id(),
             start_time: read_stat(root.id()).unwrap().unwrap().start_time,
-            boot_id: current_boot_id().unwrap(),
+            boot_id: read_boot_id().unwrap(),
         };
         stop_tree(&reaper, Duration::from_millis(100), false, || false).unwrap();
         let deadline = Instant::now() + Duration::from_secs(2);

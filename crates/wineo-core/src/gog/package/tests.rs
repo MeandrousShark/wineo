@@ -95,10 +95,7 @@ fn refusal(bytes: Vec<u8>) -> String {
 }
 
 fn md5_hex(bytes: &[u8]) -> String {
-    Md5::digest(bytes)
-        .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect()
+    crate::units::hex(Md5::digest(bytes))
 }
 
 fn mode_of(path: &Path) -> u32 {
@@ -678,12 +675,8 @@ fn not_enough_space_names_the_sizes_and_place() {
 
 #[test]
 fn the_shipped_script_list_holds_rimworlds() {
-    let hex: String = KNOWN_POSTINST[0]
-        .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect();
     assert_eq!(
-        hex,
+        crate::units::hex(KNOWN_POSTINST[0]),
         "6f91f1bb9bdcc33da5ec5a6279b5e727146ebf2eb83ef9d1b206364a69829756"
     );
 }

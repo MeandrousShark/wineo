@@ -25,6 +25,7 @@ use rustix::io::Errno;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
+use crate::files;
 use crate::name;
 use crate::paths::Paths;
 
@@ -645,11 +646,10 @@ impl FolderLock {
         // Temporaries first, so a cleanup failure never leaves the state
         // removed without the directory synced.
         remove_stale_temps(&self.dir, &key(&self.folder))?;
-        match fs::remove_file(&self.state) {
-            Ok(()) => sync_dir(&self.dir),
-            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
-            Err(error) => Err(error.into()),
+        if files::remove_if_present(&self.state)? {
+            sync_dir(&self.dir)?;
         }
+        Ok(())
     }
 
     fn require_exclusive(&self) -> Result<()> {
@@ -1233,9 +1233,7 @@ pub(crate) fn create_dir_durable(dir: &Path) -> Result<()> {
 }
 
 fn sync_dir(dir: &Path) -> Result<()> {
-    File::open(dir)
-        .and_then(|file| file.sync_all())
-        .with_context(|| format!("failed to sync {}", dir.display()))
+    files::sync_dir(dir).with_context(|| format!("failed to sync {}", dir.display()))
 }
 
 #[cfg(any(test, feature = "test-support"))]

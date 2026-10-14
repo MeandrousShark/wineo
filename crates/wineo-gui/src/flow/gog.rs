@@ -1185,7 +1185,7 @@ fn load_listing(paths: &Paths) -> Result<Listing, String> {
     }
     let sources = heroic_import::sources(paths, None).map_err(|error| error.to_string())?;
     let mut listing = listing_from(paths, &sources);
-    let keyring = SecretServiceKeyring::for_spec(&wineo_core::gog::account::KEY_SPEC);
+    let keyring = SecretServiceKeyring::gog();
     match wineo_core::gog::client_from_env() {
         Ok(client) => add_owned(paths, &keyring, client, &mut listing),
         Err(error) => listing.owned_note = Some(error.to_string()),
@@ -1570,7 +1570,7 @@ pub(super) fn import_extras(
     token: &Token,
 ) -> Extras {
     let mut out = Extras::default();
-    let keyring = SecretServiceKeyring::for_spec(&wineo_core::gog::account::KEY_SPEC);
+    let keyring = SecretServiceKeyring::gog();
     // Playtime needs the login and art doesn't, so a login that can't be read
     // only costs the playtime.
     let mut session = match wineo_core::gog::client_from_env() {

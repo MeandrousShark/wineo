@@ -95,14 +95,6 @@ fn create_file(dir: &OwnedFd, name: &str, mode: u32) -> rustix::io::Result<File>
     Ok(File::from(fd))
 }
 
-pub(crate) fn lowercase_hex(hasher: Md5) -> String {
-    hasher
-        .finalize()
-        .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect()
-}
-
 struct Copier<'a, F> {
     cancel: &'a cancel::Token,
     progress: F,
@@ -156,7 +148,7 @@ impl<F: FnMut(StageProgress)> Copier<'_, F> {
                 self.check_cancel()?;
             }
         }
-        Ok((written, lowercase_hex(hasher)))
+        Ok((written, crate::units::hex(hasher.finalize())))
     }
 
     fn check_cancel(&self) -> Result<()> {
@@ -363,7 +355,7 @@ fn assemble<F: FnMut(StageProgress)>(
         rustix::fs::unlinkat(&piece_dir, piece_leaf, AtFlags::empty())
             .with_context(|| format!("failed to remove {piece} in staging"))?;
     }
-    Ok((size, lowercase_hex(hasher)))
+    Ok((size, crate::units::hex(hasher.finalize())))
 }
 
 /// A split piece staging wrote, with its declared size and the (device,

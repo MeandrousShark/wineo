@@ -13,6 +13,7 @@ use toml_edit::{Array, DocumentMut, value};
 
 use crate::config::{self, Arch, GamescopeSetting, HooksSetting};
 use crate::error::{Error, Result};
+use crate::files;
 use crate::name;
 use crate::paths::Paths;
 use crate::runner::Runner;
@@ -171,15 +172,12 @@ impl Templates {
             return Err(Error::InvalidName(name.to_owned()));
         }
         let path = self.dir.join(format!("{name}.toml"));
-        match fs::read_to_string(&path) {
-            Ok(text) => return parse(&path, &text),
-            Err(err) if err.kind() == io::ErrorKind::NotFound => {}
-            Err(err) => {
-                return Err(Error::Io {
-                    context: format!("failed to read {}", path.display()),
-                    source: err,
-                });
-            }
+        let read = files::read_to_string_optional(&path).map_err(|err| Error::Io {
+            context: format!("failed to read {}", path.display()),
+            source: err,
+        })?;
+        if let Some(text) = read {
+            return parse(&path, &text);
         }
         match BUILT_IN.iter().find(|(built_in, _)| *built_in == name) {
             Some((_, text)) => parse(&path, text),

@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 use std::{fmt, fmt::Formatter};
 
 use crate::error::{Error, IoContext, Result};
-use crate::files::write_unique_private;
+use crate::files::{self, write_unique_private};
 use crate::paths::Paths;
 
 /// Where one service's key lives.
@@ -185,11 +185,7 @@ pub fn remove_key(spec: &KeySpec, paths: &Paths, keyring: &dyn Keyring) -> Resul
 }
 
 fn remove_file(path: &Path) -> Result<bool> {
-    match fs::remove_file(path) {
-        Ok(()) => Ok(true),
-        Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(false),
-        Err(err) => Err(err).context(|| format!("failed to remove {}", path.display())),
-    }
+    files::remove_if_present(path).context(|| format!("failed to remove {}", path.display()))
 }
 
 /// Deletes the key file and any temp file a crashed save left beside it,

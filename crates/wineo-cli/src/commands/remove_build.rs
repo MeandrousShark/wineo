@@ -60,11 +60,7 @@ fn warnings(paths: &Paths, errors: &[OverviewError], warned: &mut BTreeSet<Strin
             Some(name) => paths.templates_dir().join(format!("{name}.toml")),
             None => paths.environment_config(&error.name),
         };
-        let message = error
-            .message
-            .split_whitespace()
-            .collect::<Vec<_>>()
-            .join(" ");
+        let message = wineo_core::error::one_line(&error.message);
         eprintln!("warning: skipped {}: {message}", path.display());
     }
 }

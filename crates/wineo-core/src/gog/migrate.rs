@@ -26,6 +26,7 @@ use super::names;
 use crate::cancel::Token;
 use crate::config::{Arch, GlobalConfig};
 use crate::environment::{self, Environment, GogIdRecord};
+use crate::files;
 use crate::heroic::{HeroicGogGame, HeroicImport, HeroicSource, InputFingerprint};
 use crate::heroic_import::{self, GamePlan, NativePlan, Options, Registered, default_name};
 use crate::import::ImportProgress;
@@ -797,19 +798,14 @@ fn read_launch(folder: &Path, game: &HeroicGogGame) -> Result<Launch> {
     match game.platform {
         Platform::Linux => {
             let info = info_path(folder, game);
-            let text = match fs::read_to_string(&info) {
-                Ok(text) => text,
-                Err(error) if error.kind() == io::ErrorKind::NotFound => {
-                    return Err(MigrateError::MissingInfo {
-                        folder: folder.to_owned(),
-                        file: "gameinfo".to_owned(),
-                    }
-                    .into());
+            let Some(text) = files::read_to_string_optional(&info)
+                .with_context(|| format!("failed to read {}", info.display()))?
+            else {
+                return Err(MigrateError::MissingInfo {
+                    folder: folder.to_owned(),
+                    file: "gameinfo".to_owned(),
                 }
-                Err(error) => {
-                    return Err(error)
-                        .with_context(|| format!("failed to read {}", info.display()));
-                }
+                .into());
             };
             // The fifth line is the product id.
             let found = text.lines().nth(4).unwrap_or_default().trim();
@@ -826,22 +822,17 @@ fn read_launch(folder: &Path, game: &HeroicGogGame) -> Result<Launch> {
         Platform::Windows => {
             let info = info_path(folder, game);
             let file = format!("goggame-{}.info", game.id);
-            let text = match fs::read_to_string(&info) {
-                Ok(text) => text,
-                Err(error) if error.kind() == io::ErrorKind::NotFound => {
-                    return Err(match other_info(folder) {
-                        Some(found) => mismatch(folder, game, &found),
-                        None => MigrateError::MissingInfo {
-                            folder: folder.to_owned(),
-                            file,
-                        }
-                        .into(),
-                    });
-                }
-                Err(error) => {
-                    return Err(error)
-                        .with_context(|| format!("failed to read {}", info.display()));
-                }
+            let Some(text) = files::read_to_string_optional(&info)
+                .with_context(|| format!("failed to read {}", info.display()))?
+            else {
+                return Err(match other_info(folder) {
+                    Some(found) => mismatch(folder, game, &found),
+                    None => MigrateError::MissingInfo {
+                        folder: folder.to_owned(),
+                        file,
+                    }
+                    .into(),
+                });
             };
             let root: Value = serde_json::from_str(&text)
                 .with_context(|| format!("{} isn't valid JSON", info.display()))?;

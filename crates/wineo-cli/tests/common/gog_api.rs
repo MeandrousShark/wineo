@@ -177,10 +177,7 @@ pub fn builds(items: &[(&str, Option<&str>)]) -> Value {
 
 fn md5_hex(bytes: &[u8]) -> String {
     use md5::Digest as _;
-    md5::Md5::digest(bytes)
-        .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect()
+    wineo_core::units::hex(md5::Md5::digest(bytes))
 }
 
 fn reply(status: u16, body: &str) -> String {

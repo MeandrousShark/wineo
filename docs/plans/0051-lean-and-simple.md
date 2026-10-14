@@ -220,7 +220,11 @@ Follow-up answers (2026-10-13, all recommended):
 Calls made for review (2026-10-13 night): the maintainer asked for
 recommended calls to be made and reviewed later. Each is listed here.
 
-- (none yet)
+- Track B, test hooks: two private functions keep a test-only closure
+  parameter (`build_removal::remove_after_check`, trash's
+  `restore_locked_noting`). Their public callers don't take it and release
+  builds pass no-ops; moving them behind `cfg(test)` would mean rewriting
+  four integrity tests to own all their data. Kept as is.
 
 ## Possible bugs (fix as patches if confirmed)
 
@@ -436,6 +440,17 @@ Shipped in 0.31.1.
   fall back to a default on purpose); the last identity `map_err` joins
   are gone; the app's byte-size formatter is core's; one library reload
   guard instead of four copies. Net -258 lines.
+
+- Track B, core: one copy each of hex encoding, one-line errors, the
+  runner build lock for a Wine config, the pidfd and boot-id readers, and
+  the GOG and Steam keyring constructors; `files::read_optional`,
+  `remove_if_present`, `sync_dir`, and `persist_synced` replace about 30
+  hand-written NotFound and fsync sites (variants whose order or errors
+  differ were left as they are). Test-only hooks are out of release builds
+  (`strings` finds no `WINEO_TEST_` in `wineo`), and core and the app share
+  one scripted fake GOG server. About +450/-570 lines. `list`, `status`,
+  `validate`, `stats`, `trash`, and `runners` print the same JSON as before
+  on the maintainer's library.
 
 The maintainer's machine (real GPU, library of 22, after scrolling the
 library), the 0050 acceptance build against main with everything above:

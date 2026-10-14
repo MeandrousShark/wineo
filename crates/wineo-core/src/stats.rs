@@ -18,6 +18,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::environment::{self, Environment};
 use crate::error::{IoContext, Result};
+use crate::files;
 use crate::heroic::HeroicSource;
 use crate::paths::Paths;
 use crate::runtime::{Runtime, State};
@@ -122,10 +123,10 @@ pub fn set_imported(paths: &Paths, name: &str, imported: Imported) -> Result<()>
 /// it went, or None if there was no log to copy.
 pub(crate) fn copy_log(from: &Paths, to: &Paths, name: &str) -> Result<Option<PathBuf>> {
     let source = from.stats_log(name);
-    let bytes = match fs::read(&source) {
-        Ok(bytes) => bytes,
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(err) => return Err(err).context(|| format!("failed to read {}", source.display())),
+    let Some(bytes) =
+        files::read_optional(&source).context(|| format!("failed to read {}", source.display()))?
+    else {
+        return Ok(None);
     };
     let destination = to.stats_log(name);
     publish_new(&destination, &bytes)
@@ -143,7 +144,7 @@ fn publish_new(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     staging.as_file().sync_all()?;
     fs::hard_link(staging.path(), path)?;
     drop(staging);
-    fs::File::open(parent)?.sync_all()
+    files::sync_dir(parent)
 }
 
 /// Everything read back from the log: its sessions, its `imported` line if
@@ -159,10 +160,10 @@ pub struct Log {
 
 /// Reads and parses the log at `path`. A missing file reads as empty.
 pub fn read(path: &Path) -> Result<Log> {
-    let text = match fs::read_to_string(path) {
-        Ok(text) => text,
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(Log::default()),
-        Err(err) => return Err(err).context(|| format!("failed to read {}", path.display())),
+    let Some(text) = files::read_to_string_optional(path)
+        .context(|| format!("failed to read {}", path.display()))?
+    else {
+        return Ok(Log::default());
     };
     let mut log = Log::default();
     for (number, line) in text.lines().enumerate() {

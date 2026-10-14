@@ -22,7 +22,7 @@ use crate::art_icon;
 use crate::config::{GlobalConfig, Kind, Target};
 use crate::environment::Environment;
 use crate::error::{Error, IoContext, Result};
-use crate::files::write_atomic;
+use crate::files::{self, write_atomic};
 use crate::launch;
 use crate::operation::{Locks, Operation};
 use crate::paths::Paths;
@@ -895,11 +895,9 @@ fn icon_name(environment: &str, target: &str) -> String {
 }
 
 fn remove_file(path: &Path) -> Result<()> {
-    match fs::remove_file(path) {
-        Ok(()) => Ok(()),
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(err) => Err(err).context(|| format!("failed to remove {}", path.display())),
-    }
+    files::remove_if_present(path)
+        .map(drop)
+        .context(|| format!("failed to remove {}", path.display()))
 }
 
 /// The icon theme directories wineo may have put an icon in. Which sizes exist

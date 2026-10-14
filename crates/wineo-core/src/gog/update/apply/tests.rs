@@ -164,10 +164,7 @@ fn package(items: &[Item]) -> Vec<u8> {
 }
 
 fn md5_hex(bytes: &[u8]) -> String {
-    Md5::digest(bytes)
-        .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect()
+    crate::units::hex(Md5::digest(bytes))
 }
 
 /// What GOG offers for one product.

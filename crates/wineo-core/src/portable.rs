@@ -13,6 +13,7 @@ use crate::clone::{self, ConfigReview};
 use crate::config::{self, EnvironmentConfig, GlobalConfig, Kind};
 use crate::download::{InstallLock, publish};
 use crate::environment::{self, Environment};
+use crate::files;
 use crate::import::{self, ExternalDependency, ImportLayout, ImportProgress, SourceFingerprint};
 use crate::operation::{Locks, Operation};
 use crate::paths::{self, Paths};
@@ -512,14 +513,10 @@ fn first_copy(
     let global_text = if !first_copy {
         None
     } else {
-        match fs::read_to_string(from.global_config()) {
-            Ok(text) => Some(portable_global(to, &from.global_config(), &text)?),
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => None,
-            Err(err) => {
-                return Err(err)
-                    .with_context(|| format!("failed to read {}", from.global_config().display()));
-            }
-        }
+        files::read_to_string_optional(&from.global_config())
+            .with_context(|| format!("failed to read {}", from.global_config().display()))?
+            .map(|text| portable_global(to, &from.global_config(), &text))
+            .transpose()?
     };
     let (copied_templates, templates_fingerprint) = if !first_copy || !from.templates_dir().is_dir()
     {
@@ -844,13 +841,7 @@ fn write_environment_once(
     let path = paths.environment_config(name);
     let config = EnvironmentConfig::parse(&path, text)?;
     let _guards = match config.wine() {
-        Some(wine) => build_lock::config(
-            paths,
-            global,
-            Some(&wine.runner),
-            wine.dxvk.as_deref(),
-            wine.vkd3d.as_deref(),
-        )?,
+        Some(wine) => build_lock::wine(paths, global, wine)?,
         None => Vec::new(),
     };
     import::write_config_once(&path, text)

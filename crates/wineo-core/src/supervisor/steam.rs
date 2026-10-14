@@ -283,7 +283,9 @@ impl Supervisor {
                 .context(|| "failed to stop Steam's game processes".to_owned())?;
                 return Ok(RunStatus::Stopped);
             }
-            if steam::pidfd_exited(&fd).context(|| "failed to watch Steam process".to_owned())? {
+            if crate::process::pidfd_exited(&fd)
+                .context(|| "failed to watch Steam process".to_owned())?
+            {
                 return Ok(RunStatus::Exited);
             }
             heartbeat_state(runtime, state, &mut heartbeat, notify);
@@ -402,16 +404,15 @@ fn scan_interval(waited: Duration, fast: Duration) -> Duration {
     }
 }
 
-fn test_timeout(variable: &str, fallback: Duration) -> Duration {
-    if cfg!(debug_assertions) {
-        std::env::var(variable)
-            .ok()
-            .and_then(|value| value.parse().ok())
-            .map(Duration::from_millis)
-            .unwrap_or(fallback)
-    } else {
-        fallback
+fn test_timeout(_variable: &str, fallback: Duration) -> Duration {
+    #[cfg(debug_assertions)]
+    if let Some(millis) = std::env::var(_variable)
+        .ok()
+        .and_then(|value| value.parse().ok())
+    {
+        return Duration::from_millis(millis);
     }
+    fallback
 }
 
 #[cfg(test)]
