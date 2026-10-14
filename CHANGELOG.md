@@ -3,6 +3,56 @@
 A finished plan bumps the minor version and fixes between plans bump the
 patch version. See `AGENTS.md` for the rule.
 
+## 0.32.0 - 2026-10-14
+
+Lean and simple ([0051](docs/plans/0051-lean-and-simple.md)): wineo does
+less while nothing is happening, uses less memory, and its code is easier
+to read. Everything you see works as before, except where noted.
+
+- The desktop app does nothing in the background: no rescans and no
+  redraws while it isn't focused, and when focused it only redraws when
+  something changed. On a real GPU, background CPU went from 1.6% to 0%.
+  Refocusing refreshes at once.
+- The app holds less art in memory (a 96 MiB budget for posters, one copy
+  per card), about 210 MB less on a 300-game library. A closing panel keeps
+  its art through the fade.
+- Import pages decode posters at most 8 at a time (half your cores),
+  shrunk to the tile and cached on disk: peak memory on a 300-game page
+  went from about 1 GB to 150 MB, and reopening a page is near instant. A
+  progress bar shows while art is still being prepared.
+- `wineo list` and `status` are about 2.5x faster and use about 25% less
+  memory (one `/proc` pass for Steam, the time zone read only when shown,
+  the trash read once), and about 10x faster with a full trash. Bulk
+  Heroic imports parse Heroic's library once instead of once per game, and bulk imports share one HTTP client and one GOG login.
+- Copies and snapshots read your prefix one fewer time (snapshot create on
+  a 376 MB prefix: 0.87 s to 0.63 s), keeping every safety check.
+- Stopping a game or tool goes through one helper. It fixes two places
+  that could signal a recycled process group, and a stop it can't confirm
+  now says so instead of reporting success. A force-stop kills at once; a
+  cancelled tool waits until its whole process group is gone.
+- Toasts, scrollbars, the hook output reader, and the art picker no longer
+  poll; the supervisor still wakes about once a second during a game.
+- The keyring uses the `secret-service` crate on zbus, the D-Bus library
+  the app already uses, so building wineo no longer needs libdbus.
+  Removing a key from a locked keyring asks you to unlock it first.
+- Release builds use full LTO: the app's binary is 44.2 to 34.8 MB, and
+  `wineo` 17.4 to 16.9 MB including the new keyring library.
+- Steam launches are checked 4 times a second for the first 10 seconds,
+  then once a second.
+- The app's prefix import review now refuses what the CLI refuses (a
+  destination another environment names, nested prefixes when adopting).
+  Portable copies say "destination appeared during review/publication"
+  instead of a raw rename error, and clone's final check can be cancelled.
+- CLI tables line up accented and CJK titles.
+- JSON: `windows_installer`, which 0.31.0 stopped reporting as an update
+  `reason`, is gone from the vocabulary and the docs.
+- `wineo trash` with an empty trash and `wineo list` with no environments
+  say so on stderr (`Trash is empty`, `No environments. Create one with:
+  wineo new`), like `status`'s `Nothing is running`. Piped output stays
+  empty.
+- Building with tests from a terminal, as `makepkg` does, no longer hangs
+  on two `art fetch` tests waiting for input.
+
 ## 0.31.1 - 2026-10-13
 
 First fixes from [0051](docs/plans/0051-lean-and-simple.md), which trims

@@ -1,4 +1,4 @@
-Status: approved
+Status: done
 
 # 0051: Lean and simple
 
@@ -603,6 +603,8 @@ Found during acceptance:
   lists as a row, so it never triggers the hint.
 
 ## Acceptance checklist
+
+Passed on 2026-10-14.
 
 Nothing should look different except where a step says so. Use a small
 existing environment as SMALL; the steps make a throwaway copy, `accept51`,
