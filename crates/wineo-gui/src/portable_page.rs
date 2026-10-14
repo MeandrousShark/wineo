@@ -497,15 +497,16 @@ impl Page {
         let progress_generation = generation;
         let work = Task::perform(
             async move {
-                tokio::task::spawn_blocking(move || {
-                    let to = explicit_destination(&folder)?;
-                    inspect_copy(&paths, &to, &source, &token, |progress| {
-                        send_progress(&sender, progress_generation, progress);
-                    })
-                })
+                task::join(
+                    move || {
+                        let to = explicit_destination(&folder)?;
+                        inspect_copy(&paths, &to, &source, &token, |progress| {
+                            send_progress(&sender, progress_generation, progress);
+                        })
+                    },
+                    anyhow::Error::from,
+                )
                 .await
-                .map_err(anyhow::Error::from)
-                .and_then(|result| result)
                 .map_err(|error| error.to_string())
             },
             move |result| Event::ReviewLoaded(generation, result.map(Box::new)),
@@ -535,39 +536,51 @@ impl Page {
         let progress_generation = generation;
         let work = Task::perform(
             async move {
-                tokio::task::spawn_blocking(move || {
-                    let to = explicit_destination(&folder)?;
-                    let mut copied = 0_u64;
-                    match review {
-                        Review::Wine(review) => {
-                            let global = GlobalConfig::load(&paths)?;
-                            portable::execute_reviewed_with(
-                                &paths,
-                                &to,
-                                &global,
-                                &review,
-                                &token,
-                                |event| {
-                                    send_copy_event(
-                                        &sender,
-                                        progress_generation,
-                                        event,
-                                        &mut copied,
-                                    )
-                                },
-                            )?;
+                task::join(
+                    move || {
+                        let to = explicit_destination(&folder)?;
+                        let mut copied = 0_u64;
+                        match review {
+                            Review::Wine(review) => {
+                                let global = GlobalConfig::load(&paths)?;
+                                portable::execute_reviewed_with(
+                                    &paths,
+                                    &to,
+                                    &global,
+                                    &review,
+                                    &token,
+                                    |event| {
+                                        send_copy_event(
+                                            &sender,
+                                            progress_generation,
+                                            event,
+                                            &mut copied,
+                                        )
+                                    },
+                                )?;
+                            }
+                            Review::Native(review) => {
+                                portable::execute_native_with(
+                                    &paths,
+                                    &to,
+                                    &review,
+                                    &token,
+                                    |event| {
+                                        send_copy_event(
+                                            &sender,
+                                            progress_generation,
+                                            event,
+                                            &mut copied,
+                                        )
+                                    },
+                                )?;
+                            }
                         }
-                        Review::Native(review) => {
-                            portable::execute_native_with(&paths, &to, &review, &token, |event| {
-                                send_copy_event(&sender, progress_generation, event, &mut copied)
-                            })?;
-                        }
-                    }
-                    Ok::<_, anyhow::Error>(())
-                })
+                        Ok::<_, anyhow::Error>(())
+                    },
+                    anyhow::Error::from,
+                )
                 .await
-                .map_err(anyhow::Error::from)
-                .and_then(|result| result)
                 .map_err(|error| error.to_string())
             },
             move |result| Event::CopyFinished(generation, result),

@@ -771,39 +771,40 @@ impl Page {
         let progress_generation = generation;
         let work = Task::perform(
             async move {
-                tokio::task::spawn_blocking(move || {
-                    let global = GlobalConfig::load(&paths)?;
-                    let imported = import::execute_reviewed(
-                        &paths,
-                        &global,
-                        request,
-                        Some(&review.inspection),
-                        None,
-                        &token,
-                        {
-                            let mut copied = 0_u64;
-                            move |progress| {
-                                if let import::ImportProgress::Copied { .. } = progress {
-                                    copied += 1;
-                                    if copied.is_multiple_of(250) {
-                                        let _ = sender.unbounded_send(Event::Progress(
-                                            progress_generation,
-                                            format!("Copied {copied} files..."),
-                                        ));
+                task::join(
+                    move || {
+                        let global = GlobalConfig::load(&paths)?;
+                        let imported = import::execute_reviewed(
+                            &paths,
+                            &global,
+                            request,
+                            Some(&review.inspection),
+                            None,
+                            &token,
+                            {
+                                let mut copied = 0_u64;
+                                move |progress| {
+                                    if let import::ImportProgress::Copied { .. } = progress {
+                                        copied += 1;
+                                        if copied.is_multiple_of(250) {
+                                            let _ = sender.unbounded_send(Event::Progress(
+                                                progress_generation,
+                                                format!("Copied {copied} files..."),
+                                            ));
+                                        }
                                     }
                                 }
-                            }
-                        },
-                    )?;
-                    let art_error = apply_art(&paths, &imported.name, &art).err();
-                    Ok::<_, anyhow::Error>(ImportOutcome {
-                        name: imported.name,
-                        art_error,
-                    })
-                })
+                            },
+                        )?;
+                        let art_error = apply_art(&paths, &imported.name, &art).err();
+                        Ok::<_, anyhow::Error>(ImportOutcome {
+                            name: imported.name,
+                            art_error,
+                        })
+                    },
+                    anyhow::Error::from,
+                )
                 .await
-                .map_err(anyhow::Error::from)
-                .and_then(|result| result)
                 .map_err(|error| error.to_string())
             },
             move |result| Event::ImportFinished(generation, result.map(Box::new)),
