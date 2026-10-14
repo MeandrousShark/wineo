@@ -13,7 +13,7 @@ use wineo_core::download::{Https, Lazy, Transport};
 use wineo_core::environment::Environment;
 use wineo_core::paths::Paths;
 use wineo_core::secret_service::SecretServiceKeyring;
-use wineo_core::steamgriddb::{self, Api, Game, KEY_VAR, Key, Keyring, Saved};
+use wineo_core::steamgriddb::{self, Api, Game, KEY_VAR, Key, Keyring, Removed, Saved};
 
 use crate::cancel;
 use crate::commands::desktop;
@@ -168,26 +168,60 @@ fn keyring() -> Box<dyn Keyring> {
 }
 
 fn key(paths: &Paths, keyring: &dyn Keyring, remove: bool) -> anyhow::Result<()> {
-    if std::env::var_os(KEY_VAR).is_some_and(|value| !value.is_empty()) {
-        eprintln!("note: {KEY_VAR} is set and overrides the saved key");
+    manage_key(
+        &KeyService {
+            name: "SteamGridDB",
+            ask: "SteamGridDB API key: ",
+            var: KEY_VAR,
+        },
+        remove,
+        || Ok(steamgriddb::remove_key(paths, keyring)?),
+        |key| {
+            if !steamgriddb::check_key(&Https::new()?, key)? {
+                bail!("SteamGridDB rejected the key");
+            }
+            Ok(())
+        },
+        |key| Ok(steamgriddb::save_key(paths, keyring, key)?),
+    )
+}
+
+/// A service whose API key `key` commands save and remove.
+pub struct KeyService<'a> {
+    /// How messages name it.
+    pub name: &'a str,
+    pub ask: &'a str,
+    /// The variable that overrides the saved key.
+    pub var: &'a str,
+}
+
+/// The flow `art key` and `import --steam key` share. The key is never printed.
+pub fn manage_key(
+    service: &KeyService<'_>,
+    remove: bool,
+    remove_saved: impl FnOnce() -> anyhow::Result<Removed>,
+    check: impl FnOnce(&str) -> anyhow::Result<()>,
+    save: impl FnOnce(&str) -> anyhow::Result<Saved>,
+) -> anyhow::Result<()> {
+    let name = service.name;
+    if std::env::var_os(service.var).is_some_and(|value| !value.is_empty()) {
+        eprintln!("note: {} is set and overrides the saved key", service.var);
     }
     if remove {
-        let removed = steamgriddb::remove_key(paths, keyring)?;
+        let removed = remove_saved()?;
         if removed.keyring || removed.file {
-            println!("Removed the SteamGridDB key");
+            println!("Removed the {name} key");
         } else {
-            println!("No SteamGridDB key was saved");
+            println!("No {name} key was saved");
         }
         return Ok(());
     }
-    let Some(key) = prompt::secret("SteamGridDB API key: ")?.filter(|key| !key.is_empty()) else {
+    let Some(key) = prompt::secret(service.ask)?.filter(|key| !key.is_empty()) else {
         bail!("no key entered");
     };
-    if !steamgriddb::check_key(&Https::new()?, &key)? {
-        bail!("SteamGridDB rejected the key");
-    }
-    match steamgriddb::save_key(paths, keyring, &key)? {
-        Saved::Keyring => println!("Saved the SteamGridDB key to the keyring"),
+    check(&key)?;
+    match save(&key)? {
+        Saved::Keyring => println!("Saved the {name} key to the keyring"),
         Saved::File(path) => eprintln!(
             "{}",
             style::warning_stderr(format!(
@@ -360,13 +394,18 @@ impl KeyCheck {
         }
     }
 
-    /// Prints `skip_line` to stderr, styled as a warning when the lookup failed.
-    pub fn print_skip(&self) {
+    /// Writes `skip_line`, styled as a warning when the lookup failed.
+    pub fn write_skip(&self, err: &mut dyn Write) -> io::Result<()> {
         match (self, self.skip_line()) {
-            (KeyCheck::Failed(_), Some(line)) => eprintln!("{}", style::warning_stderr(line)),
-            (_, Some(line)) => eprintln!("{line}"),
-            (_, None) => {}
+            (KeyCheck::Failed(_), Some(line)) => writeln!(err, "{}", style::warning_stderr(line)),
+            (_, Some(line)) => writeln!(err, "{line}"),
+            (_, None) => Ok(()),
         }
+    }
+
+    /// Prints `skip_line` to stderr.
+    pub fn print_skip(&self) {
+        crate::output::handle(self.write_skip(&mut crate::output::stderr()));
     }
 }
 
@@ -428,15 +467,7 @@ impl<'a> Access<'a> {
         let key = match (self.check_key)() {
             KeyCheck::Found(key) => key,
             check => {
-                match (&check, check.skip_line()) {
-                    (KeyCheck::Failed(_), Some(line)) => {
-                        let _ = writeln!(err, "{}", style::warning_stderr(line));
-                    }
-                    (_, Some(line)) => {
-                        let _ = writeln!(err, "{line}");
-                    }
-                    (_, None) => {}
-                }
+                let _ = check.write_skip(err);
                 return;
             }
         };

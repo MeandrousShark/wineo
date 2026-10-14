@@ -494,8 +494,7 @@ fn guided(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
         native: args.native,
         exe: args.exe,
     };
-    let mut prompt =
-        Prompt::new(Terminal::open()?, crate::output::stdout()).with_first_question(true);
+    let mut prompt = prompt::terminal()?;
     let mut guided = Guided { registered: None };
     let access = Access::steamgriddb(paths);
     match wizard::run(paths, &global, &prefill, &mut prompt, &mut guided, &access) {

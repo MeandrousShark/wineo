@@ -5,7 +5,7 @@ use std::process::ExitCode;
 use wineo_core::cancel::Token;
 use wineo_core::config::GlobalConfig;
 use wineo_core::download::{Https, Lazy};
-use wineo_core::key_store::{Keyring, Saved};
+use wineo_core::key_store::Keyring;
 use wineo_core::paths::Paths;
 use wineo_core::secret_service::SecretServiceKeyring;
 use wineo_core::steam::api::SteamApi;
@@ -21,7 +21,7 @@ use super::import::ReturnToSourceMenu;
 use super::table::render_columns;
 use super::transfer::Cancellation;
 use crate::cancel;
-use crate::prompt::{self, Canceled, Input, Prompt, Reply, Terminal, numbered};
+use crate::prompt::{self, Canceled, Input, NoInput, Prompt, Reply, Terminal, numbered};
 use crate::style;
 use crate::text;
 
@@ -65,14 +65,6 @@ pub struct Args {
     /// Delete the saved Steam Web API key
     #[arg(long, conflicts_with_all = KEY_CONFLICTS)]
     pub remove_key: bool,
-}
-
-struct OutputOnly;
-
-impl Input for OutputOnly {
-    fn line(&mut self, _: &str) -> io::Result<crate::prompt::Line> {
-        unreachable!("Steam review has no prompts")
-    }
 }
 
 pub fn run(paths: &Paths, args: Args, first_question: bool) -> anyhow::Result<ExitCode> {
@@ -134,7 +126,7 @@ fn single(
         }
         PlanOutcome::Ready(plan) => {
             data.warn();
-            let mut out = Prompt::new(OutputOnly, crate::output::stdout());
+            let mut out = Prompt::new(NoInput, crate::output::stdout());
             let key = art_key(paths, global, args.art);
             review(&plan, key.is_some(), &mut out)?;
             if args.dry_run {
@@ -237,37 +229,23 @@ fn keyring() -> Box<dyn Keyring> {
 /// Saves or removes the Steam Web API key, like `art key` does for
 /// SteamGridDB's. The key is never printed.
 fn key(paths: &Paths, global: &GlobalConfig, remove: bool) -> anyhow::Result<ExitCode> {
-    let var = steam::key::KEY_VAR;
-    if std::env::var_os(var).is_some_and(|value| !value.is_empty()) {
-        eprintln!("note: {var} is set and overrides the saved key");
-    }
-    if remove {
-        let removed = steam::key::remove_key(paths, &*keyring())?;
-        if removed.keyring || removed.file {
-            println!("Removed the Steam Web API key");
-        } else {
-            println!("No Steam Web API key was saved");
-        }
-        return Ok(ExitCode::SUCCESS);
-    }
-    let Some(key) = prompt::secret("Steam Web API key: ")?.filter(|key| !key.is_empty()) else {
-        anyhow::bail!("no key entered");
-    };
-    let install =
-        steam::active_for(paths, global).ok_or_else(|| anyhow::anyhow!("Steam wasn't found."))?;
-    let api = SteamApi::from_env().map_err(|error| anyhow::anyhow!("{error}"))?;
-    owned::check_key(&api, &install, &key)
-        .map_err(|error| anyhow::anyhow!("Couldn't check the key: {error}"))?;
-    match steam::key::save_key(paths, &*keyring(), &key)? {
-        Saved::Keyring => println!("Saved the Steam Web API key to the keyring"),
-        Saved::File(path) => eprintln!(
-            "{}",
-            style::warning_stderr(format!(
-                "warning: no keyring, so the key is stored in plain text in {}",
-                path.display()
-            ))
-        ),
-    }
+    art::manage_key(
+        &art::KeyService {
+            name: "Steam Web API",
+            ask: "Steam Web API key: ",
+            var: steam::key::KEY_VAR,
+        },
+        remove,
+        || Ok(steam::key::remove_key(paths, &*keyring())?),
+        |key| {
+            let install = steam::active_for(paths, global)
+                .ok_or_else(|| anyhow::anyhow!("Steam wasn't found."))?;
+            let api = SteamApi::from_env().map_err(|error| anyhow::anyhow!("{error}"))?;
+            owned::check_key(&api, &install, key)
+                .map_err(|error| anyhow::anyhow!("Couldn't check the key: {error}"))
+        },
+        |key| Ok(steam::key::save_key(paths, &*keyring(), key)?),
+    )?;
     Ok(ExitCode::SUCCESS)
 }
 
@@ -397,7 +375,7 @@ fn bulk(paths: &Paths, global: &GlobalConfig, args: &Args) -> anyhow::Result<Exi
     let mut done = 0;
     let mut already_imported = Vec::new();
     let mut names = HashSet::new();
-    let mut out = Prompt::new(OutputOnly, crate::output::stdout());
+    let mut out = Prompt::new(NoInput, crate::output::stdout());
     for entry in steam_import::listing(paths, global, games)? {
         if let Some(name) = entry.imported_as {
             println!("Already imported as {name}.");
@@ -432,8 +410,7 @@ fn bulk(paths: &Paths, global: &GlobalConfig, args: &Args) -> anyhow::Result<Exi
         println!("Dry run, nothing was imported.");
     } else if !ready.is_empty() {
         if !args.yes {
-            let mut out =
-                Prompt::new(Terminal::open()?, crate::output::stdout()).with_first_question(true);
+            let mut out = prompt::terminal()?;
             match out.confirm(
                 &format!("Import {}?", text::counted(ready.len(), "game", "games")),
                 true,

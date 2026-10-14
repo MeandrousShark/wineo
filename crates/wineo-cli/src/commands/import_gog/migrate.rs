@@ -2,7 +2,6 @@
 //! or picked from a list, and forgetting a game folder's saved state.
 
 use std::collections::HashSet;
-use std::io;
 use std::path::Path;
 use std::process::ExitCode;
 
@@ -26,11 +25,9 @@ use crate::commands::import_heroic::{
 };
 use crate::commands::transfer::Cancellation;
 use crate::picker;
-use crate::prompt::{self, Canceled, Prompt, Reply, Terminal, numbered};
+use crate::prompt::{self, Ask, Canceled, Prompt, Reply, Terminal, numbered, terminal};
 use crate::style;
 use crate::text;
-
-type Ask = Prompt<Terminal, crate::output::Stream<io::Stdout>>;
 
 const NEEDS_YES: &str = "Migrating without a terminal needs --yes.";
 const HEROIC_NOTE: &str =
@@ -426,10 +423,6 @@ fn confirm(prompt: &mut Ask) -> anyhow::Result<()> {
         Reply::Value(true) => Ok(()),
         _ => Err(Canceled.into()),
     }
-}
-
-fn terminal() -> anyhow::Result<Ask> {
-    Ok(Prompt::new(Terminal::open()?, crate::output::stdout()).with_first_question(true))
 }
 
 pub(super) fn one(paths: &Paths, args: &Args, id: &str, verbose: bool) -> anyhow::Result<ExitCode> {

@@ -2,7 +2,6 @@
 //! native game with an update, with a review first, progress while it works,
 //! and what changed after.
 
-use std::io;
 use std::process::ExitCode;
 
 use wineo_core::gog::account::{AccountError, Session};
@@ -18,11 +17,9 @@ use crate::commands::gog_support::{
     Account, LOGGED_OUT, Reporter, ask_wizard, offers_wizard, reason_note, usage_error, warn,
 };
 use crate::commands::transfer::Cancellation;
-use crate::prompt::{self, Canceled, Prompt, Reply, Terminal};
+use crate::prompt::{self, Ask, Canceled, Reply, terminal};
 use crate::style;
 use crate::text;
-
-type Ask = Prompt<Terminal, crate::output::Stream<io::Stdout>>;
 
 const NEEDS_YES: &str = "Updating without a terminal needs --yes.";
 const NAME_A_GAME: &str = "Name a game to update, or use --all.";
@@ -358,10 +355,6 @@ fn failure_code(failures: &[(String, String)]) -> ExitCode {
     } else {
         ExitCode::FAILURE
     }
-}
-
-fn terminal() -> anyhow::Result<Ask> {
-    Ok(Prompt::new(Terminal::open()?, crate::output::stdout()).with_first_question(true))
 }
 
 fn confirm(prompt: &mut Ask, pending: &Pending) -> anyhow::Result<()> {

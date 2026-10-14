@@ -32,7 +32,7 @@ use super::import::{ReturnToSourceMenu, choose_runner, finish_guided};
 use super::transfer::Cancellation;
 use crate::cancel;
 use crate::picker;
-use crate::prompt::{self, Canceled, Input, Prompt, Reply, Terminal, numbered};
+use crate::prompt::{self, Canceled, Input, NoInput, Prompt, Reply, Terminal, numbered};
 use crate::style;
 use crate::text;
 
@@ -99,14 +99,6 @@ impl Args {
             || self.desktop
             || self.art
             || self.yes
-    }
-}
-
-struct OutputOnly;
-
-impl Input for OutputOnly {
-    fn line(&mut self, _: &str) -> io::Result<crate::prompt::Line> {
-        unreachable!("Heroic review should not prompt in noninteractive mode")
     }
 }
 
@@ -273,7 +265,7 @@ fn run_with_access(
         } else {
             ArtChoice::off()
         };
-        let mut output = Prompt::new(OutputOnly, crate::output::stdout());
+        let mut output = Prompt::new(NoInput, crate::output::stdout());
         show_game_summary(&mut output, paths, plan.resolved(), verbose)?;
         let ctx = ReviewContext {
             paths,
@@ -1203,7 +1195,7 @@ fn import_all(bulk: &Bulk, games: Vec<Game>) -> anyhow::Result<ExitCode> {
         let imported = match &game {
             Game::Windows(plan) => {
                 if verbose {
-                    let mut output = Prompt::new(OutputOnly, crate::output::stdout());
+                    let mut output = Prompt::new(NoInput, crate::output::stdout());
                     show_game_summary(&mut output, paths, plan.resolved(), verbose)?;
                 }
                 import_progress(&mut crate::output::stdout().lock(), &name, || {
@@ -1290,7 +1282,7 @@ fn import_one(
     let registered = apply_plan_with_cancellation(paths, global, bulk.source, &plan, cancellation)?;
     report_playtime(&registered.playtime);
     let environment = &registered.environment;
-    let top = Pick::<OutputOnly, Vec<u8>>::Top(out);
+    let top = Pick::<NoInput, Vec<u8>>::Top(out);
     // A top match can't be canceled.
     let _ = fetch_art(
         paths,

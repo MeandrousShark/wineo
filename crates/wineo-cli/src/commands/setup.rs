@@ -21,7 +21,7 @@ use super::transfer::Cancellation;
 use super::{build, components, desktop};
 use crate::cancel;
 use crate::picker::{self, Place};
-use crate::prompt::{self, Canceled, Input, Prompt, Reply, Terminal, numbered};
+use crate::prompt::{self, Canceled, Input, Prompt, Reply, numbered};
 
 /// The shell's code for a command ended by Ctrl+C.
 #[derive(clap::Args)]
@@ -45,8 +45,7 @@ pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
     // A broken config is reported with its path, before anything is asked.
     Environment::load(paths, name)?;
     let global = GlobalConfig::load(paths)?;
-    let mut prompt =
-        Prompt::new(Terminal::open()?, crate::output::stdout()).with_first_question(true);
+    let mut prompt = prompt::terminal()?;
     match setup(paths, &global, name, &mut prompt) {
         Err(err) if cancel::prompted(&err) => {
             eprintln!("Canceled. Unsaved changes were dropped.");

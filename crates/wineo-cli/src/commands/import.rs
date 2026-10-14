@@ -1,4 +1,4 @@
-use std::io::{self, Write};
+use std::io::Write;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
@@ -13,7 +13,7 @@ use super::transfer::{self, Cancellation};
 use super::{download, external_runners, import_gog, import_heroic, import_steam, setup};
 use crate::cancel;
 use crate::picker;
-use crate::prompt::{self, Canceled, Choice, Input, Prompt, Reply, Terminal, numbered};
+use crate::prompt::{self, Canceled, Choice, Input, NoInput, Prompt, Reply, Terminal, numbered};
 
 #[derive(clap::Args)]
 pub struct Args {
@@ -278,13 +278,6 @@ pub(super) fn check_review(
         wineo_core::environment::check_destination(paths, &request.name, &destination)?;
     }
     Ok(())
-}
-
-struct NoInput;
-impl Input for NoInput {
-    fn line(&mut self, _: &str) -> io::Result<crate::prompt::Line> {
-        unreachable!("review has no prompts")
-    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]

@@ -3,7 +3,6 @@
 //! playtime and art after, like a migration.
 
 use std::collections::HashMap;
-use std::io;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
@@ -29,10 +28,8 @@ use crate::commands::setup::{self, watched_message};
 use crate::commands::transfer::Cancellation;
 use crate::commands::{components, desktop};
 use crate::picker::{self, Place};
-use crate::prompt::{self, Prompt, Reply, Terminal};
+use crate::prompt::{self, Ask, Reply, terminal};
 use crate::style;
-
-type Ask = Prompt<Terminal, crate::output::Stream<io::Stdout>>;
 
 const NEEDS_YES: &str = "Installing without a terminal needs --yes.";
 
@@ -341,10 +338,6 @@ fn pick_target(paths: &Paths, plan: &Plan, prompt: Option<&mut Ask>) -> anyhow::
         // Keeping on editing is what `setup` is for.
         Reply::Back => setup::menu(paths, &global, name, prompt, &place, batch),
     }
-}
-
-fn terminal() -> anyhow::Result<Ask> {
-    Ok(Prompt::new(Terminal::open()?, crate::output::stdout()).with_first_question(true))
 }
 
 /// Whether the install goes ahead.
