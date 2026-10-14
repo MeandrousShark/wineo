@@ -254,6 +254,23 @@ Shipped in 0.31.1.
   closing panel keeps its picked target's art through the fade instead of
   switching to the default target's.
 
+- C2: while waiting for Steam to launch a game, `/proc` is scanned every
+  250 ms for the first 10 s, then once a second.
+- C8: the `windows_installer` update reason is gone from core, the CLI,
+  the app, and the JSON docs.
+
+The maintainer's machine (real GPU, library of 22, after scrolling the
+library), the 0050 acceptance build against main with everything above:
+
+| | Before | After |
+|---|---|---|
+| Background CPU | 1.6% | 0.0% |
+| Background main-thread wakeups | 6.5/s | 1.2/s |
+| Focused idle CPU | 1.7% | 1.0% |
+| Focused main-thread wakeups | 5.9/s | 1.1/s |
+| RSS, focused | 156 MB | 134 MB |
+| Threads | 35 | 29 to 31 |
+
 Limits accepted in review:
 
 - A spinner inside a scrollable that is itself scrolled out of an outer
