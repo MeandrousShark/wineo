@@ -396,6 +396,12 @@ Shipped in 0.31.1.
   even (+56): about 190 duplicated lines left the pages, and the shared
   grid's API added about the same.
 
+- C7b: the app's guided flow pages dispatch through one small macro and
+  `From` conversions instead of a hand-written match per method:
+  `flow/mod.rs` 410 to 353 lines, per-page arms about 55 to 24. A trait
+  was tried and dropped: the pages' methods take different arguments, so
+  it would have added adapters without removing code.
+
 The maintainer's machine (real GPU, library of 22, after scrolling the
 library), the 0050 acceptance build against main with everything above:
 
