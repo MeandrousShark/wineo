@@ -1396,7 +1396,7 @@ mod tests {
 
         // Leaving from the grid closes the page, and Add opens a fresh one.
         let mut flow = super::super::Page::Choose(paths.clone());
-        let _ = flow.update(super::super::Event::Steam);
+        let _ = flow.update(super::super::Event::Steam, false);
         let super::super::Page::Steam(reopened) = &mut flow else {
             panic!("expected the Steam page");
         };

@@ -4045,7 +4045,7 @@ mod tests {
 
         // Leaving from the grid closes the page, and Add opens a fresh one.
         let mut flow = super::super::Page::Choose(page.paths.clone());
-        let _ = flow.update(super::super::Event::Heroic);
+        let _ = flow.update(super::super::Event::Heroic, false);
         let super::super::Page::Heroic(reopened) = &mut flow else {
             panic!("expected the Heroic page");
         };

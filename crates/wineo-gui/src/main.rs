@@ -1537,7 +1537,7 @@ impl App {
         let choose_back =
             matches!(page, flow::Page::Choose(_)) && matches!(event, flow::Event::Back);
         let task = page
-            .update_with_key_availability(event, self.steamgriddb_available)
+            .update(event, self.steamgriddb_available)
             .map(move |event| Message::Flow(generation, event));
         if let Some(name) = page.take_updated() {
             self.gog_updates.remove(&name);
