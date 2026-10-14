@@ -69,7 +69,9 @@ fn prune_needs_explicit_selection_and_confirmation() {
     assert!(stderr(&refused).contains("--yes"));
     assert!(stdout(&f.run(&["trash", "list"])).contains(&id));
     assert_success(&f.run(&["prune", &id, "--yes"]));
-    assert!(stdout(&f.run(&["trash", "list"])).trim().is_empty());
+    let empty = f.run(&["trash", "list"]);
+    assert!(stdout(&empty).is_empty());
+    assert_eq!(stderr(&empty), "Trash is empty\n");
 }
 
 #[test]

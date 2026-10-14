@@ -657,6 +657,24 @@ fn list_shows_every_environment_regardless_of_state() {
 }
 
 #[test]
+fn list_with_no_environments_says_so_on_stderr() {
+    let root = tempfile::tempdir().unwrap();
+    let result = output(wineo(root.path()).arg("list"));
+    assert!(result.status.success(), "{}", stderr(&result));
+    assert!(stdout(&result).is_empty());
+    assert_eq!(
+        stderr(&result),
+        "No environments. Create one with: wineo new\n"
+    );
+
+    // A config that fails to load still lists, so the hint stays away.
+    write_environment(root.path(), "broken", "not toml [");
+    let result = output(wineo(root.path()).arg("list"));
+    assert!(stdout(&result).contains("broken"), "{}", stdout(&result));
+    assert!(stderr(&result).is_empty(), "{}", stderr(&result));
+}
+
+#[test]
 fn list_reports_a_broken_state_file_but_keeps_going() {
     let root = tempfile::tempdir().unwrap();
     write_environment(root.path(), "notepad", &env_toml("notepad"));

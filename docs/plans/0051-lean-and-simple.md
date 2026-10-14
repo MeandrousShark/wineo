@@ -596,6 +596,11 @@ Found during acceptance:
   `prompt::interactive()` is now false in unit-test builds; the PTY tests
   run the real binary and still cover the prompts. The full PKGBUILD test
   command passes under a pseudo-terminal.
+- `wineo trash` with an empty trash and `wineo list` with no environments
+  printed nothing. They now print `Trash is empty` and `No environments.
+  Create one with: wineo new` on stderr, like `status`'s `Nothing is
+  running`, so piped stdout stays empty. A config that fails to load still
+  lists as a row, so it never triggers the hint.
 
 ## Acceptance checklist
 

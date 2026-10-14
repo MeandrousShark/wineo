@@ -49,6 +49,9 @@ pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
                     ]
                 })
                 .collect();
+            if rows.is_empty() {
+                eprintln!("Trash is empty");
+            }
             for line in super::table::render_columns(&rows) {
                 println!("{line}");
             }

@@ -43,6 +43,9 @@ pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
         }
         if gathered.rows.is_empty() && !args.tags.is_empty() {
             println!("No environments are tagged {}", args.tags.join(" and "));
+        } else if gathered.rows.is_empty() && !gathered.failed() {
+            // On stderr like `status`, so piped output stays empty.
+            eprintln!("No environments. Create one with: wineo new");
         }
     }
     Ok(if gathered.failed() {

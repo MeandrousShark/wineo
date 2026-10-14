@@ -36,7 +36,8 @@ After a plain `rm` it also lists the prefix and snapshots left in place,
 which pruning does not delete.
 
 `wineo trash` (or `wineo trash list`) shows each ID, name, how long ago it was
-removed, and whether the prefix was included. Restore returns data to its original name and paths. It refuses
+removed, and whether the prefix was included. An empty trash prints `Trash is
+empty` on stderr, leaving stdout empty for scripts. Restore returns data to its original name and paths. It refuses
 collisions rather than overwriting existing data. Restoring a plain `rm` entry
 returns its config, art, and playtime while leaving the prefix and snapshots
 where they were; restoring a `--delete-prefix` entry returns those too.
