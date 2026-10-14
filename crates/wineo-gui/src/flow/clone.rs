@@ -11,6 +11,7 @@ use wineo_core::paths::Paths;
 use wineo_core::runners::Runners;
 
 use crate::chips::input_style;
+use crate::task;
 use crate::theme::Palette;
 use crate::ui::{ScrollStyle, accent_base, secondary_button};
 
@@ -88,17 +89,18 @@ impl Page {
         };
         let load = Task::perform(
             async move {
-                tokio::task::spawn_blocking(move || {
-                    let environment = Environment::load(&paths, &name)?;
-                    match &environment.config.kind {
-                        Kind::Wine(_) => Ok(false),
-                        Kind::Native => Ok(true),
-                        Kind::Proxied(_) => Err(environment.config.no_prefix(&name).into()),
-                    }
-                })
+                task::join(
+                    move || {
+                        let environment = Environment::load(&paths, &name)?;
+                        match &environment.config.kind {
+                            Kind::Wine(_) => Ok(false),
+                            Kind::Native => Ok(true),
+                            Kind::Proxied(_) => Err(environment.config.no_prefix(&name).into()),
+                        }
+                    },
+                    anyhow::Error::from,
+                )
                 .await
-                .map_err(anyhow::Error::from)
-                .and_then(|result| result)
                 .map_err(|error| error.to_string())
             },
             Event::SourceLoaded,
@@ -476,12 +478,11 @@ impl Page {
         let destination = self.destination.clone();
         Task::perform(
             async move {
-                tokio::task::spawn_blocking(move || {
-                    inspect_clone(&paths, &source, &name, &destination, &token)
-                })
+                task::join(
+                    move || inspect_clone(&paths, &source, &name, &destination, &token),
+                    anyhow::Error::from,
+                )
                 .await
-                .map_err(anyhow::Error::from)
-                .and_then(|result| result)
                 .map_err(|error| error.to_string())
             },
             move |result| Event::ReviewLoaded(generation, result.map(Box::new)),
@@ -507,40 +508,41 @@ impl Page {
         let progress_generation = generation;
         let work = Task::perform(
             async move {
-                tokio::task::spawn_blocking(move || match review {
-                    Review::Wine(review) => {
-                        let name = review.new_name.clone();
-                        clone::execute_reviewed(
-                            &paths,
-                            &GlobalConfig::load(&paths)?,
-                            &review,
-                            &token,
-                            {
-                                let mut copied = 0_u64;
-                                move |progress| {
-                                    if let ImportProgress::Copied { .. } = progress {
-                                        copied += 1;
-                                        if copied.is_multiple_of(250) {
-                                            let _ = sender.unbounded_send(Event::Progress(
-                                                progress_generation,
-                                                format!("Copied {copied} files..."),
-                                            ));
+                task::join(
+                    move || match review {
+                        Review::Wine(review) => {
+                            let name = review.new_name.clone();
+                            clone::execute_reviewed(
+                                &paths,
+                                &GlobalConfig::load(&paths)?,
+                                &review,
+                                &token,
+                                {
+                                    let mut copied = 0_u64;
+                                    move |progress| {
+                                        if let ImportProgress::Copied { .. } = progress {
+                                            copied += 1;
+                                            if copied.is_multiple_of(250) {
+                                                let _ = sender.unbounded_send(Event::Progress(
+                                                    progress_generation,
+                                                    format!("Copied {copied} files..."),
+                                                ));
+                                            }
                                         }
                                     }
-                                }
-                            },
-                        )?;
-                        Ok::<_, anyhow::Error>(name)
-                    }
-                    Review::Native(review) => {
-                        let name = review.new_name.clone();
-                        clone::execute_native(&paths, &review)?;
-                        Ok(name)
-                    }
-                })
+                                },
+                            )?;
+                            Ok::<_, anyhow::Error>(name)
+                        }
+                        Review::Native(review) => {
+                            let name = review.new_name.clone();
+                            clone::execute_native(&paths, &review)?;
+                            Ok(name)
+                        }
+                    },
+                    anyhow::Error::from,
+                )
                 .await
-                .map_err(anyhow::Error::from)
-                .and_then(|result| result)
                 .map_err(|error| error.to_string())
             },
             move |result| Event::CloneFinished(generation, result),

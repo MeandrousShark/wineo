@@ -23,6 +23,7 @@ use wineo_core::secret_service::SecretServiceKeyring;
 use super::Action;
 use super::heroic;
 use crate::size::format_bytes;
+use crate::task;
 use crate::theme::Palette;
 use crate::ui::{accent_base, secondary_button};
 
@@ -221,15 +222,11 @@ impl Page {
             wizard: self.wizard,
             ..Options::default()
         };
-        Task::perform(
-            async move {
-                tokio::task::spawn_blocking(move || {
-                    let client =
-                        wineo_core::gog::client_from_env().map_err(|error| error.to_string())?;
-                    plan_with_options(&paths, &keyring(), client, &name, options, &token)
-                })
-                .await
-                .map_err(|error| error.to_string())?
+        task::blocking(
+            move || {
+                let client =
+                    wineo_core::gog::client_from_env().map_err(|error| error.to_string())?;
+                plan_with_options(&paths, &keyring(), client, &name, options, &token)
             },
             move |result| Event::Planned(generation, result),
         )
@@ -251,18 +248,17 @@ impl Page {
         let paths = self.paths.clone();
         let (sender, receiver) = unbounded();
         let work = Task::perform(
-            async move {
-                tokio::task::spawn_blocking(move || {
+            task::join(
+                move || {
                     let client = wineo_core::gog::client_from_env()
                         .map_err(|error| Failure::Failed(error.to_string()))?;
                     apply_with(&paths, &keyring(), client, &pending, &token, |line| {
                         let _ = sender.unbounded_send(Event::Progress(generation, line));
                     })
                     .map(Box::new)
-                })
-                .await
-                .map_err(|error| Failure::Failed(error.to_string()))?
-            },
+                },
+                |error| Failure::Failed(error.to_string()),
+            ),
             move |result| Event::Finished(generation, result),
         );
         Task::batch([Task::run(receiver, |event| event), work])
