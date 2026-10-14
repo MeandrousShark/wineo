@@ -2,95 +2,13 @@
 //! plain HTTP on localhost, answering each request line through a handler.
 
 use crate::test_script::write_script;
-use std::io::{Read, Write};
-use std::net::TcpListener;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::io::Write;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use wineo_core::gog::api::Client;
 use wineo_core::key_store::Keyring;
 
-pub(crate) struct Server {
-    pub(crate) base: String,
-    requests: Arc<Mutex<Vec<String>>>,
-    stop: Arc<AtomicBool>,
-}
-
-impl Server {
-    pub(crate) fn start(handler: impl Fn(&str) -> Vec<u8> + Send + 'static) -> Self {
-        Self::start_paced(handler, usize::MAX, Duration::ZERO)
-    }
-
-    /// `start`, writing each answer `chunk` bytes at a time with `pause`
-    /// between them, like a slow connection.
-    pub(crate) fn start_paced(
-        handler: impl Fn(&str) -> Vec<u8> + Send + 'static,
-        piece_size: usize,
-        pause: Duration,
-    ) -> Self {
-        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        listener.set_nonblocking(true).unwrap();
-        let base = format!("http://{}", listener.local_addr().unwrap());
-        let requests = Arc::new(Mutex::new(Vec::new()));
-        let stop = Arc::new(AtomicBool::new(false));
-        let (seen, stopped) = (Arc::clone(&requests), Arc::clone(&stop));
-        std::thread::spawn(move || {
-            while !stopped.load(Ordering::Relaxed) {
-                let mut stream = match listener.accept() {
-                    Ok((stream, _)) => stream,
-                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
-                        std::thread::sleep(Duration::from_millis(2));
-                        continue;
-                    }
-                    Err(_) => return,
-                };
-                stream.set_nonblocking(false).unwrap();
-                let mut head = Vec::new();
-                let mut chunk = [0; 1024];
-                while !head.windows(4).any(|window| window == b"\r\n\r\n") {
-                    match stream.read(&mut chunk) {
-                        Ok(0) | Err(_) => break,
-                        Ok(read) => head.extend_from_slice(&chunk[..read]),
-                    }
-                }
-                let line = String::from_utf8_lossy(&head)
-                    .lines()
-                    .next()
-                    .unwrap_or_default()
-                    .to_owned();
-                seen.lock().unwrap().push(line.clone());
-                for piece in handler(&line).chunks(piece_size) {
-                    if stream.write_all(piece).is_err() {
-                        break;
-                    }
-                    let _ = stream.flush();
-                    std::thread::sleep(pause);
-                }
-                let _ = stream.flush();
-            }
-        });
-        Self {
-            base,
-            requests,
-            stop,
-        }
-    }
-
-    pub(crate) fn client(&self) -> Client {
-        Client::with_base("wineo-test", &self.base).unwrap()
-    }
-
-    pub(crate) fn requests(&self) -> Vec<String> {
-        self.requests.lock().unwrap().clone()
-    }
-}
-
-impl Drop for Server {
-    fn drop(&mut self) {
-        self.stop.store(true, Ordering::Relaxed);
-    }
-}
+pub(crate) use wineo_gog::fake::Scripted as Server;
 
 pub(crate) fn reply(status: u16, body: &str) -> Vec<u8> {
     format!(

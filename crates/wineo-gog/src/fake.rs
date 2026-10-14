@@ -1,5 +1,5 @@
-//! A local HTTP server standing in for GOG. A handler answers each request,
-//! and every request's line and headers are recorded.
+//! Local HTTP servers standing in for GOG. A handler answers each request,
+//! and every request is recorded.
 
 use std::io::{ErrorKind, Read, Write};
 use std::net::TcpListener;
@@ -184,6 +184,91 @@ impl FakeGog {
 }
 
 impl Drop for FakeGog {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Relaxed);
+    }
+}
+
+/// A server that answers each request line through a handler, one request
+/// at a time. The handler runs while the client waits for its answer, so a
+/// test can change state at exactly that point.
+pub struct Scripted {
+    pub base: String,
+    requests: Arc<Mutex<Vec<String>>>,
+    stop: Arc<AtomicBool>,
+}
+
+impl Scripted {
+    pub fn start(handler: impl Fn(&str) -> Vec<u8> + Send + 'static) -> Self {
+        Self::start_paced(handler, usize::MAX, Duration::ZERO)
+    }
+
+    /// `start`, writing each answer `piece_size` bytes at a time with
+    /// `pause` between them, like a slow connection.
+    pub fn start_paced(
+        handler: impl Fn(&str) -> Vec<u8> + Send + 'static,
+        piece_size: usize,
+        pause: Duration,
+    ) -> Self {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        let stop = Arc::new(AtomicBool::new(false));
+        let (seen, stopped) = (Arc::clone(&requests), Arc::clone(&stop));
+        std::thread::spawn(move || {
+            while !stopped.load(Ordering::Relaxed) {
+                let mut stream = match listener.accept() {
+                    Ok((stream, _)) => stream,
+                    Err(error) if error.kind() == ErrorKind::WouldBlock => {
+                        std::thread::sleep(Duration::from_millis(2));
+                        continue;
+                    }
+                    Err(_) => return,
+                };
+                stream.set_nonblocking(false).unwrap();
+                let mut head = Vec::new();
+                let mut chunk = [0; 1024];
+                while !head.windows(4).any(|window| window == b"\r\n\r\n") {
+                    match stream.read(&mut chunk) {
+                        Ok(0) | Err(_) => break,
+                        Ok(read) => head.extend_from_slice(&chunk[..read]),
+                    }
+                }
+                let line = String::from_utf8_lossy(&head)
+                    .lines()
+                    .next()
+                    .unwrap_or_default()
+                    .to_owned();
+                seen.lock().unwrap().push(line.clone());
+                for piece in handler(&line).chunks(piece_size) {
+                    if stream.write_all(piece).is_err() {
+                        break;
+                    }
+                    let _ = stream.flush();
+                    std::thread::sleep(pause);
+                }
+                let _ = stream.flush();
+            }
+        });
+        Self {
+            base,
+            requests,
+            stop,
+        }
+    }
+
+    /// The request lines received so far.
+    pub fn requests(&self) -> Vec<String> {
+        self.requests.lock().unwrap().clone()
+    }
+
+    pub fn client(&self) -> Client {
+        Client::with_base("wineo-test", &self.base).unwrap()
+    }
+}
+
+impl Drop for Scripted {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::Relaxed);
     }

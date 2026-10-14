@@ -23,8 +23,8 @@ mod owned;
 mod product;
 mod profile;
 
-#[cfg(test)]
-mod fake;
+#[cfg(any(test, feature = "test-server"))]
+pub mod fake;
 
 pub use art::GameArt;
 pub use auth::{
