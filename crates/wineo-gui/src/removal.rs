@@ -96,6 +96,13 @@ impl Toast {
         }
     }
 
+    /// When the toast expires, if its clock is running. Hover and focus
+    /// pause it, and an expired one has nothing left to wait for.
+    pub(crate) fn deadline(&self) -> Option<Instant> {
+        (!self.hovered && !self.focused && !self.remaining.is_zero())
+            .then(|| self.last + self.remaining)
+    }
+
     pub(crate) fn advance(&mut self, now: Instant) {
         if !self.hovered && !self.focused {
             self.remaining = self
@@ -271,9 +278,12 @@ pub(crate) fn update(app: &mut App, message: Message) -> Task<Message> {
             }
             Task::none()
         }
-        Message::ToastTick(now) => {
-            iced::widget::operation::is_focused(iced::widget::Id::new(crate::focus_button::UNDO_ID))
-                .map(move |focused| Message::ToastFocus(focused, now))
+        Message::ToastTick(generation) => {
+            if app.toast_wake.fired(generation) {
+                app.poll_toast_focus()
+            } else {
+                Task::none()
+            }
         }
         Message::ToastFocus(focused, now) => {
             if let Some(toast) = &mut app.toast {
@@ -294,6 +304,53 @@ pub(crate) fn update(app: &mut App, message: Message) -> Task<Message> {
 }
 
 impl App {
+    /// Focus is only known by asking the widget tree, and nothing tells the
+    /// toast when Undo gains or loses it, so it asks after the events that
+    /// can move it: a click, a key coming up, and any change to the screen
+    /// while Undo holds focus (it may have been disabled).
+    pub(crate) fn toast_focus_may_have_changed(&self, message: &Message) -> bool {
+        let Some(toast) = &self.toast else {
+            return false;
+        };
+        match message {
+            Message::Pressed | Message::KeyReleased => true,
+            Message::ToastTick(_) | Message::ToastHover(_) | Message::ToastFocus(..) => false,
+            _ => toast.focused,
+        }
+    }
+
+    pub(crate) fn poll_toast_focus(&mut self) -> Task<Message> {
+        let Some(toast) = &mut self.toast else {
+            return Task::none();
+        };
+        let now = Instant::now();
+        // Charge the time so far to the state the toast was last known to be
+        // in, so a focus change found now only pauses from here on.
+        toast.advance(now);
+        iced::widget::operation::is_focused(iced::widget::Id::new(crate::focus_button::UNDO_ID))
+            .map(move |focused| Message::ToastFocus(focused, now))
+    }
+
+    /// Drops a toast that ran out while a change blocked its removal, once
+    /// the change is over.
+    pub(crate) fn settle_toast(&mut self) {
+        if self.change.is_none()
+            && self
+                .toast
+                .as_ref()
+                .is_some_and(|toast| toast.remaining.is_zero())
+        {
+            self.toast = None;
+        }
+    }
+
+    /// The next time the toast or the feature notice needs the app to wake.
+    pub(crate) fn next_toast_deadline(&self) -> Option<Instant> {
+        let toast = self.toast.as_ref().and_then(Toast::deadline);
+        let notice = self.feature_notice.as_ref().map(|(_, until)| *until);
+        [toast, notice].into_iter().flatten().min()
+    }
+
     pub(crate) fn remove_reason(&self, name: &str) -> Option<String> {
         if self.restore_pending(name) {
             return Some("Roll back restore first.".into());
@@ -1193,6 +1250,99 @@ mod tests {
         let _ = app.update(Message::ToastFocus(false, start + Duration::from_secs(64)));
         let _ = app.update(Message::ToastFocus(false, start + Duration::from_secs(70)));
         assert!(app.toast.is_none());
+    }
+
+    #[test]
+    fn toast_has_one_wakeup_at_expiry_and_none_while_paused() {
+        let (_root, mut app) = fixture(false);
+        removed(&mut app);
+        let toast = app.toast.as_ref().unwrap();
+        let expiry = toast.last + toast.remaining;
+        assert_eq!(app.toast_wake.due(), Some(expiry));
+
+        let _ = app.update(Message::ToastHover(true));
+        assert!(app.toast_wake.due().is_none(), "hover leaves no timer");
+        let paused = app.toast.as_ref().unwrap().remaining;
+
+        let _ = app.update(Message::ToastHover(false));
+        let toast = app.toast.as_ref().unwrap();
+        assert_eq!(
+            toast.remaining, paused,
+            "unpausing keeps the remaining time"
+        );
+        assert_eq!(app.toast_wake.due(), Some(toast.last + toast.remaining));
+
+        let start = toast.last;
+        let _ = app.update(Message::ToastFocus(true, start + Duration::from_secs(1)));
+        assert!(app.toast_wake.due().is_none(), "focus leaves no timer");
+        let _ = app.update(Message::ToastFocus(false, start + Duration::from_secs(2)));
+        let toast = app.toast.as_ref().unwrap();
+        assert_eq!(app.toast_wake.due(), Some(toast.last + toast.remaining));
+    }
+
+    #[test]
+    fn a_stale_toast_wakeup_changes_nothing_and_the_live_one_checks_focus() {
+        let (_root, mut app) = fixture(false);
+        removed(&mut app);
+        let live = app.toast_wake.generation();
+        let remaining = app.toast.as_ref().unwrap().remaining;
+
+        let _ = app.update(Message::ToastTick(live.wrapping_sub(1)));
+        assert!(app.toast_wake.due().is_some());
+        assert_eq!(app.toast.as_ref().unwrap().remaining, remaining);
+
+        let _ = app.update(Message::ToastTick(live));
+        // The wakeup was consumed. The deadline is still ahead, so the
+        // update re-armed it.
+        assert!(app.toast_wake.due().is_some());
+        assert_ne!(app.toast_wake.generation(), live);
+    }
+
+    #[test]
+    fn an_expired_toast_waits_for_the_change_and_then_goes() {
+        let (_root, mut app) = fixture(false);
+        removed(&mut app);
+        let _ = app.update(Message::Undo);
+        let start = app.toast.as_ref().unwrap().last;
+        let _ = app.update(Message::ToastFocus(false, start + Duration::from_secs(11)));
+        assert!(app.toast.as_ref().unwrap().remaining.is_zero());
+        assert!(app.toast_wake.due().is_none(), "nothing left to wait for");
+
+        app.change = None;
+        let _ = app.update(Message::ToastHover(false));
+        assert!(app.toast.is_none());
+    }
+
+    #[test]
+    fn the_feature_notice_gets_its_own_wakeup() {
+        let (_root, mut app) = fixture(false);
+        let until = Instant::now() + Duration::from_secs(8);
+        app.feature_notice = Some(("Done".into(), until));
+        let _ = app.update(Message::ToastHover(false));
+        assert_eq!(app.toast_wake.due(), Some(until));
+
+        removed(&mut app);
+        let toast = app.toast.as_ref().unwrap();
+        let expiry = toast.last + toast.remaining;
+        assert_eq!(app.toast_wake.due(), Some(expiry.min(until)));
+
+        let live = app.toast_wake.generation();
+        app.feature_notice = Some(("Done".into(), Instant::now() - Duration::from_millis(1)));
+        let _ = app.update(Message::ToastTick(live));
+        assert!(app.feature_notice.is_none());
+    }
+
+    #[test]
+    fn focus_is_rechecked_after_a_click_a_key_release_or_any_change_while_focused() {
+        let (_root, mut app) = fixture(false);
+        assert!(!app.toast_focus_may_have_changed(&Message::Pressed));
+        removed(&mut app);
+        assert!(app.toast_focus_may_have_changed(&Message::Pressed));
+        assert!(app.toast_focus_may_have_changed(&Message::KeyReleased));
+        assert!(!app.toast_focus_may_have_changed(&Message::Rebuild));
+        app.toast.as_mut().unwrap().focused = true;
+        assert!(app.toast_focus_may_have_changed(&Message::Rebuild));
+        assert!(!app.toast_focus_may_have_changed(&Message::ToastFocus(true, Instant::now())));
     }
 
     #[test]

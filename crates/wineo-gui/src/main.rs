@@ -180,6 +180,7 @@ pub(crate) struct App {
     remove_generation: u64,
     change: Option<removal::Change>,
     toast: Option<removal::Toast>,
+    toast_wake: wake::Wake,
     feature_notice: Option<(String, Instant)>,
     change_generation: u64,
     library_generation: u64,
@@ -321,7 +322,10 @@ pub(crate) enum Message {
     RemoveFocus(iced::event::Status, bool, bool),
     Undo,
     UndoFinished(u64, Result<(), String>),
-    ToastTick(Instant),
+    /// The toast or feature notice deadline, tagged with its wakeup.
+    ToastTick(u64),
+    /// A key came up, by which time any focus move it caused has happened.
+    KeyReleased,
     ToastHover(bool),
     ToastFocus(bool, Instant),
     Trash(trash_page::Event),
@@ -416,6 +420,7 @@ impl App {
             remove_generation: 0,
             change: None,
             toast: None,
+            toast_wake: wake::Wake::default(),
             feature_notice: None,
             change_generation: 0,
             library_generation: 0,
@@ -616,20 +621,26 @@ impl App {
             panel_motion,
             grid_motion,
             collapse,
-            if self.toast.is_some() || self.feature_notice.is_some() {
-                iced::time::every(Duration::from_millis(100)).map(Message::ToastTick)
-            } else {
-                Subscription::none()
-            },
+            iced::event::listen_with(|event, _, _| key_released(event)),
         ])
     }
     fn update(&mut self, message: Message) -> Task<Message> {
+        let poll_focus = self.toast_focus_may_have_changed(&message);
         let task = self.update_message(message);
+        self.settle_toast();
+        let focus = if poll_focus {
+            self.poll_toast_focus()
+        } else {
+            Task::none()
+        };
         // Armed after every update so each deadline change is seen.
-        let wakes = self
-            .scroll_wake
-            .arm(self.scroll_visible_until, Message::ScrollIdle);
-        Task::batch([task, wakes])
+        let wakes = Task::batch([
+            self.scroll_wake
+                .arm(self.scroll_visible_until, Message::ScrollIdle),
+            self.toast_wake
+                .arm(self.next_toast_deadline(), Message::ToastTick),
+        ]);
+        Task::batch([task, focus, wakes])
     }
 
     fn update_message(&mut self, message: Message) -> Task<Message> {
@@ -1088,6 +1099,8 @@ impl App {
                     },
                 )
             }
+            // Handled in `update`, which polls the toast's focus for it.
+            Message::KeyReleased => Task::none(),
             Message::ScrollIdle(generation) => {
                 if self.scroll_wake.fired(generation)
                     && self
@@ -2044,6 +2057,16 @@ pub(crate) fn window_or_press(event: iced::Event) -> Option<Message> {
         | iced::Event::Mouse(iced::mouse::Event::ButtonPressed(_)) => Some(Message::Pressed),
         _ => None,
     }
+}
+
+/// Focus moves by key (Tab, a dialog opening) finish before the key comes up,
+/// unlike at the press, so this is when the toast re-checks its Undo focus.
+fn key_released(event: iced::Event) -> Option<Message> {
+    matches!(
+        event,
+        iced::Event::Keyboard(keyboard::Event::KeyReleased { .. })
+    )
+    .then_some(Message::KeyReleased)
 }
 
 pub(crate) fn event_message(event: iced::Event, status: iced::event::Status) -> Option<Message> {
