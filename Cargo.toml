@@ -45,3 +45,6 @@ unsafe_code = "forbid"
 # makepkg strips the package anyway, so local release builds match it.
 [profile.release]
 strip = "symbols"
+# Smallest binaries and lowest memory of the options measured in plan 0051.
+lto = "fat"
+codegen-units = 1
