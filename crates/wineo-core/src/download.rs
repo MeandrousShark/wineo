@@ -169,11 +169,46 @@ pub trait Transport {
         self.request(url, bearer).map(|response| (response, None))
     }
 }
+/// Clones share one connection pool and its worker thread.
+#[derive(Clone)]
 pub struct Https(reqwest::blocking::Client);
 impl Https {
     /// An HTTPS client for API requests.
     pub fn new() -> Result<Self> {
         Ok(Self(http_client(true, Duration::from_secs(10))?))
+    }
+}
+
+/// Something a batch builds once, when its first item needs it, instead of
+/// once per item. A blocking HTTP client costs a thread and a TLS setup. A
+/// failed build isn't kept, so each item that asks after a failure gets the
+/// error it would have built for itself.
+pub struct Lazy<T>(std::cell::OnceCell<T>);
+
+impl<T> Default for Lazy<T> {
+    fn default() -> Self {
+        Self(std::cell::OnceCell::new())
+    }
+}
+
+impl<T> Lazy<T> {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn get_or_try_init<E>(&self, build: impl FnOnce() -> Result<T, E>) -> Result<&T, E> {
+        if let Some(value) = self.0.get() {
+            return Ok(value);
+        }
+        let value = build()?;
+        Ok(self.0.get_or_init(|| value))
+    }
+}
+
+impl Lazy<Https> {
+    /// The batch's client, built on first use.
+    pub fn https(&self) -> Result<&Https> {
+        self.get_or_try_init(Https::new)
     }
 }
 impl Transport for Https {
@@ -1757,5 +1792,33 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn a_lazy_value_is_built_once_and_a_failure_is_retried() {
+        let builds = std::cell::Cell::new(0);
+        let lazy = Lazy::<u32>::new();
+        let failed = lazy.get_or_try_init(|| {
+            builds.set(builds.get() + 1);
+            Err::<u32, _>("no")
+        });
+        assert_eq!(failed, Err("no"));
+        for _ in 0..5 {
+            let value = lazy.get_or_try_init(|| {
+                builds.set(builds.get() + 1);
+                Ok::<_, &str>(7)
+            });
+            assert_eq!(value, Ok(&7));
+        }
+        // One failed build, then one that stuck for every later item.
+        assert_eq!(builds.get(), 2);
+    }
+
+    #[test]
+    fn a_lazy_https_hands_every_item_the_same_client() {
+        let lazy = Lazy::<Https>::new();
+        let first: *const Https = lazy.https().unwrap();
+        let second: *const Https = lazy.https().unwrap();
+        assert_eq!(first, second);
     }
 }
