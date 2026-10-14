@@ -372,7 +372,14 @@ pub fn signal_led_group(leader: &Child, signal: Signal) -> io::Result<()> {
 pub fn leader_exited(leader: &Child) -> io::Result<bool> {
     let pid = Pid::from_raw(leader.id() as i32).ok_or(Errno::INVAL)?;
     let options = WaitIdOptions::EXITED | WaitIdOptions::NOHANG | WaitIdOptions::NOWAIT;
-    Ok(waitid(WaitId::Pid(pid), options)?.is_some())
+    // Unlike std's `try_wait`, rustix doesn't retry after a signal handler.
+    loop {
+        match waitid(WaitId::Pid(pid), options) {
+            Ok(status) => return Ok(status.is_some()),
+            Err(Errno::INTR) => {}
+            Err(error) => return Err(error.into()),
+        }
+    }
 }
 
 /// Waits for `leader`, an unreaped child leading its own group, stopping the

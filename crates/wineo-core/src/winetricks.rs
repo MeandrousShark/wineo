@@ -643,10 +643,11 @@ fn run_with_output(
                 }
             }
             Some(process::Step::Ask) => events(WinetricksEvent::Stopping),
-            Some(_) => {
+            Some(process::Step::Kill) => {
                 events(WinetricksEvent::Killing);
                 runner.kill(prefix, None)?;
             }
+            Some(process::Step::Rekill) => {}
         }
         anyhow::Ok(())
     })

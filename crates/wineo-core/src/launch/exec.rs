@@ -299,7 +299,8 @@ fn run(
         match step {
             None => return lines.pump(READ_BATCH, events),
             Some(Step::Ask) => events(ExecEvent::Stopping),
-            Some(_) => events(ExecEvent::Killing),
+            Some(Step::Kill) => events(ExecEvent::Killing),
+            Some(Step::Rekill) => {}
         }
         Ok(())
     })
