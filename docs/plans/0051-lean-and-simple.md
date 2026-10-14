@@ -220,7 +220,11 @@ Follow-up answers (2026-10-13, all recommended):
 Calls made for review (2026-10-13 night): the maintainer asked for
 recommended calls to be made and reviewed later. Each is listed here.
 
-- (none yet)
+- Track B, test hooks: two private functions keep a test-only closure
+  parameter (`build_removal::remove_after_check`, trash's
+  `restore_locked_noting`). Their public callers don't take it and release
+  builds pass no-ops; moving them behind `cfg(test)` would mean rewriting
+  four integrity tests to own all their data. Kept as is.
 
 ## Possible bugs (fix as patches if confirmed)
 
