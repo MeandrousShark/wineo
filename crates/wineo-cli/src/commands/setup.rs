@@ -22,6 +22,7 @@ use super::{build, components, desktop};
 use crate::cancel;
 use crate::picker::{self, Place};
 use crate::prompt::{self, Canceled, Input, Prompt, Reply, numbered};
+use crate::text;
 
 /// The shell's code for a command ended by Ctrl+C.
 #[derive(clap::Args)]
@@ -441,7 +442,7 @@ fn list<I: Input, W: Write>(prompt: &mut Prompt<I, W>, batch: &Batch) -> anyhow:
     }
     prompt.say("Targets:")?;
     let default = batch.default();
-    let width = targets.keys().map(String::len).max().unwrap_or(0);
+    let width = text::widest(targets.keys().map(String::as_str));
     for (target, spec) in &targets {
         let mut notes = Vec::new();
         if default.as_deref() == Some(target.as_str()) {
@@ -458,7 +459,11 @@ fn list<I: Input, W: Write>(prompt: &mut Prompt<I, W>, batch: &Batch) -> anyhow:
         } else {
             format!("  {}", notes.join(", "))
         };
-        prompt.say(format!("  {target:width$}  {}{notes}", spec.exe))?;
+        prompt.say(format!(
+            "  {}  {}{notes}",
+            text::pad(target, width),
+            spec.exe
+        ))?;
     }
     Ok(())
 }

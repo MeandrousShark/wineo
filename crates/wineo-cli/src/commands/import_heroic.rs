@@ -1108,8 +1108,8 @@ fn render_bulk_table(
     already: &[String],
 ) -> String {
     let shared_warning = shared_ready_warning(rows);
-    let name_width = rows.iter().map(|row| row.name.len()).max().unwrap_or(0);
-    let title_width = rows.iter().map(|row| row.title.len()).max().unwrap_or(0);
+    let name_width = text::widest(rows.iter().map(|row| row.name.as_str()));
+    let title_width = text::widest(rows.iter().map(|row| row.title.as_str()));
     let mode_width = rows
         .iter()
         .filter_map(|row| match row.status {
@@ -1149,10 +1149,10 @@ fn render_bulk_table(
         } else {
             format!("{mode:mode_width$}   {}", parts.join("   "))
         };
-        let name = &row.name;
-        let title = &row.title;
         out.push_str(&format!(
-            "  {name:name_width$}  {title:title_width$}  {status}\n"
+            "  {}  {}  {status}\n",
+            text::pad(&row.name, name_width),
+            text::pad(&row.title, title_width)
         ));
     }
     if !already.is_empty() {
@@ -3371,6 +3371,31 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn render_bulk_table_lines_up_accented_and_wide_titles() {
+        let row = |name: &str, title: &str| BulkRow {
+            name: name.to_owned(),
+            title: title.to_owned(),
+            status: RowStatus::ReadyNative { warn: None },
+            launch_scripts: false,
+        };
+        let rows = vec![
+            row("cafe", "Caf\u{e9}"),
+            row("genshin", "\u{539f}\u{795e}"),
+            row("dwarf", "Dwarf"),
+        ];
+        let text = render_bulk_table("", "copy", &rows, &[]);
+        // Each CJK character takes two columns, so the title takes four.
+        assert_eq!(
+            text.lines().skip(1).collect::<Vec<_>>(),
+            [
+                "  cafe     Caf\u{e9}   native",
+                "  genshin  \u{539f}\u{795e}   native",
+                "  dwarf    Dwarf  native",
+            ]
+        );
     }
 
     #[test]

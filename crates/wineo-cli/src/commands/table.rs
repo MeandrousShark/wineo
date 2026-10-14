@@ -6,6 +6,8 @@ use wineo_core::view::{CollectionError, CollectionOutput, StatusOutput};
 
 use wineo_core::time::{Zone, clock, relative};
 
+use crate::text;
+
 /// One line of `wineo status` or `wineo list`: name, state, target, and time.
 pub struct Row {
     name: String,
@@ -187,7 +189,7 @@ pub fn render(rows: &[Row]) -> Vec<String> {
 /// Aligns arbitrary fixed-width rows with two spaces between columns.
 pub fn render_columns<const N: usize>(rows: &[[String; N]]) -> Vec<String> {
     let widths: [usize; N] =
-        std::array::from_fn(|column| rows.iter().map(|row| row[column].len()).max().unwrap_or(0));
+        std::array::from_fn(|column| text::widest(rows.iter().map(|row| row[column].as_str())));
     rows.iter()
         .map(|row| {
             let mut line = String::new();
@@ -195,9 +197,10 @@ pub fn render_columns<const N: usize>(rows: &[[String; N]]) -> Vec<String> {
                 if column > 0 {
                     line.push_str("  ");
                 }
-                line.push_str(value);
                 if column + 1 < N {
-                    line.push_str(&" ".repeat(widths[column] - value.len()));
+                    line.push_str(&text::pad(value, widths[column]));
+                } else {
+                    line.push_str(value);
                 }
             }
             line.trim_end().to_owned()
@@ -224,13 +227,9 @@ pub fn label_line(label: &str, value: &str) -> String {
 
 /// Indented `label  value` lines with the labels padded to the longest.
 pub fn aligned_rows(rows: Vec<(String, String)>) -> Vec<String> {
-    let width = rows
-        .iter()
-        .map(|(label, _)| label.chars().count())
-        .max()
-        .unwrap_or(0);
+    let width = text::widest(rows.iter().map(|(label, _)| label.as_str()));
     rows.into_iter()
-        .map(|(label, value)| format!("  {label:<width$}  {value}"))
+        .map(|(label, value)| format!("  {}  {value}", text::pad(&label, width)))
         .collect()
 }
 
@@ -251,6 +250,19 @@ mod tests {
 
     fn ts(s: &str) -> Timestamp {
         s.parse().unwrap()
+    }
+
+    #[test]
+    fn columns_line_up_by_display_width() {
+        let rows = [
+            ["Caf\u{e9}".to_owned(), "a".to_owned()],
+            ["\u{539f}\u{795e}".to_owned(), "b".to_owned()],
+            ["Plain".to_owned(), "c".to_owned()],
+        ];
+        assert_eq!(
+            render_columns(&rows),
+            ["Caf\u{e9}   a", "\u{539f}\u{795e}   b", "Plain  c"]
+        );
     }
 
     fn run(status: RunStatus, target: &str) -> RunState {

@@ -18,6 +18,7 @@ use wineo_core::steamgriddb::{self, Api, Game, KEY_VAR, Key, Keyring, Removed, S
 use crate::cancel;
 use crate::commands::desktop;
 use crate::prompt::{Canceled, Input, Prompt, Reply, Terminal, numbered};
+use crate::text;
 use crate::{prompt, style};
 
 #[derive(clap::Args)]
@@ -722,13 +723,13 @@ fn render(env: &str, art_dir: &Path, listing: &Listing) -> (Vec<String>, Vec<Str
                 .iter()
                 .flat_map(|(_, overrides)| overrides.iter().map(|(_, resolved)| resolved)),
         )
-        .map(|resolved| file(resolved).len())
+        .map(|resolved| text::width(&file(resolved)))
         .max()
         .unwrap_or(0);
     let row = |kind: Kind, resolved: &Resolved| {
         format!(
-            "  {kind}  {:<width$}  {}",
-            file(resolved),
+            "  {kind}  {}  {}",
+            text::pad(&file(resolved), width),
             source(resolved.source.as_ref())
         )
     };

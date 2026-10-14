@@ -18,13 +18,7 @@ pub fn run(paths: &Paths, _args: Args) -> anyhow::Result<ExitCode> {
     let entries = desktop::list(paths)?;
     let known: BTreeSet<String> = environment::names(paths)?.into_iter().collect();
 
-    let width = |column: fn(&desktop::Entry) -> &str| {
-        entries
-            .iter()
-            .map(|entry| column(entry).len())
-            .max()
-            .unwrap_or(0)
-    };
+    let width = |column: fn(&desktop::Entry) -> &str| text::widest(entries.iter().map(column));
     let (environments, targets) = (
         width(|entry| entry.environment.as_str()),
         width(|entry| entry.target.as_str()),

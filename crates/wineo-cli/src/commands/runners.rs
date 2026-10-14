@@ -1,12 +1,13 @@
 use std::process::ExitCode;
 
 use clap::Subcommand;
-use unicode_width::UnicodeWidthStr;
 use wineo_core::config::GlobalConfig;
 use wineo_core::external_runners::Source;
 use wineo_core::paths::Paths;
 use wineo_core::runner::Runner;
 use wineo_core::runners::Runners;
+
+use crate::text;
 
 #[derive(clap::Args)]
 pub struct Args {
@@ -126,18 +127,13 @@ pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
     }
 
     // Display width, not bytes or chars, since a folder's name may be wide.
-    let width = |column: fn(&Row) -> &str| {
-        rows.iter()
-            .map(|row| column(row).width())
-            .max()
-            .unwrap_or_default()
-    };
+    let width = |column: fn(&Row) -> &str| text::widest(rows.iter().map(column));
     // A detail only needs padding when something follows it, so a long alias
     // error doesn't push the last column off the screen.
     let details = rows
         .iter()
         .filter(|row| !row.last.is_empty())
-        .map(|row| row.detail.width())
+        .map(|row| text::width(&row.detail))
         .max()
         .unwrap_or_default();
     let (names, kinds, sources) = (
@@ -148,10 +144,10 @@ pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
     for row in &rows {
         let line = format!(
             "{}  {}  {}  {}  {}",
-            pad(&row.name, names),
-            pad(&row.kind, kinds),
-            pad(&row.source, sources),
-            pad(&row.detail, details),
+            text::pad(&row.name, names),
+            text::pad(&row.kind, kinds),
+            text::pad(&row.source, sources),
+            text::pad(&row.detail, details),
             row.last
         );
         println!("{}", line.trim_end());
@@ -164,11 +160,6 @@ pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
         );
     }
     Ok(ExitCode::SUCCESS)
-}
-
-/// `text` padded with spaces to `width` columns on screen.
-fn pad(text: &str, width: usize) -> String {
-    format!("{text}{}", " ".repeat(width.saturating_sub(text.width())))
 }
 
 /// Which launchers have a different build under the same name than the one

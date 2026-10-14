@@ -1,3 +1,5 @@
+use unicode_width::UnicodeWidthStr;
+
 /// Picks the word for `count`, like `plural(n, "entry", "entries")`.
 pub fn plural<'a, T: PartialEq + From<u8>>(count: T, one: &'a str, many: &'a str) -> &'a str {
     if count == T::from(1) { one } else { many }
@@ -17,5 +19,24 @@ pub fn games_summary(verb: &str, done: usize, total: usize) -> String {
     format!(
         "{verb} {done} of {total} {}.",
         plural(total, "game", "games")
+    )
+}
+
+/// How many terminal columns `text` takes, which is what a table lines up on.
+/// Bytes and chars are both wrong for accents and wide characters.
+pub fn width(text: &str) -> usize {
+    text.width()
+}
+
+/// The widest of `items`, or 0 for none.
+pub fn widest<'a>(items: impl IntoIterator<Item = &'a str>) -> usize {
+    items.into_iter().map(width).max().unwrap_or(0)
+}
+
+/// `text` followed by spaces up to `width` columns, never cut short.
+pub fn pad(text: &str, width: usize) -> String {
+    format!(
+        "{text}{}",
+        " ".repeat(width.saturating_sub(self::width(text)))
     )
 }

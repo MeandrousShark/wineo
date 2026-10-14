@@ -179,7 +179,7 @@ fn print_overview(overview: &Overview, tz: &dyn Zone) {
         .map(|&index| &overview.rows[index])
         .collect();
     if !played.is_empty() {
-        let name_w = played.iter().map(|(name, _)| name.len()).max().unwrap_or(0);
+        let name_w = text::widest(played.iter().map(|(name, _)| name.as_str()));
         let played_w = played
             .iter()
             .map(|(_, s)| duration_hm(s.seconds).len())
@@ -193,8 +193,10 @@ fn print_overview(overview: &Overview, tz: &dyn Zone) {
             .unwrap_or(0)
             .max("sessions".len());
         println!(
-            "{:name_w$}  {:played_w$}  {:>sessions_w$}  last played",
-            "", "played", "sessions"
+            "{}  {:played_w$}  {:>sessions_w$}  last played",
+            text::pad("", name_w),
+            "played",
+            "sessions"
         );
         for (name, summary) in &played {
             let mut last = summary
@@ -205,7 +207,8 @@ fn print_overview(overview: &Overview, tz: &dyn Zone) {
                 last.push_str(" (running)");
             }
             println!(
-                "{name:name_w$}  {:played_w$}  {:>sessions_w$}  {last}",
+                "{}  {:played_w$}  {:>sessions_w$}  {last}",
+                text::pad(name, name_w),
                 duration_hm(summary.seconds),
                 overview_sessions(summary),
             );
