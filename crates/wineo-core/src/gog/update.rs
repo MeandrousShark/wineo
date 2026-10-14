@@ -55,9 +55,6 @@ impl UpdateState {
 /// Why a game's update can't be applied, or can't be told.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Reason {
-    /// An installer-tracked Windows game, from releases that couldn't update
-    /// one. No longer given, but kept for frontends that still name it.
-    WindowsInstaller,
     /// A Galaxy-tracked game, applied by plan 0052.
     Galaxy,
     /// Why the game can't be compared, as a sentence.
@@ -65,10 +62,9 @@ pub enum Reason {
 }
 
 impl Reason {
-    /// The machine word for the first two, else the sentence.
+    /// The machine word for Galaxy, else the sentence.
     pub fn as_str(&self) -> &str {
         match self {
-            Self::WindowsInstaller => "windows_installer",
             Self::Galaxy => "galaxy",
             Self::CantCompare(why) => why,
         }

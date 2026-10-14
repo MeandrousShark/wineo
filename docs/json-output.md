@@ -212,11 +212,9 @@ game:
 In both, `update` is `available`, `none`, `galaxy` (an update on GOG that
 a later release applies), or `cant_compare`. `applicable` says whether this
 wineo can apply it, and `reason` says why not: `galaxy`, or a sentence
-when the versions can't be compared. (`windows_installer` was used before
-wineo could update Windows installer games, and may still appear from older
-releases.) A DLC's
-`state` is `none` (up to date), `available`, `unknown` (a migrated DLC whose version
-Heroic never recorded), `cant_compare`, `failed`, `unavailable`, or
+when the versions can't be compared. A DLC's `state` is `none` (up to
+date), `available`, `unknown` (a migrated DLC whose version Heroic never
+recorded), `cant_compare`, `failed`, `unavailable`, or
 `not_installed` (owned and offered, but not installed yet: bought since, or
 newly offered for the platform; `wineo update` installs it), and its
 `title` is `null` when GOG's details don't list it. GOG ids are strings.
