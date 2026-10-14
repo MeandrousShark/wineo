@@ -349,6 +349,11 @@ Shipped in 0.31.1.
   overview instead of once per Steam game. `stats`, `list`, and `status`
   print the same output as before on the maintainer's library.
 
+- C12: the CLI's guided Steam import, GOG migration, and prefix import use
+  typed step enums like the new-environment wizard, instead of numbered
+  steps. Prompts, order, and back navigation are unchanged, and new tests
+  walk each flow forward and back.
+
 The maintainer's machine (real GPU, library of 22, after scrolling the
 library), the 0050 acceptance build against main with everything above:
 
