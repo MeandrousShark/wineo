@@ -214,7 +214,21 @@ fn pending_with(
     if supported(paths).is_err() {
         return Ok(Vec::new());
     }
-    let plan = plan(paths, global, environment, runner, prefix)?;
+    pending_in(paths, global, environment, runner, prefix, &list(paths)?)
+}
+
+/// `pending` for any kind against entries `list` already gave, so a caller
+/// checking many environments reads the applications folder once. The
+/// caller has checked the root is `supported`.
+pub(crate) fn pending_in(
+    paths: &Paths,
+    global: &GlobalConfig,
+    environment: &Environment,
+    runner: Option<&Runner>,
+    prefix: Option<&Path>,
+    listed: &[Entry],
+) -> Result<Vec<Pending>> {
+    let plan = plan(paths, global, environment, runner, prefix, listed)?;
     let mut pending = Vec::new();
     for (target, draft) in plan.wanted {
         match draft {
@@ -247,7 +261,7 @@ fn reconcile_with(
             })
             .collect());
     }
-    let plan = plan(paths, global, environment, runner, prefix)?;
+    let plan = plan(paths, global, environment, runner, prefix, &list(paths)?)?;
     let mut changes = Vec::new();
     for (target_name, draft) in plan.wanted {
         let written = draft.and_then(|draft| match draft {
@@ -288,6 +302,7 @@ fn plan(
     environment: &Environment,
     runner: Option<&Runner>,
     prefix: Option<&Path>,
+    listed: &[Entry],
 ) -> Result<Plan> {
     let mut wanted = Vec::new();
     match &environment.config.kind {
@@ -319,12 +334,14 @@ fn plan(
         Kind::Proxied(proxied) => Some(proxied.launcher.as_str()),
         Kind::Wine(_) | Kind::Native => None,
     };
-    let leftover = owned_by(paths, &environment.name)?
-        .into_iter()
+    let leftover = listed
+        .iter()
+        .filter(|entry| entry.environment == environment.name)
         .filter(|entry| {
             proxied_target.is_none_or(|target| entry.target == target)
                 && !wanted.iter().any(|(target, _)| *target == entry.target)
         })
+        .cloned()
         .collect();
     Ok(Plan { wanted, leftover })
 }
@@ -388,8 +405,17 @@ pub(crate) fn requested_targets(environment: &Environment) -> Vec<String> {
     }
 }
 
+// How often the applications folder was read on this thread, so a test can
+// hold a check of many environments to one read.
+#[cfg(test)]
+thread_local! {
+    pub(crate) static LISTS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 /// Every entry wineo has written, whatever environment it belongs to.
 pub fn list(paths: &Paths) -> Result<Vec<Entry>> {
+    #[cfg(test)]
+    LISTS.set(LISTS.get() + 1);
     let dir = paths.applications_dir();
     let mut entries = Vec::new();
     for found in fs::read_dir(&dir).into_iter().flatten().flatten() {
