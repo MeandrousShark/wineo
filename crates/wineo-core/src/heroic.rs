@@ -2671,6 +2671,48 @@ mod tests {
     }
 
     #[test]
+    fn an_unchanged_gog_inspection_fingerprints_like_gog_fingerprint() {
+        use crate::gog::folder::Platform;
+
+        for native in [false, true] {
+            let (root, source) = fixture();
+            game_fixture(&source, root.path(), r#"{"launcherArgs":"--old"}"#, native);
+            fs::create_dir_all(source.config_dir().join("gog_store")).unwrap();
+            fs::write(source.gog_installed_path(), r#"{"installed":[]}"#).unwrap();
+            let info = root.path().join("goggame-1.info");
+            fs::write(&info, "{}").unwrap();
+            let game = HeroicGogGame {
+                id: "hades".to_owned(),
+                title: "Hades".to_owned(),
+                platform: if native {
+                    Platform::Linux
+                } else {
+                    Platform::Windows
+                },
+                folder: root.path().join("game"),
+                version: String::new(),
+                language: String::new(),
+                build_id: None,
+                dlc: Vec::new(),
+            };
+            let exe = root.path().join("prefix/drive_c/game.exe");
+            let fingerprint = if native {
+                source
+                    .inspect_gog_native(&game, &exe, &info)
+                    .unwrap()
+                    .fingerprint
+            } else {
+                source.inspect_gog(&game, &exe, &info).unwrap().fingerprint
+            };
+            assert_eq!(
+                fingerprint,
+                source.gog_fingerprint(&game, &info).unwrap(),
+                "native: {native}"
+            );
+        }
+    }
+
+    #[test]
     fn discovery_finds_native_and_flatpak_and_deduplicates_aliases() {
         use std::os::unix::fs::symlink;
 
