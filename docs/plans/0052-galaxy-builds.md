@@ -158,8 +158,9 @@ documentation. Items marked *probed* were checked live.
 
 ## Questions for the maintainer
 
-Recommendations first. All answered A (2026-10-14); the design below
-follows them.
+Recommendations first. Questions 1 to 11 were answered A (2026-10-14).
+Questions 12 and 13 came from the second plan review and are open; the
+design below assumes their recommendations.
 
 ### 1. Track for a new Windows install
 
@@ -272,6 +273,33 @@ wineo that can't read it can't launch the game.
 - **B.** Install and update only; branches, rollback, and repair are
   CLI-only for now.
 
+### 12. Recovery when the target build is gone
+
+Found in the second plan review. An interrupted install or update whose
+target build GOG no longer lists, with the sidecar's copy of its manifest
+also lost, can't be finished as it started.
+
+- **A (recommended).** Retarget to the latest build of the branch the game
+  follows. The review shows the new target and asks (`--yes` accepts), and
+  files already published are treated like answer b: kept when they match
+  the new target, moved aside otherwise, nothing deleted.
+- **B.** Refuse, and leave the game blocked until `--reinstall` or `wineo
+  rm`.
+
+### 13. Reading Windows exit codes
+
+Found in the second plan review. A Windows program's exit code reaches
+Linux cut to 8 bits, so VC++'s 3010 ("restart needed") arrives as 194 and
+can't be told apart from a real 194.
+
+- **A (recommended).** Each setup step runs from a small batch file wineo
+  writes into the run directory: it runs the program, then writes
+  `%ERRORLEVEL%`, the full code, to a file beside it. That file decides
+  success; a missing file is a failure. The batch file also keeps nested
+  arguments like MSVC 2005's out of Wine's command-line quoting.
+- **B.** Read the 8-bit code and treat 194, 105, and 102 as 3010, 1641,
+  and 1638. Simpler, but a real failure with those codes would pass.
+
 ## Proposed design
 
 Part A is installs, updates, setup, and repair on the default branch. Part
@@ -328,8 +356,19 @@ the plan can split there if a review asks.
   Running one takes the same lock shared. After a successful install or
   update, versions no Galaxy game's record names are removed, each only
   when its lock can be taken at once.
-- Dependencies outside `__redist`, and those with no executable, are
-  downloaded but not run. ISI comes from the same store.
+- **Game-local dependencies,** those whose executable path doesn't start
+  with `__redist` (including ones with no executable, like DOSBox and
+  ScummVM), are part of the game: their files go into the install folder
+  and join the installed manifest, with the same ownership, update,
+  deletion, and repair rules as game files. They're never run as setup.
+- **Store references.** An operation names every store version it will use
+  in its sidecar's `pending` before downloading, and holds each version's
+  lock shared from the moment the version is found or published until the
+  operation ends, so nothing between download and setup can lose it.
+  Cleanup takes a version's lock exclusively without waiting, rereads
+  every Galaxy game's `installed` and `pending` under it, and removes the
+  version only when none names it.
+- ISI comes from the same store.
 
 ### The Galaxy record (question 10)
 
@@ -338,11 +377,13 @@ The state file stays at version 1 and stays authoritative. Its journal's
 `<folder key>.galaxy.json` beside it, holds only what version 1 has no
 room for:
 
-- `installed`: the filtered manifest of the committed build (every file,
-  support file, directory, and link with its chunks and hashes), and the
-  build it describes.
-- `pending`: the target build's filtered manifest, and the journal
-  `operation` it belongs to.
+- `installed`: the filtered manifest of the committed selection (every
+  file, support file, directory, and link with its chunks and hashes), with
+  the selection's digest (below) and the hash of `goggame-<id>.info` at
+  commit.
+- `pending`: the target's filtered manifest, the journal `operation` it
+  belongs to, the digest of the selection the operation will commit, and
+  the store versions it uses.
 - `follow`: the branch followed and the pinned build, if any.
 - `setup`: which setup steps finished, each with what identifies it
   (below).
@@ -356,20 +397,30 @@ How the two files stay consistent:
   manifest and `pending` kept. Then the state commits, clearing its
   journal. The next sidecar write drops `pending`. Each write is a
   synced atomic replace, as the state file's is.
-- **Reading.** `installed` counts only when its build matches the state's
-  committed base build. `pending` counts only when its `operation`
-  matches the state's journal. A `pending` whose build is the committed
-  one (a crash between the commit and the cleanup) is promoted. Anything
-  else is stale and ignored.
+- **The selection digest** is a hash of the state's whole `committed`
+  record: game id, platform, language, track, and every product with its
+  build and status. A DLC-only change, a language change, or a retried DLC
+  changes it, even when the base build stays the same.
+- **Reading.** `installed` counts only when its digest matches the state's
+  current `committed` and the info file's hash still matches.
+  `pending` counts only when its `operation` matches the state's journal.
+  With no journal, a `pending` whose target digest matches the current
+  `committed` (a crash between the commit and the cleanup) is promoted;
+  any other `pending` is from an operation whose journal never got
+  written, and is dropped. Anything else is stale and ignored.
 - **When the sidecar is missing, corrupt, or stale,** the game is treated
   as having no stored manifest (answer b for repairs and track moves,
   question 4's manifest fetch for updates). Since b never deletes, losing
   the sidecar can't cost a file. A lost `follow` falls back to the default
   branch, unpinned, and the next check says so.
 - **Another tool's build.** When `adopt_build` records a build that
-  `goggame-<id>.info` reports, the sidecar's `installed` no longer matches
-  and is ignored from then on, including after a downgrade to a wineo
-  that doesn't know the sidecar.
+  `goggame-<id>.info` reports, the digest and the info file's hash both
+  change, so `installed` is ignored. This wineo also removes it under the
+  state lock; an older wineo that adopts a build can't, but the info file's
+  hash still catches it. If another tool goes from build A to B and back
+  to A, an old record of A can match again. That's safe: every deletion
+  is gated by a content hash (answer a), so a stale record can at worst
+  keep a file it should have replaced, which `--repair` finds.
 - **Track moves** commit the new track first, then remove the sidecar. A
   sidecar left behind by a crash is ignored, since only the Galaxy track
   reads it.
@@ -377,6 +428,10 @@ How the two files stay consistent:
   published are checked against `pending`'s hashes and kept, the rest are
   fetched again. Offline recovery succeeds only when nothing is left to
   fetch.
+- **Recovery without `pending`** (lost, corrupt, or stale): the journal's
+  `target` names each product's build, so wineo fetches those builds'
+  manifests again and finishes the same target. When GOG no longer lists
+  a target build, question 12 applies.
 
 ### Installing
 
@@ -400,10 +455,12 @@ How the two files stay consistent:
   folder; then each listed redistributable with its own arguments, `.msi`
   packages through `msiexec /i`. Each run is supervised like 0050's
   installer runs, with a log in the run directory.
-- **Success.** 0 is success. For redistributables, 3010 and 1641 (a
-  restart is needed) and 1638 (a newer version is already installed) are
-  success, and the first two are listed as "needs a restart" in the result,
-  since Wine has nothing to restart. Anything else is a failure: the
+- **Exit codes (question 13).** Each step runs from a batch file in the
+  run directory that writes the program's full exit code to a file. 0 is
+  success. For redistributables, 3010 and 1641 (a restart is needed) and
+  1638 (a newer version is already installed) are success, and the first
+  two are listed as "needs a restart" in the result, since Wine has
+  nothing to restart. Anything else, or no code file, is a failure: the
   journal stays, the game stays blocked, and `wineo update NAME` retries
   from the first unfinished step without downloading again.
 - **Recording.** A step is recorded in the sidecar's `setup` after it
@@ -411,7 +468,8 @@ How the two files stay consistent:
   reruns that step, which is safe since these are installers built to run
   again.
 - **What identifies a step,** so a change reruns it: for ISI, the product's
-  build and the hash of its `goggame-<id>.script`; for a
+  build, the hash of its `goggame-<id>.script`, and ISI's own dependency
+  manifest hash, so a new interpreter reruns it; for a
   `temp_executable`, its path, arguments, and file hash; for a
   redistributable, its dependency id and manifest hash. An update reruns
   the steps whose identity changed, plus any new ones. `--reinstall` and
@@ -581,10 +639,18 @@ They cover:
   (moved aside); a type change; a game with no stored manifest of each
   kind; a low-space update with large deletions, with the folder and the
   data directory on separate filesystems.
-- **Setup:** each exit code class; a crash between a step and its record;
-  a changed dependency version and a changed script rerunning only their
-  steps; two games installing different versions of one dependency at
-  once.
+- **Selection changes:** a DLC-only update interrupted before its
+  journal, between the journal and the commit, and after the commit; an
+  adopted build going A to B to A; a lost `pending` during an install and
+  during a rollback, with the target still listed and not (question 12).
+- **Setup:** each exit code class through the batch file, including a
+  full code above 255 and a missing code file; a crash between a step and
+  its record; a changed dependency version, a changed script, and a new
+  ISI rerunning only their steps; two games installing different versions
+  of one dependency at once; cleanup running between another game's
+  download of a version and its setup.
+- **Game-local dependencies:** installed into the folder, updated, and
+  repaired like game files.
 - **Repair:** same-size damage that an update's size check keeps, then
   `--repair` fixing it.
 - **Concurrency:** a launch during an update, an update during a launch,
