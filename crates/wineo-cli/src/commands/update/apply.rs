@@ -13,6 +13,7 @@ use wineo_core::gog::update::{self, Check, Options, Pending, Plan, UpdateError, 
 use wineo_core::paths::Paths;
 
 use super::Args;
+use crate::cancel;
 use crate::commands::gog_support::{
     Account, LOGGED_OUT, Reporter, ask_wizard, offers_wizard, reason_note, usage_error, warn,
 };
@@ -60,16 +61,16 @@ pub(super) fn run(paths: &Paths, args: &Args) -> anyhow::Result<ExitCode> {
             Some(Stop::Interrupted(name)) => {
                 eprintln!("Update interrupted.");
                 eprintln!("Finish the interrupted update with: wineo update {name}");
-                Ok(ExitCode::from(130))
+                Ok(cancel::exit_code())
             }
             Some(Stop::InstallInterrupted(name)) => {
                 eprintln!("Install interrupted.");
                 eprintln!("Finish the interrupted install with: wineo update {name}");
-                Ok(ExitCode::from(130))
+                Ok(cancel::exit_code())
             }
             Some(Stop::Canceled) => {
                 eprintln!("Update canceled.");
-                Ok(ExitCode::from(130))
+                Ok(cancel::exit_code())
             }
             None => Err(error),
         },
@@ -93,7 +94,7 @@ fn stopped(error: &anyhow::Error) -> Option<Stop> {
             Stop::Interrupted(name.clone())
         });
     }
-    let canceled = error.is::<Canceled>()
+    let canceled = cancel::prompted(error)
         || matches!(
             error.downcast_ref::<UpdateError>(),
             Some(UpdateError::Canceled { .. })
@@ -106,10 +107,7 @@ fn stopped(error: &anyhow::Error) -> Option<Stop> {
             error.downcast_ref::<FolderError>(),
             Some(FolderError::Canceled)
         )
-        || matches!(
-            error.downcast_ref::<wineo_core::Error>(),
-            Some(wineo_core::Error::Canceled(_))
-        );
+        || cancel::core(error);
     canceled.then_some(Stop::Canceled)
 }
 

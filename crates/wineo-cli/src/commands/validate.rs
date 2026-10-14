@@ -8,12 +8,11 @@ use wineo_core::paths::Paths;
 use wineo_core::validate::{self, Fix, Level, Note, Problem, Report};
 
 use super::{components, json};
-use crate::prompt::{self, Canceled, Input, Prompt, Reply, Terminal, numbered};
+use crate::cancel;
+use crate::prompt::{self, Input, Prompt, Reply, Terminal, numbered};
 use crate::style;
 
 /// The shell's code for a command ended by Ctrl+C.
-const CANCELED: u8 = 130;
-
 #[derive(clap::Args)]
 pub struct Args {
     /// Environment to check, instead of everything
@@ -84,9 +83,9 @@ pub fn run(paths: &Paths, args: Args, verbose: bool) -> anyhow::Result<ExitCode>
     } else if prompt::interactive() {
         let mut prompt = Prompt::new(Terminal::open()?, crate::output::stdout()).with_color(color);
         match review(&mut prompt, &summary(&report), fixes) {
-            Err(err) if err.is::<Canceled>() => {
+            Err(err) if cancel::prompted(&err) => {
                 eprintln!("Canceled. Nothing was fixed.");
-                return Ok(ExitCode::from(CANCELED));
+                return Ok(cancel::exit_code());
             }
             other => other?,
         }
@@ -575,6 +574,6 @@ mod tests {
     fn cancel_fixes_nothing() {
         let mut prompt = Prompt::new(Script::new(&["q"]), Vec::new());
         let err = review(&mut prompt, "h", vec![art_fix()]).unwrap_err();
-        assert!(err.is::<Canceled>());
+        assert!(cancel::prompted(&err));
     }
 }

@@ -4,7 +4,6 @@ use std::process::{ExitCode, Stdio};
 use std::time::Duration;
 
 use anyhow::{Context, bail};
-use wineo_core::error::Error;
 use wineo_core::installer::Output;
 use wineo_core::launch::{self, Overrides, Wayland, parse_launch_env_assignment};
 use wineo_core::paths::Paths;
@@ -12,6 +11,7 @@ use wineo_core::process;
 use wineo_core::runtime::{RunMode, RunState, RunStatus, Runtime};
 use wineo_core::supervisor::{Notice, Supervisor};
 
+use crate::cancel;
 use crate::commands::build;
 use crate::commands::transfer::Cancellation;
 
@@ -80,12 +80,8 @@ pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
             }
         },
     ) {
-        Err(err)
-            if err
-                .downcast_ref::<Error>()
-                .is_some_and(|err| matches!(err, Error::Canceled(_))) =>
-        {
-            return Ok(ExitCode::from(130));
+        Err(err) if cancel::core(&err) => {
+            return Ok(cancel::exit_code());
         }
         Err(err) => return Err(err),
         Ok(prepared) => prepared,
@@ -160,8 +156,8 @@ pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
                 drop(cancellation);
                 prepared.failed(paths, lock.take(), &cleanup.token);
             }
-            if matches!(err.downcast_ref::<Error>(), Some(Error::Canceled(_))) {
-                return Ok(ExitCode::from(130));
+            if cancel::core(&err) {
+                return Ok(cancel::exit_code());
             }
             return Err(err);
         }
@@ -247,7 +243,7 @@ pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
     if proxied {
         return Ok(ExitCode::from(match state.status {
             RunStatus::Exited => 0,
-            RunStatus::Stopped => 130,
+            RunStatus::Stopped => cancel::EXIT,
             RunStatus::Failed | RunStatus::Running => 1,
         }));
     }

@@ -8,6 +8,7 @@ use wineo_core::environment::Environment;
 use wineo_core::paths::Paths;
 
 use super::transfer::{self, Cancellation};
+use crate::cancel;
 use crate::picker;
 
 #[derive(clap::Args)]
@@ -69,7 +70,7 @@ pub fn run(paths: &Paths, args: Args, verbose: bool) -> anyhow::Result<ExitCode>
         }
         Err(error) if error.is::<clone::Canceled>() => {
             eprintln!("Clone canceled");
-            Ok(ExitCode::from(130))
+            Ok(cancel::exit_code())
         }
         Err(error) => Err(error),
     }

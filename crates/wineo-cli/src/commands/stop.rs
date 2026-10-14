@@ -1,5 +1,6 @@
 use std::process::ExitCode;
 
+use crate::cancel;
 use crate::commands::transfer::Cancellation;
 use wineo_core::launch::{self, StopAction, StopOutcome};
 use wineo_core::paths::Paths;
@@ -39,13 +40,8 @@ pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
         return Err(err);
     }
     let outcome = match result {
-        Err(err)
-            if matches!(
-                err.downcast_ref::<wineo_core::error::Error>(),
-                Some(wineo_core::error::Error::Canceled(_))
-            ) =>
-        {
-            return Ok(ExitCode::from(130));
+        Err(err) if cancel::core(&err) => {
+            return Ok(cancel::exit_code());
         }
         result => result?,
     };

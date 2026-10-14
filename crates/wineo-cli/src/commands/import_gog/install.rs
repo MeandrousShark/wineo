@@ -21,6 +21,7 @@ use wineo_core::paths::Paths;
 use wineo_core::targets::Batch;
 
 use super::Args;
+use crate::cancel;
 use crate::commands::gog_support::{
     Account, Reporter, ask_wizard, offers_wizard, usage_error, warn,
 };
@@ -28,7 +29,7 @@ use crate::commands::setup::{self, watched_message};
 use crate::commands::transfer::Cancellation;
 use crate::commands::{components, desktop};
 use crate::picker::{self, Place};
-use crate::prompt::{self, Canceled, Prompt, Reply, Terminal};
+use crate::prompt::{self, Prompt, Reply, Terminal};
 use crate::style;
 
 type Ask = Prompt<Terminal, crate::output::Stream<io::Stdout>>;
@@ -202,7 +203,7 @@ pub(super) fn one(paths: &Paths, args: &Args, id: &str) -> anyhow::Result<ExitCo
         && !confirm(prompt, &plan)?
     {
         eprintln!("Install canceled.");
-        return Ok(ExitCode::from(130));
+        return Ok(cancel::exit_code());
     }
     let installed = match apply(paths, &mut session, &plan, &plan) {
         Ok(installed) => installed,
@@ -214,10 +215,10 @@ pub(super) fn one(paths: &Paths, args: &Args, id: &str) -> anyhow::Result<ExitCo
             match ask_wizard(prompt, &label) {
                 Ok(true) => {}
                 Ok(false) => return stopped(error, &plan, &plan),
-                Err(asked) if asked.is::<Canceled>() => {
+                Err(asked) if cancel::prompted(&asked) => {
                     eprintln!("Install canceled.");
                     say_finish(plan.environment());
-                    return Ok(ExitCode::from(130));
+                    return Ok(cancel::exit_code());
                 }
                 Err(asked) => return Err(asked),
             }
@@ -263,7 +264,7 @@ fn plan_install(
             } else {
                 eprintln!("Install canceled.");
             }
-            Ok(Err(ExitCode::from(130)))
+            Ok(Err(cancel::exit_code()))
         }
         Ok(plan) => Ok(Ok(plan)),
         Err(error) if is_cancel(&error) => {
@@ -273,7 +274,7 @@ fn plan_install(
             } else {
                 eprintln!("Install canceled.");
             }
-            Ok(Err(ExitCode::from(130)))
+            Ok(Err(cancel::exit_code()))
         }
         Err(error) => Err(error),
     }
@@ -293,7 +294,7 @@ fn pause_for_test(token: &wineo_core::cancel::Token) {
 }
 
 fn is_cancel(error: &anyhow::Error) -> bool {
-    error.is::<Canceled>()
+    cancel::prompted(error)
         || matches!(
             error.downcast_ref::<UpdateError>(),
             Some(UpdateError::Canceled { .. })
@@ -550,7 +551,7 @@ fn stopped(error: anyhow::Error, plan: &Plan, names: &Plan) -> anyhow::Result<Ex
         } else {
             eprintln!("Install canceled.");
         }
-        return Ok(ExitCode::from(130));
+        return Ok(cancel::exit_code());
     }
     match error.downcast_ref::<SetupError>() {
         // The game's own installer was canceled before it changed anything,
@@ -558,7 +559,7 @@ fn stopped(error: anyhow::Error, plan: &Plan, names: &Plan) -> anyhow::Result<Ex
         Some(SetupError::Canceled { .. }) => {
             eprintln!("Install canceled.");
             finish();
-            Ok(ExitCode::from(130))
+            Ok(cancel::exit_code())
         }
         // A plan resumed from cached packages may only know the game by its
         // id, so it is named as `names` names it.

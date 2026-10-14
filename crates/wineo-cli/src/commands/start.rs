@@ -1,11 +1,11 @@
 use std::process::ExitCode;
 
 use anyhow::Context;
-use wineo_core::error::Error;
 use wineo_core::installer::Output;
 use wineo_core::launch::{self, LaunchEvent, Overrides, StartOutcome};
 use wineo_core::paths::Paths;
 
+use crate::cancel;
 use crate::commands::build;
 use crate::commands::run::LaunchArgs;
 use crate::commands::transfer::Cancellation;
@@ -24,12 +24,8 @@ pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
     match start(paths, &args.name, args.launch.into_overrides()) {
         Ok(true) => println!("Started {}", args.name),
         Ok(false) => {}
-        Err(err)
-            if err
-                .downcast_ref::<Error>()
-                .is_some_and(|err| matches!(err, Error::Canceled(_))) =>
-        {
-            return Ok(ExitCode::from(130));
+        Err(err) if cancel::core(&err) => {
+            return Ok(cancel::exit_code());
         }
         Err(err) => return Err(err),
     }

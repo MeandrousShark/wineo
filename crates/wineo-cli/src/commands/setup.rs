@@ -19,12 +19,11 @@ use wineo_core::targets::{Batch, Written};
 
 use super::transfer::Cancellation;
 use super::{build, components, desktop};
+use crate::cancel;
 use crate::picker::{self, Place};
 use crate::prompt::{self, Canceled, Input, Prompt, Reply, Terminal, numbered};
 
 /// The shell's code for a command ended by Ctrl+C.
-const CANCELED: u8 = 130;
-
 #[derive(clap::Args)]
 pub struct Args {
     /// Environment to set up
@@ -49,9 +48,9 @@ pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
     let mut prompt =
         Prompt::new(Terminal::open()?, crate::output::stdout()).with_first_question(true);
     match setup(paths, &global, name, &mut prompt) {
-        Err(err) if err.is::<Canceled>() => {
+        Err(err) if cancel::prompted(&err) => {
             eprintln!("Canceled. Unsaved changes were dropped.");
-            Ok(ExitCode::from(CANCELED))
+            Ok(cancel::exit_code())
         }
         other => other,
     }
@@ -710,7 +709,7 @@ pub(crate) fn report_installer<I: Input, W: Write>(
         Outcome::Canceled { .. } => {
             prompt.say("The installer was canceled.")?;
             report_recovery(paths, name, prompt)?;
-            Ran::Ended(ExitCode::from(CANCELED))
+            Ran::Ended(cancel::exit_code())
         }
         Outcome::Unresolved {
             exit_code, error, ..

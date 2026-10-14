@@ -20,6 +20,7 @@ use super::art::{self, KeyCheck};
 use super::import::ReturnToSourceMenu;
 use super::table::render_columns;
 use super::transfer::Cancellation;
+use crate::cancel;
 use crate::prompt::{self, Canceled, Input, Prompt, Reply, Terminal, numbered};
 use crate::style;
 
@@ -100,7 +101,7 @@ pub fn run(paths: &Paths, args: Args, first_question: bool) -> anyhow::Result<Ex
     match result {
         Err(error) if canceled(&error) => {
             eprintln!("Import canceled.");
-            Ok(ExitCode::from(130))
+            Ok(cancel::exit_code())
         }
         other => other,
     }
@@ -187,12 +188,7 @@ impl Notes for Data {
 }
 
 fn canceled(error: &anyhow::Error) -> bool {
-    error.is::<Canceled>()
-        || error.is::<wineo_core::import::Cancelled>()
-        || matches!(
-            error.downcast_ref::<wineo_core::Error>(),
-            Some(wineo_core::Error::Canceled(_))
-        )
+    cancel::prompted(error) || error.is::<wineo_core::import::Cancelled>() || cancel::core(error)
 }
 
 fn list(paths: &Paths, global: &GlobalConfig, args: &Args) -> anyhow::Result<ExitCode> {

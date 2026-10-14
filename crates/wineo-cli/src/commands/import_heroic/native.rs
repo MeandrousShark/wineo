@@ -14,6 +14,7 @@ use super::{
     Args, ArtChoice, Block, Bulk, OutputOnly, display_args, edit_art, edit_desktop, fetch_art,
     gamescope_display, on_off, print_issue, render_blocks, review_art,
 };
+use crate::cancel;
 use crate::commands::art::{Access, Pick};
 use crate::commands::import::finish_guided;
 use crate::picker;
@@ -171,7 +172,7 @@ pub(super) fn direct(
     if fetched.is_err() {
         let name = &environment.name;
         eprintln!("Canceled. Kept {name}, continue with `wineo setup {name}`.");
-        return Ok(ExitCode::from(130));
+        return Ok(cancel::exit_code());
     }
     println!(
         "Imported {}. Add or edit targets with wineo setup {}",

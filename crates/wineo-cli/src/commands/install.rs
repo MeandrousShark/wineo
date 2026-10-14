@@ -6,6 +6,7 @@ use wineo_core::paths::Paths;
 use wineo_core::steam_install::{self, Action, End, Follow, Outcome, Update};
 
 use super::transfer::Cancellation;
+use crate::cancel;
 use crate::style;
 
 #[derive(clap::Args)]
@@ -76,7 +77,7 @@ fn follow(
             eprintln!("Steam canceled the uninstall.");
             return Ok(ExitCode::FAILURE);
         }
-        (End::Stopped, _) => return Ok(ExitCode::from(130)),
+        (End::Stopped, _) => return Ok(cancel::exit_code()),
     }
     Ok(ExitCode::SUCCESS)
 }

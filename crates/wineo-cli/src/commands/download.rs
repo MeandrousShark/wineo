@@ -7,7 +7,8 @@ use wineo_core::download::{Client, Progress, Provider, Release, Transport};
 use wineo_core::paths::Paths;
 
 use super::transfer::Cancellation;
-use crate::prompt::{self, Canceled, Choice, Input, Prompt, Reply, Terminal, numbered};
+use crate::cancel;
+use crate::prompt::{self, Choice, Input, Prompt, Reply, Terminal, numbered};
 use crate::style;
 
 pub const PROVIDERS: [Provider; 4] = [
@@ -38,9 +39,9 @@ pub struct Args {
 
 pub fn run(paths: &Paths, args: Args, verbose: bool) -> anyhow::Result<ExitCode> {
     match run_inner(paths, args, verbose) {
-        Err(error) if error.is::<Canceled>() => {
+        Err(error) if cancel::prompted(&error) => {
             eprintln!("{}", style::warning_stderr("Download canceled"));
-            Ok(ExitCode::from(130))
+            Ok(cancel::exit_code())
         }
         other => other,
     }
@@ -82,9 +83,9 @@ fn run_inner(paths: &Paths, args: Args, verbose: bool) -> anyhow::Result<ExitCod
         }
     };
     match result {
-        Err(error) if error.is::<Canceled>() => {
+        Err(error) if cancel::prompted(&error) => {
             eprintln!("{}", style::warning_stderr("Download canceled"));
-            Ok(ExitCode::from(130))
+            Ok(cancel::exit_code())
         }
         other => other.map(|()| ExitCode::SUCCESS),
     }
@@ -166,7 +167,7 @@ fn pick_release<I: Input, W: Write, T: Transport>(
     loop {
         let catalog = match listed(client, provider, 1) {
             Ok(catalog) => catalog,
-            Err(error) if error.is::<Canceled>() => return Err(error),
+            Err(error) if cancel::prompted(&error) => return Err(error),
             Err(error) => {
                 prompt.say(style::error(format!("Couldn't list releases: {error:#}")))?;
                 return Ok(Reply::Back);
@@ -212,7 +213,7 @@ fn pick_release<I: Input, W: Write, T: Transport>(
                 }
                 match installed(paths, global, client, release) {
                     Ok(name) => return Ok(Reply::Value(name)),
-                    Err(error) if error.is::<Canceled>() => return Err(error),
+                    Err(error) if cancel::prompted(&error) => return Err(error),
                     Err(error) => {
                         prompt.say(style::error(format!("Download failed: {error:#}")))?;
                     }
@@ -235,7 +236,7 @@ fn pick_from_full_list<I: Input, W: Write, T: Transport>(
     loop {
         let catalog = match listed(client, provider, page) {
             Ok(catalog) => catalog,
-            Err(error) if error.is::<Canceled>() => return Err(error),
+            Err(error) if cancel::prompted(&error) => return Err(error),
             Err(error) => {
                 prompt.say(style::error(format!("Couldn't list releases: {error:#}")))?;
                 return Ok(Reply::Back);
@@ -281,7 +282,7 @@ fn pick_from_full_list<I: Input, W: Write, T: Transport>(
                 }
                 match installed(paths, global, client, release) {
                     Ok(name) => return Ok(Reply::Value(name)),
-                    Err(error) if error.is::<Canceled>() => return Err(error),
+                    Err(error) if cancel::prompted(&error) => return Err(error),
                     Err(error) => {
                         prompt.say(style::error(format!("Download failed: {error:#}")))?;
                     }

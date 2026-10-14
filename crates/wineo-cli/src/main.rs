@@ -28,6 +28,7 @@ macro_rules! eprintln {
     ($($arg:tt)*) => { eprint!("{}\n", format_args!($($arg)*)) };
 }
 
+mod cancel;
 mod commands;
 mod completion;
 mod output;

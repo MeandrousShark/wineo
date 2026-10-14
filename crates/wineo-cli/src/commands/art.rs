@@ -15,6 +15,7 @@ use wineo_core::paths::Paths;
 use wineo_core::secret_service::SecretServiceKeyring;
 use wineo_core::steamgriddb::{self, Api, Game, KEY_VAR, Key, Keyring, Saved};
 
+use crate::cancel;
 use crate::commands::desktop;
 use crate::prompt::{Canceled, Input, Prompt, Reply, Terminal, numbered};
 use crate::{prompt, style};
@@ -132,9 +133,9 @@ pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
                 mode,
             };
             return match fetch(paths, &request) {
-                Err(err) if err.is::<Canceled>() => {
+                Err(err) if cancel::prompted(&err) => {
                     eprintln!("Canceled.");
-                    Ok(ExitCode::from(CANCELED))
+                    Ok(cancel::exit_code())
                 }
                 Ok(true) => Ok(ExitCode::SUCCESS),
                 Ok(false) => Ok(ExitCode::FAILURE),
@@ -197,8 +198,6 @@ fn key(paths: &Paths, keyring: &dyn Keyring, remove: bool) -> anyhow::Result<()>
     }
     Ok(())
 }
-
-const CANCELED: u8 = 130;
 
 struct FetchRequest<'a> {
     spot: &'a str,
@@ -514,7 +513,7 @@ pub fn fetch_new<I: Input, W: Write>(
     }
     match try_fetch_new(paths, transport, key, request, pick) {
         Ok(()) => Ok(()),
-        Err(error) if error.is::<Canceled>() => Err(Canceled),
+        Err(error) if cancel::prompted(&error) => Err(Canceled),
         Err(error) => {
             warn_failed(&error, err);
             Ok(())

@@ -6,7 +6,7 @@ use std::process::ExitCode;
 use wineo_core::config::Arch;
 use wineo_core::gog::folder::{FolderError, Platform};
 
-use crate::prompt::Canceled;
+use crate::cancel;
 
 mod account;
 mod extras;
@@ -105,7 +105,7 @@ pub fn run(
     match result {
         Err(error) if canceled(&error) => {
             eprintln!("Import canceled.");
-            Ok(ExitCode::from(130))
+            Ok(cancel::exit_code())
         }
         other => other,
     }
@@ -122,7 +122,7 @@ fn listed(flags: &[&str]) -> String {
 }
 
 fn canceled(error: &anyhow::Error) -> bool {
-    error.is::<Canceled>()
+    cancel::prompted(error)
         || matches!(
             error.downcast_ref::<FolderError>(),
             Some(FolderError::Canceled)
@@ -132,8 +132,5 @@ fn canceled(error: &anyhow::Error) -> bool {
             Some(wineo_core::gog::update::UpdateError::Canceled { .. })
         )
         || error.is::<wineo_core::import::Cancelled>()
-        || matches!(
-            error.downcast_ref::<wineo_core::Error>(),
-            Some(wineo_core::Error::Canceled(_))
-        )
+        || cancel::core(error)
 }

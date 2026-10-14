@@ -1,11 +1,11 @@
 use std::process::ExitCode;
 
 use wineo_core::environment::Environment;
-use wineo_core::error::Error;
 use wineo_core::launch::{self, StopAction};
 use wineo_core::paths::Paths;
 use wineo_core::runtime::Runtime;
 
+use crate::cancel;
 use crate::commands::run::LaunchArgs;
 use crate::commands::start;
 use crate::commands::transfer::Cancellation;
@@ -60,8 +60,8 @@ pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
         // Dropped before stopping, so Ctrl+C can still abort a slow stop.
         drop(cancellation);
         match result {
-            Err(err) if matches!(err.downcast_ref::<Error>(), Some(Error::Canceled(_))) => {
-                return Ok(ExitCode::from(130));
+            Err(err) if cancel::core(&err) => {
+                return Ok(cancel::exit_code());
             }
             result => result?,
         }
@@ -88,8 +88,8 @@ pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
         return Err(err);
     }
     let stopped = match result {
-        Err(err) if matches!(err.downcast_ref::<Error>(), Some(Error::Canceled(_))) => {
-            return Ok(ExitCode::from(130));
+        Err(err) if cancel::core(&err) => {
+            return Ok(cancel::exit_code());
         }
         result => result?,
     };
@@ -109,12 +109,8 @@ pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
             println!("{verb} {name}");
         }
         Ok(false) => {}
-        Err(err)
-            if err
-                .downcast_ref::<Error>()
-                .is_some_and(|err| matches!(err, Error::Canceled(_))) =>
-        {
-            return Ok(ExitCode::from(130));
+        Err(err) if cancel::core(&err) => {
+            return Ok(cancel::exit_code());
         }
         Err(err) => return Err(err),
     }

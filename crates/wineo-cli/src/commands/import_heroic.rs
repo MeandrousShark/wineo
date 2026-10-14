@@ -30,6 +30,7 @@ use super::download;
 use super::external_runners;
 use super::import::{ReturnToSourceMenu, choose_runner, finish_guided};
 use super::transfer::Cancellation;
+use crate::cancel;
 use crate::picker;
 use crate::prompt::{self, Canceled, Input, Prompt, Reply, Terminal, numbered};
 use crate::style;
@@ -227,9 +228,9 @@ fn run_with_access(
     if args.all {
         return match run_all(paths, &global, access, args, verbose) {
             Ok(code) => Ok(code),
-            Err(error) if error.is::<Canceled>() => {
+            Err(error) if cancel::prompted(&error) => {
                 eprintln!("Import canceled");
-                Ok(ExitCode::from(130))
+                Ok(cancel::exit_code())
             }
             Err(error) => Err(error),
         };
@@ -298,9 +299,9 @@ fn run_with_access(
         let log_body = verbose.then(|| plan.log_text(&global, &source) + &art.log_line());
         let registered = match apply_plan(paths, &global, &source, &plan) {
             Ok(registered) => registered,
-            Err(error) if error.is::<Canceled>() => {
+            Err(error) if cancel::prompted(&error) => {
                 eprintln!("Import canceled");
-                return Ok(ExitCode::from(130));
+                return Ok(cancel::exit_code());
             }
             Err(error) => return Err(error),
         };
@@ -329,7 +330,7 @@ fn run_with_access(
         if fetched.is_err() {
             let name = &environment.name;
             eprintln!("Canceled. Kept {name}, continue with `wineo setup {name}`.");
-            return Ok(ExitCode::from(130));
+            return Ok(cancel::exit_code());
         }
         println!(
             "Imported {}. Add or edit targets with wineo setup {}",
@@ -371,9 +372,9 @@ fn run_with_access(
     .and_then(|source| guided(paths, &global, access, source, args, &mut prompt, verbose));
     match result {
         Ok(code) => Ok(code),
-        Err(error) if error.is::<Canceled>() => {
+        Err(error) if cancel::prompted(&error) => {
             eprintln!("Import canceled");
-            Ok(ExitCode::from(130))
+            Ok(cancel::exit_code())
         }
         Err(error) => Err(error),
     }
@@ -1218,7 +1219,7 @@ fn import_all(bulk: &Bulk, games: Vec<Game>) -> anyhow::Result<ExitCode> {
                 }
                 done += 1;
             }
-            Err(error) if error.is::<Canceled>() => {
+            Err(error) if cancel::prompted(&error) => {
                 canceled = true;
                 break;
             }
@@ -1239,7 +1240,7 @@ fn import_all(bulk: &Bulk, games: Vec<Game>) -> anyhow::Result<ExitCode> {
         let remaining = total - done - failed.len();
         let noun = if remaining == 1 { "game" } else { "games" };
         println!("{remaining} {noun} canceled.");
-        return Ok(ExitCode::from(130));
+        return Ok(cancel::exit_code());
     }
     Ok(if failed.is_empty() {
         ExitCode::SUCCESS
@@ -1258,7 +1259,7 @@ fn import_progress<W: Write, T>(
     let result = operation();
     match &result {
         Ok(_) => writeln!(output, " done")?,
-        Err(error) if error.is::<Canceled>() => writeln!(output, " canceled")?,
+        Err(error) if cancel::prompted(error) => writeln!(output, " canceled")?,
         Err(error) => writeln!(output, " failed: {error:#}")?,
     }
     output.flush()?;

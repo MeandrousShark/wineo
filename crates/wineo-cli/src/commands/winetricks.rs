@@ -1,7 +1,6 @@
 use std::collections::BTreeMap;
 use std::process::ExitCode;
 
-use wineo_core::error::Error;
 use wineo_core::installer::Output;
 use wineo_core::launch::parse_env_assignment;
 use wineo_core::paths::Paths;
@@ -9,6 +8,7 @@ use wineo_core::runtime::exit_code;
 use wineo_core::winetricks::{self, WinetricksEvent};
 
 use super::transfer::Cancellation;
+use crate::cancel;
 
 pub fn print_event(event: WinetricksEvent) {
     match event {
@@ -90,13 +90,7 @@ pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
         |event| print_ensure_event(paths, name, event),
     ) {
         Ok(status) => Ok(ExitCode::from(u8::try_from(exit_code(status)).unwrap_or(1))),
-        Err(err)
-            if err
-                .downcast_ref::<Error>()
-                .is_some_and(|err| matches!(err, Error::Canceled(_))) =>
-        {
-            Ok(ExitCode::from(130))
-        }
+        Err(err) if cancel::core(&err) => Ok(cancel::exit_code()),
         Err(err) => Err(err),
     }
 }

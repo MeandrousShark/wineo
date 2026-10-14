@@ -129,7 +129,7 @@ impl Hooks {
             set_modes: Arc::new(|fd, modes| tcsetattr(fd, OptionalActions::Now, modes)),
             exit: Arc::new(|| {
                 println!();
-                std::process::exit(130)
+                std::process::exit(i32::from(crate::cancel::EXIT))
             }),
             before_echo_off: Arc::new(|| {}),
             signals: vec![SIGINT, SIGTERM, SIGHUP],
