@@ -147,16 +147,12 @@ impl Host {
     /// its whole process group is gone.
     pub(crate) fn wait_idle(
         &self,
-        group: Option<u32>,
-        boot_id: Option<&str>,
-        leader_start: Option<u64>,
+        identity: Option<&crate::process::Identity>,
         unbounded: bool,
     ) -> Result<()> {
         match self {
             Host::Wine { runner, prefix } => runner.wait_idle(prefix),
-            Host::Native { .. } => {
-                runner::wait_for_live_group(group, boot_id, leader_start, unbounded)
-            }
+            Host::Native { .. } => runner::wait_for_live_group(identity, unbounded),
             Host::Proxied { .. } => Err(Error::Unsettled(
                 "Steam runs require a reaper watch".to_owned(),
             )),
@@ -165,18 +161,12 @@ impl Host {
 
     pub(crate) fn wait_settled_live(
         &self,
-        group: Option<u32>,
-        boot_id: Option<&str>,
-        leader_start: Option<u64>,
+        identity: Option<&crate::process::Identity>,
         unbounded: bool,
     ) -> Result<()> {
         match self {
-            Host::Wine { runner, prefix } => {
-                runner.wait_settled_live(prefix, group, boot_id, leader_start, unbounded)
-            }
-            Host::Native { .. } => {
-                runner::wait_for_live_group(group, boot_id, leader_start, unbounded)
-            }
+            Host::Wine { runner, prefix } => runner.wait_settled_live(prefix, identity, unbounded),
+            Host::Native { .. } => runner::wait_for_live_group(identity, unbounded),
             Host::Proxied { .. } => Err(Error::Unsettled(
                 "Steam runs require a reaper watch".to_owned(),
             )),
@@ -186,44 +176,32 @@ impl Host {
     /// Asks programs to close. A native run gets SIGTERM to its group.
     pub(crate) fn end_session_live(
         &self,
-        group: Option<u32>,
-        boot_id: Option<&str>,
-        leader_start: Option<u64>,
+        identity: Option<&crate::process::Identity>,
     ) -> Result<GroupOwnership> {
         match self {
-            Host::Wine { runner, prefix } => {
-                runner.end_session_live(prefix, group, boot_id, leader_start)
-            }
+            Host::Wine { runner, prefix } => runner.end_session_live(prefix, identity),
             Host::Proxied { .. } => Err(Error::Unsettled(
                 "Steam runs require a tree stop".to_owned(),
             )),
-            Host::Native { .. } => runner::signal_live_group(
-                group,
-                boot_id,
-                leader_start,
-                rustix::process::Signal::TERM,
-            ),
+            Host::Native { .. } => {
+                runner::signal_live_group(identity, rustix::process::Signal::TERM)
+            }
         }
     }
 
     /// Kills whatever is left. A native run gets SIGKILL to its group.
     pub(crate) fn kill_live(
         &self,
-        group: Option<u32>,
-        boot_id: Option<&str>,
-        leader_start: Option<u64>,
+        identity: Option<&crate::process::Identity>,
     ) -> Result<GroupOwnership> {
         match self {
-            Host::Wine { runner, prefix } => runner.kill_live(prefix, group, boot_id, leader_start),
+            Host::Wine { runner, prefix } => runner.kill_live(prefix, identity),
             Host::Proxied { .. } => Err(Error::Unsettled(
                 "Steam runs require a tree stop".to_owned(),
             )),
-            Host::Native { .. } => runner::signal_live_group(
-                group,
-                boot_id,
-                leader_start,
-                rustix::process::Signal::KILL,
-            ),
+            Host::Native { .. } => {
+                runner::signal_live_group(identity, rustix::process::Signal::KILL)
+            }
         }
     }
 }

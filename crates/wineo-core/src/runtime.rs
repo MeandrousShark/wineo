@@ -21,7 +21,7 @@ use crate::files::write_atomic;
 use crate::launch::{Host, Overrides};
 use crate::operation::Operation;
 use crate::paths::Paths;
-use crate::process::{self, GroupOwnership};
+use crate::process::GroupOwnership;
 use crate::runner::{self, Killed, Runner};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -245,14 +245,22 @@ pub struct OperationState {
 }
 
 impl OperationState {
+    pub fn identity(&self) -> Option<crate::process::Identity> {
+        crate::process::Identity::recorded(self.group, self.boot_id.as_deref(), self.leader_start)
+    }
+
     pub fn group_ownership(&self) -> crate::process::GroupOwnership {
-        crate::process::group_ownership(self.group, self.boot_id.as_deref(), self.leader_start)
+        crate::process::group_ownership(self.identity().as_ref())
     }
 }
 
 impl RunState {
+    pub fn identity(&self) -> Option<crate::process::Identity> {
+        crate::process::Identity::recorded(self.group, self.boot_id.as_deref(), self.leader_start)
+    }
+
     pub fn group_ownership(&self) -> crate::process::GroupOwnership {
-        crate::process::group_ownership(self.group, self.boot_id.as_deref(), self.leader_start)
+        crate::process::group_ownership(self.identity().as_ref())
     }
 }
 
@@ -583,20 +591,18 @@ impl Runtime {
             _ => return unresolved(None),
         };
         let wineserver = wine.as_ref().is_some_and(|(runner, _)| !runner.is_proton());
-        let ownership =
-            process::group_ownership(run.group, run.boot_id.as_deref(), run.leader_start);
-        let group = match ownership {
+        let Some(identity) = run.identity() else {
+            return unresolved(None);
+        };
+        let group = match identity.ownership() {
             GroupOwnership::Unknown => return unresolved(None),
             GroupOwnership::Gone => GroupOwnership::Gone,
-            GroupOwnership::Owned => match process::signal_group_if_owned(
-                run.group,
-                run.boot_id.as_deref(),
-                run.leader_start,
-                rustix::process::Signal::KILL,
-            ) {
-                Ok(ownership) => ownership,
-                Err(err) => return unresolved(Some(chain(&err))),
-            },
+            GroupOwnership::Owned => {
+                match identity.signal_if_owned(rustix::process::Signal::KILL) {
+                    Ok(ownership) => ownership,
+                    Err(err) => return unresolved(Some(chain(&err))),
+                }
+            }
         };
         if group == GroupOwnership::Unknown {
             return unresolved(None);
@@ -610,25 +616,13 @@ impl Runtime {
                 Err(err) => return unresolved(Some(chain(&err))),
             }
         }
-        if wineserver || group == GroupOwnership::Owned {
-            let settle_group = run.group;
-            let settle_boot_id = run.boot_id.clone();
-            let settle_leader_start = run.leader_start;
-            if let Err(err) = wait_settled_bounded(settle_timeout, move || match &wine {
-                Some((runner, prefix)) => runner.wait_settled_owned(
-                    prefix,
-                    settle_group,
-                    settle_boot_id.as_deref(),
-                    settle_leader_start,
-                ),
-                None => runner::wait_for_recorded_group(
-                    settle_group,
-                    settle_boot_id.as_deref(),
-                    settle_leader_start,
-                ),
-            }) {
-                return unresolved(Some(chain(&err)));
-            }
+        if (wineserver || group == GroupOwnership::Owned)
+            && let Err(err) = wait_settled_bounded(settle_timeout, move || match &wine {
+                Some((runner, prefix)) => runner.wait_settled_owned(prefix, Some(&identity)),
+                None => runner::wait_for_recorded_group(Some(&identity)),
+            })
+        {
+            return unresolved(Some(chain(&err)));
         }
         // The state write is what makes this idempotent: it stops any retry
         // from seeing the run as lost again, so it must go first and its
@@ -772,6 +766,7 @@ mod tests {
     use std::time::Instant;
 
     use super::*;
+    use crate::process;
 
     fn runtime(root: &Path) -> Runtime {
         let home = root.to_owned();
@@ -1038,10 +1033,7 @@ mod tests {
         run.boot_id = process::boot_id();
         run.leader_start = process::start_time(pid);
         run.heartbeat_at = Some("2026-09-16T21:03:00Z".parse().unwrap());
-        assert_eq!(
-            process::group_ownership(run.group, run.boot_id.as_deref(), run.leader_start),
-            GroupOwnership::Owned
-        );
+        assert_eq!(run.group_ownership(), GroupOwnership::Owned);
         runtime.write_state(&run).unwrap();
         assert!(!runtime.is_running().unwrap());
         let stats_log = root.path().join("stats.jsonl");

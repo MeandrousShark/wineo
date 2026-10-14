@@ -217,19 +217,15 @@ pub fn watch_settled(
     stop_timeout: Duration,
     mut seen: impl FnMut(Settling),
 ) -> Settled {
-    let group = child.id();
     // Read while the program is at least a zombie, which the watch only
     // reaps at the end, so its identity can't be lost to a fast exit.
-    let boot_id = crate::process::boot_id();
-    let leader_start = crate::process::start_time(group);
+    let identity = crate::process::Identity::of(child.id());
     let host = host.clone();
     let (sender, watched) = mpsc::channel();
     let watcher = thread::spawn(move || {
         supervisor.watch(
             &host,
-            Some(group),
-            boot_id,
-            leader_start,
+            identity,
             child,
             stop_timeout,
             Settle::Confirmed,

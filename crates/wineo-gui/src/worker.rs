@@ -186,7 +186,7 @@ pub(crate) fn steam_request_now(
 pub(crate) fn stop_after(
     paths: Paths,
     name: String,
-    expected: Option<wineo_core::hooks::Running>,
+    expected: Option<wineo_core::process::Identity>,
 ) -> Task<Message> {
     let finish_name = name.clone();
     Task::perform(

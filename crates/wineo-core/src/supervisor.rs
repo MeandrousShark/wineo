@@ -216,15 +216,12 @@ impl Supervisor {
         stats_log: &Path,
         mut notify: impl FnMut(Notice),
     ) -> Result<()> {
-        let group = state.group;
         let outlives = launch.host.outlives_program();
         // A run is over once the prefix looks idle, whether or not that could
         // be confirmed, so `settled` is not looked at.
         let ending = self.watch(
             &launch.host,
-            group,
-            state.boot_id.clone(),
-            state.leader_start,
+            state.identity(),
             child,
             stop_timeout,
             Settle::Idle,
@@ -281,9 +278,7 @@ impl Supervisor {
     pub(crate) fn watch(
         &self,
         host: &Host,
-        group: Option<u32>,
-        boot_id: Option<String>,
-        leader_start: Option<u64>,
+        identity: Option<crate::process::Identity>,
         mut child: Child,
         stop_timeout: Duration,
         settle: Settle,
@@ -382,19 +377,14 @@ impl Supervisor {
                     // Launchers often hand off to another process and exit, so
                     // this lasts until nothing is left running in the prefix.
                     let sender = self.sender.clone();
-                    let (host, boot_id) = (host.clone(), boot_id.clone());
+                    let (host, identity) = (host.clone(), identity.clone());
                     let unbounded = give_up.is_none();
                     thread::spawn(move || {
                         let result = match settle {
-                            Settle::Idle => {
-                                host.wait_idle(group, boot_id.as_deref(), leader_start, unbounded)
+                            Settle::Idle => host.wait_idle(identity.as_ref(), unbounded),
+                            Settle::Confirmed => {
+                                host.wait_settled_live(identity.as_ref(), unbounded)
                             }
-                            Settle::Confirmed => host.wait_settled_live(
-                                group,
-                                boot_id.as_deref(),
-                                leader_start,
-                                unbounded,
-                            ),
                         };
                         let _ = sender.send(Event::Idle(result));
                     });
@@ -405,11 +395,11 @@ impl Supervisor {
                     stopping = true;
                     deadline = Some(Instant::now() + stop_timeout);
                     watched(Watched::Notice(Notice::Stopping));
-                    let (host, boot_id) = (host.clone(), boot_id.clone());
+                    let (host, identity) = (host.clone(), identity.clone());
                     let (done, ended) = mpsc::channel();
                     ending_session = Some(ended);
                     thread::spawn(move || {
-                        let _ = host.end_session_live(group, boot_id.as_deref(), leader_start);
+                        let _ = host.end_session_live(identity.as_ref());
                         let _ = done.send(());
                     });
                 }
@@ -424,7 +414,7 @@ impl Supervisor {
                     {
                         break Err(Error::StillRunning((stop_timeout + limit).as_secs().max(1)));
                     }
-                    match host.kill_live(group, boot_id.as_deref(), leader_start) {
+                    match host.kill_live(identity.as_ref()) {
                         Ok(
                             crate::process::GroupOwnership::Owned
                             | crate::process::GroupOwnership::Gone,

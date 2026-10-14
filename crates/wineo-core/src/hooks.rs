@@ -13,7 +13,7 @@ use crate::cancel::Token;
 use crate::error::{Error, IoContext, Result};
 use crate::operation::Guard;
 use crate::paths::{PORTABLE_VAR, Paths};
-use crate::process::{self, GroupOwnership};
+use crate::process::{self, Identity};
 use crate::runner::Runner;
 
 const POLL: Duration = Duration::from_millis(20);
@@ -135,41 +135,6 @@ pub enum Outcome {
     Canceled(ExitStatus),
 }
 
-/// Identity stored in the active operation lock, independent of game state.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Running {
-    pub group: u32,
-    pub boot_id: String,
-    pub leader_start: u64,
-}
-
-impl Running {
-    fn signal(&self, signal: Signal) -> Result<GroupOwnership> {
-        let ownership = process::signal_group_if_owned(
-            Some(self.group),
-            Some(&self.boot_id),
-            Some(self.leader_start),
-            signal,
-        )
-        .context(|| "failed to signal the hook process group".to_owned())?;
-        if ownership != GroupOwnership::Unknown {
-            return Ok(ownership);
-        }
-        process::signal_group_if_live(
-            Some(self.group),
-            Some(&self.boot_id),
-            Some(self.leader_start),
-            signal,
-        )
-        .context(|| "failed to signal the hook process group".to_owned())
-    }
-
-    /// Used with an identity read from an active Hook lock by `stop --force`.
-    pub fn kill_now(&self) -> Result<GroupOwnership> {
-        self.signal(Signal::KILL)
-    }
-}
-
 fn command(paths: &Paths, context: &Context<'_>, text: &str) -> Command {
     let mut command = Command::new("sh");
     configure(&mut command, paths, context, text);
@@ -257,7 +222,7 @@ pub fn run(
         finished: false,
     };
     let group = spawned.child.id();
-    let running = Running {
+    let running = Identity {
         group,
         boot_id: process::boot_id()
             .ok_or_else(|| Error::Unsettled("could not read hook boot identity".to_owned()))?,
@@ -382,6 +347,7 @@ mod tests {
 
     use super::*;
     use crate::operation::{Locks, Operation};
+    use crate::process::GroupOwnership;
 
     fn paths(root: &Path, portable: bool) -> Paths {
         Paths::select(
@@ -525,7 +491,7 @@ mod tests {
         assert!(locks.hook_group("hades").unwrap().is_none());
     }
 
-    fn wait_ready(root: &Path, locks: &Locks) -> Running {
+    fn wait_ready(root: &Path, locks: &Locks) -> Identity {
         let deadline = Instant::now() + Duration::from_secs(5);
         loop {
             if root.join("ready").exists()
@@ -542,7 +508,7 @@ mod tests {
     fn interrupted(
         text: &str,
         timeout: Duration,
-        stop: impl FnOnce(&Token, &Running),
+        stop: impl FnOnce(&Token, &Identity),
     ) -> (ExitStatus, Duration) {
         let root = Arc::new(tempfile::tempdir().unwrap());
         let paths = paths(root.path(), false);
@@ -574,14 +540,7 @@ mod tests {
             })
         };
         let running = wait_ready(root.path(), &locks);
-        assert_eq!(
-            process::group_ownership(
-                Some(running.group),
-                Some(&running.boot_id),
-                Some(running.leader_start)
-            ),
-            GroupOwnership::Owned
-        );
+        assert_eq!(running.ownership(), GroupOwnership::Owned);
         let started = Instant::now();
         stop(&token, &running);
         let outcome = join_with_watchdog(task, &running);
@@ -601,7 +560,7 @@ mod tests {
         (status, elapsed)
     }
 
-    fn join_with_watchdog<T>(task: thread::JoinHandle<T>, running: &Running) -> T {
+    fn join_with_watchdog<T>(task: thread::JoinHandle<T>, running: &Identity) -> T {
         let deadline = Instant::now() + Duration::from_secs(5);
         while !task.is_finished() {
             if Instant::now() >= deadline {
@@ -692,31 +651,24 @@ mod tests {
             child,
             finished: false,
         };
-        let running = Running {
+        let running = Identity {
             group: spawned.child.id(),
             boot_id: process::boot_id().unwrap(),
             leader_start: process::start_time(spawned.child.id()).unwrap(),
         };
         for stale in [
-            Running {
+            Identity {
                 boot_id: "wrong-boot".to_owned(),
                 ..running.clone()
             },
-            Running {
+            Identity {
                 leader_start: running.leader_start + 1,
                 ..running.clone()
             },
         ] {
             assert_eq!(stale.kill_now().unwrap(), GroupOwnership::Gone);
             assert!(spawned.child.try_wait().unwrap().is_none());
-            assert_eq!(
-                process::group_ownership(
-                    Some(running.group),
-                    Some(&running.boot_id),
-                    Some(running.leader_start)
-                ),
-                GroupOwnership::Owned
-            );
+            assert_eq!(running.ownership(), GroupOwnership::Owned);
         }
     }
 
@@ -733,7 +685,7 @@ mod tests {
             child,
             finished: false,
         };
-        let running = Running {
+        let running = Identity {
             group: spawned.child.id(),
             boot_id: process::boot_id().unwrap(),
             leader_start: process::start_time(spawned.child.id()).unwrap(),

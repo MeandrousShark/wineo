@@ -91,29 +91,186 @@ fn try_quiet_core_dumps(pid: u32) -> io::Result<()> {
     Ok(())
 }
 
-/// Checks whether a recorded leader still identifies the recorded group.
-/// Missing identity is always unknown, even if the numeric group is absent.
-pub fn group_ownership(
-    group: Option<u32>,
-    recorded_boot: Option<&str>,
-    leader_start: Option<u64>,
-) -> GroupOwnership {
-    let (Some(group), Some(recorded_boot), Some(leader_start)) =
-        (group, recorded_boot, leader_start)
-    else {
-        return GroupOwnership::Unknown;
-    };
-    let Some(current_boot) = boot_id() else {
-        return GroupOwnership::Unknown;
-    };
-    classify_group(
-        Some(recorded_boot),
-        Some(&current_boot),
-        Some(leader_start),
-        read_stat(group),
-        group_exists(group),
-        group,
-    )
+/// A process group as it was when it started: its number, the boot it ran
+/// in, and when its leader started, so a later group that reuses the number
+/// is never mistaken for it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Identity {
+    pub group: u32,
+    pub boot_id: String,
+    pub leader_start: u64,
+}
+
+impl Identity {
+    /// The group `leader` leads, read now. None once either part is unreadable.
+    pub fn of(leader: u32) -> Option<Self> {
+        Some(Self {
+            group: leader,
+            boot_id: boot_id()?,
+            leader_start: start_time(leader)?,
+        })
+    }
+
+    /// A recorded identity, which is no identity at all with a part missing.
+    pub fn recorded(
+        group: Option<u32>,
+        boot_id: Option<&str>,
+        leader_start: Option<u64>,
+    ) -> Option<Self> {
+        Some(Self {
+            group: group?,
+            boot_id: boot_id?.to_owned(),
+            leader_start: leader_start?,
+        })
+    }
+
+    /// Checks whether the recorded leader still identifies the recorded group.
+    pub fn ownership(&self) -> GroupOwnership {
+        let Some(current_boot) = boot_id() else {
+            return GroupOwnership::Unknown;
+        };
+        classify_group(
+            Some(&self.boot_id),
+            Some(&current_boot),
+            Some(self.leader_start),
+            read_stat(self.group),
+            group_exists(self.group),
+            self.group,
+        )
+    }
+
+    /// Signals each verified member by pidfd. The caller never signals a
+    /// process by a group number alone, which could be reused between checking
+    /// and killing.
+    pub fn signal_if_owned(&self, signal: Signal) -> io::Result<GroupOwnership> {
+        let group = self.group;
+        match self.ownership() {
+            GroupOwnership::Owned => {}
+            other => return Ok(other),
+        }
+
+        let members = match open_group_members(group) {
+            Ok(members) => members,
+            Err(()) => return Ok(GroupOwnership::Unknown),
+        };
+        match group_has_live_members(group) {
+            Some(false) => return Ok(GroupOwnership::Owned),
+            Some(true) => {}
+            None => return Ok(GroupOwnership::Unknown),
+        }
+        let Some((_, _, leader_fd)) = members
+            .iter()
+            .find(|(pid, start, _)| *pid == group && *start == self.leader_start)
+        else {
+            return Ok(GroupOwnership::Unknown);
+        };
+        if !self.leader_is_recorded() || pidfd_exited(leader_fd).unwrap_or(true) {
+            return Ok(match self.ownership() {
+                GroupOwnership::Gone => GroupOwnership::Gone,
+                GroupOwnership::Owned | GroupOwnership::Unknown => GroupOwnership::Unknown,
+            });
+        }
+
+        let mut signaled = false;
+        let mut leader = None;
+        for (pid, start_time, pidfd) in members {
+            if pid == group {
+                leader = Some((start_time, pidfd));
+                continue;
+            }
+            if !self.leader_is_recorded() {
+                return Ok(GroupOwnership::Unknown);
+            }
+            if !member_is_recorded(pid, group, start_time) {
+                continue;
+            }
+            if pidfd_exited(&pidfd)? {
+                continue;
+            }
+            match pidfd_send_signal(&pidfd, signal) {
+                Ok(()) => signaled = true,
+                Err(Errno::SRCH) => {}
+                Err(err) => return Err(io::Error::from(err)),
+            }
+        }
+        let Some((start_time, pidfd)) = leader else {
+            return Ok(GroupOwnership::Unknown);
+        };
+        if self.leader_is_recorded()
+            && member_is_recorded(group, group, start_time)
+            && !pidfd_exited(&pidfd)?
+        {
+            match pidfd_send_signal(&pidfd, signal) {
+                Ok(()) => signaled = true,
+                Err(Errno::SRCH) => {}
+                Err(err) => return Err(io::Error::from(err)),
+            }
+        }
+
+        if signaled {
+            Ok(GroupOwnership::Owned)
+        } else {
+            Ok(self.ownership())
+        }
+    }
+
+    /// Signals members of a group whose ownership was established while its
+    /// leader was live and whose caller still holds the active operation lock.
+    /// This can continue a cleanup after that leader has exited, since an
+    /// extant group with a dead leader still needs settling.
+    pub fn signal_if_live(&self, signal: Signal) -> io::Result<GroupOwnership> {
+        let ownership = self.ownership();
+        if ownership != GroupOwnership::Owned {
+            return Ok(ownership);
+        }
+        let members = match open_group_members(self.group) {
+            Ok(members) => members,
+            Err(()) => return Ok(GroupOwnership::Unknown),
+        };
+        if self.ownership() != GroupOwnership::Owned {
+            return Ok(GroupOwnership::Unknown);
+        }
+        let mut signaled = false;
+        for (pid, start_time, pidfd) in members {
+            if self.ownership() != GroupOwnership::Owned {
+                return Ok(GroupOwnership::Unknown);
+            }
+            if !member_is_recorded(pid, self.group, start_time) || pidfd_exited(&pidfd)? {
+                continue;
+            }
+            match pidfd_send_signal(&pidfd, signal) {
+                Ok(()) => signaled = true,
+                Err(Errno::SRCH) => {}
+                Err(err) => return Err(io::Error::from(err)),
+            }
+        }
+        if signaled {
+            Ok(GroupOwnership::Owned)
+        } else {
+            Ok(self.ownership())
+        }
+    }
+
+    /// Kills the group if its leader still proves it, or, failing that, if it
+    /// is still the live group the caller established.
+    pub fn kill_now(&self) -> io::Result<GroupOwnership> {
+        let ownership = self.signal_if_owned(Signal::KILL)?;
+        if ownership != GroupOwnership::Unknown {
+            return Ok(ownership);
+        }
+        self.signal_if_live(Signal::KILL)
+    }
+
+    fn leader_is_recorded(&self) -> bool {
+        boot_id().as_deref() == Some(self.boot_id.as_str())
+            && matches!(read_stat(self.group), ProcRead::Found(stat) if stat.start_time == self.leader_start && stat.group == self.group)
+    }
+}
+
+/// The ownership of a recorded identity. Missing identity is always unknown,
+/// even if the numeric group is absent.
+pub fn group_ownership(identity: Option<&Identity>) -> GroupOwnership {
+    identity.map_or(GroupOwnership::Unknown, Identity::ownership)
 }
 
 fn classify_group(
@@ -147,153 +304,6 @@ fn classify_group(
         },
         ProcRead::Unknown => GroupOwnership::Unknown,
     }
-}
-
-/// Signals each verified member by pidfd. The caller never signals a process
-/// by a group number alone, which could be reused between checking and killing.
-pub fn signal_group_if_owned(
-    group: Option<u32>,
-    recorded_boot: Option<&str>,
-    leader_start: Option<u64>,
-    signal: Signal,
-) -> io::Result<GroupOwnership> {
-    let (Some(group), Some(recorded_boot), Some(leader_start)) =
-        (group, recorded_boot, leader_start)
-    else {
-        return Ok(GroupOwnership::Unknown);
-    };
-    match group_ownership(Some(group), Some(recorded_boot), Some(leader_start)) {
-        GroupOwnership::Owned => {}
-        other => return Ok(other),
-    }
-
-    let members = match open_group_members(group) {
-        Ok(members) => members,
-        Err(()) => return Ok(GroupOwnership::Unknown),
-    };
-    match group_has_live_members(group) {
-        Some(false) => return Ok(GroupOwnership::Owned),
-        Some(true) => {}
-        None => return Ok(GroupOwnership::Unknown),
-    }
-    let Some((_, _, leader_fd)) = members
-        .iter()
-        .find(|(pid, start, _)| *pid == group && *start == leader_start)
-    else {
-        return Ok(GroupOwnership::Unknown);
-    };
-    if !leader_is_recorded(group, recorded_boot, leader_start)
-        || pidfd_exited(leader_fd).unwrap_or(true)
-    {
-        return Ok(
-            match group_ownership(Some(group), Some(recorded_boot), Some(leader_start)) {
-                GroupOwnership::Gone => GroupOwnership::Gone,
-                GroupOwnership::Owned | GroupOwnership::Unknown => GroupOwnership::Unknown,
-            },
-        );
-    }
-
-    let mut signaled = false;
-    let mut leader = None;
-    for (pid, start_time, pidfd) in members {
-        if pid == group {
-            leader = Some((start_time, pidfd));
-            continue;
-        }
-        if !leader_is_recorded(group, recorded_boot, leader_start) {
-            return Ok(GroupOwnership::Unknown);
-        }
-        if !member_is_recorded(pid, group, start_time) {
-            continue;
-        }
-        if pidfd_exited(&pidfd)? {
-            continue;
-        }
-        match pidfd_send_signal(&pidfd, signal) {
-            Ok(()) => signaled = true,
-            Err(Errno::SRCH) => {}
-            Err(err) => return Err(io::Error::from(err)),
-        }
-    }
-    let Some((start_time, pidfd)) = leader else {
-        return Ok(GroupOwnership::Unknown);
-    };
-    if leader_is_recorded(group, recorded_boot, leader_start)
-        && member_is_recorded(group, group, start_time)
-        && !pidfd_exited(&pidfd)?
-    {
-        match pidfd_send_signal(&pidfd, signal) {
-            Ok(()) => signaled = true,
-            Err(Errno::SRCH) => {}
-            Err(err) => return Err(io::Error::from(err)),
-        }
-    }
-
-    if signaled {
-        Ok(GroupOwnership::Owned)
-    } else {
-        Ok(group_ownership(
-            Some(group),
-            Some(recorded_boot),
-            Some(leader_start),
-        ))
-    }
-}
-
-/// Signals members of a group whose ownership was established while its
-/// leader was live and whose caller still holds the active operation lock.
-/// This can continue a cleanup after that leader has exited.
-pub fn signal_group_if_live(
-    group: Option<u32>,
-    recorded_boot: Option<&str>,
-    leader_start: Option<u64>,
-    signal: Signal,
-) -> io::Result<GroupOwnership> {
-    let (Some(group), Some(recorded_boot), Some(leader_start)) =
-        (group, recorded_boot, leader_start)
-    else {
-        return Ok(GroupOwnership::Unknown);
-    };
-    if live_group_ownership(group, recorded_boot, leader_start) != GroupOwnership::Owned {
-        return Ok(live_group_ownership(group, recorded_boot, leader_start));
-    }
-    let members = match open_group_members(group) {
-        Ok(members) => members,
-        Err(()) => return Ok(GroupOwnership::Unknown),
-    };
-    if live_group_ownership(group, recorded_boot, leader_start) != GroupOwnership::Owned {
-        return Ok(GroupOwnership::Unknown);
-    }
-    let mut signaled = false;
-    for (pid, start_time, pidfd) in members {
-        if live_group_ownership(group, recorded_boot, leader_start) != GroupOwnership::Owned {
-            return Ok(GroupOwnership::Unknown);
-        }
-        if !member_is_recorded(pid, group, start_time) || pidfd_exited(&pidfd)? {
-            continue;
-        }
-        match pidfd_send_signal(&pidfd, signal) {
-            Ok(()) => signaled = true,
-            Err(Errno::SRCH) => {}
-            Err(err) => return Err(io::Error::from(err)),
-        }
-    }
-    if signaled {
-        Ok(GroupOwnership::Owned)
-    } else {
-        Ok(live_group_ownership(group, recorded_boot, leader_start))
-    }
-}
-
-/// Wait-side ownership retains the identity established by the live owner.
-/// With a dead leader, an extant group still needs settling, not a signal.
-pub fn live_group_ownership(group: u32, recorded_boot: &str, leader_start: u64) -> GroupOwnership {
-    group_ownership(Some(group), Some(recorded_boot), Some(leader_start))
-}
-
-fn leader_is_recorded(group: u32, recorded_boot: &str, leader_start: u64) -> bool {
-    boot_id().as_deref() == Some(recorded_boot)
-        && matches!(read_stat(group), ProcRead::Found(stat) if stat.start_time == leader_start && stat.group == group)
 }
 
 fn member_is_recorded(pid: u32, group: u32, start_time: u64) -> bool {
@@ -652,6 +662,14 @@ mod tests {
         ));
     }
 
+    fn id(group: u32, boot: &str, leader_start: u64) -> Identity {
+        Identity {
+            group,
+            boot_id: boot.to_owned(),
+            leader_start,
+        }
+    }
+
     fn process_group(command: &mut Command) -> &mut Command {
         command
             .process_group(0)
@@ -661,10 +679,10 @@ mod tests {
     }
 
     fn stop_group(child: &mut Child, group: u32, boot: &str, start: u64) {
-        let _ = signal_group_if_owned(Some(group), Some(boot), Some(start), Signal::KILL);
+        let _ = id(group, boot, start).signal_if_owned(Signal::KILL);
         let _ = child.wait();
         let deadline = Instant::now() + Duration::from_secs(2);
-        while group_ownership(Some(group), Some(boot), Some(start)) == GroupOwnership::Owned
+        while id(group, boot, start).ownership() == GroupOwnership::Owned
             && Instant::now() < deadline
         {
             thread::sleep(Duration::from_millis(10));
@@ -745,11 +763,12 @@ mod tests {
         let leader_start = start_time(group).unwrap();
 
         assert_eq!(
-            group_ownership(Some(group), Some(&boot), Some(leader_start)),
+            id(group, &boot, leader_start).ownership(),
             GroupOwnership::Owned
         );
         assert_eq!(
-            signal_group_if_owned(Some(group), Some(&boot), Some(leader_start), Signal::KILL)
+            id(group, &boot, leader_start)
+                .signal_if_owned(Signal::KILL)
                 .unwrap(),
             GroupOwnership::Owned
         );
@@ -760,11 +779,11 @@ mod tests {
         }
         assert_eq!(group_has_live_members(group), Some(false));
         assert_ne!(
-            group_ownership(Some(group), Some(&boot), Some(leader_start)),
+            id(group, &boot, leader_start).ownership(),
             GroupOwnership::Owned
         );
         assert_eq!(
-            group_ownership(Some(foreign.id()), Some(&boot), start_time(foreign.id())),
+            Identity::of(foreign.id()).unwrap().ownership(),
             GroupOwnership::Owned
         );
 
@@ -798,11 +817,12 @@ mod tests {
             thread::sleep(Duration::from_millis(10));
         }
         assert_eq!(
-            group_ownership(Some(group), Some(&boot), Some(leader_start)),
+            id(group, &boot, leader_start).ownership(),
             GroupOwnership::Unknown
         );
         assert_eq!(
-            signal_group_if_owned(Some(group), Some(&boot), Some(leader_start), Signal::KILL)
+            id(group, &boot, leader_start)
+                .signal_if_owned(Signal::KILL)
                 .unwrap(),
             GroupOwnership::Unknown
         );
@@ -867,11 +887,9 @@ mod tests {
             }
             thread::sleep(Duration::from_millis(10));
         }
-        let ownership_with_zombie_leader =
-            group_ownership(Some(group), Some(&boot), Some(leader_start));
+        let ownership_with_zombie_leader = id(group, &boot, leader_start).ownership();
         let has_live_child = group_has_live_members(group);
-        let signaled =
-            signal_group_if_live(Some(group), Some(&boot), Some(leader_start), Signal::KILL);
+        let signaled = id(group, &boot, leader_start).signal_if_live(Signal::KILL);
         let _ = rustix::process::kill_process_group(pid, Signal::KILL);
         let deadline = Instant::now() + Duration::from_secs(2);
         while group_has_live_members(group) != Some(false) && Instant::now() < deadline {
