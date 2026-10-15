@@ -13,6 +13,12 @@ thread_local! {
     static BEFORE_PLACE: RefCell<Option<PlaceHook>> = const { RefCell::new(None) };
     static FREE_AT: RefCell<Vec<(PathBuf, u64)>> = const { RefCell::new(Vec::new()) };
     static DEVICE_AT: RefCell<Vec<(PathBuf, u64)>> = const { RefCell::new(Vec::new()) };
+    static ROUND_LIMITS: RefCell<Option<(u64, usize)>> = const { RefCell::new(None) };
+}
+
+/// The bytes and chunks a test says a download round ends after.
+pub(super) fn round_limits() -> Option<(u64, usize)> {
+    ROUND_LIMITS.with(|limits| *limits.borrow())
 }
 
 /// Runs a test's hook right before a downloaded game file, or a link, is put
@@ -51,7 +57,9 @@ pub(super) fn device_at(path: &Path) -> Option<u64> {
 
 use std::collections::HashSet;
 use std::fs;
-use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Condvar, Mutex};
+use std::time::Duration;
 
 use anyhow::Result;
 use serde_json::json as value;
@@ -92,7 +100,12 @@ struct Gog {
     /// Revokes every secure link once this many chunks were served.
     revoke_after: Option<usize>,
     chunks: usize,
+    /// Runs on each chunk request with the chunk's compressed MD5, outside
+    /// the lock, so it can hold the request while others come in.
+    on_chunk: Option<ChunkHook>,
 }
+
+type ChunkHook = Arc<dyn Fn(&str) + Send + Sync>;
 
 struct Fixture {
     _root: TempDir,
@@ -289,13 +302,23 @@ fn walk(dir: &Path, prefix: &str, found: &mut Vec<String>) {
 
 fn answer(content: &ContentSystem, gog: &Mutex<Gog>, request: &fake::Request) -> Reply {
     let path = request.path().to_owned();
-    let mut gog = gog.lock().unwrap();
     if ContentSystem::cdn_of(request).is_some() {
-        gog.chunks += 1;
-        if gog.revoke_after == Some(gog.chunks) {
-            content.revoke_links(403);
+        let hook = {
+            let mut gog = gog.lock().unwrap();
+            gog.chunks += 1;
+            if gog.revoke_after == Some(gog.chunks) {
+                content.revoke_links(403);
+            }
+            gog.on_chunk.clone()
+        };
+        if let Some(hook) = hook {
+            hook(path.rsplit('/').next().unwrap_or_default());
         }
+        return content
+            .answer(request)
+            .unwrap_or_else(|| fake::json(404, "{}"));
     }
+    let gog = gog.lock().unwrap();
     if path == "/token" {
         return Reply::Send(tokens("ACCESS", "R", USER, 3600));
     }
@@ -1667,4 +1690,272 @@ fn an_unstarted_operations_pending_never_makes_a_file_tracked() {
             .iter()
             .any(|saved| saved.path == "Data/core.dat")
     );
+}
+
+fn set_round_limits(limits: Option<(u64, usize)>) {
+    ROUND_LIMITS.with(|cell| *cell.borrow_mut() = limits);
+}
+
+impl Fixture {
+    fn on_chunk(&self, hook: impl Fn(&str) + Send + Sync + 'static) {
+        self.gog.lock().unwrap().on_chunk = Some(Arc::new(hook));
+    }
+
+    /// The game with `huge` added: a file of `count` chunks, first in the
+    /// download order, whose chunks no other file shares.
+    fn with_huge(&self, count: usize, file: impl FnOnce(FakeFile) -> FakeFile) -> Vec<u8> {
+        let bytes = huge(count);
+        self.content.add_build(
+            Fixture::game("100")
+                .depot(FakeDepot::new(GAME).file(file(FakeFile::new(HUGE, &bytes)))),
+        );
+        bytes
+    }
+}
+
+const HUGE: &str = "Big\\huge.dat";
+
+fn huge(count: usize) -> Vec<u8> {
+    (0..count)
+        .flat_map(|index| format!("huge{index:04}").into_bytes())
+        .collect()
+}
+
+/// The compressed MD5 of the huge file's chunk `index`, as requested.
+fn huge_chunk(index: usize) -> String {
+    fake::content::md5_hex(&fake::content::zlib(format!("huge{index:04}").as_bytes()))
+}
+
+/// What a test has seen so far, for requests held until something else
+/// happens.
+#[derive(Default)]
+struct Seen {
+    list: Mutex<Vec<String>>,
+    changed: Condvar,
+}
+
+impl Seen {
+    fn add(&self, what: &str) {
+        self.list.lock().unwrap().push(what.to_owned());
+        self.changed.notify_all();
+    }
+
+    /// Waits until `ready` holds. False when it doesn't in time, which only
+    /// happens when downloads aren't as concurrent as they should be.
+    fn wait_for(&self, ready: impl Fn(&[String]) -> bool) -> bool {
+        let list = self.list.lock().unwrap();
+        let (list, waited) = self
+            .changed
+            .wait_timeout_while(list, Duration::from_secs(10), |list| !ready(list))
+            .unwrap();
+        drop(list);
+        !waited.timed_out()
+    }
+}
+
+#[test]
+fn one_files_chunks_download_at_once() {
+    let fx = Fixture::new();
+    let bytes = fx.with_huge(12, |file| file);
+    let hashes: Vec<String> = (0..12).map(huge_chunk).collect();
+    let seen = Arc::new(Seen::default());
+    let missed = Arc::new(AtomicBool::new(false));
+    {
+        let (seen, missed) = (Arc::clone(&seen), Arc::clone(&missed));
+        fx.on_chunk(move |hash| {
+            if !hashes.iter().any(|known| known == hash) {
+                return;
+            }
+            seen.add(hash);
+            // Held until every worker is on one of this file's chunks.
+            if !seen.wait_for(|list| list.len() >= fetch::WORKERS) {
+                missed.store(true, Ordering::Relaxed);
+            }
+        });
+    }
+    fx.install();
+    assert_installed(&fx);
+    assert_eq!(fs::read(fx.folder.join("Big/huge.dat")).unwrap(), bytes);
+    assert!(!missed.load(Ordering::Relaxed));
+}
+
+#[test]
+fn small_files_finish_while_a_big_one_downloads() {
+    let fx = Fixture::new();
+    let bytes = huge(12);
+    // More small files than the old rounds of 64 files held.
+    let mut depot = FakeDepot::new(GAME).file(FakeFile::new(HUGE, &bytes));
+    for index in 0..70 {
+        depot = depot.file(FakeFile::new(
+            &format!("small\\{index:02}.txt"),
+            format!("s{index:02}").as_bytes(),
+        ));
+    }
+    fx.content.add_build(Fixture::game("100").depot(depot));
+    let placed = Arc::new(Seen::default());
+    let missed = Arc::new(AtomicBool::new(false));
+    {
+        let placed = Arc::clone(&placed);
+        set_before_place(move |path| placed.add(path));
+    }
+    {
+        let (placed, missed) = (Arc::clone(&placed), Arc::clone(&missed));
+        let first = huge_chunk(0);
+        // The big file's first chunk waits for every small file to be in
+        // place.
+        fx.on_chunk(move |hash| {
+            if hash == first
+                && !placed.wait_for(|list| {
+                    list.iter()
+                        .filter(|path| path.starts_with("small/"))
+                        .count()
+                        == 70
+                })
+            {
+                missed.store(true, Ordering::Relaxed);
+            }
+        });
+    }
+    let result = fx.apply(&fx.plan());
+    clear_before_place();
+    result.unwrap();
+    assert_installed(&fx);
+    assert_eq!(fs::read(fx.folder.join("Big/huge.dat")).unwrap(), bytes);
+    assert_eq!(fx.read("small/69.txt"), "s69");
+    assert!(!missed.load(Ordering::Relaxed));
+}
+
+#[test]
+fn chunks_written_out_of_order_make_the_whole_file() {
+    let fx = Fixture::new();
+    let bytes = fx.with_huge(12, |file| file.with_md5().with_sha256());
+    let seen = Arc::new(Seen::default());
+    let missed = Arc::new(AtomicBool::new(false));
+    {
+        let (seen, missed) = (Arc::clone(&seen), Arc::clone(&missed));
+        let (first, later) = (huge_chunk(0), huge_chunk(fetch::WORKERS));
+        // A worker asks for a chunk past the first few only once it wrote
+        // one of them, so the first chunk is written after a later one.
+        fx.on_chunk(move |hash| {
+            seen.add(hash);
+            if hash == first && !seen.wait_for(|list| list.contains(&later)) {
+                missed.store(true, Ordering::Relaxed);
+            }
+        });
+    }
+    fx.install();
+    assert_installed(&fx);
+    assert_eq!(fs::read(fx.folder.join("Big/huge.dat")).unwrap(), bytes);
+    let (state, record) = (fx.state(), fx.record().unwrap());
+    let installed = record::installed(&state, &record).unwrap().unwrap();
+    let entry = installed
+        .manifest
+        .files
+        .iter()
+        .find(|file| file.path == "Big/huge.dat")
+        .unwrap();
+    assert_eq!(
+        entry.md5.as_deref(),
+        Some(fake::content::md5_hex(&bytes).as_str())
+    );
+    assert!(!missed.load(Ordering::Relaxed));
+}
+
+#[test]
+fn a_file_spanning_rounds_comes_out_whole() {
+    let fx = Fixture::new();
+    let bytes = fx.with_huge(12, |file| file);
+    // Rounds of three chunks, so the huge file spans four.
+    set_round_limits(Some((24, 3)));
+    let result = fx.apply(&fx.plan());
+    set_round_limits(None);
+    result.unwrap();
+    assert_installed(&fx);
+    assert_eq!(fs::read(fx.folder.join("Big/huge.dat")).unwrap(), bytes);
+}
+
+#[test]
+fn a_round_never_goes_over_its_byte_cap() {
+    let mib = 1 << 20;
+    let rounds = |sizes: &[u64], max_bytes: u64, max_units: usize| {
+        let mut ends = Vec::new();
+        let mut start = 0;
+        while start < sizes.len() {
+            start = super::fetch::round_end(
+                sizes.len(),
+                start,
+                |unit| sizes[unit],
+                max_bytes,
+                max_units,
+            );
+            ends.push(start);
+        }
+        ends
+    };
+    // Two 600 MiB chunks would make 1.2 GiB, so each gets its own round.
+    assert_eq!(
+        rounds(&[600 * mib, 600 * mib, 100 * mib], 1024 * mib, 1024),
+        [1, 3]
+    );
+    // Exactly the cap still fits.
+    assert_eq!(rounds(&[512 * mib, 512 * mib, 1], 1024 * mib, 1024), [2, 3]);
+    // A chunk over the cap still gets a round of its own.
+    assert_eq!(rounds(&[2048 * mib, 1], 1024 * mib, 1024), [1, 2]);
+    // The unit cap holds when bytes don't.
+    assert_eq!(rounds(&[1; 5], 1024 * mib, 2), [2, 4, 5]);
+}
+
+#[test]
+fn a_corrupt_chunk_mid_file_fails_the_install() {
+    let fx = Fixture::new();
+    fx.with_huge(12, |file| file);
+    fx.content.corrupt_chunk(&huge_chunk(7));
+    let error = fx.apply(&fx.plan()).unwrap_err();
+    let shown = format!("{error:#}");
+    assert!(shown.contains("Big/huge.dat"), "{shown}");
+    assert!(!fx.folder.join("Big/huge.dat").exists());
+    assert!(fx.state().journal.is_some());
+}
+
+#[test]
+fn an_install_canceled_mid_file_is_finished_by_installing_again() {
+    let fx = Fixture::new();
+    let bytes = fx.with_huge(12, |file| file);
+    let token = Token::new();
+    {
+        let (token, middle) = (token.clone(), huge_chunk(5));
+        fx.on_chunk(move |hash| {
+            if hash == middle {
+                token.cancel();
+            }
+        });
+    }
+    let error =
+        install::apply(&fx.paths, &mut fx.session(), &fx.plan(), &token, |_| {}).unwrap_err();
+    assert!(
+        matches!(
+            error.downcast_ref(),
+            Some(crate::gog::update::UpdateError::Canceled { journal: true })
+        ),
+        "{error:#}"
+    );
+    assert!(!fx.folder.join("Big/huge.dat").exists());
+    assert!(fx.state().journal.is_some());
+    // The half-written file is still there under its temporary name.
+    assert!(
+        fx.tree().iter().any(|path| path.starts_with("Big/.wineo-")),
+        "{:?}",
+        fx.tree()
+    );
+
+    fx.gog.lock().unwrap().on_chunk = None;
+    let plan = fx.plan();
+    assert!(plan.resumes());
+    let left = chunks_left(&fx, &plan);
+    let before = fx.chunk_requests().len();
+    fx.apply(&plan).unwrap();
+    assert_installed(&fx);
+    assert_eq!(fs::read(fx.folder.join("Big/huge.dat")).unwrap(), bytes);
+    // The half-written file counts for nothing: all of it comes again.
+    assert_eq!(fx.chunk_requests().len() - before, left);
 }
