@@ -5474,6 +5474,7 @@ dependencies = [
  "tempfile",
  "unicode-width",
  "wineo-core",
+ "wineo-gog",
  "zip",
 ]
 
