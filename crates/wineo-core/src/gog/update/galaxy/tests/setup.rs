@@ -12,6 +12,7 @@ use crate::operation::{Locks, Operation};
 
 const ISI_EXE: &str = "__redist\\ISI\\scriptinterpreter.exe";
 const VC_EXE: &str = "__redist\\MSVC2017\\VC_redist.x86.exe";
+const FOLDER: &str = "SimCity™ 4 Délüxe & 100% (x86)";
 const NESTED: &str = r#"/q:a /c:"msiexec /i vcredist.msi /qb! /l*v %temp%\vc.log" 100% done"#;
 
 fn set_before_setup_step(hook: impl FnMut(&Paths, usize) + 'static) {
@@ -160,8 +161,9 @@ fn setup_failure(error: &anyhow::Error) -> String {
 #[test]
 fn isi_runs_for_the_game_then_each_redistributable_with_its_arguments() {
     let mut fx = Fixture::new();
-    // A `%` in the game folder reaches ISI as it is.
-    fx.folder = fx.folder.with_file_name("100% Game");
+    // A game folder with what cmd would choke on written in a batch file
+    // reaches ISI as it is.
+    fx.folder = fx.folder.with_file_name(FOLDER);
     fx.content.add_build(scripted("100"));
     with_setup(&fx, None, None);
     let installed = fx.install();
@@ -176,11 +178,7 @@ fn isi_runs_for_the_game_then_each_redistributable_with_its_arguments() {
         z(&fx.support(GAME, "").components().collect::<PathBuf>())
     );
     assert_eq!(ran[0].arguments, heroic(&fx, GAME, "100"));
-    assert!(
-        ran[0].arguments.contains("100% Game"),
-        "{}",
-        ran[0].arguments
-    );
+    assert!(ran[0].arguments.contains(FOLDER), "{}", ran[0].arguments);
     let vc = fx.version_dir("MSVC2017");
     assert_eq!(
         ran[1].program,
@@ -234,10 +232,12 @@ fn isi_runs_for_the_game_then_each_redistributable_with_its_arguments() {
         assert!(!text.replace("\r\n", "").contains('\n'), "{text:?}");
         assert!(runs.join(format!("gog-galaxy-setup-{step}.log")).is_file());
     }
-    // The `%` that reached ISI whole was doubled in its batch file.
+    // The batch file names nothing itself; it all came from variables.
     let isi = fs::read_to_string(runs.join("gog-galaxy-setup-01.bat")).unwrap();
-    assert!(isi.contains("\\100%% Game\""), "{isi:?}");
-    assert!(!isi.contains("\\100% Game"), "{isi:?}");
+    assert_eq!(isi, setup::batch_file(false));
+    // Which were set on those runs alone.
+    let config = fs::read_to_string(fx.paths.environment_config("game")).unwrap();
+    assert!(!config.contains("WINEO_SETUP"), "{config}");
 }
 
 #[test]
@@ -334,7 +334,7 @@ fn nested_quotes_an_msi_and_percent_signs_reach_the_program_verbatim() {
     assert_eq!(ran.len(), 2);
     assert_eq!(ran[0].arguments, NESTED);
     let xna = fx.version_dir("XNA").join("__redist/XNA");
-    assert_eq!(ran[1].program, "msiexec");
+    assert_eq!(ran[1].program, "C:\\windows\\system32\\msiexec.exe");
     assert_eq!(ran[1].dir, z(&xna));
     assert_eq!(
         ran[1].arguments,
@@ -751,6 +751,31 @@ fn steps_a_leftover_record_shows_done_still_run_for_a_new_install() {
     fx.apply(&plan).unwrap();
     assert_eq!(fx.names(), ["VC_redist.x86.exe"]);
     assert_eq!(fx.record().unwrap().setup, leftover.setup);
+}
+
+#[test]
+fn a_run_directory_cmd_cant_be_given_is_refused_clearly() {
+    let mut fx = Fixture::new();
+    let home = fx._root.path().to_owned();
+    let state = home.join("Zoë's state");
+    fx.paths = Paths::select(
+        move |key| match key {
+            "HOME" => Some(home.clone().into_os_string()),
+            "XDG_STATE_HOME" => Some(state.clone().into_os_string()),
+            _ => None,
+        },
+        None,
+    )
+    .unwrap();
+    fx.content.add_build(scripted("100"));
+    with_setup(&fx, None, None);
+    let error = fx.apply(&fx.plan()).unwrap_err();
+    assert!(
+        error.to_string().starts_with("Setup can't run from "),
+        "{error:#}"
+    );
+    assert!(fx.ran().is_empty());
+    assert!(fx.state().journal.is_some());
 }
 
 /// Set for the copy of the test binary that runs with a decoy `cmd` in its

@@ -9,13 +9,15 @@
 //! the environment's operation lock, supervised, with a log. The batch file
 //! keeps GOG's arguments out of Wine's command-line quoting and writes the
 //! program's full exit code to a file, since the host only sees its low 8
-//! bits. That file alone decides.
+//! bits. That file alone decides. Its paths and arguments come from
+//! variables set on that run, so the file itself is plain ASCII.
 //!
 //! A step is recorded in the record's `setup` as soon as it succeeds, so a
 //! failed or interrupted setup carries on from the first step not done. A
 //! crash between a step and its record runs it again, which installers
 //! allow.
 
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -306,46 +308,90 @@ fn plain(text: &str, max: usize) -> bool {
 }
 
 fn quoted_path(path: &Path) -> Result<String> {
+    Ok(format!("\"{}\"", setup_path(path)?))
+}
+
+/// `path` as a Windows program in the prefix is given it. A quote would end
+/// the quoted value it goes in early, so it's refused.
+fn setup_path(path: &Path) -> Result<String> {
     let text = z_path(path)?;
-    if text.contains('"') {
+    if text.contains(['"', '\r', '\n']) {
         bail!(
-            "{} has a quote in it, which setup can't be given",
+            "{} has a character in it that setup can't be given",
             path.display()
         );
     }
-    Ok(format!("\"{text}\""))
+    Ok(text)
 }
 
-/// Text as a batch file line holds it: `%` doubled, since cmd reads a single
-/// one as the start of a variable and drops it. A line break would end the
-/// line, so it's refused.
-fn batch_text(text: &str) -> Result<String> {
-    if text.contains(['\r', '\n', '\0']) {
-        bail!("{text:?} can't go on one line of a batch file");
-    }
-    Ok(text.replace('%', "%%"))
-}
+/// The folder a step runs from.
+const DIR: &str = "WINEO_SETUP_DIR";
+/// The program, for a step that isn't an `.msi` package.
+const PROGRAM: &str = "WINEO_SETUP_PROGRAM";
+/// The package msiexec installs.
+const MSI: &str = "WINEO_SETUP_MSI";
+/// Everything after the program or package on its command line.
+const ARGS: &str = "WINEO_SETUP_ARGS";
+/// The file the full exit code goes to.
+const CODE: &str = "WINEO_SETUP_CODE";
 
 /// The batch file a step runs from, with CRLF line endings: it changes to
 /// the step's folder, runs the program with the rest of the line as its
-/// arguments, and writes `%ERRORLEVEL%`, the full exit code, to `code`.
-pub(super) fn batch_file(step: &Step, code: &Path) -> Result<String> {
-    let mut program = if step.msi() {
-        format!("\"msiexec\" /i {}", quoted_path(&step.program)?)
+/// arguments, and writes `%ERRORLEVEL%`, the full exit code, to a file.
+///
+/// It is pure ASCII and the same for every step: paths and arguments come
+/// from variables set on the runner, since cmd reads a batch file in the
+/// console's code page and can't find a path with `™` written in it. cmd
+/// expands each variable once, so a `%` in a value stays as it is.
+pub(super) fn batch_file(msi: bool) -> &'static str {
+    if msi {
+        // Named in full, since cmd looks in the current folder, a
+        // redistributable's own, before its search path.
+        "@echo off\r\n\
+         cd /d \"%WINEO_SETUP_DIR%\"\r\n\
+         \"%SystemRoot%\\system32\\msiexec.exe\" /i \"%WINEO_SETUP_MSI%\" %WINEO_SETUP_ARGS%\r\n\
+         >\"%WINEO_SETUP_CODE%\" echo %ERRORLEVEL%\r\n"
     } else {
-        quoted_path(&step.program)?
-    };
-    if !step.arguments.is_empty() {
-        program.push(' ');
-        program.push_str(&step.arguments);
+        "@echo off\r\n\
+         cd /d \"%WINEO_SETUP_DIR%\"\r\n\
+         \"%WINEO_SETUP_PROGRAM%\" %WINEO_SETUP_ARGS%\r\n\
+         >\"%WINEO_SETUP_CODE%\" echo %ERRORLEVEL%\r\n"
     }
-    let lines = [
-        "@echo off".to_owned(),
-        format!("cd /d {}", batch_text(&quoted_path(&step.dir)?)?),
-        batch_text(&program)?,
-        format!(">{} echo %ERRORLEVEL%", batch_text(&quoted_path(code)?)?),
-    ];
-    Ok(lines.iter().map(|line| format!("{line}\r\n")).collect())
+}
+
+/// The variables `batch_file` reads for `step`, writing its code to `code`.
+pub(super) fn variables(step: &Step, code: &Path) -> Result<BTreeMap<String, String>> {
+    // A line break would end the batch file's line, and a NUL can't be in a
+    // variable at all.
+    if step.arguments.contains(['\r', '\n', '\0']) {
+        bail!("{}'s arguments can't go on one command line", step.label);
+    }
+    let program = if step.msi() { MSI } else { PROGRAM };
+    Ok(BTreeMap::from([
+        (DIR.to_owned(), setup_path(&step.dir)?),
+        (program.to_owned(), setup_path(&step.program)?),
+        (ARGS.to_owned(), step.arguments.clone()),
+        (CODE.to_owned(), setup_path(code)?),
+    ]))
+}
+
+/// The batch file's path as `cmd /c` is given it. It's on cmd's own command
+/// line, where cmd would expand a `%` and act on `&` and its kind, and which
+/// it reads in a code page that may not have every character, so anything
+/// but plain ASCII is refused.
+fn batch_path(bat: &Path) -> Result<String> {
+    let text = z_path(bat)?;
+    let fine = text.bytes().all(|byte| {
+        (byte.is_ascii_graphic() || byte == b' ')
+            && !matches!(byte, b'%' | b'"' | b'&' | b'|' | b'<' | b'>' | b'^' | b'!')
+    });
+    if !fine {
+        bail!(
+            "Setup can't run from {}: cmd can't be given a path with characters other than plain letters, digits, and punctuation like - _ . /.",
+            bat.parent().unwrap_or(bat).display()
+        );
+    }
+    Ok(text)
 }
 
 /// The indexes of the steps among `wanted` still to run: every one with
@@ -454,12 +500,13 @@ pub(super) fn run(
         // A code file an earlier attempt left must not speak for this one.
         crate::files::remove_if_present(&code)
             .with_context(|| format!("failed to remove {}", code.display()))?;
-        fs::write(&bat, batch_file(step, &code)?)
-            .with_context(|| format!("failed to write {}", bat.display()))?;
         let args = installer::Args {
-            args: vec!["/c".to_owned(), z_path(&bat)?],
-            env: Default::default(),
+            args: vec!["/c".to_owned(), batch_path(&bat)?],
+            // Set on this run alone, so no later launch sees them.
+            env: variables(step, &code)?,
         };
+        fs::write(&bat, batch_file(step.msi()))
+            .with_context(|| format!("failed to write {}", bat.display()))?;
         // Looked up by Wine in the prefix, never as a file of that name in
         // the current folder.
         let installer = Installer::prepare_prefix_program_with(
@@ -536,56 +583,93 @@ mod tests {
     }
 
     #[test]
-    fn a_batch_file_runs_the_program_and_writes_its_full_code() {
+    fn the_batch_file_is_ascii_and_reads_everything_from_variables() {
+        for msi in [false, true] {
+            let text = batch_file(msi);
+            assert!(text.is_ascii());
+            assert!(text.starts_with("@echo off\r\ncd /d \"%WINEO_SETUP_DIR%\"\r\n"));
+            assert!(text.ends_with(">\"%WINEO_SETUP_CODE%\" echo %ERRORLEVEL%\r\n"));
+            assert_eq!(text.matches("\r\n").count(), 4);
+            assert!(!text.replace("\r\n", "").contains('\n'));
+        }
+        assert!(batch_file(false).contains("\r\n\"%WINEO_SETUP_PROGRAM%\" %WINEO_SETUP_ARGS%\r\n"));
+        assert!(batch_file(true).contains(
+            "\r\n\"%SystemRoot%\\system32\\msiexec.exe\" /i \"%WINEO_SETUP_MSI%\" %WINEO_SETUP_ARGS%\r\n"
+        ));
+    }
+
+    #[test]
+    fn variables_hold_paths_and_arguments_as_they_are() {
         let nested = r#"/q:a /c:"msiexec /i vcredist.msi /qb! /l*v %temp%\vc.log""#;
-        let text = batch_file(
+        let vars = variables(
             &step(
-                "/redist/MSVC2005/vcredist_x86.exe",
+                "/games/SimCity™ 4 Délüxe & 100%/vcredist_x86.exe",
                 nested,
-                "/redist/MSVC2005",
+                "/games/SimCity™ 4 Délüxe & 100%",
                 true,
             ),
             Path::new("/state/game/gog-galaxy-setup-03.code"),
         )
         .unwrap();
         assert_eq!(
-            text,
-            "@echo off\r\n\
-             cd /d \"Z:\\redist\\MSVC2005\"\r\n\
-             \"Z:\\redist\\MSVC2005\\vcredist_x86.exe\" /q:a /c:\"msiexec /i vcredist.msi /qb! /l*v %%temp%%\\vc.log\"\r\n\
-             >\"Z:\\state\\game\\gog-galaxy-setup-03.code\" echo %ERRORLEVEL%\r\n"
+            vars,
+            BTreeMap::from([
+                (
+                    "WINEO_SETUP_DIR".to_owned(),
+                    "Z:\\games\\SimCity™ 4 Délüxe & 100%".to_owned()
+                ),
+                (
+                    "WINEO_SETUP_PROGRAM".to_owned(),
+                    "Z:\\games\\SimCity™ 4 Délüxe & 100%\\vcredist_x86.exe".to_owned()
+                ),
+                ("WINEO_SETUP_ARGS".to_owned(), nested.to_owned()),
+                (
+                    "WINEO_SETUP_CODE".to_owned(),
+                    "Z:\\state\\game\\gog-galaxy-setup-03.code".to_owned()
+                ),
+            ])
         );
+        let msi = variables(&step("/d/XNA.MSI", "/quiet", "/d", true), Path::new("/c")).unwrap();
+        assert_eq!(msi["WINEO_SETUP_MSI"], "Z:\\d\\XNA.MSI");
+        assert!(!msi.contains_key("WINEO_SETUP_PROGRAM"));
     }
 
     #[test]
-    fn a_percent_in_a_path_is_doubled_and_an_msi_goes_through_msiexec() {
-        let text = batch_file(
-            &step("/data/100%/xna.msi", "/quiet", "/data/100%", true),
-            Path::new("/run/50%/code"),
-        )
-        .unwrap();
-        let lines: Vec<&str> = text.split("\r\n").collect();
-        assert_eq!(lines[1], "cd /d \"Z:\\data\\100%%\"");
-        assert_eq!(
-            lines[2],
-            "\"msiexec\" /i \"Z:\\data\\100%%\\xna.msi\" /quiet"
-        );
-        assert_eq!(lines[3], ">\"Z:\\run\\50%%\\code\" echo %ERRORLEVEL%");
-        // No arguments, no trailing space.
-        let bare = batch_file(&step("/a/b.exe", "", "/a", true), Path::new("/c")).unwrap();
-        assert_eq!(bare.split("\r\n").nth(2).unwrap(), "\"Z:\\a\\b.exe\"");
-    }
-
-    #[test]
-    fn a_batch_file_refuses_what_would_break_its_lines() {
+    fn variables_refuse_what_would_break_the_line() {
         for (program, arguments) in [
             ("/a/b.exe", "/x\r\n/y"),
+            ("/a/b.exe", "/x\0"),
             ("/a/q\"uote.exe", ""),
             ("/a/new\nline.exe", ""),
         ] {
             assert!(
-                batch_file(&step(program, arguments, "/a", true), Path::new("/c")).is_err(),
+                variables(&step(program, arguments, "/a", true), Path::new("/c")).is_err(),
                 "{program} {arguments}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_batch_files_own_path_is_plain_ascii() {
+        assert_eq!(
+            batch_path(Path::new(
+                "/home/me/.local/state/wineo/my game/gog-galaxy-setup-01.bat"
+            ))
+            .unwrap(),
+            "Z:\\home\\me\\.local\\state\\wineo\\my game\\gog-galaxy-setup-01.bat"
+        );
+        for bad in [
+            "/home/Zoë/x.bat",
+            "/home/me/100%/x.bat",
+            "/home/a&b/x.bat",
+            "/home/a\"b/x.bat",
+            "/home/a^b/x.bat",
+            "/home/a|b/x.bat",
+        ] {
+            let error = batch_path(Path::new(bad)).unwrap_err();
+            assert!(
+                error.to_string().starts_with("Setup can't run from"),
+                "{bad}: {error}"
             );
         }
     }

@@ -1,40 +1,74 @@
 /// Stands in for `cmd /c FILE.bat` with one of wineo's Galaxy setup batch
 /// files: `@echo off`, `cd /d "DIR"`, `"PROGRAM" ARGS`, and
-/// `>"CODE" echo %ERRORLEVEL%`. Like cmd, it turns `%%` into `%`. It appends
-/// the program, folder, and arguments, tab-separated, to
-/// `${FAKE_CMD_LOG:-$WINEPREFIX/fake-cmd.log}`. A program that isn't there
-/// gets 9009; otherwise the code is in `PROGRAM.exit` beside it (0 without
-/// one), and `PROGRAM.nocode` beside it means no code file is written. An
-/// msiexec line's program is its package. The host gets the low 8 bits.
+/// `>"CODE" echo %ERRORLEVEL%`. Like cmd in a batch file, it expands each
+/// `%NAME%` once from its environment, an unset one to nothing, so a missing
+/// variable fails as it would for real. It appends the program, folder, and
+/// arguments, tab-separated, to `${FAKE_CMD_LOG:-$WINEPREFIX/fake-cmd.log}`.
+/// A program that isn't there gets 9009; otherwise the code is in
+/// `PROGRAM.exit` beside it (0 without one), and `PROGRAM.nocode` beside it
+/// means no code file is written. When the program is msiexec, the package
+/// after `/i` counts as it. The host gets the low 8 bits.
 ///
 /// A macro, so `FAKE_WINE` and `FAKE_UMU` can include it with `concat!`.
 macro_rules! fake_cmd {
     () => {
         r#"fake_cmd() {
+    # Wine sets it for every program.
+    : "${SystemRoot:=C:\\windows}"
     fake_unix() { printf '%s' "$1" | sed 's/^[Zz]://; s/\\/\//g'; }
-    fake_line() { sed -n "$1p" "$2" | tr -d '\r' | sed 's/%%/%/g'; }
+    # Expands each %NAME% once from the environment, as cmd does in a batch
+    # file: an unset one is empty, `%%` is `%`, and what a value holds is
+    # never expanded again.
+    fake_expand() {
+        rest=$1
+        expanded=
+        while :; do
+            case $rest in
+            *%*%*) ;;
+            *) break ;;
+            esac
+            expanded=$expanded${rest%%\%*}
+            rest=${rest#*%}
+            name=${rest%%\%*}
+            rest=${rest#*%}
+            case $name in
+            '') expanded=$expanded% ;;
+            *[!A-Za-z0-9_]* | [0-9]*) expanded=$expanded%$name% ;;
+            *)
+                value=
+                eval "value=\${$name-}"
+                expanded=$expanded$value
+                ;;
+            esac
+        done
+        printf '%s' "$expanded$rest"
+    }
+    fake_line() { fake_expand "$(sed -n "$1p" "$2" | tr -d '\r')"; }
     bat=$(fake_unix "$1")
     dir=$(fake_line 2 "$bat" | sed 's/^cd \/d "\(.*\)"$/\1/')
     line=$(fake_line 3 "$bat")
-    out=$(sed -n '4p' "$bat" | tr -d '\r' | sed 's/^>"\(.*\)" echo %ERRORLEVEL%$/\1/; s/%%/%/g')
+    out=$(sed -n '4p' "$bat" | tr -d '\r' | sed 's/^>"\(.*\)" echo %ERRORLEVEL%$/\1/')
+    out=$(fake_expand "$out")
     program=${line#\"}
     program=${program%%\"*}
     args=${line#*\"}
     args=${args#*\"}
     args=${args# }
     target=$program
-    if [ "$program" = msiexec ]; then
+    case $program in
+    *[\\/]msiexec.exe)
         target=${args#/i \"}
         target=${target%%\"*}
-    fi
+        ;;
+    esac
     target=$(fake_unix "$target")
     printf '%s\t%s\t%s\n' "$program" "$dir" "$args" >>"${FAKE_CMD_LOG:-$WINEPREFIX/fake-cmd.log}"
-    if [ -f "$target" ]; then
+    if [ -n "$target" ] && [ -f "$target" ]; then
         code=$(cat "$target.exit" 2>/dev/null || echo 0)
     else
         code=9009
     fi
-    if [ ! -e "$target.nocode" ]; then
+    if [ -n "$out" ] && [ ! -e "$target.nocode" ]; then
         printf '%s\r\n' "$code" >"$(fake_unix "$out")"
     fi
     return $((code & 255))
