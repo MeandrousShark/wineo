@@ -1390,6 +1390,31 @@ fn a_file_put_at_a_new_path_while_publishing_is_saved_not_overwritten() {
 }
 
 #[test]
+fn a_file_put_where_a_new_link_goes_is_saved_not_overwritten() {
+    let fx = installed_v1();
+    let mut v2 = base_v2();
+    v2.push(Item::Link("newlink", "Data"));
+    fx.offer(RIMWORLD, "RimWorld", "2.0", &v2);
+    fx.offer(ROYALTY, "Royalty", "2.0", &royalty_v2());
+    let path = fx.folder.join("newlink");
+    when("publish", "newlink", move || {
+        fs::write(path, "put here meanwhile").unwrap();
+    });
+    let updated = fx.update();
+    publish::set_hook(None);
+    let tree = fx.tree();
+    assert_eq!(tree["newlink"], "-> Data");
+    assert_eq!(tree["newlink.wineo-saved"], "644 put here meanwhile");
+    assert_eq!(
+        updated.saved,
+        [SavedAside {
+            path: "newlink".to_owned(),
+            saved_as: "newlink.wineo-saved".to_owned(),
+        }]
+    );
+}
+
+#[test]
 fn a_shipped_file_changed_while_publishing_is_still_overwritten() {
     let fx = installed_v1();
     fx.offer(RIMWORLD, "RimWorld", "2.0", &base_v2());

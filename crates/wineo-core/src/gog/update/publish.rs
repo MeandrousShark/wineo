@@ -248,7 +248,7 @@ impl<'a> Publisher<'a> {
             }
             let known = known_of(records);
             if new_kind.is_some() {
-                // Wineo's own is deleted, anything else saved aside.
+                // Settling decides, so a check first would only hash twice.
                 failpoint("update.delete.before")?;
                 self.move_aside(&dir, path, &known)?;
                 failpoint("update.delete.after")?;
