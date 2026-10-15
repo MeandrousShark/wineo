@@ -677,6 +677,24 @@ fn a_check_offers_the_dlc_an_update_would_install_and_no_other() {
 }
 
 #[test]
+fn an_update_to_a_build_without_an_installed_product_names_the_version() {
+    let fx = Fixture::new();
+    fx.gog.lock().unwrap().dlc = vec![DLC];
+    fx.content
+        .add_build(Fixture::game("100").depot(FakeDepot::new(DLC).file(FakeFile::new("d", b"d"))));
+    fx.install();
+    fx.gog.lock().unwrap().newest_first = true;
+    fx.content.add_build(game_200());
+    let error = fx.update_planned().unwrap_err();
+    let message = error.to_string();
+    assert!(
+        message.starts_with("Build v200 of Fake Game doesn't have ")
+            && message.ends_with(", which is installed."),
+        "{message}"
+    );
+}
+
+#[test]
 fn an_update_interrupted_at_each_step_finishes_without_downloading_again() {
     for (point, skip) in [
         ("galaxy.update.before", 0),

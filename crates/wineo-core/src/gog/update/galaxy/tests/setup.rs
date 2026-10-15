@@ -159,6 +159,30 @@ fn setup_failure(error: &anyhow::Error) -> String {
 }
 
 #[test]
+fn progress_names_each_setup_step() {
+    let fx = Fixture::new();
+    fx.content.add_build(scripted("100"));
+    with_setup(&fx, None, None);
+    let plan = fx.plan();
+    let mut seen = Vec::new();
+    install::apply(&fx.paths, &mut fx.session(), &plan, &Token::new(), |step| {
+        if let install::Progress::Setup { done, total, step } = step {
+            seen.push((done, total, step));
+        }
+    })
+    .unwrap();
+    let step = |name: &str| Some(name.to_owned());
+    assert_eq!(
+        seen,
+        [
+            (0, 2, step("script interpreter")),
+            (1, 2, step("MSVC2017")),
+            (2, 2, None)
+        ]
+    );
+}
+
+#[test]
 fn isi_runs_for_the_game_then_each_redistributable_with_its_arguments() {
     let mut fx = Fixture::new();
     // A game folder with what cmd would choke on written in a batch file

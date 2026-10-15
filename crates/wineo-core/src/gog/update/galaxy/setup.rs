@@ -50,6 +50,9 @@ pub(super) struct Step {
     pub(super) identity: SetupStep,
     /// How messages name it.
     pub(super) label: String,
+    /// What a progress line and a review call it: plain words, or a
+    /// redistributable's id.
+    pub(super) name: String,
     /// The program, or the package msiexec installs.
     pub(super) program: PathBuf,
     /// As the program gets them, after its own path.
@@ -152,6 +155,7 @@ pub(super) fn steps(sources: &Sources) -> Result<(Vec<Step>, Vec<String>)> {
                     interpreter: redist.manifest.clone(),
                 },
                 label: format!("GOG's setup script for {}", label(id)),
+                name: "script interpreter".to_owned(),
                 program: in_folder(&store::version_dir(paths, &version), exe),
                 arguments,
                 dir,
@@ -203,6 +207,7 @@ pub(super) fn steps(sources: &Sources) -> Result<(Vec<Step>, Vec<String>)> {
                 md5,
             },
             label: format!("{}'s setup program", label(id)),
+            name: "setup program".to_owned(),
             program: dir.join(&file.path),
             arguments,
             dir,
@@ -231,6 +236,7 @@ pub(super) fn steps(sources: &Sources) -> Result<(Vec<Step>, Vec<String>)> {
                 manifest: redist.manifest.clone(),
             },
             label: redist.dependency.clone(),
+            name: redist.dependency.clone(),
             program,
             arguments: redist.arguments.trim().to_owned(),
             dir,
@@ -461,7 +467,7 @@ pub(super) fn run(
     record: &mut Record,
     steps: &[Step],
     rerun_all: bool,
-    progress: &mut dyn FnMut(usize, usize),
+    progress: &mut dyn FnMut(usize, usize, Option<&str>),
     events: &mut dyn FnMut(Event),
 ) -> Result<(Guard, Ran)> {
     let Setup {
@@ -483,7 +489,7 @@ pub(super) fn run(
     let runs = paths.runtime_dir(name);
     fs::create_dir_all(&runs).with_context(|| format!("failed to create {}", runs.display()))?;
     for (done, &index) in todo.iter().enumerate() {
-        progress(done, todo.len());
+        progress(done, todo.len(), Some(&steps[index].name));
         #[cfg(test)]
         super::tests::before_setup_step(paths);
         if token.is_canceled() {
@@ -557,7 +563,7 @@ pub(super) fn run(
         record.setup.push(step.identity.clone());
         record::write(lock, record)?;
     }
-    progress(todo.len(), todo.len());
+    progress(todo.len(), todo.len(), None);
     Ok((guard, ran))
 }
 
@@ -578,6 +584,7 @@ mod tests {
                 manifest: "a".repeat(32),
             },
             label: "MSVC2005".to_owned(),
+            name: "MSVC2005".to_owned(),
             program: PathBuf::from(program),
             arguments: arguments.to_owned(),
             dir: PathBuf::from(dir),

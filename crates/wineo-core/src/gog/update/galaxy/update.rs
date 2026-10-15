@@ -501,6 +501,10 @@ pub fn plan(
         &repository,
         bits,
         owned.as_ref(),
+        latest
+            .version_name
+            .as_deref()
+            .filter(|name| !name.is_empty()),
     )?;
     let target = Target {
         gog_id,
@@ -620,6 +624,10 @@ pub(in crate::gog::update) fn selected_for_check(
         .repository(link)
         .with_context(|| format!("Couldn't get {title}'s build {}", latest.build_id))?;
     let bits = build::bits(Environment::load(paths, name)?.wine()?.arch);
+    let version = latest
+        .version_name
+        .as_deref()
+        .filter(|name| !name.is_empty());
     Ok(select(
         title,
         game,
@@ -628,6 +636,7 @@ pub(in crate::gog::update) fn selected_for_check(
         &repository,
         bits,
         owned,
+        version,
     )?
     .products)
 }
@@ -729,7 +738,12 @@ fn repair_manifest(
         let Some(language) = resolve(&repository.depots, product.id, wanted, bits) else {
             return Err(GalaxyError::ProductGone {
                 title: title.to_owned(),
-                build: build.to_owned(),
+                build: listed
+                    .version_name
+                    .clone()
+                    .filter(|name| !name.is_empty())
+                    .unwrap_or_else(|| build.to_owned()),
+                installed: true,
                 label: if product.id == gog_id {
                     title.to_owned()
                 } else {
@@ -858,6 +872,7 @@ struct Selected {
 /// GOG's order. A failed or unavailable DLC the build now has is installed,
 /// and one still missing stays as it is. An installed product the build
 /// lacks refuses the update.
+#[allow(clippy::too_many_arguments)]
 fn select(
     title: &str,
     game: &wineo_gog::Product,
@@ -866,6 +881,7 @@ fn select(
     repository: &wineo_gog::Repository,
     bits: &str,
     owned: Option<&HashSet<u64>>,
+    version: Option<&str>,
 ) -> Result<Selected> {
     let build_id = &repository.build_id;
     let folder_language = &committed.language;
@@ -948,8 +964,9 @@ fn select(
                 let Some(language) = pick(product.id, wanted) else {
                     return Err(GalaxyError::ProductGone {
                         title: title.to_owned(),
-                        build: build_id.clone(),
+                        build: version.map_or_else(|| build_id.clone(), str::to_owned),
                         label: label(product.id),
+                        installed: true,
                     }
                     .into());
                 };
@@ -1153,8 +1170,13 @@ fn resumed(
                     };
                     return Err(GalaxyError::ProductGone {
                         title,
-                        build: repository.build_id.clone(),
+                        build: chosen
+                            .version_name
+                            .clone()
+                            .filter(|name| !name.is_empty())
+                            .unwrap_or_else(|| repository.build_id.clone()),
                         label,
+                        installed: true,
                     }
                     .into());
                 }
@@ -1933,7 +1955,13 @@ fn run(
         &mut sidecar,
         &steps,
         false,
-        &mut |done, total| (progress.borrow_mut())(Progress::Setup { done, total }),
+        &mut |done, total, step| {
+            (progress.borrow_mut())(Progress::Setup {
+                done,
+                total,
+                step: step.map(str::to_owned),
+            })
+        },
         events,
     )?;
     failpoint("galaxy.update.setup.after")?;
