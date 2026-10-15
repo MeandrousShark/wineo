@@ -1922,3 +1922,64 @@ fn a_crash_after_the_commit_leaves_a_record_that_the_next_installer_run_removes(
     fx.reinstall();
     assert_moved(&fx);
 }
+
+#[test]
+fn a_move_off_galaxy_installs_newly_owned_dlc() {
+    let fx = installed_windows();
+    as_galaxy_game(&fx);
+    offer_ideology(&fx);
+    fx.owns_ids(&[RIMWORLD, DLC, IDEOLOGY]);
+    let pending = move_plan(&fx, move_options());
+    assert_eq!(pending.target().track, Track::Installer);
+    assert!(pending.products().iter().any(|p| p.id == IDEOLOGY));
+    fx.apply_with(true, &pending, &Token::new(), |_| {})
+        .unwrap();
+    assert_eq!(
+        ran_since_install(&fx),
+        [
+            setup(RIMWORLD, "1.0"),
+            setup(DLC, "1.0"),
+            setup(IDEOLOGY, "1.0")
+        ]
+    );
+    assert_eq!(fx.read("Data/Ideology/i.dat"), "ideology v1");
+    assert_eq!(
+        statuses_and_versions(&fx),
+        [
+            (RIMWORLD, ProductStatus::Installed, v("1.0")),
+            (DLC, ProductStatus::Installed, v("1.0")),
+            (IDEOLOGY, ProductStatus::Installed, v("1.0")),
+        ]
+    );
+    assert_moved_files(&fx);
+}
+
+#[test]
+fn a_move_off_galaxy_retries_failed_dlc() {
+    let fx = installed_windows();
+    as_galaxy_game(&fx);
+    let lock = FolderLock::exclusive(&fx.paths, &fx.folder, &|| false).unwrap();
+    let mut state = lock.read().unwrap().unwrap();
+    let dlc = &mut state.committed.as_mut().unwrap().products[1];
+    dlc.status = ProductStatus::Failed;
+    dlc.build = None;
+    lock.write(&state).unwrap();
+    drop(lock);
+    let pending = move_plan(&fx, move_options());
+    fx.apply_with(true, &pending, &Token::new(), |_| {})
+        .unwrap();
+    assert_eq!(
+        statuses_and_versions(&fx),
+        [
+            (RIMWORLD, ProductStatus::Installed, v("1.0")),
+            (DLC, ProductStatus::Installed, v("1.0")),
+        ]
+    );
+    assert_moved_files(&fx);
+}
+
+fn assert_moved_files(fx: &Fixture) {
+    assert_eq!(fx.state().committed.unwrap().track, Track::Installer);
+    assert_eq!(galaxy_files(fx), (false, false));
+    assert_eq!(fx.read("galaxy-only.dat"), "stays");
+}

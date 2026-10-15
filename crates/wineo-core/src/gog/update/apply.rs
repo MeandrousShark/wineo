@@ -501,28 +501,33 @@ pub fn plan(
         windows::check_graphical()?;
     }
     let session = session.ok_or(AccountError::LoggedOut)?;
-    let (products, language, notes) = if moving {
+    // A moving game is judged as the installer track would find it, so
+    // newly owned DLC is installed and failed or unavailable DLC retried
+    // like any installer reinstall. Its Galaxy builds mean nothing there.
+    let basis = if moving {
         // GOG's installers know languages by their own codes, and a Galaxy
         // game records the depots' (`en-US`).
         let code = |tag: &str| language::installer_code(tag).unwrap_or_else(|_| tag.to_owned());
-        let products = committed
-            .products
-            .iter()
-            .map(|product| Product {
-                build: None,
-                language: product.language.as_deref().map(code),
-                ..product.clone()
-            })
-            .collect();
-        (products, code(&committed.language), Vec::new())
+        let mut basis = state.clone();
+        let converted = basis.committed.as_mut().expect("committed above");
+        converted.track = Track::Installer;
+        converted.language = code(&converted.language);
+        for product in &mut converted.products {
+            product.build = None;
+            product.language = product.language.as_deref().map(code);
+        }
+        basis
     } else {
+        state.clone()
+    };
+    let (products, language, notes) = {
         // Checked for a reinstall too, which also installs DLC owned since
         // and retries failed or unavailable ones GOG offers now.
         let checked = status_with(
             session,
             paths,
             name,
-            state.clone(),
+            basis.clone(),
             Check {
                 refresh: options.refresh,
                 read_only: options.read_only,
@@ -553,10 +558,9 @@ pub fn plan(
                 }
             }
         }
-        let products = checked
-            .products
-            .unwrap_or_else(|| committed.products.clone());
-        (products, committed.language.clone(), checked.notes)
+        let basis = basis.committed.as_ref().expect("committed above");
+        let products = checked.products.unwrap_or_else(|| basis.products.clone());
+        (products, basis.language.clone(), checked.notes)
     };
     // Just fetched and cached, so the cached details are current. A
     // read-only plan cached nothing, so it fetches again rather than reuse

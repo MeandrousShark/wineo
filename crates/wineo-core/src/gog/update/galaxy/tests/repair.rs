@@ -356,6 +356,49 @@ impl Fixture {
 }
 
 #[test]
+fn an_unstarted_reinstall_of_the_current_selection_never_makes_a_file_tracked() {
+    let fx = Fixture::new();
+    // The only build listed is the one installed.
+    fx.content.add_build(Fixture::game("100"));
+    fx.install();
+    forget_record(&fx);
+    fx.damage("Data/core.dat", "yours");
+    fx.damage("extra.txt", "also yours");
+    // Stopped after pending, before the journal.
+    let plan = fx.op(reinstall()).unwrap();
+    assert_eq!(plan.build(), "100");
+    assert_eq!(plan.installed_build(), Some("100"));
+    set_failpoint(Some("galaxy.update.pending.after"));
+    let error = fx.run_err(&plan);
+    set_failpoint(None);
+    assert!(format!("{error:#}").contains("injected"), "{error:#}");
+    let state = fx.state();
+    assert!(state.journal.is_none());
+    // Its pending claims the file of yours is the build's.
+    let mut record = fx.record().unwrap();
+    assert!(record.installed.is_none());
+    let pending = record.pending.as_mut().unwrap();
+    for file in &mut pending.manifest.files {
+        if file.path == "Data/core.dat" {
+            file.md5 = Some(fake::content::md5_hex(b"yours"));
+        }
+    }
+    write_record(&fx, &record);
+    assert!(record::pending(&state, &record).is_none());
+
+    let plan = fx.op(reinstall()).unwrap();
+    assert_eq!(plan.kind(), JournalKind::Reinstall);
+    assert!(!plan.is_recovery());
+    assert_eq!(plan.start(), Start::Target);
+    let (updated, _) = fx.run(&plan);
+    // Answer b: saved aside, replaced, and nothing deleted.
+    assert_eq!(fx.read("Data/core.dat.wineo-saved"), "yours");
+    assert_eq!(Fixture::saved(&updated), ["Data/core.dat"]);
+    assert_eq!(fx.read("extra.txt"), "also yours");
+    assert_whole(&fx, "100");
+}
+
+#[test]
 fn an_interrupted_repair_is_finished_as_a_repair() {
     for point in [
         "galaxy.update.pending.after",
