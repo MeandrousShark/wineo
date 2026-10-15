@@ -690,6 +690,60 @@ Step 4 (2026-10-14):
   runs in the prefix until step 5. `setup` in the record is a placeholder
   for step 5.
 
+Step 5 probe (2026-10-14), Wine 11.19 and GE-Proton11-3 through umu
+1.4.4, with SimCity 4 and The Witcher installed live through core's
+Galaxy install:
+
+- **Two live fixes first.** 14 of the 68 redistributables are game-local
+  and list their files with a leading `/` (nGlide, language_setup, the
+  GOG launcher shims, the DOSBox configurator); a redistributable's
+  manifest strips one leading separator and keeps every other path rule,
+  and game depots still refuse it. The redistributables' `open_link`
+  answer has no parameters at all, just a plain URL per CDN with no token
+  or expiry; a chunk's URL is that URL plus `/ab/cd/<hash>`.
+- **Exit codes through the batch file** reach the code file exactly under
+  both: 0, 1, 255, 256, 1638, 1641, 3010, 70000, 2147483647, -1, and
+  -1073741819 (an access violation). The host process only gets the low 8
+  bits (3010 arrives as 194, an access violation as 5), so the code file is
+  the only signal. A missing program gives 9009.
+- **Quoting.** A program started from the batch file gets the rest of the
+  line verbatim: MSVC 2005's nested command line arrives byte for byte,
+  and both MSVC 2005 runtimes install from it. Spaces, `&`, and
+  parentheses inside quotes are fine. A `%` must be written `%%`, or cmd
+  drops it (`100% done` became `100 done`).
+- **Every step exits 0 with no window,** in 4 to 6 seconds (DirectX in
+  19): ISI for SimCity 4; The Witcher's setup program, MSVC2005,
+  MSVC2005_x64, and DirectX `/silent`. VC++ 2005 lands in WinSxS and
+  DirectX's DLLs in system32.
+- **A `temp_executable` gets ISI's arguments.** The Witcher's is an Inno
+  "galaxy" installer whose `temp_arguments` is empty, so run as listed it
+  would open its wizard. It gets the same arguments as ISI, as Heroic
+  passes them (`/VERYSILENT /DIR= /Language= /LANG= /ProductId=
+  /galaxyclient /buildId= /versionName= /nodesktopshorctut
+  /nodesktopshortcut /lang-code= /supportDir=`), then any
+  `temp_arguments` GOG lists.
+- **What setup writes,** the same under both:
+  - the registry: `HKLM\Software\Wow6432Node\GOG.com\Games\<id>` (build,
+    exe, launch command, save folder, language, version), the game's own
+    keys from its script, and compatibility layers for its play tasks;
+  - the prefix: `ProgramData\GOG.com\supportInstaller\<id>\`, Start Menu
+    shortcuts, a setup log in Temp, and the support data the script copies
+    (SimCity 4's `{userdocs}` folder, done only once; The Witcher's seven
+    adventure modules in `Public\Documents`). So the support folder is only
+    read during setup, and a replaced prefix needs setup again;
+  - the game folder: `gog.ico`, `support.ico`, `goglog.ini` (the "only
+    once" markers), a `Launch <title>.lnk`, The Witcher's
+    `GameuxInstallHelper.dll`, and an Inno uninstaller (`unins000.*`, never
+    run by wineo). None is in the manifest, so they're the folder's extras
+    under 0049's rules: kept by updates and left by an uninstall.
+- **Plain Wine prefixes link the user folders** (Documents, Desktop,
+  Downloads, Music, Pictures) to the real home, as Wine does by default;
+  Proton's don't. A script's `{userdocs}` copy then lands in the real
+  `~/Documents`.
+- **Downloads go a file at a time per worker,** where the plan says chunks
+  4 at a time: The Witcher's 1.9 GB `textures00.bif` kept one core busy
+  while the others waited at the round's end. Fixed before step 6.
+
 ## Implementation sequence
 
 Part A:
