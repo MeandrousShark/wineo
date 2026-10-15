@@ -1029,9 +1029,10 @@ struct Compared {
 }
 
 /// Compares the folder with the plan's target, reading only. A file the
-/// update doesn't change is checked by size, since hashing a whole game
-/// takes minutes; any other file there is hashed against its new version,
-/// and against its old one, which says whether it is wineo's to replace.
+/// update doesn't change is left alone with a stored manifest, and checked
+/// by size with a fetched one, since hashing a whole game takes minutes; any
+/// other file there is hashed against its new version, and against its old
+/// one, which says whether it is wineo's to replace.
 fn compare(paths: &Paths, plan: &Plan, token: &Token) -> Result<Compared> {
     let root = package::open_folder(&plan.folder)?;
     let mut manifest = install::on_disk(&root, &plan.manifest);
@@ -1044,11 +1045,12 @@ fn compare(paths: &Paths, plan: &Plan, token: &Token) -> Result<Compared> {
         .flat_map(|base| &base.manifest.files)
         .map(|file| (file.path.to_lowercase(), file))
         .collect();
+    let stored = base.as_ref().is_some_and(|base| !base.fetched);
     let mut verified = HashMap::new();
     let mut files = Vec::new();
     for file in &manifest.files {
         let old = old.get(&file.path.to_lowercase()).copied();
-        files.push(judge(&root, file, old, token, &mut verified)?);
+        files.push(judge(&root, file, old, stored, token, &mut verified)?);
     }
     let support_root = paths.gog_support_dir(&folder::key(&plan.folder));
     let support = install::support_to_fetch(&support_root, &mut manifest.support, token)?;
@@ -1075,15 +1077,24 @@ fn compare(paths: &Paths, plan: &Plan, token: &Token) -> Result<Compared> {
 }
 
 /// What one target file needs, against what is at its path and its base
-/// version `old`, if the base lists one.
+/// version `old`, if the base lists one. `stored` says the base is the
+/// manifest wineo stored at its last commit.
 fn judge(
     root: &std::os::fd::OwnedFd,
     file: &FileEntry,
     old: Option<&FileEntry>,
+    stored: bool,
     token: &Token,
     verified: &mut HashMap<String, String>,
 ) -> Result<Verdict> {
     let path = file.path.as_str();
+    let unchanged_by_update = old.filter(|old| same_content(old, file));
+    // Left as it is, there or not, whatever its size: you may have deleted
+    // an intro video or edited a setting on purpose, and putting a file
+    // back is what `--repair` is for.
+    if stored && let Some(old) = unchanged_by_update {
+        return Ok(Verdict::Keep(file.md5.clone().or_else(|| old.md5.clone())));
+    }
     let Ok(dir) = fetch::open_dir(root, publish::parent_of(path)) else {
         return Ok(Verdict::Fetch);
     };
@@ -1091,7 +1102,7 @@ fn judge(
     if publish::current(&dir, leaf, path)? != Some(Current::File) {
         return Ok(Verdict::Fetch);
     }
-    if let Some(old) = old.filter(|old| same_content(old, file)) {
+    if let Some(old) = unchanged_by_update {
         return unchanged(&dir, leaf, path, file, old);
     }
     let mut entries = vec![file];
@@ -1110,8 +1121,9 @@ fn judge(
     )
 }
 
-/// A file the update doesn't change, kept when it's there at its size, as
-/// question 4 settled for a game with no stored manifest. The size alone
+/// A file the update doesn't change, with a fetched manifest: kept when
+/// it's there at its size, as question 4 settled for a game with no stored
+/// manifest. The size alone
 /// can't tell an edit of the same length from the file, which `--repair`
 /// finds. One of another size is downloaded again, and what was there is
 /// saved aside, since it doesn't hold a hash wineo recorded.

@@ -1165,3 +1165,26 @@ fn a_kept_file_with_no_known_md5_is_still_deleted_later_on_a_chunk_match() {
     assert!(!fx.folder.join("Data/big.dat").exists());
     assert!(updated.kept.is_empty(), "{:?}", updated.kept);
 }
+
+#[test]
+fn with_a_stored_manifest_files_the_update_doesnt_change_are_left_alone() {
+    let fx = Fixture::new();
+    // Build 200 only changes the info file.
+    fx.installed_then(Fixture::game("200"));
+    fs::write(fx.folder.join("Data/core.dat"), "edited on purpose").unwrap();
+    fs::remove_file(fx.folder.join("bin/Game.exe")).unwrap();
+    let plan = fx.update_plan();
+    assert_eq!(plan.start(), Start::Stored);
+    let before = fx.chunk_count();
+    let updated = fx.apply_update(&plan).unwrap();
+    assert_eq!(fx.read("Data/core.dat"), "edited on purpose");
+    assert!(!fx.folder.join("bin/Game.exe").exists());
+    assert!(updated.saved.is_empty() && updated.kept.is_empty());
+    assert!(updated.overwritten.is_empty());
+    assert!(!fx.tree().iter().any(|path| path.contains("wineo-saved")));
+    let asked = fx.chunks_since(before);
+    assert!(!asked.contains(&chunk(b"MZ the g")), "{asked:?}");
+    assert!(!asked.contains(&chunk(b"core dat")), "{asked:?}");
+    assert_eq!(fx.base_build().as_deref(), Some("200"));
+    assert_eq!(fx.read(&format!("goggame-{GAME}.info")), info(GAME, "200"));
+}
