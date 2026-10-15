@@ -8,8 +8,9 @@
 //! by every game (`store`).
 //!
 //! Nothing here is reachable from the CLI or the app yet: they still call
-//! `install::plan` for the offline installers. `plan` here picks the track
-//! as installs will once they do.
+//! `install::plan` for the offline installers and `update::plan`, which
+//! refuses Galaxy games. `plan` here picks the track as installs will once
+//! they do, and `plan_update` sends a Galaxy game's update to `update`.
 
 mod build;
 mod fetch;
@@ -17,15 +18,18 @@ pub mod install;
 pub mod record;
 mod setup;
 mod store;
+pub mod update;
 
 use anyhow::Result;
 
 pub use build::LayoutError;
 pub use install::{GalaxyError, PlannedProduct, Progress, Retarget};
 
+use super::apply::{self, Options};
 use super::install as offline;
 use crate::cancel::Token;
-use crate::gog::account::Session;
+use crate::environment::Environment;
+use crate::gog::account::{AccountError, Session};
 use crate::gog::folder::{Platform, Track};
 use crate::gog::migrate::host_only;
 use crate::gog::product;
@@ -93,6 +97,48 @@ pub fn plan(
     } else {
         Planned::Installer(offline::plan(paths, session, request, token)?)
     })
+}
+
+/// An update planned on the game's track.
+#[derive(Debug)]
+#[allow(clippy::large_enum_variant)]
+pub enum PlannedUpdate {
+    Installer(apply::Plan),
+    Galaxy(update::Planned),
+}
+
+/// Plans updating `name`'s GOG game on the track it follows: a Galaxy
+/// Windows game, or its interrupted Galaxy operation, through
+/// `update::plan`, which needs a session; anything else through
+/// `apply::plan`, unchanged.
+pub fn plan_update(
+    paths: &Paths,
+    session: Option<&mut Session>,
+    name: &str,
+    options: Options,
+    token: &Token,
+) -> Result<PlannedUpdate> {
+    host_only(paths)?;
+    Environment::ensure_exists(paths, name)?;
+    let state = super::game_of(paths, name)?;
+    let (platform, track) = match (&state.journal, &state.committed) {
+        (Some(journal), _) => (journal.target.platform, journal.target.track),
+        (None, Some(committed)) => (committed.platform, committed.track),
+        (None, None) => {
+            return Ok(PlannedUpdate::Installer(apply::plan(
+                paths, session, name, options, token,
+            )?));
+        }
+    };
+    if platform == Platform::Windows && track == Track::Galaxy {
+        let session = session.ok_or(AccountError::LoggedOut)?;
+        return Ok(PlannedUpdate::Galaxy(update::plan(
+            paths, session, name, options, token,
+        )?));
+    }
+    Ok(PlannedUpdate::Installer(apply::plan(
+        paths, session, name, options, token,
+    )?))
 }
 
 #[cfg(test)]

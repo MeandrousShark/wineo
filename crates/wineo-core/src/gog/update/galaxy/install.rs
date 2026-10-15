@@ -104,6 +104,9 @@ pub enum GalaxyError {
         label: String,
         detail: String,
     },
+    /// Reinstalling a Galaxy game, which a later step of plan 0052 does.
+    #[error("Reinstalling {name}'s Galaxy build comes in a later release.")]
+    Reinstall { name: String },
     #[error(transparent)]
     Layout(#[from] LayoutError),
 }
@@ -900,7 +903,10 @@ pub(super) fn manifests(
 }
 
 /// Fetches the file list of each store version that isn't in the store yet.
-pub(super) fn complete_store(session: &mut Session, store: Vec<StoreNeed>) -> Result<Vec<StoreNeed>> {
+pub(super) fn complete_store(
+    session: &mut Session,
+    store: Vec<StoreNeed>,
+) -> Result<Vec<StoreNeed>> {
     let paths = session.paths().clone();
     store
         .into_iter()
@@ -1003,7 +1009,13 @@ fn run(
     let mut warnings = plan.warnings.clone();
     windows::check_graphical()?;
     let (game, support) = unverified_sizes(paths, plan, token)?;
-    check_space(paths, plan, game, support, planned_store(paths, plan))?;
+    check_space(
+        paths,
+        plan,
+        game,
+        support,
+        planned_store(paths, &plan.store),
+    )?;
 
     let prefix = match &plan.creation {
         Some(creation) => crate::paths::resolve(creation.prefix()),
@@ -1525,7 +1537,11 @@ pub(super) fn fetch_support(
     for &index in fetch {
         let relative = support_path(&support[index])?;
         folder::create_dir_durable(&root.join(publish::parent_of(&relative)))?;
-        names.push((index, publish::parent_of(&relative).to_owned(), publisher.temp_name()));
+        names.push((
+            index,
+            publish::parent_of(&relative).to_owned(),
+            publisher.temp_name(),
+        ));
     }
     let fd = package::open_folder(root)?;
     let files = support.to_vec();
@@ -1629,7 +1645,12 @@ pub(super) fn place(
         .journal
         .as_ref()
         .map_or(&[][..], |journal| journal.attempted.as_slice());
-    publisher.place_new(&dir, temp, path, &merged(recorded(attempted, path), base(path)))
+    publisher.place_new(
+        &dir,
+        temp,
+        path,
+        &merged(recorded(attempted, path), base(path)),
+    )
 }
 
 /// The file hashes and symlink targets wineo recorded for `path`.
@@ -1657,7 +1678,12 @@ pub(super) fn merged(mut a: Known, b: Known) -> Known {
 }
 
 /// Adds an entry to `attempted` unless it's there already.
-pub(super) fn name_entry(attempted: &mut Vec<Attempted>, path: &str, kind: EntryType, content: Option<&str>) {
+pub(super) fn name_entry(
+    attempted: &mut Vec<Attempted>,
+    path: &str,
+    kind: EntryType,
+    content: Option<&str>,
+) {
     let entry = Attempted {
         path: path.to_owned(),
         kind,
@@ -1740,7 +1766,8 @@ impl Placer<'_, '_> {
             }
             // Only an empty folder is removed, so nothing can be lost.
             Current::Directory
-                if (self.known)(path).folder && self.publisher.remove_folder(dir, leaf, path)? =>
+                if (self.known)(path).folder
+                    && self.publisher.remove_folder(dir, leaf, path)? =>
             {
                 Ok(())
             }
@@ -1873,7 +1900,11 @@ impl<'a> Checking<'a> {
     fn finish(self, md5: &str) -> bool {
         self.same
             && self.chunk.is_none()
-            && self.entry.md5.as_deref().is_none_or(|expected| expected == md5)
+            && self
+                .entry
+                .md5
+                .as_deref()
+                .is_none_or(|expected| expected == md5)
             && match (&self.entry.sha256, self.sha) {
                 (Some(expected), Some(sha)) => *expected == crate::units::hex(sha.finalize()),
                 _ => true,
@@ -2022,8 +2053,8 @@ fn unverified_sizes(paths: &Paths, plan: &Plan, token: &Token) -> Result<(u64, u
 }
 
 /// The bytes of the store versions that were missing when planning looked.
-fn planned_store(paths: &Paths, plan: &Plan) -> u64 {
-    plan.store
+pub(super) fn planned_store(paths: &Paths, store: &[StoreNeed]) -> u64 {
+    store
         .iter()
         .filter(|need| !store::version_dir(paths, &need.version).is_dir())
         .flat_map(|need| need.files.iter().flatten())

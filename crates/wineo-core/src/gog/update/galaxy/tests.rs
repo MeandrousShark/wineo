@@ -111,6 +111,9 @@ struct Gog {
     dlc: Vec<u64>,
     /// Builds left out of build lists, as GOG drops old ones.
     hidden: HashSet<String>,
+    /// Lists builds the other way round, the last one added first, as GOG
+    /// lists a newer build before the one installed.
+    newest_first: bool,
     /// Revokes every secure link once this many chunks were served.
     revoke_after: Option<usize>,
     chunks: usize,
@@ -382,15 +385,19 @@ fn answer(content: &ContentSystem, gog: &Mutex<Gog>, request: &fake::Request) ->
     let answered = content.answer(request);
     if path.ends_with("/os/windows/builds")
         && let Some(Reply::Send(bytes)) = &answered
-        && !gog.hidden.is_empty()
+        && (!gog.hidden.is_empty() || gog.newest_first)
     {
         let text = String::from_utf8_lossy(bytes);
         let body = &text[text.find("\r\n\r\n").unwrap() + 4..];
         let mut list: serde_json::Value = serde_json::from_str(body).unwrap();
-        list["items"].as_array_mut().unwrap().retain(|item| {
+        let items = list["items"].as_array_mut().unwrap();
+        items.retain(|item| {
             !gog.hidden
                 .contains(item["build_id"].as_str().unwrap_or_default())
         });
+        if gog.newest_first {
+            items.reverse();
+        }
         return fake::json(200, &list.to_string());
     }
     answered.unwrap_or_else(|| fake::json(404, "{}"))
@@ -1986,3 +1993,4 @@ fn an_install_canceled_mid_file_is_finished_by_installing_again() {
 }
 
 mod setup;
+mod update;
