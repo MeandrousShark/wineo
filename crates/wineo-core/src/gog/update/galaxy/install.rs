@@ -1024,7 +1024,7 @@ fn run(
         .journal
         .as_ref()
         .map_or_else(operation_id, |journal| journal.operation.clone());
-    let mut publisher = Publisher::new(root.try_clone()?, &operation, token);
+    let mut publisher = Publisher::new(root.try_clone()?, &operation, token).require_no_replace();
     if let Some(journal) = &state.journal {
         // Whatever the interrupted attempt left half done goes first.
         let dirs = publish::remove_temporaries(&root, &journal.operation)?;

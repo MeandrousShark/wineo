@@ -1447,6 +1447,28 @@ fn a_link_of_wineos_is_deleted_only_while_it_points_where_recorded() {
 }
 
 #[test]
+fn galaxy_installs_refuse_a_filesystem_that_cant_rename_without_replacing() {
+    let fx = Fixture::new();
+    fx.content.add_build(Fixture::game("100"));
+    interrupted(&fx, "galaxy.files.after", 0);
+    fs::write(fx.folder.join("Data/core.dat"), "yours").unwrap();
+    let plan = fx.plan();
+    crate::gog::update::publish::set_no_rename_noreplace(true);
+    let error = fx.apply(&plan).unwrap_err();
+    crate::gog::update::publish::set_no_rename_noreplace(false);
+    assert!(
+        format!("{error:#}").contains("can't rename a file without replacing"),
+        "{error:#}"
+    );
+    assert_eq!(fx.read("Data/core.dat"), "yours");
+    assert!(!fx.tree().iter().any(|path| path.contains(".wineo-saved")));
+    let installed = fx.install();
+    assert_installed(&fx);
+    assert_eq!(installed.saved.len(), 1);
+    assert_eq!(fx.read("Data/core.dat.wineo-saved"), "yours");
+}
+
+#[test]
 fn same_size_damage_counts_toward_space() {
     let fx = Fixture::new();
     fx.content.add_build(Fixture::game("100"));

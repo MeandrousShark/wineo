@@ -101,6 +101,9 @@ pub(super) struct Publisher<'a> {
     /// that is still a folder is synced too.
     recorded_folders: BTreeSet<String>,
     report: Report,
+    /// Whether moving something aside has to refuse a filesystem that can't
+    /// rename without replacing, rather than look first and rename.
+    no_replace_only: bool,
 }
 
 impl<'a> Publisher<'a> {
@@ -114,7 +117,15 @@ impl<'a> Publisher<'a> {
             written: Vec::new(),
             recorded_folders: BTreeSet::new(),
             report: Report::default(),
+            no_replace_only: false,
         }
+    }
+
+    /// Never falls back to looking before a rename that could replace what
+    /// appeared meanwhile, which Galaxy installs rely on.
+    pub(super) fn require_no_replace(mut self) -> Self {
+        self.no_replace_only = true;
+        self
     }
 
     pub(super) fn into_report(self) -> Report {
@@ -756,10 +767,14 @@ impl<'a> Publisher<'a> {
                 format!("{leaf}.wineo-saved-{number}")
             };
             number += 1;
-            match rustix::fs::renameat_with(dir, leaf, dir, saved.as_str(), RenameFlags::NOREPLACE)
-            {
+            match rename_new(dir, leaf, dir, saved.as_str()) {
                 Ok(()) => break saved,
                 Err(Errno::EXIST) => {}
+                Err(error @ (Errno::INVAL | Errno::NOSYS | Errno::NOTSUP))
+                    if self.no_replace_only =>
+                {
+                    return Err(no_replace_error(error, path));
+                }
                 // A filesystem that can't refuse to replace: look first.
                 Err(Errno::INVAL) => {
                     match rustix::fs::statat(dir, saved.as_str(), AtFlags::SYMLINK_NOFOLLOW) {
@@ -836,6 +851,10 @@ fn rename_new(
     to_dir: &OwnedFd,
     to: &str,
 ) -> rustix::io::Result<()> {
+    #[cfg(test)]
+    if NO_RENAME_NOREPLACE.with(std::cell::Cell::get) {
+        return Err(Errno::INVAL);
+    }
     rustix::fs::renameat_with(from_dir, from, to_dir, to, RenameFlags::NOREPLACE)
 }
 
@@ -966,6 +985,18 @@ pub(super) fn sync_folders(
 #[cfg(test)]
 thread_local! {
     static SYNCS: std::cell::RefCell<Vec<String>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+#[cfg(test)]
+thread_local! {
+    static NO_RENAME_NOREPLACE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Makes renaming without replacing fail as on a filesystem that can't, on
+/// this thread, for tests.
+#[cfg(test)]
+pub(super) fn set_no_rename_noreplace(on: bool) {
+    NO_RENAME_NOREPLACE.with(|cell| cell.set(on));
 }
 
 /// Notes a sync or commit for tests checking that every sync comes first.
