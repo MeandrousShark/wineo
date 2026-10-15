@@ -15,6 +15,10 @@
 //! flight, never for a whole file. Every write to wineo's state stays on
 //! this thread too: workers only fetch, write, and sync, and the caller's
 //! `done` runs here as each file finishes.
+//!
+//! An update's changed file can name an old copy to reuse: a chunk the old
+//! copy holds at a known offset is read from there and checked against the
+//! chunk's MD5, and only downloaded when it doesn't match.
 
 use std::fs::File;
 use std::io;
@@ -57,6 +61,35 @@ pub(super) struct Job<'a> {
     pub(super) file: &'a FileEntry,
     /// The secure links of the file's product, or of the redistributables.
     pub(super) links: &'a ChunkLinks,
+    /// An old copy whose chunks may be reused instead of downloaded.
+    pub(super) reuse: Option<Reuse<'a>>,
+}
+
+/// An old copy of a file and where in it each of the new file's chunks may
+/// be, by the old manifest's chunk list. Nothing read from it is trusted
+/// until it matches the chunk's MD5.
+pub(super) struct Reuse<'a> {
+    /// Opened without following a symlink, and checked to be a regular file.
+    pub(super) file: &'a File,
+    /// For each chunk of the new file, the offset of a chunk in the old copy
+    /// with the same MD5 and size, if there is one.
+    pub(super) at: Vec<Option<u64>>,
+}
+
+/// Where in a copy of `old` each chunk of `new` is, matched by MD5 and size.
+pub(super) fn reuse_offsets(old: &FileEntry, new: &FileEntry) -> Vec<Option<u64>> {
+    let mut offsets = std::collections::HashMap::new();
+    let mut offset = 0u64;
+    for chunk in &old.chunks {
+        offsets
+            .entry((chunk.md5.as_str(), chunk.size))
+            .or_insert(offset);
+        offset = offset.saturating_add(chunk.size);
+    }
+    new.chunks
+        .iter()
+        .map(|chunk| offsets.get(&(chunk.md5.as_str(), chunk.size)).copied())
+        .collect()
 }
 
 /// One piece of work: a chunk of a job's file at its offset, or, for an
@@ -236,15 +269,18 @@ impl Downloads<'_, '_> {
         let path = &job.file.path;
         let file = output.open(job)?;
         if let Some(index) = unit.chunk {
-            let bytes = client
-                .chunk(job.links, access, &gog_chunk(&job.file.chunks[index]))
-                .map_err(|error| -> anyhow::Error {
-                    if error.kind() == wineo_gog::ErrorKind::Canceled {
-                        UpdateError::Canceled { journal: true }.into()
-                    } else {
-                        anyhow::Error::from(error).context(format!("Couldn't download {path}"))
-                    }
-                })?;
+            let bytes = match reused(job, index) {
+                Some(bytes) => bytes,
+                None => client
+                    .chunk(job.links, access, &gog_chunk(&job.file.chunks[index]))
+                    .map_err(|error| -> anyhow::Error {
+                        if error.kind() == wineo_gog::ErrorKind::Canceled {
+                            UpdateError::Canceled { journal: true }.into()
+                        } else {
+                            anyhow::Error::from(error).context(format!("Couldn't download {path}"))
+                        }
+                    })?,
+            };
             file.write_all_at(&bytes, unit.offset)
                 .with_context(|| format!("failed to write {path}"))?;
             self.written
@@ -291,6 +327,17 @@ impl Output {
             slot.take();
         }
     }
+}
+
+/// Chunk `index` of the job's file read from its old copy, when the copy
+/// holds it. Anything that can't be read, or doesn't match, is downloaded.
+fn reused(job: &Job, index: usize) -> Option<Vec<u8>> {
+    let reuse = job.reuse.as_ref()?;
+    let offset = (*reuse.at.get(index)?)?;
+    let chunk = &job.file.chunks[index];
+    let mut bytes = vec![0; usize::try_from(chunk.size).ok()?];
+    reuse.file.read_exact_at(&mut bytes, offset).ok()?;
+    (crate::units::hex(Md5::digest(&bytes)) == chunk.md5).then_some(bytes)
 }
 
 /// Syncs a whole file and reads it back, checking its size and the hashes

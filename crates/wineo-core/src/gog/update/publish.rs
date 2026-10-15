@@ -72,6 +72,8 @@ struct Recorded {
 pub(super) struct Known {
     pub(super) files: Vec<String>,
     pub(super) links: Vec<String>,
+    /// Whether wineo recorded a folder there.
+    pub(super) folder: bool,
 }
 
 /// What a path holds now.
@@ -476,6 +478,34 @@ impl<'a> Publisher<'a> {
             Some(aside) => self.settle_aside(dir, &aside, path, known),
             None => Ok(()),
         }
+    }
+
+    /// Deletes the file or symlink at `path` when it holds what `known`
+    /// records, checked again once it's renamed out of the way, so what is
+    /// deleted is always what was checked. Anything else stays where it is
+    /// and is listed as kept.
+    pub(super) fn remove_known(&mut self, dir: &OwnedFd, path: &str, known: &Known) -> Result<()> {
+        let leaf = leaf_of(path);
+        let ours = match current(dir, leaf, path)? {
+            None => return Ok(()),
+            Some(Current::File) => self
+                .hash(dir, leaf, path)?
+                .is_some_and(|hash| known.files.contains(&hash)),
+            Some(Current::Symlink(target)) => known.links.contains(&target),
+            Some(_) => false,
+        };
+        if !ours {
+            self.report.kept.push(path.to_owned());
+            return Ok(());
+        }
+        failpoint("update.delete.before")?;
+        if let Some(aside) = self.take_aside(dir, path)?
+            && !self.delete_if_known(dir, &aside, path, known)?
+            && !self.put_back(dir, &aside, path)?
+        {
+            self.save_settled(dir, &aside, path)?;
+        }
+        failpoint("update.delete.after")
     }
 
     /// Renames what stands at `path` to its aside name, which it returns,
@@ -1032,6 +1062,7 @@ fn known_of(records: &[Recorded]) -> Known {
         match (record.kind, &record.content) {
             (EntryType::File, Some(md5)) => known.files.push(md5.clone()),
             (EntryType::Symlink, Some(target)) => known.links.push(target.clone()),
+            (EntryType::Directory, _) => known.folder = true,
             _ => {}
         }
     }

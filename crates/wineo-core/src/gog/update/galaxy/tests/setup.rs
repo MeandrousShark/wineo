@@ -10,12 +10,12 @@ use crate::gog::update::windows::SetupError;
 use crate::gog::update::windows::tests::set_graphical;
 use crate::operation::{Locks, Operation};
 
-const ISI_EXE: &str = "__redist\\ISI\\scriptinterpreter.exe";
-const VC_EXE: &str = "__redist\\MSVC2017\\VC_redist.x86.exe";
+pub(super) const ISI_EXE: &str = "__redist\\ISI\\scriptinterpreter.exe";
+pub(super) const VC_EXE: &str = "__redist\\MSVC2017\\VC_redist.x86.exe";
 const FOLDER: &str = "SimCity™ 4 Délüxe & 100% (x86)";
 const NESTED: &str = r#"/q:a /c:"msiexec /i vcredist.msi /qb! /l*v %temp%\vc.log" 100% done"#;
 
-fn set_before_setup_step(hook: impl FnMut(&Paths, usize) + 'static) {
+pub(super) fn set_before_setup_step(hook: impl FnMut(&Paths, usize) + 'static) {
     SETUP_STEPS.with(|count| count.set(0));
     BEFORE_SETUP_STEP.with(|cell| *cell.borrow_mut() = Some(Box::new(hook)));
 }
@@ -31,7 +31,7 @@ fn dependency(id: &str, exe: &str, arguments: &str, code: Option<&str>) -> FakeD
 }
 
 /// GOG's script interpreter and one runtime, each ending with its code.
-fn with_setup(fx: &Fixture, isi: Option<&str>, vc: Option<&str>) {
+pub(super) fn with_setup(fx: &Fixture, isi: Option<&str>, vc: Option<&str>) {
     fx.content.set_dependencies(
         "1",
         &[
@@ -42,7 +42,7 @@ fn with_setup(fx: &Fixture, isi: Option<&str>, vc: Option<&str>) {
 }
 
 /// The game with a script for ISI, listing the runtime.
-fn scripted(build: &str) -> FakeBuild {
+pub(super) fn scripted(build: &str) -> FakeBuild {
     let mut game = Fixture::game(build)
         .depot(FakeDepot::new(GAME).file(FakeFile::new(
             &format!("goggame-{GAME}.script"),
@@ -55,7 +55,7 @@ fn scripted(build: &str) -> FakeBuild {
 
 /// One setup run the fake `cmd` saw.
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct Ran {
+pub(super) struct Ran {
     program: String,
     dir: String,
     arguments: String,
@@ -63,13 +63,13 @@ struct Ran {
 
 impl Ran {
     /// The program's file name.
-    fn name(&self) -> &str {
+    pub(super) fn name(&self) -> &str {
         self.program.rsplit('\\').next().unwrap()
     }
 }
 
 impl Fixture {
-    fn ran(&self) -> Vec<Ran> {
+    pub(super) fn ran(&self) -> Vec<Ran> {
         fs::read_to_string(&self.cmd_log)
             .unwrap_or_default()
             .lines()
@@ -84,11 +84,11 @@ impl Fixture {
             .collect()
     }
 
-    fn names(&self) -> Vec<String> {
+    pub(super) fn names(&self) -> Vec<String> {
         self.ran().iter().map(|ran| ran.name().to_owned()).collect()
     }
 
-    fn version_dir(&self, dependency: &str) -> PathBuf {
+    pub(super) fn version_dir(&self, dependency: &str) -> PathBuf {
         let record = self.record().unwrap();
         let manifest = record
             .pending
@@ -112,14 +112,14 @@ impl Fixture {
     }
 
     /// Sets the code the fake `cmd` ends a stored program with.
-    fn exits(&self, dependency: &str, exe: &str, code: &str) {
+    pub(super) fn exits(&self, dependency: &str, exe: &str, code: &str) {
         let path = self
             .version_dir(dependency)
             .join(format!("{}.exit", exe.replace('\\', "/")));
         fs::write(path, code).unwrap();
     }
 
-    fn launch_refused(&self) -> bool {
+    pub(super) fn launch_refused(&self) -> bool {
         folder::precheck(
             &self.paths,
             "game",
@@ -129,7 +129,7 @@ impl Fixture {
         .is_err()
     }
 
-    fn prefix(&self) -> PathBuf {
+    pub(super) fn prefix(&self) -> PathBuf {
         GlobalConfig::default()
             .prefix_root(&self.paths)
             .unwrap()

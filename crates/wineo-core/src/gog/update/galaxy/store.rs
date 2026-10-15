@@ -160,6 +160,7 @@ pub(super) fn publish(
             name: name.to_owned(),
             file,
             links,
+            reuse: None,
         });
     }
     fetch::run(session, &jobs, token, progress, &mut |_, _| Ok(()))?;

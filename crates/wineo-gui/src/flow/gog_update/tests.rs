@@ -164,6 +164,7 @@ fn updated() -> Updated {
         kept: vec!["Mods/old.dll".to_owned()],
         overwritten: vec!["RimWorldLinux".to_owned()],
         warnings: vec!["Kept the downloaded GOG packages".to_owned()],
+        needs_restart: Vec::new(),
     }
 }
 

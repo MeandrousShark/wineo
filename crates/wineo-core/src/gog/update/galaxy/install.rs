@@ -67,7 +67,7 @@ pub(super) const SCRIPT_INTERPRETER: &str = "ISI";
 const STORE_PREFIX: &str = "__redist";
 /// Files downloaded without a known MD5 wait for the journal to name them
 /// in batches of this many before they're put in place.
-const NAME_BATCH: usize = 32;
+pub(super) const NAME_BATCH: usize = 32;
 
 /// Refusals a frontend may want to tell apart.
 #[derive(Debug, thiserror::Error)]
@@ -104,6 +104,9 @@ pub enum GalaxyError {
         label: String,
         detail: String,
     },
+    /// Reinstalling a Galaxy game, which a later step of plan 0052 does.
+    #[error("Reinstalling {name}'s Galaxy build comes in a later release.")]
+    Reinstall { name: String },
     #[error(transparent)]
     Layout(#[from] LayoutError),
 }
@@ -266,7 +269,7 @@ impl Plan {
     }
 }
 
-fn sizes(files: &[FileEntry]) -> u64 {
+pub(super) fn sizes(files: &[FileEntry]) -> u64 {
     files.iter().map(|file| file.size).sum()
 }
 
@@ -498,6 +501,7 @@ pub fn plan(
         latest.version_name.clone(),
     )?;
     warnings.extend(built.warnings);
+    let store = complete_store(session, built.store)?;
     for product in &mut products {
         product.size = product_size(&built.manifest, product.id);
     }
@@ -538,14 +542,14 @@ pub fn plan(
         products,
         target,
         manifest: built.manifest,
-        store: built.store,
+        store,
         retarget: None,
         warnings,
     })
 }
 
 /// An authenticated request, its login failures kept as they are.
-fn call<T>(
+pub(super) fn call<T>(
     session: &mut Session,
     request: impl Fn(&wineo_gog::Client, &str) -> Result<T, wineo_gog::Error>,
 ) -> Result<T> {
@@ -555,7 +559,7 @@ fn call<T>(
     })
 }
 
-fn product_size(manifest: &Manifest, id: u64) -> u64 {
+pub(super) fn product_size(manifest: &Manifest, id: u64) -> u64 {
     manifest
         .files
         .iter()
@@ -771,24 +775,24 @@ fn resumed(
 }
 
 /// The folder's record read without its lock, for planning.
-fn files_record(paths: &Paths, folder: &Path) -> Option<Record> {
+pub(super) fn files_record(paths: &Paths, folder: &Path) -> Option<Record> {
     let path = folder::sidecar_file(paths, folder);
     let bytes = std::fs::read(path).ok()?;
     Record::parse(&bytes)
 }
 
 /// What a build's manifests come to.
-struct Built {
-    manifest: Manifest,
-    store: Vec<StoreNeed>,
-    warnings: Vec<String>,
+pub(super) struct Built {
+    pub(super) manifest: Manifest,
+    pub(super) store: Vec<StoreNeed>,
+    pub(super) warnings: Vec<String>,
 }
 
 /// Fetches the depot manifests of each chosen product's depots and of the
 /// redistributables the build lists, and puts them together. Those whose
 /// program lives under `__redist` go to the store; the rest, including ones
 /// with no program, are part of the game.
-fn manifests(
+pub(super) fn manifests(
     session: &mut Session,
     title: &str,
     repository: &wineo_gog::Repository,
@@ -891,7 +895,6 @@ fn manifests(
         .collect();
     let manifest =
         build::assemble(&repository.build_id, &sources, setup).map_err(GalaxyError::Layout)?;
-    let store = complete_store(session, store)?;
     Ok(Built {
         manifest,
         store,
@@ -900,7 +903,10 @@ fn manifests(
 }
 
 /// Fetches the file list of each store version that isn't in the store yet.
-fn complete_store(session: &mut Session, store: Vec<StoreNeed>) -> Result<Vec<StoreNeed>> {
+pub(super) fn complete_store(
+    session: &mut Session,
+    store: Vec<StoreNeed>,
+) -> Result<Vec<StoreNeed>> {
     let paths = session.paths().clone();
     store
         .into_iter()
@@ -913,7 +919,7 @@ fn complete_store(session: &mut Session, store: Vec<StoreNeed>) -> Result<Vec<St
         .collect()
 }
 
-fn store_files(session: &Session, version: &StoreVersion) -> Result<Vec<FileEntry>> {
+pub(super) fn store_files(session: &Session, version: &StoreVersion) -> Result<Vec<FileEntry>> {
     let manifest = session
         .client()
         .dependency_depot_manifest(&version.manifest)
@@ -969,8 +975,8 @@ pub fn apply_with_events(
 }
 
 /// Passes environment creation's events on.
-struct Forward<'a, 'b> {
-    events: &'a mut (dyn FnMut(Event) + 'b),
+pub(super) struct Forward<'a, 'b> {
+    pub(super) events: &'a mut (dyn FnMut(Event) + 'b),
 }
 
 impl Hooks for Forward<'_, '_> {
@@ -1003,7 +1009,13 @@ fn run(
     let mut warnings = plan.warnings.clone();
     windows::check_graphical()?;
     let (game, support) = unverified_sizes(paths, plan, token)?;
-    check_space(paths, plan, game, support, planned_store(paths, plan))?;
+    check_space(
+        paths,
+        plan,
+        game,
+        support,
+        planned_store(paths, &plan.store),
+    )?;
 
     let prefix = match &plan.creation {
         Some(creation) => crate::paths::resolve(creation.prefix()),
@@ -1105,6 +1117,7 @@ fn run(
         selection: selection.clone(),
         manifest: manifest.clone(),
         store: manifest.store_versions(),
+        base: None,
     });
     // Before the journal, so a journal always has its pending written.
     record::write(&lock, &sidecar)?;
@@ -1197,9 +1210,10 @@ fn run(
             .chain(manifest.links.iter().map(|link| link.path.as_str()))
             .chain(attempted.iter().map(|entry| entry.path.as_str())),
     );
+    let known = |path: &str| recorded(&attempted, path);
     let mut placer = Placer {
         publisher: &mut publisher,
-        attempted: &attempted,
+        known: &known,
         token,
     };
     let mut fetch_files = Vec::new();
@@ -1219,26 +1233,9 @@ fn run(
     }
     failpoint("galaxy.placed.after")?;
 
-    let dependency_links = ChunkLinks::new(LinkScope::Dependencies);
-
     // Support files: the folder is wineo's own, so anything there that
     // doesn't match is simply replaced.
-    let mut support_fetch = Vec::new();
-    for (index, file) in manifest.support.clone().iter().enumerate() {
-        let product = file
-            .product
-            .ok_or_else(|| anyhow!("support file {} has no product", file.path))?;
-        let path = support_root.join(product.to_string()).join(&file.path);
-        let dir = path.parent().expect("a file has a folder");
-        folder::create_dir_durable(dir)?;
-        let fd = package::open_folder(dir)?;
-        let leaf = publish::leaf_of(&file.path);
-        match verify(&fd, leaf, &file.path, file, token)? {
-            Some((md5, true)) => manifest.support[index].md5 = Some(md5),
-            _ => support_fetch.push(index),
-        }
-    }
-
+    let support_fetch = support_to_fetch(&support_root, &mut manifest.support, token)?;
     let total: u64 = fetch_files
         .iter()
         .map(|&index| manifest.files[index].size)
@@ -1255,6 +1252,13 @@ fn run(
         .sum();
     let mut base = 0u64;
     let report = |done: u64| (progress.borrow_mut())(Progress::Download { done, total });
+    // Each product's chunks come through its own secure link.
+    let links = Links::new(
+        fetch_files
+            .iter()
+            .map(|&index| &manifest.files[index])
+            .chain(support_fetch.iter().map(|&index| &manifest.support[index])),
+    );
 
     for (index, files) in &store_jobs {
         let mut counted = |done: u64| report(base + done);
@@ -1263,7 +1267,7 @@ fn run(
             session,
             &held[*index],
             files,
-            &dependency_links,
+            &links.dependencies,
             &operation,
             token,
             &mut counted,
@@ -1273,103 +1277,25 @@ fn run(
     #[cfg(test)]
     super::tests::after_store(paths);
 
-    // Each product's chunks come through its own secure link.
-    let mut product_links: BTreeMap<u64, ChunkLinks> = BTreeMap::new();
-    for &index in fetch_files.iter() {
-        if let Some(product) = manifest.files[index].product {
-            product_links
-                .entry(product)
-                .or_insert_with(|| ChunkLinks::new(LinkScope::Product(product)));
-        }
-    }
-    for &index in &support_fetch {
-        if let Some(product) = manifest.support[index].product {
-            product_links
-                .entry(product)
-                .or_insert_with(|| ChunkLinks::new(LinkScope::Product(product)));
-        }
-    }
-    let links_of = |file: &FileEntry| match file.product {
-        Some(product) => &product_links[&product],
-        None => &dependency_links,
-    };
-
-    let support_fd = if support_fetch.is_empty() {
-        None
-    } else {
-        Some(package::open_folder(&support_root)?)
-    };
-    let support_files = manifest.support.clone();
-    let mut support_jobs = Vec::new();
-    let mut support_names = Vec::new();
-    for &index in &support_fetch {
-        let file = &support_files[index];
-        let product = file
-            .product
-            .ok_or_else(|| anyhow!("support file {} has no product", file.path))?;
-        let relative = format!("{product}/{}", file.path);
-        let parent = publish::parent_of(&relative).to_owned();
-        let temp = publisher.temp_name();
-        support_names.push((index, parent.clone(), temp.clone()));
-        support_jobs.push(Job {
-            root: support_fd.as_ref().expect("opened above"),
-            parent,
-            name: temp,
-            file,
-            links: links_of(file),
-        });
-    }
     {
         let mut counted = |done: u64| report(base + done);
-        fetch::run(
+        fetch_support(
             session,
-            &support_jobs,
+            &support_root,
+            &mut manifest.support,
+            &support_fetch,
+            &mut publisher,
+            &links,
             token,
             &mut counted,
-            &mut |job, md5| {
-                let (index, parent, temp) = support_names
-                    .iter()
-                    .find(|(_, _, temp)| *temp == job.name)
-                    .expect("one of ours");
-                let dir = fetch::open_dir(support_fd.as_ref().expect("opened"), parent)?;
-                rustix::fs::renameat(&dir, temp.as_str(), &dir, publish::leaf_of(&job.file.path))
-                    .with_context(|| format!("failed to put {} in place", job.file.path))?;
-                manifest.support[*index].md5 = Some(md5);
-                Ok(())
-            },
         )?;
         base += support_fetch
             .iter()
-            .map(|&index| support_files[index].size)
+            .map(|&index| manifest.support[index].size)
             .sum::<u64>();
     }
     failpoint("galaxy.support.placed")?;
-    // Every folder holding a support file, kept from an earlier attempt or
-    // written now, since an attempt that crashed may have renamed files
-    // into them without syncing. Deepest first, so each folder's entries
-    // are durable before its parent's are.
-    if !manifest.support.is_empty() {
-        let fd = package::open_folder(&support_root)?;
-        let mut dirs = BTreeSet::new();
-        for file in &manifest.support {
-            let product = file
-                .product
-                .ok_or_else(|| anyhow!("support file {} has no product", file.path))?;
-            let mut dir = format!("{product}/{}", file.path);
-            while let Some((up, _)) = dir.rsplit_once('/') {
-                dir = up.to_owned();
-                dirs.insert(dir.clone());
-            }
-        }
-        dirs.insert(String::new());
-        let mut dirs: Vec<String> = dirs.into_iter().collect();
-        dirs.sort_by_key(|dir| std::cmp::Reverse(publish_depth(dir)));
-        for dir in dirs {
-            rustix::fs::fsync(fetch::open_dir(&fd, &dir)?)
-                .with_context(|| format!("failed to sync support folder {dir:?}"))?;
-            publish::record_sync(format!("support:{dir}"));
-        }
-    }
+    sync_support(&support_root, &manifest.support)?;
 
     // The game's files, each renamed over its path once whole. One whose MD5
     // isn't known until it's downloaded waits for the journal to name it.
@@ -1382,7 +1308,8 @@ fn run(
             parent: publish::parent_of(&file.path).to_owned(),
             name: publisher.temp_name(),
             file,
-            links: links_of(file),
+            links: links.of(file),
+            reuse: None,
         });
     }
     let index_of: HashMap<&str, usize> = fetch_files
@@ -1390,6 +1317,7 @@ fn run(
         .map(|&index| (files[index].path.as_str(), index))
         .collect();
     let mut waiting: Vec<Waiting> = Vec::new();
+    let nothing = |_: &str| Known::default();
     {
         let mut counted = |done: u64| report(base + done);
         fetch::run(session, &jobs, token, &mut counted, &mut |job, md5| {
@@ -1397,17 +1325,17 @@ fn run(
             let known = manifest.files[index].md5.is_some();
             manifest.files[index].md5 = Some(md5.clone());
             if known {
-                place(&mut publisher, &state, &job.name, &job.file.path)?;
+                place(&mut publisher, &state, &job.name, &job.file.path, &nothing)?;
             } else {
                 waiting.push((job.file.path.clone(), job.name.clone(), md5));
                 if waiting.len() >= NAME_BATCH {
-                    flush(&lock, &mut waiting, &mut state, &mut publisher)?;
+                    flush(&lock, &mut waiting, &mut state, &mut publisher, &nothing)?;
                 }
             }
             failpoint("galaxy.file.after")
         })?;
     }
-    flush(&lock, &mut waiting, &mut state, &mut publisher)?;
+    flush(&lock, &mut waiting, &mut state, &mut publisher, &nothing)?;
     publisher.finish(&[])?;
     let report_saved = publisher.into_report();
     failpoint("galaxy.files.after")?;
@@ -1519,16 +1447,168 @@ fn run(
     })
 }
 
+/// The secure links a download uses: each product's, and the
+/// redistributables'.
+pub(super) struct Links {
+    products: BTreeMap<u64, ChunkLinks>,
+    pub(super) dependencies: ChunkLinks,
+}
+
+impl Links {
+    /// Links for the products of `files`.
+    pub(super) fn new<'f>(files: impl IntoIterator<Item = &'f FileEntry>) -> Self {
+        let mut products = BTreeMap::new();
+        for file in files {
+            if let Some(product) = file.product {
+                products
+                    .entry(product)
+                    .or_insert_with(|| ChunkLinks::new(LinkScope::Product(product)));
+            }
+        }
+        Self {
+            products,
+            dependencies: ChunkLinks::new(LinkScope::Dependencies),
+        }
+    }
+
+    pub(super) fn of(&self, file: &FileEntry) -> &ChunkLinks {
+        match file.product {
+            Some(product) => &self.products[&product],
+            None => &self.dependencies,
+        }
+    }
+}
+
+/// A support file's path in the support folder: under its product's.
+fn support_path(file: &FileEntry) -> Result<String> {
+    let product = file
+        .product
+        .ok_or_else(|| anyhow!("support file {} has no product", file.path))?;
+    Ok(format!("{product}/{}", file.path))
+}
+
+/// The support files not already in `root` whole, by index. Those that are
+/// get their MD5. Reads only.
+pub(super) fn support_to_fetch(
+    root: &Path,
+    support: &mut [FileEntry],
+    token: &Token,
+) -> Result<Vec<usize>> {
+    let fd = match package::open_folder(root) {
+        Ok(fd) => Some(fd),
+        Err(_) if !root.exists() => None,
+        Err(error) => return Err(error),
+    };
+    let mut fetch = Vec::new();
+    for (index, file) in support.iter_mut().enumerate() {
+        let relative = support_path(file)?;
+        let found = match &fd {
+            Some(fd) => match fetch::open_dir(fd, publish::parent_of(&relative)) {
+                Ok(dir) => verify(&dir, publish::leaf_of(&relative), &file.path, file, token)?,
+                Err(_) => None,
+            },
+            None => None,
+        };
+        match found {
+            Some((md5, true)) => file.md5 = Some(md5),
+            _ => fetch.push(index),
+        }
+    }
+    Ok(fetch)
+}
+
+/// Downloads the support files at `fetch` into `root`, each renamed over
+/// whatever is at its path, since the folder is wineo's own.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn fetch_support(
+    session: &mut Session,
+    root: &Path,
+    support: &mut [FileEntry],
+    fetch: &[usize],
+    publisher: &mut Publisher,
+    links: &Links,
+    token: &Token,
+    progress: &mut dyn FnMut(u64),
+) -> Result<()> {
+    if fetch.is_empty() {
+        return Ok(());
+    }
+    let mut names = Vec::new();
+    for &index in fetch {
+        let relative = support_path(&support[index])?;
+        folder::create_dir_durable(&root.join(publish::parent_of(&relative)))?;
+        names.push((
+            index,
+            publish::parent_of(&relative).to_owned(),
+            publisher.temp_name(),
+        ));
+    }
+    let fd = package::open_folder(root)?;
+    let files = support.to_vec();
+    let jobs: Vec<Job> = names
+        .iter()
+        .map(|(index, parent, temp)| Job {
+            root: &fd,
+            parent: parent.clone(),
+            name: temp.clone(),
+            file: &files[*index],
+            links: links.of(&files[*index]),
+            reuse: None,
+        })
+        .collect();
+    fetch::run(session, &jobs, token, progress, &mut |job, md5| {
+        let (index, parent, temp) = names
+            .iter()
+            .find(|(_, _, temp)| *temp == job.name)
+            .expect("one of ours");
+        let dir = fetch::open_dir(&fd, parent)?;
+        rustix::fs::renameat(&dir, temp.as_str(), &dir, publish::leaf_of(&job.file.path))
+            .with_context(|| format!("failed to put {} in place", job.file.path))?;
+        support[*index].md5 = Some(md5);
+        Ok(())
+    })
+}
+
+/// Syncs every folder holding a support file, kept from an earlier attempt
+/// or written now, since an attempt that crashed may have renamed files
+/// into them without syncing. Deepest first, so each folder's entries are
+/// durable before its parent's are.
+pub(super) fn sync_support(root: &Path, support: &[FileEntry]) -> Result<()> {
+    if support.is_empty() {
+        return Ok(());
+    }
+    let fd = package::open_folder(root)?;
+    let mut dirs = BTreeSet::new();
+    for file in support {
+        let mut dir = support_path(file)?;
+        while let Some((up, _)) = dir.rsplit_once('/') {
+            dir = up.to_owned();
+            dirs.insert(dir.clone());
+        }
+    }
+    dirs.insert(String::new());
+    let mut dirs: Vec<String> = dirs.into_iter().collect();
+    dirs.sort_by_key(|dir| std::cmp::Reverse(publish_depth(dir)));
+    for dir in dirs {
+        rustix::fs::fsync(fetch::open_dir(&fd, &dir)?)
+            .with_context(|| format!("failed to sync support folder {dir:?}"))?;
+        publish::record_sync(format!("support:{dir}"));
+    }
+    Ok(())
+}
+
 /// A downloaded file waiting for the journal to name it: its path, its
 /// temporary name, and its MD5.
-type Waiting = (String, String, String);
+pub(super) type Waiting = (String, String, String);
 
-/// Names the waiting files in the journal, then puts each in place.
-fn flush(
+/// Names the waiting files in the journal, then puts each in place. `base`
+/// is what wineo recorded at a path besides the journal.
+pub(super) fn flush(
     lock: &FolderLock,
     waiting: &mut Vec<Waiting>,
     state: &mut FolderState,
     publisher: &mut Publisher,
+    base: &dyn Fn(&str) -> Known,
 ) -> Result<()> {
     if waiting.is_empty() {
         return Ok(());
@@ -1540,15 +1620,22 @@ fn flush(
     lock.write(state)?;
     failpoint("galaxy.named.after")?;
     for (path, temp, _) in waiting.drain(..) {
-        place(publisher, state, &temp, &path)?;
+        place(publisher, state, &temp, &path, base)?;
     }
     Ok(())
 }
 
 /// Puts a downloaded file at its path. What stands there now is checked
 /// again, since a program may have put or changed it while downloading: only
-/// a file holding a hash the journal names for the path is replaced.
-fn place(publisher: &mut Publisher, state: &FolderState, temp: &str, path: &str) -> Result<()> {
+/// a file holding a hash the journal or `base` names for the path is
+/// replaced.
+pub(super) fn place(
+    publisher: &mut Publisher,
+    state: &FolderState,
+    temp: &str,
+    path: &str,
+    base: &dyn Fn(&str) -> Known,
+) -> Result<()> {
     #[cfg(test)]
     super::tests::before_place(path);
     let dir = publisher
@@ -1558,11 +1645,16 @@ fn place(publisher: &mut Publisher, state: &FolderState, temp: &str, path: &str)
         .journal
         .as_ref()
         .map_or(&[][..], |journal| journal.attempted.as_slice());
-    publisher.place_new(&dir, temp, path, &recorded(attempted, path))
+    publisher.place_new(
+        &dir,
+        temp,
+        path,
+        &merged(recorded(attempted, path), base(path)),
+    )
 }
 
 /// The file hashes and symlink targets wineo recorded for `path`.
-fn recorded(attempted: &[Attempted], path: &str) -> Known {
+pub(super) fn recorded(attempted: &[Attempted], path: &str) -> Known {
     let at = || attempted.iter().filter(move |entry| entry.path == path);
     Known {
         files: at()
@@ -1573,11 +1665,25 @@ fn recorded(attempted: &[Attempted], path: &str) -> Known {
             .filter(|entry| entry.kind == EntryType::Symlink)
             .filter_map(|entry| entry.target.clone())
             .collect(),
+        folder: at().any(|entry| entry.kind == EntryType::Directory),
     }
 }
 
+/// Both of what `a` and `b` record.
+pub(super) fn merged(mut a: Known, b: Known) -> Known {
+    a.files.extend(b.files);
+    a.links.extend(b.links);
+    a.folder |= b.folder;
+    a
+}
+
 /// Adds an entry to `attempted` unless it's there already.
-fn name_entry(attempted: &mut Vec<Attempted>, path: &str, kind: EntryType, content: Option<&str>) {
+pub(super) fn name_entry(
+    attempted: &mut Vec<Attempted>,
+    path: &str,
+    kind: EntryType,
+    content: Option<&str>,
+) {
     let entry = Attempted {
         path: path.to_owned(),
         kind,
@@ -1589,7 +1695,7 @@ fn name_entry(attempted: &mut Vec<Attempted>, path: &str, kind: EntryType, conte
     }
 }
 
-enum Kind<'a> {
+pub(super) enum Kind<'a> {
     Directory,
     Link(&'a str),
     File(usize),
@@ -1597,7 +1703,7 @@ enum Kind<'a> {
 
 /// Every entry in the game folder by path, so each folder comes before what
 /// is in it.
-fn entries_in_order(manifest: &Manifest) -> Vec<(&str, Kind<'_>)> {
+pub(super) fn entries_in_order(manifest: &Manifest) -> Vec<(&str, Kind<'_>)> {
     let mut entries: Vec<(&str, Kind)> = manifest
         .directories
         .iter()
@@ -1622,12 +1728,13 @@ fn entries_in_order(manifest: &Manifest) -> Vec<(&str, Kind<'_>)> {
 
 /// Decides each game folder entry against what is there: what already
 /// matches stays, and anything else is renamed out of the way first, then
-/// deleted only when it holds what wineo wrote there (named in `attempted`)
-/// and saved aside otherwise.
-struct Placer<'a, 'b> {
-    publisher: &'a mut Publisher<'b>,
-    attempted: &'a [Attempted],
-    token: &'a Token,
+/// deleted only when it holds what wineo recorded there (`known`: what the
+/// journal names, and for an update what it started from) and saved aside
+/// otherwise.
+pub(super) struct Placer<'a, 'b> {
+    pub(super) publisher: &'a mut Publisher<'b>,
+    pub(super) known: &'a dyn Fn(&str) -> Known,
+    pub(super) token: &'a Token,
 }
 
 impl Placer<'_, '_> {
@@ -1637,32 +1744,29 @@ impl Placer<'_, '_> {
             .ok_or_else(|| anyhow!("{path}'s folder is missing while publishing"))
     }
 
-    fn recorded(&self, path: &str, kind: EntryType, content: Option<&str>) -> bool {
-        self.attempted.iter().any(|entry| {
-            entry.path == path
-                && entry.kind == kind
-                && match kind {
-                    EntryType::File => entry.md5.as_deref() == content,
-                    EntryType::Symlink => entry.target.as_deref() == content,
-                    EntryType::Directory => true,
-                }
-        })
+    /// Clears `path` for a file to be renamed over when something other than
+    /// a file stands there.
+    pub(super) fn clear_for_file(&mut self, path: &str) -> Result<()> {
+        let dir = self.parent(path)?;
+        match publish::current(&dir, publish::leaf_of(path), path)? {
+            None | Some(Current::File) => Ok(()),
+            Some(other) => self.clear(&dir, path, &other),
+        }
     }
 
     /// Makes way at `path` for an entry of another kind: wineo's own is
     /// removed, anything else moved aside.
-    fn clear(&mut self, dir: &OwnedFd, path: &str, current: &Current) -> Result<()> {
+    pub(super) fn clear(&mut self, dir: &OwnedFd, path: &str, current: &Current) -> Result<()> {
         let leaf = publish::leaf_of(path);
         match current {
             // Checked only once renamed away, so nothing put there after
             // the check can be the one deleted.
             Current::File | Current::Symlink(_) => {
-                self.publisher
-                    .move_aside(dir, path, &recorded(self.attempted, path))
+                self.publisher.move_aside(dir, path, &(self.known)(path))
             }
             // Only an empty folder is removed, so nothing can be lost.
             Current::Directory
-                if self.recorded(path, EntryType::Directory, None)
+                if (self.known)(path).folder
                     && self.publisher.remove_folder(dir, leaf, path)? =>
             {
                 Ok(())
@@ -1671,7 +1775,7 @@ impl Placer<'_, '_> {
         }
     }
 
-    fn directory(&mut self, path: &str) -> Result<()> {
+    pub(super) fn directory(&mut self, path: &str) -> Result<()> {
         let dir = self.parent(path)?;
         match publish::current(&dir, publish::leaf_of(path), path)? {
             Some(Current::Directory) => return Ok(()),
@@ -1689,7 +1793,7 @@ impl Placer<'_, '_> {
         })
     }
 
-    fn link(&mut self, path: &str, target: &str) -> Result<()> {
+    pub(super) fn link(&mut self, path: &str, target: &str) -> Result<()> {
         let dir = self.parent(path)?;
         match publish::current(&dir, publish::leaf_of(path), path)? {
             Some(Current::Symlink(now)) if now == target => return Ok(()),
@@ -1700,12 +1804,12 @@ impl Placer<'_, '_> {
         super::tests::before_place(path);
         // Whatever appears meanwhile is never replaced unchecked.
         self.publisher
-            .place_link(&dir, path, target, &recorded(self.attempted, path))
+            .place_link(&dir, path, target, &(self.known)(path))
     }
 
     /// The file's MD5 when what is there already is it, else None once the
     /// path is clear for the download to be renamed over.
-    fn file(&mut self, file: &FileEntry) -> Result<Option<String>> {
+    pub(super) fn file(&mut self, file: &FileEntry) -> Result<Option<String>> {
         let path = file.path.as_str();
         let dir = self.parent(path)?;
         let leaf = publish::leaf_of(path);
@@ -1713,7 +1817,7 @@ impl Placer<'_, '_> {
             None => Ok(None),
             Some(Current::File) => match verify(&dir, leaf, path, file, self.token)? {
                 Some((md5, true)) => Ok(Some(md5)),
-                Some((md5, false)) if self.recorded(path, EntryType::File, Some(&md5)) => Ok(None),
+                Some((md5, false)) if (self.known)(path).files.contains(&md5) => Ok(None),
                 _ => {
                     self.publisher.save_aside(&dir, leaf, path)?;
                     Ok(None)
@@ -1730,13 +1834,93 @@ impl Placer<'_, '_> {
 /// Reads the regular file `leaf` in `dir` once, without following a
 /// symlink: its MD5, and whether it is the file `entry` describes, chunk by
 /// chunk and whole. None when it isn't a regular file.
-fn verify(
+pub(super) fn verify(
     dir: &OwnedFd,
     leaf: &str,
     path: &str,
     entry: &FileEntry,
     token: &Token,
 ) -> Result<Option<(String, bool)>> {
+    Ok(verify_all(dir, leaf, path, &[entry], token)?.map(|(md5, same)| (md5, same[0])))
+}
+
+/// One entry's check as a file is read.
+struct Checking<'a> {
+    entry: &'a FileEntry,
+    same: bool,
+    sha: Option<Sha256>,
+    chunks: std::slice::Iter<'a, record::ChunkEntry>,
+    chunk: Option<&'a record::ChunkEntry>,
+    left: u64,
+    md5: Md5,
+}
+
+impl<'a> Checking<'a> {
+    fn new(entry: &'a FileEntry, length: u64) -> Self {
+        let mut chunks = entry.chunks.iter();
+        let chunk = chunks.next();
+        Self {
+            entry,
+            same: length == entry.size,
+            sha: entry.sha256.as_ref().map(|_| Sha256::new()),
+            chunks,
+            chunk,
+            left: chunk.map_or(0, |chunk| chunk.size),
+            md5: Md5::new(),
+        }
+    }
+
+    fn update(&mut self, bytes: &[u8]) {
+        if let Some(sha) = &mut self.sha {
+            sha.update(bytes);
+        }
+        let mut rest = bytes;
+        while self.same && !rest.is_empty() {
+            let Some(current) = self.chunk else {
+                self.same = false;
+                break;
+            };
+            let take = rest
+                .len()
+                .min(usize::try_from(self.left).unwrap_or(usize::MAX));
+            self.md5.update(&rest[..take]);
+            rest = &rest[take..];
+            self.left -= take as u64;
+            if self.left == 0 {
+                let done = std::mem::replace(&mut self.md5, Md5::new());
+                if crate::units::hex(done.finalize()) != current.md5 {
+                    self.same = false;
+                }
+                self.chunk = self.chunks.next();
+                self.left = self.chunk.map_or(0, |chunk| chunk.size);
+            }
+        }
+    }
+
+    fn finish(self, md5: &str) -> bool {
+        self.same
+            && self.chunk.is_none()
+            && self
+                .entry
+                .md5
+                .as_deref()
+                .is_none_or(|expected| expected == md5)
+            && match (&self.entry.sha256, self.sha) {
+                (Some(expected), Some(sha)) => *expected == crate::units::hex(sha.finalize()),
+                _ => true,
+            }
+    }
+}
+
+/// `verify` against several entries in one read, so a big file an update
+/// compares with its old and new versions is read once. Whether it is each.
+pub(super) fn verify_all(
+    dir: &OwnedFd,
+    leaf: &str,
+    path: &str,
+    entries: &[&FileEntry],
+    token: &Token,
+) -> Result<Option<(String, Vec<bool>)>> {
     let Some(mut file) = open_regular(dir, leaf, path)? else {
         return Ok(None);
     };
@@ -1744,13 +1928,11 @@ fn verify(
         .metadata()
         .with_context(|| format!("failed to check {path}"))?
         .len();
-    let mut same = length == entry.size;
+    let mut checks: Vec<Checking> = entries
+        .iter()
+        .map(|entry| Checking::new(entry, length))
+        .collect();
     let mut whole = Md5::new();
-    let mut sha = entry.sha256.as_ref().map(|_| Sha256::new());
-    let mut chunks = entry.chunks.iter();
-    let mut chunk = chunks.next();
-    let mut chunk_left = chunk.map_or(0, |chunk| chunk.size);
-    let mut chunk_md5 = Md5::new();
     let mut buffer = vec![0; 256 * 1024];
     loop {
         if token.is_canceled() {
@@ -1764,43 +1946,16 @@ fn verify(
         };
         let bytes = &buffer[..read];
         whole.update(bytes);
-        if let Some(sha) = &mut sha {
-            sha.update(bytes);
-        }
-        let mut rest = bytes;
-        while same && !rest.is_empty() {
-            let Some(current) = chunk else {
-                same = false;
-                break;
-            };
-            let take = rest
-                .len()
-                .min(usize::try_from(chunk_left).unwrap_or(usize::MAX));
-            chunk_md5.update(&rest[..take]);
-            rest = &rest[take..];
-            chunk_left -= take as u64;
-            if chunk_left == 0 {
-                let done = std::mem::replace(&mut chunk_md5, Md5::new());
-                if crate::units::hex(done.finalize()) != current.md5 {
-                    same = false;
-                }
-                chunk = chunks.next();
-                chunk_left = chunk.map_or(0, |chunk| chunk.size);
-            }
+        for check in &mut checks {
+            check.update(bytes);
         }
     }
     let md5 = crate::units::hex(whole.finalize());
-    same = same
-        && chunk.is_none()
-        && entry.md5.as_ref().is_none_or(|expected| *expected == md5)
-        && match (&entry.sha256, sha) {
-            (Some(expected), Some(sha)) => *expected == crate::units::hex(sha.finalize()),
-            _ => true,
-        };
+    let same = checks.into_iter().map(|check| check.finish(&md5)).collect();
     Ok(Some((md5, same)))
 }
 
-fn open_regular(dir: &OwnedFd, leaf: &str, path: &str) -> Result<Option<File>> {
+pub(super) fn open_regular(dir: &OwnedFd, leaf: &str, path: &str) -> Result<Option<File>> {
     let fd = match rustix::fs::openat(
         dir,
         leaf,
@@ -1821,7 +1976,7 @@ fn open_regular(dir: &OwnedFd, leaf: &str, path: &str) -> Result<Option<File>> {
 /// The manifest with each path spelled the way an entry already in the
 /// folder spells it, matched case-insensitively, since Windows games mix
 /// cases freely. Paths with nothing on disk keep GOG's spelling.
-fn on_disk(root: &OwnedFd, manifest: &Manifest) -> Manifest {
+pub(super) fn on_disk(root: &OwnedFd, manifest: &Manifest) -> Manifest {
     let mut listings: HashMap<String, Option<Vec<String>>> = HashMap::new();
     let mut spell = |path: &str| -> String {
         let mut resolved = String::new();
@@ -1898,8 +2053,8 @@ fn unverified_sizes(paths: &Paths, plan: &Plan, token: &Token) -> Result<(u64, u
 }
 
 /// The bytes of the store versions that were missing when planning looked.
-fn planned_store(paths: &Paths, plan: &Plan) -> u64 {
-    plan.store
+pub(super) fn planned_store(paths: &Paths, store: &[StoreNeed]) -> u64 {
+    store
         .iter()
         .filter(|need| !store::version_dir(paths, &need.version).is_dir())
         .flat_map(|need| need.files.iter().flatten())
@@ -2008,7 +2163,7 @@ pub(super) fn space_with(
     Ok(())
 }
 
-fn publish_depth(dir: &str) -> usize {
+pub(super) fn publish_depth(dir: &str) -> usize {
     if dir.is_empty() {
         0
     } else {

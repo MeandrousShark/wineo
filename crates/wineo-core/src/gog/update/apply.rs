@@ -323,6 +323,9 @@ pub struct Updated {
     /// Shipped files you changed, overwritten by the new version.
     pub overwritten: Vec<String>,
     pub warnings: Vec<String>,
+    /// Redistributables a Galaxy update set up that asked for a restart, by
+    /// id. Wine has nothing to restart, so they're only listed.
+    pub needs_restart: Vec<String>,
 }
 
 /// Works out what updating `name`'s installer-tracked GOG game does. Reads
@@ -1030,6 +1033,7 @@ fn run(
         kept: report.kept,
         overwritten: report.overwritten,
         warnings,
+        needs_restart: Vec::new(),
     })
 }
 
@@ -1228,6 +1232,7 @@ fn run_windows(
         kept: Vec::new(),
         overwritten: Vec::new(),
         warnings,
+        needs_restart: Vec::new(),
     })
 }
 
