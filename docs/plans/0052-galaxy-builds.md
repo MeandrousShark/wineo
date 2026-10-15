@@ -511,8 +511,10 @@ How the two files stay consistent:
   (read and checked against their `md5` before reuse).
 - **0049's publishing rules apply unchanged (answer a).** An old file is
   deleted only when its content matches a hash recorded for it; otherwise
-  it's kept and listed. A changed game file you edited is overwritten and
-  listed. A new path taken by something wineo doesn't track, or a type
+  it's kept and listed. A changed game file you edited is moved aside to
+  `<name>.wineo-saved` and listed, and the new one takes its place (the
+  maintainer chose this over overwriting it as 0049 does, 2026-10-14, so
+  nothing you changed is lost). A new path taken by something wineo doesn't track, or a type
   change over a changed entry, moves yours aside to `<name>.wineo-saved`
   and lists it. Folders emptied by deletions are removed (gogdl added this
   because The Witcher 3 hangs on empty content folders).
