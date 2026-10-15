@@ -1091,6 +1091,8 @@ fn a_crash_at_any_write_is_finished_by_recovery() {
         "update.delete.after",
         "update.save.before",
         "update.save.after",
+        "galaxy.aside.before",
+        "galaxy.aside.after",
         "update.commit.before",
         "update.commit.after",
         "write.before",
@@ -1349,6 +1351,133 @@ fn a_changed_tracked_symlink_is_saved_aside_when_its_type_changes() {
     let updated = fx.update();
     assert_eq!(fx.tree()["lib.wineo-saved"], "-> elsewhere");
     assert!(updated.saved.iter().any(|saved| saved.path == "lib"));
+}
+
+/// Runs `change` on the path given when publishing reaches `at` for it.
+fn when(at: &'static str, path: &'static str, change: impl FnOnce() + 'static) {
+    let mut change = Some(change);
+    publish::set_hook(Some(Box::new(move |now, placing| {
+        if now == at
+            && placing == path
+            && let Some(change) = change.take()
+        {
+            change();
+        }
+    })));
+}
+
+#[test]
+fn a_file_put_at_a_new_path_while_publishing_is_saved_not_overwritten() {
+    let fx = installed_v1();
+    fx.offer(RIMWORLD, "RimWorld", "2.0", &base_v2());
+    fx.offer(ROYALTY, "Royalty", "2.0", &royalty_v2());
+    let path = fx.folder.join("Data/new.dat");
+    when("publish", "Data/new.dat", move || {
+        fs::write(path, "put here meanwhile").unwrap();
+    });
+    let updated = fx.update();
+    publish::set_hook(None);
+    assert_eq!(fx.read("Data/new.dat"), "new");
+    assert_eq!(fx.read("Data/new.dat.wineo-saved"), "put here meanwhile");
+    assert_eq!(
+        updated.saved,
+        [SavedAside {
+            path: "Data/new.dat".to_owned(),
+            saved_as: "Data/new.dat.wineo-saved".to_owned(),
+        }]
+    );
+    assert!(updated.overwritten.is_empty() && updated.kept.is_empty());
+}
+
+#[test]
+fn a_shipped_file_changed_while_publishing_is_still_overwritten() {
+    let fx = installed_v1();
+    fx.offer(RIMWORLD, "RimWorld", "2.0", &base_v2());
+    fx.offer(ROYALTY, "Royalty", "2.0", &royalty_v2());
+    let path = fx.folder.join("Data/core.dat");
+    when("publish", "Data/core.dat", move || {
+        fs::write(path, "changed meanwhile").unwrap();
+    });
+    let updated = fx.update();
+    publish::set_hook(None);
+    assert_eq!(fx.read("Data/core.dat"), "core v2");
+    assert!(!fx.tree().contains_key("Data/core.dat.wineo-saved"));
+    assert!(updated.saved.is_empty() && updated.kept.is_empty());
+}
+
+#[test]
+fn an_old_file_changed_after_its_check_is_kept_in_place() {
+    let fx = installed_v1();
+    fx.offer(RIMWORLD, "RimWorld", "2.0", &base_v2());
+    fx.offer(ROYALTY, "Royalty", "2.0", &royalty_v2());
+    let path = fx.folder.join("Data/old.dat");
+    when("remove", "Data/old.dat", move || {
+        fs::write(path, "changed meanwhile").unwrap();
+    });
+    let updated = fx.update();
+    publish::set_hook(None);
+    assert_eq!(fx.read("Data/old.dat"), "changed meanwhile");
+    assert_eq!(updated.kept, ["Data/old.dat"]);
+    assert!(updated.saved.is_empty());
+    assert!(!fx.tree().keys().any(|path| path.contains(".wineo-")));
+}
+
+#[test]
+fn a_crash_with_an_old_file_moved_aside_deletes_it_only_on_a_hash_match() {
+    for changed in [false, true] {
+        let fx = installed_v1();
+        fx.offer(RIMWORLD, "RimWorld", "2.0", &base_v2());
+        fx.offer(ROYALTY, "Royalty", "2.0", &royalty_v2());
+        set_failpoint(Some("galaxy.aside.after"));
+        fx.update_err();
+        // Pass 1 goes in reverse path order, so this is the first deletion.
+        let asides: Vec<String> = fx
+            .tree()
+            .into_keys()
+            .filter(|path| path.contains(".wineo-aside-"))
+            .collect();
+        assert_eq!(asides.len(), 1, "{asides:?}");
+        assert!(asides[0].starts_with("old/deep/readme.wineo-aside-"));
+        assert!(!fx.folder.join("old/deep/readme").exists());
+        if changed {
+            fx.write(&asides[0], "changed by you");
+        }
+        let updated = fx.update();
+        assert!(updated.recovered);
+        let tree = fx.tree();
+        assert!(!tree.keys().any(|path| path.contains(".wineo-aside-")));
+        assert_eq!(
+            updated.saved,
+            if changed {
+                vec![SavedAside {
+                    path: "old/deep/readme".to_owned(),
+                    saved_as: "old/deep/readme.wineo-saved".to_owned(),
+                }]
+            } else {
+                Vec::new()
+            }
+        );
+        if changed {
+            assert_eq!(tree["old/deep/readme.wineo-saved"], "644 changed by you");
+        } else {
+            assert!(!tree.keys().any(|path| path.starts_with("old")));
+        }
+    }
+}
+
+#[test]
+fn recovery_where_rename_cant_refuse_to_replace_finishes() {
+    let fx = installed_v1();
+    ready_for_v2(&fx);
+    set_failpoint_nth("update.publish.after", 5);
+    fx.update_err();
+    let pending = fx.pending(true, Options::default());
+    assert!(pending.is_recovery());
+    crate::gog::update::publish::set_no_rename_noreplace(true);
+    let updated = fx.apply_with(true, &pending, &Token::new(), |_| {});
+    crate::gog::update::publish::set_no_rename_noreplace(false);
+    updated.unwrap();
+    assert_finished_v2(&fx);
 }
 
 #[test]
