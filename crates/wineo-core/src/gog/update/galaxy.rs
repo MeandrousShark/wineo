@@ -25,6 +25,7 @@ use anyhow::Result;
 pub use build::LayoutError;
 pub use install::{GalaxyError, PlannedProduct, Progress, Retarget};
 
+use super::UpdateError;
 use super::apply::{self, Options};
 use super::install as offline;
 use crate::cancel::Token;
@@ -111,6 +112,11 @@ pub enum PlannedUpdate {
 /// Windows game, or its interrupted Galaxy operation, through
 /// `update::plan`, which needs a session; anything else through
 /// `apply::plan`, unchanged.
+///
+/// A reinstall asking for a track moves the game onto it: onto Galaxy
+/// through `update::plan`, off it through `apply::plan`'s reinstall. An
+/// interrupted operation is finished on the track its journal targets,
+/// whatever the options say.
 pub fn plan_update(
     paths: &Paths,
     session: Option<&mut Session>,
@@ -119,18 +125,40 @@ pub fn plan_update(
     token: &Token,
 ) -> Result<PlannedUpdate> {
     host_only(paths)?;
+    options.check()?;
     Environment::ensure_exists(paths, name)?;
     let state = super::game_of(paths, name)?;
-    let (platform, track) = match (&state.journal, &state.committed) {
-        (Some(journal), _) => (journal.target.platform, journal.target.track),
-        (None, Some(committed)) => (committed.platform, committed.track),
+    let (platform, track, journaled) = match (&state.journal, &state.committed) {
+        (Some(journal), _) => (journal.target.platform, journal.target.track, true),
+        (None, Some(committed)) => (committed.platform, committed.track, false),
         (None, None) => {
             return Ok(PlannedUpdate::Installer(apply::plan(
                 paths, session, name, options, token,
             )?));
         }
     };
-    if platform == Platform::Windows && track == Track::Galaxy {
+    let galaxy = if journaled {
+        platform == Platform::Windows && track == Track::Galaxy
+    } else {
+        let to_galaxy = options.reinstall && options.track == Some(Track::Galaxy);
+        match (platform, track) {
+            (Platform::Windows, Track::Galaxy) => {
+                !(options.reinstall && options.track == Some(Track::Installer))
+            }
+            (Platform::Windows, Track::Installer) if to_galaxy => true,
+            (Platform::Windows, Track::Installer) if options.repair => {
+                return Err(UpdateError::NotGalaxy {
+                    name: name.to_owned(),
+                }
+                .into());
+            }
+            (Platform::Linux, _) if options.repair || to_galaxy => {
+                return Err(GalaxyError::NotWindows.into());
+            }
+            _ => false,
+        }
+    };
+    if galaxy {
         let session = session.ok_or(AccountError::LoggedOut)?;
         return Ok(PlannedUpdate::Galaxy(update::plan(
             paths, session, name, options, token,

@@ -41,6 +41,7 @@ use crate::gog::folder::{
     self, Attempted, Committed, EntryType, FolderError, FolderLock, FolderState, Journal,
     JournalKind, Package, Platform, Product, ProductStatus, Target, Track, WinningEntry, failpoint,
 };
+use crate::gog::language;
 use crate::gog::migrate::host_only;
 use crate::gog::names;
 use crate::gog::package::{self, PackageError};
@@ -53,6 +54,11 @@ use crate::paths::Paths;
 pub struct Options {
     /// Rebuild from current packages even when nothing changed.
     pub reinstall: bool,
+    /// Hash a Galaxy game's files against its installed build and fetch what
+    /// is missing or wrong, without changing the build. Galaxy only.
+    pub repair: bool,
+    /// The track a reinstall puts the game on. None keeps the one it is on.
+    pub track: Option<Track>,
     /// Fetch GOG's product details again instead of using an hour-old copy.
     pub refresh: bool,
     /// Write nothing while planning, for a dry run: product details aren't
@@ -62,6 +68,24 @@ pub struct Options {
     /// after it stopped before installing anything
     /// (`SetupError::NotStarted` with `wizard`).
     pub wizard: bool,
+}
+
+impl Options {
+    /// Refuses combinations that mean nothing: a repair never reinstalls or
+    /// moves, and a track is only for a reinstall.
+    pub fn check(&self) -> Result<(), UpdateError> {
+        if self.repair && (self.reinstall || self.track.is_some()) {
+            return Err(UpdateError::Options {
+                why: "A repair can't be combined with a reinstall or a track.",
+            });
+        }
+        if self.track.is_some() && !self.reinstall {
+            return Err(UpdateError::Options {
+                why: "A track is only for a reinstall.",
+            });
+        }
+        Ok(())
+    }
 }
 
 /// What updating one game would do.
@@ -348,6 +372,7 @@ pub fn plan(
     token: &Token,
 ) -> Result<Plan> {
     host_only(paths)?;
+    options.check()?;
     Environment::ensure_exists(paths, name)?;
     let state = super::game_of(paths, name)?;
     let seen = Seen::of(&state);
@@ -455,55 +480,88 @@ pub fn plan(
         .committed
         .clone()
         .ok_or_else(|| anyhow::anyhow!("{name}'s GOG install hasn't started."))?;
-    installer_only(name, committed.platform, committed.track)?;
+    // A Galaxy game moves to the installer track by a reinstall asking for it.
+    let moving = options.reinstall
+        && options.track == Some(Track::Installer)
+        && committed.platform == Platform::Windows
+        && committed.track == Track::Galaxy;
+    if !moving {
+        installer_only(name, committed.platform, committed.track)?;
+    }
+    if options.repair {
+        return Err(match committed.platform {
+            Platform::Windows => UpdateError::NotGalaxy {
+                name: name.to_owned(),
+            }
+            .into(),
+            Platform::Linux => super::galaxy::GalaxyError::NotWindows.into(),
+        });
+    }
     if committed.platform == Platform::Windows {
         windows::check_graphical()?;
     }
     let session = session.ok_or(AccountError::LoggedOut)?;
-    // Checked for a reinstall too, which also installs DLC owned since and
-    // retries failed or unavailable ones GOG offers now.
-    let checked = status_with(
-        session,
-        paths,
-        name,
-        state.clone(),
-        Check {
-            refresh: options.refresh,
-            read_only: options.read_only,
-        },
-        &names,
-        &mut Owned::default(),
-    )?;
-    let status = checked.status;
-    if !options.reinstall {
-        match status.state {
-            UpdateState::UpToDate => {
-                return Ok(Plan::UpToDate {
-                    environment: name.to_owned(),
-                    version: status.installed,
-                    warnings: status.warnings,
-                });
-            }
-            UpdateState::Available => {}
-            UpdateState::CantCompare | UpdateState::OnGog => {
-                return Err(UpdateError::CantCompare {
-                    name: name.to_owned(),
-                    why: status
-                        .reason
-                        .map(|reason| reason.as_str().to_owned())
-                        .unwrap_or_default(),
+    let (products, language, notes) = if moving {
+        // GOG's installers know languages by their own codes, and a Galaxy
+        // game records the depots' (`en-US`).
+        let code = |tag: &str| language::installer_code(tag).unwrap_or_else(|_| tag.to_owned());
+        let products = committed
+            .products
+            .iter()
+            .map(|product| Product {
+                build: None,
+                language: product.language.as_deref().map(code),
+                ..product.clone()
+            })
+            .collect();
+        (products, code(&committed.language), Vec::new())
+    } else {
+        // Checked for a reinstall too, which also installs DLC owned since
+        // and retries failed or unavailable ones GOG offers now.
+        let checked = status_with(
+            session,
+            paths,
+            name,
+            state.clone(),
+            Check {
+                refresh: options.refresh,
+                read_only: options.read_only,
+            },
+            &names,
+            &mut Owned::default(),
+        )?;
+        let status = checked.status;
+        if !options.reinstall {
+            match status.state {
+                UpdateState::UpToDate => {
+                    return Ok(Plan::UpToDate {
+                        environment: name.to_owned(),
+                        version: status.installed,
+                        warnings: status.warnings,
+                    });
                 }
-                .into());
+                UpdateState::Available => {}
+                UpdateState::CantCompare | UpdateState::OnGog => {
+                    return Err(UpdateError::CantCompare {
+                        name: name.to_owned(),
+                        why: status
+                            .reason
+                            .map(|reason| reason.as_str().to_owned())
+                            .unwrap_or_default(),
+                    }
+                    .into());
+                }
             }
         }
-    }
+        let products = checked
+            .products
+            .unwrap_or_else(|| committed.products.clone());
+        (products, committed.language.clone(), checked.notes)
+    };
     // Just fetched and cached, so the cached details are current. A
     // read-only plan cached nothing, so it fetches again rather than reuse
     // an older copy that is still fresh.
     let refresh = options.refresh && options.read_only;
-    let products = checked
-        .products
-        .unwrap_or_else(|| committed.products.clone());
     let mut resolved = resolve(
         paths,
         session,
@@ -511,7 +569,7 @@ pub fn plan(
         &state,
         Wanted {
             platform: committed.platform,
-            language: &committed.language,
+            language: &language,
             products: &products,
             names: &names,
         },
@@ -520,7 +578,7 @@ pub fn plan(
             read_only: options.read_only,
         },
     )?;
-    resolved.warnings.extend(checked.notes);
+    resolved.warnings.extend(notes);
     if committed.platform == Platform::Windows {
         select_windows(&mut resolved, Some(&committed), |_| options.reinstall);
         if resolved.files.is_empty() {

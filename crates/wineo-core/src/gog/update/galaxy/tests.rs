@@ -1992,5 +1992,6 @@ fn an_install_canceled_mid_file_is_finished_by_installing_again() {
     assert_eq!(fx.chunk_requests().len() - before, left);
 }
 
+mod repair;
 mod setup;
 mod update;

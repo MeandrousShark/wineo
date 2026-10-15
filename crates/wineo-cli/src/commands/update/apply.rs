@@ -133,6 +133,7 @@ fn plan(
             // A dry run caches nothing and records nothing.
             read_only: args.dry_run,
             wizard,
+            ..Options::default()
         },
         &cancellation.token,
     )

@@ -104,9 +104,21 @@ pub enum GalaxyError {
         label: String,
         detail: String,
     },
-    /// Reinstalling a Galaxy game, which a later step of plan 0052 does.
-    #[error("Reinstalling {name}'s Galaxy build comes in a later release.")]
-    Reinstall { name: String },
+    /// A repair of a build GOG no longer lists. A repair never changes the
+    /// build, so it can't carry on with another.
+    #[error(
+        "GOG no longer lists build {build} of {title}. Run wineo update {name} to move to the latest."
+    )]
+    BuildGone {
+        title: String,
+        build: String,
+        name: String,
+    },
+    /// A repair of a game whose installed build isn't known.
+    #[error(
+        "The installed build of {title} isn't known. Run wineo update {name} to move to the latest."
+    )]
+    BuildUnknown { title: String, name: String },
     #[error(transparent)]
     Layout(#[from] LayoutError),
 }
@@ -280,6 +292,14 @@ pub enum Progress {
     Download { done: u64, total: u64 },
     /// Setup steps run in the prefix so far, of those to run.
     Setup { done: usize, total: usize },
+    /// Files hashed against the manifest so far, support files included,
+    /// before a repair or reinstall fetches what is wrong.
+    Verify {
+        files: usize,
+        files_total: usize,
+        bytes: u64,
+        bytes_total: u64,
+    },
 }
 
 /// Works out what installing `request.gog_id` from its latest Galaxy build
@@ -1235,7 +1255,7 @@ fn run(
 
     // Support files: the folder is wineo's own, so anything there that
     // doesn't match is simply replaced.
-    let support_fetch = support_to_fetch(&support_root, &mut manifest.support, token)?;
+    let support_fetch = support_to_fetch(&support_root, &mut manifest.support, token, &mut |_| {})?;
     let total: u64 = fetch_files
         .iter()
         .map(|&index| manifest.files[index].size)
@@ -1493,6 +1513,7 @@ pub(super) fn support_to_fetch(
     root: &Path,
     support: &mut [FileEntry],
     token: &Token,
+    checked: &mut dyn FnMut(&FileEntry),
 ) -> Result<Vec<usize>> {
     let fd = match package::open_folder(root) {
         Ok(fd) => Some(fd),
@@ -1513,6 +1534,7 @@ pub(super) fn support_to_fetch(
             Some((md5, true)) => file.md5 = Some(md5),
             _ => fetch.push(index),
         }
+        checked(file);
     }
     Ok(fetch)
 }

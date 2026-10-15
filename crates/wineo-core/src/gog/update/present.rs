@@ -50,6 +50,8 @@ impl Pending {
         match (self.kind(), self.is_recovery()) {
             (JournalKind::Reinstall, false) => "Reinstall",
             (JournalKind::Reinstall, true) => "Finish the interrupted reinstall of",
+            (JournalKind::Repair, false) => "Repair",
+            (JournalKind::Repair, true) => "Finish the interrupted repair of",
             (JournalKind::Install, true) => "Finish the interrupted install of",
             (_, true) => "Finish the interrupted update of",
             (_, false) => "Update",
@@ -63,6 +65,10 @@ impl Pending {
             (JournalKind::Reinstall, false) => format!("Reinstalled {name}"),
             (JournalKind::Reinstall, true) => {
                 format!("Finished the interrupted reinstall of {name}")
+            }
+            (JournalKind::Repair, false) => format!("Repaired {name}"),
+            (JournalKind::Repair, true) => {
+                format!("Finished the interrupted repair of {name}")
             }
             (JournalKind::Install, true) => format!("Finished the interrupted install of {name}"),
             (_, true) => format!("Finished the interrupted update of {name}"),

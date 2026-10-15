@@ -700,20 +700,27 @@ impl FolderLock {
         Ok(state)
     }
 
+    /// Removes the Galaxy record and the support files, which only the
+    /// Galaxy track has. The record goes first: without it a state still
+    /// stands, and is treated as having no stored manifest.
+    pub fn remove_galaxy_files(&self) -> Result<()> {
+        self.require_exclusive()?;
+        self.remove_sidecar()?;
+        match fs::remove_dir_all(&self.support) {
+            Ok(()) => Ok(()),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+            Err(error) => {
+                Err(error).with_context(|| format!("failed to remove {}", self.support.display()))
+            }
+        }
+    }
+
     /// Removes the state file, with the Galaxy record and support files that
     /// go with it. Those go first: without them a state still stands, and
     /// is treated as having no stored manifest.
     fn remove(&self) -> Result<()> {
         self.require_exclusive()?;
-        self.remove_sidecar()?;
-        match fs::remove_dir_all(&self.support) {
-            Ok(()) => {}
-            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-            Err(error) => {
-                return Err(error)
-                    .with_context(|| format!("failed to remove {}", self.support.display()));
-            }
-        }
+        self.remove_galaxy_files()?;
         // Temporaries first, so a cleanup failure never leaves the state
         // removed without the directory synced.
         remove_stale_temps(&self.dir, &temp_prefix(&key(&self.folder)))?;

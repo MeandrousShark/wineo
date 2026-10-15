@@ -108,6 +108,7 @@ pub struct Plan {
     folder: PathBuf,
     gog_id: u64,
     title: String,
+    kind: JournalKind,
     recovery: bool,
     seen: FolderState,
     arch: Arch,
@@ -138,6 +139,18 @@ impl Plan {
 
     pub fn title(&self) -> &str {
         &self.title
+    }
+
+    /// `Update`, `Reinstall` (including a move onto Galaxy), or `Repair`; an
+    /// interrupted one has its journal's own kind.
+    pub fn kind(&self) -> JournalKind {
+        self.kind
+    }
+
+    /// Whether every file is hashed against the target rather than trusted
+    /// to be as the record says, which a repair or reinstall does.
+    pub fn hashes_all(&self) -> bool {
+        self.kind != JournalKind::Update
     }
 
     /// Whether this finishes an interrupted update.
@@ -202,9 +215,11 @@ impl Plan {
     /// the target has that the starting point doesn't have as it is. What's
     /// already in place is only known once `apply` looks.
     pub fn download_size(&self) -> u64 {
+        // A repair or reinstall hashes everything, so any file may be wrong.
         let old: HashMap<String, &FileEntry> = self
             .base
             .iter()
+            .filter(|_| !self.hashes_all())
             .flat_map(|base| &base.manifest.files)
             .map(|file| (file.path.to_lowercase(), file))
             .collect();
@@ -261,9 +276,17 @@ fn same_content(a: &FileEntry, b: &FileEntry) -> bool {
 /// recording a build another tool installed (unless `read_only`), GOG's
 /// product details cache, and a renewed login.
 ///
-/// A folder with an `update` journal is finished. An unfinished Galaxy
-/// install is finished by installing again, and a reinstall or repair comes
-/// in a later release, so those are refused.
+/// `options` picks the operation:
+/// - an update to the latest build, which is up to date when nothing changed;
+/// - a reinstall (`options.reinstall`), the same target with every file
+///   hashed, every setup step run, and no early "up to date";
+/// - a move onto Galaxy from the installer track, a reinstall asking for
+///   `Track::Galaxy`, which starts from nothing (answer b);
+/// - a repair of the installed build (`options.repair`), which doesn't ask
+///   for the latest build at all.
+///
+/// A folder with a journal is finished as its own kind, whatever `options`
+/// say. An unfinished Galaxy install is finished by installing again.
 pub fn plan(
     paths: &Paths,
     session: &mut Session,
@@ -272,13 +295,8 @@ pub fn plan(
     _token: &Token,
 ) -> Result<Planned> {
     host_only(paths)?;
+    options.check()?;
     Environment::ensure_exists(paths, name)?;
-    if options.reinstall {
-        return Err(GalaxyError::Reinstall {
-            name: name.to_owned(),
-        }
-        .into());
-    }
     // Setup runs programs in the prefix, as an install's does.
     windows::check_graphical()?;
     let mut state = crate::gog::update::game_of(paths, name)?;
@@ -288,7 +306,7 @@ pub fn plan(
         }
         let gog_id = journal.target.gog_id;
         return match journal.kind {
-            JournalKind::Update => {
+            JournalKind::Update | JournalKind::Reinstall | JournalKind::Repair => {
                 resumed(paths, session, name, state.clone(), options).map(Planned::Update)
             }
             JournalKind::Install => Err(match &state.owner {
@@ -302,23 +320,17 @@ pub fn plan(
                 },
             }
             .into()),
-            JournalKind::Reinstall => Err(UpdateError::LaterRelease {
-                name: name.to_owned(),
-                kind: "reinstall",
-            }
-            .into()),
-            JournalKind::Repair => Err(UpdateError::LaterRelease {
-                name: name.to_owned(),
-                kind: "repair",
-            }
-            .into()),
         };
     }
 
     let mut warnings = Vec::new();
     // A build another tool installed is recorded first, as a check does, so
     // the update starts from it.
-    let adopted = if state.owner.is_none() {
+    let on_galaxy = state
+        .committed
+        .as_ref()
+        .is_some_and(|committed| committed.track == Track::Galaxy);
+    let adopted = if state.owner.is_none() || !on_galaxy {
         None
     } else if options.read_only {
         crate::gog::update::seen_build(&state)
@@ -338,14 +350,97 @@ pub fn plan(
         .committed
         .clone()
         .ok_or_else(|| anyhow!("{name}'s GOG install hasn't started."))?;
-    if committed.track != Track::Galaxy {
-        bail!("{name}'s GOG game isn't a Galaxy one");
-    }
     if committed.platform != Platform::Windows {
         return Err(GalaxyError::NotWindows.into());
     }
+    // A game on the installer track comes over only by a reinstall that
+    // asks for Galaxy.
+    let moving = committed.track == Track::Installer;
+    if moving && !(options.reinstall && options.track == Some(Track::Galaxy)) {
+        bail!("{name}'s GOG game isn't a Galaxy one");
+    }
+    if !moving && options.track == Some(Track::Installer) {
+        bail!("Moving {name} to the installer track isn't a Galaxy operation");
+    }
+    let kind = if options.repair {
+        JournalKind::Repair
+    } else if options.reinstall {
+        JournalKind::Reinstall
+    } else {
+        JournalKind::Update
+    };
     let gog_id = committed.gog_id;
     let folder_names = names::product_names(&state.folder);
+    let arch = Environment::load(paths, name)?.wine()?.arch;
+    let bits = build::bits(arch);
+    let installed_build = crate::gog::update::base_build(&committed).map(str::to_owned);
+
+    if kind == JournalKind::Repair {
+        // The product's details only give titles here, so a failure costs
+        // those and nothing else.
+        let details = product::load_with(
+            paths,
+            session.client(),
+            gog_id,
+            options.refresh,
+            !options.read_only,
+        )
+        .ok();
+        let title = details
+            .as_ref()
+            .map(|details| details.product.title.clone())
+            .filter(|title| !title.is_empty())
+            .or_else(|| folder_names.get(&gog_id).cloned())
+            .unwrap_or_else(|| format!("GOG game {gog_id}"));
+        warnings.extend(details.as_ref().and_then(|details| details.warning.clone()));
+        let target = Target {
+            gog_id,
+            platform: Platform::Windows,
+            language: committed.language.clone(),
+            track: Track::Galaxy,
+            products: committed.products.clone(),
+        };
+        let (manifest, base, store) = repair_manifest(
+            paths,
+            session,
+            name,
+            &state,
+            &title,
+            &target,
+            installed_build.as_deref(),
+            bits,
+        )?;
+        let store = install::complete_store(session, store)?;
+        let products = planned_products(&target, &manifest, &title, |id| {
+            details
+                .as_ref()
+                .and_then(|details| details.product.dlcs.iter().find(|dlc| dlc.id == id))
+                .map(|dlc| dlc.title.clone())
+                .filter(|title| !title.is_empty())
+        });
+        let notes = notes(&manifest, base.is_some());
+        return Ok(Planned::Update(Plan {
+            environment: name.to_owned(),
+            folder: state.folder.clone(),
+            gog_id,
+            title,
+            kind,
+            recovery: false,
+            seen: state,
+            arch,
+            installed_build,
+            version_name: manifest.setup.version_name.clone(),
+            products,
+            target,
+            manifest,
+            base,
+            store,
+            retarget: None,
+            notes,
+            warnings,
+        }));
+    }
+
     let details = product::load_with(
         paths,
         session.client(),
@@ -372,9 +467,6 @@ pub fn plan(
         .client()
         .repository(&link)
         .with_context(|| format!("Couldn't get {title}'s build {}", latest.build_id))?;
-    let arch = Environment::load(paths, name)?.wine()?.arch;
-    let bits = build::bits(arch);
-    let installed_build = crate::gog::update::base_build(&committed).map(str::to_owned);
 
     // Ownership is only asked for when GOG lists DLC the folder doesn't
     // have, as a check does.
@@ -415,6 +507,7 @@ pub fn plan(
     // A newly owned DLC the build doesn't have is recorded as unavailable
     // when an update runs anyway, and a language another tool recorded is
     // recorded as GOG's depots spell it, but neither is a reason to run one.
+    // A reinstall runs whatever it finds.
     let selection = |products: &[Product]| -> Vec<(u64, ProductStatus)> {
         products
             .iter()
@@ -425,7 +518,8 @@ pub fn plan(
             .map(|product| (product.id, product.status))
             .collect()
     };
-    if installed_build.as_deref() == Some(latest.build_id.as_str())
+    if kind == JournalKind::Update
+        && installed_build.as_deref() == Some(latest.build_id.as_str())
         && selection(&target.products) == selection(&committed.products)
     {
         return Ok(Planned::UpToDate {
@@ -445,12 +539,16 @@ pub fn plan(
     )?;
     warnings.extend(built.warnings);
     let store = install::complete_store(session, built.store)?;
+    // A stored manifest is the starting point when the record is trusted. An
+    // update without one fetches the installed build's from GOG (question
+    // 4); a reinstall, which hashes everything anyway, starts from nothing
+    // (answer b), so it deletes only what a stored manifest vouches for.
     let base = match stored(paths, &state)? {
         Some(manifest) => Some(Base {
             manifest,
             fetched: false,
         }),
-        None => fetched_base(
+        None if kind == JournalKind::Update => fetched_base(
             session,
             &title,
             &builds,
@@ -459,6 +557,7 @@ pub fn plan(
             &repository,
             bits,
         )?,
+        None => None,
     };
     let mut products = selected.planned;
     for product in &mut products {
@@ -470,6 +569,7 @@ pub fn plan(
         folder: state.folder.clone(),
         gog_id,
         title,
+        kind,
         recovery: false,
         seen: state,
         arch,
@@ -484,6 +584,125 @@ pub fn plan(
         notes,
         warnings,
     }))
+}
+
+/// The products of `target` for a review, titled by `dlc_title` where GOG
+/// gave one.
+fn planned_products(
+    target: &Target,
+    manifest: &Manifest,
+    title: &str,
+    dlc_title: impl Fn(u64) -> Option<String>,
+) -> Vec<PlannedProduct> {
+    target
+        .products
+        .iter()
+        .map(|product| PlannedProduct {
+            id: product.id,
+            title: if product.id == target.gog_id {
+                Some(title.to_owned())
+            } else {
+                dlc_title(product.id)
+            },
+            build: product.build.clone(),
+            language: (product.status == ProductStatus::Installed).then(|| {
+                product
+                    .language
+                    .clone()
+                    .unwrap_or_else(|| target.language.clone())
+            }),
+            status: product.status,
+            note: None,
+            size: install::product_size(manifest, product.id),
+        })
+        .collect()
+}
+
+/// What a repair of `target`'s selection is made against: the stored
+/// manifest when the record is trusted, which is also its starting point, so
+/// nothing is asked of GOG's build list. Else the installed build's manifest
+/// from GOG, as the target with no starting point, so nothing is deleted
+/// (answer b). A repair never changes the build, so one GOG no longer lists
+/// is refused.
+#[allow(clippy::too_many_arguments)]
+fn repair_manifest(
+    paths: &Paths,
+    session: &mut Session,
+    name: &str,
+    state: &FolderState,
+    title: &str,
+    target: &Target,
+    build: Option<&str>,
+    bits: &str,
+) -> Result<(Manifest, Option<Base>, Vec<StoreNeed>)> {
+    if let Some(manifest) = stored(paths, state)? {
+        let store = manifest
+            .store_versions()
+            .into_iter()
+            .map(|version| StoreNeed {
+                version,
+                files: None,
+            })
+            .collect();
+        let base = Base {
+            manifest: manifest.clone(),
+            fetched: false,
+        };
+        return Ok((manifest, Some(base), store));
+    }
+    let gone = |build: &str| GalaxyError::BuildGone {
+        title: title.to_owned(),
+        build: build.to_owned(),
+        name: name.to_owned(),
+    };
+    let build = build.ok_or_else(|| GalaxyError::BuildUnknown {
+        title: title.to_owned(),
+        name: name.to_owned(),
+    })?;
+    let gog_id = target.gog_id;
+    let builds = install::call(session, |client, access| {
+        client.windows_builds(gog_id, Some(access))
+    })?;
+    let listed = builds
+        .items
+        .iter()
+        .find(|listed| listed.build_id == build && listed.generation == Some(2))
+        .ok_or_else(|| gone(build))?;
+    let link = listed.link.clone().ok_or_else(|| gone(build))?;
+    let repository = session
+        .client()
+        .repository(&link)
+        .with_context(|| format!("Couldn't get {title}'s build {build}"))?;
+    let mut chosen = Vec::new();
+    for product in target
+        .products
+        .iter()
+        .filter(|product| product.status == ProductStatus::Installed)
+    {
+        let wanted = product.language.as_deref().unwrap_or(&target.language);
+        let Some(language) = resolve(&repository.depots, product.id, wanted, bits) else {
+            return Err(GalaxyError::ProductGone {
+                title: title.to_owned(),
+                build: build.to_owned(),
+                label: if product.id == gog_id {
+                    title.to_owned()
+                } else {
+                    names::dlc_label(title, product.id, None)
+                },
+            }
+            .into());
+        };
+        chosen.push((product.id, language.code));
+    }
+    let built = install::manifests(
+        session,
+        title,
+        &repository,
+        &chosen,
+        bits,
+        listed.version_name.clone(),
+    )?;
+    Ok((built.manifest, None, built.store))
 }
 
 fn notes(manifest: &Manifest, base: bool) -> Vec<Note> {
@@ -737,11 +956,12 @@ fn select(
     Ok(selected)
 }
 
-/// Plans finishing the folder's interrupted update. Its record's `pending`
-/// is the target, with what it started from, when it belongs to the
-/// journal. Else the journal's builds are fetched again, or GOG's latest
-/// when the base game's is no longer listed, which then starts from nothing
-/// and deletes nothing (question 12).
+/// Plans finishing the folder's interrupted update, reinstall, or repair. Its
+/// record's `pending` is the target, with what it started from, when it
+/// belongs to the journal. Else the journal's builds are fetched again, or
+/// GOG's latest when the base game's is no longer listed, which then starts
+/// from nothing and deletes nothing (question 12). A repair never changes
+/// the build, so it is refused instead.
 fn resumed(
     paths: &Paths,
     session: &mut Session,
@@ -754,6 +974,7 @@ fn resumed(
         .clone()
         .expect("a resumed update has a journal");
     let gog_id = journal.target.gog_id;
+    let kind = journal.kind;
     let folder_names = names::product_names(&state.folder);
     // Not needed to finish, so a failure only costs the titles.
     let details = product::load_with(
@@ -802,6 +1023,25 @@ fn resumed(
                 store,
                 pending.manifest.setup.version_name.clone(),
             )
+        }
+        None if kind == JournalKind::Repair => {
+            let began = target
+                .products
+                .iter()
+                .find(|product| product.id == gog_id)
+                .and_then(|base| base.build.clone());
+            let (manifest, base, store) = repair_manifest(
+                paths,
+                session,
+                name,
+                &state,
+                &title,
+                &target,
+                began.as_deref(),
+                bits,
+            )?;
+            let version_name = manifest.setup.version_name.clone();
+            (manifest, base, store, version_name)
         }
         None => {
             let builds = install::call(session, |client, access| {
@@ -891,6 +1131,9 @@ fn resumed(
                     manifest,
                     fetched: false,
                 })
+            } else if kind == JournalKind::Reinstall {
+                // A reinstall without a trusted record deletes nothing.
+                None
             } else {
                 match &state.committed {
                     Some(committed) => fetched_base(
@@ -946,6 +1189,7 @@ fn resumed(
         folder: state.folder.clone(),
         gog_id,
         title,
+        kind,
         recovery: true,
         seen: state,
         arch,
@@ -1032,8 +1276,14 @@ struct Compared {
 /// update doesn't change is left alone with a stored manifest, and checked
 /// by size with a fetched one, since hashing a whole game takes minutes; any
 /// other file there is hashed against its new version, and against its old
-/// one, which says whether it is wineo's to replace.
-fn compare(paths: &Paths, plan: &Plan, token: &Token) -> Result<Compared> {
+/// one, which says whether it is wineo's to replace. A repair or reinstall
+/// hashes every file and support file and reports how far it got.
+fn compare(
+    paths: &Paths,
+    plan: &Plan,
+    token: &Token,
+    progress: &mut dyn FnMut(Progress),
+) -> Result<Compared> {
     let root = package::open_folder(&plan.folder)?;
     let mut manifest = install::on_disk(&root, &plan.manifest);
     let base = plan.base.as_ref().map(|base| Base {
@@ -1046,14 +1296,29 @@ fn compare(paths: &Paths, plan: &Plan, token: &Token) -> Result<Compared> {
         .map(|file| (file.path.to_lowercase(), file))
         .collect();
     let stored = base.as_ref().is_some_and(|base| !base.fetched);
+    let full = plan.hashes_all();
+    let mut checked = Checked {
+        files: 0,
+        files_total: manifest.files.len() + manifest.support.len(),
+        bytes: 0,
+        bytes_total: sizes(&manifest.files) + sizes(&manifest.support),
+    };
     let mut verified = HashMap::new();
     let mut files = Vec::new();
     for file in &manifest.files {
         let old = old.get(&file.path.to_lowercase()).copied();
-        files.push(judge(&root, file, old, stored, token, &mut verified)?);
+        files.push(judge(&root, file, old, stored, full, token, &mut verified)?);
+        if full {
+            checked.add(file, progress);
+        }
     }
     let support_root = paths.gog_support_dir(&folder::key(&plan.folder));
-    let support = install::support_to_fetch(&support_root, &mut manifest.support, token)?;
+    let support =
+        install::support_to_fetch(&support_root, &mut manifest.support, token, &mut |file| {
+            if full {
+                checked.add(file, progress);
+            }
+        })?;
     let game_bytes = manifest
         .files
         .iter()
@@ -1076,19 +1341,43 @@ fn compare(paths: &Paths, plan: &Plan, token: &Token) -> Result<Compared> {
     })
 }
 
+/// How many files and bytes a hashing pass has checked.
+struct Checked {
+    files: usize,
+    files_total: usize,
+    bytes: u64,
+    bytes_total: u64,
+}
+
+impl Checked {
+    fn add(&mut self, file: &FileEntry, progress: &mut dyn FnMut(Progress)) {
+        self.files += 1;
+        self.bytes += file.size;
+        progress(Progress::Verify {
+            files: self.files,
+            files_total: self.files_total,
+            bytes: self.bytes,
+            bytes_total: self.bytes_total,
+        });
+    }
+}
+
 /// What one target file needs, against what is at its path and its base
 /// version `old`, if the base lists one. `stored` says the base is the
-/// manifest wineo stored at its last commit.
+/// manifest wineo stored at its last commit. `full` is a repair or
+/// reinstall: no file is trusted or judged by its size, so each is hashed
+/// whatever the base says.
 fn judge(
     root: &std::os::fd::OwnedFd,
     file: &FileEntry,
     old: Option<&FileEntry>,
     stored: bool,
+    full: bool,
     token: &Token,
     verified: &mut HashMap<String, String>,
 ) -> Result<Verdict> {
     let path = file.path.as_str();
-    let unchanged_by_update = old.filter(|old| same_content(old, file));
+    let unchanged_by_update = old.filter(|old| !full && same_content(old, file));
     // Left as it is, there or not, whatever its size: you may have deleted
     // an intro video or edited a setting on purpose, and putting a file
     // back is what `--repair` is for.
@@ -1186,7 +1475,9 @@ fn run(
     // no other wineo and no launch changes the folder, and finishing an
     // interrupted attempt under them only ever empties a path, never fills
     // one, so what this found still holds.
-    let compared = compare(paths, plan, token)?;
+    let compared = compare(paths, plan, token, &mut |step| {
+        (progress.borrow_mut())(step)
+    })?;
     let support_root = paths.gog_support_dir(&folder::key(folder));
     let redist = paths.gog_redist_dir();
     // Staged files count whole, chunks reused or not, and deletions free
@@ -1286,12 +1577,15 @@ fn run(
         publisher.recover_asides(|path| merged(recorded(&attempted, path), known_at(path)))?;
     }
 
-    let expected = record::expected(&state, JournalKind::Update, &plan.target);
+    let expected = record::expected(&state, plan.kind, &plan.target);
     let selection = record::digest(&expected);
     let mut sidecar = record::read(&lock)?.unwrap_or_default();
     // Setup steps recorded count only while the record is this operation's
     // or the committed selection's; anything else runs every step again.
-    if !record::carries_setup(&state, &sidecar)? {
+    // A repair or reinstall runs every step, so its first attempt starts from
+    // none; one finishing a journal carries on from the steps this operation
+    // recorded.
+    if !record::carries_setup(&state, &sidecar)? || (plan.hashes_all() && state.journal.is_none()) {
         sidecar.setup.clear();
     }
     sidecar.pending = Some(record::Pending {
@@ -1313,7 +1607,7 @@ fn run(
         .collect();
     let mut journal = state.journal.clone().unwrap_or_else(|| Journal {
         operation: operation.clone(),
-        kind: JournalKind::Update,
+        kind: plan.kind,
         target: plan.target.clone(),
         packages: Vec::new(),
         attempted: Vec::new(),
@@ -1633,7 +1927,7 @@ fn run(
     Ok(Updated {
         environment: name.to_owned(),
         folder: folder.to_owned(),
-        kind: JournalKind::Update,
+        kind: plan.kind,
         recovered: plan.recovery,
         claimed,
         products: plan.target.products.clone(),
