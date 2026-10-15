@@ -1,7 +1,7 @@
 //! Repairs, reinstalls, and moves between tracks against the fake content
 //! system.
 
-use super::setup::{VC_EXE, scripted, with_setup};
+use super::setup::{scripted, with_setup};
 use super::update::{
     assert_updated, chunk, forget_record, game_200, in_english, update_interrupted,
 };
@@ -255,8 +255,6 @@ fn repair_reruns_every_setup_step_and_a_clean_one_still_journals() {
     assert_eq!(record.setup.len(), 2);
     assert!(record::installed(&fx.state(), &record).unwrap().is_some());
     assert!(!fx.launch_refused());
-    // A failed step is retried without hashing again on finishing.
-    let _ = VC_EXE;
 }
 
 #[test]
@@ -414,6 +412,30 @@ fn an_interrupted_repair_is_finished_as_a_repair() {
 }
 
 #[test]
+fn an_interrupted_repair_whose_build_is_gone_is_refused_not_retargeted() {
+    let fx = Fixture::new();
+    fx.content.add_build(Fixture::game("100"));
+    fx.install();
+    fx.damage("Data/core.dat", "core data, several chunks LONG");
+    set_failpoint(Some("galaxy.update.files.after"));
+    let error = fx.run_err(&fx.op(repair()).unwrap());
+    set_failpoint(None);
+    assert!(format!("{error:#}").contains("injected"), "{error:#}");
+    // The record is lost, and GOG has dropped the build; a newer one is
+    // listed, which a repair doesn't move to.
+    fs::write(folder::sidecar_file(&fx.paths, &fx.folder), b"garbage").unwrap();
+    fx.hide("100");
+    fx.content.add_build(game_200());
+    let before = fx.state();
+    let error = fx.op(Options::default()).unwrap_err();
+    assert!(matches!(
+        error.downcast_ref(),
+        Some(GalaxyError::BuildGone { .. })
+    ));
+    assert_eq!(fx.state(), before);
+}
+
+#[test]
 fn repair_is_refused_for_the_installer_track_and_native_games_and_bad_combinations() {
     let fx = Fixture::new();
     fx.content.add_build(Fixture::game("100"));
@@ -517,6 +539,10 @@ fn a_reinstall_across_a_newer_build_hashes_everything() {
     let (updated, steps) = fx.run(&plan);
     assert_eq!(updated.kind, JournalKind::Reinstall);
     assert_updated(&fx);
+    // Asking for the track it is on changes nothing about the operation.
+    let again = fx.op(to_galaxy()).unwrap();
+    assert_eq!(again.kind(), JournalKind::Reinstall);
+    assert_eq!(again.start(), Start::Stored);
     // The unchanged file was damaged: fixed, yours saved aside.
     assert_eq!(fx.read("Data/core.dat.wineo-saved"), damaged);
     assert_eq!(Fixture::saved(&updated), ["Data/core.dat"]);

@@ -357,6 +357,12 @@ pub fn plan(
     // asks for Galaxy.
     let moving = committed.track == Track::Installer;
     if moving && !(options.reinstall && options.track == Some(Track::Galaxy)) {
+        if options.repair {
+            return Err(UpdateError::NotGalaxy {
+                name: name.to_owned(),
+            }
+            .into());
+        }
         bail!("{name}'s GOG game isn't a Galaxy one");
     }
     if !moving && options.track == Some(Track::Installer) {
