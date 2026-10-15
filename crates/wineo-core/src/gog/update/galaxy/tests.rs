@@ -721,6 +721,18 @@ fn game_local_dependencies_join_the_folder_and_others_the_store() {
         .join(&redist.manifest)
         .join("__redist/MSVC2017/VC_redist.x86.exe");
     assert_eq!(fs::read_to_string(stored).unwrap(), "runtime v1");
+    // The store is public: its chunks are asked for without a token.
+    let store: Vec<_> = fx
+        .server
+        .requests()
+        .into_iter()
+        .filter(|request| request.path().contains("/dependencies/store/"))
+        .collect();
+    assert!(!store.is_empty());
+    for request in store {
+        assert!(!request.target.contains("token"), "{}", request.target);
+        assert_eq!(request.query("wsSecret"), None);
+    }
 }
 
 #[test]

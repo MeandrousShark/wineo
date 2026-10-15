@@ -63,22 +63,27 @@ impl fmt::Debug for LinkEndpoint {
 
 impl LinkEndpoint {
     /// The chunk's address on this CDN: `/ab/cd/<hash>` appended to the
-    /// `path` parameter, then every `{key}` in the template filled in.
+    /// `path` parameter, then every `{key}` in the template filled in. The
+    /// dependency store is public, so its CDNs give a plain address and no
+    /// `path`; the suffix goes on the end of the filled template instead.
     fn chunk_url(&self, compressed_md5: &str) -> Option<Url> {
         let hash = compressed_md5;
         if hash.len() < 4 || !hash.is_ascii() {
             return None;
         }
+        let suffix = format!("{}/{}/{hash}", &hash[0..2], &hash[2..4]);
         let mut parameters = self.parameters.clone();
-        let path = parameters.get_mut("path")?;
-        let joined = format!(
-            "{}/{}/{}/{hash}",
-            path.trim_end_matches('/'),
-            &hash[0..2],
-            &hash[2..4]
-        );
-        *path = joined;
-        Url::parse(&fill(&self.url_format, &parameters)).ok()
+        let address = match parameters.get_mut("path") {
+            Some(path) => {
+                *path = format!("{}/{suffix}", path.trim_end_matches('/'));
+                fill(&self.url_format, &parameters)
+            }
+            None => format!(
+                "{}/{suffix}",
+                fill(&self.url_format, &parameters).trim_end_matches('/')
+            ),
+        };
+        Url::parse(&address).ok()
     }
 
     fn expires_at(&self) -> Option<u64> {
