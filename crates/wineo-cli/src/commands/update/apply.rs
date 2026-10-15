@@ -316,33 +316,60 @@ fn all(paths: &Paths, args: &Args) -> anyhow::Result<ExitCode> {
     };
 
     // A game that couldn't even be checked is a failure like one that can't
-    // be planned.
-    let mut failures: Vec<(String, String)> = batch
-        .errors
-        .iter()
-        .map(|error| (error.subject(), error.message.clone()))
-        .collect();
+    // be planned, unless it has a journal: finishing one needs no check, and
+    // may not need GOG at all.
+    let mut failures: Vec<(String, String)> = Vec::new();
+    let mut journaled: Vec<(String, wineo_core::gog::folder::Journal)> = Vec::new();
+    for error in &batch.errors {
+        match error
+            .environment
+            .as_deref()
+            .and_then(|name| update::journal_of(paths, name).map(|journal| (name, journal)))
+        {
+            Some((name, journal)) => journaled.push((name.to_owned(), journal)),
+            None => failures.push((error.subject(), error.message.clone())),
+        }
+    }
     let mut names = Vec::new();
     let mut skipped = Vec::new();
     let graphical = wineo_core::launch::graphical_session();
+    // Every game to finish or update: by name, whether its journal is a
+    // Galaxy first install, with its id, and whether it runs in a prefix.
+    let mut wanted: Vec<(String, Option<u64>, bool)> = Vec::new();
     for status in &batch.statuses {
-        // A Galaxy install that didn't finish is finished by installing it
-        // again, which the update has no way to do.
-        if status.galaxy_install {
-            skipped.push(format!(
-                "Skipped {}: Finish the interrupted install with: wineo import gog --game {}",
-                status.environment, status.gog_id
-            ));
-            continue;
-        }
         // A game with a journal is finished whatever GOG offers now.
         let finishes = status.unfinished;
-        if (status.applicable || finishes) && status.platform == Platform::Windows && !graphical {
-            skipped.push(format!("Skipped {}: {NEEDS_DESKTOP}", status.environment));
+        if status.galaxy_install {
+            wanted.push((status.environment.clone(), Some(status.gog_id), true));
         } else if status.applicable || finishes {
-            names.push(status.environment.clone());
+            wanted.push((
+                status.environment.clone(),
+                None,
+                status.platform == Platform::Windows,
+            ));
         } else if let Some(reason) = &status.reason {
             skipped.push(format!("Skipped {}: {}", status.environment, reason.note()));
+        }
+    }
+    for (name, journal) in journaled {
+        let install = journal.kind == JournalKind::Install && journal.target.track == Track::Galaxy;
+        wanted.push((
+            name,
+            install.then_some(journal.target.gog_id),
+            journal.target.platform == Platform::Windows,
+        ));
+    }
+    for (name, galaxy_install, windows) in wanted {
+        if let Some(id) = galaxy_install {
+            // A Galaxy install that didn't finish is finished by installing
+            // it again, which the update has no way to do.
+            skipped.push(format!(
+                "Skipped {name}: Finish the interrupted install with: wineo import gog --game {id}"
+            ));
+        } else if windows && !graphical {
+            skipped.push(format!("Skipped {name}: {NEEDS_DESKTOP}"));
+        } else {
+            names.push(name);
         }
     }
 

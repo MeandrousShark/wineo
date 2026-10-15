@@ -689,6 +689,23 @@ fn stopped(
         }
         return Ok(cancel::exit_code());
     }
+    // A setup step in the prefix failed. The journal stays, and installing
+    // again carries on from that step.
+    if let Some(core_galaxy::GalaxyError::Setup {
+        title,
+        label,
+        detail,
+    }) = error.downcast_ref()
+    {
+        eprintln!(
+            "{}",
+            style::error_stderr(format!(
+                "error: Setting up {title} stopped: {label} failed ({detail})."
+            ))
+        );
+        finish();
+        return Ok(ExitCode::FAILURE);
+    }
     match error.downcast_ref::<SetupError>() {
         // The game's own installer was canceled before it changed anything,
         // but the install it belongs to is still there to finish.

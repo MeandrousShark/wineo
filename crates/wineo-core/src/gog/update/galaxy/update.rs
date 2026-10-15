@@ -520,11 +520,22 @@ pub fn plan(
     } else {
         game.title.clone()
     };
-    let builds = install::call(session, |client, access| {
-        client.windows_builds(gog_id, Some(access))
-    })?;
     let no_build = || GalaxyError::NoBuild {
         title: title.clone(),
+    };
+    let builds = match install::call(session, |client, access| {
+        client.windows_builds(gog_id, Some(access))
+    }) {
+        Ok(builds) => builds,
+        // No content system for the game, as a check reads it.
+        Err(error)
+            if error
+                .downcast_ref::<wineo_gog::Error>()
+                .is_some_and(|error| error.kind() == wineo_gog::ErrorKind::Status(404)) =>
+        {
+            return Err(no_build().into());
+        }
+        Err(error) => return Err(error),
     };
     let latest = build::latest(&builds, None).ok_or_else(no_build)?.clone();
     let link = latest.link.clone().ok_or_else(no_build)?;

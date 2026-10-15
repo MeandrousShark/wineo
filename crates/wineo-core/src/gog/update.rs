@@ -17,7 +17,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Result, bail};
 use serde_json::Value;
 
-use super::account::Session;
+use super::account::{CallError, Session};
 use super::folder::{
     self, Committed, FolderError, FolderLock, FolderState, Platform, Product, ProductStatus, Track,
 };
@@ -280,6 +280,12 @@ fn game_of(paths: &Paths, name: &str) -> Result<FolderState> {
         }
         .into()
     })
+}
+
+/// The journal of `name`'s game folder, when it has one. Reads the folder's
+/// state alone, so it says so when GOG can't be reached for a check.
+pub fn journal_of(paths: &Paths, name: &str) -> Option<folder::Journal> {
+    game_of(paths, name).ok()?.journal
 }
 
 /// The host paths `name`'s targets name: each one's program, working
@@ -1138,7 +1144,18 @@ fn by_build(
 ) -> Result<Compared> {
     let label = title_or(&details.title, || format!("GOG game {}", installed.gog_id));
     let id = installed.gog_id;
-    let builds = session.call(|client, token| client.windows_builds(id, Some(token)))?;
+    // A game GOG has no content system for answers 404, which leaves it to
+    // its installers, as installing picks them.
+    let builds = match session.call(|client, token| client.windows_builds(id, Some(token))) {
+        Ok(builds) => builds,
+        Err(CallError::Request(error)) if error.kind() == wineo_gog::ErrorKind::Status(404) => {
+            wineo_gog::Builds {
+                items: Vec::new(),
+                has_private_branches: false,
+            }
+        }
+        Err(error) => return Err(error.into()),
+    };
     let latest = galaxy::latest(&builds);
     let current = base(installed).and_then(|base| base.build.clone());
     let version_name = |build: &str| {

@@ -71,6 +71,7 @@ fn build_id(version: &str) -> &'static str {
     match version {
         "1.2.76" => "100",
         "1.4.11" => "200",
+        "1.5.0" => "300",
         other => panic!("no build for {other}"),
     }
 }
@@ -509,22 +510,30 @@ fn all_updates_a_galaxy_game_with_the_rest() {
     assert_eq!(stdout(&out), "Nothing to update.\n");
 }
 
-#[test]
-fn all_finishes_a_galaxy_update_that_stopped() {
-    let (f, api) = installed();
-    newer(&api);
-    let mut command = f.gog_command(&api);
+/// Starts `wineo` in a terminal, held at the first download until Ctrl+C.
+fn paused(f: &Fixture, api: &GogApi, args: &[&str]) -> Pty {
+    let mut command = f.gog_command(api);
     command
         .env("DISPLAY", ":0")
         .env("WINEO_TEST_UPDATE_PAUSE", "download")
-        .args(["update", NAME, "--yes"]);
-    let mut pty = Pty::spawn(command);
-    pty.expect("Downloading: ");
+        .args(args);
+    Pty::spawn(command)
+}
+
+fn interrupt(pty: &Pty) {
     let status = std::process::Command::new("kill")
         .args(["-INT", &pty.id().to_string()])
         .status()
         .unwrap();
     assert!(status.success());
+}
+
+/// An update to the newer build that Ctrl+C stopped after its journal.
+fn interrupted_update(f: &Fixture, api: &GogApi) {
+    newer(api);
+    let mut pty = paused(f, api, &["update", NAME, "--yes"]);
+    pty.expect("Downloading: ");
+    interrupt(&pty);
     let (status, output) = pty.finish();
     assert_eq!(status.code(), Some(130), "{output}");
     assert!(output.contains("Update interrupted."), "{output}");
@@ -534,6 +543,13 @@ fn all_finishes_a_galaxy_update_that_stopped() {
         )),
         "{output}"
     );
+    assert!(state(f).journal.is_some());
+}
+
+#[test]
+fn all_finishes_a_galaxy_update_that_stopped() {
+    let (f, api) = installed();
+    interrupted_update(&f, &api);
     let check = gog(&f, &api, &["update", "--check"]);
     assert!(
         stdout(&check).contains(&format!(
@@ -548,15 +564,178 @@ fn all_finishes_a_galaxy_update_that_stopped() {
     assert_success(&out);
     let text = stdout(&out);
     assert!(
-        text.contains(&format!("Update {NAME}\n")) || text.contains("Finish the interrupted"),
-        "{text}"
-    );
-    assert!(
         text.contains(&format!("Finished the interrupted update of {NAME}.\n")),
         "{text}"
     );
     assert_eq!(read(&f, "Papers.exe"), "MZ 1.4.11");
     assert!(state(&f).journal.is_none());
+}
+
+#[test]
+fn all_finishes_a_journal_whose_check_failed_but_not_a_game_without_one() {
+    let (f, api) = installed();
+    interrupted_update(&f, &api);
+    api.builds_status
+        .store(503, std::sync::atomic::Ordering::Relaxed);
+    // The check can't list builds, but the journal and its saved target are
+    // enough to finish.
+    let out = gog(&f, &api, &["update", "--all", "--yes"]);
+    assert_success(&out);
+    assert!(
+        stdout(&out).contains(&format!("Finished the interrupted update of {NAME}.\n")),
+        "{}",
+        stdout(&out)
+    );
+    assert_eq!(read(&f, "Papers.exe"), "MZ 1.4.11");
+    assert!(state(&f).journal.is_none());
+
+    // With nothing to finish, the failed check is a failure.
+    let out = gog(&f, &api, &["update", "--all", "--yes"]);
+    assert_eq!(out.status.code(), Some(1), "{}", stderr(&out));
+    assert!(
+        stderr(&out).contains(&format!("Failed {NAME}: ")),
+        "{}",
+        stderr(&out)
+    );
+}
+
+#[test]
+fn all_skips_a_galaxy_game_without_a_graphical_session() {
+    let (f, api) = installed();
+    newer(&api);
+    let mut command = f.gog_command(&api);
+    command
+        .env_remove("DISPLAY")
+        .env_remove("WAYLAND_DISPLAY")
+        .args(["update", "--all", "--yes"]);
+    let out = command.output().unwrap();
+    assert_success(&out);
+    let text = stdout(&out);
+    assert!(
+        text.contains(&format!(
+            "Skipped {NAME}: Updating a Windows game needs a graphical session. Run this from your desktop.\n"
+        )),
+        "{text}"
+    );
+    assert!(text.ends_with("Nothing to update.\n"), "{text}");
+    assert_eq!(read(&f, "Papers.exe"), "MZ 1.2.76");
+}
+
+#[test]
+fn a_build_gone_from_gog_retargets_when_you_say_yes() {
+    let (f, api) = installed();
+    interrupted_update(&f, &api);
+    // Its saved target is lost, and GOG lists a newer build instead.
+    fs::remove_file(wineo_core::gog::folder::sidecar_file(
+        &f.paths(),
+        &fs::canonicalize(folder(&f)).unwrap(),
+    ))
+    .unwrap();
+    api.content
+        .add_build(papers("300", "1.5.0").dependency("MSVC2017"));
+    api.hidden_builds.lock().unwrap().insert("200".to_owned());
+
+    let mut command = f.gog_command(&api);
+    command.env("DISPLAY", ":0").args(["update", NAME]);
+    let mut pty = Pty::spawn(command);
+    pty.expect("Finish it?");
+    pty.send("n");
+    let (status, output) = pty.finish();
+    assert_eq!(status.code(), Some(130), "{output}");
+    assert!(
+        output.contains("GOG no longer lists build 200 of Papers, Please, so the update finishes with build 300 instead."),
+        "{output}"
+    );
+    assert!(
+        output.contains(&format!("Finish the interrupted update of {NAME}\n")),
+        "{output}"
+    );
+    assert!(output.contains("1.5.0"), "{output}");
+    // Declined: the journal waits, with nothing committed.
+    let waiting = state(&f);
+    assert!(waiting.journal.is_some());
+    assert_eq!(
+        waiting.committed.unwrap().products[0].build.as_deref(),
+        Some("100")
+    );
+
+    let out = update(&f, &api, &["--yes"]);
+    assert_success(&out);
+    assert!(
+        stdout(&out).contains(&format!("Finished the interrupted update of {NAME}.\n")),
+        "{}",
+        stdout(&out)
+    );
+    assert_eq!(read(&f, "Papers.exe"), "MZ 1.5.0");
+    assert_eq!(
+        state(&f).committed.unwrap().products[0].build.as_deref(),
+        Some("300")
+    );
+}
+
+/// Every file under `root` with its contents, except the files named in
+/// `skip`.
+fn tree(root: &std::path::Path, skip: &[&str]) -> std::collections::BTreeMap<PathBuf, Vec<u8>> {
+    fn walk(
+        path: &std::path::Path,
+        skip: &[&str],
+        out: &mut std::collections::BTreeMap<PathBuf, Vec<u8>>,
+    ) {
+        let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+        if skip.contains(&name) {
+            return;
+        }
+        let meta = fs::symlink_metadata(path).unwrap();
+        if meta.is_dir() {
+            out.insert(path.to_owned(), Vec::new());
+            for entry in fs::read_dir(path).unwrap() {
+                walk(&entry.unwrap().path(), skip, out);
+            }
+        } else if meta.is_file() {
+            out.insert(path.to_owned(), fs::read(path).unwrap());
+        }
+    }
+    let mut out = std::collections::BTreeMap::new();
+    walk(root, skip, &mut out);
+    out
+}
+
+#[test]
+fn a_dry_run_leaves_the_cache_and_another_tools_build_alone() {
+    let (f, api) = installed();
+    newer(&api);
+    api.content
+        .add_build(papers("300", "1.5.0").dependency("MSVC2017"));
+    // Another tool updated the game to 1.4.11, which a real run would
+    // record.
+    let info_file = folder(&f).join(format!("goggame-{GAME}.info"));
+    fs::write(&info_file, info("200")).unwrap();
+    let paths = f.paths();
+    fs::remove_file(paths.gog_product_cache(GAME)).unwrap();
+    let generation = paths.gog_credentials_generation();
+    let login = ["gog.key", generation.file_name().unwrap().to_str().unwrap()];
+    let before = tree(f.root.path(), &login);
+    for extra in [&["--dry-run"][..], &["--repair", "--dry-run"]] {
+        let out = update(&f, &api, extra);
+        assert_success(&out);
+        assert!(
+            stdout(&out).ends_with("Dry run, nothing was updated.\n"),
+            "{}",
+            stdout(&out)
+        );
+        assert!(!paths.gog_product_cache(GAME).exists());
+        assert_eq!(tree(f.root.path(), &login), before);
+        assert_eq!(
+            state(&f).committed.unwrap().products[0].build.as_deref(),
+            Some("100")
+        );
+    }
+    // A real check does record it.
+    assert_success(&gog(&f, &api, &["update", "--check"]));
+    assert_eq!(
+        state(&f).committed.unwrap().products[0].build.as_deref(),
+        Some("200")
+    );
 }
 
 #[test]
@@ -603,10 +782,15 @@ fn a_setup_step_that_fails_keeps_the_journal_and_update_finishes_it() {
     with_setup(&api, "1");
     let out = install(&f, &api, &[]);
     assert_eq!(out.status.code(), Some(1));
+    let err = stderr(&out);
     assert!(
-        stderr(&out).contains("Setting up Papers, Please stopped: MSVC2017 failed (exit code 1)."),
-        "{}",
-        stderr(&out)
+        err.contains("error: Setting up Papers, Please stopped: MSVC2017 failed (exit code 1).\n"),
+        "{err}"
+    );
+    assert!(
+        err.trim_end()
+            .ends_with("Finish the interrupted install with: wineo import gog --game 1207658924"),
+        "{err}"
     );
     // Updating finishes an update's setup the same way.
     let (f, api) = installed();

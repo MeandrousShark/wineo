@@ -91,6 +91,8 @@ struct Fixture {
     keyring: Arc<FakeKeyring>,
     products: BTreeMap<u64, Value>,
     builds: BTreeMap<u64, Value>,
+    /// The build list fails with this status instead of answering.
+    builds_status: Option<u16>,
     /// The ids the account owns. None fails the list, as GOG's own 404.
     owned: Option<Vec<u64>>,
     /// How many times the owned ids were asked for.
@@ -109,6 +111,7 @@ impl Fixture {
             keyring,
             products: BTreeMap::new(),
             builds: BTreeMap::new(),
+            builds_status: None,
             owned: None,
             owned_asked: Arc::default(),
         }
@@ -191,6 +194,7 @@ impl Fixture {
     /// Serves GOG's token, product, and build endpoints from the maps.
     fn serve(&self) -> Scripted {
         let (products, builds) = (self.products.clone(), self.builds.clone());
+        let builds_status = self.builds_status;
         let (owned, asked) = (self.owned.clone(), Arc::clone(&self.owned_asked));
         Scripted::start(move |line| {
             let path = line.split(' ').nth(1).unwrap_or_default();
@@ -206,7 +210,10 @@ impl Fixture {
             };
             match parts.as_slice() {
                 ["products", _] => found(&products),
-                ["products", _, "os", "windows", "builds"] => found(&builds),
+                ["products", _, "os", "windows", "builds"] => match builds_status {
+                    Some(status) => reply(status, "{}"),
+                    None => found(&builds),
+                },
                 ["user", "data", "games"] => {
                     asked.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                     match &owned {
@@ -656,9 +663,29 @@ fn a_galaxy_check_fails_when_the_build_list_cant_be_had() {
     fx.products
         .insert(DISCO, product(DISCO, "Disco Elysium", vec![], vec![]));
     fx.galaxy(Some("400"));
-    // The server has no build list, so it answers 404.
+    fx.builds_status = Some(503);
     let error = fx.check("disco").unwrap_err();
     assert!(error.downcast_ref::<account::CallError>().is_some());
+}
+
+#[test]
+fn a_galaxy_game_with_no_build_list_is_left_to_its_installers() {
+    let mut fx = Fixture::new();
+    fx.products
+        .insert(DISCO, product(DISCO, "Disco Elysium", vec![], vec![]));
+    fx.galaxy(Some("400"));
+    // The server has no build list, so it answers 404.
+    let status = fx.status("disco");
+    assert_eq!(status.state, UpdateState::OnGog);
+    assert!(!status.applicable);
+    assert_eq!(
+        status.reason,
+        Some(Reason::Galaxy {
+            name: "disco".to_owned()
+        })
+    );
+    assert_eq!(status.installed.as_deref(), Some("400"));
+    assert_eq!(status.available, None);
 }
 
 /// Writes the file another tool's update leaves in a Windows game folder.
