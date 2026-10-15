@@ -577,8 +577,13 @@ pub fn carries_setup(state: &FolderState, record: &Record) -> Result<bool> {
     Ok(pending(state, record).is_some() || installed(state, record)?.is_some())
 }
 
-/// Reads every folder's record without locks, for store cleanup. Fails when
-/// one can't be read at all; one that isn't a valid record names nothing.
+/// Reads every Galaxy-tracked folder's record without locks, for store
+/// cleanup. Fails when one can't be read at all; one that isn't a valid
+/// record names nothing. A record whose state follows the installer track,
+/// or has no state, is a leftover that only the Galaxy track would read, so
+/// it names nothing either: a crash after a move off Galaxy must not pin
+/// store versions for good. A state that can't be read counts as Galaxy,
+/// since a version might still be needed.
 pub(super) fn all(dir: &Path) -> Result<Vec<Record>> {
     let entries = match std::fs::read_dir(dir) {
         Ok(entries) => entries,
@@ -593,7 +598,10 @@ pub(super) fn all(dir: &Path) -> Result<Vec<Record>> {
         let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
             continue;
         };
-        if name.starts_with('.') || !name.ends_with(crate::gog::folder::SIDECAR_SUFFIX) {
+        let Some(key) = name.strip_suffix(crate::gog::folder::SIDECAR_SUFFIX) else {
+            continue;
+        };
+        if name.starts_with('.') || !follows_galaxy(&dir.join(format!("{key}.toml")))? {
             continue;
         }
         let mut bytes = Vec::new();
@@ -612,4 +620,25 @@ pub(super) fn all(dir: &Path) -> Result<Vec<Record>> {
         }
     }
     Ok(records)
+}
+
+/// Whether the state file at `path` follows the Galaxy track: its journal's
+/// target if it has one, else what it committed.
+fn follows_galaxy(path: &Path) -> Result<bool> {
+    let text = match std::fs::read_to_string(path) {
+        Ok(text) => text,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => {
+            return Err(error).with_context(|| format!("failed to read {}", path.display()));
+        }
+    };
+    let Ok(state) = FolderState::parse(&text) else {
+        return Ok(true);
+    };
+    let track = match (&state.journal, &state.committed) {
+        (Some(journal), _) => Some(journal.target.track),
+        (None, Some(committed)) => Some(committed.track),
+        (None, None) => None,
+    };
+    Ok(track == Some(Track::Galaxy))
 }

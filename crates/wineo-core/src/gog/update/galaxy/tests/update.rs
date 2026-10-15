@@ -11,7 +11,7 @@ use crate::operation::{Locks, Operation};
 /// Build 200 of the game, against `Fixture::game`'s build 100: `bin/Game.exe`
 /// and `Data/big.dat` change, keeping their first chunks; `Data/core.dat`
 /// stays; `empty.txt` goes; `new/fresh.dat` is new.
-fn game_200() -> FakeBuild {
+pub(super) fn game_200() -> FakeBuild {
     FakeBuild::new(GAME, "200").depot(
         FakeDepot::new(GAME)
             .file(
@@ -34,20 +34,20 @@ fn game_200() -> FakeBuild {
 }
 
 /// The compressed MD5 a chunk of `bytes` is asked for by.
-fn chunk(bytes: &[u8]) -> String {
+pub(super) fn chunk(bytes: &[u8]) -> String {
     fake::content::md5_hex(&fake::content::zlib(bytes))
 }
 
 impl Fixture {
     /// Build 100 installed, then `next` listed before it as the latest.
-    fn installed_then(&self, next: FakeBuild) {
+    pub(super) fn installed_then(&self, next: FakeBuild) {
         self.content.add_build(Fixture::game("100"));
         self.install();
         self.gog.lock().unwrap().newest_first = true;
         self.content.add_build(next);
     }
 
-    fn update_planned(&self) -> Result<Planned> {
+    pub(super) fn update_planned(&self) -> Result<Planned> {
         update::plan(
             &self.paths,
             &mut self.session(),
@@ -60,14 +60,14 @@ impl Fixture {
         )
     }
 
-    fn update_plan(&self) -> update::Plan {
+    pub(super) fn update_plan(&self) -> update::Plan {
         match self.update_planned().unwrap() {
             Planned::Update(plan) => plan,
             Planned::UpToDate { .. } => panic!("up to date"),
         }
     }
 
-    fn apply_update(&self, plan: &update::Plan) -> Result<Updated> {
+    pub(super) fn apply_update(&self, plan: &update::Plan) -> Result<Updated> {
         update::apply(
             &self.paths,
             &mut self.session(),
@@ -77,12 +77,12 @@ impl Fixture {
         )
     }
 
-    fn update(&self) -> Updated {
+    pub(super) fn update(&self) -> Updated {
         self.apply_update(&self.update_plan()).unwrap()
     }
 
     /// The compressed MD5 of every chunk asked for since `from` requests.
-    fn chunks_since(&self, from: usize) -> Vec<String> {
+    pub(super) fn chunks_since(&self, from: usize) -> Vec<String> {
         self.server
             .requests()
             .iter()
@@ -99,18 +99,18 @@ impl Fixture {
             .collect()
     }
 
-    fn chunk_count(&self) -> usize {
+    pub(super) fn chunk_count(&self) -> usize {
         self.chunk_requests().len()
     }
 
-    fn base_build(&self) -> Option<String> {
+    pub(super) fn base_build(&self) -> Option<String> {
         self.state().committed.unwrap().products[0].build.clone()
     }
 }
 
 /// Build 200 committed, with its files, the record's `installed` matching,
 /// and nothing unfinished.
-fn assert_updated(fx: &Fixture) {
+pub(super) fn assert_updated(fx: &Fixture) {
     let state = fx.state();
     assert_eq!(state.journal, None);
     assert_eq!(fx.base_build().as_deref(), Some("200"));
@@ -396,7 +396,7 @@ fn an_up_to_date_game_has_nothing_to_do() {
 
 /// The game installed, its stored manifest no longer counting, as for a
 /// game another tool installed.
-fn forget_record(fx: &Fixture) {
+pub(super) fn forget_record(fx: &Fixture) {
     fs::remove_file(folder::sidecar_file(&fx.paths, &fx.folder)).unwrap();
 }
 
@@ -716,7 +716,7 @@ const TARGET_200: [(&str, &[u8]); 4] = [
 ];
 
 /// Build 300: build 200 with its own info file and one more file.
-fn game_300() -> FakeBuild {
+pub(super) fn game_300() -> FakeBuild {
     let mut build = game_200();
     build.build_id = "300".to_owned();
     build.version_name = "v300".to_owned();
@@ -731,7 +731,7 @@ fn game_300() -> FakeBuild {
 }
 
 /// An update to build 200 stopped by an injected failure at `point`.
-fn update_interrupted(fx: &Fixture, point: &'static str, skip: usize) {
+pub(super) fn update_interrupted(fx: &Fixture, point: &'static str, skip: usize) {
     let plan = fx.update_plan();
     set_failpoint_nth(point, skip);
     let result = fx.apply_update(&plan);
@@ -1056,8 +1056,8 @@ fn updates_reach_galaxy_games_through_core_but_not_yet_the_cli_path() {
     let status = crate::gog::update::check(&mut fx.session(), "game", true).unwrap();
     assert_eq!(status.state, crate::gog::update::UpdateState::OnGog);
     assert_eq!(status.available.as_deref(), Some("200"));
-    // A reinstall comes with repairs.
-    let error = update::plan(
+    // A reinstall is its own kind of operation.
+    let Planned::Update(plan) = update::plan(
         &fx.paths,
         &mut fx.session(),
         "game",
@@ -1067,11 +1067,10 @@ fn updates_reach_galaxy_games_through_core_but_not_yet_the_cli_path() {
         },
         &Token::new(),
     )
-    .unwrap_err();
-    assert!(matches!(
-        error.downcast_ref(),
-        Some(GalaxyError::Reinstall { .. })
-    ));
+    .unwrap() else {
+        panic!("a reinstall always runs");
+    };
+    assert_eq!(plan.kind(), JournalKind::Reinstall);
 }
 
 #[test]
@@ -1090,7 +1089,7 @@ fn an_unfinished_galaxy_install_is_finished_by_installing_not_updating() {
 }
 
 /// `build` with every depot for English alone.
-fn in_english(mut build: FakeBuild) -> FakeBuild {
+pub(super) fn in_english(mut build: FakeBuild) -> FakeBuild {
     build.depots = build
         .depots
         .into_iter()
