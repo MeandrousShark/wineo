@@ -283,7 +283,8 @@ pub struct Reporter {
     interval: Duration,
     last: Option<Instant>,
     checking: bool,
-    downloading: bool,
+    /// The last download line said, which the end of one doesn't repeat.
+    downloaded: Option<(u64, u64)>,
 }
 
 impl Reporter {
@@ -292,7 +293,7 @@ impl Reporter {
             interval,
             last: None,
             checking: false,
-            downloading: false,
+            downloaded: None,
         }
     }
 
@@ -326,8 +327,9 @@ impl Reporter {
                 self.said(line)
             }
             Progress::Download { done, total } => {
-                let first = !std::mem::replace(&mut self.downloading, true);
+                let first = self.downloaded.is_none();
                 (first || done == total || self.due()).then_some(())?;
+                (self.downloaded.replace((*done, *total)) != Some((*done, *total))).then_some(())?;
                 let line = format!(
                     "Downloading: {} / {}",
                     units::size(*done),

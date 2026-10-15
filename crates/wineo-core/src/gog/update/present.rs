@@ -7,7 +7,7 @@ use std::path::Path;
 use std::time::{Duration, Instant};
 
 use super::{GameError, Pending, Progress, Reason, Updated, galaxy, install};
-use crate::gog::folder::JournalKind;
+use crate::gog::folder::{JournalKind, Track};
 use crate::gog::names;
 use crate::units;
 
@@ -153,13 +153,22 @@ impl Pending {
             .collect()
     }
 
+    /// `1.0 -> 1.1`; a game moving off Galaxy has no installer version to
+    /// come from, so it shows the version alone.
+    fn change(&self, installed: Option<&str>, version: &str) -> String {
+        if installed.is_none() && self.moves_from() == Some(Track::Galaxy) {
+            return version.to_owned();
+        }
+        change(installed, version)
+    }
+
     /// What a review shows, row by row, with `show_path` writing the folder.
     pub fn review_rows(&self, show_path: impl Fn(&Path) -> String) -> Vec<(ReviewLabel, String)> {
         let mut rows = vec![(ReviewLabel::Folder, show_path(self.folder()))];
         for product in self.products() {
             let label = self.product_label(product.id, product.title.as_deref());
             let value = match &product.version {
-                Some(version) => change(product.installed.as_deref(), version),
+                Some(version) => self.change(product.installed.as_deref(), version),
                 None => "left as it is".to_owned(),
             };
             rows.push((ReviewLabel::Product(label), value));
@@ -200,7 +209,7 @@ impl Pending {
                 let label =
                     self.product_label(product.id, planned.and_then(|p| p.title.as_deref()));
                 let installed = planned.and_then(|p| p.installed.as_deref());
-                Some((label, change(installed, version)))
+                Some((label, self.change(installed, version)))
             })
             .collect()
     }

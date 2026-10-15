@@ -466,6 +466,18 @@ fn a_portable_folder_is_refused() {
 }
 
 #[test]
+fn a_native_game_cant_be_repaired() {
+    let (f, api, _) = world();
+    let out = f.gog(&api, &["update", "rimworld", "--repair", "--yes"]);
+    assert_eq!(out.status.code(), Some(1), "{}", stderr(&out));
+    assert!(
+        stderr(&out).contains("error: Galaxy builds are only for Windows games."),
+        "{}",
+        stderr(&out)
+    );
+}
+
+#[test]
 fn a_galaxy_game_with_no_galaxy_build_is_refused_by_name() {
     let (f, api, _) = world();
     f.galaxy_game_without_a_build(&api);

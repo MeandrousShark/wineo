@@ -95,6 +95,9 @@ pub struct GogApi {
     pub base: String,
     /// Galaxy builds, manifests, and chunks. Asked before the rest.
     pub content: Arc<ContentSystem>,
+    /// Lists the builds the other way round, the last one added first, as
+    /// GOG lists a newer build before an older one.
+    pub newest_first: Arc<AtomicBool>,
     config: Arc<Mutex<Config>>,
     requests: Arc<Mutex<Vec<String>>>,
     stop: Arc<AtomicBool>,
@@ -233,6 +236,19 @@ fn content_request(head: &str) -> Request {
             .map(|(name, value)| (name.trim().to_owned(), value.trim().to_owned()))
             .collect(),
     }
+}
+
+/// A build list's reply with the builds the other way round.
+fn reversed(reply: &[u8]) -> Vec<u8> {
+    let text = String::from_utf8_lossy(reply);
+    let body = &text[text.find("\r\n\r\n").unwrap() + 4..];
+    let mut list: Value = serde_json::from_str(body).unwrap();
+    list["items"].as_array_mut().unwrap().reverse();
+    reply_bytes(200, &list.to_string())
+}
+
+fn reply_bytes(status: u16, body: &str) -> Vec<u8> {
+    reply(status, body).into_bytes()
 }
 
 /// Answers a request with the bytes to send back. File downloads aren't
@@ -424,11 +440,13 @@ impl GogApi {
         let base = format!("http://{}", listener.local_addr().unwrap());
         let config = Arc::new(Mutex::new(Config::default()));
         let content = Arc::new(ContentSystem::new().with_chunk_size(8));
+        let newest_first = Arc::new(AtomicBool::new(false));
         let requests = Arc::new(Mutex::new(Vec::new()));
         let stop = Arc::new(AtomicBool::new(false));
         let thread = {
             let (config, requests, stop) = (config.clone(), requests.clone(), stop.clone());
             let content = content.clone();
+            let newest_first = newest_first.clone();
             let base = base.clone();
             thread::spawn(move || {
                 while !stop.load(Ordering::Relaxed) {
@@ -454,7 +472,18 @@ impl GogApi {
                     let target = line.split(' ').nth(1).unwrap_or("/");
                     let token = bearer(&text);
                     let response = match content.answer(&content_request(&text)) {
-                        Some(Reply::Send(bytes) | Reply::Stall(bytes, _)) => bytes,
+                        Some(Reply::Send(bytes) | Reply::Stall(bytes, _)) => {
+                            if newest_first.load(Ordering::Relaxed)
+                                && target
+                                    .split('?')
+                                    .next()
+                                    .is_some_and(|path| path.ends_with("/builds"))
+                            {
+                                reversed(&bytes)
+                            } else {
+                                bytes
+                            }
+                        }
                         None => {
                             respond(&mut config.lock().unwrap(), &base, target, token.as_deref())
                         }
@@ -466,6 +495,7 @@ impl GogApi {
         Self {
             base,
             content,
+            newest_first,
             config,
             requests,
             stop,

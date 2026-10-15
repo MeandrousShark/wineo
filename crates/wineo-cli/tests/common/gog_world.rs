@@ -306,6 +306,46 @@ done
         );
     }
 
+    /// A drop-in runner `galaxy`: `inno`'s wine, which also runs the batch
+    /// files Galaxy setup steps go through, with the codes the dependency
+    /// depots' `.exit` files give.
+    pub fn galaxy_runner(&self) {
+        let runs = self.inno_runs();
+        fs::create_dir_all(&runs).unwrap();
+        let bin = self.root.path().join("data/wineo/runners/galaxy/bin");
+        fs::create_dir_all(&bin).unwrap();
+        write_script(bin.join("wineserver"), "#!/bin/sh\nexit 0\n");
+        write_script(
+            bin.join("wine"),
+            format!(
+                r#"#!/bin/sh
+RUNS='{runs}'
+FAKE_CMD_LOG="$RUNS/cmd.log"
+{cmd}
+case "$1" in
+wineboot) [ "$2" = --init ] && mkdir -p "$WINEPREFIX/drive_c" && printf 'WINE REGISTRY Version 2\n\n#arch=win64\n' > "$WINEPREFIX/system.reg"; exit 0 ;;
+--version) echo wine-galaxy; exit 0 ;;
+cmd) case "$3" in *.bat) fake_cmd "$3"; exit ;; esac; exit 0 ;;
+*.exe) ;;
+*) exit 0 ;;
+esac
+exe="$1"
+shift
+name=$(basename "$exe")
+printf '%s\n' "$exe" "$@" > "$RUNS/$name.args"
+echo "$name" >> "$RUNS/log"
+DIR=
+for arg in "$@"; do
+    case "$arg" in /DIR=Z:*) DIR=$(printf '%s' "${{arg#/DIR=Z:}}" | tr '\\' '/') ;; esac
+done
+. "$exe"
+"#,
+                runs = runs.display(),
+                cmd = super::FAKE_CMD,
+            ),
+        );
+    }
+
     /// Where the `inno` runner records its setup runs.
     pub fn inno_runs(&self) -> PathBuf {
         self.root.path().join("inno-runs")
