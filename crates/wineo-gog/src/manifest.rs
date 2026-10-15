@@ -231,7 +231,7 @@ impl Client {
 
     /// A depot's file list, by the hash a repository manifest gives.
     pub fn depot_manifest(&self, hash: &str) -> Result<DepotManifest, Error> {
-        self.depot_manifest_at(&["content-system", "v2", "meta"], hash)
+        self.depot_manifest_at(&["content-system", "v2", "meta"], hash, Root::Refused)
     }
 
     /// Where the current redistributables manifest is. The token is sent
@@ -265,17 +265,26 @@ impl Client {
 
     /// A redistributable's file list, by the hash its manifest gives.
     pub fn dependency_depot_manifest(&self, hash: &str) -> Result<DepotManifest, Error> {
-        self.depot_manifest_at(&["content-system", "v2", "dependencies", "meta"], hash)
+        self.depot_manifest_at(
+            &["content-system", "v2", "dependencies", "meta"],
+            hash,
+            Root::Stripped,
+        )
     }
 
-    fn depot_manifest_at(&self, prefix: &[&str], hash: &str) -> Result<DepotManifest, Error> {
+    fn depot_manifest_at(
+        &self,
+        prefix: &[&str],
+        hash: &str,
+        root: Root,
+    ) -> Result<DepotManifest, Error> {
         let fail = |kind| Error::new(Endpoint::DepotManifest, kind);
         let hash = hex(hash, 32).ok_or_else(|| fail(ErrorKind::Malformed))?;
         let mut segments = prefix.to_vec();
         segments.extend([&hash[0..2], &hash[2..4], hash.as_str()]);
         let url = client::join(&self.endpoints().cdn, &segments, Endpoint::DepotManifest)?;
         let json = self.fetch_manifest(Endpoint::DepotManifest, url)?;
-        parse_depot_manifest(&json).ok_or_else(|| fail(ErrorKind::Malformed))
+        parse_depot_manifest_with(&json, root).ok_or_else(|| fail(ErrorKind::Malformed))
     }
 
     /// A manifest from the CDN. No token goes there.
@@ -390,19 +399,38 @@ fn parse_depot(json: &Value) -> Option<Depot> {
     })
 }
 
+/// What a leading separator in an item's path means.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Root {
+    Refused,
+    /// Game-local redistributables like nGlide and language_setup list
+    /// their files as `/glide3x.dll`, meaning the game folder's top.
+    Stripped,
+}
+
+#[cfg(test)]
 pub(crate) fn parse_depot_manifest(json: &Value) -> Option<DepotManifest> {
+    parse_depot_manifest_with(json, Root::Refused)
+}
+
+pub(crate) fn parse_depot_manifest_with(json: &Value, root: Root) -> Option<DepotManifest> {
     let items = json
         .get("depot")?
         .get("items")?
         .as_array()?
         .iter()
-        .map(parse_item)
+        .map(|item| parse_item(item, root))
         .collect::<Option<_>>()?;
     Some(DepotManifest { items })
 }
 
-fn parse_item(json: &Value) -> Option<DepotItem> {
-    let path = json.get("path")?.as_str().filter(|path| safe_path(path))?;
+fn parse_item(json: &Value, root: Root) -> Option<DepotItem> {
+    let path = json.get("path")?.as_str()?;
+    let path = match root {
+        Root::Refused => path,
+        Root::Stripped => path.strip_prefix(['/', '\\']).unwrap_or(path),
+    };
+    let path = Some(path).filter(|path| safe_path(path))?;
     match json.get("type")?.as_str()? {
         "DepotFile" => {
             let chunks: Vec<Chunk> = json::optional(json, "chunks", |list| {

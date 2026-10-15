@@ -211,6 +211,34 @@ fn a_file_only_in_the_small_file_container_is_refused() {
 }
 
 #[test]
+fn a_redistributables_leading_separator_means_the_game_folder() {
+    let file = |path: &str| json!({"path": path, "chunks": [chunk_json()], "type": "DepotFile"});
+    // As GOG lists nGlide and language_setup.
+    let manifest = depot_json(json!([file("/glide3x.dll"), file("\\sub\\a.dll")]));
+    let parsed = parse_depot_manifest_with(&manifest, Root::Stripped).unwrap();
+    let paths: Vec<_> = parsed
+        .items
+        .iter()
+        .map(|item| match item {
+            DepotItem::File(file) => file.path.as_str(),
+            _ => unreachable!(),
+        })
+        .collect();
+    assert_eq!(paths, ["glide3x.dll", "sub\\a.dll"]);
+    // A game's own depots never do, so there it's still refused.
+    assert_eq!(parse_depot_manifest(&manifest), None);
+    // Only one separator goes, and every other rule still holds.
+    for path in ["//etc/evil", "/../evil.dll", "/C:\\evil.dll", "/"] {
+        let manifest = depot_json(json!([file(path)]));
+        assert_eq!(
+            parse_depot_manifest_with(&manifest, Root::Stripped),
+            None,
+            "{path}"
+        );
+    }
+}
+
+#[test]
 fn depot_items_that_are_unsafe_or_odd_fail_the_whole_manifest() {
     let file = |path: &str| json!({"path": path, "chunks": [chunk_json()], "type": "DepotFile"});
     for item in [
@@ -459,6 +487,34 @@ fn a_build_s_manifests_are_fetched_from_the_cdn_without_a_token() {
             assert_eq!(request.header("authorization"), None, "{}", request.target);
         }
     }
+}
+
+#[test]
+fn a_game_local_redistributables_files_are_fetched_relative() {
+    let content = ContentSystem::new();
+    // GOG lists nGlide with no program and a leading slash.
+    content.set_dependencies(
+        "555",
+        &[FakeDependency::new(
+            "nGlide",
+            "",
+            "",
+            FakeDepot::new(0).file(FakeFile::new("/glide3x.dll", b"glide")),
+        )],
+    );
+    let (_content, server) = serve(content);
+    let client = server.client();
+    let repository = client.dependency_repository(None).unwrap();
+    let manifest = client.dependency_manifest(&repository).unwrap();
+    let [glide] = manifest.dependencies.as_slice() else {
+        panic!("{:?}", manifest.dependencies);
+    };
+    assert_eq!(glide.executable, None);
+    let files = client.dependency_depot_manifest(&glide.manifest).unwrap();
+    assert!(matches!(
+        files.items.as_slice(),
+        [DepotItem::File(file)] if file.path == "glide3x.dll"
+    ));
 }
 
 #[test]
