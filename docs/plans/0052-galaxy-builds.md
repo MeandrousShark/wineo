@@ -739,7 +739,9 @@ Galaxy install:
 - **Plain Wine prefixes link the user folders** (Documents, Desktop,
   Downloads, Music, Pictures) to the real home, as Wine does by default;
   Proton's don't. A script's `{userdocs}` copy then lands in the real
-  `~/Documents`.
+  `~/Documents`. The maintainer keeps it that way: most games run on
+  Proton, and other software's documents are easier to find in the real
+  home than deep in a prefix.
 - **Downloads go a file at a time per worker,** where the plan says chunks
   4 at a time: The Witcher's 1.9 GB `textures00.bif` kept one core busy
   while the others waited at the round's end. Fixed before step 6.
