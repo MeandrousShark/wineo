@@ -334,8 +334,6 @@ fn check(entry: &FileEntry, file: &File) -> Result<String> {
     Ok(md5)
 }
 
-/// The folder `relative` to `root`, one component at a time without
-/// following symlinks.
 /// Where the round starting at `start` ends: as many units as fit in
 /// `max_bytes` and `max_units`, but always at least one, so a chunk bigger
 /// than a round still gets one of its own.
@@ -359,6 +357,8 @@ pub(super) fn round_end(
     end
 }
 
+/// The folder `relative` to `root`, one component at a time without
+/// following symlinks.
 pub(super) fn open_dir(root: &OwnedFd, relative: &str) -> Result<OwnedFd> {
     let mut dir = root.try_clone().context("failed to open a folder")?;
     if relative.is_empty() {
