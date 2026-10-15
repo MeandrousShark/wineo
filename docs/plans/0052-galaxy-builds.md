@@ -709,8 +709,14 @@ Galaxy install:
 - **Quoting.** A program started from the batch file gets the rest of the
   line verbatim: MSVC 2005's nested command line arrives byte for byte,
   and both MSVC 2005 runtimes install from it. Spaces, `&`, and
-  parentheses inside quotes are fine. A `%` must be written `%%`, or cmd
-  drops it (`100% done` became `100 done`).
+  parentheses inside quotes are fine. A `%` written in the batch file must
+  be `%%`, or cmd drops it (`100% done` became `100 done`).
+- **Non-ASCII paths break a batch file.** cmd reads it in the console code
+  page, so a UTF-8 path like `SimCity™ 4` gave "File not found" (9009),
+  even after `chcp 65001`, and SimCity 4's default folder has a `™`. Paths
+  and the argument string passed in environment variables work under both,
+  with `™`, accents, `%`, and `&`, and nested quotes intact: cmd expands
+  each once and never expands inside the value.
 - **Every step exits 0 with no window,** in 4 to 6 seconds (DirectX in
   19): ISI for SimCity 4; The Witcher's setup program, MSVC2005,
   MSVC2005_x64, and DirectX `/silent`. VC++ 2005 lands in WinSxS and
@@ -752,6 +758,50 @@ Galaxy install:
   span rounds, and the round's end waits for at most 4 chunks. Progress
   moves per chunk. A release build installs The Witcher's 14.4 GB in 1
   minute 41 seconds, against 16 minutes before (in a debug build).
+
+Step 5 (2026-10-14):
+
+- **The batch file is a constant,** pure ASCII and CRLF: `cd /d
+  "%WINEO_SETUP_DIR%"`, then `"%WINEO_SETUP_PROGRAM%" %WINEO_SETUP_ARGS%`
+  (or `"%SystemRoot%\system32\msiexec.exe" /i "%WINEO_SETUP_MSI%"
+  %WINEO_SETUP_ARGS%`, spelled out since cmd looks in the current folder
+  first), then the code file from `%WINEO_SETUP_CODE%`. The values go in
+  that one run's environment only, as Z: paths. Its own path must be plain
+  ASCII without cmd's special characters, or setup refuses with a message
+  that says why.
+- **What wineo adds to a line is quoted or checked.** GOG's own argument
+  strings pass verbatim, as GOG wrote them. Paths are quoted, and a path
+  with `"`, a line break, or a backslash in its Linux name is refused (a
+  backslash would read as a separator). The language code and build id
+  must be plain letters, digits, `-`, `_`, and `.`; the version name is
+  quoted with its own quotes removed. A depot language that fails this is
+  refused when setup starts, after the download: it only happens with a
+  broken manifest, and nothing runs.
+- **`cmd` is the prefix's,** never a file of that name in the current
+  folder.
+- **Which steps exist.** A product gets one only when the repository lists
+  it. ISI's step is skipped when GOG's repository lacks ISI (warned at
+  planning), with no fallback to the `temp_executable`, and a
+  `temp_executable` that isn't among the product's support files is
+  skipped with a warning.
+- **Identity.** A `temp_executable` is identified by its full argument
+  string, so a language, version, or folder change reruns it; ISI's follows
+  the plan (build, script MD5 from the manifest, interpreter manifest), so
+  a language change alone doesn't. Recorded steps count only with a
+  `pending` matching the journal or an `installed` matching the committed
+  selection; otherwise every step runs.
+- **`/lang-code=`** is each product's own depot code, and `/Language=`
+  and `/LANG=` its English name from a small table, English when unknown.
+- **The graphical session** is checked at planning and before applying,
+  even for a build with no steps. Missing support folders are created so
+  `cd /d` can't land elsewhere.
+- **Run files** are `gog-galaxy-setup-NN.bat`, `.code`, and `.log` in the
+  run directory. `Installed` gains `needs_restart`, and progress a `Setup`
+  stage; how they show is step 8's.
+- **Live:** SimCity 4 installed under Wine into `SimCity™ 4 Délüxe & 100%`
+  with ISI, and The Witcher under GE-Proton11-3 with its setup program,
+  both MSVC 2005 runtimes, and DirectX, every step exiting 0 with its
+  effects in the prefix.
 
 ## Implementation sequence
 
