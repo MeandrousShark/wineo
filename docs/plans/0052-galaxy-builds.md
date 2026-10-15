@@ -646,6 +646,50 @@ Steps 2 and 3 (2026-10-14):
 - **Not used:** the repository's `clientId` and `clientSecret` aren't kept,
   and `max_fails` is parsed but not acted on.
 
+Step 4 (2026-10-14):
+
+- **No Galaxy build.** An explicit Galaxy install of a game with only
+  generation 1 builds says `GOG lists no Galaxy build of TITLE that wineo
+  can install.` (wording approved by the maintainer). With no track
+  chosen, such a game goes to the installer.
+- **Language.** The record stores the depot's code (like `en-US`), or the
+  requested tag when every depot is `*`. The pick goes exact code, then the
+  same language in another region, then English, with a warning on a
+  fallback. DLC follow the base game's code, then English; an owned DLC
+  with no depot left is `unavailable` with a note.
+- **Missing dependency.** One the build lists but GOG's repository lacks is
+  warned about and skipped, as gogdl does. The script interpreter's id is
+  `ISI`.
+- **Store cleanup is conservative.** It keeps any version named by an
+  `installed` or `pending`, whatever the digest or journal says. A record
+  that doesn't parse names nothing, since store versions can be downloaded
+  again.
+- **`pending` is stricter than designed:** it also needs its selection
+  digest to match what the journal would commit.
+- **`attempted`.** A file that already matches the target is kept and not
+  listed. Files whose MD5 only comes with the download are named in
+  batches before they're placed.
+- **Track choice** is a separate `track: Option<Track>` argument, not part
+  of `install::Request`, so callers using `..Request::default()` stay on
+  the installer. With no track, product details are fetched twice.
+- **Store layout.** A store dependency's program path starts with
+  `__redist/`. Locks are `gog-redist-<dep>-<hash>.lock` and
+  `gog-redist-<dep>.lock`; dependency ids are `[A-Za-z0-9_.-]` without a
+  leading dot.
+- **Placing is atomic.** Files and links are placed with a rename that
+  refuses to replace; whatever appeared is moved aside and settled. Before
+  anything is deleted to make way, it's renamed to the operation's own
+  `.wineo-aside-<op>` name, then deleted only when it's a file with a
+  recorded hash or a link with a recorded target, else saved as
+  `.wineo-saved`. Galaxy refuses a filesystem that can't rename without
+  replacing; the native publisher keeps its fallback until 0.32.1.
+- **Space under holds.** The store versions' shared holds are taken before
+  the pending record, the journal, or the folder, and space is checked
+  again with any version that cleanup removed since planning.
+- **No graphical-session check** for a Galaxy install yet, since nothing
+  runs in the prefix until step 5. `setup` in the record is a placeholder
+  for step 5.
+
 ## Implementation sequence
 
 Part A:
