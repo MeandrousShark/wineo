@@ -15,6 +15,7 @@ mod build;
 mod fetch;
 pub mod install;
 pub mod record;
+mod setup;
 mod store;
 
 use anyhow::Result;

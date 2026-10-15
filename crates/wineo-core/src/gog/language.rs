@@ -192,5 +192,52 @@ pub fn posix_locale(tag: &str, code: &str) -> Option<String> {
     Some(format!("{locale}.UTF-8"))
 }
 
+/// English names of languages by their language subtag, as GOG's setup
+/// programs take them in `/Language=` and `/LANG=` (`English`, `French`).
+/// Only English is checked against a real setup run.
+const ENGLISH_NAMES: &[(&str, &str)] = &[
+    ("en", "English"),
+    ("fr", "French"),
+    ("de", "German"),
+    ("es", "Spanish"),
+    ("it", "Italian"),
+    ("pl", "Polish"),
+    ("ru", "Russian"),
+    ("pt", "Portuguese"),
+    ("ja", "Japanese"),
+    ("zh", "Chinese"),
+    ("ko", "Korean"),
+    ("cs", "Czech"),
+    ("hu", "Hungarian"),
+    ("nl", "Dutch"),
+    ("tr", "Turkish"),
+    ("uk", "Ukrainian"),
+    ("fi", "Finnish"),
+    ("da", "Danish"),
+    ("no", "Norwegian"),
+    ("nb", "Norwegian"),
+    ("sv", "Swedish"),
+    ("el", "Greek"),
+    ("ro", "Romanian"),
+    ("th", "Thai"),
+    ("ar", "Arabic"),
+    ("bg", "Bulgarian"),
+    ("sk", "Slovak"),
+];
+
+/// The English name of the language of a Galaxy depot code like `fr-FR`,
+/// or `English` for one the table doesn't know.
+pub fn english_name(code: &str) -> &'static str {
+    let language = code
+        .split(['-', '_'])
+        .next()
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    ENGLISH_NAMES
+        .iter()
+        .find(|(known, _)| *known == language)
+        .map_or("English", |(_, name)| *name)
+}
+
 #[cfg(test)]
 mod tests;

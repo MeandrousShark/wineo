@@ -165,3 +165,19 @@ fn inno_names_and_locales_follow_the_code() {
         assert_eq!(posix_locale(tag, code).as_deref(), locale, "{tag} {code}");
     }
 }
+
+#[test]
+fn galaxy_setup_names_languages_in_english_and_falls_back_to_english() {
+    for (code, name) in [
+        ("en-US", "English"),
+        ("fr-FR", "French"),
+        ("de", "German"),
+        ("pl-PL", "Polish"),
+        ("pt-BR", "Portuguese"),
+        ("zh-Hans", "Chinese"),
+        ("xx-YY", "English"),
+        ("", "English"),
+    ] {
+        assert_eq!(english_name(code), name, "{code}");
+    }
+}

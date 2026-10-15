@@ -58,6 +58,10 @@ pub mod templates;
 // Shared with the other crates and the integration tests, which include the
 // same file.
 #[cfg(test)]
+#[allow(dead_code)]
+#[path = "../tests/common/runners.rs"]
+pub(crate) mod test_runners;
+#[cfg(test)]
 #[path = "../tests/common/test_script.rs"]
 pub(crate) mod test_script;
 #[cfg(test)]
