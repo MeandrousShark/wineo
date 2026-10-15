@@ -27,6 +27,7 @@ unicode-width.workspace = true
 [dev-dependencies]
 md-5.workspace = true
 wineo-core = { workspace = true, features = ["test-support"] }
+wineo-gog = { workspace = true, features = ["test-server"] }
 rustix = { workspace = true, features = ["pty"] }
 tempfile.workspace = true
 zip.workspace = true

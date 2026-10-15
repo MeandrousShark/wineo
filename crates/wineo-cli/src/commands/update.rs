@@ -8,6 +8,7 @@ use serde_json::json;
 use wineo_core::gog::update::{self, Batch, Status};
 use wineo_core::paths::Paths;
 
+use super::galaxy::GogTrack;
 use super::gog_support::{
     Account, dlc_json, dlc_notes, error_json, reason_json, update_label, warn,
 };
@@ -29,6 +30,12 @@ pub struct Args {
     /// Rebuild a game from GOG's current files even when nothing changed
     #[arg(long, conflicts_with_all = ["check", "all"])]
     reinstall: bool,
+    /// With --reinstall, the track to put the game on
+    #[arg(long, value_enum, requires = "reinstall")]
+    track: Option<GogTrack>,
+    /// Check every file of a Galaxy game and fix what is missing or damaged
+    #[arg(long, conflicts_with_all = ["reinstall", "track", "check", "all"])]
+    repair: bool,
     /// Fetch GOG's game details again instead of using the saved copy
     #[arg(long)]
     refresh: bool,

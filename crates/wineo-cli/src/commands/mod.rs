@@ -9,6 +9,7 @@ pub mod desktop;
 pub mod download;
 pub mod exec;
 pub mod external_runners;
+mod galaxy;
 mod gog_support;
 pub mod import;
 pub mod import_gog;

@@ -8,6 +8,7 @@ use std::time::{Duration, Instant};
 
 use super::{GameError, Pending, Progress, Reason, Updated, galaxy, install};
 use crate::gog::folder::JournalKind;
+use crate::gog::names;
 use crate::units;
 
 impl Reason {
@@ -73,7 +74,39 @@ fn finished_of(kind: JournalKind, recovery: bool, name: &str) -> String {
     }
 }
 
+/// Every Galaxy product's label, by id: the base game's title, or a DLC as
+/// `NAME (ID)`.
+fn galaxy_labels(
+    title: &str,
+    gog_id: u64,
+    products: &[galaxy::PlannedProduct],
+) -> HashMap<u64, String> {
+    products
+        .iter()
+        .map(|product| {
+            let label = if product.id == gog_id {
+                title.to_owned()
+            } else {
+                names::dlc_label(title, product.id, product.title.as_deref())
+            };
+            (product.id, label)
+        })
+        .collect()
+}
+
+impl galaxy::install::Plan {
+    /// Every product's label, by id, for a progress line or a review.
+    pub fn product_labels(&self) -> HashMap<u64, String> {
+        galaxy_labels(self.title(), self.gog_id(), self.products())
+    }
+}
+
 impl galaxy::update::Plan {
+    /// Every product's label, by id, for a progress line or a review.
+    pub fn product_labels(&self) -> HashMap<u64, String> {
+        galaxy_labels(self.title(), self.gog_id(), self.products())
+    }
+
     /// How a review names what is being done, before the environment's name.
     pub fn action(&self) -> &'static str {
         action_of(self.kind(), self.is_recovery())

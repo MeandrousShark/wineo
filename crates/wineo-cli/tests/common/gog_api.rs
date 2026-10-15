@@ -11,6 +11,8 @@ use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
 use serde_json::{Value, json};
+use wineo_gog::fake::content::ContentSystem;
+use wineo_gog::fake::{Reply, Request};
 
 /// What the server answers with. Tests change it between runs.
 pub struct Config {
@@ -91,6 +93,8 @@ impl Default for Config {
 
 pub struct GogApi {
     pub base: String,
+    /// Galaxy builds, manifests, and chunks. Asked before the rest.
+    pub content: Arc<ContentSystem>,
     config: Arc<Mutex<Config>>,
     requests: Arc<Mutex<Vec<String>>>,
     stop: Arc<AtomicBool>,
@@ -215,6 +219,20 @@ fn bearer(head: &str) -> Option<String> {
 
 fn unauthorized() -> String {
     reply(401, "{}")
+}
+
+/// The request line and headers of `head`, as the content system reads them.
+fn content_request(head: &str) -> Request {
+    let mut lines = head.lines();
+    let mut first = lines.next().unwrap_or_default().split(' ');
+    Request {
+        method: first.next().unwrap_or_default().to_owned(),
+        target: first.next().unwrap_or("/").to_owned(),
+        headers: lines
+            .filter_map(|line| line.split_once(':'))
+            .map(|(name, value)| (name.trim().to_owned(), value.trim().to_owned()))
+            .collect(),
+    }
 }
 
 /// Answers a request with the bytes to send back. File downloads aren't
@@ -405,10 +423,12 @@ impl GogApi {
         listener.set_nonblocking(true).unwrap();
         let base = format!("http://{}", listener.local_addr().unwrap());
         let config = Arc::new(Mutex::new(Config::default()));
+        let content = Arc::new(ContentSystem::new().with_chunk_size(8));
         let requests = Arc::new(Mutex::new(Vec::new()));
         let stop = Arc::new(AtomicBool::new(false));
         let thread = {
             let (config, requests, stop) = (config.clone(), requests.clone(), stop.clone());
+            let content = content.clone();
             let base = base.clone();
             thread::spawn(move || {
                 while !stop.load(Ordering::Relaxed) {
@@ -433,14 +453,19 @@ impl GogApi {
                     requests.lock().unwrap().push(line.clone());
                     let target = line.split(' ').nth(1).unwrap_or("/");
                     let token = bearer(&text);
-                    let response =
-                        respond(&mut config.lock().unwrap(), &base, target, token.as_deref());
+                    let response = match content.answer(&content_request(&text)) {
+                        Some(Reply::Send(bytes) | Reply::Stall(bytes, _)) => bytes,
+                        None => {
+                            respond(&mut config.lock().unwrap(), &base, target, token.as_deref())
+                        }
+                    };
                     let _ = stream.write_all(&response);
                 }
             })
         };
         Self {
             base,
+            content,
             config,
             requests,
             stop,

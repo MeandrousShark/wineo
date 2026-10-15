@@ -201,6 +201,15 @@ impl Plan {
         self.manifest.support.len()
     }
 
+    /// The files and bytes a repair or reinstall checks: every game file
+    /// and support file.
+    pub fn checked(&self) -> (usize, u64) {
+        (
+            self.manifest.files.len() + self.manifest.support.len(),
+            sizes(&self.manifest.files) + sizes(&self.manifest.support),
+        )
+    }
+
     /// The setup steps that run, by name: "script interpreter", "setup
     /// program", or a redistributable's id. A repair or reinstall runs them
     /// all; an update only the ones the record doesn't show done.

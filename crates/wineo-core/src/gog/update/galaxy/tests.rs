@@ -1246,6 +1246,24 @@ fn only_generation_1_builds_go_to_the_installer_or_refuse_galaxy() {
 }
 
 #[test]
+fn a_game_with_no_content_system_goes_to_the_installer() {
+    // The fake answers 404 for a build list it doesn't have.
+    let fx = Fixture::new();
+    let error = super::plan(
+        &fx.paths,
+        &mut fx.session(),
+        &fx.request(),
+        None,
+        &Token::new(),
+    )
+    .unwrap_err();
+    assert!(matches!(
+        error.downcast_ref(),
+        Some(crate::gog::update::install::InstallError::NoInstaller { .. })
+    ));
+}
+
+#[test]
 fn an_offline_install_never_carries_on_a_galaxy_one() {
     let fx = Fixture::new();
     fx.content.add_build(Fixture::game("100"));
