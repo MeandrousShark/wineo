@@ -60,6 +60,14 @@ struct Recorded {
     content: Option<String>,
 }
 
+/// What wineo recorded at one path, as an entry moved aside from it is
+/// checked against: file MD5s and symlink targets.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(super) struct Known {
+    pub(super) files: Vec<String>,
+    pub(super) links: Vec<String>,
+}
+
 /// What a path holds now.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum Current {
@@ -330,59 +338,94 @@ impl<'a> Publisher<'a> {
 
     /// Puts the temporary file `temp`, already written and synced in `dir`,
     /// at `path` without ever replacing what is there: whatever stands there
-    /// is first moved to an aside name, then deleted only when its content
-    /// matches one of `recorded`, the hashes wineo recorded for the path,
-    /// and moved to `<name>.wineo-saved` otherwise. So something another
-    /// program put there, or changed, since the path was last looked at is
-    /// never lost. Refused on a filesystem that can't rename without
-    /// replacing.
+    /// is first moved to an aside name, then deleted only when it matches
+    /// what wineo recorded for the path in `known`, and moved to
+    /// `<name>.wineo-saved` otherwise. So something another program put
+    /// there, or changed, since the path was last looked at is never lost.
+    /// Refused on a filesystem that can't rename without replacing.
     pub(super) fn place_new(
         &mut self,
         dir: &OwnedFd,
         temp: &str,
         path: &str,
-        recorded: &[String],
+        known: &Known,
     ) -> Result<()> {
+        self.place(dir, temp, path, known)?;
+        self.written.push(path.to_owned());
+        Ok(())
+    }
+
+    /// Makes a symlink to `target` at `path` the way `place_new` puts a
+    /// file there.
+    pub(super) fn place_link(
+        &mut self,
+        dir: &OwnedFd,
+        path: &str,
+        target: &str,
+        known: &Known,
+    ) -> Result<()> {
+        let temp = self.temp_name();
+        rustix::fs::symlinkat(target, dir, temp.as_str())
+            .with_context(|| format!("failed to create {path}"))?;
+        // A symlink isn't synced itself, only its folder, which `place`
+        // marks as changed.
+        self.place(dir, &temp, path, known)
+    }
+
+    fn place(&mut self, dir: &OwnedFd, temp: &str, path: &str, known: &Known) -> Result<()> {
         let leaf = leaf_of(path);
-        // Each attempt either places the file or moves one entry out of the
-        // way, so only a program racing it on purpose keeps it going.
+        // Each attempt either places the entry or moves one out of the way,
+        // so only a program racing it on purpose keeps it going.
         for _ in 0..8 {
             match rename_new(dir, temp, dir, leaf) {
                 Ok(()) => {
                     self.changed.insert(parent_of(path).to_owned());
-                    self.written.push(path.to_owned());
                     return Ok(());
                 }
                 Err(Errno::EXIST) => {}
                 Err(error) => return Err(no_replace_error(error, path)),
             }
-            let aside = aside_name(leaf, self.operation);
-            failpoint("galaxy.aside.before")?;
-            match rename_new(dir, leaf, dir, &aside) {
-                Ok(()) => {}
-                // Gone again meanwhile: the path is free.
-                Err(Errno::NOENT) => continue,
-                Err(error) => return Err(no_replace_error(error, path)),
-            }
-            self.changed.insert(parent_of(path).to_owned());
-            failpoint("galaxy.aside.after")?;
-            self.settle_aside(dir, &aside, path, recorded)?;
+            self.move_aside(dir, path, known)?;
         }
         bail!("{path} kept changing while it was put in place")
     }
 
+    /// Clears `path` without ever deleting by its name: whatever stands
+    /// there is first renamed to wineo's own aside name, so another program
+    /// can't swap it between the check and the delete, then settled by
+    /// `settle_aside`. Nothing there is fine.
+    pub(super) fn move_aside(&mut self, dir: &OwnedFd, path: &str, known: &Known) -> Result<()> {
+        let aside = aside_name(leaf_of(path), self.operation);
+        failpoint("galaxy.aside.before")?;
+        match rename_new(dir, leaf_of(path), dir, &aside) {
+            Ok(()) => {}
+            Err(Errno::NOENT) => return Ok(()),
+            Err(error) => return Err(no_replace_error(error, path)),
+        }
+        self.changed.insert(parent_of(path).to_owned());
+        failpoint("galaxy.aside.after")?;
+        self.settle_aside(dir, &aside, path, known)
+    }
+
     /// Deals with an entry moved aside from `path` as `aside`: deleted when
-    /// it is a file holding one of `recorded`, else moved to
+    /// it is a file or symlink holding what `known` records, else moved to
     /// `<name>.wineo-saved` and listed.
     pub(super) fn settle_aside(
         &mut self,
         dir: &OwnedFd,
         aside: &str,
         path: &str,
-        recorded: &[String],
+        known: &Known,
     ) -> Result<()> {
-        let hash = self.hash(dir, aside, path)?;
-        if hash.as_ref().is_some_and(|hash| recorded.contains(hash)) {
+        let ours = match current(dir, aside, path)? {
+            None => return Ok(()),
+            Some(Current::File) => self
+                .hash(dir, aside, path)?
+                .is_some_and(|hash| known.files.contains(&hash)),
+            Some(Current::Symlink(target)) => known.links.contains(&target),
+            Some(_) => false,
+        };
+        if ours {
             match rustix::fs::unlinkat(dir, aside, AtFlags::empty()) {
                 Ok(()) | Err(Errno::NOENT) => {}
                 Err(error) => {

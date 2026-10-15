@@ -53,7 +53,7 @@ use crate::gog::package::{self, SpaceNeeded};
 use crate::gog::update::UpdateError;
 use crate::gog::update::apply::{free_space, is_cancel, lock_operation_on, operation_id};
 use crate::gog::update::install::{self as offline, Creation, Installed, Request};
-use crate::gog::update::publish::{self, Current, Publisher};
+use crate::gog::update::publish::{self, Current, Known, Publisher};
 use crate::gog::update::windows::{self, Event};
 use crate::gog::{language, names, product};
 use crate::paths::Paths;
@@ -1485,17 +1485,23 @@ fn place(publisher: &mut Publisher, state: &FolderState, temp: &str, path: &str)
     publisher.place_new(&dir, temp, path, &recorded(attempted, path))
 }
 
-/// The file hashes wineo recorded for `path`.
-fn recorded(attempted: &[Attempted], path: &str) -> Vec<String> {
-    attempted
-        .iter()
-        .filter(|entry| entry.path == path && entry.kind == EntryType::File)
-        .filter_map(|entry| entry.md5.clone())
-        .collect()
+/// The file hashes and symlink targets wineo recorded for `path`.
+fn recorded(attempted: &[Attempted], path: &str) -> Known {
+    let at = || attempted.iter().filter(move |entry| entry.path == path);
+    Known {
+        files: at()
+            .filter(|entry| entry.kind == EntryType::File)
+            .filter_map(|entry| entry.md5.clone())
+            .collect(),
+        links: at()
+            .filter(|entry| entry.kind == EntryType::Symlink)
+            .filter_map(|entry| entry.target.clone())
+            .collect(),
+    }
 }
 
 /// Settles every entry an interrupted attempt of `operation` moved aside
-/// while putting a file in place, anywhere in the game, without following
+/// while clearing a path or putting an entry in place, anywhere in the game, without following
 /// symlinks.
 fn recover_asides(
     publisher: &mut Publisher,
@@ -1587,8 +1593,9 @@ fn entries_in_order(manifest: &Manifest) -> Vec<(&str, Kind<'_>)> {
 }
 
 /// Decides each game folder entry against what is there: what already
-/// matches stays, what wineo wrote (named in `attempted` with the content
-/// found) is replaced, and anything else is moved aside first.
+/// matches stays, and anything else is renamed out of the way first, then
+/// deleted only when it holds what wineo wrote there (named in `attempted`)
+/// and saved aside otherwise.
 struct Placer<'a, 'b> {
     publisher: &'a mut Publisher<'b>,
     attempted: &'a [Attempted],
@@ -1618,26 +1625,21 @@ impl Placer<'_, '_> {
     /// removed, anything else moved aside.
     fn clear(&mut self, dir: &OwnedFd, path: &str, current: &Current) -> Result<()> {
         let leaf = publish::leaf_of(path);
-        let ours = match current {
-            Current::File => match verify_hash(dir, leaf, path, self.token)? {
-                Some(md5) => self.recorded(path, EntryType::File, Some(&md5)),
-                None => false,
-            },
-            Current::Symlink(target) => self.recorded(path, EntryType::Symlink, Some(target)),
-            Current::Directory => {
-                if self.recorded(path, EntryType::Directory, None)
-                    && self.publisher.remove_folder(dir, leaf, path)?
-                {
-                    return Ok(());
-                }
-                false
+        match current {
+            // Checked only once renamed away, so nothing put there after
+            // the check can be the one deleted.
+            Current::File | Current::Symlink(_) => {
+                self.publisher
+                    .move_aside(dir, path, &recorded(self.attempted, path))
             }
-            Current::Other => false,
-        };
-        if ours && *current != Current::Directory {
-            self.publisher.delete(dir, leaf, path)
-        } else {
-            self.publisher.save_aside(dir, leaf, path)
+            // Only an empty folder is removed, so nothing can be lost.
+            Current::Directory
+                if self.recorded(path, EntryType::Directory, None)
+                    && self.publisher.remove_folder(dir, leaf, path)? =>
+            {
+                Ok(())
+            }
+            Current::Directory | Current::Other => self.publisher.save_aside(dir, leaf, path),
         }
     }
 
@@ -1666,15 +1668,11 @@ impl Placer<'_, '_> {
             Some(other) => self.clear(&dir, path, &other)?,
             None => {}
         }
-        self.publisher.publish_one(&WinningEntry {
-            path: path.to_owned(),
-            kind: EntryType::Symlink,
-            size: None,
-            md5: None,
-            target: Some(target.to_owned()),
-            mode: 0o777,
-            product: 0,
-        })
+        #[cfg(test)]
+        super::tests::before_place(path);
+        // Whatever appears meanwhile is never replaced unchecked.
+        self.publisher
+            .place_link(&dir, path, target, &recorded(self.attempted, path))
     }
 
     /// The file's MD5 when what is there already is it, else None once the
@@ -1772,27 +1770,6 @@ fn verify(
             _ => true,
         };
     Ok(Some((md5, same)))
-}
-
-/// The MD5 of the regular file `leaf` in `dir`, or None when it isn't one.
-fn verify_hash(dir: &OwnedFd, leaf: &str, path: &str, token: &Token) -> Result<Option<String>> {
-    let Some(mut file) = open_regular(dir, leaf, path)? else {
-        return Ok(None);
-    };
-    let mut whole = Md5::new();
-    let mut buffer = vec![0; 256 * 1024];
-    loop {
-        if token.is_canceled() {
-            return Err(UpdateError::Canceled { journal: true }.into());
-        }
-        match file.read(&mut buffer) {
-            Ok(0) => break,
-            Ok(read) => whole.update(&buffer[..read]),
-            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
-            Err(error) => return Err(error).with_context(|| format!("failed to read {path}")),
-        }
-    }
-    Ok(Some(crate::units::hex(whole.finalize())))
 }
 
 fn open_regular(dir: &OwnedFd, leaf: &str, path: &str) -> Result<Option<File>> {

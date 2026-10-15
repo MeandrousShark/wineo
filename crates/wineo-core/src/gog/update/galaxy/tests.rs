@@ -1330,6 +1330,123 @@ fn a_crash_with_wineos_file_moved_aside_deletes_it_only_on_a_hash_match() {
 }
 
 #[test]
+fn a_file_put_where_a_link_goes_is_saved_not_overwritten() {
+    let fx = Fixture::new();
+    fx.content.add_build(Fixture::game("100"));
+    let target = fx.folder.join("Data/current");
+    set_before_place(move |path| {
+        if path == "Data/current" {
+            fs::write(&target, "put here meanwhile").unwrap();
+        }
+    });
+    let installed = fx.install();
+    clear_before_place();
+    assert_installed(&fx);
+    assert_eq!(
+        installed
+            .saved
+            .iter()
+            .map(|saved| (saved.path.as_str(), saved.saved_as.as_str()))
+            .collect::<Vec<_>>(),
+        [("Data/current", "Data/current.wineo-saved")]
+    );
+    assert_eq!(fx.read("Data/current.wineo-saved"), "put here meanwhile");
+}
+
+/// Build 100 in place but unfinished, its record lost, and GOG listing only
+/// build 200, which ships `changed` on top of the game: `Data/swap` is a
+/// file of wineo's when build 200 wants something else there.
+fn retargeted_to(fx: &Fixture, changed: FakeDepot) -> Plan {
+    fx.content.add_build(
+        Fixture::game("100").depot(
+            FakeDepot::new(GAME).file(FakeFile::new("Data\\swap", b"wineo's swap").with_md5()),
+        ),
+    );
+    interrupted(fx, "galaxy.files.after", 0);
+    fs::remove_file(folder::sidecar_file(&fx.paths, &fx.folder)).unwrap();
+    fx.hide("100");
+    fx.content.add_build(Fixture::game("200").depot(changed));
+    fx.plan()
+}
+
+/// Applies `plan`, crashing first right after the entry at `path` is renamed
+/// out of the way when `crash` says so, which shows it is renamed before it
+/// is checked.
+fn apply_through_aside(fx: &Fixture, plan: &Plan, path: &str, crash: bool) -> Installed {
+    if !crash {
+        return fx.apply(plan).unwrap();
+    }
+    set_failpoint(Some("galaxy.aside.after"));
+    let error = fx.apply(plan).unwrap_err();
+    set_failpoint(None);
+    assert!(format!("{error:#}").contains("injected"), "{error:#}");
+    let asides: Vec<String> = fx
+        .tree()
+        .into_iter()
+        .filter(|entry| entry.contains(".wineo-aside-"))
+        .collect();
+    assert_eq!(asides.len(), 1, "{asides:?}");
+    assert!(
+        asides[0].starts_with(&format!("{path}.wineo-aside-")),
+        "{asides:?}"
+    );
+    assert!(fs::symlink_metadata(fx.folder.join(path)).is_err());
+    fx.install()
+}
+
+#[test]
+fn a_file_of_wineos_where_a_link_goes_is_deleted_only_on_a_hash_match() {
+    for changed in [false, true] {
+        for crash in [false, true] {
+            let fx = Fixture::new();
+            let plan = retargeted_to(&fx, FakeDepot::new(GAME).link("Data\\swap", "core.dat"));
+            if changed {
+                fs::write(fx.folder.join("Data/swap"), "changed by you").unwrap();
+            }
+            let installed = apply_through_aside(&fx, &plan, "Data/swap", crash);
+            assert!(!fx.tree().iter().any(|path| path.contains(".wineo-aside-")));
+            assert_eq!(
+                fs::read_link(fx.folder.join("Data/swap")).unwrap(),
+                Path::new("core.dat")
+            );
+            let saved = fx.folder.join("Data/swap.wineo-saved");
+            assert_eq!(saved.exists(), changed, "changed {changed}, crash {crash}");
+            assert_eq!(installed.saved.len(), usize::from(changed));
+            if changed {
+                assert_eq!(fs::read_to_string(saved).unwrap(), "changed by you");
+            }
+        }
+    }
+}
+
+#[test]
+fn a_link_of_wineos_is_deleted_only_while_it_points_where_recorded() {
+    for changed in [false, true] {
+        for crash in [false, true] {
+            let fx = Fixture::new();
+            let plan = retargeted_to(
+                &fx,
+                FakeDepot::new(GAME).file(FakeFile::new("Data\\current", b"a file now")),
+            );
+            if changed {
+                fs::remove_file(fx.folder.join("Data/current")).unwrap();
+                std::os::unix::fs::symlink("big.dat", fx.folder.join("Data/current")).unwrap();
+            }
+            let installed = apply_through_aside(&fx, &plan, "Data/current", crash);
+            assert!(!fx.tree().iter().any(|path| path.contains(".wineo-aside-")));
+            assert_eq!(fx.read("Data/current"), "a file now");
+            let saved = fx.folder.join("Data/current.wineo-saved");
+            assert_eq!(
+                fs::read_link(&saved).ok(),
+                changed.then(|| PathBuf::from("big.dat")),
+                "changed {changed}, crash {crash}"
+            );
+            assert_eq!(installed.saved.len(), usize::from(changed));
+        }
+    }
+}
+
+#[test]
 fn same_size_damage_counts_toward_space() {
     let fx = Fixture::new();
     fx.content.add_build(Fixture::game("100"));
