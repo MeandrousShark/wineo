@@ -1056,12 +1056,7 @@ fn run(
             publish::sync_folders(&support, dirs, token)?;
         }
         // What it had moved out of the way is deleted only on a hash match.
-        recover_asides(
-            &mut publisher,
-            &root,
-            &journal.operation,
-            &journal.attempted,
-        )?;
+        publisher.recover_asides(|path| recorded(&journal.attempted, path))?;
     }
 
     // What GOG calls each path, spelled as it already is on disk.
@@ -1503,54 +1498,6 @@ fn recorded(attempted: &[Attempted], path: &str) -> Known {
             .filter_map(|entry| entry.target.clone())
             .collect(),
     }
-}
-
-/// Settles every entry an interrupted attempt of `operation` moved aside
-/// while clearing a path or putting an entry in place, anywhere in the game, without following
-/// symlinks.
-fn recover_asides(
-    publisher: &mut Publisher,
-    root: &OwnedFd,
-    operation: &str,
-    attempted: &[Attempted],
-) -> Result<()> {
-    let mut pending = vec![(String::new(), root.try_clone()?)];
-    while let Some((path, dir)) = pending.pop() {
-        let mut names = Vec::new();
-        let mut listing =
-            rustix::fs::Dir::read_from(&dir).with_context(|| format!("failed to read {path:?}"))?;
-        while let Some(entry) = listing.read() {
-            let entry = entry.with_context(|| format!("failed to read {path:?}"))?;
-            let name = entry.file_name().to_string_lossy().into_owned();
-            if name != "." && name != ".." {
-                names.push(name);
-            }
-        }
-        for name in names {
-            let child = if path.is_empty() {
-                name.clone()
-            } else {
-                format!("{path}/{name}")
-            };
-            if let Some(origin) = publish::aside_origin(&name, operation) {
-                let origin = if path.is_empty() {
-                    origin.to_owned()
-                } else {
-                    format!("{path}/{origin}")
-                };
-                publisher.settle_aside(&dir, &name, &origin, &recorded(attempted, &origin))?;
-                continue;
-            }
-            match package::open_dir_at(&dir, name.as_str()) {
-                Ok(fd) => pending.push((child, fd)),
-                Err(
-                    rustix::io::Errno::NOTDIR | rustix::io::Errno::LOOP | rustix::io::Errno::NOENT,
-                ) => {}
-                Err(error) => return Err(error).with_context(|| format!("failed to open {child}")),
-            }
-        }
-    }
-    Ok(())
 }
 
 /// Adds an entry to `attempted` unless it's there already.

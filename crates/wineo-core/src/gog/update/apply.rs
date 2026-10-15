@@ -1303,6 +1303,17 @@ pub(super) fn rebuild(
         }
         None => (operation_id(), Vec::new()),
     };
+    let committed_files: Vec<WinningEntry> = state
+        .committed
+        .as_ref()
+        .map(|committed| committed.files.clone())
+        .unwrap_or_default();
+    let mut publisher = Publisher::new(root, &operation, token);
+    if state.journal.is_some() {
+        // What it had moved out of the way is deleted only on a hash match.
+        publisher
+            .recover_asides(|path| publish::recorded_at(&committed_files, &attempted, path))?;
+    }
     let mut journal = Journal {
         operation: operation.clone(),
         kind: work.kind,
@@ -1360,12 +1371,6 @@ pub(super) fn rebuild(
     lock.write(&state)?;
     failpoint("update.attempted.after")?;
 
-    let committed_files: Vec<WinningEntry> = state
-        .committed
-        .as_ref()
-        .map(|committed| committed.files.clone())
-        .unwrap_or_default();
-    let mut publisher = Publisher::new(root, &operation, token);
     publisher.publish(
         &winning,
         &committed_files,

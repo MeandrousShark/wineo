@@ -15,6 +15,12 @@
 //! 2. Whatever stands where a new entry goes and isn't wineo's is saved
 //!    aside as `<name>.wineo-saved`.
 //! 3. The new entries are published, parents first.
+//!
+//! Outside the paths overwritten on purpose (shipped files and a migrated
+//! game's), nothing is replaced or deleted by its name: a new entry is
+//! renamed in refusing to replace, and whatever stands in its way is first
+//! renamed to wineo's own aside name, then checked, so the check always
+//! applies to the entry deleted.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::File;
@@ -175,11 +181,27 @@ impl<'a> Publisher<'a> {
             .collect();
 
         self.remove_old(&recorded, &shipped)?;
-        self.clear_new(new, &recorded, &tracked, earlier, committed.is_empty())?;
+        let migrated = committed.is_empty();
+        self.clear_new(new, &recorded, &tracked, earlier, migrated)?;
         let total = new.len();
         for (done, entry) in new.iter().enumerate() {
             self.check_cancel()?;
-            self.publish_one(entry)?;
+            let path = entry.path.as_str();
+            // A shipped entry, and a migrated game's, is overwritten
+            // whatever it holds; anywhere else, what appeared or changed
+            // since pass 2 is saved rather than replaced.
+            let overwrite = migrated || tracked.get(path).is_some_and(|old| old.kind == entry.kind);
+            if overwrite {
+                self.publish_entry(entry, None)?;
+            } else {
+                let mut known = known_of(recorded.get(path).map_or(&[][..], Vec::as_slice));
+                match entry.kind {
+                    EntryType::File => known.files.extend(entry.md5.clone()),
+                    EntryType::Symlink => known.links.extend(entry.target.clone()),
+                    EntryType::Directory => {}
+                }
+                self.publish_entry(entry, Some(&known))?;
+            }
             progress(PublishProgress {
                 done: done + 1,
                 total,
@@ -224,10 +246,25 @@ impl<'a> Publisher<'a> {
                 }
                 continue;
             }
-            if self.ours(records, &current, &dir, leaf, path)? {
-                self.delete(&dir, leaf, path)?;
-            } else if new_kind.is_some() {
-                self.save_aside(&dir, leaf, path)?;
+            let known = known_of(records);
+            if new_kind.is_some() {
+                // Settling decides, so a check first would only hash twice.
+                failpoint("update.delete.before")?;
+                self.move_aside(&dir, path, &known)?;
+                failpoint("update.delete.after")?;
+            } else if self.ours(records, &current, &dir, leaf, path)? {
+                hook("remove", path);
+                failpoint("update.delete.before")?;
+                if let Some(aside) = self.take_aside(&dir, path)? {
+                    // Changed since it was checked: back where it was, as
+                    // if it had never matched.
+                    if !self.delete_if_known(&dir, &aside, path, &known)?
+                        && !self.put_back(&dir, &aside, path)?
+                    {
+                        self.save_settled(&dir, &aside, path)?;
+                    }
+                }
+                failpoint("update.delete.after")?;
             } else {
                 self.report.kept.push(path.to_owned());
             }
@@ -325,12 +362,10 @@ impl<'a> Publisher<'a> {
                 // Another type. Pass 1 already took away wineo's own entries
                 // whose type changes, so this is yours.
                 _ => {
-                    if current != Current::Directory
-                        && self.ours(records, &current, &dir, leaf, path)?
-                    {
-                        self.delete(&dir, leaf, path)?;
-                    } else {
+                    if current == Current::Directory {
                         self.save_aside(&dir, leaf, path)?;
+                    } else {
+                        self.move_aside(&dir, path, &known_of(records))?;
                     }
                 }
             }
@@ -394,6 +429,13 @@ impl<'a> Publisher<'a> {
                     return Ok(());
                 }
                 Err(Errno::EXIST) => {}
+                // What native publishing did before it could refuse.
+                Err(error) if self.looks_first(error) => {
+                    rustix::fs::renameat(dir, temp, dir, leaf)
+                        .with_context(|| format!("failed to publish {path}"))?;
+                    self.changed.insert(parent_of(path).to_owned());
+                    return Ok(());
+                }
                 Err(error) => return Err(no_replace_error(error, path)),
             }
             self.move_aside(dir, path, known)?;
@@ -401,21 +443,55 @@ impl<'a> Publisher<'a> {
         bail!("{path} kept changing while it was put in place")
     }
 
+    /// Whether a rename that can't refuse to replace, failing with `error`,
+    /// is done by looking first instead. Only Galaxy installs refuse.
+    fn looks_first(&self, error: Errno) -> bool {
+        !self.no_replace_only && matches!(error, Errno::INVAL | Errno::NOSYS | Errno::NOTSUP)
+    }
+
+    /// Renames `from` to `to` in `dir`, false when `to` is taken. A
+    /// filesystem that can't refuse to replace is looked at first, unless
+    /// `require_no_replace` says to refuse it.
+    fn rename_free(&self, dir: &OwnedFd, from: &str, to: &str) -> rustix::io::Result<bool> {
+        match rename_new(dir, from, dir, to) {
+            Ok(()) => Ok(true),
+            Err(Errno::EXIST) => Ok(false),
+            Err(error) if self.looks_first(error) => {
+                match rustix::fs::statat(dir, to, AtFlags::SYMLINK_NOFOLLOW) {
+                    Ok(_) => Ok(false),
+                    Err(Errno::NOENT) => rustix::fs::renameat(dir, from, dir, to).map(|()| true),
+                    Err(error) => Err(error),
+                }
+            }
+            Err(error) => Err(error),
+        }
+    }
+
     /// Clears `path` without ever deleting by its name: whatever stands
     /// there is first renamed to wineo's own aside name, so another program
     /// can't swap it between the check and the delete, then settled by
     /// `settle_aside`. Nothing there is fine.
     pub(super) fn move_aside(&mut self, dir: &OwnedFd, path: &str, known: &Known) -> Result<()> {
+        match self.take_aside(dir, path)? {
+            Some(aside) => self.settle_aside(dir, &aside, path, known),
+            None => Ok(()),
+        }
+    }
+
+    /// Renames what stands at `path` to its aside name, which it returns,
+    /// or None when nothing is there.
+    fn take_aside(&mut self, dir: &OwnedFd, path: &str) -> Result<Option<String>> {
         let aside = aside_name(leaf_of(path), self.operation);
         failpoint("galaxy.aside.before")?;
-        match rename_new(dir, leaf_of(path), dir, &aside) {
-            Ok(()) => {}
-            Err(Errno::NOENT) => return Ok(()),
+        match self.rename_free(dir, leaf_of(path), &aside) {
+            Ok(true) => {}
+            Ok(false) => return Err(no_replace_error(Errno::EXIST, path)),
+            Err(Errno::NOENT) => return Ok(None),
             Err(error) => return Err(no_replace_error(error, path)),
         }
         self.changed.insert(parent_of(path).to_owned());
         failpoint("galaxy.aside.after")?;
-        self.settle_aside(dir, &aside, path, known)
+        Ok(Some(aside))
     }
 
     /// Deals with an entry moved aside from `path` as `aside`: deleted when
@@ -428,24 +504,59 @@ impl<'a> Publisher<'a> {
         path: &str,
         known: &Known,
     ) -> Result<()> {
+        if self.delete_if_known(dir, aside, path, known)? {
+            return Ok(());
+        }
+        self.save_settled(dir, aside, path)
+    }
+
+    /// Deletes the entry moved aside from `path` as `aside` when it is a
+    /// file or symlink holding what `known` records. True when it's gone.
+    fn delete_if_known(
+        &mut self,
+        dir: &OwnedFd,
+        aside: &str,
+        path: &str,
+        known: &Known,
+    ) -> Result<bool> {
         let ours = match current(dir, aside, path)? {
-            None => return Ok(()),
+            None => return Ok(true),
             Some(Current::File) => self
                 .hash(dir, aside, path)?
                 .is_some_and(|hash| known.files.contains(&hash)),
             Some(Current::Symlink(target)) => known.links.contains(&target),
             Some(_) => false,
         };
-        if ours {
-            match rustix::fs::unlinkat(dir, aside, AtFlags::empty()) {
-                Ok(()) | Err(Errno::NOENT) => {}
-                Err(error) => {
-                    return Err(error).with_context(|| format!("failed to remove {path}"));
-                }
-            }
-            self.changed.insert(parent_of(path).to_owned());
-            return Ok(());
+        if !ours {
+            return Ok(false);
         }
+        match rustix::fs::unlinkat(dir, aside, AtFlags::empty()) {
+            Ok(()) | Err(Errno::NOENT) => {}
+            Err(error) => {
+                return Err(error).with_context(|| format!("failed to remove {path}"));
+            }
+        }
+        self.changed.insert(parent_of(path).to_owned());
+        Ok(true)
+    }
+
+    /// Renames the entry moved aside from `path` back to it and lists it as
+    /// kept. False when something has taken the path meanwhile.
+    fn put_back(&mut self, dir: &OwnedFd, aside: &str, path: &str) -> Result<bool> {
+        match self.rename_free(dir, aside, leaf_of(path)) {
+            Ok(true) => {}
+            Ok(false) => return Ok(false),
+            Err(error) => return Err(no_replace_error(error, path)),
+        }
+        self.changed.insert(parent_of(path).to_owned());
+        self.report.kept.push(path.to_owned());
+        Ok(true)
+    }
+
+    /// Moves the entry moved aside from `path` as `aside` to
+    /// `<name>.wineo-saved`, or with a number when that's taken, and lists
+    /// it.
+    fn save_settled(&mut self, dir: &OwnedFd, aside: &str, path: &str) -> Result<()> {
         let leaf = leaf_of(path);
         let mut number = 1;
         let saved = loop {
@@ -455,9 +566,9 @@ impl<'a> Publisher<'a> {
                 format!("{leaf}.wineo-saved-{number}")
             };
             number += 1;
-            match rename_new(dir, aside, dir, &saved) {
-                Ok(()) => break saved,
-                Err(Errno::EXIST) => {}
+            match self.rename_free(dir, aside, &saved) {
+                Ok(true) => break saved,
+                Ok(false) => {}
                 Err(error) => return Err(no_replace_error(error, path)),
             }
         };
@@ -474,9 +585,60 @@ impl<'a> Publisher<'a> {
         Ok(())
     }
 
-    /// Pass 3, for one entry. Directories and symlinks only need the entry
-    /// itself, so callers placing files themselves publish those with it.
+    /// Settles every entry an interrupted attempt of this operation moved
+    /// aside, anywhere in the game, without following symlinks, against what
+    /// `known` says was recorded at the path it came from.
+    pub(super) fn recover_asides(&mut self, known: impl Fn(&str) -> Known) -> Result<()> {
+        let mut pending = vec![(String::new(), self.root.try_clone()?)];
+        while let Some((path, dir)) = pending.pop() {
+            let mut names = Vec::new();
+            let mut listing = rustix::fs::Dir::read_from(&dir)
+                .with_context(|| format!("failed to read {path:?}"))?;
+            while let Some(entry) = listing.read() {
+                let entry = entry.with_context(|| format!("failed to read {path:?}"))?;
+                let name = entry.file_name().to_string_lossy().into_owned();
+                if name != "." && name != ".." {
+                    names.push(name);
+                }
+            }
+            for name in names {
+                let child = if path.is_empty() {
+                    name.clone()
+                } else {
+                    format!("{path}/{name}")
+                };
+                if let Some(origin) = aside_origin(&name, self.operation) {
+                    let origin = if path.is_empty() {
+                        origin.to_owned()
+                    } else {
+                        format!("{path}/{origin}")
+                    };
+                    self.settle_aside(&dir, &name, &origin, &known(&origin))?;
+                    continue;
+                }
+                match open_dir_at(&dir, name.as_str()) {
+                    Ok(fd) => pending.push((child, fd)),
+                    Err(Errno::NOTDIR | Errno::LOOP | Errno::NOENT) => {}
+                    Err(error) => {
+                        return Err(error).with_context(|| format!("failed to open {child}"));
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Pass 3, for one entry, never replacing anything unchecked. Directories
+    /// and symlinks only need the entry itself, so callers placing files
+    /// themselves publish those with it.
     pub(super) fn publish_one(&mut self, entry: &WinningEntry) -> Result<()> {
+        self.publish_entry(entry, Some(&Known::default()))
+    }
+
+    /// Publishes `entry`. A file or symlink replaces whatever stands at its
+    /// path when `known` is None, and is put in place as `place_new` does
+    /// otherwise.
+    fn publish_entry(&mut self, entry: &WinningEntry, known: Option<&Known>) -> Result<()> {
         let path = entry.path.as_str();
         let dir = self
             .open_parent(path)?
@@ -505,10 +667,16 @@ impl<'a> Publisher<'a> {
                 rustix::fs::renameat(&staging, leaf, &dir, temp.as_str())
                     .with_context(|| format!("failed to move {path} out of staging"))?;
                 failpoint("update.publish.temp")?;
-                rustix::fs::renameat(&dir, temp.as_str(), &dir, leaf)
-                    .with_context(|| format!("failed to publish {path}"))?;
-                self.changed.insert(parent_of(path).to_owned());
-                self.written.push(path.to_owned());
+                hook("publish", path);
+                match known {
+                    Some(known) => self.place_new(&dir, &temp, path, known)?,
+                    None => {
+                        rustix::fs::renameat(&dir, temp.as_str(), &dir, leaf)
+                            .with_context(|| format!("failed to publish {path}"))?;
+                        self.changed.insert(parent_of(path).to_owned());
+                        self.written.push(path.to_owned());
+                    }
+                }
                 failpoint("update.publish.after")?;
             }
             EntryType::Symlink => {
@@ -521,9 +689,15 @@ impl<'a> Publisher<'a> {
                 rustix::fs::symlinkat(target, &dir, temp.as_str())
                     .with_context(|| format!("failed to create {path}"))?;
                 failpoint("update.publish.temp")?;
-                rustix::fs::renameat(&dir, temp.as_str(), &dir, leaf)
-                    .with_context(|| format!("failed to publish {path}"))?;
-                self.changed.insert(parent_of(path).to_owned());
+                hook("publish", path);
+                match known {
+                    Some(known) => self.place(&dir, &temp, path, known)?,
+                    None => {
+                        rustix::fs::renameat(&dir, temp.as_str(), &dir, leaf)
+                            .with_context(|| format!("failed to publish {path}"))?;
+                        self.changed.insert(parent_of(path).to_owned());
+                    }
+                }
                 failpoint("update.publish.after")?;
             }
         }
@@ -700,16 +874,6 @@ impl<'a> Publisher<'a> {
         Ok(Some(crate::units::hex(hasher.finalize())))
     }
 
-    pub(super) fn delete(&mut self, dir: &OwnedFd, leaf: &str, path: &str) -> Result<()> {
-        failpoint("update.delete.before")?;
-        match rustix::fs::unlinkat(dir, leaf, AtFlags::empty()) {
-            Ok(()) | Err(Errno::NOENT) => {}
-            Err(error) => return Err(error).with_context(|| format!("failed to remove {path}")),
-        }
-        self.changed.insert(parent_of(path).to_owned());
-        failpoint("update.delete.after")
-    }
-
     /// Removes an empty folder. False when something is still in it.
     pub(super) fn remove_folder(&mut self, dir: &OwnedFd, leaf: &str, path: &str) -> Result<bool> {
         failpoint("update.delete.before")?;
@@ -767,28 +931,13 @@ impl<'a> Publisher<'a> {
                 format!("{leaf}.wineo-saved-{number}")
             };
             number += 1;
-            match rename_new(dir, leaf, dir, saved.as_str()) {
-                Ok(()) => break saved,
-                Err(Errno::EXIST) => {}
+            match self.rename_free(dir, leaf, saved.as_str()) {
+                Ok(true) => break saved,
+                Ok(false) => {}
                 Err(error @ (Errno::INVAL | Errno::NOSYS | Errno::NOTSUP))
                     if self.no_replace_only =>
                 {
                     return Err(no_replace_error(error, path));
-                }
-                // A filesystem that can't refuse to replace: look first.
-                Err(Errno::INVAL) => {
-                    match rustix::fs::statat(dir, saved.as_str(), AtFlags::SYMLINK_NOFOLLOW) {
-                        Ok(_) => {}
-                        Err(Errno::NOENT) => {
-                            rustix::fs::renameat(dir, leaf, dir, saved.as_str())
-                                .with_context(|| format!("failed to move {path} aside"))?;
-                            break saved;
-                        }
-                        Err(error) => {
-                            return Err(error)
-                                .with_context(|| format!("failed to move {path} aside"));
-                        }
-                    }
                 }
                 Err(error) => {
                     return Err(error).with_context(|| format!("failed to move {path} aside"));
@@ -873,6 +1022,57 @@ fn content_of(kind: EntryType, md5: &Option<String>, target: &Option<String>) ->
         EntryType::File => md5.clone(),
         EntryType::Symlink => target.clone(),
         EntryType::Directory => None,
+    }
+}
+
+/// The file MD5s and symlink targets in `records`.
+fn known_of(records: &[Recorded]) -> Known {
+    let mut known = Known::default();
+    for record in records {
+        match (record.kind, &record.content) {
+            (EntryType::File, Some(md5)) => known.files.push(md5.clone()),
+            (EntryType::Symlink, Some(target)) => known.links.push(target.clone()),
+            _ => {}
+        }
+    }
+    known
+}
+
+/// What wineo recorded at `path`, committed and attempted, as an entry
+/// moved aside from it is checked against.
+pub(super) fn recorded_at(
+    committed: &[WinningEntry],
+    attempted: &[Attempted],
+    path: &str,
+) -> Known {
+    let committed = committed
+        .iter()
+        .filter(|entry| entry.path == path)
+        .map(|entry| (entry.kind, &entry.md5, &entry.target));
+    let attempted = attempted
+        .iter()
+        .filter(|entry| entry.path == path)
+        .map(|entry| (entry.kind, &entry.md5, &entry.target));
+    let records: Vec<Recorded> = committed
+        .chain(attempted)
+        .map(|(kind, md5, target)| Recorded {
+            kind,
+            content: content_of(kind, md5, target),
+        })
+        .collect();
+    known_of(&records)
+}
+
+/// Runs a test's hook at `at` for `path`: "remove" right after pass 1
+/// checks an old entry, and "publish" right before pass 3 puts one in
+/// place.
+fn hook(_at: &str, _path: &str) {
+    #[cfg(test)]
+    if let Some(mut hook) = HOOK.with(|cell| cell.borrow_mut().take()) {
+        hook(_at, _path);
+        HOOK.with(|cell| {
+            cell.borrow_mut().get_or_insert(hook);
+        });
     }
 }
 
@@ -985,6 +1185,21 @@ pub(super) fn sync_folders(
 #[cfg(test)]
 thread_local! {
     static SYNCS: std::cell::RefCell<Vec<String>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// A test's hook, given where publishing is and the path.
+#[cfg(test)]
+pub(super) type Hook = Box<dyn FnMut(&str, &str)>;
+
+#[cfg(test)]
+thread_local! {
+    static HOOK: std::cell::RefCell<Option<Hook>> = const { std::cell::RefCell::new(None) };
+}
+
+/// Sets, or with None clears, the hook `hook` runs on this thread.
+#[cfg(test)]
+pub(super) fn set_hook(hook: Option<Hook>) {
+    HOOK.with(|cell| *cell.borrow_mut() = hook);
 }
 
 #[cfg(test)]
