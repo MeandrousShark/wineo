@@ -6,8 +6,9 @@
 //!   selection's digest and the hash of `goggame-<id>.info` at commit. It
 //!   counts only while both still match.
 //! - `pending`: the target's manifest, the journal operation it belongs to,
-//!   the digest of the selection it will commit, and the redistributable
-//!   versions it uses. It counts only with a matching journal.
+//!   the digest of the selection it will commit, the redistributable
+//!   versions it uses, and for an update the manifest it started from. It
+//!   counts only with a matching journal.
 //! - `follow`: the branch followed and the pinned build.
 //! - `setup`: the setup steps that finished.
 //!
@@ -82,6 +83,23 @@ pub struct Pending {
     /// is downloaded so store cleanup keeps them.
     #[serde(default)]
     pub store: Vec<StoreVersion>,
+    /// What an update started from, kept so finishing it after a crash
+    /// treats each file as the first attempt did. Its new info file makes
+    /// `installed` stop counting partway through. None for an install, and
+    /// for an update with no stored manifest, which deletes nothing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub base: Option<Base>,
+}
+
+/// The manifest an update compares the target with.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Base {
+    pub manifest: Manifest,
+    /// Whether it was fetched from GOG for the installed build rather than
+    /// stored at commit, for a game installed by another tool.
+    #[serde(default)]
+    pub fetched: bool,
 }
 
 /// The branch a game follows and the build it's pinned to. Part B sets
@@ -412,6 +430,9 @@ impl Record {
         }
         if let Some(pending) = &self.pending {
             pending.manifest.check()?;
+            if let Some(base) = &pending.base {
+                base.manifest.check()?;
+            }
             if pending.operation.is_empty()
                 || !pending
                     .operation
