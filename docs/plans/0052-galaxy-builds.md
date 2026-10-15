@@ -68,6 +68,16 @@ b. A window that only ends in answer b (a lost manifest, an extra download
 or rehash) is an accepted limit; one that deletes or overwrites without a
 hash match is a defect.
 
+After two code reviews of step 4 (2026-10-14), the maintainer bounded
+races with other programs the same way. wineo places, moves aside, and
+deletes with atomic Linux operations (a rename that refuses to replace,
+and a rename to wineo's own name before hashing anything it might delete),
+so it never overwrites or deletes an entry it hasn't checked, and the
+folder lock keeps other wineo processes out. A program outside wineo
+writing the same path in the moment between wineo's steps is an accepted
+limit, not a defect. The 0.32.1 fix to the native installer publisher
+follows the same rule.
+
 ## What GOG offers
 
 From reading heroic-gogdl 1.3.1, Heroic, and lgogdownloader 3.19, then a
@@ -729,3 +739,6 @@ branch; and repairing a damaged file.
 - A crash at the wrong moment can make wineo forget a game's stored
   manifest, which costs a rehash or a download on the next update. It
   never costs a file (the bounding rule above).
+- Another program writing a file in the install folder at the same moment
+  wineo places it isn't guarded against beyond wineo's atomic operations
+  (the race rule above).
