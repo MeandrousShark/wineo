@@ -158,7 +158,7 @@ pub(super) fn check_graphical() -> Result<()> {
 }
 
 /// `path` as Wine sees it through its `Z:` drive, fully qualified.
-fn z_path(path: &Path) -> Result<String> {
+pub(super) fn z_path(path: &Path) -> Result<String> {
     let Some(text) = path.to_str() else {
         bail!("{} isn't a path Wine can be given", path.display());
     };

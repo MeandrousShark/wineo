@@ -95,13 +95,76 @@ pub struct Follow {
     pub pinned: Option<String>,
 }
 
-/// A setup step that finished, with what identifies it so a change runs it
-/// again. Written by setup, which comes in a later step.
+/// A setup step that finished, with what identifies it, so a change runs it
+/// again: a step counts as done only while every field still matches.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct SetupStep {
-    pub step: String,
-    pub identity: String,
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum SetupStep {
+    /// GOG's script interpreter, run for one product.
+    ScriptInterpreter {
+        product: u64,
+        /// The build it set up.
+        build: String,
+        /// The MD5 of the product's `goggame-<id>.script`. None when the
+        /// build has none.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        script: Option<String>,
+        /// The interpreter's own manifest hash, so a new one runs again.
+        interpreter: String,
+    },
+    /// A product's own setup program, from its support folder.
+    Program {
+        product: u64,
+        /// Relative to the product's support folder.
+        path: String,
+        /// Everything it was given.
+        arguments: String,
+        md5: String,
+    },
+    /// A redistributable from the store.
+    Redistributable {
+        dependency: String,
+        manifest: String,
+    },
+}
+
+impl SetupStep {
+    /// Whether `other` is the same step, whatever its identity: the same
+    /// product's script or program, or the same dependency.
+    pub fn same_step(&self, other: &Self) -> bool {
+        match (self, other) {
+            (
+                Self::ScriptInterpreter { product: a, .. },
+                Self::ScriptInterpreter { product: b, .. },
+            )
+            | (Self::Program { product: a, .. }, Self::Program { product: b, .. }) => a == b,
+            (
+                Self::Redistributable { dependency: a, .. },
+                Self::Redistributable { dependency: b, .. },
+            ) => a == b,
+            _ => false,
+        }
+    }
+
+    fn check(&self) -> Result<(), String> {
+        let fine = match self {
+            Self::ScriptInterpreter {
+                script,
+                interpreter,
+                ..
+            } => is_hex(interpreter, 32) && script.as_deref().is_none_or(|md5| is_hex(md5, 32)),
+            Self::Program { path, md5, .. } => check_path(path).is_ok() && is_hex(md5, 32),
+            Self::Redistributable {
+                dependency,
+                manifest,
+            } => super::store::valid_id(dependency) && is_hex(manifest, 32),
+        };
+        if fine {
+            Ok(())
+        } else {
+            Err("invalid setup step".to_owned())
+        }
+    }
 }
 
 /// One version of a redistributable in the shared store.
@@ -199,6 +262,10 @@ pub struct SetupInfo {
     /// the script interpreter included when it runs.
     #[serde(default)]
     pub redist: Vec<Redist>,
+    /// GOG's name for the build, like `1.0.4`, which setup programs are
+    /// given. Kept here so finishing from `pending` has it offline.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub version_name: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -339,6 +406,9 @@ impl Record {
         }
         if let Some(installed) = &self.installed {
             installed.manifest.check()?;
+        }
+        for step in &self.setup {
+            step.check()?;
         }
         if let Some(pending) = &self.pending {
             pending.manifest.check()?;

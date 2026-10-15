@@ -37,6 +37,7 @@ use wineo_gog::{ChunkLinks, LinkScope};
 use super::build::{self, LayoutError, Owner};
 use super::fetch::{self, Job};
 use super::record::{self, FileEntry, Manifest, Record, Redist, SetupInfo, StoreVersion};
+use super::setup;
 use super::store;
 use crate::cancel::Token;
 use crate::config::{Arch, GlobalConfig};
@@ -60,7 +61,7 @@ use crate::paths::Paths;
 use crate::supervisor::Watched;
 
 /// The id GOG's script interpreter has among the redistributables.
-const SCRIPT_INTERPRETER: &str = "ISI";
+pub(super) const SCRIPT_INTERPRETER: &str = "ISI";
 /// Where a redistributable's program is when it belongs in the store
 /// rather than the game folder.
 const STORE_PREFIX: &str = "__redist";
@@ -94,6 +95,14 @@ pub enum GalaxyError {
         title: String,
         build: String,
         label: String,
+    },
+    /// A setup step in the prefix failed. The journal stays, and installing
+    /// again carries on from that step.
+    #[error("Setting up {title} stopped: {label} failed ({detail}). Install it again to finish.")]
+    Setup {
+        title: String,
+        label: String,
+        detail: String,
     },
     #[error(transparent)]
     Layout(#[from] LayoutError),
@@ -266,6 +275,8 @@ fn sizes(files: &[FileEntry]) -> u64 {
 pub enum Progress {
     /// Bytes downloaded so far, of what isn't in place yet.
     Download { done: u64, total: u64 },
+    /// Setup steps run in the prefix so far, of those to run.
+    Setup { done: usize, total: usize },
 }
 
 /// Works out what installing `request.gog_id` from its latest Galaxy build
@@ -287,6 +298,8 @@ pub fn plan(
     if request.platform == Some(Platform::Linux) {
         return Err(GalaxyError::NotWindows.into());
     }
+    // Setup runs programs in the prefix, as a Windows installer does.
+    windows::check_graphical()?;
     let global = GlobalConfig::load(paths)?;
     let requested = request
         .language
@@ -476,7 +489,14 @@ pub fn plan(
         }
     }
 
-    let built = manifests(session, &title, &repository, &chosen, bits)?;
+    let built = manifests(
+        session,
+        &title,
+        &repository,
+        &chosen,
+        bits,
+        latest.version_name.clone(),
+    )?;
     warnings.extend(built.warnings);
     for product in &mut products {
         product.size = product_size(&built.manifest, product.id);
@@ -597,7 +617,7 @@ fn resumed(
     let mut warnings = Vec::new();
     let mut target = journal.target.clone();
     let mut retarget = None;
-    let mut version_name = None;
+    let version_name;
 
     let record = files_record(paths, &folder);
     let (manifest, store) = match record
@@ -613,6 +633,7 @@ fn resumed(
                     files: None,
                 })
                 .collect();
+            version_name = pending.manifest.setup.version_name.clone();
             (pending.manifest.clone(), store)
         }
         None => {
@@ -688,7 +709,14 @@ fn resumed(
                 product.build = Some(repository.build_id.clone());
                 chosen_products.push((product.id, language));
             }
-            let built = manifests(session, &title, &repository, &chosen_products, bits)?;
+            let built = manifests(
+                session,
+                &title,
+                &repository,
+                &chosen_products,
+                bits,
+                chosen.version_name.clone(),
+            )?;
             warnings.extend(built.warnings);
             (built.manifest, built.store)
         }
@@ -766,6 +794,7 @@ fn manifests(
     repository: &wineo_gog::Repository,
     chosen: &[(u64, String)],
     bits: &str,
+    version_name: Option<String>,
 ) -> Result<Built> {
     let failed = || format!("Couldn't get {title}'s file lists");
     let mut fetched = Vec::new();
@@ -854,6 +883,7 @@ fn manifests(
         script_interpreter: repository.script_interpreter,
         products: build::product_setups(repository, &kept),
         redist,
+        version_name,
     };
     let sources: Vec<(Owner, &wineo_gog::DepotManifest)> = fetched
         .iter()
@@ -971,6 +1001,7 @@ fn run(
         what: what.to_owned(),
     };
     let mut warnings = plan.warnings.clone();
+    windows::check_graphical()?;
     let (game, support) = unverified_sizes(paths, plan, token)?;
     check_space(paths, plan, game, support, planned_store(paths, plan))?;
 
@@ -1064,6 +1095,13 @@ fn run(
     let expected = record::expected(&state, JournalKind::Install, &plan.target);
     let selection = record::digest(&expected);
     let mut sidecar = record::read(&lock)?.unwrap_or_default();
+    // Setup steps recorded count only while the record is this operation's
+    // or the committed selection's; anything else runs every step again.
+    let carried = record::pending(&state, &sidecar).is_some()
+        || record::installed(&state, &sidecar)?.is_some();
+    if !carried {
+        sidecar.setup.clear();
+    }
     sidecar.pending = Some(record::Pending {
         operation: operation.clone(),
         selection: selection.clone(),
@@ -1376,9 +1414,48 @@ fn run(
     let report_saved = publisher.into_report();
     failpoint("galaxy.files.after")?;
 
-    // Setup in the prefix (GOG's script interpreter, each product's setup
-    // program, then the redistributables) runs here, between the files and
-    // the commit, holding `guard` and the store versions in `held`.
+    // Setup in the prefix, between the files and the commit, holding the
+    // environment's operation lock and the store versions in `held`.
+    let label = |id: u64| {
+        if id == plan.gog_id {
+            return plan.title.clone();
+        }
+        let title = plan
+            .products
+            .iter()
+            .find(|product| product.id == id)
+            .and_then(|product| product.title.as_deref());
+        names::dlc_label(&plan.title, id, title)
+    };
+    let (steps, setup_warnings) = setup::steps(&setup::Sources {
+        paths,
+        folder,
+        support: &support_root,
+        manifest: &manifest,
+        target: &plan.target,
+        label: &label,
+    })?;
+    warnings.extend(setup_warnings);
+    let (guard, ran) = setup::run(
+        &setup::Setup {
+            paths,
+            name,
+            title: &plan.title,
+            prefix: &prefix,
+            lock: &lock,
+            token,
+        },
+        guard,
+        &mut sidecar,
+        &steps,
+        false,
+        &mut |done, total| (progress.borrow_mut())(Progress::Setup { done, total }),
+        events,
+    )?;
+    failpoint("galaxy.setup.after")?;
+    // Exactly the steps this selection has, so one it no longer lists
+    // isn't kept as done.
+    sidecar.setup = steps.into_iter().map(|step| step.identity).collect();
 
     // The default target comes from the game's info file, as for an offline
     // install.
@@ -1440,6 +1517,7 @@ fn run(
         warnings,
         target: added,
         reported_language: None,
+        needs_restart: ran.needs_restart,
     })
 }
 

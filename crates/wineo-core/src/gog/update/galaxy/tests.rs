@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 use crate::paths::Paths;
 
 type Hook = Box<dyn FnMut(&Paths)>;
+type StepHook = Box<dyn FnMut(&Paths, usize)>;
 type PlaceHook = Box<dyn FnMut(&str)>;
 
 thread_local! {
@@ -14,6 +15,19 @@ thread_local! {
     static FREE_AT: RefCell<Vec<(PathBuf, u64)>> = const { RefCell::new(Vec::new()) };
     static DEVICE_AT: RefCell<Vec<(PathBuf, u64)>> = const { RefCell::new(Vec::new()) };
     static ROUND_LIMITS: RefCell<Option<(u64, usize)>> = const { RefCell::new(None) };
+    static BEFORE_SETUP_STEP: RefCell<Option<StepHook>> = const { RefCell::new(None) };
+    static SETUP_STEPS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// Runs a test's hook before each setup step, with how many ran before it
+/// on this thread.
+pub(super) fn before_setup_step(paths: &Paths) {
+    let count = SETUP_STEPS.with(|count| count.replace(count.get() + 1));
+    BEFORE_SETUP_STEP.with(|hook| {
+        if let Some(hook) = hook.borrow_mut().as_mut() {
+            hook(paths, count);
+        }
+    });
 }
 
 /// The bytes and chunks a test says a download round ends after.
@@ -108,6 +122,8 @@ struct Gog {
 type ChunkHook = Arc<dyn Fn(&str) + Send + Sync>;
 
 struct Fixture {
+    /// Every setup step run, as `program<TAB>folder<TAB>arguments`.
+    cmd_log: PathBuf,
     _root: TempDir,
     paths: Paths,
     keyring: Arc<FakeKeyring>,
@@ -159,11 +175,19 @@ impl Fixture {
             .join("fake/bin");
         fs::create_dir_all(&bin).unwrap();
         write_script(bin.join("wineserver"), "#!/bin/sh\nexit 0\n");
+        // Setup's batch files run through the shared `cmd` stand-in, which
+        // logs each run to `cmd_log`.
+        let cmd_log = root.path().join("fake-cmd.log");
         write_script(
             bin.join("wine"),
-            "#!/bin/sh\ncase \"$1\" in\nwineboot) [ \"$2\" = --init ] && echo 'WINE REGISTRY Version 2' > \"$WINEPREFIX/system.reg\" ;;\nesac\nexit 0\n",
+            format!(
+                "#!/bin/sh\nFAKE_CMD_LOG='{}'\n{}case \"$1\" in\nwineboot) [ \"$2\" = --init ] && mkdir -p \"$WINEPREFIX/drive_c\" && echo 'WINE REGISTRY Version 2' > \"$WINEPREFIX/system.reg\" ;;\ncmd) fake_cmd \"$3\"; exit ;;\nesac\nexit 0\n",
+                cmd_log.display(),
+                crate::test_runners::FAKE_CMD,
+            ),
         );
         Self {
+            cmd_log,
             _root: root,
             paths,
             keyring,
@@ -1959,3 +1983,5 @@ fn an_install_canceled_mid_file_is_finished_by_installing_again() {
     // The half-written file counts for nothing: all of it comes again.
     assert_eq!(fx.chunk_requests().len() - before, left);
 }
+
+mod setup;

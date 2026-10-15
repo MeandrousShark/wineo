@@ -366,6 +366,9 @@ pub struct Installed {
     pub target: Option<PathBuf>,
     /// GOG's code for the language a Windows game's info file reports.
     pub reported_language: Option<String>,
+    /// Redistributables a Galaxy install set up that asked for a restart,
+    /// by id. Wine has nothing to restart, so they're only listed.
+    pub needs_restart: Vec<String>,
 }
 
 /// Works out what installing `request.gog_id` natively does. Reads only: it
@@ -1272,6 +1275,7 @@ fn run(
             warnings,
             target: done.target,
             reported_language: done.reported_language,
+            needs_restart: Vec::new(),
         });
     }
 
@@ -1319,6 +1323,7 @@ fn run(
         warnings,
         target: None,
         reported_language: None,
+        needs_restart: Vec::new(),
     })
 }
 
