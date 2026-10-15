@@ -19,7 +19,7 @@ use super::Args;
 use crate::cancel;
 use crate::commands::galaxy;
 use crate::commands::gog_support::{
-    Account, LOGGED_OUT, Reporter, ask_wizard, offers_wizard, usage_error, warn,
+    Account, LOGGED_OUT, Reporter, ask_wizard, offers_wizard, usage_error, warn, with_finish_hint,
 };
 use crate::commands::setup::watched_message;
 use crate::commands::table;
@@ -194,14 +194,17 @@ fn plan(
         &cancellation.token,
     )
     .map_err(|error| {
+        let canceled = stopped(&error).is_some();
         if logged_out
             && matches!(
                 error.downcast_ref::<AccountError>(),
                 Some(AccountError::LoggedOut)
             )
         {
-            anyhow::anyhow!(LOGGED_OUT)
-        } else if matches!(
+            // Logging in comes first, and says so.
+            return anyhow::anyhow!(LOGGED_OUT);
+        }
+        let error = if matches!(
             error.downcast_ref::<UpdateError>(),
             Some(UpdateError::NotGalaxy { .. })
         ) {
@@ -222,7 +225,8 @@ fn plan(
             )
         } else {
             error
-        }
+        };
+        with_finish_hint(paths, error, name, None, canceled)
     })?;
     Ok(match planned {
         PlannedUpdate::Installer(Plan::UpToDate { warnings, .. })
@@ -563,24 +567,8 @@ fn stopped_as(paths: &Paths, error: anyhow::Error, ready: &Ready) -> anyhow::Err
     {
         interrupted.install = true;
     }
-    finish_hint(paths, error, ready.environment())
-}
-
-/// Ends the message of a failure with how to finish the update, decided by
-/// the journal still being in the folder, not by what failed. A
-/// cancellation says its own, and a message that already names the command
-/// is left alone.
-fn finish_hint(paths: &Paths, error: anyhow::Error, name: &str) -> anyhow::Error {
-    let command = format!("wineo update {name}");
-    if stopped(&error).is_some()
-        || update::journal_of(paths, name).is_none()
-        || error.to_string().contains(&command)
-    {
-        return error;
-    }
-    let message = format!("{error:#}");
-    let sep = if message.ends_with('.') { "" } else { "." };
-    anyhow::anyhow!("{message}{sep} Finish it with: {command}")
+    let canceled = stopped(&error).is_some();
+    with_finish_hint(paths, error, ready.environment(), None, canceled)
 }
 
 /// The update with core's own errors, so a Windows installer that never

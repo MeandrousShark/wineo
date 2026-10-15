@@ -892,11 +892,14 @@ fn an_interrupted_galaxy_install_is_finished_by_installing_again() {
     );
     let out = update(&f, &api, &["--yes"]);
     assert_eq!(out.status.code(), Some(1));
+    let err = stderr(&out);
     assert!(
-        stderr(&out).contains("Install GOG game 1207658924 again as papers-please to finish it."),
-        "{}",
-        stderr(&out)
+        err.trim_end().ends_with(
+            "papers-please's GOG install didn't finish. Finish it with: wineo import gog --game 1207658924"
+        ),
+        "{err}"
     );
+    assert!(!err.contains("wineo update"), "{err}");
 
     let out = gog(
         &f,
@@ -991,4 +994,84 @@ fn a_repair_that_fails_after_its_journal_says_how_to_finish_it() {
         "{}",
         stdout(&out)
     );
+}
+
+/// The saved target of the folder's unfinished operation, lost.
+fn lose_the_saved_target(f: &Fixture) {
+    fs::remove_file(wineo_core::gog::folder::sidecar_file(
+        &f.paths(),
+        &fs::canonicalize(folder(f)).unwrap(),
+    ))
+    .unwrap();
+}
+
+#[test]
+fn a_planning_failure_with_a_journal_says_how_to_finish_it() {
+    let (f, api) = installed();
+    interrupted_update(&f, &api);
+    lose_the_saved_target(&f);
+    api.builds_status
+        .store(503, std::sync::atomic::Ordering::Relaxed);
+    let command = format!("Finish it with: wineo update {NAME}");
+
+    let out = update(&f, &api, &["--yes"]);
+    assert_eq!(out.status.code(), Some(1), "{}", stderr(&out));
+    let err = stderr(&out);
+    assert!(err.trim_end().ends_with(&command), "{err}");
+    assert_eq!(err.matches("Finish it with").count(), 1, "{err}");
+
+    // `--all` reports the game that couldn't be planned the same way.
+    let out = gog(&f, &api, &["update", "--all", "--yes"]);
+    assert_eq!(out.status.code(), Some(1), "{}", stderr(&out));
+    let err = stderr(&out);
+    let failed = err
+        .lines()
+        .find(|line| line.starts_with(&format!("Failed {NAME}: ")))
+        .unwrap_or_else(|| panic!("{err}"));
+    assert!(failed.ends_with(&command), "{err}");
+    assert_eq!(err.matches("Finish it with").count(), 1, "{err}");
+
+    // Once GOG answers, it finishes.
+    api.builds_status
+        .store(0, std::sync::atomic::Ordering::Relaxed);
+    assert_success(&update(&f, &api, &["--yes"]));
+    assert!(state(&f).journal.is_none());
+}
+
+#[test]
+fn a_resumed_galaxy_install_that_cant_be_planned_says_how_to_finish_it() {
+    let (f, api) = world();
+    let mut pty = paused(
+        &f,
+        &api,
+        &[
+            "import",
+            "gog",
+            "--game",
+            "1207658924",
+            "--runner",
+            "galaxy",
+            "--yes",
+        ],
+    );
+    pty.expect("Downloading: ");
+    interrupt(&pty);
+    let (status, _) = pty.finish();
+    assert_eq!(status.code(), Some(130));
+    lose_the_saved_target(&f);
+    api.builds_status
+        .store(503, std::sync::atomic::Ordering::Relaxed);
+    let out = gog(
+        &f,
+        &api,
+        &["import", "gog", "--game", "1207658924", "--yes"],
+    );
+    assert_eq!(out.status.code(), Some(1), "{}", stderr(&out));
+    let err = stderr(&out);
+    assert!(
+        err.trim_end()
+            .ends_with("Finish it with: wineo import gog --game 1207658924"),
+        "{err}"
+    );
+    assert!(!err.contains("wineo update"), "{err}");
 }

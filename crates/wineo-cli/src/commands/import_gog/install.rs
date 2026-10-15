@@ -23,7 +23,8 @@ use super::Args;
 use crate::cancel;
 use crate::commands::galaxy;
 use crate::commands::gog_support::{
-    Account, Reporter, ask_wizard, offers_wizard, usage_error, warn,
+    Account, Reporter, ask_wizard, finish_command, journal_for, offers_wizard, usage_error, warn,
+    with_finish_hint,
 };
 use crate::commands::setup::{self, watched_message};
 use crate::commands::table;
@@ -384,7 +385,14 @@ fn plan_install(
             }
             Ok(Err(cancel::exit_code()))
         }
-        Err(error) => Err(error),
+        // A resumed install that can't be planned still has its journal.
+        Err(error) => Err(with_finish_hint(
+            paths,
+            error,
+            &request.name,
+            Some(request.gog_id),
+            false,
+        )),
     }
 }
 
@@ -729,7 +737,7 @@ fn stopped(
         }
         // Whatever else stopped it, a journal still in the folder is there
         // to finish.
-        _ if journal_left(paths, name, plan.gog_id()).is_some() => {
+        _ if journal_for(paths, name, Some(plan.gog_id())).is_some() => {
             eprintln!("{}", style::error_stderr(format!("error: {error:#}")));
             finish();
             Ok(ExitCode::FAILURE)
@@ -738,25 +746,13 @@ fn stopped(
     }
 }
 
-/// The journal an install left in the game's folder, if any.
-fn journal_left(paths: &Paths, name: &str, gog_id: u64) -> Option<folder::Journal> {
-    folder::find(paths, name, &gog_id.to_string())
-        .ok()
-        .flatten()
-        .and_then(|state| state.journal)
-}
-
-/// How an install that stopped is finished: a Galaxy one by installing the
-/// game again, since `wineo update` has no way to carry on a first install
-/// there.
+/// How an install that stopped is finished, by its journal.
 fn say_finish(paths: &Paths, name: &str, gog_id: u64) {
-    let galaxy = journal_left(paths, name, gog_id)
-        .is_some_and(|journal| journal.target.track == Track::Galaxy);
-    if galaxy {
-        eprintln!("Finish the interrupted install with: wineo import gog --game {gog_id}");
-    } else {
-        eprintln!("Finish the interrupted install with: wineo update {name}");
-    }
+    let command = journal_for(paths, name, Some(gog_id)).map_or_else(
+        || format!("wineo update {name}"),
+        |journal| finish_command(&journal, name),
+    );
+    eprintln!("Finish the interrupted install with: {command}");
 }
 
 /// Says what the install did, then imports GOG's playtime and art and
