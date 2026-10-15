@@ -742,9 +742,16 @@ Galaxy install:
   `~/Documents`. The maintainer keeps it that way: most games run on
   Proton, and other software's documents are easier to find in the real
   home than deep in a prefix.
-- **Downloads go a file at a time per worker,** where the plan says chunks
-  4 at a time: The Witcher's 1.9 GB `textures00.bif` kept one core busy
-  while the others waited at the round's end. Fixed before step 6.
+- **Downloads went a file at a time per worker,** where the plan says
+  chunks 4 at a time: The Witcher's 1.9 GB `textures00.bif` kept one core
+  busy while the others waited at the round's end. Now up to 4 chunks are
+  in flight across all files, each written at its offset in its file's
+  temporary file; the worker writing a file's last chunk syncs it and
+  checks its size and hashes by reading it back, and only then does the
+  main thread take it. A round is at most 1 GiB or 1024 chunks, a file may
+  span rounds, and the round's end waits for at most 4 chunks. Progress
+  moves per chunk. A release build installs The Witcher's 14.4 GB in 1
+  minute 41 seconds, against 16 minutes before (in a debug build).
 
 ## Implementation sequence
 
