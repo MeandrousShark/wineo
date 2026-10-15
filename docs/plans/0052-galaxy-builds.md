@@ -847,6 +847,58 @@ Step 6 (2026-10-14):
   the new build drops kept and listed, an edited setup extra untouched,
   and ISI rerun for the new build.
 
+Step 7 (2026-10-15), with two answers from the maintainer the same day:
+
+- **A Galaxy `--reinstall`** (answer A) goes to the latest build like an
+  update, installs newly owned DLC, and retries failed or unavailable DLC.
+  Every file is hashed instead of trusting the record, and every setup
+  step runs again, even when the build is already the latest. It starts
+  from the stored manifest only when `installed` is trusted (so old files
+  can be deleted on hash matches); otherwise it follows answer b and
+  doesn't fetch the installed build's manifest the way an update does.
+- **A repair never changes the build** (answer A). With a trusted
+  `installed`, the stored manifest is both the target and the starting
+  point, so a repair needs no build listing from GOG. Without one, it
+  fetches the committed build's manifest and follows answer b; when GOG no
+  longer lists that build, it says `GOG no longer lists build ID of TITLE.
+  Run wineo update NAME to move to the latest.` An interrupted repair
+  whose `pending` is lost refuses the same way instead of retargeting.
+- **A damaged or edited file is saved aside** on a repair, as step 6
+  settled for updates, never overwritten. wineo can't tell damage from an
+  edit, so a damaged large file leaves a large `.wineo-saved` behind.
+- **Hashing.** A repair or reinstall checks every game file, support file,
+  folder, and link, with no size-only shortcut, and reuses the matching
+  chunks of a damaged file, so same-size damage downloads only the bad
+  chunk. `Progress::Verify` reports files and bytes checked, per file;
+  plain updates don't emit it.
+- **Setup.** The first attempt of a repair or reinstall clears the recorded
+  steps, so every one runs; a resume keeps the steps already recorded.
+- **Moving onto Galaxy** is a `Reinstall` on the latest generation 2 build
+  that starts from the target (answer b). A Linux game says `Galaxy builds
+  are only for Windows games.`, and one with only generation 1 builds gets
+  step 4's wording. An installed DLC missing from the new build refuses the
+  move, as it refuses an update.
+- **Moving to the installer track** plans from an in-memory copy of the
+  state with the track switched, builds cleared, and languages mapped to
+  installer codes (`en-US` becomes `en`), so the installer side's own
+  ownership check installs newly owned DLC and retries failed ones. After
+  the commit, the sidecar and the support folder are removed; a crash
+  first leaves them for the next installer-track run to remove.
+- **Store cleanup** ignores a sidecar whose folder isn't on the Galaxy
+  track (by its journal's target, else its committed track), so one left
+  by a crash pins nothing. A state that can't be read still counts.
+- **Journals win over options.** An interrupted `Reinstall` or `Repair`
+  finishes as its own kind; the plan's dispatch follows the journal's
+  target track, else the track a reinstall asks for.
+- **For step 8:** `--repair` on an installer-tracked game uses the plan's
+  "Only Galaxy games have branches." line for now, and `ProductGone`'s
+  "which the install began with" reads oddly outside an install; both
+  want repair- and move-specific copy. Galaxy plans have `kind()` but no
+  wording of their own yet, so the CLI words them.
+- **Known limit:** a damaged `goggame-<id>.info` makes `installed`
+  untrusted, so its repair takes the answer-b route and needs the build to
+  be listed.
+
 ## Implementation sequence
 
 Part A:
