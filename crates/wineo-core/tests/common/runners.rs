@@ -1,3 +1,51 @@
+/// Stands in for `cmd /c FILE.bat` with one of wineo's Galaxy setup batch
+/// files: `@echo off`, `cd /d "DIR"`, `"PROGRAM" ARGS`, and
+/// `>"CODE" echo %ERRORLEVEL%`. Like cmd, it turns `%%` into `%`. It appends
+/// the program, folder, and arguments, tab-separated, to
+/// `${FAKE_CMD_LOG:-$WINEPREFIX/fake-cmd.log}`. A program that isn't there
+/// gets 9009; otherwise the code is in `PROGRAM.exit` beside it (0 without
+/// one), and `PROGRAM.nocode` beside it means no code file is written. An
+/// msiexec line's program is its package. The host gets the low 8 bits.
+///
+/// A macro, so `FAKE_WINE` and `FAKE_UMU` can include it with `concat!`.
+macro_rules! fake_cmd {
+    () => {
+        r#"fake_cmd() {
+    fake_unix() { printf '%s' "$1" | sed 's/^[Zz]://; s/\\/\//g'; }
+    fake_line() { sed -n "$1p" "$2" | tr -d '\r' | sed 's/%%/%/g'; }
+    bat=$(fake_unix "$1")
+    dir=$(fake_line 2 "$bat" | sed 's/^cd \/d "\(.*\)"$/\1/')
+    line=$(fake_line 3 "$bat")
+    out=$(sed -n '4p' "$bat" | tr -d '\r' | sed 's/^>"\(.*\)" echo %ERRORLEVEL%$/\1/; s/%%/%/g')
+    program=${line#\"}
+    program=${program%%\"*}
+    args=${line#*\"}
+    args=${args#*\"}
+    args=${args# }
+    target=$program
+    if [ "$program" = msiexec ]; then
+        target=${args#/i \"}
+        target=${target%%\"*}
+    fi
+    target=$(fake_unix "$target")
+    printf '%s\t%s\t%s\n' "$program" "$dir" "$args" >>"${FAKE_CMD_LOG:-$WINEPREFIX/fake-cmd.log}"
+    if [ -f "$target" ]; then
+        code=$(cat "$target.exit" 2>/dev/null || echo 0)
+    else
+        code=9009
+    fi
+    if [ ! -e "$target.nocode" ]; then
+        printf '%s\r\n' "$code" >"$(fake_unix "$out")"
+    fi
+    return $((code & 255))
+}
+"#
+    };
+}
+
+/// The `cmd /c FILE.bat` stand-in on its own, for a test's own fake runner.
+pub const FAKE_CMD: &str = fake_cmd!();
+
 /// A program named exit-N exits with N right away, a program named stubborn
 /// ignores requests to close, a program named slow takes a moment before
 /// wineserver can see it, noisy writes megabytes in bursts, noisy-exit leaves
@@ -6,8 +54,10 @@
 /// break-wineserver deletes the wineserver beside it, a program whose name ends
 /// in install-game.exe installs a game into the prefix, and any other program
 /// runs until `wineboot --end-session` or `wineserver -k` ends it.
-pub const FAKE_WINE: &str = r#"#!/bin/sh
-pids="$WINEPREFIX/fake-pids"
+pub const FAKE_WINE: &str = concat!(
+    "#!/bin/sh\n",
+    fake_cmd!(),
+    r#"pids="$WINEPREFIX/fake-pids"
 # wineo lowers the core limit right after spawning, so wait for that to land.
 record_core_when_one() {
     i=0
@@ -26,6 +76,13 @@ burst() {
     done
 }
 case "$1" in
+cmd)
+    case "$3" in *.bat)
+        fake_cmd "$3"
+        exit
+        ;;
+    esac
+    ;;
 --version)
     echo wine-fake
     exit 0
@@ -118,7 +175,8 @@ fi
 echo "$$ $!" >"$pids"
 wait
 rm -f "$pids"
-"#;
+"#
+);
 
 /// Treats the fake wine program as the only process in the prefix.
 pub const FAKE_WINESERVER: &str = r#"#!/bin/sh
@@ -150,8 +208,10 @@ exec "$@"
 /// under the compatdata directory when handed an empty program, which is how umu
 /// creates a prefix, and otherwise runs like the fake wine so the same programs
 /// work under both kinds. Its handoff leaves something in umu's process group.
-pub const FAKE_UMU: &str = r#"#!/bin/sh
-echo "umu-run: $*"
+pub const FAKE_UMU: &str = concat!(
+    "#!/bin/sh\n",
+    fake_cmd!(),
+    r#"echo "umu-run: $*"
 echo "umu-run: WINEPREFIX=$WINEPREFIX PROTONPATH=$PROTONPATH"
 echo "umu-run: GAMEID=${GAMEID-unset} STORE=${STORE-unset}"
 if [ -z "$1" ]; then
@@ -165,6 +225,13 @@ fi
 echo "umu-run: FAKE_VAR=${FAKE_VAR-}"
 pids="$WINEPREFIX/fake-pids"
 case "$1" in
+cmd)
+    case "$3" in *.bat)
+        fake_cmd "$3"
+        exit
+        ;;
+    esac
+    ;;
 winetricks)
     shift
     if [ "${1-}" = -q ]; then
@@ -202,4 +269,5 @@ trap 'kill "$!" 2>/dev/null; rm -f "$pids"; exit 0' TERM
 echo "$$ $!" >"$pids"
 wait
 rm -f "$pids"
-"#;
+"#
+);
