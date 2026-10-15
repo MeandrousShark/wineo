@@ -312,10 +312,12 @@ fn quoted_path(path: &Path) -> Result<String> {
 }
 
 /// `path` as a Windows program in the prefix is given it. A quote would end
-/// the quoted value it goes in early, so it's refused.
+/// the quoted value it goes in early, and a backslash in a Linux name would
+/// read as a separator, pointing setup at another folder, so both are
+/// refused.
 fn setup_path(path: &Path) -> Result<String> {
     let text = z_path(path)?;
-    if text.contains(['"', '\r', '\n']) {
+    if path.as_os_str().as_encoded_bytes().contains(&b'\\') || text.contains(['"', '\r', '\n']) {
         bail!(
             "{} has a character in it that setup can't be given",
             path.display()
@@ -381,10 +383,11 @@ pub(super) fn variables(step: &Step, code: &Path) -> Result<BTreeMap<String, Str
 /// but plain ASCII is refused.
 fn batch_path(bat: &Path) -> Result<String> {
     let text = z_path(bat)?;
-    let fine = text.bytes().all(|byte| {
-        (byte.is_ascii_graphic() || byte == b' ')
-            && !matches!(byte, b'%' | b'"' | b'&' | b'|' | b'<' | b'>' | b'^' | b'!')
-    });
+    let fine = !bat.as_os_str().as_encoded_bytes().contains(&b'\\')
+        && text.bytes().all(|byte| {
+            (byte.is_ascii_graphic() || byte == b' ')
+                && !matches!(byte, b'%' | b'"' | b'&' | b'|' | b'<' | b'>' | b'^' | b'!')
+        });
     if !fine {
         bail!(
             "Setup can't run from {}: cmd can't be given a path with characters other than plain letters, digits, and punctuation like - _ . /.",
@@ -641,12 +644,21 @@ mod tests {
             ("/a/b.exe", "/x\0"),
             ("/a/q\"uote.exe", ""),
             ("/a/new\nline.exe", ""),
+            // Read as a separator on the Windows side.
+            ("/a/back\\slash.exe", ""),
         ] {
             assert!(
                 variables(&step(program, arguments, "/a", true), Path::new("/c")).is_err(),
                 "{program} {arguments}"
             );
         }
+        for dir in ["/games/Game\\", "/games/a\\b"] {
+            assert!(
+                variables(&step("/a/b.exe", "", dir, true), Path::new("/c")).is_err(),
+                "{dir}"
+            );
+        }
+        assert!(quoted_path(Path::new("/games/Game\\")).is_err());
     }
 
     #[test]
@@ -665,6 +677,7 @@ mod tests {
             "/home/a\"b/x.bat",
             "/home/a^b/x.bat",
             "/home/a|b/x.bat",
+            "/home/a\\b/x.bat",
         ] {
             let error = batch_path(Path::new(bad)).unwrap_err();
             assert!(
