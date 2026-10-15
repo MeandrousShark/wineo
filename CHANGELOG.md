@@ -3,6 +3,24 @@
 A finished plan bumps the minor version and fixes between plans bump the
 patch version. See `AGENTS.md` for the rule.
 
+## 0.32.1 - 2026-10-14
+
+Safer GOG installer updates.
+
+- Installing or updating a GOG game from its installer never overwrites or
+  deletes a file in the game folder that wineo hasn't checked first. Before,
+  a file another program created or changed while wineo was publishing
+  could be replaced or removed. wineo now places files with a rename that
+  refuses to replace, and moves its own old files aside before checking and
+  deleting them. Anything that isn't wineo's is kept or saved as
+  `<name>.wineo-saved`.
+- Files the game's previous version shipped are still updated in place, as
+  before.
+- On filesystems that can't rename without replacing (like NFS), installs
+  keep working as before.
+- A folder that appears where a new file goes is saved aside instead of
+  failing the update.
+
 ## 0.32.0 - 2026-10-14
 
 Lean and simple ([0051](docs/plans/0051-lean-and-simple.md)): wineo does
