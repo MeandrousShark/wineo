@@ -805,6 +805,48 @@ Step 5 (2026-10-14):
   both MSVC 2005 runtimes, and DirectX, every step exiting 0 with its
   effects in the prefix.
 
+Step 6 (2026-10-14):
+
+- **Where an update starts.** `installed` when the sidecar's rules trust
+  it; else the installed build's manifest fetched from GOG when that build
+  is known and listed; else the target's (answer b, nothing deleted). The
+  plan says which, and notes that setup's own prefix writes aren't counted
+  for space.
+- **Files the update doesn't change** are left alone when `installed` is
+  trusted: present, missing, or resized (the maintainer, 2026-10-14;
+  restoring them is `--repair`'s job). Only an update starting from a
+  fetched manifest checks them by size (question 4).
+- **An edited file at a changed path** is saved aside, never overwritten,
+  so Galaxy's `overwritten` stays empty.
+- **`pending` keeps the starting manifest,** so a resume after the new
+  `goggame-<id>.info` is in place still knows what the old build shipped.
+  It's evidence only: every delete or replace is still hash-checked at the
+  aside. A retarget with `pending` lost starts from the target's manifest.
+- **Deletions walk only the starting manifest,** so setup's extras in the
+  folder are never touched, and a folder goes only once it's empty. Before
+  a folder becomes a file or link, wineo's own entries in it are deleted
+  on a hash match.
+- **Chunk reuse** covers game files the starting manifest lists: each old
+  chunk is read at its offset and checked against its MD5 first. Staged
+  files count at full size for space.
+- **Setup steps carry over** only from a trusted `installed`; otherwise
+  every step runs. A new redistributable version alone, on the same build
+  and products, doesn't make an update.
+- **Languages** are picked as installs pick them, so a migrated game
+  recorded as `en` matches `en-US` depots. A file kept on size alone with
+  no whole-file MD5 is recorded without one, and a later delete checks it
+  chunk by chunk.
+- **A Galaxy update needs a login,** even to finish an interrupted one.
+  `update NAME --reinstall` on a Galaxy game is refused until step 7. The
+  CLI and app still refuse Galaxy updates until step 8; core's
+  `galaxy::plan_update` dispatches by track.
+- **Live:** Papers, Please installed at 1.2.76 under GE-Proton11-3 (the
+  older build picked by a throwaway patch), then updated to 1.4.11 with the
+  real code in 8 seconds: 108 old files deleted on hash matches, 53 added,
+  4 changed, the old `assets` folder removed once empty, two edited files
+  the new build drops kept and listed, an edited setup extra untouched,
+  and ISI rerun for the new build.
+
 ## Implementation sequence
 
 Part A:
