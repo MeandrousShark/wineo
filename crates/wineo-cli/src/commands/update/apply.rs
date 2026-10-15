@@ -276,10 +276,10 @@ fn one(paths: &Paths, args: &Args, name: &str) -> anyhow::Result<ExitCode> {
         Ok(updated) => (ready, updated),
         Err(error) => {
             let Some(label) = offers_wizard(&error).filter(|_| asking) else {
-                return Err(stopped_as(error, &ready));
+                return Err(stopped_as(paths, error, &ready));
             };
             if !ask_wizard(&mut terminal()?, &label)? {
-                return Err(stopped_as(error, &ready));
+                return Err(stopped_as(paths, error, &ready));
             }
             drop(cancellation);
             // The first attempt dropped its journal, or kept it to finish,
@@ -551,18 +551,36 @@ fn apply(
     ready: &Ready,
     cancellation: &Cancellation,
 ) -> anyhow::Result<Updated> {
-    apply_raw(paths, session, ready, cancellation).map_err(|error| stopped_as(error, ready))
+    apply_raw(paths, session, ready, cancellation).map_err(|error| stopped_as(paths, error, ready))
 }
 
-/// `setup_stopped`, naming an interrupted install as one.
-fn stopped_as(error: anyhow::Error, ready: &Ready) -> anyhow::Error {
+/// `setup_stopped`, naming an interrupted install as one, and saying how to
+/// finish whatever else stopped it after the journal was written.
+fn stopped_as(paths: &Paths, error: anyhow::Error, ready: &Ready) -> anyhow::Error {
     let mut error = setup_stopped(error, ready.environment(), ready.is_recovery());
     if ready.kind() == JournalKind::Install
         && let Some(interrupted) = error.downcast_mut::<Interrupted>()
     {
         interrupted.install = true;
     }
-    error
+    finish_hint(paths, error, ready.environment())
+}
+
+/// Ends the message of a failure with how to finish the update, decided by
+/// the journal still being in the folder, not by what failed. A
+/// cancellation says its own, and a message that already names the command
+/// is left alone.
+fn finish_hint(paths: &Paths, error: anyhow::Error, name: &str) -> anyhow::Error {
+    let command = format!("wineo update {name}");
+    if stopped(&error).is_some()
+        || update::journal_of(paths, name).is_none()
+        || error.to_string().contains(&command)
+    {
+        return error;
+    }
+    let message = format!("{error:#}");
+    let sep = if message.ends_with('.') { "" } else { "." };
+    anyhow::anyhow!("{message}{sep} Finish it with: {command}")
 }
 
 /// The update with core's own errors, so a Windows installer that never

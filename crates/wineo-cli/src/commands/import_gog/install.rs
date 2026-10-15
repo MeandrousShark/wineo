@@ -727,18 +727,30 @@ fn stopped(
             finish();
             Ok(ExitCode::FAILURE)
         }
+        // Whatever else stopped it, a journal still in the folder is there
+        // to finish.
+        _ if journal_left(paths, name, plan.gog_id()).is_some() => {
+            eprintln!("{}", style::error_stderr(format!("error: {error:#}")));
+            finish();
+            Ok(ExitCode::FAILURE)
+        }
         _ => Err(error),
     }
+}
+
+/// The journal an install left in the game's folder, if any.
+fn journal_left(paths: &Paths, name: &str, gog_id: u64) -> Option<folder::Journal> {
+    folder::find(paths, name, &gog_id.to_string())
+        .ok()
+        .flatten()
+        .and_then(|state| state.journal)
 }
 
 /// How an install that stopped is finished: a Galaxy one by installing the
 /// game again, since `wineo update` has no way to carry on a first install
 /// there.
 fn say_finish(paths: &Paths, name: &str, gog_id: u64) {
-    let galaxy = folder::find(paths, name, &gog_id.to_string())
-        .ok()
-        .flatten()
-        .and_then(|state| state.journal)
+    let galaxy = journal_left(paths, name, gog_id)
         .is_some_and(|journal| journal.target.track == Track::Galaxy);
     if galaxy {
         eprintln!("Finish the interrupted install with: wineo import gog --game {gog_id}");

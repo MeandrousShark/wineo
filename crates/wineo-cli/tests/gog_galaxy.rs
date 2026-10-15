@@ -916,3 +916,79 @@ fn an_interrupted_galaxy_install_is_finished_by_installing_again() {
     assert_eq!(read(&f, "Papers.exe"), "MZ 1.2.76");
     assert!(state(&f).journal.is_none());
 }
+
+/// `wineo` with its run state in a folder whose name setup's batch files
+/// can't carry, so a Galaxy setup step fails without an exit code.
+fn with_odd_state(f: &Fixture, api: &GogApi, args: &[&str]) -> Output {
+    gog_api::checked(
+        f.gog_command(api)
+            .args(args)
+            .env("DISPLAY", ":0")
+            .env("XDG_STATE_HOME", f.root.path().join("státe"))
+            .output()
+            .unwrap(),
+    )
+}
+
+#[test]
+fn an_install_that_fails_after_its_journal_says_how_to_finish_it() {
+    let (f, api) = world();
+    let out = with_odd_state(
+        &f,
+        &api,
+        &[
+            "import",
+            "gog",
+            "--game",
+            "1207658924",
+            "--runner",
+            "galaxy",
+            "--yes",
+        ],
+    );
+    assert_eq!(out.status.code(), Some(1), "{}", stderr(&out));
+    let err = stderr(&out);
+    assert!(err.contains("error: "), "{err}");
+    assert!(
+        err.trim_end()
+            .ends_with("Finish the interrupted install with: wineo import gog --game 1207658924"),
+        "{err}"
+    );
+    assert!(!err.contains("wineo update"), "{err}");
+    assert!(state(&f).journal.is_some());
+
+    let out = gog(
+        &f,
+        &api,
+        &["import", "gog", "--game", "1207658924", "--yes"],
+    );
+    assert_success(&out);
+    assert!(state(&f).journal.is_none());
+}
+
+#[test]
+fn a_repair_that_fails_after_its_journal_says_how_to_finish_it() {
+    let (f, api) = installed();
+    let out = with_odd_state(&f, &api, &["update", NAME, "--repair", "--yes"]);
+    assert_eq!(out.status.code(), Some(1), "{}", stderr(&out));
+    let err = stderr(&out);
+    assert!(
+        err.trim_end()
+            .ends_with(&format!("Finish it with: wineo update {NAME}")),
+        "{err}"
+    );
+    assert_eq!(
+        err.matches("Finish it with").count(),
+        1,
+        "the hint comes once: {err}"
+    );
+    assert!(state(&f).journal.is_some());
+
+    let out = update(&f, &api, &["--yes"]);
+    assert_success(&out);
+    assert!(
+        stdout(&out).contains(&format!("Finished the interrupted repair of {NAME}.\n")),
+        "{}",
+        stdout(&out)
+    );
+}

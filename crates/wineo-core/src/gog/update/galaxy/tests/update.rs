@@ -677,6 +677,44 @@ fn a_check_offers_the_dlc_an_update_would_install_and_no_other() {
 }
 
 #[test]
+fn a_check_whose_dlc_file_list_cant_be_had_warns_and_invents_no_update() {
+    use crate::gog::update::{UpdateState, check};
+    let fx = Fixture::new();
+    fx.gog.lock().unwrap().dlc = vec![DLC];
+    fx.gog.lock().unwrap().owned = Some(vec![GAME]);
+    fx.content.add_build(
+        Fixture::game("100").depot(FakeDepot::new(DLC).file(FakeFile::new("dlc.dat", b"now"))),
+    );
+    fx.install();
+    // Bought since; asking the build about it fails.
+    fx.gog.lock().unwrap().owned = Some(vec![GAME, DLC]);
+    fx.gog.lock().unwrap().fail_manifests = true;
+
+    // The base build is current, so there is nothing to offer.
+    let status = check(&mut fx.session(), "game", true).unwrap();
+    assert_eq!(status.state, UpdateState::UpToDate);
+    assert!(!status.applicable);
+    assert!(status.dlc.iter().all(|dlc| dlc.id != DLC));
+    assert_eq!(status.warnings.len(), 1, "{:?}", status.warnings);
+    assert!(
+        status.warnings[0]
+            .starts_with("Couldn't tell which DLC of Fake Game an update would install"),
+        "{:?}",
+        status.warnings
+    );
+
+    // A different base build is still an update.
+    fx.gog.lock().unwrap().newest_first = true;
+    fx.content.add_build(game_200());
+    let status = check(&mut fx.session(), "game", true).unwrap();
+    assert_eq!(status.state, UpdateState::Available);
+    assert!(status.applicable);
+    assert_eq!(status.installed.as_deref(), Some("100"));
+    assert_eq!(status.available.as_deref(), Some("200"));
+    assert_eq!(status.warnings.len(), 1, "{:?}", status.warnings);
+}
+
+#[test]
 fn an_update_to_a_build_without_an_installed_product_names_the_version() {
     let fx = Fixture::new();
     fx.gog.lock().unwrap().dlc = vec![DLC];
