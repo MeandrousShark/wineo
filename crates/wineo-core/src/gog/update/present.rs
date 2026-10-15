@@ -6,8 +6,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::time::{Duration, Instant};
 
-use super::install;
-use super::{GameError, Pending, Progress, Reason, Updated};
+use super::{GameError, Pending, Progress, Reason, Updated, galaxy, install};
 use crate::gog::folder::JournalKind;
 use crate::units;
 
@@ -45,37 +44,57 @@ pub enum ReviewLabel {
     Unpacked,
 }
 
+/// How a review and its result name an operation, before the environment's
+/// name.
+fn action_of(kind: JournalKind, recovery: bool) -> &'static str {
+    match (kind, recovery) {
+        (JournalKind::Reinstall, false) => "Reinstall",
+        (JournalKind::Reinstall, true) => "Finish the interrupted reinstall of",
+        (JournalKind::Repair, false) => "Repair",
+        (JournalKind::Repair, true) => "Finish the interrupted repair of",
+        (JournalKind::Install, true) => "Finish the interrupted install of",
+        (_, true) => "Finish the interrupted update of",
+        (_, false) => "Update",
+    }
+}
+
+/// What a finished operation says it did, without a full stop.
+fn finished_of(kind: JournalKind, recovery: bool, name: &str) -> String {
+    match (kind, recovery) {
+        (JournalKind::Reinstall, false) => format!("Reinstalled {name}"),
+        (JournalKind::Reinstall, true) => {
+            format!("Finished the interrupted reinstall of {name}")
+        }
+        (JournalKind::Repair, false) => format!("Repaired {name}"),
+        (JournalKind::Repair, true) => format!("Finished the interrupted repair of {name}"),
+        (JournalKind::Install, true) => format!("Finished the interrupted install of {name}"),
+        (_, true) => format!("Finished the interrupted update of {name}"),
+        (_, false) => format!("Updated {name}"),
+    }
+}
+
+impl galaxy::update::Plan {
+    /// How a review names what is being done, before the environment's name.
+    pub fn action(&self) -> &'static str {
+        action_of(self.kind(), self.is_recovery())
+    }
+
+    /// What a finished operation says it did, without a full stop.
+    pub fn finished(&self) -> String {
+        finished_of(self.kind(), self.is_recovery(), self.environment())
+    }
+}
+
 impl Pending {
     /// How a review and its result name what is being done, before the
     /// environment's name.
     pub fn action(&self) -> &'static str {
-        match (self.kind(), self.is_recovery()) {
-            (JournalKind::Reinstall, false) => "Reinstall",
-            (JournalKind::Reinstall, true) => "Finish the interrupted reinstall of",
-            (JournalKind::Repair, false) => "Repair",
-            (JournalKind::Repair, true) => "Finish the interrupted repair of",
-            (JournalKind::Install, true) => "Finish the interrupted install of",
-            (_, true) => "Finish the interrupted update of",
-            (_, false) => "Update",
-        }
+        action_of(self.kind(), self.is_recovery())
     }
 
     /// What a finished update says it did, without a full stop.
     pub fn finished(&self) -> String {
-        let name = self.environment();
-        match (self.kind(), self.is_recovery()) {
-            (JournalKind::Reinstall, false) => format!("Reinstalled {name}"),
-            (JournalKind::Reinstall, true) => {
-                format!("Finished the interrupted reinstall of {name}")
-            }
-            (JournalKind::Repair, false) => format!("Repaired {name}"),
-            (JournalKind::Repair, true) => {
-                format!("Finished the interrupted repair of {name}")
-            }
-            (JournalKind::Install, true) => format!("Finished the interrupted install of {name}"),
-            (_, true) => format!("Finished the interrupted update of {name}"),
-            (_, false) => format!("Updated {name}"),
-        }
+        finished_of(self.kind(), self.is_recovery(), self.environment())
     }
 
     /// The base game's title, which a recovery from saved packages doesn't

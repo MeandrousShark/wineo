@@ -83,6 +83,9 @@ pub(super) struct Sources<'a> {
     pub(super) target: &'a Target,
     /// How messages name a product.
     pub(super) label: &'a dyn Fn(u64) -> String,
+    /// Only the steps' names are wanted, for a review, before every file's
+    /// MD5 is known.
+    pub(super) review: bool,
 }
 
 /// The steps setup takes, in order, and warnings for a product's setup
@@ -95,6 +98,7 @@ pub(super) fn steps(sources: &Sources) -> Result<(Vec<Step>, Vec<String>)> {
         manifest,
         target,
         label,
+        review,
     } = *sources;
     let setup = &manifest.setup;
     let mut steps = Vec::new();
@@ -141,10 +145,10 @@ pub(super) fn steps(sources: &Sources) -> Result<(Vec<Step>, Vec<String>)> {
                 .files
                 .iter()
                 .find(|file| file.path.eq_ignore_ascii_case(&script))
-                .map(|file| {
-                    file.md5
-                        .clone()
-                        .ok_or_else(|| anyhow!("{}'s MD5 isn't known", file.path))
+                .map(|file| match (&file.md5, review) {
+                    (Some(md5), _) => Ok(md5.clone()),
+                    (None, true) => Ok(String::new()),
+                    (None, false) => Err(anyhow!("{}'s MD5 isn't known", file.path)),
                 })
                 .transpose()?;
             steps.push(Step {
@@ -190,10 +194,11 @@ pub(super) fn steps(sources: &Sources) -> Result<(Vec<Step>, Vec<String>)> {
             ));
             continue;
         };
-        let md5 = file
-            .md5
-            .clone()
-            .ok_or_else(|| anyhow!("{}'s MD5 isn't known", file.path))?;
+        let md5 = match (&file.md5, review) {
+            (Some(md5), _) => md5.clone(),
+            (None, true) => String::new(),
+            (None, false) => bail!("{}'s MD5 isn't known", file.path),
+        };
         let arguments = if temp_arguments.is_empty() {
             arguments
         } else {
@@ -244,6 +249,30 @@ pub(super) fn steps(sources: &Sources) -> Result<(Vec<Step>, Vec<String>)> {
         });
     }
     Ok((steps, warnings))
+}
+
+/// The steps setup would take for a plan, without the warnings, for a
+/// review. Empty when they can't be told, which applying reports.
+pub(super) fn planned_steps(
+    paths: &Paths,
+    folder: &Path,
+    manifest: &Manifest,
+    target: &Target,
+    title: &str,
+) -> Vec<Step> {
+    let support = paths.gog_support_dir(&crate::gog::folder::key(folder));
+    let label = |_: u64| title.to_owned();
+    steps(&Sources {
+        paths,
+        folder,
+        support: &support,
+        manifest,
+        target,
+        label: &label,
+        review: true,
+    })
+    .map(|(steps, _)| steps)
+    .unwrap_or_default()
 }
 
 /// `relative` under `root`, each part spelled as it is on disk when only its

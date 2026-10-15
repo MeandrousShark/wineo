@@ -113,6 +113,9 @@ pub struct Plan {
     seen: FolderState,
     arch: Arch,
     installed_build: Option<String>,
+    /// GOG's name for the installed build, or the installer version a move
+    /// comes from.
+    installed_version: Option<String>,
     version_name: Option<String>,
     products: Vec<PlannedProduct>,
     target: Target,
@@ -173,9 +176,55 @@ impl Plan {
         &self.manifest.build
     }
 
+    /// GOG's name for the installed build, when it was listed; for a move
+    /// off the installer track, the version the installer left.
+    pub fn installed_version(&self) -> Option<&str> {
+        self.installed_version.as_deref()
+    }
+
     /// GOG's name for the target build, when it was listed.
     pub fn version_name(&self) -> Option<&str> {
         self.version_name.as_deref()
+    }
+
+    /// The track the game is moving off, for a reinstall onto Galaxy.
+    pub fn moves_from(&self) -> Option<Track> {
+        self.seen
+            .committed
+            .as_ref()
+            .map(|committed| committed.track)
+            .filter(|track| *track != Track::Galaxy && self.kind == JournalKind::Reinstall)
+    }
+
+    /// How many support files the target build has.
+    pub fn support_files(&self) -> usize {
+        self.manifest.support.len()
+    }
+
+    /// The setup steps that run, by name: "script interpreter", "setup
+    /// program", or a redistributable's id. A repair or reinstall runs them
+    /// all; an update only the ones the record doesn't show done.
+    pub fn setup_steps(&self, paths: &Paths) -> Vec<String> {
+        let steps = setup::planned_steps(
+            paths,
+            &self.folder,
+            &self.manifest,
+            &self.target,
+            &self.title,
+        );
+        let done = if self.hashes_all() || self.recovery {
+            Vec::new()
+        } else {
+            install::files_record(paths, &self.folder)
+                .filter(|record| record::carries_setup(&self.seen, record).unwrap_or(false))
+                .map(|record| record.setup)
+                .unwrap_or_default()
+        };
+        let wanted: Vec<_> = steps.iter().map(|step| step.identity.clone()).collect();
+        setup::remaining(&wanted, &done, false)
+            .into_iter()
+            .map(|index| steps[index].name.clone())
+            .collect()
     }
 
     pub fn arch(&self) -> Arch {
@@ -435,6 +484,7 @@ pub fn plan(
             seen: state,
             arch,
             installed_build,
+            installed_version: manifest.setup.version_name.clone(),
             version_name: manifest.setup.version_name.clone(),
             products,
             target,
@@ -569,6 +619,19 @@ pub fn plan(
         recovery: false,
         seen: state,
         arch,
+        installed_version: if moving {
+            committed
+                .products
+                .iter()
+                .find(|product| product.id == gog_id)
+                .and_then(|product| product.version.clone())
+        } else {
+            installed_build
+                .as_deref()
+                .and_then(|id| builds.items.iter().find(|build| build.build_id == id))
+                .and_then(|build| build.version_name.clone())
+                .filter(|name| !name.is_empty())
+        },
         installed_build,
         version_name: latest.version_name.clone(),
         products,
@@ -1262,6 +1325,7 @@ fn resumed(
         seen: state,
         arch,
         installed_build,
+        installed_version: None,
         version_name,
         products,
         target,
@@ -1940,6 +2004,7 @@ fn run(
         manifest: &manifest,
         target: &plan.target,
         label: &label,
+        review: false,
     })?;
     warnings.extend(setup_warnings);
     let (guard, ran) = setup::run(

@@ -283,6 +283,21 @@ impl Plan {
             .collect()
     }
 
+    /// The setup steps that run, by name: "script interpreter", "setup
+    /// program", or a redistributable's id.
+    pub fn setup_steps(&self, paths: &Paths) -> Vec<String> {
+        setup::planned_steps(
+            paths,
+            &self.folder,
+            &self.manifest,
+            &self.target,
+            &self.title,
+        )
+        .into_iter()
+        .map(|step| step.name)
+        .collect()
+    }
+
     pub fn warnings(&self) -> &[String] {
         &self.warnings
     }
@@ -1399,6 +1414,7 @@ fn run(
         manifest: &manifest,
         target: &plan.target,
         label: &label,
+        review: false,
     })?;
     warnings.extend(setup_warnings);
     let (guard, ran) = setup::run(
