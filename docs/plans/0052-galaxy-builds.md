@@ -899,6 +899,70 @@ Step 7 (2026-10-15), with two answers from the maintainer the same day:
   untrusted, so its repair takes the answer-b route and needs the build to
   be listed.
 
+Step 8 (2026-10-15), with the maintainer's answers the same day:
+
+- **Checking.** A Galaxy game's latest build is the first generation 2
+  build on the default branch. It's `available` and `applicable` when that
+  differs from the installed build, including an unknown, unlisted,
+  generation 1, or other-branch one, since answer b and the fetched start
+  handle those. `update: galaxy` stays only when there's no generation 2
+  build, with the note `GOG has no Galaxy build of this game that wineo
+  can update. Move it to offline installers with: wineo update NAME
+  --reinstall --track installer` (approved).
+- **Version names** (approved, answer A): the `--check` table shows GOG's
+  version names, falling back to the build id; JSON's `installed` and
+  `available` stay build ids. Recovery reviews show the build id, since
+  nothing fetches the builds list on resume.
+- **DLC in `--check`.** Galaxy games now get the newly owned DLC check
+  too. When there's DLC to ask about, the check fetches the latest build's
+  manifest and runs the same selection an update does, so DLC the build
+  lacks never shows as an update; a failure there is a warning.
+- **Reviews, progress, and reports** follow the approved mockups: a
+  `track` row (`installer -> Galaxy` on a move), versions with the build
+  id when a move keeps the same name, `support` and `setup` rows, `check`
+  and "only what's missing or damaged" on a repair, "up to SIZE, files
+  that already match are kept" on a reinstall, and the plan's notes as
+  lines after the rows. Progress says `Checking files`, `Downloading`, and
+  `Running setup N of M: LABEL`; setup progress carries the step's name
+  from core. A repair or reinstall reports "Saved these files aside, since
+  they didn't match GOG's:", and a redistributable asking for a restart
+  says Wine doesn't need one.
+- **Messages** (approved): `--repair` on an installer game says `Only
+  Galaxy games can be repaired. Move it with: wineo update NAME
+  --reinstall --track galaxy`; a missing product outside an install says
+  `Build VERSION of TITLE doesn't have LABEL, which is installed.`
+- **Interrupted Galaxy installs** finish through `wineo import gog --game
+  ID`, as core has required since step 4, and every hint names that
+  command. Installer-track installs finish through `wineo update NAME`, so
+  this differs; making `update NAME` finish a Galaxy install too would be
+  a small core change. Left for the maintainer (decided while away).
+- **No content system.** With no track asked for, a 404 from the build
+  list means no Galaxy build, and the install goes to the installer. A
+  check reads a 404 the same way (`update: galaxy`), and `update NAME`
+  says the same note instead of a raw 404; other errors still fail.
+- **`update --all` finishes journals whose check failed,** on both tracks:
+  the journal is read from the folder, so a builds list that fails for a
+  moment can't strand an update that could finish without it. A game with
+  no journal whose check failed is still a failure.
+- **Every failure that leaves a journal says how to finish** (a bound set
+  after two review findings of the same class). When planning or applying
+  an install, update, repair, reinstall, or move fails, isn't a cancel,
+  and the folder's journal is still there, the error ends with the finish
+  command once, on both tracks. The journal decides, not the error's type
+  or the command that ran: a Galaxy install's journal names `wineo import
+  gog --game ID` even after `wineo update NAME`, which says `NAME's GOG
+  install didn't finish. Finish it with: wineo import gog --game ID`.
+  Errors before planning that aren't about the game (usage, `--yes`,
+  logged out) get no hint. Accepted limit (decided while the maintainer
+  was away, after the fourth review round): when the environment's own
+  config can't be read, its folder and journal can't be found, so the
+  config error shows without the hint; once the config is fixed, the next
+  run gives it.
+- **Deferred:** the `branch` and `pinned` JSON fields land with branches
+  in step 11. The app shows a clean error for a Galaxy update until step
+  9, which also rewords `UpdateError::Galaxy` and the `OnGog` note for the
+  app.
+
 ## Implementation sequence
 
 Part A:
