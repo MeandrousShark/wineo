@@ -132,15 +132,13 @@ pub(super) fn run(
     let (round_bytes, round_chunks) = (ROUND_BYTES, ROUND_CHUNKS);
     let mut start = 0;
     while start < units.len() {
-        let mut end = start;
-        let mut bytes = 0u64;
-        while end < units.len()
-            && end - start < round_chunks
-            && (end == start || bytes < round_bytes)
-        {
-            bytes = bytes.saturating_add(downloads.size_of(&units[end]));
-            end += 1;
-        }
+        let end = round_end(
+            units.len(),
+            start,
+            |unit| downloads.size_of(&units[unit]),
+            round_bytes,
+            round_chunks,
+        );
         if token.is_canceled() {
             return Err(UpdateError::Canceled { journal: true }.into());
         }
@@ -338,6 +336,29 @@ fn check(entry: &FileEntry, file: &File) -> Result<String> {
 
 /// The folder `relative` to `root`, one component at a time without
 /// following symlinks.
+/// Where the round starting at `start` ends: as many units as fit in
+/// `max_bytes` and `max_units`, but always at least one, so a chunk bigger
+/// than a round still gets one of its own.
+pub(super) fn round_end(
+    units: usize,
+    start: usize,
+    size: impl Fn(usize) -> u64,
+    max_bytes: u64,
+    max_units: usize,
+) -> usize {
+    let mut end = start;
+    let mut bytes = 0u64;
+    while end < units && end - start < max_units {
+        let next = bytes.saturating_add(size(end));
+        if end > start && next > max_bytes {
+            break;
+        }
+        bytes = next;
+        end += 1;
+    }
+    end
+}
+
 pub(super) fn open_dir(root: &OwnedFd, relative: &str) -> Result<OwnedFd> {
     let mut dir = root.try_clone().context("failed to open a folder")?;
     if relative.is_empty() {

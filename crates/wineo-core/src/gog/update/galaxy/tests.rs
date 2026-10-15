@@ -1875,6 +1875,37 @@ fn a_file_spanning_rounds_comes_out_whole() {
 }
 
 #[test]
+fn a_round_never_goes_over_its_byte_cap() {
+    let mib = 1 << 20;
+    let rounds = |sizes: &[u64], max_bytes: u64, max_units: usize| {
+        let mut ends = Vec::new();
+        let mut start = 0;
+        while start < sizes.len() {
+            start = super::fetch::round_end(
+                sizes.len(),
+                start,
+                |unit| sizes[unit],
+                max_bytes,
+                max_units,
+            );
+            ends.push(start);
+        }
+        ends
+    };
+    // Two 600 MiB chunks would make 1.2 GiB, so each gets its own round.
+    assert_eq!(
+        rounds(&[600 * mib, 600 * mib, 100 * mib], 1024 * mib, 1024),
+        [1, 3]
+    );
+    // Exactly the cap still fits.
+    assert_eq!(rounds(&[512 * mib, 512 * mib, 1], 1024 * mib, 1024), [2, 3]);
+    // A chunk over the cap still gets a round of its own.
+    assert_eq!(rounds(&[2048 * mib, 1], 1024 * mib, 1024), [1, 2]);
+    // The unit cap holds when bytes don't.
+    assert_eq!(rounds(&[1; 5], 1024 * mib, 2), [2, 4, 5]);
+}
+
+#[test]
 fn a_corrupt_chunk_mid_file_fails_the_install() {
     let fx = Fixture::new();
     fx.with_huge(12, |file| file);
