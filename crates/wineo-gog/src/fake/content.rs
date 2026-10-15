@@ -524,7 +524,7 @@ impl ContentSystem {
                 Some(json(200, &link.to_string()))
             }
             ["open_link"] => {
-                let link = state.issue_link(&base, "/content-system/v2/dependencies/store");
+                let link = open_link(&base);
                 Some(json(200, &value!({ "urls": link }).to_string()))
             }
             ["primary" | "fallback", ..] => Some(state.serve_chunk(request)),
@@ -662,6 +662,15 @@ impl State {
 
     fn serve_chunk(&self, request: &Request) -> Reply {
         let primary = ContentSystem::cdn_of(request) == Some(Cdn::Primary);
+        if !request.path().contains(DEPENDENCY_STORE) && !self.token_is_live(request, primary) {
+            return json(self.refusal, "{}");
+        }
+        self.chunk_reply(request, primary)
+    }
+
+    /// Whether the request carries a token that was handed out and hasn't
+    /// expired.
+    fn token_is_live(&self, request: &Request, primary: bool) -> bool {
         let token = if primary {
             request
                 .path()
@@ -671,12 +680,12 @@ impl State {
         } else {
             request.query("wsSecret")
         };
-        let live = token
+        token
             .and_then(|token| self.tokens.get(&token).copied())
-            .is_some_and(|expires_at| now() < expires_at);
-        if !live {
-            return json(self.refusal, "{}");
-        }
+            .is_some_and(|expires_at| now() < expires_at)
+    }
+
+    fn chunk_reply(&self, request: &Request, primary: bool) -> Reply {
         let hash = request.path().rsplit('/').next().unwrap_or_default();
         if primary && self.missing_on_primary.contains(hash) {
             return json(404, "{}");
@@ -691,6 +700,35 @@ impl State {
         }
         Reply::Send(response(200, &[], &bytes))
     }
+}
+
+/// Where the dependency store lives on both CDNs. It's public, as on real
+/// GOG: its links carry no token and its chunks are served without one.
+const DEPENDENCY_STORE: &str = "/content-system/v2/dependencies/store";
+
+/// The dependency store's `open_link` endpoints, shaped like GOG's: a plain
+/// address on each CDN and no parameters.
+fn open_link(base: &str) -> Value {
+    value!([
+        {
+            "endpoint_name": "fallback",
+            "url_format": format!("{base}/fallback{DEPENDENCY_STORE}"),
+            "parameters": {},
+            "priority": 20,
+            "max_fails": 100,
+            "supports_generation": [2],
+            "fallback_only": true,
+        },
+        {
+            "endpoint_name": "primary",
+            "url_format": format!("{base}/primary{DEPENDENCY_STORE}"),
+            "parameters": {},
+            "priority": 10,
+            "max_fails": 100,
+            "supports_generation": [1, 2],
+            "fallback_only": false,
+        },
+    ])
 }
 
 fn files(depot: &FakeDepot) -> impl Iterator<Item = &FakeFile> {

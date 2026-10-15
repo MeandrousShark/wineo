@@ -59,17 +59,63 @@ fn a_chunk_url_appends_the_hash_to_the_path_and_fills_the_template() {
             "https://gog-cdn.gcdn.co/store/1/01/23/{MD5}?wsSecret={{time}}&wsTime=5&x={{unknown}}"
         )
     );
-    assert!(
+    // No `path` parameter: the hash goes on the end of the filled
+    // template, as on the open dependency store.
+    assert_eq!(
         endpoint("{base_url}", &[("base_url", "https://a")])
             .chunk_url(MD5)
-            .is_none()
+            .unwrap()
+            .as_str(),
+        format!("https://a/01/23/{MD5}")
     );
+    assert!(endpoint("{base_url}", &[]).chunk_url(MD5).is_none());
     assert!(
         endpoint("{path}", &[("path", "/x")])
             .chunk_url(MD5)
             .is_none()
     );
     assert!(fastly.chunk_url("ab").is_none());
+}
+
+/// The answer GOG gave for the dependency store on 2026-10-14: plain
+/// addresses and no parameters, since the store is public.
+fn open_link_json() -> Value {
+    json!({
+        "urls": [
+            {"endpoint_name": "fastly", "url_format": "https://gog-cdn-fastly.gog.com/content-system/v2/dependencies/store", "parameters": {}, "priority": 20, "max_fails": 100, "supports_generation": [1, 2], "fallback_only": false},
+            {"endpoint_name": "gcore", "url_format": "https://gog-cdn.gcdn.co/content-system/v2/dependencies/store", "parameters": {}, "priority": 10, "max_fails": 100, "supports_generation": [2], "fallback_only": false},
+        ],
+    })
+}
+
+#[test]
+fn an_open_link_without_parameters_gives_plain_chunk_urls() {
+    let link = parse_secure_link(&open_link_json()).unwrap();
+    assert_eq!(link.endpoint_names(), ["fastly", "gcore"]);
+    assert_eq!(link.expires_at(), None);
+    assert!(link.fresh(u64::MAX));
+    let urls: Vec<String> = link
+        .endpoints
+        .iter()
+        .map(|endpoint| endpoint.chunk_url(MD5).unwrap().to_string())
+        .collect();
+    assert_eq!(
+        urls,
+        [
+            format!(
+                "https://gog-cdn-fastly.gog.com/content-system/v2/dependencies/store/01/23/{MD5}"
+            ),
+            format!("https://gog-cdn.gcdn.co/content-system/v2/dependencies/store/01/23/{MD5}"),
+        ]
+    );
+    // A trailing slash in the address isn't doubled.
+    let mut slashed = open_link_json();
+    slashed["urls"][0]["url_format"] = json!("https://cdn.example/store/");
+    let link = parse_secure_link(&slashed).unwrap();
+    assert_eq!(
+        link.endpoints[0].chunk_url(MD5).unwrap().as_str(),
+        format!("https://cdn.example/store/01/23/{MD5}")
+    );
 }
 
 fn link_json() -> Value {
@@ -518,10 +564,69 @@ fn the_dependency_store_has_its_own_link() {
         "/open_link?generation=2&_version=2&path=/dependencies/store/"
     );
     let chunk_request = server.requests().pop().unwrap();
-    assert!(
-        chunk_request
-            .path()
-            .contains("/content-system/v2/dependencies/store/")
+    // The store is public, so the chunk is asked for without a token.
+    assert_eq!(
+        chunk_request.path(),
+        format!(
+            "/primary/content-system/v2/dependencies/store/{}/{}/{}",
+            &chunk.compressed_md5[0..2],
+            &chunk.compressed_md5[2..4],
+            chunk.compressed_md5
+        )
+    );
+    assert_eq!(chunk_request.query("wsSecret"), None);
+    assert!(content.live_tokens().is_empty());
+}
+
+#[test]
+fn a_dependency_chunk_missing_on_the_primary_comes_from_the_fallback() {
+    let (content, server, _files) = serve(ContentSystem::new());
+    let chunk = content.add_chunk(b"redist bytes");
+    content.missing_on_primary(&chunk.compressed_md5);
+    let links = ChunkLinks::new(LinkScope::Dependencies);
+    assert_eq!(
+        server.client().chunk(&links, ACCESS, &chunk).unwrap(),
+        b"redist bytes"
+    );
+    assert_eq!(chunk_requests(&server), [Cdn::Primary, Cdn::Fallback]);
+}
+
+#[test]
+fn a_corrupt_dependency_chunk_is_refused_on_both_cdns() {
+    let (content, server, _files) = serve(ContentSystem::new());
+    let chunk = content.add_chunk(b"redist bytes");
+    content.corrupt_chunk(&chunk.compressed_md5);
+    let links = ChunkLinks::new(LinkScope::Dependencies);
+    let error = server.client().chunk(&links, ACCESS, &chunk).unwrap_err();
+    assert_eq!(error.kind(), ErrorKind::WrongChecksum);
+    assert_eq!(chunk_requests(&server), [Cdn::Primary, Cdn::Fallback]);
+}
+
+#[test]
+fn product_chunks_still_need_a_live_token() {
+    let (content, server, files) = serve(ContentSystem::new());
+    let chunk = &files[0].chunks[0];
+    let dependency = content.add_chunk(b"redist bytes");
+    // Revoking links refuses product chunks but never the public store.
+    let product = ChunkLinks::new(LinkScope::Product(7));
+    let dependencies = ChunkLinks::new(LinkScope::Dependencies);
+    let client = server.client();
+    client.chunk(&product, ACCESS, chunk).unwrap();
+    content.revoke_links(403);
+    let requests = link_requests(&server).len();
+    assert_eq!(
+        client.chunk(&dependencies, ACCESS, &dependency).unwrap(),
+        b"redist bytes"
+    );
+    assert_eq!(
+        client.chunk(&dependencies, ACCESS, &dependency).unwrap(),
+        b"redist bytes"
+    );
+    assert_eq!(link_requests(&server).len(), requests + 1);
+    // The product link is refused, fetched again, and then works.
+    assert_eq!(
+        client.chunk(&product, ACCESS, chunk).unwrap(),
+        b"0123456789"
     );
 }
 
