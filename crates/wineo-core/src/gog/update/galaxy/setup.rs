@@ -264,6 +264,9 @@ fn in_folder(root: &Path, relative: &str) -> PathBuf {
 /// The arguments Heroic gives GOG's script interpreter and a product's
 /// setup program, which were checked to set both up silently. The doubled
 /// shortcut flag, one of them misspelled, is how Heroic passes it.
+///
+/// cmd parses the line these end up on, so every value wineo puts in is
+/// either quoted or held to characters cmd gives no meaning to.
 fn galaxy_arguments(
     folder: &Path,
     support: &Path,
@@ -272,9 +275,18 @@ fn galaxy_arguments(
     version_name: Option<&str>,
     code: &str,
 ) -> Result<String> {
+    if !plain(code, 35) {
+        bail!("GOG's language code {code:?} isn't one setup can be given");
+    }
+    if !plain(build, 64) {
+        bail!("GOG's build id {build:?} isn't one setup can be given");
+    }
     let name = language::english_name(code);
     // A quote would end the quoted value early, so it's left out.
     let version: String = version_name.unwrap_or_default().replace('"', "");
+    if version.contains(['\r', '\n', '\0']) {
+        bail!("GOG's version name {version:?} isn't one setup can be given");
+    }
     Ok(format!(
         "/VERYSILENT /DIR={} /Language={name} /LANG={name} /ProductId={product} \
          /galaxyclient /buildId={build} /versionName=\"{version}\" \
@@ -282,6 +294,15 @@ fn galaxy_arguments(
         quoted_path(folder)?,
         quoted_path(support)?,
     ))
+}
+
+/// Whether `text` is 1 to `max` ASCII letters, digits, `-`, `_`, and `.`,
+/// none of which mean anything to cmd.
+fn plain(text: &str, max: usize) -> bool {
+    (1..=max).contains(&text.len())
+        && text
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
 }
 
 fn quoted_path(path: &Path) -> Result<String> {
@@ -565,6 +586,43 @@ mod tests {
             assert!(
                 batch_file(&step(program, arguments, "/a", true), Path::new("/c")).is_err(),
                 "{program} {arguments}"
+            );
+        }
+    }
+
+    #[test]
+    fn values_wineo_composes_cant_carry_commands() {
+        let args = |build: &str, version: Option<&str>, code: &str| {
+            galaxy_arguments(Path::new("/g"), Path::new("/s"), 1, build, version, code)
+        };
+        for code in [
+            "en-US&echo injected>injected.txt&rem",
+            "en US",
+            "en|x",
+            "en^",
+            "%PATH%",
+            "en\"",
+            "",
+            &"a".repeat(36),
+        ] {
+            assert!(args("100", None, code).is_err(), "{code:?}");
+        }
+        for build in ["1&calc", "1 2", "1%x%", "", "1\"x"] {
+            assert!(args(build, None, "en-US").is_err(), "{build:?}");
+        }
+        // A version name stays inside its quotes, its own quotes gone, so
+        // `&` and the like are only text there.
+        let quoted = args("100", Some("1.0\" & echo injected & rem \""), "en-US").unwrap();
+        assert!(
+            quoted.contains("/versionName=\"1.0 & echo injected & rem \" "),
+            "{quoted}"
+        );
+        assert!(args("100", Some("1.0\r\n"), "en-US").is_err());
+        // Codes GOG's depots use are fine.
+        for code in ["en-US", "zh-Hans", "es_mx", "pt-BR"] {
+            assert!(
+                args("59781086834418085", Some("v1.2"), code).is_ok(),
+                "{code}"
             );
         }
     }

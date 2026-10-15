@@ -797,3 +797,22 @@ fn decoy_cmd_scenario() {
     assert_installed(&fx);
     assert_eq!(fx.names(), ["scriptinterpreter.exe", "VC_redist.x86.exe"]);
 }
+
+#[test]
+fn a_depot_language_with_cmd_syntax_never_reaches_cmd() {
+    let fx = Fixture::new();
+    let injected = "en-US&echo injected>injected.txt&rem";
+    let mut game = scripted("100");
+    for depot in &mut game.depots {
+        depot.languages = vec![injected.to_owned()];
+    }
+    fx.content.add_build(game);
+    with_setup(&fx, None, None);
+    // Taken as the game's language, it's refused before anything runs.
+    let plan = fx.plan();
+    assert_eq!(plan.language(), injected);
+    let error = fx.apply(&plan).unwrap_err();
+    assert!(format!("{error:#}").contains("language code"), "{error:#}");
+    assert!(fx.ran().is_empty());
+    assert!(fx.state().journal.is_some());
+}
