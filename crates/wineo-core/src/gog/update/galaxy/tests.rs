@@ -15,7 +15,8 @@ thread_local! {
     static DEVICE_AT: RefCell<Vec<(PathBuf, u64)>> = const { RefCell::new(Vec::new()) };
 }
 
-/// Runs a test's hook right before a downloaded game file is put in place.
+/// Runs a test's hook right before a downloaded game file, or a link, is put
+/// in place.
 pub(super) fn before_place(path: &str) {
     BEFORE_PLACE.with(|hook| {
         if let Some(hook) = hook.borrow_mut().as_mut() {
