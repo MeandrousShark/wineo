@@ -439,8 +439,11 @@ pub(super) fn run(
             args: vec!["/c".to_owned(), z_path(&bat)?],
             env: Default::default(),
         };
-        let installer =
-            Installer::prepare_args_with(guard, paths, &global, name, "cmd", &args, prefix)?;
+        // Looked up by Wine in the prefix, never as a file of that name in
+        // the current folder.
+        let installer = Installer::prepare_prefix_program_with(
+            guard, paths, &global, name, "cmd", &args, prefix,
+        )?;
         let (outcome, back) = installer.run_keeping(token, stop, Output::Log(&log), |watched| {
             events(Event::Watched(watched))
         });

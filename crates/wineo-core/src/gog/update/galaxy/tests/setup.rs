@@ -752,3 +752,48 @@ fn steps_a_leftover_record_shows_done_still_run_for_a_new_install() {
     assert_eq!(fx.names(), ["VC_redist.x86.exe"]);
     assert_eq!(fx.record().unwrap().setup, leftover.setup);
 }
+
+/// Set for the copy of the test binary that runs with a decoy `cmd` in its
+/// current folder.
+const DECOY: &str = "WINEO_TEST_DECOY_CMD";
+
+#[test]
+fn a_file_named_cmd_in_the_current_folder_is_never_run() {
+    let dir = tempfile::tempdir().unwrap();
+    crate::test_script::write_script(
+        dir.path().join("cmd"),
+        "#!/bin/sh\ntouch \"$0.ran\"\nexit 0\n",
+    );
+    let output = std::process::Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            "gog::update::galaxy::tests::setup::decoy_cmd_scenario",
+            "--nocapture",
+        ])
+        .env(DECOY, "1")
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{output:?}");
+    assert!(
+        String::from_utf8_lossy(&output.stdout).contains("1 passed"),
+        "{output:?}"
+    );
+    assert!(!dir.path().join("cmd.ran").exists());
+}
+
+/// Runs only as `a_file_named_cmd_in_the_current_folder_is_never_run`'s
+/// copy, whose current folder holds a file named `cmd`.
+#[test]
+fn decoy_cmd_scenario() {
+    if std::env::var_os(DECOY).is_none() {
+        return;
+    }
+    assert!(Path::new("cmd").is_file());
+    let fx = Fixture::new();
+    fx.content.add_build(scripted("100"));
+    with_setup(&fx, None, None);
+    fx.install();
+    assert_installed(&fx);
+    assert_eq!(fx.names(), ["scriptinterpreter.exe", "VC_redist.x86.exe"]);
+}

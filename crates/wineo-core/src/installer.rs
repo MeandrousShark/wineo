@@ -22,7 +22,7 @@ use crate::cancel::Token;
 use crate::config::GlobalConfig;
 use crate::environment::Environment;
 use crate::error::{Error, IoContext, Result};
-use crate::launch::{Host, Launch};
+use crate::launch::{ExecResolution, Host, Launch};
 use crate::operation::{Guard, Locks, Operation};
 use crate::paths::Paths;
 use crate::process;
@@ -103,11 +103,18 @@ impl Installer {
     ) -> Result<Self> {
         // Resolved once to know which prefix to lock, then again under it.
         let environment = Environment::load(paths, name)?;
-        let locked = launch(paths, global, &environment, program, args)?
-            .host
-            .prefix()
-            .ok_or_else(|| environment.config.no_prefix(name))?
-            .to_owned();
+        let locked = launch(
+            paths,
+            global,
+            &environment,
+            program,
+            args,
+            ExecResolution::CurrentDirectory,
+        )?
+        .host
+        .prefix()
+        .ok_or_else(|| environment.config.no_prefix(name))?
+        .to_owned();
         let guard = Locks::new(paths).acquire(Operation::Install, name, &[&locked])?;
         Self::claim(
             guard,
@@ -118,6 +125,7 @@ impl Installer {
             args,
             Some(&locked),
             None,
+            ExecResolution::CurrentDirectory,
         )
     }
 
@@ -141,6 +149,7 @@ impl Installer {
             &Args::default(),
             None,
             None,
+            ExecResolution::CurrentDirectory,
         )
     }
 
@@ -165,6 +174,33 @@ impl Installer {
             args,
             Some(locked),
             None,
+            ExecResolution::CurrentDirectory,
+        )
+    }
+
+    /// `prepare_args_with` for a program in the prefix named by itself, like
+    /// `cmd`, which Wine looks up there whatever files the current directory
+    /// holds.
+    pub fn prepare_prefix_program_with(
+        mut guard: Guard,
+        paths: &Paths,
+        global: &GlobalConfig,
+        name: &str,
+        program: &str,
+        args: &Args,
+        locked: &Path,
+    ) -> Result<Self> {
+        guard.relabel(Operation::Install)?;
+        Self::claim(
+            guard,
+            paths,
+            global,
+            name,
+            program,
+            args,
+            Some(locked),
+            None,
+            ExecResolution::ExplicitPaths,
         )
     }
 
@@ -208,6 +244,7 @@ impl Installer {
             args,
             None,
             Some(runner),
+            ExecResolution::CurrentDirectory,
         )
     }
 
@@ -223,6 +260,7 @@ impl Installer {
         args: &Args,
         locked: Option<&Path>,
         fixed_runner: Option<&crate::runner::Runner>,
+        resolution: ExecResolution,
     ) -> Result<Self> {
         let mut environment = Environment::load(paths, name)?;
         if let Some(runner) = fixed_runner {
@@ -243,7 +281,7 @@ impl Installer {
             Runners::new(paths, global)?.resolve_locked(paths, &environment.wine()?.runner)?
         };
         environment.config.require_wine_mut(name)?.runner = runner.name().to_owned();
-        let mut launch = launch(paths, global, &environment, program, args)?;
+        let mut launch = launch(paths, global, &environment, program, args, resolution)?;
         let Host::Wine {
             runner: launch_runner,
             prefix,
@@ -466,8 +504,17 @@ fn launch(
     environment: &Environment,
     program: &str,
     args: &Args,
+    resolution: ExecResolution,
 ) -> Result<Launch> {
-    Launch::exec(paths, global, environment, program, &args.args, &args.env)
+    Launch::exec_with_resolution(
+        paths,
+        global,
+        environment,
+        program,
+        &args.args,
+        &args.env,
+        resolution,
+    )
 }
 
 fn command(launch: &Launch, output: Output) -> Result<Command> {
