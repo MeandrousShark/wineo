@@ -24,6 +24,11 @@ pub(super) fn latest<'a>(builds: &'a Builds, branch: Option<&str>) -> Option<&'a
         .find(|build| build.branch.as_deref() == branch && build.generation == Some(2))
 }
 
+/// `latest` on the default branch.
+pub(in crate::gog::update) fn latest_default(builds: &Builds) -> Option<&Build> {
+    latest(builds, None)
+}
+
 /// What `osBitness` calls a prefix's arch.
 pub(super) fn bits(arch: Arch) -> &'static str {
     match arch {

@@ -8,6 +8,7 @@ use serde_json::json;
 use wineo_core::gog::update::{self, Batch, Status};
 use wineo_core::paths::Paths;
 
+use super::galaxy::GogTrack;
 use super::gog_support::{
     Account, dlc_json, dlc_notes, error_json, reason_json, update_label, warn,
 };
@@ -29,6 +30,12 @@ pub struct Args {
     /// Rebuild a game from GOG's current files even when nothing changed
     #[arg(long, conflicts_with_all = ["check", "all"])]
     reinstall: bool,
+    /// With --reinstall, the track to put the game on
+    #[arg(long, value_enum, requires = "reinstall")]
+    track: Option<GogTrack>,
+    /// Check every file of a Galaxy game and fix what is missing or damaged
+    #[arg(long, conflicts_with_all = ["reinstall", "track", "check", "all"])]
+    repair: bool,
     /// Fetch GOG's game details again instead of using the saved copy
     #[arg(long)]
     refresh: bool,
@@ -112,13 +119,18 @@ fn print_table(statuses: &[Status]) {
     if statuses.is_empty() {
         return;
     }
-    let dash = || "-".to_owned();
+    // A Galaxy build reads by GOG's name for it, else by its id.
+    let shown = |name: &Option<String>, id: &Option<String>| {
+        name.clone()
+            .or_else(|| id.clone())
+            .unwrap_or_else(|| "-".to_owned())
+    };
     let mut table = vec![["NAME", "INSTALLED", "AVAILABLE", "STATE"].map(str::to_owned)];
     table.extend(statuses.iter().map(|status| {
         [
             status.environment.clone(),
-            status.installed.clone().unwrap_or_else(dash),
-            status.available.clone().unwrap_or_else(dash),
+            shown(&status.installed_name, &status.installed),
+            shown(&status.available_name, &status.available),
             update_label(status.state).to_owned(),
         ]
     }));
@@ -129,7 +141,12 @@ fn print_table(statuses: &[Status]) {
         if let Some(reason) = &status.reason {
             println!("  {}", reason.note());
         }
-        if status.unfinished {
+        if status.galaxy_install {
+            println!(
+                "  Finish the interrupted install with: wineo import gog --game {}",
+                status.gog_id
+            );
+        } else if status.unfinished {
             println!(
                 "  Finish the interrupted update with: wineo update {}",
                 status.environment

@@ -5,12 +5,14 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::{Read, Write};
 use std::net::TcpListener;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU16, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
 use serde_json::{Value, json};
+use wineo_gog::fake::content::ContentSystem;
+use wineo_gog::fake::{Reply, Request};
 
 /// What the server answers with. Tests change it between runs.
 pub struct Config {
@@ -91,6 +93,15 @@ impl Default for Config {
 
 pub struct GogApi {
     pub base: String,
+    /// Galaxy builds, manifests, and chunks. Asked before the rest.
+    pub content: Arc<ContentSystem>,
+    /// Lists the builds the other way round, the last one added first, as
+    /// GOG lists a newer build before an older one.
+    pub newest_first: Arc<AtomicBool>,
+    /// Builds GOG no longer lists, by id.
+    pub hidden_builds: Arc<Mutex<BTreeSet<String>>>,
+    /// Build lists fail with this status while it isn't 0.
+    pub builds_status: Arc<AtomicU16>,
     config: Arc<Mutex<Config>>,
     requests: Arc<Mutex<Vec<String>>>,
     stop: Arc<AtomicBool>,
@@ -160,15 +171,22 @@ pub fn product(id: u64, title: &str, installers: &[Value], dlcs: &[Value]) -> Va
     })
 }
 
-/// A Windows build list, newest first, each as `(build id, branch)`.
+/// A Windows build list, newest first, each as `(build id, branch)`. Every
+/// build is generation 2 and named `v` and its id.
 pub fn builds(items: &[(&str, Option<&str>)]) -> Value {
+    let items: Vec<_> = items.iter().map(|&(id, branch)| (id, branch, 2)).collect();
+    builds_of(&items)
+}
+
+/// `builds`, each with its generation.
+pub fn builds_of(items: &[(&str, Option<&str>, u8)]) -> Value {
     json!({
-        "items": items.iter().map(|(id, branch)| json!({
+        "items": items.iter().map(|(id, branch, generation)| json!({
             "build_id": id,
-            "version_name": "1.0",
+            "version_name": format!("v{id}"),
             "branch": branch,
             "date_published": "2026-01-01T00:00:00+0000",
-            "generation": 2,
+            "generation": generation,
             "link": "http://unused.example/manifest",
         })).collect::<Vec<_>>(),
         "has_private_branches": false,
@@ -208,6 +226,38 @@ fn bearer(head: &str) -> Option<String> {
 
 fn unauthorized() -> String {
     reply(401, "{}")
+}
+
+/// The request line and headers of `head`, as the content system reads them.
+fn content_request(head: &str) -> Request {
+    let mut lines = head.lines();
+    let mut first = lines.next().unwrap_or_default().split(' ');
+    Request {
+        method: first.next().unwrap_or_default().to_owned(),
+        target: first.next().unwrap_or("/").to_owned(),
+        headers: lines
+            .filter_map(|line| line.split_once(':'))
+            .map(|(name, value)| (name.trim().to_owned(), value.trim().to_owned()))
+            .collect(),
+    }
+}
+
+/// A build list's reply without the `hidden` builds, and with the rest the
+/// other way round when `reverse`.
+fn shaped(reply: &[u8], reverse: bool, hidden: &BTreeSet<String>) -> Vec<u8> {
+    let text = String::from_utf8_lossy(reply);
+    let body = &text[text.find("\r\n\r\n").unwrap() + 4..];
+    let mut list: Value = serde_json::from_str(body).unwrap();
+    let items = list["items"].as_array_mut().unwrap();
+    items.retain(|item| !hidden.contains(item["build_id"].as_str().unwrap_or_default()));
+    if reverse {
+        items.reverse();
+    }
+    reply_bytes(200, &list.to_string())
+}
+
+fn reply_bytes(status: u16, body: &str) -> Vec<u8> {
+    reply(status, body).into_bytes()
 }
 
 /// Answers a request with the bytes to send back. File downloads aren't
@@ -398,10 +448,18 @@ impl GogApi {
         listener.set_nonblocking(true).unwrap();
         let base = format!("http://{}", listener.local_addr().unwrap());
         let config = Arc::new(Mutex::new(Config::default()));
+        let content = Arc::new(ContentSystem::new().with_chunk_size(8));
+        let newest_first = Arc::new(AtomicBool::new(false));
+        let builds_status = Arc::new(AtomicU16::new(0));
+        let hidden_builds = Arc::new(Mutex::new(BTreeSet::new()));
         let requests = Arc::new(Mutex::new(Vec::new()));
         let stop = Arc::new(AtomicBool::new(false));
         let thread = {
             let (config, requests, stop) = (config.clone(), requests.clone(), stop.clone());
+            let content = content.clone();
+            let newest_first = newest_first.clone();
+            let builds_status = builds_status.clone();
+            let hidden = hidden_builds.clone();
             let base = base.clone();
             thread::spawn(move || {
                 while !stop.load(Ordering::Relaxed) {
@@ -426,14 +484,40 @@ impl GogApi {
                     requests.lock().unwrap().push(line.clone());
                     let target = line.split(' ').nth(1).unwrap_or("/");
                     let token = bearer(&text);
-                    let response =
-                        respond(&mut config.lock().unwrap(), &base, target, token.as_deref());
+                    let failing = builds_status.load(Ordering::Relaxed);
+                    let lists_builds = target
+                        .split('?')
+                        .next()
+                        .is_some_and(|path| path.ends_with("/builds"));
+                    let response = match content
+                        .answer(&content_request(&text))
+                        .filter(|_| failing == 0 || !lists_builds)
+                    {
+                        Some(Reply::Send(bytes) | Reply::Stall(bytes, _)) => {
+                            let hidden = hidden.lock().unwrap();
+                            if lists_builds
+                                && (newest_first.load(Ordering::Relaxed) || !hidden.is_empty())
+                            {
+                                shaped(&bytes, newest_first.load(Ordering::Relaxed), &hidden)
+                            } else {
+                                bytes
+                            }
+                        }
+                        None if failing != 0 && lists_builds => reply_bytes(failing, "{}"),
+                        None => {
+                            respond(&mut config.lock().unwrap(), &base, target, token.as_deref())
+                        }
+                    };
                     let _ = stream.write_all(&response);
                 }
             })
         };
         Self {
             base,
+            content,
+            newest_first,
+            builds_status,
+            hidden_builds,
             config,
             requests,
             stop,

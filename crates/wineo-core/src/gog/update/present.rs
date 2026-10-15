@@ -6,16 +6,18 @@ use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::time::{Duration, Instant};
 
-use super::install;
-use super::{GameError, Pending, Progress, Reason, Updated};
-use crate::gog::folder::JournalKind;
+use super::{GameError, Pending, Progress, Reason, Updated, galaxy, install};
+use crate::gog::folder::{JournalKind, Track};
+use crate::gog::names;
 use crate::units;
 
 impl Reason {
     /// Why an update can't be applied, or can't be told, as a sentence.
     pub fn note(&self) -> String {
         match self {
-            Self::Galaxy => "Updating Galaxy builds comes in a later release.".to_owned(),
+            Self::Galaxy { name } => format!(
+                "GOG has no Galaxy build of this game that wineo can update. Move it to offline installers with: wineo update {name} --reinstall --track installer"
+            ),
             Self::CantCompare(why) => why.clone(),
         }
     }
@@ -43,37 +45,89 @@ pub enum ReviewLabel {
     Unpacked,
 }
 
+/// How a review and its result name an operation, before the environment's
+/// name.
+fn action_of(kind: JournalKind, recovery: bool) -> &'static str {
+    match (kind, recovery) {
+        (JournalKind::Reinstall, false) => "Reinstall",
+        (JournalKind::Reinstall, true) => "Finish the interrupted reinstall of",
+        (JournalKind::Repair, false) => "Repair",
+        (JournalKind::Repair, true) => "Finish the interrupted repair of",
+        (JournalKind::Install, true) => "Finish the interrupted install of",
+        (_, true) => "Finish the interrupted update of",
+        (_, false) => "Update",
+    }
+}
+
+/// What a finished operation says it did, without a full stop.
+fn finished_of(kind: JournalKind, recovery: bool, name: &str) -> String {
+    match (kind, recovery) {
+        (JournalKind::Reinstall, false) => format!("Reinstalled {name}"),
+        (JournalKind::Reinstall, true) => {
+            format!("Finished the interrupted reinstall of {name}")
+        }
+        (JournalKind::Repair, false) => format!("Repaired {name}"),
+        (JournalKind::Repair, true) => format!("Finished the interrupted repair of {name}"),
+        (JournalKind::Install, true) => format!("Finished the interrupted install of {name}"),
+        (_, true) => format!("Finished the interrupted update of {name}"),
+        (_, false) => format!("Updated {name}"),
+    }
+}
+
+/// Every Galaxy product's label, by id: the base game's title, or a DLC as
+/// `NAME (ID)`.
+fn galaxy_labels(
+    title: &str,
+    gog_id: u64,
+    products: &[galaxy::PlannedProduct],
+) -> HashMap<u64, String> {
+    products
+        .iter()
+        .map(|product| {
+            let label = if product.id == gog_id {
+                title.to_owned()
+            } else {
+                names::dlc_label(title, product.id, product.title.as_deref())
+            };
+            (product.id, label)
+        })
+        .collect()
+}
+
+impl galaxy::install::Plan {
+    /// Every product's label, by id, for a progress line or a review.
+    pub fn product_labels(&self) -> HashMap<u64, String> {
+        galaxy_labels(self.title(), self.gog_id(), self.products())
+    }
+}
+
+impl galaxy::update::Plan {
+    /// Every product's label, by id, for a progress line or a review.
+    pub fn product_labels(&self) -> HashMap<u64, String> {
+        galaxy_labels(self.title(), self.gog_id(), self.products())
+    }
+
+    /// How a review names what is being done, before the environment's name.
+    pub fn action(&self) -> &'static str {
+        action_of(self.kind(), self.is_recovery())
+    }
+
+    /// What a finished operation says it did, without a full stop.
+    pub fn finished(&self) -> String {
+        finished_of(self.kind(), self.is_recovery(), self.environment())
+    }
+}
+
 impl Pending {
     /// How a review and its result name what is being done, before the
     /// environment's name.
     pub fn action(&self) -> &'static str {
-        match (self.kind(), self.is_recovery()) {
-            (JournalKind::Reinstall, false) => "Reinstall",
-            (JournalKind::Reinstall, true) => "Finish the interrupted reinstall of",
-            (JournalKind::Repair, false) => "Repair",
-            (JournalKind::Repair, true) => "Finish the interrupted repair of",
-            (JournalKind::Install, true) => "Finish the interrupted install of",
-            (_, true) => "Finish the interrupted update of",
-            (_, false) => "Update",
-        }
+        action_of(self.kind(), self.is_recovery())
     }
 
     /// What a finished update says it did, without a full stop.
     pub fn finished(&self) -> String {
-        let name = self.environment();
-        match (self.kind(), self.is_recovery()) {
-            (JournalKind::Reinstall, false) => format!("Reinstalled {name}"),
-            (JournalKind::Reinstall, true) => {
-                format!("Finished the interrupted reinstall of {name}")
-            }
-            (JournalKind::Repair, false) => format!("Repaired {name}"),
-            (JournalKind::Repair, true) => {
-                format!("Finished the interrupted repair of {name}")
-            }
-            (JournalKind::Install, true) => format!("Finished the interrupted install of {name}"),
-            (_, true) => format!("Finished the interrupted update of {name}"),
-            (_, false) => format!("Updated {name}"),
-        }
+        finished_of(self.kind(), self.is_recovery(), self.environment())
     }
 
     /// The base game's title, which a recovery from saved packages doesn't
@@ -99,13 +153,22 @@ impl Pending {
             .collect()
     }
 
+    /// `1.0 -> 1.1`; a game moving off Galaxy has no installer version to
+    /// come from, so it shows the version alone.
+    fn change(&self, installed: Option<&str>, version: &str) -> String {
+        if installed.is_none() && self.moves_from() == Some(Track::Galaxy) {
+            return version.to_owned();
+        }
+        change(installed, version)
+    }
+
     /// What a review shows, row by row, with `show_path` writing the folder.
     pub fn review_rows(&self, show_path: impl Fn(&Path) -> String) -> Vec<(ReviewLabel, String)> {
         let mut rows = vec![(ReviewLabel::Folder, show_path(self.folder()))];
         for product in self.products() {
             let label = self.product_label(product.id, product.title.as_deref());
             let value = match &product.version {
-                Some(version) => change(product.installed.as_deref(), version),
+                Some(version) => self.change(product.installed.as_deref(), version),
                 None => "left as it is".to_owned(),
             };
             rows.push((ReviewLabel::Product(label), value));
@@ -146,7 +209,7 @@ impl Pending {
                 let label =
                     self.product_label(product.id, planned.and_then(|p| p.title.as_deref()));
                 let installed = planned.and_then(|p| p.installed.as_deref());
-                Some((label, change(installed, version)))
+                Some((label, self.change(installed, version)))
             })
             .collect()
     }

@@ -42,6 +42,9 @@ pub struct Args {
     /// With --game, the platform to install for, Linux when GOG has a Linux installer
     #[arg(long, value_enum, requires = "game")]
     pub platform: Option<InstallPlatform>,
+    /// With --game, galaxy or installer, Galaxy's builds when GOG has one for a Windows game
+    #[arg(long, value_enum, requires = "game")]
+    pub track: Option<super::galaxy::GogTrack>,
     /// With --game, the language to install in, a locale tag like fr-FR
     #[arg(long, value_name = "TAG", requires = "game")]
     pub language: Option<String>,

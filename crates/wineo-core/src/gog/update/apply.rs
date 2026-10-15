@@ -210,6 +210,16 @@ impl Pending {
         self.seen.owner.is_none()
     }
 
+    /// The track a reinstall moves the game off, when it puts it on
+    /// another.
+    pub fn moves_from(&self) -> Option<Track> {
+        self.seen
+            .committed
+            .as_ref()
+            .map(|committed| committed.track)
+            .filter(|track| *track != self.target.track)
+    }
+
     /// The state the rebuild commits.
     pub fn target(&self) -> &Target {
         &self.target

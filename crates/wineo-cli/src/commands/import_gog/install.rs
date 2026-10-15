@@ -1,6 +1,6 @@
-//! Installing a GOG game wineo doesn't have yet, from GOG's offline
-//! installers: a review, progress while it downloads and installs, and GOG's
-//! playtime and art after, like a migration.
+//! Installing a GOG game wineo doesn't have yet, from Galaxy's builds or
+//! GOG's offline installers: a review, progress while it downloads and
+//! installs, and GOG's playtime and art after, like a migration.
 
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -9,10 +9,11 @@ use wineo_core::config::GlobalConfig;
 use wineo_core::create::CreateEvent;
 use wineo_core::environment;
 use wineo_core::gog::account::Session;
-use wineo_core::gog::folder::{self, JournalKind, Platform, ProductStatus};
+use wineo_core::gog::folder::{self, JournalKind, Platform, ProductStatus, Track};
 use wineo_core::gog::migrate::MigrateError;
 use wineo_core::gog::product;
-use wineo_core::gog::update::install::{self, Installed, Plan, Request};
+use wineo_core::gog::update::galaxy::{self as core_galaxy, Planned};
+use wineo_core::gog::update::install::{Creation, Installed, Request};
 use wineo_core::gog::update::windows::{Event, SetupError};
 use wineo_core::gog::update::{self, Progress, UpdateError};
 use wineo_core::paths::Paths;
@@ -20,8 +21,10 @@ use wineo_core::targets::Batch;
 
 use super::Args;
 use crate::cancel;
+use crate::commands::galaxy;
 use crate::commands::gog_support::{
-    Account, Reporter, ask_wizard, offers_wizard, usage_error, warn,
+    Account, Reporter, ask_wizard, finish_command, journal_for, offers_wizard, usage_error, warn,
+    with_finish_hint,
 };
 use crate::commands::setup::{self, watched_message};
 use crate::commands::table;
@@ -32,6 +35,107 @@ use crate::prompt::{self, Ask, Reply, terminal};
 use crate::style;
 
 const NEEDS_YES: &str = "Installing without a terminal needs --yes.";
+
+/// An install planned on the Galaxy track or from offline installers, with
+/// what the two share.
+struct Plan(Planned);
+
+impl Plan {
+    fn galaxy(&self) -> Option<&core_galaxy::install::Plan> {
+        match &self.0 {
+            Planned::Galaxy(plan) => Some(plan),
+            Planned::Installer(_) => None,
+        }
+    }
+
+    fn environment(&self) -> &str {
+        match &self.0 {
+            Planned::Installer(plan) => plan.environment(),
+            Planned::Galaxy(plan) => plan.environment(),
+        }
+    }
+
+    fn title(&self) -> &str {
+        match &self.0 {
+            Planned::Installer(plan) => plan.title(),
+            Planned::Galaxy(plan) => plan.title(),
+        }
+    }
+
+    fn gog_id(&self) -> u64 {
+        match &self.0 {
+            Planned::Installer(plan) => plan.gog_id(),
+            Planned::Galaxy(plan) => plan.gog_id(),
+        }
+    }
+
+    fn folder(&self) -> &std::path::Path {
+        match &self.0 {
+            Planned::Installer(plan) => plan.folder(),
+            Planned::Galaxy(plan) => plan.folder(),
+        }
+    }
+
+    /// Galaxy builds are only for Windows games.
+    fn platform(&self) -> Platform {
+        match &self.0 {
+            Planned::Installer(plan) => plan.platform(),
+            Planned::Galaxy(_) => Platform::Windows,
+        }
+    }
+
+    fn resumes(&self) -> bool {
+        match &self.0 {
+            Planned::Installer(plan) => plan.resumes(),
+            Planned::Galaxy(plan) => plan.resumes(),
+        }
+    }
+
+    fn has_config(&self) -> bool {
+        match &self.0 {
+            Planned::Installer(plan) => plan.has_config(),
+            Planned::Galaxy(plan) => plan.has_config(),
+        }
+    }
+
+    fn creation(&self) -> Option<&Creation> {
+        match &self.0 {
+            Planned::Installer(plan) => plan.creation(),
+            Planned::Galaxy(plan) => plan.creation(),
+        }
+    }
+
+    fn requested_language(&self) -> &str {
+        match &self.0 {
+            Planned::Installer(plan) => plan.requested_language(),
+            Planned::Galaxy(plan) => plan.requested_language(),
+        }
+    }
+
+    fn warnings(&self) -> &[String] {
+        match &self.0 {
+            Planned::Installer(plan) => plan.warnings(),
+            Planned::Galaxy(plan) => plan.warnings(),
+        }
+    }
+
+    fn product_labels(&self) -> std::collections::HashMap<u64, String> {
+        match &self.0 {
+            Planned::Installer(plan) => plan.product_labels(),
+            Planned::Galaxy(plan) => plan.product_labels(),
+        }
+    }
+
+    fn product_label(&self, id: u64) -> String {
+        match &self.0 {
+            Planned::Installer(plan) => plan.product_label(id),
+            Planned::Galaxy(plan) => plan
+                .product_labels()
+                .remove(&id)
+                .unwrap_or_else(|| format!("GOG product {id}")),
+        }
+    }
+}
 
 /// Whether wineo already has the game, and under which name.
 enum Existing {
@@ -155,7 +259,13 @@ pub(super) fn one(paths: &Paths, args: &Args, id: &str) -> anyhow::Result<ExitCo
         arch: args.arch,
         wizard: false,
     };
-    let plan = match plan_install(paths, &mut session, &request, unfinished)? {
+    let plan = match plan_install(
+        paths,
+        &mut session,
+        &request,
+        args.track.map(Into::into),
+        unfinished,
+    )? {
         Ok(plan) => plan,
         Err(code) => return Ok(code),
     };
@@ -175,6 +285,7 @@ pub(super) fn one(paths: &Paths, args: &Args, id: &str) -> anyhow::Result<ExitCo
         let has_environment = plan.creation().is_none();
         let ignored: Vec<&str> = [
             (args.platform.is_some(), "--platform"),
+            (args.track.is_some(), "--track"),
             (args.language.is_some(), "--language"),
             (has_environment && args.runner.is_some(), "--runner"),
             (has_environment && args.arch.is_some(), "--arch"),
@@ -207,21 +318,21 @@ pub(super) fn one(paths: &Paths, args: &Args, id: &str) -> anyhow::Result<ExitCo
         Err(error) => {
             let label = offers_wizard(&error);
             let Some((prompt, label)) = prompt.as_mut().zip(label) else {
-                return stopped(error, &plan, &plan);
+                return stopped(paths, error, &plan, &plan);
             };
             match ask_wizard(prompt, &label) {
                 Ok(true) => {}
-                Ok(false) => return stopped(error, &plan, &plan),
+                Ok(false) => return stopped(paths, error, &plan, &plan),
                 Err(asked) if cancel::prompted(&asked) => {
                     eprintln!("Install canceled.");
-                    say_finish(plan.environment());
+                    say_finish(paths, plan.environment(), plan.gog_id());
                     return Ok(cancel::exit_code());
                 }
                 Err(asked) => return Err(asked),
             }
             // The first attempt left its journal, so this carries it on.
             request.wizard = true;
-            let again = match plan_install(paths, &mut session, &request, true)? {
+            let again = match plan_install(paths, &mut session, &request, None, true)? {
                 Ok(again) => again,
                 Err(code) => return Ok(code),
             };
@@ -229,7 +340,7 @@ pub(super) fn one(paths: &Paths, args: &Args, id: &str) -> anyhow::Result<ExitCo
             // by its id, so the first plan names things.
             match apply(paths, &mut session, &again, &plan) {
                 Ok(installed) => installed,
-                Err(error) => return stopped(error, &again, &plan),
+                Err(error) => return stopped(paths, error, &again, &plan),
             }
         }
     };
@@ -246,34 +357,42 @@ fn plan_install(
     paths: &Paths,
     session: &mut Session,
     request: &Request,
+    track: Option<Track>,
     unfinished: bool,
 ) -> anyhow::Result<Result<Plan, ExitCode>> {
     let cancellation = Cancellation::new()?;
     #[cfg(debug_assertions)]
     pause_for_test(&cancellation.token);
-    let planned = install::plan(paths, session, request, &cancellation.token);
+    let planned = core_galaxy::plan(paths, session, request, track, &cancellation.token);
     match planned {
         // Ctrl+C while planning cancels whatever planning made of it.
         _ if cancellation.token.is_canceled() => {
             if unfinished {
                 eprintln!("Install interrupted.");
-                say_finish(&request.name);
+                say_finish(paths, &request.name, request.gog_id);
             } else {
                 eprintln!("Install canceled.");
             }
             Ok(Err(cancel::exit_code()))
         }
-        Ok(plan) => Ok(Ok(plan)),
+        Ok(planned) => Ok(Ok(Plan(planned))),
         Err(error) if is_cancel(&error) => {
             if unfinished {
                 eprintln!("Install interrupted.");
-                say_finish(&request.name);
+                say_finish(paths, &request.name, request.gog_id);
             } else {
                 eprintln!("Install canceled.");
             }
             Ok(Err(cancel::exit_code()))
         }
-        Err(error) => Err(error),
+        // A resumed install that can't be planned still has its journal.
+        Err(error) => Err(with_finish_hint(
+            paths,
+            error,
+            &request.name,
+            Some(request.gog_id),
+            false,
+        )),
     }
 }
 
@@ -376,16 +495,41 @@ fn review_lines(paths: &Paths, plan: &Plan) -> Vec<String> {
             format!("{}{kind}", plan.environment()),
         ),
         ("folder".to_owned(), style::path(paths, plan.folder())),
-        (
-            "platform".to_owned(),
-            platform_name(plan.platform()).to_owned(),
-        ),
-        ("language".to_owned(), plan.requested_language().to_owned()),
     ];
+    // Only a Windows game has a choice of tracks.
+    if plan.platform() == Platform::Windows {
+        let track = if plan.galaxy().is_some() {
+            "Galaxy"
+        } else {
+            "installer"
+        };
+        rows.push(("track".to_owned(), track.to_owned()));
+    }
+    rows.push((
+        "platform".to_owned(),
+        platform_name(plan.platform()).to_owned(),
+    ));
+    rows.push(("language".to_owned(), plan.requested_language().to_owned()));
     if let Some(creation) = plan.creation() {
         rows.push(("runner".to_owned(), creation.runner().name().to_owned()));
         rows.push(("arch".to_owned(), creation.resolved_arch().to_string()));
     }
+    match &plan.0 {
+        Planned::Installer(offline) => installer_rows(offline, &mut rows),
+        Planned::Galaxy(galaxy_plan) => galaxy::install_rows(paths, galaxy_plan, &mut rows),
+    }
+    let action = if plan.resumes() {
+        "Finish the interrupted install of"
+    } else {
+        "Install"
+    };
+    let mut lines = vec![format!("{action} {} ({})", plan.title(), plan.gog_id())];
+    lines.extend(table::aligned_rows(rows));
+    lines
+}
+
+/// The rows of an offline installer install: versions, DLC, and sizes.
+fn installer_rows(plan: &wineo_core::gog::update::install::Plan, rows: &mut Vec<(String, String)>) {
     let mut dlc = Vec::new();
     for product in plan.products() {
         let version = match (product.status, &product.version) {
@@ -419,14 +563,6 @@ fn review_lines(paths: &Paths, plan: &Plan) -> Vec<String> {
             style::size(plan.installed_estimate())
         ),
     ));
-    let action = if plan.resumes() {
-        "Finish the interrupted install of"
-    } else {
-        "Install"
-    };
-    let mut lines = vec![format!("{action} {} ({})", plan.title(), plan.gog_id())];
-    lines.extend(table::aligned_rows(rows));
-    lines
 }
 
 fn print_review(paths: &Paths, plan: &Plan) {
@@ -436,10 +572,12 @@ fn print_review(paths: &Paths, plan: &Plan) {
     for warning in plan.warnings() {
         warn(warning);
     }
-    for product in plan.products() {
-        if let Some(note) = &product.note {
-            warn(note);
-        }
+    let notes: Vec<&Option<String>> = match &plan.0 {
+        Planned::Installer(offline) => offline.products().iter().map(|p| &p.note).collect(),
+        Planned::Galaxy(galaxy_plan) => galaxy_plan.products().iter().map(|p| &p.note).collect(),
+    };
+    for note in notes.into_iter().flatten() {
+        warn(note);
     }
 }
 
@@ -451,13 +589,41 @@ fn apply(
     plan: &Plan,
     names: &Plan,
 ) -> anyhow::Result<Installed> {
-    let progress = std::cell::RefCell::new(Reporter::new(names.product_labels()));
     let cancellation = Cancellation::new()?;
     let name = plan.environment();
-    install::apply_with_events(
+    let offline = match &plan.0 {
+        Planned::Installer(offline) => offline,
+        Planned::Galaxy(galaxy_plan) => {
+            let mut progress = galaxy::Reporter::new(std::time::Duration::from_secs(1));
+            return core_galaxy::install::apply_with_events(
+                paths,
+                session,
+                galaxy_plan,
+                &cancellation.token,
+                |step| {
+                    if let Some(line) = progress.line(&step) {
+                        eprintln!("{line}");
+                    }
+                    #[cfg(debug_assertions)]
+                    galaxy::pause_for_test(name, &step, &cancellation.token);
+                },
+                |event| match event {
+                    Event::Watched(watched) => {
+                        if let Some(line) = watched_message(watched) {
+                            eprintln!("{line}");
+                        }
+                    }
+                    Event::Create(event) => created(paths, name, event),
+                    Event::Installing { .. } => {}
+                },
+            );
+        }
+    };
+    let progress = std::cell::RefCell::new(Reporter::new(names.product_labels()));
+    wineo_core::gog::update::install::apply_with_events(
         paths,
         session,
-        plan,
+        offline,
         &cancellation.token,
         |step| {
             progress.borrow_mut().show(&step);
@@ -514,9 +680,14 @@ fn created(paths: &Paths, name: &str, event: CreateEvent) {
 
 /// Says how an install that didn't finish left things, and exits with the
 /// matching code.
-fn stopped(error: anyhow::Error, plan: &Plan, names: &Plan) -> anyhow::Result<ExitCode> {
+fn stopped(
+    paths: &Paths,
+    error: anyhow::Error,
+    plan: &Plan,
+    names: &Plan,
+) -> anyhow::Result<ExitCode> {
     let name = plan.environment();
-    let finish = || say_finish(name);
+    let finish = || say_finish(paths, name, plan.gog_id());
     if let Some(UpdateError::Canceled { journal }) = error.downcast_ref() {
         if *journal {
             eprintln!("Install interrupted.");
@@ -525,6 +696,23 @@ fn stopped(error: anyhow::Error, plan: &Plan, names: &Plan) -> anyhow::Result<Ex
             eprintln!("Install canceled.");
         }
         return Ok(cancel::exit_code());
+    }
+    // A setup step in the prefix failed. The journal stays, and installing
+    // again carries on from that step.
+    if let Some(core_galaxy::GalaxyError::Setup {
+        title,
+        label,
+        detail,
+    }) = error.downcast_ref()
+    {
+        eprintln!(
+            "{}",
+            style::error_stderr(format!(
+                "error: Setting up {title} stopped: {label} failed ({detail})."
+            ))
+        );
+        finish();
+        return Ok(ExitCode::FAILURE);
     }
     match error.downcast_ref::<SetupError>() {
         // The game's own installer was canceled before it changed anything,
@@ -547,12 +735,24 @@ fn stopped(error: anyhow::Error, plan: &Plan, names: &Plan) -> anyhow::Result<Ex
             finish();
             Ok(ExitCode::FAILURE)
         }
+        // Whatever else stopped it, a journal still in the folder is there
+        // to finish.
+        _ if journal_for(paths, name, Some(plan.gog_id())).is_some() => {
+            eprintln!("{}", style::error_stderr(format!("error: {error:#}")));
+            finish();
+            Ok(ExitCode::FAILURE)
+        }
         _ => Err(error),
     }
 }
 
-fn say_finish(name: &str) {
-    eprintln!("Finish the interrupted install with: wineo update {name}");
+/// How an install that stopped is finished, by its journal.
+fn say_finish(paths: &Paths, name: &str, gog_id: u64) {
+    let command = journal_for(paths, name, Some(gog_id)).map_or_else(
+        || format!("wineo update {name}"),
+        |journal| finish_command(&journal, name),
+    );
+    eprintln!("Finish the interrupted install with: {command}");
 }
 
 /// Says what the install did, then imports GOG's playtime and art and
@@ -576,6 +776,9 @@ fn report(paths: &Paths, plan: &Plan, installed: &Installed) -> anyhow::Result<(
         for path in &installed.overwritten {
             println!("  {path}");
         }
+    }
+    for line in galaxy::restart_lines(&installed.needs_restart) {
+        println!("{line}");
     }
     // The plan's warnings came first, and the review already showed them.
     for warning in installed.warnings.iter().skip(plan.warnings().len()) {

@@ -117,6 +117,8 @@ struct Gog {
     /// Revokes every secure link once this many chunks were served.
     revoke_after: Option<usize>,
     chunks: usize,
+    /// Build file lists fail with a 500, as when GOG's CDN is down.
+    fail_manifests: bool,
     /// Runs on each chunk request with the chunk's compressed MD5, outside
     /// the lock, so it can hold the request while others come in.
     on_chunk: Option<ChunkHook>,
@@ -346,6 +348,9 @@ fn answer(content: &ContentSystem, gog: &Mutex<Gog>, request: &fake::Request) ->
             .unwrap_or_else(|| fake::json(404, "{}"));
     }
     let gog = gog.lock().unwrap();
+    if gog.fail_manifests && path.starts_with("/content-system/v2/meta/") {
+        return fake::json(500, "{}");
+    }
     if path == "/token" {
         return Reply::Send(tokens("ACCESS", "R", USER, 3600));
     }
@@ -1243,6 +1248,24 @@ fn only_generation_1_builds_go_to_the_installer_or_refuse_galaxy() {
         error.to_string(),
         "GOG lists no Galaxy build of Fake Game that wineo can install."
     );
+}
+
+#[test]
+fn a_game_with_no_content_system_goes_to_the_installer() {
+    // The fake answers 404 for a build list it doesn't have.
+    let fx = Fixture::new();
+    let error = super::plan(
+        &fx.paths,
+        &mut fx.session(),
+        &fx.request(),
+        None,
+        &Token::new(),
+    )
+    .unwrap_err();
+    assert!(matches!(
+        error.downcast_ref(),
+        Some(crate::gog::update::install::InstallError::NoInstaller { .. })
+    ));
 }
 
 #[test]

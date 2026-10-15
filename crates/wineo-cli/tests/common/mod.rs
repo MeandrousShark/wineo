@@ -18,7 +18,7 @@ use wineo_core::runtime::Runtime;
 mod runners;
 #[path = "../../../wineo-core/tests/common/test_script.rs"]
 mod test_script;
-pub use runners::{FAKE_GAMEMODERUN, FAKE_UMU, FAKE_WINE, FAKE_WINESERVER};
+pub use runners::{FAKE_CMD, FAKE_GAMEMODERUN, FAKE_UMU, FAKE_WINE, FAKE_WINESERVER};
 pub use test_script::write_script;
 pub mod gog_api;
 pub mod gog_world;

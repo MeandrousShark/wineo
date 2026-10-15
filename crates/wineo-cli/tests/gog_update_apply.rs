@@ -466,13 +466,27 @@ fn a_portable_folder_is_refused() {
 }
 
 #[test]
-fn a_windows_game_is_refused_by_name() {
+fn a_native_game_cant_be_repaired() {
     let (f, api, _) = world();
-    f.galaxy_game_with_update(&api);
+    let out = f.gog(&api, &["update", "rimworld", "--repair", "--yes"]);
+    assert_eq!(out.status.code(), Some(1), "{}", stderr(&out));
+    assert!(
+        stderr(&out).contains("error: Galaxy builds are only for Windows games."),
+        "{}",
+        stderr(&out)
+    );
+}
+
+#[test]
+fn a_galaxy_game_with_no_galaxy_build_is_refused_by_name() {
+    let (f, api, _) = world();
+    f.galaxy_game_without_a_build(&api);
     let out = f.gog(&api, &["update", "disco", "--yes"]);
     assert_eq!(out.status.code(), Some(1));
     assert!(
-        stderr(&out).contains("error: Updating Galaxy builds comes in a later release."),
+        stderr(&out).contains(
+            "error: GOG has no Galaxy build of this game that wineo can update. Move it to offline installers with: wineo update disco --reinstall --track installer"
+        ),
         "{}",
         stderr(&out)
     );
@@ -525,7 +539,7 @@ fn a_clone_running_from_the_folder_refuses_and_the_packages_stay_cached() {
 /// second can't be planned and the third fails when its download starts.
 fn batch_world() -> (Fixture, GogApi, PathBuf) {
     let (f, api, folder) = world();
-    f.galaxy_game_with_update(&api);
+    f.galaxy_game_without_a_build(&api);
     f.native_game("beta", 111, "1");
     let mut two_files = gog_api::installer("linux", "en", "2");
     let more = two_files["files"][0].clone();
@@ -558,7 +572,9 @@ fn all_updates_what_it_can_skips_windows_games_and_continues_past_failures() {
     assert_eq!(out.status.code(), Some(1), "{}", stderr(&out));
     let text = stdout(&out);
     assert!(
-        text.contains("Skipped disco: Updating Galaxy builds comes in a later release.\n"),
+        text.contains(
+            "Skipped disco: GOG has no Galaxy build of this game that wineo can update. Move it to offline installers with: wineo update disco --reinstall --track installer\n"
+        ),
         "{text}"
     );
     assert!(text.contains("Update rimworld\n"), "{text}");
@@ -596,7 +612,7 @@ fn all_dry_run_reviews_every_game_and_reports_the_ones_that_would_fail() {
 
     // Without a game that would fail, a dry run succeeds.
     let (f, api, _) = world();
-    f.galaxy_game_with_update(&api);
+    f.galaxy_game_without_a_build(&api);
     let out = f.gog(&api, &["update", "--all", "--dry-run"]);
     assert_success(&out);
 }
@@ -604,7 +620,7 @@ fn all_dry_run_reviews_every_game_and_reports_the_ones_that_would_fail() {
 #[test]
 fn all_with_nothing_to_update_says_so() {
     let (f, api, _) = world();
-    f.galaxy_game_with_update(&api);
+    f.galaxy_game_without_a_build(&api);
     assert_success(&f.gog(&api, &["update", "rimworld", "--yes"]));
     let out = f.gog(&api, &["update", "--all", "--yes"]);
     assert_success(&out);
@@ -743,7 +759,7 @@ fn a_dry_run_of_one_game_writes_nothing_at_all() {
 #[test]
 fn a_dry_run_of_all_writes_nothing_but_a_renewed_login() {
     let (f, api, _) = world();
-    f.galaxy_game_with_update(&api);
+    f.galaxy_game_without_a_build(&api);
     // Another tool updated Disco Elysium, which a real check would record.
     let info = f.root.path().join(format!(
         "Games/Disco/goggame-{}.info",
@@ -789,7 +805,7 @@ fn all_with_nothing_to_update_needs_no_terminal() {
 #[test]
 fn all_with_something_to_confirm_needs_yes_without_a_terminal() {
     let (f, api, folder) = world();
-    f.galaxy_game_with_update(&api);
+    f.galaxy_game_without_a_build(&api);
     let out = f.gog(&api, &["update", "--all"]);
     assert_eq!(out.status.code(), Some(1), "{}", stderr(&out));
     assert!(

@@ -306,6 +306,46 @@ done
         );
     }
 
+    /// A drop-in runner `galaxy`: `inno`'s wine, which also runs the batch
+    /// files Galaxy setup steps go through, with the codes the dependency
+    /// depots' `.exit` files give.
+    pub fn galaxy_runner(&self) {
+        let runs = self.inno_runs();
+        fs::create_dir_all(&runs).unwrap();
+        let bin = self.root.path().join("data/wineo/runners/galaxy/bin");
+        fs::create_dir_all(&bin).unwrap();
+        write_script(bin.join("wineserver"), "#!/bin/sh\nexit 0\n");
+        write_script(
+            bin.join("wine"),
+            format!(
+                r#"#!/bin/sh
+RUNS='{runs}'
+FAKE_CMD_LOG="$RUNS/cmd.log"
+{cmd}
+case "$1" in
+wineboot) [ "$2" = --init ] && mkdir -p "$WINEPREFIX/drive_c" && printf 'WINE REGISTRY Version 2\n\n#arch=win64\n' > "$WINEPREFIX/system.reg"; exit 0 ;;
+--version) echo wine-galaxy; exit 0 ;;
+cmd) case "$3" in *.bat) fake_cmd "$3"; exit ;; esac; exit 0 ;;
+*.exe) ;;
+*) exit 0 ;;
+esac
+exe="$1"
+shift
+name=$(basename "$exe")
+printf '%s\n' "$exe" "$@" > "$RUNS/$name.args"
+echo "$name" >> "$RUNS/log"
+DIR=
+for arg in "$@"; do
+    case "$arg" in /DIR=Z:*) DIR=$(printf '%s' "${{arg#/DIR=Z:}}" | tr '\\' '/') ;; esac
+done
+. "$exe"
+"#,
+                runs = runs.display(),
+                cmd = super::FAKE_CMD,
+            ),
+        );
+    }
+
     /// Where the `inno` runner records its setup runs.
     pub fn inno_runs(&self) -> PathBuf {
         self.root.path().join("inno-runs")
@@ -378,9 +418,22 @@ done
     }
 
     /// Disco Elysium as a Windows game from Galaxy whose latest build is
-    /// newer than the one installed, which wineo can check but not update.
+    /// newer than the one installed. Its build list names no real manifest,
+    /// so only a check can use it.
     pub fn galaxy_game_with_update(&self, api: &super::gog_api::GogApi) {
         self.disco_with_update(api, Track::Galaxy);
+    }
+
+    /// Disco Elysium as a Windows game from Galaxy whose only listed build is
+    /// generation 1, so wineo can check it but not update it.
+    pub fn galaxy_game_without_a_build(&self, api: &super::gog_api::GogApi) {
+        self.disco_with_update(api, Track::Galaxy);
+        api.with(|config| {
+            config.builds.insert(
+                DISCO,
+                super::gog_api::builds_of(&[("59781086834418086", None, 1)]),
+            );
+        });
     }
 
     /// Disco Elysium installed from GOG's Windows installer 1, with 2 on
@@ -395,7 +448,7 @@ done
         fs::write(
             self.config_dir().join("environments/disco.toml"),
             format!(
-                "gog_id = \"{DISCO}\"\nrunner = \"wine\"\nprefix = \"{}\"\n\n[targets.game]\nexe = \"{}\"\n",
+                "gog_id = \"{DISCO}\"\nrunner = \"wine\"\narch = \"win64\"\nprefix = \"{}\"\n\n[targets.game]\nexe = \"{}\"\n",
                 self.root.path().join("Prefixes/Disco").display(),
                 folder.join("Disco Elysium.exe").display()
             ),

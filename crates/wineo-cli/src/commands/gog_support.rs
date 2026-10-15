@@ -9,6 +9,7 @@ use std::time::Duration;
 use serde_json::{Value, json};
 use wineo_core::gog;
 use wineo_core::gog::account::Session;
+use wineo_core::gog::folder::{self, FolderError, Journal, JournalKind, Track};
 use wineo_core::gog::update::windows::SetupError;
 use wineo_core::gog::update::{
     self, DlcState, DlcStatus, GameError, Progress, Reason, Status, UpdateState,
@@ -20,6 +21,61 @@ use crate::prompt::{Canceled, Prompt, Reply};
 use crate::style;
 
 pub const LOGGED_OUT: &str = "Log in to GOG first: wineo import gog --login.";
+
+/// The journal an install or update left in the folder of `name`'s game,
+/// read from its state alone. A first install that stopped before its
+/// environment had a config is found by `gog_id`.
+pub fn journal_for(paths: &Paths, name: &str, gog_id: Option<u64>) -> Option<Journal> {
+    update::journal_of(paths, name).or_else(|| {
+        folder::find(paths, name, &gog_id?.to_string())
+            .ok()
+            .flatten()
+            .and_then(|state| state.journal)
+    })
+}
+
+/// How `journal` is finished: a Galaxy first install by installing the game
+/// again, since `wineo update` has no way to carry one on; anything else by
+/// updating.
+pub fn finish_command(journal: &Journal, name: &str) -> String {
+    if journal.kind == JournalKind::Install && journal.target.track == Track::Galaxy {
+        format!("wineo import gog --game {}", journal.target.gog_id)
+    } else {
+        format!("wineo update {name}")
+    }
+}
+
+/// Ends the message of a failure with how to finish the game's unfinished
+/// install or update, decided by the journal still being in its folder and
+/// not by what failed or which command was running. Failures that are
+/// cancellations (`canceled`) say their own, and a message that already
+/// names the command is left alone. For an install that `wineo update`
+/// can't finish, core's "install it again" is said with the command instead.
+pub fn with_finish_hint(
+    paths: &Paths,
+    error: anyhow::Error,
+    name: &str,
+    gog_id: Option<u64>,
+    canceled: bool,
+) -> anyhow::Error {
+    if canceled {
+        return error;
+    }
+    let Some(journal) = journal_for(paths, name, gog_id) else {
+        return error;
+    };
+    let command = finish_command(&journal, name);
+    let message = if let Some(FolderError::UnfinishedInstall { name, .. }) = error.downcast_ref() {
+        format!("{name}'s GOG install didn't finish.")
+    } else {
+        format!("{error:#}")
+    };
+    if message.contains(&command) {
+        return error;
+    }
+    let sep = if message.ends_with('.') { "" } else { "." };
+    anyhow::anyhow!("{message}{sep} Finish it with: {command}")
+}
 
 /// The keyring item that holds the GOG login. Sessions borrow it, so it has
 /// to outlive them.
@@ -228,10 +284,13 @@ mod tests {
             language: "en".to_owned(),
             installed: None,
             available: None,
+            installed_name: None,
+            available_name: None,
             state: UpdateState::UpToDate,
             applicable: false,
             reason: None,
             unfinished: false,
+            galaxy_install: false,
             warnings: Vec::new(),
             dlc,
         }

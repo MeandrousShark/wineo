@@ -23,6 +23,7 @@ pub mod update;
 use anyhow::Result;
 
 pub use build::LayoutError;
+pub(super) use build::latest_default as latest;
 pub use install::{GalaxyError, PlannedProduct, Progress, Retarget};
 
 use super::UpdateError;
@@ -30,7 +31,7 @@ use super::apply::{self, Options};
 use super::install as offline;
 use crate::cancel::Token;
 use crate::environment::Environment;
-use crate::gog::account::{AccountError, Session};
+use crate::gog::account::{AccountError, CallError, Session};
 use crate::gog::folder::{Platform, Track};
 use crate::gog::migrate::host_only;
 use crate::gog::product;
@@ -86,10 +87,17 @@ pub fn plan(
                 false
             } else {
                 let id = request.gog_id;
-                let builds = session
-                    .call(|client, access| client.windows_builds(id, Some(access)))
-                    .map_err(anyhow::Error::from)?;
-                build::latest(&builds, None).is_some()
+                // A game GOG has no content system for answers 404, which
+                // is the installers' to install, not a failure.
+                match session.call(|client, access| client.windows_builds(id, Some(access))) {
+                    Ok(builds) => build::latest(&builds, None).is_some(),
+                    Err(CallError::Request(error))
+                        if error.kind() == wineo_gog::ErrorKind::Status(404) =>
+                    {
+                        false
+                    }
+                    Err(error) => return Err(error.into()),
+                }
             }
         }
     };

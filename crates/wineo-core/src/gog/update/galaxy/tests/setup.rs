@@ -159,6 +159,72 @@ fn setup_failure(error: &anyhow::Error) -> String {
 }
 
 #[test]
+fn progress_names_each_setup_step() {
+    let fx = Fixture::new();
+    fx.content.add_build(scripted("100"));
+    with_setup(&fx, None, None);
+    let plan = fx.plan();
+    let mut seen = Vec::new();
+    install::apply(&fx.paths, &mut fx.session(), &plan, &Token::new(), |step| {
+        if let install::Progress::Setup { done, total, step } = step {
+            seen.push((done, total, step));
+        }
+    })
+    .unwrap();
+    let step = |name: &str| Some(name.to_owned());
+    assert_eq!(
+        seen,
+        [
+            (0, 2, step("script interpreter")),
+            (1, 2, step("MSVC2017")),
+            (2, 2, None)
+        ]
+    );
+}
+
+#[test]
+fn a_plan_lists_the_setup_steps_that_will_run() {
+    let fx = Fixture::new();
+    fx.content.add_build(scripted("100"));
+    with_setup(&fx, None, None);
+    let plan = fx.plan();
+    assert_eq!(
+        plan.setup_steps(&fx.paths),
+        ["script interpreter", "MSVC2017"]
+    );
+    fx.apply(&plan).unwrap();
+
+    // The new build changes ISI's step alone.
+    fx.content.add_build(scripted("200"));
+    fx.gog.lock().unwrap().newest_first = true;
+    let update = fx.update_plan();
+    assert_eq!(update.installed_version(), Some("v100"));
+    assert_eq!(update.version_name(), Some("v200"));
+    assert_eq!(update.setup_steps(&fx.paths), ["script interpreter"]);
+    assert_eq!(update.moves_from(), None);
+
+    // A reinstall runs them all again.
+    use crate::gog::update::galaxy::update as galaxy_update;
+    let galaxy_update::Planned::Update(reinstall) = galaxy_update::plan(
+        &fx.paths,
+        &mut fx.session(),
+        "game",
+        crate::gog::update::apply::Options {
+            reinstall: true,
+            ..Default::default()
+        },
+        &Token::new(),
+    )
+    .unwrap() else {
+        panic!("a reinstall always runs");
+    };
+    assert_eq!(
+        reinstall.setup_steps(&fx.paths),
+        ["script interpreter", "MSVC2017"]
+    );
+}
+
+#[test]
 fn isi_runs_for_the_game_then_each_redistributable_with_its_arguments() {
     let mut fx = Fixture::new();
     // A game folder with what cmd would choke on written in a batch file
@@ -524,6 +590,7 @@ fn a_changed_version_script_or_interpreter_reruns_only_its_step() {
             manifest,
             target: &target,
             label: &label,
+            review: false,
         })
         .unwrap();
         let wanted: Vec<SetupStep> = steps.into_iter().map(|step| step.identity).collect();
@@ -580,6 +647,7 @@ fn a_changed_version_script_or_interpreter_reruns_only_its_step() {
         manifest: &installed,
         target: &target,
         label: &label,
+        review: false,
     })
     .unwrap();
     let wanted: Vec<SetupStep> = steps.into_iter().map(|step| step.identity).collect();

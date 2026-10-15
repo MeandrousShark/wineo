@@ -89,12 +89,16 @@ pub enum GalaxyError {
     )]
     InstallerPending { name: String },
     /// A product the interrupted install began with isn't in the build it
-    /// finishes with.
-    #[error("Build {build} of {title} no longer has {label}, which the install began with.")]
+    /// finishes with, or one a game has installed isn't in the build an
+    /// update, reinstall, move, or repair goes to. `build` is the build's
+    /// version name where one is known, else its id.
+    #[error("{}", product_gone(.title, .build, .label, *.installed))]
     ProductGone {
         title: String,
         build: String,
         label: String,
+        /// The product is installed, not just begun by an install.
+        installed: bool,
     },
     /// A setup step in the prefix failed. The journal stays, and installing
     /// again carries on from that step.
@@ -121,6 +125,14 @@ pub enum GalaxyError {
     BuildUnknown { title: String, name: String },
     #[error(transparent)]
     Layout(#[from] LayoutError),
+}
+
+fn product_gone(title: &str, build: &str, label: &str, installed: bool) -> String {
+    if installed {
+        format!("Build {build} of {title} doesn't have {label}, which is installed.")
+    } else {
+        format!("Build {build} of {title} no longer has {label}, which the install began with.")
+    }
 }
 
 /// One product a Galaxy install would put in the folder, for a review.
@@ -271,6 +283,21 @@ impl Plan {
             .collect()
     }
 
+    /// The setup steps that run, by name: "script interpreter", "setup
+    /// program", or a redistributable's id.
+    pub fn setup_steps(&self, paths: &Paths) -> Vec<String> {
+        setup::planned_steps(
+            paths,
+            &self.folder,
+            &self.manifest,
+            &self.target,
+            &self.title,
+        )
+        .into_iter()
+        .map(|step| step.name)
+        .collect()
+    }
+
     pub fn warnings(&self) -> &[String] {
         &self.warnings
     }
@@ -286,12 +313,18 @@ pub(super) fn sizes(files: &[FileEntry]) -> u64 {
 }
 
 /// How far `apply` has got.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Progress {
     /// Bytes downloaded so far, of what isn't in place yet.
     Download { done: u64, total: u64 },
-    /// Setup steps run in the prefix so far, of those to run.
-    Setup { done: usize, total: usize },
+    /// Setup steps run in the prefix so far, of those to run, and the one
+    /// starting now (None once all are done): "script interpreter", "setup
+    /// program", or a redistributable's id.
+    Setup {
+        done: usize,
+        total: usize,
+        step: Option<String>,
+    },
     /// Files hashed against the manifest so far, support files included,
     /// before a repair or reinstall fetches what is wrong.
     Verify {
@@ -727,6 +760,7 @@ fn resumed(
                         title,
                         build: repository.build_id.clone(),
                         label,
+                        installed: false,
                     }
                     .into());
                 }
@@ -1380,6 +1414,7 @@ fn run(
         manifest: &manifest,
         target: &plan.target,
         label: &label,
+        review: false,
     })?;
     warnings.extend(setup_warnings);
     let (guard, ran) = setup::run(
@@ -1395,7 +1430,13 @@ fn run(
         &mut sidecar,
         &steps,
         false,
-        &mut |done, total| (progress.borrow_mut())(Progress::Setup { done, total }),
+        &mut |done, total, step| {
+            (progress.borrow_mut())(Progress::Setup {
+                done,
+                total,
+                step: step.map(str::to_owned),
+            })
+        },
         events,
     )?;
     failpoint("galaxy.setup.after")?;

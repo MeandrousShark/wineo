@@ -1,13 +1,15 @@
 //! Applying updates: `wineo update NAME` for one game and `--all` for every
-//! native game with an update, with a review first, progress while it works,
-//! and what changed after.
+//! game with an update, with a review first, progress while it works, and
+//! what changed after. A game on the installer track is rebuilt from its
+//! packages; a Galaxy game is updated, repaired, or moved file by file.
 
 use std::process::ExitCode;
 
 use wineo_core::gog::account::{AccountError, Session};
 use wineo_core::gog::folder::{FolderError, JournalKind, Platform, Track};
 use wineo_core::gog::migrate::MigrateError;
-use wineo_core::gog::update::windows::SetupError;
+use wineo_core::gog::update::galaxy::{self as core_galaxy, GalaxyError, PlannedUpdate};
+use wineo_core::gog::update::windows::{Event, SetupError};
 use wineo_core::gog::update::{
     self, Check, Options, Pending, Plan, ReviewLabel, UpdateError, Updated,
 };
@@ -15,9 +17,11 @@ use wineo_core::paths::Paths;
 
 use super::Args;
 use crate::cancel;
+use crate::commands::galaxy;
 use crate::commands::gog_support::{
-    Account, LOGGED_OUT, Reporter, ask_wizard, offers_wizard, usage_error, warn,
+    Account, LOGGED_OUT, Reporter, ask_wizard, offers_wizard, usage_error, warn, with_finish_hint,
 };
+use crate::commands::setup::watched_message;
 use crate::commands::table;
 use crate::commands::transfer::Cancellation;
 use crate::prompt::{self, Ask, Canceled, Reply, terminal};
@@ -45,6 +49,57 @@ impl std::fmt::Display for Interrupted {
 }
 
 impl std::error::Error for Interrupted {}
+
+/// An update ready to review and apply, on the track the game is on.
+#[allow(clippy::large_enum_variant)]
+enum Ready {
+    Installer(Pending),
+    Galaxy(core_galaxy::update::Plan),
+}
+
+impl Ready {
+    fn environment(&self) -> &str {
+        match self {
+            Self::Installer(pending) => pending.environment(),
+            Self::Galaxy(plan) => plan.environment(),
+        }
+    }
+
+    fn kind(&self) -> JournalKind {
+        match self {
+            Self::Installer(pending) => pending.kind(),
+            Self::Galaxy(plan) => plan.kind(),
+        }
+    }
+
+    fn is_recovery(&self) -> bool {
+        match self {
+            Self::Installer(pending) => pending.is_recovery(),
+            Self::Galaxy(plan) => plan.is_recovery(),
+        }
+    }
+
+    fn warnings(&self) -> &[String] {
+        match self {
+            Self::Installer(pending) => pending.warnings(),
+            Self::Galaxy(plan) => plan.warnings(),
+        }
+    }
+
+    fn finished(&self) -> String {
+        match self {
+            Self::Installer(pending) => pending.finished(),
+            Self::Galaxy(plan) => plan.finished(),
+        }
+    }
+}
+
+/// What planning an update found.
+#[allow(clippy::large_enum_variant)]
+enum Planned {
+    UpToDate(Vec<String>),
+    Ready(Ready),
+}
 
 pub(super) fn run(paths: &Paths, args: &Args) -> anyhow::Result<ExitCode> {
     if paths.portable_root().is_some() {
@@ -121,32 +176,68 @@ fn plan(
     args: &Args,
     wizard: bool,
     cancellation: &Cancellation,
-) -> anyhow::Result<Plan> {
+) -> anyhow::Result<Planned> {
     let logged_out = session.is_none();
-    update::plan(
+    let planned = core_galaxy::plan_update(
         paths,
         session.as_mut(),
         name,
         Options {
             reinstall: args.reinstall,
+            repair: args.repair,
+            track: args.track.map(Into::into),
             refresh: args.refresh,
             // A dry run caches nothing and records nothing.
             read_only: args.dry_run,
             wizard,
-            ..Options::default()
         },
         &cancellation.token,
     )
     .map_err(|error| {
+        let canceled = stopped(&error).is_some();
         if logged_out
             && matches!(
                 error.downcast_ref::<AccountError>(),
                 Some(AccountError::LoggedOut)
             )
         {
-            anyhow::anyhow!(LOGGED_OUT)
+            // Logging in comes first, and says so.
+            return anyhow::anyhow!(LOGGED_OUT);
+        }
+        let error = if matches!(
+            error.downcast_ref::<UpdateError>(),
+            Some(UpdateError::NotGalaxy { .. })
+        ) {
+            anyhow::anyhow!(
+                "Only Galaxy games can be repaired. Move it with: wineo update {name} --reinstall --track galaxy"
+            )
+        } else if matches!(error.downcast_ref::<GalaxyError>(), Some(GalaxyError::NoBuild { .. }))
+            && !(args.reinstall && args.track.is_some())
+        {
+            // A Galaxy game GOG has no Galaxy build of is left to its
+            // installers, as the check says.
+            anyhow::anyhow!(
+                "{}",
+                update::Reason::Galaxy {
+                    name: name.to_owned()
+                }
+                .note()
+            )
         } else {
             error
+        };
+        with_finish_hint(paths, error, name, None, canceled)
+    })?;
+    Ok(match planned {
+        PlannedUpdate::Installer(Plan::UpToDate { warnings, .. })
+        | PlannedUpdate::Galaxy(core_galaxy::update::Planned::UpToDate { warnings, .. }) => {
+            Planned::UpToDate(warnings)
+        }
+        PlannedUpdate::Installer(Plan::Update(pending)) => {
+            Planned::Ready(Ready::Installer(pending))
+        }
+        PlannedUpdate::Galaxy(core_galaxy::update::Planned::Update(plan)) => {
+            Planned::Ready(Ready::Galaxy(plan))
         }
     })
 }
@@ -162,45 +253,45 @@ fn one(paths: &Paths, args: &Args, name: &str) -> anyhow::Result<ExitCode> {
         false,
         &Cancellation::new()?,
     )?;
-    let pending = match planned {
-        Plan::UpToDate { warnings, .. } => {
+    let ready = match planned {
+        Planned::UpToDate(warnings) => {
             for warning in &warnings {
                 warn(warning);
             }
             println!("Up to date.");
             return Ok(ExitCode::SUCCESS);
         }
-        Plan::Update(pending) => pending,
+        Planned::Ready(ready) => ready,
     };
     let asking = !args.yes && !args.dry_run;
     if asking && !prompt::interactive() {
         anyhow::bail!(NEEDS_YES);
     }
-    print_review(paths, &pending);
+    print_review(paths, &ready);
     if args.dry_run {
         println!("Dry run, nothing was updated.");
         return Ok(ExitCode::SUCCESS);
     }
     if asking {
-        confirm(&mut terminal()?, &pending)?;
+        confirm(&mut terminal()?, &ready)?;
     }
     let cancellation = Cancellation::new()?;
-    let (pending, updated) = match apply_raw(paths, &mut session, &pending, &cancellation) {
-        Ok(updated) => (pending, updated),
+    let (ready, updated) = match apply_raw(paths, &mut session, &ready, &cancellation) {
+        Ok(updated) => (ready, updated),
         Err(error) => {
             let Some(label) = offers_wizard(&error).filter(|_| asking) else {
-                return Err(stopped_as(error, &pending));
+                return Err(stopped_as(paths, error, &ready));
             };
             if !ask_wizard(&mut terminal()?, &label)? {
-                return Err(stopped_as(error, &pending));
+                return Err(stopped_as(paths, error, &ready));
             }
             drop(cancellation);
             // The first attempt dropped its journal, or kept it to finish,
             // so the update is planned again before it runs as a wizard.
             let cancellation = Cancellation::new()?;
             let again = match plan(paths, &mut session, name, args, true, &cancellation)? {
-                Plan::Update(pending) => pending,
-                Plan::UpToDate { .. } => {
+                Planned::Ready(ready) => ready,
+                Planned::UpToDate(_) => {
                     println!("Up to date.");
                     return Ok(ExitCode::SUCCESS);
                 }
@@ -209,7 +300,7 @@ fn one(paths: &Paths, args: &Args, name: &str) -> anyhow::Result<ExitCode> {
             (again, updated)
         }
     };
-    report(paths, &pending, &updated);
+    report(paths, &ready, &updated);
     Ok(ExitCode::SUCCESS)
 }
 
@@ -229,36 +320,72 @@ fn all(paths: &Paths, args: &Args) -> anyhow::Result<ExitCode> {
     };
 
     // A game that couldn't even be checked is a failure like one that can't
-    // be planned.
-    let mut failures: Vec<(String, String)> = batch
-        .errors
-        .iter()
-        .map(|error| (error.subject(), error.message.clone()))
-        .collect();
+    // be planned, unless it has a journal: finishing one needs no check, and
+    // may not need GOG at all.
+    let mut failures: Vec<(String, String)> = Vec::new();
+    let mut journaled: Vec<(String, wineo_core::gog::folder::Journal)> = Vec::new();
+    for error in &batch.errors {
+        match error
+            .environment
+            .as_deref()
+            .and_then(|name| update::journal_of(paths, name).map(|journal| (name, journal)))
+        {
+            Some((name, journal)) => journaled.push((name.to_owned(), journal)),
+            None => failures.push((error.subject(), error.message.clone())),
+        }
+    }
     let mut names = Vec::new();
     let mut skipped = Vec::new();
     let graphical = wineo_core::launch::graphical_session();
+    // Every game to finish or update: by name, whether its journal is a
+    // Galaxy first install, with its id, and whether it runs in a prefix.
+    let mut wanted: Vec<(String, Option<u64>, bool)> = Vec::new();
     for status in &batch.statuses {
         // A game with a journal is finished whatever GOG offers now.
-        let finishes = status.unfinished && status.track == Track::Installer;
-        if (status.applicable || finishes) && status.platform == Platform::Windows && !graphical {
-            skipped.push(format!("Skipped {}: {NEEDS_DESKTOP}", status.environment));
+        let finishes = status.unfinished;
+        if status.galaxy_install {
+            wanted.push((status.environment.clone(), Some(status.gog_id), true));
         } else if status.applicable || finishes {
-            names.push(status.environment.clone());
+            wanted.push((
+                status.environment.clone(),
+                None,
+                status.platform == Platform::Windows,
+            ));
         } else if let Some(reason) = &status.reason {
             skipped.push(format!("Skipped {}: {}", status.environment, reason.note()));
         }
     }
+    for (name, journal) in journaled {
+        let install = journal.kind == JournalKind::Install && journal.target.track == Track::Galaxy;
+        wanted.push((
+            name,
+            install.then_some(journal.target.gog_id),
+            journal.target.platform == Platform::Windows,
+        ));
+    }
+    for (name, galaxy_install, windows) in wanted {
+        if let Some(id) = galaxy_install {
+            // A Galaxy install that didn't finish is finished by installing
+            // it again, which the update has no way to do.
+            skipped.push(format!(
+                "Skipped {name}: Finish the interrupted install with: wineo import gog --game {id}"
+            ));
+        } else if windows && !graphical {
+            skipped.push(format!("Skipped {name}: {NEEDS_DESKTOP}"));
+        } else {
+            names.push(name);
+        }
+    }
 
     let planning = Cancellation::new()?;
-    let mut ready: Vec<Pending> = Vec::new();
+    let mut ready: Vec<Ready> = Vec::new();
     for name in &names {
         if planning.token.is_canceled() {
             return Err(Canceled.into());
         }
         match plan(paths, &mut session, name, args, false, &planning) {
-            Ok(Plan::Update(pending)) => ready.push(pending),
-            Ok(Plan::UpToDate { .. }) => {}
+            Ok(Planned::Ready(item)) => ready.push(item),
+            Ok(Planned::UpToDate(_)) => {}
             Err(error) if stopped(&error).is_some() => return Err(error),
             Err(error) => failures.push((name.clone(), format!("{error:#}"))),
         }
@@ -277,15 +404,15 @@ fn all(paths: &Paths, args: &Args) -> anyhow::Result<ExitCode> {
     for status in &batch.statuses {
         if !ready
             .iter()
-            .any(|pending| pending.environment() == status.environment)
+            .any(|item| item.environment() == status.environment)
         {
             for warning in &status.warnings {
                 warn(format!("{}: {warning}", status.environment));
             }
         }
     }
-    for pending in &ready {
-        print_review(paths, pending);
+    for item in &ready {
+        print_review(paths, item);
     }
     let total = ready.len();
     if ready.is_empty() && failures.is_empty() {
@@ -310,22 +437,22 @@ fn all(paths: &Paths, args: &Args) -> anyhow::Result<ExitCode> {
     let cancellation = Cancellation::new()?;
     let mut done = 0;
     let mut stop = None;
-    for pending in &ready {
+    for item in &ready {
         if cancellation.token.is_canceled() {
             stop = Some(anyhow::Error::from(Canceled));
             break;
         }
-        println!("Updating {}", pending.environment());
-        match apply(paths, &mut session, pending, &cancellation) {
+        println!("Updating {}", item.environment());
+        match apply(paths, &mut session, item, &cancellation) {
             Ok(updated) => {
                 done += 1;
-                report(paths, pending, &updated);
+                report(paths, item, &updated);
             }
             Err(error) if stopped(&error).is_some() => {
                 stop = Some(error);
                 break;
             }
-            Err(error) => failures.push((pending.environment().to_owned(), format!("{error:#}"))),
+            Err(error) => failures.push((item.environment().to_owned(), format!("{error:#}"))),
         }
     }
     for (name, reason) in &failures {
@@ -352,10 +479,11 @@ fn failure_code(failures: &[(String, String)]) -> ExitCode {
     }
 }
 
-fn confirm(prompt: &mut Ask, pending: &Pending) -> anyhow::Result<()> {
-    let question = match (pending.kind(), pending.is_recovery()) {
+fn confirm(prompt: &mut Ask, ready: &Ready) -> anyhow::Result<()> {
+    let question = match (ready.kind(), ready.is_recovery()) {
         (_, true) => "Finish it?",
         (JournalKind::Reinstall, false) => "Reinstall it?",
+        (JournalKind::Repair, false) => "Repair it?",
         _ => "Update it?",
     };
     prompt.confirm_hint(false)?;
@@ -365,8 +493,12 @@ fn confirm(prompt: &mut Ask, pending: &Pending) -> anyhow::Result<()> {
     }
 }
 
-fn review_lines(paths: &Paths, pending: &Pending) -> Vec<String> {
-    let rows: Vec<(String, String)> = pending
+fn review_lines(paths: &Paths, ready: &Ready) -> Vec<String> {
+    let pending = match ready {
+        Ready::Installer(pending) => pending,
+        Ready::Galaxy(plan) => return galaxy::update_review(paths, plan),
+    };
+    let mut rows: Vec<(String, String)> = pending
         .review_rows(|path| style::path(paths, path))
         .into_iter()
         .map(|(label, value)| {
@@ -380,16 +512,37 @@ fn review_lines(paths: &Paths, pending: &Pending) -> Vec<String> {
             (label, value)
         })
         .collect();
+    // A game moving off Galaxy says so, right after the folder.
+    if let Some(from) = pending.moves_from() {
+        rows.insert(
+            1,
+            (
+                "track".to_owned(),
+                format!(
+                    "{} -> {}",
+                    track_word(from),
+                    track_word(pending.target().track)
+                ),
+            ),
+        );
+    }
     let mut lines = vec![format!("{} {}", pending.action(), pending.environment())];
     lines.extend(table::aligned_rows(rows));
     lines
 }
 
-fn print_review(paths: &Paths, pending: &Pending) {
-    for line in review_lines(paths, pending) {
+fn track_word(track: Track) -> &'static str {
+    match track {
+        Track::Galaxy => "Galaxy",
+        Track::Installer => "installer",
+    }
+}
+
+fn print_review(paths: &Paths, ready: &Ready) {
+    for line in review_lines(paths, ready) {
         println!("{line}");
     }
-    for warning in pending.warnings() {
+    for warning in ready.warnings() {
         warn(warning);
     }
 }
@@ -399,21 +552,23 @@ fn print_review(paths: &Paths, pending: &Pending) {
 fn apply(
     paths: &Paths,
     session: &mut Option<Session<'_>>,
-    pending: &Pending,
+    ready: &Ready,
     cancellation: &Cancellation,
 ) -> anyhow::Result<Updated> {
-    apply_raw(paths, session, pending, cancellation).map_err(|error| stopped_as(error, pending))
+    apply_raw(paths, session, ready, cancellation).map_err(|error| stopped_as(paths, error, ready))
 }
 
-/// `setup_stopped`, naming an interrupted install as one.
-fn stopped_as(error: anyhow::Error, pending: &Pending) -> anyhow::Error {
-    let mut error = setup_stopped(error, pending.environment(), pending.is_recovery());
-    if pending.kind() == JournalKind::Install
+/// `setup_stopped`, naming an interrupted install as one, and saying how to
+/// finish whatever else stopped it after the journal was written.
+fn stopped_as(paths: &Paths, error: anyhow::Error, ready: &Ready) -> anyhow::Error {
+    let mut error = setup_stopped(error, ready.environment(), ready.is_recovery());
+    if ready.kind() == JournalKind::Install
         && let Some(interrupted) = error.downcast_mut::<Interrupted>()
     {
         interrupted.install = true;
     }
-    error
+    let canceled = stopped(&error).is_some();
+    with_finish_hint(paths, error, ready.environment(), None, canceled)
 }
 
 /// The update with core's own errors, so a Windows installer that never
@@ -421,31 +576,62 @@ fn stopped_as(error: anyhow::Error, pending: &Pending) -> anyhow::Error {
 fn apply_raw(
     paths: &Paths,
     session: &mut Option<Session<'_>>,
-    pending: &Pending,
+    ready: &Ready,
     cancellation: &Cancellation,
 ) -> anyhow::Result<Updated> {
-    let mut progress = Reporter::new(pending.product_labels());
-    update::apply(
-        paths,
-        session.as_mut(),
-        pending,
-        &cancellation.token,
-        |step| {
-            progress.show(&step);
-            #[cfg(debug_assertions)]
-            crate::commands::gog_support::pause_for_test(
-                pending.environment(),
-                &step,
+    match ready {
+        Ready::Installer(pending) => {
+            let mut progress = Reporter::new(pending.product_labels());
+            update::apply(
+                paths,
+                session.as_mut(),
+                pending,
                 &cancellation.token,
-            );
-        },
-    )
+                |step| {
+                    progress.show(&step);
+                    #[cfg(debug_assertions)]
+                    crate::commands::gog_support::pause_for_test(
+                        pending.environment(),
+                        &step,
+                        &cancellation.token,
+                    );
+                },
+            )
+        }
+        Ready::Galaxy(plan) => {
+            let session = session
+                .as_mut()
+                .ok_or_else(|| anyhow::anyhow!(LOGGED_OUT))?;
+            let mut progress = galaxy::Reporter::new(std::time::Duration::from_secs(1));
+            core_galaxy::update::apply_with_events(
+                paths,
+                session,
+                plan,
+                &cancellation.token,
+                |step| {
+                    if let Some(line) = progress.line(&step) {
+                        eprintln!("{line}");
+                    }
+                    #[cfg(debug_assertions)]
+                    galaxy::pause_for_test(plan.environment(), &step, &cancellation.token);
+                },
+                |event| {
+                    if let Event::Watched(watched) = event
+                        && let Some(line) = watched_message(watched)
+                    {
+                        eprintln!("{line}");
+                    }
+                },
+            )
+        }
+    }
 }
 
 /// Says how an update stopped when it had started changing the folder, and
 /// how a Windows installer that stopped on its own left things. An
 /// installer that never started on a first attempt changed nothing, since
-/// the update drops its journal then; finishing one keeps it.
+/// the update drops its journal then; finishing one keeps it. A Galaxy
+/// setup step that failed leaves the journal for `wineo update` to finish.
 fn setup_stopped(error: anyhow::Error, name: &str, recovery: bool) -> anyhow::Error {
     let interrupted = || {
         Interrupted {
@@ -456,6 +642,16 @@ fn setup_stopped(error: anyhow::Error, name: &str, recovery: bool) -> anyhow::Er
     };
     if let Some(UpdateError::Canceled { journal: true }) = error.downcast_ref() {
         return interrupted();
+    }
+    if let Some(GalaxyError::Setup {
+        title,
+        label,
+        detail,
+    }) = error.downcast_ref()
+    {
+        return anyhow::anyhow!(
+            "Setting up {title} stopped: {label} failed ({detail}). Finish it with: wineo update {name}"
+        );
     }
     match error.downcast_ref::<SetupError>() {
         Some(SetupError::Canceled { .. }) if recovery => interrupted(),
@@ -475,9 +671,13 @@ fn setup_stopped(error: anyhow::Error, name: &str, recovery: bool) -> anyhow::Er
 }
 
 /// Says what an update changed, and the files of yours it touched.
-fn report(paths: &Paths, pending: &Pending, updated: &Updated) {
-    println!("{}.", pending.finished());
-    for line in table::aligned_rows(pending.changes(updated)) {
+fn report(paths: &Paths, ready: &Ready, updated: &Updated) {
+    println!("{}.", ready.finished());
+    let rows = match ready {
+        Ready::Installer(pending) => pending.changes(updated),
+        Ready::Galaxy(plan) => galaxy::changes(paths, plan, updated),
+    };
+    for line in table::aligned_rows(rows) {
         println!("{line}");
     }
     if updated.claimed {
@@ -487,10 +687,19 @@ fn report(paths: &Paths, pending: &Pending, updated: &Updated) {
             style::path(paths, &updated.folder)
         );
     }
-    if !updated.saved.is_empty() {
-        println!("Moved your files aside where the new version has files:");
-        for saved in &updated.saved {
-            println!("  {} -> {}", saved.path, saved.saved_as);
+    match ready {
+        Ready::Galaxy(plan) => {
+            for line in galaxy::saved_lines(plan, &updated.saved) {
+                println!("{line}");
+            }
+        }
+        Ready::Installer(_) => {
+            if !updated.saved.is_empty() {
+                println!("Moved your files aside where the new version has files:");
+                for saved in &updated.saved {
+                    println!("  {} -> {}", saved.path, saved.saved_as);
+                }
+            }
         }
     }
     if !updated.kept.is_empty() {
@@ -505,8 +714,11 @@ fn report(paths: &Paths, pending: &Pending, updated: &Updated) {
             println!("  {path}");
         }
     }
+    for line in galaxy::restart_lines(&updated.needs_restart) {
+        println!("{line}");
+    }
     // The plan's warnings came first, and the review already showed them.
-    for warning in updated.warnings.iter().skip(pending.warnings().len()) {
+    for warning in updated.warnings.iter().skip(ready.warnings().len()) {
         warn(warning);
     }
 }

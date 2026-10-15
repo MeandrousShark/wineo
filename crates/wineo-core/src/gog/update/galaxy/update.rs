@@ -113,6 +113,9 @@ pub struct Plan {
     seen: FolderState,
     arch: Arch,
     installed_build: Option<String>,
+    /// GOG's name for the installed build, or the installer version a move
+    /// comes from.
+    installed_version: Option<String>,
     version_name: Option<String>,
     products: Vec<PlannedProduct>,
     target: Target,
@@ -173,9 +176,64 @@ impl Plan {
         &self.manifest.build
     }
 
+    /// GOG's name for the installed build, when it was listed; for a move
+    /// off the installer track, the version the installer left.
+    pub fn installed_version(&self) -> Option<&str> {
+        self.installed_version.as_deref()
+    }
+
     /// GOG's name for the target build, when it was listed.
     pub fn version_name(&self) -> Option<&str> {
         self.version_name.as_deref()
+    }
+
+    /// The track the game is moving off, for a reinstall onto Galaxy.
+    pub fn moves_from(&self) -> Option<Track> {
+        self.seen
+            .committed
+            .as_ref()
+            .map(|committed| committed.track)
+            .filter(|track| *track != Track::Galaxy && self.kind == JournalKind::Reinstall)
+    }
+
+    /// How many support files the target build has.
+    pub fn support_files(&self) -> usize {
+        self.manifest.support.len()
+    }
+
+    /// The files and bytes a repair or reinstall checks: every game file
+    /// and support file.
+    pub fn checked(&self) -> (usize, u64) {
+        (
+            self.manifest.files.len() + self.manifest.support.len(),
+            sizes(&self.manifest.files) + sizes(&self.manifest.support),
+        )
+    }
+
+    /// The setup steps that run, by name: "script interpreter", "setup
+    /// program", or a redistributable's id. A repair or reinstall runs them
+    /// all; an update only the ones the record doesn't show done.
+    pub fn setup_steps(&self, paths: &Paths) -> Vec<String> {
+        let steps = setup::planned_steps(
+            paths,
+            &self.folder,
+            &self.manifest,
+            &self.target,
+            &self.title,
+        );
+        let done = if self.hashes_all() || self.recovery {
+            Vec::new()
+        } else {
+            install::files_record(paths, &self.folder)
+                .filter(|record| record::carries_setup(&self.seen, record).unwrap_or(false))
+                .map(|record| record.setup)
+                .unwrap_or_default()
+        };
+        let wanted: Vec<_> = steps.iter().map(|step| step.identity.clone()).collect();
+        setup::remaining(&wanted, &done, false)
+            .into_iter()
+            .map(|index| steps[index].name.clone())
+            .collect()
     }
 
     pub fn arch(&self) -> Arch {
@@ -435,6 +493,7 @@ pub fn plan(
             seen: state,
             arch,
             installed_build,
+            installed_version: manifest.setup.version_name.clone(),
             version_name: manifest.setup.version_name.clone(),
             products,
             target,
@@ -461,11 +520,22 @@ pub fn plan(
     } else {
         game.title.clone()
     };
-    let builds = install::call(session, |client, access| {
-        client.windows_builds(gog_id, Some(access))
-    })?;
     let no_build = || GalaxyError::NoBuild {
         title: title.clone(),
+    };
+    let builds = match install::call(session, |client, access| {
+        client.windows_builds(gog_id, Some(access))
+    }) {
+        Ok(builds) => builds,
+        // No content system for the game, as a check reads it.
+        Err(error)
+            if error
+                .downcast_ref::<wineo_gog::Error>()
+                .is_some_and(|error| error.kind() == wineo_gog::ErrorKind::Status(404)) =>
+        {
+            return Err(no_build().into());
+        }
+        Err(error) => return Err(error),
     };
     let latest = build::latest(&builds, None).ok_or_else(no_build)?.clone();
     let link = latest.link.clone().ok_or_else(no_build)?;
@@ -501,6 +571,10 @@ pub fn plan(
         &repository,
         bits,
         owned.as_ref(),
+        latest
+            .version_name
+            .as_deref()
+            .filter(|name| !name.is_empty()),
     )?;
     let target = Target {
         gog_id,
@@ -509,24 +583,10 @@ pub fn plan(
         track: Track::Galaxy,
         products: selected.products,
     };
-    // On the same build, only a product to install is a reason to update.
-    // A newly owned DLC the build doesn't have is recorded as unavailable
-    // when an update runs anyway, and a language another tool recorded is
-    // recorded as GOG's depots spell it, but neither is a reason to run one.
     // A reinstall runs whatever it finds.
-    let selection = |products: &[Product]| -> Vec<(u64, ProductStatus)> {
-        products
-            .iter()
-            .filter(|product| {
-                product.status != ProductStatus::Unavailable
-                    || committed.products.iter().any(|old| old.id == product.id)
-            })
-            .map(|product| (product.id, product.status))
-            .collect()
-    };
     if kind == JournalKind::Update
         && installed_build.as_deref() == Some(latest.build_id.as_str())
-        && selection(&target.products) == selection(&committed.products)
+        && !selection_changed(&committed, &target.products)
     {
         return Ok(Planned::UpToDate {
             environment: name.to_owned(),
@@ -579,6 +639,19 @@ pub fn plan(
         recovery: false,
         seen: state,
         arch,
+        installed_version: if moving {
+            committed
+                .products
+                .iter()
+                .find(|product| product.id == gog_id)
+                .and_then(|product| product.version.clone())
+        } else {
+            installed_build
+                .as_deref()
+                .and_then(|id| builds.items.iter().find(|build| build.build_id == id))
+                .and_then(|build| build.version_name.clone())
+                .filter(|name| !name.is_empty())
+        },
         installed_build,
         version_name: latest.version_name.clone(),
         products,
@@ -590,6 +663,65 @@ pub fn plan(
         notes,
         warnings,
     }))
+}
+
+/// Whether `target` differs from what `committed` has by a product to
+/// install. On the same build, that is the only reason to update. A newly
+/// owned DLC the build doesn't have is recorded as unavailable when an
+/// update runs anyway, and a language another tool recorded is recorded as
+/// GOG's depots spell it, but neither is a reason to run one.
+pub(in crate::gog::update) fn selection_changed(committed: &Committed, target: &[Product]) -> bool {
+    let selection = |products: &[Product]| -> Vec<(u64, ProductStatus)> {
+        products
+            .iter()
+            .filter(|product| {
+                product.status != ProductStatus::Unavailable
+                    || committed.products.iter().any(|old| old.id == product.id)
+            })
+            .map(|product| (product.id, product.status))
+            .collect()
+    };
+    selection(target) != selection(&committed.products)
+}
+
+/// The products updating `name`'s game to `latest` would select, for a
+/// check that asks which DLC an update would install.
+#[allow(clippy::too_many_arguments)]
+pub(in crate::gog::update) fn selected_for_check(
+    session: &mut Session,
+    paths: &Paths,
+    name: &str,
+    title: &str,
+    game: &wineo_gog::Product,
+    folder_names: &HashMap<u64, String>,
+    committed: &Committed,
+    latest: &wineo_gog::Build,
+    owned: Option<&HashSet<u64>>,
+) -> Result<Vec<Product>> {
+    let link = latest
+        .link
+        .as_deref()
+        .ok_or_else(|| anyhow!("GOG lists no file list for build {}", latest.build_id))?;
+    let repository = session
+        .client()
+        .repository(link)
+        .with_context(|| format!("Couldn't get {title}'s build {}", latest.build_id))?;
+    let bits = build::bits(Environment::load(paths, name)?.wine()?.arch);
+    let version = latest
+        .version_name
+        .as_deref()
+        .filter(|name| !name.is_empty());
+    Ok(select(
+        title,
+        game,
+        folder_names,
+        committed,
+        &repository,
+        bits,
+        owned,
+        version,
+    )?
+    .products)
 }
 
 /// The products of `target` for a review, titled by `dlc_title` where GOG
@@ -689,7 +821,12 @@ fn repair_manifest(
         let Some(language) = resolve(&repository.depots, product.id, wanted, bits) else {
             return Err(GalaxyError::ProductGone {
                 title: title.to_owned(),
-                build: build.to_owned(),
+                build: listed
+                    .version_name
+                    .clone()
+                    .filter(|name| !name.is_empty())
+                    .unwrap_or_else(|| build.to_owned()),
+                installed: true,
                 label: if product.id == gog_id {
                     title.to_owned()
                 } else {
@@ -818,6 +955,7 @@ struct Selected {
 /// GOG's order. A failed or unavailable DLC the build now has is installed,
 /// and one still missing stays as it is. An installed product the build
 /// lacks refuses the update.
+#[allow(clippy::too_many_arguments)]
 fn select(
     title: &str,
     game: &wineo_gog::Product,
@@ -826,6 +964,7 @@ fn select(
     repository: &wineo_gog::Repository,
     bits: &str,
     owned: Option<&HashSet<u64>>,
+    version: Option<&str>,
 ) -> Result<Selected> {
     let build_id = &repository.build_id;
     let folder_language = &committed.language;
@@ -908,8 +1047,9 @@ fn select(
                 let Some(language) = pick(product.id, wanted) else {
                     return Err(GalaxyError::ProductGone {
                         title: title.to_owned(),
-                        build: build_id.clone(),
+                        build: version.map_or_else(|| build_id.clone(), str::to_owned),
                         label: label(product.id),
+                        installed: true,
                     }
                     .into());
                 };
@@ -1113,8 +1253,13 @@ fn resumed(
                     };
                     return Err(GalaxyError::ProductGone {
                         title,
-                        build: repository.build_id.clone(),
+                        build: chosen
+                            .version_name
+                            .clone()
+                            .filter(|name| !name.is_empty())
+                            .unwrap_or_else(|| repository.build_id.clone()),
                         label,
+                        installed: true,
                     }
                     .into());
                 }
@@ -1200,6 +1345,7 @@ fn resumed(
         seen: state,
         arch,
         installed_build,
+        installed_version: None,
         version_name,
         products,
         target,
@@ -1878,6 +2024,7 @@ fn run(
         manifest: &manifest,
         target: &plan.target,
         label: &label,
+        review: false,
     })?;
     warnings.extend(setup_warnings);
     let (guard, ran) = setup::run(
@@ -1893,7 +2040,13 @@ fn run(
         &mut sidecar,
         &steps,
         false,
-        &mut |done, total| (progress.borrow_mut())(Progress::Setup { done, total }),
+        &mut |done, total, step| {
+            (progress.borrow_mut())(Progress::Setup {
+                done,
+                total,
+                step: step.map(str::to_owned),
+            })
+        },
         events,
     )?;
     failpoint("galaxy.update.setup.after")?;
