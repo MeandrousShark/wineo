@@ -1188,3 +1188,23 @@ fn with_a_stored_manifest_files_the_update_doesnt_change_are_left_alone() {
     assert_eq!(fx.base_build().as_deref(), Some("200"));
     assert_eq!(fx.read(&format!("goggame-{GAME}.info")), info(GAME, "200"));
 }
+
+#[test]
+fn an_edited_tracked_file_the_update_changes_is_saved_aside_not_overwritten() {
+    let fx = Fixture::new();
+    fx.installed_then(game_200());
+    fs::write(fx.folder.join("bin/Game.exe"), "patched by you").unwrap();
+    let updated = fx.update();
+    assert_updated(&fx);
+    assert_eq!(fx.read("bin/Game.exe"), "MZ the game itself, version two");
+    assert_eq!(fx.read("bin/Game.exe.wineo-saved"), "patched by you");
+    assert_eq!(
+        updated
+            .saved
+            .iter()
+            .map(|saved| (saved.path.as_str(), saved.saved_as.as_str()))
+            .collect::<Vec<_>>(),
+        [("bin/Game.exe", "bin/Game.exe.wineo-saved")]
+    );
+    assert!(updated.overwritten.is_empty());
+}
