@@ -352,23 +352,13 @@ fn file_entry(file: &DepotFile, path: String, owner: &Owner) -> FileEntry {
     }
 }
 
-/// The file as the client downloads it.
-pub(super) fn depot_file(file: &FileEntry) -> DepotFile {
-    DepotFile {
-        path: file.path.clone(),
-        chunks: file
-            .chunks
-            .iter()
-            .map(|chunk| wineo_gog::Chunk {
-                md5: chunk.md5.clone(),
-                size: chunk.size,
-                compressed_md5: chunk.compressed_md5.clone(),
-                compressed_size: chunk.compressed_size,
-            })
-            .collect(),
-        md5: file.md5.clone(),
-        sha256: file.sha256.clone(),
-        flags: Vec::new(),
+/// A chunk as the client downloads it.
+pub(super) fn gog_chunk(chunk: &ChunkEntry) -> wineo_gog::Chunk {
+    wineo_gog::Chunk {
+        md5: chunk.md5.clone(),
+        size: chunk.size,
+        compressed_md5: chunk.compressed_md5.clone(),
+        compressed_size: chunk.compressed_size,
     }
 }
 
