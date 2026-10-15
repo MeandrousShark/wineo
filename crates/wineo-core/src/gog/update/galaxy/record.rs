@@ -547,6 +547,15 @@ pub fn pending<'a>(state: &FolderState, record: &'a Record) -> Option<&'a Pendin
     .then_some(pending)
 }
 
+/// Whether the setup steps `record` shows done still count for an
+/// operation on `state`: only while its `pending` is that operation's or
+/// its `installed` is the committed selection's. Anything else, like a
+/// record left from an earlier install or a lost `pending`, runs every step
+/// again, since a step skipped wrongly would leave the prefix without it.
+pub fn carries_setup(state: &FolderState, record: &Record) -> Result<bool> {
+    Ok(pending(state, record).is_some() || installed(state, record)?.is_some())
+}
+
 /// Reads every folder's record without locks, for store cleanup. Fails when
 /// one can't be read at all; one that isn't a valid record names nothing.
 pub(super) fn all(dir: &Path) -> Result<Vec<Record>> {

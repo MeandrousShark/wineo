@@ -234,6 +234,49 @@ fn isi_runs_for_the_game_then_each_redistributable_with_its_arguments() {
         assert!(!text.replace("\r\n", "").contains('\n'), "{text:?}");
         assert!(runs.join(format!("gog-galaxy-setup-{step}.log")).is_file());
     }
+    // The `%` that reached ISI whole was doubled in its batch file.
+    let isi = fs::read_to_string(runs.join("gog-galaxy-setup-01.bat")).unwrap();
+    assert!(isi.contains("\\100%% Game\""), "{isi:?}");
+    assert!(!isi.contains("\\100% Game"), "{isi:?}");
+}
+
+#[test]
+fn isi_runs_for_the_game_then_each_dlc_from_its_own_support_folder() {
+    let fx = Fixture::new();
+    fx.gog.lock().unwrap().dlc = vec![DLC];
+    fx.content.add_build(
+        scripted("100")
+            .depot(FakeDepot::new(DLC).file(FakeFile::new("Data\\dlc.dat", b"dlc")))
+            .product(GAME, "")
+            .product(DLC, ""),
+    );
+    with_setup(&fx, None, None);
+    fx.install();
+    assert_installed(&fx);
+    let ran = fx.ran();
+    assert_eq!(
+        fx.names(),
+        [
+            "scriptinterpreter.exe",
+            "scriptinterpreter.exe",
+            "VC_redist.x86.exe"
+        ]
+    );
+    for (ran, product) in ran.iter().zip([GAME, DLC]) {
+        let support = fx.support(product, "").components().collect::<PathBuf>();
+        assert_eq!(ran.dir, z(&support));
+        assert_eq!(ran.arguments, heroic(&fx, product, "100"));
+    }
+    let record = fx.record().unwrap();
+    let products: Vec<u64> = record
+        .setup
+        .iter()
+        .filter_map(|step| match step {
+            SetupStep::ScriptInterpreter { product, .. } => Some(*product),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(products, [GAME, DLC]);
 }
 
 #[test]
@@ -686,4 +729,26 @@ fn a_galaxy_install_needs_a_graphical_session() {
     set_graphical(true);
     fx.apply(&plan).unwrap();
     assert_installed(&fx);
+}
+
+#[test]
+fn steps_a_leftover_record_shows_done_still_run_for_a_new_install() {
+    let fx = Fixture::new();
+    fx.content
+        .add_build(Fixture::game("100").dependency("MSVC2017"));
+    with_dependencies(&fx, b"runtime v1");
+    let plan = fx.plan();
+    // A record with no state beside it, naming this very step done.
+    let redist = &plan.manifest_for_tests().setup.redist[0];
+    let leftover = Record {
+        setup: vec![SetupStep::Redistributable {
+            dependency: redist.dependency.clone(),
+            manifest: redist.manifest.clone(),
+        }],
+        ..Record::default()
+    };
+    write_record(&fx, &leftover);
+    fx.apply(&plan).unwrap();
+    assert_eq!(fx.names(), ["VC_redist.x86.exe"]);
+    assert_eq!(fx.record().unwrap().setup, leftover.setup);
 }

@@ -1097,9 +1097,7 @@ fn run(
     let mut sidecar = record::read(&lock)?.unwrap_or_default();
     // Setup steps recorded count only while the record is this operation's
     // or the committed selection's; anything else runs every step again.
-    let carried = record::pending(&state, &sidecar).is_some()
-        || record::installed(&state, &sidecar)?.is_some();
-    if !carried {
+    if !record::carries_setup(&state, &sidecar)? {
         sidecar.setup.clear();
     }
     sidecar.pending = Some(record::Pending {
