@@ -35,7 +35,8 @@ pub enum UpdateState {
     UpToDate,
     /// JSON `available`.
     Available,
-    /// A newer Galaxy build exists, applied by plan 0052. JSON `galaxy`.
+    /// GOG has no generation 2 Galaxy build on the default branch, so
+    /// wineo can't update the game. JSON `galaxy`.
     OnGog,
     /// JSON `cant_compare`.
     CantCompare,
@@ -56,8 +57,9 @@ impl UpdateState {
 /// Why a game's update can't be applied, or can't be told.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Reason {
-    /// A Galaxy-tracked game, applied by plan 0052.
-    Galaxy,
+    /// A Galaxy-tracked game GOG has no Galaxy build of that wineo can
+    /// update. `name` is its environment, for the way out.
+    Galaxy { name: String },
     /// Why the game can't be compared, as a sentence.
     CantCompare(String),
 }
@@ -66,7 +68,7 @@ impl Reason {
     /// The machine word for Galaxy, else the sentence.
     pub fn as_str(&self) -> &str {
         match self {
-            Self::Galaxy => "galaxy",
+            Self::Galaxy { .. } => "galaxy",
             Self::CantCompare(why) => why,
         }
     }
@@ -129,19 +131,25 @@ pub struct Status {
     pub platform: Platform,
     pub track: Track,
     pub language: String,
-    /// The base game's installed version, or build on the Galaxy track.
+    /// The base game's installed version, or build id on the Galaxy track.
     pub installed: Option<String>,
-    /// The base game's current installer version, or latest default-branch
-    /// build, when it could be told.
+    /// The base game's current installer version, or latest generation 2
+    /// default-branch build id, when it could be told.
     pub available: Option<String>,
+    /// GOG's names for the Galaxy builds `installed` and `available` are,
+    /// when it lists one. None on the installer track.
+    pub installed_name: Option<String>,
+    pub available_name: Option<String>,
     pub state: UpdateState,
-    /// Whether this wineo can apply the update: an installer-tracked game
-    /// with one.
+    /// Whether this wineo can apply the update.
     pub applicable: bool,
     /// Set when the state is `OnGog`, and when it is `CantCompare`.
     pub reason: Option<Reason>,
     /// A journal is present: the owner has an update to finish.
     pub unfinished: bool,
+    /// The journal is a Galaxy game's first install, which installing again
+    /// finishes, not `wineo update`.
+    pub galaxy_install: bool,
     pub warnings: Vec<String>,
     /// Every product after the base, in the order they were added.
     pub dlc: Vec<DlcStatus>,
@@ -525,6 +533,10 @@ struct Compared {
     products: Option<Vec<Product>>,
     /// Why each newly owned DLC can't be installed, for an update's review.
     notes: Vec<String>,
+    /// What comparing couldn't find out, besides the state.
+    warnings: Vec<String>,
+    installed_name: Option<String>,
+    available_name: Option<String>,
 }
 
 /// The ids the account owns, asked of GOG once for any number of games.
@@ -586,6 +598,9 @@ pub(super) fn status_with(
     )?;
     let mut warnings: Vec<String> = details.warning.into_iter().collect();
     let unfinished = state.journal.is_some();
+    let galaxy_install = state.journal.as_ref().is_some_and(|journal| {
+        journal.kind == folder::JournalKind::Install && journal.target.track == Track::Galaxy
+    });
 
     if installed.platform == Platform::Windows
         && installed.track == Track::Galaxy
@@ -616,8 +631,7 @@ pub(super) fn status_with(
         .dlc_ids
         .iter()
         .any(|id| !installed.products.iter().any(|product| product.id == *id));
-    let owned = if installed.track == Track::Installer && !installed.unfinished_install && unlisted
-    {
+    let owned = if !installed.unfinished_install && unlisted {
         match owned.get(session) {
             Ok(owned) => Some(owned),
             Err(error) => {
@@ -641,15 +655,24 @@ pub(super) fn status_with(
             dlc: Vec::new(),
             products: None,
             notes: Vec::new(),
+            warnings: Vec::new(),
+            installed_name: None,
+            available_name: None,
         }
     } else {
         match (installed.platform, installed.track) {
             (Platform::Linux | Platform::Windows, Track::Installer) => {
                 by_installer(&installed, names, &details.product, owned)
             }
-            (Platform::Windows, Track::Galaxy) => {
-                by_build(session, &installed, names, &details.product)?
-            }
+            (Platform::Windows, Track::Galaxy) => by_build(
+                session,
+                paths,
+                name,
+                &installed,
+                names,
+                &details.product,
+                owned,
+            )?,
             (Platform::Linux, Track::Galaxy) => cant(
                 &installed,
                 names,
@@ -658,14 +681,16 @@ pub(super) fn status_with(
         }
     };
 
-    let applicable =
-        compared.state == UpdateState::Available && installed.track == Track::Installer;
+    let applicable = compared.state == UpdateState::Available;
     let reason = match compared.state {
         UpdateState::CantCompare => compared.why.map(Reason::CantCompare),
-        UpdateState::OnGog => Some(Reason::Galaxy),
+        UpdateState::OnGog => Some(Reason::Galaxy {
+            name: name.to_owned(),
+        }),
         UpdateState::Available | UpdateState::UpToDate => None,
     };
     notes.extend(compared.notes);
+    warnings.extend(compared.warnings);
     let status = Status {
         environment: name.to_owned(),
         gog_id: installed.gog_id,
@@ -676,10 +701,13 @@ pub(super) fn status_with(
         language: installed.language,
         installed: compared.installed,
         available: compared.available,
+        installed_name: compared.installed_name,
+        available_name: compared.available_name,
         state: compared.state,
         applicable,
         reason,
         unfinished,
+        galaxy_install,
         warnings,
         dlc: compared.dlc,
     };
@@ -700,6 +728,9 @@ fn cant(installed: &Installed, names: &HashMap<u64, String>, why: String) -> Com
         dlc: dlc(installed, names).map(|(dlc, _)| dlc).collect(),
         products: None,
         notes: Vec::new(),
+        warnings: Vec::new(),
+        installed_name: None,
+        available_name: None,
     }
 }
 
@@ -987,6 +1018,9 @@ fn by_installer(
         dlc: listing,
         products: Some(products),
         notes,
+        warnings: Vec::new(),
+        installed_name: None,
+        available_name: None,
     }
 }
 
@@ -1088,52 +1122,34 @@ fn title_or(title: &str, fallback: impl FnOnce() -> String) -> String {
     }
 }
 
-/// The Galaxy track: the base game's build against GOG's build list. The
-/// latest default-branch build is the first one GOG lists with no branch,
-/// since GOG lists newest first.
+/// The Galaxy track: the base game's build against the latest generation 2
+/// build GOG lists on the default branch. Any other installed build, one
+/// that is unknown, unlisted, generation 1, or on another branch, is
+/// updated onto it. Newly owned DLC and failed or unavailable DLC the build
+/// has count as an update too, as `galaxy::update::plan` installs them.
 fn by_build(
     session: &mut Session,
+    paths: &Paths,
+    name: &str,
     installed: &Installed,
     names: &HashMap<u64, String>,
     details: &wineo_gog::Product,
+    owned: Option<&HashSet<u64>>,
 ) -> Result<Compared> {
     let label = title_or(&details.title, || format!("GOG game {}", installed.gog_id));
     let id = installed.gog_id;
     let builds = session.call(|client, token| client.windows_builds(id, Some(token)))?;
-    let latest = builds.items.iter().find(|build| build.branch.is_none());
+    let latest = galaxy::latest(&builds);
     let current = base(installed).and_then(|base| base.build.clone());
-    let (state, why) = match (&current, latest) {
-        (None, _) => (
-            UpdateState::CantCompare,
-            Some(format!("The installed build of {label} isn't known.")),
-        ),
-        (_, None) => (
-            UpdateState::CantCompare,
-            Some(format!(
-                "GOG lists no build of {label} on its default branch."
-            )),
-        ),
-        (Some(current), Some(latest)) if *current == latest.build_id => {
-            (UpdateState::UpToDate, None)
-        }
-        (Some(current), Some(_)) => {
-            match builds.items.iter().find(|build| build.build_id == *current) {
-                Some(build) if build.branch.is_none() => (UpdateState::OnGog, None),
-                Some(build) => (
-                    UpdateState::CantCompare,
-                    Some(format!(
-                        "Build {current} is on GOG's {} branch, not the default one.",
-                        build.branch.as_deref().unwrap_or_default()
-                    )),
-                ),
-                None => (
-                    UpdateState::CantCompare,
-                    Some(format!("Build {current} isn't one GOG lists.")),
-                ),
-            }
-        }
+    let version_name = |build: &str| {
+        builds
+            .items
+            .iter()
+            .find(|listed| listed.build_id == build)
+            .and_then(|listed| listed.version_name.clone())
+            .filter(|name| !name.is_empty())
     };
-    let dlc = dlc(installed, names)
+    let mut dlc: Vec<DlcStatus> = dlc(installed, names)
         .map(|(mut entry, _)| {
             entry.title = details
                 .dlcs
@@ -1144,14 +1160,91 @@ fn by_build(
             entry
         })
         .collect();
+    let mut warnings = Vec::new();
+    let mut tally = Tally::default();
+    match latest {
+        None => {
+            tally.state = UpdateState::OnGog;
+        }
+        Some(latest) => {
+            if current.as_deref() != Some(latest.build_id.as_str()) {
+                tally.available();
+            }
+            let committed = Committed {
+                source: None,
+                gog_id: id,
+                platform: installed.platform,
+                language: installed.language.clone(),
+                track: installed.track,
+                products: installed.products.clone(),
+                files: Vec::new(),
+            };
+            // The build's own file list is only fetched when there is a DLC
+            // to ask it about.
+            let questions = installed
+                .products
+                .iter()
+                .any(|product| product.status != ProductStatus::Installed)
+                || details.dlc_ids.iter().any(|dlc| {
+                    owned.is_some_and(|owned| owned.contains(dlc))
+                        && !installed.products.iter().any(|product| product.id == *dlc)
+                });
+            if questions {
+                match galaxy::update::selected_for_check(
+                    session, paths, name, &label, details, names, &committed, latest, owned,
+                ) {
+                    Ok(products) => {
+                        if galaxy::update::selection_changed(&committed, &products) {
+                            tally.available();
+                        }
+                        for product in products
+                            .iter()
+                            .filter(|product| product.id != id)
+                            .filter(|product| product.status == ProductStatus::Installed)
+                        {
+                            match dlc.iter_mut().find(|entry| entry.id == product.id) {
+                                // Already installed.
+                                Some(entry) if entry.state == DlcState::Unknown => {}
+                                Some(entry) => {
+                                    entry.available = Some(latest.build_id.clone());
+                                    if entry.state == DlcState::Unavailable {
+                                        entry.state = DlcState::NotInstalled;
+                                    }
+                                }
+                                None => dlc.push(DlcStatus {
+                                    id: product.id,
+                                    title: details
+                                        .dlcs
+                                        .iter()
+                                        .find(|dlc| dlc.id == product.id)
+                                        .map(|dlc| dlc.title.clone())
+                                        .filter(|title| !title.is_empty()),
+                                    name: names.get(&product.id).cloned(),
+                                    installed: None,
+                                    available: Some(latest.build_id.clone()),
+                                    state: DlcState::NotInstalled,
+                                }),
+                            }
+                        }
+                    }
+                    Err(error) => warnings.push(format!(
+                        "Couldn't tell which DLC of {label} an update would install: {error:#}"
+                    )),
+                }
+            }
+        }
+    }
     Ok(Compared {
-        state,
+        state: tally.state,
+        installed_name: current.as_deref().and_then(version_name),
+        available_name: latest.and_then(|build| version_name(&build.build_id)),
         installed: current,
         available: latest.map(|build| build.build_id.clone()),
-        why,
+        why: None,
         dlc,
         products: None,
         notes: Vec::new(),
+        warnings,
     })
 }
 

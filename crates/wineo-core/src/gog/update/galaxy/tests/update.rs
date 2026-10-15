@@ -640,6 +640,43 @@ fn an_unavailable_dlc_is_retried_on_the_same_build() {
 }
 
 #[test]
+fn a_check_offers_the_dlc_an_update_would_install_and_no_other() {
+    use crate::gog::update::{DlcState, UpdateState, check};
+    let fx = Fixture::new();
+    fx.gog.lock().unwrap().dlc = vec![DLC];
+    fx.gog.lock().unwrap().owned = Some(vec![GAME]);
+    fx.content.add_build(Fixture::game("100"));
+    fx.install();
+    let status = check(&mut fx.session(), "game", true).unwrap();
+    assert_eq!(status.state, UpdateState::UpToDate);
+    assert!(!status.applicable);
+
+    // Bought since, but the build has no files for it: still nothing to do,
+    // as `plan` agrees.
+    fx.gog.lock().unwrap().owned = Some(vec![GAME, DLC]);
+    let status = check(&mut fx.session(), "game", true).unwrap();
+    assert_eq!(status.state, UpdateState::UpToDate);
+    assert!(matches!(
+        fx.update_planned().unwrap(),
+        Planned::UpToDate { .. }
+    ));
+
+    // The same build listed with its files: only the DLC makes an update.
+    fx.gog.lock().unwrap().newest_first = true;
+    fx.content.add_build(
+        Fixture::game("100").depot(FakeDepot::new(DLC).file(FakeFile::new("dlc.dat", b"now"))),
+    );
+    let status = check(&mut fx.session(), "game", true).unwrap();
+    assert_eq!(status.state, UpdateState::Available);
+    assert!(status.applicable);
+    assert_eq!(status.installed.as_deref(), Some("100"));
+    assert_eq!(status.available.as_deref(), Some("100"));
+    let dlc = status.dlc.iter().find(|dlc| dlc.id == DLC).unwrap();
+    assert_eq!(dlc.state, DlcState::NotInstalled);
+    assert_eq!(dlc.available.as_deref(), Some("100"));
+}
+
+#[test]
 fn an_update_interrupted_at_each_step_finishes_without_downloading_again() {
     for (point, skip) in [
         ("galaxy.update.before", 0),
@@ -1052,9 +1089,10 @@ fn updates_reach_galaxy_games_through_core_but_not_yet_the_cli_path() {
         error.downcast_ref(),
         Some(crate::gog::update::UpdateError::Galaxy { .. })
     ));
-    // Checking still compares by build.
+    // Checking compares by build, and the update applies.
     let status = crate::gog::update::check(&mut fx.session(), "game", true).unwrap();
-    assert_eq!(status.state, crate::gog::update::UpdateState::OnGog);
+    assert_eq!(status.state, crate::gog::update::UpdateState::Available);
+    assert!(status.applicable);
     assert_eq!(status.available.as_deref(), Some("200"));
     // A reinstall is its own kind of operation.
     let Planned::Update(plan) = update::plan(

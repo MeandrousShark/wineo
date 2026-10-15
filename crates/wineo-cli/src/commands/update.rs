@@ -112,13 +112,18 @@ fn print_table(statuses: &[Status]) {
     if statuses.is_empty() {
         return;
     }
-    let dash = || "-".to_owned();
+    // A Galaxy build reads by GOG's name for it, else by its id.
+    let shown = |name: &Option<String>, id: &Option<String>| {
+        name.clone()
+            .or_else(|| id.clone())
+            .unwrap_or_else(|| "-".to_owned())
+    };
     let mut table = vec![["NAME", "INSTALLED", "AVAILABLE", "STATE"].map(str::to_owned)];
     table.extend(statuses.iter().map(|status| {
         [
             status.environment.clone(),
-            status.installed.clone().unwrap_or_else(dash),
-            status.available.clone().unwrap_or_else(dash),
+            shown(&status.installed_name, &status.installed),
+            shown(&status.available_name, &status.available),
             update_label(status.state).to_owned(),
         ]
     }));
@@ -129,7 +134,12 @@ fn print_table(statuses: &[Status]) {
         if let Some(reason) = &status.reason {
             println!("  {}", reason.note());
         }
-        if status.unfinished {
+        if status.galaxy_install {
+            println!(
+                "  Finish the interrupted install with: wineo import gog --game {}",
+                status.gog_id
+            );
+        } else if status.unfinished {
             println!(
                 "  Finish the interrupted update with: wineo update {}",
                 status.environment

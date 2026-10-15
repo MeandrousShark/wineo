@@ -15,7 +15,9 @@ impl Reason {
     /// Why an update can't be applied, or can't be told, as a sentence.
     pub fn note(&self) -> String {
         match self {
-            Self::Galaxy => "Updating Galaxy builds comes in a later release.".to_owned(),
+            Self::Galaxy { name } => format!(
+                "GOG has no Galaxy build of this game that wineo can update. Move it to offline installers with: wineo update {name} --reinstall --track installer"
+            ),
             Self::CantCompare(why) => why.clone(),
         }
     }

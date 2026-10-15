@@ -160,15 +160,22 @@ pub fn product(id: u64, title: &str, installers: &[Value], dlcs: &[Value]) -> Va
     })
 }
 
-/// A Windows build list, newest first, each as `(build id, branch)`.
+/// A Windows build list, newest first, each as `(build id, branch)`. Every
+/// build is generation 2 and named `v` and its id.
 pub fn builds(items: &[(&str, Option<&str>)]) -> Value {
+    let items: Vec<_> = items.iter().map(|&(id, branch)| (id, branch, 2)).collect();
+    builds_of(&items)
+}
+
+/// `builds`, each with its generation.
+pub fn builds_of(items: &[(&str, Option<&str>, u8)]) -> Value {
     json!({
-        "items": items.iter().map(|(id, branch)| json!({
+        "items": items.iter().map(|(id, branch, generation)| json!({
             "build_id": id,
-            "version_name": "1.0",
+            "version_name": format!("v{id}"),
             "branch": branch,
             "date_published": "2026-01-01T00:00:00+0000",
-            "generation": 2,
+            "generation": generation,
             "link": "http://unused.example/manifest",
         })).collect::<Vec<_>>(),
         "has_private_branches": false,

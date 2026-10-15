@@ -228,10 +228,13 @@ mod tests {
             language: "en".to_owned(),
             installed: None,
             available: None,
+            installed_name: None,
+            available_name: None,
             state: UpdateState::UpToDate,
             applicable: false,
             reason: None,
             unfinished: false,
+            galaxy_install: false,
             warnings: Vec::new(),
             dlc,
         }

@@ -153,17 +153,21 @@ fn check_lists_a_game_with_an_update_and_its_dlc() {
 }
 
 #[test]
-fn check_names_one_game_and_notes_games_it_cant_update() {
+fn check_names_one_game_and_shows_a_galaxy_updates_version_names() {
     let (f, api) = world();
     disco(&f, &api);
     let out = f.gog(&api, &["update", "--check", "disco"]);
     assert_success(&out);
     let text = stdout(&out);
-    assert!(text.contains("update on GOG"), "{text}");
-    assert!(
-        text.contains("Updating Galaxy builds comes in a later release."),
-        "{text}"
-    );
+    let row = text.lines().nth(1).unwrap();
+    for part in [
+        "disco",
+        "v59781086834418085",
+        "v59781086834418086",
+        "update available",
+    ] {
+        assert!(row.contains(part), "{text}");
+    }
     assert!(!text.contains("rimworld"), "{text}");
 
     let all = f.gog(&api, &["update", "--check", "--all"]);
@@ -189,7 +193,7 @@ fn check_json_has_the_plans_shape() {
             {
                 "name": "disco", "id": DISCO.to_string(), "track": "galaxy",
                 "installed": "59781086834418085", "available": "59781086834418086",
-                "update": "galaxy", "applicable": false, "reason": "galaxy",
+                "update": "available", "applicable": true, "reason": null,
                 "unfinished": false, "dlc": [],
             },
             {

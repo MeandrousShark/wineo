@@ -509,24 +509,10 @@ pub fn plan(
         track: Track::Galaxy,
         products: selected.products,
     };
-    // On the same build, only a product to install is a reason to update.
-    // A newly owned DLC the build doesn't have is recorded as unavailable
-    // when an update runs anyway, and a language another tool recorded is
-    // recorded as GOG's depots spell it, but neither is a reason to run one.
     // A reinstall runs whatever it finds.
-    let selection = |products: &[Product]| -> Vec<(u64, ProductStatus)> {
-        products
-            .iter()
-            .filter(|product| {
-                product.status != ProductStatus::Unavailable
-                    || committed.products.iter().any(|old| old.id == product.id)
-            })
-            .map(|product| (product.id, product.status))
-            .collect()
-    };
     if kind == JournalKind::Update
         && installed_build.as_deref() == Some(latest.build_id.as_str())
-        && selection(&target.products) == selection(&committed.products)
+        && !selection_changed(&committed, &target.products)
     {
         return Ok(Planned::UpToDate {
             environment: name.to_owned(),
@@ -590,6 +576,60 @@ pub fn plan(
         notes,
         warnings,
     }))
+}
+
+/// Whether `target` differs from what `committed` has by a product to
+/// install. On the same build, that is the only reason to update. A newly
+/// owned DLC the build doesn't have is recorded as unavailable when an
+/// update runs anyway, and a language another tool recorded is recorded as
+/// GOG's depots spell it, but neither is a reason to run one.
+pub(in crate::gog::update) fn selection_changed(committed: &Committed, target: &[Product]) -> bool {
+    let selection = |products: &[Product]| -> Vec<(u64, ProductStatus)> {
+        products
+            .iter()
+            .filter(|product| {
+                product.status != ProductStatus::Unavailable
+                    || committed.products.iter().any(|old| old.id == product.id)
+            })
+            .map(|product| (product.id, product.status))
+            .collect()
+    };
+    selection(target) != selection(&committed.products)
+}
+
+/// The products updating `name`'s game to `latest` would select, for a
+/// check that asks which DLC an update would install.
+#[allow(clippy::too_many_arguments)]
+pub(in crate::gog::update) fn selected_for_check(
+    session: &mut Session,
+    paths: &Paths,
+    name: &str,
+    title: &str,
+    game: &wineo_gog::Product,
+    folder_names: &HashMap<u64, String>,
+    committed: &Committed,
+    latest: &wineo_gog::Build,
+    owned: Option<&HashSet<u64>>,
+) -> Result<Vec<Product>> {
+    let link = latest
+        .link
+        .as_deref()
+        .ok_or_else(|| anyhow!("GOG lists no file list for build {}", latest.build_id))?;
+    let repository = session
+        .client()
+        .repository(link)
+        .with_context(|| format!("Couldn't get {title}'s build {}", latest.build_id))?;
+    let bits = build::bits(Environment::load(paths, name)?.wine()?.arch);
+    Ok(select(
+        title,
+        game,
+        folder_names,
+        committed,
+        &repository,
+        bits,
+        owned,
+    )?
+    .products)
 }
 
 /// The products of `target` for a review, titled by `dlc_title` where GOG

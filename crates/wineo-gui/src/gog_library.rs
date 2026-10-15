@@ -328,10 +328,15 @@ mod tests {
             language: "en-US".to_owned(),
             installed: Some("1.0".to_owned()),
             available: Some("1.1".to_owned()),
+            installed_name: None,
+            available_name: None,
             state,
             applicable,
-            reason: (!applicable).then_some(Reason::Galaxy),
+            reason: (!applicable).then(|| Reason::Galaxy {
+                name: name.to_owned(),
+            }),
             unfinished: false,
+            galaxy_install: false,
             warnings: Vec::new(),
             dlc: Vec::new(),
         }
@@ -366,8 +371,11 @@ mod tests {
         assert_eq!(Badge::FinishUpdate.label(), "Finish update");
         assert_eq!(state_label(UpdateState::OnGog), "Update on GOG");
         assert_eq!(
-            Reason::Galaxy.note(),
-            "Updating Galaxy builds comes in a later release."
+            Reason::Galaxy {
+                name: "disco".to_owned()
+            }
+            .note(),
+            "GOG has no Galaxy build of this game that wineo can update. Move it to offline installers with: wineo update disco --reinstall --track installer"
         );
     }
 

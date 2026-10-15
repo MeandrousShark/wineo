@@ -55,7 +55,9 @@ fn builds(items: &[(&str, Option<&str>)]) -> Value {
     json!({
         "items": items
             .iter()
-            .map(|(id, branch)| json!({"build_id": id, "branch": branch}))
+            .map(|(id, branch)| {
+                json!({"build_id": id, "branch": branch, "generation": 2, "version_name": format!("v{id}")})
+            })
             .collect::<Vec<_>>(),
         "has_private_branches": false,
     })
@@ -603,25 +605,49 @@ fn a_galaxy_game_is_compared_by_build() {
     assert_eq!(status.platform, Platform::Windows);
     assert_eq!(status.track, Track::Galaxy);
 
+    assert_eq!(status.installed_name.as_deref(), Some("v400"));
+    assert_eq!(status.available_name.as_deref(), Some("v400"));
+
+    // An older build, an unlisted one, one on another branch, and one that
+    // isn't known all update onto the latest.
+    for installed in [Some("300"), Some("200"), Some("999"), None] {
+        fx.galaxy(installed);
+        let status = fx.status("disco");
+        assert_eq!(status.state, UpdateState::Available, "{installed:?}");
+        assert_eq!(status.state.as_str(), "available");
+        assert!(status.applicable);
+        assert_eq!(status.reason, None);
+        assert_eq!(status.installed.as_deref(), installed);
+        assert_eq!(status.available.as_deref(), Some("400"));
+        assert_eq!(status.available_name.as_deref(), Some("v400"));
+    }
     fx.galaxy(Some("300"));
     let status = fx.status("disco");
-    assert_eq!(status.state, UpdateState::OnGog);
-    assert_eq!(status.state.as_str(), "galaxy");
-    assert!(!status.applicable);
-    assert_eq!(status.reason, Some(Reason::Galaxy));
-    assert_eq!(status.reason.as_ref().unwrap().as_str(), "galaxy");
-    assert_eq!(status.available.as_deref(), Some("400"));
-
-    fx.galaxy(Some("200"));
-    assert!(cant_compare(&fx.status("disco")).contains("beta branch"));
+    assert_eq!(status.installed_name.as_deref(), Some("v300"));
     fx.galaxy(Some("999"));
-    assert!(cant_compare(&fx.status("disco")).contains("isn't one GOG lists"));
-    fx.galaxy(None);
-    assert!(cant_compare(&fx.status("disco")).contains("isn't known"));
+    assert_eq!(fx.status("disco").installed_name, None);
 
-    fx.builds.insert(DISCO, builds(&[("500", Some("beta"))]));
-    fx.galaxy(Some("500"));
-    assert!(cant_compare(&fx.status("disco")).contains("default branch"));
+    // Only a game with no generation 2 build on the default branch is left
+    // to its offline installers.
+    for items in [
+        builds(&[("500", Some("beta"))]),
+        json!({"items": [{"build_id": "400", "branch": null, "generation": 1}]}),
+    ] {
+        fx.builds.insert(DISCO, items);
+        fx.galaxy(Some("500"));
+        let status = fx.status("disco");
+        assert_eq!(status.state, UpdateState::OnGog);
+        assert_eq!(status.state.as_str(), "galaxy");
+        assert!(!status.applicable);
+        assert_eq!(
+            status.reason,
+            Some(Reason::Galaxy {
+                name: "disco".to_owned()
+            })
+        );
+        assert_eq!(status.reason.as_ref().unwrap().as_str(), "galaxy");
+        assert_eq!(status.available, None);
+    }
 }
 
 #[test]
@@ -669,7 +695,7 @@ fn a_build_another_tool_installed_is_recorded_and_used() {
 
     // An older build on disk is recorded too, and compared as it is.
     info(&state.folder, &DISCO.to_string(), "300");
-    assert_eq!(fx.status("disco").state, UpdateState::OnGog);
+    assert_eq!(fx.status("disco").state, UpdateState::Available);
     assert_eq!(
         fx.state(&state).committed.unwrap().products[0]
             .build
@@ -686,7 +712,7 @@ fn a_build_on_disk_is_not_trusted_without_the_games_own_id() {
     for game_id in ["1", ""] {
         info(&state.folder, game_id, "400");
         let status = fx.status("disco");
-        assert_eq!(status.state, UpdateState::OnGog);
+        assert_eq!(status.state, UpdateState::Available);
         assert_eq!(status.installed.as_deref(), Some("300"));
         assert_eq!(fx.state(&state), state);
     }
@@ -709,7 +735,7 @@ fn a_build_on_disk_is_not_recorded_while_a_journal_is_present() {
     let status = fx.status("disco");
     assert!(status.unfinished);
     // Computed from the committed build.
-    assert_eq!(status.state, UpdateState::OnGog);
+    assert_eq!(status.state, UpdateState::Available);
     assert_eq!(status.installed.as_deref(), Some("300"));
     assert_eq!(fx.state(&state), state);
 }

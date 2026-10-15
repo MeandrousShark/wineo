@@ -23,6 +23,7 @@ pub mod update;
 use anyhow::Result;
 
 pub use build::LayoutError;
+pub(super) use build::latest_default as latest;
 pub use install::{GalaxyError, PlannedProduct, Progress, Retarget};
 
 use super::UpdateError;
