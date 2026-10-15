@@ -240,11 +240,6 @@ impl Plan {
     pub fn warnings(&self) -> &[String] {
         &self.warnings
     }
-
-    #[cfg(test)]
-    pub(super) fn manifest_for_tests(&self) -> &Manifest {
-        &self.manifest
-    }
 }
 
 /// Whether two entries of a path hold the same content: the same chunks,

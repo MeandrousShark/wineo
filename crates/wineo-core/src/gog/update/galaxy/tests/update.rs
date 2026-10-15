@@ -714,3 +714,377 @@ const TARGET_200: [(&str, &[u8]); 4] = [
     ("new/fresh.dat", b"brand new"),
     ("Data/core.dat", b"core data, several chunks long"),
 ];
+
+/// Build 300: build 200 with its own info file and one more file.
+fn game_300() -> FakeBuild {
+    let mut build = game_200();
+    build.build_id = "300".to_owned();
+    build.version_name = "v300".to_owned();
+    build.depot(
+        FakeDepot::new(GAME)
+            .file(FakeFile::new(
+                &format!("goggame-{GAME}.info"),
+                info(GAME, "300").as_bytes(),
+            ))
+            .file(FakeFile::new("three.dat", b"three")),
+    )
+}
+
+/// An update to build 200 stopped by an injected failure at `point`.
+fn update_interrupted(fx: &Fixture, point: &'static str, skip: usize) {
+    let plan = fx.update_plan();
+    set_failpoint_nth(point, skip);
+    let result = fx.apply_update(&plan);
+    set_failpoint(None);
+    let error = result.unwrap_err();
+    assert!(format!("{error:#}").contains("injected"), "{error:#}");
+}
+
+#[test]
+fn without_pending_an_update_fetches_its_builds_again() {
+    let fx = Fixture::new();
+    fx.installed_then(game_200());
+    update_interrupted(&fx, "galaxy.update.file.after", 1);
+    forget_record(&fx);
+    let plan = fx.update_plan();
+    assert!(plan.is_recovery());
+    assert!(plan.retarget().is_none());
+    assert_eq!(plan.build(), "200");
+    // The installed build is still listed, so it's the starting point and
+    // old files are deleted on a hash match.
+    assert_eq!(plan.start(), Start::Fetched);
+    let updated = fx.apply_update(&plan).unwrap();
+    assert_updated(&fx);
+    assert!(updated.recovered);
+    assert!(updated.saved.is_empty(), "{:?}", updated.saved);
+    assert!(!fx.folder.join("empty.txt").exists());
+}
+
+#[test]
+fn without_pending_an_update_whose_build_is_gone_finishes_with_the_latest() {
+    let fx = Fixture::new();
+    fx.installed_then(game_200());
+    update_interrupted(&fx, "galaxy.update.files.after", 0);
+    fs::write(folder::sidecar_file(&fx.paths, &fx.folder), b"garbage").unwrap();
+    fx.hide("200");
+    fx.content.add_build(game_300());
+    let plan = fx.update_plan();
+    assert_eq!(
+        plan.retarget(),
+        Some(&install::Retarget {
+            from: "200".to_owned(),
+            to: "300".to_owned()
+        })
+    );
+    assert_eq!(plan.start(), Start::Target);
+    assert_eq!(plan.notes(), [Note::NothingDeleted]);
+    let before = fx.chunk_count();
+    let updated = fx.apply_update(&plan).unwrap();
+    assert_eq!(fx.base_build().as_deref(), Some("300"));
+    // What matches build 300 stays, the info file the update wrote is its
+    // own to replace, and nothing is deleted or moved aside.
+    assert!(updated.saved.is_empty(), "{:?}", updated.saved);
+    assert!(fx.folder.join("empty.txt").is_file());
+    assert_eq!(fx.read(&format!("goggame-{GAME}.info")), info(GAME, "300"));
+    assert_eq!(fx.read("three.dat"), "three");
+    let asked = fx.chunks_since(before);
+    assert!(!asked.contains(&chunk(b"brand ne")), "{asked:?}");
+}
+
+#[test]
+fn an_unstarted_updates_pending_never_makes_a_file_tracked() {
+    let fx = Fixture::new();
+    fx.installed_then(game_200());
+    // Stopped after pending, before the journal.
+    update_interrupted(&fx, "galaxy.update.pending.after", 0);
+    assert!(fx.state().journal.is_none());
+    // The stored manifest is lost, and the unstarted update's pending
+    // claims a file of yours at exactly its content.
+    fs::write(fx.folder.join("bin/Game.exe"), "yours").unwrap();
+    let mut record = fx.record().unwrap();
+    record.installed = None;
+    let pending = record.pending.as_mut().unwrap();
+    let base = pending.base.as_mut().unwrap();
+    for file in &mut base.manifest.files {
+        if file.path == "bin/Game.exe" {
+            file.md5 = Some(fake::content::md5_hex(b"yours"));
+        }
+    }
+    write_record(&fx, &record);
+    fx.hide("100");
+    let plan = fx.update_plan();
+    assert!(!plan.is_recovery());
+    assert_eq!(plan.start(), Start::Target);
+    let updated = fx.apply_update(&plan).unwrap();
+    assert_updated(&fx);
+    assert_eq!(fx.read("bin/Game.exe.wineo-saved"), "yours");
+    assert!(
+        updated
+            .saved
+            .iter()
+            .any(|saved| saved.path == "bin/Game.exe")
+    );
+}
+
+#[test]
+fn a_dlc_only_update_interrupted_anywhere_finishes_once() {
+    for point in [
+        "galaxy.update.pending.after",
+        "galaxy.update.files.after",
+        "galaxy.update.commit.after",
+    ] {
+        let fx = Fixture::new();
+        fx.gog.lock().unwrap().dlc = vec![DLC];
+        fx.gog.lock().unwrap().owned = Some(vec![GAME]);
+        fx.content.add_build(
+            Fixture::game("100")
+                .depot(FakeDepot::new(DLC).file(FakeFile::new("dlc.dat", b"bought"))),
+        );
+        fx.install();
+        assert!(!fx.folder.join("dlc.dat").exists());
+        fx.gog.lock().unwrap().owned = Some(vec![GAME, DLC]);
+        let plan = fx.update_plan();
+        assert_eq!(plan.build(), "100");
+        set_failpoint(Some(point));
+        let error = fx.apply_update(&plan).unwrap_err();
+        set_failpoint(None);
+        assert!(
+            format!("{error:#}").contains("injected"),
+            "{point}: {error:#}"
+        );
+        if point == "galaxy.update.commit.after" {
+            assert!(
+                matches!(fx.update_planned().unwrap(), Planned::UpToDate { .. }),
+                "{point}"
+            );
+        } else {
+            let plan = fx.update_plan();
+            assert_eq!(
+                plan.is_recovery(),
+                point != "galaxy.update.pending.after",
+                "{point}"
+            );
+            // The committed selection's record still counts, or pending
+            // carries on.
+            assert_eq!(plan.start(), Start::Stored, "{point}");
+            fx.apply_update(&plan).unwrap();
+        }
+        assert_eq!(fx.read("dlc.dat"), "bought", "{point}");
+        let state = fx.state();
+        assert!(state.journal.is_none());
+        let products = state.committed.as_ref().unwrap().products.clone();
+        assert_eq!(products[1].status, ProductStatus::Installed, "{point}");
+        let record = fx.record().unwrap();
+        assert!(record::installed(&state, &record).unwrap().is_some());
+        assert!(!fx.tree().iter().any(|path| path.contains("wineo-saved")));
+    }
+}
+
+#[test]
+fn setup_reruns_only_the_steps_whose_identity_changed() {
+    let fx = Fixture::new();
+    fx.content.add_build(scripted("100"));
+    with_setup(&fx, None, None);
+    fx.install();
+    assert_eq!(fx.names(), ["scriptinterpreter.exe", "VC_redist.x86.exe"]);
+    fx.gog.lock().unwrap().newest_first = true;
+    // A new build, with the same runtime: the script reruns, the runtime
+    // doesn't.
+    fx.content.add_build(scripted("200"));
+    fx.update();
+    assert_eq!(
+        fx.names(),
+        [
+            "scriptinterpreter.exe",
+            "VC_redist.x86.exe",
+            "scriptinterpreter.exe"
+        ]
+    );
+    // A new build with a new version of the runtime: both.
+    fx.content.add_build(scripted("300"));
+    with_setup(&fx, None, Some("0"));
+    fx.update();
+    assert_eq!(fx.names().len(), 5);
+    assert_eq!(
+        &fx.names()[3..],
+        ["scriptinterpreter.exe", "VC_redist.x86.exe"]
+    );
+    let record = fx.record().unwrap();
+    assert!(matches!(
+        &record.setup[..],
+        [
+            SetupStep::ScriptInterpreter { build, .. },
+            SetupStep::Redistributable { .. }
+        ] if build == "300"
+    ));
+}
+
+#[test]
+fn an_update_stopped_in_setup_carries_on_from_the_step_without_downloading() {
+    for (point, skip) in [
+        ("galaxy.setup.ran", 0),
+        ("galaxy.setup.ran", 1),
+        ("galaxy.update.setup.after", 0),
+    ] {
+        let fx = Fixture::new();
+        fx.content.add_build(scripted("100"));
+        with_setup(&fx, None, None);
+        fx.install();
+        fx.gog.lock().unwrap().newest_first = true;
+        fx.content.add_build(scripted("200"));
+        with_setup(&fx, None, Some("0"));
+        update_interrupted(&fx, point, skip);
+        assert!(fx.launch_refused(), "{point} {skip}");
+        let ran = fx.names().len();
+        let before = fx.chunk_count();
+        let plan = fx.update_plan();
+        assert!(plan.is_recovery());
+        fx.apply_update(&plan).unwrap();
+        assert_eq!(fx.chunk_count(), before, "{point} {skip}");
+        // The step that hadn't been recorded runs again, and the rest only
+        // if they hadn't run.
+        let again = fx.names()[ran..].to_vec();
+        let expected: &[&str] = match (point, skip) {
+            ("galaxy.setup.ran", 0) => &["scriptinterpreter.exe", "VC_redist.x86.exe"],
+            ("galaxy.setup.ran", _) => &["VC_redist.x86.exe"],
+            _ => &[],
+        };
+        assert_eq!(again, expected, "{point} {skip}");
+        assert!(!fx.launch_refused());
+        assert_eq!(fx.base_build().as_deref(), Some("200"));
+    }
+}
+
+#[test]
+fn a_failed_setup_step_blocks_launch_until_updating_again() {
+    let fx = Fixture::new();
+    fx.content.add_build(scripted("100"));
+    with_setup(&fx, None, None);
+    fx.install();
+    fx.gog.lock().unwrap().newest_first = true;
+    fx.content.add_build(scripted("200"));
+    with_setup(&fx, None, Some("5"));
+    let error = fx.apply_update(&fx.update_plan()).unwrap_err();
+    assert!(
+        matches!(error.downcast_ref(), Some(GalaxyError::Setup { .. })),
+        "{error:#}"
+    );
+    assert!(fx.launch_refused());
+    fx.exits("MSVC2017", VC_EXE, "0");
+    let before = fx.chunk_count();
+    fx.update();
+    assert_eq!(fx.chunk_count(), before);
+    assert!(!fx.launch_refused());
+}
+
+#[test]
+fn an_update_refuses_while_the_game_runs() {
+    let fx = Fixture::new();
+    fx.installed_then(game_200());
+    let plan = fx.update_plan();
+    let launch = Locks::new(&fx.paths)
+        .acquire(Operation::Launch, "game", &[])
+        .unwrap();
+    let error = fx.apply_update(&plan).unwrap_err();
+    assert!(
+        matches!(
+            error.downcast_ref(),
+            Some(crate::gog::update::UpdateError::Running { .. })
+        ),
+        "{error:#}"
+    );
+    drop(launch);
+    assert_eq!(fx.base_build().as_deref(), Some("100"));
+    assert!(fx.state().journal.is_none());
+    fx.apply_update(&plan).unwrap();
+    assert_updated(&fx);
+}
+
+#[test]
+fn a_snapshot_restore_during_an_updates_setup_is_refused() {
+    let fx = Fixture::new();
+    fx.content.add_build(scripted("100"));
+    with_setup(&fx, None, None);
+    fx.install();
+    fx.gog.lock().unwrap().newest_first = true;
+    fx.content.add_build(scripted("200"));
+    let prefix = fx.prefix();
+    let refused = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+    let seen = std::rc::Rc::clone(&refused);
+    super::setup::set_before_setup_step(move |paths, _| {
+        seen.borrow_mut().push(
+            Locks::new(paths)
+                .acquire(Operation::Snapshot, "game", &[&prefix])
+                .is_err(),
+        );
+    });
+    fx.update();
+    assert_eq!(*refused.borrow(), [true]);
+}
+
+#[test]
+fn updates_reach_galaxy_games_through_core_but_not_yet_the_cli_path() {
+    let fx = Fixture::new();
+    fx.installed_then(game_200());
+    let planned = crate::gog::update::galaxy::plan_update(
+        &fx.paths,
+        Some(&mut fx.session()),
+        "game",
+        Options::default(),
+        &Token::new(),
+    )
+    .unwrap();
+    assert!(matches!(
+        planned,
+        crate::gog::update::galaxy::PlannedUpdate::Galaxy(Planned::Update(_))
+    ));
+    // What the CLI and the app call still refuses, until they show Galaxy
+    // updates.
+    let error = crate::gog::update::plan(
+        &fx.paths,
+        Some(&mut fx.session()),
+        "game",
+        Options::default(),
+        &Token::new(),
+    )
+    .unwrap_err();
+    assert!(matches!(
+        error.downcast_ref(),
+        Some(crate::gog::update::UpdateError::Galaxy { .. })
+    ));
+    // Checking still compares by build.
+    let status = crate::gog::update::check(&mut fx.session(), "game", true).unwrap();
+    assert_eq!(status.state, crate::gog::update::UpdateState::OnGog);
+    assert_eq!(status.available.as_deref(), Some("200"));
+    // A reinstall comes with repairs.
+    let error = update::plan(
+        &fx.paths,
+        &mut fx.session(),
+        "game",
+        Options {
+            reinstall: true,
+            ..Options::default()
+        },
+        &Token::new(),
+    )
+    .unwrap_err();
+    assert!(matches!(
+        error.downcast_ref(),
+        Some(GalaxyError::Reinstall { .. })
+    ));
+}
+
+#[test]
+fn an_unfinished_galaxy_install_is_finished_by_installing_not_updating() {
+    let fx = Fixture::new();
+    fx.content.add_build(Fixture::game("100"));
+    interrupted(&fx, "galaxy.files.after", 0);
+    let error = fx.update_planned().unwrap_err();
+    assert!(
+        matches!(
+            error.downcast_ref(),
+            Some(folder::FolderError::UnfinishedInstall { .. })
+        ),
+        "{error:#}"
+    );
+}
