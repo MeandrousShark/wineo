@@ -971,7 +971,8 @@ fn run(
         what: what.to_owned(),
     };
     let mut warnings = plan.warnings.clone();
-    check_space(paths, plan, token)?;
+    let (game, support) = unverified_sizes(paths, plan, token)?;
+    check_space(paths, plan, game, support, planned_store(paths, plan))?;
 
     let prefix = match &plan.creation {
         Some(creation) => crate::paths::resolve(creation.prefix()),
@@ -999,6 +1000,26 @@ fn run(
     if folder::check_fresh_install(paths, folder, name)? != folder {
         return Err(changed(&folder.display().to_string()).into());
     }
+    // Every store version is held from before it's looked for until the
+    // install ends, so cleanup can't take one between its download and its
+    // use. This comes before anything is written: a version that was in the
+    // store when planning looked may be gone by now, and its size has to
+    // count toward the space check, which refuses before the first change.
+    let mut held = Vec::new();
+    let mut store_jobs = Vec::new();
+    for need in &plan.store {
+        let version = store::hold(paths, &need.version, token)?;
+        if !version.present() {
+            let files = match &need.files {
+                Some(files) => files.clone(),
+                None => store_files(session, &need.version)?,
+            };
+            store_jobs.push((held.len(), files));
+        }
+        held.push(version);
+    }
+    let missing: u64 = store_jobs.iter().map(|(_, files)| sizes(files)).sum();
+    check_space(paths, plan, game, support, missing)?;
     // The last check before the first write.
     if token.is_canceled() {
         return Err(UpdateError::Canceled { journal: false }.into());
@@ -1167,23 +1188,7 @@ fn run(
     }
     failpoint("galaxy.placed.after")?;
 
-    // Every store version is held from before it's looked for until the
-    // install ends, so cleanup can't take one between its download and its
-    // use.
     let dependency_links = ChunkLinks::new(LinkScope::Dependencies);
-    let mut held = Vec::new();
-    let mut store_jobs = Vec::new();
-    for need in &plan.store {
-        let version = store::hold(paths, &need.version, token)?;
-        if !version.present() {
-            let files = match &need.files {
-                Some(files) => files.clone(),
-                None => store_files(session, &need.version)?,
-            };
-            store_jobs.push((held.len(), files));
-        }
-        held.push(version);
-    }
 
     // Support files: the folder is wineo's own, so anything there that
     // doesn't match is simply replaced.
@@ -1850,11 +1855,9 @@ fn list(root: &OwnedFd, relative: &str) -> Option<Vec<String>> {
     Some(names)
 }
 
-/// Refuses before anything changes when a filesystem can't hold its peak:
-/// the game's files on the folder's, support files on the data directory's,
-/// and new redistributable versions on the store's, summed where they share
-/// one. Files already in place at their size aren't counted.
-fn check_space(paths: &Paths, plan: &Plan, token: &Token) -> Result<()> {
+/// The bytes of the game's files and support files that aren't in place
+/// yet, checked by hash. Counted once, since hashing a big install is slow.
+fn unverified_sizes(paths: &Paths, plan: &Plan, token: &Token) -> Result<(u64, u64)> {
     let support_root = paths.gog_support_dir(&folder::key(&plan.folder));
     let game = unverified(
         &plan.folder,
@@ -1868,13 +1871,25 @@ fn check_space(paths: &Paths, plan: &Plan, token: &Token) -> Result<()> {
         |file| format!("{}/{}", file.product.unwrap_or_default(), file.path),
         token,
     )?;
-    let store: u64 = plan
-        .store
+    Ok((game, support))
+}
+
+/// The bytes of the store versions that were missing when planning looked.
+fn planned_store(paths: &Paths, plan: &Plan) -> u64 {
+    plan.store
         .iter()
         .filter(|need| !store::version_dir(paths, &need.version).is_dir())
         .flat_map(|need| need.files.iter().flatten())
         .map(|file| file.size)
-        .sum();
+        .sum()
+}
+
+/// Refuses before anything changes when a filesystem can't hold its peak:
+/// the game's files on the folder's, support files on the data directory's,
+/// and new redistributable versions on the store's, summed where they share
+/// one. Files already in place at their size aren't counted.
+fn check_space(paths: &Paths, plan: &Plan, game: u64, support: u64, store: u64) -> Result<()> {
+    let support_root = paths.gog_support_dir(&folder::key(&plan.folder));
     space(
         paths,
         &[

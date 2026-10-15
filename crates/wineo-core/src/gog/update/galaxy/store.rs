@@ -2,11 +2,12 @@
 //! <manifest hash>/` in the data directory, so a newer version never
 //! replaces files a running setup uses.
 //!
-//! An operation names every version it uses in its record's `pending`
-//! before downloading any, then holds each version's lock shared from
-//! before it looks for the version until the operation ends. A missing
-//! version is downloaded into a temporary folder, verified, and renamed into
-//! place under its dependency's lock, which is held only for that. Cleanup
+//! An operation holds each version it uses shared from before it looks for
+//! the version until the operation ends, and checks the space for those that
+//! have gone missing before it changes anything. It names them all in its
+//! record's `pending` before downloading any. A missing version is
+//! downloaded into a temporary folder, verified, and renamed into place
+//! under its dependency's lock, which is held only for that. Cleanup
 //! takes a dependency's lock and then each version's exclusively without
 //! waiting, rereads every record under them, and removes a version only
 //! when none names it.

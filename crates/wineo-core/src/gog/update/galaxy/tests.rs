@@ -1044,6 +1044,74 @@ fn a_filesystem_short_of_space_refuses_before_anything_changes() {
     assert!(!fx.paths.environment_config("game").exists());
 }
 
+/// A game planned while an unreferenced redistributable version sits in the
+/// store, which cleanup then removes. Returns the plan and the version's
+/// folder.
+fn planned_over_a_version_cleanup_removes(fx: &Fixture) -> (Plan, PathBuf) {
+    fx.content
+        .add_build(Fixture::game("100").dependency("MSVC2017"));
+    with_dependencies(fx, b"runtime v1");
+    // The first plan only learns the version's hash.
+    let hash = fx.plan().manifest_for_tests().setup.redist[0]
+        .manifest
+        .clone();
+    let version = fx.paths.gog_redist_dir().join("MSVC2017").join(hash);
+    fs::create_dir_all(&version).unwrap();
+    let plan = fx.plan();
+    assert_eq!(plan.installed_size(), sizes_of_game(&plan));
+    assert!(store::clean(&fx.paths).unwrap().len() == 1);
+    assert!(!version.exists());
+    (plan, version)
+}
+
+/// What a plan's game and support files add up to, without the store.
+fn sizes_of_game(plan: &Plan) -> u64 {
+    let manifest = plan.manifest_for_tests();
+    manifest
+        .files
+        .iter()
+        .chain(&manifest.support)
+        .map(|file| file.size)
+        .sum()
+}
+
+#[test]
+fn a_version_cleaned_after_planning_still_counts_toward_space() {
+    let fx = Fixture::new();
+    let (plan, version) = planned_over_a_version_cleanup_removes(&fx);
+    // The store is on a filesystem of its own, and has room for nothing.
+    let redist = fx.paths.gog_redist_dir();
+    DEVICE_AT.with(|list| list.borrow_mut().push((redist.clone(), 9)));
+    FREE_AT.with(|list| list.borrow_mut().push((redist, 2)));
+    let error = fx.apply(&plan).unwrap_err();
+    DEVICE_AT.with(|list| list.borrow_mut().clear());
+    FREE_AT.with(|list| list.borrow_mut().clear());
+    assert!(error.to_string().starts_with("Not enough space"), "{error}");
+    assert!(!fx.folder.exists());
+    assert!(folder::peek(&fx.paths, &fx.folder).unwrap().is_none());
+    assert!(fx.record().is_none());
+    assert!(!fx.paths.environment_config("game").exists());
+    assert!(!version.exists());
+}
+
+#[test]
+fn a_version_cleaned_after_planning_is_downloaded_again_with_room() {
+    let fx = Fixture::new();
+    let (plan, version) = planned_over_a_version_cleanup_removes(&fx);
+    let redist = fx.paths.gog_redist_dir();
+    DEVICE_AT.with(|list| list.borrow_mut().push((redist.clone(), 9)));
+    FREE_AT.with(|list| list.borrow_mut().push((redist, 1 << 40)));
+    let result = fx.apply(&plan);
+    DEVICE_AT.with(|list| list.borrow_mut().clear());
+    FREE_AT.with(|list| list.borrow_mut().clear());
+    result.unwrap();
+    assert_installed(&fx);
+    assert_eq!(
+        fs::read_to_string(version.join("__redist/MSVC2017/VC_redist.x86.exe")).unwrap(),
+        "runtime v1"
+    );
+}
+
 #[test]
 fn the_track_is_galaxy_when_a_generation_2_build_exists() {
     let fx = Fixture::new();
