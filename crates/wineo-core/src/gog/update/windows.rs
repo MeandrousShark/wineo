@@ -732,7 +732,7 @@ fn reported_language(root: &Value) -> Option<(String, String)> {
 
 /// Adds the game's play task as the default target, unless the environment
 /// already has one by that name from an earlier attempt.
-fn add_target(
+pub(super) fn add_target(
     paths: &Paths,
     name: &str,
     title: &str,

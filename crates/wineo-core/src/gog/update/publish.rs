@@ -60,9 +60,17 @@ struct Recorded {
     content: Option<String>,
 }
 
+/// What wineo recorded at one path, as an entry moved aside from it is
+/// checked against: file MD5s and symlink targets.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(super) struct Known {
+    pub(super) files: Vec<String>,
+    pub(super) links: Vec<String>,
+}
+
 /// What a path holds now.
 #[derive(Debug, Clone, PartialEq, Eq)]
-enum Current {
+pub(super) enum Current {
     File,
     Symlink(String),
     Directory,
@@ -93,6 +101,9 @@ pub(super) struct Publisher<'a> {
     /// that is still a folder is synced too.
     recorded_folders: BTreeSet<String>,
     report: Report,
+    /// Whether moving something aside has to refuse a filesystem that can't
+    /// rename without replacing, rather than look first and rename.
+    no_replace_only: bool,
 }
 
 impl<'a> Publisher<'a> {
@@ -106,7 +117,15 @@ impl<'a> Publisher<'a> {
             written: Vec::new(),
             recorded_folders: BTreeSet::new(),
             report: Report::default(),
+            no_replace_only: false,
         }
+    }
+
+    /// Never falls back to looking before a rename that could replace what
+    /// appeared meanwhile, which Galaxy installs rely on.
+    pub(super) fn require_no_replace(mut self) -> Self {
+        self.no_replace_only = true;
+        self
     }
 
     pub(super) fn into_report(self) -> Report {
@@ -319,8 +338,145 @@ impl<'a> Publisher<'a> {
         Ok(())
     }
 
-    /// Pass 3, for one entry.
-    fn publish_one(&mut self, entry: &WinningEntry) -> Result<()> {
+    /// Notes the folders of `paths` as ones an earlier, interrupted attempt
+    /// may have changed, so `finish` syncs each that is still a folder. For
+    /// callers placing entries themselves rather than through `publish`.
+    pub(super) fn note_folders<'p>(&mut self, paths: impl IntoIterator<Item = &'p str>) {
+        for path in paths {
+            self.recorded_folders.insert(parent_of(path).to_owned());
+        }
+    }
+
+    /// Puts the temporary file `temp`, already written and synced in `dir`,
+    /// at `path` without ever replacing what is there: whatever stands there
+    /// is first moved to an aside name, then deleted only when it matches
+    /// what wineo recorded for the path in `known`, and moved to
+    /// `<name>.wineo-saved` otherwise. So something another program put
+    /// there, or changed, since the path was last looked at is never lost.
+    /// Refused on a filesystem that can't rename without replacing.
+    pub(super) fn place_new(
+        &mut self,
+        dir: &OwnedFd,
+        temp: &str,
+        path: &str,
+        known: &Known,
+    ) -> Result<()> {
+        self.place(dir, temp, path, known)?;
+        self.written.push(path.to_owned());
+        Ok(())
+    }
+
+    /// Makes a symlink to `target` at `path` the way `place_new` puts a
+    /// file there.
+    pub(super) fn place_link(
+        &mut self,
+        dir: &OwnedFd,
+        path: &str,
+        target: &str,
+        known: &Known,
+    ) -> Result<()> {
+        let temp = self.temp_name();
+        rustix::fs::symlinkat(target, dir, temp.as_str())
+            .with_context(|| format!("failed to create {path}"))?;
+        // A symlink isn't synced itself, only its folder, which `place`
+        // marks as changed.
+        self.place(dir, &temp, path, known)
+    }
+
+    fn place(&mut self, dir: &OwnedFd, temp: &str, path: &str, known: &Known) -> Result<()> {
+        let leaf = leaf_of(path);
+        // Each attempt either places the entry or moves one out of the way,
+        // so only a program racing it on purpose keeps it going.
+        for _ in 0..8 {
+            match rename_new(dir, temp, dir, leaf) {
+                Ok(()) => {
+                    self.changed.insert(parent_of(path).to_owned());
+                    return Ok(());
+                }
+                Err(Errno::EXIST) => {}
+                Err(error) => return Err(no_replace_error(error, path)),
+            }
+            self.move_aside(dir, path, known)?;
+        }
+        bail!("{path} kept changing while it was put in place")
+    }
+
+    /// Clears `path` without ever deleting by its name: whatever stands
+    /// there is first renamed to wineo's own aside name, so another program
+    /// can't swap it between the check and the delete, then settled by
+    /// `settle_aside`. Nothing there is fine.
+    pub(super) fn move_aside(&mut self, dir: &OwnedFd, path: &str, known: &Known) -> Result<()> {
+        let aside = aside_name(leaf_of(path), self.operation);
+        failpoint("galaxy.aside.before")?;
+        match rename_new(dir, leaf_of(path), dir, &aside) {
+            Ok(()) => {}
+            Err(Errno::NOENT) => return Ok(()),
+            Err(error) => return Err(no_replace_error(error, path)),
+        }
+        self.changed.insert(parent_of(path).to_owned());
+        failpoint("galaxy.aside.after")?;
+        self.settle_aside(dir, &aside, path, known)
+    }
+
+    /// Deals with an entry moved aside from `path` as `aside`: deleted when
+    /// it is a file or symlink holding what `known` records, else moved to
+    /// `<name>.wineo-saved` and listed.
+    pub(super) fn settle_aside(
+        &mut self,
+        dir: &OwnedFd,
+        aside: &str,
+        path: &str,
+        known: &Known,
+    ) -> Result<()> {
+        let ours = match current(dir, aside, path)? {
+            None => return Ok(()),
+            Some(Current::File) => self
+                .hash(dir, aside, path)?
+                .is_some_and(|hash| known.files.contains(&hash)),
+            Some(Current::Symlink(target)) => known.links.contains(&target),
+            Some(_) => false,
+        };
+        if ours {
+            match rustix::fs::unlinkat(dir, aside, AtFlags::empty()) {
+                Ok(()) | Err(Errno::NOENT) => {}
+                Err(error) => {
+                    return Err(error).with_context(|| format!("failed to remove {path}"));
+                }
+            }
+            self.changed.insert(parent_of(path).to_owned());
+            return Ok(());
+        }
+        let leaf = leaf_of(path);
+        let mut number = 1;
+        let saved = loop {
+            let saved = if number == 1 {
+                format!("{leaf}.wineo-saved")
+            } else {
+                format!("{leaf}.wineo-saved-{number}")
+            };
+            number += 1;
+            match rename_new(dir, aside, dir, &saved) {
+                Ok(()) => break saved,
+                Err(Errno::EXIST) => {}
+                Err(error) => return Err(no_replace_error(error, path)),
+            }
+        };
+        let parent = parent_of(path);
+        self.changed.insert(parent.to_owned());
+        self.report.saved.push(SavedAside {
+            path: path.to_owned(),
+            saved_as: if parent.is_empty() {
+                saved
+            } else {
+                format!("{parent}/{saved}")
+            },
+        });
+        Ok(())
+    }
+
+    /// Pass 3, for one entry. Directories and symlinks only need the entry
+    /// itself, so callers placing files themselves publish those with it.
+    pub(super) fn publish_one(&mut self, entry: &WinningEntry) -> Result<()> {
         let path = entry.path.as_str();
         let dir = self
             .open_parent(path)?
@@ -428,7 +584,7 @@ impl<'a> Publisher<'a> {
         Ok(())
     }
 
-    fn temp_name(&mut self) -> String {
+    pub(super) fn temp_name(&mut self) -> String {
         self.next_temp += 1;
         format!(".wineo-{}-{}", self.operation, self.next_temp)
     }
@@ -436,7 +592,7 @@ impl<'a> Publisher<'a> {
     /// The folder holding `path`, opened without following symlinks. None
     /// when a folder on the way is missing or isn't a real folder, since
     /// then nothing there can be wineo's.
-    fn open_parent(&self, path: &str) -> Result<Option<OwnedFd>> {
+    pub(super) fn open_parent(&self, path: &str) -> Result<Option<OwnedFd>> {
         let parent = parent_of(path);
         let mut dir = self.root.try_clone().context("failed to open the game")?;
         if parent.is_empty() {
@@ -544,7 +700,7 @@ impl<'a> Publisher<'a> {
         Ok(Some(crate::units::hex(hasher.finalize())))
     }
 
-    fn delete(&mut self, dir: &OwnedFd, leaf: &str, path: &str) -> Result<()> {
+    pub(super) fn delete(&mut self, dir: &OwnedFd, leaf: &str, path: &str) -> Result<()> {
         failpoint("update.delete.before")?;
         match rustix::fs::unlinkat(dir, leaf, AtFlags::empty()) {
             Ok(()) | Err(Errno::NOENT) => {}
@@ -555,7 +711,7 @@ impl<'a> Publisher<'a> {
     }
 
     /// Removes an empty folder. False when something is still in it.
-    fn remove_folder(&mut self, dir: &OwnedFd, leaf: &str, path: &str) -> Result<bool> {
+    pub(super) fn remove_folder(&mut self, dir: &OwnedFd, leaf: &str, path: &str) -> Result<bool> {
         failpoint("update.delete.before")?;
         match rustix::fs::unlinkat(dir, leaf, AtFlags::REMOVEDIR) {
             Ok(()) | Err(Errno::NOENT) => {}
@@ -573,7 +729,7 @@ impl<'a> Publisher<'a> {
 
     /// Moves what stands at `path` to `<name>.wineo-saved`, or with a number
     /// when that's taken, never replacing anything.
-    fn save_aside(&mut self, dir: &OwnedFd, leaf: &str, path: &str) -> Result<()> {
+    pub(super) fn save_aside(&mut self, dir: &OwnedFd, leaf: &str, path: &str) -> Result<()> {
         failpoint("update.save.before")?;
         // Changes already made inside a folder are made durable before it
         // moves, since a recovery looks for its folders under their old
@@ -611,10 +767,14 @@ impl<'a> Publisher<'a> {
                 format!("{leaf}.wineo-saved-{number}")
             };
             number += 1;
-            match rustix::fs::renameat_with(dir, leaf, dir, saved.as_str(), RenameFlags::NOREPLACE)
-            {
+            match rename_new(dir, leaf, dir, saved.as_str()) {
                 Ok(()) => break saved,
                 Err(Errno::EXIST) => {}
+                Err(error @ (Errno::INVAL | Errno::NOSYS | Errno::NOTSUP))
+                    if self.no_replace_only =>
+                {
+                    return Err(no_replace_error(error, path));
+                }
                 // A filesystem that can't refuse to replace: look first.
                 Err(Errno::INVAL) => {
                     match rustix::fs::statat(dir, saved.as_str(), AtFlags::SYMLINK_NOFOLLOW) {
@@ -668,6 +828,46 @@ impl<'a> Publisher<'a> {
     }
 }
 
+/// What an entry moved out of the way at `leaf` is called while it waits to
+/// be deleted or saved. It isn't one of the operation's temporaries, so
+/// recovery never deletes it unchecked; `aside_origin` gives the name back.
+pub(super) fn aside_name(leaf: &str, operation: &str) -> String {
+    format!("{leaf}{}", aside_suffix(operation))
+}
+
+fn aside_suffix(operation: &str) -> String {
+    format!(".wineo-aside-{operation}")
+}
+
+/// The name an aside entry of `operation` was moved from, if `name` is one.
+pub(super) fn aside_origin<'a>(name: &'a str, operation: &str) -> Option<&'a str> {
+    name.strip_suffix(&aside_suffix(operation))
+        .filter(|origin| !origin.is_empty())
+}
+
+fn rename_new(
+    from_dir: &OwnedFd,
+    from: &str,
+    to_dir: &OwnedFd,
+    to: &str,
+) -> rustix::io::Result<()> {
+    #[cfg(test)]
+    if NO_RENAME_NOREPLACE.with(std::cell::Cell::get) {
+        return Err(Errno::INVAL);
+    }
+    rustix::fs::renameat_with(from_dir, from, to_dir, to, RenameFlags::NOREPLACE)
+}
+
+fn no_replace_error(error: Errno, path: &str) -> anyhow::Error {
+    if error == Errno::INVAL || error == Errno::NOSYS || error == Errno::NOTSUP {
+        anyhow!(
+            "{path}'s filesystem can't rename a file without replacing another, which wineo needs to install Galaxy builds safely"
+        )
+    } else {
+        anyhow::Error::from(error).context(format!("failed to put {path} in place"))
+    }
+}
+
 fn content_of(kind: EntryType, md5: &Option<String>, target: &Option<String>) -> Option<String> {
     match kind {
         EntryType::File => md5.clone(),
@@ -676,7 +876,7 @@ fn content_of(kind: EntryType, md5: &Option<String>, target: &Option<String>) ->
     }
 }
 
-fn current(dir: &OwnedFd, leaf: &str, path: &str) -> Result<Option<Current>> {
+pub(super) fn current(dir: &OwnedFd, leaf: &str, path: &str) -> Result<Option<Current>> {
     let stat = match rustix::fs::statat(dir, leaf, AtFlags::SYMLINK_NOFOLLOW) {
         Ok(stat) => stat,
         Err(Errno::NOENT) => return Ok(None),
@@ -694,11 +894,11 @@ fn current(dir: &OwnedFd, leaf: &str, path: &str) -> Result<Option<Current>> {
     }))
 }
 
-fn parent_of(path: &str) -> &str {
+pub(super) fn parent_of(path: &str) -> &str {
     path.rsplit_once('/').map_or("", |(parent, _)| parent)
 }
 
-fn leaf_of(path: &str) -> &str {
+pub(super) fn leaf_of(path: &str) -> &str {
     path.rsplit_once('/').map_or(path, |(_, leaf)| leaf)
 }
 
@@ -785,6 +985,18 @@ pub(super) fn sync_folders(
 #[cfg(test)]
 thread_local! {
     static SYNCS: std::cell::RefCell<Vec<String>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+#[cfg(test)]
+thread_local! {
+    static NO_RENAME_NOREPLACE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Makes renaming without replacing fail as on a filesystem that can't, on
+/// this thread, for tests.
+#[cfg(test)]
+pub(super) fn set_no_rename_noreplace(on: bool) {
+    NO_RENAME_NOREPLACE.with(|cell| cell.set(on));
 }
 
 /// Notes a sync or commit for tests checking that every sync comes first.

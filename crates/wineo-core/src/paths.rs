@@ -256,6 +256,34 @@ impl Paths {
         self.data.join("gog").join("folders")
     }
 
+    /// A Galaxy game's support files, `<productId>/<path>` under its folder
+    /// key, which setup reads. Removed with the folder's state.
+    pub fn gog_support_dir(&self, key: &str) -> PathBuf {
+        self.data.join("gog").join("support").join(key)
+    }
+
+    /// GOG's redistributables, shared by every Galaxy game as
+    /// `<dependencyId>/<manifest hash>/`.
+    pub fn gog_redist_dir(&self) -> PathBuf {
+        self.data.join("gog").join("redist")
+    }
+
+    /// Held shared by every operation using one version of a
+    /// redistributable, and taken exclusively, without waiting, to remove it.
+    pub fn gog_redist_version_lock(&self, dependency: &str, hash: &str) -> PathBuf {
+        self.host_state
+            .join(".locks")
+            .join(format!("gog-redist-{dependency}-{hash}.lock"))
+    }
+
+    /// Held exclusively while a version of a redistributable is downloaded
+    /// and put in place.
+    pub fn gog_redist_dependency_lock(&self, dependency: &str) -> PathBuf {
+        self.host_state
+            .join(".locks")
+            .join(format!("gog-redist-{dependency}.lock"))
+    }
+
     /// A GOG game folder's lock, keyed like its state file. Host-wide, so
     /// every root sees the same lock.
     pub fn gog_folder_lock(&self, key: &str) -> PathBuf {

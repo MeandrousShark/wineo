@@ -797,6 +797,18 @@ fn assert_finished_v2(fx: &Fixture) {
 }
 
 #[test]
+fn an_update_saves_aside_where_rename_cant_refuse_to_replace() {
+    let fx = installed_v1();
+    ready_for_v2(&fx);
+    let pending = fx.pending(true, Options::default());
+    crate::gog::update::publish::set_no_rename_noreplace(true);
+    let updated = fx.apply_with(true, &pending, &Token::new(), |_| {});
+    crate::gog::update::publish::set_no_rename_noreplace(false);
+    updated.unwrap();
+    assert_finished_v2(&fx);
+}
+
+#[test]
 fn an_update_rebuilds_every_product_and_reports_what_was_yours() {
     let fx = installed_v1();
     assert_eq!(fx.read("shared.txt"), "dlc shared");
