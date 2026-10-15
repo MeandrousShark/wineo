@@ -503,12 +503,16 @@ pub(super) fn install(
                     .find(|product| product.id == id)
                     .expect("in the target");
                 // A DLC already installed is still there as it was.
-                match committed.and_then(|committed| {
-                    committed
-                        .products
-                        .iter()
-                        .find(|old| old.id == id && old.status == ProductStatus::Installed)
-                }) {
+                // A product from a Galaxy commit has no installer version to
+                // go back to.
+                match committed
+                    .filter(|committed| committed.track == Track::Installer)
+                    .and_then(|committed| {
+                        committed
+                            .products
+                            .iter()
+                            .find(|old| old.id == id && old.status == ProductStatus::Installed)
+                    }) {
                     Some(old) => {
                         warnings.push(format!("{} wasn't updated: {why}.", label(id)));
                         *product = old.clone();
@@ -597,6 +601,14 @@ pub(super) fn install(
         files: Vec::new(),
     })?;
     failpoint("install.windows.commit.after")?;
+    // Only the Galaxy track reads its record and support files, so a game
+    // moving off it drops them once the new track is committed. A crash
+    // before this leaves them ignored.
+    if let Err(error) = lock.remove_galaxy_files() {
+        warnings.push(format!(
+            "Couldn't remove the Galaxy files of {title}: {error:#}"
+        ));
+    }
     drop(lock);
     drop(guard);
     let products: Vec<u64> = target.products.iter().map(|product| product.id).collect();

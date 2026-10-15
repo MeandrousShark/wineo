@@ -1760,3 +1760,165 @@ fn a_windows_reinstall_also_installs_newly_owned_dlc() {
     assert_eq!(fx.read("Data/Ideology/i.dat"), "ideology v1");
     assert_settled(&fx);
 }
+
+// Moving a Galaxy game to the installer track.
+
+const GALAXY_RECORD: &str = "{}";
+
+/// `installed_windows()` rewritten as a Galaxy game: builds instead of
+/// versions, GOG's depot language, a record, and a support file.
+fn as_galaxy_game(fx: &Fixture) {
+    let lock = FolderLock::exclusive(&fx.paths, &fx.folder, &|| false).unwrap();
+    let mut state = lock.read().unwrap().unwrap();
+    let committed = state.committed.as_mut().unwrap();
+    committed.track = Track::Galaxy;
+    committed.language = "en-US".to_owned();
+    for product in &mut committed.products {
+        product.build = Some("5".to_owned());
+        product.version = None;
+        product.language = None;
+    }
+    lock.write(&state).unwrap();
+    lock.write_sidecar(GALAXY_RECORD).unwrap();
+    let support = lock.support_dir().join(format!("{RIMWORLD}/setup.exe"));
+    fs::create_dir_all(support.parent().unwrap()).unwrap();
+    fs::write(support, "setup").unwrap();
+    // Galaxy's own, which the installer doesn't list.
+    fx.write("galaxy-only.dat", "stays");
+}
+
+fn move_options() -> Options {
+    Options {
+        reinstall: true,
+        track: Some(Track::Installer),
+        refresh: true,
+        ..Options::default()
+    }
+}
+
+fn move_plan(fx: &Fixture, options: Options) -> Pending {
+    match crate::gog::update::galaxy::plan_update(
+        &fx.paths,
+        Some(&mut fx.session()),
+        "rimworld",
+        options,
+        &Token::new(),
+    )
+    .unwrap()
+    {
+        crate::gog::update::galaxy::PlannedUpdate::Installer(Plan::Update(pending)) => pending,
+        other => panic!("not an installer operation: {other:?}"),
+    }
+}
+
+fn galaxy_files(fx: &Fixture) -> (bool, bool) {
+    let sidecar = crate::gog::folder::sidecar_file(&fx.paths, &fx.folder);
+    let support = fx
+        .paths
+        .gog_support_dir(&crate::gog::folder::key(&fx.folder));
+    (sidecar.exists(), support.exists())
+}
+
+fn assert_moved(fx: &Fixture) {
+    let state = fx.state();
+    assert_eq!(state.journal, None);
+    let committed = state.committed.unwrap();
+    assert_eq!(committed.track, Track::Installer);
+    // GOG's installer code, not the depot's.
+    assert_eq!(committed.language, "en");
+    for product in &committed.products {
+        assert_eq!(product.build, None);
+        assert_eq!(product.version, v("1.0"));
+        assert_eq!(product.language, None);
+    }
+    assert_eq!(galaxy_files(fx), (false, false));
+    // Galaxy's files stay.
+    assert_eq!(fx.read("galaxy-only.dat"), "stays");
+    assert_settled(fx);
+}
+
+#[test]
+fn a_galaxy_game_moves_to_the_installer_track_and_drops_its_record() {
+    let fx = installed_windows();
+    as_galaxy_game(&fx);
+    assert_eq!(galaxy_files(&fx), (true, true));
+    let pending = move_plan(&fx, move_options());
+    assert_eq!(pending.kind(), JournalKind::Reinstall);
+    assert_eq!(pending.target().track, Track::Installer);
+    assert_eq!(pending.target().language, "en");
+    let updated = fx
+        .apply_with(true, &pending, &Token::new(), |_| {})
+        .unwrap();
+    assert_eq!(updated.kind, JournalKind::Reinstall);
+    assert_eq!(
+        ran_since_install(&fx),
+        [setup(RIMWORLD, "1.0"), setup(DLC, "1.0")]
+    );
+    assert_moved(&fx);
+}
+
+#[test]
+fn a_dlc_that_never_started_while_moving_is_failed_not_kept_as_galaxys() {
+    let fx = installed_windows();
+    as_galaxy_game(&fx);
+    fx.exits(DLC, 1);
+    let pending = move_plan(&fx, move_options());
+    fx.apply_with(true, &pending, &Token::new(), |_| {})
+        .unwrap();
+    let state = fx.state();
+    let products = state.committed.unwrap().products;
+    assert_eq!(products[1].status, ProductStatus::Failed);
+    assert_eq!(products[1].build, None);
+}
+
+#[test]
+fn an_interrupted_move_is_finished_on_the_installer_track_and_drops_the_record() {
+    let fx = installed_windows();
+    as_galaxy_game(&fx);
+    let pending = move_plan(&fx, move_options());
+    set_failpoint(Some("install.windows.base.after"));
+    let error = fx
+        .apply_with(true, &pending, &Token::new(), |_| {})
+        .unwrap_err();
+    set_failpoint(None);
+    assert!(format!("{error:#}").contains("injected"), "{error:#}");
+    let state = fx.state();
+    let journal = state.journal.as_ref().unwrap();
+    assert_eq!(journal.kind, JournalKind::Reinstall);
+    assert_eq!(journal.target.track, Track::Installer);
+    // Still Galaxy's until the new track is committed.
+    assert_eq!(state.committed.as_ref().unwrap().track, Track::Galaxy);
+    assert_eq!(galaxy_files(&fx), (true, true));
+
+    // The journal's track decides, whatever the options say.
+    let pending = move_plan(
+        &fx,
+        Options {
+            refresh: true,
+            ..Options::default()
+        },
+    );
+    assert!(pending.is_recovery());
+    fx.apply_with(true, &pending, &Token::new(), |_| {})
+        .unwrap();
+    assert_moved(&fx);
+}
+
+#[test]
+fn a_crash_after_the_commit_leaves_a_record_that_the_next_installer_run_removes() {
+    let fx = installed_windows();
+    as_galaxy_game(&fx);
+    let pending = move_plan(&fx, move_options());
+    set_failpoint(Some("install.windows.commit.after"));
+    let error = fx
+        .apply_with(true, &pending, &Token::new(), |_| {})
+        .unwrap_err();
+    set_failpoint(None);
+    assert!(format!("{error:#}").contains("injected"), "{error:#}");
+    let state = fx.state();
+    assert_eq!(state.journal, None);
+    assert_eq!(state.committed.as_ref().unwrap().track, Track::Installer);
+    assert_eq!(galaxy_files(&fx), (true, true));
+    fx.reinstall();
+    assert_moved(&fx);
+}
