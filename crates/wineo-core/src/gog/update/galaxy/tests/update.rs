@@ -1088,3 +1088,80 @@ fn an_unfinished_galaxy_install_is_finished_by_installing_not_updating() {
         "{error:#}"
     );
 }
+
+/// `build` with every depot for English alone.
+fn in_english(mut build: FakeBuild) -> FakeBuild {
+    build.depots = build
+        .depots
+        .into_iter()
+        .map(|depot| depot.languages(&["en-US"]))
+        .collect();
+    build
+}
+
+#[test]
+fn a_language_another_tool_recorded_finds_gogs_depots() {
+    let fx = Fixture::new();
+    fx.content.add_build(in_english(Fixture::game("100")));
+    fx.install();
+    // As Heroic may record it.
+    let lock = FolderLock::exclusive(&fx.paths, &fx.folder, &|| false).unwrap();
+    let mut state = lock.read().unwrap().unwrap();
+    state.committed.as_mut().unwrap().language = "en".to_owned();
+    lock.write(&state).unwrap();
+    drop(lock);
+    // On the latest build, that alone is nothing to update.
+    assert!(matches!(
+        fx.update_planned().unwrap(),
+        Planned::UpToDate { .. }
+    ));
+    fx.gog.lock().unwrap().newest_first = true;
+    fx.content.add_build(in_english(game_200()));
+    let plan = fx.update_plan();
+    assert_eq!(plan.start(), Start::Fetched);
+    assert!(plan.warnings().is_empty(), "{:?}", plan.warnings());
+    fx.apply_update(&plan).unwrap();
+    assert_updated(&fx);
+    assert!(!fx.folder.join("empty.txt").exists());
+    let committed = fx.state().committed.unwrap();
+    assert_eq!(committed.language, "en");
+    assert_eq!(committed.products[0].language.as_deref(), Some("en-US"));
+    assert!(matches!(
+        fx.update_planned().unwrap(),
+        Planned::UpToDate { .. }
+    ));
+}
+
+#[test]
+fn a_kept_file_with_no_known_md5_is_still_deleted_later_on_a_chunk_match() {
+    let fx = Fixture::new();
+    // Build 200 only changes the info file, so with no stored manifest
+    // `Data/big.dat` is kept on its size, and nothing gives its MD5.
+    fx.installed_then(Fixture::game("200"));
+    forget_record(&fx);
+    let plan = fx.update_plan();
+    assert_eq!(plan.start(), Start::Fetched);
+    fx.apply_update(&plan).unwrap();
+    let record = fx.record().unwrap();
+    let installed = record::installed(&fx.state(), &record).unwrap().unwrap();
+    let big = installed
+        .manifest
+        .files
+        .iter()
+        .find(|file| file.path == "Data/big.dat")
+        .unwrap();
+    assert_eq!(big.md5, None);
+    // Build 300 drops it: its chunks show it's GOG's, so it goes.
+    fx.content
+        .add_build(
+            FakeBuild::new(GAME, "300").depot(FakeDepot::new(GAME).file(FakeFile::new(
+                &format!("goggame-{GAME}.info"),
+                info(GAME, "300").as_bytes(),
+            ))),
+        );
+    let plan = fx.update_plan();
+    assert_eq!(plan.start(), Start::Stored);
+    let updated = fx.apply_update(&plan).unwrap();
+    assert!(!fx.folder.join("Data/big.dat").exists());
+    assert!(updated.kept.is_empty(), "{:?}", updated.kept);
+}

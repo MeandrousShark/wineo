@@ -411,14 +411,23 @@ pub fn plan(
         track: Track::Galaxy,
         products: selected.products,
     };
+    // On the same build, only a product to install is a reason to update.
     // A newly owned DLC the build doesn't have is recorded as unavailable
-    // when an update runs anyway, but is no reason to run one.
-    let mut worth = record::expected(&state, JournalKind::Update, &target);
-    worth.products.retain(|product| {
-        product.status != ProductStatus::Unavailable
-            || committed.products.iter().any(|old| old.id == product.id)
-    });
-    if installed_build.as_deref() == Some(latest.build_id.as_str()) && worth == committed {
+    // when an update runs anyway, and a language another tool recorded is
+    // recorded as GOG's depots spell it, but neither is a reason to run one.
+    let selection = |products: &[Product]| -> Vec<(u64, ProductStatus)> {
+        products
+            .iter()
+            .filter(|product| {
+                product.status != ProductStatus::Unavailable
+                    || committed.products.iter().any(|old| old.id == product.id)
+            })
+            .map(|product| (product.id, product.status))
+            .collect()
+    };
+    if installed_build.as_deref() == Some(latest.build_id.as_str())
+        && selection(&target.products) == selection(&committed.products)
+    {
         return Ok(Planned::UpToDate {
             environment: name.to_owned(),
             build: installed_build,
@@ -544,18 +553,10 @@ fn fetched_base(
         .products
         .iter()
         .filter(|product| product.status == ProductStatus::Installed)
-        .map(|product| {
-            let language = product
-                .language
-                .clone()
-                .unwrap_or_else(|| committed.language.clone());
-            (product.id, language)
-        })
-        .filter(|(id, language)| {
-            repository
-                .depots
-                .iter()
-                .any(|depot| build::keeps(depot, *id, language, bits))
+        .filter_map(|product| {
+            let wanted = product.language.as_deref().unwrap_or(&committed.language);
+            let language = resolve(&repository.depots, product.id, wanted, bits)?;
+            Some((product.id, language.code))
         })
         .collect();
     let built = install::manifests(session, title, repository, &chosen, bits, None)?;
@@ -563,6 +564,21 @@ fn fetched_base(
         manifest: built.manifest,
         fetched: true,
     }))
+}
+
+/// The language `id`'s depots in `depots` are in, picked from `wanted` as
+/// an install picks it, when it has any for a prefix of `bits`.
+fn resolve(
+    depots: &[wineo_gog::Depot],
+    id: u64,
+    wanted: &str,
+    bits: &str,
+) -> Option<build::Language> {
+    build::pick_language(depots, id, wanted).filter(|language| {
+        depots
+            .iter()
+            .any(|depot| build::keeps(depot, id, &language.code, bits))
+    })
 }
 
 /// The products an update installs.
@@ -588,17 +604,7 @@ fn select(
 ) -> Result<Selected> {
     let build_id = &repository.build_id;
     let folder_language = &committed.language;
-    let has = |id: u64, language: &str| {
-        repository
-            .depots
-            .iter()
-            .any(|depot| build::keeps(depot, id, language, bits))
-    };
-    // In the language the base game is in, then English.
-    let pick = |id: u64| {
-        build::pick_language(&repository.depots, id, folder_language)
-            .filter(|language| has(id, &language.code))
-    };
+    let pick = |id: u64, wanted: &str| resolve(&repository.depots, id, wanted, bits);
     let dlc_title = |id: u64| {
         game.dlcs
             .iter()
@@ -648,13 +654,16 @@ fn select(
         selected.planned.push(planned(&product, note));
         selected.products.push(product);
     };
-    let fresh = |id: u64, language: build::Language| {
-        let note = language.english.then(|| {
+    let english = |id: u64, language: &build::Language, wanted: &str| {
+        language.english.then(|| {
             format!(
-                "{} has no Galaxy files in {folder_language}, so it installs in English.",
+                "{} has no Galaxy files in {wanted}, so it installs in English.",
                 label(id)
             )
-        });
+        })
+    };
+    let fresh = |id: u64, language: build::Language| {
+        let note = english(id, &language, folder_language);
         let product = Product {
             id,
             version: None,
@@ -668,28 +677,34 @@ fn select(
     for product in &committed.products {
         match product.status {
             ProductStatus::Installed => {
-                let language = product.language.as_deref().unwrap_or(folder_language);
-                if !has(product.id, language) {
+                // Picked as an install picks it, so a language another tool
+                // recorded, like `en`, finds GOG's `en-US` depots.
+                let wanted = product.language.as_deref().unwrap_or(folder_language);
+                let Some(language) = pick(product.id, wanted) else {
                     return Err(GalaxyError::ProductGone {
                         title: title.to_owned(),
                         build: build_id.clone(),
                         label: label(product.id),
                     }
                     .into());
-                }
+                };
+                let note = english(product.id, &language, wanted);
                 let product = Product {
                     build: Some(build_id.clone()),
+                    language: (language.code != *folder_language).then_some(language.code),
                     ..product.clone()
                 };
-                add(&mut selected, product, None);
+                add(&mut selected, product, note);
             }
-            ProductStatus::Failed | ProductStatus::Unavailable => match pick(product.id) {
-                Some(language) => {
-                    let (product, note) = fresh(product.id, language);
-                    add(&mut selected, product, note);
+            ProductStatus::Failed | ProductStatus::Unavailable => {
+                match pick(product.id, folder_language) {
+                    Some(language) => {
+                        let (product, note) = fresh(product.id, language);
+                        add(&mut selected, product, note);
+                    }
+                    None => add(&mut selected, product.clone(), None),
                 }
-                None => add(&mut selected, product.clone(), None),
-            },
+            }
         }
     }
     let mut seen = HashSet::new();
@@ -700,7 +715,7 @@ fn select(
         {
             continue;
         }
-        match pick(id) {
+        match pick(id, folder_language) {
             Some(language) => {
                 let (product, note) = fresh(id, language);
                 add(&mut selected, product, note);
