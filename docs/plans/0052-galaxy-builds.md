@@ -1186,9 +1186,10 @@ Step 13 (2026-10-16), with the maintainer's answers the same day:
   games get no Version row, since Galaxy has no Linux builds.
 - **When the row shows** (answer A): for every GOG Windows game, with the
   track learned from a listing loaded when the view opens, not only from
-  the startup check. Logged out, a portable folder, and an unfinished
-  operation open the view and say why; an unfinished operation keeps
-  **Finish update**.
+  the startup check. Logged out and an unfinished operation open the view
+  and say why; an unfinished operation keeps **Finish update**. In a
+  portable folder the row doesn't show, like the panel's other GOG rows
+  (maintainer, after the second review).
 - **Private branches in the app** (answer A): **Enter a private branch**
   asks for the branch's name and its password (hidden), and lists it
   through `listing::list` with the entered password; a miss says `GOG
@@ -1205,7 +1206,15 @@ Step 13 (2026-10-16), with the maintainer's answers the same day:
   **Up to date** instead of disappearing; the app's Pin row names only
   the build, without the CLI's `until --latest`; and the Version row
   reads the installed build from the game's record when no check or
-  listing has run, so it shows without a login.
+  listing has run, so it shows without a login. A version name counts
+  only from a record that passes the sidecar rule; otherwise the row
+  shows the build id.
+- **A GOG status reply for a game counts only if nothing newer for that
+  game has landed since it was asked**, whichever task sent it (the
+  startup check, a recheck after an update, a listing). A bound set
+  after two review rounds found the same class through two paths: each
+  game has a generation, and a reply that lands after it moved on
+  leaves the newer entry alone.
 
 ## Implementation sequence
 
