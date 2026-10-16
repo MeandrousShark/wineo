@@ -38,6 +38,7 @@ The primary session reads `docs/workflow.md` at the start of each session.
 - Coding subagents may stage and commit their own logical changes. Only the primary session handles release work: pushes, merges, version bumps, changelogs, tags, releases, publishing, and deployments. Never delegate it.
 - The version lives in `[workspace.package]` in `Cargo.toml`, and wineo stays on `0.x` until the maintainer calls it stable.
 - Marking a plan `Status: done` bumps the minor version (`0.2.0` to `0.3.0`). Fixes that land between plans bump the patch version.
+- A plan released in parts bumps the minor version for each part; the last part marks it done.
 - Each bump gets a section in `CHANGELOG.md` with the date and a short list of changes, linking the plan when there is one, and an annotated `vX.Y.Z` tag.
 - Push tags with the commits.
 

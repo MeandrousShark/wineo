@@ -1,7 +1,31 @@
 # Changelog
 
 A finished plan bumps the minor version and fixes between plans bump the
-patch version. See `AGENTS.md` for the rule.
+patch version. A plan released in parts bumps the minor version for each
+part. See `AGENTS.md` for the rule.
+
+## 0.33.0 - 2026-10-15
+
+GOG Galaxy builds, part A ([0052](docs/plans/0052-galaxy-builds.md)):
+Windows GOG games install and update from GOG Galaxy's builds, file by
+file, so updates download only what changed.
+
+- `wineo import gog --game` installs Windows games on the Galaxy track
+  when GOG has a Galaxy build; `--track installer` keeps the offline
+  installers. Setup (GOG's script interpreter, redistributables) runs in
+  the prefix, and redistributables are shared between games.
+- Galaxy games update with `wineo update`, including ones Heroic or the
+  GOG Galaxy client installed. Disco Elysium no longer says "Update on GOG".
+- `wineo update NAME --repair` checks every file of a Galaxy game and
+  fixes damaged ones, saving the damaged copy aside.
+- `--reinstall --track galaxy|installer` moves a game between tracks,
+  keeping files that already match.
+- The desktop app installs and updates on either track, with a Track
+  picker in the install review.
+- `update --check` and `import gog --list` show GOG's version names for
+  Galaxy builds; JSON keeps build ids, and Galaxy updates are `applicable`.
+- Every failure that leaves an unfinished operation ends with the command
+  that finishes it.
 
 ## 0.32.1 - 2026-10-14
 

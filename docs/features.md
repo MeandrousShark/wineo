@@ -8,7 +8,7 @@ own numbered plan in `docs/plans/`.
 The order the maintainer picked on 2026-10-14, after 0051. Each item gets
 its own plan when it comes up, and the rows below have the details.
 
-1. GOG Galaxy builds: [0052](plans/0052-galaxy-builds.md), approved 2026-10-14.
+1. GOG Galaxy builds: [0052](plans/0052-galaxy-builds.md), approved 2026-10-14; part A released in 0.33.0.
 2. The 1.0 contract: the JSON gaps (criterion 3), and the config
    compatibility guarantee with a deprecation path (criteria 4 and 5).
 3. GUI library views, designed against a library that includes store games.
