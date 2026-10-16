@@ -514,3 +514,15 @@ fn a_pinned_game_is_not_offered_dlc_its_pinned_build_lacks() {
     ));
     assert_eq!(fx.state().committed.unwrap().products.len(), 1);
 }
+
+#[test]
+fn a_check_of_an_install_stopped_after_its_record_reports_the_follow_it_kept() {
+    use crate::gog::update::check;
+    let fx = Fixture::new();
+    fx.install_stopped_without_pending(Choice::Build("300".to_owned()));
+    let status = check(&mut fx.session(), "game", true).unwrap();
+    assert_eq!(status.state, UpdateState::CantCompare);
+    assert!(status.unfinished);
+    assert_eq!(status.branch.as_deref(), Some("beta"));
+    assert_eq!(status.pinned.as_deref(), Some("300"));
+}

@@ -1139,3 +1139,62 @@ fn a_move_off_galaxy_planned_before_a_pin_is_refused_and_keeps_the_pin() {
     assert_eq!(read(&f, "Papers.exe"), "MZ 1.2.76");
     assert!(state(&f).journal.is_none());
 }
+
+#[test]
+fn an_unfinished_install_reports_the_follow_its_record_kept() {
+    let (f, api) = world();
+    beta(&api, "400", "1.3.0-beta");
+    let mut pty = paused(
+        &f,
+        &api,
+        &[
+            "import",
+            "gog",
+            "--game",
+            "1207658924",
+            "--runner",
+            "galaxy",
+            "--branch",
+            "beta",
+            "--yes",
+        ],
+    );
+    pty.expect("Downloading: ");
+    interrupt(&pty);
+    let (status, output) = pty.finish();
+    assert_eq!(status.code(), Some(130), "{output}");
+    assert!(state(&f).committed.is_none());
+
+    // The window after the record is written and before the state commits.
+    let path =
+        wineo_core::gog::folder::sidecar_file(&f.paths(), &fs::canonicalize(folder(&f)).unwrap());
+    for (follow, branch, pinned) in [
+        (json!({"branch": "beta"}), json!("beta"), Value::Null),
+        (
+            json!({"branch": "beta", "pinned": "400"}),
+            json!("beta"),
+            json!("400"),
+        ),
+    ] {
+        let mut saved: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        saved["follow"] = follow;
+        fs::write(&path, saved.to_string()).unwrap();
+
+        let out = gog(&f, &api, &["update", "--check", "--json"]);
+        let env = &json_of(&out)["environments"][0];
+        assert_eq!(env["update"], "cant_compare", "{env}");
+        assert_eq!(env["unfinished"], true);
+        assert_eq!(env["branch"], branch);
+        assert_eq!(env["pinned"], pinned);
+        let out = gog(&f, &api, &["import", "gog", "--list", "--json"]);
+        let games = json_of(&out);
+        let game = games["games"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|game| game["environment"] == NAME)
+            .unwrap();
+        assert_eq!(game["branch"], branch);
+        assert_eq!(game["pinned"], pinned);
+    }
+}

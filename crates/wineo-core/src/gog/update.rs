@@ -691,7 +691,13 @@ pub(super) fn status_with(
             warnings: Vec::new(),
             installed_name: None,
             available_name: None,
-            follow: galaxy::record::Follow::default(),
+            // The record outlives the install's state, so it still says
+            // what the install is for.
+            follow: if installed.track == Track::Galaxy {
+                galaxy::follow_of(paths, &state.folder)
+            } else {
+                galaxy::record::Follow::default()
+            },
             pinned_name: None,
             dlc_update: false,
         }
