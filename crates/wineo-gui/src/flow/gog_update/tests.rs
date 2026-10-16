@@ -477,7 +477,11 @@ fn a_windows_update_shows_each_installer_and_offers_the_setup_window_once() {
     .unwrap()
     {
         Planned::Update(pending) => pending,
-        Planned::UpToDate | Planned::Pinned(_) | Planned::Galaxy(_) => {
+        Planned::UpToDate
+        | Planned::Pinned(_)
+        | Planned::Galaxy(_)
+        | Planned::Follow(_)
+        | Planned::NeedsPassword { .. } => {
             panic!("expected an update")
         }
     };

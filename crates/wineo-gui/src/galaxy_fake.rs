@@ -238,6 +238,25 @@ exit 0
         galaxy_install::apply(&self.paths, &mut session, &plan, &Token::new(), |_| {}).unwrap();
     }
 
+    /// Records the installed game as one from offline installers, as if it
+    /// were installed the old way, at version 1.2.76.
+    pub(crate) fn on_installer_track(&self) {
+        use wineo_core::gog::folder::{FolderLock, Track};
+        let lock = FolderLock::exclusive(&self.paths, &self.folder(), &|| false).unwrap();
+        let mut state = lock.read().unwrap().unwrap();
+        let committed = state.committed.as_mut().unwrap();
+        committed.track = Track::Installer;
+        for product in &mut committed.products {
+            product.build = None;
+            product.version = Some("1.2.76".to_owned());
+        }
+        lock.write(&state).unwrap();
+        let _ = fs::remove_file(wineo_core::gog::folder::sidecar_file(
+            &self.paths,
+            &self.folder(),
+        ));
+    }
+
     /// Where a file of the game is.
     pub(crate) fn file(&self, path: &str) -> PathBuf {
         self.folder().join(path)

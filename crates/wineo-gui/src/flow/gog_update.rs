@@ -8,11 +8,11 @@ use std::cell::RefCell;
 use std::time::Duration;
 
 use iced::futures::channel::mpsc::unbounded;
-use iced::widget::{column, container, row, text};
+use iced::widget::{column, container, row, text, text_input};
 use iced::{Center, Element, Fill, Task, border};
 use wineo_core::cancel::Token;
 use wineo_core::gog::account::{AccountError, Session};
-use wineo_core::gog::api::Client;
+use wineo_core::gog::api::{Client, Secret};
 use wineo_core::gog::folder::{JournalKind, Track};
 use wineo_core::gog::update::galaxy::present::{Label, Reporter as GalaxyReporter, restart_lines};
 use wineo_core::gog::update::galaxy::{self as core_galaxy, GalaxyError, PlannedUpdate};
@@ -46,6 +46,8 @@ enum Step {
     /// Asking whether to run an installer that never started as its own
     /// setup window.
     Question,
+    /// Asking for the password of a private branch the plan needs.
+    Password,
     Finished,
 }
 
@@ -57,13 +59,22 @@ pub(crate) enum Planned {
     Pinned(String),
     Update(Box<Pending>),
     Galaxy(Box<core_galaxy::update::Plan>),
+    /// Only the branch or pin changes.
+    Follow(Box<core_galaxy::FollowPlan>),
+    /// The plan needs a private branch's password, and none is saved.
+    NeedsPassword {
+        title: String,
+        branch: String,
+    },
 }
 
-/// An update ready to review and apply, on the track the game is on.
+/// An update to review and apply, on the track the game is on.
 #[derive(Debug, Clone)]
 pub(crate) enum Ready {
     Installer(Box<Pending>),
     Galaxy(Box<core_galaxy::update::Plan>),
+    /// A change of branch or pin that moves no files.
+    Follow(Box<core_galaxy::FollowPlan>),
 }
 
 impl Ready {
@@ -71,6 +82,7 @@ impl Ready {
         match self {
             Self::Installer(pending) => pending.action(),
             Self::Galaxy(plan) => plan.action(),
+            Self::Follow(plan) => plan.action(),
         }
     }
 
@@ -78,6 +90,7 @@ impl Ready {
         match self {
             Self::Installer(pending) => pending.kind(),
             Self::Galaxy(plan) => plan.kind(),
+            Self::Follow(_) => JournalKind::Update,
         }
     }
 
@@ -85,6 +98,7 @@ impl Ready {
         match self {
             Self::Installer(pending) => pending.is_recovery(),
             Self::Galaxy(plan) => plan.is_recovery(),
+            Self::Follow(_) => false,
         }
     }
 
@@ -92,6 +106,20 @@ impl Ready {
         match self {
             Self::Installer(pending) => pending.warnings(),
             Self::Galaxy(plan) => plan.warnings(),
+            Self::Follow(plan) => plan.warnings(),
+        }
+    }
+
+    /// The review's main button.
+    fn button(&self) -> &'static str {
+        if matches!(self, Self::Follow(_)) {
+            return "Switch";
+        }
+        match (self.kind(), self.is_recovery()) {
+            (_, true) => "Finish",
+            (JournalKind::Repair, false) => "Repair",
+            (JournalKind::Reinstall, false) => "Reinstall",
+            _ => "Update",
         }
     }
 
@@ -148,6 +176,10 @@ pub(crate) enum Event {
     Update,
     /// The answer to the setup window question.
     SetupWindow(bool),
+    /// The private branch's password, as typed.
+    Password(Secret),
+    /// Plans again with the password typed.
+    Continue,
     Cancel,
     Force,
     Progress(u64, String),
@@ -174,11 +206,25 @@ pub(crate) struct Page {
     /// Set while planning again to run the setup window, which then starts
     /// without another review.
     wizard: bool,
+    /// What planning asks for: a branch or build, a repair, or a move.
+    options: Options,
+    /// The private branch the password question is about, and its title.
+    asked: Option<(String, String)>,
+    password: Secret,
     action: Option<Action>,
 }
 
 impl Page {
     pub(crate) fn new(paths: Paths, name: String) -> (Self, Task<Event>) {
+        Self::with_options(paths, name, Options::default())
+    }
+
+    /// A page that plans with `options`, as the Version picker asks.
+    pub(crate) fn with_options(
+        paths: Paths,
+        name: String,
+        options: Options,
+    ) -> (Self, Task<Event>) {
         let mut page = Self {
             paths,
             name,
@@ -193,6 +239,9 @@ impl Page {
             note: None,
             question: None,
             wizard: false,
+            options,
+            asked: None,
+            password: Secret::new(""),
             action: None,
         };
         let task = page.plan();
@@ -237,6 +286,7 @@ impl Page {
         match self.step {
             Step::Review => self.start(),
             Step::Question => self.update(Event::SetupWindow(true)),
+            Step::Password => self.update(Event::Continue),
             Step::Finished => self.update(Event::BackToLibrary),
             Step::Planning | Step::Working => Task::none(),
         }
@@ -260,6 +310,11 @@ impl Page {
     }
 
     fn plan(&mut self) -> Task<Event> {
+        self.plan_with(None)
+    }
+
+    /// Plans, with `password` for the private branch the plan uses.
+    fn plan_with(&mut self, password: Option<Secret>) -> Task<Event> {
         self.step = Step::Planning;
         self.status = format!("Checking {} with GOG...", self.name);
         let generation = self.next_generation();
@@ -268,10 +323,7 @@ impl Page {
         // closing the window asks first.
         let token = Token::new();
         self.token = Some(token.clone());
-        let options = Options {
-            wizard: self.wizard,
-            ..Options::default()
-        };
+        let options = self.planning_options(password);
         task::blocking(
             move || {
                 let client =
@@ -280,6 +332,15 @@ impl Page {
             },
             move |result| Event::Planned(generation, result),
         )
+    }
+
+    /// What the next plan asks core for.
+    fn planning_options(&self, password: Option<Secret>) -> Options {
+        Options {
+            wizard: self.wizard,
+            password,
+            ..self.options.clone()
+        }
     }
 
     fn start(&mut self) -> Task<Event> {
@@ -335,6 +396,13 @@ impl Page {
                         return self.reviewed(Ready::Installer(pending));
                     }
                     Ok(Planned::Galaxy(plan)) => return self.reviewed(Ready::Galaxy(plan)),
+                    Ok(Planned::Follow(plan)) => return self.reviewed(Ready::Follow(plan)),
+                    Ok(Planned::NeedsPassword { title, branch }) => {
+                        self.asked = Some((branch, title));
+                        self.password = Secret::new("");
+                        self.error = None;
+                        self.step = Step::Password;
+                    }
                     Err(error) => {
                         if self.wizard {
                             self.step = Step::Finished;
@@ -359,6 +427,19 @@ impl Page {
                 self.error = Some(question.message_for(&self.name, install));
                 self.step = Step::Finished;
                 Task::none()
+            }
+            Event::Password(password) if self.step == Step::Password => {
+                self.password = password;
+                Task::none()
+            }
+            Event::Continue if self.step == Step::Password => {
+                if self.password.expose().is_empty() {
+                    return Task::none();
+                }
+                // Kept only for this one plan.
+                let password = std::mem::replace(&mut self.password, Secret::new(""));
+                self.asked = None;
+                self.plan_with(Some(password))
             }
             Event::Cancel if matches!(self.step, Step::Planning | Step::Working) => {
                 self.cancel(false);
@@ -459,6 +540,18 @@ impl Page {
         if let Some(Failure::NotStarted { label, .. }) = &self.question {
             body = body.push(text(setup_window_question(label)));
         }
+        if let (Step::Password, Some((branch, title))) = (self.step, &self.asked) {
+            body = body.push(text(format!("Branch {branch} of {title} is private.")));
+            body = body.push(
+                text_input("Password", self.password.expose())
+                    .secure(true)
+                    .on_input(|value| Event::Password(Secret::new(value)))
+                    .on_submit(Event::Continue)
+                    .padding([6, 10])
+                    .width(Fill)
+                    .style(move |_, status| crate::chips::input_style(palette, status)),
+            );
+        }
         match (self.step, &self.ready, &self.updated) {
             (Step::Review | Step::Working, Some(ready), _) => {
                 let mut summary = column![].spacing(8);
@@ -514,15 +607,15 @@ impl Page {
             .height(Fill);
         let footer: Option<Element<'_, Event>> = match self.step {
             Step::Review => self.ready.as_ref().map(|ready| {
-                let label = if ready.is_recovery() {
-                    "Finish"
-                } else {
-                    "Update"
-                };
-                accent_base(label, palette.primary)
+                accent_base(ready.button(), palette.primary)
                     .on_press(Event::Update)
                     .into()
             }),
+            Step::Password => Some(
+                accent_base("Continue", palette.primary)
+                    .on_press_maybe((!self.password.expose().is_empty()).then_some(Event::Continue))
+                    .into(),
+            ),
             Step::Planning | Step::Working => self.token.as_ref().map(|token| {
                 let (label, event) = if token.is_canceled() {
                     ("Force stop", Event::Force)
@@ -589,8 +682,9 @@ pub(crate) fn plan_with(
     plan_with_options(paths, keyring, client, name, Options::default(), token)
 }
 
-/// `plan_with`, with `options` saying whether a Windows installer runs as
-/// its own setup window.
+/// `plan_with`, with `options`: a branch or build, a repair, a move, a
+/// password, or a Windows installer run as its own setup window. A private
+/// branch with no password saved asks for one rather than failing.
 pub(crate) fn plan_with_options(
     paths: &Paths,
     keyring: &dyn Keyring,
@@ -604,6 +698,15 @@ pub(crate) fn plan_with_options(
     let planned = core_galaxy::plan_update(paths, session.as_mut(), name, options, token);
     if token.is_canceled() {
         return Err(canceled_message(paths, name));
+    }
+    if let Err(error) = &planned
+        && let Some(GalaxyError::NeedsPassword { title, branch, .. }) =
+            error.downcast_ref::<GalaxyError>()
+    {
+        return Ok(Planned::NeedsPassword {
+            title: title.clone(),
+            branch: branch.clone(),
+        });
     }
     match planned {
         Ok(
@@ -619,11 +722,10 @@ pub(crate) fn plan_with_options(
         Ok(PlannedUpdate::Galaxy(core_galaxy::update::Planned::Pinned(pinned))) => {
             Ok(Planned::Pinned(pinned.message()))
         }
-        // The app doesn't pick a branch or build yet, so it never asks for
-        // one.
-        Ok(PlannedUpdate::Galaxy(core_galaxy::update::Planned::Follow(_))) => Err(format!(
-            "Changing {name}'s branch isn't available in the app yet. Use: wineo update {name}"
-        )),
+        Ok(PlannedUpdate::Galaxy(core_galaxy::update::Planned::Follow(plan))) => {
+            Ok(Planned::Follow(Box::new(plan)))
+        }
+
         Err(error)
             if logged_out
                 && matches!(
@@ -724,7 +826,22 @@ pub(crate) fn apply_ready(
     match ready {
         Ready::Installer(pending) => apply_with(paths, keyring, client, pending, token, say),
         Ready::Galaxy(plan) => apply_galaxy_with(paths, keyring, client, plan, token, say),
+        Ready::Follow(plan) => apply_follow(paths, plan, token),
     }
+}
+
+/// Records a change of branch or pin, which needs neither GOG nor a login.
+pub(crate) fn apply_follow(
+    paths: &Paths,
+    plan: &core_galaxy::FollowPlan,
+    token: &Token,
+) -> Result<Updated, Failure> {
+    core_galaxy::switch::apply(paths, plan, token).map_err(|error| {
+        if let Some(UpdateError::Canceled { journal }) = error.downcast_ref::<UpdateError>() {
+            return Failure::Canceled { journal: *journal };
+        }
+        Failure::Failed(format!("{error:#}"))
+    })
 }
 
 /// Applies a Galaxy `plan`, sending a status line for each stage and about
@@ -877,6 +994,11 @@ fn ready_rows(paths: &Paths, ready: &Ready) -> Vec<(String, String)> {
     match ready {
         Ready::Installer(pending) => review_rows(pending),
         Ready::Galaxy(plan) => galaxy_review_rows(paths, plan),
+        Ready::Follow(plan) => plan
+            .review_rows(|path| path.display().to_string())
+            .into_iter()
+            .map(|(label, value)| (galaxy_label(label), value))
+            .collect(),
     }
 }
 
@@ -914,6 +1036,17 @@ fn ready_lines(paths: &Paths, ready: &Ready, updated: &Updated) -> Vec<String> {
     match ready {
         Ready::Installer(pending) => result_lines(pending, updated),
         Ready::Galaxy(plan) => galaxy_result_lines(paths, plan, updated),
+        Ready::Follow(plan) => {
+            let mut lines = vec![format!("{}.", plan.finished())];
+            if updated.claimed {
+                lines.push(format!(
+                    "{} now owns {}.",
+                    updated.environment,
+                    updated.folder.display()
+                ));
+            }
+            lines
+        }
     }
 }
 
@@ -942,7 +1075,7 @@ pub(crate) fn galaxy_result_lines(
 /// The files of yours a finished update touched, on either track.
 fn ready_lists(ready: &Ready, updated: &Updated) -> Vec<(&'static str, Vec<String>)> {
     match ready {
-        Ready::Installer(_) => result_lists(updated),
+        Ready::Installer(_) | Ready::Follow(_) => result_lists(updated),
         Ready::Galaxy(plan) => lists_under(updated, plan.saved_heading()),
     }
 }
