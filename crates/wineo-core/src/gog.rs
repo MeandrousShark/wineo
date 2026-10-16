@@ -36,6 +36,7 @@ pub fn client_from_env() -> Result<api::Client, api::Error> {
 
 #[cfg(test)]
 pub(crate) mod test_support {
+    use std::collections::BTreeMap;
     use std::ffi::OsString;
     use std::sync::Mutex;
 
@@ -43,9 +44,13 @@ pub(crate) mod test_support {
     use crate::paths::Paths;
     use crate::steam::api::fixture::{Server, reply};
 
-    /// A keyring in memory, shareable between threads.
+    /// A keyring in memory, shareable between threads. The second slot holds
+    /// private-branch passwords by game and branch.
     #[derive(Default)]
-    pub struct FakeKeyring(pub Mutex<Option<String>>);
+    pub struct FakeKeyring(
+        pub Mutex<Option<String>>,
+        pub Mutex<BTreeMap<(u64, String), String>>,
+    );
 
     impl Keyring for FakeKeyring {
         fn get(&self) -> Result<Option<String>, KeyringError> {
@@ -59,6 +64,50 @@ pub(crate) mod test_support {
 
         fn delete(&self) -> Result<bool, KeyringError> {
             Ok(self.0.lock().unwrap().take().is_some())
+        }
+
+        fn get_branch(&self, game: u64, branch: &str) -> Result<Option<String>, KeyringError> {
+            Ok(self
+                .1
+                .lock()
+                .unwrap()
+                .get(&(game, branch.to_owned()))
+                .cloned())
+        }
+
+        fn set_branch(&self, game: u64, branch: &str, password: &str) -> Result<(), KeyringError> {
+            self.1
+                .lock()
+                .unwrap()
+                .insert((game, branch.to_owned()), password.to_owned());
+            Ok(())
+        }
+
+        fn delete_branch(&self, game: u64, branch: &str) -> Result<bool, KeyringError> {
+            Ok(self
+                .1
+                .lock()
+                .unwrap()
+                .remove(&(game, branch.to_owned()))
+                .is_some())
+        }
+
+        fn list_branches(&self, game: u64) -> Result<Vec<(String, String)>, KeyringError> {
+            Ok(self
+                .1
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|((id, _), _)| *id == game)
+                .map(|((_, branch), password)| (branch.clone(), password.clone()))
+                .collect())
+        }
+
+        fn delete_all_branches(&self) -> Result<bool, KeyringError> {
+            let mut all = self.1.lock().unwrap();
+            let had = !all.is_empty();
+            all.clear();
+            Ok(had)
         }
     }
 

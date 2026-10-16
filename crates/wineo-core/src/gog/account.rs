@@ -7,6 +7,10 @@
 //! still the one it started from, so a stale renewal can't overwrite a newer
 //! login or bring one back after a logout.
 //!
+//! Private-branch passwords (`branches`) belong to the login too: logging out,
+//! or logging in as another account, removes every one of them under the
+//! same lock, so no front end has to remember to.
+//!
 //! Every change to the saved login under the lock also bumps a generation
 //! counter. A session is bound to one account for its whole life: before
 //! each authenticated request it compares the counter, and when it moved it
@@ -251,6 +255,15 @@ pub(crate) fn store(
 ) -> crate::Result<(Saved, u64)> {
     let lock = CredentialsLock::acquire(paths)?;
     let generation = bump_generation(paths, &lock)?;
+    // Branch passwords stay only for the account that entered them. A login
+    // that can't be read, or none, can't be told to be the same.
+    let same_account = matches!(
+        saved_login(paths, keyring),
+        Ok(Some(saved)) if saved.user_id == login.user_id
+    );
+    if !same_account {
+        branches::remove_all(paths, keyring)?;
+    }
     let saved = save(paths, keyring, login)?;
     Ok((saved, generation))
 }
@@ -338,6 +351,8 @@ pub fn logout(paths: &Paths, keyring: &dyn Keyring) -> Result<LoggedOut, Account
         Some(user_id) => owned::remove_cache(paths, user_id)?,
         None => false,
     };
+    // Before the login goes, so a failure leaves it there to try again with.
+    branches::remove_all(paths, keyring)?;
     let removed = key_store::remove_key(&KEY_SPEC, paths, keyring)?;
     Ok(LoggedOut {
         user_id,
@@ -460,6 +475,37 @@ impl<'a> Session<'a> {
         Ok(write())
     }
 
+    /// The saved password for a private branch of `game`, if there is one.
+    pub fn branch_password(&self, game: u64, branch: &str) -> Result<Option<Secret>, AccountError> {
+        Ok(branches::find(&self.paths, self.keyring, game, branch)?)
+    }
+
+    /// Every private branch of `game` with a saved password.
+    pub fn branch_passwords(&self, game: u64) -> Result<Vec<(String, Secret)>, AccountError> {
+        Ok(branches::list(&self.paths, self.keyring, game)?)
+    }
+
+    /// Saves the password for a private branch of `game`, replacing any
+    /// other. Refused once the login has left, so a password can't outlive
+    /// the logout that removes them.
+    pub fn save_branch_password(
+        &mut self,
+        game: u64,
+        branch: &str,
+        password: &Secret,
+    ) -> Result<Saved, AccountError> {
+        let (paths, keyring) = (self.paths.clone(), self.keyring);
+        self.while_current(|| branches::save(&paths, keyring, game, branch, password))?
+            .map_err(AccountError::from)
+    }
+
+    /// Removes the saved password for a private branch of `game`. Returns
+    /// whether there was one.
+    pub fn forget_branch_password(&self, game: u64, branch: &str) -> Result<bool, AccountError> {
+        let _lock = CredentialsLock::acquire(&self.paths)?;
+        Ok(branches::remove(&self.paths, self.keyring, game, branch)?)
+    }
+
     /// A current access token, renewing it first when it is within a minute
     /// of expiring.
     pub fn access_token(&mut self) -> Result<Secret, AccountError> {
@@ -556,6 +602,9 @@ impl<'a> Session<'a> {
                         let error = renewal_error(error);
                         if matches!(error, AccountError::LoggedOut) {
                             bump_generation(&self.paths, &lock)?;
+                            // GOG no longer knows this login, so the next one
+                            // can't be told to be the same account.
+                            branches::remove_all(&self.paths, self.keyring)?;
                             key_store::remove_key(&KEY_SPEC, &self.paths, self.keyring)?;
                         }
                         Err(error)
@@ -570,6 +619,8 @@ impl<'a> Session<'a> {
         Err(AccountError::Changed)
     }
 }
+
+mod branches;
 
 #[cfg(test)]
 mod tests;

@@ -1208,3 +1208,249 @@ fn a_named_login_round_trips_through_the_plain_text_key_file() {
     );
     assert_eq!(profile_requests(&server), 1);
 }
+
+const GAME: u64 = 1771589310;
+const SECRET_WORD: &str = "open-sesame-9";
+
+fn password(text: &str) -> Secret {
+    Secret::new(text)
+}
+
+fn branch_file(paths: &Paths) -> std::path::PathBuf {
+    branches::file(paths)
+}
+
+#[test]
+fn branch_passwords_live_in_the_keyring_per_game_and_branch() {
+    let (_root, paths) = setup();
+    let keyring = FakeKeyring::default();
+    let first = password(SECRET_WORD);
+    assert_eq!(
+        branches::save(&paths, &keyring, GAME, "beta", &first).unwrap(),
+        Saved::Keyring
+    );
+    branches::save(
+        &paths,
+        &keyring,
+        GAME,
+        "Legacy (64-bit)",
+        &password("legacy"),
+    )
+    .unwrap();
+    branches::save(&paths, &keyring, 5, "beta", &password("other game")).unwrap();
+    assert!(!branch_file(&paths).exists());
+
+    let found = |game, branch| {
+        branches::find(&paths, &keyring, game, branch)
+            .unwrap()
+            .map(|secret| secret.expose().to_owned())
+    };
+    assert_eq!(found(GAME, "beta").as_deref(), Some(SECRET_WORD));
+    assert_eq!(found(5, "beta").as_deref(), Some("other game"));
+    assert_eq!(found(GAME, "gamma"), None);
+    let listed: Vec<_> = branches::list(&paths, &keyring, GAME)
+        .unwrap()
+        .into_iter()
+        .map(|(branch, secret)| (branch, secret.expose().to_owned()))
+        .collect();
+    assert_eq!(
+        listed,
+        [
+            ("Legacy (64-bit)".to_owned(), "legacy".to_owned()),
+            ("beta".to_owned(), SECRET_WORD.to_owned())
+        ]
+    );
+
+    // Entering one again replaces it.
+    branches::save(&paths, &keyring, GAME, "beta", &password("changed")).unwrap();
+    assert_eq!(found(GAME, "beta").as_deref(), Some("changed"));
+
+    assert!(branches::remove(&paths, &keyring, GAME, "beta").unwrap());
+    assert!(!branches::remove(&paths, &keyring, GAME, "beta").unwrap());
+    assert_eq!(found(GAME, "beta"), None);
+    assert_eq!(found(5, "beta").as_deref(), Some("other game"));
+}
+
+#[test]
+fn without_a_keyring_branch_passwords_are_one_private_file() {
+    let (_root, paths) = setup();
+    let file = branch_file(&paths);
+    assert_eq!(file.file_name().unwrap(), "gog-branches.key");
+    let saved = branches::save(&paths, &NoKeyring, GAME, "beta", &password(SECRET_WORD)).unwrap();
+    assert_eq!(saved, Saved::File(file.clone()));
+    branches::save(&paths, &NoKeyring, GAME, "gamma", &password("g")).unwrap();
+    branches::save(&paths, &NoKeyring, 5, "beta", &password("five")).unwrap();
+    assert_eq!(
+        fs::metadata(&file).unwrap().permissions().mode() & 0o777,
+        0o600
+    );
+    let find = |game, branch| {
+        branches::find(&paths, &NoKeyring, game, branch)
+            .unwrap()
+            .map(|secret| secret.expose().to_owned())
+    };
+    assert_eq!(find(GAME, "beta").as_deref(), Some(SECRET_WORD));
+    assert_eq!(branches::list(&paths, &NoKeyring, GAME).unwrap().len(), 2);
+
+    branches::save(&paths, &NoKeyring, GAME, "beta", &password("changed")).unwrap();
+    assert_eq!(find(GAME, "beta").as_deref(), Some("changed"));
+
+    assert!(branches::remove(&paths, &NoKeyring, GAME, "beta").unwrap());
+    assert_eq!(find(GAME, "beta"), None);
+    assert_eq!(find(GAME, "gamma").as_deref(), Some("g"));
+    assert!(branches::remove_all(&paths, &NoKeyring).unwrap());
+    assert!(!file.exists());
+    assert!(!branches::remove_all(&paths, &NoKeyring).unwrap());
+}
+
+#[test]
+fn a_keyring_save_clears_the_file_copy() {
+    let (_root, paths) = setup();
+    branches::save(&paths, &NoKeyring, GAME, "beta", &password("from the file")).unwrap();
+    let keyring = FakeKeyring::default();
+    branches::save(&paths, &keyring, GAME, "beta", &password("in the keyring")).unwrap();
+    // The only branch in the file, so the file goes with it.
+    assert!(!branch_file(&paths).exists());
+    assert_eq!(
+        branches::find(&paths, &keyring, GAME, "beta")
+            .unwrap()
+            .unwrap()
+            .expose(),
+        "in the keyring"
+    );
+}
+
+/// A keyring whose branch wipe fails, as a locked one can.
+struct WipeFails(FakeKeyring);
+
+impl Keyring for WipeFails {
+    fn get(&self) -> Result<Option<String>, key_store::KeyringError> {
+        self.0.get()
+    }
+
+    fn set(&self, key: &str) -> Result<(), key_store::KeyringError> {
+        self.0.set(key)
+    }
+
+    fn delete(&self) -> Result<bool, key_store::KeyringError> {
+        self.0.delete()
+    }
+
+    fn delete_all_branches(&self) -> Result<bool, key_store::KeyringError> {
+        Err(key_store::KeyringError::Failed("locked".to_owned()))
+    }
+}
+
+#[test]
+fn logging_out_removes_every_branch_password() {
+    for keyring in [
+        Box::new(FakeKeyring::default()) as Box<dyn Keyring>,
+        Box::new(NoKeyring),
+    ] {
+        let (_root, paths) = setup();
+        seed(&paths, &*keyring, "R1", USER);
+        branches::save(&paths, &*keyring, GAME, "beta", &password(SECRET_WORD)).unwrap();
+        branches::save(&paths, &*keyring, 5, "gamma", &password("g")).unwrap();
+        logout(&paths, &*keyring).unwrap();
+        assert!(branches::list(&paths, &*keyring, GAME).unwrap().is_empty());
+        assert!(branches::list(&paths, &*keyring, 5).unwrap().is_empty());
+        assert!(!branch_file(&paths).exists());
+    }
+}
+
+#[test]
+fn a_logout_that_cannot_wipe_the_passwords_keeps_the_login() {
+    let (_root, paths) = setup();
+    let keyring = WipeFails(FakeKeyring::default());
+    seed(&paths, &keyring, "R1", USER);
+    branches::save(&paths, &keyring, GAME, "beta", &password(SECRET_WORD)).unwrap();
+    let error = logout(&paths, &keyring).unwrap_err();
+    assert!(matches!(error, AccountError::Store(_)), "{error:?}");
+    assert_eq!(saved(&paths, &keyring), Some(login_of("R1", USER)));
+    assert!(!format!("{error:?} {error}").contains(SECRET_WORD));
+}
+
+#[test]
+fn logging_in_as_another_account_removes_them_but_the_same_account_keeps_them() {
+    let (_root, paths) = setup();
+    let keyring = FakeKeyring::default();
+    seed(&paths, &keyring, "R1", USER);
+    branches::save(&paths, &keyring, GAME, "beta", &password(SECRET_WORD)).unwrap();
+
+    // The same account logging in again, or renewing, keeps them.
+    replace(&paths, &keyring, "R2", USER);
+    assert_eq!(branches::list(&paths, &keyring, GAME).unwrap().len(), 1);
+
+    replace(&paths, &keyring, "R3", OTHER_USER);
+    assert!(branches::list(&paths, &keyring, GAME).unwrap().is_empty());
+
+    // Passwords with no login to compare against don't carry over either.
+    logout(&paths, &keyring).unwrap();
+    branches::save(&paths, &keyring, GAME, "beta", &password(SECRET_WORD)).unwrap();
+    replace(&paths, &keyring, "R4", USER);
+    assert!(branches::list(&paths, &keyring, GAME).unwrap().is_empty());
+}
+
+#[test]
+fn the_real_login_path_removes_them_for_another_account() {
+    let (_root, paths) = setup();
+    seed(&paths, &NoKeyring, "R1", USER);
+    branches::save(&paths, &NoKeyring, GAME, "beta", &password(SECRET_WORD)).unwrap();
+    let server = Server::start(vec![tokens("A", "REFRESH2", OTHER_USER, 3600)]);
+    login(&paths, &NoKeyring, client(&server), CODE).unwrap();
+    assert!(!branch_file(&paths).exists());
+}
+
+#[test]
+fn a_refused_login_takes_the_passwords_with_it() {
+    let (_root, paths) = setup();
+    let keyring = FakeKeyring::default();
+    seed(&paths, &keyring, "R1", USER);
+    branches::save(&paths, &keyring, GAME, "beta", &password(SECRET_WORD)).unwrap();
+    let server = Server::start(vec![invalid_grant()]);
+    let error = open(&paths, &keyring, &server).access_token().unwrap_err();
+    assert!(matches!(error, AccountError::LoggedOut), "{error:?}");
+    assert!(branches::list(&paths, &keyring, GAME).unwrap().is_empty());
+}
+
+#[test]
+fn a_session_saves_and_forgets_passwords_only_while_its_account_is_current() {
+    let (_root, paths) = setup();
+    let keyring = FakeKeyring::default();
+    seed(&paths, &keyring, "R1", USER);
+    let server = Server::start(vec![]);
+    let mut session = open(&paths, &keyring, &server);
+    session
+        .save_branch_password(GAME, "beta", &password(SECRET_WORD))
+        .unwrap();
+    assert_eq!(
+        session
+            .branch_password(GAME, "beta")
+            .unwrap()
+            .unwrap()
+            .expose(),
+        SECRET_WORD
+    );
+    assert_eq!(session.branch_passwords(GAME).unwrap().len(), 1);
+    assert!(session.forget_branch_password(GAME, "beta").unwrap());
+    assert!(!session.forget_branch_password(GAME, "beta").unwrap());
+
+    // Once the account has left, nothing is saved for it.
+    logout(&paths, &keyring).unwrap();
+    let error = session
+        .save_branch_password(GAME, "beta", &password(SECRET_WORD))
+        .unwrap_err();
+    assert!(matches!(error, AccountError::LoggedOut), "{error:?}");
+    assert!(branches::list(&paths, &keyring, GAME).unwrap().is_empty());
+    replace(&paths, &keyring, "R9", OTHER_USER);
+    let error = session
+        .save_branch_password(GAME, "beta", &password(SECRET_WORD))
+        .unwrap_err();
+    assert!(matches!(error, AccountError::Switched), "{error:?}");
+}
+
+#[test]
+fn a_branch_password_is_redacted_in_debug() {
+    let secret = password(SECRET_WORD);
+    assert!(!format!("{secret:?} {secret:#?}").contains(SECRET_WORD));
+}
