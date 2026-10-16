@@ -523,6 +523,7 @@ mod tests {
 
     use wineo_core::gog::folder::{Platform, Track};
     use wineo_core::gog::update::Reason;
+    use wineo_core::gog::update::galaxy::present::Wording;
     use wineo_core::runtime::State;
 
     use super::*;
@@ -792,8 +793,8 @@ mod tests {
         );
         assert_eq!(status_label(&pinned), "Pinned");
         assert_eq!(
-            pinned.reason.as_ref().unwrap().note(),
-            "Pinned to build 100 (1.2.76). Run wineo update papers --latest to follow its branch again."
+            pinned.reason.as_ref().unwrap().note_for(Wording::App),
+            "Pinned to build 100 (1.2.76). Use Change to follow its branch again."
         );
         assert_eq!(pinned.reason.as_ref().unwrap().as_str(), "pinned");
 
@@ -811,10 +812,8 @@ mod tests {
         assert!(!updatable(&level));
         assert_eq!(status_label(&level), "Up to date");
         assert_eq!(
-            level.pin_note().as_deref(),
-            Some(
-                "Pinned to build 100 (1.2.76). Run wineo update papers --latest to follow its branch again."
-            )
+            level.pin_note_for(Wording::App).as_deref(),
+            Some("Pinned to build 100 (1.2.76). Use Change to follow its branch again.")
         );
     }
 

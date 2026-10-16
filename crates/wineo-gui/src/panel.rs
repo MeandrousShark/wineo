@@ -7,6 +7,7 @@ use iced::widget::{
 use iced::{Center, Color, ContentFit, Element, Fill, Task, border};
 use wineo_core::cancel::Token;
 use wineo_core::error::Error;
+use wineo_core::gog::update::galaxy::present::Wording;
 use wineo_core::hooks::Phase;
 use wineo_core::launch::LaunchEvent;
 use wineo_core::operation::Operation as CoreOperation;
@@ -960,8 +961,12 @@ impl App {
                     palette,
                 ));
                 if let Some(reason) = &status.reason {
-                    inner = inner.push(text(reason.note()).size(13).color(palette.muted));
-                } else if let Some(note) = status.pin_note() {
+                    inner = inner.push(
+                        text(reason.note_for(Wording::App))
+                            .size(13)
+                            .color(palette.muted),
+                    );
+                } else if let Some(note) = status.pin_note_for(Wording::App) {
                     // Nothing newer, but the pin stays visible.
                     inner = inner.push(text(note).size(13).color(palette.muted));
                 }
