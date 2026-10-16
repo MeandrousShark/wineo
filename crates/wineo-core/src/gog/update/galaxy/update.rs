@@ -459,6 +459,7 @@ pub fn plan(
         if options.repair {
             return Err(UpdateError::NotGalaxy {
                 name: name.to_owned(),
+                windows: true,
             }
             .into());
         }

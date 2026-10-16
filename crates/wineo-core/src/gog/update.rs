@@ -223,9 +223,13 @@ pub enum UpdateError {
     /// Options that can't go together.
     #[error("{why}")]
     Options { why: &'static str },
-    /// A repair or a branch for a game on the installer track.
-    #[error("Only Galaxy games have branches. Move it with --reinstall --track galaxy.")]
-    NotGalaxy { name: String },
+    /// A repair or a branch for a game on the installer track. Only a
+    /// Windows game can move to Galaxy, so only its message says how.
+    #[error(
+        "Only Galaxy games have branches.{}",
+        if *.windows { " Move it with --reinstall --track galaxy." } else { "" }
+    )]
+    NotGalaxy { name: String, windows: bool },
     /// A repair journal handed to the installer-only `plan`.
     #[error("{name} has an unfinished GOG {kind}, which galaxy::plan_update finishes.")]
     LaterRelease { name: String, kind: &'static str },

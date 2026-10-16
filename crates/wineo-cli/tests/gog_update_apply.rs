@@ -466,6 +466,28 @@ fn a_portable_folder_is_refused() {
 }
 
 #[test]
+fn a_native_game_has_no_branches_and_isnt_told_to_move() {
+    let (f, api, _) = world();
+    for flag in [
+        &["--builds"][..],
+        &["--branch", "beta", "--yes"],
+        &["--default-branch", "--yes"],
+        &["--build", "100", "--yes"],
+        &["--latest", "--yes"],
+    ] {
+        let mut args = vec!["update", "rimworld"];
+        args.extend(flag);
+        let out = f.gog(&api, &args);
+        assert_eq!(out.status.code(), Some(1), "{flag:?}: {}", stderr(&out));
+        assert_eq!(
+            stderr(&out),
+            "error: Only Galaxy games have branches.\n",
+            "{flag:?}"
+        );
+    }
+}
+
+#[test]
 fn a_native_game_cant_be_repaired() {
     let (f, api, _) = world();
     let out = f.gog(&api, &["update", "rimworld", "--repair", "--yes"]);

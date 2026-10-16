@@ -526,6 +526,7 @@ pub fn plan(
         return Err(match committed.platform {
             Platform::Windows => UpdateError::NotGalaxy {
                 name: name.to_owned(),
+                windows: true,
             }
             .into(),
             Platform::Linux => super::galaxy::GalaxyError::NotWindows.into(),

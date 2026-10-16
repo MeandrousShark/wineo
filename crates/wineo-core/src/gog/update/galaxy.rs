@@ -229,6 +229,7 @@ pub fn plan_update(
             (Platform::Windows, Track::Installer) if options.repair => {
                 return Err(UpdateError::NotGalaxy {
                     name: name.to_owned(),
+                    windows: true,
                 }
                 .into());
             }
@@ -242,6 +243,7 @@ pub fn plan_update(
     if !galaxy && !options.choice.is_keep() {
         return Err(UpdateError::NotGalaxy {
             name: name.to_owned(),
+            windows: platform == Platform::Windows,
         }
         .into());
     }

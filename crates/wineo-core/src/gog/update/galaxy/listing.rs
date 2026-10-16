@@ -114,6 +114,7 @@ pub fn list(
     if committed.track != Track::Galaxy {
         return Err(UpdateError::NotGalaxy {
             name: name.to_owned(),
+            windows: committed.platform == Platform::Windows,
         }
         .into());
     }

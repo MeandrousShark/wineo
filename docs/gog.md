@@ -471,12 +471,13 @@ pin. An interrupted change to a pinned build GOG has since stopped
 listing finishes on the latest build of the branch instead, after asking,
 and drops the pin.
 
-Branch flags exclude each other and `--repair`, need a Galaxy game (`Only
-Galaxy games have branches. Move it with --reinstall --track galaxy.`),
-and a change of branch or build is refused while an update is
-unfinished, until it's finished. `--branch` naming the branch the update
-already follows is allowed then, to enter its password again. A
-branch GOG doesn't list is refused with a pointer to `--builds`.
+Branch flags exclude each other and `--repair`, and need a Galaxy game:
+`Only Galaxy games have branches.`, followed for a Windows game by `Move
+it with --reinstall --track galaxy.` A change of branch or build is
+refused while an update is unfinished, until it's finished; `--branch`
+naming the branch the update already follows is allowed then, to enter
+its password again. A branch GOG doesn't list is refused with a pointer
+to `--builds`.
 
 ### Private branches
 

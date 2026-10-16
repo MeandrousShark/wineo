@@ -1233,6 +1233,18 @@ Step 13 (2026-10-16), with the maintainer's answers the same day:
   path for a stale GOG reply, which the bound above now covers through
   one type the compiler enforces.
 
+Step 14 (2026-10-16), with the maintainer's answer the same day:
+
+- **Docs** for part B: `gog.md` (branches, pins, `--builds`, private
+  branches), `json-output.md` (`branch`, `pinned`, the `pinned` reason,
+  `--builds --json`), `gui.md` (the Version picker and the update page's
+  password prompt), `core-api.md`, `stability.md`, and the README; and
+  the acceptance checklist below.
+- **A native game has no branches, and isn't told to move** (found
+  writing the docs): branch flags and `--builds` on a native game say only
+  `Only Galaxy games have branches.`; a Windows game's message still adds
+  `Move it with --reinstall --track galaxy.`, since only it can move.
+
 ## Implementation sequence
 
 Part A:
