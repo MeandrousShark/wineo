@@ -144,6 +144,15 @@ impl Galaxy {
         self.content.add_build(papers(build, version));
     }
 
+    /// Lists a build on a private branch that only `password` lists.
+    pub(crate) fn private(&self, branch: &str, password: &str, build: &str, version: &str) {
+        self.switches.newest_first.store(true, Ordering::Relaxed);
+        let mut private = papers(build, version);
+        private.branch = Some(branch.to_owned());
+        self.content.add_build(private);
+        self.content.set_branch_password(branch, password);
+    }
+
     /// Leaves `build` out of the build lists.
     pub(crate) fn hide(&self, build: &str) {
         self.switches

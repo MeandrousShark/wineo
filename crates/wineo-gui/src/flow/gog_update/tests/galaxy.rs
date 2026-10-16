@@ -477,3 +477,93 @@ fn a_pinned_game_is_told_it_is_pinned_instead_of_failing() {
     assert_eq!(page.error, None);
     fits(&page);
 }
+
+const BRANCH_PASSWORD: &str = "hunter2-private";
+
+/// The game following a private branch at its first build, with the
+/// branch's password saved and a newer build of the branch listed.
+fn following_private_branch() -> Galaxy {
+    let world = Galaxy::new();
+    world.install();
+    world.private("beta", BRANCH_PASSWORD, "300", "1.3.0-beta");
+    let mut session = Session::open(&world.paths, &world.keyring, world.server.client())
+        .unwrap()
+        .unwrap();
+    let Ok(core_galaxy::PlannedUpdate::Galaxy(galaxy_update::Planned::Update(follow))) =
+        core_galaxy::plan_update(
+            &world.paths,
+            Some(&mut session),
+            NAME,
+            Options {
+                choice: core_galaxy::Choice::Branch("beta".to_owned()),
+                password: Some(wineo_core::gog::api::Secret::new(BRANCH_PASSWORD)),
+                refresh: true,
+                ..Options::default()
+            },
+            &Token::new(),
+        )
+    else {
+        panic!("expected a move to the branch");
+    };
+    galaxy_update::apply(&world.paths, &mut session, &follow, &Token::new(), |_| {}).unwrap();
+    world.private("beta", BRANCH_PASSWORD, "400", "1.3.1-beta");
+    world
+}
+
+/// Where the password is kept when there is no keyring, which is all the
+/// test keyring offers.
+fn password_file(world: &Galaxy) -> std::path::PathBuf {
+    world.paths.host_data().join("gog-branches.key")
+}
+
+#[test]
+fn a_game_following_a_private_branch_updates_with_the_saved_password() {
+    let world = following_private_branch();
+    assert!(password_file(&world).exists());
+    let Ok(Planned::Galaxy(plan)) = plan(&world, Options::default()) else {
+        panic!("expected a Galaxy update");
+    };
+    let rows = galaxy_review_rows(&world.paths, &plan);
+    assert!(
+        rows.contains(&(
+            "Papers, Please".to_owned(),
+            "1.3.0-beta -> 1.3.1-beta".to_owned()
+        )),
+        "{rows:?}"
+    );
+}
+
+#[test]
+fn a_game_following_a_private_branch_without_its_password_fails_naming_the_cli_command() {
+    let world = following_private_branch();
+    fs::remove_file(password_file(&world)).unwrap();
+    let error = plan(&world, Options::default()).unwrap_err();
+    assert_eq!(
+        error,
+        format!(
+            "Papers, Please's branch beta is private. Enter its password with: wineo update {NAME} --branch beta"
+        )
+    );
+    assert!(!error.contains(BRANCH_PASSWORD));
+
+    // The page shows it as an error and offers no way to continue.
+    let mut page = Page::new(world.paths.clone(), NAME.to_owned()).0;
+    let generation = page.generation;
+    let _ = page.update(Event::Planned(generation, Err(error.clone())));
+    assert_eq!(page.error.as_deref(), Some(error.as_str()));
+    fits(&page);
+}
+
+#[test]
+fn a_refused_password_on_a_followed_private_branch_fails_and_is_removed() {
+    let world = following_private_branch();
+    world
+        .content
+        .set_branch_password("beta", "changed-by-owner");
+    let error = plan(&world, Options::default()).unwrap_err();
+    assert_eq!(
+        error,
+        "GOG lists no branch beta for Papers, Please, or refused its password."
+    );
+    assert!(!password_file(&world).exists());
+}
