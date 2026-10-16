@@ -453,15 +453,17 @@ pub(crate) fn update(app: &mut App, event: Event) -> Task<Message> {
             match result {
                 Ok(loaded) => {
                     picker.error = None;
+                    // Something newer about the game may have landed since
+                    // this was asked; then only the picker shows it, which is
+                    // what GOG said when asked. Learning the game is on the
+                    // installer track is an answer about it too.
+                    let value = match &loaded {
+                        Loaded::Galaxy(listing) => listing_value(listing),
+                        Loaded::Installer { .. } => None,
+                    };
+                    app.gog_updates
+                        .accept_listing(&picker.name, picker.asked, value);
                     if let Loaded::Galaxy(listing) = &loaded {
-                        // Something newer about the game may have landed since
-                        // this was asked; then only the picker shows it, which
-                        // is what GOG listed when asked.
-                        app.gog_updates.accept_listing(
-                            &picker.name,
-                            picker.asked,
-                            listing_value(listing),
-                        );
                         let listed = |name: &Option<String>| {
                             listing.builds.iter().any(|build| &build.branch == name)
                         };

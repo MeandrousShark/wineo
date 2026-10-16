@@ -731,6 +731,32 @@ fn a_listing_answering_after_a_newer_recheck_only_shows_in_the_picker() {
 }
 
 #[test]
+fn an_installer_track_answer_drops_checks_asked_before_it() {
+    let mut app = opened(false);
+    let recheck = app.gog_updates.asked(NAME);
+    let startup = app.gog_updates.asked_all();
+    let generation = app.version_generation;
+    let _ = app.update(Message::Version(Event::Loaded(
+        generation,
+        None,
+        Ok(Loaded::Installer { galaxy: true }),
+    )));
+    let _ = app.update(Message::GogRechecked(
+        NAME.to_owned(),
+        recheck,
+        Ok(Some(Box::new(checked_status()))),
+    ));
+    let _ = app.update(Message::GogChecked(
+        startup,
+        Ok(Some(wineo_core::gog::update::Batch {
+            statuses: vec![checked_status()],
+            errors: Vec::new(),
+        })),
+    ));
+    assert!(app.gog_updates.status(NAME).is_none());
+}
+
+#[test]
 fn a_listing_answering_after_a_newer_startup_check_only_shows_in_the_picker() {
     let world = world();
     pin(&world, "100");
