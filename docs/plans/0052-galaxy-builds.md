@@ -1196,7 +1196,16 @@ Step 13 (2026-10-16), with the maintainer's answers the same day:
   update needs the followed branch's password and none is saved, the
   update page asks `Branch NAME of TITLE is private.` with a Password
   field and **Continue**, and plans again, replacing step 12's error
-  that named the CLI command.
+  that named the CLI command. A refused password keeps the field up
+  for another try.
+- **Calls made during implementation** (approved by the maintainer the
+  same day): the update page's main button names the action (**Update**,
+  **Repair**, **Reinstall**, **Switch**, or **Finish**); finishing the
+  update page checks that game with GOG again, so its Update row shows
+  **Up to date** instead of disappearing; the app's Pin row names only
+  the build, without the CLI's `until --latest`; and the Version row
+  reads the installed build from the game's record when no check or
+  listing has run, so it shows without a login.
 
 ## Implementation sequence
 
