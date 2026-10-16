@@ -33,7 +33,9 @@ wineo stop hades
   owning them. Owned games can be installed through Steam from wineo.
 - **GOG games.** Log in to GOG and install the [GOG games](docs/gog.md)
   you own, native or Windows, in your language, or move the ones Heroic
-  installed into wineo, then keep them up to date, DLC included.
+  installed into wineo, then keep them up to date, DLC included. Windows
+  games install from GOG Galaxy's builds, so updates download only what
+  changed and damaged files can be repaired.
 - **Clones, snapshots, and portable folders.** Copy an environment, snapshot
   and restore its prefix on a filesystem with reflinks (Btrfs, XFS), or keep
   everything in a folder you can move to another drive.

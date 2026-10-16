@@ -345,11 +345,18 @@ an hour unless `refresh` is set.
   It fails as a whole only for a portable root or an unreadable folder
   directory.
 - A `Status` has the environment, game id, title, folder, platform, track,
-  language, `installed` and `available` (versions, or builds on the Galaxy
-  track), `state` (`UpToDate`, `Available`, `OnGog`, `CantCompare`, whose
-  `as_str()` is the JSON `update` value), `applicable` (true for a native or
-  Windows installer game with an update), `reason`, `unfinished` (a journal is
-  present, so the game needs finishing before it launches), `warnings`,
+  language, `installed` and `available` (versions, or build ids on the
+  Galaxy track, where the latest is the first generation 2 build on the
+  default branch), `installed_name` and `available_name` (GOG's names for
+  those builds, when it lists them), `state` (`UpToDate`, `Available`,
+  `OnGog`, `CantCompare`, whose `as_str()` is the JSON `update` value),
+  `applicable` (true for any update this wineo can apply, on either track),
+  `reason` (`Reason::Galaxy { name }` for a Galaxy game GOG has no
+  generation 2 build of, else `CantCompare(why)`; `as_str()` is the JSON
+  word and `note()` the sentence), `unfinished` (a journal is present, so
+  the game needs finishing before it launches), `galaxy_install` (that
+  journal is a Galaxy game's first install, which `galaxy::plan` finishes,
+  not an update), `warnings`,
   and `dlc` (`DlcStatus` per DLC, with `Unknown` for a migrated DLC whose
   version Heroic never recorded and `NotInstalled` for one you own that GOG
   offers but isn't installed). Checks ask `Client::owned_ids` which DLC you
@@ -371,14 +378,25 @@ an hour unless `refresh` is set.
   `FolderError::SeveralFolders`. `update::named_paths` gives the paths an
   environment's targets name, which a frontend can pass to
   `folder::folder_holding` to see, without locks, whether another game's
-  unfinished update blocks it.
+  unfinished update blocks it. `update::journal_of(paths, name)` reads an
+  environment's folder journal alone, without GOG, so a frontend can say
+  how to finish an operation that failed.
+- A Galaxy game whose state has DLC to ask about fetches the latest build's
+  manifest and runs the same selection an update does, so DLC the build
+  lacks never shows as an update; a failure there is a warning.
 
-Updating a native or Windows installer game, reinstalling it, or finishing
-an interrupted update or install goes through `gog::update::plan` and
-`apply`:
+Frontends plan updates through `gog::update::galaxy::plan_update` (below),
+which sends each game to its track. Updating a native or Windows installer
+game, reinstalling it, or finishing its interrupted update or install goes
+through `gog::update::plan` and `apply`:
 
-- `plan(paths, session, name, Options { reinstall, refresh }, &token) ->
-  Plan` reads only. It returns `UpToDate` or `Update(Pending)`, which says
+- `plan(paths, session, name, Options, &token) -> Plan` reads only.
+  `Options` has `reinstall`, `repair` (Galaxy only), `track` (the track a
+  reinstall moves to; only with `reinstall`), `refresh`, `read_only`, and
+  `wizard`; `Options::check` refuses a repair with a reinstall or track,
+  and a track without a reinstall, as `UpdateError::Options`. A reinstall
+  with `track: Some(Track::Installer)` moves a Galaxy game onto the
+  offline installers here. It returns `UpToDate` or `Update(Pending)`, which says
   what will happen (`kind`, `is_recovery`, `is_offline`, `claims` for an
   ownerless folder), each product's installed and new version
   (`products()`), the download size, and an unpacked estimate (labeled as
@@ -392,18 +410,22 @@ an interrupted update or install goes through `gog::update::plan` and
   meanwhile, then takes the owner's operation lock, the in-use lock, and
   the state lock, rechecks the plan, writes the journal, stages, publishes,
   syncs, and commits. `Progress` reports download, verify, stage, and
-  publish steps. `Updated` lists what was saved aside (your files at new
-  paths, as `.wineo-saved`), kept (old files you changed), and overwritten
-  (shipped files you changed, and on a migrated game's first rebuild, any
-  file that differed from the new one).
+  publish steps. `Updated` has the journal's `kind` and lists what was
+  saved aside (your files at new paths, as `.wineo-saved`), kept (old
+  files you changed), and overwritten (shipped files you changed, and on a
+  migrated game's first rebuild, any file that differed from the new one).
+  `needs_restart` names the redistributables a Galaxy update set up that
+  asked for a restart.
 - Windows installer games run the full installer over the game, then each
   changed DLC's, holding the environment and prefix reserved from the
   journal to the commit, syncing before it, and never deleting files after
   a failure (`gog::update::windows`). Exit codes are classified as
   `SetupExit`; a base installer that never started gives
   `SetupError::NotStarted { wizard }`, and `Options.wizard` replans to run
-  its own setup window once. Galaxy games refuse (`Galaxy`, plan 0052), as
-  do `repair` journals (`LaterRelease`). `Running` means the environment is running,
+  its own setup window once. Called directly, `plan` refuses a Galaxy game
+  that isn't moving off Galaxy (`Galaxy`) and a `repair` journal
+  (`LaterRelease`), both of which `galaxy::plan_update` handles, and a
+  repair of an installer game (`NotGalaxy`). `Running` means the environment is running,
   `Changed` that the folder changed since planning, and
   `Canceled { journal }` says whether a journal was left for recovery.
 - Downloaded packages live in `Paths::gog_download_cache()` and are removed
@@ -436,6 +458,73 @@ environment with `gog_id`, native or Windows.
   Frontends run `gog::extras::import` and desktop entries afterwards.
 - `folder::forget` also drops an `install` journal whose owner never got a
   config.
+
+### Galaxy builds
+
+`gog::update::galaxy` installs, updates, repairs, and moves Windows games
+on the Galaxy track, file by file from GOG's content system. Everything
+here works only in the host root and needs a session.
+
+- `track_for(paths, &mut session, &request, track) -> Track` chooses an
+  install's track without planning: an interrupted install's own track,
+  else `track`, else Galaxy for a Windows install when GOG has a
+  generation 2 build on the default branch (a 404 from the build list
+  means it has none), else the offline installers. Only that last choice
+  asks GOG, so a frontend can choose first and offer both tracks even when
+  planning on one fails.
+- `plan(paths, &mut session, &request, track, &token) -> Planned` plans an
+  install on the track `track_for` chooses: `Planned::Installer` holds
+  `install::Plan` (above), `Planned::Galaxy` holds `galaxy::install::Plan`.
+- `plan_update(paths, session, name, options, &token) -> PlannedUpdate`
+  plans `name`'s update on the track its game follows, or its journal
+  targets: `PlannedUpdate::Installer` holds an `apply` plan, and
+  `PlannedUpdate::Galaxy` holds `galaxy::update::Planned` (`UpToDate {
+  environment, build, warnings }` or `Update(Plan)`). A Galaxy game, a
+  reinstall with `track: Some(Galaxy)`, and a repair go to Galaxy and need
+  a session; a repair of an installer game is `UpdateError::NotGalaxy`,
+  and a repair or move of a native game `GalaxyError::NotWindows`. A
+  Galaxy install journal isn't an update: `galaxy::update::plan` refuses
+  it, and installing again (`plan`) finishes it.
+- `galaxy::install::Plan` says what an install will do: `title`, `folder`,
+  `build`, `version_name`, `language`, `products` (`PlannedProduct` with
+  its status), `support_files`, `redistributables`, `setup_steps(paths)`
+  (the names of the setup steps, in order), `installed_size` (exact),
+  `creation`, `resumes`, `retarget`, and `warnings`.
+- `galaxy::update::Plan` says what an update, reinstall, repair, or move
+  will do: `kind` (the `JournalKind`), `is_recovery`, `claims`,
+  `installed_build` and `installed_version`, `build` and `version_name`,
+  `moves_from` (`Some(Track::Installer)` on a move onto Galaxy),
+  `products`, `support_files`, `checked` (files and bytes a repair or
+  reinstall hashes), `hashes_all`, `setup_steps(paths)`, `download_size`
+  (an upper bound when files that match are kept), `start` (what the
+  update compares against: `Stored`, `Fetched`, or `Target`), `notes`
+  (`Note::NothingDeleted`, `Note::SetupSpaceUncounted`), `retarget`, and
+  `warnings`. A `Retarget { from, to }` is set when an interrupted
+  operation's build is gone from GOG and it finishes on the latest
+  instead; its warning says so, and a frontend asks before applying.
+- `galaxy::install::apply` and `galaxy::update::apply` (and their
+  `apply_with_events` forms, which pass on setup's `windows::Event`s)
+  report `galaxy::Progress`: `Verify { files, files_total, bytes,
+  bytes_total }` while hashing, `Download { done, total }`, and `Setup {
+  done, total, step }`, where `step` names the step starting. A failure or
+  cancel after the journal is written leaves it; `UpdateError::Canceled {
+  journal }` says whether one was left.
+- `GalaxyError` names the refusals a frontend may tell apart: `NotWindows`,
+  `NoBuild` (no generation 2 build), `NoLanguage`, `InstallerPending` (the
+  environment's unfinished install is from offline installers),
+  `ProductGone { installed }`, `Setup` (a setup step failed; the journal
+  stays and the next run carries on from that step), `BuildGone` and
+  `BuildUnknown` (a repair can't find its build), and `Layout`.
+- `gog::update::galaxy::present` holds the wording both frontends use:
+  `Plan::review_rows` (rows as a `Label` and a value, each frontend wording
+  the labels), `note_lines`, `changes`, `saved_heading`, the install plan's
+  `review_rows`, `restart_lines`, and a `Reporter` that turns `Progress`
+  into status lines at most once per interval. `Plan::action()` and
+  `finished()` name what's being done, as `Pending`'s do.
+- Each game's record of its installed manifest and setup steps lives
+  beside its folder state as `<key>.galaxy.json`; support files under
+  `Paths::gog_support_dir(key)`, and redistributables in the shared store
+  at `Paths::gog_redist_dir()`. None of these is promised.
 
 `gog::names` names products for display. `product_names(folder)` reads the
 `name` of each `goggame-<id>.info` in the folder and its `game/` directory,
