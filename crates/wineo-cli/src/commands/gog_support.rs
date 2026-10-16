@@ -292,7 +292,7 @@ pub fn needs_password(error: &anyhow::Error) -> Option<NeedsPassword> {
 /// without echo when it comes from a terminal. Spaces around it are part
 /// of it.
 pub fn password_from_stdin() -> anyhow::Result<Secret> {
-    let Some(password) = prompt::secret("Password: ")?.filter(|password| !password.is_empty())
+    let Some(password) = prompt::password("Password: ")?.filter(|password| !password.is_empty())
     else {
         anyhow::bail!("No password was given on standard input.");
     };
@@ -321,7 +321,7 @@ pub fn ask_password(needed: &NeedsPassword, branch_named: bool) -> anyhow::Resul
     if !prompt::interactive() {
         anyhow::bail!("{}", without_terminal(needed, branch_named));
     }
-    let Some(password) = prompt::secret(&format!(
+    let Some(password) = prompt::password(&format!(
         "Branch {branch} of {title} is private. Password: "
     ))?
     .filter(|password| !password.is_empty()) else {

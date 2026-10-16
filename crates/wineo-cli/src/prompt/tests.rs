@@ -456,6 +456,43 @@ fn pty_slave() -> (rustix::fd::OwnedFd, std::fs::File) {
 }
 
 #[test]
+fn a_password_keeps_the_spaces_around_it_and_loses_only_the_line_ending() {
+    let any_fd = std::fs::File::open("/dev/null").unwrap();
+    for (typed, expected) in [
+        (&b" pass word \n"[..], Some(" pass word ")),
+        (b" pass word \r\n", Some(" pass word ")),
+        (b"  \n", Some("  ")),
+        (b"\n", Some("")),
+        (b"no newline", Some("no newline")),
+        (b"", None),
+    ] {
+        let mut out = Vec::new();
+        let read = read_secret_with(
+            any_fd.as_fd(),
+            false,
+            &mut io::Cursor::new(typed.to_vec()),
+            &mut out,
+            "Password: ",
+            &hooks(),
+            false,
+        )
+        .unwrap();
+        assert_eq!(read.as_deref(), expected, "{typed:?}");
+    }
+    // The login paste is still trimmed.
+    let mut input = io::Cursor::new(b"  pasted \n".to_vec());
+    let read = read_secret(
+        any_fd.as_fd(),
+        false,
+        &mut input,
+        &mut Vec::new(),
+        "",
+        &hooks(),
+    );
+    assert_eq!(read.unwrap().as_deref(), Some("pasted"));
+}
+
+#[test]
 fn a_secret_turns_echo_off_before_the_prompt_is_shown() {
     let _serial = serial();
     let (_master, slave) = pty_slave();

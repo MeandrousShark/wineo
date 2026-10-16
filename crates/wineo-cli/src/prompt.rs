@@ -107,17 +107,28 @@ pub fn interactive() -> bool {
 /// Piped input is read as is, without a prompt. None is the end of input.
 /// At a terminal where echo can't be turned off, nothing is read.
 pub fn secret(label: &str) -> anyhow::Result<Option<String>> {
+    read_stdin_secret(label, true)
+}
+
+/// Like `secret`, for a password: only the line ending is removed, so
+/// spaces around it are part of the password.
+pub fn password(label: &str) -> anyhow::Result<Option<String>> {
+    read_stdin_secret(label, false)
+}
+
+fn read_stdin_secret(label: &str, trim: bool) -> anyhow::Result<Option<String>> {
     let stdin = io::stdin();
     // Plain stdout, not the wrapper that exits on a closed pipe: that would
     // skip putting the terminal back. A closed pipe takes the usual exit
     // once echo is restored.
-    let result = read_secret(
+    let result = read_secret_with(
         stdin.as_fd(),
         stdin.is_terminal(),
         &mut stdin.lock(),
         &mut io::stdout(),
         label,
         &Hooks::real(),
+        trim,
     );
     if let Err(error) = &result
         && let Some(error) = error.downcast_ref::<io::Error>()
@@ -165,6 +176,7 @@ fn locked(leaving: &Leaving) -> std::sync::MutexGuard<'_, bool> {
         .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
+#[cfg(test)]
 fn read_secret(
     fd: BorrowedFd<'_>,
     terminal: bool,
@@ -172,6 +184,20 @@ fn read_secret(
     out: &mut dyn Write,
     label: &str,
     hooks: &Hooks,
+) -> anyhow::Result<Option<String>> {
+    read_secret_with(fd, terminal, input, out, label, hooks, true)
+}
+
+/// `trim` removes all surrounding whitespace; without it, only the line
+/// ending goes.
+fn read_secret_with(
+    fd: BorrowedFd<'_>,
+    terminal: bool,
+    input: &mut dyn BufRead,
+    out: &mut dyn Write,
+    label: &str,
+    hooks: &Hooks,
+    trim: bool,
 ) -> anyhow::Result<Option<String>> {
     let mut restore_on_exit = None;
     if terminal {
@@ -223,7 +249,14 @@ fn read_secret(
     let mut line = String::new();
     let read = input.read_line(&mut line);
     put_back(fd, restore_on_exit, out, hooks);
-    Ok((read? > 0).then(|| line.trim().to_owned()))
+    Ok((read? > 0).then(|| {
+        if trim {
+            line.trim().to_owned()
+        } else {
+            let line = line.strip_suffix('\n').unwrap_or(&line);
+            line.strip_suffix('\r').unwrap_or(line).to_owned()
+        }
+    }))
 }
 
 /// Turns echo back on and ends the signal watch.

@@ -469,3 +469,82 @@ fn an_unfinished_import_of_a_private_branch_asks_for_the_password_too() {
     assert_eq!(read(&f, "Papers.exe"), "MZ 1.3.0-beta");
     assert_eq!(saved(&f).as_deref(), Some(PASSWORD));
 }
+
+#[test]
+fn a_password_keeps_the_spaces_around_it_through_stdin_the_terminal_and_the_file() {
+    let (f, api) = private_world();
+    let spaced = "SECRET  edge spaces ";
+    api.content.set_branch_password("beta", spaced);
+    // Only the line ending goes, `\r\n` or not.
+    for ending in ["\n", "\r\n"] {
+        let out = with_stdin(
+            &f,
+            &api,
+            &[
+                "update",
+                NAME,
+                "--branch",
+                "beta",
+                "--password-stdin",
+                "--yes",
+            ],
+            &format!("{spaced}{ending}"),
+        );
+        assert_success(&out);
+        assert_eq!(saved(&f).as_deref(), Some(spaced));
+        fs::remove_file(keys_file(&f)).unwrap();
+    }
+    // The server holds the same password, so the saved one works as is.
+    follow_spaced(&f, &api, spaced);
+    assert_eq!(saved(&f).as_deref(), Some(spaced));
+    let out = update(&f, &api, &["--yes"]);
+    assert_success(&out);
+
+    // And at a terminal.
+    fs::remove_file(keys_file(&f)).unwrap();
+    let mut pty = in_terminal(&f, &api, &["update", NAME, "--yes"]);
+    pty.expect(PROMPT);
+    pty.send(spaced);
+    let (status, output) = pty.finish();
+    assert!(status.success(), "{output:?}");
+    assert_eq!(saved(&f).as_deref(), Some(spaced));
+
+    // Nothing but a line ending is no password.
+    fs::remove_file(keys_file(&f)).unwrap();
+    let out = with_stdin(
+        &f,
+        &api,
+        &[
+            "update",
+            NAME,
+            "--branch",
+            "beta",
+            "--password-stdin",
+            "--yes",
+        ],
+        "\n",
+    );
+    assert_eq!(out.status.code(), Some(1));
+    assert!(
+        stderr(&out).contains("No password was given on standard input."),
+        "{}",
+        stderr(&out)
+    );
+}
+
+fn follow_spaced(f: &Fixture, api: &GogApi, password: &str) {
+    let out = with_stdin(
+        f,
+        api,
+        &[
+            "update",
+            NAME,
+            "--branch",
+            "beta",
+            "--password-stdin",
+            "--yes",
+        ],
+        &format!("{password}\n"),
+    );
+    assert_success(&out);
+}
