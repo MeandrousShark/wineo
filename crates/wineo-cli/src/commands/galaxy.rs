@@ -2,14 +2,11 @@
 //! of their reviews, progress lines, and what a finished run says. The
 //! wording lives here, apart from the flow that uses it.
 
-use std::time::Duration;
-
-use wineo_core::cancel::Token;
 use wineo_core::gog::folder::Track;
+use wineo_core::gog::update::galaxy::FollowPlan;
 use wineo_core::gog::update::galaxy::present::{Label, Wording, saved_items};
 pub use wineo_core::gog::update::galaxy::present::{Reporter, restart_lines};
 use wineo_core::gog::update::galaxy::update::Plan;
-use wineo_core::gog::update::galaxy::{FollowPlan, Progress};
 use wineo_core::gog::update::{SavedAside, Updated};
 use wineo_core::paths::Paths;
 
@@ -120,7 +117,15 @@ pub fn saved_lines(plan: &Plan, saved: &[SavedAside]) -> Vec<String> {
 /// Ctrl+C, and `download:NAME` only for that environment. Release builds
 /// never look at it.
 #[cfg(debug_assertions)]
-pub fn pause_for_test(environment: &str, step: &Progress, token: &Token) {
+pub fn pause_for_test(
+    environment: &str,
+    step: &wineo_core::gog::update::galaxy::Progress,
+    token: &wineo_core::cancel::Token,
+) {
+    use std::time::Duration;
+
+    use wineo_core::gog::update::galaxy::Progress;
+
     let wanted = std::env::var("WINEO_TEST_UPDATE_PAUSE").unwrap_or_default();
     let (at, only) = wanted.split_once(':').unwrap_or((wanted.as_str(), ""));
     let here = at == "download"
