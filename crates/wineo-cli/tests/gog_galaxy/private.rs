@@ -396,15 +396,26 @@ fn a_game_whose_password_is_missing_cannot_be_compared_and_asks_when_updated() {
     );
     assert_eq!(read(&f, "Papers.exe"), "MZ 1.3.0-beta");
 
-    // Without a terminal, a plain update says how to give it.
+    // Without a terminal, a plain update names a command that works.
     let out = update(&f, &api, &["--yes"]);
     assert_eq!(out.status.code(), Some(1));
+    let command = format!("wineo update {NAME} --branch beta --password-stdin");
     assert!(
-        stderr(&out)
-            .contains("error: Branch beta is private. Give its password with --password-stdin."),
+        stderr(&out).contains(&format!(
+            "error: Branch beta is private. Give its password with: {command}"
+        )),
         "{}",
         stderr(&out)
     );
+    let args: Vec<&str> = command.split(' ').skip(1).collect();
+    let mut args = args;
+    args.push("--yes");
+    let out = with_stdin(&f, &api, &args, &format!("{PASSWORD}\n"));
+    assert_success(&out);
+    assert_eq!(read(&f, "Papers.exe"), "MZ 1.3.1-beta");
+    assert_eq!(saved(&f).as_deref(), Some(PASSWORD));
+    fs::remove_file(keys_file(&f)).unwrap();
+    api.content.set_branch_password("beta", PASSWORD);
 
     // At a terminal, it asks, updates, and saves what was accepted.
     let mut pty = in_terminal(&f, &api, &["update", NAME, "--yes"]);

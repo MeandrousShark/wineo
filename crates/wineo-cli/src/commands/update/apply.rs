@@ -297,7 +297,7 @@ fn one(paths: &Paths, args: &Args, name: &str) -> anyhow::Result<ExitCode> {
             // A followed private branch whose password isn't saved, or a
             // branch named that is one: ask once, then plan again.
             Err(error) if password.is_none() => match needs_password(&error) {
-                Some((title, branch)) => password = Some(ask_password(&title, &branch)?),
+                Some(needed) => password = Some(ask_password(&needed, args.branch.is_some())?),
                 None => return Err(error),
             },
             other => break other?,

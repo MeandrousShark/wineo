@@ -286,7 +286,14 @@ pub(super) fn one(paths: &Paths, args: &Args, id: &str) -> anyhow::Result<ExitCo
             None
         },
     };
-    let plan = match plan_asking(paths, &mut session, &mut request, track, unfinished)? {
+    let plan = match plan_asking(
+        paths,
+        &mut session,
+        &mut request,
+        track,
+        unfinished,
+        args.branch.is_some(),
+    )? {
         Ok(plan) => plan,
         Err(code) => return Ok(code),
     };
@@ -382,11 +389,12 @@ fn plan_asking(
     request: &mut Request,
     track: Option<Track>,
     unfinished: bool,
+    branch_named: bool,
 ) -> anyhow::Result<Result<Plan, ExitCode>> {
     loop {
         match plan_install(paths, session, request, track, unfinished) {
             Err(error) if request.password.is_none() => match needs_password(&error) {
-                Some((title, branch)) => request.password = Some(ask_password(&title, &branch)?),
+                Some(needed) => request.password = Some(ask_password(&needed, branch_named)?),
                 None => return Err(error),
             },
             other => return other,
