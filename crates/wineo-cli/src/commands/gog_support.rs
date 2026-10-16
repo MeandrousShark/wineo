@@ -9,7 +9,7 @@ use std::time::Duration;
 use serde_json::{Value, json};
 use wineo_core::gog;
 use wineo_core::gog::account::Session;
-use wineo_core::gog::folder::{self, FolderError, Journal, JournalKind, Track};
+use wineo_core::gog::folder::{self, FolderError, Journal};
 use wineo_core::gog::update::windows::SetupError;
 use wineo_core::gog::update::{
     self, DlcState, DlcStatus, GameError, Progress, Reason, Status, UpdateState,
@@ -38,10 +38,9 @@ pub fn journal_for(paths: &Paths, name: &str, gog_id: Option<u64>) -> Option<Jou
 /// again, since `wineo update` has no way to carry one on; anything else by
 /// updating.
 pub fn finish_command(journal: &Journal, name: &str) -> String {
-    if journal.kind == JournalKind::Install && journal.target.track == Track::Galaxy {
-        format!("wineo import gog --game {}", journal.target.gog_id)
-    } else {
-        format!("wineo update {name}")
+    match journal.galaxy_install() {
+        Some(gog_id) => format!("wineo import gog --game {gog_id}"),
+        None => format!("wineo update {name}"),
     }
 }
 

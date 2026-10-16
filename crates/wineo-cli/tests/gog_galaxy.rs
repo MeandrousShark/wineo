@@ -920,6 +920,43 @@ fn an_interrupted_galaxy_install_is_finished_by_installing_again() {
     assert!(state(&f).journal.is_none());
 }
 
+#[test]
+fn start_and_rm_name_the_install_command_for_an_interrupted_galaxy_install() {
+    let (f, api) = world();
+    let mut pty = paused(
+        &f,
+        &api,
+        &[
+            "import",
+            "gog",
+            "--game",
+            "1207658924",
+            "--runner",
+            "galaxy",
+            "--yes",
+        ],
+    );
+    pty.expect("Downloading: ");
+    interrupt(&pty);
+    let (status, output) = pty.finish();
+    assert_eq!(status.code(), Some(130), "{output}");
+    assert!(state(&f).journal.is_some());
+
+    let finish = "GOG install didn't finish. Finish it with wineo import gog --game 1207658924";
+    let out = f.run(&["start", NAME]);
+    assert_eq!(out.status.code(), Some(1));
+    let err = stderr(&out);
+    assert!(err.contains(finish), "{err}");
+    assert!(!err.contains("wineo update"), "{err}");
+
+    let out = f.run(&["rm", NAME]);
+    assert_eq!(out.status.code(), Some(1));
+    let err = stderr(&out);
+    assert!(err.contains(finish), "{err}");
+    assert!(!err.contains("wineo update"), "{err}");
+    assert!(err.contains("or remove it anyway with --force."), "{err}");
+}
+
 /// `wineo` with its run state in a folder whose name setup's batch files
 /// can't carry, so a Galaxy setup step fails without an exit code.
 fn with_odd_state(f: &Fixture, api: &GogApi, args: &[&str]) -> Output {

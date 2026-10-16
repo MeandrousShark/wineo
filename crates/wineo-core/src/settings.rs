@@ -127,9 +127,11 @@ pub fn apply(
         {
             let strict = gog::folder::may_track_game(paths, name);
             let held = gog::folder::lock_owned(paths, name, strict, &|| false)?;
-            if held.iter().any(|(_, state)| state.journal.is_some()) {
-                return Err(gog::folder::FolderError::UnsetMidUpdate {
-                    name: name.to_owned(),
+            if let Some(journal) = held.iter().find_map(|(_, state)| state.journal.as_ref()) {
+                let name = name.to_owned();
+                return Err(match journal.galaxy_install() {
+                    Some(gog_id) => gog::folder::FolderError::UnsetMidInstall { name, gog_id },
+                    None => gog::folder::FolderError::UnsetMidUpdate { name },
                 }
                 .into());
             }

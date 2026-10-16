@@ -89,6 +89,36 @@ fn an_owner_mid_update_is_refused() {
 }
 
 #[test]
+fn a_galaxy_install_names_the_install_command() {
+    let (root, paths) = setup();
+    let folder = game(&paths, root.path(), Some("rimworld"), true);
+    // With a config, the environment exists and so isn't an unfinished
+    // install that never got one.
+    let config = paths.environment_config("rimworld");
+    fs::create_dir_all(config.parent().unwrap()).unwrap();
+    fs::write(&config, "kind = 'native'\n").unwrap();
+    let mut state = FolderLock::shared(&paths, &folder, NEVER)
+        .unwrap()
+        .read()
+        .unwrap()
+        .unwrap();
+    let journal = state.journal.as_mut().unwrap();
+    journal.kind = JournalKind::Install;
+    journal.target.track = Track::Galaxy;
+    FolderLock::exclusive(&paths, &folder, NEVER)
+        .unwrap()
+        .write(&state)
+        .unwrap();
+    let message =
+        "rimworld's GOG install didn't finish. Finish it with wineo import gog --game 1094900565.";
+    let error = refusal(protect(&paths, "rimworld", Some("1094900565"), &[], NEVER));
+    assert_eq!(error.to_string(), message);
+    // A clone running from the folder is told which game to finish.
+    let error = refusal(protect(&paths, "copy", None, &[folder], NEVER));
+    assert_eq!(error.to_string(), message);
+}
+
+#[test]
 fn an_owner_holds_the_in_use_lock_whatever_it_launches() {
     let (root, paths) = setup();
     let folder = game(&paths, root.path(), Some("rimworld"), false);

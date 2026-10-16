@@ -216,6 +216,16 @@ pub struct Journal {
     pub attempted: Vec<Attempted>,
 }
 
+impl Journal {
+    /// The game's id when this is a Galaxy first install. `wineo update` has
+    /// no way to carry one on, so it is finished by installing the game
+    /// again.
+    pub fn galaxy_install(&self) -> Option<u64> {
+        (self.kind == JournalKind::Install && self.target.track == Track::Galaxy)
+            .then_some(self.target.gog_id)
+    }
+}
+
 /// An exact GOG file an operation uses.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -425,6 +435,15 @@ pub enum FolderError {
     RemoveMidUpdate { name: String },
     #[error("{name} is mid-update. Finish it with wineo update {name}.")]
     UnsetMidUpdate { name: String },
+    /// `RemoveMidUpdate` for a Galaxy first install, which `wineo update`
+    /// can't finish.
+    #[error(
+        "{name}'s GOG install didn't finish. Finish it with wineo import gog --game {gog_id}, or remove it anyway with --force."
+    )]
+    RemoveMidInstall { name: String, gog_id: u64 },
+    /// `UnsetMidUpdate` for a Galaxy first install.
+    #[error("{name}'s GOG install didn't finish. Finish it with wineo import gog --game {gog_id}.")]
+    UnsetMidInstall { name: String, gog_id: u64 },
     #[error("{folder} belongs to {owner}.")]
     OwnedByOther { folder: PathBuf, owner: String },
     #[error("{folder} overlaps {other}'s game folder {other_folder}.")]
@@ -456,6 +475,10 @@ pub enum FolderError {
     Updating { name: String },
     #[error("{name}'s game folder is mid-update. Finish it with wineo update {name}.")]
     MidUpdate { name: String },
+    /// `MidUpdate` for a Galaxy first install, which only installing again
+    /// finishes.
+    #[error("{name}'s GOG install didn't finish. Finish it with wineo import gog --game {gog_id}.")]
+    MidInstall { name: String, gog_id: u64 },
     #[error(
         "GOG game {gog_id}'s folder is mid-update. Migrate it again with wineo import gog --game {gog_id} and finish it."
     )]
@@ -1018,7 +1041,7 @@ pub fn check_fresh_install(paths: &Paths, folder: &Path, name: &str) -> Result<P
 
 /// Why a launch from a folder with a journal is refused: finish it with
 /// `wineo update`, or, for an install whose environment has no config yet
-/// or no owner, install again.
+/// or no owner, or a Galaxy first install, install again.
 pub fn unfinished(paths: &Paths, state: &FolderState) -> FolderError {
     let gog_id = state.gog_id().unwrap_or_default();
     let install = state
@@ -1032,8 +1055,14 @@ pub fn unfinished(paths: &Paths, state: &FolderState) -> FolderError {
                 gog_id,
             }
         }
-        Some(owner) => FolderError::MidUpdate {
-            name: owner.clone(),
+        Some(owner) => match state.journal.as_ref().and_then(Journal::galaxy_install) {
+            Some(gog_id) => FolderError::MidInstall {
+                name: owner.clone(),
+                gog_id,
+            },
+            None => FolderError::MidUpdate {
+                name: owner.clone(),
+            },
         },
         None if install => FolderError::OwnerlessInstall {
             gog_id,
