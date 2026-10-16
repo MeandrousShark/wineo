@@ -92,6 +92,24 @@ fn a_choice_that_leaves_the_files_alone_only_writes_the_follow() {
 }
 
 #[test]
+fn a_switch_to_a_build_whose_manifest_has_no_build_id_applies_as_the_listed_build() {
+    let fx = Fixture::on_branches();
+    fx.content.add_build(Fixture::game("50").without_build_id());
+    let Planned::Update(plan) = fx.plan_choosing(Choice::Build("50".to_owned())).unwrap() else {
+        panic!("expected an update");
+    };
+    assert_eq!(plan.installed_build(), Some("100"));
+    assert_eq!(plan.build(), "50");
+    assert_eq!(plan.to().pinned.as_deref(), Some("50"));
+    fx.apply_update(&plan).unwrap();
+
+    let record = fx.record().unwrap();
+    assert_eq!(record.installed.unwrap().manifest.build, "50");
+    assert_eq!(record.follow.pinned.as_deref(), Some("50"));
+    assert_eq!(record.pending, None);
+}
+
+#[test]
 fn a_change_planned_before_the_follow_changed_is_refused() {
     let fx = Fixture::on_branches();
     let Planned::Follow(change) = fx.plan_choosing(Choice::Build("100".to_owned())).unwrap() else {

@@ -16,7 +16,7 @@ use serde_json::Value;
 use crate::client::{self, Client};
 use crate::error::{Endpoint, Error, ErrorKind};
 use crate::json;
-use crate::product::id_text;
+use crate::product::{Build, id_text};
 
 /// Well above the largest depot manifest seen, 1.4 MB unpacked.
 pub(crate) const MAX_MANIFEST: u64 = 64 * 1024 * 1024;
@@ -220,13 +220,18 @@ pub struct DependencyExecutable {
 }
 
 impl Client {
-    /// A build's repository manifest, from the `link` in its build list.
-    pub fn repository(&self, link: &str) -> Result<Repository, Error> {
-        let url =
-            Url::parse(link).map_err(|_| Error::new(Endpoint::Repository, ErrorKind::Malformed))?;
+    /// A listed build's repository manifest, from the `link` in its build
+    /// list entry. A build without a link is Malformed; callers that want
+    /// their own error for it check first.
+    pub fn repository(&self, build: &Build) -> Result<Repository, Error> {
+        let malformed = || Error::new(Endpoint::Repository, ErrorKind::Malformed);
+        let url = build
+            .link
+            .as_deref()
+            .and_then(|link| Url::parse(link).ok())
+            .ok_or_else(malformed)?;
         let json = self.fetch_manifest(Endpoint::Repository, url)?;
-        parse_repository(&json)
-            .ok_or_else(|| Error::new(Endpoint::Repository, ErrorKind::Malformed))
+        parse_repository(&json, &build.build_id).ok_or_else(malformed)
     }
 
     /// A depot's file list, by the hash a repository manifest gives.
@@ -341,10 +346,17 @@ fn is_zlib(body: &[u8]) -> bool {
     }
 }
 
-pub(crate) fn parse_repository(json: &Value) -> Option<Repository> {
+/// `listed` is the build id of the build list entry the manifest came from.
+pub(crate) fn parse_repository(json: &Value, listed: &str) -> Option<Repository> {
     if json.get("version").and_then(json::id) != Some(2) {
         return None;
     }
+    // GOG's older generation 2 manifests have no `buildId`, so the listing
+    // is the only source. One that names another build is a defect.
+    let build_id = match json.get("buildId") {
+        None => listed.to_owned(),
+        Some(id) => id_text(id).filter(|id| id == listed)?,
+    };
     let depots = json
         .get("depots")?
         .as_array()?
@@ -377,7 +389,7 @@ pub(crate) fn parse_repository(json: &Value) -> Option<Repository> {
             .collect::<Option<_>>()?,
     };
     Some(Repository {
-        build_id: json.get("buildId").and_then(id_text)?,
+        build_id,
         base_product_id: json::id(json.get("baseProductId")?)?,
         install_directory: json::optional_text(json, "installDirectory")?,
         script_interpreter: flag(json, "scriptInterpreter")?,

@@ -556,10 +556,12 @@ pub fn plan(
     // A new install follows the default branch unless it names another.
     let picked = follow::pick(&builds, &request.builds, &Follow::default(), false, &who)?;
     let latest = picked.build;
-    let link = latest.link.clone().ok_or_else(no_build)?;
+    if latest.link.is_none() {
+        return Err(no_build().into());
+    }
     let repository = session
         .client()
-        .repository(&link)
+        .repository(latest)
         .with_context(|| format!("Couldn't get {title}'s build {}", latest.build_id))?;
     let creation = offline::creation(paths, request, Platform::Windows, exists)?
         .ok_or_else(|| anyhow!("{name} already has a config"))?;
@@ -886,12 +888,15 @@ fn resumed(
                 }
             };
             version_name = chosen.version_name.clone();
-            let link = chosen.link.clone().ok_or_else(|| GalaxyError::NoBuild {
-                title: title.clone(),
-            })?;
+            if chosen.link.is_none() {
+                return Err(GalaxyError::NoBuild {
+                    title: title.clone(),
+                }
+                .into());
+            }
             let repository = session
                 .client()
-                .repository(&link)
+                .repository(chosen)
                 .with_context(|| format!("Couldn't get {title}'s build {}", chosen.build_id))?;
             let mut chosen_products = Vec::new();
             for product in &mut target.products {

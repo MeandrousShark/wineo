@@ -169,6 +169,8 @@ pub struct FakeBuild {
     /// Defaults to the base product alone.
     pub products: Vec<FakeProduct>,
     pub depots: Vec<FakeDepot>,
+    /// Older manifests carry no `buildId`.
+    pub omit_build_id: bool,
 }
 
 impl FakeBuild {
@@ -185,7 +187,14 @@ impl FakeBuild {
             dependencies: Vec::new(),
             products: Vec::new(),
             depots: Vec::new(),
+            omit_build_id: false,
         }
+    }
+
+    /// Serves a manifest without `buildId`, as GOG's older builds do.
+    pub fn without_build_id(mut self) -> Self {
+        self.omit_build_id = true;
+        self
     }
 
     pub fn branch(mut self, branch: &str) -> Self {
@@ -370,6 +379,9 @@ impl ContentSystem {
             "tags": [],
             "version": 2,
         });
+        if build.omit_build_id {
+            repository.as_object_mut().unwrap().remove("buildId");
+        }
         if !build.dependencies.is_empty() {
             repository["dependencies"] = value!(build.dependencies);
         }
