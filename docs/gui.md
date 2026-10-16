@@ -486,10 +486,11 @@ can install either way, the language (the setting, or one you type; Enter
 checks it), a runner and arch for Windows, the version, and the DLC you
 own. From offline installers it also shows the language it actually
 installs in, the download size, and an estimate of the installed size; on
-Galaxy, the support files, the setup steps, and the download size, which
-is exact. When GOG can't say whether it has a Galaxy build, both tracks
-are offered and the error shows, so **Offline installer** still works. **Install** stays off until the review matches what you've
-typed. Then come download and install progress, with **Cancel** and
+Galaxy, the support files, the setup steps, and the build's exact size.
+When GOG can't say whether it has a Galaxy build, both tracks are offered
+and the error shows, so **Offline installer** still works. **Install**
+stays off until the review matches what you've typed. Then come download
+and install progress, with **Cancel** and
 **Force stop**, then the result. A Windows game whose info file names no
 program offers a list of the programs it installed, the game's own folder
 first. Back from the result returns to the library with the game

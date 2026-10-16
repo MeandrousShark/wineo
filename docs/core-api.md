@@ -351,8 +351,9 @@ an hour unless `refresh` is set.
   those builds, when it lists them), `state` (`UpToDate`, `Available`,
   `OnGog`, `CantCompare`, whose `as_str()` is the JSON `update` value),
   `applicable` (true for any update this wineo can apply, on either track),
-  `reason` (`Reason::Galaxy { name }` for a Galaxy game GOG has no
-  generation 2 build of, else `CantCompare(why)`; `as_str()` is the JSON
+  `reason` (`Reason::Galaxy { name }` for a Galaxy game GOG lists no
+  generation 2 default-branch build of, a 404 from its build list
+  included, else `CantCompare(why)`; `as_str()` is the JSON
   word and `note()` the sentence), `unfinished` (a journal is present, so
   the game needs finishing before it launches), `galaxy_install` (that
   journal is a Galaxy game's first install, which `galaxy::plan` finishes,

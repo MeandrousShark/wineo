@@ -116,8 +116,9 @@ installed, as with `wineo new`.
 
 wineo installs the latest build GOG lists for the game, with the DLC you
 own. Every file is downloaded in pieces, each checked against GOG's
-hashes, and put in place once whole, so the download size is exact. The
-space check runs before anything is written.
+hashes, and put in place once whole. The review's download size is the
+build's exact size; what crosses the network is compressed, so it's
+usually less. The space check runs before anything is written.
 
 Then setup runs in the new prefix, the steps the GOG Galaxy client would
 run: GOG's script interpreter or the game's own setup program, then the
@@ -236,8 +237,9 @@ the-witcher  1.5 (CS) GOG 0.2  1.5 (CS) GOG 0.2  up to date
   Heroic) ran.
 
 When wineo can't tell (another language, a version it doesn't know), it
-says `can't compare` rather than guess. A Galaxy game GOG has only older
-Galaxy builds of, which wineo can't install, shows `update on GOG` with a
+says `can't compare` rather than guess. A Galaxy game GOG lists no
+current (generation 2) build of on its default branch, which wineo can't
+install, shows `update on GOG` with a
 way out under its row: `GOG has no Galaxy build of this game that wineo
 can update. Move it to offline installers with: wineo update NAME
 --reinstall --track installer`.
@@ -249,8 +251,10 @@ platform is checked again. If GOG can't say which DLC you own, nothing new
 is listed and a warning says so.
 
 `wineo update NAME` updates one game. `--all` updates every game with an
-update in one go, after one question, and finishes any that were
-interrupted; it skips Windows games when there's no desktop session.
+update in one go, after one question, and finishes interrupted updates
+and installer-track installs; an interrupted Galaxy install is listed with
+the `wineo import gog --game ID` that finishes it. It skips Windows games
+when there's no desktop session.
 `--dry-run` shows the review without downloading.
 
 ### Galaxy updates
@@ -360,12 +364,14 @@ Repair papers-please
   download        only what's missing or damaged
 Setup's own writes in the prefix aren't counted in the space check.
 Repaired papers-please.
+  Papers, Please  1.4.11.124
 Saved these files aside, since they didn't match GOG's:
   baselib.dll -> baselib.dll.wineo-saved
 ```
 
-Every file of the installed build is hashed, support files included, so
-damage an update's size check can't see is found too. Missing and damaged
+Every file of the installed build is hashed, support files included. An
+update leaves files it doesn't change alone, so damage to them is only
+found here. Missing and damaged
 files are downloaded again, and a file that doesn't match is moved aside
 first, never overwritten. Then all of setup runs again, which also sets up
 a replaced prefix. A repair works from the file list wineo stored at the
@@ -373,9 +379,9 @@ game's last install or update. A game wineo has no list for, like one
 another tool installed, is checked against its build on GOG instead; when
 GOG no longer lists that build, the repair says to run `wineo update NAME`
 to move to the latest.
-Games on the installer track can't be repaired this way: `Only Galaxy
-games can be repaired. Move it with: wineo update NAME --reinstall --track
-galaxy`.
+Windows games on the installer track can't be repaired this way: `Only
+Galaxy games can be repaired. Move it with: wineo update NAME --reinstall
+--track galaxy`. For a native game, `--reinstall` is the repair.
 
 ### Moving between tracks
 

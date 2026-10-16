@@ -214,8 +214,8 @@ it again with `wineo import gog --game ID`. `import gog --list --json` has
 it too, `false` for games that aren't imported.
 
 In both, `update` is `available`, `none`, `galaxy`, or `cant_compare`.
-`galaxy` means a Galaxy game GOG has only older Galaxy builds of, which
-wineo can't install; `wineo update NAME --reinstall --track installer`
+`galaxy` means a Galaxy game GOG lists no generation 2 build of on its
+default branch, which wineo can't install; `wineo update NAME --reinstall --track installer`
 moves it to offline installers. `applicable` says whether this wineo can
 apply the update, Galaxy updates included, and `reason` says why not:
 `galaxy`, or a sentence when the versions can't be compared. A DLC's `state` is `none` (up to
