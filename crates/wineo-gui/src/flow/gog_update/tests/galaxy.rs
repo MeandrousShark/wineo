@@ -621,7 +621,7 @@ fn a_change_that_moves_no_files_reviews_and_switches() {
     assert_eq!(ready.button(), "Switch");
     let rows = ready_rows(&world.paths, &ready);
     assert!(
-        rows.contains(&("Pin".to_owned(), "build 100, until --latest".to_owned())),
+        rows.contains(&("Pin".to_owned(), "build 100".to_owned())),
         "{rows:?}"
     );
 

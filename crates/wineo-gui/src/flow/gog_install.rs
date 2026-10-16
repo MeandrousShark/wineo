@@ -22,7 +22,7 @@ use wineo_core::gog::api::Client;
 use wineo_core::gog::folder::{Platform, ProductStatus, Track};
 use wineo_core::gog::install_dir::install_folder;
 use wineo_core::gog::update::galaxy::present::{
-    Label as GalaxyLabel, Reporter as GalaxyReporter, restart_lines,
+    Label as GalaxyLabel, Reporter as GalaxyReporter, Wording, restart_lines,
 };
 use wineo_core::gog::update::galaxy::{
     self as core_galaxy, GalaxyError, install as galaxy_install,
@@ -1158,7 +1158,7 @@ impl Install {
             // Galaxy's sizes are exact, so there is no estimate.
             Some(Plan::Galaxy(plan)) => {
                 let mut dlc = false;
-                for (label, value) in plan.review_rows(&self.paths) {
+                for (label, value) in plan.review_rows(&self.paths, Wording::App) {
                     let label = match label {
                         // One DLC per row; the rest have no label, so they
                         // sit under the first.

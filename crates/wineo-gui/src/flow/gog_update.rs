@@ -14,7 +14,9 @@ use wineo_core::cancel::Token;
 use wineo_core::gog::account::{AccountError, Session};
 use wineo_core::gog::api::{Client, Secret};
 use wineo_core::gog::folder::{JournalKind, Track};
-use wineo_core::gog::update::galaxy::present::{Label, Reporter as GalaxyReporter, restart_lines};
+use wineo_core::gog::update::galaxy::present::{
+    Label, Reporter as GalaxyReporter, Wording, restart_lines,
+};
 use wineo_core::gog::update::galaxy::{self as core_galaxy, GalaxyError, PlannedUpdate};
 use wineo_core::gog::update::windows::{Event as WindowsEvent, SetupError};
 use wineo_core::gog::update::{
@@ -1045,7 +1047,7 @@ fn ready_rows(paths: &Paths, ready: &Ready) -> Vec<(String, String)> {
         Ready::Installer(pending) => review_rows(pending),
         Ready::Galaxy(plan) => galaxy_review_rows(paths, plan),
         Ready::Follow(plan) => plan
-            .review_rows(|path| path.display().to_string())
+            .review_rows(|path| path.display().to_string(), Wording::App)
             .into_iter()
             .map(|(label, value)| (galaxy_label(label), value))
             .collect(),
@@ -1057,7 +1059,7 @@ pub(crate) fn galaxy_review_rows(
     paths: &Paths,
     plan: &core_galaxy::update::Plan,
 ) -> Vec<(String, String)> {
-    plan.review_rows(paths, |path| path.display().to_string())
+    plan.review_rows(paths, |path| path.display().to_string(), Wording::App)
         .into_iter()
         .map(|(label, value)| (galaxy_label(label), value))
         .collect()
