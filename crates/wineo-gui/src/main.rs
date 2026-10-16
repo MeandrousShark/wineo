@@ -320,7 +320,10 @@ pub(crate) enum Message {
     CloneEnvironment(String),
     /// Updates a GOG game, or finishes its interrupted update.
     GogUpdate(String),
-    GogChecked(Result<Option<wineo_core::gog::update::Batch>, String>),
+    GogChecked(
+        HashMap<String, u64>,
+        Result<Option<wineo_core::gog::update::Batch>, String>,
+    ),
     /// One game checked again after an update changed it.
     GogRechecked(
         String,
@@ -480,7 +483,7 @@ impl App {
         })
         .discard();
         let key_presence = settings::key_presence_task(app.paths.clone(), app.steamgriddb_sequence);
-        let gog_check = gog_library::check_task(app.paths.clone());
+        let gog_check = gog_library::check_task(app.paths.clone(), app.gog_rechecks.clone());
         (
             app,
             Task::batch([
@@ -1294,8 +1297,8 @@ impl App {
                     iced::advanced::widget::operation::focusable::unfocus(),
                 )
             }
-            Message::GogChecked(result) => {
-                gog_library::checked(self, result);
+            Message::GogChecked(asked, result) => {
+                gog_library::checked_since(self, &asked, result);
                 Task::none()
             }
             Message::GogRechecked(name, generation, result) => {

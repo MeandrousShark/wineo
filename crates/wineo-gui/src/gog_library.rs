@@ -219,8 +219,13 @@ pub(crate) fn state_label(state: UpdateState) -> &'static str {
 
 /// Checks every GOG game for updates, once after start. Logged out, or in a
 /// portable session, there is nothing to check. Changes nothing a user
-/// didn't ask for beyond what `check_all` records itself.
-pub(crate) fn check_task(paths: Paths) -> iced::Task<crate::Message> {
+/// didn't ask for beyond what `check_all` records itself. `asked` is each
+/// game's re-check generation when it starts, so what lands after it can't
+/// replace newer state.
+pub(crate) fn check_task(
+    paths: Paths,
+    asked: std::collections::HashMap<String, u64>,
+) -> iced::Task<crate::Message> {
     if paths.portable_root().is_some() {
         return iced::Task::none();
     }
@@ -230,7 +235,7 @@ pub(crate) fn check_task(paths: Paths) -> iced::Task<crate::Message> {
             let client = wineo_core::gog::client_from_env().map_err(|error| error.to_string())?;
             check_with(&paths, &keyring, client)
         },
-        crate::Message::GogChecked,
+        move |result| crate::Message::GogChecked(asked, result),
     )
 }
 
@@ -318,10 +323,26 @@ pub(crate) fn rechecked(
 
 /// Lands the background check: statuses mark cards, and problems are only
 /// logged, since nobody asked for the check.
+#[cfg(test)]
 pub(crate) fn checked(
     app: &mut crate::App,
     result: Result<Option<wineo_core::gog::update::Batch>, String>,
 ) {
+    let asked = app.gog_rechecks.clone();
+    checked_since(app, &asked, result);
+}
+
+/// `checked`, for a check that started when the games' re-check
+/// generations were `asked`. A game whose generation moved on since keeps
+/// what it has, since that is newer.
+pub(crate) fn checked_since(
+    app: &mut crate::App,
+    asked: &std::collections::HashMap<String, u64>,
+    result: Result<Option<wineo_core::gog::update::Batch>, String>,
+) {
+    let current = |rechecks: &std::collections::HashMap<String, u64>, name: &str| {
+        rechecks.get(name) == asked.get(name)
+    };
     match result {
         Ok(Some(batch)) => {
             for error in &batch.errors {
@@ -331,11 +352,18 @@ pub(crate) fn checked(
                     error.message
                 );
             }
-            app.gog_updates = batch
-                .statuses
-                .into_iter()
-                .map(|status| (status.environment.clone(), status))
-                .collect();
+            let rechecks = &app.gog_rechecks;
+            let mut statuses: std::collections::HashMap<String, Status> =
+                std::mem::take(&mut app.gog_updates)
+                    .into_iter()
+                    .filter(|(name, _)| !current(rechecks, name))
+                    .collect();
+            for status in batch.statuses {
+                if current(rechecks, &status.environment) {
+                    statuses.insert(status.environment.clone(), status);
+                }
+            }
+            app.gog_updates = statuses;
         }
         Ok(None) => {}
         Err(error) => eprintln!("wineo-gui: couldn't check for GOG updates: {error}"),
@@ -498,6 +526,43 @@ mod tests {
             .note(),
             "GOG has no Galaxy build of this game that wineo can update. Move it to offline installers with: wineo update disco --reinstall --track installer"
         );
+    }
+
+    #[test]
+    fn a_startup_check_landing_after_a_newer_change_keeps_it() {
+        let mut app = app();
+        // The startup check starts, then papers changes and is checked again
+        // before it answers.
+        let asked = app.gog_rechecks.clone();
+        let generation = supersede(&mut app, "papers");
+        let newer = pinned_status("papers");
+        rechecked(
+            &mut app,
+            "papers".to_owned(),
+            generation,
+            Ok(Some(Box::new(newer.clone()))),
+        );
+        let batch = wineo_core::gog::update::Batch {
+            statuses: vec![
+                status("papers", UpdateState::Available, true),
+                status("rimworld", UpdateState::Available, true),
+            ],
+            errors: Vec::new(),
+        };
+        checked_since(&mut app, &asked, Ok(Some(batch)));
+        assert_eq!(app.gog_updates["papers"], newer);
+        assert_eq!(app.gog_updates["rimworld"].state, UpdateState::Available);
+
+        // A check that started after the change counts for it.
+        let asked = app.gog_rechecks.clone();
+        let batch = wineo_core::gog::update::Batch {
+            statuses: vec![status("papers", UpdateState::UpToDate, true)],
+            errors: Vec::new(),
+        };
+        checked_since(&mut app, &asked, Ok(Some(batch)));
+        assert_eq!(app.gog_updates["papers"].state, UpdateState::UpToDate);
+        // As before, a game the check no longer reports is dropped.
+        assert!(!app.gog_updates.contains_key("rimworld"));
     }
 
     fn pinned_status(name: &str) -> Status {
