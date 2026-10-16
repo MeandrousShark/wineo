@@ -5,7 +5,7 @@
 use std::io::Write;
 use std::process::Stdio;
 
-use super::branches::{beta, installed_build, rows, words};
+use super::branches::{beta, installed_build, record, rows, words};
 use super::*;
 
 /// "SECRET" is what the fake GOG's output check looks for, so a password
@@ -553,4 +553,82 @@ fn follow_spaced(f: &Fixture, api: &GogApi, password: &str) {
         &format!("{password}\n"),
     );
     assert_success(&out);
+}
+
+/// Drops what the sidecar saved of the operation's target, as a crash or an
+/// old copy can leave it.
+fn lose_pending(f: &Fixture) {
+    let path =
+        wineo_core::gog::folder::sidecar_file(&f.paths(), &fs::canonicalize(folder(f)).unwrap());
+    let mut saved: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    assert!(saved.as_object_mut().unwrap().remove("pending").is_some());
+    fs::write(&path, saved.to_string()).unwrap();
+}
+
+/// The words of a command an error suggests, after `wineo`.
+fn suggested(error: &str, prefix: &str) -> Vec<String> {
+    let line = error
+        .lines()
+        .find(|line| line.contains(prefix))
+        .unwrap_or_else(|| panic!("no suggestion in {error}"));
+    let command = line.split_once(prefix).unwrap().1.trim();
+    command.split(' ').map(str::to_owned).collect()
+}
+
+#[test]
+fn the_suggested_command_finishes_an_interrupted_update_whose_password_and_target_are_gone() {
+    let (f, api) = private_world();
+    follow_beta(&f, &api);
+    newer(&api);
+    beta(&api, "500", "1.3.1-beta");
+    api.content.set_branch_password("beta", PASSWORD);
+    let mut pty = paused(&f, &api, &["update", NAME, "--yes"]);
+    pty.expect("Downloading: ");
+    interrupt(&pty);
+    let (status, output) = pty.finish();
+    assert_eq!(status.code(), Some(130), "{output}");
+    assert!(state(&f).journal.is_some());
+    lose_pending(&f);
+    fs::remove_file(keys_file(&f)).unwrap();
+
+    // Without a terminal, it names a command.
+    let out = update(&f, &api, &["--yes"]);
+    assert_eq!(out.status.code(), Some(1), "{}", stderr(&out));
+    let args = suggested(&stderr(&out), "with: wineo ");
+    assert_eq!(
+        args,
+        ["update", NAME, "--branch", "beta", "--password-stdin"]
+    );
+
+    // Another branch, or any other change, still waits for the update.
+    for other in [
+        &["--branch", "gamma", "--password-stdin"][..],
+        &["--default-branch"],
+        &["--build", "100"],
+        &["--latest"],
+    ] {
+        let mut args = vec!["update", NAME];
+        args.extend(other);
+        args.push("--yes");
+        let out = with_stdin(&f, &api, &args, &format!("{PASSWORD}\n"));
+        assert_eq!(out.status.code(), Some(1), "{other:?}: {}", stderr(&out));
+        assert!(
+            stderr(&out).contains(
+                "has an unfinished GOG operation, so it can't change its branch or build yet."
+            ),
+            "{other:?}: {}",
+            stderr(&out)
+        );
+    }
+    assert_eq!(saved(&f), None);
+
+    // The suggested command, as given, finishes it and keeps the password.
+    let mut args = args.iter().map(String::as_str).collect::<Vec<_>>();
+    args.push("--yes");
+    let out = with_stdin(&f, &api, &args, &format!("{PASSWORD}\n"));
+    assert_success(&out);
+    assert_eq!(read(&f, "Papers.exe"), "MZ 1.3.1-beta");
+    assert!(state(&f).journal.is_none());
+    assert_eq!(saved(&f).as_deref(), Some(PASSWORD));
+    assert_eq!(record(&f).follow.branch.as_deref(), Some("beta"));
 }

@@ -38,7 +38,7 @@ use rustix::fs::AtFlags;
 
 use super::build;
 use super::fetch::{self, Job, Reuse};
-use super::follow::{self, Who};
+use super::follow::{self, Choice, Who};
 use super::install::{
     self, GalaxyError, Kind, Links, NAME_BATCH, Placer, PlannedProduct, Progress, Retarget,
     StoreNeed, Waiting, flush, merged, name_entry, place, recorded, sizes,
@@ -369,7 +369,7 @@ pub fn plan(
     paths: &Paths,
     session: &mut Session,
     name: &str,
-    options: Options,
+    mut options: Options,
     _token: &Token,
 ) -> Result<Planned> {
     host_only(paths)?;
@@ -383,11 +383,25 @@ pub fn plan(
             bail!("{name}'s unfinished GOG operation isn't a Galaxy one");
         }
         // The operation carries the branch it began with, so a new one waits.
+        // Naming that same branch changes nothing, and is how its password
+        // is given again when it was lost.
         if !options.choice.is_keep() {
-            return Err(GalaxyError::Unfinished {
-                name: name.to_owned(),
+            let followed = install::files_record(paths, &state.folder).map(|record| {
+                record::pending(&state, &record)
+                    .and_then(|pending| pending.follow.clone())
+                    .unwrap_or_else(|| record.follow.clone())
+            });
+            match (&options.choice, followed.and_then(|follow| follow.branch)) {
+                (Choice::Branch(named), Some(followed)) if *named == followed => {
+                    options.choice = Choice::Keep;
+                }
+                _ => {
+                    return Err(GalaxyError::Unfinished {
+                        name: name.to_owned(),
+                    }
+                    .into());
+                }
             }
-            .into());
         }
         let gog_id = journal.target.gog_id;
         return match journal.kind {
