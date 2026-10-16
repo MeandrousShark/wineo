@@ -210,7 +210,7 @@ fn serve(content: ContentSystem) -> (Arc<ContentSystem>, FakeGog, Vec<DepotFile>
     let server =
         FakeGog::start(move |request| served.answer(request).unwrap_or_else(|| reply(404, "{}")));
     let client = server.client();
-    let builds = client.windows_builds(7, None).unwrap();
+    let builds = client.windows_builds(7, None, None).unwrap();
     let repository = client
         .repository(builds.items[0].link.as_deref().unwrap())
         .unwrap();

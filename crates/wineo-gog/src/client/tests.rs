@@ -676,7 +676,7 @@ fn the_windows_build_list() {
     });
     let builds = server
         .client()
-        .windows_builds(1771589310, Some(ACCESS))
+        .windows_builds(1771589310, Some(ACCESS), None)
         .unwrap();
     assert!(builds.has_private_branches);
     assert_eq!(builds.items.len(), 2);
@@ -696,12 +696,80 @@ fn the_windows_build_list() {
     let request = &server.requests()[0];
     assert_eq!(request.path(), "/products/1771589310/os/windows/builds");
     assert_eq!(request.query("generation").as_deref(), Some("2"));
+    assert_eq!(request.query("password"), None);
+}
+
+const BRANCH_PASSWORD: &str = "pw-for-a-branch&x=1";
+
+#[test]
+fn a_branch_password_goes_in_the_query_only() {
+    let server = FakeGog::start(|_| reply(200, r#"{"items":[],"has_private_branches":true}"#));
+    let password = Secret::new(BRANCH_PASSWORD);
+    server
+        .client()
+        .windows_builds(5, Some(ACCESS), Some(&password))
+        .unwrap();
+    let request = &server.requests()[0];
+    assert_eq!(request.query("generation").as_deref(), Some("2"));
+    assert_eq!(request.query("password").as_deref(), Some(BRANCH_PASSWORD));
+    assert!(!format!("{password:?}").contains(BRANCH_PASSWORD));
+}
+
+#[test]
+fn no_build_list_error_shows_the_password_or_the_query() {
+    let password = Secret::new(BRANCH_PASSWORD);
+    let echoing = |status| {
+        FakeGog::start(move |request| {
+            let echo = request.query("password").unwrap_or_default();
+            Reply::Send(raw(
+                status,
+                &format!(
+                    r#"{{"error":"refused","echo":"{echo} {}"}}"#,
+                    request.target
+                ),
+            ))
+        })
+    };
+    let mut errors = Vec::new();
+    for status in [400, 401, 403, 404, 429, 500] {
+        errors.push(
+            echoing(status)
+                .client()
+                .windows_builds(5, Some(ACCESS), Some(&password))
+                .unwrap_err(),
+        );
+    }
+    // A body that isn't a build list at all, and a request that never
+    // got an answer.
+    let server = FakeGog::start(|request| {
+        let echo = request.query("password").unwrap_or_default();
+        reply(200, &format!(r#"{{"items":"{echo}"}}"#))
+    });
+    errors.push(
+        server
+            .client()
+            .windows_builds(5, Some(ACCESS), Some(&password))
+            .unwrap_err(),
+    );
+    let refused = Client::with_base("wineo-test/1", &refused()).unwrap();
+    errors.push(
+        refused
+            .windows_builds(5, Some(ACCESS), Some(&password))
+            .unwrap_err(),
+    );
+    for error in &errors {
+        assert_clean(error);
+        let shown = format!("{error} {error:?} {error:#?} {}", error.kind());
+        for secret in [BRANCH_PASSWORD, "pw-for-a-branch", "password="] {
+            assert!(!shown.contains(secret), "{secret} in {shown}");
+        }
+    }
 }
 
 #[test]
 fn a_missing_build_list_is_a_404() {
     let server = FakeGog::start(|_| reply(404, "{}"));
-    let error = server.client().windows_builds(1, None).unwrap_err();
+    let error = server.client().windows_builds(1, None, None).unwrap_err();
     assert_eq!(
         (error.endpoint(), error.kind(), error.class()),
         (Endpoint::Builds, ErrorKind::Status(404), Class::Other)
@@ -728,7 +796,7 @@ fn no_error_from_any_endpoint_shows_a_secret() {
             client
                 .resolve_link(ACCESS, &format!("{}/products/1/downlink", server.base))
                 .unwrap_err(),
-            client.windows_builds(1, Some(ACCESS)).unwrap_err(),
+            client.windows_builds(1, Some(ACCESS), None).unwrap_err(),
         ];
         for error in &errors {
             assert_clean(error);

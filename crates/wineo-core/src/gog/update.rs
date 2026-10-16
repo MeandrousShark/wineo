@@ -73,6 +73,11 @@ pub enum Reason {
     },
     /// Why the game can't be compared, as a sentence.
     CantCompare(String),
+    /// The game follows a private branch and its password isn't saved or GOG
+    /// no longer answers to it, as a sentence that says what to do. A front
+    /// end can tell this one apart, since entering the password takes a
+    /// command of its own.
+    Password(String),
 }
 
 impl Reason {
@@ -81,7 +86,7 @@ impl Reason {
         match self {
             Self::Galaxy { .. } => "galaxy",
             Self::Pinned { .. } => "pinned",
-            Self::CantCompare(why) => why,
+            Self::CantCompare(why) | Self::Password(why) => why,
         }
     }
 }
@@ -552,6 +557,8 @@ struct Compared {
     installed: Option<String>,
     available: Option<String>,
     why: Option<String>,
+    /// `why` is a private branch's missing password.
+    password: bool,
     dlc: Vec<DlcStatus>,
     /// What an installer-tracked game's update rebuilds: every product, with
     /// failed and unavailable DLC GOG offers now turned installed, and newly
@@ -685,6 +692,7 @@ pub(super) fn status_with(
             installed: None,
             available: None,
             why: Some("The install hasn't finished.".to_owned()),
+            password: false,
             dlc: Vec::new(),
             products: None,
             notes: Vec::new(),
@@ -715,6 +723,7 @@ pub(super) fn status_with(
                 names,
                 &details.product,
                 owned,
+                how.read_only,
             )?,
             (Platform::Linux, Track::Galaxy) => cant(
                 &installed,
@@ -729,7 +738,13 @@ pub(super) fn status_with(
     let applicable =
         compared.state == UpdateState::Available && (pinned.is_none() || compared.dlc_update);
     let reason = match compared.state {
-        UpdateState::CantCompare => compared.why.map(Reason::CantCompare),
+        UpdateState::CantCompare => compared.why.map(|why| {
+            if compared.password {
+                Reason::Password(why)
+            } else {
+                Reason::CantCompare(why)
+            }
+        }),
         UpdateState::OnGog => Some(Reason::Galaxy {
             name: name.to_owned(),
             branch: compared.follow.branch.clone(),
@@ -781,6 +796,7 @@ fn cant(installed: &Installed, names: &HashMap<u64, String>, why: String) -> Com
         installed: base(installed).and_then(|base| base.version.clone().or(base.build.clone())),
         available: None,
         why: Some(why),
+        password: false,
         dlc: dlc(installed, names).map(|(dlc, _)| dlc).collect(),
         products: None,
         notes: Vec::new(),
@@ -1074,6 +1090,7 @@ fn by_installer(
         installed: base_installed,
         available: base_available,
         why: tally.why,
+        password: false,
         dlc: listing,
         products: Some(products),
         notes,
@@ -1199,22 +1216,61 @@ fn by_build(
     names: &HashMap<u64, String>,
     details: &wineo_gog::Product,
     owned: Option<&HashSet<u64>>,
+    read_only: bool,
 ) -> Result<Compared> {
     let label = title_or(&details.title, || format!("GOG game {}", installed.gog_id));
     let id = installed.gog_id;
     // A game GOG has no content system for answers 404, which leaves it to
     // its installers, as installing picks them.
-    let builds = match session.call(|client, token| client.windows_builds(id, Some(token))) {
-        Ok(builds) => builds,
+    let follow = galaxy::follow_of(paths, folder);
+    // The password saved for the branch followed is sent with the request.
+    let fetched = match galaxy::private::fetch_call(session, id, follow.branch.as_deref(), None) {
+        Ok(fetched) => fetched,
         Err(CallError::Request(error)) if error.kind() == wineo_gog::ErrorKind::Status(404) => {
-            wineo_gog::Builds {
-                items: Vec::new(),
-                has_private_branches: false,
-            }
+            galaxy::private::Fetched::empty()
         }
         Err(error) => return Err(error.into()),
     };
-    let follow = galaxy::follow_of(paths, folder);
+    if let Some(branch) = follow.branch.as_deref()
+        && fetched.needs_password(branch)
+    {
+        let mut compared = cant(
+            installed,
+            names,
+            format!(
+                "Enter its password again with: wineo update {name} --branch {}",
+                galaxy::private::shell_word(branch)
+            ),
+        );
+        compared.password = true;
+        compared.follow = follow;
+        return Ok(compared);
+    }
+    // A password GOG no longer answers to: the branch is gone from the list
+    // it was sent with. A check says so and drops the password, unless it is
+    // a dry run.
+    if let Some(branch) = follow.branch.as_deref()
+        && fetched.refused(branch)
+    {
+        let mut compared = cant(
+            installed,
+            names,
+            galaxy::GalaxyError::Refused {
+                title: label.clone(),
+                branch: branch.to_owned(),
+            }
+            .to_string(),
+        );
+        compared.password = true;
+        if !read_only && let Err(error) = fetched.forget_refused(session, id, branch) {
+            compared.warnings.push(format!(
+                "Couldn't remove the saved password for branch {branch}: {error}"
+            ));
+        }
+        compared.follow = follow;
+        return Ok(compared);
+    }
+    let builds = fetched.builds;
     let latest = galaxy::latest(&builds, follow.branch.as_deref());
     let current = base(installed).and_then(|base| base.build.clone());
     let version_name = |build: &str| {
@@ -1330,6 +1386,7 @@ fn by_build(
         installed: current,
         available: latest.map(|build| build.build_id.clone()),
         why: None,
+        password: false,
         dlc,
         products: None,
         notes: Vec::new(),

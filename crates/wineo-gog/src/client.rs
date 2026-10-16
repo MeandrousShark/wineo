@@ -6,7 +6,7 @@ use reqwest::Url;
 use serde_json::Value;
 
 use crate::art::{self, GameArt};
-use crate::auth::{self, AuthCode, CLIENT_ID, CLIENT_SECRET, REDIRECT_URI, Tokens, UserId};
+use crate::auth::{self, AuthCode, CLIENT_ID, CLIENT_SECRET, REDIRECT_URI, Secret, Tokens, UserId};
 use crate::error::{Endpoint, Error, ErrorKind};
 #[cfg(test)]
 use crate::owned::OwnedProduct;
@@ -339,14 +339,27 @@ impl Client {
         product::parse_link(&json)
     }
 
-    /// The Windows builds Galaxy offers for a product.
-    pub fn windows_builds(&self, id: u64, access_token: Option<&str>) -> Result<Builds, Error> {
+    /// The Windows builds Galaxy offers for a product. A private branch's
+    /// builds are only listed when `password` is its password; GOG lists
+    /// the public builds all the same for a wrong one, so a refused password
+    /// can't be told from a branch that isn't there. The password goes in
+    /// the query and nowhere else: an `Error` never carries the URL.
+    pub fn windows_builds(
+        &self,
+        id: u64,
+        access_token: Option<&str>,
+        password: Option<&Secret>,
+    ) -> Result<Builds, Error> {
         let mut url = join(
             &self.endpoints.content_system,
             &["products", &id.to_string(), "os", "windows", "builds"],
             Endpoint::Builds,
         )?;
         url.query_pairs_mut().append_pair("generation", "2");
+        if let Some(password) = password {
+            url.query_pairs_mut()
+                .append_pair("password", password.expose());
+        }
         let json = self.get_json(Endpoint::Builds, url, access_token)?;
         product::parse_builds(&json)
     }

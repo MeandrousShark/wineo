@@ -9,7 +9,9 @@ use std::time::Duration;
 use serde_json::{Value, json};
 use wineo_core::gog;
 use wineo_core::gog::account::Session;
+use wineo_core::gog::api::Secret;
 use wineo_core::gog::folder::{self, FolderError, Journal};
+use wineo_core::gog::update::galaxy::GalaxyError;
 use wineo_core::gog::update::windows::SetupError;
 use wineo_core::gog::update::{
     self, DlcState, DlcStatus, GameError, Progress, Reason, Status, UpdateState,
@@ -17,7 +19,7 @@ use wineo_core::gog::update::{
 use wineo_core::paths::Paths;
 use wineo_core::secret_service::SecretServiceKeyring;
 
-use crate::prompt::{Canceled, Prompt, Reply};
+use crate::prompt::{self, Canceled, Prompt, Reply};
 use crate::style;
 
 pub const LOGGED_OUT: &str = "Log in to GOG first: wineo import gog --login.";
@@ -262,6 +264,72 @@ pub fn pause_for_test(environment: &str, step: &Progress, token: &wineo_core::ca
     }
 }
 
+/// What a failed plan says about a private branch it needs a password for,
+/// when asking could get the plan through.
+pub struct NeedsPassword {
+    pub title: String,
+    pub branch: String,
+    /// How to run the command again with the branch named.
+    pub command: String,
+}
+
+pub fn needs_password(error: &anyhow::Error) -> Option<NeedsPassword> {
+    match error.downcast_ref::<GalaxyError>() {
+        Some(GalaxyError::NeedsPassword {
+            title,
+            branch,
+            command,
+        }) => Some(NeedsPassword {
+            title: title.clone(),
+            branch: branch.clone(),
+            command: command.clone(),
+        }),
+        _ => None,
+    }
+}
+
+/// A password read from standard input for `--password-stdin`: one line,
+/// without echo when it comes from a terminal. Spaces around it are part
+/// of it.
+pub fn password_from_stdin() -> anyhow::Result<Secret> {
+    let Some(password) = prompt::password("Password: ")?.filter(|password| !password.is_empty())
+    else {
+        anyhow::bail!("No password was given on standard input.");
+    };
+    Ok(Secret::new(password))
+}
+
+/// What to say when a password is needed and there is no terminal. With
+/// `--branch` on the command line only `--password-stdin` is missing;
+/// without it, the command that works is named.
+fn without_terminal(needed: &NeedsPassword, branch_named: bool) -> String {
+    let NeedsPassword {
+        branch, command, ..
+    } = needed;
+    if branch_named {
+        format!("Branch {branch} is private. Give its password with --password-stdin.")
+    } else {
+        format!("Branch {branch} is private. Give its password with: {command} --password-stdin")
+    }
+}
+
+/// Asks for a private branch's password at a terminal, without echo.
+/// Without one it says how to give it: `branch_named` is whether `--branch`
+/// is on the command line, which `--password-stdin` needs.
+pub fn ask_password(needed: &NeedsPassword, branch_named: bool) -> anyhow::Result<Secret> {
+    let NeedsPassword { title, branch, .. } = needed;
+    if !prompt::interactive() {
+        anyhow::bail!("{}", without_terminal(needed, branch_named));
+    }
+    let Some(password) = prompt::password(&format!(
+        "Branch {branch} of {title} is private. Password: "
+    ))?
+    .filter(|password| !password.is_empty()) else {
+        anyhow::bail!("No password entered.");
+    };
+    Ok(Secret::new(password))
+}
+
 #[cfg(test)]
 mod tests {
     use std::path::PathBuf;
@@ -269,6 +337,33 @@ mod tests {
     use wineo_core::gog::folder::{Platform, Track};
 
     use super::*;
+
+    #[test]
+    fn the_no_terminal_message_names_a_command_that_works() {
+        let needed = |command: &str| NeedsPassword {
+            title: "Game".to_owned(),
+            branch: "Legacy (64-bit)".to_owned(),
+            command: command.to_owned(),
+        };
+        assert_eq!(
+            without_terminal(
+                &needed("wineo update game --branch 'Legacy (64-bit)'"),
+                true
+            ),
+            "Branch Legacy (64-bit) is private. Give its password with --password-stdin."
+        );
+        assert_eq!(
+            without_terminal(
+                &needed("wineo update game --branch 'Legacy (64-bit)'"),
+                false
+            ),
+            "Branch Legacy (64-bit) is private. Give its password with: wineo update game --branch 'Legacy (64-bit)' --password-stdin"
+        );
+        assert_eq!(
+            without_terminal(&needed("wineo import gog --game 7 --branch beta"), false),
+            "Branch Legacy (64-bit) is private. Give its password with: wineo import gog --game 7 --branch beta --password-stdin"
+        );
+    }
 
     fn dlc(id: u64, title: Option<&str>, name: Option<&str>) -> DlcStatus {
         DlcStatus {

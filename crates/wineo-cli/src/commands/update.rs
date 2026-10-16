@@ -46,6 +46,9 @@ pub struct Args {
         conflicts_with_all = ["default_branch", "build", "latest", "repair", "all", "check"]
     )]
     branch: Option<String>,
+    /// With --branch, read the branch's password from standard input
+    #[arg(long, requires = "branch", conflicts_with_all = ["all", "check", "builds"])]
+    password_stdin: bool,
     /// Return to the default Galaxy branch, and update from it
     #[arg(
         long,
@@ -107,6 +110,10 @@ impl Args {
 }
 
 pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
+    // clap lets this through beside the flags that conflict with --branch.
+    if args.password_stdin && args.branch.is_none() {
+        return Ok(usage_error("--password-stdin needs --branch."));
+    }
     // A branch is Galaxy's; clap can't tell this value from --track galaxy.
     if let (Some(GogTrack::Installer), (_, Some(flag))) = (args.track, args.choice()) {
         return Ok(usage_error(format!(

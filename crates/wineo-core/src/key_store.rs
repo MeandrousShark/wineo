@@ -43,6 +43,56 @@ pub trait Keyring {
     fn set(&self, key: &str) -> Result<(), KeyringError>;
     /// Returns whether there was a key to delete.
     fn delete(&self) -> Result<bool, KeyringError>;
+
+    /// The private-branch passwords GOG's login keeps beside it, one item
+    /// per account, game, and branch. `user` is the GOG account that saved
+    /// it, and only that account's are ever read. Only the GOG login's
+    /// keyring has them; the others answer `Unavailable`, which sends them
+    /// to the key file.
+    fn get_branch(
+        &self,
+        _user: &str,
+        _game: u64,
+        _branch: &str,
+    ) -> Result<Option<String>, KeyringError> {
+        Err(KeyringError::Unavailable)
+    }
+
+    fn set_branch(
+        &self,
+        _user: &str,
+        _game: u64,
+        _branch: &str,
+        _password: &str,
+    ) -> Result<(), KeyringError> {
+        Err(KeyringError::Unavailable)
+    }
+
+    /// Returns whether there was a password to delete.
+    fn delete_branch(&self, _user: &str, _game: u64, _branch: &str) -> Result<bool, KeyringError> {
+        Err(KeyringError::Unavailable)
+    }
+
+    /// Every branch of `game` that `user` has a password for, with it.
+    fn list_branches(
+        &self,
+        _user: &str,
+        _game: u64,
+    ) -> Result<Vec<(String, String)>, KeyringError> {
+        Err(KeyringError::Unavailable)
+    }
+
+    /// Deletes every branch password of every account and game. Returns
+    /// whether there were any.
+    fn delete_all_branches(&self) -> Result<bool, KeyringError> {
+        Err(KeyringError::Unavailable)
+    }
+
+    /// Deletes every branch password `user` doesn't own, including any with
+    /// no owner. Returns whether there were any.
+    fn delete_branches_not_of(&self, _user: &str) -> Result<bool, KeyringError> {
+        Err(KeyringError::Unavailable)
+    }
 }
 
 /// A keyring that is never available, so the key file is always used.
@@ -192,17 +242,26 @@ fn remove_file(path: &Path) -> Result<bool> {
 /// since those hold the key too. Returns whether the key file itself existed.
 /// A leftover that can't be deleted is an error, because the point is to get
 /// the secret off disk. Only names that exactly match a temp name are touched.
-fn remove_key_file(path: &Path) -> Result<bool> {
+pub(crate) fn remove_key_file(path: &Path) -> Result<bool> {
     let existed = remove_file(path)?;
+    sweep_leftovers(path)?;
+    Ok(existed)
+}
+
+/// Deletes the temp files a crashed save left beside the key file, and
+/// nothing else. The key file itself stays. Only for a caller that holds
+/// whatever keeps saves from running at the same time, since a save in
+/// flight has a temp file of its own.
+pub(crate) fn sweep_leftovers(path: &Path) -> Result<()> {
     let (Some(dir), Some(name)) = (
         path.parent(),
         path.file_name().and_then(|name| name.to_str()),
     ) else {
-        return Ok(existed);
+        return Ok(());
     };
     let entries = match fs::read_dir(dir) {
         Ok(entries) => entries,
-        Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(existed),
+        Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(()),
         Err(err) => return Err(err).context(|| format!("failed to read {}", dir.display())),
     };
     for entry in entries {
@@ -215,7 +274,7 @@ fn remove_key_file(path: &Path) -> Result<bool> {
             remove_file(&entry.path())?;
         }
     }
-    Ok(existed)
+    Ok(())
 }
 
 /// `<name>.<pid>-<n>.tmp` from `write_unique_private`, or the fixed
@@ -240,7 +299,7 @@ fn is_temp_name(name: &str, candidate: &str) -> bool {
 /// Writes through a temp file created `0600`, so the key is never readable by
 /// anyone else, not even for a moment. Each save has its own temp file, so
 /// concurrent saves can't publish or delete each other's.
-fn write_private(path: &Path, key: &str) -> Result<()> {
+pub(crate) fn write_private(path: &Path, key: &str) -> Result<()> {
     let dir = path.parent().expect("the key file has a parent");
     fs::create_dir_all(dir).context(|| format!("failed to create {}", dir.display()))?;
     // Older versions wrote to this one fixed name and could leave it behind

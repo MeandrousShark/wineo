@@ -1138,3 +1138,5 @@ fn a_resumed_galaxy_install_that_cant_be_planned_says_how_to_finish_it() {
 
 #[path = "gog_galaxy/branches.rs"]
 mod branches;
+#[path = "gog_galaxy/private.rs"]
+mod private;

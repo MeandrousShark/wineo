@@ -23,8 +23,8 @@ use super::Args;
 use crate::cancel;
 use crate::commands::galaxy::{self, GogTrack};
 use crate::commands::gog_support::{
-    Account, Reporter, ask_wizard, finish_command, journal_for, offers_wizard, usage_error, warn,
-    with_finish_hint,
+    Account, Reporter, ask_password, ask_wizard, finish_command, journal_for, needs_password,
+    offers_wizard, password_from_stdin, usage_error, warn, with_finish_hint,
 };
 use crate::commands::setup::{self, watched_message};
 use crate::commands::table;
@@ -213,6 +213,10 @@ pub(super) fn one(paths: &Paths, args: &Args, id: &str) -> anyhow::Result<ExitCo
     let Ok(gog_id) = id.parse::<u64>() else {
         return Ok(usage_error(format!("{id} isn't a GOG game id.")));
     };
+    // clap lets this through beside --build, which conflicts with --branch.
+    if args.password_stdin && args.branch.is_none() {
+        return Ok(usage_error("--password-stdin needs --branch."));
+    }
     // A branch or build is Galaxy's, so asking for one picks the track.
     let (choice, branch_flag) = match (&args.branch, &args.build) {
         (Some(branch), _) => (Choice::Branch(branch.clone()), Some("--branch")),
@@ -275,8 +279,21 @@ pub(super) fn one(paths: &Paths, args: &Args, id: &str) -> anyhow::Result<ExitCo
         arch: args.arch,
         wizard: false,
         builds: choice,
+        // Read before anything else, so a script feeding it isn't left waiting.
+        password: if args.password_stdin {
+            Some(password_from_stdin()?)
+        } else {
+            None
+        },
     };
-    let plan = match plan_install(paths, &mut session, &request, track, unfinished)? {
+    let plan = match plan_asking(
+        paths,
+        &mut session,
+        &mut request,
+        track,
+        unfinished,
+        args.branch.is_some(),
+    )? {
         Ok(plan) => plan,
         Err(code) => return Ok(code),
     };
@@ -364,6 +381,27 @@ pub(super) fn one(paths: &Paths, args: &Args, id: &str) -> anyhow::Result<ExitCo
     Ok(ExitCode::SUCCESS)
 }
 
+/// `plan_install`, asking for a private branch's password once when the plan
+/// needs one that wasn't given.
+fn plan_asking(
+    paths: &Paths,
+    session: &mut Session,
+    request: &mut Request,
+    track: Option<Track>,
+    unfinished: bool,
+    branch_named: bool,
+) -> anyhow::Result<Result<Plan, ExitCode>> {
+    loop {
+        match plan_install(paths, session, request, track, unfinished) {
+            Err(error) if request.password.is_none() => match needs_password(&error) {
+                Some(needed) => request.password = Some(ask_password(&needed, branch_named)?),
+                None => return Err(error),
+            },
+            other => return other,
+        }
+    }
+}
+
 /// Plans the install, telling Ctrl+C apart: an unfinished install keeps its
 /// journal, which `wineo update` finishes.
 fn plan_install(
@@ -398,6 +436,8 @@ fn plan_install(
             }
             Ok(Err(cancel::exit_code()))
         }
+        // The caller asks for the password and plans again.
+        Err(error) if needs_password(&error).is_some() => Err(error),
         // A resumed install that can't be planned still has its journal.
         Err(error) => Err(with_finish_hint(
             paths,

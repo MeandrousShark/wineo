@@ -47,6 +47,7 @@ fn listing_json(listing: &Listing) -> serde_json::Value {
             "version": build.version,
             "published": build.published,
             "latest": build.latest,
+            "private": build.private,
         })).collect::<Vec<_>>(),
     })
 }

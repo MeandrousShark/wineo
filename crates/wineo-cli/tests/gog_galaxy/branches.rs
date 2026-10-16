@@ -6,7 +6,7 @@ use wineo_core::gog::update::galaxy::record::Record;
 
 /// A build of the game on `branch` (None for the default one), whose info
 /// file names it.
-fn on(build: &str, version: &str, branch: Option<&str>) -> FakeBuild {
+pub(super) fn on(build: &str, version: &str, branch: Option<&str>) -> FakeBuild {
     let mut fake = FakeBuild::new(GAME, build)
         .depot(
             FakeDepot::new(GAME)
@@ -31,17 +31,17 @@ fn on(build: &str, version: &str, branch: Option<&str>) -> FakeBuild {
 }
 
 /// Lists a build on the beta branch.
-fn beta(api: &GogApi, build: &str, version: &str) {
+pub(super) fn beta(api: &GogApi, build: &str, version: &str) {
     api.content.add_build(on(build, version, Some("beta")));
 }
 
-fn record(f: &Fixture) -> Record {
+pub(super) fn record(f: &Fixture) -> Record {
     let path =
         wineo_core::gog::folder::sidecar_file(&f.paths(), &fs::canonicalize(folder(f)).unwrap());
     Record::parse(&fs::read(path).unwrap()).unwrap()
 }
 
-fn installed_build(f: &Fixture) -> String {
+pub(super) fn installed_build(f: &Fixture) -> String {
     state(f).committed.unwrap().products[0]
         .build
         .clone()
@@ -49,14 +49,14 @@ fn installed_build(f: &Fixture) -> String {
 }
 
 /// What `--builds` printed, row by row, split on whitespace.
-fn rows(out: &Output) -> Vec<Vec<String>> {
+pub(super) fn rows(out: &Output) -> Vec<Vec<String>> {
     stdout(out)
         .lines()
         .map(|line| line.split_whitespace().map(str::to_owned).collect())
         .collect()
 }
 
-fn words(row: &[&str]) -> Vec<String> {
+pub(super) fn words(row: &[&str]) -> Vec<String> {
     row.iter().map(|word| (*word).to_owned()).collect()
 }
 
@@ -185,13 +185,17 @@ fn builds_lists_what_gog_offers_with_marks() {
             "private_branches": false,
             "builds": [
                 {"branch": null, "build": "200", "version": "1.4.11",
-                 "published": "2026-01-02T03:04:05+0000", "latest": true},
+                 "published": "2026-01-02T03:04:05+0000", "latest": true,
+                 "private": false},
                 {"branch": null, "build": "100", "version": "1.2.76",
-                 "published": "2026-01-02T03:04:05+0000", "latest": false},
+                 "published": "2026-01-02T03:04:05+0000", "latest": false,
+                 "private": false},
                 {"branch": "beta", "build": "500", "version": "1.3.1-beta",
-                 "published": "2026-01-02T03:04:05+0000", "latest": true},
+                 "published": "2026-01-02T03:04:05+0000", "latest": true,
+                 "private": false},
                 {"branch": "beta", "build": "400", "version": "1.3.0-beta",
-                 "published": "2026-01-02T03:04:05+0000", "latest": false},
+                 "published": "2026-01-02T03:04:05+0000", "latest": false,
+                 "private": false},
             ],
         })
     );

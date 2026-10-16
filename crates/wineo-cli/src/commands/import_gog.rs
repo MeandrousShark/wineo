@@ -53,6 +53,9 @@ pub struct Args {
         conflicts_with = "build"
     )]
     pub branch: Option<String>,
+    /// With --branch, read the branch's password from standard input
+    #[arg(long, requires = "branch")]
+    pub password_stdin: bool,
     /// With --game, install one of the builds GOG lists, by id or version name, and stay on it
     #[arg(
         long,

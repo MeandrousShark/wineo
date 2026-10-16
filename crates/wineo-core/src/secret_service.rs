@@ -120,14 +120,11 @@ fn fdo_message(err: &zbus::fdo::Error) -> String {
     }
 }
 
-impl Keyring for SecretServiceKeyring {
-    fn get(&self) -> Result<Option<String>, KeyringError> {
+impl SecretServiceKeyring {
+    fn read(&self, attributes: HashMap<&str, &str>) -> Result<Option<String>, KeyringError> {
         block_on(async {
             let service = connect().await?;
-            let found = service
-                .search_items(self.attributes())
-                .await
-                .map_err(failed)?;
+            let found = service.search_items(attributes).await.map_err(failed)?;
             let Some(item) = found.unlocked.first().or(found.locked.first()) else {
                 return Ok(None);
             };
@@ -139,7 +136,12 @@ impl Keyring for SecretServiceKeyring {
         })
     }
 
-    fn set(&self, key: &str) -> Result<(), KeyringError> {
+    fn write(
+        &self,
+        label: &str,
+        attributes: HashMap<&str, &str>,
+        key: &str,
+    ) -> Result<(), KeyringError> {
         block_on(async {
             let service = connect().await?;
             let collection = match service.get_default_collection().await {
@@ -153,26 +155,18 @@ impl Keyring for SecretServiceKeyring {
                 collection.unlock().await.map_err(failed)?;
             }
             collection
-                .create_item(
-                    &self.label,
-                    self.attributes(),
-                    key.as_bytes(),
-                    true,
-                    "text/plain",
-                )
+                .create_item(label, attributes, key.as_bytes(), true, "text/plain")
                 .await
                 .map_err(failed)?;
             Ok(())
         })
     }
 
-    fn delete(&self) -> Result<bool, KeyringError> {
+    /// Deletes every item that has all of `attributes`.
+    fn remove(&self, attributes: HashMap<&str, &str>) -> Result<bool, KeyringError> {
         block_on(async {
             let service = connect().await?;
-            let found = service
-                .search_items(self.attributes())
-                .await
-                .map_err(failed)?;
+            let found = service.search_items(attributes).await.map_err(failed)?;
             let items: Vec<_> = found.unlocked.iter().chain(&found.locked).collect();
             for item in &items {
                 // This crate refuses to delete a locked item rather than letting
@@ -181,6 +175,126 @@ impl Keyring for SecretServiceKeyring {
                 item.delete().await.map_err(failed)?;
             }
             Ok(!items.is_empty())
+        })
+    }
+}
+
+/// The `account` of the items holding private-branch passwords. Each also
+/// has the `user` who saved it, the `game`, and the `branch`.
+const BRANCH_ACCOUNT: &str = "gog-branch";
+const BRANCH_LABEL: &str = "wineo GOG branch password";
+
+fn branch_attributes<'a>(
+    user: &'a str,
+    game: &'a str,
+    branch: &'a str,
+) -> HashMap<&'a str, &'a str> {
+    HashMap::from([
+        ("service", SERVICE),
+        ("account", BRANCH_ACCOUNT),
+        ("user", user),
+        ("game", game),
+        ("branch", branch),
+    ])
+}
+
+impl Keyring for SecretServiceKeyring {
+    fn get(&self) -> Result<Option<String>, KeyringError> {
+        self.read(self.attributes())
+    }
+
+    fn set(&self, key: &str) -> Result<(), KeyringError> {
+        self.write(&self.label, self.attributes(), key)
+    }
+
+    fn delete(&self) -> Result<bool, KeyringError> {
+        self.remove(self.attributes())
+    }
+
+    fn get_branch(
+        &self,
+        user: &str,
+        game: u64,
+        branch: &str,
+    ) -> Result<Option<String>, KeyringError> {
+        self.read(branch_attributes(user, &game.to_string(), branch))
+    }
+
+    fn set_branch(
+        &self,
+        user: &str,
+        game: u64,
+        branch: &str,
+        password: &str,
+    ) -> Result<(), KeyringError> {
+        self.write(
+            BRANCH_LABEL,
+            branch_attributes(user, &game.to_string(), branch),
+            password,
+        )
+    }
+
+    fn delete_branch(&self, user: &str, game: u64, branch: &str) -> Result<bool, KeyringError> {
+        self.remove(branch_attributes(user, &game.to_string(), branch))
+    }
+
+    fn list_branches(&self, user: &str, game: u64) -> Result<Vec<(String, String)>, KeyringError> {
+        let game = game.to_string();
+        block_on(async {
+            let service = connect().await?;
+            let found = service
+                .search_items(HashMap::from([
+                    ("service", SERVICE),
+                    ("account", BRANCH_ACCOUNT),
+                    ("user", user),
+                    ("game", game.as_str()),
+                ]))
+                .await
+                .map_err(failed)?;
+            let mut listed = Vec::new();
+            for item in found.unlocked.iter().chain(&found.locked) {
+                unlock_item(item).await?;
+                let attributes = item.get_attributes().await.map_err(failed)?;
+                let Some(branch) = attributes.get("branch") else {
+                    continue;
+                };
+                let secret = item.get_secret().await.map_err(failed)?;
+                let password = String::from_utf8(secret)
+                    .map_err(|_| KeyringError::Failed("the saved key is not text".to_owned()))?;
+                listed.push((branch.clone(), password));
+            }
+            Ok(listed)
+        })
+    }
+
+    fn delete_all_branches(&self) -> Result<bool, KeyringError> {
+        self.remove(HashMap::from([
+            ("service", SERVICE),
+            ("account", BRANCH_ACCOUNT),
+        ]))
+    }
+
+    fn delete_branches_not_of(&self, user: &str) -> Result<bool, KeyringError> {
+        block_on(async {
+            let service = connect().await?;
+            let found = service
+                .search_items(HashMap::from([
+                    ("service", SERVICE),
+                    ("account", BRANCH_ACCOUNT),
+                ]))
+                .await
+                .map_err(failed)?;
+            let mut deleted = false;
+            for item in found.unlocked.iter().chain(&found.locked) {
+                unlock_item(item).await?;
+                let attributes = item.get_attributes().await.map_err(failed)?;
+                // An item with no owner is from before items had one.
+                if attributes.get("user").map(String::as_str) != Some(user) {
+                    item.delete().await.map_err(failed)?;
+                    deleted = true;
+                }
+            }
+            Ok(deleted)
         })
     }
 }
