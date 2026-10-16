@@ -304,6 +304,28 @@ fn check_shows_version_names_and_json_keeps_build_ids() {
 }
 
 #[test]
+fn list_shows_version_names_and_json_keeps_build_ids() {
+    let (f, api) = installed();
+    let out = gog(&f, &api, &["import", "gog", "--list"]);
+    assert_success(&out);
+    let text = stdout(&out);
+    let row = text.lines().find(|line| line.contains(NAME)).unwrap();
+    assert!(row.contains("1.2.76"), "{text}");
+    assert!(!row.contains("100"), "{text}");
+
+    let out = gog(&f, &api, &["import", "gog", "--list", "--json"]);
+    assert_success(&out);
+    let games = json_of(&out);
+    let game = games["games"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|game| game["environment"] == NAME)
+        .unwrap();
+    assert_eq!(game["version"], "100", "{games}");
+}
+
+#[test]
 fn an_update_reviews_then_reports_with_the_files_it_moved_aside() {
     let (f, api) = installed();
     newer(&api);
