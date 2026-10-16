@@ -120,6 +120,14 @@ fn blocking_owner(paths: &Paths, env: &Environment) -> Option<(String, JournalKi
         })
 }
 
+/// Whether `name`'s interrupted operation is a Galaxy install, which the
+/// install page finishes: `wineo update` can't carry one on.
+pub(crate) fn galaxy_install(paths: &Paths, name: &str) -> bool {
+    update::journal_of(paths, name).is_some_and(|journal| {
+        journal.kind == JournalKind::Install && journal.target.track == folder::Track::Galaxy
+    })
+}
+
 /// The badge on a card's poster.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Badge {

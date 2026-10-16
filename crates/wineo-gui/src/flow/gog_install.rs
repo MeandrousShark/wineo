@@ -19,11 +19,17 @@ use wineo_core::desktop;
 use wineo_core::environment::Environment;
 use wineo_core::gog::account::Session;
 use wineo_core::gog::api::Client;
-use wineo_core::gog::folder::{Platform, ProductStatus};
+use wineo_core::gog::folder::{Platform, ProductStatus, Track};
 use wineo_core::gog::install_dir::install_folder;
-use wineo_core::gog::update::install::{self, Installed, Plan, Request};
+use wineo_core::gog::update::galaxy::present::{
+    Label as GalaxyLabel, Reporter as GalaxyReporter, restart_lines,
+};
+use wineo_core::gog::update::galaxy::{
+    self as core_galaxy, GalaxyError, install as galaxy_install,
+};
+use wineo_core::gog::update::install::{self, Installed, Request};
 use wineo_core::gog::update::windows::{Event as WindowsEvent, SetupError};
-use wineo_core::gog::update::{Reporter, UpdateError};
+use wineo_core::gog::update::{self, Reporter, UpdateError};
 use wineo_core::gog::{language, product};
 use wineo_core::key_store::Keyring;
 use wineo_core::paths::Paths;
@@ -66,10 +72,139 @@ pub(crate) struct Offer {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct Choices {
     pub(crate) platform: Option<Platform>,
+    /// None takes Galaxy's builds when GOG has them for a Windows game.
+    pub(crate) track: Option<Track>,
     pub(crate) language: String,
     pub(crate) runner: Option<String>,
     pub(crate) arch: Option<Arch>,
     pub(crate) dir: String,
+}
+
+/// A planned install on either track.
+#[derive(Debug, Clone)]
+#[allow(clippy::large_enum_variant)]
+pub(crate) enum Plan {
+    Installer(install::Plan),
+    Galaxy(galaxy_install::Plan),
+}
+
+impl Plan {
+    fn track(&self) -> Track {
+        match self {
+            Self::Installer(_) => Track::Installer,
+            Self::Galaxy(_) => Track::Galaxy,
+        }
+    }
+
+    fn environment(&self) -> &str {
+        match self {
+            Self::Installer(plan) => plan.environment(),
+            Self::Galaxy(plan) => plan.environment(),
+        }
+    }
+
+    fn title(&self) -> &str {
+        match self {
+            Self::Installer(plan) => plan.title(),
+            Self::Galaxy(plan) => plan.title(),
+        }
+    }
+
+    fn gog_id(&self) -> u64 {
+        match self {
+            Self::Installer(plan) => plan.gog_id(),
+            Self::Galaxy(plan) => plan.gog_id(),
+        }
+    }
+
+    fn folder(&self) -> &Path {
+        match self {
+            Self::Installer(plan) => plan.folder(),
+            Self::Galaxy(plan) => plan.folder(),
+        }
+    }
+
+    /// Galaxy builds are only for Windows games.
+    fn platform(&self) -> Platform {
+        match self {
+            Self::Installer(plan) => plan.platform(),
+            Self::Galaxy(_) => Platform::Windows,
+        }
+    }
+
+    fn resumes(&self) -> bool {
+        match self {
+            Self::Installer(plan) => plan.resumes(),
+            Self::Galaxy(plan) => plan.resumes(),
+        }
+    }
+
+    fn has_config(&self) -> bool {
+        match self {
+            Self::Installer(plan) => plan.has_config(),
+            Self::Galaxy(plan) => plan.has_config(),
+        }
+    }
+
+    fn creation(&self) -> Option<&wineo_core::gog::update::install::Creation> {
+        match self {
+            Self::Installer(plan) => plan.creation(),
+            Self::Galaxy(plan) => plan.creation(),
+        }
+    }
+
+    fn requested_language(&self) -> &str {
+        match self {
+            Self::Installer(plan) => plan.requested_language(),
+            Self::Galaxy(plan) => plan.requested_language(),
+        }
+    }
+
+    /// GOG's name for the language an installer installs in. A Galaxy
+    /// build has depot languages, which its review doesn't show.
+    #[cfg(test)]
+    fn language_name(&self) -> &str {
+        match self {
+            Self::Installer(plan) => plan.language_name(),
+            Self::Galaxy(plan) => plan.language(),
+        }
+    }
+
+    fn warnings(&self) -> &[String] {
+        match self {
+            Self::Installer(plan) => plan.warnings(),
+            Self::Galaxy(plan) => plan.warnings(),
+        }
+    }
+
+    fn product_labels(&self) -> HashMap<u64, String> {
+        match self {
+            Self::Installer(plan) => plan.product_labels(),
+            Self::Galaxy(plan) => plan.product_labels(),
+        }
+    }
+
+    /// Whether the game's installer runs as its own setup window.
+    fn wizard(&self) -> bool {
+        matches!(self, Self::Installer(plan) if plan.wizard())
+    }
+}
+
+/// A track in the review's picker.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct TrackShown(Track);
+
+impl fmt::Display for TrackShown {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(track_name(self.0))
+    }
+}
+
+fn track_name(track: Track) -> &'static str {
+    match track {
+        Track::Galaxy => "Galaxy",
+        Track::Installer => "Offline installer",
+    }
 }
 
 /// A planned install and what its review offers.
@@ -79,6 +214,9 @@ pub(crate) struct Prepared {
     /// The plan, or why the choices can't be installed.
     plan: Result<Box<Plan>, String>,
     runners: Vec<Choice>,
+    /// Whether GOG offers both tracks for this game, so the review lets
+    /// you pick.
+    both_tracks: bool,
     /// The `gog.language` setting, which an empty language uses.
     default_language: String,
     /// `<games_root>/<title>`, which an empty folder uses.
@@ -145,6 +283,7 @@ impl fmt::Display for Shown {
 pub(crate) enum Event {
     Prepared(u64, Result<Box<Prepared>, String>),
     Platform(Platform),
+    Track(Track),
     Language(String),
     /// Plans again with the language typed so far.
     LanguageDone,
@@ -187,6 +326,9 @@ pub(crate) struct Install {
     generation: u64,
     choices: Choices,
     prepared: Option<Prepared>,
+    /// Whether GOG offers both tracks, as the last plan found. An explicit
+    /// track doesn't ask GOG again, so it carries this on.
+    both_tracks: Option<bool>,
     /// The first plan, which names products for a resumed one that only
     /// knows them by id.
     names: Option<Box<Plan>>,
@@ -212,6 +354,7 @@ impl Install {
             generation: 0,
             choices: Choices::default(),
             prepared: None,
+            both_tracks: None,
             names: None,
             wizard: false,
             question: None,
@@ -373,6 +516,7 @@ impl Install {
         let offer = self.offer.clone();
         let choices = self.choices.clone();
         let wizard = self.wizard;
+        let known = self.choices.track.and(self.both_tracks);
         // GOG's answers can't be interrupted, so the token only drops a plan
         // that arrives after Back.
         let token = Token::new();
@@ -380,8 +524,17 @@ impl Install {
             move || {
                 let client =
                     wineo_core::gog::client_from_env().map_err(|error| error.to_string())?;
-                prepare_with(&paths, &keyring(), client, &offer, &choices, wizard, &token)
-                    .map(Box::new)
+                prepare_known(
+                    &paths,
+                    &keyring(),
+                    client,
+                    &offer,
+                    &choices,
+                    wizard,
+                    known,
+                    &token,
+                )
+                .map(Box::new)
             },
             move |result| Event::Prepared(generation, result),
         )
@@ -500,6 +653,7 @@ impl Install {
                             self.stage = Stage::Finished;
                             return Task::none();
                         }
+                        self.both_tracks = Some(prepared.both_tracks);
                         self.prepared = Some(*prepared);
                         self.stage = Stage::Review;
                         // The setup window was asked for, so it runs now.
@@ -518,6 +672,14 @@ impl Install {
             }
             Event::Platform(platform) if self.stage == Stage::Review => {
                 self.choices.platform = Some(platform);
+                // Another platform may have other tracks, which planning
+                // finds out again.
+                self.choices.track = None;
+                self.both_tracks = None;
+                self.replan()
+            }
+            Event::Track(track) if self.stage == Stage::Review => {
+                self.choices.track = Some(track);
                 self.replan()
             }
             Event::Language(value) if self.stage == Stage::Review => {
@@ -875,6 +1037,22 @@ impl Install {
         } else if let Some(platform) = platform {
             summary = summary.push(shown_row("Platform", platform_name(platform).to_owned()));
         }
+        if editable && prepared.both_tracks {
+            summary = summary.push(control_row(
+                "Track",
+                pick_list(
+                    [TrackShown(Track::Galaxy), TrackShown(Track::Installer)],
+                    plan.map(Plan::track).or(self.choices.track).map(TrackShown),
+                    |shown| Event::Track(shown.0),
+                )
+                .wineo_style(palette)
+                .into(),
+            ));
+        } else if let Some(plan) =
+            plan.filter(|plan| plan.resumes() && plan.platform() == Platform::Windows)
+        {
+            summary = summary.push(shown_row("Track", track_name(plan.track()).to_owned()));
+        }
         if editable {
             summary = summary.push(control_row(
                 "Language",
@@ -889,7 +1067,7 @@ impl Install {
         } else if let Some(plan) = plan {
             summary = summary.push(shown_row("Language", plan.requested_language().to_owned()));
         }
-        if let Some(plan) = plan {
+        if let Some(Plan::Installer(plan)) = plan {
             summary = summary.push(shown_row("Installs in", plan.language_name().to_owned()));
         }
         if let Some(creation) = plan.and_then(Plan::creation) {
@@ -945,25 +1123,41 @@ impl Install {
                     .into(),
             ));
         }
-        if let Some(plan) = plan {
-            for (label, value) in product_rows(plan) {
-                summary = summary.push(shown_row(label, value));
+        match plan {
+            Some(Plan::Installer(plan)) => {
+                for (label, value) in installer_product_rows(plan) {
+                    summary = summary.push(shown_row(label, value));
+                }
+                summary = summary.push(shown_row(
+                    "Download",
+                    if plan.is_offline() {
+                        "none, uses the packages already downloaded".to_owned()
+                    } else {
+                        format_bytes(plan.download_size())
+                    },
+                ));
+                summary = summary.push(shown_row(
+                    "Installed",
+                    format!(
+                        "about {} (an estimate)",
+                        format_bytes(plan.installed_estimate())
+                    ),
+                ));
             }
-            summary = summary.push(shown_row(
-                "Download",
-                if plan.is_offline() {
-                    "none, uses the packages already downloaded".to_owned()
-                } else {
-                    format_bytes(plan.download_size())
-                },
-            ));
-            summary = summary.push(shown_row(
-                "Installed",
-                format!(
-                    "about {} (an estimate)",
-                    format_bytes(plan.installed_estimate())
-                ),
-            ));
+            // Galaxy's sizes are exact, so there is no estimate.
+            Some(Plan::Galaxy(plan)) => {
+                let mut dlc = false;
+                for (label, value) in plan.review_rows(&self.paths) {
+                    let label = match label {
+                        // One DLC per row; the rest have no label, so they
+                        // sit under the first.
+                        GalaxyLabel::Dlc if std::mem::replace(&mut dlc, true) => "",
+                        label => install_label(&label),
+                    };
+                    summary = summary.push(shown_row(label, value));
+                }
+            }
+            None => {}
         }
         body = body.push(container(summary).padding(16).width(Fill).style(move |_| {
             container::Style::default()
@@ -1077,7 +1271,16 @@ fn platform_name(platform: Platform) -> &'static str {
 
 /// The version row and one row per DLC, `NAME (ID)` with its version, like
 /// `import gog` prints them.
+#[cfg(test)]
 fn product_rows(plan: &Plan) -> Vec<(&'static str, String)> {
+    // Galaxy's rows are core's.
+    match plan {
+        Plan::Installer(plan) => installer_product_rows(plan),
+        Plan::Galaxy(_) => Vec::new(),
+    }
+}
+
+fn installer_product_rows(plan: &install::Plan) -> Vec<(&'static str, String)> {
     let mut rows = Vec::new();
     let mut dlc = Vec::new();
     for product in plan.products() {
@@ -1099,16 +1302,37 @@ fn product_rows(plan: &Plan) -> Vec<(&'static str, String)> {
     rows
 }
 
+/// The label of a row of a Galaxy install's review. The rows an update
+/// reviews have none here.
+fn install_label(label: &GalaxyLabel) -> &'static str {
+    match label {
+        GalaxyLabel::Version => "Version",
+        GalaxyLabel::Dlc => "DLC",
+        GalaxyLabel::Support => "Support",
+        GalaxyLabel::Setup => "Setup",
+        GalaxyLabel::Download => "Download",
+        _ => "",
+    }
+}
+
 /// The plan's warnings, then why each product falls back or is unavailable.
 fn review_notes(plan: &Plan) -> Vec<&str> {
+    let notes: Vec<&Option<String>> = match plan {
+        Plan::Installer(plan) => plan
+            .products()
+            .iter()
+            .map(|product| &product.note)
+            .collect(),
+        Plan::Galaxy(plan) => plan
+            .products()
+            .iter()
+            .map(|product| &product.note)
+            .collect(),
+    };
     plan.warnings()
         .iter()
         .map(String::as_str)
-        .chain(
-            plan.products()
-                .iter()
-                .filter_map(|product| product.note.as_deref()),
-        )
+        .chain(notes.into_iter().filter_map(|note| note.as_deref()))
         .collect()
 }
 
@@ -1137,6 +1361,7 @@ fn new_name(paths: &Paths, client: &Client, id: u64) -> Result<String, String> {
 
 /// Plans installing `offer` with `choices`. A plan that fails is part of
 /// what's prepared, so the review can still offer other choices.
+#[cfg(test)]
 pub(crate) fn prepare_with(
     paths: &Paths,
     keyring: &dyn Keyring,
@@ -1144,6 +1369,22 @@ pub(crate) fn prepare_with(
     offer: &Offer,
     choices: &Choices,
     wizard: bool,
+    token: &Token,
+) -> Result<Prepared, String> {
+    prepare_known(paths, keyring, client, offer, choices, wizard, None, token)
+}
+
+/// `prepare_with`, given whether GOG offers both tracks when `choices` asks
+/// for one, which then doesn't ask GOG for its builds.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn prepare_known(
+    paths: &Paths,
+    keyring: &dyn Keyring,
+    client: Client,
+    offer: &Offer,
+    choices: &Choices,
+    wizard: bool,
+    known: Option<bool>,
     token: &Token,
 ) -> Result<Prepared, String> {
     let mut session = Session::open(paths, keyring, client)
@@ -1190,16 +1431,28 @@ pub(crate) fn prepare_with(
             arch: choices.arch,
             wizard,
         };
-        install::plan(paths, &mut session, &request, token)
-            .map(Box::new)
+        core_galaxy::plan(paths, &mut session, &request, choices.track, token)
+            .map(|planned| {
+                Box::new(match planned {
+                    core_galaxy::Planned::Installer(plan) => Plan::Installer(plan),
+                    core_galaxy::Planned::Galaxy(plan) => Plan::Galaxy(plan),
+                })
+            })
             .map_err(|error| format!("{error:#}"))
     })();
     if token.is_canceled() {
         return Err(CANCELED.to_owned());
     }
+    // With no track asked for, Galaxy is only chosen when GOG has a build
+    // and the game can run on Windows, which is when both are possible.
+    let both_tracks = match choices.track {
+        None => matches!(plan.as_deref(), Ok(Plan::Galaxy(_))),
+        Some(_) => known.unwrap_or(false),
+    };
     Ok(Prepared {
         name,
         plan,
+        both_tracks,
         runners,
         default_language: global.gog_language().to_owned(),
         default_folder,
@@ -1227,55 +1480,82 @@ pub(crate) fn install_with(
         .ok_or_else(|| Failure::new(LOGGED_OUT))?;
     let labels = names.product_labels();
     let say = std::cell::RefCell::new(&mut say);
-    let mut reporter = Reporter::new(labels.clone(), PROGRESS_INTERVAL);
-    let installed = install::apply_with_events(
-        paths,
-        &mut session,
-        plan,
-        token,
-        |step| {
-            if let Some(line) = reporter.line(&step) {
-                (say.borrow_mut())(line);
-            }
-        },
-        |event| {
-            let line = match event {
-                WindowsEvent::Installing {
-                    product,
-                    interactive,
-                } => {
-                    let label = labels
-                        .get(&product)
-                        .cloned()
-                        .unwrap_or_else(|| format!("GOG product {product}"));
-                    Some(if interactive {
-                        format!("Opening {label}'s setup window")
-                    } else {
-                        format!("Running {label}'s installer")
-                    })
-                }
-                WindowsEvent::Create(CreateEvent::BuildingPrefix { dir, .. }) => {
-                    Some(format!("Building prefix in {}", dir.display()))
-                }
-                WindowsEvent::Watched(Watched::Notice(Notice::Stopping)) => {
-                    Some("Canceling installer...".to_owned())
-                }
-                WindowsEvent::Watched(Watched::Notice(Notice::Killing)) => {
-                    Some("Force stopping installer...".to_owned())
-                }
-                WindowsEvent::Watched(Watched::Notice(Notice::Warning(error))) => {
-                    Some(format!("Installer warning: {error}"))
-                }
-                _ => None,
-            };
-            if let Some(line) = line {
-                (say.borrow_mut())(line);
-            }
-        },
-    )
+    let installed = match plan {
+        Plan::Installer(offline) => {
+            let mut reporter = Reporter::new(labels.clone(), PROGRESS_INTERVAL);
+            install::apply_with_events(
+                paths,
+                &mut session,
+                offline,
+                token,
+                |step| {
+                    if let Some(line) = reporter.line(&step) {
+                        (say.borrow_mut())(line);
+                    }
+                },
+                |event| {
+                    if let Some(line) = event_line(event, &labels) {
+                        (say.borrow_mut())(line);
+                    }
+                },
+            )
+        }
+        Plan::Galaxy(galaxy) => {
+            let mut reporter = GalaxyReporter::new(PROGRESS_INTERVAL);
+            galaxy_install::apply_with_events(
+                paths,
+                &mut session,
+                galaxy,
+                token,
+                |step| {
+                    if let Some(line) = reporter.line(&step) {
+                        (say.borrow_mut())(line);
+                    }
+                },
+                |event| {
+                    if let Some(line) = event_line(event, &labels) {
+                        (say.borrow_mut())(line);
+                    }
+                },
+            )
+        }
+    }
     .map_err(|error| failure(paths, &error, plan, &labels))?;
     let say = say.into_inner();
     Ok(finish(paths, plan, names, &installed, token, say, extras))
+}
+
+/// The status line for something an install's Windows side reports.
+fn event_line(event: WindowsEvent, labels: &HashMap<u64, String>) -> Option<String> {
+    match event {
+        WindowsEvent::Installing {
+            product,
+            interactive,
+        } => {
+            let label = labels
+                .get(&product)
+                .cloned()
+                .unwrap_or_else(|| format!("GOG product {product}"));
+            Some(if interactive {
+                format!("Opening {label}'s setup window")
+            } else {
+                format!("Running {label}'s installer")
+            })
+        }
+        WindowsEvent::Create(CreateEvent::BuildingPrefix { dir, .. }) => {
+            Some(format!("Building prefix in {}", dir.display()))
+        }
+        WindowsEvent::Watched(Watched::Notice(Notice::Stopping)) => {
+            Some("Canceling installer...".to_owned())
+        }
+        WindowsEvent::Watched(Watched::Notice(Notice::Killing)) => {
+            Some("Force stopping installer...".to_owned())
+        }
+        WindowsEvent::Watched(Watched::Notice(Notice::Warning(error))) => {
+            Some(format!("Installer warning: {error}"))
+        }
+        _ => None,
+    }
 }
 
 /// How an install that didn't finish left things.
@@ -1321,8 +1601,36 @@ fn failure(
             "{label}'s installer stopped partway ({detail}). {}",
             hint()
         )),
-        _ => Failure::new(format!("{error:#}")),
+        _ => match error.downcast_ref::<GalaxyError>() {
+            // A setup step in the prefix failed; installing again carries
+            // on from it.
+            Some(GalaxyError::Setup {
+                title,
+                label,
+                detail,
+            }) => Failure::new(format!(
+                "Setting up {title} stopped: {label} failed ({detail}). {}",
+                hint()
+            )),
+            // Whatever else stopped a Galaxy install, a journal still in
+            // the folder is there to finish.
+            _ if matches!(plan, Plan::Galaxy(_)) && journal_of(paths, plan).is_some() => {
+                Failure::new(format!("{error:#}. {}", hint()))
+            }
+            _ => Failure::new(format!("{error:#}")),
+        },
     }
+}
+
+/// The journal an install of `plan` left, found by its environment or, when
+/// that has no config yet, by its game.
+fn journal_of(paths: &Paths, plan: &Plan) -> Option<wineo_core::gog::folder::Journal> {
+    update::journal_of(paths, plan.environment()).or_else(|| {
+        wineo_core::gog::folder::find(paths, plan.environment(), &plan.gog_id().to_string())
+            .ok()
+            .flatten()
+            .and_then(|state| state.journal)
+    })
 }
 
 /// Says what the install did, adds the extras and desktop entries, and for
@@ -1349,6 +1657,7 @@ fn finish(
     } else {
         format!("Installed {title} as {name}.")
     });
+    done.lines.extend(restart_lines(&installed.needs_restart));
     if !installed.saved.is_empty() {
         done.lists.push((
             "Moved your files aside where the game has files:",
@@ -2047,3 +2356,6 @@ pub(super) mod tests {
         set_graphical_session(None);
     }
 }
+
+#[cfg(test)]
+mod galaxy_tests;
