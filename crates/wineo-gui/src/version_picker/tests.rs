@@ -82,6 +82,7 @@ fn game_card(unfinished: bool) -> Card {
         unfinished,
         blocked_by: None,
         install: false,
+        version: None,
     });
     game
 }
@@ -155,7 +156,7 @@ fn the_listing_loads_and_a_stale_reply_is_dropped() {
     let rows: Vec<&str> = shown.rows().iter().map(|row| row.build.as_str()).collect();
     assert_eq!(rows, ["200", "100"]);
     // The row in the details now says what the listing found.
-    assert_eq!(app.version_value(NAME), "1.2.76");
+    assert_eq!(app.version_value(&app.cards[0]), "1.2.76");
     fits(&app);
 
     // Closing drops a reply still on its way.
@@ -567,10 +568,10 @@ fn the_version_row_names_the_build_with_its_pin_or_branch() {
 
     let mut app = app();
     app.cards = vec![game_card(false)];
-    assert_eq!(app.version_value(NAME), "Unknown");
+    assert_eq!(app.version_value(&app.cards[0]), "Unknown");
     app.gog_updates
         .insert(NAME.to_owned(), status(Track::Galaxy));
-    assert_eq!(app.version_value(NAME), "1.2.76");
+    assert_eq!(app.version_value(&app.cards[0]), "1.2.76");
 }
 
 #[test]
@@ -585,6 +586,7 @@ fn only_gog_windows_games_get_a_version_row() {
         unfinished: false,
         blocked_by: Some("papers".to_owned()),
         install: false,
+        version: None,
     });
     assert!(!has_version(&clone));
     let mut plain = game_card(false);
@@ -611,7 +613,7 @@ fn a_finished_change_is_checked_again_for_the_panel() {
         generation,
         Ok(Some(status)),
     ));
-    assert_eq!(app.version_value(NAME), "1.2.76");
+    assert_eq!(app.version_value(&app.cards[0]), "1.2.76");
     assert!(app.gog_updates.contains_key(NAME));
 }
 
@@ -639,7 +641,7 @@ fn a_recheck_answering_after_something_newer_is_dropped() {
         Ok(Some(before.clone())),
     ));
     assert!(!app.gog_updates.contains_key(NAME));
-    assert_eq!(app.version_value(NAME), "1.2.76 (pinned)");
+    assert_eq!(app.version_value(&app.cards[0]), "1.2.76 (pinned)");
 
     // Nor after a newer check of its own.
     let older = crate::gog_library::supersede(&mut app, NAME);
@@ -650,4 +652,42 @@ fn a_recheck_answering_after_something_newer_is_dropped() {
         Ok(Some(before)),
     ));
     assert!(!app.gog_updates.contains_key(NAME));
+}
+
+/// The game's card as the library reads it from disk.
+fn card_from_disk(world: &Galaxy) -> GogCard {
+    let env = wineo_core::environment::Environment::load(&world.paths, NAME).unwrap();
+    crate::gog_library::Folders::read(&world.paths)
+        .card(&world.paths, &env)
+        .unwrap()
+}
+
+#[test]
+fn before_any_check_the_version_row_reads_the_games_own_record() {
+    let world = world();
+    assert_eq!(card_from_disk(&world).version.as_deref(), Some("1.2.76"));
+    pin(&world, "100");
+    let local = card_from_disk(&world);
+    assert_eq!(local.version.as_deref(), Some("1.2.76 (pinned)"));
+
+    let mut app = app();
+    let mut game = game_card(false);
+    game.gog = Some(local);
+    app.cards = vec![game];
+    assert_eq!(app.version_value(&app.cards[0]), "1.2.76 (pinned)");
+    // A check, once it has run, says what GOG lists.
+    app.gog_updates
+        .insert(NAME.to_owned(), status(Track::Galaxy));
+    assert_eq!(app.version_value(&app.cards[0]), "1.2.76");
+
+    // Without its record the build id is all there is, and its follow is
+    // the default branch's.
+    world.lose_record();
+    assert_eq!(card_from_disk(&world).version.as_deref(), Some("100"));
+
+    // An installer-track game shows its installer's version.
+    let world = Galaxy::new();
+    world.install();
+    world.on_installer_track();
+    assert_eq!(card_from_disk(&world).version.as_deref(), Some("1.2.76"));
 }

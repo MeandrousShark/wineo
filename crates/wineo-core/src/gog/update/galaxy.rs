@@ -39,7 +39,7 @@ use super::install as offline;
 use crate::cancel::Token;
 use crate::environment::Environment;
 use crate::gog::account::{AccountError, CallError, Session};
-use crate::gog::folder::{Platform, Track};
+use crate::gog::folder::{FolderState, Platform, Track};
 use crate::gog::migrate::host_only;
 use crate::gog::product;
 use crate::paths::Paths;
@@ -50,6 +50,39 @@ pub fn follow_of(paths: &Paths, folder: &std::path::Path) -> record::Follow {
     install::files_record(paths, folder)
         .map(|record| record.follow)
         .unwrap_or_default()
+}
+
+/// What a Galaxy game's folder says it has, read from disk alone.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Local {
+    /// The base game's installed build.
+    pub build: String,
+    /// GOG's name for it, when the record kept one for that build.
+    pub version: Option<String>,
+    pub follow: record::Follow,
+}
+
+/// What `state`'s Galaxy game has installed and follows, without asking
+/// GOG, for showing before a check has run. None off the Galaxy track or
+/// when the installed build isn't recorded.
+pub fn local_of(paths: &Paths, state: &FolderState) -> Option<Local> {
+    let committed = state.committed.as_ref()?;
+    if committed.track != Track::Galaxy {
+        return None;
+    }
+    let build = super::base_build(committed)?.to_owned();
+    let record = install::files_record(paths, &state.folder);
+    let version = record
+        .as_ref()
+        .and_then(|record| record.installed.as_ref())
+        .filter(|installed| installed.manifest.build == build)
+        .and_then(|installed| installed.manifest.setup.version_name.clone())
+        .filter(|name| !name.is_empty());
+    Some(Local {
+        build,
+        version,
+        follow: record.map(|record| record.follow).unwrap_or_default(),
+    })
 }
 
 /// An install planned on one track or the other.

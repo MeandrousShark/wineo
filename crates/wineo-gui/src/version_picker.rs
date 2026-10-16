@@ -254,7 +254,7 @@ pub(crate) fn has_version(card: &Card) -> bool {
 }
 
 /// A build as the Version row shows it, with its pin or branch.
-fn described(version: String, branch: Option<&str>, pinned: bool) -> String {
+pub(crate) fn described(version: String, branch: Option<&str>, pinned: bool) -> String {
     match (pinned, branch) {
         (true, _) => format!("{version} (pinned)"),
         (false, Some(branch)) => format!("{version} (branch {branch})"),
@@ -306,12 +306,14 @@ impl App {
         }
     }
 
-    /// What the panel's Version row says for `name`.
-    pub(crate) fn version_value(&self, name: &str) -> String {
+    /// What the panel's Version row says for `card`: the latest listing,
+    /// else the background check, else what its folder records.
+    pub(crate) fn version_value(&self, card: &Card) -> String {
         self.gog_versions
-            .get(name)
+            .get(&card.name)
             .cloned()
-            .or_else(|| self.gog_updates.get(name).and_then(status_value))
+            .or_else(|| self.gog_updates.get(&card.name).and_then(status_value))
+            .or_else(|| card.gog.as_ref()?.version.clone())
             .unwrap_or_else(|| "Unknown".to_owned())
     }
 

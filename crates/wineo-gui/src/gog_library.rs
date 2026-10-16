@@ -21,6 +21,9 @@ pub(crate) struct GogCard {
     /// What was interrupted, its own or the blocking owner's, is an install
     /// rather than an update.
     pub(crate) install: bool,
+    /// The installed version as its own folder records it, for the Version
+    /// row before GOG has been asked.
+    pub(crate) version: Option<String>,
 }
 
 impl GogCard {
@@ -93,13 +96,42 @@ impl Folders {
         let install =
             own.or(blocking.as_ref().map(|(_, kind)| *kind)) == Some(JournalKind::Install);
         let blocked_by = blocking.map(|(owner, _)| owner);
+        let version = gog_id.as_deref().and_then(|id| {
+            let state = self.states.iter().find(|state| {
+                state.owner.as_deref() == Some(env.name.as_str()) && state.is_game(id)
+            })?;
+            local_version(paths, state)
+        });
         (gog_id.is_some() || blocked_by.is_some()).then_some(GogCard {
             gog_id,
             unfinished,
             blocked_by,
             install,
+            version,
         })
     }
+}
+
+/// What a game's own folder says is installed: its Galaxy build with its pin
+/// or branch, or the base game's installer version.
+fn local_version(paths: &Paths, state: &FolderState) -> Option<String> {
+    if let Some(local) = wineo_core::gog::update::galaxy::local_of(paths, state) {
+        return Some(crate::version_picker::described(
+            wineo_core::gog::update::galaxy::present::version(
+                local.version.as_deref(),
+                &local.build,
+            ),
+            local.follow.branch.as_deref(),
+            local.follow.pinned.is_some(),
+        ));
+    }
+    let committed = state.committed.as_ref()?;
+    committed
+        .products
+        .iter()
+        .find(|product| product.id == committed.gog_id)?
+        .version
+        .clone()
 }
 
 /// The owner whose interrupted update stops `env` from launching: the owner
@@ -435,6 +467,7 @@ mod tests {
             unfinished,
             blocked_by: blocked_by.map(str::to_owned),
             install: false,
+            version: None,
         })
     }
 

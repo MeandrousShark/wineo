@@ -946,7 +946,7 @@ impl App {
             }
             if crate::version_picker::has_version(card) {
                 inner = inner.push(version_row(
-                    self.version_value(&card.name),
+                    self.version_value(card),
                     Message::Version(crate::version_picker::Event::Open(card.name.clone())),
                     palette,
                 ));

@@ -2064,3 +2064,21 @@ fn the_track_is_chosen_apart_from_planning_with_one_builds_fetch() {
         Track::Installer
     );
 }
+
+#[test]
+fn what_a_galaxy_game_has_is_read_from_its_folder_alone() {
+    let fx = Fixture::new();
+    let mut build = Fixture::game("100");
+    build.version_name = "1.0.4".to_owned();
+    fx.content.add_build(build);
+    fx.install();
+    let local = super::local_of(&fx.paths, &fx.state()).unwrap();
+    assert_eq!(local.build, "100");
+    assert_eq!(local.version.as_deref(), Some("1.0.4"));
+    assert!(local.follow.is_default());
+
+    // Without a readable record, the build is still known from the state.
+    fs::write(folder::sidecar_file(&fx.paths, &fx.folder), b"garbage").unwrap();
+    let local = super::local_of(&fx.paths, &fx.state()).unwrap();
+    assert_eq!((local.build.as_str(), local.version), ("100", None));
+}
