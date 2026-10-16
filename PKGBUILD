@@ -17,7 +17,7 @@ optdepends=(
 )
 provides=('wineo')
 conflicts=('wineo')
-options=('!lto')
+options=('!lto' '!debug')
 source=('wineo::git+ssh://gitea/mphannon/wineo.git#branch=main')
 sha256sums=('SKIP')
 
