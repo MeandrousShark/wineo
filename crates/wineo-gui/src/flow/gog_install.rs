@@ -1045,6 +1045,7 @@ impl Install {
                     plan.map(Plan::track).or(self.choices.track).map(TrackShown),
                     |shown| Event::Track(shown.0),
                 )
+                .placeholder("Choose a track")
                 .wineo_style(palette)
                 .into(),
             ));
@@ -1412,6 +1413,7 @@ pub(crate) fn prepare_known(
     // The track is chosen before planning on it, so a plan that fails
     // still knows whether there was another to fall back to.
     let mut chosen = None;
+    let mut choosing_failed = false;
     let plan = (|| {
         if !language.is_empty() {
             language::validate(language)?;
@@ -1437,8 +1439,12 @@ pub(crate) fn prepare_known(
         let track = match choices.track {
             Some(track) => track,
             None => {
-                let track = core_galaxy::track_for(paths, &mut session, &request, None)
-                    .map_err(|error| format!("{error:#}"))?;
+                let track = core_galaxy::track_for(paths, &mut session, &request, None).map_err(
+                    |error| {
+                        choosing_failed = true;
+                        format!("{error:#}")
+                    },
+                )?;
                 chosen = Some(track);
                 track
             }
@@ -1473,7 +1479,13 @@ pub(crate) fn prepare_known(
     // With no track asked for, Galaxy is only chosen when GOG has a build
     // and the game can run on Windows, which is when both are possible. A
     // finished install's track was never a choice.
+    //
+    // When GOG couldn't say, a Windows install may still go either way, so
+    // both are offered and the error shows as the plan's.
     let both_tracks = match choices.track {
+        None if choosing_failed => {
+            offer.windows && choices.platform != Some(Platform::Linux) && offer.unfinished.is_none()
+        }
         None => chosen == Some(Track::Galaxy) && offer.unfinished.is_none(),
         Some(_) => known.unwrap_or(false),
     };

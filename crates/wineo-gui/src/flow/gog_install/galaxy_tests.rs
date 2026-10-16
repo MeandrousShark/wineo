@@ -408,3 +408,49 @@ fn canceling_while_planning_says_whether_an_install_is_left_to_finish() {
         format!("Install interrupted. Use Finish install on {NAME} in the library.")
     );
 }
+
+#[test]
+fn when_the_tracks_cant_be_told_a_windows_install_still_offers_both() {
+    let world = Galaxy::new();
+    world.fail_builds(true);
+    let first = prepared(&world, &choices(&world), None);
+    assert!(first.both_tracks);
+    let error = first.plan.as_ref().unwrap_err().clone();
+    assert!(!error.is_empty());
+    let mut page = page(&world, first);
+    fits(&page);
+    // Offline installer plans the installers with an explicit track, which
+    // asks GOG for no builds.
+    let before = builds_requests(&world);
+    let _ = page.update(Event::Track(Track::Installer));
+    assert_eq!(page.choices.track, Some(Track::Installer));
+    let installers = prepared(
+        &world,
+        &Choices {
+            track: Some(Track::Installer),
+            ..choices(&world)
+        },
+        page.both_tracks,
+    );
+    assert_eq!(builds_requests(&world), before);
+    assert!(installers.both_tracks);
+    assert_ne!(installers.plan.unwrap_err(), error);
+
+    // A game that isn't for Windows never offers it.
+    let linux_only = prepare_known(
+        &world.paths,
+        &world.keyring,
+        world.server.client(),
+        &Offer {
+            windows: false,
+            linux: true,
+            ..offer()
+        },
+        &Choices::default(),
+        false,
+        None,
+        &Token::new(),
+    )
+    .unwrap();
+    assert!(!linux_only.both_tracks);
+}
