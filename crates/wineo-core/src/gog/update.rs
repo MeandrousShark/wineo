@@ -193,7 +193,8 @@ pub enum UpdateError {
     /// isn't taken for one that doesn't.
     #[error("{name} can't be checked: its config can't be read ({detail}).")]
     Unloadable { name: String, detail: String },
-    #[error("Updating Galaxy builds comes in a later release.")]
+    /// A Galaxy-tracked game handed to the installer-only `plan`.
+    #[error("{name} is on the Galaxy track, which galaxy::plan_update updates.")]
     Galaxy { name: String },
     /// Options that can't go together.
     #[error("{why}")]
@@ -201,8 +202,8 @@ pub enum UpdateError {
     /// A repair or a branch for a game on the installer track.
     #[error("Only Galaxy games have branches. Move it with --reinstall --track galaxy.")]
     NotGalaxy { name: String },
-    /// A journal of a kind this release can't finish yet, `repair`.
-    #[error("{name} has an unfinished GOG {kind}, and finishing it comes in a later release.")]
+    /// A repair journal handed to the installer-only `plan`.
+    #[error("{name} has an unfinished GOG {kind}, which galaxy::plan_update finishes.")]
     LaterRelease { name: String, kind: &'static str },
     #[error("{name} can't be updated: {why}")]
     CantCompare { name: String, why: String },
