@@ -1245,6 +1245,20 @@ Step 14 (2026-10-16), with the maintainer's answer the same day:
   `Only Galaxy games have branches.`; a Windows game's message still adds
   `Move it with --reinstall --track galaxy.`, since only it can move.
 
+Acceptance (2026-10-16), run by the maintainer on a build of `main`:
+
+- Steps 1 to 14 passed. Cleanup (step 15) happens with the release.
+- **Fixed: older builds whose manifest has no `buildId`** (step 10, The
+  Witcher). GOG's older generation 2 repository manifests leave out
+  `buildId`, and the strict parser refused them, so switching to The
+  Witcher's 1.5 or 1.5 (A) failed with `GOG's answer isn't shaped as
+  expected`. `Client::repository` now takes the listed build: a manifest
+  without `buildId` reads as that build, and one naming another build is
+  still refused. Papers, Please's old builds carry it, which is why they
+  switched fine.
+- **Fixed: release builds warned about three unused imports** behind the
+  CLI's debug-only pause hook.
+
 ## Implementation sequence
 
 Part A:
