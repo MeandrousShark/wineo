@@ -4,6 +4,43 @@ A finished plan bumps the minor version and fixes between plans bump the
 patch version. A plan released in parts bumps the minor version for each
 part. See `AGENTS.md` for the rule.
 
+## 0.34.0 - 2026-10-16
+
+GOG Galaxy builds, part B, which finishes
+[0052](docs/plans/0052-galaxy-builds.md): Galaxy games can follow a beta
+or legacy branch, roll back to an older build and stay there, and use
+private branches.
+
+- `wineo update NAME --builds` lists the builds GOG offers by branch, with
+  `--json`. `--branch NAME` follows a branch, `--default-branch` returns to
+  the default one, `--build ID` (an id or a version name) installs a build
+  and pins the game to it, and `--latest` unpins. `import gog --game` takes
+  `--branch` and `--build` too.
+- A pinned game stays on its build: `update --all` leaves it alone, plain
+  `wineo update NAME` says how to unpin and exits 0, and `update --check`
+  shows `pinned`. Newly owned DLC still installs from the pinned build.
+- Private branches ask for their password at a terminal, or read
+  `--password-stdin`, and save it in the keyring for the account that
+  entered it. Logging out or switching accounts removes them.
+- The desktop app has a Version row and picker in a GOG game's panel:
+  branches, builds, pinning, Repair, and moving between Galaxy and offline
+  installers. A branch or pin change that moves no files reviews with
+  **Switch**. The update page asks for a missing private branch password
+  instead of pointing at the CLI, and its button names what it does.
+- JSON: `update --check --json` and `import gog --list --json` add `branch`
+  and `pinned`, and `reason` can be `pinned`.
+- Behavior changes: the app's Update row checks the game again after an
+  update, so it shows **Up to date** instead of disappearing; `update --all
+  --track galaxy` is now a usage error instead of ignoring `--track`; and a
+  native game's branch flags say only `Only Galaxy games have branches.`
+- Fixed: switching to an older Galaxy build whose manifest has no build id
+  (like The Witcher 1.5) failed with "GOG's answer isn't shaped as
+  expected".
+- A new app logo: a window with a glass of wine.
+- Packaging: release builds no longer warn about unused imports, and the
+  PKGBUILD skips makepkg's debug package, which the stripped binaries left
+  empty.
+
 ## 0.33.0 - 2026-10-15
 
 GOG Galaxy builds, part A ([0052](docs/plans/0052-galaxy-builds.md)):

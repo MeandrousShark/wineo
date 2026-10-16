@@ -8,13 +8,15 @@ own numbered plan in `docs/plans/`.
 The order the maintainer picked on 2026-10-14, after 0051. Each item gets
 its own plan when it comes up, and the rows below have the details.
 
-1. GOG Galaxy builds: [0052](plans/0052-galaxy-builds.md), approved 2026-10-14; part A released in 0.33.0, part B (branches, pins, private branches, the app's Version picker) implemented and awaiting acceptance.
-2. The 1.0 contract: the JSON gaps (criterion 3), and the config
+1. The 1.0 contract: the JSON gaps (criterion 3), and the config
    compatibility guarantee with a deprecation path (criteria 4 and 5).
-3. GUI library views, designed against a library that includes store games.
-4. GUI themes, after library views, so they cover every palette role.
-5. 1.0, once the [1.0 criteria](#10-criteria) are met.
-6. Release packages (deb, rpm, AppImage), shortly after 1.0.
+2. GUI library views, designed against a library that includes store games.
+3. GUI themes, after library views, so they cover every palette role.
+4. 1.0, once the [1.0 criteria](#10-criteria) are met.
+5. Release packages (deb, rpm, AppImage), shortly after 1.0.
+
+Done from this queue: GOG Galaxy builds
+([0052](plans/0052-galaxy-builds.md), 0.33.0 and 0.34.0).
 
 The previous queue (2026-10-06) is done: `--dry-run` (0044), tags in
 `stats` (0045), hooks (0046), Steam installed and owned games (0047,
@@ -86,7 +88,8 @@ Completed: [0043: Runners from Steam, Heroic, and Lutris](plans/0043-external-ru
 [0046: Launch hooks](plans/0046-launch-hooks.md).
 Completed: store libraries in [0047](plans/0047-steam-library.md),
 [0048](plans/0048-steam-owned-games.md), [0049](plans/0049-gog-games.md),
-and [0050](plans/0050-gog-installs.md), and
+[0050](plans/0050-gog-installs.md), and
+[0052](plans/0052-galaxy-builds.md), and
 [0051: Lean and simple](plans/0051-lean-and-simple.md), which also made the
 supervisor wait on events instead of polling.
 Completed without a plan: manpages (`wineo manpages`, 2026-10-05), the
@@ -120,7 +123,6 @@ around the next milestone, 1.0:
 
 | Feature | Category | Priority | Depends on | Why | Notes |
 |---|---|---:|---|---|---|
-| GOG Galaxy builds | Compatibility | **1** | 0050 | Install and update GOG Windows games through Galaxy, so updates download only what changed, with branches and rollback | [0052](plans/0052-galaxy-builds.md). Closes 1.0 criterion 8. |
 | JSON contract gaps | Automation | **1** | | Close the three code gaps the 1.0 `--json` audit found | 1.0 criterion 3: the docs side is done (2026-10-12), and three gaps in the code wait on the maintainer. |
 | Config compatibility guarantee and deprecation path | Portability/Data | **1** | 0018 | Promise that 1.x configs keep loading, and give renamed keys and flags a warning period | 1.0 criteria 4 and 5, planned together: upgrade tests with fixture configs from earlier releases, and `validate` reporting deprecated keys. Needs a decision on newer keys, since `deny_unknown_fields` makes an older wineo reject them. |
 | GUI themes and customization | UX | **1** | 0036 | Let people make the app their own | From the maintainer's 0036 testing (2026-09-28): custom themes with a few presets, added with a GUI settings page. Longer term, a deeply customizable GUI. The palette tokens from 0036 are the starting point. Moved up to 1 by the maintainer (2026-10-14), to land before 1.0. |
@@ -223,7 +225,8 @@ maintainer calls it stable, which these criteria are meant to inform.
    Settled (2026-10-12): the proxied kind landed in 0047 and GOG went
    direct. 0050 and 0052 ship as regular 0.x releases before 1.0, so their
    new flags, JSON, and state get used before they're frozen; 1.0 itself
-   adds no features, only the promise. Closes once 0052 lands.
+   adds no features, only the promise. Closed: 0052 landed in 0.34.0
+   (2026-10-16).
 9. A stretch of daily use, across at least two releases, where upgrading a
    real library needs no manual fixes.
 
