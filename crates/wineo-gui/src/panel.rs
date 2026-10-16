@@ -7,6 +7,7 @@ use iced::widget::{
 use iced::{Center, Color, ContentFit, Element, Fill, Task, border};
 use wineo_core::cancel::Token;
 use wineo_core::error::Error;
+use wineo_core::gog::update::galaxy::present::Wording;
 use wineo_core::hooks::Phase;
 use wineo_core::launch::LaunchEvent;
 use wineo_core::operation::Operation as CoreOperation;
@@ -28,7 +29,7 @@ const PANEL_WIDTH: f32 = 420.0;
 const PANEL_ACTION_WIDTH: f32 = 82.0;
 pub(crate) const LOG_ID: &str = "panel-log";
 const LOG_LINES: usize = 2000;
-const PANEL_PLAY_ID: &str = "panel-play";
+pub(crate) const PANEL_PLAY_ID: &str = "panel-play";
 const PANEL_INSTALL_ID: &str = "panel-install";
 /// How strongly art for a game that isn't installed is dimmed, on its card
 /// and in its panel.
@@ -38,6 +39,7 @@ const PANEL_LOG_ID: &str = "panel-log";
 const PANEL_SETTINGS_ID: &str = "panel-settings";
 const PANEL_ART_ID: &str = "panel-art";
 const PANEL_ACTIONS_ID: &str = "panel-actions";
+const PANEL_VERSION_ID: &str = "panel-version";
 const PANEL_CANCEL_ID: &str = "panel-cancel";
 const PANEL_FORCE_STOP_ID: &str = "panel-force-stop";
 const HOOK_CANCEL_ID: &str = "hook-stop-cancel";
@@ -246,7 +248,7 @@ impl App {
     /// background check found an update for, with nothing to finish first.
     pub(crate) fn gog_update_action(&self, name: &str) -> bool {
         self.gog_updates
-            .get(name)
+            .status(name)
             .is_some_and(crate::gog_library::updatable)
             && self
                 .cards
@@ -296,7 +298,10 @@ impl App {
     pub(crate) fn panel_log_visible(&self) -> bool {
         self.log_view && self.checkup_log_scope != Some(crate::checkup::Scope::Global)
     }
+    /// Closes the log, and the Version view, which takes the same place in
+    /// the panel, so whatever leaves one leaves both.
     pub(crate) fn close_log(&mut self) {
+        self.close_version();
         if let Some(token) = self.log_token.take() {
             token.cancel();
         }
@@ -895,8 +900,11 @@ impl App {
         ));
         let has_log = self.log_source(card).is_some();
         let mut inner = column![].spacing(8).width(Fill);
+        let version_visible = self.version_visible();
         if self.panel_log_visible() {
             inner = inner.push(self.log_content());
+        } else if version_visible {
+            inner = inner.push(self.version_content());
         } else if self.checkup_visible() {
             inner = inner
                 .push(self.checkup_view(crate::checkup::Scope::Environment(card.name.clone())));
@@ -936,15 +944,29 @@ impl App {
                     .size(14)
                     .color(palette.warning),
                 );
-            } else if let Some(status) = self.gog_updates.get(&card.name) {
+            }
+            if crate::version_picker::has_version(card) {
+                inner = inner.push(version_row(
+                    self.version_value(card),
+                    Message::Version(crate::version_picker::Event::Open(card.name.clone())),
+                    palette,
+                ));
+            }
+            if !card.finish_update()
+                && let Some(status) = self.gog_updates.status(&card.name)
+            {
                 inner = inner.push(detail_row(
                     "Update",
                     crate::gog_library::status_label(status),
                     palette,
                 ));
                 if let Some(reason) = &status.reason {
-                    inner = inner.push(text(reason.note()).size(13).color(palette.muted));
-                } else if let Some(note) = status.pin_note() {
+                    inner = inner.push(
+                        text(reason.note_for(Wording::App))
+                            .size(13)
+                            .color(palette.muted),
+                    );
+                } else if let Some(note) = status.pin_note_for(Wording::App) {
                     // Nothing newer, but the pin stays visible.
                     inner = inner.push(text(note).size(13).color(palette.muted));
                 }
@@ -956,7 +978,7 @@ impl App {
                 inner = inner.push(detail_row("Tags", &card.tags.join(", "), palette));
             }
         }
-        if !self.panel_log_visible() && !self.checkup_visible() {
+        if !self.panel_log_visible() && !version_visible && !self.checkup_visible() {
             if let Some(target_picker) = target_picker {
                 inner = inner.push(target_picker);
             }
@@ -990,6 +1012,11 @@ impl App {
                 Message::Context(card.name.clone()),
             ));
             inner = inner.push(extra);
+        } else if version_visible && card.finish_update() {
+            // The view can't change anything until the operation finishes,
+            // so Finish update stays in reach.
+            inner = inner.push(ui::separator(palette));
+            inner = inner.push(actions);
         }
         inner =
             inner.push(self.checkup_status(&crate::checkup::Scope::Environment(card.name.clone())));
@@ -1155,6 +1182,25 @@ fn panel_log_button(
         .on_press(message.clone())
         .into();
     focus_button::control(content, true, id, message)
+}
+
+/// The installed version, with Change opening the Version view beside it.
+fn version_row(value: String, change: Message, palette: Palette) -> Element<'static, Message> {
+    crate::ends::ends(
+        row![
+            text("Version").color(palette.muted),
+            Space::new().width(Fill),
+            text(value)
+                .color(palette.foreground)
+                .wrapping(iced::widget::text::Wrapping::WordOrGlyph),
+        ]
+        .spacing(8)
+        .align_y(Center)
+        .width(Fill),
+        panel_secondary_button("Change", palette, PANEL_VERSION_ID, change),
+        8.0,
+        160.0,
+    )
 }
 
 fn detail_row(label: &str, value: &str, palette: Palette) -> Element<'static, Message> {

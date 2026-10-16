@@ -68,7 +68,29 @@ impl App {
         Task::batch([library, trash, art])
     }
 
+    /// `merge_checked` for tests, which don't run the checks it schedules.
+    #[cfg(test)]
     pub(crate) fn merge(&mut self, cards: Vec<Card>) {
+        let _ = self.merge_checked(cards);
+    }
+
+    /// Shows `cards`, and checks again each GOG game whose own folder now
+    /// says something new about it: that is newer than anything asked of GOG
+    /// before, so the app forgets it, and the check puts the Update row back.
+    pub(crate) fn merge_checked(&mut self, cards: Vec<Card>) -> Task<Message> {
+        let changed = crate::gog_library::local_changes(&self.cards, &cards);
+        self.merge_cards(cards);
+        Task::batch(changed.into_iter().map(|(name, check)| {
+            self.gog_updates.changed(&name);
+            if check {
+                crate::gog_library::recheck(self, name)
+            } else {
+                Task::none()
+            }
+        }))
+    }
+
+    fn merge_cards(&mut self, cards: Vec<Card>) {
         let needle = self.search.to_lowercase();
         let old_layout: Vec<_> = self
             .filtered()

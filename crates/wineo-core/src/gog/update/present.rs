@@ -6,6 +6,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::time::{Duration, Instant};
 
+use super::galaxy::present::Wording;
 use super::{GameError, Pending, Progress, Reason, Status, Updated, galaxy, install};
 use crate::gog::folder::{JournalKind, Track};
 use crate::gog::names;
@@ -14,6 +15,12 @@ use crate::units;
 impl Reason {
     /// Why an update can't be applied, or can't be told, as a sentence.
     pub fn note(&self) -> String {
+        self.note_for(Wording::Cli)
+    }
+
+    /// `note`, worded for `wording`. Only a pin differs: the app undoes it
+    /// with its Version picker, not a flag.
+    pub fn note_for(&self, wording: Wording) -> String {
         match self {
             Self::Galaxy { name, branch: None } => format!(
                 "GOG has no Galaxy build of this game that wineo can update. Move it to offline installers with: wineo update {name} --reinstall --track installer"
@@ -34,9 +41,16 @@ impl Reason {
                     .filter(|version| !version.is_empty())
                     .map(|version| format!(" ({version})"))
                     .unwrap_or_default();
-                format!(
-                    "Pinned to build {build}{version}. Run wineo update {name} --latest to follow its branch again."
-                )
+                match wording {
+                    Wording::Cli => format!(
+                        "Pinned to build {build}{version}. Run wineo update {name} --latest to follow its branch again."
+                    ),
+                    Wording::App => {
+                        format!(
+                            "Pinned to build {build}{version}. Use Change to follow its branch again."
+                        )
+                    }
+                }
             }
             Self::CantCompare(why) | Self::Password(why) => why.clone(),
         }
@@ -47,8 +61,13 @@ impl Status {
     /// The note a pinned game carries: the reason when a newer build waits,
     /// else the same words, so the pin is visible while nothing is newer.
     pub fn pin_note(&self) -> Option<String> {
+        self.pin_note_for(Wording::Cli)
+    }
+
+    /// `pin_note`, worded for `wording`.
+    pub fn pin_note_for(&self, wording: Wording) -> Option<String> {
         if let Some(reason @ Reason::Pinned { .. }) = &self.reason {
-            return Some(reason.note());
+            return Some(reason.note_for(wording));
         }
         let build = self.pinned.clone()?;
         Some(
@@ -57,7 +76,7 @@ impl Status {
                 build,
                 version: self.pinned_name.clone(),
             }
-            .note(),
+            .note_for(wording),
         )
     }
 }

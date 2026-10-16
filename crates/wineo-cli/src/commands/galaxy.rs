@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use wineo_core::cancel::Token;
 use wineo_core::gog::folder::Track;
-use wineo_core::gog::update::galaxy::present::{Label, saved_items};
+use wineo_core::gog::update::galaxy::present::{Label, Wording, saved_items};
 pub use wineo_core::gog::update::galaxy::present::{Reporter, restart_lines};
 use wineo_core::gog::update::galaxy::update::Plan;
 use wineo_core::gog::update::galaxy::{FollowPlan, Progress};
@@ -56,7 +56,7 @@ fn word(label: Label) -> String {
 pub fn update_review(paths: &Paths, plan: &Plan) -> Vec<String> {
     let mut lines = vec![format!("{} {}", plan.action(), plan.environment())];
     let rows = plan
-        .review_rows(paths, |path| crate::style::path(paths, path))
+        .review_rows(paths, |path| crate::style::path(paths, path), Wording::Cli)
         .into_iter()
         .map(|(label, value)| (word(label), value))
         .collect();
@@ -69,7 +69,7 @@ pub fn update_review(paths: &Paths, plan: &Plan) -> Vec<String> {
 pub fn follow_review(paths: &Paths, plan: &FollowPlan) -> Vec<String> {
     let mut lines = vec![format!("{} {}", plan.action(), plan.environment())];
     let rows = plan
-        .review_rows(|path| crate::style::path(paths, path))
+        .review_rows(|path| crate::style::path(paths, path), Wording::Cli)
         .into_iter()
         .map(|(label, value)| (word(label), value))
         .collect();
@@ -86,7 +86,7 @@ pub fn install_rows(
 ) {
     // One DLC per line; the rest sit under the first one's label.
     let mut dlc = false;
-    for (label, value) in plan.review_rows(paths) {
+    for (label, value) in plan.review_rows(paths, Wording::Cli) {
         let label = match label {
             Label::Dlc if std::mem::replace(&mut dlc, true) => String::new(),
             label => word(label),

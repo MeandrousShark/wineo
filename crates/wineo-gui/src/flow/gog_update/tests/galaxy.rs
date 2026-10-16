@@ -534,24 +534,239 @@ fn a_game_following_a_private_branch_updates_with_the_saved_password() {
 }
 
 #[test]
-fn a_game_following_a_private_branch_without_its_password_fails_naming_the_cli_command() {
+fn a_game_following_a_private_branch_without_its_password_asks_for_it() {
     let world = following_private_branch();
     fs::remove_file(password_file(&world)).unwrap();
-    let error = plan(&world, Options::default()).unwrap_err();
+    let Ok(Planned::NeedsPassword { title, branch }) = plan(&world, Options::default()) else {
+        panic!("expected the password question");
+    };
     assert_eq!(
-        error,
-        format!(
-            "Papers, Please's branch beta is private. Enter its password with: wineo update {NAME} --branch beta"
-        )
+        (title.as_str(), branch.as_str()),
+        ("Papers, Please", "beta")
     );
-    assert!(!error.contains(BRANCH_PASSWORD));
 
-    // The page shows it as an error and offers no way to continue.
     let mut page = Page::new(world.paths.clone(), NAME.to_owned()).0;
     let generation = page.generation;
-    let _ = page.update(Event::Planned(generation, Err(error.clone())));
-    assert_eq!(page.error.as_deref(), Some(error.as_str()));
+    let _ = page.update(Event::Planned(
+        generation,
+        Ok(Planned::NeedsPassword { title, branch }),
+    ));
+    assert_eq!(page.step, Step::Password);
+    assert_eq!(page.error, None);
     fits(&page);
+    // Nothing to send yet.
+    let _ = page.update(Event::Continue);
+    assert_eq!(page.step, Step::Password);
+    let _ = page.update(Event::Password(Secret::new(BRANCH_PASSWORD)));
+    // What Continue sends, run here against the fake GOG.
+    let job = page.continue_job().unwrap();
+    assert_eq!(page.step, Step::Planning);
+    // The field is cleared once the password is on its way.
+    assert_eq!(page.password.expose(), "");
+    let generation = job.generation;
+    let planned = job.run(&world.keyring, world.server.client());
+    let Ok(Planned::Galaxy(plan)) = &planned else {
+        panic!("expected a Galaxy update");
+    };
+    assert!(galaxy_review_rows(&world.paths, plan).contains(&(
+        "Papers, Please".to_owned(),
+        "1.3.0-beta -> 1.3.1-beta".to_owned()
+    )));
+    let _ = page.update(Event::Planned(generation, planned));
+    assert_eq!(page.step, Step::Review);
+    assert_eq!(page.asked, None);
+    assert!(password_file(&world).exists());
+}
+
+#[test]
+fn a_wrong_password_typed_on_the_page_asks_again_and_saves_nothing() {
+    let world = following_private_branch();
+    fs::remove_file(password_file(&world)).unwrap();
+    let mut page = Page::new(world.paths.clone(), NAME.to_owned()).0;
+    let generation = page.generation;
+    let _ = page.update(Event::Planned(
+        generation,
+        Ok(Planned::NeedsPassword {
+            title: "Papers, Please".to_owned(),
+            branch: "beta".to_owned(),
+        }),
+    ));
+    let _ = page.update(Event::Password(Secret::new("wrong")));
+    let job = page.continue_job().unwrap();
+    let generation = job.generation;
+    let planned = job.run(&world.keyring, world.server.client());
+    let refused = "GOG lists no branch beta for Papers, Please, or refused its password.";
+    assert!(
+        matches!(&planned, Ok(Planned::Refused { message, .. }) if message == refused),
+        "{planned:?}"
+    );
+    let _ = page.update(Event::Planned(generation, planned));
+    // The question stays up with why, and the refused password is gone.
+    assert_eq!(page.step, Step::Password);
+    assert_eq!(page.error.as_deref(), Some(refused));
+    assert_eq!(page.password.expose(), "");
+    assert!(page.asked.is_some());
+    fits(&page);
+    assert!(!password_file(&world).exists());
+
+    // The right one then gets through.
+    let _ = page.update(Event::Password(Secret::new(BRANCH_PASSWORD)));
+    let job = page.continue_job().unwrap();
+    assert_eq!(page.error, None);
+    let generation = job.generation;
+    let planned = job.run(&world.keyring, world.server.client());
+    let _ = page.update(Event::Planned(generation, planned));
+    assert_eq!(page.step, Step::Review);
+    assert!(password_file(&world).exists());
+}
+
+/// Plans `options` from a page opened with them, as the Version picker
+/// opens it.
+fn plan_from_page(world: &Galaxy, options: Options) -> Result<Planned, String> {
+    let page = Page::with_options(world.paths.clone(), NAME.to_owned(), options).0;
+    plan(world, page.planning_options(None))
+}
+
+#[test]
+fn a_change_that_moves_no_files_reviews_and_switches() {
+    let world = world();
+    let Ok(Planned::Follow(follow)) = plan_from_page(
+        &world,
+        Options {
+            choice: core_galaxy::Choice::Build("100".to_owned()),
+            ..Options::default()
+        },
+    ) else {
+        panic!("expected a change of pin");
+    };
+    let ready = Ready::Follow(follow.clone());
+    assert_eq!(ready.action(), "Pin");
+    assert_eq!(ready.button(), "Switch");
+    let rows = ready_rows(&world.paths, &ready);
+    assert!(
+        rows.contains(&("Pin".to_owned(), "build 100".to_owned())),
+        "{rows:?}"
+    );
+
+    let mut page = Page::new(world.paths.clone(), NAME.to_owned()).0;
+    let generation = page.generation;
+    let _ = page.update(Event::Planned(generation, Ok(Planned::Follow(follow))));
+    assert_eq!(page.step, Step::Review);
+    fits(&page);
+
+    let updated = apply_ready(
+        &world.paths,
+        &world.keyring,
+        world.server.client(),
+        &ready,
+        &Token::new(),
+        |_| {},
+    )
+    .unwrap();
+    assert_eq!(
+        ready_lines(&world.paths, &ready, &updated),
+        [format!("Pinned {NAME} to build 100.")]
+    );
+    assert_eq!(
+        core_galaxy::follow_of(&world.paths, &world.folder())
+            .pinned
+            .as_deref(),
+        Some("100")
+    );
+    // Nothing moved.
+    assert_eq!(
+        fs::read_to_string(world.file("Papers.exe")).unwrap(),
+        "MZ 1.2.76"
+    );
+}
+
+#[test]
+fn a_repair_from_the_picker_reviews_as_a_repair() {
+    let world = world();
+    let Ok(Planned::Galaxy(plan)) = plan_from_page(
+        &world,
+        Options {
+            repair: true,
+            ..Options::default()
+        },
+    ) else {
+        panic!("expected a repair");
+    };
+    assert_eq!(plan.kind(), JournalKind::Repair);
+    let ready = Ready::Galaxy(plan);
+    assert_eq!(ready.action(), "Repair");
+    assert_eq!(ready.button(), "Repair");
+}
+
+#[test]
+fn a_move_to_offline_installers_reviews_the_track_change() {
+    let world = world();
+    world.offer_installer("1.5");
+    let Ok(Planned::Update(pending)) = plan_from_page(
+        &world,
+        Options {
+            reinstall: true,
+            track: Some(Track::Installer),
+            ..Options::default()
+        },
+    ) else {
+        panic!("expected a move to offline installers");
+    };
+    let ready = Ready::Installer(pending);
+    assert_eq!(ready.action(), "Reinstall");
+    let rows = ready_rows(&world.paths, &ready);
+    assert_eq!(rows[0].0, "Folder");
+    assert_eq!(
+        rows[1],
+        ("Track".to_owned(), "Galaxy -> Offline installer".to_owned())
+    );
+    let mut page = Page::new(world.paths.clone(), NAME.to_owned()).0;
+    let generation = page.generation;
+    let Ready::Installer(pending) = ready else {
+        unreachable!()
+    };
+    let _ = page.update(Event::Planned(generation, Ok(Planned::Update(pending))));
+    assert_eq!(page.step, Step::Review);
+    fits(&page);
+}
+
+#[test]
+fn a_move_to_offline_installers_plans_on_the_installer_track() {
+    let world = world();
+    let error = plan_from_page(
+        &world,
+        Options {
+            reinstall: true,
+            track: Some(Track::Installer),
+            ..Options::default()
+        },
+    )
+    .unwrap_err();
+    // The fake GOG offers no installers, which only the installers' planner
+    // asks for.
+    assert!(error.contains("has no Windows installer"), "{error}");
+}
+
+#[test]
+fn a_move_to_galaxy_reviews_the_track_change() {
+    let world = world();
+    world.on_installer_track();
+    let Ok(Planned::Galaxy(plan)) = plan_from_page(
+        &world,
+        Options {
+            reinstall: true,
+            track: Some(Track::Galaxy),
+            ..Options::default()
+        },
+    ) else {
+        panic!("expected a move onto Galaxy");
+    };
+    let ready = Ready::Galaxy(plan);
+    assert_eq!(ready.button(), "Reinstall");
+    assert!(
+        ready_rows(&world.paths, &ready)
+            .contains(&("Track".to_owned(), "Offline installer -> Galaxy".to_owned()))
+    );
 }
 
 #[test]
@@ -566,4 +781,77 @@ fn a_refused_password_on_a_followed_private_branch_fails_and_is_removed() {
         "GOG lists no branch beta for Papers, Please, or refused its password."
     );
     assert!(!password_file(&world).exists());
+}
+
+#[test]
+fn finishing_the_update_page_checks_the_game_again() {
+    let mut app = crate::tests::app();
+    let _ = app.open_gog_update(NAME.to_owned(), None);
+    assert!(app.flow.is_some());
+    let before = app.gog_updates.asked(NAME);
+    let generation = match &app.flow {
+        Some(crate::flow::Page::GogUpdate(page)) => page.generation,
+        _ => panic!("expected the update page"),
+    };
+    let _ = app.update(crate::Message::Flow(
+        app.flow_generation,
+        crate::flow::Event::UpdateMessage(Box::new(Event::Planned(
+            generation,
+            Ok(Planned::UpToDate),
+        ))),
+    ));
+    // Finishing changed the game, so only what is asked from now counts:
+    // the check it scheduled.
+    assert_ne!(app.gog_updates.asked(NAME), before);
+}
+
+#[test]
+fn leaving_the_password_question_forgets_what_was_typed() {
+    let world = following_private_branch();
+    let mut page = Page::new(world.paths.clone(), NAME.to_owned()).0;
+    let generation = page.generation;
+    page.token = None;
+    let _ = page.update(Event::Planned(
+        generation,
+        Ok(Planned::NeedsPassword {
+            title: "Papers, Please".to_owned(),
+            branch: "beta".to_owned(),
+        }),
+    ));
+    let _ = page.update(Event::Password(Secret::new(BRANCH_PASSWORD)));
+    let _ = page.update(Event::Back);
+    assert_eq!(page.password.expose(), "");
+    assert_eq!(page.asked, None);
+}
+
+#[test]
+fn debug_output_never_shows_a_password() {
+    let typed = [
+        format!("{:?}", Event::Password(Secret::new(BRANCH_PASSWORD))),
+        format!(
+            "{:?}",
+            crate::Message::Flow(
+                1,
+                crate::flow::Event::UpdateMessage(Box::new(Event::Password(Secret::new(
+                    BRANCH_PASSWORD
+                )))),
+            )
+        ),
+        format!(
+            "{:?}",
+            crate::Message::Version(crate::version_picker::Event::PrivatePassword(Secret::new(
+                BRANCH_PASSWORD
+            )))
+        ),
+        format!(
+            "{:?}",
+            Options {
+                password: Some(Secret::new(BRANCH_PASSWORD)),
+                ..Options::default()
+            }
+        ),
+    ];
+    for line in typed {
+        assert!(!line.contains(BRANCH_PASSWORD), "{line}");
+    }
 }

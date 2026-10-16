@@ -139,7 +139,7 @@ impl App {
             &key,
             modifiers,
             search_focused,
-            self.panel_log_visible(),
+            self.panel_log_visible() || self.version_visible(),
             self.panel_open,
             self.search.is_empty(),
         ) {
@@ -199,7 +199,7 @@ impl App {
                 ])
             }
             Action::OpenOrPlay => {
-                if self.checkup_visible() && !self.panel_log_visible() {
+                if self.version_visible() || (self.checkup_visible() && !self.panel_log_visible()) {
                     Task::none()
                 } else if self.panel_open {
                     self.start_selected()

@@ -13,6 +13,7 @@ mod prefix;
 mod steam;
 
 pub(crate) use gog_install::Offer;
+pub(crate) use gog_update::LOGGED_OUT;
 
 use iced::widget::{column, container, scrollable, text};
 use iced::{Element, Fill, Task, keyboard};
@@ -68,6 +69,14 @@ pub(crate) enum Event {
     SteamMessage(Box<steam::Event>),
     GogMessage(Box<gog::Event>),
     UpdateMessage(Box<gog_update::Event>),
+}
+
+impl Event {
+    /// The update page's planning answering that the game is up to date.
+    #[cfg(test)]
+    pub(crate) fn update_message_planned_up_to_date(generation: u64) -> Self {
+        gog_update::Event::Planned(generation, Ok(gog_update::Planned::UpToDate)).into()
+    }
 }
 
 /// Boxes each page's own event into the flow's, so `.map(Event::from)` replaces
@@ -134,6 +143,17 @@ impl Page {
     /// Updates `name`'s GOG game, or finishes its interrupted update.
     pub(crate) fn gog_update(paths: Paths, name: String) -> (Self, Task<Event>) {
         let (page, task) = gog_update::Page::new(paths, name);
+        (Self::GogUpdate(Box::new(page)), task.map(Event::from))
+    }
+
+    /// Changes `name`'s GOG game as `options` ask, from the Version picker:
+    /// a branch or build, a repair, or a move to the other track.
+    pub(crate) fn gog_update_with(
+        paths: Paths,
+        name: String,
+        options: wineo_core::gog::update::Options,
+    ) -> (Self, Task<Event>) {
+        let (page, task) = gog_update::Page::with_options(paths, name, options);
         (Self::GogUpdate(Box::new(page)), task.map(Event::from))
     }
 

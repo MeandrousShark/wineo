@@ -2064,3 +2064,50 @@ fn the_track_is_chosen_apart_from_planning_with_one_builds_fetch() {
         Track::Installer
     );
 }
+
+#[test]
+fn what_a_galaxy_game_has_is_read_from_its_folder_alone() {
+    let fx = Fixture::new();
+    let mut build = Fixture::game("100");
+    build.version_name = "1.0.4".to_owned();
+    fx.content.add_build(build);
+    fx.install();
+    let local = super::local_of(&fx.paths, &fx.state()).unwrap();
+    assert_eq!(local.build, "100");
+    assert_eq!(local.version.as_deref(), Some("1.0.4"));
+    assert!(local.follow.is_default());
+
+    // A record written for another selection is stale: its name doesn't
+    // count, though its build id matches.
+    let sidecar = folder::sidecar_file(&fx.paths, &fx.folder);
+    let good = fs::read(&sidecar).unwrap();
+    let mut stale = fx.record().unwrap();
+    stale.installed.as_mut().unwrap().selection = "another selection".to_owned();
+    fs::write(&sidecar, stale.to_json().unwrap()).unwrap();
+    let local = super::local_of(&fx.paths, &fx.state()).unwrap();
+    assert_eq!((local.build.as_str(), local.version), ("100", None));
+
+    // So is one whose info file another tool changed since.
+    fs::write(&sidecar, &good).unwrap();
+    assert!(
+        super::local_of(&fx.paths, &fx.state())
+            .unwrap()
+            .version
+            .is_some()
+    );
+    let info = fx.folder.join(format!("goggame-{GAME}.info"));
+    let mut changed = fs::read(&info).unwrap();
+    changed.extend_from_slice(b" ");
+    fs::write(&info, changed).unwrap();
+    assert_eq!(
+        fx.record().unwrap().installed.unwrap().manifest.build,
+        "100"
+    );
+    let local = super::local_of(&fx.paths, &fx.state()).unwrap();
+    assert_eq!((local.build.as_str(), local.version), ("100", None));
+
+    // Without a readable record, the build is still known from the state.
+    fs::write(&sidecar, b"garbage").unwrap();
+    let local = super::local_of(&fx.paths, &fx.state()).unwrap();
+    assert_eq!((local.build.as_str(), local.version), ("100", None));
+}

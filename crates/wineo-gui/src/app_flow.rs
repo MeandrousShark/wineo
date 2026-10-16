@@ -8,6 +8,50 @@ use crate::library::{Card, load_library};
 use crate::{App, Message, flow, task};
 
 impl App {
+    /// Opens the update page for `name`'s GOG game: an update, or the end
+    /// of an interrupted one, or with `options` what the Version picker
+    /// chose. Callers decide whether it may start.
+    pub(crate) fn open_gog_update(
+        &mut self,
+        name: String,
+        options: Option<wineo_core::gog::update::Options>,
+    ) -> Task<Message> {
+        if self.settings.is_some() || self.art_page.is_some() || self.flow.is_some() {
+            return Task::none();
+        }
+        self.close_log();
+        self.action_menu = None;
+        self.flow_generation = self.flow_generation.wrapping_add(1);
+        let generation = self.flow_generation;
+        // An interrupted Galaxy install is finished by installing the
+        // game again, which the update page can't do.
+        let galaxy_install = self
+            .cards
+            .iter()
+            .find(|card| card.name == name)
+            .filter(|card| options.is_none() && card.finish_update())
+            .filter(|_| crate::gog_library::galaxy_install(&self.paths, &name))
+            .and_then(|card| {
+                Some(flow::Offer {
+                    gog_id: card.gog.as_ref()?.gog_id.as_deref()?.parse().ok()?,
+                    title: card.display_title.clone(),
+                    linux: false,
+                    windows: true,
+                    unfinished: Some(name.clone()),
+                })
+            });
+        let (page, task) = match (galaxy_install, options) {
+            (Some(offer), _) => flow::Page::gog_finish_install(self.paths.clone(), offer),
+            (None, Some(options)) => flow::Page::gog_update_with(self.paths.clone(), name, options),
+            (None, None) => flow::Page::gog_update(self.paths.clone(), name),
+        };
+        self.flow = Some(page);
+        Task::batch([
+            task.map(move |event| Message::Flow(generation, event)),
+            iced::advanced::widget::operate(iced::advanced::widget::operation::focusable::unfocus()),
+        ])
+    }
+
     pub(crate) fn flow_update(&mut self, generation: u64, event: flow::Event) -> Task<Message> {
         if generation != self.flow_generation {
             return Task::none();
@@ -20,9 +64,15 @@ impl App {
         let task = page
             .update(event, self.steamgriddb_available)
             .map(move |event| Message::Flow(generation, event));
-        if let Some(name) = page.take_updated() {
-            self.gog_updates.remove(&name);
-        }
+        // What changed is checked again, so the panel's Update and Version
+        // rows say what the game has now.
+        let task = match page.take_updated() {
+            Some(name) => {
+                self.gog_updates.changed(&name);
+                Task::batch([task, crate::gog_library::recheck(self, name)])
+            }
+            None => task,
+        };
         let Some(page) = &mut self.flow else {
             return task;
         };
@@ -68,21 +118,21 @@ impl App {
                 iced::exit()
             };
         }
-        match result {
-            Ok(cards) => self.merge(cards),
+        let checks = match result {
+            Ok(cards) => self.merge_checked(cards),
             Err(error) => {
                 self.shown.show_library(Err(error.clone()));
                 self.error = Some(error);
                 return Task::none();
             }
-        }
+        };
         let (name, launch, settings) = match action {
-            flow::Action::Choose | flow::Action::SteamKey => return Task::none(),
+            flow::Action::Choose | flow::Action::SteamKey => return checks,
             flow::Action::Library { name, launch } => (name, launch, false),
             flow::Action::Settings { name, launch } => (Some(name), launch, true),
         };
         let Some(name) = name else {
-            return Task::none();
+            return checks;
         };
         self.search.clear();
         if self.selected.as_deref() != Some(&name) {
@@ -101,7 +151,7 @@ impl App {
             .and_then(|card| card.default_target.clone());
         self.panel_error = None;
         self.panel_note = None;
-        let mut tasks = vec![self.load_visible_art(), self.load_panel_art()];
+        let mut tasks = vec![checks, self.load_visible_art(), self.load_panel_art()];
         if launch {
             tasks.push(self.start_selected());
         }

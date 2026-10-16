@@ -72,6 +72,8 @@ struct Switches {
     fail_manifests: AtomicBool,
     /// Builds left out of the lists, as GOG drops old ones.
     hidden: Mutex<HashSet<String>>,
+    /// The version of a Windows installer GOG's details offer, if any.
+    installer: Mutex<Option<String>>,
 }
 
 pub(crate) struct Galaxy {
@@ -151,6 +153,12 @@ impl Galaxy {
         private.branch = Some(branch.to_owned());
         self.content.add_build(private);
         self.content.set_branch_password(branch, password);
+    }
+
+    /// Offers an English Windows installer at `version` in the game's
+    /// details, enough to plan a move to offline installers.
+    pub(crate) fn offer_installer(&self, version: &str) {
+        *self.switches.installer.lock().unwrap() = Some(version.to_owned());
     }
 
     /// Leaves `build` out of the build lists.
@@ -238,10 +246,45 @@ exit 0
         galaxy_install::apply(&self.paths, &mut session, &plan, &Token::new(), |_| {}).unwrap();
     }
 
+    /// Records the installed game as one from offline installers, as if it
+    /// were installed the old way, at version 1.2.76.
+    pub(crate) fn on_installer_track(&self) {
+        use wineo_core::gog::folder::{FolderLock, Track};
+        let lock = FolderLock::exclusive(&self.paths, &self.folder(), &|| false).unwrap();
+        let mut state = lock.read().unwrap().unwrap();
+        let committed = state.committed.as_mut().unwrap();
+        committed.track = Track::Installer;
+        for product in &mut committed.products {
+            product.build = None;
+            product.version = Some("1.2.76".to_owned());
+        }
+        lock.write(&state).unwrap();
+        let _ = fs::remove_file(wineo_core::gog::folder::sidecar_file(
+            &self.paths,
+            &self.folder(),
+        ));
+    }
+
     /// Where a file of the game is.
     pub(crate) fn file(&self, path: &str) -> PathBuf {
         self.folder().join(path)
     }
+}
+
+/// The installers the details offer, as `offer_installer` set them.
+fn installers(switches: &Switches) -> Value {
+    let Some(version) = switches.installer.lock().unwrap().clone() else {
+        return json!([]);
+    };
+    json!([{
+        "id": format!("installer_windows_en_{GAME}"),
+        "os": "windows",
+        "language": "en",
+        "language_full": "English",
+        "version": version,
+        "total_size": 4096,
+        "files": [{"id": "en1installer0", "size": 4096, "downlink": "/downlink/setup.exe"}],
+    }])
 }
 
 fn answer(content: &ContentSystem, switches: &Switches, request: &fake::Request) -> Reply {
@@ -282,7 +325,7 @@ fn answer(content: &ContentSystem, switches: &Switches, request: &fake::Request)
             "id": GAME,
             "title": "Papers, Please",
             "content_system_compatibility": {"windows": true, "osx": false, "linux": false},
-            "downloads": {"installers": [], "patches": []},
+            "downloads": {"installers": installers(switches), "patches": []},
             "dlcs": {"products": []},
             "expanded_dlcs": [],
         });

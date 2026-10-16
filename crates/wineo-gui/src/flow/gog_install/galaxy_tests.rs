@@ -107,7 +107,7 @@ fn the_review_lets_you_pick_the_track_when_both_are_possible() {
         panic!("expected Galaxy");
     };
     assert_eq!(
-        galaxy.review_rows(&world.paths),
+        galaxy.review_rows(&world.paths, Wording::App),
         [
             (GalaxyLabel::Version, "1.2.76".to_owned()),
             (GalaxyLabel::Setup, "MSVC2017".to_owned()),

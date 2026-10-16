@@ -44,6 +44,15 @@ pub enum Label {
     Download,
 }
 
+/// Who a review is worded for. The CLI's pin row says which flag undoes
+/// it, which means nothing in the app, and the app names the installer
+/// track as its Track picker does.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Wording {
+    Cli,
+    App,
+}
+
 /// A count with thousands separators, like `1,421`.
 pub fn thousands(count: usize) -> String {
     let digits = count.to_string();
@@ -105,7 +114,7 @@ pub fn restart_lines(needs_restart: &[String]) -> Vec<String> {
 /// The branch and pin rows of a review. With `from`, the game follows
 /// something already, and a row shows what changes; without, it's an
 /// install, and a row shows what it will follow.
-pub fn follow_rows(from: Option<&Follow>, to: &Follow) -> Vec<(Label, String)> {
+pub fn follow_rows(from: Option<&Follow>, to: &Follow, wording: Wording) -> Vec<(Label, String)> {
     let branch = |branch: &Option<String>| branch.as_deref().unwrap_or("default").to_owned();
     let mut rows = Vec::new();
     match from {
@@ -121,7 +130,13 @@ pub fn follow_rows(from: Option<&Follow>, to: &Follow) -> Vec<(Label, String)> {
     }
     if from.is_none_or(|from| from.pinned != to.pinned) {
         match &to.pinned {
-            Some(build) => rows.push((Label::Pin, format!("build {build}, until --latest"))),
+            Some(build) => rows.push((
+                Label::Pin,
+                match wording {
+                    Wording::Cli => format!("build {build}, until --latest"),
+                    Wording::App => format!("build {build}"),
+                },
+            )),
             None if from.is_some() => rows.push((Label::Pin, "removed".to_owned())),
             None => {}
         }
@@ -157,12 +172,16 @@ impl FollowPlan {
 
     /// The rows of the review: nothing but the folder, track, and what
     /// changes about the branch and pin.
-    pub fn review_rows(&self, show_path: impl Fn(&Path) -> String) -> Vec<(Label, String)> {
+    pub fn review_rows(
+        &self,
+        show_path: impl Fn(&Path) -> String,
+        wording: Wording,
+    ) -> Vec<(Label, String)> {
         let mut rows = vec![
             (Label::Folder, show_path(self.folder())),
             (Label::Track, "Galaxy".to_owned()),
         ];
-        rows.extend(follow_rows(Some(self.from()), self.to()));
+        rows.extend(follow_rows(Some(self.from()), self.to(), wording));
         if self.claims() {
             rows.push((
                 Label::Owner,
@@ -180,15 +199,17 @@ impl Plan {
         &self,
         paths: &Paths,
         show_path: impl Fn(&Path) -> String,
+        wording: Wording,
     ) -> Vec<(Label, String)> {
         let mut rows = vec![(Label::Folder, show_path(self.folder()))];
-        let track = if self.moves_from().is_some() {
-            "installer -> Galaxy"
-        } else {
-            "Galaxy"
+        let track = match (self.moves_from().is_some(), wording) {
+            (true, Wording::Cli) => "installer -> Galaxy",
+            // The app names the installer track as its Track picker does.
+            (true, Wording::App) => "Offline installer -> Galaxy",
+            (false, _) => "Galaxy",
         };
         rows.push((Label::Track, track.to_owned()));
-        rows.extend(follow_rows(Some(self.from()), self.to()));
+        rows.extend(follow_rows(Some(self.from()), self.to(), wording));
         if self.claims() {
             rows.push((
                 Label::Owner,
@@ -287,7 +308,8 @@ impl Plan {
     /// The rows an update reports as changed: the products it installed, as
     /// the review showed them.
     pub fn changes(&self, paths: &Paths, updated: &Updated) -> Vec<(String, String)> {
-        let rows = self.review_rows(paths, |path| path.display().to_string());
+        // Only the product rows are read, which every wording shares.
+        let rows = self.review_rows(paths, |path| path.display().to_string(), Wording::Cli);
         let labels = self.product_labels();
         updated
             .products
@@ -316,11 +338,11 @@ impl Plan {
 impl install::Plan {
     /// A Galaxy install's rows after its platform, language, and runner: the
     /// build, DLC, support files, setup, and size.
-    pub fn review_rows(&self, paths: &Paths) -> Vec<(Label, String)> {
+    pub fn review_rows(&self, paths: &Paths, wording: Wording) -> Vec<(Label, String)> {
         let mut rows = Vec::new();
         let target = version(self.version_name(), self.build());
         let labels = self.product_labels();
-        rows.extend(follow_rows(None, self.follow()));
+        rows.extend(follow_rows(None, self.follow(), wording));
         for product in self.products() {
             let value = if product.status == ProductStatus::Installed {
                 target.clone()
@@ -506,5 +528,29 @@ mod tests {
         assert_eq!(version(Some("1.2.76"), "100"), "1.2.76");
         assert_eq!(version(Some(""), "100"), "100");
         assert_eq!(version(None, "100"), "100");
+    }
+
+    #[test]
+    fn only_the_cli_names_the_flag_that_undoes_a_pin() {
+        let from = Follow::default();
+        let to = Follow {
+            branch: None,
+            pinned: Some("100".to_owned()),
+        };
+        assert_eq!(
+            follow_rows(Some(&from), &to, Wording::Cli),
+            [(Label::Pin, "build 100, until --latest".to_owned())]
+        );
+        assert_eq!(
+            follow_rows(Some(&from), &to, Wording::App),
+            [(Label::Pin, "build 100".to_owned())]
+        );
+        // Unpinning reads the same in both.
+        for wording in [Wording::Cli, Wording::App] {
+            assert_eq!(
+                follow_rows(Some(&to), &from, wording),
+                [(Label::Pin, "removed".to_owned())]
+            );
+        }
     }
 }
