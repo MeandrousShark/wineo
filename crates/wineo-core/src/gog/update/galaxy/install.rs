@@ -37,6 +37,7 @@ use wineo_gog::{ChunkLinks, LinkScope};
 use super::build::{self, LayoutError, Owner};
 use super::fetch::{self, Job};
 use super::follow::{self, Who};
+use super::private;
 use super::record::{self, FileEntry, Follow, Manifest, Record, Redist, SetupInfo, StoreVersion};
 use super::setup;
 use super::store;
@@ -124,8 +125,8 @@ pub enum GalaxyError {
         "The installed build of {title} isn't known. Run wineo update {name} to move to the latest."
     )]
     BuildUnknown { title: String, name: String },
-    /// `--branch` names a branch GOG lists no generation 2 build on, which
-    /// includes every private branch until passwords are supported.
+    /// `--branch` names a branch GOG lists no generation 2 build on, and
+    /// says no branch of the game is private.
     #[error("{}", no_branch(.title, .branch, .name.as_deref()))]
     NoBranch {
         title: String,
@@ -134,6 +135,19 @@ pub enum GalaxyError {
         /// is installed.
         name: Option<String>,
     },
+    /// A branch the game needs isn't in GOG's list, GOG says some branches
+    /// are private, and no password is saved or given for it. `command` is
+    /// how to enter one.
+    #[error("{title}'s branch {branch} is private. Enter its password with: {command}")]
+    NeedsPassword {
+        title: String,
+        branch: String,
+        command: String,
+    },
+    /// A password was sent and the branch still isn't listed. GOG answers a
+    /// wrong or revoked password like a branch that doesn't exist.
+    #[error("GOG lists no branch {branch} for {title}, or refused its password.")]
+    Refused { title: String, branch: String },
     /// `--build` names a build GOG doesn't list as a generation 2 build.
     #[error("{}", no_such_build(.build, .title, .name.as_deref()))]
     NoSuchBuild {
@@ -520,7 +534,18 @@ pub fn plan(
     }
 
     let gog_id = request.gog_id;
-    let builds = builds_of(session, gog_id, None)?;
+    let fresh = Follow::default();
+    let (branch, required) = private::wanted(&request.builds, &fresh);
+    let fetched = builds_of(session, gog_id, branch, request.password.as_ref())?;
+    if let (Some(branch), true) = (branch, required) {
+        let game = private::Game {
+            title: &title,
+            gog_id,
+            name: None,
+        };
+        warnings.extend(fetched.require(session, &game, branch, request.read_only)?);
+    }
+    let builds = fetched.builds;
     let no_build = || GalaxyError::NoBuild {
         title: title.clone(),
     };
@@ -706,16 +731,15 @@ pub(super) fn call<T>(
     })
 }
 
-/// The builds GOG lists for a game. A private branch's builds need its
-/// password, which is the seam `_password` is for; none is sent yet.
+/// The builds GOG lists for a game, with the password for `branch` when
+/// one is entered or saved (`private`).
 pub(super) fn builds_of(
     session: &mut Session,
     gog_id: u64,
-    _password: Option<&str>,
-) -> Result<wineo_gog::Builds> {
-    call(session, |client, access| {
-        client.windows_builds(gog_id, Some(access))
-    })
+    branch: Option<&str>,
+    entered: Option<&wineo_gog::Secret>,
+) -> Result<private::Fetched> {
+    private::fetch(session, gog_id, branch, entered)
 }
 
 pub(super) fn product_size(manifest: &Manifest, id: u64) -> u64 {
@@ -808,7 +832,18 @@ fn resumed(
             (pending.manifest.clone(), store)
         }
         None => {
-            let builds = builds_of(session, gog_id, None)?;
+            // The branch the operation was for, which is where its build is.
+            let branch = from.branch.as_deref();
+            let fetched = builds_of(session, gog_id, branch, request.password.as_ref())?;
+            if let Some(branch) = branch {
+                let game = private::Game {
+                    title: &title,
+                    gog_id,
+                    name: None,
+                };
+                warnings.extend(fetched.require(session, &game, branch, request.read_only)?);
+            }
+            let builds = fetched.builds;
             let began = target
                 .products
                 .iter()

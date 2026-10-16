@@ -264,6 +264,10 @@ struct State {
     plain_json: bool,
     /// What the build lists say about branches that need a password.
     private_branches: bool,
+    /// Branches whose builds are only listed when the request carries the
+    /// branch's password. A wrong one gets the rest of the list with a 200,
+    /// as GOG answers (probed 2026-10-16).
+    branch_passwords: BTreeMap<String, String>,
     link_lifetime: u64,
     /// Tokens handed out and when each expires.
     tokens: BTreeMap<String, u64>,
@@ -430,6 +434,16 @@ impl ContentSystem {
         self.state.lock().unwrap().private_branches = private;
     }
 
+    /// Hides `branch`'s builds from every list that doesn't carry
+    /// `password`, and makes the lists say the game has private branches.
+    pub fn set_branch_password(&self, branch: &str, password: &str) {
+        let mut state = self.state.lock().unwrap();
+        state
+            .branch_passwords
+            .insert(branch.to_owned(), password.to_owned());
+        state.private_branches = true;
+    }
+
     pub fn serve_plain_json(&self, plain: bool) {
         self.state.lock().unwrap().plain_json = plain;
     }
@@ -484,10 +498,20 @@ impl ContentSystem {
         let mut state = self.state.lock().unwrap();
         match segments.as_slice() {
             ["products", id, "os", "windows", "builds"] => {
+                let given = request.query("password");
                 let items: Vec<Value> = state
                     .builds
                     .get(&id.parse().ok()?)?
                     .iter()
+                    .filter(|item| {
+                        let Some(branch) = item["branch"].as_str() else {
+                            return true;
+                        };
+                        state
+                            .branch_passwords
+                            .get(branch)
+                            .is_none_or(|password| given.as_ref() == Some(password))
+                    })
                     .map(|item| {
                         let mut item = item.clone();
                         let hash = item["meta"].as_str().unwrap_or_default().to_owned();

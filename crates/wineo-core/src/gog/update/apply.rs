@@ -63,6 +63,11 @@ pub struct Options {
     /// The branch or build a Galaxy game goes to. Keeps the one it follows
     /// by default.
     pub choice: super::galaxy::Choice,
+    /// A password entered for the private branch the operation uses: the one
+    /// `choice` names, else the one the game follows. It is saved once GOG
+    /// lists the branch with it, replacing any saved before. Without it, the
+    /// saved password is used.
+    pub password: Option<wineo_gog::Secret>,
     /// Fetch GOG's product details again instead of using an hour-old copy.
     pub refresh: bool,
     /// Write nothing while planning, for a dry run: product details aren't

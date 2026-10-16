@@ -9,7 +9,9 @@ use std::time::Duration;
 use serde_json::{Value, json};
 use wineo_core::gog;
 use wineo_core::gog::account::Session;
+use wineo_core::gog::api::Secret;
 use wineo_core::gog::folder::{self, FolderError, Journal};
+use wineo_core::gog::update::galaxy::GalaxyError;
 use wineo_core::gog::update::windows::SetupError;
 use wineo_core::gog::update::{
     self, DlcState, DlcStatus, GameError, Progress, Reason, Status, UpdateState,
@@ -17,7 +19,7 @@ use wineo_core::gog::update::{
 use wineo_core::paths::Paths;
 use wineo_core::secret_service::SecretServiceKeyring;
 
-use crate::prompt::{Canceled, Prompt, Reply};
+use crate::prompt::{self, Canceled, Prompt, Reply};
 use crate::style;
 
 pub const LOGGED_OUT: &str = "Log in to GOG first: wineo import gog --login.";
@@ -260,6 +262,42 @@ pub fn pause_for_test(environment: &str, step: &Progress, token: &wineo_core::ca
     while here && !token.is_canceled() {
         std::thread::sleep(Duration::from_millis(20));
     }
+}
+
+/// The branch a failed plan says is private, and its game's title, when
+/// asking for a password could get the plan through.
+pub fn needs_password(error: &anyhow::Error) -> Option<(String, String)> {
+    match error.downcast_ref::<GalaxyError>() {
+        Some(GalaxyError::NeedsPassword { title, branch, .. }) => {
+            Some((title.clone(), branch.clone()))
+        }
+        _ => None,
+    }
+}
+
+/// A password read from standard input for `--password-stdin`: one line,
+/// without echo when it comes from a terminal.
+pub fn password_from_stdin() -> anyhow::Result<Secret> {
+    let Some(password) = prompt::secret("Password: ")?.filter(|password| !password.is_empty())
+    else {
+        anyhow::bail!("No password was given on standard input.");
+    };
+    Ok(Secret::new(password))
+}
+
+/// Asks for a private branch's password at a terminal, without echo.
+/// Without one it says how to give it.
+pub fn ask_password(title: &str, branch: &str) -> anyhow::Result<Secret> {
+    if !prompt::interactive() {
+        anyhow::bail!("Branch {branch} is private. Give its password with --password-stdin.");
+    }
+    let Some(password) = prompt::secret(&format!(
+        "Branch {branch} of {title} is private. Password: "
+    ))?
+    .filter(|password| !password.is_empty()) else {
+        anyhow::bail!("No password entered.");
+    };
+    Ok(Secret::new(password))
 }
 
 #[cfg(test)]

@@ -43,6 +43,7 @@ use super::install::{
     self, GalaxyError, Kind, Links, NAME_BATCH, Placer, PlannedProduct, Progress, Retarget,
     StoreNeed, Waiting, flush, merged, name_entry, place, recorded, sizes,
 };
+use super::private;
 use super::record::{self, Base, FileEntry, Follow, Manifest};
 use super::setup;
 use super::store;
@@ -505,6 +506,12 @@ pub fn plan(
             &target,
             installed_build.as_deref(),
             bits,
+            from.branch.as_deref(),
+            &Entered {
+                secret: options.password.as_ref(),
+                read_only: options.read_only,
+            },
+            &mut warnings,
         )?;
         let store = install::complete_store(session, store)?;
         let products = planned_products(&target, &manifest, &title, |id| {
@@ -557,8 +564,9 @@ pub fn plan(
     let no_build = || GalaxyError::NoBuild {
         title: title.clone(),
     };
-    let builds = match install::builds_of(session, gog_id, None) {
-        Ok(builds) => builds,
+    let (branch, required) = private::wanted(&options.choice, &from);
+    let fetched = match install::builds_of(session, gog_id, branch, options.password.as_ref()) {
+        Ok(fetched) => fetched,
         // No content system for the game, as a check reads it.
         Err(error)
             if error
@@ -569,6 +577,15 @@ pub fn plan(
         }
         Err(error) => return Err(error),
     };
+    if let (Some(branch), true) = (branch, required) {
+        let game = private::Game {
+            title: &title,
+            gog_id,
+            name: Some(name),
+        };
+        warnings.extend(fetched.require(session, &game, branch, options.read_only)?);
+    }
+    let builds = fetched.builds;
     // A pinned game isn't moved to another build; reinstalling it rebuilds
     // the pin. An update holds the pinned build, and only installs DLC from
     // it, so it carries on only when the pin is what's installed.
@@ -856,6 +873,12 @@ fn planned_products(
 /// from GOG, as the target with no starting point, so nothing is deleted
 /// (answer b). A repair never changes the build, so one GOG no longer lists
 /// is refused.
+/// The password an operation was given, and whether it may be saved.
+struct Entered<'a> {
+    secret: Option<&'a wineo_gog::Secret>,
+    read_only: bool,
+}
+
 #[allow(clippy::too_many_arguments)]
 fn repair_manifest(
     paths: &Paths,
@@ -866,6 +889,9 @@ fn repair_manifest(
     target: &Target,
     build: Option<&str>,
     bits: &str,
+    branch: Option<&str>,
+    password: &Entered,
+    warnings: &mut Vec<String>,
 ) -> Result<(Manifest, Option<Base>, Vec<StoreNeed>)> {
     if let Some(manifest) = stored(paths, state)? {
         let store = manifest
@@ -892,7 +918,16 @@ fn repair_manifest(
         name: name.to_owned(),
     })?;
     let gog_id = target.gog_id;
-    let builds = install::builds_of(session, gog_id, None)?;
+    let fetched = install::builds_of(session, gog_id, branch, password.secret)?;
+    if let Some(branch) = branch {
+        let game = private::Game {
+            title,
+            gog_id,
+            name: Some(name),
+        };
+        warnings.extend(fetched.require(session, &game, branch, password.read_only)?);
+    }
+    let builds = fetched.builds;
     let listed = builds
         .items
         .iter()
@@ -1286,12 +1321,29 @@ fn resumed(
                 &target,
                 began.as_deref(),
                 bits,
+                from.branch.as_deref(),
+                &Entered {
+                    secret: options.password.as_ref(),
+                    read_only: options.read_only,
+                },
+                &mut warnings,
             )?;
             let version_name = manifest.setup.version_name.clone();
             (manifest, base, store, version_name)
         }
         None => {
-            let builds = install::builds_of(session, gog_id, None)?;
+            // The branch the operation was for, which is where its build is.
+            let branch = from.branch.as_deref();
+            let fetched = install::builds_of(session, gog_id, branch, options.password.as_ref())?;
+            if let Some(branch) = branch {
+                let game = private::Game {
+                    title: &title,
+                    gog_id,
+                    name: Some(name),
+                };
+                warnings.extend(fetched.require(session, &game, branch, options.read_only)?);
+            }
+            let builds = fetched.builds;
             let began = target
                 .products
                 .iter()

@@ -6,6 +6,7 @@
 use std::process::ExitCode;
 
 use wineo_core::gog::account::{AccountError, Session};
+use wineo_core::gog::api::Secret;
 use wineo_core::gog::folder::{FolderError, JournalKind, Platform, Track};
 use wineo_core::gog::migrate::MigrateError;
 use wineo_core::gog::update::galaxy::{self as core_galaxy, GalaxyError, PlannedUpdate};
@@ -19,7 +20,8 @@ use super::Args;
 use crate::cancel;
 use crate::commands::galaxy;
 use crate::commands::gog_support::{
-    Account, LOGGED_OUT, Reporter, ask_wizard, offers_wizard, usage_error, warn, with_finish_hint,
+    Account, LOGGED_OUT, Reporter, ask_password, ask_wizard, needs_password, offers_wizard,
+    password_from_stdin, usage_error, warn, with_finish_hint,
 };
 use crate::commands::setup::watched_message;
 use crate::commands::table;
@@ -184,6 +186,7 @@ fn plan(
     name: &str,
     args: &Args,
     wizard: bool,
+    password: Option<&Secret>,
     cancellation: &Cancellation,
 ) -> anyhow::Result<Planned> {
     let logged_out = session.is_none();
@@ -202,6 +205,7 @@ fn plan(
             } else {
                 args.choice().0
             },
+            password: password.cloned(),
             refresh: args.refresh,
             // A dry run caches nothing and records nothing.
             read_only: args.dry_run,
@@ -210,6 +214,10 @@ fn plan(
         &cancellation.token,
     )
     .map_err(|error| {
+        // The caller asks for the password and plans again.
+        if needs_password(&error).is_some() {
+            return error;
+        }
         let canceled = stopped(&error).is_some();
         if logged_out
             && matches!(
@@ -270,14 +278,31 @@ fn plan(
 fn one(paths: &Paths, args: &Args, name: &str) -> anyhow::Result<ExitCode> {
     let account = Account::new();
     let mut session = account.open(paths)?;
-    let planned = plan(
-        paths,
-        &mut session,
-        name,
-        args,
-        false,
-        &Cancellation::new()?,
-    )?;
+    // Read before anything else, so a script feeding it isn't left waiting.
+    let mut password = if args.password_stdin {
+        Some(password_from_stdin()?)
+    } else {
+        None
+    };
+    let planned = loop {
+        match plan(
+            paths,
+            &mut session,
+            name,
+            args,
+            false,
+            password.as_ref(),
+            &Cancellation::new()?,
+        ) {
+            // A followed private branch whose password isn't saved, or a
+            // branch named that is one: ask once, then plan again.
+            Err(error) if password.is_none() => match needs_password(&error) {
+                Some((title, branch)) => password = Some(ask_password(&title, &branch)?),
+                None => return Err(error),
+            },
+            other => break other?,
+        }
+    };
     let ready = match planned {
         Planned::UpToDate(warnings) => {
             for warning in &warnings {
@@ -322,7 +347,15 @@ fn one(paths: &Paths, args: &Args, name: &str) -> anyhow::Result<ExitCode> {
             // The first attempt dropped its journal, or kept it to finish,
             // so the update is planned again before it runs as a wizard.
             let cancellation = Cancellation::new()?;
-            let again = match plan(paths, &mut session, name, args, true, &cancellation)? {
+            let again = match plan(
+                paths,
+                &mut session,
+                name,
+                args,
+                true,
+                password.as_ref(),
+                &cancellation,
+            )? {
                 Planned::Ready(ready) => ready,
                 Planned::UpToDate(_) | Planned::Pinned(..) => {
                     println!("Up to date.");
@@ -384,6 +417,10 @@ fn all(paths: &Paths, args: &Args) -> anyhow::Result<ExitCode> {
                 None,
                 status.platform == Platform::Windows,
             ));
+        } else if let Some(reason @ update::Reason::Password(_)) = &status.reason {
+            // Unlike a game that can't be compared for good, this one has a
+            // way forward, so it counts as a failure the rest don't wait on.
+            failures.push((status.environment.clone(), reason.note()));
         } else if let Some(reason) = &status.reason {
             skipped.push(format!("Skipped {}: {}", status.environment, reason.note()));
         }
@@ -416,7 +453,7 @@ fn all(paths: &Paths, args: &Args) -> anyhow::Result<ExitCode> {
         if planning.token.is_canceled() {
             return Err(Canceled.into());
         }
-        match plan(paths, &mut session, name, args, false, &planning) {
+        match plan(paths, &mut session, name, args, false, None, &planning) {
             Ok(Planned::Ready(item)) => ready.push(item),
             Ok(Planned::UpToDate(_) | Planned::Pinned(..)) => {}
             Err(error) if stopped(&error).is_some() => return Err(error),

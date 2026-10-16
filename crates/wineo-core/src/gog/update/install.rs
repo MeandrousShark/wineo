@@ -111,6 +111,9 @@ pub struct Request {
     /// The Galaxy branch or build to install, the default branch's latest
     /// by default. Only a Galaxy install reads it.
     pub builds: super::galaxy::Choice,
+    /// A password entered for the private branch `builds` names. It is saved
+    /// once GOG lists the branch with it.
+    pub password: Option<wineo_gog::Secret>,
 }
 
 /// One product an install would put in the folder, for a review.

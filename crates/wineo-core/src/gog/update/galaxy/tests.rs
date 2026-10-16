@@ -2017,6 +2017,7 @@ fn an_install_canceled_mid_file_is_finished_by_installing_again() {
 }
 
 mod branches;
+mod private;
 mod repair;
 mod setup;
 mod update;

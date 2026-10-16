@@ -2,8 +2,10 @@
 //! lists, and what a version picker offers.
 
 use anyhow::{Result, anyhow};
+use wineo_gog::{Builds, Secret};
 
 use super::install::{self, GalaxyError};
+use super::private;
 use super::record::Follow;
 use crate::environment::Environment;
 use crate::gog::account::Session;
@@ -30,6 +32,8 @@ pub struct Listed {
     pub pinned: bool,
     /// It is on a branch other than the default one that the game follows.
     pub followed: bool,
+    /// It is on a private branch, listed with a password.
+    pub private: bool,
 }
 
 impl Listed {
@@ -55,6 +59,7 @@ impl Listed {
             (self.latest, "latest"),
             (self.pinned, "pinned"),
             (self.followed, "followed"),
+            (self.private, "private"),
         ]
         .into_iter()
         .filter_map(|(on, mark)| on.then_some(mark))
@@ -82,15 +87,20 @@ pub struct Listing {
 
 /// Lists the generation 2 builds GOG offers for `name`'s Galaxy game.
 /// Reads only, apart from GOG's product details cache (unless `read_only`)
-/// and a renewed login. `password` is the seam for a private branch's
-/// builds, which nothing sends yet.
+/// and a renewed login.
+///
+/// A private branch's builds are listed when its password is saved, and
+/// `entered` gives one for this call, as `(branch, password)`, which is saved
+/// once GOG lists the branch with it (unless `read_only`). A saved password
+/// that doesn't list its branch is removed (unless `read_only`) and said so
+/// in the warnings.
 ///
 /// An installer-tracked game has no builds to list: `UpdateError::NotGalaxy`.
 pub fn list(
     paths: &Paths,
     session: &mut Session,
     name: &str,
-    password: Option<&str>,
+    entered: Option<(&str, &Secret)>,
     refresh: bool,
     read_only: bool,
 ) -> Result<Listing> {
@@ -128,21 +138,79 @@ pub fn list(
     }
     .or_else(|| names::product_names(&state.folder).get(&gog_id).cloned())
     .unwrap_or_else(|| format!("GOG game {gog_id}"));
-    let builds = match install::builds_of(session, gog_id, password) {
-        Ok(builds) => builds,
+    let public = match install::builds_of(session, gog_id, None, None) {
+        Ok(fetched) => Some(fetched.builds),
         // No content system for the game: nothing to list.
         Err(error)
             if error
                 .downcast_ref::<wineo_gog::Error>()
                 .is_some_and(|error| error.kind() == wineo_gog::ErrorKind::Status(404)) =>
         {
-            wineo_gog::Builds {
-                items: Vec::new(),
-                has_private_branches: false,
-            }
+            None
         }
         Err(error) => return Err(error),
     };
+    let mut builds = public.unwrap_or(Builds {
+        items: Vec::new(),
+        has_private_branches: false,
+    });
+    let public_branches: Vec<Option<String>> = builds
+        .items
+        .iter()
+        .map(|build| build.branch.clone())
+        .collect();
+    // The saved passwords, with an entered one taking the place of the one
+    // saved for its branch.
+    let mut passwords: Vec<(String, bool)> = session
+        .branch_passwords(gog_id)?
+        .into_iter()
+        .map(|(branch, _)| (branch, false))
+        .collect();
+    if let Some((branch, _)) = entered {
+        passwords.retain(|(saved, _)| saved != branch);
+        passwords.push((branch.to_owned(), true));
+    }
+    passwords.sort();
+    let game = private::Game {
+        title: &title,
+        gog_id,
+        name: Some(name),
+    };
+    let mut private_branches: Vec<String> = Vec::new();
+    // Nothing is asked of a branch the public list already has.
+    for (branch, is_entered) in passwords
+        .into_iter()
+        .filter(|(branch, _)| !public_branches.contains(&Some(branch.clone())))
+    {
+        let password = entered.filter(|_| is_entered).map(|(_, password)| password);
+        let fetched = install::builds_of(session, gog_id, Some(&branch), password)?;
+        if fetched.lists(&branch) {
+            warnings.extend(fetched.accept(session, &game, &branch, read_only));
+            builds.items.extend(
+                fetched
+                    .builds
+                    .items
+                    .into_iter()
+                    .filter(|build| build.branch.as_deref() == Some(branch.as_str())),
+            );
+            private_branches.push(branch);
+        } else {
+            // Said the same whether it was typed or saved: GOG can't tell
+            // either from a branch that isn't there.
+            warnings.push(
+                GalaxyError::Refused {
+                    title: title.clone(),
+                    branch: branch.clone(),
+                }
+                .to_string(),
+            );
+            if !read_only && let Err(error) = session.forget_branch_password(gog_id, &branch) {
+                warnings.push(format!(
+                    "Couldn't remove the saved password for branch {branch}: {error}"
+                ));
+            }
+        }
+    }
     let follow = super::follow_of(paths, &state.folder);
     let installed = state
         .committed
@@ -173,6 +241,8 @@ pub fn list(
                 latest: std::mem::take(&mut first),
                 pinned: follow.pinned.as_deref() == Some(build.build_id.as_str()),
                 followed: branch.is_some() && follow.branch.as_deref() == branch,
+                private: branch
+                    .is_some_and(|branch| private_branches.iter().any(|name| name == branch)),
             });
         }
     }
@@ -202,6 +272,7 @@ mod tests {
             latest: true,
             pinned: false,
             followed: false,
+            private: false,
         }
     }
 

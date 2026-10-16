@@ -1450,6 +1450,8 @@ pub(crate) fn prepare_known(
             wizard,
             // The app installs the default branch's latest build.
             builds: core_galaxy::Choice::Keep,
+            // A private branch's password is step 13's panel.
+            password: None,
         };
         let track = match choices.track {
             Some(track) => track,

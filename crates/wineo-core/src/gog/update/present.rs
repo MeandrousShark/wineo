@@ -38,7 +38,7 @@ impl Reason {
                     "Pinned to build {build}{version}. Run wineo update {name} --latest to follow its branch again."
                 )
             }
-            Self::CantCompare(why) => why.clone(),
+            Self::CantCompare(why) | Self::Password(why) => why.clone(),
         }
     }
 }

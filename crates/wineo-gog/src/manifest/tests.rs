@@ -430,6 +430,38 @@ fn game_depot() -> FakeDepot {
 }
 
 #[test]
+fn a_private_branch_is_listed_only_with_its_password() {
+    let content = ContentSystem::new();
+    content.add_build(FakeBuild::new(7, "100").depot(game_depot()));
+    content.add_build(FakeBuild::new(7, "200").depot(game_depot()).branch("beta"));
+    content.set_branch_password("beta", "open sesame");
+    let (_content, server) = serve(content);
+    let client = server.client();
+    let branches = |password: Option<&str>| {
+        let secret = password.map(crate::Secret::new);
+        let builds = client
+            .windows_builds(7, Some("ACCESS"), secret.as_ref())
+            .unwrap();
+        (
+            builds.has_private_branches,
+            builds
+                .items
+                .iter()
+                .map(|build| build.branch.clone())
+                .collect::<Vec<_>>(),
+        )
+    };
+    let public = (true, vec![None]);
+    // A wrong password isn't an error: GOG answers it like none at all.
+    assert_eq!(branches(None), public);
+    assert_eq!(branches(Some("wrong")), public);
+    assert_eq!(
+        branches(Some("open sesame")),
+        (true, vec![None, Some("beta".to_owned())])
+    );
+}
+
+#[test]
 fn a_build_s_manifests_are_fetched_from_the_cdn_without_a_token() {
     for plain in [false, true] {
         let content = ContentSystem::new();
@@ -444,7 +476,7 @@ fn a_build_s_manifests_are_fetched_from_the_cdn_without_a_token() {
         );
         let (_content, server) = serve(content);
         let client = server.client();
-        let builds = client.windows_builds(7, Some("ACCESS")).unwrap();
+        let builds = client.windows_builds(7, Some("ACCESS"), None).unwrap();
         let repository = client
             .repository(builds.items[0].link.as_deref().unwrap())
             .unwrap();

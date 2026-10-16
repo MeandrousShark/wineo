@@ -18,6 +18,7 @@ pub mod follow;
 pub mod install;
 pub mod listing;
 pub mod present;
+pub(super) mod private;
 pub mod record;
 mod setup;
 mod store;
@@ -105,7 +106,7 @@ pub fn track_for(
                 let id = request.gog_id;
                 // A game GOG has no content system for answers 404, which
                 // is the installers' to install, not a failure.
-                match session.call(|client, access| client.windows_builds(id, Some(access))) {
+                match session.call(|client, access| client.windows_builds(id, Some(access), None)) {
                     Ok(builds) => build::latest(&builds, None).is_some(),
                     Err(CallError::Request(error))
                         if error.kind() == wineo_gog::ErrorKind::Status(404) =>
