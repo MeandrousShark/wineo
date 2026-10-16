@@ -12,7 +12,7 @@ use common::gog_api::{self, CODE, GogApi, owned_game, product, success_address};
 use common::pty::Pty;
 use common::{Fixture, assert_success, stderr, stdout};
 use serde_json::{Value, json};
-use wineo_core::gog::folder::{FolderState, Platform, Track};
+use wineo_core::gog::folder::{FolderState, JournalKind, Platform, Track};
 use wineo_gog::fake::content::{FakeBuild, FakeDependency, FakeDepot, FakeFile};
 
 const GAME: u64 = 1207658924;
@@ -1135,3 +1135,6 @@ fn a_resumed_galaxy_install_that_cant_be_planned_says_how_to_finish_it() {
     );
     assert!(!err.contains("wineo update"), "{err}");
 }
+
+#[path = "gog_galaxy/branches.rs"]
+mod branches;

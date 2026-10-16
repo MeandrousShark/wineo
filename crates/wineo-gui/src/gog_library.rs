@@ -5,7 +5,7 @@
 use wineo_core::config::Kind;
 use wineo_core::environment::Environment;
 use wineo_core::gog::folder::{self, FolderState, JournalKind};
-use wineo_core::gog::update::{self, Status, UpdateState};
+use wineo_core::gog::update::{self, Reason, Status, UpdateState};
 use wineo_core::paths::Paths;
 
 /// What a card knows about GOG without asking GOG.
@@ -164,6 +164,15 @@ pub(crate) fn badge(gog: Option<&GogCard>, status: Option<&Status>) -> Option<Ba
 /// an update it can apply.
 pub(crate) fn updatable(status: &Status) -> bool {
     status.applicable && status.state == UpdateState::Available
+}
+
+/// How a game's update status reads in the panel: a pinned game with a
+/// newer build waiting says so instead of offering it.
+pub(crate) fn status_label(status: &Status) -> &'static str {
+    match status.reason {
+        Some(Reason::Pinned { .. }) => "Pinned",
+        _ => state_label(status.state),
+    }
 }
 
 /// How a game's update state reads in the panel.
@@ -389,6 +398,60 @@ mod tests {
             }
             .note(),
             "GOG has no Galaxy build of this game that wineo can update. Move it to offline installers with: wineo update disco --reinstall --track installer"
+        );
+    }
+
+    fn pinned_status(name: &str) -> Status {
+        let mut pinned = status(name, UpdateState::Available, false);
+        pinned.platform = Platform::Windows;
+        pinned.track = Track::Galaxy;
+        pinned.pinned = Some("100".to_owned());
+        pinned.pinned_name = Some("1.2.76".to_owned());
+        pinned.reason = Some(Reason::Pinned {
+            name: name.to_owned(),
+            build: "100".to_owned(),
+            version: Some("1.2.76".to_owned()),
+        });
+        pinned
+    }
+
+    #[test]
+    fn a_pinned_game_has_no_update_badge_or_action_and_says_why() {
+        let pinned = pinned_status("papers");
+        assert!(!updatable(&pinned));
+        let plain = gog_card(false, None);
+        assert_eq!(badge(plain.as_ref(), Some(&pinned)), None);
+        // An interrupted update is still finished, whatever the pin says.
+        let finish = gog_card(true, None);
+        assert_eq!(
+            badge(finish.as_ref(), Some(&pinned)),
+            Some(Badge::FinishUpdate)
+        );
+        assert_eq!(status_label(&pinned), "Pinned");
+        assert_eq!(
+            pinned.reason.as_ref().unwrap().note(),
+            "Pinned to build 100 (1.2.76). Run wineo update papers --latest to follow its branch again."
+        );
+        assert_eq!(pinned.reason.as_ref().unwrap().as_str(), "pinned");
+
+        let mut app = app();
+        let mut game = card("papers", State::Inactive, 0);
+        game.gog = gog_card(false, None);
+        app.cards = vec![game];
+        app.gog_updates.insert("papers".to_owned(), pinned);
+        assert!(!app.gog_update_action("papers"));
+
+        // With nothing newer, the pin is still told, and nothing is offered.
+        let mut level = pinned_status("papers");
+        level.state = UpdateState::UpToDate;
+        level.reason = None;
+        assert!(!updatable(&level));
+        assert_eq!(status_label(&level), "Up to date");
+        assert_eq!(
+            level.pin_note().as_deref(),
+            Some(
+                "Pinned to build 100 (1.2.76). Run wineo update papers --latest to follow its branch again."
+            )
         );
     }
 

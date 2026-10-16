@@ -431,3 +431,49 @@ fn a_retargeted_update_shows_the_warning_and_updates_when_asked() {
         format!("Finished the interrupted update of {NAME}.")
     );
 }
+
+#[test]
+fn a_pinned_game_is_told_it_is_pinned_instead_of_failing() {
+    let world = world();
+    // `wineo update --build 100`: the build it has, so only the pin changes.
+    let mut session = Session::open(&world.paths, &world.keyring, world.server.client())
+        .unwrap()
+        .unwrap();
+    let Ok(core_galaxy::PlannedUpdate::Galaxy(galaxy_update::Planned::Follow(pin))) =
+        core_galaxy::plan_update(
+            &world.paths,
+            Some(&mut session),
+            NAME,
+            Options {
+                choice: core_galaxy::Choice::Build("100".to_owned()),
+                refresh: true,
+                ..Options::default()
+            },
+            &Token::new(),
+        )
+    else {
+        panic!("expected a change of pin");
+    };
+    core_galaxy::switch::apply(&world.paths, &pin, &Token::new()).unwrap();
+
+    let planned = plan(&world, Options::default()).unwrap();
+    let Planned::Pinned(message) = planned else {
+        panic!("expected the pinned message");
+    };
+    assert_eq!(
+        message,
+        format!(
+            "{NAME} is pinned to build 100 (1.2.76). Run wineo update {NAME} --latest to follow its branch again."
+        )
+    );
+    let mut page = Page::new(world.paths.clone(), NAME.to_owned()).0;
+    let generation = page.generation;
+    let _ = page.update(Event::Planned(
+        generation,
+        Ok(Planned::Pinned(message.clone())),
+    ));
+    assert_eq!(page.step, Step::Finished);
+    assert_eq!(page.note.as_deref(), Some(message.as_str()));
+    assert_eq!(page.error, None);
+    fits(&page);
+}

@@ -34,7 +34,7 @@ pub struct Args {
     #[arg(long, conflicts_with_all = ["check", "all"])]
     reinstall: bool,
     /// With --reinstall, the track to put the game on
-    #[arg(long, value_enum, requires = "reinstall")]
+    #[arg(long, value_enum, requires = "reinstall", conflicts_with = "all")]
     track: Option<GogTrack>,
     /// Check every file of a Galaxy game and fix what is missing or damaged
     #[arg(long, conflicts_with_all = ["reinstall", "track", "check", "all"])]

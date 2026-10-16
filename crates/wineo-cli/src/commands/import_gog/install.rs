@@ -213,6 +213,22 @@ pub(super) fn one(paths: &Paths, args: &Args, id: &str) -> anyhow::Result<ExitCo
     let Ok(gog_id) = id.parse::<u64>() else {
         return Ok(usage_error(format!("{id} isn't a GOG game id.")));
     };
+    // A branch or build is Galaxy's, so asking for one picks the track.
+    let (choice, branch_flag) = match (&args.branch, &args.build) {
+        (Some(branch), _) => (Choice::Branch(branch.clone()), Some("--branch")),
+        (_, Some(build)) => (Choice::Build(build.clone()), Some("--build")),
+        _ => (Choice::Keep, None),
+    };
+    if let (Some(flag), Some(GogTrack::Installer)) = (branch_flag, args.track) {
+        return Ok(usage_error(format!(
+            "{flag} is for Galaxy games, so leave out --track installer."
+        )));
+    }
+    let track: Option<Track> = match (args.track, branch_flag) {
+        (Some(track), _) => Some(track.into()),
+        (None, Some(_)) => Some(Track::Galaxy),
+        (None, None) => None,
+    };
     // Whether wineo already has it is known without GOG or a question.
     let existing = existing(paths, gog_id)?;
     if let Existing::Installed { name, folder } = &existing {
@@ -245,22 +261,6 @@ pub(super) fn one(paths: &Paths, args: &Args, id: &str) -> anyhow::Result<ExitCo
         .as_deref()
         .map(|dir| paths.absolute(&picker::clean_path(dir)))
         .transpose()?;
-    // A branch or build is Galaxy's, so asking for one picks the track.
-    let (choice, branch_flag) = match (&args.branch, &args.build) {
-        (Some(branch), _) => (Choice::Branch(branch.clone()), Some("--branch")),
-        (_, Some(build)) => (Choice::Build(build.clone()), Some("--build")),
-        _ => (Choice::Keep, None),
-    };
-    if let (Some(flag), Some(GogTrack::Installer)) = (branch_flag, args.track) {
-        return Ok(usage_error(format!(
-            "{flag} is for Galaxy games, so leave out --track installer."
-        )));
-    }
-    let track: Option<Track> = match (args.track, branch_flag) {
-        (Some(track), _) => Some(track.into()),
-        (None, Some(_)) => Some(Track::Galaxy),
-        (None, None) => None,
-    };
     let mut request = Request {
         name,
         gog_id,

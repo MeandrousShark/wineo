@@ -939,11 +939,14 @@ impl App {
             } else if let Some(status) = self.gog_updates.get(&card.name) {
                 inner = inner.push(detail_row(
                     "Update",
-                    crate::gog_library::state_label(status.state),
+                    crate::gog_library::status_label(status),
                     palette,
                 ));
                 if let Some(reason) = &status.reason {
                     inner = inner.push(text(reason.note()).size(13).color(palette.muted));
+                } else if let Some(note) = status.pin_note() {
+                    // Nothing newer, but the pin stays visible.
+                    inner = inner.push(text(note).size(13).color(palette.muted));
                 }
             }
             inner = inner.push(detail_row("Playtime", &card.playtime, palette));

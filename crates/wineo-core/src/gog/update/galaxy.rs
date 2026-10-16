@@ -81,6 +81,8 @@ pub fn track_for(
     }
     let galaxy = match (track, request.platform) {
         (Some(track), _) => track == Track::Galaxy,
+        // A branch or build is Galaxy's; a Linux install refuses it later.
+        (None, _) if !request.builds.is_keep() => true,
         (None, Some(Platform::Linux)) => false,
         (None, platform) => {
             let details = product::load_with(
@@ -180,13 +182,12 @@ pub fn plan_update(
         platform == Platform::Windows && track == Track::Galaxy
     } else {
         let to_galaxy = options.reinstall && options.track == Some(Track::Galaxy);
-        let branched = !options.choice.is_keep();
         match (platform, track) {
             (Platform::Windows, Track::Galaxy) => {
                 !(options.reinstall && options.track == Some(Track::Installer))
             }
             (Platform::Windows, Track::Installer) if to_galaxy => true,
-            (Platform::Windows, Track::Installer) if options.repair || branched => {
+            (Platform::Windows, Track::Installer) if options.repair => {
                 return Err(UpdateError::NotGalaxy {
                     name: name.to_owned(),
                 }
@@ -195,15 +196,16 @@ pub fn plan_update(
             (Platform::Linux, _) if options.repair || to_galaxy => {
                 return Err(GalaxyError::NotWindows.into());
             }
-            (Platform::Linux, _) if branched => {
-                return Err(UpdateError::NotGalaxy {
-                    name: name.to_owned(),
-                }
-                .into());
-            }
             _ => false,
         }
     };
+    // Branches are Galaxy's, on an unfinished installer operation too.
+    if !galaxy && !options.choice.is_keep() {
+        return Err(UpdateError::NotGalaxy {
+            name: name.to_owned(),
+        }
+        .into());
+    }
     if galaxy {
         let session = session.ok_or(AccountError::LoggedOut)?;
         return Ok(PlannedUpdate::Galaxy(update::plan(
