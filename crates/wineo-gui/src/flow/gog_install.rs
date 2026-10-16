@@ -1048,9 +1048,9 @@ impl Install {
                 .wineo_style(palette)
                 .into(),
             ));
-        } else if let Some(plan) =
-            plan.filter(|plan| plan.resumes() && plan.platform() == Platform::Windows)
-        {
+        } else if let Some(plan) = plan.filter(|plan| {
+            plan.platform() == Platform::Windows && (plan.resumes() || prepared.both_tracks)
+        }) {
             summary = summary.push(shown_row("Track", track_name(plan.track()).to_owned()));
         }
         if editable {
@@ -1615,7 +1615,14 @@ fn failure(
             // Whatever else stopped a Galaxy install, a journal still in
             // the folder is there to finish.
             _ if matches!(plan, Plan::Galaxy(_)) && journal_of(paths, plan).is_some() => {
-                Failure::new(format!("{error:#}. {}", hint()))
+                let message = format!("{error:#}");
+                let hint = hint();
+                let sep = if message.ends_with('.') { "" } else { "." };
+                Failure::new(if message.contains(&hint) {
+                    message
+                } else {
+                    format!("{message}{sep} {hint}")
+                })
             }
             _ => Failure::new(format!("{error:#}")),
         },
