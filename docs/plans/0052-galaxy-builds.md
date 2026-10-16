@@ -1214,7 +1214,24 @@ Step 13 (2026-10-16), with the maintainer's answers the same day:
   startup check, a recheck after an update, a listing). A bound set
   after two review rounds found the same class through two paths: each
   game has a generation, and a reply that lands after it moved on
-  leaves the newer entry alone.
+  leaves the newer entry alone. A library rescan that finds a game's
+  local GOG facts changed (a pin from the CLI, say) counts as newer
+  too, and checks the game again.
+- **Pin note in the app** (answer b, after the smoke test): the panel's
+  note on a pinned game reads `Pinned to build ID (VERSION). Use Change
+  to follow its branch again.`; the CLI keeps its `--latest` hint.
+- **Track moves in the app's reviews:** a move to offline installers
+  shows `Track  Galaxy -> Offline installer` after the folder, as the CLI
+  does (found by the smoke test), and a move to Galaxy `Offline installer
+  -> Galaxy`, in the Track picker's names.
+- **Smoke test** (Xvfb, the real GOG login, a throwaway root holding a
+  copy of `zz-update-papers`'s config and state): the Version row and
+  Actions entry, branches in the dropdown, unpinning through **Switch**
+  (the CLI agreed afterwards), and the reviews of a branch rollback,
+  Repair, and Move to offline installers, which weren't applied.
+- **Reviews:** seven qa-gpt rounds; rounds 2 to 5 each found one more
+  path for a stale GOG reply, which the bound above now covers through
+  one type the compiler enforces.
 
 ## Implementation sequence
 
