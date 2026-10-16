@@ -20,6 +20,7 @@ use wineo_core::key_store::Keyring;
 use wineo_core::paths::Paths;
 
 use crate::library::{Card, CardKind};
+use crate::prefix_facts::Facts;
 use crate::progress::Delayed;
 use crate::ui::{
     PickListStyle, accent_base, list_group, list_row, list_row_text, secondary_button,
@@ -370,12 +371,13 @@ impl App {
         self.open_gog_update(name, Some(options))
     }
 
-    /// Whether the picker's actions can start for its game now.
-    fn version_actions_enabled(&self, picker: &Picker) -> bool {
+    /// Whether the picker's actions can start for its game, as the view
+    /// draws them from `facts`.
+    fn version_actions_enabled(&self, facts: &dyn Facts, picker: &Picker) -> bool {
         !picker.busy
-            && self
-                .version_card(&picker.name)
-                .is_some_and(|card| !card.finish_update() && self.gog_update_enabled(card))
+            && self.version_card(&picker.name).is_some_and(|card| {
+                !card.finish_update() && self.gog_update_enabled_with(facts, card)
+            })
     }
 }
 
@@ -636,7 +638,7 @@ impl App {
         if let Some(error) = &picker.error {
             body = body.push(text(error).size(14).color(palette.danger));
         }
-        let enabled = self.version_actions_enabled(picker);
+        let enabled = self.version_actions_enabled(&self.facts, picker);
         match &picker.loaded {
             Some(Loaded::Galaxy(listing)) => {
                 body = self.galaxy_view(body, picker, listing, enabled);
