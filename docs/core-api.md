@@ -456,7 +456,10 @@ environment with `gog_id`, native or Windows.
 
 - `plan(paths, session, Request, &token) -> Plan` reads only. `Request`
   names the game and optionally the platform, language (a locale tag),
-  runner, arch, folder, and `wizard`. It refuses a portable root, a taken
+  runner, arch, folder, `wizard`, and for Galaxy `builds` (a
+  `galaxy::Choice`, the default branch's latest by default) and
+  `password` (for a private branch `builds` names, saved once GOG lists
+  the branch with it). It refuses a portable root, a taken
   name, a non-empty or overlapping folder, and another environment's
   pending install. An environment's own unfinished install is resumed from
   its journal first, without GOG when its packages are cached. DLC you own
@@ -479,8 +482,10 @@ here works only in the host root and needs a session.
 
 - `track_for(paths, &mut session, &request, track) -> Track` chooses an
   install's track without planning: an interrupted install's own track,
-  else `track`, else Galaxy for a Windows install when GOG has a
-  generation 2 build on the default branch (a 404 from the build list
+  else `track`, else Galaxy when the request names a branch or build
+  (`builds` isn't `Keep`; a Linux install refuses it later), else Galaxy
+  for a Windows install when GOG has a generation 2 build on the default
+  branch (a 404 from the build list
   means it has none), else the offline installers. Only that last choice
   asks GOG, so a frontend can choose first and offer both tracks even when
   planning on one fails.

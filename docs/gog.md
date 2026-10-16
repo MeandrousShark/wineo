@@ -357,7 +357,8 @@ from; the full installer always works.
 track it rebuilds from current packages, which repairs changed or missing
 files; for a Windows game it reruns the current installers, which also
 repairs a replaced prefix's registry and redistributables. On the Galaxy
-track it moves to the latest build, checks every file against it, fetches
+track it moves to the latest build of the branch the game follows (or
+rebuilds the build it's pinned to), checks every file against it, fetches
 only what doesn't match, and runs all of setup again.
 
 `--repair` checks a Galaxy game's files without changing its build:
@@ -460,12 +461,12 @@ Pin papers-please
 Pinned papers-please to build 56353505673715002.
 ```
 
-A pinned game stays where it is. `update --all` skips it, and plain
-`wineo update NAME` changes nothing and exits 0: `papers-please is pinned
-to build 56353505673715002 (1.4.11.124). Run wineo update papers-please
---latest to follow its branch again.` A pin holds the build, not the DLC:
-DLC you buy since is still installed from the pinned build when it has
-it. `--reinstall` on a pinned game rebuilds the pinned build and keeps the
+A pinned game stays on its build. A pin holds the build, not the DLC:
+DLC you buy since, or that failed before, is still installed from the
+pinned build when it has it. Otherwise `update --all` leaves the game
+alone, and plain `wineo update NAME` changes nothing and exits 0:
+`papers-please is pinned to build 56353505673715002 (1.4.11.124). Run
+wineo update papers-please --latest to follow its branch again.` `--reinstall` on a pinned game rebuilds the pinned build and keeps the
 pin. An interrupted change to a pinned build GOG has since stopped
 listing finishes on the latest build of the branch instead, after asking,
 and drops the pin.
@@ -494,9 +495,10 @@ wrong password exactly as it answers a branch that isn't there, so either
 says `GOG lists no branch beta for The Witcher, or refused its password.`
 
 A password is saved once GOG lists its branch with it, in your keyring
-(`service=wineo`, `account=gog-branch`, with the game and branch), or in a
-`gog-branches.key` file readable only by you when there's no keyring. It
-belongs to the GOG account that saved it. After that, `--builds`,
+(`service=wineo`, `account=gog-branch`, with `user`, `game`, and `branch`
+attributes), or without a keyring in `gog-branches.key` in wineo's data
+directory, readable only by you. It belongs to the GOG account that saved
+it, and only that account's passwords are used. After that, `--builds`,
 `--check`, and updates use it, and saved private branches show in
 `--builds` marked `private`. Entering a password again replaces it, and
 one GOG refuses later is removed. When the password of the branch a game

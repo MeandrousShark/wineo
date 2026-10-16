@@ -149,9 +149,10 @@ interrupted install), which finishes it on the update page, or for a
 Galaxy install on the install page; when something fails, the page says
 which button finishes it.
 
-A GOG Windows game's panel has a **Version** row: the installed build's
-name, with `(pinned)` or the branch it follows, read from the game's own
-record until GOG has been asked. Its **Change** button, or **Version...**
+A GOG Windows game's panel has a **Version** row: on the Galaxy track the
+installed build's name, with `(pinned)` or the branch it follows, and on
+the installer track the installer version. Until GOG has been asked, it's
+read from the game's own record. Its **Change** button, or **Version...**
 in the Actions menu, opens the version picker in the panel, like **Log**;
 **Back** or Esc returns to the details. The picker asks GOG for the
 game's builds (the ones `wineo update NAME --builds` lists) and shows a

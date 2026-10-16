@@ -1322,7 +1322,8 @@ branch; and repairing a damaged file.
 Use a throwaway games folder so nothing lands in `~/Games`: `wineo set
 --global defaults.games_root=~/wineo-0052-test` (unset it afterwards with
 `wineo set --global --unset defaults.games_root`). Pick a small Windows
-game you own that isn't installed (SMALL below), and use Papers, Please
+game you own that isn't installed and that GOG offers both as Galaxy
+builds and as an offline installer (SMALL below), and use Papers, Please
 (it has two legacy branches) and The Witcher (it has private branches)
 where named. Log in first: `wineo import gog --login`.
 
@@ -1351,14 +1352,17 @@ where named. Log in first: `wineo import gog --login`.
    1.4.11.124` returns to the default branch and pins it.
 7. While pinned: `wineo update --check` shows the pin note, `wineo update
    papers-please` says it's pinned and exits 0, and `update --all` leaves
-   it alone. `--latest` unpins with no download.
+   it alone (with no DLC waiting to install). `--latest` unpins with no
+   download.
 8. `wineo update the-witcher --builds` says GOG has private branches.
    `--branch beta` asks `Branch beta of The Witcher is private.
    Password:`; a wrong one says `GOG lists no branch beta for The Witcher,
    or refused its password.` and nothing is saved (`secret-tool search
    service wineo account gog-branch` finds nothing). If you have a real
-   branch password, enter it: the branch's builds list, marked `private`,
-   and `wineo import gog --logout` removes it.
+   branch password, enter it and decline the update: `wineo update
+   the-witcher --builds` then lists the branch's builds marked `private`,
+   and `wineo import gog --logout` removes the password (log in again
+   afterwards).
 9. In the app, Import from GOG: SMALL's review shows a **Track** picker
    with **Galaxy** and **Offline installer**. Installing on Galaxy shows
    its download and setup progress.
@@ -1373,8 +1377,9 @@ where named. Log in first: `wineo import gog --login`.
     with **Switch**, and afterwards the pin is gone.
 12. In the picker, **Repair** and **Move to offline installers** each open
     their review (the move shows `Track  Galaxy -> Offline installer`);
-    press Back on both. On SMALL moved to the installer track (step 5), the
-    picker offers **Move to Galaxy** instead.
+    press Back on both. Move SMALL to the installer track again (`wineo
+    update NAME --reinstall --track installer`): its picker offers **Move
+    to Galaxy** instead.
 13. In The Witcher's picker, **Enter a private branch** with a wrong
     password says the refused message and keeps the form.
 14. Interrupt an update in the CLI with Ctrl+C, then open the game in the
