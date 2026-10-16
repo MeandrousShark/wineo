@@ -73,9 +73,10 @@ pub enum Reason {
     },
     /// Why the game can't be compared, as a sentence.
     CantCompare(String),
-    /// The game follows a private branch and its password isn't saved, as a
-    /// sentence that says how to enter it. A front end can tell this one
-    /// apart, since entering the password takes a command of its own.
+    /// The game follows a private branch and its password isn't saved or GOG
+    /// no longer answers to it, as a sentence that says what to do. A front
+    /// end can tell this one apart, since entering the password takes a
+    /// command of its own.
     Password(String),
 }
 
@@ -722,6 +723,7 @@ pub(super) fn status_with(
                 names,
                 &details.product,
                 owned,
+                how.read_only,
             )?,
             (Platform::Linux, Track::Galaxy) => cant(
                 &installed,
@@ -1214,6 +1216,7 @@ fn by_build(
     names: &HashMap<u64, String>,
     details: &wineo_gog::Product,
     owned: Option<&HashSet<u64>>,
+    read_only: bool,
 ) -> Result<Compared> {
     let label = title_or(&details.title, || format!("GOG game {}", installed.gog_id));
     let id = installed.gog_id;
@@ -1240,6 +1243,30 @@ fn by_build(
             ),
         );
         compared.password = true;
+        compared.follow = follow;
+        return Ok(compared);
+    }
+    // A password GOG no longer answers to: the branch is gone from the list
+    // it was sent with. A check says so and drops the password, unless it is
+    // a dry run.
+    if let Some(branch) = follow.branch.as_deref()
+        && fetched.refused(branch)
+    {
+        let mut compared = cant(
+            installed,
+            names,
+            galaxy::GalaxyError::Refused {
+                title: label.clone(),
+                branch: branch.to_owned(),
+            }
+            .to_string(),
+        );
+        compared.password = true;
+        if !read_only && let Err(error) = session.forget_branch_password(id, branch) {
+            compared.warnings.push(format!(
+                "Couldn't remove the saved password for branch {branch}: {error}"
+            ));
+        }
         compared.follow = follow;
         return Ok(compared);
     }

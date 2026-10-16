@@ -149,6 +149,12 @@ impl Fetched {
         self.sent == Sent::Nothing && self.builds.has_private_branches && !self.lists(branch)
     }
 
+    /// Whether a password was sent for `branch` and the list still lacks it,
+    /// which is how GOG refuses one.
+    pub(in crate::gog::update) fn refused(&self, branch: &str) -> bool {
+        self.sent != Sent::Nothing && !self.lists(branch)
+    }
+
     /// Settles a branch the caller needs. When it is listed, an entered
     /// password is saved now that GOG has accepted it, and a failure to save
     /// is the warning returned. When it isn't, and a password was sent, the

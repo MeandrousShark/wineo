@@ -270,6 +270,32 @@ fn a_refused_password_is_removed_and_said() {
     follow_beta(&f, &api);
     // The owner changes it: the saved one is refused on the next use.
     api.content.set_branch_password("beta", "SECRET-changed");
+    let refused = "GOG lists no branch beta for Papers, Please, or refused its password.";
+
+    // A dry run leaves the password, and --all fails the game either way.
+    let out = gog(&f, &api, &["update", "--all", "--dry-run"]);
+    assert_eq!(out.status.code(), Some(1), "{}", stderr(&out));
+    assert!(saved(&f).is_some(), "a dry run keeps the password");
+    // A check says so and removes it.
+    let out = gog(&f, &api, &["update", "--check", "--json"]);
+    assert_success(&out);
+    assert_eq!(json_of(&out)["environments"][0]["reason"], refused);
+    assert_eq!(saved(&f), None);
+    // Entered again, it is saved, and refused the same way by a table check.
+    api.content.set_branch_password("beta", PASSWORD);
+    follow_beta(&f, &api);
+    api.content.set_branch_password("beta", "SECRET-changed");
+    let out = gog(&f, &api, &["update", "--check"]);
+    assert_success(&out);
+    let text = stdout(&out);
+    assert!(text.contains("can't compare"), "{text}");
+    assert!(text.contains(refused), "{text}");
+    assert_eq!(saved(&f), None);
+
+    // An update that finds it refused says so too.
+    api.content.set_branch_password("beta", PASSWORD);
+    follow_beta(&f, &api);
+    api.content.set_branch_password("beta", "SECRET-changed");
     let out = update(&f, &api, &["--yes"]);
     assert_eq!(out.status.code(), Some(1), "{}", stderr(&out));
     assert!(

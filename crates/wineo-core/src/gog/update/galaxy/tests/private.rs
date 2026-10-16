@@ -545,3 +545,44 @@ fn the_password_is_never_in_an_error_or_a_plan() {
         assert!(!text.contains("wrong-secret"), "{text}");
     }
 }
+
+#[test]
+fn a_check_finding_the_saved_password_refused_says_so_and_removes_it() {
+    let fx = Fixture::following_private_beta();
+    fx.content.set_branch_password("beta", "changed-by-owner");
+    let check = |fx: &Fixture| crate::gog::update::check(&mut fx.session(), "game", true).unwrap();
+
+    // A dry run leaves the password where it was.
+    let status = crate::gog::update::check_with(
+        &mut fx.session(),
+        "game",
+        crate::gog::update::Check {
+            refresh: true,
+            read_only: true,
+        },
+    )
+    .unwrap();
+    assert_eq!(status.state, UpdateState::CantCompare);
+    assert_eq!(fx.saved_password("beta").as_deref(), Some(PASSWORD));
+
+    let status = check(&fx);
+    assert_eq!(status.state, UpdateState::CantCompare);
+    assert!(!status.applicable);
+    assert_eq!(status.branch.as_deref(), Some("beta"));
+    assert_eq!(
+        status.reason,
+        Some(Reason::Password(
+            "GOG lists no branch beta for Fake Game, or refused its password.".to_owned()
+        ))
+    );
+    assert_eq!(fx.saved_password("beta"), None);
+
+    // With the password gone, the next check asks for it again.
+    let status = check(&fx);
+    assert_eq!(
+        status.reason,
+        Some(Reason::Password(
+            "Enter its password again with: wineo update game --branch beta".to_owned()
+        ))
+    );
+}
