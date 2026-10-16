@@ -1014,6 +1014,35 @@ Step 9 (2026-10-15), with the maintainer's answers the same day:
   direct caller of core's installer-only `update::plan` gets it. Its
   "later release" wording is a step 10 core API docs item.
 
+Step 10 (2026-10-15), with the maintainer's answers the same day:
+
+- **Docs:** `gog.md` describes both tracks (installing, Galaxy updates,
+  reinstalling and repairing, moving between tracks, interrupted
+  operations, where support files and redistributables live, limits);
+  `json-output.md` what `version`, `installed`, `available`, `unfinished`,
+  and `update: galaxy` mean on the Galaxy track; `core-api.md` the Galaxy
+  module (`track_for`, `plan`, `plan_update`, both plans, `Progress`,
+  `GalaxyError`, the shared wording) and the changed `Status`, `Options`,
+  `Updated`, and `FolderError`; `gui.md` the Track picker, Galaxy updates,
+  and finishing; `stability.md` the new managed files; the README.
+- **One finish command per journal, everywhere** (answer A): writing the
+  docs showed an interrupted Galaxy install blocking a launch with "Finish
+  it with wineo update NAME", which then pointed at `wineo import gog
+  --game ID`. Launches and clones (`FolderError::MidInstall`), `rm`,
+  unsetting `gog_id`, validate, and the hint after a migration reclaims a
+  folder (CLI and app) now ask the journal through
+  `Journal::galaxy_install()`, step 8's rule.
+- **Stale wording** (answer A): the installer-only planners' Galaxy and
+  repair refusals no longer say "a later release"; they name
+  `galaxy::plan_update` and `galaxy::plan`, the only way they're reached
+  being a direct call into core.
+- **Version names in `import gog --list`** (answer A): the table shows
+  GOG's name for a Galaxy build, else its id, like `update --check`; JSON
+  keeps build ids.
+- **The review's `download` row on Galaxy** is the build's uncompressed
+  size, as approved for the CLI; the docs say what crosses the network is
+  usually less.
+
 ## Implementation sequence
 
 Part A:
