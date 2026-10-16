@@ -1265,8 +1265,11 @@ fn branch_passwords_live_in_the_keyring_per_game_and_branch() {
     branches::save(&paths, &keyring, GAME, "beta", &password("changed")).unwrap();
     assert_eq!(found(GAME, "beta").as_deref(), Some("changed"));
 
-    assert!(branches::remove(&paths, &keyring, GAME, "beta").unwrap());
-    assert!(!branches::remove(&paths, &keyring, GAME, "beta").unwrap());
+    // Only the password that was refused goes.
+    assert!(!branches::remove_if(&paths, &keyring, GAME, "beta", &password("other")).unwrap());
+    assert_eq!(found(GAME, "beta").as_deref(), Some("changed"));
+    assert!(branches::remove_if(&paths, &keyring, GAME, "beta", &password("changed")).unwrap());
+    assert!(!branches::remove_if(&paths, &keyring, GAME, "beta", &password("changed")).unwrap());
     assert_eq!(found(GAME, "beta"), None);
     assert_eq!(found(5, "beta").as_deref(), Some("other game"));
 }
@@ -1295,7 +1298,9 @@ fn without_a_keyring_branch_passwords_are_one_private_file() {
     branches::save(&paths, &NoKeyring, GAME, "beta", &password("changed")).unwrap();
     assert_eq!(find(GAME, "beta").as_deref(), Some("changed"));
 
-    assert!(branches::remove(&paths, &NoKeyring, GAME, "beta").unwrap());
+    assert!(!branches::remove_if(&paths, &NoKeyring, GAME, "beta", &password("other")).unwrap());
+    assert_eq!(find(GAME, "beta").as_deref(), Some("changed"));
+    assert!(branches::remove_if(&paths, &NoKeyring, GAME, "beta", &password("changed")).unwrap());
     assert_eq!(find(GAME, "beta"), None);
     assert_eq!(find(GAME, "gamma").as_deref(), Some("g"));
     assert!(branches::remove_all(&paths, &NoKeyring).unwrap());
@@ -1432,8 +1437,14 @@ fn a_session_saves_and_forgets_passwords_only_while_its_account_is_current() {
         SECRET_WORD
     );
     assert_eq!(session.branch_passwords(GAME).unwrap().len(), 1);
-    assert!(session.forget_branch_password(GAME, "beta").unwrap());
-    assert!(!session.forget_branch_password(GAME, "beta").unwrap());
+    let word = password(SECRET_WORD);
+    assert!(
+        !session
+            .forget_branch_password(GAME, "beta", &password("x"))
+            .unwrap()
+    );
+    assert!(session.forget_branch_password(GAME, "beta", &word).unwrap());
+    assert!(!session.forget_branch_password(GAME, "beta", &word).unwrap());
 
     // Once the account has left, nothing is saved for it.
     logout(&paths, &keyring).unwrap();

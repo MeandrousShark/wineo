@@ -204,7 +204,7 @@ pub fn list(
                 }
                 .to_string(),
             );
-            if !read_only && let Err(error) = session.forget_branch_password(gog_id, &branch) {
+            if !read_only && let Err(error) = fetched.forget_refused(session, gog_id, &branch) {
                 warnings.push(format!(
                     "Couldn't remove the saved password for branch {branch}: {error}"
                 ));

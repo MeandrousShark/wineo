@@ -499,11 +499,19 @@ impl<'a> Session<'a> {
             .map_err(AccountError::from)
     }
 
-    /// Removes the saved password for a private branch of `game`. Returns
-    /// whether there was one.
-    pub fn forget_branch_password(&self, game: u64, branch: &str) -> Result<bool, AccountError> {
-        let _lock = CredentialsLock::acquire(&self.paths)?;
-        Ok(branches::remove(&self.paths, self.keyring, game, branch)?)
+    /// Removes the saved password for a private branch of `game`, if it is
+    /// still `refused`: the one that was sent and not accepted. One saved
+    /// since stays, and so does everything once the account has left, which
+    /// is an error. Returns whether anything was removed.
+    pub fn forget_branch_password(
+        &mut self,
+        game: u64,
+        branch: &str,
+        refused: &Secret,
+    ) -> Result<bool, AccountError> {
+        let (paths, keyring) = (self.paths.clone(), self.keyring);
+        self.while_current(|| branches::remove_if(&paths, keyring, game, branch, refused))?
+            .map_err(AccountError::from)
     }
 
     /// A current access token, renewing it first when it is within a minute

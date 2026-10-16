@@ -16,7 +16,7 @@ use super::build;
 use super::follow::Choice;
 use super::install::GalaxyError;
 use super::record::Follow;
-use crate::gog::account::{CallError, Session};
+use crate::gog::account::{AccountError, CallError, Session};
 use crate::key_store::Saved;
 
 /// Which password a builds request carried.
@@ -33,7 +33,8 @@ pub(in crate::gog::update) enum Sent {
 pub(in crate::gog::update) struct Fetched {
     pub(in crate::gog::update) builds: Builds,
     pub(in crate::gog::update) sent: Sent,
-    entered: Option<Secret>,
+    /// The password the request carried, if any.
+    password: Option<Secret>,
 }
 
 /// The branch whose password a choice's builds request carries, and whether
@@ -89,7 +90,7 @@ pub(in crate::gog::update) fn fetch_call(
     Ok(Fetched {
         builds,
         sent,
-        entered: password.filter(|_| sent == Sent::Entered),
+        password,
     })
 }
 
@@ -133,7 +134,7 @@ impl Fetched {
                 has_private_branches: false,
             },
             sent: Sent::Nothing,
-            entered: None,
+            password: None,
         }
     }
 
@@ -185,8 +186,11 @@ impl Fetched {
             .into()),
             Sent::Nothing => Ok(None),
             Sent::Entered | Sent::Saved => {
-                if !read_only && let Err(error) = session.forget_branch_password(who.gog_id, branch)
-                {
+                if !read_only && let Err(error) = self.forget_refused(session, who.gog_id, branch) {
+                    // The account having left is the news, not the refusal.
+                    if matches!(error, AccountError::LoggedOut | AccountError::Switched) {
+                        return Err(error.into());
+                    }
                     return Err(anyhow!(
                         "{} Couldn't remove its saved password: {error}",
                         refused()
@@ -194,6 +198,21 @@ impl Fetched {
                 }
                 Err(refused().into())
             }
+        }
+    }
+
+    /// Removes the saved password for `branch` if it is still the one this
+    /// request carried and GOG did not accept. One saved since, by another
+    /// process, or any at all once the account has left, is not touched.
+    pub(in crate::gog::update) fn forget_refused(
+        &self,
+        session: &mut Session,
+        gog_id: u64,
+        branch: &str,
+    ) -> Result<bool, AccountError> {
+        match &self.password {
+            Some(refused) => session.forget_branch_password(gog_id, branch, refused),
+            None => Ok(false),
         }
     }
 
@@ -206,7 +225,10 @@ impl Fetched {
         branch: &str,
         read_only: bool,
     ) -> Option<String> {
-        let password = self.entered.as_ref().filter(|_| !read_only)?;
+        let password = self
+            .password
+            .as_ref()
+            .filter(|_| self.sent == Sent::Entered && !read_only)?;
         match session.save_branch_password(who.gog_id, branch, password) {
             // Like the login, a password with no keyring to hold it says so.
             Ok(Saved::File(path)) => Some(format!(

@@ -1262,7 +1262,7 @@ fn by_build(
             .to_string(),
         );
         compared.password = true;
-        if !read_only && let Err(error) = session.forget_branch_password(id, branch) {
+        if !read_only && let Err(error) = fetched.forget_refused(session, id, branch) {
             compared.warnings.push(format!(
                 "Couldn't remove the saved password for branch {branch}: {error}"
             ));

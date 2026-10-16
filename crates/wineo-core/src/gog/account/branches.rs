@@ -161,13 +161,19 @@ fn drop_from_file(paths: &Paths, game: u64, branch: &str) -> Result<bool> {
     Ok(had)
 }
 
-/// Removes the saved password. Returns whether there was one.
-pub(crate) fn remove(
+/// Removes the saved password if it is still `refused`, the one that was
+/// sent and not accepted. One saved since, by another process, stays.
+/// Returns whether anything was removed.
+pub(crate) fn remove_if(
     paths: &Paths,
     keyring: &dyn Keyring,
     game: u64,
     branch: &str,
+    refused: &Secret,
 ) -> Result<bool> {
+    if find(paths, keyring, game, branch)?.is_none_or(|saved| saved != *refused) {
+        return Ok(false);
+    }
     let from_keyring = match keyring.delete_branch(game, branch) {
         Ok(deleted) => deleted,
         Err(error) => match keyring_error(error) {

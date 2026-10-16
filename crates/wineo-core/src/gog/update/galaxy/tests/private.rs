@@ -8,6 +8,7 @@ use super::*;
 use crate::gog::update::apply::Options;
 use crate::gog::update::galaxy::follow::Choice;
 use crate::gog::update::galaxy::listing;
+use crate::gog::update::galaxy::private;
 use crate::gog::update::galaxy::record::Follow;
 use crate::gog::update::galaxy::update::{self, Planned};
 use crate::gog::update::{Reason, UpdateState};
@@ -185,23 +186,111 @@ fn a_saved_password_is_used_without_asking_and_entering_one_again_replaces_it() 
 }
 
 #[test]
-fn a_refused_password_is_not_saved_removes_the_saved_one_and_leaks_nothing() {
+fn a_refused_password_is_not_saved_and_leaks_nothing() {
     let fx = Fixture::with_private_beta();
-    fx.save_password("beta", "stale-password");
     let error = fx.plan_branch("beta", Some("wrong-one")).unwrap_err();
     assert_eq!(
         error.to_string(),
         "GOG lists no branch beta for Fake Game, or refused its password."
     );
     assert_eq!(fx.saved_password("beta"), None);
-    for secret in ["wrong-one", "stale-password", PASSWORD] {
+    for secret in ["wrong-one", PASSWORD] {
         let shown = format!("{error:#} {error:?}");
         assert!(!shown.contains(secret), "{shown}");
     }
-    // Nothing was saved for a wrong password with none saved before.
+}
+
+#[test]
+fn only_the_password_that_was_refused_is_removed() {
+    let fx = Fixture::with_private_beta();
+    // A wrong one entered doesn't say the one saved is wrong.
+    fx.save_password("beta", PASSWORD);
     let error = fx.plan_branch("beta", Some("wrong-one")).unwrap_err();
     assert!(matches!(galaxy_error(&error), GalaxyError::Refused { .. }));
+    assert_eq!(fx.saved_password("beta").as_deref(), Some(PASSWORD));
+
+    // The same one entered and refused is the saved one refused.
+    fx.content.set_branch_password("beta", "changed-by-owner");
+    let error = fx.plan_branch("beta", Some(PASSWORD)).unwrap_err();
+    assert!(matches!(galaxy_error(&error), GalaxyError::Refused { .. }));
     assert_eq!(fx.saved_password("beta"), None);
+}
+
+/// The list GOG gave for the saved password, which the owner has since
+/// changed, so the branch is missing from it.
+fn refused_fetch(fx: &Fixture, session: &mut Session) -> private::Fetched {
+    fx.save_password("beta", PASSWORD);
+    fx.content.set_branch_password("beta", "changed-by-owner");
+    let fetched = private::fetch(session, GAME, Some("beta"), None).unwrap();
+    assert_eq!(fetched.sent, private::Sent::Saved);
+    assert!(!fetched.lists("beta"));
+    fetched
+}
+
+fn game<'a>() -> private::Game<'a> {
+    private::Game {
+        title: "Fake Game",
+        gog_id: GAME,
+        name: Some("game"),
+    }
+}
+
+#[test]
+fn a_refusal_that_a_newer_saved_password_overtook_removes_nothing() {
+    let fx = Fixture::with_private_beta();
+    let mut session = fx.session();
+    let fetched = refused_fetch(&fx, &mut session);
+    // Another process saves the branch's new password after the request.
+    fx.save_password("beta", "the-new-password");
+    let error = fetched
+        .require(&mut session, &game(), "beta", false)
+        .unwrap_err();
+    assert!(matches!(galaxy_error(&error), GalaxyError::Refused { .. }));
+    assert_eq!(
+        fx.saved_password("beta").as_deref(),
+        Some("the-new-password")
+    );
+    // The check and the listing remove through the same call.
+    assert!(!fetched.forget_refused(&mut session, GAME, "beta").unwrap());
+    assert_eq!(
+        fx.saved_password("beta").as_deref(),
+        Some("the-new-password")
+    );
+}
+
+#[test]
+fn a_refusal_that_another_account_s_login_overtook_removes_nothing() {
+    let fx = Fixture::with_private_beta();
+    let mut session = fx.session();
+    let fetched = refused_fetch(&fx, &mut session);
+    // Another account logs in, which clears the passwords, and saves its own.
+    crate::gog::account::store(
+        &fx.paths,
+        &*fx.keyring,
+        &account::StoredLogin {
+            refresh_token: "OTHER".to_owned(),
+            user_id: wineo_gog::UserId::new(USER + 1),
+            username: None,
+        },
+    )
+    .unwrap();
+    fx.save_password("beta", "their-password");
+    let error = fetched
+        .require(&mut session, &game(), "beta", false)
+        .unwrap_err();
+    assert!(
+        matches!(
+            error.downcast_ref::<account::AccountError>(),
+            Some(account::AccountError::Switched)
+        ),
+        "{error:#}"
+    );
+    assert_eq!(fx.saved_password("beta").as_deref(), Some("their-password"));
+    assert!(matches!(
+        fetched.forget_refused(&mut session, GAME, "beta"),
+        Err(account::AccountError::Switched)
+    ));
+    assert_eq!(fx.saved_password("beta").as_deref(), Some("their-password"));
 }
 
 #[test]
