@@ -583,6 +583,8 @@ How the two files stay consistent:
 
 - `import gog --game ID [--track galaxy|installer] [--branch NAME | --build ID] [--password-stdin]`.
 - `update NAME [--reinstall [--track galaxy|installer]] [--repair] [--branch NAME | --default-branch | --build ID | --latest] [--password-stdin]`.
+- `update NAME --builds [--json] [--refresh]` lists the generation 2 builds
+  GOG offers for a Galaxy game (maintainer, 2026-10-15), read-only.
 - Conflicts are usage errors (exit 2): `--branch`, `--default-branch`,
   `--build`, and `--latest` exclude each other; `--repair` excludes
   `--reinstall`, `--track`, and the branch flags; `--track` on `update`
@@ -608,7 +610,13 @@ How the two files stay consistent:
 ### 1.0 contract impact
 
 - **New flags:** `--track`, `--branch`, `--default-branch`, `--build`,
-  `--latest`, `--password-stdin`, `--repair`, with the conflicts above.
+  `--latest`, `--builds`, `--password-stdin`, `--repair`, with the
+  conflicts above.
+- **`update NAME --builds --json`:** `environment`, `id`, `track`,
+  `branch` and `pinned` (what the game follows), `installed`,
+  `private_branches`, and `builds`, each with `branch` (null for the
+  default), `build`, `version`, `published` (GOG's timestamp), and
+  `latest`. Ids are strings.
 - **JSON,** on GOG games in `update --check --json` and `import gog --list
   --json`:
   - `branch`: a string, or `null` for the default branch and for games on
@@ -1042,6 +1050,54 @@ Step 10 (2026-10-15), with the maintainer's answers the same day:
 - **The review's `download` row on Galaxy** is the build's uncompressed
   size, as approved for the CLI; the docs say what crosses the network is
   usually less.
+
+Step 11 (2026-10-15), with the maintainer's answers the same day:
+
+- **`--builds`** (answer A): `wineo update NAME --builds` lists GOG's
+  generation 2 builds by branch, default first, each newest first, marking
+  `installed`, `latest`, `pinned`, and `followed`, with `--json`. A game
+  with private branches says so. Core's `galaxy::listing::list` is what
+  step 13's Version picker will use.
+- **Pinned in `--check`** (answer A): STATE `pinned` when a newer build is
+  on the branch followed, with the note `Pinned to build ID (VERSION). Run
+  wineo update NAME --latest to follow its branch again.`; pinned to the
+  latest, STATE `up to date` with the same note.
+- **Review rows** (answer A): `branch` when the game follows a non-default
+  branch or the run changes it, `pin` when pinning or unpinning.
+- **`--build`** (answer A) takes a build id, or a version name matching
+  exactly one listed build; an ambiguous name lists the ids. A pin stored
+  in the record resolves by id only.
+- **A pin holds the build, not the DLC** (answer A): a pinned game installs
+  newly owned and retried DLC its pinned build has, and stays pinned.
+- **Calls shown to the maintainer, not objected to:** a change that moves
+  no files (`--build` of the installed build, `--latest` on the latest) is
+  a review and a record write, with no journal; an interrupted branch or
+  pin change carries the intended follow in the record's `pending`, so
+  the resume commits it; a retarget (question 12) of a pinned operation
+  drops the pin and says so; `--build` naming a build on another branch
+  follows that branch unless the build is listed on the one followed;
+  `--reinstall` on a pinned game rebuilds the pinned build and keeps the
+  pin; branch flags on a game with an unfinished operation are refused
+  until it's finished; a pin survives another tool changing the installed
+  build; a followed branch with no generation 2 build says how to return
+  to the default branch.
+- **Every writer or remover of the Galaxy record rechecks the follow** (a
+  bound set after two review findings of the same class: a stale update,
+  and a stale move off Galaxy, each overwriting a newer pin). An install,
+  resume, update, reinstall, repair, follow-only change, or move off
+  Galaxy compares the record's follow with the one it planned from, under
+  the folder state lock before any write, and refuses with `Changed`.
+  Adopting another tool's build rewrites only `installed` under the same
+  lock; `forget` and validate's cleanup remove a whole state on purpose.
+- **Accepted limit:** a game pinned to a build GOG no longer lists, on a
+  branch with no generation 2 build left, shows `update on GOG` in
+  `--check`, though a plain update would still work on the pinned build.
+- **Also fixed:** `update --all --track galaxy` was accepted and ignored
+  `--track`; it's a usage error now.
+- **Live test** on `zz-update-papers`: `--branch "Legacy (64-bit)"` rolled
+  back to 1.2.76 and moved the offline installer's leftovers aside;
+  `--build 1.4.11.124` (a version name) returned to the default branch and
+  pinned; `--latest` unpinned with no download.
 
 ## Implementation sequence
 
