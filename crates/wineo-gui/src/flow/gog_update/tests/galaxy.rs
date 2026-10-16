@@ -558,24 +558,23 @@ fn a_game_following_a_private_branch_without_its_password_asks_for_it() {
     let _ = page.update(Event::Continue);
     assert_eq!(page.step, Step::Password);
     let _ = page.update(Event::Password(Secret::new(BRANCH_PASSWORD)));
-    let _ = page.update(Event::Continue);
+    // What Continue sends, run here against the fake GOG.
+    let job = page.continue_job().unwrap();
     assert_eq!(page.step, Step::Planning);
-    assert_eq!(page.asked, None);
     // The field is cleared once the password is on its way.
     assert_eq!(page.password.expose(), "");
-
-    // Planning again with it gets the update, and saves it.
-    let options = Page::with_options(world.paths.clone(), NAME.to_owned(), Options::default())
-        .0
-        .planning_options(Some(Secret::new(BRANCH_PASSWORD)));
-    assert_eq!(options.password, Some(Secret::new(BRANCH_PASSWORD)));
-    let Ok(Planned::Galaxy(plan)) = plan(&world, options) else {
+    let generation = job.generation;
+    let planned = job.run(&world.keyring, world.server.client());
+    let Ok(Planned::Galaxy(plan)) = &planned else {
         panic!("expected a Galaxy update");
     };
-    assert!(galaxy_review_rows(&world.paths, &plan).contains(&(
+    assert!(galaxy_review_rows(&world.paths, plan).contains(&(
         "Papers, Please".to_owned(),
         "1.3.0-beta -> 1.3.1-beta".to_owned()
     )));
+    let _ = page.update(Event::Planned(generation, planned));
+    assert_eq!(page.step, Step::Review);
+    assert_eq!(page.asked, None);
     assert!(password_file(&world).exists());
 }
 
@@ -749,4 +748,55 @@ fn finishing_the_update_page_checks_the_game_again() {
     // Finishing scheduled a check, which is now the only one that counts.
     let after = app.gog_rechecks.get(NAME).copied();
     assert!(after.is_some() && after != before);
+}
+
+#[test]
+fn leaving_the_password_question_forgets_what_was_typed() {
+    let world = following_private_branch();
+    let mut page = Page::new(world.paths.clone(), NAME.to_owned()).0;
+    let generation = page.generation;
+    page.token = None;
+    let _ = page.update(Event::Planned(
+        generation,
+        Ok(Planned::NeedsPassword {
+            title: "Papers, Please".to_owned(),
+            branch: "beta".to_owned(),
+        }),
+    ));
+    let _ = page.update(Event::Password(Secret::new(BRANCH_PASSWORD)));
+    let _ = page.update(Event::Back);
+    assert_eq!(page.password.expose(), "");
+    assert_eq!(page.asked, None);
+}
+
+#[test]
+fn debug_output_never_shows_a_password() {
+    let typed = [
+        format!("{:?}", Event::Password(Secret::new(BRANCH_PASSWORD))),
+        format!(
+            "{:?}",
+            crate::Message::Flow(
+                1,
+                crate::flow::Event::UpdateMessage(Box::new(Event::Password(Secret::new(
+                    BRANCH_PASSWORD
+                )))),
+            )
+        ),
+        format!(
+            "{:?}",
+            crate::Message::Version(crate::version_picker::Event::PrivatePassword(Secret::new(
+                BRANCH_PASSWORD
+            )))
+        ),
+        format!(
+            "{:?}",
+            Options {
+                password: Some(Secret::new(BRANCH_PASSWORD)),
+                ..Options::default()
+            }
+        ),
+    ];
+    for line in typed {
+        assert!(!line.contains(BRANCH_PASSWORD), "{line}");
+    }
 }

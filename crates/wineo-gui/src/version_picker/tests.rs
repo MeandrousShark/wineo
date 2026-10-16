@@ -296,6 +296,14 @@ fn a_private_branch_entered_with_its_password_is_listed_and_saved() {
     // The password left with the request, and the field is empty again.
     assert_eq!(picker(&app).private_password.expose(), "");
     assert!(picker(&app).busy);
+    // The form waits for the answer: nothing typed meanwhile is kept.
+    let _ = app.update(Message::Version(Event::PrivatePassword(Secret::new(
+        "typed-meanwhile",
+    ))));
+    let _ = app.update(Message::Version(Event::PrivateBranch("other".to_owned())));
+    assert_eq!(picker(&app).private_password.expose(), "");
+    assert_eq!(picker(&app).private_branch, " beta ");
+    fits(&app);
 
     let listing = listed(&world, Some(("beta", &Secret::new(PASSWORD))));
     let generation = app.version_generation;
@@ -315,6 +323,14 @@ fn a_private_branch_entered_with_its_password_is_listed_and_saved() {
             .collect::<Vec<_>>(),
         ["Default", "beta (private)"]
     );
+    assert_eq!(shown.private_password.expose(), "");
+    // Closing the view drops the form with it.
+    let _ = app.update(Message::Version(Event::EnterPrivate));
+    let _ = app.update(Message::Version(Event::PrivatePassword(Secret::new(
+        PASSWORD,
+    ))));
+    let _ = app.update(Message::Version(Event::Back));
+    assert!(app.version.is_none());
     // Saved, so the next listing has it without being asked.
     let again = listed(&world, None);
     assert!(again.builds.iter().any(|build| build.build == "300"));

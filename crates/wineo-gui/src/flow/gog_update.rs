@@ -303,6 +303,8 @@ impl Page {
     }
 
     fn exit(&mut self) {
+        self.asked = None;
+        self.password = Secret::new("");
         self.action = Some(Action::Library {
             name: Some(self.name.clone()),
             launch: false,
@@ -315,6 +317,11 @@ impl Page {
 
     /// Plans, with `password` for the private branch the plan uses.
     fn plan_with(&mut self, password: Option<Secret>) -> Task<Event> {
+        self.plan_job(password).spawn()
+    }
+
+    /// Starts planning, with the work left to run.
+    fn plan_job(&mut self, password: Option<Secret>) -> PlanJob {
         self.step = Step::Planning;
         self.status = format!("Checking {} with GOG...", self.name);
         let generation = self.next_generation();
@@ -324,14 +331,23 @@ impl Page {
         let token = Token::new();
         self.token = Some(token.clone());
         let options = self.planning_options(password);
-        task::blocking(
-            move || {
-                let client =
-                    wineo_core::gog::client_from_env().map_err(|error| error.to_string())?;
-                plan_with_options(&paths, &keyring(), client, &name, options, &token)
-            },
-            move |result| Event::Planned(generation, result),
-        )
+        PlanJob {
+            generation,
+            paths,
+            name,
+            options,
+            token,
+        }
+    }
+
+    /// Continue: plans again with the password typed, which the page then
+    /// forgets. None while there's nothing to send.
+    fn continue_job(&mut self) -> Option<PlanJob> {
+        if self.step != Step::Password || self.password.expose().is_empty() {
+            return None;
+        }
+        let password = std::mem::replace(&mut self.password, Secret::new(""));
+        Some(self.plan_job(Some(password)))
     }
 
     /// What the page was opened to do.
@@ -387,6 +403,7 @@ impl Page {
             Event::Planned(generation, result) if generation == self.generation => {
                 self.status.clear();
                 self.token = None;
+                self.asked = None;
                 match result {
                     Ok(Planned::UpToDate) => {
                         self.note = Some("Up to date.".to_owned());
@@ -438,15 +455,7 @@ impl Page {
                 self.password = password;
                 Task::none()
             }
-            Event::Continue if self.step == Step::Password => {
-                if self.password.expose().is_empty() {
-                    return Task::none();
-                }
-                // Kept only for this one plan.
-                let password = std::mem::replace(&mut self.password, Secret::new(""));
-                self.asked = None;
-                self.plan_with(Some(password))
-            }
+            Event::Continue => self.continue_job().map_or_else(Task::none, PlanJob::spawn),
             Event::Cancel if matches!(self.step, Step::Planning | Step::Working) => {
                 self.cancel(false);
                 Task::none()
@@ -645,6 +654,41 @@ impl Page {
             }));
         }
         heroic::page_frame(page)
+    }
+}
+
+/// Planning the page started, to run off the UI thread. The options hold a
+/// typed password only until it runs.
+pub(crate) struct PlanJob {
+    pub(crate) generation: u64,
+    paths: Paths,
+    name: String,
+    options: Options,
+    token: Token,
+}
+
+impl PlanJob {
+    pub(crate) fn run(self, keyring: &dyn Keyring, client: Client) -> Result<Planned, String> {
+        plan_with_options(
+            &self.paths,
+            keyring,
+            client,
+            &self.name,
+            self.options,
+            &self.token,
+        )
+    }
+
+    fn spawn(self) -> Task<Event> {
+        let generation = self.generation;
+        task::blocking(
+            move || {
+                let client =
+                    wineo_core::gog::client_from_env().map_err(|error| error.to_string())?;
+                self.run(&keyring(), client)
+            },
+            move |result| Event::Planned(generation, result),
+        )
     }
 }
 

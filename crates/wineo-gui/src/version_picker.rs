@@ -448,6 +448,9 @@ pub(crate) fn update(app: &mut App, event: Event) -> Task<Message> {
             };
             picker.busy = false;
             picker.loading.finish_all();
+            if entered.is_some() {
+                picker.private_password = Secret::new("");
+            }
             match result {
                 Ok(loaded) => {
                     picker.error = None;
@@ -578,14 +581,20 @@ pub(crate) fn update(app: &mut App, event: Event) -> Task<Message> {
             }
             Task::none()
         }
+        // The form waits while a request is out, so nothing typed then
+        // outlives it.
         Event::PrivateBranch(branch) => {
-            if let Some(picker) = app.version.as_mut() {
+            if let Some(picker) = app.version.as_mut()
+                && !picker.busy
+            {
                 picker.private_branch = branch;
             }
             Task::none()
         }
         Event::PrivatePassword(password) => {
-            if let Some(picker) = app.version.as_mut() {
+            if let Some(picker) = app.version.as_mut()
+                && !picker.busy
+            {
                 picker.private_password = password;
             }
             Task::none()
@@ -751,21 +760,26 @@ impl App {
                     && !picker.private_password.expose().is_empty();
                 body = body.push(
                     text_input("Branch name", &picker.private_branch)
-                        .on_input(|value| send(Event::PrivateBranch(value)))
-                        .on_submit(send(Event::ListBuilds))
+                        .on_input_maybe(
+                            (!picker.busy).then_some(|value| send(Event::PrivateBranch(value))),
+                        )
+                        .on_submit_maybe(ready.then(|| send(Event::ListBuilds)))
                         .padding([6, 10])
                         .width(Fill)
                         .style(move |_, status| crate::chips::input_style(palette, status)),
                 );
-                body = body.push(
-                    text_input("Password", picker.private_password.expose())
-                        .secure(true)
-                        .on_input(|value| send(Event::PrivatePassword(Secret::new(value))))
-                        .on_submit(send(Event::ListBuilds))
-                        .padding([6, 10])
-                        .width(Fill)
-                        .style(move |_, status| crate::chips::input_style(palette, status)),
-                );
+                body =
+                    body.push(
+                        text_input("Password", picker.private_password.expose())
+                            .secure(true)
+                            .on_input_maybe((!picker.busy).then_some(|value| {
+                                send(Event::PrivatePassword(Secret::new(value)))
+                            }))
+                            .on_submit_maybe(ready.then(|| send(Event::ListBuilds)))
+                            .padding([6, 10])
+                            .width(Fill)
+                            .style(move |_, status| crate::chips::input_style(palette, status)),
+                    );
                 body = body.push(
                     secondary_button("List builds", palette)
                         .on_press_maybe(ready.then_some(send(Event::ListBuilds))),
