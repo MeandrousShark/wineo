@@ -7,14 +7,14 @@
 //! per game in the data directory, and redistributables to a store shared
 //! by every game (`store`).
 //!
-//! Nothing here is reachable from the CLI or the app yet: they still call
-//! `install::plan` for the offline installers and `update::plan`, which
-//! refuses Galaxy games. `plan` here picks the track as installs will once
-//! they do, and `plan_update` sends a Galaxy game's update to `update`.
+//! `plan` picks the track an install takes, and `plan_update` sends a Galaxy
+//! game's update to `update` and every other game's to the installers'.
+//! `present` words reviews and progress for both front ends.
 
 mod build;
 mod fetch;
 pub mod install;
+pub mod present;
 pub mod record;
 mod setup;
 mod store;
