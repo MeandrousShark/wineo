@@ -1837,7 +1837,7 @@ fn windows(fx: &Fixture, track: Track) {
 }
 
 #[test]
-fn galaxy_games_refuse_saying_updates_come_later() {
+fn galaxy_games_are_refused_by_the_installer_only_plan() {
     let fx = Fixture::new();
     for (track, said) in [(
         Track::Galaxy,
@@ -1862,7 +1862,7 @@ fn galaxy_games_refuse_saying_updates_come_later() {
 }
 
 #[test]
-fn a_journal_from_a_later_release_is_left_alone() {
+fn a_repair_journal_is_refused_by_the_installer_only_plan() {
     let fx = installed_v1();
     let mut state = fx.state();
     state.journal = Some(Journal {

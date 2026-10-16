@@ -72,8 +72,10 @@ pub enum InstallError {
     /// The name's own install stopped in another folder.
     #[error("{name}'s install in {folder} didn't finish. Install it again there to finish it.")]
     PendingElsewhere { name: String, folder: PathBuf },
-    /// The name's own install is a Galaxy one, which this path can't finish.
-    #[error("{name}'s Galaxy install didn't finish, and finishing it comes in a later release.")]
+    /// The name's own install is a Galaxy one, which this offline planner
+    /// can't finish. Only a direct caller reaches it, since front ends plan
+    /// through `galaxy::plan`.
+    #[error("{name}'s Galaxy install didn't finish, which galaxy::plan finishes.")]
     GalaxyPending { name: String },
 }
 
