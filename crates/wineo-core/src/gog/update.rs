@@ -567,6 +567,9 @@ struct Compared {
     /// pinned to.
     follow: galaxy::record::Follow,
     pinned_name: Option<String>,
+    /// Whether an update would install DLC, which a pinned game still gets
+    /// from the build it is pinned to.
+    dlc_update: bool,
 }
 
 /// The ids the account owns, asked of GOG once for any number of games.
@@ -690,6 +693,7 @@ pub(super) fn status_with(
             available_name: None,
             follow: galaxy::record::Follow::default(),
             pinned_name: None,
+            dlc_update: false,
         }
     } else {
         match (installed.platform, installed.track) {
@@ -716,18 +720,20 @@ pub(super) fn status_with(
 
     // A pinned game isn't updated, whatever GOG has on its branch.
     let pinned = compared.follow.pinned.clone();
-    let applicable = compared.state == UpdateState::Available && pinned.is_none();
+    let applicable =
+        compared.state == UpdateState::Available && (pinned.is_none() || compared.dlc_update);
     let reason = match compared.state {
         UpdateState::CantCompare => compared.why.map(Reason::CantCompare),
         UpdateState::OnGog => Some(Reason::Galaxy {
             name: name.to_owned(),
             branch: compared.follow.branch.clone(),
         }),
-        UpdateState::Available => pinned.clone().map(|build| Reason::Pinned {
+        UpdateState::Available if !applicable => pinned.clone().map(|build| Reason::Pinned {
             name: name.to_owned(),
             build,
             version: compared.pinned_name.clone(),
         }),
+        UpdateState::Available => None,
         UpdateState::UpToDate => None,
     };
     notes.extend(compared.notes);
@@ -777,6 +783,7 @@ fn cant(installed: &Installed, names: &HashMap<u64, String>, why: String) -> Com
         available_name: None,
         follow: galaxy::record::Follow::default(),
         pinned_name: None,
+        dlc_update: false,
     }
 }
 
@@ -1069,6 +1076,7 @@ fn by_installer(
         available_name: None,
         follow: galaxy::record::Follow::default(),
         pinned_name: None,
+        dlc_update: false,
     }
 }
 
@@ -1224,6 +1232,7 @@ fn by_build(
         .collect();
     let mut warnings = Vec::new();
     let mut tally = Tally::default();
+    let mut dlc_update = false;
     match latest {
         None => {
             tally.state = UpdateState::OnGog;
@@ -1232,6 +1241,14 @@ fn by_build(
             if current.as_deref() != Some(latest.build_id.as_str()) {
                 tally.available();
             }
+            // DLC come from the build an update installs: the latest, or
+            // for a pinned game the build it is pinned to, when that is what
+            // is installed.
+            let basis = match follow.pinned.as_deref() {
+                None => Some(latest),
+                Some(pin) => galaxy::follow::by_id(&builds, pin, follow.branch.as_deref())
+                    .filter(|held| current.as_deref() == Some(held.build_id.as_str())),
+            };
             let committed = Committed {
                 source: None,
                 gog_id: id,
@@ -1251,13 +1268,14 @@ fn by_build(
                     owned.is_some_and(|owned| owned.contains(dlc))
                         && !installed.products.iter().any(|product| product.id == *dlc)
                 });
-            if questions {
+            if let (true, Some(basis)) = (questions, basis) {
                 match galaxy::update::selected_for_check(
-                    session, paths, name, &label, details, names, &committed, latest, owned,
+                    session, paths, name, &label, details, names, &committed, basis, owned,
                 ) {
                     Ok(products) => {
                         if galaxy::update::selection_changed(&committed, &products) {
                             tally.available();
+                            dlc_update = true;
                         }
                         for product in products
                             .iter()
@@ -1268,7 +1286,7 @@ fn by_build(
                                 // Already installed.
                                 Some(entry) if entry.state == DlcState::Unknown => {}
                                 Some(entry) => {
-                                    entry.available = Some(latest.build_id.clone());
+                                    entry.available = Some(basis.build_id.clone());
                                     if entry.state == DlcState::Unavailable {
                                         entry.state = DlcState::NotInstalled;
                                     }
@@ -1283,7 +1301,7 @@ fn by_build(
                                         .filter(|title| !title.is_empty()),
                                     name: names.get(&product.id).cloned(),
                                     installed: None,
-                                    available: Some(latest.build_id.clone()),
+                                    available: Some(basis.build_id.clone()),
                                     state: DlcState::NotInstalled,
                                 }),
                             }
@@ -1301,6 +1319,7 @@ fn by_build(
         installed_name: current.as_deref().and_then(version_name),
         available_name: latest.and_then(|build| version_name(&build.build_id)),
         pinned_name: follow.pinned.as_deref().and_then(version_name),
+        dlc_update,
         follow,
         installed: current,
         available: latest.map(|build| build.build_id.clone()),

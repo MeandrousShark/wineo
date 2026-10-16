@@ -1034,3 +1034,74 @@ fn an_install_on_a_branch_that_stopped_finishes_on_it() {
     assert_eq!(read(&f, "Papers.exe"), "MZ 1.3.0-beta");
     assert_eq!(record(&f).follow.branch.as_deref(), Some("beta"));
 }
+
+#[test]
+fn all_updates_a_pinned_game_that_has_dlc_to_install_and_skips_one_with_only_a_newer_build() {
+    const DLC: u64 = 1207658925;
+    let (f, api) = installed();
+    // Build 100 is listed again with the DLC, behind a newer build 200.
+    api.content.add_build(
+        on("100", "1.2.76", None)
+            .depot(FakeDepot::new(DLC).file(FakeFile::new("data\\dlc.dat", b"bought"))),
+    );
+    newer(&api);
+    assert_success(&update(&f, &api, &["--build", "100", "--yes"]));
+    let out = gog(&f, &api, &["update", "--all", "--yes"]);
+    assert_eq!(
+        stdout(&out),
+        format!(
+            "Skipped {NAME}: {}\nNothing to update.\n",
+            pin_note("100", "1.2.76")
+        )
+    );
+
+    // Bought since.
+    api.with(|config| {
+        config.products.insert(
+            GAME,
+            product(
+                GAME,
+                "Papers, Please",
+                &[],
+                &[json!({"id": DLC, "title": "Bonus"})],
+            ),
+        );
+        config.owned_ids = Some(vec![GAME, DLC]);
+    });
+    let out = gog(&f, &api, &["update", "--check", "--refresh", "--json"]);
+    let env = &json_of(&out)["environments"][0];
+    assert_eq!(env["update"], "available");
+    assert_eq!(env["applicable"], true);
+    assert_eq!(env["reason"], Value::Null);
+    assert_eq!(env["pinned"], "100");
+    assert_eq!(env["dlc"][0]["state"], "not_installed");
+    let out = gog(&f, &api, &["update", "--check", "--refresh"]);
+    assert!(
+        stdout(&out).contains("update available"),
+        "{}",
+        stdout(&out)
+    );
+
+    let out = gog(&f, &api, &["update", "--all", "--refresh", "--yes"]);
+    assert_success(&out);
+    let text = stdout(&out);
+    assert!(text.contains(&format!("Updating {NAME}\n")), "{text}");
+    assert!(text.contains("Updated 1 of 1 game.\n"), "{text}");
+    assert_eq!(read(&f, "data/dlc.dat"), "bought");
+    assert_eq!(installed_build(&f), "100");
+    assert_eq!(record(&f).follow.pinned.as_deref(), Some("100"));
+
+    // Nothing left but the newer build.
+    let out = gog(&f, &api, &["update", "--all", "--refresh", "--yes"]);
+    assert!(
+        stdout(&out).starts_with(&format!("Skipped {NAME}: Pinned to build 100")),
+        "{}",
+        stdout(&out)
+    );
+    let out = update(&f, &api, &["--refresh", "--yes"]);
+    assert_success(&out);
+    assert_eq!(
+        stdout(&out),
+        format!("{}\n", pinned_message("100", "1.2.76"))
+    );
+}

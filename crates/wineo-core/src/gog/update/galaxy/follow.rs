@@ -81,7 +81,11 @@ fn listed(builds: &Builds) -> impl Iterator<Item = &Build> {
 /// The generation 2 build with id `id`, as listed on `prefer` where it is.
 /// Only an id names a build here: what a record or journal holds is never
 /// read as a version name.
-pub(super) fn by_id<'a>(builds: &'a Builds, id: &str, prefer: Option<&str>) -> Option<&'a Build> {
+pub(in crate::gog::update) fn by_id<'a>(
+    builds: &'a Builds,
+    id: &str,
+    prefer: Option<&str>,
+) -> Option<&'a Build> {
     let found: Vec<&Build> = listed(builds)
         .filter(|build| build.build_id == id)
         .collect();

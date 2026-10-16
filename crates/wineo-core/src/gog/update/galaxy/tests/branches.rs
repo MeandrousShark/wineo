@@ -428,3 +428,89 @@ fn an_install_resumed_after_the_follow_changed_is_refused() {
     );
     assert_eq!(fx.follows(), Follow::default());
 }
+
+fn dlc_depot() -> FakeDepot {
+    FakeDepot::new(DLC).file(FakeFile::new("Data\\dlc.dat", b"bought"))
+}
+
+#[test]
+fn a_pinned_game_installs_the_dlc_its_pinned_build_has_and_stays_pinned() {
+    use crate::gog::update::{DlcState, check};
+    let fx = Fixture::new();
+    fx.gog.lock().unwrap().dlc = vec![DLC];
+    fx.gog.lock().unwrap().owned = Some(vec![GAME]);
+    fx.content.add_build(Fixture::game("100"));
+    fx.install();
+    // Build 100 is listed again with the DLC, behind a newer build 200.
+    fx.gog.lock().unwrap().newest_first = true;
+    fx.content
+        .add_build(Fixture::game("100").depot(dlc_depot()));
+    fx.content.add_build(game_200());
+    fx.pin("100");
+    assert!(matches!(
+        fx.plan_choosing(Choice::Keep).unwrap(),
+        Planned::Pinned(_)
+    ));
+    let status = check(&mut fx.session(), "game", true).unwrap();
+    assert_eq!(status.state, UpdateState::Available);
+    assert!(!status.applicable);
+    assert!(matches!(status.reason, Some(Reason::Pinned { .. })));
+
+    fx.gog.lock().unwrap().owned = Some(vec![GAME, DLC]);
+    let status = check(&mut fx.session(), "game", true).unwrap();
+    assert_eq!(status.state, UpdateState::Available);
+    assert!(status.applicable);
+    assert_eq!(status.reason, None);
+    assert_eq!(status.pinned.as_deref(), Some("100"));
+    let dlc = status.dlc.iter().find(|dlc| dlc.id == DLC).unwrap();
+    assert_eq!(dlc.state, DlcState::NotInstalled);
+    assert_eq!(dlc.available.as_deref(), Some("100"));
+
+    let Planned::Update(plan) = fx.plan_choosing(Choice::Keep).unwrap() else {
+        panic!("expected the DLC to install");
+    };
+    assert_eq!(plan.build(), "100");
+    assert_eq!(plan.from(), plan.to());
+    fx.apply_update(&plan).unwrap();
+    assert_eq!(fx.read("Data/dlc.dat"), "bought");
+    let committed = fx.state().committed.unwrap();
+    assert_eq!(committed.products[0].build.as_deref(), Some("100"));
+    assert_eq!(committed.products[1].status, ProductStatus::Installed);
+    assert_eq!(fx.follows().pinned.as_deref(), Some("100"));
+
+    // With nothing left to install, it's the pinned message again, and the
+    // newer build is only held back.
+    assert!(matches!(
+        fx.plan_choosing(Choice::Keep).unwrap(),
+        Planned::Pinned(_)
+    ));
+    let status = check(&mut fx.session(), "game", true).unwrap();
+    assert!(!status.applicable);
+    assert!(matches!(status.reason, Some(Reason::Pinned { .. })));
+}
+
+#[test]
+fn a_pinned_game_is_not_offered_dlc_its_pinned_build_lacks() {
+    use crate::gog::update::check;
+    let fx = Fixture::new();
+    fx.gog.lock().unwrap().dlc = vec![DLC];
+    fx.gog.lock().unwrap().owned = Some(vec![GAME]);
+    fx.content.add_build(Fixture::game("100"));
+    fx.install();
+    fx.gog.lock().unwrap().newest_first = true;
+    // Only the newer build has the DLC.
+    fx.content.add_build(game_200().depot(dlc_depot()));
+    fx.pin("100");
+    fx.gog.lock().unwrap().owned = Some(vec![GAME, DLC]);
+
+    let status = check(&mut fx.session(), "game", true).unwrap();
+    assert_eq!(status.state, UpdateState::Available);
+    assert!(!status.applicable);
+    assert!(matches!(status.reason, Some(Reason::Pinned { .. })));
+    assert!(status.dlc.iter().all(|dlc| dlc.id != DLC));
+    assert!(matches!(
+        fx.plan_choosing(Choice::Keep).unwrap(),
+        Planned::Pinned(_)
+    ));
+    assert_eq!(fx.state().committed.unwrap().products.len(), 1);
+}

@@ -569,22 +569,29 @@ pub fn plan(
         }
         Err(error) => return Err(error),
     };
-    // A pinned game isn't updated; reinstalling it rebuilds the pin.
-    if kind == JournalKind::Update
-        && options.choice.is_keep()
-        && let Some(pinned) = &from.pinned
-    {
-        return Ok(Planned::Pinned(Pinned {
+    // A pinned game isn't moved to another build; reinstalling it rebuilds
+    // the pin. An update holds the pinned build, and only installs DLC from
+    // it, so it carries on only when the pin is what's installed.
+    let holding = kind == JournalKind::Update && options.choice.is_keep() && from.pinned.is_some();
+    let pinned_game = |warnings: Vec<String>| -> Planned {
+        let pinned = from.pinned.clone().unwrap_or_default();
+        Planned::Pinned(Pinned {
             environment: name.to_owned(),
-            build: pinned.clone(),
             version: builds
                 .items
                 .iter()
-                .find(|listed| listed.build_id == *pinned)
+                .find(|listed| listed.build_id == pinned)
                 .and_then(|listed| listed.version_name.clone())
                 .filter(|version| !version.is_empty()),
+            build: pinned,
             warnings,
-        }));
+        })
+    };
+    if let (true, Some(pinned)) = (holding, &from.pinned)
+        && follow::by_id(&builds, pinned, from.branch.as_deref()).map(|held| &held.build_id)
+            != installed_build.as_ref()
+    {
+        return Ok(pinned_game(warnings));
     }
     let who = Who {
         title: &title,
@@ -594,7 +601,7 @@ pub fn plan(
         &builds,
         &options.choice,
         &from,
-        kind == JournalKind::Reinstall,
+        kind == JournalKind::Reinstall || holding,
         &who,
     )?;
     let latest = picked.build.clone();
@@ -649,6 +656,10 @@ pub fn plan(
         && installed_build.as_deref() == Some(latest.build_id.as_str())
         && !selection_changed(&committed, &target.products)
     {
+        if holding {
+            // Nothing for the pinned build to install.
+            return Ok(pinned_game(warnings));
+        }
         if from == to {
             return Ok(Planned::UpToDate {
                 environment: name.to_owned(),
