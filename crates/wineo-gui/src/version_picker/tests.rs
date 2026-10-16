@@ -423,8 +423,48 @@ fn an_unfinished_operation_says_why_and_loads_nothing() {
             .as_str()
         )
     );
-    // Finish update keeps its place.
-    assert!(app.cards[0].finish_update());
+    // Finish update stays in the panel, and can start.
+    assert!(app.version_visible());
+    let ids = panel_controls(&app);
+    assert!(
+        ids.contains(&iced::widget::Id::new(crate::panel::PANEL_PLAY_ID)),
+        "{ids:?}"
+    );
+    // A game with nothing unfinished shows only the view.
+    let app = opened(false);
+    let ids = panel_controls(&app);
+    assert!(
+        !ids.contains(&iced::widget::Id::new(crate::panel::PANEL_PLAY_ID)),
+        "{ids:?}"
+    );
+}
+
+/// The ids of the enabled controls the panel draws.
+fn panel_controls(app: &App) -> Vec<iced::widget::Id> {
+    use std::sync::{Arc, Mutex};
+    struct Ids(Arc<Mutex<Vec<iced::widget::Id>>>);
+    impl iced::advanced::widget::Operation for Ids {
+        fn traverse(
+            &mut self,
+            operate: &mut dyn FnMut(&mut dyn iced::advanced::widget::Operation),
+        ) {
+            operate(self);
+        }
+
+        fn focusable(
+            &mut self,
+            id: Option<&iced::widget::Id>,
+            _bounds: iced::Rectangle,
+            _state: &mut dyn iced::advanced::widget::operation::Focusable,
+        ) {
+            self.0.lock().unwrap().extend(id.cloned());
+        }
+    }
+    let ids = Arc::new(Mutex::new(Vec::new()));
+    let mut laid =
+        crate::layout_probe::lay_out(app.panel(&app.cards[0]), iced::Size::new(420.0, 1600.0));
+    laid.run(Box::new(Ids(Arc::clone(&ids))));
+    ids.lock().unwrap().clone()
 }
 
 #[test]

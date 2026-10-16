@@ -28,7 +28,7 @@ const PANEL_WIDTH: f32 = 420.0;
 const PANEL_ACTION_WIDTH: f32 = 82.0;
 pub(crate) const LOG_ID: &str = "panel-log";
 const LOG_LINES: usize = 2000;
-const PANEL_PLAY_ID: &str = "panel-play";
+pub(crate) const PANEL_PLAY_ID: &str = "panel-play";
 const PANEL_INSTALL_ID: &str = "panel-install";
 /// How strongly art for a game that isn't installed is dimmed, on its card
 /// and in its panel.
@@ -1007,6 +1007,11 @@ impl App {
                 Message::Context(card.name.clone()),
             ));
             inner = inner.push(extra);
+        } else if version_visible && card.finish_update() {
+            // The view can't change anything until the operation finishes,
+            // so Finish update stays in reach.
+            inner = inner.push(ui::separator(palette));
+            inner = inner.push(actions);
         }
         inner =
             inner.push(self.checkup_status(&crate::checkup::Scope::Environment(card.name.clone())));
