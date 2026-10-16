@@ -334,6 +334,12 @@ impl Page {
         )
     }
 
+    /// What the page was opened to do.
+    #[cfg(test)]
+    pub(crate) fn options(&self) -> &Options {
+        &self.options
+    }
+
     /// What the next plan asks core for.
     fn planning_options(&self, password: Option<Secret>) -> Options {
         Options {

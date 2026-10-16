@@ -218,6 +218,56 @@ pub(crate) fn check_with(
         .map_err(|error| format!("{error:#}"))
 }
 
+/// Checks `name` again once an update changed it. Logged out, or in a
+/// portable session, there is nothing to check.
+pub(crate) fn recheck_task(paths: Paths, name: String) -> iced::Task<crate::Message> {
+    if paths.portable_root().is_some() {
+        return iced::Task::none();
+    }
+    let checked = name.clone();
+    crate::task::blocking(
+        move || {
+            let keyring = wineo_core::secret_service::SecretServiceKeyring::gog();
+            let client = wineo_core::gog::client_from_env().map_err(|error| error.to_string())?;
+            recheck_with(&paths, &keyring, client, &checked)
+        },
+        move |result| crate::Message::GogRechecked(name, result),
+    )
+}
+
+/// What checking `name` found, or None when logged out.
+pub(crate) fn recheck_with(
+    paths: &Paths,
+    keyring: &dyn wineo_core::key_store::Keyring,
+    client: wineo_core::gog::api::Client,
+    name: &str,
+) -> Result<Option<Box<Status>>, String> {
+    let Some(mut session) = wineo_core::gog::account::Session::open(paths, keyring, client)
+        .map_err(|error| error.to_string())?
+    else {
+        return Ok(None);
+    };
+    update::check(&mut session, name, false)
+        .map(|status| Some(Box::new(status)))
+        .map_err(|error| format!("{error:#}"))
+}
+
+/// Lands a check of one game, like the background check does.
+pub(crate) fn rechecked(
+    app: &mut crate::App,
+    name: String,
+    result: Result<Option<Box<Status>>, String>,
+) {
+    match result {
+        Ok(Some(status)) => {
+            app.gog_versions.remove(&name);
+            app.gog_updates.insert(name, *status);
+        }
+        Ok(None) => {}
+        Err(error) => eprintln!("wineo-gui: couldn't check {name} for GOG updates: {error}"),
+    }
+}
+
 /// Lands the background check: statuses mark cards, and problems are only
 /// logged, since nobody asked for the check.
 pub(crate) fn checked(

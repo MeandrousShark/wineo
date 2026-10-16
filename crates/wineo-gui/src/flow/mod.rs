@@ -13,6 +13,7 @@ mod prefix;
 mod steam;
 
 pub(crate) use gog_install::Offer;
+pub(crate) use gog_update::LOGGED_OUT;
 
 use iced::widget::{column, container, scrollable, text};
 use iced::{Element, Fill, Task, keyboard};
@@ -134,6 +135,17 @@ impl Page {
     /// Updates `name`'s GOG game, or finishes its interrupted update.
     pub(crate) fn gog_update(paths: Paths, name: String) -> (Self, Task<Event>) {
         let (page, task) = gog_update::Page::new(paths, name);
+        (Self::GogUpdate(Box::new(page)), task.map(Event::from))
+    }
+
+    /// Changes `name`'s GOG game as `options` ask, from the Version picker:
+    /// a branch or build, a repair, or a move to the other track.
+    pub(crate) fn gog_update_with(
+        paths: Paths,
+        name: String,
+        options: wineo_core::gog::update::Options,
+    ) -> (Self, Task<Event>) {
+        let (page, task) = gog_update::Page::with_options(paths, name, options);
         (Self::GogUpdate(Box::new(page)), task.map(Event::from))
     }
 

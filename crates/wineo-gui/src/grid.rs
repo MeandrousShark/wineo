@@ -466,12 +466,17 @@ impl App {
             let transfer_actions = self.transfer_actions(name);
             let uninstall_action = self.uninstall_action(name);
             let update_action = self.gog_update_action(name);
+            let version_action = self
+                .cards
+                .iter()
+                .any(|card| card.name == *name && crate::version_picker::has_version(card));
             let removal_reason = self.remove_reason_with(&self.facts, name);
             let menu_buttons = 4
                 + usize::from(wine_actions) * 3
                 + usize::from(transfer_actions) * 2
                 + usize::from(uninstall_action)
-                + usize::from(update_action);
+                + usize::from(update_action)
+                + usize::from(version_action);
             let menu_dividers = 1 + usize::from(wine_actions);
             let body_content_height =
                 action_menu_body_height(menu_buttons, menu_dividers, removal_reason.as_deref());
@@ -503,6 +508,16 @@ impl App {
                     palette,
                     false,
                     enabled.then(|| Message::GogUpdate(name.clone())),
+                ));
+            }
+            if version_action {
+                scroll_items = scroll_items.push(context_menu_button(
+                    "Version...",
+                    palette,
+                    false,
+                    Some(Message::Version(crate::version_picker::Event::Open(
+                        name.clone(),
+                    ))),
                 ));
             }
             if uninstall_action {

@@ -62,6 +62,7 @@ mod tools_page;
 mod trash_page;
 mod trash_work;
 mod ui;
+mod version_picker;
 mod wake;
 mod wheel;
 mod worker;
@@ -165,6 +166,12 @@ pub(crate) struct App {
     /// What the background check found, by environment. Kept here rather
     /// than on cards, which every library refresh rebuilds.
     pub(crate) gog_updates: HashMap<String, wineo_core::gog::update::Status>,
+    /// The Version row's value from the last listing the picker loaded, by
+    /// environment, newer than the background check's.
+    pub(crate) gog_versions: HashMap<String, String>,
+    /// The Version picker, which takes the panel's details' place like Log.
+    pub(crate) version: Option<version_picker::Picker>,
+    version_generation: u64,
     art_page: Option<String>,
     art_pages: HashMap<String, art_page::Page>,
     pending_art_writes: HashSet<(String, u64, u64, art_page::EnvironmentIdentity)>,
@@ -311,6 +318,13 @@ pub(crate) enum Message {
     /// Updates a GOG game, or finishes its interrupted update.
     GogUpdate(String),
     GogChecked(Result<Option<wineo_core::gog::update::Batch>, String>),
+    /// One game checked again after an update changed it.
+    GogRechecked(
+        String,
+        Result<Option<Box<wineo_core::gog::update::Status>>, String>,
+    ),
+    /// The Version picker in a GOG game's panel.
+    Version(version_picker::Event),
     Context(String),
     /// Where the cursor was when an input that can open the action menu arrived.
     MenuAnchor(iced::Point),
@@ -410,6 +424,9 @@ impl App {
             steam_key_work: settings::SteamKeyWork::default(),
             gog_work: settings::GogWork::default(),
             gog_updates: HashMap::new(),
+            gog_versions: HashMap::new(),
+            version: None,
+            version_generation: 0,
             art_page: None,
             art_pages: HashMap::new(),
             pending_art_writes: HashSet::new(),
@@ -627,7 +644,7 @@ impl App {
             || self.art_page.is_some()
             || self.tool_page.is_some()
             || self.portable_page.is_some())
-            && matches!(
+            && (matches!(
                 message,
                 Message::SearchChanged(_)
                     | Message::Select(_)
@@ -659,7 +676,7 @@ impl App {
                             | checkup::Event::OpenInstallLog(_)
                             | checkup::Event::Environment(_)
                     )
-            )
+            ) || matches!(&message, Message::Version(event) if event.is_input()))
         {
             return Task::none();
         }
@@ -679,6 +696,7 @@ impl App {
             Message::OpenTool(name, kind) => self.open_tool(name, kind),
             Message::Tool(name, kind, event) => self.tool_update(name, kind, event),
             Message::Checkup(event) => checkup::update(self, event),
+            Message::Version(event) => version_picker::update(self, event),
             Message::Trash(event) => trash_page::update(self, event),
             Message::Downloads(event) => downloads_page::update(self, event),
             message @ (Message::Remove(_)
@@ -1275,6 +1293,10 @@ impl App {
                 gog_library::checked(self, result);
                 Task::none()
             }
+            Message::GogRechecked(name, result) => {
+                gog_library::rechecked(self, name, result);
+                Task::none()
+            }
             Message::GogUpdate(name) => {
                 let enabled = self
                     .cards
@@ -1284,45 +1306,10 @@ impl App {
                         (card.finish_update() || self.gog_update_action(&name))
                             && self.gog_update_enabled(card)
                     });
-                if !enabled
-                    || self.settings.is_some()
-                    || self.art_page.is_some()
-                    || self.flow.is_some()
-                {
+                if !enabled {
                     return Task::none();
                 }
-                self.close_log();
-                self.action_menu = None;
-                self.flow_generation = self.flow_generation.wrapping_add(1);
-                let generation = self.flow_generation;
-                // An interrupted Galaxy install is finished by installing the
-                // game again, which the update page can't do.
-                let galaxy_install = self
-                    .cards
-                    .iter()
-                    .find(|card| card.name == name)
-                    .filter(|card| card.finish_update())
-                    .filter(|_| gog_library::galaxy_install(&self.paths, &name))
-                    .and_then(|card| {
-                        Some(flow::Offer {
-                            gog_id: card.gog.as_ref()?.gog_id.as_deref()?.parse().ok()?,
-                            title: card.display_title.clone(),
-                            linux: false,
-                            windows: true,
-                            unfinished: Some(name.clone()),
-                        })
-                    });
-                let (page, task) = match galaxy_install {
-                    Some(offer) => flow::Page::gog_finish_install(self.paths.clone(), offer),
-                    None => flow::Page::gog_update(self.paths.clone(), name),
-                };
-                self.flow = Some(page);
-                Task::batch([
-                    task.map(move |event| Message::Flow(generation, event)),
-                    iced::advanced::widget::operate(
-                        iced::advanced::widget::operation::focusable::unfocus(),
-                    ),
-                ])
+                self.open_gog_update(name, None)
             }
             Message::CloneEnvironment(name) => {
                 if self.management_busy()
