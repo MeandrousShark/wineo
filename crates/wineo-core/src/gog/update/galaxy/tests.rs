@@ -352,7 +352,14 @@ fn answer(content: &ContentSystem, gog: &Mutex<Gog>, request: &fake::Request) ->
         return fake::json(500, "{}");
     }
     if path == "/token" {
-        return Reply::Send(tokens("ACCESS", "R", USER, 3600));
+        // The account a test switched to, which logs in with `OTHER`.
+        return Reply::Send(
+            if request.query("refresh_token").as_deref() == Some("OTHER") {
+                tokens("ACCESS", "OTHER", USER + 1, 3600)
+            } else {
+                tokens("ACCESS", "R", USER, 3600)
+            },
+        );
     }
     if path == "/user/data/games" {
         let owned = gog.owned.clone().unwrap_or_else(|| {

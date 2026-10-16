@@ -7,9 +7,10 @@
 //! still the one it started from, so a stale renewal can't overwrite a newer
 //! login or bring one back after a logout.
 //!
-//! Private-branch passwords (`branches`) belong to the login too: logging out,
-//! or logging in as another account, removes every one of them under the
-//! same lock, so no front end has to remember to.
+//! Private-branch passwords (`branches`) belong to the login too: each is
+//! owned by the account that saved it, and only that account's are used.
+//! Logging out, or logging in as another account, also removes every one of
+//! them under the same lock, so no front end has to remember to.
 //!
 //! Every change to the saved login under the lock also bumps a generation
 //! counter. A session is bound to one account for its whole life: before
@@ -477,12 +478,23 @@ impl<'a> Session<'a> {
 
     /// The saved password for a private branch of `game`, if there is one.
     pub fn branch_password(&self, game: u64, branch: &str) -> Result<Option<Secret>, AccountError> {
-        Ok(branches::find(&self.paths, self.keyring, game, branch)?)
+        Ok(branches::find(
+            &self.paths,
+            self.keyring,
+            &self.login.user_id.to_string(),
+            game,
+            branch,
+        )?)
     }
 
     /// Every private branch of `game` with a saved password.
     pub fn branch_passwords(&self, game: u64) -> Result<Vec<(String, Secret)>, AccountError> {
-        Ok(branches::list(&self.paths, self.keyring, game)?)
+        Ok(branches::list(
+            &self.paths,
+            self.keyring,
+            &self.login.user_id.to_string(),
+            game,
+        )?)
     }
 
     /// Saves the password for a private branch of `game`, replacing any
@@ -495,7 +507,8 @@ impl<'a> Session<'a> {
         password: &Secret,
     ) -> Result<Saved, AccountError> {
         let (paths, keyring) = (self.paths.clone(), self.keyring);
-        self.while_current(|| branches::save(&paths, keyring, game, branch, password))?
+        let user = self.login.user_id.to_string();
+        self.while_current(|| branches::save(&paths, keyring, &user, game, branch, password))?
             .map_err(AccountError::from)
     }
 
@@ -510,7 +523,8 @@ impl<'a> Session<'a> {
         refused: &Secret,
     ) -> Result<bool, AccountError> {
         let (paths, keyring) = (self.paths.clone(), self.keyring);
-        self.while_current(|| branches::remove_if(&paths, keyring, game, branch, refused))?
+        let user = self.login.user_id.to_string();
+        self.while_current(|| branches::remove_if(&paths, keyring, &user, game, branch, refused))?
             .map_err(AccountError::from)
     }
 

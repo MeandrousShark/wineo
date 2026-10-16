@@ -36,16 +36,15 @@ impl Fixture {
             .1
             .lock()
             .unwrap()
-            .get(&(GAME, branch.to_owned()))
+            .get(&(USER.to_string(), GAME, branch.to_owned()))
             .cloned()
     }
 
     fn save_password(&self, branch: &str, password: &str) {
-        self.keyring
-            .1
-            .lock()
-            .unwrap()
-            .insert((GAME, branch.to_owned()), password.to_owned());
+        self.keyring.1.lock().unwrap().insert(
+            (USER.to_string(), GAME, branch.to_owned()),
+            password.to_owned(),
+        );
     }
 
     fn plan_with_options(&self, options: Options) -> Result<Planned> {
@@ -673,5 +672,104 @@ fn a_check_finding_the_saved_password_refused_says_so_and_removes_it() {
         Some(Reason::Password(
             "Enter its password again with: wineo update game --branch beta".to_owned()
         ))
+    );
+}
+
+impl Fixture {
+    /// Every builds request that carried a password.
+    fn password_requests(&self) -> usize {
+        self.server
+            .requests()
+            .iter()
+            .filter(|request| request.path().ends_with("/os/windows/builds"))
+            .filter(|request| request.query("password").is_some())
+            .count()
+    }
+
+    /// Another account logs in while the keyring can't be reached to wipe.
+    fn switch_account_with_a_failed_wipe(&self) {
+        self.keyring
+            .2
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        crate::gog::account::store(
+            &self.paths,
+            &*self.keyring,
+            &account::StoredLogin {
+                refresh_token: "OTHER".to_owned(),
+                user_id: wineo_gog::UserId::new(USER + 1),
+                username: None,
+            },
+        )
+        .unwrap();
+        // The wipe changed nothing, so the first account's item is still there.
+        assert_eq!(self.saved_password("beta").as_deref(), Some(PASSWORD));
+    }
+}
+
+#[test]
+fn after_a_switch_whose_wipe_failed_the_new_account_never_sends_or_lists_the_old_one_s_password() {
+    let fx = Fixture::following_private_beta();
+    fx.content.add_build(Fixture::game("400").branch("beta"));
+    fx.gog.lock().unwrap().newest_first = true;
+    let before = fx.password_requests();
+    fx.switch_account_with_a_failed_wipe();
+
+    // A check can't compare, as with no password, and sends none.
+    let status = crate::gog::update::check(&mut fx.session(), "game", true).unwrap();
+    assert_eq!(status.state, UpdateState::CantCompare);
+    assert_eq!(
+        status.reason,
+        Some(Reason::Password(
+            "Enter its password again with: wineo update game --branch beta".to_owned()
+        ))
+    );
+    // An update asks for the password.
+    let error = fx.plan_with_options(Options::default()).unwrap_err();
+    assert!(matches!(
+        galaxy_error(&error),
+        GalaxyError::NeedsPassword { .. }
+    ));
+    // A listing has only the public builds.
+    let listed = listing::list(&fx.paths, &mut fx.session(), "game", None, true, false).unwrap();
+    assert!(listed.builds.iter().all(|build| build.branch.is_none()));
+    assert!(listed.builds.iter().all(|build| !build.private));
+    assert_eq!(fx.password_requests(), before, "a password was sent");
+
+    // The new account entering its own clears the old one out.
+    let Planned::Update(_) = fx.plan_branch("beta", Some(PASSWORD)).unwrap() else {
+        panic!("expected an update");
+    };
+    let owners: Vec<String> = fx
+        .keyring
+        .1
+        .lock()
+        .unwrap()
+        .keys()
+        .map(|(owner, _, _)| owner.clone())
+        .collect();
+    assert_eq!(owners, [(USER + 1).to_string()]);
+}
+
+#[test]
+fn an_item_with_no_owner_is_never_sent_and_goes_with_the_next_write() {
+    let fx = Fixture::with_private_beta();
+    fx.keyring.1.lock().unwrap().insert(
+        (String::new(), GAME, "beta".to_owned()),
+        PASSWORD.to_owned(),
+    );
+    let error = fx.plan_branch("beta", None).unwrap_err();
+    assert!(matches!(
+        galaxy_error(&error),
+        GalaxyError::NeedsPassword { .. }
+    ));
+    assert_eq!(fx.password_requests(), 0);
+    fx.plan_branch("beta", Some(PASSWORD)).unwrap();
+    assert!(
+        fx.keyring
+            .1
+            .lock()
+            .unwrap()
+            .keys()
+            .all(|(owner, _, _)| owner == &USER.to_string())
     );
 }

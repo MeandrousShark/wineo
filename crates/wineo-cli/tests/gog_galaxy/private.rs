@@ -29,7 +29,13 @@ fn keys_file(f: &Fixture) -> PathBuf {
 fn saved(f: &Fixture) -> Option<String> {
     let text = fs::read_to_string(keys_file(f)).ok()?;
     let all: Value = serde_json::from_str(&text).unwrap();
-    all[GAME.to_string()]["beta"].as_str().map(str::to_owned)
+    // By account, then game, then branch: one account logs in here.
+    let accounts = all.as_object().unwrap();
+    assert!(accounts.len() <= 1, "{} accounts", accounts.len());
+    accounts
+        .values()
+        .find_map(|games| games[GAME.to_string()]["beta"].as_str())
+        .map(str::to_owned)
 }
 
 /// Runs wineo with `input` on its standard input, which is not a terminal.

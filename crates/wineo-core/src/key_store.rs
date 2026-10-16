@@ -45,29 +45,52 @@ pub trait Keyring {
     fn delete(&self) -> Result<bool, KeyringError>;
 
     /// The private-branch passwords GOG's login keeps beside it, one item
-    /// per game and branch. Only the GOG login's keyring has them; the
-    /// others answer `Unavailable`, which sends them to the key file.
-    fn get_branch(&self, _game: u64, _branch: &str) -> Result<Option<String>, KeyringError> {
+    /// per account, game, and branch. `user` is the GOG account that saved
+    /// it, and only that account's are ever read. Only the GOG login's
+    /// keyring has them; the others answer `Unavailable`, which sends them
+    /// to the key file.
+    fn get_branch(
+        &self,
+        _user: &str,
+        _game: u64,
+        _branch: &str,
+    ) -> Result<Option<String>, KeyringError> {
         Err(KeyringError::Unavailable)
     }
 
-    fn set_branch(&self, _game: u64, _branch: &str, _password: &str) -> Result<(), KeyringError> {
+    fn set_branch(
+        &self,
+        _user: &str,
+        _game: u64,
+        _branch: &str,
+        _password: &str,
+    ) -> Result<(), KeyringError> {
         Err(KeyringError::Unavailable)
     }
 
     /// Returns whether there was a password to delete.
-    fn delete_branch(&self, _game: u64, _branch: &str) -> Result<bool, KeyringError> {
+    fn delete_branch(&self, _user: &str, _game: u64, _branch: &str) -> Result<bool, KeyringError> {
         Err(KeyringError::Unavailable)
     }
 
-    /// Every branch of `game` that has a password, with the password.
-    fn list_branches(&self, _game: u64) -> Result<Vec<(String, String)>, KeyringError> {
+    /// Every branch of `game` that `user` has a password for, with it.
+    fn list_branches(
+        &self,
+        _user: &str,
+        _game: u64,
+    ) -> Result<Vec<(String, String)>, KeyringError> {
         Err(KeyringError::Unavailable)
     }
 
-    /// Deletes every branch password of every game. Returns whether there
-    /// were any.
+    /// Deletes every branch password of every account and game. Returns
+    /// whether there were any.
     fn delete_all_branches(&self) -> Result<bool, KeyringError> {
+        Err(KeyringError::Unavailable)
+    }
+
+    /// Deletes every branch password `user` doesn't own, including any with
+    /// no owner. Returns whether there were any.
+    fn delete_branches_not_of(&self, _user: &str) -> Result<bool, KeyringError> {
         Err(KeyringError::Unavailable)
     }
 }

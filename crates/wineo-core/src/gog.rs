@@ -45,11 +45,15 @@ pub(crate) mod test_support {
     use crate::steam::api::fixture::{Server, reply};
 
     /// A keyring in memory, shareable between threads. The second slot holds
-    /// private-branch passwords by game and branch.
+    /// private-branch passwords by owner, game, and branch. An owner of
+    /// `""` is an item from before items had one.
     #[derive(Default)]
     pub struct FakeKeyring(
         pub Mutex<Option<String>>,
-        pub Mutex<BTreeMap<(u64, String), String>>,
+        pub Mutex<BTreeMap<(String, u64, String), String>>,
+        /// Wiping every branch password answers `Unavailable` and does
+        /// nothing, as when the connection to the keyring dropped.
+        pub std::sync::atomic::AtomicBool,
     );
 
     impl Keyring for FakeKeyring {
@@ -66,44 +70,69 @@ pub(crate) mod test_support {
             Ok(self.0.lock().unwrap().take().is_some())
         }
 
-        fn get_branch(&self, game: u64, branch: &str) -> Result<Option<String>, KeyringError> {
+        fn get_branch(
+            &self,
+            user: &str,
+            game: u64,
+            branch: &str,
+        ) -> Result<Option<String>, KeyringError> {
             Ok(self
                 .1
                 .lock()
                 .unwrap()
-                .get(&(game, branch.to_owned()))
+                .get(&(user.to_owned(), game, branch.to_owned()))
                 .cloned())
         }
 
-        fn set_branch(&self, game: u64, branch: &str, password: &str) -> Result<(), KeyringError> {
-            self.1
-                .lock()
-                .unwrap()
-                .insert((game, branch.to_owned()), password.to_owned());
+        fn set_branch(
+            &self,
+            user: &str,
+            game: u64,
+            branch: &str,
+            password: &str,
+        ) -> Result<(), KeyringError> {
+            self.1.lock().unwrap().insert(
+                (user.to_owned(), game, branch.to_owned()),
+                password.to_owned(),
+            );
             Ok(())
         }
 
-        fn delete_branch(&self, game: u64, branch: &str) -> Result<bool, KeyringError> {
+        fn delete_branch(&self, user: &str, game: u64, branch: &str) -> Result<bool, KeyringError> {
             Ok(self
                 .1
                 .lock()
                 .unwrap()
-                .remove(&(game, branch.to_owned()))
+                .remove(&(user.to_owned(), game, branch.to_owned()))
                 .is_some())
         }
 
-        fn list_branches(&self, game: u64) -> Result<Vec<(String, String)>, KeyringError> {
+        fn list_branches(
+            &self,
+            user: &str,
+            game: u64,
+        ) -> Result<Vec<(String, String)>, KeyringError> {
             Ok(self
                 .1
                 .lock()
                 .unwrap()
                 .iter()
-                .filter(|((id, _), _)| *id == game)
-                .map(|((_, branch), password)| (branch.clone(), password.clone()))
+                .filter(|((owner, id, _), _)| owner == user && *id == game)
+                .map(|((_, _, branch), password)| (branch.clone(), password.clone()))
                 .collect())
         }
 
+        fn delete_branches_not_of(&self, user: &str) -> Result<bool, KeyringError> {
+            let mut all = self.1.lock().unwrap();
+            let before = all.len();
+            all.retain(|(owner, _, _), _| owner == user);
+            Ok(all.len() != before)
+        }
+
         fn delete_all_branches(&self) -> Result<bool, KeyringError> {
+            if self.2.load(std::sync::atomic::Ordering::SeqCst) {
+                return Err(KeyringError::Unavailable);
+            }
             let mut all = self.1.lock().unwrap();
             let had = !all.is_empty();
             all.clear();

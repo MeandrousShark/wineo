@@ -179,14 +179,20 @@ impl SecretServiceKeyring {
     }
 }
 
-/// The `account` of the items holding private-branch passwords.
+/// The `account` of the items holding private-branch passwords. Each also
+/// has the `user` who saved it, the `game`, and the `branch`.
 const BRANCH_ACCOUNT: &str = "gog-branch";
 const BRANCH_LABEL: &str = "wineo GOG branch password";
 
-fn branch_attributes<'a>(game: &'a str, branch: &'a str) -> HashMap<&'a str, &'a str> {
+fn branch_attributes<'a>(
+    user: &'a str,
+    game: &'a str,
+    branch: &'a str,
+) -> HashMap<&'a str, &'a str> {
     HashMap::from([
         ("service", SERVICE),
         ("account", BRANCH_ACCOUNT),
+        ("user", user),
         ("game", game),
         ("branch", branch),
     ])
@@ -205,23 +211,34 @@ impl Keyring for SecretServiceKeyring {
         self.remove(self.attributes())
     }
 
-    fn get_branch(&self, game: u64, branch: &str) -> Result<Option<String>, KeyringError> {
-        self.read(branch_attributes(&game.to_string(), branch))
+    fn get_branch(
+        &self,
+        user: &str,
+        game: u64,
+        branch: &str,
+    ) -> Result<Option<String>, KeyringError> {
+        self.read(branch_attributes(user, &game.to_string(), branch))
     }
 
-    fn set_branch(&self, game: u64, branch: &str, password: &str) -> Result<(), KeyringError> {
+    fn set_branch(
+        &self,
+        user: &str,
+        game: u64,
+        branch: &str,
+        password: &str,
+    ) -> Result<(), KeyringError> {
         self.write(
             BRANCH_LABEL,
-            branch_attributes(&game.to_string(), branch),
+            branch_attributes(user, &game.to_string(), branch),
             password,
         )
     }
 
-    fn delete_branch(&self, game: u64, branch: &str) -> Result<bool, KeyringError> {
-        self.remove(branch_attributes(&game.to_string(), branch))
+    fn delete_branch(&self, user: &str, game: u64, branch: &str) -> Result<bool, KeyringError> {
+        self.remove(branch_attributes(user, &game.to_string(), branch))
     }
 
-    fn list_branches(&self, game: u64) -> Result<Vec<(String, String)>, KeyringError> {
+    fn list_branches(&self, user: &str, game: u64) -> Result<Vec<(String, String)>, KeyringError> {
         let game = game.to_string();
         block_on(async {
             let service = connect().await?;
@@ -229,6 +246,7 @@ impl Keyring for SecretServiceKeyring {
                 .search_items(HashMap::from([
                     ("service", SERVICE),
                     ("account", BRANCH_ACCOUNT),
+                    ("user", user),
                     ("game", game.as_str()),
                 ]))
                 .await
@@ -254,6 +272,30 @@ impl Keyring for SecretServiceKeyring {
             ("service", SERVICE),
             ("account", BRANCH_ACCOUNT),
         ]))
+    }
+
+    fn delete_branches_not_of(&self, user: &str) -> Result<bool, KeyringError> {
+        block_on(async {
+            let service = connect().await?;
+            let found = service
+                .search_items(HashMap::from([
+                    ("service", SERVICE),
+                    ("account", BRANCH_ACCOUNT),
+                ]))
+                .await
+                .map_err(failed)?;
+            let mut deleted = false;
+            for item in found.unlocked.iter().chain(&found.locked) {
+                unlock_item(item).await?;
+                let attributes = item.get_attributes().await.map_err(failed)?;
+                // An item with no owner is from before items had one.
+                if attributes.get("user").map(String::as_str) != Some(user) {
+                    item.delete().await.map_err(failed)?;
+                    deleted = true;
+                }
+            }
+            Ok(deleted)
+        })
     }
 }
 
