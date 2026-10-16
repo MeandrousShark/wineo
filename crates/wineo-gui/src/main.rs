@@ -18,6 +18,8 @@ mod flow;
 mod focus_button;
 mod fonts;
 #[cfg(test)]
+mod galaxy_fake;
+#[cfg(test)]
 mod gog_fake;
 // Shared with the other crates, which include the same file.
 mod gog_library;
@@ -46,6 +48,10 @@ mod size;
 mod snapshots_page;
 mod spinner;
 mod task;
+#[cfg(test)]
+#[allow(dead_code)]
+#[path = "../../wineo-core/tests/common/runners.rs"]
+mod test_runners;
 #[cfg(test)]
 #[path = "../../wineo-core/tests/common/test_script.rs"]
 mod test_script;
@@ -1289,7 +1295,27 @@ impl App {
                 self.action_menu = None;
                 self.flow_generation = self.flow_generation.wrapping_add(1);
                 let generation = self.flow_generation;
-                let (page, task) = flow::Page::gog_update(self.paths.clone(), name);
+                // An interrupted Galaxy install is finished by installing the
+                // game again, which the update page can't do.
+                let galaxy_install = self
+                    .cards
+                    .iter()
+                    .find(|card| card.name == name)
+                    .filter(|card| card.finish_update())
+                    .filter(|_| gog_library::galaxy_install(&self.paths, &name))
+                    .and_then(|card| {
+                        Some(flow::Offer {
+                            gog_id: card.gog.as_ref()?.gog_id.as_deref()?.parse().ok()?,
+                            title: card.display_title.clone(),
+                            linux: false,
+                            windows: true,
+                            unfinished: Some(name.clone()),
+                        })
+                    });
+                let (page, task) = match galaxy_install {
+                    Some(offer) => flow::Page::gog_finish_install(self.paths.clone(), offer),
+                    None => flow::Page::gog_update(self.paths.clone(), name),
+                };
                 self.flow = Some(page);
                 Task::batch([
                     task.map(move |event| Message::Flow(generation, event)),

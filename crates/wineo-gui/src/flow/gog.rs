@@ -201,6 +201,9 @@ pub(crate) struct Page {
     install: Option<Box<Install>>,
     /// Which opened review `install` is; each one gets a new number.
     install_instance: u64,
+    /// The environment whose interrupted install this page was opened to
+    /// finish from the library, which it returns to instead of the grid.
+    finishing: Option<String>,
     /// Its focus is the tile the keyboard is on, in grid order. Nothing is
     /// picked here, since a tile opens its game.
     grid: ImportGrid<Event>,
@@ -221,7 +224,35 @@ impl Drop for Page {
 
 impl Page {
     pub(crate) fn new(paths: Paths) -> (Self, Task<Event>) {
-        let mut page = Self {
+        let mut page = Self::blank(paths);
+        let task = page.list();
+        (page, task)
+    }
+
+    /// Opens the install page for `offer`, whose environment's install
+    /// stopped, without the grid of games: the library's Finish install
+    /// does.
+    pub(crate) fn finish_install(paths: Paths, offer: Offer) -> (Self, Task<Event>) {
+        let mut page = Self::blank(paths);
+        page.finishing = offer.unfinished.clone();
+        let (install, task) = Install::new(page.paths.clone(), offer);
+        page.install = Some(Box::new(install));
+        page.install_instance = 1;
+        page.step = Step::Install;
+        let instance = page.install_instance;
+        let task = task.map(move |event| Event::Installing(instance, Box::new(event)));
+        (page, task)
+    }
+
+    /// The environment this page finishes the install of, when opened from
+    /// the library for that.
+    #[cfg(test)]
+    pub(super) fn finishing_name(&self) -> Option<&str> {
+        self.finishing.as_deref()
+    }
+
+    fn blank(paths: Paths) -> Self {
+        Self {
             paths,
             step: Step::Games,
             generation: 0,
@@ -237,12 +268,11 @@ impl Page {
             action: None,
             install: None,
             install_instance: 0,
+            finishing: None,
             grid: ImportGrid::new(GRID_ID, Event::ProgressDue, next_poster_load()),
             posters: HashMap::new(),
             poster_token: None,
-        };
-        let task = page.list();
-        (page, task)
+        }
     }
 
     fn next_generation(&mut self) -> u64 {
@@ -339,6 +369,12 @@ impl Page {
             .as_mut()
             .and_then(|install| install.take_leave());
         match leave {
+            Some(Leave::Games) if self.finishing.is_some() => {
+                self.action = Some(Action::Library {
+                    name: self.finishing.clone(),
+                    launch: false,
+                });
+            }
             Some(Leave::Games) => {
                 self.install = None;
                 self.step = Step::Games;

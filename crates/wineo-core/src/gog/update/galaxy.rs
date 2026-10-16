@@ -7,14 +7,14 @@
 //! per game in the data directory, and redistributables to a store shared
 //! by every game (`store`).
 //!
-//! Nothing here is reachable from the CLI or the app yet: they still call
-//! `install::plan` for the offline installers and `update::plan`, which
-//! refuses Galaxy games. `plan` here picks the track as installs will once
-//! they do, and `plan_update` sends a Galaxy game's update to `update`.
+//! `plan` picks the track an install takes, and `plan_update` sends a Galaxy
+//! game's update to `update` and every other game's to the installers'.
+//! `present` words reviews and progress for both front ends.
 
 mod build;
 mod fetch;
 pub mod install;
+pub mod present;
 pub mod record;
 mod setup;
 mod store;
@@ -45,25 +45,25 @@ pub enum Planned {
     Galaxy(install::Plan),
 }
 
-/// Plans installing `request.gog_id` on `track`, or, with none, on the
-/// Galaxy track when it's a Windows install and GOG has a generation 2
-/// build on the default branch, else from its offline installer. An
-/// interrupted install carries on on the track it began on. An explicit
-/// installer track is `install::plan` unchanged.
-pub fn plan(
+/// The track an install of `request.gog_id` takes: the one an interrupted
+/// install began on, else `track`, else Galaxy when it's a Windows install
+/// and GOG has a generation 2 build on the default branch, else the
+/// offline installers. Asks GOG for its builds only for that last choice,
+/// so a frontend can choose first and plan with the answer.
+pub fn track_for(
     paths: &Paths,
     session: &mut Session,
     request: &offline::Request,
     track: Option<Track>,
-    token: &Token,
-) -> Result<Planned> {
+) -> Result<Track> {
     host_only(paths)?;
     if let Some(pending) = offline::own_pending(paths, request)? {
-        let began = pending.journal.as_ref().map(|journal| journal.target.track);
-        return Ok(match began {
-            Some(Track::Galaxy) => Planned::Galaxy(install::plan(paths, session, request, token)?),
-            _ => Planned::Installer(offline::plan(paths, session, request, token)?),
-        });
+        return Ok(
+            match pending.journal.as_ref().map(|journal| journal.target.track) {
+                Some(Track::Galaxy) => Track::Galaxy,
+                _ => Track::Installer,
+            },
+        );
     }
     let galaxy = match (track, request.platform) {
         (Some(track), _) => track == Track::Galaxy,
@@ -102,9 +102,26 @@ pub fn plan(
         }
     };
     Ok(if galaxy {
-        Planned::Galaxy(install::plan(paths, session, request, token)?)
+        Track::Galaxy
     } else {
-        Planned::Installer(offline::plan(paths, session, request, token)?)
+        Track::Installer
+    })
+}
+
+/// Plans installing `request.gog_id` on `track`, or, with none, on the
+/// track `track_for` chooses. An interrupted install carries on on the
+/// track it began on. An explicit installer track is `install::plan`
+/// unchanged.
+pub fn plan(
+    paths: &Paths,
+    session: &mut Session,
+    request: &offline::Request,
+    track: Option<Track>,
+    token: &Token,
+) -> Result<Planned> {
+    Ok(match track_for(paths, session, request, track)? {
+        Track::Galaxy => Planned::Galaxy(install::plan(paths, session, request, token)?),
+        Track::Installer => Planned::Installer(offline::plan(paths, session, request, token)?),
     })
 }
 

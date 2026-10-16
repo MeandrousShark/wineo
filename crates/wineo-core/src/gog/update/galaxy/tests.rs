@@ -2018,3 +2018,39 @@ fn an_install_canceled_mid_file_is_finished_by_installing_again() {
 mod repair;
 mod setup;
 mod update;
+
+#[test]
+fn the_track_is_chosen_apart_from_planning_with_one_builds_fetch() {
+    let fx = Fixture::new();
+    fx.content.add_build(Fixture::game("100"));
+    let builds = |fx: &Fixture| {
+        fx.server
+            .requests()
+            .iter()
+            .filter(|request| request.path().ends_with("/os/windows/builds"))
+            .count()
+    };
+    let chosen = track_for(&fx.paths, &mut fx.session(), &fx.request(), None).unwrap();
+    assert_eq!(chosen, Track::Galaxy);
+    assert_eq!(builds(&fx), 1);
+    // An explicit track chooses without asking GOG at all.
+    let before = builds(&fx);
+    let explicit = track_for(
+        &fx.paths,
+        &mut fx.session(),
+        &fx.request(),
+        Some(Track::Installer),
+    )
+    .unwrap();
+    assert_eq!(explicit, Track::Installer);
+    assert_eq!(builds(&fx), before);
+    // A Linux install has only the installers.
+    let linux = offline::Request {
+        platform: Some(Platform::Linux),
+        ..fx.request()
+    };
+    assert_eq!(
+        track_for(&fx.paths, &mut fx.session(), &linux, None).unwrap(),
+        Track::Installer
+    );
+}

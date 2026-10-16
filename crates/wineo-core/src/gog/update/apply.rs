@@ -671,7 +671,8 @@ fn kind_word(kind: JournalKind) -> &'static str {
     }
 }
 
-/// Refuses a Galaxy-tracked game, which a later release updates.
+/// Refuses a Galaxy-tracked game, which `galaxy::plan_update` sends to the
+/// Galaxy planner. Only a caller using `plan` directly reaches this.
 fn installer_only(name: &str, platform: Platform, track: Track) -> Result<()> {
     let name = name.to_owned();
     match (platform, track) {

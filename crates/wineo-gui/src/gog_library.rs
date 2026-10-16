@@ -120,6 +120,14 @@ fn blocking_owner(paths: &Paths, env: &Environment) -> Option<(String, JournalKi
         })
 }
 
+/// Whether `name`'s interrupted operation is a Galaxy install, which the
+/// install page finishes: `wineo update` can't carry one on.
+pub(crate) fn galaxy_install(paths: &Paths, name: &str) -> bool {
+    update::journal_of(paths, name).is_some_and(|journal| {
+        journal.kind == JournalKind::Install && journal.target.track == folder::Track::Galaxy
+    })
+}
+
 /// The badge on a card's poster.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Badge {
@@ -152,8 +160,8 @@ pub(crate) fn badge(gog: Option<&GogCard>, status: Option<&Status>) -> Option<Ba
     }
 }
 
-/// Whether this wineo can update the game now: an installer-tracked game
-/// with an update.
+/// Whether this wineo can update the game now: a game on either track with
+/// an update it can apply.
 pub(crate) fn updatable(status: &Status) -> bool {
     status.applicable && status.state == UpdateState::Available
 }

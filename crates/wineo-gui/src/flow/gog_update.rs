@@ -1,9 +1,10 @@
 //! Updating a GOG game, or finishing an interrupted update or install, like
-//! `wineo update NAME`: a review of what changes, the update with progress
-//! and cancel, then what changed and which of your files it touched. A
-//! Windows installer that never started is offered once as its own setup
-//! window.
+//! `wineo update NAME`, on the track the game follows: a review of what
+//! changes, the update with progress and cancel, then what changed and which
+//! of your files it touched. A Windows installer that never started is
+//! offered once as its own setup window.
 
+use std::cell::RefCell;
 use std::time::Duration;
 
 use iced::futures::channel::mpsc::unbounded;
@@ -12,14 +13,17 @@ use iced::{Center, Element, Fill, Task, border};
 use wineo_core::cancel::Token;
 use wineo_core::gog::account::{AccountError, Session};
 use wineo_core::gog::api::Client;
-use wineo_core::gog::folder::JournalKind;
-use wineo_core::gog::update::windows::SetupError;
+use wineo_core::gog::folder::{JournalKind, Track};
+use wineo_core::gog::update::galaxy::present::{Label, Reporter as GalaxyReporter, restart_lines};
+use wineo_core::gog::update::galaxy::{self as core_galaxy, GalaxyError, PlannedUpdate};
+use wineo_core::gog::update::windows::{Event as WindowsEvent, SetupError};
 use wineo_core::gog::update::{
     self, Options, Pending, Plan, Reporter, ReviewLabel, UpdateError, Updated,
 };
 use wineo_core::key_store::Keyring;
 use wineo_core::paths::Paths;
 use wineo_core::secret_service::SecretServiceKeyring;
+use wineo_core::supervisor::{Notice, Watched};
 
 use super::Action;
 use super::heroic;
@@ -50,6 +54,50 @@ enum Step {
 pub(crate) enum Planned {
     UpToDate,
     Update(Box<Pending>),
+    Galaxy(Box<core_galaxy::update::Plan>),
+}
+
+/// An update ready to review and apply, on the track the game is on.
+#[derive(Debug, Clone)]
+pub(crate) enum Ready {
+    Installer(Box<Pending>),
+    Galaxy(Box<core_galaxy::update::Plan>),
+}
+
+impl Ready {
+    fn action(&self) -> &'static str {
+        match self {
+            Self::Installer(pending) => pending.action(),
+            Self::Galaxy(plan) => plan.action(),
+        }
+    }
+
+    fn kind(&self) -> JournalKind {
+        match self {
+            Self::Installer(pending) => pending.kind(),
+            Self::Galaxy(plan) => plan.kind(),
+        }
+    }
+
+    fn is_recovery(&self) -> bool {
+        match self {
+            Self::Installer(pending) => pending.is_recovery(),
+            Self::Galaxy(plan) => plan.is_recovery(),
+        }
+    }
+
+    fn warnings(&self) -> &[String] {
+        match self {
+            Self::Installer(pending) => pending.warnings(),
+            Self::Galaxy(plan) => plan.warnings(),
+        }
+    }
+
+    /// Whether this runs an installer as its own setup window, which only
+    /// an installer-track update does.
+    fn wizard(&self) -> bool {
+        matches!(self, Self::Installer(pending) if pending.wizard())
+    }
 }
 
 /// Why an update didn't finish.
@@ -110,7 +158,7 @@ pub(crate) struct Page {
     name: String,
     step: Step,
     generation: u64,
-    pending: Option<Box<Pending>>,
+    ready: Option<Ready>,
     updated: Option<Box<Updated>>,
     /// Set once an update finished, until the app takes it to clear the
     /// card's badge.
@@ -134,7 +182,7 @@ impl Page {
             name,
             step: Step::Planning,
             generation: 0,
-            pending: None,
+            ready: None,
             updated: None,
             done: None,
             token: None,
@@ -233,7 +281,7 @@ impl Page {
     }
 
     fn start(&mut self) -> Task<Event> {
-        let Some(pending) = self.pending.clone() else {
+        let Some(ready) = self.ready.clone() else {
             return Task::none();
         };
         if self.busy() || self.waiting() {
@@ -243,7 +291,7 @@ impl Page {
         self.token = Some(token.clone());
         self.step = Step::Working;
         self.error = None;
-        self.status = format!("{} {}...", pending.action(), self.name);
+        self.status = format!("{} {}...", ready.action(), self.name);
         let generation = self.next_generation();
         let paths = self.paths.clone();
         let (sender, receiver) = unbounded();
@@ -252,7 +300,7 @@ impl Page {
                 move || {
                     let client = wineo_core::gog::client_from_env()
                         .map_err(|error| Failure::Failed(error.to_string()))?;
-                    apply_with(&paths, &keyring(), client, &pending, &token, |line| {
+                    apply_ready(&paths, &keyring(), client, &ready, &token, |line| {
                         let _ = sender.unbounded_send(Event::Progress(generation, line));
                     })
                     .map(Box::new)
@@ -277,13 +325,9 @@ impl Page {
                         self.step = Step::Finished;
                     }
                     Ok(Planned::Update(pending)) => {
-                        self.pending = Some(pending);
-                        self.step = Step::Review;
-                        // The setup window was asked for, so it runs now.
-                        if std::mem::take(&mut self.wizard) {
-                            return self.start();
-                        }
+                        return self.reviewed(Ready::Installer(pending));
                     }
+                    Ok(Planned::Galaxy(plan)) => return self.reviewed(Ready::Galaxy(plan)),
                     Err(error) => {
                         if self.wizard {
                             self.step = Step::Finished;
@@ -337,10 +381,7 @@ impl Page {
                     // Asked once: a setup window that also never starts is
                     // only reported.
                     Err(failure @ Failure::NotStarted { .. })
-                        if self
-                            .pending
-                            .as_ref()
-                            .is_some_and(|pending| !pending.wizard()) =>
+                        if self.ready.as_ref().is_some_and(|ready| !ready.wizard()) =>
                     {
                         self.question = Some(failure);
                         self.step = Step::Question;
@@ -360,17 +401,28 @@ impl Page {
         }
     }
 
+    /// Shows `ready` for review, or runs it at once when the setup window
+    /// was asked for.
+    fn reviewed(&mut self, ready: Ready) -> Task<Event> {
+        self.ready = Some(ready);
+        self.step = Step::Review;
+        if std::mem::take(&mut self.wizard) {
+            return self.start();
+        }
+        Task::none()
+    }
+
     /// Whether this finishes an interrupted install rather than updating.
     fn installs(&self) -> bool {
-        self.pending
+        self.ready
             .as_ref()
-            .is_some_and(|pending| pending.kind() == JournalKind::Install)
+            .is_some_and(|ready| ready.kind() == JournalKind::Install)
     }
 
     pub(crate) fn view(&self, palette: Palette) -> Element<'_, Event> {
-        let title = match (self.step, self.pending.as_deref()) {
+        let title = match (self.step, self.ready.as_ref()) {
             (Step::Planning, _) => format!("Update {}", self.name),
-            (_, Some(pending)) => format!("{} {}", pending.action(), self.name),
+            (_, Some(ready)) => format!("{} {}", ready.action(), self.name),
             (_, None) => format!("Update {}", self.name),
         };
         let heading = text(title)
@@ -400,10 +452,10 @@ impl Page {
         if let Some(Failure::NotStarted { label, .. }) = &self.question {
             body = body.push(text(setup_window_question(label)));
         }
-        match (self.step, &self.pending, &self.updated) {
-            (Step::Review | Step::Working, Some(pending), _) => {
+        match (self.step, &self.ready, &self.updated) {
+            (Step::Review | Step::Working, Some(ready), _) => {
                 let mut summary = column![].spacing(8);
-                for (label, value) in review_rows(pending) {
+                for (label, value) in ready_rows(&self.paths, ready) {
                     summary = summary.push(
                         row![
                             text(label).color(palette.muted).width(160),
@@ -417,23 +469,31 @@ impl Page {
                         .background(palette.surface)
                         .border(border::rounded(12).width(1).color(palette.border))
                 }));
-                for warning in pending.warnings() {
+                if let Ready::Galaxy(plan) = ready {
+                    for note in plan.note_lines() {
+                        body = body.push(text(note).size(13).color(palette.muted));
+                    }
+                }
+                for warning in ready.warnings() {
                     body = body.push(text(warning).size(13).color(palette.warning));
                 }
             }
-            (Step::Finished, Some(pending), Some(updated)) => {
-                for line in result_lines(pending, updated) {
+            (Step::Finished, Some(ready), Some(updated)) => {
+                for line in ready_lines(&self.paths, ready, updated) {
                     body = body.push(text(line));
                 }
-                for (heading, items) in result_lists(updated) {
+                for (heading, items) in ready_lists(ready, updated) {
                     let mut list = column![crate::ui::section_heading(heading, palette)].spacing(4);
                     for item in items {
                         list = list.push(text(item).size(13));
                     }
                     body = body.push(list);
                 }
+                for line in restart_lines(&updated.needs_restart) {
+                    body = body.push(text(line).size(13));
+                }
                 // The plan's warnings came first, and the review showed them.
-                for warning in updated.warnings.iter().skip(pending.warnings().len()) {
+                for warning in updated.warnings.iter().skip(ready.warnings().len()) {
                     body = body.push(text(warning).size(13).color(palette.warning));
                 }
             }
@@ -446,8 +506,8 @@ impl Page {
             .max_width(heroic::PAGE_MAX_WIDTH)
             .height(Fill);
         let footer: Option<Element<'_, Event>> = match self.step {
-            Step::Review => self.pending.as_ref().map(|pending| {
-                let label = if pending.is_recovery() {
+            Step::Review => self.ready.as_ref().map(|ready| {
+                let label = if ready.is_recovery() {
                     "Finish"
                 } else {
                     "Update"
@@ -534,13 +594,21 @@ pub(crate) fn plan_with_options(
 ) -> Result<Planned, String> {
     let mut session = Session::open(paths, keyring, client).map_err(|error| error.to_string())?;
     let logged_out = session.is_none();
-    let planned = update::plan(paths, session.as_mut(), name, options, token);
+    let planned = core_galaxy::plan_update(paths, session.as_mut(), name, options, token);
     if token.is_canceled() {
-        return Err(CANCELED.to_owned());
+        return Err(canceled_message(paths, name));
     }
     match planned {
-        Ok(Plan::UpToDate { .. }) => Ok(Planned::UpToDate),
-        Ok(Plan::Update(pending)) => Ok(Planned::Update(Box::new(pending))),
+        Ok(
+            PlannedUpdate::Installer(Plan::UpToDate { .. })
+            | PlannedUpdate::Galaxy(core_galaxy::update::Planned::UpToDate { .. }),
+        ) => Ok(Planned::UpToDate),
+        Ok(PlannedUpdate::Installer(Plan::Update(pending))) => {
+            Ok(Planned::Update(Box::new(pending)))
+        }
+        Ok(PlannedUpdate::Galaxy(core_galaxy::update::Planned::Update(plan))) => {
+            Ok(Planned::Galaxy(Box::new(plan)))
+        }
         Err(error)
             if logged_out
                 && matches!(
@@ -550,8 +618,44 @@ pub(crate) fn plan_with_options(
         {
             Err(LOGGED_OUT.to_owned())
         }
-        Err(error) => Err(format!("{error:#}")),
+        Err(error) => Err(planning_failed(paths, name, &error)),
     }
+}
+
+/// What a cancel during planning says: that an update is left to finish when
+/// the folder has a journal, else only that it was canceled.
+fn canceled_message(paths: &Paths, name: &str) -> String {
+    match update::journal_of(paths, name) {
+        Some(journal) => Failure::Canceled { journal: true }
+            .message_for(name, journal.kind == JournalKind::Install),
+        None => CANCELED.to_owned(),
+    }
+}
+
+/// A planning failure, ending with how to finish the game's unfinished
+/// operation when the folder has a journal. A Galaxy install's journal can't
+/// be finished here, so it says to use the library instead of core's
+/// refusal.
+fn planning_failed(paths: &Paths, name: &str, error: &anyhow::Error) -> String {
+    let message = format!("{error:#}");
+    let Some(journal) = update::journal_of(paths, name) else {
+        return message;
+    };
+    if journal.kind == JournalKind::Install && journal.target.track == Track::Galaxy {
+        return format!(
+            "{name}'s install didn't finish. Use Finish install on {name} in the library."
+        );
+    }
+    with_hint(&message, &finish_hint(journal.kind, name))
+}
+
+/// `message` ending with `hint`, once.
+fn with_hint(message: &str, hint: &str) -> String {
+    if message.contains(hint) {
+        return message.to_owned();
+    }
+    let sep = if message.ends_with('.') { "" } else { "." };
+    format!("{message}{sep} {hint}")
 }
 
 /// Applies `pending`, sending a status line for each step and about ten a
@@ -590,6 +694,110 @@ pub(crate) fn apply_with(
         }
         Failure::Failed(format!("{error:#}"))
     })
+    .map_err(|failure| hinted(paths, pending.environment(), failure))
+}
+
+/// Applies `ready` on its track.
+pub(crate) fn apply_ready(
+    paths: &Paths,
+    keyring: &dyn Keyring,
+    client: Client,
+    ready: &Ready,
+    token: &Token,
+    say: impl FnMut(String),
+) -> Result<Updated, Failure> {
+    match ready {
+        Ready::Installer(pending) => apply_with(paths, keyring, client, pending, token, say),
+        Ready::Galaxy(plan) => apply_galaxy_with(paths, keyring, client, plan, token, say),
+    }
+}
+
+/// Applies a Galaxy `plan`, sending a status line for each stage and about
+/// ten a second while bytes move.
+pub(crate) fn apply_galaxy_with(
+    paths: &Paths,
+    keyring: &dyn Keyring,
+    client: Client,
+    plan: &core_galaxy::update::Plan,
+    token: &Token,
+    say: impl FnMut(String),
+) -> Result<Updated, Failure> {
+    let mut session = Session::open(paths, keyring, client)
+        .map_err(|error| Failure::Failed(error.to_string()))?;
+    // A Galaxy update fetches from GOG whatever it finishes.
+    let Some(session) = session.as_mut() else {
+        return Err(Failure::Failed(LOGGED_OUT.to_owned()));
+    };
+    let say = RefCell::new(say);
+    let mut reporter = GalaxyReporter::new(PROGRESS_INTERVAL);
+    core_galaxy::update::apply_with_events(
+        paths,
+        session,
+        plan,
+        token,
+        |step| {
+            if let Some(line) = reporter.line(&step) {
+                (say.borrow_mut())(line);
+            }
+        },
+        |event| {
+            let line = match event {
+                WindowsEvent::Watched(Watched::Notice(Notice::Stopping)) => {
+                    Some("Canceling setup...".to_owned())
+                }
+                WindowsEvent::Watched(Watched::Notice(Notice::Killing)) => {
+                    Some("Force stopping setup...".to_owned())
+                }
+                WindowsEvent::Watched(Watched::Notice(Notice::Warning(error))) => {
+                    Some(format!("Setup warning: {error}"))
+                }
+                _ => None,
+            };
+            if let Some(line) = line {
+                (say.borrow_mut())(line);
+            }
+        },
+    )
+    .map_err(|error| {
+        if let Some(UpdateError::Canceled { journal }) = error.downcast_ref::<UpdateError>() {
+            return Failure::Canceled { journal: *journal };
+        }
+        if let Some(GalaxyError::Setup {
+            title,
+            label,
+            detail,
+        }) = error.downcast_ref::<GalaxyError>()
+        {
+            return Failure::Failed(format!(
+                "Setting up {title} stopped: {label} failed ({detail})."
+            ));
+        }
+        Failure::Failed(format!("{error:#}"))
+    })
+    .map_err(|failure| hinted(paths, plan.environment(), failure))
+}
+
+/// How to finish what `kind` left, in the app's words.
+fn finish_hint(kind: JournalKind, name: &str) -> String {
+    if kind == JournalKind::Install {
+        format!("Use Finish install on {name} to finish it.")
+    } else {
+        format!("Use Finish update on {name} to finish it.")
+    }
+}
+
+/// Ends a failure's message with how to finish the game's unfinished
+/// operation, decided by the journal still being in its folder and not by
+/// what failed. A cancel says its own, and a message that has the hint
+/// already is left alone.
+fn hinted(paths: &Paths, name: &str, failure: Failure) -> Failure {
+    let Failure::Failed(message) = failure else {
+        return failure;
+    };
+    let Some(journal) = update::journal_of(paths, name) else {
+        return Failure::Failed(message);
+    };
+    Failure::Failed(with_hint(&message, &finish_hint(journal.kind, name)))
 }
 
 /// How a Windows installer that stopped on its own left things, like
@@ -599,11 +807,7 @@ pub(crate) fn apply_with(
 fn setup_failure(error: &anyhow::Error, pending: &Pending) -> Option<Failure> {
     let name = pending.environment();
     let recovery = pending.is_recovery();
-    let finish = if pending.kind() == JournalKind::Install {
-        format!("Use Finish install on {name} to finish it.")
-    } else {
-        format!("Use Finish update on {name} to finish it.")
-    };
+    let finish = finish_hint(pending.kind(), name);
     match error.downcast_ref::<SetupError>()? {
         SetupError::Canceled { .. } if recovery => Some(Failure::Canceled { journal: true }),
         SetupError::Canceled { .. } => Some(Failure::Canceled { journal: false }),
@@ -653,6 +857,79 @@ pub(crate) fn review_rows(pending: &Pending) -> Vec<(String, String)> {
         .collect()
 }
 
+/// The review's rows on either track.
+fn ready_rows(paths: &Paths, ready: &Ready) -> Vec<(String, String)> {
+    match ready {
+        Ready::Installer(pending) => review_rows(pending),
+        Ready::Galaxy(plan) => galaxy_review_rows(paths, plan),
+    }
+}
+
+/// A Galaxy update's review rows, the ones `wineo update NAME` prints.
+pub(crate) fn galaxy_review_rows(
+    paths: &Paths,
+    plan: &core_galaxy::update::Plan,
+) -> Vec<(String, String)> {
+    plan.review_rows(paths, |path| path.display().to_string())
+        .into_iter()
+        .map(|(label, value)| (galaxy_label(label), value))
+        .collect()
+}
+
+/// A Galaxy row's label as the app words it.
+pub(crate) fn galaxy_label(label: Label) -> String {
+    match label {
+        Label::Folder => "Folder".to_owned(),
+        Label::Track => "Track".to_owned(),
+        Label::Owner => "Owner".to_owned(),
+        Label::Product(label) => label,
+        Label::Version => "Version".to_owned(),
+        Label::Dlc => "DLC".to_owned(),
+        Label::Support => "Support".to_owned(),
+        Label::Check => "Check".to_owned(),
+        Label::Setup => "Setup".to_owned(),
+        Label::Download => "Download".to_owned(),
+    }
+}
+
+/// What a finished update says on either track.
+fn ready_lines(paths: &Paths, ready: &Ready, updated: &Updated) -> Vec<String> {
+    match ready {
+        Ready::Installer(pending) => result_lines(pending, updated),
+        Ready::Galaxy(plan) => galaxy_result_lines(paths, plan, updated),
+    }
+}
+
+/// What a finished Galaxy update says, before the lists of your files.
+pub(crate) fn galaxy_result_lines(
+    paths: &Paths,
+    plan: &core_galaxy::update::Plan,
+    updated: &Updated,
+) -> Vec<String> {
+    let mut lines = vec![format!("{}.", plan.finished())];
+    lines.extend(
+        plan.changes(paths, updated)
+            .into_iter()
+            .map(|(label, change)| format!("{label}: {change}")),
+    );
+    if updated.claimed {
+        lines.push(format!(
+            "{} now owns {}.",
+            updated.environment,
+            updated.folder.display()
+        ));
+    }
+    lines
+}
+
+/// The files of yours a finished update touched, on either track.
+fn ready_lists(ready: &Ready, updated: &Updated) -> Vec<(&'static str, Vec<String>)> {
+    match ready {
+        Ready::Installer(_) => result_lists(updated),
+        Ready::Galaxy(plan) => lists_under(updated, plan.saved_heading()),
+    }
+}
+
 /// What a finished update says, before the lists of your files.
 pub(crate) fn result_lines(pending: &Pending, updated: &Updated) -> Vec<String> {
     let mut lines = vec![format!("{}.", pending.finished())];
@@ -674,10 +951,17 @@ pub(crate) fn result_lines(pending: &Pending, updated: &Updated) -> Vec<String> 
 
 /// The files of yours an update touched, under the CLI's headings.
 pub(crate) fn result_lists(updated: &Updated) -> Vec<(&'static str, Vec<String>)> {
+    lists_under(
+        updated,
+        "Moved your files aside where the new version has files:",
+    )
+}
+
+fn lists_under(updated: &Updated, saved_heading: &'static str) -> Vec<(&'static str, Vec<String>)> {
     let mut lists = Vec::new();
     if !updated.saved.is_empty() {
         lists.push((
-            "Moved your files aside where the new version has files:",
+            saved_heading,
             updated
                 .saved
                 .iter()

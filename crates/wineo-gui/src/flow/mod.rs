@@ -12,6 +12,8 @@ mod posters;
 mod prefix;
 mod steam;
 
+pub(crate) use gog_install::Offer;
+
 use iced::widget::{column, container, scrollable, text};
 use iced::{Element, Fill, Task, keyboard};
 use wineo_core::paths::Paths;
@@ -133,6 +135,13 @@ impl Page {
     pub(crate) fn gog_update(paths: Paths, name: String) -> (Self, Task<Event>) {
         let (page, task) = gog_update::Page::new(paths, name);
         (Self::GogUpdate(Box::new(page)), task.map(Event::from))
+    }
+
+    /// Finishes the interrupted install of the game `offer` names, on the
+    /// install page.
+    pub(crate) fn gog_finish_install(paths: Paths, offer: Offer) -> (Self, Task<Event>) {
+        let (page, task) = gog::Page::finish_install(paths, offer);
+        (Self::Gog(Box::new(page)), task.map(Event::from))
     }
 
     /// The environment a GOG update just finished for, once.
