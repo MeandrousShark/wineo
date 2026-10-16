@@ -576,7 +576,8 @@ How the two files stay consistent:
   password at a terminal, or reads `--password-stdin`, and saves it in the
   keyring per game and branch (`account=gog-branch`, attributes `game` and
   `branch`). Entering it again replaces it. A refused password removes the
-  saved one and says `GOG refused the password for branch NAME.`
+  saved one and says `GOG refused the password for branch NAME.` (the
+  probe in step 12 changed this: see its decisions)
   Logging out or switching accounts removes them all (answer d).
 
 ### Commands and flag rules
@@ -1098,6 +1099,66 @@ Step 11 (2026-10-15), with the maintainer's answers the same day:
   back to 1.2.76 and moved the offline installer's leftovers aside;
   `--build 1.4.11.124` (a version name) returned to the default branch and
   pinned; `--latest` unpinned with no download.
+
+Step 12 (2026-10-16), with the maintainer's answers the same day:
+
+- **Probe** (approved, read-only): Disco Elysium's generation 2 build list
+  answers 200 with the identical public list (5 builds, default branch
+  only, `has_private_branches: true`) with no password and with a wrong
+  one. GOG can't be asked whether a password was wrong; a branch that
+  isn't there looks the same.
+- **When wineo asks** (answer A): only when `--branch NAME` isn't in the
+  public list and GOG says the game has private branches; otherwise step
+  11's "GOG lists no branch" message. A refused or unknown branch says
+  `GOG lists no branch NAME for TITLE, or refused its password.`, since
+  the two can't be told apart.
+- **Prompt** (answer A): `Branch NAME of TITLE is private. Password: `,
+  hidden. `--password-stdin` reads one line, removing only the line
+  ending, so spaces around a password stay. Without a terminal it names a
+  command that works: `Give its password with --password-stdin.` when
+  `--branch` was given, else the whole `wineo update NAME --branch BRANCH
+  --password-stdin`.
+- **`--builds` and checks** (answer A): saved private branches are listed,
+  marked `private` (JSON `"private"` on every build). A game following a
+  private branch uses its saved password everywhere; with it missing,
+  `--check` says `can't compare` and how to enter it again, `update NAME`
+  at a terminal asks, and `--all` reports that game as failed and never
+  prompts. The app uses a saved password and otherwise fails naming the
+  CLI command; its own password entry is step 13.
+- **A branch password belongs to the account that saved it** (a bound set
+  after two review rounds found cleanup missing when the keyring dropped
+  out mid-operation). Keyring items are `service=wineo`,
+  `account=gog-branch`, with attributes `user`, `game`, and `branch`;
+  without a keyring, a 0600 `gog-branches.key` holds `{user: {game:
+  {branch: password}}}`, like wineo's other key files. Only the current
+  login's are read, listed, sent, or compared; another account's, or one
+  with no owner, is never used and is removed by the next branch-password
+  write. Logging out, switching accounts, and a refused renewal still wipe
+  them all (answer d), as cleanup: a wipe the keyring can't finish
+  can't leak a password to the next account.
+- **A refusal removes only the password it sent:** under the credentials
+  lock, while the same login is current, and in each backend only the
+  copy equal to the refused password, so a newer one saved meanwhile
+  stays. A password is saved only once GOG lists its branch with it, at
+  planning, so declining the review keeps it.
+- **Crash leftovers** of the fallback file are swept under the credentials
+  lock whenever it's written or removed. Accepted limit, pre-existing:
+  `gog.key`, `steam.key`, and `steamgriddb.key` sweep theirs on migration
+  and removal but not when a crashed save is followed by another file
+  save, since Steam and SteamGridDB saves share no lock to sweep under.
+- **During an unfinished operation,** `--branch` naming the branch it
+  already follows isn't a change: it's taken as the password, so the
+  recovery hint's command works. Any other branch flag is still refused.
+- **Accepted limits:** a followed public branch GOG removes, on a game
+  with private branches, reads as a missing password; `--build ID` on a
+  private branch whose saved password is now refused says GOG doesn't
+  list the build, and the stale password stays until the next listing or
+  update; a `--check` that finds a saved password refused removes it
+  (dry runs don't).
+- **Live check** on `zz-probe-witcher` (The Witcher has private branches):
+  without a terminal it named `--password-stdin`; a wrong password gave
+  the "or refused" message; nothing reached the keyring or a fallback
+  file. A game without private branches never asked.
 
 ## Implementation sequence
 
