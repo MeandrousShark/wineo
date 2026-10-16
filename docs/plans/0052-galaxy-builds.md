@@ -1317,6 +1317,72 @@ app, and `--json`; installing a small Windows game on Galaxy and checking
 it starts; moving a game between tracks; rolling back and following a
 branch; and repairing a damaged file.
 
+## Acceptance checklist
+
+Use a throwaway games folder so nothing lands in `~/Games`: `wineo set
+--global defaults.games_root=~/wineo-0052-test` (unset it afterwards with
+`wineo set --global --unset defaults.games_root`). Pick a small Windows
+game you own that isn't installed (SMALL below), and use Papers, Please
+(it has two legacy branches) and The Witcher (it has private branches)
+where named. Log in first: `wineo import gog --login`.
+
+1. `wineo update --check`: Disco Elysium shows GOG's version names, not
+   `update on GOG`. `--check --json` has `"track": "galaxy"`, `"branch":
+   null`, and `"pinned": null` for it.
+2. `wineo import gog --game SMALL --dry-run`: the review shows `track
+   Galaxy`, the version, the setup steps, any support files, and an exact
+   download size, then `Dry run, nothing was installed.`
+3. Install it for real and press Ctrl+C during the download: `wineo start
+   NAME` refuses, naming `wineo import gog --game SMALL`. Run that: it
+   picks up without downloading finished files again, runs setup, and the
+   game starts.
+4. Damage one of its files without changing its size (overwrite a few
+   bytes of a `.dll` in the game folder). `wineo update NAME --check` still
+   says up to date; `wineo update NAME --repair` finds it, downloads only
+   that file, and saves the damaged copy aside as `.wineo-saved`. The game
+   starts.
+5. `wineo update NAME --reinstall --track installer`: the review shows
+   `track  Galaxy -> installer`, the installer runs, and the game starts.
+   Then `--reinstall --track galaxy`: the review says nothing is deleted,
+   only files that don't match are downloaded, and the game starts.
+6. `wineo update papers-please --builds` lists the default branch and
+   both legacy branches with dates and marks. `--branch "Legacy (64-bit)"`
+   rolls back to 1.2.76 and the game starts at that version. `--build
+   1.4.11.124` returns to the default branch and pins it.
+7. While pinned: `wineo update --check` shows the pin note, `wineo update
+   papers-please` says it's pinned and exits 0, and `update --all` leaves
+   it alone. `--latest` unpins with no download.
+8. `wineo update the-witcher --builds` says GOG has private branches.
+   `--branch beta` asks `Branch beta of The Witcher is private.
+   Password:`; a wrong one says `GOG lists no branch beta for The Witcher,
+   or refused its password.` and nothing is saved (`secret-tool search
+   service wineo account gog-branch` finds nothing). If you have a real
+   branch password, enter it: the branch's builds list, marked `private`,
+   and `wineo import gog --logout` removes it.
+9. In the app, Import from GOG: SMALL's review shows a **Track** picker
+   with **Galaxy** and **Offline installer**. Installing on Galaxy shows
+   its download and setup progress.
+10. In the app, Papers, Please's panel shows a **Version** row. **Change**
+    opens the picker with a **Branch** dropdown; picking `Legacy (64-bit)`
+    and its build reviews the rollback, and **Update** applies it. Picking
+    the default branch's newest build and pressing **Review** reviews the
+    return. Esc closes the picker and keeps the panel.
+11. Pin it from the CLI (`--build 1.4.11.124`): the panel says `(pinned)`
+    and `Use Change to follow its branch again.` once the library refreshes.
+    **Change**, pick the newest build, **Review**: the review says `Unpin`
+    with **Switch**, and afterwards the pin is gone.
+12. In the picker, **Repair** and **Move to offline installers** each open
+    their review (the move shows `Track  Galaxy -> Offline installer`);
+    press Back on both. On SMALL moved to the installer track (step 5), the
+    picker offers **Move to Galaxy** instead.
+13. In The Witcher's picker, **Enter a private branch** with a wrong
+    password says the refused message and keeps the form.
+14. Interrupt an update in the CLI with Ctrl+C, then open the game in the
+    app: the panel shows **Finish update**, the picker says the update is
+    unfinished, and **Finish update** finishes it.
+15. Clean up: `wineo rm` the test environments, delete
+    `~/wineo-0052-test`, and unset `defaults.games_root`.
+
 ## Scope limits
 
 - Generation 1 builds (question 3), delta patches (question 6), Mac games,
