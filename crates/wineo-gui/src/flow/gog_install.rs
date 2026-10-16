@@ -1409,6 +1409,9 @@ pub(crate) fn prepare_known(
     };
     let language = choices.language.trim();
     let dir = choices.dir.trim();
+    // The track is chosen before planning on it, so a plan that fails
+    // still knows whether there was another to fall back to.
+    let mut chosen = None;
     let plan = (|| {
         if !language.is_empty() {
             language::validate(language)?;
@@ -1431,7 +1434,16 @@ pub(crate) fn prepare_known(
             arch: choices.arch,
             wizard,
         };
-        core_galaxy::plan(paths, &mut session, &request, choices.track, token)
+        let track = match choices.track {
+            Some(track) => track,
+            None => {
+                let track = core_galaxy::track_for(paths, &mut session, &request, None)
+                    .map_err(|error| format!("{error:#}"))?;
+                chosen = Some(track);
+                track
+            }
+        };
+        core_galaxy::plan(paths, &mut session, &request, Some(track), token)
             .map(|planned| {
                 Box::new(match planned {
                     core_galaxy::Planned::Installer(plan) => Plan::Installer(plan),
@@ -1440,13 +1452,29 @@ pub(crate) fn prepare_known(
             })
             .map_err(|error| format!("{error:#}"))
     })();
+    let journaled = journal_for(paths, &name, offer.gog_id).is_some();
     if token.is_canceled() {
-        return Err(CANCELED.to_owned());
+        return Err(if journaled {
+            format!("Install interrupted. {}", finish_hint(paths, &name))
+        } else {
+            CANCELED.to_owned()
+        });
     }
+    // The failure of a plan that left an unfinished install ends with how
+    // to finish it.
+    let plan = plan.map_err(|message| {
+        let hint = finish_hint(paths, &name);
+        if !journaled || message.contains(&hint) {
+            return message;
+        }
+        let sep = if message.ends_with('.') { "" } else { "." };
+        format!("{message}{sep} {hint}")
+    });
     // With no track asked for, Galaxy is only chosen when GOG has a build
-    // and the game can run on Windows, which is when both are possible.
+    // and the game can run on Windows, which is when both are possible. A
+    // finished install's track was never a choice.
     let both_tracks = match choices.track {
-        None => matches!(plan.as_deref(), Ok(Plan::Galaxy(_))),
+        None => chosen == Some(Track::Galaxy) && offer.unfinished.is_none(),
         Some(_) => known.unwrap_or(false),
     };
     Ok(Prepared {
@@ -1614,7 +1642,9 @@ fn failure(
             )),
             // Whatever else stopped a Galaxy install, a journal still in
             // the folder is there to finish.
-            _ if matches!(plan, Plan::Galaxy(_)) && journal_of(paths, plan).is_some() => {
+            _ if matches!(plan, Plan::Galaxy(_))
+                && journal_for(paths, plan.environment(), plan.gog_id()).is_some() =>
+            {
                 let message = format!("{error:#}");
                 let hint = hint();
                 let sep = if message.ends_with('.') { "" } else { "." };
@@ -1629,11 +1659,11 @@ fn failure(
     }
 }
 
-/// The journal an install of `plan` left, found by its environment or, when
-/// that has no config yet, by its game.
-fn journal_of(paths: &Paths, plan: &Plan) -> Option<wineo_core::gog::folder::Journal> {
-    update::journal_of(paths, plan.environment()).or_else(|| {
-        wineo_core::gog::folder::find(paths, plan.environment(), &plan.gog_id().to_string())
+/// The journal an install left, found by its environment or, when that has
+/// no config yet, by its game.
+fn journal_for(paths: &Paths, name: &str, gog_id: u64) -> Option<wineo_core::gog::folder::Journal> {
+    update::journal_of(paths, name).or_else(|| {
+        wineo_core::gog::folder::find(paths, name, &gog_id.to_string())
             .ok()
             .flatten()
             .and_then(|state| state.journal)

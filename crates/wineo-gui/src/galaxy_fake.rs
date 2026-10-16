@@ -3,11 +3,12 @@
 //! setup's batch files through the shared `cmd` stand-in, and a game
 //! installed through core's own Galaxy install.
 
+use std::collections::HashSet;
 use std::ffi::OsString;
 use std::fs;
 use std::path::PathBuf;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 
 use serde_json::{Value, json};
 use wineo_core::cancel::Token;
@@ -60,12 +61,25 @@ pub(crate) fn papers(build: &str, version: &str) -> FakeBuild {
     build.dependency("MSVC2017")
 }
 
+/// What a test changes about the fake GOG while it runs.
+#[derive(Default)]
+struct Switches {
+    /// Lists the last build added first, as GOG lists a newer one.
+    newest_first: AtomicBool,
+    /// Build lists fail with a 500.
+    fail_builds: AtomicBool,
+    /// Build file lists fail with a 500, as when GOG's CDN is down.
+    fail_manifests: AtomicBool,
+    /// Builds left out of the lists, as GOG drops old ones.
+    hidden: Mutex<HashSet<String>>,
+}
+
 pub(crate) struct Galaxy {
     pub(crate) root: tempfile::TempDir,
     pub(crate) paths: Paths,
     pub(crate) keyring: TestKeyring,
     pub(crate) content: Arc<ContentSystem>,
-    newest_first: Arc<AtomicBool>,
+    switches: Arc<Switches>,
     pub(crate) server: FakeGog,
 }
 
@@ -81,10 +95,10 @@ impl Galaxy {
         let keyring = TestKeyring(std::cell::RefCell::new(None));
         save_login(&paths, &keyring);
         let content = Arc::new(ContentSystem::new().with_chunk_size(8));
-        let newest_first = Arc::new(AtomicBool::new(false));
+        let switches = Arc::new(Switches::default());
         let server = {
-            let (content, newest_first) = (Arc::clone(&content), Arc::clone(&newest_first));
-            FakeGog::start(move |request| answer(&content, &newest_first, request))
+            let (content, switches) = (Arc::clone(&content), Arc::clone(&switches));
+            FakeGog::start(move |request| answer(&content, &switches, request))
         };
         content.add_build(papers("100", "1.2.76"));
         let world = Self {
@@ -92,7 +106,7 @@ impl Galaxy {
             paths,
             keyring,
             content,
-            newest_first,
+            switches,
             server,
         };
         world.runtime_exits("0");
@@ -126,8 +140,36 @@ impl Galaxy {
 
     /// Lists a newer build ahead of the ones listed.
     pub(crate) fn newer(&self, build: &str, version: &str) {
-        self.newest_first.store(true, Ordering::Relaxed);
+        self.switches.newest_first.store(true, Ordering::Relaxed);
         self.content.add_build(papers(build, version));
+    }
+
+    /// Leaves `build` out of the build lists.
+    pub(crate) fn hide(&self, build: &str) {
+        self.switches
+            .hidden
+            .lock()
+            .unwrap()
+            .insert(build.to_owned());
+    }
+
+    /// Makes the build lists fail, or work again.
+    pub(crate) fn fail_builds(&self, fail: bool) {
+        self.switches.fail_builds.store(fail, Ordering::Relaxed);
+    }
+
+    /// Makes the builds' file lists fail, or work again.
+    pub(crate) fn fail_manifests(&self, fail: bool) {
+        self.switches.fail_manifests.store(fail, Ordering::Relaxed);
+    }
+
+    /// Loses the record beside the game's state, as a crash can.
+    pub(crate) fn lose_record(&self) {
+        fs::write(
+            wineo_core::gog::folder::sidecar_file(&self.paths, &self.folder()),
+            b"garbage",
+        )
+        .unwrap();
     }
 
     /// A runner `galaxy` whose Wine builds a prefix and runs setup's batch
@@ -193,13 +235,21 @@ exit 0
     }
 }
 
-fn answer(content: &ContentSystem, newest_first: &AtomicBool, request: &fake::Request) -> Reply {
+fn answer(content: &ContentSystem, switches: &Switches, request: &fake::Request) -> Reply {
     if ContentSystem::cdn_of(request).is_some() {
         return content
             .answer(request)
             .unwrap_or_else(|| fake::json(404, "{}"));
     }
     let path = request.path();
+    if switches.fail_manifests.load(Ordering::Relaxed)
+        && path.starts_with("/content-system/v2/meta/")
+    {
+        return fake::json(500, "{}");
+    }
+    if switches.fail_builds.load(Ordering::Relaxed) && path.ends_with("/os/windows/builds") {
+        return fake::json(500, "{}");
+    }
     if path == "/token" {
         return Reply::Send(tokens("REFRESH", USER));
     }
@@ -231,13 +281,17 @@ fn answer(content: &ContentSystem, newest_first: &AtomicBool, request: &fake::Re
     }
     let answered = content.answer(request);
     if path.ends_with("/os/windows/builds")
-        && newest_first.load(Ordering::Relaxed)
         && let Some(Reply::Send(bytes)) = &answered
     {
         let text = String::from_utf8_lossy(bytes);
         let body = &text[text.find("\r\n\r\n").unwrap() + 4..];
         let mut list: Value = serde_json::from_str(body).unwrap();
-        list["items"].as_array_mut().unwrap().reverse();
+        let hidden = switches.hidden.lock().unwrap();
+        let items = list["items"].as_array_mut().unwrap();
+        items.retain(|item| !hidden.contains(item["build_id"].as_str().unwrap_or_default()));
+        if switches.newest_first.load(Ordering::Relaxed) {
+            items.reverse();
+        }
         return fake::json(200, &list.to_string());
     }
     answered.unwrap_or_else(|| fake::json(404, "{}"))

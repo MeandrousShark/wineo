@@ -13,7 +13,7 @@ use iced::{Center, Element, Fill, Task, border};
 use wineo_core::cancel::Token;
 use wineo_core::gog::account::{AccountError, Session};
 use wineo_core::gog::api::Client;
-use wineo_core::gog::folder::JournalKind;
+use wineo_core::gog::folder::{JournalKind, Track};
 use wineo_core::gog::update::galaxy::present::{Label, Reporter as GalaxyReporter, restart_lines};
 use wineo_core::gog::update::galaxy::{self as core_galaxy, GalaxyError, PlannedUpdate};
 use wineo_core::gog::update::windows::{Event as WindowsEvent, SetupError};
@@ -596,7 +596,7 @@ pub(crate) fn plan_with_options(
     let logged_out = session.is_none();
     let planned = core_galaxy::plan_update(paths, session.as_mut(), name, options, token);
     if token.is_canceled() {
-        return Err(CANCELED.to_owned());
+        return Err(canceled_message(paths, name));
     }
     match planned {
         Ok(
@@ -618,8 +618,44 @@ pub(crate) fn plan_with_options(
         {
             Err(LOGGED_OUT.to_owned())
         }
-        Err(error) => Err(format!("{error:#}")),
+        Err(error) => Err(planning_failed(paths, name, &error)),
     }
+}
+
+/// What a cancel during planning says: that an update is left to finish when
+/// the folder has a journal, else only that it was canceled.
+fn canceled_message(paths: &Paths, name: &str) -> String {
+    match update::journal_of(paths, name) {
+        Some(journal) => Failure::Canceled { journal: true }
+            .message_for(name, journal.kind == JournalKind::Install),
+        None => CANCELED.to_owned(),
+    }
+}
+
+/// A planning failure, ending with how to finish the game's unfinished
+/// operation when the folder has a journal. A Galaxy install's journal can't
+/// be finished here, so it says to use the library instead of core's
+/// refusal.
+fn planning_failed(paths: &Paths, name: &str, error: &anyhow::Error) -> String {
+    let message = format!("{error:#}");
+    let Some(journal) = update::journal_of(paths, name) else {
+        return message;
+    };
+    if journal.kind == JournalKind::Install && journal.target.track == Track::Galaxy {
+        return format!(
+            "{name}'s install didn't finish. Use Finish install on {name} in the library."
+        );
+    }
+    with_hint(&message, &finish_hint(journal.kind, name))
+}
+
+/// `message` ending with `hint`, once.
+fn with_hint(message: &str, hint: &str) -> String {
+    if message.contains(hint) {
+        return message.to_owned();
+    }
+    let sep = if message.ends_with('.') { "" } else { "." };
+    format!("{message}{sep} {hint}")
 }
 
 /// Applies `pending`, sending a status line for each step and about ten a
@@ -761,12 +797,7 @@ fn hinted(paths: &Paths, name: &str, failure: Failure) -> Failure {
     let Some(journal) = update::journal_of(paths, name) else {
         return Failure::Failed(message);
     };
-    let hint = finish_hint(journal.kind, name);
-    if message.contains(&hint) {
-        return Failure::Failed(message);
-    }
-    let sep = if message.ends_with('.') { "" } else { "." };
-    Failure::Failed(format!("{message}{sep} {hint}"))
+    Failure::Failed(with_hint(&message, &finish_hint(journal.kind, name)))
 }
 
 /// How a Windows installer that stopped on its own left things, like

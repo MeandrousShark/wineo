@@ -307,3 +307,104 @@ fn a_failed_galaxy_setup_step_says_how_to_finish_once() {
     assert!(failure.message.ends_with(&hint), "{}", failure.message);
     assert_eq!(failure.message.matches(&hint).count(), 1);
 }
+
+/// An install of the game canceled once it is downloading, which leaves its
+/// journal.
+fn interrupted(world: &Galaxy) {
+    let prepared = prepared(world, &choices(world), None);
+    let plan = prepared.plan.unwrap();
+    let token = Token::new();
+    let failure = install(world, &plan, &token, |line| {
+        if line.starts_with("Downloading: ") {
+            token.cancel();
+        }
+    })
+    .unwrap_err();
+    assert!(failure.message.starts_with("Install interrupted."));
+}
+
+fn resumed(world: &Galaxy, token: &Token) -> Result<Prepared, String> {
+    prepare_known(
+        &world.paths,
+        &world.keyring,
+        world.server.client(),
+        &Offer {
+            unfinished: Some(NAME.to_owned()),
+            ..offer()
+        },
+        &Choices::default(),
+        false,
+        None,
+        token,
+    )
+}
+
+#[test]
+fn a_galaxy_plan_that_fails_keeps_the_picker_to_fall_back_to_the_installers() {
+    let world = Galaxy::new();
+    world.fail_manifests(true);
+    let first = prepared(&world, &choices(&world), None);
+    // GOG lists a build, but its file list can't be read.
+    assert!(first.both_tracks);
+    let galaxy_error = first.plan.as_ref().unwrap_err().clone();
+    let mut page = page(&world, first);
+    fits(&page);
+    let before = builds_requests(&world);
+    let _ = page.update(Event::Track(Track::Installer));
+    let installers = prepared(
+        &world,
+        &Choices {
+            track: Some(Track::Installer),
+            ..choices(&world)
+        },
+        page.both_tracks,
+    );
+    assert_eq!(builds_requests(&world), before, "no second builds fetch");
+    assert!(installers.both_tracks);
+    // It planned on the installers, whose failure is its own.
+    assert_ne!(installers.plan.unwrap_err(), galaxy_error);
+}
+
+#[test]
+fn a_planning_failure_ends_with_how_to_finish_once_only_with_a_journal() {
+    let world = Galaxy::new();
+    world.fail_manifests(true);
+    let fresh = prepared(&world, &choices(&world), None);
+    let error = fresh.plan.unwrap_err();
+    assert!(!error.contains("Finish install"), "{error}");
+    world.fail_manifests(false);
+
+    interrupted(&world);
+    world.lose_record();
+    world.fail_builds(true);
+    let hint = format!("Use Finish install on {NAME} in the library.");
+    let error = resumed(&world, &Token::new()).unwrap().plan.unwrap_err();
+    assert!(error.ends_with(&hint), "{error}");
+    assert_eq!(error.matches(&hint).count(), 1, "{error}");
+}
+
+#[test]
+fn canceling_while_planning_says_whether_an_install_is_left_to_finish() {
+    let world = Galaxy::new();
+    let canceled = Token::new();
+    canceled.cancel();
+    let error = prepare_known(
+        &world.paths,
+        &world.keyring,
+        world.server.client(),
+        &offer(),
+        &choices(&world),
+        false,
+        None,
+        &canceled,
+    )
+    .unwrap_err();
+    assert_eq!(error, "Install canceled.");
+
+    interrupted(&world);
+    let error = resumed(&world, &canceled).unwrap_err();
+    assert_eq!(
+        error,
+        format!("Install interrupted. Use Finish install on {NAME} in the library.")
+    );
+}
