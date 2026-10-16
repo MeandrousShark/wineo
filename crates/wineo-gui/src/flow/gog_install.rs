@@ -516,7 +516,7 @@ impl Install {
         let offer = self.offer.clone();
         let choices = self.choices.clone();
         let wizard = self.wizard;
-        let known = self.choices.track.and(self.both_tracks);
+        let known = self.both_tracks;
         // GOG's answers can't be interrupted, so the token only drops a plan
         // that arrives after Back.
         let token = Token::new();
@@ -1375,8 +1375,9 @@ pub(crate) fn prepare_with(
     prepare_known(paths, keyring, client, offer, choices, wizard, None, token)
 }
 
-/// `prepare_with`, given whether GOG offers both tracks when `choices` asks
-/// for one, which then doesn't ask GOG for its builds.
+/// `prepare_with`, given whether GOG offered both tracks when the last plan
+/// found out. An explicit track doesn't ask GOG for its builds, and carries
+/// that on; so does a plan that never got as far as the question.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn prepare_known(
     paths: &Paths,
@@ -1486,8 +1487,10 @@ pub(crate) fn prepare_known(
         None if choosing_failed => {
             offer.windows && choices.platform != Some(Platform::Linux) && offer.unfinished.is_none()
         }
-        None => chosen == Some(Track::Galaxy) && offer.unfinished.is_none(),
-        Some(_) => known.unwrap_or(false),
+        None if chosen.is_some() => chosen == Some(Track::Galaxy) && offer.unfinished.is_none(),
+        // The track wasn't asked about, as when a typed language or folder
+        // didn't pass, or an explicit one was: what was known stays.
+        None | Some(_) => known.unwrap_or(false),
     };
     Ok(Prepared {
         name,

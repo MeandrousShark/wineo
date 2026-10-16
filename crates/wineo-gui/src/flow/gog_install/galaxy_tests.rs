@@ -454,3 +454,49 @@ fn when_the_tracks_cant_be_told_a_windows_install_still_offers_both() {
     .unwrap();
     assert!(!linux_only.both_tracks);
 }
+
+#[test]
+fn a_typed_language_that_fails_keeps_the_picker_and_a_valid_one_plans_on_galaxy() {
+    let world = Galaxy::new();
+    let mut page = page(&world, prepared(&world, &choices(&world), None));
+    assert_eq!(page.both_tracks, Some(true));
+    // The language doesn't pass before the track is even asked about.
+    let _ = page.update(Event::Language("english".to_owned()));
+    let _ = page.update(Event::LanguageDone);
+    assert_eq!(page.choices.track, None);
+    let before = builds_requests(&world);
+    let invalid = prepare_known(
+        &world.paths,
+        &world.keyring,
+        world.server.client(),
+        &offer(),
+        &page.choices,
+        false,
+        page.both_tracks,
+        &Token::new(),
+    )
+    .unwrap();
+    assert!(invalid.plan.is_err());
+    assert!(invalid.both_tracks, "the picker stays");
+    assert_eq!(builds_requests(&world), before);
+    let generation = page.generation;
+    let _ = page.update(Event::Prepared(generation, Ok(Box::new(invalid))));
+    assert_eq!(page.both_tracks, Some(true));
+    fits(&page);
+
+    let _ = page.update(Event::Language("en-US".to_owned()));
+    let _ = page.update(Event::LanguageDone);
+    let valid = prepare_known(
+        &world.paths,
+        &world.keyring,
+        world.server.client(),
+        &offer(),
+        &page.choices,
+        false,
+        page.both_tracks,
+        &Token::new(),
+    )
+    .unwrap();
+    assert!(valid.both_tracks);
+    assert_eq!(valid.plan.unwrap().track(), Track::Galaxy);
+}
