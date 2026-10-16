@@ -8,8 +8,9 @@ own numbered plan in `docs/plans/`.
 The order the maintainer picked on 2026-10-14, after 0051. Each item gets
 its own plan when it comes up, and the rows below have the details.
 
-1. The 1.0 contract: the JSON gaps (criterion 3), and the config
-   compatibility guarantee with a deprecation path (criteria 4 and 5).
+1. The 1.0 contract: the config compatibility guarantee with a
+   deprecation path (criteria 4 and 5). The JSON gaps (criterion 3) were
+   closed in 0.30.1.
 2. GUI library views, designed against a library that includes store games.
 3. GUI themes, after library views, so they cover every palette role.
 4. 1.0, once the [1.0 criteria](#10-criteria) are met.
@@ -123,7 +124,6 @@ around the next milestone, 1.0:
 
 | Feature | Category | Priority | Depends on | Why | Notes |
 |---|---|---:|---|---|---|
-| JSON contract gaps | Automation | **1** | | Close the three code gaps the 1.0 `--json` audit found | 1.0 criterion 3: the docs side is done (2026-10-12), and three gaps in the code wait on the maintainer. |
 | Config compatibility guarantee and deprecation path | Portability/Data | **1** | 0018 | Promise that 1.x configs keep loading, and give renamed keys and flags a warning period | 1.0 criteria 4 and 5, planned together: upgrade tests with fixture configs from earlier releases, and `validate` reporting deprecated keys. Needs a decision on newer keys, since `deny_unknown_fields` makes an older wineo reject them. |
 | GUI themes and customization | UX | **1** | 0036 | Let people make the app their own | From the maintainer's 0036 testing (2026-09-28): custom themes with a few presets, added with a GUI settings page. Longer term, a deeply customizable GUI. The palette tokens from 0036 are the starting point. Moved up to 1 by the maintainer (2026-10-14), to land before 1.0. |
 | GUI library views | UX | **1** | 0036 | Browse the library the way that fits the moment | A zoom slider to make the grid bigger or smaller, a list view as an alternative to the grid, and a coverflow-style picker that suits a controller (pairs with gamepad navigation). A poster-only view like Heroic's (from the maintainer, 2026-10-09): titles hidden until hover, then shown wrapped over the poster, with keyboard focus revealing them too. Titles and state/playtime sit beneath the art today per `gui-style.md`, so this view amends the style guide on purpose, and art-less environments need their text tiles to stay readable. Moved up to 1 by the maintainer (2026-10-14), to land before 1.0. Also from the Playnite comparison (2026-10-14): sorting (last played, playtime, date added, name), filtering and grouping (tags, source, state) with saved filter presets, and favorites and hidden games, since they're the same screen and new config keys are best added before 1.0. |
@@ -203,7 +203,12 @@ maintainer calls it stable, which these criteria are meant to inform.
    In progress (2026-10-12): an audit of every `--json` command found the
    page missing `hooks`, two validate codes, enum lists, and nullable
    fields; those are documented now, with a compatible-changes section.
-   Three gaps are in the code, not the docs, and wait on the maintainer.
+   Three gaps were in the code, not the docs. The maintainer settled them
+   (2026-10-12): `update --check --json` and `import gog --list --json`
+   gained `unfinished`, this week's and this month's playtime became
+   text-only for every environment, and `validate --fix` leaving an
+   interrupted snapshot restore for `wineo snapshot recover` stays as
+   documented. Done (2026-10-12): the two code changes shipped in 0.30.1.
 4. Make `schema_version` a guarantee: a config written by any 1.x release
    loads in every later 1.x, and an older one either loads or migrates
    cleanly. Add upgrade tests that load fixture configs and state written
