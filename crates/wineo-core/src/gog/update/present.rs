@@ -6,7 +6,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::time::{Duration, Instant};
 
-use super::{GameError, Pending, Progress, Reason, Updated, galaxy, install};
+use super::{GameError, Pending, Progress, Reason, Status, Updated, galaxy, install};
 use crate::gog::folder::{JournalKind, Track};
 use crate::gog::names;
 use crate::units;
@@ -15,11 +15,50 @@ impl Reason {
     /// Why an update can't be applied, or can't be told, as a sentence.
     pub fn note(&self) -> String {
         match self {
-            Self::Galaxy { name } => format!(
+            Self::Galaxy { name, branch: None } => format!(
                 "GOG has no Galaxy build of this game that wineo can update. Move it to offline installers with: wineo update {name} --reinstall --track installer"
             ),
+            Self::Galaxy {
+                name,
+                branch: Some(branch),
+            } => format!(
+                "GOG has no Galaxy build of this game on branch {branch} that wineo can update. Return to the default branch with: wineo update {name} --default-branch"
+            ),
+            Self::Pinned {
+                name,
+                build,
+                version,
+            } => {
+                let version = version
+                    .as_deref()
+                    .filter(|version| !version.is_empty())
+                    .map(|version| format!(" ({version})"))
+                    .unwrap_or_default();
+                format!(
+                    "Pinned to build {build}{version}. Run wineo update {name} --latest to follow its branch again."
+                )
+            }
             Self::CantCompare(why) => why.clone(),
         }
+    }
+}
+
+impl Status {
+    /// The note a pinned game carries: the reason when a newer build waits,
+    /// else the same words, so the pin is visible while nothing is newer.
+    pub fn pin_note(&self) -> Option<String> {
+        if let Some(reason @ Reason::Pinned { .. }) = &self.reason {
+            return Some(reason.note());
+        }
+        let build = self.pinned.clone()?;
+        Some(
+            Reason::Pinned {
+                name: self.environment.clone(),
+                build,
+                version: self.pinned_name.clone(),
+            }
+            .note(),
+        )
     }
 }
 

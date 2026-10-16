@@ -1137,7 +1137,7 @@ fn a_same_version_reinstall_crashing_around_its_commit() {
         ..Options::default()
     };
     set_failpoint(Some("update.commit.before"));
-    fx.try_update(reinstall).unwrap_err();
+    fx.try_update(reinstall.clone()).unwrap_err();
     assert_eq!(fx.state().journal.unwrap().kind, JournalKind::Reinstall);
     // Versions match, but the journal's kind still rebuilds.
     let pending = fx.pending(true, Options::default());

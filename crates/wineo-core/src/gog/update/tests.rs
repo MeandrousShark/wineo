@@ -649,7 +649,8 @@ fn a_galaxy_game_is_compared_by_build() {
         assert_eq!(
             status.reason,
             Some(Reason::Galaxy {
-                name: "disco".to_owned()
+                name: "disco".to_owned(),
+                branch: None,
             })
         );
         assert_eq!(status.reason.as_ref().unwrap().as_str(), "galaxy");
@@ -681,7 +682,8 @@ fn a_galaxy_game_with_no_build_list_is_left_to_its_installers() {
     assert_eq!(
         status.reason,
         Some(Reason::Galaxy {
-            name: "disco".to_owned()
+            name: "disco".to_owned(),
+            branch: None,
         })
     );
     assert_eq!(status.installed.as_deref(), Some("400"));

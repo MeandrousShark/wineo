@@ -471,13 +471,15 @@ fn a_windows_update_shows_each_installer_and_offers_the_setup_window_once() {
         &world.keyring,
         world.server.client(),
         name,
-        refresh,
+        refresh.clone(),
         &Token::new(),
     )
     .unwrap()
     {
         Planned::Update(pending) => pending,
-        Planned::UpToDate | Planned::Galaxy(_) => panic!("expected an update"),
+        Planned::UpToDate | Planned::Pinned(_) | Planned::Galaxy(_) => {
+            panic!("expected an update")
+        }
     };
     let first = apply_with(
         &world.paths,

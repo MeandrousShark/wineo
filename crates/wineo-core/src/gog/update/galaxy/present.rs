@@ -7,6 +7,8 @@ use std::time::{Duration, Instant};
 
 use super::Progress;
 use super::install;
+use super::record::Follow;
+use super::switch::FollowPlan;
 use super::update::{Note, Plan};
 use crate::gog::folder::{JournalKind, ProductStatus};
 use crate::gog::update::{SavedAside, Updated};
@@ -24,6 +26,10 @@ const NOTHING_DELETED: &str =
 pub enum Label {
     Folder,
     Track,
+    /// The branch followed, or the change of it.
+    Branch,
+    /// A pin to a build, or its removal.
+    Pin,
     Owner,
     /// A product of an update, by its label, which is the row's label as it
     /// is.
@@ -96,6 +102,77 @@ pub fn restart_lines(needs_restart: &[String]) -> Vec<String> {
         .collect()
 }
 
+/// The branch and pin rows of a review. With `from`, the game follows
+/// something already, and a row shows what changes; without, it's an
+/// install, and a row shows what it will follow.
+pub fn follow_rows(from: Option<&Follow>, to: &Follow) -> Vec<(Label, String)> {
+    let branch = |branch: &Option<String>| branch.as_deref().unwrap_or("default").to_owned();
+    let mut rows = Vec::new();
+    match from {
+        Some(from) if from.branch != to.branch => rows.push((
+            Label::Branch,
+            format!("{} -> {}", branch(&from.branch), branch(&to.branch)),
+        )),
+        _ => {
+            if let Some(name) = &to.branch {
+                rows.push((Label::Branch, name.clone()));
+            }
+        }
+    }
+    if from.is_none_or(|from| from.pinned != to.pinned) {
+        match &to.pinned {
+            Some(build) => rows.push((Label::Pin, format!("build {build}, until --latest"))),
+            None if from.is_some() => rows.push((Label::Pin, "removed".to_owned())),
+            None => {}
+        }
+    }
+    rows
+}
+
+impl FollowPlan {
+    /// How a review names the change, before the environment's name.
+    pub fn action(&self) -> &'static str {
+        if self.to().pinned.is_some() && self.to().pinned != self.from().pinned {
+            "Pin"
+        } else if self.to().branch != self.from().branch {
+            "Switch the branch of"
+        } else {
+            "Unpin"
+        }
+    }
+
+    /// What a finished change says it did, without a full stop.
+    pub fn finished(&self) -> String {
+        let name = self.environment();
+        let to = self.to();
+        if let (Some(build), true) = (&to.pinned, to.pinned != self.from().pinned) {
+            return format!("Pinned {name} to build {build}");
+        }
+        match (&to.branch, to.branch != self.from().branch) {
+            (None, true) => format!("{name} now follows the default branch"),
+            (Some(branch), true) => format!("{name} now follows branch {branch}"),
+            _ => format!("{name} follows its branch again"),
+        }
+    }
+
+    /// The rows of the review: nothing but the folder, track, and what
+    /// changes about the branch and pin.
+    pub fn review_rows(&self, show_path: impl Fn(&Path) -> String) -> Vec<(Label, String)> {
+        let mut rows = vec![
+            (Label::Folder, show_path(self.folder())),
+            (Label::Track, "Galaxy".to_owned()),
+        ];
+        rows.extend(follow_rows(Some(self.from()), self.to()));
+        if self.claims() {
+            rows.push((
+                Label::Owner,
+                format!("none yet, {} takes this folder", self.environment()),
+            ));
+        }
+        rows
+    }
+}
+
 impl Plan {
     /// What an update, repair, reinstall, or move reviews, row by row, with
     /// `show_path` writing the folder.
@@ -111,6 +188,7 @@ impl Plan {
             "Galaxy"
         };
         rows.push((Label::Track, track.to_owned()));
+        rows.extend(follow_rows(Some(self.from()), self.to()));
         if self.claims() {
             rows.push((
                 Label::Owner,
@@ -242,6 +320,7 @@ impl install::Plan {
         let mut rows = Vec::new();
         let target = version(self.version_name(), self.build());
         let labels = self.product_labels();
+        rows.extend(follow_rows(None, self.follow()));
         for product in self.products() {
             let value = if product.status == ProductStatus::Installed {
                 target.clone()

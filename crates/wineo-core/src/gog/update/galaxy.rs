@@ -9,22 +9,28 @@
 //!
 //! `plan` picks the track an install takes, and `plan_update` sends a Galaxy
 //! game's update to `update` and every other game's to the installers'.
+//! `follow` picks the branch and build a game goes to.
 //! `present` words reviews and progress for both front ends.
 
 mod build;
 mod fetch;
+pub mod follow;
 pub mod install;
+pub mod listing;
 pub mod present;
 pub mod record;
 mod setup;
 mod store;
+pub mod switch;
 pub mod update;
 
 use anyhow::Result;
 
 pub use build::LayoutError;
-pub(super) use build::latest_default as latest;
+pub(super) use build::latest;
+pub use follow::Choice;
 pub use install::{GalaxyError, PlannedProduct, Progress, Retarget};
+pub use switch::{FollowPlan, Pinned};
 
 use super::UpdateError;
 use super::apply::{self, Options};
@@ -36,6 +42,14 @@ use crate::gog::folder::{Platform, Track};
 use crate::gog::migrate::host_only;
 use crate::gog::product;
 use crate::paths::Paths;
+
+/// The branch a game follows and the build it's pinned to, as its record
+/// says: the default branch, unpinned, when there's no record to read.
+pub fn follow_of(paths: &Paths, folder: &std::path::Path) -> record::Follow {
+    install::files_record(paths, folder)
+        .map(|record| record.follow)
+        .unwrap_or_default()
+}
 
 /// An install planned on one track or the other.
 #[derive(Debug)]
@@ -67,6 +81,8 @@ pub fn track_for(
     }
     let galaxy = match (track, request.platform) {
         (Some(track), _) => track == Track::Galaxy,
+        // A branch or build is Galaxy's; a Linux install refuses it later.
+        (None, _) if !request.builds.is_keep() => true,
         (None, Some(Platform::Linux)) => false,
         (None, platform) => {
             let details = product::load_with(
@@ -183,6 +199,13 @@ pub fn plan_update(
             _ => false,
         }
     };
+    // Branches are Galaxy's, on an unfinished installer operation too.
+    if !galaxy && !options.choice.is_keep() {
+        return Err(UpdateError::NotGalaxy {
+            name: name.to_owned(),
+        }
+        .into());
+    }
     if galaxy {
         let session = session.ok_or(AccountError::LoggedOut)?;
         return Ok(PlannedUpdate::Galaxy(update::plan(

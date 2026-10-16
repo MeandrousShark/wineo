@@ -36,7 +36,8 @@ use wineo_gog::{ChunkLinks, LinkScope};
 
 use super::build::{self, LayoutError, Owner};
 use super::fetch::{self, Job};
-use super::record::{self, FileEntry, Manifest, Record, Redist, SetupInfo, StoreVersion};
+use super::follow::{self, Who};
+use super::record::{self, FileEntry, Follow, Manifest, Record, Redist, SetupInfo, StoreVersion};
 use super::setup;
 use super::store;
 use crate::cancel::Token;
@@ -123,8 +124,83 @@ pub enum GalaxyError {
         "The installed build of {title} isn't known. Run wineo update {name} to move to the latest."
     )]
     BuildUnknown { title: String, name: String },
+    /// `--branch` names a branch GOG lists no generation 2 build on, which
+    /// includes every private branch until passwords are supported.
+    #[error("{}", no_branch(.title, .branch, .name.as_deref()))]
+    NoBranch {
+        title: String,
+        branch: String,
+        /// The environment, for the way to its listing. None before a game
+        /// is installed.
+        name: Option<String>,
+    },
+    /// `--build` names a build GOG doesn't list as a generation 2 build.
+    #[error("{}", no_such_build(.build, .title, .name.as_deref()))]
+    NoSuchBuild {
+        build: String,
+        title: String,
+        name: Option<String>,
+    },
+    /// `--build` names a version more than one build has.
+    #[error("{version} matches builds {}. Pick one with --build ID.", joined(.builds))]
+    AmbiguousBuild {
+        version: String,
+        builds: Vec<String>,
+    },
+    /// The branch a game follows has no generation 2 build now.
+    #[error("{}", branch_empty(.name, .branch))]
+    BranchEmpty { name: String, branch: String },
+    /// A reinstall of a game pinned to a build GOG no longer lists.
+    #[error(
+        "GOG no longer lists build {build} of {title}, which {name} is pinned to. Run wineo update {name} --latest to follow its branch again."
+    )]
+    PinGone {
+        title: String,
+        build: String,
+        name: String,
+    },
+    /// A branch or build asked for while an operation is waiting to finish.
+    #[error("{name} has an unfinished GOG operation, so it can't change its branch or build yet.")]
+    Unfinished { name: String },
     #[error(transparent)]
     Layout(#[from] LayoutError),
+}
+
+fn branch_empty(name: &str, branch: &str) -> String {
+    crate::gog::update::Reason::Galaxy {
+        name: name.to_owned(),
+        branch: Some(branch.to_owned()),
+    }
+    .note()
+}
+
+fn see_builds(name: Option<&str>) -> String {
+    name.map(|name| format!(" See: wineo update {name} --builds"))
+        .unwrap_or_default()
+}
+
+fn no_branch(title: &str, branch: &str, name: Option<&str>) -> String {
+    format!(
+        "GOG lists no branch {branch} for {title}.{}",
+        see_builds(name)
+    )
+}
+
+fn no_such_build(build: &str, title: &str, name: Option<&str>) -> String {
+    format!(
+        "GOG doesn't list build {build} of {title}.{}",
+        see_builds(name)
+    )
+}
+
+/// `A`, `A and B`, or `A, B, and C`.
+fn joined(items: &[String]) -> String {
+    match items {
+        [] => String::new(),
+        [one] => one.clone(),
+        [one, two] => format!("{one} and {two}"),
+        [rest @ .., last] => format!("{}, and {last}", rest.join(", ")),
+    }
 }
 
 fn product_gone(title: &str, build: &str, label: &str, installed: bool) -> String {
@@ -188,6 +264,10 @@ pub struct Plan {
     manifest: Manifest,
     store: Vec<StoreNeed>,
     retarget: Option<Retarget>,
+    /// What the record said the game follows when planning looked, and what
+    /// the install leaves it following.
+    from: Follow,
+    follow: Follow,
     warnings: Vec<String>,
 }
 
@@ -256,6 +336,11 @@ impl Plan {
     /// it finishes with the latest one instead.
     pub fn retarget(&self) -> Option<&Retarget> {
         self.retarget.as_ref()
+    }
+
+    /// The branch and pin the install leaves the game with.
+    pub fn follow(&self) -> &Follow {
+        &self.follow
     }
 
     /// The files, support files, and redistributables it takes.
@@ -435,13 +520,17 @@ pub fn plan(
     }
 
     let gog_id = request.gog_id;
-    let builds = call(session, |client, access| {
-        client.windows_builds(gog_id, Some(access))
-    })?;
+    let builds = builds_of(session, gog_id, None)?;
     let no_build = || GalaxyError::NoBuild {
         title: title.clone(),
     };
-    let latest = build::latest(&builds, None).ok_or_else(no_build)?;
+    let who = Who {
+        title: &title,
+        name: None,
+    };
+    // A new install follows the default branch unless it names another.
+    let picked = follow::pick(&builds, &request.builds, &Follow::default(), false, &who)?;
+    let latest = picked.build;
     let link = latest.link.clone().ok_or_else(no_build)?;
     let repository = session
         .client()
@@ -579,6 +668,9 @@ pub fn plan(
             })
             .collect(),
     };
+    let from = files_record(paths, &folder)
+        .map(|record| record.follow)
+        .unwrap_or_default();
     Ok(Plan {
         environment: name.to_owned(),
         gog_id,
@@ -597,6 +689,8 @@ pub fn plan(
         manifest: built.manifest,
         store,
         retarget: None,
+        from,
+        follow: picked.to,
         warnings,
     })
 }
@@ -609,6 +703,18 @@ pub(super) fn call<T>(
     session.call(request).map_err(|error| match error {
         CallError::Account(error) => anyhow::Error::from(error),
         CallError::Request(error) => anyhow::Error::from(error),
+    })
+}
+
+/// The builds GOG lists for a game. A private branch's builds need its
+/// password, which is the seam `_password` is for; none is sent yet.
+pub(super) fn builds_of(
+    session: &mut Session,
+    gog_id: u64,
+    _password: Option<&str>,
+) -> Result<wineo_gog::Builds> {
+    call(session, |client, access| {
+        client.windows_builds(gog_id, Some(access))
     })
 }
 
@@ -677,6 +783,13 @@ fn resumed(
     let version_name;
 
     let record = files_record(paths, &folder);
+    // A record that survived says what the install is for, even when
+    // `pending` didn't.
+    let from = record
+        .as_ref()
+        .map(|record| record.follow.clone())
+        .unwrap_or_default();
+    let mut follow = from.clone();
     let (manifest, store) = match record
         .as_ref()
         .and_then(|record| record::pending(&seen, record))
@@ -691,12 +804,11 @@ fn resumed(
                 })
                 .collect();
             version_name = pending.manifest.setup.version_name.clone();
+            follow = pending.follow.clone().unwrap_or_else(|| from.clone());
             (pending.manifest.clone(), store)
         }
         None => {
-            let builds = call(session, |client, access| {
-                client.windows_builds(gog_id, Some(access))
-            })?;
+            let builds = builds_of(session, gog_id, None)?;
             let began = target
                 .products
                 .iter()
@@ -710,12 +822,25 @@ fn resumed(
             let chosen = match listed {
                 Some(build) => build,
                 None => {
-                    let latest =
-                        build::latest(&builds, None).ok_or_else(|| GalaxyError::NoBuild {
-                            title: title.clone(),
-                        })?;
+                    // The latest of the branch followed, with the pin
+                    // dropped, since the build it named is gone.
+                    let who = Who {
+                        title: &title,
+                        name: None,
+                    };
+                    let latest = follow::latest_on(&builds, from.branch.as_deref(), &who)?;
+                    let pin = from
+                        .pinned
+                        .as_deref()
+                        .filter(|pinned| *pinned == began)
+                        .map(|pinned| format!(" The pin to build {pinned} is removed."))
+                        .unwrap_or_default();
+                    follow = Follow {
+                        branch: from.branch.clone(),
+                        pinned: None,
+                    };
                     warnings.push(format!(
-                        "GOG no longer lists build {began} of {title}, so the install finishes with build {} instead.",
+                        "GOG no longer lists build {began} of {title}, so the install finishes with build {} instead.{pin}",
                         latest.build_id
                     ));
                     retarget = Some(Retarget {
@@ -824,6 +949,8 @@ fn resumed(
         manifest,
         store,
         retarget,
+        from,
+        follow,
         warnings,
     })
 }
@@ -1083,6 +1210,10 @@ fn run(
     if state != plan.seen {
         return Err(changed(&folder.display().to_string()).into());
     }
+    // Another wineo may have pinned the game since planning.
+    if record::follow_now(&lock)? != plan.from {
+        return Err(changed(&folder.display().to_string()).into());
+    }
     if paths.environment_config(name).exists() != plan.has_config {
         return Err(changed(name).into());
     }
@@ -1172,6 +1303,7 @@ fn run(
         manifest: manifest.clone(),
         store: manifest.store_versions(),
         base: None,
+        follow: (!plan.follow.is_default()).then(|| plan.follow.clone()),
     });
     // Before the journal, so a journal always has its pending written.
     record::write(&lock, &sidecar)?;
@@ -1467,6 +1599,7 @@ fn run(
         info: record::info_hash(folder, gog_id)?,
         manifest,
     });
+    sidecar.follow = plan.follow.clone();
     if token.is_canceled() {
         return Err(UpdateError::Canceled { journal: true }.into());
     }

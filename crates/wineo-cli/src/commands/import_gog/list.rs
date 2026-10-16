@@ -10,9 +10,7 @@ use wineo_core::heroic_import;
 use wineo_core::paths::Paths;
 
 use super::Args;
-use crate::commands::gog_support::{
-    Account, dlc_json, error_json, reason_json, update_label, warn,
-};
+use crate::commands::gog_support::{Account, dlc_json, error_json, reason_json, state_label, warn};
 use crate::commands::table::render_columns;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -176,6 +174,8 @@ fn game_json(row: &Row) -> Value {
         "environment": row.environment,
         "track": status.map(|status| status.track.as_str()),
         "version": status.and_then(|status| status.installed.as_deref()),
+        "branch": status.and_then(|status| status.branch.as_deref()),
+        "pinned": status.and_then(|status| status.pinned.as_deref()),
         "update": status.map(|status| status.state.as_str()),
         "applicable": status.is_some_and(|status| status.applicable),
         "reason": status.map_or(Value::Null, |status| reason_json(&status.reason)),
@@ -217,7 +217,7 @@ fn print_table(rows: &[Row]) {
                 .and_then(|status| status.installed_name.clone().or(status.installed.clone()))
                 .unwrap_or_default(),
             status
-                .map(|status| update_label(status.state).to_owned())
+                .map(|status| state_label(status).to_owned())
                 .unwrap_or_default(),
         ]);
     }

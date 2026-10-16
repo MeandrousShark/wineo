@@ -12,7 +12,7 @@ use wineo_core::gog::account::Session;
 use wineo_core::gog::folder::{self, JournalKind, Platform, ProductStatus, Track};
 use wineo_core::gog::migrate::MigrateError;
 use wineo_core::gog::product;
-use wineo_core::gog::update::galaxy::{self as core_galaxy, Planned};
+use wineo_core::gog::update::galaxy::{self as core_galaxy, Choice, Planned};
 use wineo_core::gog::update::install::{Creation, Installed, Request};
 use wineo_core::gog::update::windows::{Event, SetupError};
 use wineo_core::gog::update::{self, Progress, UpdateError};
@@ -21,7 +21,7 @@ use wineo_core::targets::Batch;
 
 use super::Args;
 use crate::cancel;
-use crate::commands::galaxy;
+use crate::commands::galaxy::{self, GogTrack};
 use crate::commands::gog_support::{
     Account, Reporter, ask_wizard, finish_command, journal_for, offers_wizard, usage_error, warn,
     with_finish_hint,
@@ -213,6 +213,22 @@ pub(super) fn one(paths: &Paths, args: &Args, id: &str) -> anyhow::Result<ExitCo
     let Ok(gog_id) = id.parse::<u64>() else {
         return Ok(usage_error(format!("{id} isn't a GOG game id.")));
     };
+    // A branch or build is Galaxy's, so asking for one picks the track.
+    let (choice, branch_flag) = match (&args.branch, &args.build) {
+        (Some(branch), _) => (Choice::Branch(branch.clone()), Some("--branch")),
+        (_, Some(build)) => (Choice::Build(build.clone()), Some("--build")),
+        _ => (Choice::Keep, None),
+    };
+    if let (Some(flag), Some(GogTrack::Installer)) = (branch_flag, args.track) {
+        return Ok(usage_error(format!(
+            "{flag} is for Galaxy games, so leave out --track installer."
+        )));
+    }
+    let track: Option<Track> = match (args.track, branch_flag) {
+        (Some(track), _) => Some(track.into()),
+        (None, Some(_)) => Some(Track::Galaxy),
+        (None, None) => None,
+    };
     // Whether wineo already has it is known without GOG or a question.
     let existing = existing(paths, gog_id)?;
     if let Existing::Installed { name, folder } = &existing {
@@ -258,14 +274,9 @@ pub(super) fn one(paths: &Paths, args: &Args, id: &str) -> anyhow::Result<ExitCo
         runner: args.runner.clone(),
         arch: args.arch,
         wizard: false,
+        builds: choice,
     };
-    let plan = match plan_install(
-        paths,
-        &mut session,
-        &request,
-        args.track.map(Into::into),
-        unfinished,
-    )? {
+    let plan = match plan_install(paths, &mut session, &request, track, unfinished)? {
         Ok(plan) => plan,
         Err(code) => return Ok(code),
     };
@@ -286,6 +297,8 @@ pub(super) fn one(paths: &Paths, args: &Args, id: &str) -> anyhow::Result<ExitCo
         let ignored: Vec<&str> = [
             (args.platform.is_some(), "--platform"),
             (args.track.is_some(), "--track"),
+            (args.branch.is_some(), "--branch"),
+            (args.build.is_some(), "--build"),
             (args.language.is_some(), "--language"),
             (has_environment && args.runner.is_some(), "--runner"),
             (has_environment && args.arch.is_some(), "--arch"),

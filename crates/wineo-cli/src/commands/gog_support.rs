@@ -119,7 +119,16 @@ pub fn warn(message: impl std::fmt::Display) {
     eprintln!("{}", style::warning_stderr(format!("warning: {message}")));
 }
 
-/// How a game's update state reads in a table.
+/// How a game's update state reads in a table: a pinned game with a newer
+/// build waiting says so instead of offering it.
+pub fn state_label(status: &Status) -> &'static str {
+    match &status.reason {
+        Some(Reason::Pinned { .. }) => "pinned",
+        _ => update_label(status.state),
+    }
+}
+
+/// How an update state reads in a table.
 pub fn update_label(state: UpdateState) -> &'static str {
     match state {
         UpdateState::UpToDate => "up to date",
@@ -285,6 +294,9 @@ mod tests {
             available: None,
             installed_name: None,
             available_name: None,
+            branch: None,
+            pinned: None,
+            pinned_name: None,
             state: UpdateState::UpToDate,
             applicable: false,
             reason: None,

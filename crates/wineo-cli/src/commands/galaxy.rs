@@ -6,17 +6,17 @@ use std::time::Duration;
 
 use wineo_core::cancel::Token;
 use wineo_core::gog::folder::Track;
-use wineo_core::gog::update::galaxy::Progress;
 use wineo_core::gog::update::galaxy::present::{Label, saved_items};
 pub use wineo_core::gog::update::galaxy::present::{Reporter, restart_lines};
 use wineo_core::gog::update::galaxy::update::Plan;
+use wineo_core::gog::update::galaxy::{FollowPlan, Progress};
 use wineo_core::gog::update::{SavedAside, Updated};
 use wineo_core::paths::Paths;
 
 use super::table;
 
 /// What `--track` takes.
-#[derive(Clone, Copy, clap::ValueEnum)]
+#[derive(Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
 pub enum GogTrack {
     /// Galaxy's builds, file by file
     Galaxy,
@@ -38,6 +38,8 @@ fn word(label: Label) -> String {
     match label {
         Label::Folder => "folder".to_owned(),
         Label::Track => "track".to_owned(),
+        Label::Branch => "branch".to_owned(),
+        Label::Pin => "pin".to_owned(),
         Label::Owner => "owner".to_owned(),
         Label::Product(label) => label,
         Label::Version => "version".to_owned(),
@@ -60,6 +62,18 @@ pub fn update_review(paths: &Paths, plan: &Plan) -> Vec<String> {
         .collect();
     lines.extend(table::aligned_rows(rows));
     lines.extend(plan.note_lines().into_iter().map(str::to_owned));
+    lines
+}
+
+/// The lines of a branch or pin change's review.
+pub fn follow_review(paths: &Paths, plan: &FollowPlan) -> Vec<String> {
+    let mut lines = vec![format!("{} {}", plan.action(), plan.environment())];
+    let rows = plan
+        .review_rows(|path| crate::style::path(paths, path))
+        .into_iter()
+        .map(|(label, value)| (word(label), value))
+        .collect();
+    lines.extend(table::aligned_rows(rows));
     lines
 }
 

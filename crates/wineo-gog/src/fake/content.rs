@@ -262,6 +262,8 @@ struct State {
     /// Compressed chunks by their MD5.
     chunks: BTreeMap<String, Vec<u8>>,
     plain_json: bool,
+    /// What the build lists say about branches that need a password.
+    private_branches: bool,
     link_lifetime: u64,
     /// Tokens handed out and when each expires.
     tokens: BTreeMap<String, u64>,
@@ -423,6 +425,11 @@ impl ContentSystem {
     }
 
     /// Serves manifests added from now on as plain JSON rather than zlib.
+    /// Makes the build lists say the game has private branches.
+    pub fn set_private_branches(&self, private: bool) {
+        self.state.lock().unwrap().private_branches = private;
+    }
+
     pub fn serve_plain_json(&self, plain: bool) {
         self.state.lock().unwrap().plain_json = plain;
     }
@@ -495,7 +502,7 @@ impl ContentSystem {
                         "total_count": items.len(),
                         "count": items.len(),
                         "items": items,
-                        "has_private_branches": false,
+                        "has_private_branches": state.private_branches,
                     })
                     .to_string(),
                 ))

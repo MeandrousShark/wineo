@@ -17,16 +17,14 @@ const EMPTY_MD5: &str = "d41d8cd98f00b204e9800998ecf8427e";
 /// The latest build on `branch` (None for the default one): the first
 /// generation 2 build GOG lists there, since it lists each branch newest
 /// first. Generation 1 builds aren't supported.
-pub(super) fn latest<'a>(builds: &'a Builds, branch: Option<&str>) -> Option<&'a Build> {
+pub(in crate::gog::update) fn latest<'a>(
+    builds: &'a Builds,
+    branch: Option<&str>,
+) -> Option<&'a Build> {
     builds
         .items
         .iter()
         .find(|build| build.branch.as_deref() == branch && build.generation == Some(2))
-}
-
-/// `latest` on the default branch.
-pub(in crate::gog::update) fn latest_default(builds: &Builds) -> Option<&Build> {
-    latest(builds, None)
 }
 
 /// What `osBitness` calls a prefix's arch.

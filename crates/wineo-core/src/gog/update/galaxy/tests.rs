@@ -810,6 +810,7 @@ fn an_unstarted_operation_is_never_taken_for_tracked() {
         manifest: record.installed.clone().unwrap().manifest,
         store: Vec::new(),
         base: None,
+        follow: None,
     });
     pending.selection = record::digest(state.committed.as_ref().unwrap());
     record.pending = Some(pending);
@@ -2015,6 +2016,7 @@ fn an_install_canceled_mid_file_is_finished_by_installing_again() {
     assert_eq!(fx.chunk_requests().len() - before, left);
 }
 
+mod branches;
 mod repair;
 mod setup;
 mod update;

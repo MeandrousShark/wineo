@@ -52,6 +52,8 @@ fn refuse_install_options(args: &Args, title: &str) -> Option<ExitCode> {
     let given: Vec<&str> = [
         (args.platform.is_some(), "--platform"),
         (args.track.is_some(), "--track"),
+        (args.branch.is_some(), "--branch"),
+        (args.build.is_some(), "--build"),
         (args.language.is_some(), "--language"),
         (args.runner.is_some(), "--runner"),
         (args.arch.is_some(), "--arch"),

@@ -28,6 +28,7 @@ use std::path::{Path, PathBuf};
 use anyhow::Result;
 use wineo_gog::{DownloadCache, Pin, Verification};
 
+use super::galaxy::record::{Follow, follow_now};
 use super::install::dlc_can_fail;
 use super::publish::{self, PublishProgress, Publisher, Report, SavedAside};
 use super::windows::{self, SetupError};
@@ -50,7 +51,7 @@ use crate::operation::{Guard, Locks, Operation};
 use crate::paths::Paths;
 
 /// What `plan` is asked to do.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Options {
     /// Rebuild from current packages even when nothing changed.
     pub reinstall: bool,
@@ -59,6 +60,9 @@ pub struct Options {
     pub repair: bool,
     /// The track a reinstall puts the game on. None keeps the one it is on.
     pub track: Option<Track>,
+    /// The branch or build a Galaxy game goes to. Keeps the one it follows
+    /// by default.
+    pub choice: super::galaxy::Choice,
     /// Fetch GOG's product details again instead of using an hour-old copy.
     pub refresh: bool,
     /// Write nothing while planning, for a dry run: product details aren't
@@ -71,12 +75,23 @@ pub struct Options {
 }
 
 impl Options {
-    /// Refuses combinations that mean nothing: a repair never reinstalls or
-    /// moves, and a track is only for a reinstall.
+    /// Refuses combinations that mean nothing: a repair never reinstalls,
+    /// moves, or changes branch, a track is only for a reinstall, and the
+    /// installer track has no branches.
     pub fn check(&self) -> Result<(), UpdateError> {
         if self.repair && (self.reinstall || self.track.is_some()) {
             return Err(UpdateError::Options {
                 why: "A repair can't be combined with a reinstall or a track.",
+            });
+        }
+        if self.repair && !self.choice.is_keep() {
+            return Err(UpdateError::Options {
+                why: "A repair can't be combined with a branch or build.",
+            });
+        }
+        if self.track == Some(Track::Installer) && !self.choice.is_keep() {
+            return Err(UpdateError::Options {
+                why: "A branch or build can't be combined with the installer track.",
             });
         }
         if self.track.is_some() && !self.reinstall {
@@ -167,15 +182,19 @@ struct Seen {
     gog_id: Option<u64>,
     committed: Option<Committed>,
     journal: Option<Journal>,
+    /// What the Galaxy record said the game follows. A move off Galaxy
+    /// deletes the record, so it must not take a newer pin with it.
+    follow: Follow,
 }
 
 impl Seen {
-    fn of(state: &FolderState) -> Self {
+    fn of(state: &FolderState, follow: Follow) -> Self {
         Self {
             owner: state.owner.clone(),
             gog_id: state.gog_id(),
             committed: state.committed.clone(),
             journal: state.journal.clone(),
+            follow,
         }
     }
 }
@@ -385,7 +404,7 @@ pub fn plan(
     options.check()?;
     Environment::ensure_exists(paths, name)?;
     let state = super::game_of(paths, name)?;
-    let seen = Seen::of(&state);
+    let seen = Seen::of(&state, super::galaxy::follow_of(paths, &state.folder));
     let folder = state.folder.clone();
     // Read once for the review and for every message that names a DLC.
     let names = names::product_names(&folder);
@@ -1065,7 +1084,7 @@ fn run(
         owner: None,
         ..seen.clone()
     };
-    if unowned(&Seen::of(&state)) != unowned(&pending.seen) {
+    if unowned(&Seen::of(&state, follow_now(&lock)?)) != unowned(&pending.seen) {
         return Err(changed().into());
     }
     let claimed = pending.seen.owner.is_none();
@@ -1180,7 +1199,7 @@ fn run_windows(
         owner: None,
         ..seen.clone()
     };
-    if unowned(&Seen::of(&state)) != unowned(&pending.seen) {
+    if unowned(&Seen::of(&state, follow_now(&lock)?)) != unowned(&pending.seen) {
         return Err(changed().into());
     }
     let claimed = pending.seen.owner.is_none();
