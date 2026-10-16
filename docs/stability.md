@@ -35,7 +35,8 @@ match the docs.
   when each one is set.
 - **Keyring items.** Keys are stored with `service=wineo` and
   `account=steamgriddb` or `account=steam`, so other tools can find them.
-  The GOG login (`account=gog`) is wineo's own and not promised.
+  The GOG login (`account=gog`) and private branch passwords
+  (`account=gog-branch`) are wineo's own and not promised.
 
 ## Not promised
 
@@ -48,8 +49,8 @@ match the docs.
   `templates/gaming.toml`, which replaces the built-in one.
 - **Shell completion output.** It follows the CLI, which is stable.
 - **Files wineo manages for itself.** Run records, locks, and logs in the
-  state directory, GOG folder states, Galaxy records, support files, and
-  the redistributable store in the data directory, caches like
+  state directory, GOG folder states, Galaxy records, support files,
+  the redistributable store, and `gog-branches.key` in the data directory, caches like
   `steam-owned-<steamid>.json` and the GOG lists, details, and downloads,
   temporary
   files, the desktop entries wineo writes, and the on-disk layout of

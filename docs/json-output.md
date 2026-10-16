@@ -159,6 +159,8 @@ argument errors keep their normal stderr output.
       "state": "imported",
       "environment": "rimworld",
       "track": "installer",
+      "branch": null,
+      "pinned": null,
       "version": "1.6.4871 rev588",
       "update": "available",
       "applicable": true,
@@ -192,6 +194,8 @@ game:
       "name": "rimworld",
       "id": "1094900565",
       "track": "installer",
+      "branch": null,
+      "pinned": null,
       "installed": "1.6.4871 rev588",
       "available": "1.6.4900 rev600",
       "update": "available",
@@ -214,12 +218,19 @@ was interrupted and has to be finished before the game starts: with
 it again with `wineo import gog --game ID`. `import gog --list --json` has
 it too, `false` for games that aren't imported.
 
+In both, `branch` is the Galaxy branch the game follows, and `null` for
+the default branch and on the installer track. `pinned` is the build id
+the game is [pinned](gog.md#branches-and-pinned-builds) to, or `null`.
+
 In both, `update` is `available`, `none`, `galaxy`, or `cant_compare`.
-`galaxy` means a Galaxy game GOG lists no generation 2 build of on its
-default branch, which wineo can't install; `wineo update NAME --reinstall --track installer`
+`galaxy` means a Galaxy game GOG lists no generation 2 build of on the
+branch it follows, which wineo can't install; `wineo update NAME --reinstall --track installer`
 moves it to offline installers. `applicable` says whether this wineo can
 apply the update, Galaxy updates included, and `reason` says why not:
-`galaxy`, or a sentence when the versions can't be compared. A DLC's `state` is `none` (up to
+`galaxy`, `pinned` (a newer build waits on the branch of a pinned game,
+which `wineo update NAME --latest` installs), or a sentence when the
+versions can't be compared, including when a private branch's password
+is missing. A DLC's `state` is `none` (up to
 date), `available`, `unknown` (a migrated DLC whose version Heroic never
 recorded), `cant_compare`, `failed`, `unavailable`, or
 `not_installed` (owned and offered, but not installed yet: bought since, or
@@ -232,6 +243,49 @@ print and the command exits 1. `warnings` holds notes like an older saved
 list standing in for one GOG couldn't send, and they also go to stderr.
 A failure of `update --check NAME` exits 1 with a diagnostic on stderr and
 no JSON, like named status.
+
+`wineo update NAME --builds --json` lists the builds GOG offers for a
+Galaxy game:
+
+```json
+{
+  "environment": "papers-please",
+  "id": "1207659209",
+  "track": "galaxy",
+  "branch": null,
+  "pinned": null,
+  "installed": "56353505673715002",
+  "private_branches": false,
+  "builds": [
+    {
+      "branch": null,
+      "build": "56353505673715002",
+      "version": "1.4.11.124",
+      "published": "2023-03-22T06:14:05+0000",
+      "latest": true,
+      "private": false
+    },
+    {
+      "branch": "Legacy (64-bit)",
+      "build": "55257829924550446",
+      "version": "1.2.76",
+      "published": "2022-03-09T16:04:40+0000",
+      "latest": true,
+      "private": false
+    }
+  ]
+}
+```
+
+`branch` and `pinned` say what the game follows, as above, and
+`installed` is its base game's build id. `private_branches` is `true`
+when GOG says the game has branches only a password lists. `builds` has
+the default branch first (`branch` is `null`), then the others, each
+newest first. `version` is GOG's name for the build, or `null`;
+`published` is GOG's timestamp as given; `latest` marks the build an
+update on that branch goes to; and `private` marks a build listed with a
+saved password. A game on the installer track has no builds to list: it
+exits 1 with a diagnostic on stderr and no JSON.
 
 ## Validate
 

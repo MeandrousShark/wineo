@@ -136,12 +136,44 @@ its track, versions, support files, setup steps, and download size, with
 the notes `wineo update` prints, and progress goes through downloading
 and each setup step, after checking every file when it finishes a repair
 or reinstall the CLI started. A warning in the review, like a build
-GOG no longer lists, is accepted by pressing **Update**. Planning and updating both count as work for Back,
-Cancel, and closing the window. A game whose last update was interrupted has a **Finish
+GOG no longer lists, is accepted by pressing **Update**. The page's main
+button names what it does: **Update**, **Repair**, **Reinstall**,
+**Switch**, or **Finish**. When the branch a game follows is private and
+its password isn't saved, the page asks for it (`Branch NAME of TITLE is
+private.`) with a hidden Password field and **Continue**; a password GOG
+refuses asks again. Planning and updating both count as work for Back,
+Cancel, and closing the window. When the page finishes, the game is
+checked with GOG again, so its Update row stays current. A game whose last update was interrupted has a **Finish
 update** badge and button in place of Play (**Finish install** for an
 interrupted install), which finishes it on the update page, or for a
 Galaxy install on the install page; when something fails, the page says
-which button finishes it. Another environment running
+which button finishes it.
+
+A GOG Windows game's panel has a **Version** row: the installed build's
+name, with `(pinned)` or the branch it follows, read from the game's own
+record until GOG has been asked. Its **Change** button, or **Version...**
+in the Actions menu, opens the version picker in the panel, like **Log**;
+**Back** or Esc returns to the details. The picker asks GOG for the
+game's builds (the ones `wineo update NAME --builds` lists) and shows a
+**Branch** dropdown, then the branch's builds with their dates and marks.
+Picking the newest build on a branch follows that branch; picking an
+older one pins the game to it, like `--build`. **Review** opens the update
+page with the change, and a change that moves no files, like unpinning
+the build that's installed, reviews with **Switch** in place of
+**Update**. A pinned game's note says `Use Change to follow its branch
+again.`
+
+The picker also has **Repair** and **Move to offline installers**, which
+review like `--repair` and `--reinstall --track installer`. A game on the
+installer track instead says so and offers **Move to Galaxy** when GOG
+has a Galaxy build of it. When GOG says the game has private branches,
+**Enter a private branch** asks for a branch's name and password and
+lists its builds; GOG answers a wrong password like a missing branch, so
+either says `GOG lists no branch NAME for TITLE, or refused its
+password.` A password GOG accepts is saved, as in the CLI. Logged out, or
+with an update unfinished, the picker says why, and **Finish update**
+stays. A portable folder has no Version row, like the panel's other GOG
+rows. Another environment running
 from its folder can't play and says which game to finish. Once after the
 app starts, when you're logged in to GOG and not in a portable folder, it
 checks your GOG games for updates in the background; a failure only goes to
@@ -659,7 +691,7 @@ portable folder leaves them alone.
 |---|---|
 | Arrow keys | Move between cards |
 | Enter | Open the panel, or play when it's open |
-| Esc | Close the log or results, then the panel, then clear the search |
+| Esc | Close the log, version picker, or results, then the panel, then clear the search |
 | `/` or Ctrl+F | Search |
 | Ctrl+N | Open Add (Library only) |
 | Delete | Remove the selected environment, asking first (on the details) |

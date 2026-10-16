@@ -351,14 +351,21 @@ an hour unless `refresh` is set.
 - A `Status` has the environment, game id, title, folder, platform, track,
   language, `installed` and `available` (versions, or build ids on the
   Galaxy track, where the latest is the first generation 2 build on the
-  default branch), `installed_name` and `available_name` (GOG's names for
-  those builds, when it lists them), `state` (`UpToDate`, `Available`,
+  branch the game follows), `installed_name` and `available_name` (GOG's
+  names for those builds, when it lists them), `branch` (the Galaxy branch
+  followed, None for the default), `pinned` and `pinned_name` (the build
+  the game is pinned to, and GOG's name for it), `state` (`UpToDate`, `Available`,
   `OnGog`, `CantCompare`, whose `as_str()` is the JSON `update` value),
   `applicable` (true for any update this wineo can apply, on either track),
-  `reason` (`Reason::Galaxy { name }` for a Galaxy game GOG lists no
-  generation 2 default-branch build of, a 404 from its build list
-  included, else `CantCompare(why)`; `as_str()` is the JSON
-  word and `note()` the sentence), `unfinished` (a journal is present, so
+  `reason` (`Reason::Galaxy { name, branch }` for a Galaxy game GOG lists
+  no generation 2 build of on the branch it follows, a 404 from its build
+  list included; `Pinned { name, build, version }` when a newer build
+  waits on a pinned game's branch; `Password(why)` when a followed private
+  branch's password is missing or refused; else `CantCompare(why)`;
+  `as_str()` is the JSON word, `note()` the CLI's sentence, and
+  `note_for(Wording::App)` the app's, which differs only for a pin),
+  `pin_note()` and `pin_note_for(wording)` (the pin's note even when
+  nothing is newer), `unfinished` (a journal is present, so
   the game needs finishing before it launches), `galaxy_install` (that
   journal is a Galaxy game's first install, which `galaxy::plan` finishes,
   not an update), `warnings`,
@@ -484,7 +491,14 @@ here works only in the host root and needs a session.
   plans `name`'s update on the track its game follows, or its journal
   targets: `PlannedUpdate::Installer` holds an `apply` plan, and
   `PlannedUpdate::Galaxy` holds `galaxy::update::Planned` (`UpToDate {
-  environment, build, warnings }` or `Update(Plan)`). A Galaxy game, a
+  environment, build, warnings }`, `Pinned(Pinned)` for a plain update of
+  a pinned game, whose `message()` says how to unpin, `Follow(FollowPlan)`
+  for a branch or pin change that moves no files, or `Update(Plan)`).
+  `Options::choice` takes a `galaxy::Choice`: `Keep` (the default),
+  `Branch(name)`, `DefaultBranch`, `Build(id or version name)`, or
+  `Latest`; `Options::password` sends a private branch's password with
+  `Branch`. `Options::check()` refuses the combinations the CLI calls usage
+  errors. A Galaxy game, a
   reinstall with `track: Some(Galaxy)`, and a repair go to Galaxy and need
   a session; a repair of an installer game is `UpdateError::NotGalaxy`,
   and a repair or move of a native game `GalaxyError::NotWindows`. A
@@ -507,6 +521,31 @@ here works only in the host root and needs a session.
   `warnings`. A `Retarget { from, to }` is set when an interrupted
   operation's build is gone from GOG and it finishes on the latest
   instead; its warning says so, and a frontend asks before applying.
+- `galaxy::switch::apply(paths, &FollowPlan, &token) -> Updated` applies a
+  `Follow` plan: a record write under the folder's state lock, no journal,
+  refused with `Changed` when the follow changed since planning.
+  `FollowPlan::review_rows(show_path, wording)` and `action()` word it.
+- `galaxy::listing::list(paths, &mut session, name, entered, refresh,
+  read_only) -> Listing` lists the generation 2 builds GOG offers, what
+  `--builds` prints and the app's picker shows. `Listing` has the
+  environment, game id, title, `follow` (`branch` and `pinned`),
+  `installed`, `private_branches`, `builds`, and `warnings`; each `Listed`
+  has `branch` (None for the default), `build`, `version`, `published`,
+  and `installed`, `latest`, `pinned`, `followed`, and `private` flags,
+  with `marks()` and `published_date()`. Saved private branches are
+  listed; `entered` gives `(branch, &Secret)` for one more, saved once GOG
+  lists it (unless `read_only`). An installer-track game is
+  `UpdateError::NotGalaxy`.
+- `galaxy::local_of(paths, &FolderState) -> Option<Local>` reads what a
+  Galaxy game has installed and follows without asking GOG: `build`,
+  `version` (only from a record still valid for the folder), and
+  `follow`. It's for showing a game before a check has run.
+- `account::Session` keeps private branch passwords for the logged-in
+  account: `branch_password(game, branch)`, `branch_passwords(game)`,
+  `save_branch_password(game, branch, &password)`, and
+  `forget_branch_password(game, branch, &refused)`, which removes only a
+  copy equal to the refused password. Logging out or switching accounts
+  removes them all.
 - `galaxy::install::apply` and `galaxy::update::apply` (and their
   `apply_with_events` forms, which pass on setup's `windows::Event`s)
   report `galaxy::Progress`: `Verify { files, files_total, bytes,
@@ -519,12 +558,22 @@ here works only in the host root and needs a session.
   environment's unfinished install is from offline installers),
   `ProductGone { installed }`, `Setup` (a setup step failed; the journal
   stays and the next run carries on from that step), `BuildGone` and
-  `BuildUnknown` (a repair can't find its build), and `Layout`.
+  `BuildUnknown` (a repair can't find its build), `NoBranch`,
+  `NeedsPassword { title, branch, command }` (a private branch with no
+  password; a frontend asks for one and plans again with
+  `Options::password`), `Refused { title, branch }` (GOG doesn't list the
+  branch with that password, which can't be told from a missing branch),
+  `NoSuchBuild`, `AmbiguousBuild` (a version name matching several
+  builds), `BranchEmpty`, `PinGone`, `Unfinished` (a branch or pin change
+  while an operation is unfinished), and `Layout`.
 - `gog::update::galaxy::present` holds the wording both frontends use:
   `Plan::review_rows` (rows as a `Label` and a value, each frontend wording
   the labels), `note_lines`, `changes`, `saved_heading`, the install plan's
   `review_rows`, `restart_lines`, and a `Reporter` that turns `Progress`
-  into status lines at most once per interval. `Plan::action()` and
+  into status lines at most once per interval. Review rows take a
+  `Wording` (`Cli` or `App`): the CLI's pin row names `--latest`, and the
+  app names the installer track `Offline installer`, as its Track picker
+  does. `Plan::action()` and
   `finished()` name what's being done, as `Pending`'s do.
 - Each game's record of its installed manifest and setup steps lives
   beside its folder state as `<key>.galaxy.json`; support files under

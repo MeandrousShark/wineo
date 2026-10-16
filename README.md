@@ -35,7 +35,8 @@ wineo stop hades
   you own, native or Windows, in your language, or move the ones Heroic
   installed into wineo, then keep them up to date, DLC included. Windows
   games install from GOG Galaxy's builds, so updates download only what
-  changed and damaged files can be repaired.
+  changed, damaged files can be repaired, and a game can follow a beta
+  branch or stay on an older build.
 - **Clones, snapshots, and portable folders.** Copy an environment, snapshot
   and restore its prefix on a filesystem with reflinks (Btrfs, XFS), or keep
   everything in a folder you can move to another drive.

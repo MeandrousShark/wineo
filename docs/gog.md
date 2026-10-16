@@ -10,8 +10,8 @@ A GOG game follows one of two tracks:
 
 - **Galaxy:** a Windows game installed from GOG Galaxy's builds, file by
   file, the way the GOG Galaxy client and Heroic install them. Updates
-  download only the files that changed, and `--repair` fixes damaged
-  files.
+  download only the files that changed, a game can follow a beta branch
+  or stay on an older build, and `--repair` fixes damaged files.
 - **Installer:** a native (Linux) game, or a Windows game, installed from
   GOG's offline installers. Updates download the whole new installer.
 
@@ -41,8 +41,9 @@ one GOG hands out each time. A timeout or GOG being down keeps the login;
 only GOG refusing it logs you out: `Log in to GOG again: wineo import gog
 --login.`
 
-`wineo import gog --logout` removes the login and that account's list of
-owned games.
+`wineo import gog --logout` removes the login, that account's list of
+owned games, and the passwords saved for private branches. Logging in as
+another account removes those passwords too.
 
 wineo uses the GOG Galaxy client's login, like every other Linux GOG tool,
 since GOG offers no other. If GOG ever blocks it, a wineo release changes it.
@@ -96,6 +97,9 @@ after the game, in a folder named after it under `defaults.games_root`
 - `--track galaxy|installer` picks how a Windows game installs. The default
   is Galaxy when GOG has a Galaxy build of the game, else its offline
   installer. A native game always uses its installer.
+- `--branch NAME` installs from a Galaxy branch and follows it, and
+  `--build ID` installs one listed build and stays on it (see
+  [Branches and pinned builds](#branches-and-pinned-builds)).
 - `--language TAG` is a locale tag like `fr-FR`; the default is
   `gog.language`, else `en-US`. A product GOG doesn't offer in that language
   installs in English, and the review says so.
@@ -114,8 +118,8 @@ installed, as with `wineo new`.
 
 ### On the Galaxy track
 
-wineo installs the latest build GOG lists for the game, with the DLC you
-own. Every file is downloaded in pieces, each checked against GOG's
+wineo installs the latest build GOG lists on the game's default branch
+(or the branch or build you name), with the DLC you own. Every file is downloaded in pieces, each checked against GOG's
 hashes, and put in place once whole. The review's download size is the
 build's exact size; what crosses the network is compressed, so it's
 usually less. The space check runs before anything is written.
@@ -227,7 +231,7 @@ the-witcher  1.5 (CS) GOG 0.2  1.5 (CS) GOG 0.2  up to date
 `wineo update --check` compares your GOG games with what GOG offers now.
 
 - **Galaxy games** compare the installed build with the latest one GOG
-  lists, shown by GOG's name for each build (the build id when there's
+  lists on the branch the game follows, shown by GOG's name for each build (the build id when there's
   none). Any other build is an update, including one another tool
   installed or one GOG no longer lists.
 - **Native games** compare installer versions, DLC included, so an update
@@ -239,11 +243,14 @@ the-witcher  1.5 (CS) GOG 0.2  1.5 (CS) GOG 0.2  up to date
 
 When wineo can't tell (another language, a version it doesn't know), it
 says `can't compare` rather than guess. A Galaxy game GOG lists no
-current (generation 2) build of on its default branch, which wineo can't
-install, shows `update on GOG` with a
+current (generation 2) build of on the branch it follows, which wineo
+can't install, shows `update on GOG` with a
 way out under its row: `GOG has no Galaxy build of this game that wineo
 can update. Move it to offline installers with: wineo update NAME
---reinstall --track installer`.
+--reinstall --track installer`. On a branch other than the default, the
+way out is `wineo update NAME --default-branch` instead. A game pinned to
+a build shows `pinned` when its branch has a newer one, with a note under
+its row saying how to follow the branch again.
 
 Every check also asks GOG which DLC you own, so DLC you bought since the
 install shows up as `not installed`, and `wineo update` installs it. A DLC
@@ -398,6 +405,105 @@ nothing is deleted, so files the installer left that the build doesn't
 list stay. The review says so. A move to the installer track runs the
 current installers over the game, like a Windows installer update.
 
+### Branches and pinned builds
+
+Some Galaxy games have branches besides the default one, like a beta or a
+legacy version. `--builds` lists what GOG offers, and changes nothing:
+
+```
+$ wineo update papers-please --builds
+BRANCH           BUILD              VERSION     PUBLISHED
+default          56353505673715002  1.4.11.124  2023-03-22  installed, latest
+default          55257829924550446  1.2.76      2022-03-09
+Legacy (64-bit)  55257829924550446  1.2.76      2022-03-09  latest
+Legacy (32-bit)  51283582026170494  1.1.65      2018-06-07  latest
+```
+
+The default branch comes first, then the others in GOG's order, each
+newest first. The marks say which build is `installed`, which is the
+`latest` of its branch, which one the game is `pinned` to, which branch it
+`followed` (when it isn't the default), and which builds are on a
+`private` branch. `--refresh` asks GOG again rather than using the details
+it saved, and `--json` prints [JSON](json-output.md#gog).
+
+- `--branch NAME` follows a branch from now on and updates to its latest
+  build, which may be older than what's installed. Branch names are
+  matched exactly; quote ones with spaces.
+- `--default-branch` returns to the default branch.
+- `--build ID` installs one listed build and pins the game to it. It takes
+  a build id, or a version name that matches exactly one listed build. A
+  build listed only on another branch follows that branch too.
+- `--latest` unpins, and updates to the latest build of the branch
+  followed.
+
+```
+$ wineo update papers-please --branch "Legacy (64-bit)"
+Update papers-please
+  folder          ~/Games/Papers, Please
+  track           Galaxy
+  branch          default -> Legacy (64-bit)
+  Papers, Please  1.4.11.124 -> 1.2.76
+  setup           script interpreter
+  download        58 MiB
+```
+
+A change that moves no files, like pinning the build that's installed or
+`--latest` on a game already at the latest, only changes what the game
+follows:
+
+```
+$ wineo update papers-please --build 1.4.11.124
+Pin papers-please
+  folder  ~/Games/Papers, Please
+  track   Galaxy
+  pin     build 56353505673715002, until --latest
+Pinned papers-please to build 56353505673715002.
+```
+
+A pinned game stays where it is. `update --all` skips it, and plain
+`wineo update NAME` changes nothing and exits 0: `papers-please is pinned
+to build 56353505673715002 (1.4.11.124). Run wineo update papers-please
+--latest to follow its branch again.` A pin holds the build, not the DLC:
+DLC you buy since is still installed from the pinned build when it has
+it. `--reinstall` on a pinned game rebuilds the pinned build and keeps the
+pin. An interrupted change to a pinned build GOG has since stopped
+listing finishes on the latest build of the branch instead, after asking,
+and drops the pin.
+
+Branch flags exclude each other and `--repair`, need a Galaxy game (`Only
+Galaxy games have branches. Move it with --reinstall --track galaxy.`),
+and are refused while an update is unfinished, until it's finished. A
+branch GOG doesn't list is refused with a pointer to `--builds`.
+
+### Private branches
+
+Some branches are private: GOG only lists them with a password, which
+the game's developer hands out. `--builds` says `GOG also has private
+branches. Name one with --branch NAME.` when a game has them.
+`--branch NAME` on one asks for its password at a terminal:
+
+```
+$ wineo update the-witcher --branch beta
+Branch beta of The Witcher is private. Password:
+```
+
+`--password-stdin` reads it from standard input instead, one line, with
+only the line ending removed. Without a terminal, wineo names the command
+that works (`Give its password with --password-stdin.`). GOG answers a
+wrong password exactly as it answers a branch that isn't there, so either
+says `GOG lists no branch beta for The Witcher, or refused its password.`
+
+A password is saved once GOG lists its branch with it, in your keyring
+(`service=wineo`, `account=gog-branch`, with the game and branch), or in a
+`gog-branches.key` file readable only by you when there's no keyring. It
+belongs to the GOG account that saved it. After that, `--builds`,
+`--check`, and updates use it, and saved private branches show in
+`--builds` marked `private`. Entering a password again replaces it, and
+one GOG refuses later is removed. When the password of the branch a game
+follows is missing, `--check` says `can't compare` and how to enter it
+again, `wineo update NAME` asks at a terminal, and `update --all` reports
+that game as failed rather than asking.
+
 ### Interrupted updates
 
 An update writes down what it's doing before it touches the game, so a
@@ -444,8 +550,9 @@ that stopped before its environment was saved. The files stay.
 - A Windows installer trusts its exit code: an installer that changes
   files and then says it never started is taken at its word on a first
   attempt.
-- Galaxy installs and updates take the latest build on GOG's default
-  branch. Older Galaxy builds (GOG's first generation), patches between
-  builds, and builds GOG no longer lists can't be installed.
+- Galaxy installs and updates take the latest build of the branch a game
+  follows, or the build it's pinned to. Older Galaxy builds (GOG's first
+  generation), patches between builds, and builds GOG no longer lists
+  can't be installed.
 - Bonus content, cloud saves, Mac games, and posting playtime back to GOG
   aren't supported.
