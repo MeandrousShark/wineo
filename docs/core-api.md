@@ -168,9 +168,13 @@ CLI's attached `wineo run` holds the terminal and isn't meant for a GUI.
   stop timeout. If the frontend is killed during the wait, the locks are
   released and the idle waiter keeps running until the prefix is idle,
   holding nothing. The refusals are
-  `gog::folder::FolderError` variants: `MidUpdate`, `OwnerlessMidUpdate`,
-  `Updating`, `StateMissing`, `UnreadableFolder`, `Unreadable`, and
-  `OwnedByOther`. Canceling while waiting for a folder's lock returns
+  `gog::folder::FolderError` variants: `MidUpdate`, `MidInstall` (a Galaxy
+  first install, which names `wineo import gog --game ID` rather than
+  `wineo update`), `OwnerlessMidUpdate`, `Updating`, `StateMissing`,
+  `UnreadableFolder`, `Unreadable`, and `OwnedByOther`. `rm` and unsetting
+  `gog_id` refuse the same way (`RemoveMidUpdate` or `RemoveMidInstall`,
+  `UnsetMidUpdate` or `UnsetMidInstall`). `Journal::galaxy_install()` gives
+  the game id when a journal is a Galaxy first install. Canceling while waiting for a folder's lock returns
   `Error::Canceled`. A frontend that runs its own launch flow calls
   `launch::precheck` before side effects and holds the guards from
   `launch::protect`, taken after the operation lock, for the whole run.

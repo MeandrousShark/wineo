@@ -51,9 +51,9 @@ since GOG offers no other. If GOG ever blocks it, a wineo release changes it.
 
 ```
 $ wineo import gog --list
-ID          TITLE                          STATE          ENVIRONMENT    TRACK      VERSION            UPDATE
-1094900565  RimWorld                       imported       rimworld       installer  1.6.4871 rev588    update available
-1207658924  The Witcher: Enhanced Edition  installed      the-witcher    galaxy     58076094395251196  up to date
+ID          TITLE                          STATE          ENVIRONMENT    TRACK      VERSION           UPDATE
+1094900565  RimWorld                       imported       rimworld       installer  1.6.4871 rev588   update available
+1207658924  The Witcher: Enhanced Edition  installed      the-witcher    galaxy     1.5 (CS) GOG 0.2  up to date
 1771589310  Disco Elysium - The Final Cut  in Heroic
 1455877361  HuniePop 2: Double Date        not installed
 ```
@@ -61,8 +61,8 @@ ID          TITLE                          STATE          ENVIRONMENT    TRACK  
 `--list` shows what your account owns, with each game's state:
 `not installed`, `heroic` (installed by Heroic, not moved yet), `imported`
 (moved from Heroic), or `installed` (installed by wineo), with its
-environment, track, version (the build id on the Galaxy track), and update
-state. The list is cached for an hour; `--refresh` asks GOG again.
+environment, track, version (on the Galaxy track, GOG's name for the
+build, else its id), and update state. The list is cached for an hour; `--refresh` asks GOG again.
 If GOG can't send it, the last whole list stands in with a warning. See
 [JSON output](json-output.md#gog) for `--json`.
 
@@ -150,7 +150,8 @@ An install writes down what it's doing first, like an update, so a
 crash, a power cut, or Ctrl+C leaves something to finish rather than a
 broken game. Running the same `--game ID` again finishes it from what was
 already downloaded, on the track it began on; an install from offline
-installers also finishes with `wineo update NAME`. A game whose install
+installers also finishes with `wineo update NAME`. Until then the game
+won't start, and says which command finishes it. A game whose install
 stopped before its environment was saved shows as `Install didn't finish`
 in the app; `wineo import gog --forget FOLDER` drops it instead, leaving
 the files.
