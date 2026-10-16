@@ -481,7 +481,8 @@ fn a_windows_update_shows_each_installer_and_offers_the_setup_window_once() {
         | Planned::Pinned(_)
         | Planned::Galaxy(_)
         | Planned::Follow(_)
-        | Planned::NeedsPassword { .. } => {
+        | Planned::NeedsPassword { .. }
+        | Planned::Refused { .. } => {
             panic!("expected an update")
         }
     };

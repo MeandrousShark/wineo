@@ -68,6 +68,13 @@ pub(crate) enum Planned {
         title: String,
         branch: String,
     },
+    /// GOG didn't list the branch with the password typed for it, which
+    /// may be wrong, so it can be typed again.
+    Refused {
+        title: String,
+        branch: String,
+        message: String,
+    },
 }
 
 /// An update to review and apply, on the track the game is on.
@@ -349,6 +356,7 @@ impl Page {
             return None;
         }
         let password = std::mem::replace(&mut self.password, Secret::new(""));
+        self.error = None;
         Some(self.plan_job(Some(password)))
     }
 
@@ -426,6 +434,16 @@ impl Page {
                         self.asked = Some((branch, title));
                         self.password = Secret::new("");
                         self.error = None;
+                        self.step = Step::Password;
+                    }
+                    Ok(Planned::Refused {
+                        title,
+                        branch,
+                        message,
+                    }) => {
+                        self.asked = Some((branch, title));
+                        self.password = Secret::new("");
+                        self.error = Some(message);
                         self.step = Step::Password;
                     }
                     Err(error) => {
@@ -747,6 +765,7 @@ pub(crate) fn plan_with_options(
 ) -> Result<Planned, String> {
     let mut session = Session::open(paths, keyring, client).map_err(|error| error.to_string())?;
     let logged_out = session.is_none();
+    let typed = options.password.is_some();
     let planned = core_galaxy::plan_update(paths, session.as_mut(), name, options, token);
     if token.is_canceled() {
         return Err(canceled_message(paths, name));
@@ -758,6 +777,17 @@ pub(crate) fn plan_with_options(
         return Ok(Planned::NeedsPassword {
             title: title.clone(),
             branch: branch.clone(),
+        });
+    }
+    if typed
+        && let Err(error) = &planned
+        && let Some(refused @ GalaxyError::Refused { title, branch }) =
+            error.downcast_ref::<GalaxyError>()
+    {
+        return Ok(Planned::Refused {
+            title: title.clone(),
+            branch: branch.clone(),
+            message: refused.to_string(),
         });
     }
     match planned {

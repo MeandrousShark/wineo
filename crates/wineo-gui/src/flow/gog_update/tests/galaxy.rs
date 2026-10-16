@@ -579,22 +579,45 @@ fn a_game_following_a_private_branch_without_its_password_asks_for_it() {
 }
 
 #[test]
-fn a_wrong_password_typed_on_the_page_fails_and_saves_nothing() {
+fn a_wrong_password_typed_on_the_page_asks_again_and_saves_nothing() {
     let world = following_private_branch();
     fs::remove_file(password_file(&world)).unwrap();
-    let error = plan(
-        &world,
-        Options {
-            password: Some(Secret::new("wrong")),
-            ..Options::default()
-        },
-    )
-    .unwrap_err();
-    assert_eq!(
-        error,
-        "GOG lists no branch beta for Papers, Please, or refused its password."
+    let mut page = Page::new(world.paths.clone(), NAME.to_owned()).0;
+    let generation = page.generation;
+    let _ = page.update(Event::Planned(
+        generation,
+        Ok(Planned::NeedsPassword {
+            title: "Papers, Please".to_owned(),
+            branch: "beta".to_owned(),
+        }),
+    ));
+    let _ = page.update(Event::Password(Secret::new("wrong")));
+    let job = page.continue_job().unwrap();
+    let generation = job.generation;
+    let planned = job.run(&world.keyring, world.server.client());
+    let refused = "GOG lists no branch beta for Papers, Please, or refused its password.";
+    assert!(
+        matches!(&planned, Ok(Planned::Refused { message, .. }) if message == refused),
+        "{planned:?}"
     );
+    let _ = page.update(Event::Planned(generation, planned));
+    // The question stays up with why, and the refused password is gone.
+    assert_eq!(page.step, Step::Password);
+    assert_eq!(page.error.as_deref(), Some(refused));
+    assert_eq!(page.password.expose(), "");
+    assert!(page.asked.is_some());
+    fits(&page);
     assert!(!password_file(&world).exists());
+
+    // The right one then gets through.
+    let _ = page.update(Event::Password(Secret::new(BRANCH_PASSWORD)));
+    let job = page.continue_job().unwrap();
+    assert_eq!(page.error, None);
+    let generation = job.generation;
+    let planned = job.run(&world.keyring, world.server.client());
+    let _ = page.update(Event::Planned(generation, planned));
+    assert_eq!(page.step, Step::Review);
+    assert!(password_file(&world).exists());
 }
 
 /// Plans `options` from a page opened with them, as the Version picker
