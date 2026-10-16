@@ -602,6 +602,8 @@ How the two files stay consistent:
 - A **Version** picker in the game's panel lists branches and the builds
   GOG returns for each, marks the installed one and a pin, and offers
   **Repair**. A private branch asks for its password in the panel.
+- The Version picker also offers **Move to offline installers** for a
+  Galaxy game (maintainer, 2026-10-15).
 
 ### 1.0 contract impact
 
@@ -963,6 +965,55 @@ Step 8 (2026-10-15), with the maintainer's answers the same day:
   9, which also rewords `UpdateError::Galaxy` and the `OnGog` note for the
   app.
 
+Step 9 (2026-10-15), with the maintainer's answers the same day:
+
+- **Live test** (before step 9, on `zz-update-papers`, Papers, Please):
+  `--repair` found a same-size damaged DLL that `--check` couldn't see,
+  downloaded 488 KiB, and saved the damaged copy aside; a move to the
+  installer track and back both finished, and the move back downloaded
+  nothing, since every file the installer left matched the Galaxy build.
+- **One wording for both front ends.** The Galaxy review rows, notes,
+  changes, saved-aside heading, restart lines, and progress `Reporter`
+  moved from the CLI into core (`gog::update::galaxy::present`), like the
+  installer track's `ReviewLabel`. The CLI words labels in lowercase, the
+  app in Title case; the CLI's output didn't change.
+- **Track in the install review** (approved): a `Track` picker under
+  `Platform`, `Galaxy` or `Offline installer`, shown when both are
+  possible. Core's new `galaxy::track_for` makes the choice `plan` made
+  inline, so the app learns which tracks exist before planning, and a
+  failed Galaxy plan keeps the picker. When GOG can't say (the builds
+  request fails on a fresh Windows install), the picker offers both with
+  nothing chosen. A Galaxy install's review shows Version, DLC, Support,
+  Setup, and Download, with no "Installs in" or estimated "Installed" row,
+  since its language is a depot tag and its sizes are exact.
+- **Galaxy updates in the app** follow the approved CLI copy. The page
+  finishes any Update, Reinstall, or Repair journal, whichever front end
+  left it. A retarget (question 12) shows as the plan's warning, and the
+  Update button accepts it.
+- **Finishing an interrupted Galaxy install** (answer A): the library
+  card's Finish install opens the install page, which resumes it and runs
+  the install's own finish (playtime, art, desktop entries, the program
+  picker). Installer-track installs still finish on the update page. Core
+  is unchanged, so the CLI keeps naming `wineo import gog --game ID`.
+- **Finish hints** follow step 8's bound in the app on both tracks: any
+  non-cancel failure, planning or applying, that leaves a journal ends
+  with the page's finish hint once, chosen from the journal, and a cancel
+  with a journal says the interrupted message. Logged out and an
+  unreadable environment or global config get no hint (step 8's accepted
+  limit; the install page loads the global config before it can look for
+  a journal).
+- **The Track picker's knowledge belongs to the platform it was learned
+  for** (a bound set after two review rounds found it out of step with
+  the page): it shows only for that platform, a Track choice counts only
+  while it shows, and a Platform change learns it again.
+- **The "no Galaxy build" note** stays as it is, CLI command included
+  (maintainer, 2026-10-15). A "Move to offline installers" action in the
+  app joins step 13's Version picker (amended in "Desktop app" and
+  the implementation sequence).
+- `UpdateError::Galaxy` can't be reached from either front end now; only a
+  direct caller of core's installer-only `update::plan` gets it. Its
+  "later release" wording is a step 10 core API docs item.
+
 ## Implementation sequence
 
 Part A:
@@ -991,7 +1042,7 @@ Part B:
 
 11. Branches, pinned builds, and `--default-branch` in core and the CLI.
 12. Private branch passwords.
-13. The app's **Version** picker.
+13. The app's **Version** picker, with **Move to offline installers**.
 14. Docs for part B.
 
 ## Testing and acceptance
