@@ -88,6 +88,8 @@ impl Event {
 pub(crate) struct Picker {
     pub(crate) name: String,
     generation: u64,
+    /// The game's shared generation when the current request was asked.
+    asked: u64,
     loading: Delayed<Message>,
     busy: bool,
     loaded: Option<Loaded>,
@@ -115,6 +117,7 @@ impl Picker {
         Self {
             name,
             generation: 0,
+            asked: 0,
             loading: Delayed::new(reveal),
             busy: false,
             loaded: None,
@@ -309,10 +312,10 @@ impl App {
     /// What the panel's Version row says for `card`: the latest listing,
     /// else the background check, else what its folder records.
     pub(crate) fn version_value(&self, card: &Card) -> String {
-        self.gog_versions
-            .get(&card.name)
-            .cloned()
-            .or_else(|| self.gog_updates.get(&card.name).and_then(status_value))
+        self.gog_updates
+            .listed_version(&card.name)
+            .map(str::to_owned)
+            .or_else(|| self.gog_updates.status(&card.name).and_then(status_value))
             .or_else(|| card.gog.as_ref()?.version.clone())
             .unwrap_or_else(|| "Unknown".to_owned())
     }
@@ -339,6 +342,7 @@ impl App {
         self.version_generation = self.version_generation.wrapping_add(1);
         let generation = self.version_generation;
         picker.generation = generation;
+        picker.asked = self.gog_updates.asked(&picker.name);
         picker.busy = true;
         picker.loading.reset();
         let reveal = picker.loading.add(1, Instant::now());
@@ -434,13 +438,6 @@ pub(crate) fn update(app: &mut App, event: Event) -> Task<Message> {
             Task::none()
         }
         Event::Loaded(generation, entered, result) => {
-            // A listing is newer than any check of the game still on its way.
-            if let (Some(picker), Ok(Loaded::Galaxy(_))) = (app.version.as_ref(), &result)
-                && picker.generation == generation
-            {
-                let name = picker.name.clone();
-                crate::gog_library::supersede(app, &name);
-            }
             let Some(picker) = app
                 .version
                 .as_mut()
@@ -457,9 +454,14 @@ pub(crate) fn update(app: &mut App, event: Event) -> Task<Message> {
                 Ok(loaded) => {
                     picker.error = None;
                     if let Loaded::Galaxy(listing) = &loaded {
-                        if let Some(value) = listing_value(listing) {
-                            app.gog_versions.insert(picker.name.clone(), value);
-                        }
+                        // Something newer about the game may have landed since
+                        // this was asked; then only the picker shows it, which
+                        // is what GOG listed when asked.
+                        app.gog_updates.accept_listing(
+                            &picker.name,
+                            picker.asked,
+                            listing_value(listing),
+                        );
                         let listed = |name: &Option<String>| {
                             listing.builds.iter().any(|build| &build.branch == name)
                         };

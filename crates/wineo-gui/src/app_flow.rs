@@ -68,8 +68,7 @@ impl App {
         // rows say what the game has now.
         let task = match page.take_updated() {
             Some(name) => {
-                self.gog_updates.remove(&name);
-                self.gog_versions.remove(&name);
+                self.gog_updates.changed(&name);
                 Task::batch([task, crate::gog_library::recheck(self, name)])
             }
             None => task,

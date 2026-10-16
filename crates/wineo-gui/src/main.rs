@@ -165,13 +165,7 @@ pub(crate) struct App {
     gog_work: settings::GogWork,
     /// What the background check found, by environment. Kept here rather
     /// than on cards, which every library refresh rebuilds.
-    pub(crate) gog_updates: HashMap<String, wineo_core::gog::update::Status>,
-    /// The Version row's value from the last listing the picker loaded, by
-    /// environment, newer than the background check's.
-    pub(crate) gog_versions: HashMap<String, String>,
-    /// Each game's latest re-check, so a late answer can't replace newer
-    /// state.
-    pub(crate) gog_rechecks: HashMap<String, u64>,
+    pub(crate) gog_updates: gog_library::GogState,
     /// The Version picker, which takes the panel's details' place like Log.
     pub(crate) version: Option<version_picker::Picker>,
     version_generation: u64,
@@ -430,9 +424,7 @@ impl App {
             steamgriddb_late_result: None,
             steam_key_work: settings::SteamKeyWork::default(),
             gog_work: settings::GogWork::default(),
-            gog_updates: HashMap::new(),
-            gog_versions: HashMap::new(),
-            gog_rechecks: HashMap::new(),
+            gog_updates: gog_library::GogState::default(),
             version: None,
             version_generation: 0,
             art_page: None,
@@ -483,7 +475,7 @@ impl App {
         })
         .discard();
         let key_presence = settings::key_presence_task(app.paths.clone(), app.steamgriddb_sequence);
-        let gog_check = gog_library::check_task(app.paths.clone(), app.gog_rechecks.clone());
+        let gog_check = gog_library::check_task(app.paths.clone(), app.gog_updates.asked_all());
         (
             app,
             Task::batch([

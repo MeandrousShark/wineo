@@ -605,9 +605,9 @@ fn a_finished_change_is_checked_again_for_the_panel() {
 
     let mut app = app();
     app.cards = vec![game_card(false)];
-    app.gog_versions
-        .insert(NAME.to_owned(), "stale (pinned)".to_owned());
-    let generation = crate::gog_library::supersede(&mut app, NAME);
+    app.gog_updates.insert_version(NAME, "stale (pinned)");
+    app.gog_updates.changed(NAME);
+    let generation = app.gog_updates.asked(NAME);
     let _ = app.update(Message::GogRechecked(
         NAME.to_owned(),
         generation,
@@ -626,9 +626,9 @@ fn a_recheck_answering_after_something_newer_is_dropped() {
             .unwrap();
     pin(&world, "100");
 
-    // A check asked for before the pin answers after a listing of it.
+    // A check asked with the listing answers after it.
     let mut app = opened(false);
-    let late = crate::gog_library::supersede(&mut app, NAME);
+    let late = app.gog_updates.asked(NAME);
     let generation = app.version_generation;
     let _ = app.update(Message::Version(Event::Loaded(
         generation,
@@ -643,15 +643,21 @@ fn a_recheck_answering_after_something_newer_is_dropped() {
     assert!(!app.gog_updates.contains_key(NAME));
     assert_eq!(app.version_value(&app.cards[0]), "1.2.76 (pinned)");
 
-    // Nor after a newer check of its own.
-    let older = crate::gog_library::supersede(&mut app, NAME);
-    let _ = crate::gog_library::recheck(&mut app, NAME.to_owned());
+    // Nor after a check asked with it that answered first.
+    let older = app.gog_updates.asked(NAME);
+    let mut newer = before.clone();
+    newer.state = UpdateState::UpToDate;
+    let _ = app.update(Message::GogRechecked(
+        NAME.to_owned(),
+        older,
+        Ok(Some(newer)),
+    ));
     let _ = app.update(Message::GogRechecked(
         NAME.to_owned(),
         older,
         Ok(Some(before)),
     ));
-    assert!(!app.gog_updates.contains_key(NAME));
+    assert_eq!(app.gog_updates[NAME].state, UpdateState::UpToDate);
 }
 
 /// The game's card as the library reads it from disk.
@@ -690,4 +696,72 @@ fn before_any_check_the_version_row_reads_the_games_own_record() {
     world.install();
     world.on_installer_track();
     assert_eq!(card_from_disk(&world).version.as_deref(), Some("1.2.76"));
+}
+
+/// A status GOG's check could give for the game, distinct from a listing.
+fn checked_status() -> Status {
+    let mut checked = status(Track::Galaxy);
+    checked.state = UpdateState::UpToDate;
+    checked
+}
+
+#[test]
+fn a_listing_answering_after_a_newer_recheck_only_shows_in_the_picker() {
+    let world = world();
+    pin(&world, "100");
+    // The recheck and the listing are both asked, and the recheck lands first.
+    let mut app = opened(false);
+    let recheck = app.gog_updates.asked(NAME);
+    let _ = app.update(Message::GogRechecked(
+        NAME.to_owned(),
+        recheck,
+        Ok(Some(Box::new(checked_status()))),
+    ));
+    let generation = app.version_generation;
+    let _ = app.update(Message::Version(Event::Loaded(
+        generation,
+        None,
+        Ok(Loaded::Galaxy(Box::new(listed(&world, None)))),
+    )));
+    // The panel keeps the recheck's answer; the picker still shows the builds.
+    assert_eq!(app.gog_updates.listed_version(NAME), None);
+    assert_eq!(app.gog_updates[NAME].state, UpdateState::UpToDate);
+    assert_eq!(app.version_value(&app.cards[0]), "1.2.76");
+    assert_eq!(picker(&app).rows().len(), 2);
+}
+
+#[test]
+fn a_listing_answering_after_a_newer_startup_check_only_shows_in_the_picker() {
+    let world = world();
+    pin(&world, "100");
+    let mut app = app();
+    app.cards = vec![game_card(false)];
+    let startup = app.gog_updates.asked_all();
+    let _ = app.update(Message::Version(Event::Open(NAME.to_owned())));
+    let _ = app.update(Message::GogChecked(
+        startup,
+        Ok(Some(wineo_core::gog::update::Batch {
+            statuses: vec![checked_status()],
+            errors: Vec::new(),
+        })),
+    ));
+    let generation = app.version_generation;
+    let _ = app.update(Message::Version(Event::Loaded(
+        generation,
+        None,
+        Ok(Loaded::Galaxy(Box::new(listed(&world, None)))),
+    )));
+    assert_eq!(app.gog_updates.listed_version(NAME), None);
+    assert_eq!(app.gog_updates[NAME].state, UpdateState::UpToDate);
+    assert_eq!(picker(&app).rows().len(), 2);
+
+    // Opened again after it, the listing counts.
+    let _ = app.update(Message::Version(Event::Open(NAME.to_owned())));
+    let generation = app.version_generation;
+    let _ = app.update(Message::Version(Event::Loaded(
+        generation,
+        None,
+        Ok(Loaded::Galaxy(Box::new(listed(&world, None)))),
+    )));
+    assert_eq!(app.version_value(&app.cards[0]), "1.2.76 (pinned)");
 }

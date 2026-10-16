@@ -756,7 +756,7 @@ fn finishing_the_update_page_checks_the_game_again() {
     let mut app = crate::tests::app();
     let _ = app.open_gog_update(NAME.to_owned(), None);
     assert!(app.flow.is_some());
-    let before = app.gog_rechecks.get(NAME).copied();
+    let before = app.gog_updates.asked(NAME);
     let generation = match &app.flow {
         Some(crate::flow::Page::GogUpdate(page)) => page.generation,
         _ => panic!("expected the update page"),
@@ -768,9 +768,9 @@ fn finishing_the_update_page_checks_the_game_again() {
             Ok(Planned::UpToDate),
         ))),
     ));
-    // Finishing scheduled a check, which is now the only one that counts.
-    let after = app.gog_rechecks.get(NAME).copied();
-    assert!(after.is_some() && after != before);
+    // Finishing changed the game, so only what is asked from now counts:
+    // the check it scheduled.
+    assert_ne!(app.gog_updates.asked(NAME), before);
 }
 
 #[test]

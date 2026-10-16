@@ -247,7 +247,7 @@ impl App {
     /// background check found an update for, with nothing to finish first.
     pub(crate) fn gog_update_action(&self, name: &str) -> bool {
         self.gog_updates
-            .get(name)
+            .status(name)
             .is_some_and(crate::gog_library::updatable)
             && self
                 .cards
@@ -952,7 +952,7 @@ impl App {
                 ));
             }
             if !card.finish_update()
-                && let Some(status) = self.gog_updates.get(&card.name)
+                && let Some(status) = self.gog_updates.status(&card.name)
             {
                 inner = inner.push(detail_row(
                     "Update",

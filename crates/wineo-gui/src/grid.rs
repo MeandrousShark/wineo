@@ -176,7 +176,7 @@ impl App {
             );
         }
         if let Some(badge) =
-            crate::gog_library::badge(card.gog.as_ref(), self.gog_updates.get(&card.name))
+            crate::gog_library::badge(card.gog.as_ref(), self.gog_updates.status(&card.name))
         {
             let color = match badge {
                 crate::gog_library::Badge::UpdateAvailable => palette.primary,

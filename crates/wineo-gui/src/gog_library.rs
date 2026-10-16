@@ -255,11 +255,155 @@ pub(crate) fn check_with(
         .map_err(|error| format!("{error:#}"))
 }
 
-/// Checks `name` again once an update changed it, dropping any check of it
-/// still on its way. Logged out, or in a portable session, there is nothing
-/// to check.
+/// What the app knows from GOG about each game: the checks' statuses and
+/// the Version row's value from a listing. Every request that can write
+/// either for a game captures the game's generation when it is asked
+/// (`asked`), and its reply counts only while that generation still holds.
+/// Accepting a reply, or a change to the game (`changed`), moves the
+/// generation on, so whatever was asked before is dropped. The fields are
+/// private, so no writer can skip that.
+#[derive(Debug, Default)]
+pub(crate) struct GogState {
+    statuses: std::collections::HashMap<String, Status>,
+    versions: std::collections::HashMap<String, String>,
+    generations: std::collections::HashMap<String, u64>,
+}
+
+impl GogState {
+    pub(crate) fn status(&self, name: &str) -> Option<&Status> {
+        self.statuses.get(name)
+    }
+
+    /// The Version row's value from the last listing accepted.
+    pub(crate) fn listed_version(&self, name: &str) -> Option<&str> {
+        self.versions.get(name).map(String::as_str)
+    }
+
+    /// What a request about `name` captures when it is asked.
+    pub(crate) fn asked(&self, name: &str) -> u64 {
+        self.generations.get(name).copied().unwrap_or_default()
+    }
+
+    /// What a request about every game captures when it is asked.
+    pub(crate) fn asked_all(&self) -> std::collections::HashMap<String, u64> {
+        self.generations.clone()
+    }
+
+    /// Whether a reply asked at `asked` is still the newest about `name`;
+    /// if so it takes the generation, so anything asked before is dropped.
+    fn accept(&mut self, name: &str, asked: u64) -> bool {
+        if self.asked(name) != asked {
+            return false;
+        }
+        self.generations
+            .insert(name.to_owned(), asked.wrapping_add(1));
+        true
+    }
+
+    /// `name`'s game changed, so nothing known or asked about it before
+    /// counts.
+    pub(crate) fn changed(&mut self, name: &str) {
+        let generation = self.asked(name).wrapping_add(1);
+        self.generations.insert(name.to_owned(), generation);
+        self.statuses.remove(name);
+        self.versions.remove(name);
+    }
+
+    /// A check of one game, asked at `asked`. Returns whether it counted.
+    pub(crate) fn accept_status(&mut self, name: &str, asked: u64, status: Status) -> bool {
+        if !self.accept(name, asked) {
+            return false;
+        }
+        self.versions.remove(name);
+        self.statuses.insert(name.to_owned(), status);
+        true
+    }
+
+    /// A listing's Version row value, asked at `asked`. Returns whether it
+    /// counted.
+    pub(crate) fn accept_listing(&mut self, name: &str, asked: u64, value: Option<String>) -> bool {
+        if !self.accept(name, asked) {
+            return false;
+        }
+        match value {
+            Some(value) => self.versions.insert(name.to_owned(), value),
+            None => self.versions.remove(name),
+        };
+        true
+    }
+
+    /// A check of every game, asked when the generations were `asked`. Each
+    /// game counts on its own: one reported takes the new status, one no
+    /// longer reported loses its old one, and one whose generation moved on
+    /// keeps what it has.
+    pub(crate) fn accept_batch(
+        &mut self,
+        asked: &std::collections::HashMap<String, u64>,
+        statuses: Vec<Status>,
+    ) {
+        let asked_for = |name: &str| asked.get(name).copied().unwrap_or_default();
+        let reported: std::collections::HashSet<String> = statuses
+            .iter()
+            .map(|status| status.environment.clone())
+            .collect();
+        let gone: Vec<String> = self
+            .statuses
+            .keys()
+            .filter(|name| !reported.contains(*name))
+            .cloned()
+            .collect();
+        for name in gone {
+            if self.accept(&name, asked_for(&name)) {
+                self.statuses.remove(&name);
+            }
+        }
+        for status in statuses {
+            let name = status.environment.clone();
+            if self.accept(&name, asked_for(&name)) {
+                self.versions.remove(&name);
+                self.statuses.insert(name, status);
+            }
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn is_empty(&self) -> bool {
+        self.statuses.is_empty()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn contains_key(&self, name: &str) -> bool {
+        self.statuses.contains_key(name)
+    }
+
+    /// Seeds a status for a test, as an accepted check would.
+    #[cfg(test)]
+    pub(crate) fn insert(&mut self, name: String, status: Status) {
+        let asked = self.asked(&name);
+        assert!(self.accept_status(&name, asked, status));
+    }
+
+    /// Seeds a listing's value for a test, as an accepted listing would.
+    #[cfg(test)]
+    pub(crate) fn insert_version(&mut self, name: &str, value: &str) {
+        let asked = self.asked(name);
+        assert!(self.accept_listing(name, asked, Some(value.to_owned())));
+    }
+}
+
+#[cfg(test)]
+impl std::ops::Index<&str> for GogState {
+    type Output = Status;
+
+    fn index(&self, name: &str) -> &Status {
+        &self.statuses[name]
+    }
+}
+
+/// Checks `name` again once an update changed it. Logged out, or in a
+/// portable session, there is nothing to check.
 pub(crate) fn recheck(app: &mut crate::App, name: String) -> iced::Task<crate::Message> {
-    let generation = supersede(app, &name);
+    let generation = app.gog_updates.asked(&name);
     let paths = app.paths.clone();
     if paths.portable_root().is_some() {
         return iced::Task::none();
@@ -292,29 +436,17 @@ pub(crate) fn recheck_with(
         .map_err(|error| format!("{error:#}"))
 }
 
-/// Marks what is known of `name` as newer than any check of it on its way,
-/// returning the generation a new check would carry.
-pub(crate) fn supersede(app: &mut crate::App, name: &str) -> u64 {
-    let generation = app.gog_rechecks.entry(name.to_owned()).or_default();
-    *generation = generation.wrapping_add(1);
-    *generation
-}
-
-/// Lands a check of one game, like the background check does, unless
-/// something newer about the game arrived since it was asked for.
+/// Lands a check of one game asked at `generation`, like the background
+/// check does.
 pub(crate) fn rechecked(
     app: &mut crate::App,
     name: String,
     generation: u64,
     result: Result<Option<Box<Status>>, String>,
 ) {
-    if app.gog_rechecks.get(&name) != Some(&generation) {
-        return;
-    }
     match result {
         Ok(Some(status)) => {
-            app.gog_versions.remove(&name);
-            app.gog_updates.insert(name, *status);
+            app.gog_updates.accept_status(&name, generation, *status);
         }
         Ok(None) => {}
         Err(error) => eprintln!("wineo-gui: couldn't check {name} for GOG updates: {error}"),
@@ -328,21 +460,16 @@ pub(crate) fn checked(
     app: &mut crate::App,
     result: Result<Option<wineo_core::gog::update::Batch>, String>,
 ) {
-    let asked = app.gog_rechecks.clone();
+    let asked = app.gog_updates.asked_all();
     checked_since(app, &asked, result);
 }
 
-/// `checked`, for a check that started when the games' re-check
-/// generations were `asked`. A game whose generation moved on since keeps
-/// what it has, since that is newer.
+/// `checked`, for a check asked when the games' generations were `asked`.
 pub(crate) fn checked_since(
     app: &mut crate::App,
     asked: &std::collections::HashMap<String, u64>,
     result: Result<Option<wineo_core::gog::update::Batch>, String>,
 ) {
-    let current = |rechecks: &std::collections::HashMap<String, u64>, name: &str| {
-        rechecks.get(name) == asked.get(name)
-    };
     match result {
         Ok(Some(batch)) => {
             for error in &batch.errors {
@@ -352,18 +479,7 @@ pub(crate) fn checked_since(
                     error.message
                 );
             }
-            let rechecks = &app.gog_rechecks;
-            let mut statuses: std::collections::HashMap<String, Status> =
-                std::mem::take(&mut app.gog_updates)
-                    .into_iter()
-                    .filter(|(name, _)| !current(rechecks, name))
-                    .collect();
-            for status in batch.statuses {
-                if current(rechecks, &status.environment) {
-                    statuses.insert(status.environment.clone(), status);
-                }
-            }
-            app.gog_updates = statuses;
+            app.gog_updates.accept_batch(asked, batch.statuses);
         }
         Ok(None) => {}
         Err(error) => eprintln!("wineo-gui: couldn't check for GOG updates: {error}"),
@@ -533,8 +649,9 @@ mod tests {
         let mut app = app();
         // The startup check starts, then papers changes and is checked again
         // before it answers.
-        let asked = app.gog_rechecks.clone();
-        let generation = supersede(&mut app, "papers");
+        let asked = app.gog_updates.asked_all();
+        app.gog_updates.changed("papers");
+        let generation = app.gog_updates.asked("papers");
         let newer = pinned_status("papers");
         rechecked(
             &mut app,
@@ -554,7 +671,7 @@ mod tests {
         assert_eq!(app.gog_updates["rimworld"].state, UpdateState::Available);
 
         // A check that started after the change counts for it.
-        let asked = app.gog_rechecks.clone();
+        let asked = app.gog_updates.asked_all();
         let batch = wineo_core::gog::update::Batch {
             statuses: vec![status("papers", UpdateState::UpToDate, true)],
             errors: Vec::new(),
@@ -563,6 +680,57 @@ mod tests {
         assert_eq!(app.gog_updates["papers"].state, UpdateState::UpToDate);
         // As before, a game the check no longer reports is dropped.
         assert!(!app.gog_updates.contains_key("rimworld"));
+    }
+
+    /// Every way to write what the app knows from GOG about a game refuses
+    /// a reply asked before something newer about it landed.
+    #[test]
+    fn every_writer_drops_a_reply_asked_before_something_newer() {
+        let fresh = || status("papers", UpdateState::UpToDate, true);
+        let stale = || status("papers", UpdateState::Available, true);
+        // Each writer, landing at the generation it was asked at.
+        type Writer = fn(&mut GogState, u64, Status) -> bool;
+        let writers: [(&str, Writer); 3] = [
+            ("status", |state, asked, status| {
+                state.accept_status("papers", asked, status)
+            }),
+            ("listing", |state, asked, _| {
+                state.accept_listing("papers", asked, Some("listed".to_owned()))
+            }),
+            ("batch", |state, asked, status| {
+                let before = state.asked("papers");
+                let asked = std::collections::HashMap::from([("papers".to_owned(), asked)]);
+                state.accept_batch(&asked, vec![status]);
+                state.asked("papers") != before
+            }),
+        ];
+        for (name, write) in writers {
+            for (newer, landed) in writers {
+                // Two requests asked together; the other one lands first.
+                let mut state = GogState::default();
+                let asked = state.asked("papers");
+                assert!(landed(&mut state, asked, fresh()), "{newer} first");
+                let known = (
+                    state.status("papers").cloned(),
+                    state.listed_version("papers").map(str::to_owned),
+                );
+                assert!(!write(&mut state, asked, stale()), "{name} after {newer}");
+                assert_eq!(
+                    (
+                        state.status("papers").cloned(),
+                        state.listed_version("papers").map(str::to_owned)
+                    ),
+                    known,
+                    "{name} after {newer}"
+                );
+            }
+            // And after the game changed.
+            let mut state = GogState::default();
+            let asked = state.asked("papers");
+            state.changed("papers");
+            assert!(!write(&mut state, asked, stale()), "{name} after a change");
+            assert!(state.status("papers").is_none() && state.listed_version("papers").is_none());
+        }
     }
 
     fn pinned_status(name: &str) -> Status {
