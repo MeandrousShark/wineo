@@ -1492,13 +1492,23 @@ fn run(
         .lines
         .insert(0, format!("Migrated {title} as {}.", migrated.environment));
     if matches!(migrated.state, StateChange::Reclaim { journal: true }) {
-        report.lines.push(format!(
-            "Its last update was interrupted. Use Finish update on {} in the library.",
-            migrated.environment
-        ));
+        let galaxy_install = crate::gog_library::galaxy_install(paths, &migrated.environment);
+        report
+            .lines
+            .push(interrupted_line(galaxy_install, &migrated.environment));
     }
     report.lines.push(HEROIC_NOTE.to_owned());
     Ok(report)
+}
+
+/// What a reclaimed folder's journal leaves to do: a Galaxy first install is
+/// finished from the install page, anything else by updating.
+fn interrupted_line(galaxy_install: bool, name: &str) -> String {
+    if galaxy_install {
+        format!("Its install was interrupted. Use Finish install on {name} in the library.")
+    } else {
+        format!("Its last update was interrupted. Use Finish update on {name} in the library.")
+    }
 }
 
 /// What importing GOG's extras said.

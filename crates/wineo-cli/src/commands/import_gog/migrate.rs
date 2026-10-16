@@ -6,7 +6,7 @@ use std::path::Path;
 use std::process::ExitCode;
 
 use wineo_core::config::GlobalConfig;
-use wineo_core::gog::folder::{self, Platform};
+use wineo_core::gog::folder::{self, Journal, Platform};
 use wineo_core::gog::migrate::{
     self, MigrateError, Migration, Outcome, Plan, ReviewLabel, StateChange, Target,
 };
@@ -20,7 +20,7 @@ use wineo_core::runners::Runners;
 
 use super::Args;
 use super::extras::Batch;
-use crate::commands::gog_support::{Account, usage_error, warn};
+use crate::commands::gog_support::{Account, finish_command, journal_for, usage_error, warn};
 use crate::commands::import::{ReturnToSourceMenu, check_review};
 use crate::commands::import_heroic::{
     ChosenRunner, ensure_components_available, finish_registered, pick_runner, report_playtime,
@@ -327,14 +327,24 @@ fn report(
                 migrated.environment
             );
             if matches!(migrated.state, StateChange::Reclaim { journal: true }) {
-                println!(
-                    "Finish the interrupted update with: wineo update {}",
-                    migrated.environment
-                );
+                let journal = journal_for(paths, &migrated.environment, None);
+                println!("{}", finish_hint(journal.as_ref(), &migrated.environment));
             }
             println!("{HEROIC_NOTE}");
             Ok(true)
         }
+    }
+}
+
+/// How the interrupted work a reclaimed folder came back with is finished,
+/// by its journal: a Galaxy first install only by installing again.
+fn finish_hint(journal: Option<&Journal>, name: &str) -> String {
+    match journal {
+        Some(journal) if journal.galaxy_install().is_some() => format!(
+            "Finish the interrupted install with: {}",
+            finish_command(journal, name)
+        ),
+        _ => format!("Finish the interrupted update with: wineo update {name}"),
     }
 }
 
@@ -644,4 +654,52 @@ pub(super) fn forget(paths: &Paths, path: &str) -> anyhow::Result<ExitCode> {
         println!("No GOG state is saved for {shown}.");
     }
     Ok(ExitCode::SUCCESS)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use wineo_core::gog::folder::{JournalKind, Target, Track};
+
+    fn journal(kind: JournalKind, track: Track) -> Journal {
+        Journal {
+            operation: "op".to_owned(),
+            kind,
+            target: Target {
+                gog_id: 1207658924,
+                platform: Platform::Windows,
+                language: "en-US".to_owned(),
+                track,
+                products: Vec::new(),
+            },
+            packages: Vec::new(),
+            attempted: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn a_reclaimed_galaxy_install_is_finished_by_installing_again() {
+        let galaxy = journal(JournalKind::Install, Track::Galaxy);
+        assert_eq!(
+            finish_hint(Some(&galaxy), "papers-please"),
+            "Finish the interrupted install with: wineo import gog --game 1207658924"
+        );
+    }
+
+    #[test]
+    fn any_other_reclaimed_journal_is_finished_by_updating() {
+        for journal in [
+            journal(JournalKind::Update, Track::Galaxy),
+            journal(JournalKind::Install, Track::Installer),
+        ] {
+            assert_eq!(
+                finish_hint(Some(&journal), "rimworld"),
+                "Finish the interrupted update with: wineo update rimworld"
+            );
+        }
+        assert_eq!(
+            finish_hint(None, "rimworld"),
+            "Finish the interrupted update with: wineo update rimworld"
+        );
+    }
 }

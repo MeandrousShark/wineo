@@ -1061,6 +1061,32 @@ mod gog_id {
     }
 
     #[test]
+    fn unsetting_gog_id_during_a_galaxy_install_names_the_install_command() {
+        let (_root, paths, folder) = setup(Some(true));
+        let mut state = game(&folder, true);
+        let journal = state.journal.as_mut().unwrap();
+        journal.kind = JournalKind::Install;
+        journal.target.track = Track::Galaxy;
+        FolderLock::exclusive(&paths, &folder, NEVER)
+            .unwrap()
+            .write(&state)
+            .unwrap();
+        let error = apply(
+            &paths,
+            ConfigFile::Environment("rimworld"),
+            &[],
+            &["gog_id"],
+        )
+        .unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "rimworld's GOG install didn't finish. Finish it with wineo import gog --game 1094900565."
+        );
+        assert_eq!(owner(&paths, &folder).as_deref(), Some("rimworld"));
+        assert_eq!(text(&paths), RIMWORLD);
+    }
+
+    #[test]
     fn unsetting_gog_id_with_a_lost_state_only_edits_the_config() {
         let (_root, paths, _) = setup(None);
         let applied = apply(

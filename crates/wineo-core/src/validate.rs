@@ -638,9 +638,20 @@ fn check_gog_folder(
     let folder = state.folder.display();
     if state.journal.is_some() {
         let message = match environment {
-            Some(owner) => {
-                format!("{owner}'s game folder is mid-update. Finish it with wineo update {owner}.")
-            }
+            Some(owner) => match state
+                .journal
+                .as_ref()
+                .and_then(folder::Journal::galaxy_install)
+            {
+                Some(gog_id) => folder::FolderError::MidInstall {
+                    name: owner.to_owned(),
+                    gog_id,
+                }
+                .to_string(),
+                None => format!(
+                    "{owner}'s game folder is mid-update. Finish it with wineo update {owner}."
+                ),
+            },
             None => match folder::unfinished(paths, state) {
                 refusal @ (folder::FolderError::UnfinishedInstall { .. }
                 | folder::FolderError::OwnerlessInstall { .. }) => refusal.to_string(),

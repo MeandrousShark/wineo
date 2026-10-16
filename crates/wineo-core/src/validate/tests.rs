@@ -1624,6 +1624,23 @@ mod gog {
     }
 
     #[test]
+    fn a_galaxy_install_names_the_install_command() {
+        let f = Fixture::new();
+        f.native("rimworld", &format!("gog_id = '{ID}'\n"));
+        let folder = f.root.join("rimworld");
+        fs::create_dir_all(&folder).unwrap();
+        let mut galaxy = state(&folder, Some("rimworld"), true);
+        let journal = galaxy.journal.as_mut().unwrap();
+        journal.kind = JournalKind::Install;
+        journal.target.track = Track::Galaxy;
+        save(&f, &galaxy);
+        assert_eq!(
+            f.only(Code::GogMidUpdate).message,
+            "rimworld's GOG install didn't finish. Finish it with wineo import gog --game 1094900565."
+        );
+    }
+
+    #[test]
     fn a_lost_state_is_reported_with_how_to_fix_it() {
         let f = Fixture::new();
         f.native("rimworld", &format!("gog_id = '{ID}'\n"));

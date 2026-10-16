@@ -113,9 +113,11 @@ pub fn remove_with_force(
         _ => {}
     }
     runtime.check_resolved(name)?;
-    if !force && gog.iter().any(|(_, state)| state.journal.is_some()) {
-        return Err(FolderError::RemoveMidUpdate {
-            name: name.to_owned(),
+    if !force && let Some(journal) = gog.iter().find_map(|(_, state)| state.journal.as_ref()) {
+        let name = name.to_owned();
+        return Err(match journal.galaxy_install() {
+            Some(gog_id) => FolderError::RemoveMidInstall { name, gog_id },
+            None => FolderError::RemoveMidUpdate { name },
         }
         .into());
     }

@@ -211,8 +211,10 @@ fn print_table(rows: &[Row]) {
             status
                 .map(|status| status.track.as_str().to_owned())
                 .unwrap_or_default(),
+            // A Galaxy build reads by GOG's name for it, else by its id, as
+            // `wineo update --check` shows it. JSON keeps the id.
             status
-                .and_then(|status| status.installed.clone())
+                .and_then(|status| status.installed_name.clone().or(status.installed.clone()))
                 .unwrap_or_default(),
             status
                 .map(|status| update_label(status.state).to_owned())

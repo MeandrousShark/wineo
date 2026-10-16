@@ -2231,6 +2231,22 @@ mod gog {
     }
 
     #[test]
+    fn rm_of_a_galaxy_install_names_the_install_command() {
+        let (f, folder) = setup(true);
+        let mut state = load(&f.paths, &folder);
+        let journal = state.journal.as_mut().unwrap();
+        journal.kind = JournalKind::Install;
+        journal.target.track = Track::Galaxy;
+        save(&f.paths, &state);
+        let error = remove(&f.paths, "rimworld", false).unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "rimworld's GOG install didn't finish. Finish it with wineo import gog --game 1094900565, or remove it anyway with --force."
+        );
+        assert!(f.paths.environment_config("rimworld").exists());
+    }
+
+    #[test]
     fn rm_mid_update_is_refused_without_force() {
         let (f, folder) = setup(true);
         let error = remove(&f.paths, "rimworld", false).unwrap_err();

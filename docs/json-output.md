@@ -175,7 +175,9 @@ argument errors keep their normal stderr output.
 game for. `state` is `not_installed`, `heroic` (installed by Heroic, not
 migrated yet), `imported` (migrated from Heroic), or `installed` (installed
 by wineo). Only an imported or installed game has `environment`,
-`track` (`installer` or `galaxy`), `version`, `update`, and `dlc`; the rest
+`track` (`installer` or `galaxy`), `version` (the installer version, or the
+build id on the Galaxy track, where the table shows GOG's name for it),
+`update`, and `dlc`; the rest
 have `null`, `false` for `applicable`, and an empty `dlc`. An imported game
 whose update check failed, or any game in a [portable folder](portable.md),
 where the check is skipped, has its `environment` but `null` for the rest.
@@ -204,15 +206,20 @@ game:
 }
 ```
 
-`installed` and `available` are `null` when the version isn't known.
-`unfinished` is `true` when an update or install was interrupted and
-`wineo update NAME` has to finish it before the game starts; `import gog
---list --json` has it too, `false` for games that aren't imported.
+`installed` and `available` are installer versions, or build ids on the
+Galaxy track (the table shows GOG's names for those builds), and `null`
+when they aren't known. `unfinished` is `true` when an update or install
+was interrupted and has to be finished before the game starts: with
+`wineo update NAME`, or for a Galaxy game's first install, by installing
+it again with `wineo import gog --game ID`. `import gog --list --json` has
+it too, `false` for games that aren't imported.
 
-In both, `update` is `available`, `none`, `galaxy` (an update on GOG that
-a later release applies), or `cant_compare`. `applicable` says whether this
-wineo can apply it, and `reason` says why not: `galaxy`, or a sentence
-when the versions can't be compared. A DLC's `state` is `none` (up to
+In both, `update` is `available`, `none`, `galaxy`, or `cant_compare`.
+`galaxy` means a Galaxy game GOG lists no generation 2 build of on its
+default branch, which wineo can't install; `wineo update NAME --reinstall --track installer`
+moves it to offline installers. `applicable` says whether this wineo can
+apply the update, Galaxy updates included, and `reason` says why not:
+`galaxy`, or a sentence when the versions can't be compared. A DLC's `state` is `none` (up to
 date), `available`, `unknown` (a migrated DLC whose version Heroic never
 recorded), `cant_compare`, `failed`, `unavailable`, or
 `not_installed` (owned and offered, but not installed yet: bought since, or

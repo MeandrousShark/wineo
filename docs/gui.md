@@ -123,17 +123,25 @@ isn't installed, like its card.
 
 A [GOG game](gog.md) shows an **Update** row in its panel: **Up to date**,
 **Update available**, **Update on GOG**, or **Can't compare**. Games with
-an update, native or Windows installer games, get an **Update available** badge on their poster and
-**Update** in the Actions and right-click menus. **Update** opens a page with
-the same review as `wineo update NAME` (versions, download size, and the
-unpacked estimate), then download, verify, unpack, and publish progress,
+an update, on either track, get an **Update available** badge on their
+poster and **Update** in the Actions and right-click menus. **Update**
+opens a page with the same review as `wineo update NAME`, then progress,
 then what changed and the lists of your files it moved aside, kept, or
-overwrote. A Windows game's update shows each installer as it runs, and if
-one quits before installing anything, the page asks once whether to open
-its own setup window. Planning and updating both count as work for Back,
+overwrote. On the installer track the review shows versions, the download
+size, and the unpacked estimate, and progress goes through download,
+verify, unpack, and publish; a Windows game's update shows each installer
+as it runs, and if one quits before installing anything, the page asks
+once whether to open its own setup window. A Galaxy game's review shows
+its track, versions, support files, setup steps, and download size, with
+the notes `wineo update` prints, and progress goes through downloading
+and each setup step, after checking every file when it finishes a repair
+or reinstall the CLI started. A warning in the review, like a build
+GOG no longer lists, is accepted by pressing **Update**. Planning and updating both count as work for Back,
 Cancel, and closing the window. A game whose last update was interrupted has a **Finish
 update** badge and button in place of Play (**Finish install** for an
-interrupted install), and another environment running
+interrupted install), which finishes it on the update page, or for a
+Galaxy install on the install page; when something fails, the page says
+which button finishes it. Another environment running
 from its folder can't play and says which game to finish. Once after the
 app starts, when you're logged in to GOG and not in a portable folder, it
 checks your GOG games for updates in the background; a failure only goes to
@@ -474,11 +482,16 @@ already has it, otherwise GOG's box art, downloaded once and cached.
 
 Picking a game you own opens the install review: the environment it
 creates, the folder (with **Browse...**), the platform when GOG offers
-both, the language (the setting, or one you type; Enter checks it), the
-language it actually installs in, a runner and arch for Windows, the
-version, the DLC you own, the download size, and an estimate of the
-installed size. **Install** stays off until the review matches what you've
-typed. Then come download and install progress, with **Cancel** and
+both, the track (**Galaxy** or **Offline installer**) when a Windows game
+can install either way, the language (the setting, or one you type; Enter
+checks it), a runner and arch for Windows, the version, and the DLC you
+own. From offline installers it also shows the language it actually
+installs in, the download size, and an estimate of the installed size; on
+Galaxy, the support files, the setup steps, and the build's exact size.
+When GOG can't say whether it has a Galaxy build, both tracks are offered
+and the error shows, so **Offline installer** still works. **Install**
+stays off until the review matches what you've typed. Then come download
+and install progress, with **Cancel** and
 **Force stop**, then the result. A Windows game whose info file names no
 program offers a list of the programs it installed, the game's own folder
 first. Back from the result returns to the library with the game

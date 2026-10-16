@@ -1837,11 +1837,11 @@ fn windows(fx: &Fixture, track: Track) {
 }
 
 #[test]
-fn galaxy_games_refuse_saying_updates_come_later() {
+fn galaxy_games_are_refused_by_the_installer_only_plan() {
     let fx = Fixture::new();
     for (track, said) in [(
         Track::Galaxy,
-        "Updating Galaxy builds comes in a later release.",
+        "rimworld is on the Galaxy track, which galaxy::plan_update updates.",
     )] {
         windows(&fx, track);
         let before = fx.state();
@@ -1862,7 +1862,7 @@ fn galaxy_games_refuse_saying_updates_come_later() {
 }
 
 #[test]
-fn a_journal_from_a_later_release_is_left_alone() {
+fn a_repair_journal_is_refused_by_the_installer_only_plan() {
     let fx = installed_v1();
     let mut state = fx.state();
     state.journal = Some(Journal {
@@ -1882,7 +1882,7 @@ fn a_journal_from_a_later_release_is_left_alone() {
     let error = fx.plan_with(true, Options::default()).unwrap_err();
     assert_eq!(
         error.to_string(),
-        "rimworld has an unfinished GOG repair, and finishing it comes in a later release."
+        "rimworld has an unfinished GOG repair, which galaxy::plan_update finishes."
     );
     assert_eq!(fx.state(), state);
 }

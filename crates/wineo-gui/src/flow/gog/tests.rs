@@ -1708,3 +1708,15 @@ fn heroic_games_not_yet_migrated_take_the_cover_by_their_numeric_id() {
         }]
     );
 }
+
+#[test]
+fn a_reclaimed_folders_journal_decides_which_finish_action_is_named() {
+    assert_eq!(
+        interrupted_line(true, "papers-please"),
+        "Its install was interrupted. Use Finish install on papers-please in the library."
+    );
+    assert_eq!(
+        interrupted_line(false, "rimworld"),
+        "Its last update was interrupted. Use Finish update on rimworld in the library."
+    );
+}

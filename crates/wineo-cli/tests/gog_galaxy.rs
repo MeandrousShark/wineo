@@ -304,6 +304,28 @@ fn check_shows_version_names_and_json_keeps_build_ids() {
 }
 
 #[test]
+fn list_shows_version_names_and_json_keeps_build_ids() {
+    let (f, api) = installed();
+    let out = gog(&f, &api, &["import", "gog", "--list"]);
+    assert_success(&out);
+    let text = stdout(&out);
+    let row = text.lines().find(|line| line.contains(NAME)).unwrap();
+    assert!(row.contains("1.2.76"), "{text}");
+    assert!(!row.contains("100"), "{text}");
+
+    let out = gog(&f, &api, &["import", "gog", "--list", "--json"]);
+    assert_success(&out);
+    let games = json_of(&out);
+    let game = games["games"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|game| game["environment"] == NAME)
+        .unwrap();
+    assert_eq!(game["version"], "100", "{games}");
+}
+
+#[test]
 fn an_update_reviews_then_reports_with_the_files_it_moved_aside() {
     let (f, api) = installed();
     newer(&api);
@@ -918,6 +940,43 @@ fn an_interrupted_galaxy_install_is_finished_by_installing_again() {
     );
     assert_eq!(read(&f, "Papers.exe"), "MZ 1.2.76");
     assert!(state(&f).journal.is_none());
+}
+
+#[test]
+fn start_and_rm_name_the_install_command_for_an_interrupted_galaxy_install() {
+    let (f, api) = world();
+    let mut pty = paused(
+        &f,
+        &api,
+        &[
+            "import",
+            "gog",
+            "--game",
+            "1207658924",
+            "--runner",
+            "galaxy",
+            "--yes",
+        ],
+    );
+    pty.expect("Downloading: ");
+    interrupt(&pty);
+    let (status, output) = pty.finish();
+    assert_eq!(status.code(), Some(130), "{output}");
+    assert!(state(&f).journal.is_some());
+
+    let finish = "GOG install didn't finish. Finish it with wineo import gog --game 1207658924";
+    let out = f.run(&["start", NAME]);
+    assert_eq!(out.status.code(), Some(1));
+    let err = stderr(&out);
+    assert!(err.contains(finish), "{err}");
+    assert!(!err.contains("wineo update"), "{err}");
+
+    let out = f.run(&["rm", NAME]);
+    assert_eq!(out.status.code(), Some(1));
+    let err = stderr(&out);
+    assert!(err.contains(finish), "{err}");
+    assert!(!err.contains("wineo update"), "{err}");
+    assert!(err.contains("or remove it anyway with --force."), "{err}");
 }
 
 /// `wineo` with its run state in a folder whose name setup's batch files

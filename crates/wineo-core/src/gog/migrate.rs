@@ -123,7 +123,7 @@ fn changed(what: Changed) -> anyhow::Error {
 #[allow(clippy::large_enum_variant)]
 pub enum Plan {
     /// Heroic hasn't installed it, so there's nothing to migrate. Installing
-    /// comes in a later release.
+    /// it is `wineo import gog --game`.
     NotInstalled {
         gog_id: String,
     },
