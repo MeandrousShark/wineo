@@ -218,9 +218,12 @@ pub(crate) fn check_with(
         .map_err(|error| format!("{error:#}"))
 }
 
-/// Checks `name` again once an update changed it. Logged out, or in a
-/// portable session, there is nothing to check.
-pub(crate) fn recheck_task(paths: Paths, name: String) -> iced::Task<crate::Message> {
+/// Checks `name` again once an update changed it, dropping any check of it
+/// still on its way. Logged out, or in a portable session, there is nothing
+/// to check.
+pub(crate) fn recheck(app: &mut crate::App, name: String) -> iced::Task<crate::Message> {
+    let generation = supersede(app, &name);
+    let paths = app.paths.clone();
     if paths.portable_root().is_some() {
         return iced::Task::none();
     }
@@ -231,7 +234,7 @@ pub(crate) fn recheck_task(paths: Paths, name: String) -> iced::Task<crate::Mess
             let client = wineo_core::gog::client_from_env().map_err(|error| error.to_string())?;
             recheck_with(&paths, &keyring, client, &checked)
         },
-        move |result| crate::Message::GogRechecked(name, result),
+        move |result| crate::Message::GogRechecked(name, generation, result),
     )
 }
 
@@ -252,12 +255,25 @@ pub(crate) fn recheck_with(
         .map_err(|error| format!("{error:#}"))
 }
 
-/// Lands a check of one game, like the background check does.
+/// Marks what is known of `name` as newer than any check of it on its way,
+/// returning the generation a new check would carry.
+pub(crate) fn supersede(app: &mut crate::App, name: &str) -> u64 {
+    let generation = app.gog_rechecks.entry(name.to_owned()).or_default();
+    *generation = generation.wrapping_add(1);
+    *generation
+}
+
+/// Lands a check of one game, like the background check does, unless
+/// something newer about the game arrived since it was asked for.
 pub(crate) fn rechecked(
     app: &mut crate::App,
     name: String,
+    generation: u64,
     result: Result<Option<Box<Status>>, String>,
 ) {
+    if app.gog_rechecks.get(&name) != Some(&generation) {
+        return;
+    }
     match result {
         Ok(Some(status)) => {
             app.gog_versions.remove(&name);

@@ -70,10 +70,7 @@ impl App {
             Some(name) => {
                 self.gog_updates.remove(&name);
                 self.gog_versions.remove(&name);
-                Task::batch([
-                    task,
-                    crate::gog_library::recheck_task(self.paths.clone(), name),
-                ])
+                Task::batch([task, crate::gog_library::recheck(self, name)])
             }
             None => task,
         };

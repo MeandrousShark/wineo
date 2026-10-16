@@ -728,3 +728,25 @@ fn a_refused_password_on_a_followed_private_branch_fails_and_is_removed() {
     );
     assert!(!password_file(&world).exists());
 }
+
+#[test]
+fn finishing_the_update_page_checks_the_game_again() {
+    let mut app = crate::tests::app();
+    let _ = app.open_gog_update(NAME.to_owned(), None);
+    assert!(app.flow.is_some());
+    let before = app.gog_rechecks.get(NAME).copied();
+    let generation = match &app.flow {
+        Some(crate::flow::Page::GogUpdate(page)) => page.generation,
+        _ => panic!("expected the update page"),
+    };
+    let _ = app.update(crate::Message::Flow(
+        app.flow_generation,
+        crate::flow::Event::UpdateMessage(Box::new(Event::Planned(
+            generation,
+            Ok(Planned::UpToDate),
+        ))),
+    ));
+    // Finishing scheduled a check, which is now the only one that counts.
+    let after = app.gog_rechecks.get(NAME).copied();
+    assert!(after.is_some() && after != before);
+}

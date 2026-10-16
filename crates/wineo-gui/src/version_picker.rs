@@ -432,6 +432,13 @@ pub(crate) fn update(app: &mut App, event: Event) -> Task<Message> {
             Task::none()
         }
         Event::Loaded(generation, entered, result) => {
+            // A listing is newer than any check of the game still on its way.
+            if let (Some(picker), Ok(Loaded::Galaxy(_))) = (app.version.as_ref(), &result)
+                && picker.generation == generation
+            {
+                let name = picker.name.clone();
+                crate::gog_library::supersede(app, &name);
+            }
             let Some(picker) = app
                 .version
                 .as_mut()

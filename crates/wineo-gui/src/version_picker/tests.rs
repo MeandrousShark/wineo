@@ -549,7 +549,49 @@ fn a_finished_change_is_checked_again_for_the_panel() {
     app.cards = vec![game_card(false)];
     app.gog_versions
         .insert(NAME.to_owned(), "stale (pinned)".to_owned());
-    let _ = app.update(Message::GogRechecked(NAME.to_owned(), Ok(Some(status))));
+    let generation = crate::gog_library::supersede(&mut app, NAME);
+    let _ = app.update(Message::GogRechecked(
+        NAME.to_owned(),
+        generation,
+        Ok(Some(status)),
+    ));
     assert_eq!(app.version_value(NAME), "1.2.76");
     assert!(app.gog_updates.contains_key(NAME));
+}
+
+#[test]
+fn a_recheck_answering_after_something_newer_is_dropped() {
+    let world = world();
+    let before =
+        crate::gog_library::recheck_with(&world.paths, &world.keyring, world.server.client(), NAME)
+            .unwrap()
+            .unwrap();
+    pin(&world, "100");
+
+    // A check asked for before the pin answers after a listing of it.
+    let mut app = opened(false);
+    let late = crate::gog_library::supersede(&mut app, NAME);
+    let generation = app.version_generation;
+    let _ = app.update(Message::Version(Event::Loaded(
+        generation,
+        None,
+        Ok(Loaded::Galaxy(Box::new(listed(&world, None)))),
+    )));
+    let _ = app.update(Message::GogRechecked(
+        NAME.to_owned(),
+        late,
+        Ok(Some(before.clone())),
+    ));
+    assert!(!app.gog_updates.contains_key(NAME));
+    assert_eq!(app.version_value(NAME), "1.2.76 (pinned)");
+
+    // Nor after a newer check of its own.
+    let older = crate::gog_library::supersede(&mut app, NAME);
+    let _ = crate::gog_library::recheck(&mut app, NAME.to_owned());
+    let _ = app.update(Message::GogRechecked(
+        NAME.to_owned(),
+        older,
+        Ok(Some(before)),
+    ));
+    assert!(!app.gog_updates.contains_key(NAME));
 }
