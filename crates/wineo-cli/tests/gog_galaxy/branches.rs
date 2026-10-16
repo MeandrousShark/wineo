@@ -1105,3 +1105,37 @@ fn all_updates_a_pinned_game_that_has_dlc_to_install_and_skips_one_with_only_a_n
         format!("{}\n", pinned_message("100", "1.2.76"))
     );
 }
+
+#[test]
+fn a_move_off_galaxy_planned_before_a_pin_is_refused_and_keeps_the_pin() {
+    let (f, api) = installed();
+    f.inno_runner();
+    installer_package(&api, "1.5", "installer");
+    let mut command = f.gog_command(&api);
+    command.env("DISPLAY", ":0").args([
+        "update",
+        NAME,
+        "--reinstall",
+        "--track",
+        "installer",
+        "--refresh",
+    ]);
+    let mut pty = Pty::spawn(command);
+    pty.expect("Reinstall it?");
+    // Meanwhile another command pins the build installed, which only
+    // touches the record the move would delete.
+    assert_success(&update(&f, &api, &["--build", "100", "--yes"]));
+    pty.send("y");
+    let (status, output) = pty.finish();
+    assert_eq!(status.code(), Some(1), "{output}");
+    assert!(
+        output.contains(&format!(
+            "{NAME}'s GOG game changed while updating; run wineo update {NAME} again."
+        )),
+        "{output}"
+    );
+    assert_eq!(state(&f).committed.unwrap().track, Track::Galaxy);
+    assert_eq!(record(&f).follow.pinned.as_deref(), Some("100"));
+    assert_eq!(read(&f, "Papers.exe"), "MZ 1.2.76");
+    assert!(state(&f).journal.is_none());
+}

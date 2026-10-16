@@ -28,6 +28,7 @@ use std::path::{Path, PathBuf};
 use anyhow::Result;
 use wineo_gog::{DownloadCache, Pin, Verification};
 
+use super::galaxy::record::{Follow, follow_now};
 use super::install::dlc_can_fail;
 use super::publish::{self, PublishProgress, Publisher, Report, SavedAside};
 use super::windows::{self, SetupError};
@@ -181,15 +182,19 @@ struct Seen {
     gog_id: Option<u64>,
     committed: Option<Committed>,
     journal: Option<Journal>,
+    /// What the Galaxy record said the game follows. A move off Galaxy
+    /// deletes the record, so it must not take a newer pin with it.
+    follow: Follow,
 }
 
 impl Seen {
-    fn of(state: &FolderState) -> Self {
+    fn of(state: &FolderState, follow: Follow) -> Self {
         Self {
             owner: state.owner.clone(),
             gog_id: state.gog_id(),
             committed: state.committed.clone(),
             journal: state.journal.clone(),
+            follow,
         }
     }
 }
@@ -399,7 +404,7 @@ pub fn plan(
     options.check()?;
     Environment::ensure_exists(paths, name)?;
     let state = super::game_of(paths, name)?;
-    let seen = Seen::of(&state);
+    let seen = Seen::of(&state, super::galaxy::follow_of(paths, &state.folder));
     let folder = state.folder.clone();
     // Read once for the review and for every message that names a DLC.
     let names = names::product_names(&folder);
@@ -1079,7 +1084,7 @@ fn run(
         owner: None,
         ..seen.clone()
     };
-    if unowned(&Seen::of(&state)) != unowned(&pending.seen) {
+    if unowned(&Seen::of(&state, follow_now(&lock)?)) != unowned(&pending.seen) {
         return Err(changed().into());
     }
     let claimed = pending.seen.owner.is_none();
@@ -1194,7 +1199,7 @@ fn run_windows(
         owner: None,
         ..seen.clone()
     };
-    if unowned(&Seen::of(&state)) != unowned(&pending.seen) {
+    if unowned(&Seen::of(&state, follow_now(&lock)?)) != unowned(&pending.seen) {
         return Err(changed().into());
     }
     let claimed = pending.seen.owner.is_none();
