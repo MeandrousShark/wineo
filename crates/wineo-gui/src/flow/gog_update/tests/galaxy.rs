@@ -699,6 +699,38 @@ fn a_repair_from_the_picker_reviews_as_a_repair() {
 }
 
 #[test]
+fn a_move_to_offline_installers_reviews_the_track_change() {
+    let world = world();
+    world.offer_installer("1.5");
+    let Ok(Planned::Update(pending)) = plan_from_page(
+        &world,
+        Options {
+            reinstall: true,
+            track: Some(Track::Installer),
+            ..Options::default()
+        },
+    ) else {
+        panic!("expected a move to offline installers");
+    };
+    let ready = Ready::Installer(pending);
+    assert_eq!(ready.action(), "Reinstall");
+    let rows = ready_rows(&world.paths, &ready);
+    assert_eq!(rows[0].0, "Folder");
+    assert_eq!(
+        rows[1],
+        ("Track".to_owned(), "Galaxy -> Offline installer".to_owned())
+    );
+    let mut page = Page::new(world.paths.clone(), NAME.to_owned()).0;
+    let generation = page.generation;
+    let Ready::Installer(pending) = ready else {
+        unreachable!()
+    };
+    let _ = page.update(Event::Planned(generation, Ok(Planned::Update(pending))));
+    assert_eq!(page.step, Step::Review);
+    fits(&page);
+}
+
+#[test]
 fn a_move_to_offline_installers_plans_on_the_installer_track() {
     let world = world();
     let error = plan_from_page(
@@ -733,7 +765,7 @@ fn a_move_to_galaxy_reviews_the_track_change() {
     assert_eq!(ready.button(), "Reinstall");
     assert!(
         ready_rows(&world.paths, &ready)
-            .contains(&("Track".to_owned(), "installer -> Galaxy".to_owned()))
+            .contains(&("Track".to_owned(), "Offline installer -> Galaxy".to_owned()))
     );
 }
 

@@ -44,8 +44,9 @@ pub enum Label {
     Download,
 }
 
-/// Who a review is worded for. Only the pin row differs: the CLI's says
-/// which flag undoes it, which means nothing in the app.
+/// Who a review is worded for. The CLI's pin row says which flag undoes
+/// it, which means nothing in the app, and the app names the installer
+/// track as its Track picker does.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Wording {
     Cli,
@@ -201,10 +202,11 @@ impl Plan {
         wording: Wording,
     ) -> Vec<(Label, String)> {
         let mut rows = vec![(Label::Folder, show_path(self.folder()))];
-        let track = if self.moves_from().is_some() {
-            "installer -> Galaxy"
-        } else {
-            "Galaxy"
+        let track = match (self.moves_from().is_some(), wording) {
+            (true, Wording::Cli) => "installer -> Galaxy",
+            // The app names the installer track as its Track picker does.
+            (true, Wording::App) => "Offline installer -> Galaxy",
+            (false, _) => "Galaxy",
         };
         rows.push((Label::Track, track.to_owned()));
         rows.extend(follow_rows(Some(self.from()), self.to(), wording));

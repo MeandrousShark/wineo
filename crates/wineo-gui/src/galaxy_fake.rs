@@ -72,6 +72,8 @@ struct Switches {
     fail_manifests: AtomicBool,
     /// Builds left out of the lists, as GOG drops old ones.
     hidden: Mutex<HashSet<String>>,
+    /// The version of a Windows installer GOG's details offer, if any.
+    installer: Mutex<Option<String>>,
 }
 
 pub(crate) struct Galaxy {
@@ -151,6 +153,12 @@ impl Galaxy {
         private.branch = Some(branch.to_owned());
         self.content.add_build(private);
         self.content.set_branch_password(branch, password);
+    }
+
+    /// Offers an English Windows installer at `version` in the game's
+    /// details, enough to plan a move to offline installers.
+    pub(crate) fn offer_installer(&self, version: &str) {
+        *self.switches.installer.lock().unwrap() = Some(version.to_owned());
     }
 
     /// Leaves `build` out of the build lists.
@@ -263,6 +271,22 @@ exit 0
     }
 }
 
+/// The installers the details offer, as `offer_installer` set them.
+fn installers(switches: &Switches) -> Value {
+    let Some(version) = switches.installer.lock().unwrap().clone() else {
+        return json!([]);
+    };
+    json!([{
+        "id": format!("installer_windows_en_{GAME}"),
+        "os": "windows",
+        "language": "en",
+        "language_full": "English",
+        "version": version,
+        "total_size": 4096,
+        "files": [{"id": "en1installer0", "size": 4096, "downlink": "/downlink/setup.exe"}],
+    }])
+}
+
 fn answer(content: &ContentSystem, switches: &Switches, request: &fake::Request) -> Reply {
     if ContentSystem::cdn_of(request).is_some() {
         return content
@@ -301,7 +325,7 @@ fn answer(content: &ContentSystem, switches: &Switches, request: &fake::Request)
             "id": GAME,
             "title": "Papers, Please",
             "content_system_compatibility": {"windows": true, "osx": false, "linux": false},
-            "downloads": {"installers": [], "patches": []},
+            "downloads": {"installers": installers(switches), "patches": []},
             "dlcs": {"products": []},
             "expanded_dlcs": [],
         });

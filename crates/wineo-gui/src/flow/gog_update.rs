@@ -1061,7 +1061,7 @@ fn setup_failure(error: &anyhow::Error, pending: &Pending) -> Option<Failure> {
 
 /// The review's rows, the ones `wineo update NAME` prints.
 pub(crate) fn review_rows(pending: &Pending) -> Vec<(String, String)> {
-    pending
+    let mut rows: Vec<(String, String)> = pending
         .review_rows(|path| path.display().to_string())
         .into_iter()
         .map(|(label, value)| {
@@ -1074,7 +1074,24 @@ pub(crate) fn review_rows(pending: &Pending) -> Vec<(String, String)> {
             };
             (label, value)
         })
-        .collect()
+        .collect();
+    // A game moving off Galaxy says so, right after the folder, as the CLI's
+    // review does.
+    if let Some(from) = pending.moves_from() {
+        let to = pending.target().track;
+        rows.insert(
+            1,
+            (
+                "Track".to_owned(),
+                format!(
+                    "{} -> {}",
+                    super::gog_install::track_name(from),
+                    super::gog_install::track_name(to)
+                ),
+            ),
+        );
+    }
+    rows
 }
 
 /// The review's rows on either track.

@@ -200,7 +200,8 @@ impl fmt::Display for TrackShown {
     }
 }
 
-fn track_name(track: Track) -> &'static str {
+/// A track as the app names it.
+pub(crate) fn track_name(track: Track) -> &'static str {
     match track {
         Track::Galaxy => "Galaxy",
         Track::Installer => "Offline installer",
