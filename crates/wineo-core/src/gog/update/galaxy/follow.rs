@@ -71,38 +71,53 @@ pub(super) fn latest_on<'a>(
     })
 }
 
-/// The generation 2 build `spec` names: an id, else a version name that
-/// only one build has. One build listed on two branches counts once, on
-/// `prefer` where it is.
+fn listed(builds: &Builds) -> impl Iterator<Item = &Build> {
+    builds
+        .items
+        .iter()
+        .filter(|build| build.generation == Some(2) && build.link.is_some())
+}
+
+/// The generation 2 build with id `id`, as listed on `prefer` where it is.
+/// Only an id names a build here: what a record or journal holds is never
+/// read as a version name.
+pub(super) fn by_id<'a>(builds: &'a Builds, id: &str, prefer: Option<&str>) -> Option<&'a Build> {
+    let found: Vec<&Build> = listed(builds)
+        .filter(|build| build.build_id == id)
+        .collect();
+    found
+        .iter()
+        .find(|build| build.branch.as_deref() == prefer)
+        .or(found.first())
+        .copied()
+}
+
+/// The generation 2 build `spec`, typed after `--build`, names: an id, else
+/// a version name that only one build has. One build listed on two branches
+/// counts once, on `prefer` where it is.
 fn named<'a>(
     builds: &'a Builds,
     spec: &str,
     prefer: Option<&str>,
     who: &Who,
 ) -> Result<&'a Build, GalaxyError> {
-    let listed = || {
-        builds
-            .items
-            .iter()
-            .filter(|build| build.generation == Some(2) && build.link.is_some())
-    };
-    let mut found: Vec<&Build> = listed().filter(|build| build.build_id == spec).collect();
-    if found.is_empty() {
-        found = listed()
-            .filter(|build| build.version_name.as_deref() == Some(spec))
-            .collect();
-        let mut builds: Vec<String> = Vec::new();
-        for build in &found {
-            if !builds.contains(&build.build_id) {
-                builds.push(build.build_id.clone());
-            }
+    if let Some(build) = by_id(builds, spec, prefer) {
+        return Ok(build);
+    }
+    let found: Vec<&Build> = listed(builds)
+        .filter(|build| build.version_name.as_deref() == Some(spec))
+        .collect();
+    let mut ids: Vec<String> = Vec::new();
+    for build in &found {
+        if !ids.contains(&build.build_id) {
+            ids.push(build.build_id.clone());
         }
-        if builds.len() > 1 {
-            return Err(GalaxyError::AmbiguousBuild {
-                version: spec.to_owned(),
-                builds,
-            });
-        }
+    }
+    if ids.len() > 1 {
+        return Err(GalaxyError::AmbiguousBuild {
+            version: spec.to_owned(),
+            builds: ids,
+        });
     }
     found
         .iter()
@@ -117,19 +132,19 @@ fn named<'a>(
 }
 
 /// The build `choice` goes to for a game that follows `from`, and the
-/// follow it leaves. `reinstall` says a pinned game rebuilds the build it is
-/// pinned to rather than leaving it alone.
+/// follow it leaves. `hold` says a pinned game goes to the build it is
+/// pinned to rather than the latest of its branch.
 pub(super) fn pick<'a>(
     builds: &'a Builds,
     choice: &Choice,
     from: &Follow,
-    reinstall: bool,
+    hold: bool,
     who: &Who,
 ) -> Result<Picked<'a>, GalaxyError> {
     match choice {
         Choice::Keep => {
-            if let (true, Some(pinned)) = (reinstall, &from.pinned) {
-                let build = named(builds, pinned, from.branch.as_deref(), who).map_err(|_| {
+            if let (true, Some(pinned)) = (hold, &from.pinned) {
+                let build = by_id(builds, pinned, from.branch.as_deref()).ok_or_else(|| {
                     GalaxyError::PinGone {
                         title: who.title.to_owned(),
                         build: pinned.clone(),
@@ -391,6 +406,33 @@ mod tests {
             error.to_string(),
             "GOG no longer lists build 77 of Game, which game is pinned to. Run wineo update game --latest to follow its branch again."
         );
+    }
+
+    #[test]
+    fn a_stored_pin_is_an_id_and_never_a_version_name() {
+        // Build 100 is gone, and another build is called 100.
+        let builds = Builds {
+            items: vec![build("7", "100", None, 2)],
+            has_private_branches: false,
+        };
+        let pinned = Follow {
+            branch: None,
+            pinned: Some("100".to_owned()),
+        };
+        let error = pick(&builds, &Choice::Keep, &pinned, true, &who())
+            .err()
+            .unwrap();
+        assert!(matches!(error, GalaxyError::PinGone { .. }), "{error}");
+        // Typed after --build, the same words do name that build.
+        let typed = pick(
+            &builds,
+            &Choice::Build("100".to_owned()),
+            &Follow::default(),
+            false,
+            &who(),
+        )
+        .unwrap();
+        assert_eq!(typed.build.build_id, "7");
     }
 
     #[test]
