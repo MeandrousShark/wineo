@@ -1323,7 +1323,8 @@ Use a throwaway games folder so nothing lands in `~/Games`: `wineo set
 --global defaults.games_root=~/wineo-0052-test` (unset it afterwards with
 `wineo set --global --unset defaults.games_root`). Pick a small Windows
 game you own that isn't installed and that GOG offers both as Galaxy
-builds and as an offline installer (SMALL below), and use Papers, Please
+builds and as an offline installer (SMALL below), a second one like it
+for the app (SMALL2), and use Papers, Please
 (it has two legacy branches) and The Witcher (it has private branches)
 where named. Log in first: `wineo import gog --login`.
 
@@ -1363,7 +1364,7 @@ where named. Log in first: `wineo import gog --login`.
    the-witcher --builds` then lists the branch's builds marked `private`,
    and `wineo import gog --logout` removes the password (log in again
    afterwards).
-9. In the app, Import from GOG: SMALL's review shows a **Track** picker
+9. In the app, Import from GOG: SMALL2's review shows a **Track** picker
    with **Galaxy** and **Offline installer**. Installing on Galaxy shows
    its download and setup progress.
 10. In the app, Papers, Please's panel shows a **Version** row. **Change**

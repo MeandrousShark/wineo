@@ -473,7 +473,9 @@ and drops the pin.
 
 Branch flags exclude each other and `--repair`, need a Galaxy game (`Only
 Galaxy games have branches. Move it with --reinstall --track galaxy.`),
-and are refused while an update is unfinished, until it's finished. A
+and a change of branch or build is refused while an update is
+unfinished, until it's finished. `--branch` naming the branch the update
+already follows is allowed then, to enter its password again. A
 branch GOG doesn't list is refused with a pointer to `--builds`.
 
 ### Private branches

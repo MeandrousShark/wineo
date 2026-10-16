@@ -278,11 +278,11 @@ Galaxy game:
 ```
 
 `branch` and `pinned` say what the game follows, as above, and
-`installed` is its base game's build id. `private_branches` is `true`
+`installed` is its base game's build id, or `null` when it isn't known. `private_branches` is `true`
 when GOG says the game has branches only a password lists. `builds` has
 the default branch first (`branch` is `null`), then the others, each
 newest first. `version` is GOG's name for the build, or `null`;
-`published` is GOG's timestamp as given; `latest` marks the build an
+`published` is GOG's timestamp as given, or `null` when GOG gives none; `latest` marks the build an
 update on that branch goes to; and `private` marks a build listed with a
 saved password. A game on the installer track has no builds to list: it
 exits 1 with a diagnostic on stderr and no JSON.
