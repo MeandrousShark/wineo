@@ -91,7 +91,7 @@ pub struct Pending {
     pub base: Option<Base>,
     /// The follow the operation commits with its files, so an interrupted
     /// branch or pin change is finished by the resume. None when the
-    /// operation doesn't change it.
+    /// operation doesn't change it (an install: leaves the default).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub follow: Option<Follow>,
 }

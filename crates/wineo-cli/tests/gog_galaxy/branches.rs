@@ -977,3 +977,60 @@ fn a_change_of_pin_asks_before_it_writes() {
     }
     assert_eq!(record(&f).follow.pinned.as_deref(), Some("100"));
 }
+
+#[test]
+fn an_install_on_a_branch_that_stopped_finishes_on_it() {
+    let (f, api) = world();
+    beta(&api, "400", "1.3.0-beta");
+    let mut pty = paused(
+        &f,
+        &api,
+        &[
+            "import",
+            "gog",
+            "--game",
+            "1207658924",
+            "--runner",
+            "galaxy",
+            "--branch",
+            "beta",
+            "--yes",
+        ],
+    );
+    pty.expect("Downloading: ");
+    interrupt(&pty);
+    let (status, output) = pty.finish();
+    assert_eq!(status.code(), Some(130), "{output}");
+    assert_eq!(record(&f).follow, Default::default());
+
+    // Finishing carries on as it began, so a branch can't be asked for again.
+    let out = gog(
+        &f,
+        &api,
+        &[
+            "import",
+            "gog",
+            "--game",
+            "1207658924",
+            "--branch",
+            "beta",
+            "--yes",
+        ],
+    );
+    assert_eq!(out.status.code(), Some(2), "{}", stderr(&out));
+    assert!(
+        stderr(&out).contains("Leave out --branch."),
+        "{}",
+        stderr(&out)
+    );
+
+    let out = gog(
+        &f,
+        &api,
+        &["import", "gog", "--game", "1207658924", "--yes"],
+    );
+    assert_success(&out);
+    assert!(has_row(&stdout(&out), "branch", "beta"), "{}", stdout(&out));
+    assert_eq!(read(&f, "Papers.exe"), "MZ 1.3.0-beta");
+    assert_eq!(record(&f).follow.branch.as_deref(), Some("beta"));
+}

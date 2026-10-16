@@ -1849,7 +1849,9 @@ fn run(
         manifest: manifest.clone(),
         store: manifest.store_versions(),
         base: base.clone(),
-        follow: Some(plan.to.clone()),
+        // Only a change is recorded, so a record that changes nothing stays
+        // readable by a wineo without branches.
+        follow: (plan.to != plan.from).then(|| plan.to.clone()),
     });
     // Before the journal, so a journal always has its pending written.
     record::write(&lock, &sidecar)?;

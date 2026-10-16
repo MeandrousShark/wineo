@@ -1274,7 +1274,7 @@ fn run(
         manifest: manifest.clone(),
         store: manifest.store_versions(),
         base: None,
-        follow: Some(plan.follow.clone()),
+        follow: (!plan.follow.is_default()).then(|| plan.follow.clone()),
     });
     // Before the journal, so a journal always has its pending written.
     record::write(&lock, &sidecar)?;
