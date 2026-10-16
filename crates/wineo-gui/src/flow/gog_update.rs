@@ -360,6 +360,12 @@ impl Page {
         Some(self.plan_job(Some(password)))
     }
 
+    /// The generation its planning answers carry.
+    #[cfg(test)]
+    pub(crate) fn generation(&self) -> u64 {
+        self.generation
+    }
+
     /// What the page was opened to do.
     #[cfg(test)]
     pub(crate) fn options(&self) -> &Options {

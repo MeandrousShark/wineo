@@ -1010,8 +1010,8 @@ impl App {
                     self.hook_stop_identity = None;
                 }
                 let art = self.refresh_art(&cards);
-                self.merge(cards);
-                Task::batch([art, self.load_visible_art(), self.load_panel_art()])
+                let checks = self.merge_checked(cards);
+                Task::batch([art, checks, self.load_visible_art(), self.load_panel_art()])
             }
             Message::Loaded(Err(error)) => {
                 self.refreshing = false;

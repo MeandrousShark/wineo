@@ -400,6 +400,37 @@ impl std::ops::Index<&str> for GogState {
     }
 }
 
+/// The games whose own folder says something new about them between the
+/// library's `old` cards and `new` ones, and whether each can be checked
+/// with GOG. These are the facts a check could contradict: the game, its
+/// recorded version, pin, and branch, and an unfinished operation. A card
+/// seen for the first time has nothing to compare, so ordinary rescans ask
+/// GOG nothing.
+pub(crate) fn local_changes(
+    old: &[crate::library::Card],
+    new: &[crate::library::Card],
+) -> Vec<(String, bool)> {
+    let facts = |gog: Option<&GogCard>| {
+        gog.map(|gog| {
+            (
+                gog.gog_id.clone(),
+                gog.version.clone(),
+                gog.unfinished,
+                gog.install,
+            )
+        })
+    };
+    new.iter()
+        .filter_map(|card| {
+            let before = old.iter().find(|old| old.name == card.name)?;
+            (facts(before.gog.as_ref()) != facts(card.gog.as_ref())).then(|| {
+                let tracked = card.gog.as_ref().is_some_and(|gog| gog.gog_id.is_some());
+                (card.name.clone(), tracked)
+            })
+        })
+        .collect()
+}
+
 /// Checks `name` again once an update changed it. Logged out, or in a
 /// portable session, there is nothing to check.
 pub(crate) fn recheck(app: &mut crate::App, name: String) -> iced::Task<crate::Message> {

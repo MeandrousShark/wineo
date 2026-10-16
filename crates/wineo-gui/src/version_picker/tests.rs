@@ -791,3 +791,100 @@ fn a_listing_answering_after_a_newer_startup_check_only_shows_in_the_picker() {
     )));
     assert_eq!(app.version_value(&app.cards[0]), "1.2.76 (pinned)");
 }
+
+/// The game's card with `version` read from its folder.
+fn recorded(version: &str) -> Card {
+    let mut game = game_card(false);
+    game.gog.as_mut().unwrap().version = Some(version.to_owned());
+    game
+}
+
+#[test]
+fn a_rescan_with_newer_local_facts_refuses_an_older_check_and_checks_again() {
+    let mut app = app();
+    app.merge(vec![recorded("1.2.76")]);
+    // A check is asked, then the CLI pins the game and a rescan sees it.
+    let asked = app.gog_updates.asked(NAME);
+    assert_eq!(
+        crate::gog_library::local_changes(&app.cards, &[recorded("1.2.76 (pinned)")]),
+        [(NAME.to_owned(), true)]
+    );
+    app.merge(vec![recorded("1.2.76 (pinned)")]);
+    let rechecked = app.gog_updates.asked(NAME);
+    assert_ne!(rechecked, asked);
+    let _ = app.update(Message::GogRechecked(
+        NAME.to_owned(),
+        asked,
+        Ok(Some(Box::new(status(Track::Galaxy)))),
+    ));
+    assert!(app.gog_updates.status(NAME).is_none());
+    assert_eq!(app.version_value(&app.cards[0]), "1.2.76 (pinned)");
+    // The check the rescan scheduled is the one that counts.
+    let mut pinned = status(Track::Galaxy);
+    pinned.pinned = Some("100".to_owned());
+    let _ = app.update(Message::GogRechecked(
+        NAME.to_owned(),
+        rechecked,
+        Ok(Some(Box::new(pinned))),
+    ));
+    assert_eq!(app.version_value(&app.cards[0]), "1.2.76 (pinned)");
+    assert!(app.gog_updates.status(NAME).is_some());
+}
+
+#[test]
+fn after_an_app_update_the_reload_checks_again_and_the_panel_keeps_a_status() {
+    let mut app = app();
+    app.merge(vec![recorded("1.2.76")]);
+    // The update page finishes, which checks the game again.
+    let _ = app.open_gog_update(NAME.to_owned(), None);
+    let generation = match &app.flow {
+        Some(flow::Page::GogUpdate(page)) => page.generation(),
+        _ => panic!("expected the update page"),
+    };
+    let _ = app.update(Message::Flow(
+        app.flow_generation,
+        flow::Event::update_message_planned_up_to_date(generation),
+    ));
+    let from_update = app.gog_updates.asked(NAME);
+    // Its library reload sees the new version, and checks again itself.
+    app.merge(vec![recorded("1.4.11")]);
+    let from_reload = app.gog_updates.asked(NAME);
+    assert_ne!(from_reload, from_update);
+    let mut updated = status(Track::Galaxy);
+    updated.installed_name = Some("1.4.11".to_owned());
+    let _ = app.update(Message::GogRechecked(
+        NAME.to_owned(),
+        from_update,
+        Ok(Some(Box::new(updated.clone()))),
+    ));
+    assert!(app.gog_updates.status(NAME).is_none());
+    let _ = app.update(Message::GogRechecked(
+        NAME.to_owned(),
+        from_reload,
+        Ok(Some(Box::new(updated))),
+    ));
+    assert!(app.gog_updates.status(NAME).is_some());
+    assert_eq!(app.version_value(&app.cards[0]), "1.4.11");
+}
+
+#[test]
+fn unchanged_or_first_seen_cards_ask_gog_nothing() {
+    let mut app = app();
+    // First seen.
+    assert!(crate::gog_library::local_changes(&app.cards, &[recorded("1.2.76")]).is_empty());
+    app.merge(vec![recorded("1.2.76")]);
+    let asked = app.gog_updates.asked(NAME);
+    assert_eq!(asked, 0);
+    // Unchanged, though another field of the card did change.
+    let mut same = recorded("1.2.76");
+    same.playtime = "1 hour".to_owned();
+    assert!(crate::gog_library::local_changes(&app.cards, &[same.clone()]).is_empty());
+    app.merge(vec![same]);
+    assert_eq!(app.gog_updates.asked(NAME), asked);
+    // A game that isn't GOG's never counts.
+    let mut plain = card("notes", State::Inactive, 0);
+    plain.kind = Some(CardKind::Wine);
+    app.merge(vec![recorded("1.2.76"), plain.clone()]);
+    plain.playtime = "2 hours".to_owned();
+    assert!(crate::gog_library::local_changes(&app.cards, &[recorded("1.2.76"), plain]).is_empty());
+}

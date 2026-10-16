@@ -118,21 +118,21 @@ impl App {
                 iced::exit()
             };
         }
-        match result {
-            Ok(cards) => self.merge(cards),
+        let checks = match result {
+            Ok(cards) => self.merge_checked(cards),
             Err(error) => {
                 self.shown.show_library(Err(error.clone()));
                 self.error = Some(error);
                 return Task::none();
             }
-        }
+        };
         let (name, launch, settings) = match action {
-            flow::Action::Choose | flow::Action::SteamKey => return Task::none(),
+            flow::Action::Choose | flow::Action::SteamKey => return checks,
             flow::Action::Library { name, launch } => (name, launch, false),
             flow::Action::Settings { name, launch } => (Some(name), launch, true),
         };
         let Some(name) = name else {
-            return Task::none();
+            return checks;
         };
         self.search.clear();
         if self.selected.as_deref() != Some(&name) {
@@ -151,7 +151,7 @@ impl App {
             .and_then(|card| card.default_target.clone());
         self.panel_error = None;
         self.panel_note = None;
-        let mut tasks = vec![self.load_visible_art(), self.load_panel_art()];
+        let mut tasks = vec![checks, self.load_visible_art(), self.load_panel_art()];
         if launch {
             tasks.push(self.start_selected());
         }

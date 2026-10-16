@@ -71,6 +71,14 @@ pub(crate) enum Event {
     UpdateMessage(Box<gog_update::Event>),
 }
 
+impl Event {
+    /// The update page's planning answering that the game is up to date.
+    #[cfg(test)]
+    pub(crate) fn update_message_planned_up_to_date(generation: u64) -> Self {
+        gog_update::Event::Planned(generation, Ok(gog_update::Planned::UpToDate)).into()
+    }
+}
+
 /// Boxes each page's own event into the flow's, so `.map(Event::from)` replaces
 /// a closure per page.
 macro_rules! wrap_events {
