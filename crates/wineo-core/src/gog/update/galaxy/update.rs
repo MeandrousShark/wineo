@@ -638,10 +638,12 @@ pub fn plan(
     )?;
     let latest = picked.build.clone();
     let to = picked.to;
-    let link = latest.link.clone().ok_or_else(no_build)?;
+    if latest.link.is_none() {
+        return Err(no_build().into());
+    }
     let repository = session
         .client()
-        .repository(&link)
+        .repository(&latest)
         .with_context(|| format!("Couldn't get {title}'s build {}", latest.build_id))?;
 
     // Ownership is only asked for when GOG lists DLC the folder doesn't
@@ -824,13 +826,12 @@ pub(in crate::gog::update) fn selected_for_check(
     latest: &wineo_gog::Build,
     owned: Option<&HashSet<u64>>,
 ) -> Result<Vec<Product>> {
-    let link = latest
-        .link
-        .as_deref()
-        .ok_or_else(|| anyhow!("GOG lists no file list for build {}", latest.build_id))?;
+    if latest.link.is_none() {
+        bail!("GOG lists no file list for build {}", latest.build_id);
+    }
     let repository = session
         .client()
-        .repository(link)
+        .repository(latest)
         .with_context(|| format!("Couldn't get {title}'s build {}", latest.build_id))?;
     let bits = build::bits(Environment::load(paths, name)?.wine()?.arch);
     let version = latest
@@ -948,10 +949,12 @@ fn repair_manifest(
         .iter()
         .find(|listed| listed.build_id == build && listed.generation == Some(2))
         .ok_or_else(|| gone(build))?;
-    let link = listed.link.clone().ok_or_else(|| gone(build))?;
+    if listed.link.is_none() {
+        return Err(gone(build).into());
+    }
     let repository = session
         .client()
-        .repository(&link)
+        .repository(listed)
         .with_context(|| format!("Couldn't get {title}'s build {build}"))?;
     let mut chosen = Vec::new();
     for product in target
@@ -1043,12 +1046,12 @@ fn fetched_base(
     let repository = if latest.build_id == installed {
         latest
     } else {
-        let Some(link) = &listed.link else {
+        if listed.link.is_none() {
             return Ok(None);
-        };
+        }
         fetched = session
             .client()
-            .repository(link)
+            .repository(listed)
             .with_context(|| format!("Couldn't get {title}'s build {installed}"))?;
         &fetched
     };
@@ -1400,12 +1403,15 @@ fn resumed(
                     latest
                 }
             };
-            let link = chosen.link.clone().ok_or_else(|| GalaxyError::NoBuild {
-                title: title.clone(),
-            })?;
+            if chosen.link.is_none() {
+                return Err(GalaxyError::NoBuild {
+                    title: title.clone(),
+                }
+                .into());
+            }
             let repository = session
                 .client()
-                .repository(&link)
+                .repository(chosen)
                 .with_context(|| format!("Couldn't get {title}'s build {}", chosen.build_id))?;
             let mut chosen_products = Vec::new();
             for product in &mut target.products {

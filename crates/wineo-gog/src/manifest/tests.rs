@@ -17,6 +17,9 @@ fn chunk_json() -> Value {
     json!({"compressedMd5": MD5_A, "compressedSize": 19, "md5": MD5_B, "size": 11})
 }
 
+/// The build id `repository_json` carries.
+const LISTED: &str = "55898712513408984";
+
 fn repository_json() -> Value {
     json!({
         "baseProductId": "1455877361",
@@ -55,9 +58,21 @@ fn repository_json() -> Value {
     })
 }
 
+/// A build list entry for `link`.
+fn listed(link: &str) -> Build {
+    Build {
+        build_id: LISTED.to_owned(),
+        version_name: None,
+        branch: None,
+        date_published: None,
+        generation: Some(2),
+        link: Some(link.to_owned()),
+    }
+}
+
 #[test]
 fn a_repository_manifest_gives_depots_dependencies_and_products() {
-    let repository = parse_repository(&repository_json()).unwrap();
+    let repository = parse_repository(&repository_json(), LISTED).unwrap();
     assert_eq!(repository.build_id, "55898712513408984");
     assert_eq!(repository.base_product_id, 1455877361);
     assert_eq!(
@@ -98,12 +113,31 @@ fn a_repository_manifest_gives_depots_dependencies_and_products() {
 }
 
 #[test]
+fn a_repository_without_a_build_id_takes_the_listed_one() {
+    let mut json = repository_json();
+    json.as_object_mut().unwrap().remove("buildId");
+    let repository = parse_repository(&json, "42").unwrap();
+    assert_eq!(repository.build_id, "42");
+    assert_eq!(repository.base_product_id, 1455877361);
+}
+
+#[test]
+fn a_repository_for_another_build_is_refused() {
+    let json = repository_json();
+    assert_eq!(parse_repository(&json, "42"), None);
+    assert!(parse_repository(&json, LISTED).is_some());
+    let mut numeric = repository_json();
+    numeric["buildId"] = json!(55898712513408984_u64);
+    assert!(parse_repository(&numeric, LISTED).is_some());
+}
+
+#[test]
 fn a_repository_without_a_script_interpreter_or_dependencies() {
     let mut json = repository_json();
     let object = json.as_object_mut().unwrap();
     object.remove("scriptInterpreter");
     object.remove("dependencies");
-    let repository = parse_repository(&json).unwrap();
+    let repository = parse_repository(&json, LISTED).unwrap();
     assert!(!repository.script_interpreter);
     assert!(repository.dependencies.is_empty());
 }
@@ -122,14 +156,12 @@ fn a_repository_that_is_not_generation_2_or_is_missing_parts_is_refused() {
         |json| json["depots"][1]["productId"] = json!("x"),
         |json| json["dependencies"] = json!([""]),
         |json| json["products"][0]["productId"] = json!(null),
-        |json| {
-            json.as_object_mut().unwrap().remove("buildId");
-        },
+        |json| json["buildId"] = json!(null),
     ];
     for (index, breaking) in broken.iter().enumerate() {
         let mut json = repository_json();
         breaking(&mut json);
-        assert_eq!(parse_repository(&json), None, "{index}");
+        assert_eq!(parse_repository(&json, LISTED), None, "{index}");
     }
 }
 
@@ -462,6 +494,21 @@ fn a_private_branch_is_listed_only_with_its_password() {
 }
 
 #[test]
+fn a_served_manifest_without_a_build_id_reads_as_the_listed_build() {
+    let content = ContentSystem::new();
+    content.add_build(
+        FakeBuild::new(7, "100")
+            .depot(game_depot())
+            .without_build_id(),
+    );
+    let (_content, server) = serve(content);
+    let client = server.client();
+    let builds = client.windows_builds(7, Some("ACCESS"), None).unwrap();
+    let repository = client.repository(&builds.items[0]).unwrap();
+    assert_eq!(repository.build_id, "100");
+}
+
+#[test]
 fn a_build_s_manifests_are_fetched_from_the_cdn_without_a_token() {
     for plain in [false, true] {
         let content = ContentSystem::new();
@@ -477,9 +524,7 @@ fn a_build_s_manifests_are_fetched_from_the_cdn_without_a_token() {
         let (_content, server) = serve(content);
         let client = server.client();
         let builds = client.windows_builds(7, Some("ACCESS"), None).unwrap();
-        let repository = client
-            .repository(builds.items[0].link.as_deref().unwrap())
-            .unwrap();
+        let repository = client.repository(&builds.items[0]).unwrap();
         assert_eq!(repository.build_id, "100");
         assert_eq!(repository.dependencies, ["MSVC2017"]);
         assert_eq!(
@@ -614,7 +659,7 @@ fn manifest_failures_name_only_the_endpoint() {
         "{}/content-system/v2/meta/ab/cd/{MD5_A}?secret=1",
         server.base
     );
-    let missing_repository = client.repository(&link).unwrap_err();
+    let missing_repository = client.repository(&listed(&link)).unwrap_err();
     assert_eq!(missing_repository.endpoint(), Endpoint::Repository);
     let missing_dependencies = client.dependency_repository(Some("ACCESS")).unwrap_err();
     assert_eq!(missing_dependencies.endpoint(), Endpoint::Dependencies);
@@ -630,7 +675,16 @@ fn manifest_failures_name_only_the_endpoint() {
         let error = client.depot_manifest(bad).unwrap_err();
         assert_eq!(error.kind(), ErrorKind::Malformed);
     }
-    let error = client.repository("not a url").unwrap_err();
+    let error = client.repository(&listed("not a url")).unwrap_err();
+    assert_eq!(
+        (error.endpoint(), error.kind()),
+        (Endpoint::Repository, ErrorKind::Malformed)
+    );
+    let linkless = Build {
+        link: None,
+        ..listed("")
+    };
+    let error = client.repository(&linkless).unwrap_err();
     assert_eq!(
         (error.endpoint(), error.kind()),
         (Endpoint::Repository, ErrorKind::Malformed)
@@ -656,10 +710,10 @@ fn a_manifest_answer_that_is_not_a_manifest_is_malformed() {
 fn absurd_sizes_fail_the_manifest() {
     let mut depot = repository_json();
     depot["depots"][0]["size"] = json!(u64::MAX);
-    assert_eq!(parse_repository(&depot), None);
+    assert_eq!(parse_repository(&depot, LISTED), None);
     let mut depot = repository_json();
     depot["depots"][0]["compressedSize"] = json!(MAX_SIZE + 1);
-    assert_eq!(parse_repository(&depot), None);
+    assert_eq!(parse_repository(&depot, LISTED), None);
     for (name, size) in [
         ("compressedSize", u64::MAX),
         ("compressedSize", MAX_CHUNK + 1),
@@ -695,14 +749,14 @@ fn a_product_s_setup_program_must_be_a_safe_path() {
     ] {
         let mut json = repository_json();
         json["products"][1]["temp_executable"] = bad.clone();
-        assert_eq!(parse_repository(&json), None, "{bad}");
+        assert_eq!(parse_repository(&json, LISTED), None, "{bad}");
     }
     let mut json = repository_json();
     json["products"][1]["temp_arguments"] = json!(["/S"]);
-    assert_eq!(parse_repository(&json), None);
+    assert_eq!(parse_repository(&json, LISTED), None);
     let mut json = repository_json();
     json["products"][1]["temp_executable"] = json!("support\\setup.exe");
-    let repository = parse_repository(&json).unwrap();
+    let repository = parse_repository(&json, LISTED).unwrap();
     assert_eq!(
         repository.products[1].temp_executable.as_deref(),
         Some("support\\setup.exe")
@@ -794,7 +848,10 @@ fn a_cdn_refusal_is_a_status_never_a_login_problem() {
             client.depot_manifest(MD5_A).unwrap_err(),
             client.dependency_depot_manifest(MD5_A).unwrap_err(),
             client
-                .repository(&format!("{}/content-system/v2/meta/ab/cd/x", server.base))
+                .repository(&listed(&format!(
+                    "{}/content-system/v2/meta/ab/cd/x",
+                    server.base
+                )))
                 .unwrap_err(),
             client.dependency_manifest(&repository).unwrap_err(),
         ] {
@@ -919,7 +976,7 @@ fn every_optional_field_fails_when_malformed_and_defaults_only_when_null() {
     ]));
     let dependencies = dependency_manifest_json();
     type Parse = fn(&Value) -> bool;
-    let parse_repo: Parse = |json| parse_repository(json).is_some();
+    let parse_repo: Parse = |json| parse_repository(json, LISTED).is_some();
     let parse_depot: Parse = |json| parse_depot_manifest(json).is_some();
     let parse_dependencies: Parse = |json| parse_dependency_manifest(json).is_some();
     let cases: Vec<(&Value, Parse, &[&str], Value)> = vec![
