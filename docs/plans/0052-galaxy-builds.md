@@ -606,7 +606,9 @@ How the two files stay consistent:
   GOG returns for each, marks the installed one and a pin, and offers
   **Repair**. A private branch asks for its password in the panel.
 - The Version picker also offers **Move to offline installers** for a
-  Galaxy game (maintainer, 2026-10-15).
+  Galaxy game (maintainer, 2026-10-15), and **Move to Galaxy** for an
+  installer-track Windows game GOG has a Galaxy build of (maintainer,
+  2026-10-16).
 
 ### 1.0 contract impact
 
@@ -1160,6 +1162,42 @@ Step 12 (2026-10-16), with the maintainer's answers the same day:
   the "or refused" message; nothing reached the keyring or a fallback
   file. A game without private branches never asked.
 
+Step 13 (2026-10-16), with the maintainer's answers the same day:
+
+- **Placement** (answer A): the Version picker is a view inside the
+  panel, like Log. A **Version** row in the panel's details shows the
+  installed build's name, with `(pinned)` or the followed branch, and a
+  **Change** button; it and **Version...** in the Actions menu open the
+  view. **Back** and Esc return to the details. The view has a Branch
+  dropdown (saved private branches marked `(private)`), the branch's
+  builds as quiet rows with their date and marks, **Enter a private
+  branch** when GOG says the game has them, **Repair**, **Move to offline
+  installers**, and **Review** as the one accent action.
+- **What a row means** (answer A): the newest build on a branch follows
+  that branch (`Choice::Branch`, `DefaultBranch`, or `Latest`); an older
+  one pins it (`Choice::Build`). Pinning the newest build stays CLI-only.
+- **Every action ends on the update page's review:** a branch or build
+  choice, Repair (`repair`), and a track move (`reinstall` plus `track`).
+  A change that moves no files (`Planned::Follow`) gets its own review
+  with **Switch** in place of **Update** (answer 5), applied through
+  `switch::apply`.
+- **Move to Galaxy** (answer A): an installer-track Windows game's view
+  offers it when `galaxy::track_for` says GOG has a Galaxy build. Native
+  games get no Version row, since Galaxy has no Linux builds.
+- **When the row shows** (answer A): for every GOG Windows game, with the
+  track learned from a listing loaded when the view opens, not only from
+  the startup check. Logged out, a portable folder, and an unfinished
+  operation open the view and say why; an unfinished operation keeps
+  **Finish update**.
+- **Private branches in the app** (answer A): **Enter a private branch**
+  asks for the branch's name and its password (hidden), and lists it
+  through `listing::list` with the entered password; a miss says `GOG
+  lists no branch NAME for TITLE, or refused its password.` When an
+  update needs the followed branch's password and none is saved, the
+  update page asks `Branch NAME of TITLE is private.` with a Password
+  field and **Continue**, and plans again, replacing step 12's error
+  that named the CLI command.
+
 ## Implementation sequence
 
 Part A:
@@ -1188,7 +1226,8 @@ Part B:
 
 11. Branches, pinned builds, and `--default-branch` in core and the CLI.
 12. Private branch passwords.
-13. The app's **Version** picker, with **Move to offline installers**.
+13. The app's **Version** picker, with **Move to offline installers** and
+    **Move to Galaxy**.
 14. Docs for part B.
 
 ## Testing and acceptance
