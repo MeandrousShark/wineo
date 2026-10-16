@@ -1884,3 +1884,37 @@ fn the_file_of_one_account_is_dropped_by_another_account_s_write_and_never_read(
         Some("mine")
     );
 }
+
+#[test]
+fn a_refusal_removes_only_the_copy_that_was_refused_in_each_backend() {
+    let (_root, paths) = setup();
+    let keyring = FakeKeyring::default();
+    // The older one is in the keyring; a newer one went to the file while
+    // the keyring was unavailable.
+    branches::save(&paths, &keyring, OWNER, GAME, "beta", &password("older")).unwrap();
+    branches::save(&paths, &NoKeyring, OWNER, GAME, "beta", &password("newer")).unwrap();
+    assert_eq!(
+        kept_in(&paths, &keyring, "beta").as_deref(),
+        Some("newer"),
+        "the file's copy is the newer"
+    );
+
+    // The older one was refused: it goes, the newer one stays.
+    assert!(
+        branches::remove_if(&paths, &keyring, OWNER, GAME, "beta", &password("older")).unwrap()
+    );
+    assert!(keyring.1.lock().unwrap().is_empty());
+    assert_eq!(kept_in(&paths, &keyring, "beta").as_deref(), Some("newer"));
+
+    // And the other way round: the file's is refused, a keyring copy saved
+    // since stays.
+    branches::save(&paths, &keyring, OWNER, GAME, "gamma", &password("k")).unwrap();
+    branches::save(&paths, &NoKeyring, OWNER, GAME, "gamma", &password("f")).unwrap();
+    assert!(branches::remove_if(&paths, &keyring, OWNER, GAME, "gamma", &password("f")).unwrap());
+    assert_eq!(kept_in(&paths, &keyring, "gamma").as_deref(), Some("k"));
+    // A password nobody holds removes nothing.
+    assert!(
+        !branches::remove_if(&paths, &keyring, OWNER, GAME, "gamma", &password("zzz")).unwrap()
+    );
+    assert_eq!(kept_in(&paths, &keyring, "gamma").as_deref(), Some("k"));
+}

@@ -212,25 +212,38 @@ pub(crate) fn remove_if(
     branch: &str,
     refused: &Secret,
 ) -> Result<bool> {
-    // Whichever copy `find` would send is the one compared.
-    if find(paths, keyring, user, game, branch)?.is_none_or(|saved| saved != *refused) {
-        edit_file(paths, user, |_| ())?;
-        purge_keyring(keyring, user);
-        return Ok(false);
+    let mut removed = false;
+    match keyring.get_branch(user, game, branch) {
+        Ok(Some(saved)) if saved == refused.expose() => {
+            match keyring.delete_branch(user, game, branch) {
+                Ok(deleted) => removed |= deleted,
+                Err(error) => {
+                    if let Some(error) = keyring_error(error) {
+                        return Err(error);
+                    }
+                }
+            }
+        }
+        Ok(_) => {}
+        Err(error) => {
+            if let Some(error) = keyring_error(error) {
+                return Err(error);
+            }
+        }
     }
-    let from_keyring = match keyring.delete_branch(user, game, branch) {
-        Ok(deleted) => deleted,
-        Err(error) => match keyring_error(error) {
-            Some(error) => return Err(error),
-            None => false,
-        },
-    };
-    let from_file = edit_file(paths, user, |mine| {
-        mine.get_mut(&game.to_string())
-            .is_some_and(|branches| branches.remove(branch).is_some())
+    removed |= edit_file(paths, user, |mine| {
+        let Some(branches) = mine.get_mut(&game.to_string()) else {
+            return false;
+        };
+        if branches.get(branch).map(String::as_str) == Some(refused.expose()) {
+            branches.remove(branch);
+            true
+        } else {
+            false
+        }
     })?;
     purge_keyring(keyring, user);
-    Ok(from_file || from_keyring)
+    Ok(removed)
 }
 
 /// Removes every saved password of every account and game. Returns whether
