@@ -89,6 +89,11 @@ pub struct Pending {
     /// for an update with no stored manifest, which deletes nothing.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub base: Option<Base>,
+    /// The follow the operation commits with its files, so an interrupted
+    /// branch or pin change is finished by the resume. None when the
+    /// operation doesn't change it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub follow: Option<Follow>,
 }
 
 /// The manifest an update compares the target with.
@@ -102,8 +107,8 @@ pub struct Base {
     pub fetched: bool,
 }
 
-/// The branch a game follows and the build it's pinned to. Part B sets
-/// these; until then a game follows the default branch, unpinned.
+/// The branch a game follows (None for the default one) and the build it's
+/// pinned to. A pinned game stays on its build until unpinned.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Follow {

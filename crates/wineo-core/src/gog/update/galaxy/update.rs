@@ -38,13 +38,15 @@ use rustix::fs::AtFlags;
 
 use super::build;
 use super::fetch::{self, Job, Reuse};
+use super::follow::{self, Who};
 use super::install::{
     self, GalaxyError, Kind, Links, NAME_BATCH, Placer, PlannedProduct, Progress, Retarget,
     StoreNeed, Waiting, flush, merged, name_entry, place, recorded, sizes,
 };
-use super::record::{self, Base, FileEntry, Manifest};
+use super::record::{self, Base, FileEntry, Follow, Manifest};
 use super::setup;
 use super::store;
+use super::switch::{FollowPlan, Pinned};
 use crate::cancel::Token;
 use crate::config::Arch;
 use crate::environment::Environment;
@@ -98,6 +100,10 @@ pub enum Planned {
         build: Option<String>,
         warnings: Vec<String>,
     },
+    /// The game is pinned and asked to update, which changes nothing.
+    Pinned(Pinned),
+    /// Only the branch or pin changes: the build wanted is the one installed.
+    Follow(FollowPlan),
     Update(Plan),
 }
 
@@ -123,6 +129,9 @@ pub struct Plan {
     base: Option<Base>,
     store: Vec<StoreNeed>,
     retarget: Option<Retarget>,
+    /// What the game follows now, and after this.
+    from: Follow,
+    to: Follow,
     notes: Vec<Note>,
     warnings: Vec<String>,
 }
@@ -269,6 +278,16 @@ impl Plan {
         &self.notes
     }
 
+    /// The branch and pin the game has now.
+    pub fn from(&self) -> &Follow {
+        &self.from
+    }
+
+    /// The branch and pin it has after.
+    pub fn to(&self) -> &Follow {
+        &self.to
+    }
+
     /// The most it downloads: every file, support file, and redistributable
     /// the target has that the starting point doesn't have as it is. What's
     /// already in place is only known once `apply` looks.
@@ -362,6 +381,13 @@ pub fn plan(
         if journal.target.track != Track::Galaxy {
             bail!("{name}'s unfinished GOG operation isn't a Galaxy one");
         }
+        // The operation carries the branch it began with, so a new one waits.
+        if !options.choice.is_keep() {
+            return Err(GalaxyError::Unfinished {
+                name: name.to_owned(),
+            }
+            .into());
+        }
         let gog_id = journal.target.gog_id;
         return match journal.kind {
             JournalKind::Update | JournalKind::Reinstall | JournalKind::Repair => {
@@ -438,6 +464,12 @@ pub fn plan(
     let arch = Environment::load(paths, name)?.wine()?.arch;
     let bits = build::bits(arch);
     let installed_build = crate::gog::update::base_build(&committed).map(str::to_owned);
+    // A game coming over from the installers has nothing to follow yet.
+    let from = if moving {
+        Follow::default()
+    } else {
+        super::follow_of(paths, &state.folder)
+    };
 
     if kind == JournalKind::Repair {
         // The product's details only give titles here, so a failure costs
@@ -501,6 +533,8 @@ pub fn plan(
             base,
             store,
             retarget: None,
+            to: from.clone(),
+            from,
             notes,
             warnings,
         }));
@@ -523,9 +557,7 @@ pub fn plan(
     let no_build = || GalaxyError::NoBuild {
         title: title.clone(),
     };
-    let builds = match install::call(session, |client, access| {
-        client.windows_builds(gog_id, Some(access))
-    }) {
+    let builds = match install::builds_of(session, gog_id, None) {
         Ok(builds) => builds,
         // No content system for the game, as a check reads it.
         Err(error)
@@ -537,7 +569,36 @@ pub fn plan(
         }
         Err(error) => return Err(error),
     };
-    let latest = build::latest(&builds, None).ok_or_else(no_build)?.clone();
+    // A pinned game isn't updated; reinstalling it rebuilds the pin.
+    if kind == JournalKind::Update
+        && options.choice.is_keep()
+        && let Some(pinned) = &from.pinned
+    {
+        return Ok(Planned::Pinned(Pinned {
+            environment: name.to_owned(),
+            build: pinned.clone(),
+            version: builds
+                .items
+                .iter()
+                .find(|listed| listed.build_id == *pinned)
+                .and_then(|listed| listed.version_name.clone())
+                .filter(|version| !version.is_empty()),
+            warnings,
+        }));
+    }
+    let who = Who {
+        title: &title,
+        name: Some(name),
+    };
+    let picked = follow::pick(
+        &builds,
+        &options.choice,
+        &from,
+        kind == JournalKind::Reinstall,
+        &who,
+    )?;
+    let latest = picked.build.clone();
+    let to = picked.to;
     let link = latest.link.clone().ok_or_else(no_build)?;
     let repository = session
         .client()
@@ -588,11 +649,31 @@ pub fn plan(
         && installed_build.as_deref() == Some(latest.build_id.as_str())
         && !selection_changed(&committed, &target.products)
     {
-        return Ok(Planned::UpToDate {
+        if from == to {
+            return Ok(Planned::UpToDate {
+                environment: name.to_owned(),
+                build: installed_build,
+                warnings,
+            });
+        }
+        // The build is the one wanted, so only the record changes.
+        let installed_version = installed_build
+            .as_deref()
+            .and_then(|id| builds.items.iter().find(|build| build.build_id == id))
+            .and_then(|build| build.version_name.clone())
+            .filter(|name| !name.is_empty());
+        return Ok(Planned::Follow(FollowPlan {
             environment: name.to_owned(),
-            build: installed_build,
+            folder: state.folder.clone(),
+            gog_id,
+            title,
+            seen: state,
+            installed_build,
+            installed_version,
+            from,
+            to,
             warnings,
-        });
+        }));
     }
 
     let built = install::manifests(
@@ -660,6 +741,8 @@ pub fn plan(
         base,
         store,
         retarget: None,
+        from,
+        to,
         notes,
         warnings,
     }))
@@ -798,9 +881,7 @@ fn repair_manifest(
         name: name.to_owned(),
     })?;
     let gog_id = target.gog_id;
-    let builds = install::call(session, |client, access| {
-        client.windows_builds(gog_id, Some(access))
-    })?;
+    let builds = install::builds_of(session, gog_id, None)?;
     let listed = builds
         .items
         .iter()
@@ -1153,6 +1234,15 @@ fn resumed(
     let pending = record
         .as_ref()
         .and_then(|record| record::pending(&state, record));
+    let from = record
+        .as_ref()
+        .map(|record| record.follow.clone())
+        .unwrap_or_default();
+    // The operation's own follow, else the one the game has. Without
+    // `pending` nothing says which branch or pin it was for.
+    let mut to = pending
+        .and_then(|pending| pending.follow.clone())
+        .unwrap_or_else(|| from.clone());
     let (manifest, base, store, version_name) = match pending {
         Some(pending) => {
             let store = pending
@@ -1190,9 +1280,7 @@ fn resumed(
             (manifest, base, store, version_name)
         }
         None => {
-            let builds = install::call(session, |client, access| {
-                client.windows_builds(gog_id, Some(access))
-            })?;
+            let builds = install::builds_of(session, gog_id, None)?;
             let began = target
                 .products
                 .iter()
@@ -1206,12 +1294,25 @@ fn resumed(
             let chosen = match listed {
                 Some(build) => build,
                 None => {
-                    let latest =
-                        build::latest(&builds, None).ok_or_else(|| GalaxyError::NoBuild {
-                            title: title.clone(),
-                        })?;
+                    // The latest of the branch followed, with the pin
+                    // dropped, since the build it named is gone.
+                    let who = Who {
+                        title: &title,
+                        name: Some(name),
+                    };
+                    let latest = follow::latest_on(&builds, from.branch.as_deref(), &who)?;
+                    let pin = from
+                        .pinned
+                        .as_deref()
+                        .filter(|pinned| *pinned == began)
+                        .map(|pinned| format!(" The pin to build {pinned} is removed."))
+                        .unwrap_or_default();
+                    to = Follow {
+                        branch: from.branch.clone(),
+                        pinned: None,
+                    };
                     warnings.push(format!(
-                        "GOG no longer lists build {began} of {title}, so the update finishes with build {} instead.",
+                        "GOG no longer lists build {began} of {title}, so the update finishes with build {} instead.{pin}",
                         latest.build_id
                     ));
                     retarget = Some(Retarget {
@@ -1353,6 +1454,8 @@ fn resumed(
         base,
         store,
         retarget,
+        from,
+        to,
         notes,
         warnings,
     })
@@ -1746,6 +1849,7 @@ fn run(
         manifest: manifest.clone(),
         store: manifest.store_versions(),
         base: base.clone(),
+        follow: Some(plan.to.clone()),
     });
     // Before the journal, so a journal always has its pending written.
     record::write(&lock, &sidecar)?;
@@ -2060,6 +2164,7 @@ fn run(
         info: record::info_hash(folder, plan.gog_id)?,
         manifest,
     });
+    sidecar.follow = plan.to.clone();
     if token.is_canceled() {
         return Err(UpdateError::Canceled { journal: true }.into());
     }

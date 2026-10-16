@@ -45,6 +45,22 @@ pub struct Args {
     /// With --game, galaxy or installer, Galaxy's builds when GOG has one for a Windows game
     #[arg(long, value_enum, requires = "game")]
     pub track: Option<super::galaxy::GogTrack>,
+    /// With --game, install from this Galaxy branch and follow it
+    #[arg(
+        long,
+        value_name = "BRANCH",
+        requires = "game",
+        conflicts_with = "build"
+    )]
+    pub branch: Option<String>,
+    /// With --game, install one of the builds GOG lists, by id or version name, and stay on it
+    #[arg(
+        long,
+        value_name = "BUILD",
+        requires = "game",
+        conflicts_with = "branch"
+    )]
+    pub build: Option<String>,
     /// With --game, the language to install in, a locale tag like fr-FR
     #[arg(long, value_name = "TAG", requires = "game")]
     pub language: Option<String>,

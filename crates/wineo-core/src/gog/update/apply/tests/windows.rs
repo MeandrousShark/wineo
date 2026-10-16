@@ -1298,7 +1298,7 @@ fn an_update_whose_installer_never_started_offers_its_wizard_once() {
             wizard: true,
             ..Options::default()
         };
-        let pending = fx.pending(true, wizard);
+        let pending = fx.pending(true, wizard.clone());
         assert!(pending.wizard());
         let error = fx
             .apply_with(true, &pending, &Token::new(), |_| {})

@@ -53,6 +53,8 @@ enum Step {
 #[derive(Debug, Clone)]
 pub(crate) enum Planned {
     UpToDate,
+    /// A pinned game, with what to say instead of updating it.
+    Pinned(String),
     Update(Box<Pending>),
     Galaxy(Box<core_galaxy::update::Plan>),
 }
@@ -321,6 +323,11 @@ impl Page {
                 match result {
                     Ok(Planned::UpToDate) => {
                         self.note = Some("Up to date.".to_owned());
+                        self.done = Some(self.name.clone());
+                        self.step = Step::Finished;
+                    }
+                    Ok(Planned::Pinned(message)) => {
+                        self.note = Some(message);
                         self.done = Some(self.name.clone());
                         self.step = Step::Finished;
                     }
@@ -609,6 +616,14 @@ pub(crate) fn plan_with_options(
         Ok(PlannedUpdate::Galaxy(core_galaxy::update::Planned::Update(plan))) => {
             Ok(Planned::Galaxy(Box::new(plan)))
         }
+        Ok(PlannedUpdate::Galaxy(core_galaxy::update::Planned::Pinned(pinned))) => {
+            Ok(Planned::Pinned(pinned.message()))
+        }
+        // The app doesn't pick a branch or build yet, so it never asks for
+        // one.
+        Ok(PlannedUpdate::Galaxy(core_galaxy::update::Planned::Follow(_))) => Err(format!(
+            "Changing {name}'s branch isn't available in the app yet. Use: wineo update {name}"
+        )),
         Err(error)
             if logged_out
                 && matches!(
@@ -881,6 +896,8 @@ pub(crate) fn galaxy_label(label: Label) -> String {
     match label {
         Label::Folder => "Folder".to_owned(),
         Label::Track => "Track".to_owned(),
+        Label::Branch => "Branch".to_owned(),
+        Label::Pin => "Pin".to_owned(),
         Label::Owner => "Owner".to_owned(),
         Label::Product(label) => label,
         Label::Version => "Version".to_owned(),

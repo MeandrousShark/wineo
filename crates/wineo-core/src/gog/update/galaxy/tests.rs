@@ -810,6 +810,7 @@ fn an_unstarted_operation_is_never_taken_for_tracked() {
         manifest: record.installed.clone().unwrap().manifest,
         store: Vec::new(),
         base: None,
+        follow: None,
     });
     pending.selection = record::digest(state.committed.as_ref().unwrap());
     record.pending = Some(pending);

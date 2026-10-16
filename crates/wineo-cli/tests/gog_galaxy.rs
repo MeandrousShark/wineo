@@ -297,6 +297,7 @@ fn check_shows_version_names_and_json_keeps_build_ids() {
         json!([{
             "name": NAME, "id": GAME.to_string(), "track": "galaxy",
             "installed": "100", "available": "200",
+            "branch": null, "pinned": null,
             "update": "available", "applicable": true, "reason": null,
             "unfinished": false, "dlc": [],
         }])

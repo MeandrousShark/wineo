@@ -338,10 +338,14 @@ mod tests {
             available: Some("1.1".to_owned()),
             installed_name: None,
             available_name: None,
+            branch: None,
+            pinned: None,
+            pinned_name: None,
             state,
             applicable,
             reason: (!applicable).then(|| Reason::Galaxy {
                 name: name.to_owned(),
+                branch: None,
             }),
             unfinished: false,
             galaxy_install: false,
@@ -380,7 +384,8 @@ mod tests {
         assert_eq!(state_label(UpdateState::OnGog), "Update on GOG");
         assert_eq!(
             Reason::Galaxy {
-                name: "disco".to_owned()
+                name: "disco".to_owned(),
+                branch: None,
             }
             .note(),
             "GOG has no Galaxy build of this game that wineo can update. Move it to offline installers with: wineo update disco --reinstall --track installer"

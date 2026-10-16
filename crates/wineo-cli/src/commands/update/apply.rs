@@ -55,6 +55,8 @@ impl std::error::Error for Interrupted {}
 enum Ready {
     Installer(Pending),
     Galaxy(core_galaxy::update::Plan),
+    /// Only the branch or pin changes.
+    Follow(core_galaxy::FollowPlan),
 }
 
 impl Ready {
@@ -62,6 +64,7 @@ impl Ready {
         match self {
             Self::Installer(pending) => pending.environment(),
             Self::Galaxy(plan) => plan.environment(),
+            Self::Follow(plan) => plan.environment(),
         }
     }
 
@@ -69,6 +72,7 @@ impl Ready {
         match self {
             Self::Installer(pending) => pending.kind(),
             Self::Galaxy(plan) => plan.kind(),
+            Self::Follow(_) => JournalKind::Update,
         }
     }
 
@@ -76,6 +80,7 @@ impl Ready {
         match self {
             Self::Installer(pending) => pending.is_recovery(),
             Self::Galaxy(plan) => plan.is_recovery(),
+            Self::Follow(_) => false,
         }
     }
 
@@ -83,6 +88,7 @@ impl Ready {
         match self {
             Self::Installer(pending) => pending.warnings(),
             Self::Galaxy(plan) => plan.warnings(),
+            Self::Follow(plan) => plan.warnings(),
         }
     }
 
@@ -90,6 +96,7 @@ impl Ready {
         match self {
             Self::Installer(pending) => pending.finished(),
             Self::Galaxy(plan) => plan.finished(),
+            Self::Follow(plan) => plan.finished(),
         }
     }
 }
@@ -98,6 +105,8 @@ impl Ready {
 #[allow(clippy::large_enum_variant)]
 enum Planned {
     UpToDate(Vec<String>),
+    /// A pinned game, with what to say instead of updating it.
+    Pinned(String, Vec<String>),
     Ready(Ready),
 }
 
@@ -186,6 +195,13 @@ fn plan(
             reinstall: args.reinstall,
             repair: args.repair,
             track: args.track.map(Into::into),
+            // Finishing what the wizard question interrupted carries its
+            // own branch and pin in its journal.
+            choice: if wizard {
+                core_galaxy::Choice::Keep
+            } else {
+                args.choice().0
+            },
             refresh: args.refresh,
             // A dry run caches nothing and records nothing.
             read_only: args.dry_run,
@@ -204,10 +220,12 @@ fn plan(
             // Logging in comes first, and says so.
             return anyhow::anyhow!(LOGGED_OUT);
         }
-        let error = if matches!(
-            error.downcast_ref::<UpdateError>(),
-            Some(UpdateError::NotGalaxy { .. })
-        ) {
+        let error = if args.repair
+            && matches!(
+                error.downcast_ref::<UpdateError>(),
+                Some(UpdateError::NotGalaxy { .. })
+            )
+        {
             anyhow::anyhow!(
                 "Only Galaxy games can be repaired. Move it with: wineo update {name} --reinstall --track galaxy"
             )
@@ -219,7 +237,8 @@ fn plan(
             anyhow::anyhow!(
                 "{}",
                 update::Reason::Galaxy {
-                    name: name.to_owned()
+                    name: name.to_owned(),
+                    branch: None,
                 }
                 .note()
             )
@@ -238,6 +257,12 @@ fn plan(
         }
         PlannedUpdate::Galaxy(core_galaxy::update::Planned::Update(plan)) => {
             Planned::Ready(Ready::Galaxy(plan))
+        }
+        PlannedUpdate::Galaxy(core_galaxy::update::Planned::Follow(plan)) => {
+            Planned::Ready(Ready::Follow(plan))
+        }
+        PlannedUpdate::Galaxy(core_galaxy::update::Planned::Pinned(pinned)) => {
+            Planned::Pinned(pinned.message(), pinned.warnings)
         }
     })
 }
@@ -259,6 +284,14 @@ fn one(paths: &Paths, args: &Args, name: &str) -> anyhow::Result<ExitCode> {
                 warn(warning);
             }
             println!("Up to date.");
+            return Ok(ExitCode::SUCCESS);
+        }
+        // Nothing to change, and the way to unpin.
+        Planned::Pinned(message, warnings) => {
+            for warning in &warnings {
+                warn(warning);
+            }
+            println!("{message}");
             return Ok(ExitCode::SUCCESS);
         }
         Planned::Ready(ready) => ready,
@@ -291,7 +324,7 @@ fn one(paths: &Paths, args: &Args, name: &str) -> anyhow::Result<ExitCode> {
             let cancellation = Cancellation::new()?;
             let again = match plan(paths, &mut session, name, args, true, &cancellation)? {
                 Planned::Ready(ready) => ready,
-                Planned::UpToDate(_) => {
+                Planned::UpToDate(_) | Planned::Pinned(..) => {
                     println!("Up to date.");
                     return Ok(ExitCode::SUCCESS);
                 }
@@ -385,7 +418,7 @@ fn all(paths: &Paths, args: &Args) -> anyhow::Result<ExitCode> {
         }
         match plan(paths, &mut session, name, args, false, &planning) {
             Ok(Planned::Ready(item)) => ready.push(item),
-            Ok(Planned::UpToDate(_)) => {}
+            Ok(Planned::UpToDate(_) | Planned::Pinned(..)) => {}
             Err(error) if stopped(&error).is_some() => return Err(error),
             Err(error) => failures.push((name.clone(), format!("{error:#}"))),
         }
@@ -481,6 +514,7 @@ fn failure_code(failures: &[(String, String)]) -> ExitCode {
 
 fn confirm(prompt: &mut Ask, ready: &Ready) -> anyhow::Result<()> {
     let question = match (ready.kind(), ready.is_recovery()) {
+        _ if matches!(ready, Ready::Follow(_)) => "Change it?",
         (_, true) => "Finish it?",
         (JournalKind::Reinstall, false) => "Reinstall it?",
         (JournalKind::Repair, false) => "Repair it?",
@@ -497,6 +531,7 @@ fn review_lines(paths: &Paths, ready: &Ready) -> Vec<String> {
     let pending = match ready {
         Ready::Installer(pending) => pending,
         Ready::Galaxy(plan) => return galaxy::update_review(paths, plan),
+        Ready::Follow(plan) => return galaxy::follow_review(paths, plan),
     };
     let mut rows: Vec<(String, String)> = pending
         .review_rows(|path| style::path(paths, path))
@@ -598,6 +633,7 @@ fn apply_raw(
                 },
             )
         }
+        Ready::Follow(plan) => core_galaxy::switch::apply(paths, plan, &cancellation.token),
         Ready::Galaxy(plan) => {
             let session = session
                 .as_mut()
@@ -676,6 +712,7 @@ fn report(paths: &Paths, ready: &Ready, updated: &Updated) {
     let rows = match ready {
         Ready::Installer(pending) => pending.changes(updated),
         Ready::Galaxy(plan) => galaxy::changes(paths, plan, updated),
+        Ready::Follow(_) => Vec::new(),
     };
     for line in table::aligned_rows(rows) {
         println!("{line}");
@@ -693,6 +730,7 @@ fn report(paths: &Paths, ready: &Ready, updated: &Updated) {
                 println!("{line}");
             }
         }
+        Ready::Follow(_) => {}
         Ready::Installer(_) => {
             if !updated.saved.is_empty() {
                 println!("Moved your files aside where the new version has files:");

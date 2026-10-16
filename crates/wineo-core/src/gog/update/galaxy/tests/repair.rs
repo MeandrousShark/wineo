@@ -47,6 +47,7 @@ impl Fixture {
         )? {
             Planned::Update(plan) => Ok(plan),
             Planned::UpToDate { .. } => panic!("up to date"),
+            Planned::Pinned(_) | Planned::Follow(_) => panic!("not an update"),
         }
     }
 
@@ -541,7 +542,7 @@ fn repair_is_refused_for_the_installer_track_and_native_games_and_bad_combinatio
             &fx.paths,
             Some(&mut fx.session()),
             "game",
-            options,
+            options.clone(),
             &Token::new(),
         )
         .unwrap_err();
@@ -550,7 +551,14 @@ fn repair_is_refused_for_the_installer_track_and_native_games_and_bad_combinatio
             "{error:#}"
         );
         assert!(
-            update::plan(&fx.paths, &mut fx.session(), "game", options, &Token::new()).is_err()
+            update::plan(
+                &fx.paths,
+                &mut fx.session(),
+                "game",
+                options.clone(),
+                &Token::new()
+            )
+            .is_err()
         );
         assert!(
             crate::gog::update::plan(

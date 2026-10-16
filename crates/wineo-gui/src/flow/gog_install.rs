@@ -1317,6 +1317,8 @@ fn installer_product_rows(plan: &install::Plan) -> Vec<(&'static str, String)> {
 /// reviews have none here.
 fn install_label(label: &GalaxyLabel) -> &'static str {
     match label {
+        GalaxyLabel::Branch => "Branch",
+        GalaxyLabel::Pin => "Pin",
         GalaxyLabel::Version => "Version",
         GalaxyLabel::Dlc => "DLC",
         GalaxyLabel::Support => "Support",
@@ -1446,6 +1448,8 @@ pub(crate) fn prepare_known(
             runner: choices.runner.clone(),
             arch: choices.arch,
             wizard,
+            // The app installs the default branch's latest build.
+            builds: core_galaxy::Choice::Keep,
         };
         let track = match choices.track {
             Some(track) => track,

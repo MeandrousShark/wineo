@@ -64,6 +64,7 @@ impl Fixture {
         match self.update_planned().unwrap() {
             Planned::Update(plan) => plan,
             Planned::UpToDate { .. } => panic!("up to date"),
+            Planned::Pinned(_) | Planned::Follow(_) => panic!("not an update"),
         }
     }
 
@@ -390,7 +391,7 @@ fn an_up_to_date_game_has_nothing_to_do() {
     fx.install();
     match fx.update_planned().unwrap() {
         Planned::UpToDate { build, .. } => assert_eq!(build.as_deref(), Some("100")),
-        Planned::Update(plan) => panic!("{plan:?}"),
+        other => panic!("{other:?}"),
     }
 }
 

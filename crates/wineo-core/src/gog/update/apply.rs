@@ -50,7 +50,7 @@ use crate::operation::{Guard, Locks, Operation};
 use crate::paths::Paths;
 
 /// What `plan` is asked to do.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Options {
     /// Rebuild from current packages even when nothing changed.
     pub reinstall: bool,
@@ -59,6 +59,9 @@ pub struct Options {
     pub repair: bool,
     /// The track a reinstall puts the game on. None keeps the one it is on.
     pub track: Option<Track>,
+    /// The branch or build a Galaxy game goes to. Keeps the one it follows
+    /// by default.
+    pub choice: super::galaxy::Choice,
     /// Fetch GOG's product details again instead of using an hour-old copy.
     pub refresh: bool,
     /// Write nothing while planning, for a dry run: product details aren't
@@ -71,12 +74,23 @@ pub struct Options {
 }
 
 impl Options {
-    /// Refuses combinations that mean nothing: a repair never reinstalls or
-    /// moves, and a track is only for a reinstall.
+    /// Refuses combinations that mean nothing: a repair never reinstalls,
+    /// moves, or changes branch, a track is only for a reinstall, and the
+    /// installer track has no branches.
     pub fn check(&self) -> Result<(), UpdateError> {
         if self.repair && (self.reinstall || self.track.is_some()) {
             return Err(UpdateError::Options {
                 why: "A repair can't be combined with a reinstall or a track.",
+            });
+        }
+        if self.repair && !self.choice.is_keep() {
+            return Err(UpdateError::Options {
+                why: "A repair can't be combined with a branch or build.",
+            });
+        }
+        if self.track == Some(Track::Installer) && !self.choice.is_keep() {
+            return Err(UpdateError::Options {
+                why: "A branch or build can't be combined with the installer track.",
             });
         }
         if self.track.is_some() && !self.reinstall {

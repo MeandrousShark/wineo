@@ -108,6 +108,9 @@ pub struct Request {
     /// Run the base game's Windows installer as its own wizard instead of
     /// silently, after it stopped before installing anything.
     pub wizard: bool,
+    /// The Galaxy branch or build to install, the default branch's latest
+    /// by default. Only a Galaxy install reads it.
+    pub builds: super::galaxy::Choice,
 }
 
 /// One product an install would put in the folder, for a review.

@@ -58,17 +58,29 @@ impl UpdateState {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Reason {
     /// A Galaxy-tracked game GOG has no Galaxy build of that wineo can
-    /// update. `name` is its environment, for the way out.
-    Galaxy { name: String },
+    /// update, on the branch it follows (None for the default one). `name`
+    /// is its environment, for the way out.
+    Galaxy {
+        name: String,
+        branch: Option<String>,
+    },
+    /// A game pinned to a build, with a newer one on its branch. `version`
+    /// is GOG's name for the pinned build, when it is listed.
+    Pinned {
+        name: String,
+        build: String,
+        version: Option<String>,
+    },
     /// Why the game can't be compared, as a sentence.
     CantCompare(String),
 }
 
 impl Reason {
-    /// The machine word for Galaxy, else the sentence.
+    /// The machine word for Galaxy and for a pin, else the sentence.
     pub fn as_str(&self) -> &str {
         match self {
             Self::Galaxy { .. } => "galaxy",
+            Self::Pinned { .. } => "pinned",
             Self::CantCompare(why) => why,
         }
     }
@@ -140,6 +152,13 @@ pub struct Status {
     /// when it lists one. None on the installer track.
     pub installed_name: Option<String>,
     pub available_name: Option<String>,
+    /// The branch a Galaxy game follows. None for the default branch and on
+    /// the installer track.
+    pub branch: Option<String>,
+    /// The build a Galaxy game is pinned to, and GOG's name for it when it
+    /// is listed.
+    pub pinned: Option<String>,
+    pub pinned_name: Option<String>,
     pub state: UpdateState,
     /// Whether this wineo can apply the update.
     pub applicable: bool,
@@ -544,6 +563,10 @@ struct Compared {
     warnings: Vec<String>,
     installed_name: Option<String>,
     available_name: Option<String>,
+    /// What a Galaxy game follows, and GOG's name for the build it is
+    /// pinned to.
+    follow: galaxy::record::Follow,
+    pinned_name: Option<String>,
 }
 
 /// The ids the account owns, asked of GOG once for any number of games.
@@ -665,6 +688,8 @@ pub(super) fn status_with(
             warnings: Vec::new(),
             installed_name: None,
             available_name: None,
+            follow: galaxy::record::Follow::default(),
+            pinned_name: None,
         }
     } else {
         match (installed.platform, installed.track) {
@@ -675,6 +700,7 @@ pub(super) fn status_with(
                 session,
                 paths,
                 name,
+                &state.folder,
                 &installed,
                 names,
                 &details.product,
@@ -688,13 +714,21 @@ pub(super) fn status_with(
         }
     };
 
-    let applicable = compared.state == UpdateState::Available;
+    // A pinned game isn't updated, whatever GOG has on its branch.
+    let pinned = compared.follow.pinned.clone();
+    let applicable = compared.state == UpdateState::Available && pinned.is_none();
     let reason = match compared.state {
         UpdateState::CantCompare => compared.why.map(Reason::CantCompare),
         UpdateState::OnGog => Some(Reason::Galaxy {
             name: name.to_owned(),
+            branch: compared.follow.branch.clone(),
         }),
-        UpdateState::Available | UpdateState::UpToDate => None,
+        UpdateState::Available => pinned.clone().map(|build| Reason::Pinned {
+            name: name.to_owned(),
+            build,
+            version: compared.pinned_name.clone(),
+        }),
+        UpdateState::UpToDate => None,
     };
     notes.extend(compared.notes);
     warnings.extend(compared.warnings);
@@ -710,6 +744,9 @@ pub(super) fn status_with(
         available: compared.available,
         installed_name: compared.installed_name,
         available_name: compared.available_name,
+        branch: compared.follow.branch,
+        pinned,
+        pinned_name: compared.pinned_name,
         state: compared.state,
         applicable,
         reason,
@@ -738,6 +775,8 @@ fn cant(installed: &Installed, names: &HashMap<u64, String>, why: String) -> Com
         warnings: Vec::new(),
         installed_name: None,
         available_name: None,
+        follow: galaxy::record::Follow::default(),
+        pinned_name: None,
     }
 }
 
@@ -1028,6 +1067,8 @@ fn by_installer(
         warnings: Vec::new(),
         installed_name: None,
         available_name: None,
+        follow: galaxy::record::Follow::default(),
+        pinned_name: None,
     }
 }
 
@@ -1130,14 +1171,16 @@ fn title_or(title: &str, fallback: impl FnOnce() -> String) -> String {
 }
 
 /// The Galaxy track: the base game's build against the latest generation 2
-/// build GOG lists on the default branch. Any other installed build, one
-/// that is unknown, unlisted, generation 1, or on another branch, is
-/// updated onto it. Newly owned DLC and failed or unavailable DLC the build
+/// build GOG lists on the branch the game follows. Any other installed
+/// build, one that is unknown, unlisted, generation 1, or on another branch,
+/// is updated onto it, unless the game is pinned. Newly owned DLC and failed or unavailable DLC the build
 /// has count as an update too, as `galaxy::update::plan` installs them.
+#[allow(clippy::too_many_arguments)]
 fn by_build(
     session: &mut Session,
     paths: &Paths,
     name: &str,
+    folder: &Path,
     installed: &Installed,
     names: &HashMap<u64, String>,
     details: &wineo_gog::Product,
@@ -1157,7 +1200,8 @@ fn by_build(
         }
         Err(error) => return Err(error.into()),
     };
-    let latest = galaxy::latest(&builds);
+    let follow = galaxy::follow_of(paths, folder);
+    let latest = galaxy::latest(&builds, follow.branch.as_deref());
     let current = base(installed).and_then(|base| base.build.clone());
     let version_name = |build: &str| {
         builds
@@ -1256,6 +1300,8 @@ fn by_build(
         state: tally.state,
         installed_name: current.as_deref().and_then(version_name),
         available_name: latest.and_then(|build| version_name(&build.build_id)),
+        pinned_name: follow.pinned.as_deref().and_then(version_name),
+        follow,
         installed: current,
         available: latest.map(|build| build.build_id.clone()),
         why: None,
