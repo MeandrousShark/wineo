@@ -215,7 +215,9 @@ pub(crate) struct Prepared {
     plan: Result<Box<Plan>, String>,
     runners: Vec<Choice>,
     /// Whether GOG offers both tracks for this game, so the review lets
-    /// you pick.
+    /// you pick. This is learned for the platform it was planned with
+    /// (`choices.platform`) and means nothing for another, so the review only
+    /// acts on it while the platform chosen now is that one.
     both_tracks: bool,
     /// The `gog.language` setting, which an empty language uses.
     default_language: String,
@@ -432,6 +434,14 @@ impl Install {
     /// can't.
     fn editable(&self) -> bool {
         self.stage == Stage::Review && !self.plan().is_some_and(Plan::resumes)
+    }
+
+    /// Whether the tracks can be picked: GOG offers both for the platform
+    /// chosen now, not just for one that was.
+    fn tracks_offered(&self) -> bool {
+        self.prepared.as_ref().is_some_and(|prepared| {
+            prepared.both_tracks && prepared.choices.platform == self.choices.platform
+        })
     }
 
     fn windows(&self) -> bool {
@@ -678,7 +688,7 @@ impl Install {
                 self.both_tracks = None;
                 self.replan()
             }
-            Event::Track(track) if self.stage == Stage::Review => {
+            Event::Track(track) if self.stage == Stage::Review && self.tracks_offered() => {
                 self.choices.track = Some(track);
                 self.replan()
             }
@@ -1037,7 +1047,7 @@ impl Install {
         } else if let Some(platform) = platform {
             summary = summary.push(shown_row("Platform", platform_name(platform).to_owned()));
         }
-        if editable && prepared.both_tracks {
+        if editable && self.tracks_offered() {
             summary = summary.push(control_row(
                 "Track",
                 pick_list(
@@ -1050,7 +1060,7 @@ impl Install {
                 .into(),
             ));
         } else if let Some(plan) = plan.filter(|plan| {
-            plan.platform() == Platform::Windows && (plan.resumes() || prepared.both_tracks)
+            plan.platform() == Platform::Windows && (plan.resumes() || self.tracks_offered())
         }) {
             summary = summary.push(shown_row("Track", track_name(plan.track()).to_owned()));
         }

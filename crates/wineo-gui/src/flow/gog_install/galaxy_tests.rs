@@ -500,3 +500,57 @@ fn a_typed_language_that_fails_keeps_the_picker_and_a_valid_one_plans_on_galaxy(
     assert!(valid.both_tracks);
     assert_eq!(valid.plan.unwrap().track(), Track::Galaxy);
 }
+
+#[test]
+fn the_tracks_offered_belong_to_the_platform_they_were_learned_for() {
+    let world = Galaxy::new();
+    let both = Offer {
+        linux: true,
+        ..offer()
+    };
+    let plan_for = |page: &Install| {
+        prepare_known(
+            &world.paths,
+            &world.keyring,
+            world.server.client(),
+            &both,
+            &page.choices,
+            false,
+            page.both_tracks,
+            &Token::new(),
+        )
+        .unwrap()
+    };
+    let (mut page, _) = Install::new(world.paths.clone(), both.clone());
+    page.choices = choices(&world);
+    let land = |page: &mut Install, prepared: Prepared| {
+        let generation = page.generation;
+        let _ = page.update(Event::Prepared(generation, Ok(Box::new(prepared))));
+    };
+    let first = plan_for(&page);
+    land(&mut page, first);
+    assert!(page.tracks_offered());
+
+    // Linux is chosen and its plan is still running: the picker is gone,
+    // and a track sent anyway changes nothing.
+    let _ = page.update(Event::Platform(Platform::Linux));
+    assert!(!page.tracks_offered());
+    let _ = page.update(Event::Track(Track::Galaxy));
+    assert_eq!(page.choices.track, None);
+    fits(&page);
+    let linux = plan_for(&page);
+    land(&mut page, linux);
+    assert!(!page.tracks_offered());
+    let _ = page.update(Event::Track(Track::Galaxy));
+    assert_eq!(page.choices.track, None);
+    fits(&page);
+
+    // Windows again learns it afresh before the picker returns.
+    let _ = page.update(Event::Platform(Platform::Windows));
+    assert!(!page.tracks_offered());
+    let windows = plan_for(&page);
+    assert!(windows.both_tracks);
+    land(&mut page, windows);
+    assert!(page.tracks_offered());
+    fits(&page);
+}
