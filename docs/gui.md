@@ -133,8 +133,8 @@ verify, unpack, and publish; a Windows game's update shows each installer
 as it runs, and if one quits before installing anything, the page asks
 once whether to open its own setup window. A Galaxy game's review shows
 its track, versions, support files, setup steps, and download size, with
-the notes `wineo update` prints, and progress goes through checking files,
-downloading, and each setup step. A warning in the review, like a build
+the notes `wineo update` prints, and progress goes through downloading
+and each setup step, after checking every file on a reinstall. A warning in the review, like a build
 GOG no longer lists, is accepted by pressing **Update**. Planning and updating both count as work for Back,
 Cancel, and closing the window. A game whose last update was interrupted has a **Finish
 update** badge and button in place of Play (**Finish install** for an

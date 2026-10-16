@@ -301,7 +301,8 @@ is deleted, so files of the old build the new one doesn't list stay. The
 review says so.
 
 If GOG stops listing the build an interrupted install or update was going
-to, finishing it moves to the latest build instead. The review says so,
+to, and wineo's own copy of that build's file list was lost too, finishing
+it moves to the latest build instead. The review says so,
 and answering yes (or `--yes`) agrees.
 
 ### Installer updates
