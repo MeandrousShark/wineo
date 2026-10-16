@@ -1465,3 +1465,121 @@ fn a_branch_password_is_redacted_in_debug() {
     let secret = password(SECRET_WORD);
     assert!(!format!("{secret:?} {secret:#?}").contains(SECRET_WORD));
 }
+
+/// Plants what a crashed fallback save leaves beside the file, and files
+/// that only look similar, which must stay.
+fn plant_leftovers(paths: &Paths) -> (Vec<std::path::PathBuf>, Vec<std::path::PathBuf>) {
+    let file = branch_file(paths);
+    let dir = file.parent().unwrap().to_owned();
+    fs::create_dir_all(&dir).unwrap();
+    let leftovers: Vec<_> = ["gog-branches.key.4242-1.tmp", ".gog-branches.key.tmp"]
+        .iter()
+        .map(|name| dir.join(name))
+        .collect();
+    for leftover in &leftovers {
+        fs::write(leftover, r#"{"1771589310":{"beta":"leaked-password"}}"#).unwrap();
+    }
+    let others: Vec<_> = [
+        "gog.key",
+        "gog-branches.key.bak",
+        "gog-branches.key.4242-1.tmp.keep",
+        "gog-branches.key.x-1.tmp",
+        "notes.tmp",
+    ]
+    .iter()
+    .map(|name| dir.join(name))
+    .collect();
+    for other in &others {
+        fs::write(other, "unrelated").unwrap();
+    }
+    (leftovers, others)
+}
+
+fn assert_swept(leftovers: &[std::path::PathBuf], others: &[std::path::PathBuf]) {
+    for leftover in leftovers {
+        assert!(!leftover.exists(), "{} was left", leftover.display());
+    }
+    for other in others {
+        assert_eq!(fs::read_to_string(other).unwrap(), "unrelated");
+    }
+}
+
+fn two_fallback_entries(paths: &Paths) {
+    branches::save(paths, &NoKeyring, GAME, "beta", &password("one")).unwrap();
+    branches::save(paths, &NoKeyring, GAME, "gamma", &password("two")).unwrap();
+}
+
+#[test]
+fn leftovers_of_a_crashed_fallback_save_go_when_a_password_moves_to_the_keyring() {
+    let (_root, paths) = setup();
+    two_fallback_entries(&paths);
+    let (leftovers, others) = plant_leftovers(&paths);
+    let keyring = FakeKeyring::default();
+    branches::save(&paths, &keyring, GAME, "beta", &password("three")).unwrap();
+    assert_swept(&leftovers, &others);
+    // The other branch stays in the published file.
+    assert_eq!(
+        branches::find(&paths, &NoKeyring, GAME, "gamma")
+            .unwrap()
+            .unwrap()
+            .expose(),
+        "two"
+    );
+    // Even when the branch wasn't in the file at all.
+    let (leftovers, others) = plant_leftovers(&paths);
+    branches::save(&paths, &keyring, GAME, "delta", &password("four")).unwrap();
+    assert_swept(&leftovers, &others);
+}
+
+#[test]
+fn leftovers_go_when_a_password_is_removed_whether_or_not_it_was_in_the_file() {
+    let (_root, paths) = setup();
+    two_fallback_entries(&paths);
+    for branch in ["beta", "nope"] {
+        let (leftovers, others) = plant_leftovers(&paths);
+        branches::remove_if(&paths, &NoKeyring, GAME, branch, &password("one")).unwrap();
+        assert_swept(&leftovers, &others);
+    }
+    assert!(
+        branches::find(&paths, &NoKeyring, GAME, "beta")
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(
+        branches::find(&paths, &NoKeyring, GAME, "gamma")
+            .unwrap()
+            .unwrap()
+            .expose(),
+        "two"
+    );
+    // A refusal that doesn't remove anything still tidies up.
+    let (leftovers, others) = plant_leftovers(&paths);
+    assert!(!branches::remove_if(&paths, &NoKeyring, GAME, "gamma", &password("old")).unwrap());
+    assert_swept(&leftovers, &others);
+    // And so does a removal with no published file at all.
+    branches::remove_all(&paths, &NoKeyring).unwrap();
+    let (leftovers, others) = plant_leftovers(&paths);
+    branches::remove_if(&paths, &NoKeyring, GAME, "gamma", &password("two")).unwrap();
+    assert_swept(&leftovers, &others);
+}
+
+#[test]
+fn leftovers_go_with_a_wipe_and_with_the_next_fallback_save() {
+    let (_root, paths) = setup();
+    two_fallback_entries(&paths);
+    let (leftovers, others) = plant_leftovers(&paths);
+    assert!(branches::remove_all(&paths, &NoKeyring).unwrap());
+    assert_swept(&leftovers, &others);
+    assert!(!branch_file(&paths).exists());
+
+    let (leftovers, others) = plant_leftovers(&paths);
+    branches::save(&paths, &NoKeyring, GAME, "beta", &password("one")).unwrap();
+    assert_swept(&leftovers, &others);
+    assert!(branch_file(&paths).exists());
+
+    // A logout wipes them too, with no published file left to find them by.
+    let (leftovers, _) = plant_leftovers(&paths);
+    seed(&paths, &NoKeyring, "R1", USER);
+    logout(&paths, &NoKeyring).unwrap();
+    assert_swept(&leftovers, &[]);
+}

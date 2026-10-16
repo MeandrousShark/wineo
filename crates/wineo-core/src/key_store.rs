@@ -221,15 +221,24 @@ fn remove_file(path: &Path) -> Result<bool> {
 /// the secret off disk. Only names that exactly match a temp name are touched.
 pub(crate) fn remove_key_file(path: &Path) -> Result<bool> {
     let existed = remove_file(path)?;
+    sweep_leftovers(path)?;
+    Ok(existed)
+}
+
+/// Deletes the temp files a crashed save left beside the key file, and
+/// nothing else. The key file itself stays. Only for a caller that holds
+/// whatever keeps saves from running at the same time, since a save in
+/// flight has a temp file of its own.
+pub(crate) fn sweep_leftovers(path: &Path) -> Result<()> {
     let (Some(dir), Some(name)) = (
         path.parent(),
         path.file_name().and_then(|name| name.to_str()),
     ) else {
-        return Ok(existed);
+        return Ok(());
     };
     let entries = match fs::read_dir(dir) {
         Ok(entries) => entries,
-        Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(existed),
+        Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(()),
         Err(err) => return Err(err).context(|| format!("failed to read {}", dir.display())),
     };
     for entry in entries {
@@ -242,7 +251,7 @@ pub(crate) fn remove_key_file(path: &Path) -> Result<bool> {
             remove_file(&entry.path())?;
         }
     }
-    Ok(existed)
+    Ok(())
 }
 
 /// `<name>.<pid>-<n>.tmp` from `write_unique_private`, or the fixed

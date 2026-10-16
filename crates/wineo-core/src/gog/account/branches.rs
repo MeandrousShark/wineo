@@ -50,7 +50,9 @@ fn write_file(paths: &Paths, passwords: &Passwords) -> Result<()> {
         return Ok(());
     }
     let text = serde_json::to_string(passwords).expect("passwords serialize");
-    key_store::write_private(&path, &text)
+    key_store::write_private(&path, &text)?;
+    // What an earlier crashed save left holds passwords too.
+    key_store::sweep_leftovers(&path)
 }
 
 fn keyring_error(error: KeyringError) -> Option<Error> {
@@ -146,6 +148,9 @@ pub(crate) fn save(
 }
 
 fn drop_from_file(paths: &Paths, game: u64, branch: &str) -> Result<bool> {
+    // Whether or not the branch is in the file, a crashed save may have left
+    // its passwords beside it.
+    key_store::sweep_leftovers(&file(paths))?;
     let mut passwords = read_file(paths)?;
     let key = game.to_string();
     let Some(branches) = passwords.0.get_mut(&key) else {
@@ -172,6 +177,8 @@ pub(crate) fn remove_if(
     refused: &Secret,
 ) -> Result<bool> {
     if find(paths, keyring, game, branch)?.is_none_or(|saved| saved != *refused) {
+        // Still tidy up after a crashed save.
+        key_store::sweep_leftovers(&file(paths))?;
         return Ok(false);
     }
     let from_keyring = match keyring.delete_branch(game, branch) {
