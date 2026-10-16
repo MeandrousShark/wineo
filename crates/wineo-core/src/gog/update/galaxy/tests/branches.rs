@@ -303,3 +303,128 @@ fn the_listing_of_an_installer_game_is_refused() {
         Some(UpdateError::NotGalaxy { .. })
     ));
 }
+
+#[test]
+fn an_operation_planned_before_a_pin_is_refused_and_leaves_the_pin() {
+    let fx = Fixture::on_branches();
+    let Planned::Update(stale) = fx.plan_choosing(Choice::Keep).unwrap() else {
+        panic!("expected an update");
+    };
+    let repair = Options {
+        repair: true,
+        ..Options::default()
+    };
+    let Planned::Update(stale_repair) =
+        update::plan(&fx.paths, &mut fx.session(), "game", repair, &Token::new()).unwrap()
+    else {
+        panic!("expected a repair");
+    };
+    let before = fx.tree();
+    // Another wineo pins the build installed, which touches only the record.
+    fx.pin("100");
+    for plan in [&stale, &stale_repair] {
+        let error = fx.apply_update(plan).unwrap_err();
+        assert!(
+            matches!(error.downcast_ref(), Some(UpdateError::Changed { .. })),
+            "{error:#}"
+        );
+    }
+    assert_eq!(fx.follows().pinned.as_deref(), Some("100"));
+    assert_eq!(fx.tree(), before);
+    assert!(fx.state().journal.is_none());
+    assert_eq!(
+        fx.state().committed.unwrap().products[0].build.as_deref(),
+        Some("100")
+    );
+}
+
+impl Fixture {
+    /// An install of the game's beta branch (or the build `choice` names)
+    /// that stopped once its record was written, with `pending` lost.
+    fn install_stopped_without_pending(&self, choice: Choice) {
+        self.content.add_build(Fixture::game("100"));
+        self.content.add_build(Fixture::game("300").branch("beta"));
+        let plan = self
+            .plan_with(&Request {
+                builds: choice,
+                ..self.request()
+            })
+            .unwrap();
+        crate::gog::folder::set_failpoint(Some("galaxy.installed.after"));
+        self.apply(&plan).unwrap_err();
+        crate::gog::folder::set_failpoint(None);
+        assert!(self.state().journal.is_some());
+        let path = folder::sidecar_file(&self.paths, &self.folder);
+        let mut saved: serde_json::Value =
+            serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        assert!(saved.as_object_mut().unwrap().remove("pending").is_some());
+        fs::write(&path, saved.to_string()).unwrap();
+    }
+}
+
+#[test]
+fn an_install_whose_pending_is_lost_finishes_with_the_follow_its_record_kept() {
+    let fx = Fixture::new();
+    fx.install_stopped_without_pending(Choice::Branch("beta".to_owned()));
+    assert_eq!(fx.follows(), beta());
+    let plan = fx.plan_with(&fx.request()).unwrap();
+    assert_eq!(plan.build(), "300");
+    assert_eq!(plan.follow(), &beta());
+    fx.apply(&plan).unwrap();
+    assert_eq!(fx.follows(), beta());
+    assert_eq!(fx.read("bin/Game.exe"), "MZ the game itself");
+}
+
+#[test]
+fn an_install_retargets_to_the_branch_its_record_kept_and_drops_a_pin() {
+    let fx = Fixture::new();
+    fx.install_stopped_without_pending(Choice::Build("300".to_owned()));
+    assert_eq!(fx.follows().pinned.as_deref(), Some("300"));
+    fx.hide("300");
+    fx.content.add_build(Fixture::game("301").branch("beta"));
+    let plan = fx.plan_with(&fx.request()).unwrap();
+    assert_eq!(plan.build(), "301");
+    assert_eq!(plan.follow(), &beta());
+    assert!(
+        plan.warnings()
+            .iter()
+            .any(|warning| warning.ends_with("The pin to build 300 is removed.")),
+        "{:?}",
+        plan.warnings()
+    );
+    fx.apply(&plan).unwrap();
+    assert_eq!(fx.follows(), beta());
+
+    // A branch with nothing left says so instead of falling to the default.
+    let fx = Fixture::new();
+    fx.install_stopped_without_pending(Choice::Branch("beta".to_owned()));
+    fx.hide("300");
+    let error = fx.plan_with(&fx.request()).unwrap_err();
+    assert!(
+        matches!(error.downcast_ref(), Some(GalaxyError::BranchEmpty { .. })),
+        "{error:#}"
+    );
+}
+
+#[test]
+fn an_install_resumed_after_the_follow_changed_is_refused() {
+    let fx = Fixture::new();
+    fx.install_stopped_without_pending(Choice::Branch("beta".to_owned()));
+    let plan = fx.plan_with(&fx.request()).unwrap();
+    let mut record = fx.record().unwrap();
+    record.follow = Follow::default();
+    fs::write(
+        folder::sidecar_file(&fx.paths, &fx.folder),
+        record.to_json().unwrap(),
+    )
+    .unwrap();
+    let error = fx.apply(&plan).unwrap_err();
+    assert!(
+        matches!(
+            error.downcast_ref(),
+            Some(crate::gog::update::install::InstallError::Changed { .. })
+        ),
+        "{error:#}"
+    );
+    assert_eq!(fx.follows(), Follow::default());
+}

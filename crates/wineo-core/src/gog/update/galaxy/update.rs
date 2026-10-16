@@ -1768,6 +1768,12 @@ fn run(
     if !claimed && state.owner != plan.seen.owner {
         return Err(changed().into());
     }
+    // Another wineo may have pinned or moved the game since planning, which
+    // this must not write over. A game coming over from the installers has
+    // no follow to compare.
+    if plan.moves_from().is_none() && record::follow_now(&lock)? != plan.from {
+        return Err(changed().into());
+    }
     // Held from before each version is looked for until the update ends,
     // and checked for space before the first write, as an install does.
     let mut held = Vec::new();

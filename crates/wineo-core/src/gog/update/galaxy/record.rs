@@ -541,6 +541,12 @@ pub fn read(lock: &FolderLock) -> Result<Option<Record>> {
     Ok(lock.read_sidecar()?.and_then(|bytes| Record::parse(&bytes)))
 }
 
+/// What the folder's record says the game follows now, under its lock: the
+/// default branch, unpinned, when there's no record.
+pub fn follow_now(lock: &FolderLock) -> Result<Follow> {
+    Ok(read(lock)?.map(|record| record.follow).unwrap_or_default())
+}
+
 /// Replaces the folder's record in one synced write.
 pub fn write(lock: &FolderLock, record: &Record) -> Result<()> {
     lock.write_sidecar(&record.to_json()?)

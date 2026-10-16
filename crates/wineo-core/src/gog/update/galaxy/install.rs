@@ -264,6 +264,9 @@ pub struct Plan {
     manifest: Manifest,
     store: Vec<StoreNeed>,
     retarget: Option<Retarget>,
+    /// What the record said the game follows when planning looked, and what
+    /// the install leaves it following.
+    from: Follow,
     follow: Follow,
     warnings: Vec<String>,
 }
@@ -665,6 +668,9 @@ pub fn plan(
             })
             .collect(),
     };
+    let from = files_record(paths, &folder)
+        .map(|record| record.follow)
+        .unwrap_or_default();
     Ok(Plan {
         environment: name.to_owned(),
         gog_id,
@@ -683,6 +689,7 @@ pub fn plan(
         manifest: built.manifest,
         store,
         retarget: None,
+        from,
         follow: picked.to,
         warnings,
     })
@@ -774,9 +781,15 @@ fn resumed(
     let mut target = journal.target.clone();
     let mut retarget = None;
     let version_name;
-    let follow;
 
     let record = files_record(paths, &folder);
+    // A record that survived says what the install is for, even when
+    // `pending` didn't.
+    let from = record
+        .as_ref()
+        .map(|record| record.follow.clone())
+        .unwrap_or_default();
+    let mut follow = from.clone();
     let (manifest, store) = match record
         .as_ref()
         .and_then(|record| record::pending(&seen, record))
@@ -791,12 +804,10 @@ fn resumed(
                 })
                 .collect();
             version_name = pending.manifest.setup.version_name.clone();
-            follow = pending.follow.clone().unwrap_or_default();
+            follow = pending.follow.clone().unwrap_or_else(|| from.clone());
             (pending.manifest.clone(), store)
         }
         None => {
-            // Without `pending` nothing says which branch it was for.
-            follow = Follow::default();
             let builds = builds_of(session, gog_id, None)?;
             let began = target
                 .products
@@ -811,12 +822,25 @@ fn resumed(
             let chosen = match listed {
                 Some(build) => build,
                 None => {
-                    let latest =
-                        build::latest(&builds, None).ok_or_else(|| GalaxyError::NoBuild {
-                            title: title.clone(),
-                        })?;
+                    // The latest of the branch followed, with the pin
+                    // dropped, since the build it named is gone.
+                    let who = Who {
+                        title: &title,
+                        name: None,
+                    };
+                    let latest = follow::latest_on(&builds, from.branch.as_deref(), &who)?;
+                    let pin = from
+                        .pinned
+                        .as_deref()
+                        .filter(|pinned| *pinned == began)
+                        .map(|pinned| format!(" The pin to build {pinned} is removed."))
+                        .unwrap_or_default();
+                    follow = Follow {
+                        branch: from.branch.clone(),
+                        pinned: None,
+                    };
                     warnings.push(format!(
-                        "GOG no longer lists build {began} of {title}, so the install finishes with build {} instead.",
+                        "GOG no longer lists build {began} of {title}, so the install finishes with build {} instead.{pin}",
                         latest.build_id
                     ));
                     retarget = Some(Retarget {
@@ -925,6 +949,7 @@ fn resumed(
         manifest,
         store,
         retarget,
+        from,
         follow,
         warnings,
     })
@@ -1183,6 +1208,10 @@ fn run(
     let lock = FolderLock::exclusive(paths, folder, &cancel)?;
     let state = lock.read()?;
     if state != plan.seen {
+        return Err(changed(&folder.display().to_string()).into());
+    }
+    // Another wineo may have pinned the game since planning.
+    if record::follow_now(&lock)? != plan.from {
         return Err(changed(&folder.display().to_string()).into());
     }
     if paths.environment_config(name).exists() != plan.has_config {
