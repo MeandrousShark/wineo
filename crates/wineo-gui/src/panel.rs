@@ -242,8 +242,8 @@ impl App {
             && self.remove_reason_with(facts, &card.name).is_none()
     }
 
-    /// Whether the menu offers Update: a native GOG game the background
-    /// check found an update for, with nothing to finish first.
+    /// Whether the menu offers Update: a GOG game, on either track, the
+    /// background check found an update for, with nothing to finish first.
     pub(crate) fn gog_update_action(&self, name: &str) -> bool {
         self.gog_updates
             .get(name)

@@ -152,8 +152,8 @@ pub(crate) fn badge(gog: Option<&GogCard>, status: Option<&Status>) -> Option<Ba
     }
 }
 
-/// Whether this wineo can update the game now: an installer-tracked game
-/// with an update.
+/// Whether this wineo can update the game now: a game on either track with
+/// an update it can apply.
 pub(crate) fn updatable(status: &Status) -> bool {
     status.applicable && status.state == UpdateState::Available
 }

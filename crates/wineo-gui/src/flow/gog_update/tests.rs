@@ -477,7 +477,7 @@ fn a_windows_update_shows_each_installer_and_offers_the_setup_window_once() {
     .unwrap()
     {
         Planned::Update(pending) => pending,
-        Planned::UpToDate => panic!("expected an update"),
+        Planned::UpToDate | Planned::Galaxy(_) => panic!("expected an update"),
     };
     let first = apply_with(
         &world.paths,
@@ -530,7 +530,9 @@ fn a_windows_update_shows_each_installer_and_offers_the_setup_window_once() {
     let generation = page.generation;
     let _ = page.update(Event::Planned(generation, Ok(again)));
     assert_eq!(page.step, Step::Working, "the setup window runs right away");
-    let pending = page.pending.clone().unwrap();
+    let Some(Ready::Installer(pending)) = page.ready.clone() else {
+        panic!("expected an installer update");
+    };
     assert!(pending.wizard());
     let mut lines = Vec::new();
     let updated = apply_with(
@@ -652,3 +654,5 @@ fn an_interrupted_install_shows_finish_install_and_finishes_here() {
     assert!(!card.unfinished);
     set_graphical_session(None);
 }
+
+mod galaxy;

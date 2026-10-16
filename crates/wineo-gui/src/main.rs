@@ -18,6 +18,8 @@ mod flow;
 mod focus_button;
 mod fonts;
 #[cfg(test)]
+mod galaxy_fake;
+#[cfg(test)]
 mod gog_fake;
 // Shared with the other crates, which include the same file.
 mod gog_library;
@@ -46,6 +48,10 @@ mod size;
 mod snapshots_page;
 mod spinner;
 mod task;
+#[cfg(test)]
+#[allow(dead_code)]
+#[path = "../../wineo-core/tests/common/runners.rs"]
+mod test_runners;
 #[cfg(test)]
 #[path = "../../wineo-core/tests/common/test_script.rs"]
 mod test_script;
