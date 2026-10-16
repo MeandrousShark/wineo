@@ -4,7 +4,7 @@
 use std::fs;
 
 use wineo_core::gog::account::Session;
-use wineo_core::gog::update::galaxy::update as galaxy_update;
+use wineo_core::gog::update::galaxy::{self as core_galaxy, update as galaxy_update};
 
 use super::super::*;
 use crate::galaxy_fake::{Galaxy, NAME};
@@ -309,5 +309,125 @@ fn the_background_check_offers_a_galaxy_update_like_any_other() {
     assert_eq!(
         crate::gog_library::badge(None, Some(status)),
         Some(crate::gog_library::Badge::UpdateAvailable)
+    );
+}
+
+/// The update to 1.4.11 canceled once it is downloading, which leaves its
+/// journal.
+fn interrupted(world: &Galaxy) {
+    let plan = planned_by(world);
+    let token = Token::new();
+    let failure = apply(world, &plan, &token, |line| {
+        if line.starts_with("Downloading: ") {
+            token.cancel();
+        }
+    })
+    .unwrap_err();
+    assert_eq!(failure, Failure::Canceled { journal: true });
+}
+
+fn replan(world: &Galaxy, token: &Token) -> Result<Planned, String> {
+    plan_with_options(
+        &world.paths,
+        &world.keyring,
+        world.server.client(),
+        NAME,
+        Options::default(),
+        token,
+    )
+}
+
+#[test]
+fn a_planning_failure_ends_with_how_to_finish_once_only_with_a_journal() {
+    let world = world();
+    world.fail_builds(true);
+    let error = plan(&world, Options::default()).unwrap_err();
+    assert!(!error.contains("Finish update"), "no journal: {error}");
+    world.fail_builds(false);
+
+    interrupted(&world);
+    world.lose_record();
+    world.fail_builds(true);
+    let hint = format!("Use Finish update on {NAME} to finish it.");
+    let error = replan(&world, &Token::new()).unwrap_err();
+    assert!(error.ends_with(&hint), "{error}");
+    assert_eq!(error.matches(&hint).count(), 1, "{error}");
+}
+
+#[test]
+fn canceling_while_planning_says_whether_an_update_is_left_to_finish() {
+    let world = world();
+    let canceled = Token::new();
+    canceled.cancel();
+    assert_eq!(replan(&world, &canceled).unwrap_err(), "Update canceled.");
+    interrupted(&world);
+    assert_eq!(
+        replan(&world, &canceled).unwrap_err(),
+        format!("Update interrupted. Use Finish update on {NAME} to finish it.")
+    );
+}
+
+#[test]
+fn a_galaxy_install_journal_reaching_the_update_page_points_to_the_library() {
+    let world = Galaxy::new();
+    let token = Token::new();
+    wineo_core::gog::update::windows::set_graphical_session(Some(true));
+    let mut session = Session::open(&world.paths, &world.keyring, world.server.client())
+        .unwrap()
+        .unwrap();
+    let plan =
+        core_galaxy::install::plan(&world.paths, &mut session, &world.request(), &token).unwrap();
+    core_galaxy::install::apply(&world.paths, &mut session, &plan, &token, |step| {
+        if matches!(step, core_galaxy::Progress::Download { .. }) {
+            token.cancel();
+        }
+    })
+    .unwrap_err();
+    drop(session);
+    assert_eq!(
+        replan(&world, &Token::new()).unwrap_err(),
+        format!("{NAME}'s install didn't finish. Use Finish install on {NAME} in the library.")
+    );
+}
+
+#[test]
+fn a_retargeted_update_shows_the_warning_and_updates_when_asked() {
+    let world = world();
+    interrupted(&world);
+    // The build it was updating to is gone from GOG's lists, with another
+    // ahead of it.
+    world.lose_record();
+    world.hide("200");
+    world.newer("300", "1.5.0");
+    let Ok(Planned::Galaxy(plan)) = replan(&world, &Token::new()) else {
+        panic!("expected the update to finish");
+    };
+    assert!(plan.retarget().is_some(), "{:?}", plan.warnings());
+    assert!(
+        plan.warnings()
+            .iter()
+            .any(|warning| warning.contains("300")),
+        "{:?}",
+        plan.warnings()
+    );
+    let mut page = Page::new(world.paths.clone(), NAME.to_owned()).0;
+    let generation = page.generation;
+    let _ = page.update(Event::Planned(
+        generation,
+        Ok(Planned::Galaxy(plan.clone())),
+    ));
+    assert_eq!(page.step, Step::Review);
+    fits(&page);
+    // The review's Update button is the acceptance.
+    let _ = page.update(Event::Update);
+    assert_eq!(page.step, Step::Working);
+    let updated = apply(&world, &plan, &Token::new(), |_| {}).unwrap();
+    assert_eq!(
+        fs::read_to_string(world.file("Papers.exe")).unwrap(),
+        "MZ 1.5.0"
+    );
+    assert_eq!(
+        galaxy_result_lines(&world.paths, &plan, &updated)[0],
+        format!("Finished the interrupted update of {NAME}.")
     );
 }

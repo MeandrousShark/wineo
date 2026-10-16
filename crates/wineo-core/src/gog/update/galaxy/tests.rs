@@ -2033,8 +2033,7 @@ fn the_track_is_chosen_apart_from_planning_with_one_builds_fetch() {
     let chosen = track_for(&fx.paths, &mut fx.session(), &fx.request(), None).unwrap();
     assert_eq!(chosen, Track::Galaxy);
     assert_eq!(builds(&fx), 1);
-    // Planning on the chosen track asks for no builds list of its own
-    // choosing, and an explicit track chooses without asking at all.
+    // An explicit track chooses without asking GOG at all.
     let before = builds(&fx);
     let explicit = track_for(
         &fx.paths,
