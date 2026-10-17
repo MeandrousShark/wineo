@@ -348,10 +348,16 @@ fn config_written_between_first_check_and_lock_is_caught() {
     let f = Fixture::new();
     let dir = f.runner("unused");
     let lock = Lock::new(&f.paths, Kind::Runner, "unused");
-    let error = remove_after_check(&f.paths, &lock, &dir, || {
-        let _guard = lock.shared().unwrap();
-        f.environment("new-user", "runner = 'unused'");
-    })
+    let error = remove_after_check(
+        &f.paths,
+        &lock,
+        &dir,
+        || {
+            let _guard = lock.shared().unwrap();
+            f.environment("new-user", "runner = 'unused'");
+        },
+        || {},
+    )
     .unwrap_err();
     assert_eq!(error.to_string(), "unused is used by new-user.");
     assert!(dir.is_dir());
@@ -593,9 +599,13 @@ fn removal_refuses_a_config_that_breaks_between_the_checks() {
     let f = Fixture::new();
     let dir = f.runner("unused");
     let lock = Lock::new(&f.paths, Kind::Runner, "unused");
-    let error = remove_after_check(&f.paths, &lock, &dir, || {
-        f.environment("later", "runner = [invalid");
-    })
+    let error = remove_after_check(
+        &f.paths,
+        &lock,
+        &dir,
+        || f.environment("later", "runner = [invalid"),
+        || {},
+    )
     .unwrap_err();
     let text = error.to_string();
     assert!(text.starts_with("unused is kept, since a config can't be read\n"));
@@ -603,6 +613,40 @@ fn removal_refuses_a_config_that_breaks_between_the_checks() {
         text.contains(&f.paths.environment_config("later").display().to_string()),
         "{text}"
     );
+    assert!(dir.is_dir());
+}
+
+#[test]
+fn removal_refuses_a_config_that_breaks_while_sizing() {
+    let f = Fixture::new();
+    let dir = f.runner("unused");
+    let lock = Lock::new(&f.paths, Kind::Runner, "unused");
+    let error = remove_after_check(
+        &f.paths,
+        &lock,
+        &dir,
+        || {},
+        || f.environment("late", "runner = [invalid"),
+    )
+    .unwrap_err();
+    let text = error.to_string();
+    assert!(text.starts_with("unused is kept, since a config can't be read\n"));
+    assert!(
+        text.contains(&f.paths.environment_config("late").display().to_string()),
+        "{text}"
+    );
+    assert!(dir.is_dir());
+}
+
+#[test]
+fn a_lock_only_user_is_reported_before_an_unreadable_config() {
+    let f = Fixture::new();
+    let dir = f.runner("held");
+    f.environment("broken", "runner = [invalid");
+    let _shared = Lock::new(&f.paths, Kind::Runner, "held").shared().unwrap();
+    let error = crate::runners::remove(&f.paths, "held").unwrap_err();
+    assert!(matches!(error, Error::BuildInUse { .. }), "{error}");
+    assert_eq!(error.to_string(), "held is used by another operation.");
     assert!(dir.is_dir());
 }
 

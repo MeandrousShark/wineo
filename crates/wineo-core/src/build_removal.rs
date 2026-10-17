@@ -316,7 +316,7 @@ pub(crate) fn directory_size(dir: &Path) -> Result<u64> {
 }
 
 pub(crate) fn remove(paths: &Paths, build: &Lock, directory: &Path) -> Result<Removed> {
-    remove_after_check(paths, build, directory, || {})
+    remove_after_check(paths, build, directory, || {}, || {})
 }
 
 fn remove_after_check(
@@ -324,13 +324,13 @@ fn remove_after_check(
     build: &Lock,
     directory: &Path,
     after_check: impl FnOnce(),
+    after_size: impl FnOnce(),
 ) -> Result<Removed> {
     let root = directory.parent().expect("a build has a parent");
     let first = uses(paths, build)?;
     if !first.labels.is_empty() {
         return Err(in_use(build.name(), &first.labels));
     }
-    refuse_unreadable(build.name(), &first.errors)?;
     after_check();
     let Some(_guard) = build.try_exclusive()? else {
         return Err(in_use(build.name(), &uses(paths, build)?.labels));
@@ -341,9 +341,19 @@ fn remove_after_check(
     if !current.labels.is_empty() {
         return Err(in_use(build.name(), &current.labels));
     }
+    // References, then held locks, then unreadable configs, so a build another
+    // operation holds reports that, not an unrelated config.
     refuse_unreadable(build.name(), &current.errors)?;
     managed(directory, build.name())?;
     let bytes = directory_size(directory)?;
+    after_size();
+    // Sizing can take long enough for a config to change, so check once more
+    // right before the move.
+    let last = uses(paths, build)?;
+    if !last.labels.is_empty() {
+        return Err(in_use(build.name(), &last.labels));
+    }
+    refuse_unreadable(build.name(), &last.errors)?;
     let staged = move_out(directory)?;
     fs::remove_dir_all(&staged).context(|| format!("failed to delete {}", staged.display()))?;
     sync(root)?;
