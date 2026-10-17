@@ -487,8 +487,8 @@ fn an_interrupted_restore_is_an_error_and_skips_the_rest() {
     let marker = f.paths.restore_marker("game");
     fs::create_dir_all(marker.parent().unwrap()).unwrap();
     fs::write(&marker, "").unwrap();
-    assert_eq!(f.codes(), [Code::RestoreInterrupted]);
-    let problem = f.only(Code::RestoreInterrupted);
+    assert_eq!(f.codes(), [Code::SnapshotRestoreInterrupted]);
+    let problem = f.only(Code::SnapshotRestoreInterrupted);
     assert!(problem.message.contains("wineo snapshot recover game"));
     assert_eq!(problem.fix, None);
 }
@@ -514,7 +514,7 @@ fn a_well_formed_restore_marker_offers_only_explicit_recovery() {
         "old_config": saved_config,
     });
     fs::write(&marker, serde_json::to_vec(&contents).unwrap()).unwrap();
-    let problem = f.only(Code::RestoreInterrupted);
+    let problem = f.only(Code::SnapshotRestoreInterrupted);
     let wanted = Fix::RecoverSnapshot {
         environment: "game".to_owned(),
     };
@@ -1357,7 +1357,7 @@ fn check_environment_checks_only_that_environment() {
         (Code::TargetAmbiguous, "target_ambiguous", "warning", "environment"),
         (Code::LostRun, "lost_run", "warning", "runtime"),
         (Code::InstallerUnresolved, "installer_unresolved", "warning", "runtime"),
-        (Code::RestoreInterrupted, "restore_interrupted", "error", "runtime"),
+        (Code::SnapshotRestoreInterrupted, "snapshot_restore_interrupted", "error", "runtime"),
         (Code::StateDirStray, "state_dir_stray", "warning", "runtime"),
         (Code::DesktopEntryStray, "desktop_entry_stray", "warning", "desktop"),
         (Code::DesktopOutdated, "desktop_outdated", "warning", "desktop"),

@@ -142,9 +142,9 @@ fn recovery_report(app: &mut App, environments: &[&str]) {
             environment: Some((*environment).into()),
             template: None,
             stray: None,
-            area: Code::RestoreInterrupted.area(),
-            level: Code::RestoreInterrupted.level(),
-            code: Code::RestoreInterrupted,
+            area: Code::SnapshotRestoreInterrupted.area(),
+            level: Code::SnapshotRestoreInterrupted.level(),
+            code: Code::SnapshotRestoreInterrupted,
             message: "interrupted".into(),
             fix: Some(Fix::RecoverSnapshot {
                 environment: (*environment).into(),

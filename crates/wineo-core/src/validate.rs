@@ -172,7 +172,7 @@ codes! {
     TargetAmbiguous => "target_ambiguous", Level::Warning, Area::Environment;
     LostRun => "lost_run", Level::Warning, Area::Runtime;
     InstallerUnresolved => "installer_unresolved", Level::Warning, Area::Runtime;
-    RestoreInterrupted => "restore_interrupted", Level::Error, Area::Runtime;
+    SnapshotRestoreInterrupted => "snapshot_restore_interrupted", Level::Error, Area::Runtime;
     StateDirStray => "state_dir_stray", Level::Warning, Area::Runtime;
     DesktopEntryStray => "desktop_entry_stray", Level::Warning, Area::Desktop;
     DesktopOutdated => "desktop_outdated", Level::Warning, Area::Desktop;
@@ -952,7 +952,7 @@ fn check_one(
                 ),
             };
             report.push(Problem::new(
-                Code::RestoreInterrupted,
+                Code::SnapshotRestoreInterrupted,
                 Some(name),
                 message,
                 fix,
