@@ -1229,6 +1229,8 @@ pub struct ArtConfig {
     pub game: Option<u64>,
     pub kinds: Records,
     pub targets: BTreeMap<String, Records>,
+    /// The deprecated keys the file used, moved to their new names.
+    pub deprecated: Vec<crate::deprecated::Moved>,
 }
 
 impl ArtConfig {
@@ -1247,9 +1249,13 @@ impl ArtConfig {
     /// `path` is only used for error messages.
     pub fn parse(path: &Path, text: &str) -> Result<Self> {
         config::check_schema(path, text)?;
-        let raw: RawArt = config::parse_toml(path, text)?;
-        raw.validate()
-            .map_err(|message| config::invalid(path, message))
+        let (raw, deprecated): (RawArt, _) =
+            config::parse_config(path, text, crate::deprecated::FileKind::Art)?;
+        let mut art = raw
+            .validate()
+            .map_err(|message| config::invalid(path, message))?;
+        art.deprecated = deprecated;
+        Ok(art)
     }
 
     /// The records for `target`, or the environment's for None.
@@ -1274,6 +1280,8 @@ pub struct ArtFile {
     doc: DocumentMut,
     /// The text as read, or a new document's for a missing file.
     original: String,
+    /// Deprecated keys `doc` has under their new names while it's edited.
+    renamed: Vec<crate::deprecated::Renamed>,
     config: ArtConfig,
 }
 
@@ -1294,10 +1302,16 @@ impl ArtFile {
             }
             Err(err) => return Err(err).context(|| format!("failed to read {}", path.display())),
         };
+        let original = doc.to_string();
+        let mut doc = doc;
+        // Edits use the current names, and `save` puts the file's own back.
+        let renamed =
+            crate::deprecated::rename_document(crate::deprecated::FileKind::Art, &path, &mut doc)?;
         Ok(Self {
-            original: doc.to_string(),
+            original,
             path,
             doc,
+            renamed,
             config,
         })
     }
@@ -1411,11 +1425,15 @@ impl ArtFile {
     /// Writes the file if anything changed, marking it as the current version.
     /// Returns whether it wrote.
     pub fn save(&mut self) -> Result<bool> {
-        if self.doc.to_string() == self.original {
+        // An older release only knows the old names, so the file keeps them.
+        let mut written = self.doc.clone();
+        crate::deprecated::restore_document(&mut written, &self.renamed);
+        if written.to_string() == self.original {
             return Ok(false);
         }
         config::stamp_schema(&mut self.doc);
-        let text = self.doc.to_string();
+        config::stamp_schema(&mut written);
+        let text = written.to_string();
         self.config = ArtConfig::parse(&self.path, &text)?;
         write_atomic(&self.path, &text)?;
         self.original = text;
@@ -1510,6 +1528,7 @@ impl RawArt {
             game: self.game,
             kinds: kinds.validate("")?,
             targets,
+            deprecated: Vec::new(),
         })
     }
 }

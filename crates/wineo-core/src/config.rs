@@ -6,6 +6,7 @@ use std::str::FromStr;
 use serde::{Deserialize, Serialize};
 use toml_edit::{DocumentMut, Item, Table, value};
 
+use crate::deprecated::{self, FileKind, Moved};
 use crate::error::{Error, IoContext, NoPrefix, PrefixOwner, Result};
 use crate::files;
 pub use crate::gamescope::GamescopeSetting;
@@ -84,6 +85,9 @@ pub struct GlobalConfig {
     pub gog: GogConfig,
     #[serde(default)]
     pub env: BTreeMap<String, String>,
+    /// The deprecated keys the file used, moved to their new names.
+    #[serde(skip)]
+    pub deprecated: Vec<Moved>,
 }
 
 /// GOG settings.
@@ -264,6 +268,8 @@ pub struct EnvironmentConfig {
     pub winetricks: Vec<String>,
     pub env: BTreeMap<String, String>,
     pub targets: BTreeMap<String, Target>,
+    /// The deprecated keys the file used, moved to their new names.
+    pub deprecated: Vec<Moved>,
 }
 
 /// What an environment runs on. A config without `kind` is Wine.
@@ -458,6 +464,7 @@ impl RawEnvironmentConfig {
             winetricks: self.winetricks.unwrap_or_default(),
             env: self.env.unwrap_or_default(),
             targets: self.targets.unwrap_or_default(),
+            deprecated: Vec::new(),
         })
     }
 
@@ -717,6 +724,7 @@ impl Default for GlobalConfig {
             art: ArtConfig::default(),
             gog: GogConfig::default(),
             env: BTreeMap::new(),
+            deprecated: Vec::new(),
         }
     }
 }
@@ -800,7 +808,8 @@ impl GlobalConfig {
     /// `path` is only used for error messages.
     pub fn parse(path: &Path, text: &str) -> Result<Self> {
         check_schema(path, text)?;
-        let config: Self = parse_toml(path, text)?;
+        let (mut config, deprecated): (Self, _) = parse_config(path, text, FileKind::Global)?;
+        config.deprecated = deprecated;
         validate_env(&config.env).map_err(|message| invalid(path, message))?;
         if let Some(language) = &config.gog.language {
             crate::gog::language::validate(language).map_err(|message| invalid(path, message))?;
@@ -851,14 +860,16 @@ impl EnvironmentConfig {
     /// `path` is only used for error messages.
     pub fn parse(path: &Path, text: &str) -> Result<Self> {
         check_schema(path, text)?;
-        let raw: RawEnvironmentConfig = parse_toml(path, text)?;
+        let (raw, deprecated): (RawEnvironmentConfig, _) =
+            parse_config(path, text, FileKind::Environment)?;
         let name = path.file_stem().unwrap_or_default().to_string_lossy();
-        let config = raw
+        let mut config = raw
             .into_config(&name)
             .map_err(|message| invalid(path, message))?;
         config
             .validate()
             .map_err(|message| invalid(path, message))?;
+        config.deprecated = deprecated;
         Ok(config)
     }
 
@@ -1001,6 +1012,26 @@ pub(crate) fn stamp_schema(doc: &mut DocumentMut) {
 
 pub(crate) fn parse_toml<T: serde::de::DeserializeOwned>(path: &Path, text: &str) -> Result<T> {
     toml::from_str(text).map_err(|source| deserialize_error(path, source))
+}
+
+/// Parses a config with its deprecated keys moved to their new names, and
+/// says which were. Deserializing from the text, rather than the parsed
+/// table, keeps line and column in errors, so that is only skipped for a
+/// file that used an old name.
+pub(crate) fn parse_config<T: serde::de::DeserializeOwned>(
+    path: &Path,
+    text: &str,
+    file: FileKind,
+) -> Result<(T, Vec<Moved>)> {
+    let mut table: toml::Table = parse_toml(path, text)?;
+    let moved = deprecated::apply(file, path, &mut table)?;
+    if moved.is_empty() {
+        return Ok((parse_toml(path, text)?, moved));
+    }
+    let parsed = table
+        .try_into()
+        .map_err(|source| deserialize_error(path, source))?;
+    Ok((parsed, moved))
 }
 
 /// Sorts a failed config parse into an unknown key or any other syntax or

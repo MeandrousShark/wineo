@@ -1260,3 +1260,151 @@ fn apply_refuses_a_global_config_with_an_unknown_key() {
         NOTEPAD
     );
 }
+
+const OLD_SPELLING: &str = "# hand written\nschema_version = 1\nprefix = \"~/prefixes/notepad\"\ntest_old_gamemode = false # mine\nrunner = \"wine\"\narch = \"win64\"\n\n[targets.main]\ntest_old_exe = \"C:/a.exe\"\n";
+
+fn read_notepad(paths: &Paths) -> String {
+    fs::read_to_string(paths.environment_config("notepad")).unwrap()
+}
+
+#[test]
+fn setting_either_spelling_updates_the_one_the_file_has() {
+    for key in ["gamemode", "test_old_gamemode"] {
+        let (_root, paths) = setup();
+        write_env(&paths, OLD_SPELLING);
+        update(
+            &paths,
+            ConfigFile::Environment("notepad"),
+            &[(key, "true")],
+            &[],
+        )
+        .unwrap();
+        assert_eq!(
+            read_notepad(&paths),
+            OLD_SPELLING.replace("test_old_gamemode = false", "test_old_gamemode = true"),
+            "{key}"
+        );
+    }
+    for key in ["targets.main.exe", "targets.main.test_old_exe"] {
+        let (_root, paths) = setup();
+        write_env(&paths, OLD_SPELLING);
+        update(
+            &paths,
+            ConfigFile::Environment("notepad"),
+            &[(key, "C:/b.exe")],
+            &[],
+        )
+        .unwrap();
+        assert_eq!(
+            read_notepad(&paths),
+            OLD_SPELLING.replace("C:/a.exe", "C:/b.exe"),
+            "{key}"
+        );
+    }
+}
+
+#[test]
+fn setting_the_old_spelling_on_a_file_without_it_writes_the_new_one() {
+    let (_root, paths) = setup();
+    write_env(&paths, NOTEPAD);
+    update(
+        &paths,
+        ConfigFile::Environment("notepad"),
+        &[("test_old_gamemode", "true")],
+        &[],
+    )
+    .unwrap();
+    let text = read_notepad(&paths);
+    assert!(text.contains("\ngamemode = true\n"), "{text}");
+    assert!(!text.contains("test_old_gamemode"), "{text}");
+}
+
+#[test]
+fn unsetting_either_spelling_removes_the_key() {
+    for key in ["gamemode", "test_old_gamemode"] {
+        let (_root, paths) = setup();
+        write_env(&paths, OLD_SPELLING);
+        let missing = update(&paths, ConfigFile::Environment("notepad"), &[], &[key]).unwrap();
+        assert!(missing.is_empty(), "{key}");
+        assert_eq!(
+            read_notepad(&paths),
+            OLD_SPELLING.replace("test_old_gamemode = false # mine\n", ""),
+            "{key}"
+        );
+    }
+    let (_root, paths) = setup();
+    write_env(&paths, NOTEPAD);
+    let missing = update(
+        &paths,
+        ConfigFile::Environment("notepad"),
+        &[],
+        &["test_old_gamemode"],
+    )
+    .unwrap();
+    assert_eq!(missing, ["test_old_gamemode"]);
+}
+
+#[test]
+fn an_unrelated_edit_leaves_the_old_spelling_alone() {
+    let (_root, paths) = setup();
+    write_env(&paths, OLD_SPELLING);
+    update(
+        &paths,
+        ConfigFile::Environment("notepad"),
+        &[("mangohud", "true")],
+        &[],
+    )
+    .unwrap();
+    assert_eq!(
+        read_notepad(&paths),
+        OLD_SPELLING.replace("arch = \"win64\"\n", "arch = \"win64\"\nmangohud = true\n")
+    );
+}
+
+#[test]
+fn a_no_op_edit_leaves_the_old_spelling_byte_for_byte() {
+    let (_root, paths) = setup();
+    write_env(&paths, OLD_SPELLING);
+    let path = paths.environment_config("notepad");
+    let before = fs::metadata(&path).unwrap().modified().unwrap();
+    update(
+        &paths,
+        ConfigFile::Environment("notepad"),
+        &[("gamemode", "false"), ("targets.main.exe", "C:/a.exe")],
+        &[],
+    )
+    .unwrap();
+    assert_eq!(read_notepad(&paths), OLD_SPELLING);
+    assert_eq!(fs::metadata(&path).unwrap().modified().unwrap(), before);
+}
+
+#[test]
+fn an_edit_never_makes_both_spellings() {
+    let (_root, paths) = setup();
+    let path = paths.global_config();
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    fs::write(
+        &path,
+        "test_old_stop_timeout = 3\n[defaults]\ntest_old_runner = \"ge\"\n",
+    )
+    .unwrap();
+    update(
+        &paths,
+        ConfigFile::Global,
+        &[("stop_timeout", "4"), ("defaults.runner", "wine")],
+        &[],
+    )
+    .unwrap();
+    assert_eq!(
+        fs::read_to_string(&path).unwrap(),
+        "test_old_stop_timeout = 4\nschema_version = 1\n[defaults]\ntest_old_runner = \"wine\"\n"
+    );
+
+    fs::write(&path, "stop_timeout = 3\ntest_old_stop_timeout = 3\n").unwrap();
+    let err = update(&paths, ConfigFile::Global, &[("log_limit_mb", "1")], &[]).unwrap_err();
+    assert!(err.to_string().contains("test_old_stop_timeout"), "{err}");
+    assert_eq!(
+        fs::read_to_string(&path).unwrap(),
+        "stop_timeout = 3\ntest_old_stop_timeout = 3\n"
+    );
+}
