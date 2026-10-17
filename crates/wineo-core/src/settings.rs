@@ -52,6 +52,9 @@ pub struct Applied {
     /// Keys asked to be removed that weren't set.
     pub not_set: Vec<String>,
     pub desktop: Vec<desktop::Change>,
+    /// Things to tell the user that aren't changes, such as the global config
+    /// having been passed over for defaults.
+    pub warnings: Vec<String>,
     /// The runner this set switched to. The prefix is not migrated, and one
     /// set up by a newer wine may not work with it.
     pub changed_runner: Option<String>,
@@ -143,8 +146,9 @@ pub fn apply(
     let mut applied = Applied::default();
     // Checked under the lock, so a typo never gets written and the runner
     // cannot be removed between the check and the write.
+    let mut env_global = None;
     let _build_guards = if let ConfigFile::Environment(name) = file {
-        let global = GlobalConfig::load_or_default(paths)?;
+        let global = GlobalConfig::load_or_default(paths)?.note(&mut applied.warnings);
         let build_guards = build_lock::config(
             paths,
             &global,
@@ -153,6 +157,7 @@ pub fn apply(
             new_setting(pairs, "vkd3d"),
         )?;
         applied.components = check(paths, &global, name, pairs, unset)?;
+        env_global = Some(global);
         build_guards
     } else {
         Vec::new()
@@ -162,7 +167,15 @@ pub fn apply(
     for (lock, _) in &gog {
         lock.release()?;
     }
-    if let Err(err) = write_and_follow(paths, file, pairs, unset, guard.is_some(), &mut applied) {
+    if let Err(err) = write_and_follow(
+        paths,
+        file,
+        pairs,
+        unset,
+        env_global.as_ref(),
+        guard.is_some(),
+        &mut applied,
+    ) {
         applied.failed = Some(err);
     }
     // Held through the desktop step, so its icon extraction runs under it.
@@ -176,12 +189,13 @@ fn write_and_follow(
     file: ConfigFile,
     pairs: &[(&str, &str)],
     unset: &[&str],
+    global: Option<&GlobalConfig>,
     held: bool,
     applied: &mut Applied,
 ) -> anyhow::Result<()> {
     applied.not_set = update(paths, file, pairs, unset)?;
-    if let ConfigFile::Environment(name) = file {
-        applied.desktop = desktop::apply(paths, name, held)?;
+    if let (ConfigFile::Environment(name), Some(global)) = (file, global) {
+        applied.desktop = desktop::apply_with(paths, name, held, global)?;
     }
     // Wine writes its version into a prefix, so an older build can choke on a
     // prefix a newer one set up. Wineo does not try to detect that.
@@ -646,8 +660,10 @@ fn update_with_writer(
             let loaded_global;
             let global = match &global {
                 Some(global) => global,
+                // `apply` has reported a fallback already, and nothing else
+                // gets here with an environment's settings and no global.
                 None => {
-                    loaded_global = GlobalConfig::load_or_default(paths)?;
+                    loaded_global = GlobalConfig::load_or_default(paths)?.config;
                     &loaded_global
                 }
             };

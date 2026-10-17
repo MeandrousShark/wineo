@@ -207,12 +207,15 @@ pub fn ensure(
     mut events: impl FnMut(EnsureEvent),
 ) -> anyhow::Result<()> {
     let environment = Environment::load(paths, name)?;
-    let global = GlobalConfig::load_or_default(paths)?;
-    let context = context(paths, global, environment)?;
-    let wanted = &context.environment.config.winetricks;
-    if wanted.is_empty() {
+    let loaded = GlobalConfig::load_or_default(paths)?;
+    if environment.config.winetricks.is_empty() {
         return Ok(());
     }
+    if let Some(warning) = loaded.warning {
+        events(EnsureEvent::Winetricks(WinetricksEvent::Warning(warning)));
+    }
+    let context = context(paths, loaded.config, environment)?;
+    let wanted = &context.environment.config.winetricks;
 
     let runtime = Runtime::new(paths, name);
     if runtime.is_running()? {

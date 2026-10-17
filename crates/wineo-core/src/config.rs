@@ -735,6 +735,23 @@ impl Default for Defaults {
     }
 }
 
+/// A global config from `load_or_default`.
+#[derive(Debug)]
+pub struct Loaded {
+    pub config: GlobalConfig,
+    /// Why the file was passed over for defaults, if it was. Without a line
+    /// to show it, the defaults would apply silently.
+    pub warning: Option<String>,
+}
+
+impl Loaded {
+    /// The config, with any warning added to `warnings`.
+    pub fn note(self, warnings: &mut Vec<String>) -> GlobalConfig {
+        warnings.extend(self.warning);
+        self.config
+    }
+}
+
 impl GlobalConfig {
     /// Loads the global config, treating a missing file as all defaults.
     pub fn load(paths: &Paths) -> Result<Self> {
@@ -749,12 +766,24 @@ impl GlobalConfig {
         }
     }
 
-    /// Like `load`, but a broken file means defaults. A file in a format this
-    /// wineo doesn't know is still an error, so nothing acts on guessed settings.
-    pub fn load_or_default(paths: &Paths) -> Result<Self> {
+    /// Like `load`, but a file that can't be read as a config means defaults,
+    /// with a warning for the caller to show. A file this wineo can't
+    /// interpret faithfully, a newer format or a key it doesn't know, is still
+    /// an error, so nothing acts on guessed settings.
+    pub fn load_or_default(paths: &Paths) -> Result<Loaded> {
         match Self::load(paths) {
-            Err(err @ Error::SchemaVersion { .. }) => Err(err),
-            result => Ok(result.unwrap_or_default()),
+            Ok(config) => Ok(Loaded {
+                config,
+                warning: None,
+            }),
+            Err(err @ (Error::SchemaVersion { .. } | Error::ConfigUnknownKey { .. })) => Err(err),
+            Err(err) => Ok(Loaded {
+                config: Self::default(),
+                warning: Some(format!(
+                    "using default settings: {}",
+                    crate::error::chain(&err)
+                )),
+            }),
         }
     }
 
@@ -961,10 +990,25 @@ pub(crate) fn stamp_schema(doc: &mut DocumentMut) {
 }
 
 pub(crate) fn parse_toml<T: serde::de::DeserializeOwned>(path: &Path, text: &str) -> Result<T> {
-    toml::from_str(text).map_err(|source| Error::ConfigSyntax {
-        path: path.to_owned(),
-        source: Box::new(source),
-    })
+    toml::from_str(text).map_err(|source| deserialize_error(path, source))
+}
+
+/// Sorts a failed config parse into an unknown key or any other syntax or
+/// type problem. Every config parse goes through here, so the check lives in
+/// one place; the parser has no structured kind to match on, only serde's
+/// wording.
+pub(crate) fn deserialize_error(path: &Path, source: toml::de::Error) -> Error {
+    if source.message().starts_with("unknown field `") {
+        Error::ConfigUnknownKey {
+            path: path.to_owned(),
+            detail: Box::new(source),
+        }
+    } else {
+        Error::ConfigSyntax {
+            path: path.to_owned(),
+            source: Box::new(source),
+        }
+    }
 }
 
 pub(crate) fn invalid(path: &Path, message: String) -> Error {

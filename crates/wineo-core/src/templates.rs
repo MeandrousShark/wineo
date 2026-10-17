@@ -232,10 +232,8 @@ impl Templates {
 
 fn parse(path: &Path, text: &str) -> Result<Template> {
     crate::config::check_schema(path, text)?;
-    let mut table: toml::Table = toml::from_str(text).map_err(|source| Error::ConfigSyntax {
-        path: path.to_owned(),
-        source: Box::new(source),
-    })?;
+    let mut table: toml::Table =
+        toml::from_str(text).map_err(|source| config::deserialize_error(path, source))?;
     // Both are per-environment by definition, so they are called out rather
     // than lumped in with an unknown key.
     for key in ["prefix", "targets"] {
@@ -247,10 +245,9 @@ fn parse(path: &Path, text: &str) -> Result<Template> {
         }
     }
     table.remove("schema_version");
-    let template: Template = table.try_into().map_err(|source| Error::ConfigSyntax {
-        path: path.to_owned(),
-        source: Box::new(source),
-    })?;
+    let template: Template = table
+        .try_into()
+        .map_err(|source| config::deserialize_error(path, source))?;
     config::validate_tags(&template.tags).map_err(|message| Error::ConfigInvalid {
         path: path.to_owned(),
         message,

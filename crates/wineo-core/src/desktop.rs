@@ -67,25 +67,36 @@ pub enum Change {
         target: String,
         reason: String,
     },
+    /// Something the caller should say, not an entry that changed: the global
+    /// config was passed over for defaults, which the entries were built from.
+    Warning(String),
 }
 
 /// Writes the entries a config now asks for. Run after the write, so an entry
 /// is built from the config as it ends up rather than as it was. `held` says
 /// the caller already has the environment to itself.
 pub fn apply(paths: &Paths, name: &str, held: bool) -> Result<Vec<Change>> {
+    let loaded = GlobalConfig::load_or_default(paths)?;
+    let mut changes = apply_with(paths, name, held, &loaded.config)?;
+    changes.extend(loaded.warning.map(Change::Warning));
+    Ok(changes)
+}
+
+/// `apply` with a global config the caller has already loaded, and reported
+/// on if it fell back to defaults.
+pub fn apply_with(
+    paths: &Paths,
+    name: &str,
+    held: bool,
+    global: &GlobalConfig,
+) -> Result<Vec<Change>> {
     let Ok(environment) = Environment::load(paths, name) else {
         return Ok(Vec::new());
     };
     match &environment.config.kind {
         Kind::Wine(_) => {}
-        Kind::Native => {
-            let global = GlobalConfig::load_or_default(paths)?;
-            return reconcile_native(paths, &global, &environment);
-        }
-        Kind::Proxied(_) => {
-            let global = GlobalConfig::load_or_default(paths)?;
-            return reconcile_proxied(paths, &global, &environment);
-        }
+        Kind::Native => return reconcile_native(paths, global, &environment),
+        Kind::Proxied(_) => return reconcile_proxied(paths, global, &environment),
     }
     let Ok(prefix) = environment.prefix(paths) else {
         return Ok(Vec::new());
@@ -103,9 +114,8 @@ pub fn apply(paths: &Paths, name: &str, held: bool) -> Result<Vec<Change>> {
         .flatten();
     let may_run_wine =
         held || (launch.is_some() && Runtime::new(paths, name).check_resolved(name).is_ok());
-    let global = GlobalConfig::load_or_default(paths)?;
     let runner = may_run_wine
-        .then(|| Runners::new(paths, &global).ok())
+        .then(|| Runners::new(paths, global).ok())
         .flatten()
         .and_then(|runners| {
             runners
@@ -114,7 +124,7 @@ pub fn apply(paths: &Paths, name: &str, held: bool) -> Result<Vec<Change>> {
         });
     reconcile(
         paths,
-        &global,
+        global,
         &environment,
         runner.as_ref().map(|(runner, _)| runner),
         &prefix,

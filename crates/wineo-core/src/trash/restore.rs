@@ -54,7 +54,9 @@ fn reconcile(paths: &Paths, name: &str) -> Result<()> {
             }
         }
     }
-    let global = GlobalConfig::load_or_default(paths)?;
+    // The entry is rebuilt on the next launch anyway, and this step has no
+    // line to show a fallback on, so only a refusal is passed on.
+    let global = GlobalConfig::load_or_default(paths)?.config;
     let changes = match &environment.config.kind {
         config::Kind::Native => desktop::reconcile_native(paths, &global, &environment)?,
         config::Kind::Proxied(_) => desktop::reconcile_proxied(paths, &global, &environment)?,

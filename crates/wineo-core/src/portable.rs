@@ -789,7 +789,9 @@ pub fn execute_native_with(
 fn destination_global(to: &Paths, copied: Option<&str>) -> Result<GlobalConfig> {
     match copied {
         Some(text) => GlobalConfig::parse(&to.global_config(), text).map_err(Into::into),
-        None => Ok(GlobalConfig::load_or_default(to).unwrap_or_default()),
+        // Only the destination's runner roots matter here, to lock builds, so
+        // a fallback to defaults has nowhere to report and is left silent.
+        None => Ok(GlobalConfig::load_or_default(to)?.config),
     }
 }
 

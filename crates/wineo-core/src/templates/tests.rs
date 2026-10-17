@@ -194,7 +194,39 @@ fn unsupported_template_versions_are_rejected() {
 fn an_unknown_key_is_an_error() {
     let root = tempfile::tempdir().unwrap();
     write(root.path(), "typo", "gamemod = true\n");
-    assert!(templates(root.path()).resolve("typo").is_err());
+    let err = templates(root.path()).resolve("typo").unwrap_err();
+    assert!(matches!(err, Error::ConfigUnknownKey { .. }), "{err}");
+    let message = err.to_string();
+    assert!(message.contains("unknown field `gamemod`"), "{message}");
+    assert!(
+        message.ends_with(
+            "\nA newer version of wineo may have written it; update wineo or remove the key."
+        ),
+        "{message}"
+    );
+}
+
+#[test]
+fn template_syntax_and_type_errors_are_not_unknown_keys() {
+    let root = tempfile::tempdir().unwrap();
+    for text in ["gamemode = [\n", "gamemode = 3\n"] {
+        write(root.path(), "t", text);
+        let err = templates(root.path()).resolve("t").unwrap_err();
+        assert!(matches!(err, Error::ConfigSyntax { .. }), "{text}: {err}");
+        assert!(!err.to_string().contains("A newer version"), "{err}");
+    }
+}
+
+#[test]
+fn a_newer_template_version_gets_the_version_hint() {
+    let root = tempfile::tempdir().unwrap();
+    write(root.path(), "t", "schema_version = 2\n");
+    let err = templates(root.path()).resolve("t").unwrap_err();
+    assert!(
+        err.to_string()
+            .ends_with("\nA newer version of wineo wrote it; update wineo to use this file."),
+        "{err}"
+    );
 }
 
 #[test]

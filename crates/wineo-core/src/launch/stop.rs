@@ -98,13 +98,22 @@ pub fn stop_with(
         return Ok(outcome);
     };
 
-    let cleaned = clean_up_installer(paths, name).with_context(|| {
+    let (cleaned, warning) = clean_up_installer(paths, name).with_context(|| {
         let record = Runtime::new(paths, name).operation_path();
         format!(
             "failed to clean up after {name}'s last installer. If nothing it started is running any more, delete {} to clear this",
             record.display()
         )
     })?;
+    // The timeout lookup in `stop_run_with` reads the same file and has
+    // usually said so already.
+    if let Some(warning) = warning
+        && !messages
+            .iter()
+            .any(|message| message.starts_with("warning: "))
+    {
+        messages.push(format!("warning: {warning}"));
+    }
     match cleaned {
         Some(Cleaned::Stopped) => {
             messages.push(format!(
@@ -347,10 +356,16 @@ pub(crate) fn clean_up_lost_run(
 
 /// Stops whatever an installer left running when wineo could not confirm it
 /// was done.
-pub(crate) fn clean_up_installer(paths: &Paths, name: &str) -> Result<Option<Cleaned>> {
-    let global = GlobalConfig::load_or_default(paths)?;
-    let timeout = installer::clean_up_timeout(&global);
-    installer::clean_up(paths, &global, name, timeout)
+///
+/// The warning says the global config was passed over for defaults.
+pub(crate) fn clean_up_installer(
+    paths: &Paths,
+    name: &str,
+) -> Result<(Option<Cleaned>, Option<String>)> {
+    let loaded = GlobalConfig::load_or_default(paths)?;
+    let timeout = installer::clean_up_timeout(&loaded.config);
+    let cleaned = installer::clean_up(paths, &loaded.config, name, timeout)?;
+    Ok((cleaned, loaded.warning))
 }
 
 pub(crate) fn stop_timeout(paths: &Paths) -> (u32, Vec<String>) {
