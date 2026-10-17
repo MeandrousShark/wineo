@@ -286,7 +286,7 @@ fn a_portable_environment_keeps_working_after_the_folder_moves() {
         assert!(!config(&moved, "app").contains("FAKE_VAR"));
     }
 
-    assert_success(&wineo(&moved, &["rm", "app", "--delete-prefix"]));
+    assert_success(&wineo(&moved, &["rm", "app", "--include-prefix"]));
     assert!(!prefix.exists());
     assert_eq!(names(&wineo(&moved, &["list"])), ["copy"]);
 }

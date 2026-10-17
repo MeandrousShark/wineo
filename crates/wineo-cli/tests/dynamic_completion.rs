@@ -173,6 +173,37 @@ fn removal_completes_only_installed_build_names() {
 }
 
 #[test]
+fn removal_aliases_complete_and_hidden_spellings_stay_out() {
+    let root = tempfile::tempdir().unwrap();
+    for dir in ["x64", "x32"] {
+        let path = root.path().join("data/wineo/dxvk/dxvk-2.7").join(dir);
+        fs::create_dir_all(&path).unwrap();
+        fs::write(path.join("dxgi.dll"), b"build").unwrap();
+    }
+
+    // Build names complete after the alias too.
+    assert_eq!(
+        complete(root.path(), "fish", &["wineo", "dxvk", "rm", "dxvk-"]),
+        ["dxvk-2.7"]
+    );
+    assert_eq!(complete(root.path(), "fish", &["wineo", "rm"]), ["rm"]);
+    assert_eq!(complete(root.path(), "fish", &["wineo", "rem"]), ["remove"]);
+    for words in [
+        &["wineo", "snapshot", ""][..],
+        &["wineo", "dxvk", ""],
+        &["wineo", "runners", ""],
+        &["wineo", "art", ""],
+    ] {
+        let offered = complete(root.path(), "fish", words);
+        assert!(offered.iter().any(|name| name == "remove"), "{offered:?}");
+        assert!(!offered.iter().any(|name| name == "delete"), "{offered:?}");
+    }
+    let flags = complete(root.path(), "fish", &["wineo", "rm", "--"]);
+    assert!(flags.contains(&"--include-prefix".to_owned()), "{flags:?}");
+    assert!(!flags.contains(&"--delete-prefix".to_owned()), "{flags:?}");
+}
+
+#[test]
 fn trash_ids_complete_for_restore_and_prune() {
     let root = tempfile::tempdir().unwrap();
     write_environment(root.path(), "game", "kind = 'native'\n");

@@ -22,6 +22,7 @@ pub struct Args {
 #[derive(Subcommand)]
 enum Action {
     /// Remove an installed runner
+    #[command(visible_alias = "rm")]
     Remove(RemoveArgs),
 }
 

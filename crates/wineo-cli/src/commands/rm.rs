@@ -12,8 +12,8 @@ pub struct Args {
     name: String,
 
     /// Also move the Wine prefix and snapshots to trash
-    #[arg(long)]
-    delete_prefix: bool,
+    #[arg(long, alias = "delete-prefix")]
+    include_prefix: bool,
 
     /// Remove it even when its GOG game is mid-update
     #[arg(long)]
@@ -24,7 +24,7 @@ pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
     let entry = trash::remove_with_force(
         paths,
         &args.name,
-        args.delete_prefix,
+        args.include_prefix,
         args.force,
         &wineo_core::cancel::Token::new(),
         |event| {
@@ -36,7 +36,7 @@ pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
     for warning in &entry.warnings {
         eprintln!("warning: {warning}");
     }
-    if args.delete_prefix && entry.prefix_present == Some(false) {
+    if args.include_prefix && entry.prefix_present == Some(false) {
         eprintln!("The prefix is already gone; its config was retained in trash");
     }
     if entry.desktop_removed > 0 {
@@ -46,8 +46,8 @@ pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
             text::plural(entry.desktop_removed, "y", "ies")
         );
     }
-    let prefix_was_left = !args.delete_prefix && entry.prefix_present == Some(true);
-    if args.delete_prefix && entry.prefix_present == Some(true) {
+    let prefix_was_left = !args.include_prefix && entry.prefix_present == Some(true);
+    if args.include_prefix && entry.prefix_present == Some(true) {
         println!(
             "Removed environment {} and its prefix to trash {}",
             entry.name, entry.id

@@ -34,6 +34,7 @@ mod completion;
 mod output;
 mod picker;
 mod prompt;
+mod renamed;
 mod style;
 mod text;
 mod wizard;
@@ -115,6 +116,7 @@ enum Command {
     /// Set or remove an environment's artwork
     Art(commands::art::Args),
     /// Remove an environment
+    #[command(visible_alias = "remove")]
     Rm(commands::rm::Args),
     /// Return a trash entry's data to its original name and paths
     Restore(commands::restore::Args),
@@ -188,6 +190,7 @@ fn run() -> anyhow::Result<ExitCode> {
             return Ok(ExitCode::from(error.exit_code() as u8));
         }
     };
+    renamed::warn_used(&Cli::command(), std::env::args_os());
     let paths = Paths::from_env(cli.portable.as_deref())?;
     let verbose = cli.verbose;
     if !matches!(

@@ -130,14 +130,16 @@ pub fn remove_with_force(
         }
     }
     if include_prefix && prefix_path.is_none() {
-        bail!("{name}'s config cannot identify its prefix; remove without --delete-prefix instead");
+        bail!(
+            "{name}'s config cannot identify its prefix; remove without --include-prefix instead"
+        );
     }
     if include_prefix
         && let Some(raw) = &prefix_path
         && fs::symlink_metadata(raw).is_ok_and(|meta| meta.file_type().is_symlink())
     {
         bail!(
-            "{} is a symlink, so its prefix was not moved. Run `wineo rm {name}` without --delete-prefix instead",
+            "{} is a symlink, so its prefix was not moved. Run `wineo rm {name}` without --include-prefix instead",
             raw.display()
         );
     }
@@ -161,7 +163,7 @@ pub fn remove_with_force(
     if include_prefix && let (Some(prefix_path), Some(_)) = (&prefix_path, prefix_present) {
         if !prefix::holds_prefix(prefix_path) {
             bail!(
-                "{} is not a wine prefix. Run `wineo rm {name}` without --delete-prefix after checking its contents",
+                "{} is not a wine prefix. Run `wineo rm {name}` without --include-prefix after checking its contents",
                 prefix_path.display()
             );
         }

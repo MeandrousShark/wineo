@@ -57,7 +57,10 @@ pub fn removable_build_names(current: &OsStr) -> Vec<CompletionCandidate> {
     let Some((command, args)) = command_args(&words) else {
         return Vec::new();
     };
-    if !args.iter().any(|arg| arg == "remove") {
+    if !args
+        .iter()
+        .any(|arg| matches!(arg.as_str(), "remove" | "rm"))
+    {
         return Vec::new();
     }
     let names = match command {
@@ -241,7 +244,7 @@ pub fn snapshots(current: &OsStr) -> Vec<CompletionCandidate> {
     let [action, name, ..] = args else {
         return Vec::new();
     };
-    if !matches!(action.as_str(), "restore" | "delete") {
+    if !matches!(action.as_str(), "restore" | "remove" | "rm" | "delete") {
         return Vec::new();
     }
     snapshot::list(&paths, name)

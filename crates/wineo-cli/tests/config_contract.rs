@@ -212,7 +212,7 @@ fn rm_with_a_prefix_warns_when_the_global_config_fell_back() {
     let f = Fixture::new();
     f.environment("hades", TARGET);
     f.global_config("stop_timeout = [\n");
-    let removed = f.run(&["rm", "hades", "--delete-prefix"]);
+    let removed = f.run(&["rm", "hades", "--include-prefix"]);
     assert_success(&removed);
     assert_eq!(
         stderr(&removed)
@@ -229,7 +229,7 @@ fn rm_with_a_prefix_refuses_an_unknown_global_key() {
     let f = Fixture::new();
     f.environment("hades", TARGET);
     f.global_config("foo = 1\n");
-    let removed = f.run(&["rm", "hades", "--delete-prefix"]);
+    let removed = f.run(&["rm", "hades", "--include-prefix"]);
     assert!(!removed.status.success());
     assert!(
         stderr(&removed).contains(UNKNOWN_KEY_HINT),

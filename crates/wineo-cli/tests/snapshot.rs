@@ -127,12 +127,33 @@ fn create_restore_and_delete_keep_the_saved_state_independent() {
     );
     assert_eq!(f.created_config("game"), saved_config);
     assert!(snapshot.exists());
-    assert_success(&f.run(&["snapshot", "delete", "game", "before-update"]));
+    assert_success(&f.run(&["snapshot", "remove", "game", "before-update"]));
     assert!(!snapshot.exists());
     assert!(prefix.exists());
-    let removed = f.run(&["rm", "game", "--delete-prefix"]);
+    let removed = f.run(&["rm", "game", "--include-prefix"]);
     assert_success(&removed);
     assert!(!stdout(&removed).contains("Snapshots left"));
+}
+
+#[test]
+fn snapshot_remove_has_an_rm_alias_and_delete_still_works_with_a_warning() {
+    let Some(f) = fixture() else { return };
+    let (prefix, _) = environment(&f);
+    let snapshot = prefix.parent().unwrap().join(".wineo-snapshots/game/one");
+    for (verb, warned) in [("remove", false), ("rm", false), ("delete", true)] {
+        assert_success(&f.run(&["snapshot", "create", "game", "one"]));
+        assert!(snapshot.exists());
+        let removed = f.run(&["snapshot", verb, "game", "one"]);
+        assert_success(&removed);
+        assert!(!snapshot.exists(), "{verb}");
+        assert_eq!(stdout(&removed), "Deleted snapshot one of game\n");
+        let expected = if warned {
+            "warning: snapshot delete is deprecated; use snapshot remove\n"
+        } else {
+            ""
+        };
+        assert_eq!(stderr(&removed), expected, "{verb}");
+    }
 }
 
 #[test]
@@ -227,7 +248,7 @@ fn interrupted_restore_blocks_config_edits_and_removal() {
     for args in [
         vec!["set", "game", "runner=wine"],
         vec!["config", "game"],
-        vec!["rm", "game", "--delete-prefix"],
+        vec!["rm", "game", "--include-prefix"],
     ] {
         let output = f.run(&args);
         assert!(!output.status.success(), "{args:?}");
@@ -260,7 +281,7 @@ fn removing_prefix_and_snapshots_can_be_restored_from_trash() {
     let snapshots = prefix.parent().unwrap().join(".wineo-snapshots/game");
     f.write_stats_log("game", "saved playtime\n");
 
-    let removed = f.run(&["rm", "game", "--delete-prefix"]);
+    let removed = f.run(&["rm", "game", "--include-prefix"]);
     assert_success(&removed);
     assert!(!prefix.exists());
     assert!(!snapshots.exists());
@@ -505,7 +526,7 @@ fn restore_refuses_a_real_bind_mount() {
 /// See `restore_refuses_a_real_bind_mount` for how to run it.
 #[test]
 #[ignore]
-fn snapshot_delete_refuses_a_real_bind_mount_on_the_snapshot() {
+fn snapshot_remove_refuses_a_real_bind_mount_on_the_snapshot() {
     let Some(f) = fixture() else { return };
     let Some(tools) = namespace_tools() else {
         return;
@@ -531,7 +552,7 @@ fn snapshot_delete_refuses_a_real_bind_mount_on_the_snapshot() {
         &tools,
         &external,
         &snapshot,
-        &["snapshot", "delete", "game", "one"],
+        &["snapshot", "remove", "game", "one"],
     );
     assert!(!output.status.success(), "{}", stderr(&output));
     assert!(

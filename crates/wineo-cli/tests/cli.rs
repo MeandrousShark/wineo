@@ -1204,11 +1204,14 @@ fn static_completions_cover_every_visible_command_and_flag() {
             "global",
             "follow",
             "previous",
-            "delete-prefix",
+            "include-prefix",
             "all",
         ] {
             let needle = format!("--{flag}");
             assert!(script.contains(&needle), "{shell} is missing {needle}");
+        }
+        for hidden in ["delete-prefix", "'delete'", "\"delete\""] {
+            assert!(!script.contains(hidden), "{shell} offers {hidden}");
         }
     }
 }
@@ -1437,7 +1440,7 @@ fn rm_needs_exactly_one_name_and_removes_nothing_otherwise() {
 }
 
 #[test]
-fn rm_delete_prefix_deletes_the_prefix_without_following_its_symlinks() {
+fn rm_include_prefix_deletes_the_prefix_without_following_its_symlinks() {
     let root = tempfile::tempdir().unwrap();
     let outside = root.path().join("outside");
     fs::create_dir_all(&outside).unwrap();
@@ -1447,7 +1450,7 @@ fn rm_delete_prefix_deletes_the_prefix_without_following_its_symlinks() {
     fake_prefix(&prefix, &outside);
     environment_with_prefix(root.path(), "notepad", &prefix);
 
-    let out = output(wineo(root.path()).args(["rm", "notepad", "--delete-prefix"]));
+    let out = output(wineo(root.path()).args(["rm", "notepad", "--include-prefix"]));
     assert!(out.status.success(), "{}", stderr(&out));
     let output = stdout(&out);
     let id = output
@@ -1473,12 +1476,12 @@ fn rm_delete_prefix_deletes_the_prefix_without_following_its_symlinks() {
 }
 
 #[test]
-fn rm_delete_prefix_notes_a_prefix_that_is_already_gone() {
+fn rm_include_prefix_notes_a_prefix_that_is_already_gone() {
     let root = tempfile::tempdir().unwrap();
     let prefix = root.path().join("prefixes/notepad");
     environment_with_prefix(root.path(), "notepad", &prefix);
 
-    let out = output(wineo(root.path()).args(["rm", "notepad", "--delete-prefix"]));
+    let out = output(wineo(root.path()).args(["rm", "notepad", "--include-prefix"]));
     assert!(out.status.success(), "{}", stderr(&out));
     assert!(stderr(&out).contains("already gone"), "{}", stderr(&out));
     assert!(
@@ -1530,14 +1533,14 @@ fn rm_plain_notes_a_prefix_that_was_already_absent() {
 }
 
 #[test]
-fn rm_delete_prefix_refuses_a_directory_that_is_not_a_prefix() {
+fn rm_include_prefix_refuses_a_directory_that_is_not_a_prefix() {
     let root = tempfile::tempdir().unwrap();
     let prefix = root.path().join("prefixes/notepad");
     fs::create_dir_all(&prefix).unwrap();
     fs::write(prefix.join("notes.txt"), "not a prefix").unwrap();
     environment_with_prefix(root.path(), "notepad", &prefix);
 
-    let out = output(wineo(root.path()).args(["rm", "notepad", "--delete-prefix"]));
+    let out = output(wineo(root.path()).args(["rm", "notepad", "--include-prefix"]));
     assert!(!out.status.success());
     let message = stderr(&out);
     assert!(message.contains("is not a wine prefix"), "{message}");
@@ -1551,7 +1554,7 @@ fn rm_delete_prefix_refuses_a_directory_that_is_not_a_prefix() {
 }
 
 #[test]
-fn rm_delete_prefix_refuses_a_prefix_another_environment_uses() {
+fn rm_include_prefix_refuses_a_prefix_another_environment_uses() {
     let root = tempfile::tempdir().unwrap();
     let prefix = root.path().join("prefixes/shared");
     fake_prefix(&prefix, root.path());
@@ -1563,7 +1566,7 @@ fn rm_delete_prefix_refuses_a_prefix_another_environment_uses() {
         &root.path().join("prefixes/../prefixes/shared"),
     );
 
-    let out = output(wineo(root.path()).args(["rm", "notepad", "--delete-prefix"]));
+    let out = output(wineo(root.path()).args(["rm", "notepad", "--include-prefix"]));
     assert!(!out.status.success());
     assert!(
         stderr(&out).contains("also used by other"),
@@ -1579,14 +1582,14 @@ fn rm_delete_prefix_refuses_a_prefix_another_environment_uses() {
 }
 
 #[test]
-fn rm_delete_prefix_refuses_while_another_config_cannot_be_read() {
+fn rm_include_prefix_refuses_while_another_config_cannot_be_read() {
     let root = tempfile::tempdir().unwrap();
     let prefix = root.path().join("prefixes/notepad");
     fake_prefix(&prefix, root.path());
     environment_with_prefix(root.path(), "notepad", &prefix);
     write_environment(root.path(), "broken", "this is not toml");
 
-    let out = output(wineo(root.path()).args(["rm", "notepad", "--delete-prefix"]));
+    let out = output(wineo(root.path()).args(["rm", "notepad", "--include-prefix"]));
     assert!(!out.status.success());
     assert!(
         stderr(&out).contains("broken can't be read"),
@@ -1686,14 +1689,14 @@ fn rm_refuses_a_lost_run() {
 }
 
 #[test]
-fn rm_delete_prefix_refuses_unreadable_run_state() {
+fn rm_include_prefix_refuses_unreadable_run_state() {
     let root = tempfile::tempdir().unwrap();
     let prefix = root.path().join("prefixes/notepad");
     fake_prefix(&prefix, root.path());
     environment_with_prefix(root.path(), "notepad", &prefix);
     write_log(root.path(), "notepad", "state.toml", "not = valid = toml\n");
 
-    let out = output(wineo(root.path()).args(["rm", "notepad", "--delete-prefix"]));
+    let out = output(wineo(root.path()).args(["rm", "notepad", "--include-prefix"]));
     assert!(!out.status.success());
     assert!(
         stderr(&out).contains("wineo stop notepad"),
@@ -1726,7 +1729,7 @@ fn a_partly_deleted_prefix_keeps_the_config_and_explains_the_cleanup() {
 
     // What is left when a delete failed after removing system.reg.
     fs::remove_file(prefix.join("system.reg")).unwrap();
-    let out = output(wineo(root.path()).args(["rm", "notepad", "--delete-prefix"]));
+    let out = output(wineo(root.path()).args(["rm", "notepad", "--include-prefix"]));
     assert!(!out.status.success());
     let message = stderr(&out);
     assert!(message.contains("is not a wine prefix"), "{message}");
@@ -1744,7 +1747,7 @@ fn a_partly_deleted_prefix_keeps_the_config_and_explains_the_cleanup() {
 }
 
 #[test]
-fn rm_delete_prefix_refuses_a_prefix_path_that_is_a_symlink() {
+fn rm_include_prefix_refuses_a_prefix_path_that_is_a_symlink() {
     let root = tempfile::tempdir().unwrap();
     let real = root.path().join("prefixes/real");
     fake_prefix(&real, root.path());
@@ -1752,7 +1755,7 @@ fn rm_delete_prefix_refuses_a_prefix_path_that_is_a_symlink() {
     std::os::unix::fs::symlink(&real, &link).unwrap();
     environment_with_prefix(root.path(), "notepad", &link);
 
-    let out = output(wineo(root.path()).args(["rm", "notepad", "--delete-prefix"]));
+    let out = output(wineo(root.path()).args(["rm", "notepad", "--include-prefix"]));
     assert!(!out.status.success());
     assert!(stderr(&out).contains("is a symlink"), "{}", stderr(&out));
     assert!(real.join("system.reg").exists());
@@ -2202,7 +2205,7 @@ fn winetricks_runs_against_a_real_prefix() {
     assert!(out.status.success(), "{}", stderr(&out));
     // Nothing is left holding it once winetricks has finished.
     assert!(
-        output(wineo(root.path()).args(["rm", "notepad", "--delete-prefix"]))
+        output(wineo(root.path()).args(["rm", "notepad", "--include-prefix"]))
             .status
             .success()
     );
