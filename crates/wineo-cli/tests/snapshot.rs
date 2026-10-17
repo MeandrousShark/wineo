@@ -146,7 +146,7 @@ fn snapshot_remove_has_an_rm_alias_and_delete_still_works_with_a_warning() {
         let removed = f.run(&["snapshot", verb, "game", "one"]);
         assert_success(&removed);
         assert!(!snapshot.exists(), "{verb}");
-        assert_eq!(stdout(&removed), "Deleted snapshot one of game\n");
+        assert_eq!(stdout(&removed), "Removed snapshot one of game\n");
         let expected = if warned {
             "warning: snapshot delete is deprecated; use snapshot remove\n"
         } else {

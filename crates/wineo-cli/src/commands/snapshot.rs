@@ -87,7 +87,7 @@ pub fn run(paths: &Paths, args: Args, verbose: bool) -> anyhow::Result<ExitCode>
         Command::Restore { env, label, yes } => restore(paths, &env, &label, yes),
         Command::Remove { env, label } => {
             snapshot::delete(paths, &env, &label)?;
-            println!("Deleted snapshot {label} of {env}");
+            println!("Removed snapshot {label} of {env}");
             Ok(ExitCode::SUCCESS)
         }
         Command::Recover { env } => {
