@@ -128,7 +128,8 @@ storage is reported for attention rather than recovered by ordinary commands.
 | Desktop | An environment's entries out of date with its config | warning | rewrite them, like `start` does |
 | Desktop | Portable config with `desktop = true` | warning | |
 | Steam game | Steam isn't installed, or the chosen install is missing | error | |
-| Steam game | A Steam library is unavailable, or a Steam file can't be read | error | |
+| Steam game | A Steam library is unavailable | warning | |
+| Steam game | A Steam file can't be read | error | |
 | GOG game | A GOG folder state can't be read | error | |
 | GOG game | `gog_id` set, but no folder state names the environment | error | hint: migrate it again, or `--unset gog_id` |
 | GOG game | The environment's folder is owned by another environment | error | |
