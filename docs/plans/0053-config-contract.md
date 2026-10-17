@@ -322,6 +322,68 @@ which to change. Renames before 1.0 could just break, but going through
 question 5's path keeps your own configs working and gives the mechanism a
 real first use.
 
+### 🧐 8. Where library state lives
+
+Library views (priority 1, before 1.0) and completion status (priority 2)
+add state the app writes often: favorites, hidden, status, and notes per
+environment, plus global sort, zoom, and saved filter presets. Their rows
+assume new keys in the env configs. Under question 1 each such key makes
+the whole file unreadable to an older wineo, and the global settings would
+land in `config.toml`, where question 2 makes an unknown key refuse `set`
+and `new` everywhere. The same three scenarios in each option:
+
+- **Rollback:** in 1.5 you star hades and change the grid zoom (both new
+  in 1.5), then go back to 1.4.
+- **Hand edit:** you type `favourite = true` by hand.
+- **Remove and restore:** `wineo rm hades`, then `wineo restore hades`.
+
+**A. In the configs, as the rows assume.** Per-environment keys in
+`environments/<name>.toml`, global ones in a `[gui]` table in
+`config.toml`.
+
+```
+Rollback:  hades.toml refused (unknown field favorite); config.toml
+           refused too, so set and new fail for every environment
+Hand edit: refused as a typo
+Restore:   comes back with the config, for free
+```
+
+**B. One lenient `library.toml` (recommended).** A new file in the config
+dir, so it's backed up and travels with a portable folder. It holds
+per-environment tables keyed by name plus the global view settings, and
+carries `schema_version = 1` under question 3's rule. Unknown keys are
+ignored with `serde(default)` and `validate` warns about them. Edits go
+through `toml_edit` like every config, so 1.4 changing a star keeps 1.5's
+keys.
+
+```
+Rollback:  hades launches; 1.4 shows no star and the default zoom,
+           and 1.5 still has both
+Hand edit: ignored; validate warns about an unknown key in library.toml
+Restore:   core moves hades's entry into the trash entry and back
+```
+
+**C. Split by kind.** Status and notes, which are about the game and
+hand-written, go in the env configs; view state (favorites, hidden, sort,
+zoom, presets) goes in `library.toml`.
+
+```
+Rollback:  fine for the star and zoom; a status key added in 1.5 would
+           still make hades.toml unreadable to 1.4
+Hand edit: refused in the env config, ignored in library.toml
+Restore:   notes come back with the config; core handles the star
+```
+
+**Recommendation: B.** The rule is that env configs say how to run
+something and `library.toml` says how you see it. Strictness pays off for
+keys where skipping one changes a launch, and only costs for keys where it
+hides a star. The price is keeping entries in step through `rm`, trash
+restore, and `clone`, all in core. Tags stay in the env configs, since
+they shipped in 0.14.
+
+This plan only records the rule in `stability.md` and `config-files.md`;
+the library views plan builds the file.
+
 ## Proposed design
 
 Written for the recommended answers; amended once the questions are
@@ -383,9 +445,10 @@ to a temporary portable root and checks, with the current wineo:
 5. Upgrade tests over the sets.
 6. Naming review (question 7): a list for the maintainer. Any renames
    picked go through step 3's path.
-7. Docs: `stability.md` (questions 1, 3, and 4, and the deprecation
+7. Docs: `stability.md` (questions 1, 3, 4, and 8, and the deprecation
    period), `config-files.md` (art.toml in the versioned list, a
-   deprecated-keys section, the downgrade note), `validate.md` and
+   deprecated-keys section, the downgrade note, and where library state
+   goes), `validate.md` and
    `json-output.md` (`deprecated_key`), `workflow.md` (fixtures at each
    release), and the features rows and criteria 4 and 5.
 8. Acceptance checklist.
