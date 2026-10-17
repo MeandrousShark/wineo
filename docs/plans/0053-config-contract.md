@@ -30,6 +30,24 @@ config struct uses `deny_unknown_fields`.
 - **The JSON gaps** (criterion 3, 2026-10-12): closed in 0.30.1, so this
   plan covers criteria 4 and 5 only.
 
+On 2026-10-16 the maintainer answered the questions below:
+
+- **1: A2**, with the hint worded "A newer version of wineo may have
+  written it", which reads better aloud than "a newer wineo". The
+  unsupported-version hint uses the same wording.
+- **2: C.** Unknown global keys refuse; any other fallback to defaults
+  warns.
+- **3: the recommended rule.** 1.x may bump `schema_version` for a change
+  in meaning, stamping only files that need it; later 1.x reads every older
+  version, and 2.0 migrates.
+- **4: A.** Lenient internal files, and cleanup that keeps everything when
+  a record is unreadable.
+- **5: A.** Build the config-key half now; document the rest. Where the
+  warning shows is still open (see question 5).
+- **6: A.** Fixtures written by real old releases.
+- **7: the recommended review**, read-only and cross-family.
+- **8: B.** Library state lives in a lenient `library.toml`.
+
 ## Existing foundation
 
 - **Versioned configs** ([0018](0018-config-schema-versioning.md)):
@@ -69,7 +87,10 @@ config struct uses `deny_unknown_fields`.
 
 ## Questions for the maintainer
 
-### 🧐 1. A newer config in an older wineo
+Answered on 2026-10-16 (see "Settled by the maintainer"). The design
+below follows every answer.
+
+### 1. A newer config in an older wineo
 
 The promise is forward: newer wineo reads older files. The other direction
 happens too: a portable folder opened on another machine, a downgrade
@@ -106,7 +127,7 @@ run, so the hint has to ship in 1.0 to help later.
 
 ```
 Typo:      the error above, then:
-           A newer wineo may have written it; update wineo or remove the key.
+           A newer version of wineo may have written it; update wineo or remove the key.
 Portable:  the same for `foo`; other environments work
 Rollback:  same as portable
 ```
@@ -115,7 +136,7 @@ An unsupported `schema_version` (question 3) gets the same kind of hint:
 
 ```
 error: unsupported schema_version 2 in ~/.config/wineo/environments/hades.toml
-A newer wineo wrote it; update wineo to use this file.
+A newer version of wineo wrote it; update wineo to use this file.
 ```
 
 **B. Ignore unknown keys, with a warning.** Older wineo loads the file and
@@ -148,7 +169,7 @@ stamp current.
 **Recommendation: A2.** It keeps typo detection and safe launches, and the
 hint covers the downgrade case for a fraction of C's upkeep.
 
-### 🧐 2. A broken global config
+### 2. A broken global config
 
 Today a key the running wineo doesn't know in `config.toml` makes most
 commands quietly use all defaults (see foundation). Scenario: `config.toml`
@@ -169,7 +190,7 @@ runs `wineo set hades gamemode=true` and then `wineo new tool`.
 `status` keeps warning instead of failing, as it does for an unsupported
 version. This is a behavior change for the changelog.
 
-### 🧐 3. Version bumps in 1.x
+### 3. Version bumps in 1.x
 
 New keys never need a bump: question 1 covers older readers. A bump is for
 a change in what an existing value means, which `deny_unknown_fields` can't
@@ -224,7 +245,7 @@ Side effects to confirm:
   no code of its own. A script can't do anything different with it than
   with any other refusal.
 
-### 🧐 4. wineo's own files across versions
+### 4. wineo's own files across versions
 
 Internal files aren't promised, but criterion 9 (upgrading a real library
 needs no manual fixes) depends on them, and a downgrade can lose data.
@@ -246,7 +267,7 @@ as no record, and its redistributable cleanup removes a redistributable the
 
 A also closes the same hole for a corrupt record today.
 
-### 🧐 5. The deprecation path
+### 5. The deprecation path
 
 Nothing is deprecated yet, so the first real use comes in some 1.x
 release. The parts:
@@ -260,8 +281,8 @@ release. The parts:
   comments. A wineo edit to that file leaves the old key alone, since
   renaming it would make the file unreadable to a release from before the
   new name.
-- **Where the warning shows** for configs, scenario `wineo list` with 22
-  environments, 3 of them using a deprecated key:
+- 🧐 **Where the warning shows** (still open) for configs, scenario
+  `wineo list` with 22 environments, 3 of them using a deprecated key:
   - a: one line per file, three lines like `warning: hades.toml: old_name is deprecated; use new_name`
   - b (recommended): one summary line: `warning: 3 configs use deprecated keys; see wineo validate`
   - c: nothing outside `validate` and the app's checkup
@@ -287,7 +308,7 @@ What to build now:
 - **C.** Document the procedure only, and build everything with the first
   deprecation.
 
-### 🧐 6. Upgrade fixtures
+### 6. Upgrade fixtures
 
 - **A. Files written by real old releases (recommended).** Build a set of
   tagged releases in a worktree, have each one write configs and state
@@ -311,7 +332,7 @@ tagged release behind it, so it stays hand-written either way.
 Old releases can't reach GOG offline, so GOG folder states and Galaxy
 records come from v0.34.0's writers in tests rather than the generator.
 
-### 🧐 7. A naming review before the freeze
+### 7. A naming review before the freeze
 
 1.0 freezes every config key, flag, command, and JSON field name until
 2.0. **Recommended:** add a read-only review step, by a reviewer from the
@@ -322,7 +343,7 @@ which to change. Renames before 1.0 could just break, but going through
 question 5's path keeps your own configs working and gives the mechanism a
 real first use.
 
-### 🧐 8. Where library state lives
+### 8. Where library state lives
 
 Library views (priority 1, before 1.0) and completion status (priority 2)
 add state the app writes often: favorites, hidden, status, and notes per
@@ -386,8 +407,7 @@ the library views plan builds the file.
 
 ## Proposed design
 
-Written for the recommended answers; amended once the questions are
-settled.
+Follows the answers to every question.
 
 ### Unknown keys (questions 1 and 2)
 
