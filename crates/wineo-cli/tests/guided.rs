@@ -410,7 +410,7 @@ fn heroic_runner_copy_preserves_dependencies_and_survives_later_cancellation() {
         assert!(output.contains("Beta"), "{output}");
         if !cancel {
             let log =
-                fs::read_to_string(f.root.path().join("state/wineo/imports/alpha.log")).unwrap();
+                fs::read_to_string(f.root.path().join("state/wineo/.imports/alpha.log")).unwrap();
             assert!(log.contains(external.to_str().unwrap()), "{log}");
             assert!(log.contains("Beta"), "{log}");
         }

@@ -1419,12 +1419,12 @@ fn check_strays(
     report: &mut Report,
 ) -> Result<()> {
     let known: BTreeSet<&str> = names.iter().map(String::as_str).collect();
-    // Named after an environment, but not one.
-    let imports = paths.import_log("x");
-    let imports = imports.parent();
+    // Import logs lived here before they moved to a dot directory, so it
+    // holds logs rather than a removed environment's state.
+    let legacy_imports = paths.runtime_dir("imports");
 
     for (dir, stray) in subdirs(&parent(&paths.runtime_dir("x")))? {
-        if known.contains(stray.as_str()) || Some(dir.as_path()) == imports {
+        if known.contains(stray.as_str()) || dir == legacy_imports {
             continue;
         }
         let fix = name::is_valid(&stray).then(|| Fix::RemoveStateDir {

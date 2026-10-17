@@ -363,8 +363,9 @@ impl Paths {
     }
 
     /// Where a Heroic import appends its `-v` log, one file per environment name.
+    /// A dot directory, since `imports` would be an environment's runtime dir.
     pub fn import_log(&self, name: &str) -> PathBuf {
-        self.state.join("imports").join(format!("{name}.log"))
+        self.state.join(".imports").join(format!("{name}.log"))
     }
 
     /// Expands a leading `~` in a path taken from a config file or the command line.

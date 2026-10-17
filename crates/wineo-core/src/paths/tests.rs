@@ -61,7 +61,13 @@ fn defaults_follow_xdg_fallbacks() {
     );
     assert_eq!(
         paths.import_log("palworld"),
-        Path::new("/home/me/.local/state/wineo/imports/palworld.log")
+        Path::new("/home/me/.local/state/wineo/.imports/palworld.log")
+    );
+    // Removing an environment named imports must not take every log with it.
+    assert!(
+        !paths
+            .import_log("palworld")
+            .starts_with(paths.runtime_dir("imports"))
     );
 }
 

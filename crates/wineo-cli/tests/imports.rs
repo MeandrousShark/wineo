@@ -488,7 +488,7 @@ fn heroic_bulk_preserves_omission_evidence_in_verbose_output_and_plain_logs() {
         .unwrap();
     assert_success(&output);
     let printed = stdout(&output);
-    let log = fs::read_to_string(f.root.path().join("state/wineo/imports/alpha.log")).unwrap();
+    let log = fs::read_to_string(f.root.path().join("state/wineo/.imports/alpha.log")).unwrap();
     for text in [&printed, &log] {
         assert!(text.contains("WINEPREFIX"), "{text}");
         assert!(text.contains("wrapperOptions"), "{text}");
@@ -539,7 +539,7 @@ fn heroic_bulk_imports_gamescope_mangohud_and_supported_wine_wayland_hdr() {
     assert_eq!((game.width, game.fps_limit), (Some(1920), Some(60)));
     assert_eq!(game.args, ["--label", "two words"]);
     assert!(text.contains("[gamescope]"), "{text}");
-    let log = fs::read_to_string(f.root.path().join("state/wineo/imports/alpha.log")).unwrap();
+    let log = fs::read_to_string(f.root.path().join("state/wineo/.imports/alpha.log")).unwrap();
     for field in [
         "wayland: Some(true)",
         "mangohud: Some(true)",
@@ -735,7 +735,7 @@ fn heroic_disable_umu_disclosure_follows_runner_and_per_game_setting() {
                 } else {
                     assert_success(&output);
                     if verbose {
-                        let log = fs::read_to_string(f.root.path().join("state/wineo/imports/alpha.log"))
+                        let log = fs::read_to_string(f.root.path().join("state/wineo/.imports/alpha.log"))
                     .unwrap_or_else(|error| panic!("proton={proton}, per_game={per_game:?}, global_only={global_only}, bulk={bulk}: {error}\n{}\n{}", stdout(&output), stderr(&output)));
                         assert_eq!(
                             log.contains("Heroic disabled umu; wineo uses umu for Proton"),

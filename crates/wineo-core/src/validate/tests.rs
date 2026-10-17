@@ -996,6 +996,7 @@ fn a_state_dir_without_an_environment_is_removed() {
     // wineo's own dirs aren't environments.
     fs::create_dir_all(f.paths.locks_dir()).unwrap();
     fs::create_dir_all(f.paths.import_log("x").parent().unwrap()).unwrap();
+    fs::create_dir_all(f.paths.runtime_dir("imports")).unwrap();
     fs::create_dir_all(f.paths.runtime_dir("game")).unwrap();
 
     let problem = f.only(Code::StateDirStray);
