@@ -504,10 +504,13 @@ Not scans that could delete on a bad read: stray checks in `validate`
 
 Limits:
 
-- 🧐 **`runner rm` and component removal** (`build_removal.rs:84`) skip
-  a config they can't read, warn, and remove the build anyway
-  (`remove_build.rs:46`), so an older wineo can remove a runner a newer
-  config uses. Open: refuse, or record as a limit.
+- **`runner rm` and component removal** (`build_removal.rs:84`) skipped
+  a config they couldn't read, warned, and removed the build anyway
+  (`remove_build.rs:46`), so an older wineo could remove a runner a newer
+  config uses. The maintainer chose to refuse (2026-10-16): removal keeps
+  the build and names the configs it couldn't read. The read-only "used
+  by" listing still warns and carries on. A behavior change for the
+  changelog.
 - **The GOG download cache** (`wineo-gog/src/cache.rs:527`) ignores an
   unreadable cache record, so a download can overwrite a file it names.
   The cache can always be downloaded again, so this stays.
