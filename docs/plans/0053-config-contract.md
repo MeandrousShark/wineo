@@ -1,4 +1,4 @@
-Status: draft
+Status: approved
 
 # 0053: Config contract
 
@@ -541,4 +541,5 @@ For the maintainer to triage; not steps of this plan.
   logs use (`paths.rs:361-367`), so `wineo rm imports` deletes every
   environment's import log. Moving the logs to a dot directory, like
   `.locks` and `.icons`, fixes it, since environment names can't start
-  with a dot.
+  with a dot. Fixed as a patch fix (439a8d08); validate still skips the old
+  `imports` dir so logs written before the fix aren't offered for removal.
