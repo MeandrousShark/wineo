@@ -527,7 +527,7 @@ fn removed_and_restored_environment_rejects_the_old_checks_reply() {
     assert!(!app.checkups.contains_key(&scope()));
     let _ = app.update(Message::Undo);
     wineo_core::trash::restore(&app.paths, &entry.id).unwrap();
-    let _ = app.update(Message::UndoFinished(app.change_generation, Ok(())));
+    let _ = app.update(Message::UndoFinished(app.change_generation, Ok(Vec::new())));
     let _ = app.update(Message::Loaded(Ok(crate::library::load_library(
         &app.paths,
     )

@@ -415,7 +415,7 @@ fn successful_remove_clears_only_that_environments_checkup() {
     assert!(app.checkups.contains_key(&other));
     let _ = app.update(Message::Undo);
     trash::restore(&app.paths, &entry.id).unwrap();
-    let _ = app.update(Message::UndoFinished(app.change_generation, Ok(())));
+    let _ = app.update(Message::UndoFinished(app.change_generation, Ok(Vec::new())));
     let _ = app.update(Message::Loaded(Ok(crate::library::load_library(
         &app.paths,
     )
@@ -454,7 +454,7 @@ fn undo_uses_entry_id_refusal_stays_and_success_dismisses() {
     ));
     assert!(matches!(app.change, Some(Change::Restore { .. })));
     trash::restore(&app.paths, &entry.id).unwrap();
-    let _ = app.update(Message::UndoFinished(app.change_generation, Ok(())));
+    let _ = app.update(Message::UndoFinished(app.change_generation, Ok(Vec::new())));
     assert!(app.toast.is_none());
 }
 
@@ -733,7 +733,7 @@ fn closing_prompts_cancels_wait_and_waits_for_moving_or_restore() {
     let _ = app.update(Message::Window(iced::window::Event::CloseRequested));
     let _ = app.update(Message::CancelAndClose);
     assert!(app.closing && app.foreground_busy());
-    let _ = app.update(Message::UndoFinished(app.change_generation, Ok(())));
+    let _ = app.update(Message::UndoFinished(app.change_generation, Ok(Vec::new())));
     assert!(!app.foreground_busy());
 }
 
@@ -769,7 +769,7 @@ fn stale_reads_and_progress_cannot_replace_a_new_change() {
     let _ = app.update(Message::RemoveFinished(old_change, Err("late".into())));
     assert!(matches!(&app.change, Some(Change::Restore { id, .. }) if id == &entry.id));
     trash::restore(&app.paths, &entry.id).unwrap();
-    let _ = app.update(Message::UndoFinished(app.change_generation, Ok(())));
+    let _ = app.update(Message::UndoFinished(app.change_generation, Ok(Vec::new())));
     app.cards = crate::library::load_library(&app.paths).unwrap();
     open(&mut app);
     let _ = app.update(Message::ConfirmRemove);
@@ -778,7 +778,7 @@ fn stale_reads_and_progress_cannot_replace_a_new_change() {
         app.change,
         Some(Change::Remove { phase: None, .. })
     ));
-    let _ = app.update(Message::UndoFinished(old_change + 1, Ok(())));
+    let _ = app.update(Message::UndoFinished(old_change + 1, Ok(Vec::new())));
     assert!(matches!(app.change, Some(Change::Remove { .. })));
 }
 
@@ -817,4 +817,31 @@ fn closing_a_dialog_cancels_measurement_and_ignores_old_size() {
     let token = app.removal.as_ref().unwrap().measure.clone();
     let _ = app.update(Message::Window(iced::window::Event::CloseRequested));
     assert!(app.removal.is_none() && token.is_canceled());
+}
+
+#[test]
+fn an_undo_that_had_a_warning_says_so_in_the_toast() {
+    let (_root, mut app) = fixture(false);
+    let entry = removed(&mut app);
+    let _ = app.update(Message::Undo);
+    let global = app.paths.global_config();
+    std::fs::create_dir_all(global.parent().unwrap()).unwrap();
+    std::fs::write(global, "stop_timeout = [\n").unwrap();
+    let notes = trash::restore(&app.paths, &entry.id).unwrap();
+    assert_eq!(notes.len(), 1, "{notes:?}");
+
+    let _ = app.update(Message::UndoFinished(app.change_generation, Ok(notes)));
+    let toast = app.toast.as_ref().expect("the toast stays up to say it");
+    assert!(
+        toast
+            .text
+            .starts_with("Restored game. Warning: using default settings: "),
+        "{}",
+        toast.text
+    );
+    assert!(toast.restored);
+    assert!(!toast.text.contains('\n'), "{}", toast.text);
+    // Nothing is left to undo.
+    let _ = app.update(Message::Undo);
+    assert!(app.change.is_none());
 }
