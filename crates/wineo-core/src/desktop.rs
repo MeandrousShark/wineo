@@ -241,7 +241,7 @@ pub(crate) fn pending_in(
     let plan = plan(paths, global, environment, runner, prefix, listed)?;
     let mut pending = Vec::new();
     for (target, draft) in plan.wanted {
-        match draft {
+        match draft.map(|drafted| drafted.draft) {
             Ok(Some(draft)) if draft.existing.is_some() => pending.push(Pending::Update { target }),
             Ok(Some(_)) => pending.push(Pending::Write { target }),
             Ok(None) | Err(_) => {}
@@ -274,9 +274,17 @@ fn reconcile_with(
     let plan = plan(paths, global, environment, runner, prefix, &list(paths)?)?;
     let mut changes = Vec::new();
     for (target_name, draft) in plan.wanted {
-        let written = draft.and_then(|draft| match draft {
-            Some(draft) => write(paths, environment, runner, prefix, &target_name, draft),
-            None => Ok(Vec::new()),
+        let written = draft.and_then(|drafted| {
+            let mut changes = match drafted.draft {
+                Some(draft) => write(paths, environment, runner, prefix, &target_name, draft)?,
+                None => Vec::new(),
+            };
+            changes.extend(drafted.art_warning.map(|error| {
+                Change::Warning(format!(
+                    "art for {target_name} could not be read, so its icon was left as it is: {error}"
+                ))
+            }));
+            Ok(changes)
         });
         match written {
             Ok(written) => changes.extend(written),
@@ -300,7 +308,7 @@ fn reconcile_with(
 struct Plan {
     /// Each target asking for an entry, with the draft of it, or None when the
     /// entry on disk already matches.
-    wanted: Vec<(String, Result<Option<Draft>>)>,
+    wanted: Vec<(String, Result<Drafted>)>,
     /// Entries for a target that stopped asking for one, or one that was
     /// removed from the config entirely.
     leftover: Vec<Entry>,
@@ -483,6 +491,15 @@ fn ensure_entry_available(path: &Path, environment: &str, target: &str) -> Resul
     }
 }
 
+/// What reading a target's entry came to.
+struct Drafted {
+    /// None when the entry on disk already matches.
+    draft: Option<Draft>,
+    /// Why the target's art couldn't be read. The entry's icon is left as it
+    /// is, and the caller says so.
+    art_warning: Option<String>,
+}
+
 /// Everything about a target's entry that is known without writing it.
 struct Draft {
     path: PathBuf,
@@ -497,6 +514,9 @@ struct Draft {
     art_stamp: Option<String>,
     had_icon: bool,
     stale_art: bool,
+    /// The art couldn't be read, so the icon is neither replaced nor removed
+    /// and the entry keeps the stamp it has.
+    art_unreadable: bool,
     art_only: bool,
 }
 
@@ -517,6 +537,9 @@ impl Draft {
     }
 
     fn stamp(&self, icon: bool) -> Option<&str> {
+        if self.art_unreadable && self.existing.is_some() {
+            return self.existing_stamp.as_deref();
+        }
         match &self.art_stamp {
             Some(stamp) => Some(stamp),
             None => icon.then_some("exe"),
@@ -534,7 +557,7 @@ fn draft(
     prefix: Option<&Path>,
     target_name: &str,
     target: &Target,
-) -> Result<Option<Draft>> {
+) -> Result<Drafted> {
     match prefix {
         Some(prefix) => check(paths, prefix, &target.exe)?,
         None => {
@@ -560,11 +583,16 @@ fn draft(
         || launch::gamescope(environment, Some(target)).is_some()
         || launch::mangohud(global, environment, Some(target));
 
-    let art = icon_art(paths, &environment.name, target_name)?;
+    let (art, art_warning) = match icon_art(paths, &environment.name, target_name)? {
+        IconLookup::Art(art) => (Some(art), None),
+        IconLookup::None => (None, None),
+        IconLookup::Unreadable(error) => (None, Some(error)),
+    };
     let art_stamp = art.as_ref().map(|art| format!("art:{}", art.hash));
     let had_icon = has_icon(paths, &environment.name, target_name);
     // Icons from art that has since gone are the art's, not the exe's.
     let stale_art = art.is_none()
+        && art_warning.is_none()
         && existing_stamp
             .as_deref()
             .is_some_and(|stamp| stamp.starts_with("art:"));
@@ -581,6 +609,7 @@ fn draft(
         art_stamp,
         had_icon,
         stale_art,
+        art_unreadable: art_warning.is_some(),
         art_only: false,
     };
     // With an icon already there, the text below matches and nothing runs.
@@ -591,7 +620,10 @@ fn draft(
                     .render(&environment.name, target_name, had_icon)
                     .as_str(),
             );
-    Ok((!current).then_some(draft))
+    Ok(Drafted {
+        draft: (!current).then_some(draft),
+        art_warning,
+    })
 }
 
 fn draft_proxied(
@@ -599,7 +631,7 @@ fn draft_proxied(
     global: &GlobalConfig,
     environment: &Environment,
     proxied: &crate::config::ProxiedConfig,
-) -> Result<Option<Draft>> {
+) -> Result<Drafted> {
     let target_name = proxied.launcher.as_str();
     let live_title = steam::active_for(paths, global).and_then(|install| {
         steam::manifests(&install)
@@ -616,10 +648,15 @@ fn draft_proxied(
     ensure_entry_available(&path, &environment.name, target_name)?;
     let existing = fs::read_to_string(&path).ok();
     let existing_stamp = existing.as_deref().and_then(stamp_of).map(str::to_owned);
-    let art = icon_art(paths, &environment.name, target_name)?;
+    let (art, art_warning) = match icon_art(paths, &environment.name, target_name)? {
+        IconLookup::Art(art) => (Some(art), None),
+        IconLookup::None => (None, None),
+        IconLookup::Unreadable(error) => (None, Some(error)),
+    };
     let art_stamp = art.as_ref().map(|art| format!("art:{}", art.hash));
     let had_icon = has_icon(paths, &environment.name, target_name);
     let stale_art = art.is_none()
+        && art_warning.is_none()
         && existing_stamp
             .as_deref()
             .is_some_and(|stamp| stamp.starts_with("art:"));
@@ -636,17 +673,21 @@ fn draft_proxied(
         art_stamp,
         had_icon,
         stale_art,
+        art_unreadable: art_warning.is_some(),
         art_only: true,
     };
     let current = !draft.stale_art
-        && !(draft.art_only && draft.art.is_none() && draft.had_icon)
+        && !(draft.art_only && draft.art.is_none() && !draft.art_unreadable && draft.had_icon)
         && draft.existing.as_deref()
             == Some(
                 draft
                     .render(&environment.name, target_name, had_icon)
                     .as_str(),
             );
-    Ok((!current).then_some(draft))
+    Ok(Drafted {
+        draft: (!current).then_some(draft),
+        art_warning,
+    })
 }
 
 fn write(
@@ -714,6 +755,10 @@ fn write(
                 true
             }
         }
+        // Whatever icon is there stays, since nothing can be said about what
+        // the art would have been. An entry with none yet still gets the
+        // exe's, which a readable art.toml later replaces.
+        None if draft.art_unreadable && (had_icon || draft.art_only) => had_icon,
         None => {
             if stale_art || draft.art_only {
                 remove_icons(paths, &environment.name, target_name)?;
@@ -752,21 +797,29 @@ struct IconArt {
     hash: String,
 }
 
-/// A bad `art.toml` counts as no art. The art commands already report it, and
-/// a launch is not the place to.
-fn icon_art(paths: &Paths, environment: &str, target: &str) -> Result<Option<IconArt>> {
+/// What a target's icon art came to.
+enum IconLookup {
+    Art(IconArt),
+    None,
+    /// `art.toml` couldn't be read, with why. That isn't "no art": the icon
+    /// the entry has is left alone rather than replaced from guesswork.
+    Unreadable(String),
+}
+
+fn icon_art(paths: &Paths, environment: &str, target: &str) -> Result<IconLookup> {
     let art_dir = paths.art_dir(environment);
-    let Ok(config) = ArtConfig::load(&art_dir) else {
-        return Ok(None);
+    let config = match ArtConfig::load(&art_dir) {
+        Ok(config) => config,
+        Err(error) => return Ok(IconLookup::Unreadable(crate::error::chain(&error))),
     };
     let Some(resolved) = art::resolve(&art_dir, &config, Some(target), art::Kind::Icon)? else {
-        return Ok(None);
+        return Ok(IconLookup::None);
     };
     let path = resolved.found.path;
     let bytes = fs::read(&path).context(|| format!("failed to read {}", path.display()))?;
     let mut hash = format!("{:x}", Sha256::digest(&bytes));
     hash.truncate(16);
-    Ok(Some(IconArt {
+    Ok(IconLookup::Art(IconArt {
         path,
         format: resolved.found.format,
         hash,
