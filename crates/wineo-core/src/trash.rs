@@ -27,6 +27,8 @@ mod identity;
 mod manifest;
 mod markers;
 mod payload;
+#[cfg(any(test, feature = "test-support"))]
+mod rebind;
 mod remove;
 mod restore;
 
@@ -45,6 +47,8 @@ use markers::{
     path_overlap, relocated_marker_root, retire_marker, start_marker,
 };
 use payload::{retained_identity, verified_retained, verify_parents};
+#[cfg(any(test, feature = "test-support"))]
+pub use rebind::rebind_identities;
 pub use remove::{RemoveEvent, remove, remove_with, remove_with_force};
 pub use restore::restore;
 use restore::{complete_entry, restore_locked};

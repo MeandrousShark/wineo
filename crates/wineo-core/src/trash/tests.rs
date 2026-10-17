@@ -2383,3 +2383,33 @@ mod gog {
         assert_eq!(load(&f.paths, &folder).owner.as_deref(), Some("rimworld"));
     }
 }
+
+#[test]
+fn rebinding_identities_changes_only_the_identity_numbers() {
+    let f = Fixture::new();
+    let prefix = f.wine("game");
+    let snapshots = f.paths.snapshot_root(&prefix, "game");
+    fs::create_dir_all(&snapshots).unwrap();
+    fs::write(snapshots.join("saved"), "snapshot").unwrap();
+    let entry = remove(&f.paths, "game", true).unwrap();
+    let file = entry_dir(&f.paths, &entry.id).unwrap().join(MANIFEST);
+    let written = fs::read_to_string(&file).unwrap();
+
+    // What a checkout does: every recorded inode is somebody else's.
+    let mut manifest = read_manifest(&f.paths, &entry.id).unwrap();
+    manifest.entry_identity.inode += 1;
+    if let Some(identity) = &mut manifest.prefix_identity {
+        identity.inode += 1;
+    }
+    for payload in &mut manifest.payloads {
+        payload.identity.inode += 1;
+        payload.source_parent.inode += 1;
+        payload.destination_parent.inode += 1;
+    }
+    write_manifest(&f.paths, &manifest).unwrap();
+    assert!(read_manifest(&f.paths, &entry.id).is_err());
+
+    assert_eq!(rebind_identities(&f.paths).unwrap(), 1);
+    assert_eq!(fs::read_to_string(&file).unwrap(), written);
+    read_manifest(&f.paths, &entry.id).unwrap();
+}
