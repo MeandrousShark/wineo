@@ -51,6 +51,7 @@ use std::process::ExitCode;
 
 use clap::{CommandFactory, Parser, Subcommand, ValueHint};
 use wineo_core::components::Component;
+use wineo_core::deprecated;
 use wineo_core::paths::Paths;
 use wineo_core::supervisor;
 
@@ -189,6 +190,12 @@ fn run() -> anyhow::Result<ExitCode> {
     };
     let paths = Paths::from_env(cli.portable.as_deref())?;
     let verbose = cli.verbose;
+    if !matches!(
+        cli.command,
+        Command::Validate(_) | Command::Completions(_) | Command::Manpages(_)
+    ) {
+        warn_deprecated(&paths);
+    }
     match cli.command {
         Command::New(args) => commands::new::run(&paths, args),
         Command::Clone(args) => commands::clone::run(&paths, args, verbose),
@@ -226,6 +233,14 @@ fn run() -> anyhow::Result<ExitCode> {
         Command::Winetricks(args) => commands::winetricks::run(&paths, args),
         Command::Completions(args) => commands::completions::run(&mut Cli::command(), args),
         Command::Manpages(args) => commands::manpages::run(Cli::command(), args),
+    }
+}
+
+/// One line for every config a deprecated key is in, before the command
+/// runs, so a long `run` shows it up front. `validate` lists each key itself.
+fn warn_deprecated(paths: &Paths) {
+    if let Some(line) = deprecated::summary(deprecated::count_configs(paths)) {
+        eprintln!("{}", style::warning_stderr(format!("warning: {line}")));
     }
 }
 
