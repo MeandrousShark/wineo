@@ -1201,6 +1201,29 @@ fn a_dropped_record_whose_file_came_back_is_kept() {
 }
 
 #[test]
+fn an_unreadable_trash_manifest_is_reported_once_and_not_as_art() {
+    let f = Fixture::new();
+    f.wine("kept", "");
+    f.wine("gone", "");
+    let entry = crate::trash::remove(&f.paths, "gone", false).unwrap();
+    let manifest = f.paths.trash_dir().join(&entry.id).join("manifest.toml");
+    fs::write(&manifest, "this is not a manifest").unwrap();
+
+    for report in [
+        check_all(&f.paths).unwrap(),
+        check_environment(&f.paths, "kept").unwrap(),
+    ] {
+        let errors: Vec<_> = report
+            .problems
+            .iter()
+            .filter(|problem| problem.level == Level::Error)
+            .map(|problem| (problem.code, problem.environment.clone()))
+            .collect();
+        assert_eq!(errors, [(Code::TrashInvalid, None)], "{report:#?}");
+    }
+}
+
+#[test]
 fn duplicate_art_stray_art_dirs_and_a_broken_art_toml_are_reported() {
     let f = Fixture::new();
     f.wine("game", HEALTHY);
