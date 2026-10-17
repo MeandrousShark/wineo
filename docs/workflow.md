@@ -71,6 +71,17 @@ only adds what it doesn't say. If the two disagree, `AGENTS.md` wins.
   every build's outputs, so a busy stretch of merges can grow `target/` to
   hundreds of GB; worktrees clean up with their own removal.
 
+## Renaming something stable
+
+- From 1.0, a rename goes through the deprecation path in
+  [`stability.md`](stability.md): the old name keeps working with a warning
+  until 2.0.
+- A config key gets an entry in the table in `crates/wineo-core/src/deprecated.rs`.
+  Before the first real entry, check every writer that names a key directly
+  instead of going through settings edits, as listed in plan 0053's step 3
+  notes. Each has to keep the spelling the file already uses, or it can
+  create the both-spellings error.
+
 ## Working with the maintainer
 
 - Record the answers to design questions in the plan.
