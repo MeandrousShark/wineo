@@ -20,10 +20,7 @@ pub(crate) fn warnings(paths: &Paths, errors: &[OverviewError]) -> Vec<String> {
     errors
         .iter()
         .map(|error| {
-            let path = match error.name.strip_prefix("template ") {
-                Some(name) => paths.templates_dir().join(format!("{name}.toml")),
-                None => paths.environment_config(&error.name),
-            };
+            let path = build_removal::config_path(paths, error);
             paths.contract_text(&format!(
                 "Skipped {}: {}",
                 path.display(),
