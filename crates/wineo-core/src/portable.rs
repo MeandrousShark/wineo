@@ -32,6 +32,9 @@ pub enum CopyEvent {
     Progress(ImportProgress),
     /// Publication starts now. Later cancel requests do not stop the copy.
     Publishing,
+    /// The folder's global config was passed over for defaults, which the
+    /// copied environment is checked against.
+    Warning(String),
 }
 
 /// Whether files can be reflinked from the source into the folder.
@@ -244,10 +247,24 @@ pub fn execute_reviewed(
     global: &GlobalConfig,
     reviewed: &CopyInspection,
     cancel: &Token,
-    mut progress: impl FnMut(ImportProgress),
+    progress: impl FnMut(ImportProgress),
 ) -> Result<Environment> {
-    execute_reviewed_with(from, to, global, reviewed, cancel, |event| {
-        if let CopyEvent::Progress(event) = event {
+    execute_reviewed_noting(from, to, global, reviewed, cancel, progress, |_| {})
+}
+
+/// `execute_reviewed` that also hands warnings, such as the folder's global
+/// config having been passed over for defaults, to `warn`.
+pub fn execute_reviewed_noting(
+    from: &Paths,
+    to: &Paths,
+    global: &GlobalConfig,
+    reviewed: &CopyInspection,
+    cancel: &Token,
+    mut progress: impl FnMut(ImportProgress),
+    mut warn: impl FnMut(String),
+) -> Result<Environment> {
+    execute_reviewed_with(from, to, global, reviewed, cancel, |event| match event {
+        CopyEvent::Progress(event) => {
             if let ImportProgress::Copied { path } = &event
                 && path.starts_with(from.art_dir(&reviewed.name))
             {
@@ -255,6 +272,8 @@ pub fn execute_reviewed(
             }
             progress(event);
         }
+        CopyEvent::Warning(warning) => warn(warning),
+        CopyEvent::Publishing => {}
     })
 }
 
@@ -459,7 +478,8 @@ pub fn execute_reviewed_with(
                     .parent()
                     .expect("templates have a parent"),
             )?;
-            let destination_global = destination_global(to, reviewed.global_text.as_deref())?;
+            let destination_global =
+                destination_global(to, reviewed.global_text.as_deref())?.config;
             let _template_guards =
                 template_build_guards(to, &destination_global, &staged_templates)?;
             staging.publish_part(&staged_templates, &to.templates_dir())?;
@@ -478,7 +498,9 @@ pub fn execute_reviewed_with(
         }
         let config_path = to.environment_config(name);
         let _guard = locks.config(&config_path)?;
-        let destination_global = destination_global(to, reviewed.global_text.as_deref())?;
+        // Said here rather than with the template guards, so it's once a copy.
+        let destination_global = destination_global(to, reviewed.global_text.as_deref())?
+            .note_with(|warning| events(CopyEvent::Warning(warning)));
         write_environment_once(to, &destination_global, name, &reviewed.config_text)
     })();
     result.map_err(|err| recovery(&published, err))?;
@@ -746,7 +768,8 @@ pub fn execute_native_with(
                     .expect("templates have a parent"),
             )?;
             let staged = &staged_templates;
-            let destination_global = destination_global(to, reviewed.global_text.as_deref())?;
+            let destination_global =
+                destination_global(to, reviewed.global_text.as_deref())?.config;
             let _template_guards = template_build_guards(to, &destination_global, staged)?;
             publish(staged, &to.templates_dir())?;
             published.push(to.templates_dir());
@@ -764,7 +787,9 @@ pub fn execute_native_with(
         }
         let config_path = to.environment_config(name);
         let _guard = locks.config(&config_path)?;
-        let destination_global = destination_global(to, reviewed.global_text.as_deref())?;
+        // Said here rather than with the template guards, so it's once a copy.
+        let destination_global = destination_global(to, reviewed.global_text.as_deref())?
+            .note_with(|warning| events(CopyEvent::Warning(warning)));
         write_environment_once(to, &destination_global, name, &reviewed.config_text)
     })();
     result.map_err(|err| {
@@ -786,10 +811,13 @@ pub fn execute_native_with(
     Ok(Environment::load(to, name)?)
 }
 
-fn destination_global(to: &Paths, copied: Option<&str>) -> Result<GlobalConfig> {
+fn destination_global(to: &Paths, copied: Option<&str>) -> Result<config::Loaded> {
     match copied {
-        Some(text) => GlobalConfig::parse(&to.global_config(), text).map_err(Into::into),
-        None => Ok(GlobalConfig::load_or_default(to).unwrap_or_default()),
+        Some(text) => Ok(config::Loaded {
+            config: GlobalConfig::parse(&to.global_config(), text)?,
+            warning: None,
+        }),
+        None => Ok(GlobalConfig::load_or_default(to)?),
     }
 }
 

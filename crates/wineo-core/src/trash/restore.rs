@@ -22,14 +22,16 @@ use super::{
     stored,
 };
 
-fn reconcile(paths: &Paths, name: &str) -> Result<()> {
+/// Rebuilds the desktop entries. The warning says the global config was
+/// passed over for defaults, which the entries were built from.
+fn reconcile(paths: &Paths, name: &str) -> Result<Option<String>> {
     let path = paths.environment_config(name);
     let config = match fs::read_to_string(&path)
         .ok()
         .and_then(|text| EnvironmentConfig::parse(&path, &text).ok())
     {
         Some(config) => config,
-        None => return Ok(()), // Broken raw configs stay registered without shortcuts.
+        None => return Ok(None), // Broken raw configs stay registered without shortcuts.
     };
     let environment = Environment {
         name: name.to_owned(),
@@ -54,7 +56,8 @@ fn reconcile(paths: &Paths, name: &str) -> Result<()> {
             }
         }
     }
-    let global = GlobalConfig::load_or_default(paths)?;
+    let loaded = GlobalConfig::load_or_default(paths)?;
+    let global = loaded.config;
     let changes = match &environment.config.kind {
         config::Kind::Native => desktop::reconcile_native(paths, &global, &environment)?,
         config::Kind::Proxied(_) => desktop::reconcile_proxied(paths, &global, &environment)?,
@@ -71,7 +74,7 @@ fn reconcile(paths: &Paths, name: &str) -> Result<()> {
             bail!("environment restored, but desktop entry {target} was not created: {reason}");
         }
     }
-    Ok(())
+    Ok(loaded.warning)
 }
 
 pub(super) fn finish_entry(paths: &Paths, manifest: &Manifest) -> Result<()> {
@@ -217,7 +220,9 @@ fn restore_locked_noting(
         }
         require(&prefix, expected)?;
     }
-    // Recovery must finish even when build discovery is unavailable.
+    // Recovery must finish even when build discovery is unavailable. The
+    // global config only picks which build locks to take, so one that can't
+    // be read skips them instead of refusing the recovery.
     let restored_config = return_config(paths, manifest).ok().flatten();
     let global = restored_config
         .as_ref()
@@ -238,12 +243,16 @@ fn restore_locked_noting(
     reclaim_gog(paths, manifest, gog)?;
     // Registration and payload restoration have completed. A shortcut failure
     // is reported, but it must not undo or block the returned environment.
-    let desktop_error = reconcile(paths, &manifest.name).err();
+    let (desktop_error, warning) = match reconcile(paths, &manifest.name) {
+        Ok(warning) => (None, warning),
+        Err(err) => (Some(err), None),
+    };
     if manifest.payloads.iter().any(|payload| payload.kept) {
         keep_changed(paths, manifest, notes)?;
     } else {
         complete_entry(paths, manifest)?;
     }
+    notes.extend(warning);
     if let Some(err) = desktop_error {
         bail!(
             "environment {} was restored, but its desktop entries need attention: {err:#}",
@@ -440,11 +449,15 @@ pub(super) fn with_environment_build_locks<T>(
     publish()
 }
 
-pub fn restore(paths: &Paths, id: &str) -> Result<()> {
+/// Restores a trashed environment. The notes are warnings to show, such as
+/// the global config having been passed over for defaults.
+pub fn restore(paths: &Paths, id: &str) -> Result<Vec<String>> {
+    let mut notes = Vec::new();
     locked(paths, id, true, |manifest, gog| {
         if manifest.phase != Phase::Trashed {
             bail!("entry {id} needs `wineo validate --fix` first");
         }
-        restore_locked(paths, manifest, false, gog, &mut Vec::new())
-    })
+        restore_locked(paths, manifest, false, gog, &mut notes)
+    })?;
+    Ok(notes)
 }

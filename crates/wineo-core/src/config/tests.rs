@@ -153,7 +153,7 @@ fn unknown_art_fetch_values_and_keys_are_errors() {
     ));
     assert!(matches!(
         global("[art]\nfecth = \"icon\""),
-        Err(Error::ConfigSyntax { .. })
+        Err(Error::ConfigUnknownKey { .. })
     ));
 }
 
@@ -161,11 +161,11 @@ fn unknown_art_fetch_values_and_keys_are_errors() {
 fn unknown_keys_are_errors() {
     assert!(matches!(
         global("stop_timeuot = 3"),
-        Err(Error::ConfigSyntax { .. })
+        Err(Error::ConfigUnknownKey { .. })
     ));
     assert!(matches!(
         environment("prefix = \"/p\"\nrunner = \"wine\"\narch = \"win64\"\nprefx = 1"),
-        Err(Error::ConfigSyntax { .. })
+        Err(Error::ConfigUnknownKey { .. })
     ));
 }
 
@@ -492,7 +492,7 @@ fn an_unknown_kind_is_refused() {
 fn unknown_keys_are_refused_for_native_too() {
     assert!(matches!(
         environment("kind = \"native\"\nprefx = 1"),
-        Err(Error::ConfigSyntax { .. })
+        Err(Error::ConfigUnknownKey { .. })
     ));
 }
 
@@ -597,7 +597,10 @@ fn unsupported_schema_versions_are_rejected() {
         assert!(matches!(err, Error::SchemaVersion { .. }), "{value}: {err}");
         assert_eq!(
             err.to_string(),
-            format!("unsupported schema_version {found} in {PATH}")
+            format!(
+                "unsupported schema_version {found} in {PATH}\n\
+                 A newer version of wineo wrote it; update wineo to use this file."
+            )
         );
         let err = environment(&format!("{text}{ENV}")).unwrap_err();
         assert!(matches!(err, Error::SchemaVersion { .. }), "{value}: {err}");
@@ -615,7 +618,7 @@ fn a_newer_version_is_reported_before_unknown_keys() {
 fn a_nested_schema_version_is_an_unknown_key() {
     assert!(matches!(
         global("[defaults]\nschema_version = 1"),
-        Err(Error::ConfigSyntax { .. })
+        Err(Error::ConfigUnknownKey { .. })
     ));
 }
 
@@ -642,6 +645,7 @@ fn a_missing_global_config_stays_missing() {
     assert_eq!(
         GlobalConfig::load_or_default(&paths)
             .unwrap()
+            .config
             .schema_version,
         0
     );
@@ -658,25 +662,6 @@ fn loading_a_legacy_global_config_leaves_it_alone() {
     assert_eq!(GlobalConfig::load(&paths).unwrap().stop_timeout, 3);
     assert_eq!(fs::read_to_string(&path).unwrap(), text);
     assert_eq!(fs::metadata(&path).unwrap().modified().unwrap(), before);
-}
-
-#[test]
-fn load_or_default_only_forgives_a_broken_file() {
-    let (_root, paths) = temp_paths();
-    write_global(&paths, "stop_timeout = [\n");
-    let config = GlobalConfig::load_or_default(&paths).unwrap();
-    assert_eq!(config.stop_timeout, DEFAULT_STOP_TIMEOUT);
-
-    for version in ["0", "2", "\"1\""] {
-        write_global(
-            &paths,
-            &format!("schema_version = {version}\nstop_timeout = 3\n"),
-        );
-        assert!(matches!(
-            GlobalConfig::load_or_default(&paths),
-            Err(Error::SchemaVersion { .. })
-        ));
-    }
 }
 
 #[test]
@@ -1103,4 +1088,88 @@ fn hooks_reject_true_empty_commands_and_invalid_fields_at_load() {
             assert!(environment(&format!("{base}{prefix}[{table}]\nunknown = 'sync'\n")).is_err());
         }
     }
+}
+
+const UNKNOWN_KEY_HINT: &str =
+    "\nA newer version of wineo may have written it; update wineo or remove the key.";
+const VERSION_HINT: &str = "\nA newer version of wineo wrote it; update wineo to use this file.";
+
+#[test]
+fn an_unknown_key_prints_the_parser_message_then_the_hint() {
+    for err in [
+        global("stop_timeuot = 3\n").unwrap_err(),
+        environment(&format!("{ENV}gamemod = true\n")).unwrap_err(),
+    ] {
+        assert!(matches!(err, Error::ConfigUnknownKey { .. }), "{err}");
+        let line = crate::error::chain(&err);
+        assert!(
+            line.starts_with("invalid config /test/config.toml: TOML parse error"),
+            "{line}"
+        );
+        assert!(line.contains("unknown field `"), "{line}");
+        assert!(line.ends_with(UNKNOWN_KEY_HINT.trim_start()), "{line}");
+        assert_eq!(line.matches("A newer version").count(), 1, "{line}");
+    }
+}
+
+#[test]
+fn an_unknown_key_in_a_nested_shorthand_table_is_still_an_unknown_key() {
+    for text in [
+        "[gamescope]\nwidht = 1\n",
+        "[hooks]\nbfore = \"x\"\n",
+        "[launch]\nfoo = 1\n",
+    ] {
+        let err = environment(&format!("{ENV}{text}")).unwrap_err();
+        assert!(
+            matches!(err, Error::ConfigUnknownKey { .. }),
+            "{text}: {err}"
+        );
+    }
+}
+
+#[test]
+fn an_unsupported_version_prints_the_version_hint() {
+    let err = global("schema_version = 2\n").unwrap_err();
+    assert!(err.to_string().ends_with(VERSION_HINT), "{err}");
+}
+
+#[test]
+fn load_or_default_matrix() {
+    let (_root, paths) = temp_paths();
+
+    write_global(&paths, "stop_timeout = 3\nfoo = 1\n");
+    assert!(matches!(
+        GlobalConfig::load_or_default(&paths),
+        Err(Error::ConfigUnknownKey { .. })
+    ));
+
+    for text in ["stop_timeout = [\n", "stop_timeout = \"soon\"\n"] {
+        write_global(&paths, text);
+        let loaded = GlobalConfig::load_or_default(&paths).unwrap();
+        assert_eq!(loaded.config.stop_timeout, DEFAULT_STOP_TIMEOUT, "{text}");
+        let warning = loaded.warning.unwrap_or_default();
+        assert!(
+            warning.starts_with("using default settings: invalid config "),
+            "{text}: {warning}"
+        );
+    }
+
+    for version in ["0", "2", "\"1\""] {
+        write_global(
+            &paths,
+            &format!("schema_version = {version}\nstop_timeout = 3\n"),
+        );
+        assert!(matches!(
+            GlobalConfig::load_or_default(&paths),
+            Err(Error::SchemaVersion { .. })
+        ));
+    }
+
+    write_global(&paths, "stop_timeout = 3\n");
+    let loaded = GlobalConfig::load_or_default(&paths).unwrap();
+    assert_eq!(loaded.config.stop_timeout, 3);
+    assert_eq!(loaded.warning, None);
+
+    fs::remove_file(paths.global_config()).unwrap();
+    assert_eq!(GlobalConfig::load_or_default(&paths).unwrap().warning, None);
 }

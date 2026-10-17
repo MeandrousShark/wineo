@@ -235,7 +235,9 @@ fn download_build(
         Component::Vkd3d => Provider::Vkd3d,
     };
     let client = download::Client::new()?;
-    let global = GlobalConfig::load_or_default(paths)?;
+    // The checkup that offered this download already lists a config that fell
+    // back to defaults as a problem.
+    let global = GlobalConfig::load_or_default(paths)?.config;
     let release = match version {
         Some(version) => client.select_pinned(provider, version),
         None => client.select(provider, None),

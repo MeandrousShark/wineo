@@ -422,9 +422,14 @@ fn unknown_or_missing_keys_are_refused() {
         "[icon]\nfile = \"icon.png\"\nmanual = \"a\"\nscore = 3\n",
         "[banner]\nfile = \"banner.png\"\nmanual = \"a\"\n",
         "[targets.server.banner]\nfile = \"banner.png\"\nmanual = \"a\"\n",
-        "[icon]\nmanual = \"a\"\n",
-        "game = -1\n",
     ] {
+        let err = ArtConfig::parse(Path::new("art.toml"), text).unwrap_err();
+        assert!(
+            matches!(err, Error::ConfigUnknownKey { .. }),
+            "{text}: {err}"
+        );
+    }
+    for text in ["[icon]\nmanual = \"a\"\n", "game = -1\n"] {
         let err = ArtConfig::parse(Path::new("art.toml"), text).unwrap_err();
         assert!(matches!(err, Error::ConfigSyntax { .. }), "{text}: {err}");
     }

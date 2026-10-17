@@ -1517,7 +1517,11 @@ fn use_image_for(
 
 fn reconcile_desktop(paths: &Paths, name: &str) -> Result<(), String> {
     let environment = Environment::load(paths, name).map_err(|error| error.to_string())?;
-    let global = GlobalConfig::load_or_default(paths).map_err(|error| error.to_string())?;
+    // A config that fell back to defaults isn't reported here, since the
+    // checkup already lists it as `global_config_invalid`.
+    let global = GlobalConfig::load_or_default(paths)
+        .map_err(|error| error.to_string())?
+        .config;
     match &environment.config.kind {
         config::Kind::Native => desktop::reconcile_native(paths, &global, &environment),
         // Proxied environments get no entries yet.

@@ -350,7 +350,7 @@ pub(crate) enum Message {
     ),
     RemoveFocus(iced::event::Status, bool, bool),
     Undo,
-    UndoFinished(u64, Result<(), String>),
+    UndoFinished(u64, Result<Vec<String>, String>),
     /// The toast or feature notice deadline, tagged with its wakeup.
     ToastTick(u64),
     /// A key came up or a finger went down, by which time any focus move it

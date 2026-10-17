@@ -322,7 +322,11 @@ pub(crate) fn resolve_exe(paths: &Paths, name: &str, typed: &str) -> Result<Stri
         return Err(environment.config.no_prefix(name).to_string());
     }
     if let Kind::Native = environment.config.kind {
-        let global = GlobalConfig::load_or_default(paths).map_err(|error| error.to_string())?;
+        // A fallback to defaults isn't reported here, since the checkup
+        // already lists it as `global_config_invalid`.
+        let global = GlobalConfig::load_or_default(paths)
+            .map_err(|error| error.to_string())?
+            .config;
         let mut env = global.env;
         env.extend(environment.config.env);
         return target_path::native_exe(paths, name, &env, &typed).map_err(|error| {
@@ -456,27 +460,29 @@ pub(crate) fn desktop_line(change: &wineo_core::desktop::Change) -> String {
         Change::Skipped { target, reason } => {
             format!("No desktop entry for {target}: {reason}")
         }
+        Change::Warning(warning) => format!("Warning: {}", wineo_core::error::one_line(warning)),
     }
 }
 
 pub(crate) fn report(name: &str, applied: Applied) -> Report {
     let mut lines: Vec<String> = applied
-        .components
+        .warnings
         .iter()
-        .map(|change| match change {
-            Change::Installed { component, build } => {
-                format!("Installed {} {build}", component.label())
-            }
-            Change::Replaced {
-                component,
-                from,
-                to,
-            } => format!("Replaced {} {from} with {to}", component.label()),
-            Change::Removed { component, build } => {
-                format!("Removed {} {build}", component.label())
-            }
-        })
+        .map(|warning| format!("Warning: {}", wineo_core::error::one_line(warning)))
         .collect();
+    lines.extend(applied.components.iter().map(|change| match change {
+        Change::Installed { component, build } => {
+            format!("Installed {} {build}", component.label())
+        }
+        Change::Replaced {
+            component,
+            from,
+            to,
+        } => format!("Replaced {} {from} with {to}", component.label()),
+        Change::Removed { component, build } => {
+            format!("Removed {} {build}", component.label())
+        }
+    }));
     lines.extend(applied.desktop.iter().map(desktop_line));
     if let Some(runner) = &applied.changed_runner {
         lines.push(format!(

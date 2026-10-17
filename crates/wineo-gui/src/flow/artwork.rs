@@ -161,8 +161,10 @@ impl Draft {
         let sequence = self.configuration_sequence;
         task::blocking(
             move || {
-                let global = GlobalConfig::load_or_default(&paths).map_err(|e| e.to_string())?;
-                Ok(global.art.fetch)
+                // A fallback to defaults isn't reported here, since the checkup
+                // already lists it as `global_config_invalid`.
+                let loaded = GlobalConfig::load_or_default(&paths).map_err(|e| e.to_string())?;
+                Ok(loaded.config.art.fetch)
             },
             move |result| Event::Configured(sequence, result),
         )
@@ -1180,15 +1182,22 @@ pub(crate) fn fetch_default(
     title: &str,
     https: &Lazy<Https>,
 ) -> Result<Vec<String>, String> {
-    let global = GlobalConfig::load_or_default(paths).map_err(|e| e.to_string())?;
-    let kinds = global.art.fetch.kinds();
+    let loaded = GlobalConfig::load_or_default(paths).map_err(|e| e.to_string())?;
+    // Reported through the same notes as every other outcome here.
+    let mut notes: Vec<String> = loaded
+        .warning
+        .iter()
+        .map(|warning| format!("Warning: {}", wineo_core::error::one_line(warning)))
+        .collect();
+    let kinds = loaded.config.art.fetch.kinds();
     if kinds.is_empty() {
-        return Ok(Vec::new());
+        return Ok(notes);
     }
     match search_with(paths, title, https)?.into_iter().next() {
-        Some(game) => fetch(paths, name, &game, kinds.into_iter(), https),
-        None => Ok(vec![format!("No artwork match for {title}")]),
+        Some(game) => notes.extend(fetch(paths, name, &game, kinds.into_iter(), https)?),
+        None => notes.push(format!("No artwork match for {title}")),
     }
+    Ok(notes)
 }
 
 #[cfg(test)]

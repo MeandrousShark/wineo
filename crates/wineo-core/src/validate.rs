@@ -497,8 +497,8 @@ pub fn check_environment(paths: &Paths, name: &str) -> Result<Report> {
     if !paths.environment_config(name).is_file() {
         return Err(Error::UnknownEnvironment(name.to_owned()));
     }
-    // A broken global config is only reported by `check_all`. Here it means
-    // defaults, as it does for most commands.
+    // A broken global config is only reported by `check_all`. This report
+    // only displays problems and changes nothing, so defaults are enough.
     let global = GlobalConfig::load(paths).unwrap_or_default();
     let entries = listed_entries(paths)?;
     check_one(paths, &global, name, &entries, &mut report)?;
@@ -1590,7 +1590,9 @@ pub fn apply(
             winetricks_events,
         )?,
         Fix::Download { component, version } => {
-            let global = GlobalConfig::load_or_default(paths)?;
+            // The report that offered this fix already carries
+            // `global_config_invalid` for a file that fell back to defaults.
+            let global = GlobalConfig::load_or_default(paths)?.config;
             let asked = version.as_deref().unwrap_or(LATEST);
             // Another environment's fix may have fetched it already.
             if Builds::new(paths, &global, *component)?
@@ -1689,7 +1691,8 @@ fn clean_up_lost_run(paths: &Paths, name: &str) -> Result<Vec<Note>> {
 
 fn clean_up_installer(paths: &Paths, name: &str) -> Result<()> {
     Environment::ensure_exists(paths, name)?;
-    match launch::clean_up_installer(paths, name)? {
+    // As for `Fix::Download`, the report already said a fallback happened.
+    match launch::clean_up_installer(paths, name)?.0 {
         Some(Cleaned::Untracked | Cleaned::Unresolved) => {
             Err(Error::Unsettled(installer::unresolved_message(paths, name)))
         }
@@ -1745,7 +1748,8 @@ fn remove_desktop_entry(paths: &Paths, entry: &Entry) -> Result<()> {
 /// What `start` does to the entries, under the lock it takes.
 fn rewrite_desktop(paths: &Paths, name: &str) -> Result<()> {
     let environment = Environment::load(paths, name)?;
-    let global = GlobalConfig::load_or_default(paths)?;
+    // As for `Fix::Download`, the report already said a fallback happened.
+    let global = GlobalConfig::load_or_default(paths)?.config;
     let locks = Locks::new(paths);
     let wine = match &environment.config.kind {
         Kind::Wine(wine) => wine,

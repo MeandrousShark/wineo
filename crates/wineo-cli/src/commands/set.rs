@@ -70,6 +70,9 @@ pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
         ConfigFile::Environment(name) => name,
         ConfigFile::Global => "",
     };
+    for warning in &applied.warnings {
+        eprintln!("warning: {warning}");
+    }
     for change in &applied.components {
         eprintln!("{}", components::describe(change, name));
     }

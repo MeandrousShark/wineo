@@ -422,3 +422,56 @@ fn copy_refuses_to_replace_an_existing_play_log() {
     );
     assert_eq!(read(dir.join("stats/game.jsonl")), "orphan\n");
 }
+
+const UNKNOWN_KEY_HINT: &str =
+    "A newer version of wineo may have written it; update wineo or remove the key.";
+
+#[test]
+fn a_copy_refuses_a_source_global_config_with_an_unknown_key() {
+    let Some((f, _)) = fixture() else { return };
+    f.global_config("foo = 1\n");
+    let dir = f.root.path().join("usb");
+    let copied = copy(&f, "game", &dir);
+    assert!(!copied.status.success());
+    let message = stderr(&copied);
+    assert!(message.contains("unknown field `foo`"), "{message}");
+    assert!(message.contains(UNKNOWN_KEY_HINT), "{message}");
+    assert!(!dir.join("config/environments/game.toml").exists());
+}
+
+#[test]
+fn a_later_copy_refuses_a_folder_global_config_with_an_unknown_key() {
+    let Some((f, _)) = fixture() else { return };
+    f.environment("other", "");
+    let dir = f.root.path().join("usb");
+    assert_success(&copy(&f, "game", &dir));
+    fs::write(dir.join("config/config.toml"), "foo = 1\n").unwrap();
+
+    let copied = copy(&f, "other", &dir);
+    assert!(!copied.status.success());
+    let message = stderr(&copied);
+    assert!(message.contains("unknown field `foo`"), "{message}");
+    assert!(message.contains(UNKNOWN_KEY_HINT), "{message}");
+    assert!(!dir.join("config/environments/other.toml").exists());
+}
+
+#[test]
+fn a_later_copy_warns_when_the_folder_global_config_fell_back() {
+    let Some((f, _)) = fixture() else { return };
+    f.environment("other", "");
+    let dir = f.root.path().join("usb");
+    assert_success(&copy(&f, "game", &dir));
+    fs::write(dir.join("config/config.toml"), "stop_timeout = [\n").unwrap();
+
+    let copied = copy(&f, "other", &dir);
+    assert_success(&copied);
+    assert_eq!(
+        stderr(&copied)
+            .matches("warning: using default settings: ")
+            .count(),
+        1,
+        "{}",
+        stderr(&copied)
+    );
+    assert!(!stdout(&copied).contains("using default settings"));
+}

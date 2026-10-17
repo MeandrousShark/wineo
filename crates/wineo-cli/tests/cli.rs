@@ -222,7 +222,7 @@ fn status_warns_about_an_unsupported_global_config() {
     assert_eq!(
         stderr(&result),
         format!(
-            "warning: unsupported schema_version 2 in {}\n",
+            "warning: using default settings: unsupported schema_version 2 in {}\nA newer version of wineo wrote it; update wineo to use this file.\n",
             global.display()
         )
     );

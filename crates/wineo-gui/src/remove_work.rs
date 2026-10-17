@@ -121,7 +121,7 @@ async fn remove_worker(
     .await
 }
 
-async fn restore_worker(paths: Paths, id: String) -> Result<(), String> {
+async fn restore_worker(paths: Paths, id: String) -> Result<Vec<String>, String> {
     task::join_string(move || trash::restore(&paths, &id).map_err(|error| error.to_string())).await
 }
 

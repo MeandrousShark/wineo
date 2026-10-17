@@ -761,7 +761,7 @@ fn unreadable_art_keeps_an_exe_icon() {
 }
 
 #[test]
-fn a_bad_art_toml_counts_as_no_art() {
+fn a_bad_art_toml_adds_no_icon_and_says_so() {
     let fixture = Fixture::new();
     fixture.art(None, "icon.png", &png(64, 1));
     fs::write(
@@ -771,15 +771,114 @@ fn a_bad_art_toml_counts_as_no_art() {
     .unwrap();
     assert!(ArtConfig::load(&fixture.paths.art_dir("hades")).is_err());
     let environment = fixture.environment(ASKS);
-    assert_eq!(
-        fixture.reconcile(&environment),
-        [Change::Wrote {
-            target: "hades".to_owned(),
-            icon: false,
-        }]
+    let changes = fixture.reconcile(&environment);
+    assert!(
+        matches!(
+            changes.as_slice(),
+            [Change::Wrote { icon: false, .. }, Change::Warning(warning)]
+                if warning.starts_with("art for hades could not be read, so its icon was left as it is: ")
+        ),
+        "{changes:?}"
     );
     assert!(!fixture.entry("hades").unwrap().contains("Icon"));
     assert!(fixture.icons().is_empty());
+}
+
+/// An art.toml this wineo can't read: a key it doesn't know, a newer
+/// version, a wrong type, and bad syntax.
+const BROKEN_ART: [&str; 4] = [
+    "schema_version = 1\ncolor = 1\n",
+    "schema_version = 2\n",
+    "game = \"not a number\"\n",
+    "game = [\n",
+];
+
+#[test]
+fn an_unreadable_art_toml_leaves_the_art_icon_alone() {
+    for broken in BROKEN_ART {
+        let fixture = Fixture::new();
+        fixture.art(None, "icon.png", &png(64, 1));
+        let environment = fixture.environment(ASKS);
+        fixture.reconcile(&environment);
+        let entry = fixture.entry("hades").unwrap();
+        let icons = fixture.icons();
+        assert_eq!(icons, ["64x64/apps/wineo-hades-hades.png"]);
+
+        let art_toml = fixture.paths.art_dir("hades").join(art::ART_FILE);
+        fs::write(&art_toml, broken).unwrap();
+        let changes = fixture.reconcile(&environment);
+        assert!(
+            matches!(changes.as_slice(), [Change::Warning(warning)]
+                if warning.starts_with("art for hades could not be read, so its icon was left as it is: ")),
+            "{broken}: {changes:?}"
+        );
+        assert_eq!(fixture.entry("hades").unwrap(), entry, "{broken}");
+        assert_eq!(fixture.icons(), icons, "{broken}");
+
+        // Fixed, a pass behaves as it did before.
+        fs::remove_file(&art_toml).unwrap();
+        assert!(fixture.reconcile(&environment).is_empty(), "{broken}");
+        fixture.art(None, "icon.png", &png(64, 2));
+        assert_eq!(
+            fixture.reconcile(&environment),
+            [Change::Updated {
+                target: "hades".to_owned()
+            }],
+            "{broken}"
+        );
+        assert_ne!(fixture.entry("hades").unwrap(), entry);
+    }
+}
+
+#[test]
+fn an_unknown_key_in_art_toml_carries_the_hint() {
+    let fixture = Fixture::new();
+    fixture.art(None, "icon.png", &png(64, 1));
+    let environment = fixture.environment(ASKS);
+    fixture.reconcile(&environment);
+    fs::write(
+        fixture.paths.art_dir("hades").join(art::ART_FILE),
+        "schema_version = 1\ncolor = 1\n",
+    )
+    .unwrap();
+    let changes = fixture.reconcile(&environment);
+    let [Change::Warning(warning)] = changes.as_slice() else {
+        panic!("{changes:?}");
+    };
+    assert!(warning.contains("unknown field `color`"), "{warning}");
+    assert!(
+        warning.ends_with(
+            "A newer version of wineo may have written it; update wineo or remove the key."
+        ),
+        "{warning}"
+    );
+}
+
+#[test]
+fn an_unreadable_art_toml_leaves_a_proxied_entrys_art_icon_alone() {
+    let fixture = Fixture::new();
+    fixture.art(Some("steam"), "icon.png", &png(64, 1));
+    let environment = fixture.proxied("desktop = true\n");
+    fixture.reconcile_proxied(&environment);
+    let entry = fixture.entry("steam").unwrap();
+    let icon = fixture
+        .paths
+        .icons_dir()
+        .join("hicolor/64x64/apps/wineo-hades-steam.png");
+    assert!(icon.is_file());
+
+    fs::write(
+        fixture.paths.art_dir("hades").join(art::ART_FILE),
+        "schema_version = 1\ncolor = 1\n",
+    )
+    .unwrap();
+    let changes = fixture.reconcile_proxied(&environment);
+    assert!(
+        matches!(changes.as_slice(), [Change::Warning(_)]),
+        "{changes:?}"
+    );
+    assert_eq!(fixture.entry("steam").unwrap(), entry);
+    assert!(icon.is_file());
 }
 
 #[test]
@@ -1084,4 +1183,22 @@ fn proxied_entries_are_skipped_in_portable_mode() {
         }]
     );
     assert!(!entry_path(&paths, "hades", "steam").exists());
+}
+
+#[test]
+fn apply_says_when_the_global_config_fell_back_to_defaults() {
+    let f = Fixture::new();
+    f.environment("[targets.hades]\nexe = \"C:\\\\Hades\\\\Hades.exe\"\n");
+    fs::create_dir_all(f.paths.global_config().parent().unwrap()).unwrap();
+
+    fs::write(f.paths.global_config(), "stop_timeout = [\n").unwrap();
+    let changes = apply(&f.paths, "hades", true).unwrap();
+    assert!(
+        matches!(changes.as_slice(), [Change::Warning(warning)] if warning.starts_with("using default settings: ")),
+        "{changes:?}"
+    );
+
+    fs::write(f.paths.global_config(), "foo = 1\n").unwrap();
+    let err = apply(&f.paths, "hades", true).unwrap_err();
+    assert!(matches!(err, Error::ConfigUnknownKey { .. }), "{err}");
 }

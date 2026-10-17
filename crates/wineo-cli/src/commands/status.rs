@@ -3,7 +3,6 @@ use std::process::ExitCode;
 use jiff::Timestamp;
 use wineo_core::config::GlobalConfig;
 use wineo_core::environment::Environment;
-use wineo_core::error::Error;
 use wineo_core::paths::Paths;
 use wineo_core::report::{self, EnvironmentReport, KindReport, OverviewFilter};
 use wineo_core::runtime::{RunKind, RunMode, RunState, State};
@@ -32,9 +31,12 @@ pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
             let environment = Environment::load(paths, &name)?;
             // A broken global config only costs the runner version line.
             let global = GlobalConfig::load(paths).unwrap_or_else(|err| {
-                if matches!(err, Error::SchemaVersion { .. }) {
-                    eprintln!("warning: {err}");
-                }
+                // Every failure here is a fallback to defaults, so it reads
+                // like the other commands' warning.
+                eprintln!(
+                    "warning: {}",
+                    wineo_core::config::default_settings_warning(&err)
+                );
                 GlobalConfig::default()
             });
             let (report, warnings) =

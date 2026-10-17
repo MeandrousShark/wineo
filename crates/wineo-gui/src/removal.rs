@@ -66,6 +66,9 @@ pub(crate) struct Toast {
     /// on its way, so there is nothing to arm a timer for.
     checking: bool,
     last: Instant,
+    /// The entry is back and the toast is only telling what the restore had
+    /// to say, so there is nothing left to undo.
+    restored: bool,
 }
 
 impl Toast {
@@ -85,6 +88,12 @@ impl Toast {
                 }
             ));
         }
+        for warning in &entry.warnings {
+            text.push_str(&format!(
+                " Warning: {}",
+                wineo_core::error::one_line(warning)
+            ));
+        }
         if let Some(snapshots) = &entry.snapshots_left
             && snapshots.is_dir()
             && std::fs::read_dir(snapshots).is_ok_and(|mut entries| entries.next().is_some())
@@ -102,6 +111,7 @@ impl Toast {
             focused: false,
             checking: false,
             last: Instant::now(),
+            restored: false,
         }
     }
 
@@ -629,6 +639,9 @@ impl App {
         let Some(toast) = &self.toast else {
             return Task::none();
         };
+        if toast.restored {
+            return Task::none();
+        }
         self.change_generation = self.change_generation.wrapping_add(1);
         self.change = Some(Change::Restore {
             id: toast.id.clone(),
@@ -637,7 +650,7 @@ impl App {
         remove_work::restore(self.change_generation, self.paths.clone(), toast.id.clone())
     }
 
-    pub(crate) fn undo_finished(&mut self, result: Result<(), String>) -> Task<Message> {
+    pub(crate) fn undo_finished(&mut self, result: Result<Vec<String>, String>) -> Task<Message> {
         if !matches!(self.change, Some(Change::Restore { .. })) {
             return Task::none();
         }
@@ -648,7 +661,22 @@ impl App {
             && toast.id == id
         {
             match result {
-                Ok(()) => self.toast = None,
+                Ok(notes) if notes.is_empty() => self.toast = None,
+                // Kept up for a moment so what the restore said isn't lost.
+                Ok(notes) => {
+                    toast.text = format!(
+                        "Restored {}. {}",
+                        toast.name,
+                        notes
+                            .iter()
+                            .map(|note| format!("Warning: {}", wineo_core::error::one_line(note)))
+                            .collect::<Vec<_>>()
+                            .join(" ")
+                    );
+                    toast.restored = true;
+                    toast.remaining = Duration::from_secs(10);
+                    toast.last = Instant::now();
+                }
                 Err(error) => {
                     toast.text = error;
                     toast.remaining = Duration::from_secs(10);
@@ -797,15 +825,17 @@ impl App {
             && self.settings.is_none()
             && self.art_page.is_none()
             && !self.close_prompt;
-        let undo = crate::focus_button::undo(
-            secondary_button("Undo", palette)
-                .on_press_maybe(enabled.then_some(Message::Undo))
-                .into(),
-            enabled,
-        );
-        let mut content = row![text(&toast.text).width(Fill).wrapping(TOAST_WRAPPING), undo]
+        let mut content = row![text(&toast.text).width(Fill).wrapping(TOAST_WRAPPING)]
             .spacing(12)
             .align_y(Center);
+        if !toast.restored {
+            content = content.push(crate::focus_button::undo(
+                secondary_button("Undo", palette)
+                    .on_press_maybe(enabled.then_some(Message::Undo))
+                    .into(),
+                enabled,
+            ));
+        }
         if let Some(change) = &self.change {
             content = content.push(text(change.reason()).size(13));
         }

@@ -98,13 +98,15 @@ pub fn stop_with(
         return Ok(outcome);
     };
 
-    let cleaned = clean_up_installer(paths, name).with_context(|| {
+    let (cleaned, warning) = clean_up_installer_with(paths, name, global_for_stop(paths))
+        .with_context(|| {
         let record = Runtime::new(paths, name).operation_path();
         format!(
             "failed to clean up after {name}'s last installer. If nothing it started is running any more, delete {} to clear this",
             record.display()
         )
     })?;
+    append_unique_warning(&mut messages, warning);
     match cleaned {
         Some(Cleaned::Stopped) => {
             messages.push(format!(
@@ -161,7 +163,10 @@ pub fn stop_run_with(
 
     let (stop_timeout, mut messages) = stop_timeout(paths);
     let runtime = Runtime::new(paths, name);
-    // Stop must still work with a broken config or state file. Only a known
+    // Stop must still work with a broken config or state file, even one
+    // that other commands refuse (an unknown key or newer version): that is
+    // deliberate under plan 0053, so it stops on the default timeout with the
+    // warning from `stop_timeout`. Only a known
     // after hook can extend the wait beyond the ordinary run deadline.
     let has_after = Environment::load(paths, name)
         .ok()
@@ -225,26 +230,31 @@ pub fn stop_run_with(
     }
     if let Ok(environment) = Environment::load(paths, name)
         && let crate::config::Kind::Proxied(proxied) = environment.config.kind
-        && let Ok(global) = GlobalConfig::load(paths)
-        && let Some(install) = steam::active_for(paths, &global)
     {
-        let mut reapers = steam::matching_reapers(&install, &proxied.app_id)
-            .with_context(|| format!("failed to scan Steam processes for {name}"))?;
-        if reapers.len() > 1 {
-            bail!("More than one Steam process matches {name}.");
-        }
-        if let Some(reaper) = reapers.pop() {
-            steam::stop_tree(
-                &reaper,
-                Duration::from_secs(u64::from(stop_timeout)),
-                force,
-                || token.is_canceled(),
-            )
-            .with_context(|| format!("failed to stop {name}"))?;
-            return Ok(StopOutcome::Stopped {
-                messages,
-                action: StopAction::Run,
-            });
+        // Stop never refuses over the global config (plan 0053). It only picks
+        // which Steam install to look in, so a default can at worst miss the
+        // game, and the warning says why.
+        let loaded = global_for_stop(paths);
+        append_unique_warning(&mut messages, loaded.warning);
+        if let Some(install) = steam::active_for(paths, &loaded.config) {
+            let mut reapers = steam::matching_reapers(&install, &proxied.app_id)
+                .with_context(|| format!("failed to scan Steam processes for {name}"))?;
+            if reapers.len() > 1 {
+                bail!("More than one Steam process matches {name}.");
+            }
+            if let Some(reaper) = reapers.pop() {
+                steam::stop_tree(
+                    &reaper,
+                    Duration::from_secs(u64::from(stop_timeout)),
+                    force,
+                    || token.is_canceled(),
+                )
+                .with_context(|| format!("failed to stop {name}"))?;
+                return Ok(StopOutcome::Stopped {
+                    messages,
+                    action: StopAction::Run,
+                });
+            }
         }
     }
     if cleaned_proxied_run {
@@ -347,18 +357,54 @@ pub(crate) fn clean_up_lost_run(
 
 /// Stops whatever an installer left running when wineo could not confirm it
 /// was done.
-pub(crate) fn clean_up_installer(paths: &Paths, name: &str) -> Result<Option<Cleaned>> {
-    let global = GlobalConfig::load_or_default(paths)?;
-    let timeout = installer::clean_up_timeout(&global);
-    installer::clean_up(paths, &global, name, timeout)
+///
+/// The warning says the global config was passed over for defaults.
+pub(crate) fn clean_up_installer(
+    paths: &Paths,
+    name: &str,
+) -> Result<(Option<Cleaned>, Option<String>)> {
+    clean_up_installer_with(paths, name, GlobalConfig::load_or_default(paths)?)
+}
+
+/// The global config for a stop, which never refuses over it (plan 0053): one
+/// that can't be used means defaults and a warning, an unknown key included.
+fn global_for_stop(paths: &Paths) -> crate::config::Loaded {
+    GlobalConfig::load_or_default(paths).unwrap_or_else(|err| crate::config::Loaded {
+        config: GlobalConfig::default(),
+        warning: Some(crate::config::default_settings_warning(&err)),
+    })
+}
+
+fn clean_up_installer_with(
+    paths: &Paths,
+    name: &str,
+    loaded: crate::config::Loaded,
+) -> Result<(Option<Cleaned>, Option<String>)> {
+    let timeout = installer::clean_up_timeout(&loaded.config);
+    let cleaned = installer::clean_up(paths, &loaded.config, name, timeout)?;
+    Ok((cleaned, loaded.warning))
 }
 
 pub(crate) fn stop_timeout(paths: &Paths) -> (u32, Vec<String>) {
     match GlobalConfig::load(paths) {
         Ok(global) => (global.stop_timeout, Vec::new()),
-        Err(err) => {
-            let err: anyhow::Error = err.into();
-            (DEFAULT_STOP_TIMEOUT, vec![format!("warning: {err:#}")])
+        Err(err) => (
+            DEFAULT_STOP_TIMEOUT,
+            vec![format!(
+                "warning: {}",
+                crate::config::default_settings_warning(&err)
+            )],
+        ),
+    }
+}
+
+/// `stop_timeout` words a global config fallback the same way, so the line is
+/// only added when it isn't already there.
+fn append_unique_warning(messages: &mut Vec<String>, warning: Option<String>) {
+    if let Some(warning) = warning {
+        let line = format!("warning: {warning}");
+        if !messages.contains(&line) {
+            messages.push(line);
         }
     }
 }
@@ -383,6 +429,32 @@ mod tests {
     use crate::runners::Runners;
     use crate::runtime::{RunMode, RunState, RunStatus};
     use crate::test_script::write_script;
+
+    #[test]
+    fn the_same_fallback_warning_is_said_once() {
+        let (_, mut messages) = {
+            let root = tempfile::tempdir().unwrap();
+            let home = root.path().to_owned();
+            let paths = Paths::from_lookup(move |key| {
+                (key == "HOME").then(|| OsString::from(home.as_os_str()))
+            })
+            .unwrap();
+            fs::create_dir_all(paths.global_config().parent().unwrap()).unwrap();
+            fs::write(paths.global_config(), "stop_timeout = [\n").unwrap();
+            let timeout = stop_timeout(&paths);
+            let loaded = GlobalConfig::load_or_default(&paths).unwrap();
+            let mut messages = timeout.1.clone();
+            append_unique_warning(&mut messages, loaded.warning);
+            (timeout.0, messages)
+        };
+        assert_eq!(messages.len(), 1, "{messages:?}");
+        append_unique_warning(&mut messages, Some("something else".to_owned()));
+        assert_eq!(messages.len(), 2, "{messages:?}");
+
+        let mut unrelated = vec!["warning: unrelated".to_owned()];
+        append_unique_warning(&mut unrelated, Some("using default settings: x".to_owned()));
+        assert_eq!(unrelated.len(), 2, "{unrelated:?}");
+    }
 
     fn paths(root: &std::path::Path) -> Paths {
         let root = root.to_owned();

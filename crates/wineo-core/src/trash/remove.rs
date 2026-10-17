@@ -97,6 +97,7 @@ pub fn remove_with_force(
     if prefix_path.as_deref().map(paths::resolve) != initial_resolved {
         bail!("environment prefix changed while acquiring locks; retry");
     }
+    let mut warnings = Vec::new();
     let runtime = Runtime::new(paths, name);
     if runtime.is_running()? {
         bail!("{name} is running, stop it first");
@@ -182,12 +183,11 @@ pub fn remove_with_force(
             );
         }
         environment::check_nesting(paths, name, prefix_path)?;
-        if let Ok(global) = GlobalConfig::load(paths) {
-            current
-                .as_ref()
-                .unwrap()
-                .wait_idle_for_remove(paths, &global, token, || events(RemoveEvent::Waiting))?;
-        }
+        let global = GlobalConfig::load_or_default(paths)?.note(&mut warnings);
+        current
+            .as_ref()
+            .unwrap()
+            .wait_idle_for_remove(paths, &global, token, || events(RemoveEvent::Waiting))?;
     }
     if token.is_canceled() {
         return Err(crate::error::Error::Canceled("removing environment").into());
@@ -320,5 +320,6 @@ pub fn remove_with_force(
     retire_marker(paths, &manifest)?;
     let mut entry = info(paths, &manifest)?;
     entry.desktop_removed = desktop_removed;
+    entry.warnings = warnings;
     Ok(entry)
 }

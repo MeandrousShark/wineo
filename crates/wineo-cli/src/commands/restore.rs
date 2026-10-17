@@ -20,7 +20,9 @@ pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
             args.id
         );
     }
-    trash::restore(paths, &args.id)?;
+    for warning in trash::restore(paths, &args.id)? {
+        eprintln!("warning: {warning}");
+    }
     println!("Restored environment {} from trash {}", entry.name, args.id);
     if Environment::load(paths, &entry.name).is_err() {
         eprintln!(

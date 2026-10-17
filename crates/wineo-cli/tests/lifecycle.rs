@@ -573,11 +573,64 @@ fn a_broken_global_config_does_not_block_stop() {
     assert_success(&stopped);
     assert_eq!(stdout(&stopped), "Stopped app\n");
     assert!(
-        stderr(&stopped).contains("warning: invalid config"),
+        stderr(&stopped).contains("warning: using default settings: invalid config"),
         "{}",
         stderr(&stopped)
     );
     assert!(!f.fake_program_running("app"));
+}
+
+// Deliberate under plan 0053: stopping a run never waits on a config it
+// can't read, so it stops with the default timeout and says why.
+#[test]
+fn stop_goes_on_with_defaults_for_a_global_config_it_refuses_elsewhere() {
+    for (config, hint) in [
+        (
+            "typo_key = 1\n",
+            "A newer version of wineo may have written it; update wineo or remove the key.",
+        ),
+        (
+            "schema_version = 2\n",
+            "A newer version of wineo wrote it; update wineo to use this file.",
+        ),
+    ] {
+        let f = Fixture::new();
+        f.environment("app", APP);
+        assert_success(&f.run(&["start", "app"]));
+        wait_for("the program to start", || f.fake_program_running("app"));
+        fs::write(f.config_dir().join("config.toml"), config).unwrap();
+
+        let stopped = f.run(&["stop", "app"]);
+        assert_success(&stopped);
+        assert_eq!(stdout(&stopped), "Stopped app\n");
+        let message = stderr(&stopped);
+        assert_eq!(
+            message.matches("warning: using default settings: ").count(),
+            1,
+            "{config}: {message}"
+        );
+        assert_eq!(message.matches(hint).count(), 1, "{config}: {message}");
+        assert!(!f.fake_program_running("app"));
+    }
+}
+
+#[test]
+fn stop_of_an_idle_environment_goes_on_with_defaults_for_an_unreadable_global_config() {
+    for config in ["typo_key = 1\n", "schema_version = 2\n"] {
+        let f = Fixture::new();
+        f.environment("app", APP);
+        fs::write(f.config_dir().join("config.toml"), config).unwrap();
+
+        let stopped = f.run(&["stop", "app"]);
+        assert_success(&stopped);
+        let message = stderr(&stopped);
+        assert_eq!(
+            message.matches("warning: using default settings: ").count(),
+            1,
+            "{config}: {message}"
+        );
+        assert!(message.contains("app is not running"), "{message}");
+    }
 }
 
 #[test]

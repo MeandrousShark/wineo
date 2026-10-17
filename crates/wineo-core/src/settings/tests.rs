@@ -739,7 +739,7 @@ fn an_invalid_art_toml_stops_a_target_removal_first() {
         &["targets.a"],
     )
     .unwrap_err();
-    assert!(matches!(err, Error::ConfigSyntax { .. }), "{err}");
+    assert!(matches!(err, Error::ConfigUnknownKey { .. }), "{err}");
     assert_eq!(
         fs::read_to_string(paths.environment_config("notepad")).unwrap(),
         text
@@ -1210,4 +1210,53 @@ mod gog_id {
         assert!(applied.failed.is_none(), "{:?}", applied.failed);
         assert_eq!(applied.not_set, ["gog_id"]);
     }
+}
+
+#[test]
+fn apply_reports_a_global_config_that_fell_back_to_defaults() {
+    let (_root, paths) = setup();
+    write_env(&paths, NOTEPAD);
+    fs::create_dir_all(paths.global_config().parent().unwrap()).unwrap();
+    fs::write(paths.global_config(), "stop_timeout = [\n").unwrap();
+    let applied = apply(
+        &paths,
+        ConfigFile::Environment("notepad"),
+        &[("gamemode", "true")],
+        &[],
+    )
+    .unwrap();
+    assert!(applied.failed.is_none(), "{:?}", applied.failed);
+    // The desktop step reuses the config `apply` loaded, so it says so once.
+    assert_eq!(applied.warnings.len(), 1, "{:?}", applied.warnings);
+    assert!(
+        applied.warnings[0].starts_with("using default settings: "),
+        "{:?}",
+        applied.warnings
+    );
+}
+
+#[test]
+fn apply_refuses_a_global_config_with_an_unknown_key() {
+    let (_root, paths) = setup();
+    write_env(&paths, NOTEPAD);
+    fs::create_dir_all(paths.global_config().parent().unwrap()).unwrap();
+    fs::write(paths.global_config(), "foo = 1\n").unwrap();
+    let err = apply(
+        &paths,
+        ConfigFile::Environment("notepad"),
+        &[("gamemode", "true")],
+        &[],
+    )
+    .unwrap_err();
+    assert!(
+        matches!(
+            err.downcast_ref::<Error>(),
+            Some(Error::ConfigUnknownKey { .. })
+        ),
+        "{err}"
+    );
+    assert_eq!(
+        fs::read_to_string(paths.environment_config("notepad")).unwrap(),
+        NOTEPAD
+    );
 }

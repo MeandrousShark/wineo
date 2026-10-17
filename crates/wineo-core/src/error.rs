@@ -40,6 +40,14 @@ impl std::fmt::Display for NoPrefix {
     }
 }
 
+/// Printed under the parser's message for a key this wineo doesn't know.
+pub const UNKNOWN_KEY_HINT: &str =
+    "A newer version of wineo may have written it; update wineo or remove the key.";
+
+/// Printed under an unsupported `schema_version`.
+pub const NEWER_VERSION_HINT: &str =
+    "A newer version of wineo wrote it; update wineo to use this file.";
+
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     #[error("{context}")]
@@ -80,6 +88,14 @@ pub enum Error {
         source: Box<toml::de::Error>,
     },
 
+    /// Not a `#[source]`, so the hint can follow the parser's message when the
+    /// chain is printed on one line.
+    #[error("invalid config {}: {}\n{UNKNOWN_KEY_HINT}", .path.display(), .detail.to_string().trim_end())]
+    ConfigUnknownKey {
+        path: PathBuf,
+        detail: Box<toml::de::Error>,
+    },
+
     #[error("invalid config {}", .path.display())]
     ConfigParse {
         path: PathBuf,
@@ -87,7 +103,7 @@ pub enum Error {
         source: Box<toml_edit::TomlError>,
     },
 
-    #[error("unsupported schema_version {found} in {}", .path.display())]
+    #[error("unsupported schema_version {found} in {}\n{NEWER_VERSION_HINT}", .path.display())]
     SchemaVersion { path: PathBuf, found: String },
 
     #[error(transparent)]

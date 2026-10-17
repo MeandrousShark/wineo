@@ -3514,3 +3514,22 @@ fn a_portable_page_refuses_desktop_entries() {
         "apps/other.exe"
     );
 }
+
+#[test]
+fn a_save_that_fell_back_to_default_settings_says_so() {
+    let applied = settings::Applied {
+        warnings: vec!["using default settings: invalid config /c.toml:\nbad".to_owned()],
+        desktop: vec![wineo_core::desktop::Change::Warning(
+            "again\nlater".to_owned(),
+        )],
+        ..Default::default()
+    };
+    let report = load::report("hades", applied);
+    assert_eq!(
+        report.lines,
+        [
+            "Warning: using default settings: invalid config /c.toml: bad",
+            "Warning: again later"
+        ]
+    );
+}
