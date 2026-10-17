@@ -57,6 +57,54 @@ fn copy_tree(from: &Path, to: &Path) {
     }
 }
 
+/// The state a set must have, so deleting it from the fixtures fails a test
+/// instead of quietly skipping the check. Snapshots exist in every generated
+/// set, trash and playtime from v0.14.0, and the hand-written legacy set has
+/// none (its README says so). A set added later is expected to have all.
+struct Expected {
+    playtime: bool,
+    trash: bool,
+    snapshots: bool,
+}
+
+fn expected(set: &str) -> Expected {
+    let (playtime, trash, snapshots) = match set {
+        "legacy" => (false, false, false),
+        "v0.2.0" | "v0.7.0" => (false, false, true),
+        _ => (true, true, true),
+    };
+    Expected {
+        playtime,
+        trash,
+        snapshots,
+    }
+}
+
+/// The entries of `dir` when the set should have it, and none when it
+/// shouldn't. Either way the directory must agree with the table.
+fn state_entries(name: &str, what: &str, dir: &Path, should_exist: bool) -> Vec<PathBuf> {
+    assert_eq!(
+        dir.is_dir(),
+        should_exist,
+        "{name}: {what} directory {} {}",
+        dir.display(),
+        if should_exist {
+            "is missing"
+        } else {
+            "should not exist"
+        }
+    );
+    if !should_exist {
+        return Vec::new();
+    }
+    let entries: Vec<PathBuf> = fs::read_dir(dir)
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .collect();
+    assert!(!entries.is_empty(), "{name}: {what} directory is empty");
+    entries
+}
+
 const ROOTS: [&str; 2] = ["portable", "xdg"];
 
 /// One set copied into place, with the CLI pointed at either root.
@@ -298,7 +346,7 @@ fn reading_changes_no_bytes_or_modification_times() {
                 &["templates"],
                 &["trash"],
                 &["stats"],
-                &["config", "--global"],
+                &["config"],
             ]
             .iter()
             .map(|args| args.iter().map(|arg| (*arg).to_owned()).collect())
@@ -404,6 +452,26 @@ fn a_real_edit_stamps_a_legacy_file_and_keeps_every_other_line() {
                 let after = fs::read_to_string(&file).unwrap();
                 let label = format!("{name} {root} {}", file.display());
 
+                // The edit landed, in the file and in what wineo reports.
+                if key == "stop_timeout" {
+                    assert!(
+                        after.lines().any(|line| line == "stop_timeout = 21"),
+                        "{label}:\n{after}"
+                    );
+                    let shown = stdout(&set.run(root, &["config"]));
+                    assert!(
+                        shown.lines().any(|line| line == "stop_timeout = 21"),
+                        "{label}: config shows\n{shown}"
+                    );
+                } else {
+                    assert!(
+                        after.lines().any(|line| line == "tags = [\"upgrade\"]"),
+                        "{label}:\n{after}"
+                    );
+                    let status = set.json(root, &["status", args[1], "--json"]);
+                    assert_eq!(status["tags"], serde_json::json!(["upgrade"]), "{label}");
+                }
+
                 let stamps = after
                     .lines()
                     .filter(|line| *line == "schema_version = 1")
@@ -466,11 +534,8 @@ fn playtime_reads_back_as_written() {
     for name in sets() {
         let set = Set::new(&name);
         let logs = set.portable().join("stats");
-        let Ok(entries) = fs::read_dir(&logs) else {
-            continue;
-        };
-        for entry in entries {
-            let path = entry.unwrap().path();
+        let entries = state_entries(&name, "playtime", &logs, expected(&name).playtime);
+        for path in entries {
             let environment = path.file_stem().unwrap().to_string_lossy().into_owned();
             let sessions: Vec<Value> = fs::read_to_string(&path)
                 .unwrap()
@@ -521,13 +586,13 @@ fn trash_entries_read_back_as_written() {
     for name in sets() {
         let set = Set::new(&name);
         let trash = set.portable().join("data/trash");
-        let Ok(entries) = fs::read_dir(&trash) else {
+        let entries = state_entries(&name, "trash", &trash, expected(&name).trash);
+        if entries.is_empty() {
             continue;
-        };
+        }
         let listing = stdout(&set.run("portable", &["trash"]));
         let mut seen = 0;
-        for entry in entries {
-            let dir = entry.unwrap().path();
+        for dir in entries {
             let id = dir.file_name().unwrap().to_string_lossy().into_owned();
             let manifest = top_level(&fs::read_to_string(dir.join("manifest.toml")).unwrap());
             let environment = unquote(&manifest["name"]).to_owned();
@@ -571,11 +636,8 @@ fn snapshots_read_back_as_written() {
     for name in sets() {
         let set = Set::new(&name);
         let root = set.portable().join("prefixes/.wineo-snapshots");
-        let Ok(environments) = fs::read_dir(&root) else {
-            continue;
-        };
+        let environments = state_entries(&name, "snapshot", &root, expected(&name).snapshots);
         for environment in environments {
-            let environment = environment.unwrap().path();
             let owner = environment
                 .file_name()
                 .unwrap()
