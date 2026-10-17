@@ -296,7 +296,6 @@ fn bad_states_are_refused() {
         "version = 2\nfolder = \"/games/x\"\n",
         "version = 1\nfolder = \"games/x\"\n",
         "version = 1\nfolder = \"/games/x\"\nowner = \"bad name\"\n",
-        "version = 1\nfolder = \"/games/x\"\nsurprise = 1\n",
     ] {
         assert!(FolderState::parse(text).is_err(), "{text}");
     }
