@@ -659,6 +659,69 @@ Steps 1 to 3 touch different files and can run in parallel worktrees.
   record and one that parses but fails validation.
 - The fixture tests above, in the normal `cargo test` run.
 
+## Acceptance checklist
+
+Most steps use a throwaway portable folder, so your real config is never
+touched: in fish, `set -x WINEO_PORTABLE_DIR ~/wineo-0053-test` (the CLI and
+the app both read it). Create an environment to work with: `wineo new
+--name zz --runner wine`, then `wineo set zz targets.np.exe='C:\windows\notepad.exe'`.
+Step 9 needs desktop entries, which a portable folder refuses, so it uses
+your normal setup with its own throwaway environment.
+
+1. Add `gamemod = true` to `environments/zz.toml` by hand. `wineo status
+   zz` fails with `unknown field gamemod` and then `A newer version of
+   wineo may have written it; update wineo or remove the key.` Remove it.
+2. Set `schema_version = 2` in `zz.toml`. `wineo status zz` fails with
+   `unsupported schema_version 2` and `A newer version of wineo wrote it;
+   update wineo to use this file.` Set it back to 1.
+3. Add `foo = 1` to the folder's `config.toml`. `wineo set zz gamemode=true`
+   and `wineo start zz` refuse with the unknown-key hint. `wineo status zz`
+   prints `warning: using default settings: ...` with the hint, then the
+   status. `wineo validate` reports `global_config_invalid` with the hint.
+4. With `foo = 1` still there, open the app: its checkup lists the global
+   config problem with the hint. Close it.
+5. Replace `foo = 1` with a broken line like `[defaults`. `wineo set zz
+   gamemode=true` works and warns once that it used the default settings.
+   Fix `config.toml`.
+6. `wineo start zz` (Notepad opens), then add `foo = 1` to `config.toml`
+   again and run `wineo stop zz`: Notepad closes, with the default-settings
+   warning and the hint. Remove `foo = 1`.
+7. `wineo download dxvk`, then break `zz.toml` (delete its `arch` line).
+   `wineo dxvk rm <version>` refuses: `<version> is kept, since a config
+   can't be read`, followed by `zz.toml`'s own error, and the build stays.
+   In the app, the Downloads page shows the same refusal on the build's row.
+   Fix `zz.toml`; `wineo dxvk remove <version> --yes` removes it.
+8. Corrupt a trash entry: `wineo new --name zz2 --runner wine`, `wineo rm
+   zz2`, then add a stray line to `data/trash/*/manifest.toml`. `wineo
+   validate` reports `trash_invalid` once, and no `art_config_invalid`
+   problems. Undo the edit; `wineo prune` removes the entry.
+9. Without `WINEO_PORTABLE_DIR` (a new shell): `wineo new --name zz0053
+   --runner wine`, give it a target with a desktop entry, and set an icon
+   with `wineo art set zz0053 icon <some png>`. Note the entry's icon. Add
+   `foo = 1` to `~/.local/share/wineo/art/zz0053/art.toml`, then change the
+   target so its entry is rewritten: `wineo set zz0053
+   'targets.TARGET.args=["x"]'`. It succeeds and warns `art for TARGET could
+   not be read, so its icon was left as it is`, and the entry keeps its
+   icon. Remove the line, then `wineo rm zz0053 --include-prefix` and
+   `wineo prune`.
+10. Renames, back in the portable folder: `wineo snapshot create zz first`,
+    then `wineo snapshot delete zz first` warns `snapshot delete is
+    deprecated; use snapshot remove` and removes it with `Removed snapshot
+    first of zz`. `wineo snapshot create zz second` and `wineo snapshot rm
+    zz second` work with no warning. `wineo rm zz --delete-prefix` warns
+    `--delete-prefix is deprecated; use --include-prefix` and trashes the
+    prefix; `wineo restore zz` brings it back.
+11. `wineo set zz dxvk=<an installed version>` (download one again if
+    needed), then `wineo status zz --json`: its `dxvk` object has both
+    `configured` and `wanted`, with the same value.
+12. `cargo test -p wineo-cli --test upgrade` passes, and
+    `scripts/generate-upgrade-fixtures.sh v0.34.0` regenerates that set
+    with no change beyond timestamps and trash ids (`git diff --stat`).
+13. Clean up: `rm -rf ~/wineo-0053-test` and `set -e WINEO_PORTABLE_DIR`.
+
+Deprecated config keys can't be tried by hand, since release builds ship
+an empty table; the tests cover them.
+
 ## Scope limits
 
 - **Downgrades are not promised.** An older wineo refuses a newer key
