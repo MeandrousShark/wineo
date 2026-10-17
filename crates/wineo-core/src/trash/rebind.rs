@@ -9,14 +9,15 @@ use toml_edit::{Array, DocumentMut, Item, Value};
 use crate::paths::Paths;
 
 use super::identity::identity;
-use super::{Identity, MANIFEST, Manifest, resolved};
+use super::{Identity, MANIFEST, Manifest, Phase, Step, resolved};
 
 /// Rewrites the device, inode, mount, and birth time in every identity table
 /// of every manifest under the trash directory to what the files have now, and
 /// touches nothing else in the file. A trash entry records the identity of the
 /// directories it moved things into, so a manifest copied from another
 /// checkout never matches. Returns how many manifests it rewrote. Entries that
-/// are mid-operation (staged or copied payloads) are refused.
+/// are mid-operation (any phase but trashed, any step but retained, or a
+/// staged or copied payload) are refused.
 ///
 /// Fixture tests use this on copies of what an old release wrote. The check
 /// that makes it necessary stays strict in production.
@@ -46,6 +47,12 @@ fn rebind_manifest(paths: &Paths, dir: &Path, file: &Path) -> Result<()> {
     let manifest: Manifest = toml::from_str(&text)?;
     let mut doc: DocumentMut = text.parse()?;
 
+    // Only what a finished removal leaves behind: anything else is an
+    // operation in progress, whose identities mean something else.
+    if manifest.phase != Phase::Trashed {
+        bail!("trash entry {} is mid-operation", manifest.id);
+    }
+
     set(&mut doc["entry_identity"], dir)?;
     if manifest.prefix_identity.is_some() {
         let reference = manifest
@@ -68,7 +75,9 @@ fn rebind_manifest(paths: &Paths, dir: &Path, file: &Path) -> Result<()> {
         .as_array_of_tables_mut()
         .ok_or_else(|| anyhow!("manifest has no payloads"))?;
     for (table, payload) in tables.iter_mut().zip(&manifest.payloads) {
-        if payload.copied_identity.is_some()
+        if payload.step != Step::Retained
+            || payload.kept
+            || payload.copied_identity.is_some()
             || payload.returned_identity.is_some()
             || payload.out_stage.is_some()
             || payload.return_stage.is_some()

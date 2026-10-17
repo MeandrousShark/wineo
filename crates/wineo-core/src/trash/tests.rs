@@ -2413,3 +2413,29 @@ fn rebinding_identities_changes_only_the_identity_numbers() {
     assert_eq!(fs::read_to_string(&file).unwrap(), written);
     read_manifest(&f.paths, &entry.id).unwrap();
 }
+
+#[test]
+fn rebinding_refuses_entries_that_are_mid_operation() {
+    for phase in [Phase::Restoring, Phase::Pruning, Phase::Removing] {
+        let f = Fixture::new();
+        f.config("game", "kind = 'native'\n");
+        let entry = remove(&f.paths, "game", false).unwrap();
+        let mut manifest = read_manifest(&f.paths, &entry.id).unwrap();
+        manifest.phase = phase;
+        write_manifest(&f.paths, &manifest).unwrap();
+        let err = rebind_identities(&f.paths).unwrap_err();
+        assert!(
+            err.to_string().contains("mid-operation"),
+            "{phase:?}: {err}"
+        );
+    }
+
+    let f = Fixture::new();
+    f.config("game", "kind = 'native'\n");
+    let entry = remove(&f.paths, "game", false).unwrap();
+    let mut manifest = read_manifest(&f.paths, &entry.id).unwrap();
+    manifest.payloads[0].step = Step::Returning;
+    write_manifest(&f.paths, &manifest).unwrap();
+    let err = rebind_identities(&f.paths).unwrap_err();
+    assert!(err.to_string().contains("mid-operation"), "{err}");
+}
