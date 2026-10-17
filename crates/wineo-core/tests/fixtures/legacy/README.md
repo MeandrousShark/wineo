@@ -13,14 +13,23 @@ Release v0.2.0 reads all of them as legacy version 0.
 
 ## Layout
 
-- `./` is a portable folder: `wineo --portable <copy of this directory>`.
-- `config/config.toml`: the global config, with every key it had then.
-- `config/environments/notepad.toml`: a Wine environment with one target and
-  an `[env]` table. Its prefix is `prefixes/notepad`, which does not exist in
-  a copy of this folder. The old code's own test wrote `~/prefixes/notepad`,
-  but today's wineo refuses that in a portable folder (`prefix_refused`).
-- `config/templates/mygame.toml`: a user template with every key a template had.
-  Its `dxvk` and `vkd3d` picks are never resolved, since no builds exist.
+Two sibling roots hold the same three files, in the two shapes a real file had:
+
+- `portable/` is a portable folder: `wineo --portable <copy of portable/>`. Its
+  environment's prefix is `prefixes/notepad`.
+- `xdg/` is a HOME: point `HOME`, `XDG_CONFIG_HOME`, and `XDG_DATA_HOME` at it
+  and its `.config` and `.local/share`. Its environment's prefix is
+  `~/prefixes/notepad`, the form the old code's own test used. Current wineo
+  refuses that form in a portable folder (`prefix_refused`), which is why the
+  portable root differs.
+
+Each root has:
+
+- `config.toml`, the global config, with every key it had then.
+- `environments/notepad.toml`, a Wine environment with one target and an `[env]`
+  table.
+- `templates/mygame.toml`, a user template with every key a template had. Its
+  `dxvk` and `vkd3d` picks are never resolved, since no builds exist.
 
 Each file starts with a `# hand written` comment, so a test can tell that a
 `wineo set` edit kept the comment and stamped `schema_version = 1`.

@@ -1,0 +1,128 @@
+version = 1
+id = "20261017T053619Z-a0cc1215"
+name = "doomed-prefix"
+removed_at = "2026-10-17T05:36:19.699290518Z"
+include_prefix = true
+prefix_present = true
+prefix_reference = "prefixes/doomed-prefix"
+phase = "trashed"
+
+[entry_identity]
+device = 50
+inode = 36484106
+mount = 63
+birth = [
+    1792215379,
+    695291457,
+]
+
+[prefix_identity]
+device = 50
+inode = 36484082
+mount = 63
+birth = [
+    1792215379,
+    560291448,
+]
+
+[[payloads]]
+kind = "config"
+original = "config/environments/doomed-prefix.toml"
+retained = "data/trash/20261017T053619Z-a0cc1215/config.toml"
+digest = "cca94abea64c4b84c56a25b8cfea1788913552395a66d4144305988dc7c5f6da"
+step = "retained"
+
+[payloads.identity]
+device = 50
+inode = 36484092
+mount = 63
+birth = [
+    1792215379,
+    636291453,
+]
+
+[payloads.source_parent]
+device = 50
+inode = 36483966
+mount = 63
+birth = [
+    1792215375,
+    450291150,
+]
+
+[payloads.destination_parent]
+device = 50
+inode = 36484106
+mount = 63
+birth = [
+    1792215379,
+    695291457,
+]
+
+[[payloads]]
+kind = "prefix"
+original = "prefixes/doomed-prefix"
+retained = "prefixes/.wineo-trash/20261017T053619Z-a0cc1215/prefix"
+digest = "b858e3a06dfebe68954af877098556d5fa7a96218dc1fba14ee272b1ef5d59f7"
+step = "retained"
+
+[payloads.identity]
+device = 50
+inode = 36484082
+mount = 63
+birth = [
+    1792215379,
+    560291448,
+]
+
+[payloads.source_parent]
+device = 50
+inode = 36483955
+mount = 63
+birth = [
+    1792215375,
+    374291145,
+]
+
+[payloads.destination_parent]
+device = 50
+inode = 36484108
+mount = 63
+birth = [
+    1792215379,
+    697291458,
+]
+
+[[payloads]]
+kind = "snapshots"
+original = "prefixes/.wineo-snapshots/doomed-prefix"
+retained = "prefixes/.wineo-trash/20261017T053619Z-a0cc1215/snapshots"
+digest = "87f19d711d100bb8a5348bf646e9d2a8b54cbbaf037a74df1ec8863b8ac4c2e8"
+step = "retained"
+
+[payloads.identity]
+device = 50
+inode = 36484093
+mount = 63
+birth = [
+    1792215379,
+    659291455,
+]
+
+[payloads.source_parent]
+device = 50
+inode = 36484022
+mount = 63
+birth = [
+    1792215375,
+    705291168,
+]
+
+[payloads.destination_parent]
+device = 50
+inode = 36484108
+mount = 63
+birth = [
+    1792215379,
+    697291458,
+]

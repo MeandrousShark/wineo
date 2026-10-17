@@ -1,0 +1,13 @@
+# hand written
+prefix = "~/prefixes/notepad"
+runner = "wine"
+arch = "win64"
+gamemode = false
+
+[targets.notepad]
+exe = 'C:\windows\notepad.exe'
+default = true
+args = ["/A"]
+
+[env]
+WINEDEBUG = "-all"

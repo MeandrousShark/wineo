@@ -7,29 +7,29 @@ id, and snapshot times differ from run to run.
 
 ## Layout
 
-- `./` is a portable folder: `wineo --portable <copy of this directory>`.
-- `xdg/` is a HOME for what a portable folder cannot hold: desktop entries are
-  refused there, Steam games cannot be imported into one, and
-  `external_runners` does nothing in one. Copy it to a temporary HOME and
-  point `XDG_CONFIG_HOME` and `XDG_DATA_HOME` at `.config` and `.local/share`
-  under it.
+- `portable/` is a portable folder: copy it and run `wineo --portable <copy>`.
+- `xdg/` is a HOME, a sibling of `portable/`, for what a portable folder
+  cannot hold: desktop entries are refused there, Steam games cannot be
+  imported into one, and `external_runners` does nothing in one. Copy it to a
+  temporary HOME and point `XDG_CONFIG_HOME` and `XDG_DATA_HOME` at `.config`
+  and `.local/share` under it.
 - Prefixes hold only `system.reg`, `dosdevices/c:`, `drive_c/` (with an empty
   `windows/win.ini`, since git keeps no empty directories), and empty fake
   program files, plus `winetricks.log` where winetricks ran. Prefix paths in
-  configs are relative to the folder or start with `~`.
+  configs are relative to the portable folder or start with `~`.
 - The trash entry directory is named by time and a random suffix; glob
-  `data/trash/*/`. Its manifest records a device and inode that never match a
-  copy.
+  `portable/data/trash/*/`. Its manifest records a device and inode that never
+  match a copy. A trashed prefix lives under `portable/prefixes/.wineo-trash/`.
 
 ## Contents
 
-- Global config: `config/config.toml`, keys: schema_version, stop_timeout, log_limit_mb, gamemode, wayland, mangohud, external_runners, steam, [defaults], arch, [env], [art], fetch
-- Environments (portable): lazy (wine), plain (wine), templated (wine), tool (native)
-- Templates (hand-written): full, mygame
-- Art: art/plain/art.toml
-- Snapshots: plain/first
-- Playtime logs: lazy.jsonl, tool.jsonl
-- Trash entries (names in the manifests): doomed (prefix left in place); doomed-prefix (prefix in the trash);
+- Global config: `portable/config/config.toml`, keys: schema_version, stop_timeout, log_limit_mb, gamemode, wayland, mangohud, external_runners, steam, [defaults], arch, [env], [art], fetch
+- Environments in `portable/config/environments`: lazy (wine), plain (wine), templated (wine), tool (native)
+- Templates in `portable/config/templates` (hand-written): full, mygame
+- Art, under `portable/`: art/plain/art.toml
+- Snapshots, under `portable/prefixes/.wineo-snapshots`: plain/first
+- Playtime logs, under `portable/stats`: lazy.jsonl, tool.jsonl
+- Trash entries under `portable/data/trash` (names in the manifests): doomed-prefix (prefix in the trash); doomed (prefix left in place);
 - XDG home environments (`xdg/.config/wineo/environments`): desktop (wine), external (wine), steam-game (proxied)
 - XDG home global config: `xdg/.config/wineo/config.toml`, only so external runners count.
 - Desktop entries under `xdg/.local/share/applications/`.

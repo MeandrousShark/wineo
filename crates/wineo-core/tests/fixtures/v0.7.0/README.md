@@ -7,27 +7,27 @@ id, and snapshot times differ from run to run.
 
 ## Layout
 
-- `./` is a portable folder: `wineo --portable <copy of this directory>`.
-- `xdg/` is a HOME for what a portable folder cannot hold: desktop entries are
-  refused there, Steam games cannot be imported into one, and
-  `external_runners` does nothing in one. Copy it to a temporary HOME and
-  point `XDG_CONFIG_HOME` and `XDG_DATA_HOME` at `.config` and `.local/share`
-  under it.
+- `portable/` is a portable folder: copy it and run `wineo --portable <copy>`.
+- `xdg/` is a HOME, a sibling of `portable/`, for what a portable folder
+  cannot hold: desktop entries are refused there, Steam games cannot be
+  imported into one, and `external_runners` does nothing in one. Copy it to a
+  temporary HOME and point `XDG_CONFIG_HOME` and `XDG_DATA_HOME` at `.config`
+  and `.local/share` under it.
 - Prefixes hold only `system.reg`, `dosdevices/c:`, `drive_c/` (with an empty
   `windows/win.ini`, since git keeps no empty directories), and empty fake
   program files, plus `winetricks.log` where winetricks ran. Prefix paths in
-  configs are relative to the folder or start with `~`.
+  configs are relative to the portable folder or start with `~`.
 - The trash entry directory is named by time and a random suffix; glob
-  `data/trash/*/`. Its manifest records a device and inode that never match a
-  copy.
+  `portable/data/trash/*/`. Its manifest records a device and inode that never
+  match a copy. A trashed prefix lives under `portable/prefixes/.wineo-trash/`.
 
 ## Contents
 
-- Global config: `config/config.toml`, keys: schema_version, stop_timeout, log_limit_mb, gamemode, [defaults], arch, [env]
-- Environments (portable): plain (wine), templated (wine), tool (native)
-- Templates (hand-written): full, mygame
-- Art: art/plain/art.toml
-- Snapshots: plain/first
+- Global config: `portable/config/config.toml`, keys: schema_version, stop_timeout, log_limit_mb, gamemode, [defaults], arch, [env]
+- Environments in `portable/config/environments`: plain (wine), templated (wine), tool (native)
+- Templates in `portable/config/templates` (hand-written): full, mygame
+- Art, under `portable/`: art/plain/art.toml
+- Snapshots, under `portable/prefixes/.wineo-snapshots`: plain/first
 - XDG home environments (`xdg/.config/wineo/environments`): desktop (wine)
 - Desktop entries under `xdg/.local/share/applications/`.
 

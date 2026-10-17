@@ -1,0 +1,60 @@
+version = 1
+id = "20261017T053609Z-1cd24ead"
+name = "doomed"
+removed_at = "2026-10-17T05:36:09.770619611Z"
+include_prefix = false
+prefix_present = true
+prefix_reference = "prefixes/doomed"
+phase = "trashed"
+
+[entry_identity]
+device = 50
+inode = 36483275
+mount = 63
+birth = [
+    1792215369,
+    768290739,
+]
+
+[prefix_identity]
+device = 50
+inode = 36483260
+mount = 63
+birth = [
+    1792215369,
+    755290738,
+]
+
+[[payloads]]
+kind = "config"
+original = "config/environments/doomed.toml"
+retained = "data/trash/20261017T053609Z-1cd24ead/config.toml"
+digest = "188d8afdb5f6375a996fefc2523a8c2bc45fbb7829f3f53785a35cae3e0e8b8d"
+step = "retained"
+
+[payloads.identity]
+device = 50
+inode = 36483270
+mount = 63
+birth = [
+    1792215369,
+    761290738,
+]
+
+[payloads.source_parent]
+device = 50
+inode = 36483166
+mount = 63
+birth = [
+    1792215365,
+    570290434,
+]
+
+[payloads.destination_parent]
+device = 50
+inode = 36483275
+mount = 63
+birth = [
+    1792215369,
+    768290739,
+]

@@ -474,26 +474,26 @@ environments_in() {
     done | paste -sd, - | sed 's/,/, /g'
 }
 
-# contents OUT: what the set holds, read from the copied files.
+# contents SET: what the set holds, read from the copied files.
 contents() {
-    local out=$1 entry
+    local out=$1/portable xdg=$1/xdg entry
     printf '## Contents\n\n'
-    printf -- '- Global config: `config/config.toml`, keys: %s\n' \
+    printf -- '- Global config: `portable/config/config.toml`, keys: %s\n' \
         "$(sed -n 's/^\([a-z_]*\) *=.*/\1/p; s/^\[\(.*\)\]$/[\1]/p' "$out/config/config.toml" | paste -sd, - | sed 's/,/, /g')"
-    printf -- '- Environments (portable): %s\n' "$(environments_in "$out/config/environments")"
-    printf -- '- Templates (hand-written): %s\n' \
+    printf -- '- Environments in `portable/config/environments`: %s\n' "$(environments_in "$out/config/environments")"
+    printf -- '- Templates in `portable/config/templates` (hand-written): %s\n' \
         "$(find "$out/config/templates" -name '*.toml' -printf '%f\n' | sed 's/\.toml$//' | sort | paste -sd, - | sed 's/,/, /g')"
     if [[ -d $out/art ]]; then
-        printf -- '- Art: %s\n' "$(find "$out/art" -name art.toml | sed "s|$out/||" | sort | paste -sd, - | sed 's/,/, /g')"
+        printf -- '- Art, under `portable/`: %s\n' "$(find "$out/art" -name art.toml | sed "s|$out/||" | sort | paste -sd, - | sed 's/,/, /g')"
     fi
     if [[ -d $out/prefixes/.wineo-snapshots ]]; then
-        printf -- '- Snapshots: %s\n' "$(find "$out/prefixes/.wineo-snapshots" -mindepth 2 -maxdepth 2 -type d | sed "s|$out/prefixes/.wineo-snapshots/||" | sort | paste -sd, - | sed 's/,/, /g')"
+        printf -- '- Snapshots, under `portable/prefixes/.wineo-snapshots`: %s\n' "$(find "$out/prefixes/.wineo-snapshots" -mindepth 2 -maxdepth 2 -type d | sed "s|$out/prefixes/.wineo-snapshots/||" | sort | paste -sd, - | sed 's/,/, /g')"
     fi
     if [[ -d $out/stats ]]; then
-        printf -- '- Playtime logs: %s\n' "$(find "$out/stats" -name '*.jsonl' -printf '%f\n' | sort | paste -sd, - | sed 's/,/, /g')"
+        printf -- '- Playtime logs, under `portable/stats`: %s\n' "$(find "$out/stats" -name '*.jsonl' -printf '%f\n' | sort | paste -sd, - | sed 's/,/, /g')"
     fi
     if [[ -d $out/data/trash ]]; then
-        printf -- '- Trash entries (names in the manifests):'
+        printf -- '- Trash entries under `portable/data/trash` (names in the manifests):'
         for entry in "$out"/data/trash/*/manifest.toml; do
             printf ' %s (prefix %s);' "$(sed -n 's/^name = "\(.*\)"$/\1/p' "$entry")" \
                 "$(sed -n 's/^include_prefix = \(.*\)$/\1/p' "$entry" | sed 's/true/in the trash/; s/false/left in place/')"
@@ -501,11 +501,11 @@ contents() {
         printf '\n'
     fi
     printf -- '- XDG home environments (`xdg/.config/wineo/environments`): %s\n' \
-        "$(environments_in "$out/xdg/.config/wineo/environments")"
-    if [[ -f $out/xdg/.config/wineo/config.toml ]]; then
+        "$(environments_in "$xdg/.config/wineo/environments")"
+    if [[ -f $xdg/.config/wineo/config.toml ]]; then
         printf -- '- XDG home global config: `xdg/.config/wineo/config.toml`, only so external runners count.\n'
     fi
-    if [[ -d $out/xdg/.local/share/applications ]]; then
+    if [[ -d $xdg/.local/share/applications ]]; then
         printf -- '- Desktop entries under `xdg/.local/share/applications/`.\n'
     fi
     printf '\n'
@@ -515,9 +515,8 @@ contents() {
 publish() {
     local out=$fixtures/$tag item
     rm -rf "$out"
-    mkdir -p "$out"
-    cp -a "$root/." "$out/"
-    mkdir -p "$out/xdg"
+    mkdir -p "$out/portable" "$out/xdg"
+    cp -a "$root/." "$out/portable/"
     # The XDG home: configs, data, and fake launcher folders. Run state, locks,
     # and caches live outside it.
     cp -a "$home/." "$out/xdg/"
@@ -537,19 +536,19 @@ id, and snapshot times differ from run to run.
 
 ## Layout
 
-- `./` is a portable folder: `wineo --portable <copy of this directory>`.
-- `xdg/` is a HOME for what a portable folder cannot hold: desktop entries are
-  refused there, Steam games cannot be imported into one, and
-  `external_runners` does nothing in one. Copy it to a temporary HOME and
-  point `XDG_CONFIG_HOME` and `XDG_DATA_HOME` at `.config` and `.local/share`
-  under it.
+- `portable/` is a portable folder: copy it and run `wineo --portable <copy>`.
+- `xdg/` is a HOME, a sibling of `portable/`, for what a portable folder
+  cannot hold: desktop entries are refused there, Steam games cannot be
+  imported into one, and `external_runners` does nothing in one. Copy it to a
+  temporary HOME and point `XDG_CONFIG_HOME` and `XDG_DATA_HOME` at `.config`
+  and `.local/share` under it.
 - Prefixes hold only `system.reg`, `dosdevices/c:`, `drive_c/` (with an empty
   `windows/win.ini`, since git keeps no empty directories), and empty fake
   program files, plus `winetricks.log` where winetricks ran. Prefix paths in
-  configs are relative to the folder or start with `~`.
+  configs are relative to the portable folder or start with `~`.
 - The trash entry directory is named by time and a random suffix; glob
-  `data/trash/*/`. Its manifest records a device and inode that never match a
-  copy.
+  `portable/data/trash/*/`. Its manifest records a device and inode that never
+  match a copy. A trashed prefix lives under `portable/prefixes/.wineo-trash/`.
 
 EOT
         contents "$out"
