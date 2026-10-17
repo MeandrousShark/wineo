@@ -28,7 +28,7 @@ pub fn run(
         // A build in use still gets its usual refusal from removal itself.
         let uses = build_removal::uses(paths, &Lock::new(paths, build_kind, name))?;
         if uses.labels.is_empty() {
-            build_removal::refuse_unreadable(paths, name, &uses.errors)?;
+            build_removal::refuse_unreadable(name, &uses.errors)?;
         }
         print!("Remove {kind} {name} ({})? [y/N] ", style::size(size));
         crate::output::stdout().flush()?;

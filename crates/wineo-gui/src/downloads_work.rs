@@ -145,9 +145,7 @@ pub(crate) fn remove(paths: &Paths, build: &Build) -> Result<Removed, String> {
 
 pub(crate) fn delete(generation: u64, paths: Paths, build: Build) -> Task<Message> {
     work(
-        move || {
-            remove(&paths, &build).map(|removed| (removed.bytes, warnings(&paths, &removed.errors)))
-        },
+        move || remove(&paths, &build).map(|removed| removed.bytes),
         move |result| Event::Deleted(generation, result),
     )
 }

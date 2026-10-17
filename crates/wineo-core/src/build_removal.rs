@@ -31,8 +31,6 @@ pub struct Uses {
 #[derive(Debug)]
 pub struct Removed {
     pub bytes: u64,
-    /// Always empty now that an unreadable config refuses removal.
-    pub errors: Vec<OverviewError>,
 }
 
 pub fn uses(paths: &Paths, build: &Lock) -> Result<Uses> {
@@ -264,21 +262,13 @@ pub fn config_path(paths: &Paths, error: &OverviewError) -> PathBuf {
 
 /// A config this wineo can't read may select the build, so removal can't tell
 /// the build is unused.
-pub fn refuse_unreadable(paths: &Paths, name: &str, errors: &[OverviewError]) -> Result<()> {
+pub fn refuse_unreadable(name: &str, errors: &[OverviewError]) -> Result<()> {
     if errors.is_empty() {
         return Ok(());
     }
     Err(Error::UnreadableConfigs {
         name: name.to_owned(),
-        configs: errors
-            .iter()
-            .map(|error| {
-                (
-                    config_path(paths, error),
-                    crate::error::one_line(&error.message),
-                )
-            })
-            .collect(),
+        errors: errors.iter().map(|error| error.message.clone()).collect(),
     })
 }
 
@@ -340,7 +330,7 @@ fn remove_after_check(
     if !first.labels.is_empty() {
         return Err(in_use(build.name(), &first.labels));
     }
-    refuse_unreadable(paths, build.name(), &first.errors)?;
+    refuse_unreadable(build.name(), &first.errors)?;
     after_check();
     let Some(_guard) = build.try_exclusive()? else {
         return Err(in_use(build.name(), &uses(paths, build)?.labels));
@@ -351,16 +341,13 @@ fn remove_after_check(
     if !current.labels.is_empty() {
         return Err(in_use(build.name(), &current.labels));
     }
-    refuse_unreadable(paths, build.name(), &current.errors)?;
+    refuse_unreadable(build.name(), &current.errors)?;
     managed(directory, build.name())?;
     let bytes = directory_size(directory)?;
     let staged = move_out(directory)?;
     fs::remove_dir_all(&staged).context(|| format!("failed to delete {}", staged.display()))?;
     sync(root)?;
-    Ok(Removed {
-        bytes,
-        errors: Vec::new(),
-    })
+    Ok(Removed { bytes })
 }
 
 pub(crate) fn sweep_best_effort(paths: &Paths, kind: Kind, root: &Path) {

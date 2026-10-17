@@ -377,13 +377,13 @@ fn malformed_configs_refuse_removal_before_the_terminal_prompt() {
     let (status, output) = Pty::spawn(command).finish();
     assert_eq!(status.code(), Some(1), "{output}");
     assert!(!output.contains("[y/N]"), "{output}");
+    assert!(
+        output.contains("error: wine-tkg is kept, since 2 configs can't be read"),
+        "{output}"
+    );
     for path in [&config, &template] {
-        assert!(
-            output.contains(&format!("can't check {} (", path.display())),
-            "{output}"
-        );
+        assert!(output.contains(&path.display().to_string()), "{output}");
     }
-    assert!(output.contains("so wine-tkg is kept"), "{output}");
     assert!(f.root.path().join("data/wineo/runners/wine-tkg").exists());
 
     std::fs::remove_file(&config).unwrap();
@@ -430,14 +430,15 @@ fn yes_refuses_removal_when_a_config_is_malformed() {
         let refused = f.run(&args);
         assert_eq!(refused.status.code(), Some(1), "{}", stderr(&refused));
         let errors = stderr(&refused);
-        assert!(errors.starts_with("error: can't check "), "{errors}");
+        assert!(
+            errors.starts_with(&format!(
+                "error: {name} is kept, since 2 configs can't be read\n"
+            )),
+            "{errors}"
+        );
         for config in [&config, &template] {
-            assert!(
-                errors.contains(&format!("can't check {} (", config.display())),
-                "{errors}"
-            );
+            assert!(errors.contains(&config.display().to_string()), "{errors}");
         }
-        assert!(errors.contains(&format!("so {name} is kept")), "{errors}");
         assert!(stdout(&refused).is_empty());
         assert!(f.root.path().join(path).exists(), "{path} was removed");
     }

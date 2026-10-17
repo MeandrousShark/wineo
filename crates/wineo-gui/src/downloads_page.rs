@@ -118,7 +118,6 @@ pub(crate) struct Page {
     review_generation: u64,
     review: Option<(Build, Option<u64>)>,
     row_errors: HashMap<String, String>,
-    warnings: Vec<String>,
     notice: Option<String>,
     error: Option<String>,
     choosing: bool,
@@ -176,7 +175,7 @@ pub(crate) enum Event {
     Measured(u64, Result<u64, String>),
     Dismiss,
     Confirm,
-    Deleted(u64, Result<(u64, Vec<String>), String>),
+    Deleted(u64, Result<u64, String>),
     Choose,
     Provider(Provider),
     Listed(u64, u32, Result<ReleasePage, String>),
@@ -304,13 +303,12 @@ pub(crate) fn update(app: &mut App, event: Event) -> Task<Message> {
                 unreachable!()
             };
             match result {
-                Ok((bytes, warnings)) => {
+                Ok(bytes) => {
                     app.downloads_page.notice = Some(format!(
                         "Deleted {}. {} freed.",
                         build.name,
                         crate::size::format_bytes(bytes)
                     ));
-                    app.downloads_page.warnings = warnings;
                 }
                 Err(error) => {
                     app.downloads_page.row_errors.insert(build.id(), error);
@@ -638,12 +636,9 @@ impl App {
         }
         match &page.snapshot {
             Some(Ok(snapshot)) => {
-                let mut warnings = snapshot.warnings.clone();
-                warnings.extend(page.warnings.clone());
-                warnings.sort();
-                warnings.dedup();
-                if !warnings.is_empty() {
-                    let notices = warnings.into_iter().fold(
+                // The read already sorts and dedups these.
+                if !snapshot.warnings.is_empty() {
+                    let notices = snapshot.warnings.iter().fold(
                         column![section_heading("Warnings", palette)].spacing(8),
                         |rows, warning| rows.push(text(warning).color(palette.warning)),
                     );

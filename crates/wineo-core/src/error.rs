@@ -165,11 +165,8 @@ pub enum Error {
     #[error("{name} is used by {users}.")]
     BuildInUse { name: String, users: String },
 
-    #[error("{}", unreadable_configs(.name, .configs))]
-    UnreadableConfigs {
-        name: String,
-        configs: Vec<(PathBuf, String)>,
-    },
+    #[error("{}", unreadable_configs(.name, .errors))]
+    UnreadableConfigs { name: String, errors: Vec<String> },
 
     #[error("{0} is not a managed build and cannot be removed")]
     UnmanagedBuild(String),
@@ -450,17 +447,18 @@ pub fn chain(err: &dyn std::error::Error) -> String {
     text
 }
 
-fn unreadable_configs(name: &str, configs: &[(PathBuf, String)]) -> String {
-    configs
-        .iter()
-        .map(|(path, reason)| {
-            format!(
-                "can't check {} ({reason}), so {name} is kept",
-                path.display()
-            )
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
+/// A summary line, then each config's own error, which already names its file.
+fn unreadable_configs(name: &str, errors: &[String]) -> String {
+    let count = match errors {
+        [_] => "a config".to_owned(),
+        _ => format!("{} configs", errors.len()),
+    };
+    let mut text = format!("{name} is kept, since {count} can't be read");
+    for error in errors {
+        text.push('\n');
+        text.push_str(error);
+    }
+    text
 }
 
 /// Collapses every run of whitespace, newlines included, to one space.

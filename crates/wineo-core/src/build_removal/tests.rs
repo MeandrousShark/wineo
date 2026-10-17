@@ -203,15 +203,15 @@ fn an_unreadable_environment_blocks_removal_until_fixed() {
     let error = crate::runners::remove(&f.paths, "unused").unwrap_err();
     assert!(matches!(error, Error::UnreadableConfigs { .. }));
     let text = error.to_string();
-    assert_eq!(text.lines().count(), 1, "{text}");
+    let (summary, rest) = text.split_once('\n').unwrap();
+    assert_eq!(summary, "unused is kept, since a config can't be read");
     assert!(
-        text.starts_with(&format!(
-            "can't check {} (",
+        rest.starts_with(&format!(
+            "invalid config {}",
             f.paths.environment_config("hades").display()
         )),
         "{text}"
     );
-    assert!(text.ends_with("), so unused is kept"), "{text}");
     assert!(dir.is_dir());
     f.environment("hades", "runner = 'wine'");
     crate::runners::remove(&f.paths, "unused").unwrap();
@@ -224,12 +224,17 @@ fn an_unreadable_template_blocks_removal_until_fixed() {
     let dir = f.runner("unused");
     f.template("custom", "not valid TOML");
     let error = crate::runners::remove(&f.paths, "unused").unwrap_err();
+    let text = error.to_string();
+    assert!(text.starts_with("unused is kept, since a config can't be read\n"));
     assert!(
-        error.to_string().starts_with(&format!(
-            "can't check {} (",
-            f.paths.templates_dir().join("custom.toml").display()
-        )),
-        "{error}"
+        text.contains(
+            &f.paths
+                .templates_dir()
+                .join("custom.toml")
+                .display()
+                .to_string()
+        ),
+        "{text}"
     );
     assert!(dir.is_dir());
     f.template("custom", "");
@@ -564,19 +569,22 @@ fn removal_names_each_unreadable_config_and_keeps_the_build() {
     f.environment("broken", "runner = [invalid");
     f.template("broken", "not valid TOML");
     let error = crate::runners::remove(&f.paths, "unused").unwrap_err();
-    let Error::UnreadableConfigs { name, configs } = &error else {
-        panic!("{error}");
-    };
-    assert_eq!(name, "unused");
-    assert_eq!(
-        configs.iter().map(|c| c.0.clone()).collect::<Vec<_>>(),
-        [
-            f.paths.environment_config("broken"),
-            f.paths.templates_dir().join("broken.toml")
-        ]
-    );
-    assert!(configs.iter().all(|(_, reason)| !reason.is_empty()));
-    assert_eq!(error.to_string().lines().count(), 2);
+    let text = error.to_string();
+    let (summary, rest) = text.split_once('\n').unwrap();
+    assert_eq!(summary, "unused is kept, since 2 configs can't be read");
+    let environment = rest
+        .find(&f.paths.environment_config("broken").display().to_string())
+        .unwrap();
+    let template = rest
+        .find(
+            &f.paths
+                .templates_dir()
+                .join("broken.toml")
+                .display()
+                .to_string(),
+        )
+        .unwrap();
+    assert!(environment < template, "{text}");
     assert!(dir.is_dir());
 }
 
@@ -589,12 +597,11 @@ fn removal_refuses_a_config_that_breaks_between_the_checks() {
         f.environment("later", "runner = [invalid");
     })
     .unwrap_err();
-    let Error::UnreadableConfigs { configs, .. } = &error else {
-        panic!("{error}");
-    };
-    assert_eq!(
-        configs.iter().map(|c| c.0.clone()).collect::<Vec<_>>(),
-        [f.paths.environment_config("later")]
+    let text = error.to_string();
+    assert!(text.starts_with("unused is kept, since a config can't be read\n"));
+    assert!(
+        text.contains(&f.paths.environment_config("later").display().to_string()),
+        "{text}"
     );
     assert!(dir.is_dir());
 }
