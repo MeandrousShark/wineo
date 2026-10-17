@@ -111,6 +111,13 @@ Portable:  the same for `foo`; other environments work
 Rollback:  same as portable
 ```
 
+An unsupported `schema_version` (question 3) gets the same kind of hint:
+
+```
+error: unsupported schema_version 2 in ~/.config/wineo/environments/hades.toml
+A newer wineo wrote it; update wineo to use this file.
+```
+
 **B. Ignore unknown keys, with a warning.** Older wineo loads the file and
 skips what it doesn't know. `validate` reports `unknown_key`.
 
@@ -164,15 +171,55 @@ version. This is a behavior change for the changelog.
 
 ### 🧐 3. Version bumps in 1.x
 
-**Recommended rule:** `schema_version` stays `1` through every 1.x
-release. Any other value is refused by every older 1.x, so a bump is a 2.0
-change. Keys are only added (question 1 covers older readers) or
-deprecated (question 5). The same rule covers art.toml.
+New keys never need a bump: question 1 covers older readers. A bump is for
+a change in what an existing value means, which `deny_unknown_fields` can't
+catch. One backlog row is that case today: the "Started" hook and launch
+variables in [features.md](../features.md). `args = ["{prefix}"]` is a
+literal string now and would expand afterwards, so a config with braces
+would change behavior on upgrade, and an older wineo would launch with a
+literal `{install_dir}` instead of refusing.
+
+**Recommended rule:**
+
+- A 1.x release may bump `schema_version` for a change in meaning, never
+  for a new key or a rename (question 5 covers renames).
+- Every later 1.x reads every older version by that version's rules, so the
+  forward promise is unchanged.
+- A file is stamped with the new version only when it uses something that
+  needs it. Every other file keeps `1`, so a release with v2 still writes
+  files an older 1.x can read.
+- `validate` reports an older-version file only where the newer rules would
+  read it differently (for variables, literal braces in `exe`, `args`, or
+  `cwd`), and `--fix` upgrades it, escaping those braces. A file the newer
+  rules read the same way needs nothing.
+- 2.0 migrates an older version instead of refusing it, or tells you to run
+  `wineo validate --fix`.
+- In a merge, each value follows the version of the file it came from, so a
+  v2 template feeding a v1 environment expands only the template's values.
+  The merge order is stable, so this rule is too.
+- An older 1.x refuses a newer version with question 1's hint. 1.0 has to
+  ship that hint, since it's the oldest reader.
+- The same rule covers art.toml.
+
+Scenario: 1.6 adds launch variables as v2, `hades.toml` uses
+`{install_dir}`, and `tool.toml` doesn't.
+
+```
+1.6 writes:  hades.toml with schema_version = 2; tool.toml stays 1
+1.5 reads:   hades.toml refused with the hint; tool.toml works
+1.7 reads:   both, each by its own version's rules
+validate:    nothing for tool.toml; a v1 file with literal braces gets a
+             warning, and --fix escapes them and stamps it 2
+```
+
+The details (escape syntax, which keys expand, the `validate` code) belong
+to that feature's plan. This plan sets the rule and makes 1.0's refusal
+useful.
 
 Side effects to confirm:
 
 - The built-in `gaming` template's text hardcodes `schema_version = 1`
-  (`templates.rs:28`), which is fine under this rule.
+  (`templates.rs:28`), which is fine: it uses nothing newer.
 - An unsupported version keeps exiting 1, the general failure code, with
   no code of its own. A script can't do anything different with it than
   with any other refusal.
@@ -284,7 +331,8 @@ settled.
 
 `parse_toml` (`config.rs:963`) is the one place every config, template,
 and art.toml goes through. An unknown-field error from it gains the hint
-line. `load_or_default` returns unknown-field errors like
+line, and so does `check_schema`'s unsupported-version error.
+`load_or_default` returns unknown-field errors like
 `SchemaVersion`, and its other fallbacks return a warning for the caller to
 print. Each of the 18 callers is checked: CLI commands print the warning on
 stderr, the app shows it where it already shows checkup problems, and
@@ -323,8 +371,9 @@ to a temporary portable root and checks, with the current wineo:
 
 ## Implementation sequence
 
-1. Unknown keys: the hint, `load_or_default`'s split, and every caller's
-   warning (questions 1 and 2).
+1. Unknown keys: the hints for unknown keys and unsupported versions,
+   `load_or_default`'s split, and every caller's warning (questions 1, 2,
+   and 3).
 2. Internal formats: the denies, fail-safe cleanup, and the inventory of
    scans that read every file of a kind (question 4).
 3. Deprecated keys: table, pass, summary warning, `deprecated_key` and its
