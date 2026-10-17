@@ -477,6 +477,29 @@ wrote it; the production check stays as strict as it is.
 
 ## Decisions during implementation
 
+### Step 1: where an unreadable config doesn't refuse
+
+Everything that starts or changes something refuses on an unknown key or
+an unsupported version. Two kinds of path finish what's already happening
+instead, so they warn and go on:
+
+- **Stopping a run** (maintainer, 2026-10-16). `wineo stop` uses the
+  default stop timeout and warns. The timeout is the only global setting
+  it reads, so a wrong guess costs seconds, and refusing would leave a
+  game that can't be stopped.
+- **Recovering an interrupted snapshot restore or trash removal**
+  (`snapshot.rs:877`, `trash/restore.rs:227`). The config only picks
+  which advisory build locks to take; the paths and bytes restored come
+  from the operation's own records. Refusing would leave the operation
+  half done.
+
+Display-only reads (`validate.rs:502`, `report.rs:541`, completion) keep
+silent defaults. In the app, three spots with nowhere to show a warning
+(`art_page.rs`, `settings/load.rs`, `flow/artwork.rs`) rely on the
+checkup, which already lists `global_config_invalid`. An unreadable
+art.toml leaves a desktop entry's icon as it is, with a warning, instead
+of reading as no art.
+
 ### Step 2: scans that read every file of a kind
 
 Redistributable cleanup now removes nothing when any Galaxy-tracked
