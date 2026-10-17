@@ -135,7 +135,8 @@ check_tree() {
         echo "$tree is on a branch, not detached at $tag; run git worktree remove --force $tree and rerun" >&2
         return 1
     fi
-    if [[ -n $(git -C "$tree" status --porcelain) ]]; then
+    # Untracked files count too, whatever status.showUntrackedFiles says.
+    if [[ -n $(git -C "$tree" status --porcelain --untracked-files=all) ]]; then
         echo "$tree has local changes; run git worktree remove --force $tree and rerun" >&2
         return 1
     fi
@@ -618,7 +619,11 @@ main() {
         v*)
             # Tags become paths that get built in and deleted, so only the
             # known ones are accepted.
-            if [[ " ${TAGS_ALL[*]} " != *" $arg "* ]]; then
+            local known=0 tag
+            for tag in "${TAGS_ALL[@]}"; do
+                [[ $arg == "$tag" ]] && known=1
+            done
+            if ((!known)); then
                 echo "unsupported tag: $arg (supported: ${TAGS_ALL[*]})" >&2
                 exit 2
             fi
