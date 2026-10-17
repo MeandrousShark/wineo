@@ -280,6 +280,9 @@ fn commands_print_one_summary_line_for_deprecated_keys() {
         &["config", "hades"],
         &["templates"],
         &["set", "hades", "mangohud=true"],
+        &["start", "hades"],
+        &["restart", "hades"],
+        &["stop", "hades"],
     ] {
         let output = f.run(args);
         assert_success(&output);

@@ -1891,6 +1891,29 @@ fn deprecated_keys_are_reported_in_every_kind_of_config() {
         "{:#?}",
         report.problems
     );
+
+    for fix in f.check().fixes() {
+        apply(&f.paths, &fix, no_download).unwrap();
+    }
+    let report = f.check();
+    assert!(
+        !codes(&report).contains(&Code::DeprecatedKey),
+        "{:#?}",
+        report.problems
+    );
+    assert_eq!(report.errors(), 0, "{:#?}", report.problems);
+    assert_eq!(
+        fs::read_to_string(f.paths.global_config()).unwrap(),
+        "stop_timeout = 3\nschema_version = 1\n"
+    );
+    assert_eq!(
+        fs::read_to_string(f.paths.templates_dir().join("coop.toml")).unwrap(),
+        "tags = ['game']\nschema_version = 1\n"
+    );
+    assert_eq!(
+        fs::read_to_string(f.art_dir("zomboid").join("art.toml")).unwrap(),
+        "game = 5\nschema_version = 1\n"
+    );
 }
 
 #[test]

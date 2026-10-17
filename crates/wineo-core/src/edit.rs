@@ -54,9 +54,16 @@ pub fn unset(doc: &mut DocumentMut, scope: Scope, key: &str) -> Result<bool, Edi
 
 /// Whether a parsed global file explicitly sets a key that also has a default.
 pub fn global_has_key(text: &str, key: &str) -> bool {
-    let Ok(doc) = text.parse::<DocumentMut>() else {
+    let Ok(mut doc) = text.parse::<DocumentMut>() else {
         return false;
     };
+    // A key under a deprecated name is set all the same. Both names at once
+    // is an error the read reports, and either one counts here.
+    let _ = crate::deprecated::rename_document(
+        crate::deprecated::FileKind::Global,
+        std::path::Path::new(""),
+        &mut doc,
+    );
     doc.get(key).is_some()
 }
 
