@@ -117,12 +117,37 @@ EOF
 # Building
 # ---------------------------------------------------------------------------
 
+# check_tree TAG TREE: a reused worktree must be this repo's, detached at the
+# tag's commit, and clean, or the binary wouldn't be that release's.
+check_tree() {
+    local tag=$1 tree=$2 want have
+    want=$(git -C "$repo" rev-parse "$tag^{commit}")
+    have=$(git -C "$tree" rev-parse HEAD 2>/dev/null) || have=""
+    if [[ $(git -C "$tree" rev-parse --path-format=absolute --git-common-dir 2>/dev/null) != "$common" ]]; then
+        echo "$tree is not a worktree of $repo; remove it and rerun" >&2
+        return 1
+    fi
+    if [[ $have != "$want" ]]; then
+        echo "$tree is at ${have:-an unknown commit}, not $tag ($want); run git worktree remove --force $tree and rerun" >&2
+        return 1
+    fi
+    if git -C "$tree" symbolic-ref -q HEAD >/dev/null; then
+        echo "$tree is on a branch, not detached at $tag; run git worktree remove --force $tree and rerun" >&2
+        return 1
+    fi
+    if [[ -n $(git -C "$tree" status --porcelain) ]]; then
+        echo "$tree has local changes; run git worktree remove --force $tree and rerun" >&2
+        return 1
+    fi
+}
+
 build_tag() {
     local tag=$1 tree=$WORK/tags/$1
     if [[ ! -d $tree ]]; then
         mkdir -p "$WORK/tags"
         git -C "$repo" worktree add --detach "$tree" "$tag" >/dev/null
     fi
+    check_tree "$tag" "$tree"
     (
         cd "$tree"
         cargo fetch --locked >/dev/null 2>&1 || true
@@ -590,7 +615,15 @@ main() {
             sed -n '2,19p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
             exit 0
             ;;
-        v*) tags+=("$arg") ;;
+        v*)
+            # Tags become paths that get built in and deleted, so only the
+            # known ones are accepted.
+            if [[ " ${TAGS_ALL[*]} " != *" $arg "* ]]; then
+                echo "unsupported tag: $arg (supported: ${TAGS_ALL[*]})" >&2
+                exit 2
+            fi
+            tags+=("$arg")
+            ;;
         *)
             echo "unknown argument: $arg" >&2
             exit 2
