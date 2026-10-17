@@ -917,3 +917,140 @@ fn a_galaxy_folders_sidecar_still_pins_its_versions() {
     assert!(store::clean(&fx.paths).unwrap().is_empty());
     assert!(version.is_dir());
 }
+
+// A record cleanup can't read must keep every redistributable: it might be
+// the one naming a version a game still needs.
+
+/// Installs a game that uses a redistributable, rewrites its record with
+/// `rewrite`, and checks cleanup removes nothing and says why.
+fn cleanup_keeps_the_store_when_the_record_is(
+    rewrite: impl FnOnce(&[u8]) -> Vec<u8>,
+    reason: &str,
+) {
+    let fx = Fixture::new();
+    fx.content.add_build(scripted("100"));
+    with_setup(&fx, None, None);
+    fx.install();
+    let version = fx.version_dir("MSVC2017");
+    assert!(version.is_dir());
+    let sidecar = folder::sidecar_file(&fx.paths, &fx.folder);
+    let bytes = fs::read(&sidecar).unwrap();
+    fs::write(&sidecar, rewrite(&bytes)).unwrap();
+    let error = format!("{:#}", store::clean(&fx.paths).unwrap_err());
+    assert!(error.contains(reason), "{error}");
+    assert!(error.contains("no redistributable is removed"), "{error}");
+    assert!(version.is_dir());
+}
+
+/// Sets the value at a JSON pointer, like `/installed/manifest/build`.
+fn with_value(bytes: &[u8], pointer: &str, value: serde_json::Value) -> Vec<u8> {
+    let mut json: serde_json::Value = serde_json::from_slice(bytes).unwrap();
+    *json.pointer_mut(pointer).unwrap() = value;
+    serde_json::to_vec(&json).unwrap()
+}
+
+/// Adds a key to the object at a JSON pointer ("" for the root).
+fn with_field(bytes: &[u8], pointer: &str, key: &str, value: serde_json::Value) -> Vec<u8> {
+    let mut json: serde_json::Value = serde_json::from_slice(bytes).unwrap();
+    json.pointer_mut(pointer)
+        .unwrap()
+        .as_object_mut()
+        .unwrap()
+        .insert(key.to_owned(), value);
+    serde_json::to_vec(&json).unwrap()
+}
+
+#[test]
+fn a_record_with_a_field_from_a_newer_release_still_pins_its_versions() {
+    let fx = Fixture::new();
+    fx.content.add_build(scripted("100"));
+    with_setup(&fx, None, None);
+    fx.install();
+    let version = fx.version_dir("MSVC2017");
+    let sidecar = folder::sidecar_file(&fx.paths, &fx.folder);
+    let bytes = fs::read(&sidecar).unwrap();
+    let extra = with_field(&bytes, "", "added_later", serde_json::json!({"a": 1}));
+    let extra = with_field(&extra, "/installed/manifest", "also_later", true.into());
+    fs::write(&sidecar, extra).unwrap();
+    assert_eq!(record::all(&fx.paths.gog_folders_dir()).unwrap().len(), 1);
+    assert!(store::clean(&fx.paths).unwrap().is_empty());
+    assert!(version.is_dir());
+}
+
+#[test]
+fn a_record_with_a_newer_version_keeps_every_redistributable() {
+    cleanup_keeps_the_store_when_the_record_is(
+        |bytes| with_value(bytes, "/version", 2.into()),
+        "unsupported Galaxy record version 2",
+    );
+}
+
+#[test]
+fn a_corrupt_record_keeps_every_redistributable() {
+    cleanup_keeps_the_store_when_the_record_is(|_| b"garbage".to_vec(), "expected value");
+}
+
+#[test]
+fn a_record_that_fails_validation_keeps_every_redistributable() {
+    cleanup_keeps_the_store_when_the_record_is(
+        |bytes| {
+            with_value(
+                bytes,
+                "/installed/manifest/setup/redist/0/manifest",
+                "not a hash".into(),
+            )
+        },
+        "redistributable MSVC2017 is invalid",
+    );
+}
+
+#[test]
+fn installing_a_game_beside_an_unreadable_record_warns_and_removes_nothing() {
+    let fx = Fixture::new();
+    fx.content
+        .add_build(Fixture::game("100").dependency("MSVC2017"));
+    fx.content.add_build(
+        FakeBuild::new(OTHER, "300")
+            .dependency("MSVC2017")
+            .depot(FakeDepot::new(OTHER).file(FakeFile::new("other.exe", b"other"))),
+    );
+    with_dependencies(&fx, b"runtime v1");
+    fx.install();
+    let first = fx.version_dir("MSVC2017");
+    // A version nothing names, which a clean store would drop.
+    let orphan = fx
+        .paths
+        .gog_redist_dir()
+        .join("MSVC2017")
+        .join("0".repeat(32));
+    fs::create_dir_all(orphan.join("__redist")).unwrap();
+    // The first game's record goes bad.
+    fs::write(folder::sidecar_file(&fx.paths, &fx.folder), b"garbage").unwrap();
+
+    with_dependencies(&fx, b"runtime v2");
+    let other = Request {
+        name: "other".to_owned(),
+        gog_id: OTHER,
+        dir: Some(fx.folder.with_file_name("Other Game")),
+        ..fx.request()
+    };
+    let plan = fx.plan_with(&other).unwrap();
+    let second = fx
+        .paths
+        .gog_redist_dir()
+        .join("MSVC2017")
+        .join(&plan.manifest_for_tests().setup.redist[0].manifest);
+    let installed = fx.apply(&plan).unwrap();
+    assert!(
+        installed
+            .warnings
+            .iter()
+            .any(|warning| warning.starts_with("Couldn't clean up GOG's redistributables")),
+        "{:?}",
+        installed.warnings
+    );
+    assert_ne!(first, second);
+    for dir in [&first, &second, &orphan] {
+        assert!(dir.is_dir(), "{}", dir.display());
+    }
+}

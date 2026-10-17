@@ -43,7 +43,6 @@ const LOCK_RETRY: Duration = Duration::from_millis(50);
 
 /// Everything wineo knows about one GOG game folder.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct FolderState {
     pub version: u32,
     /// The environment that owns the game. None after `rm`, or before a
@@ -66,7 +65,6 @@ pub struct FolderState {
 
 /// The last finished install or update.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct Committed {
     pub gog_id: u64,
     pub platform: Platform,
@@ -95,7 +93,6 @@ pub enum Source {
 
 /// What an operation will commit, enough to finish it without asking GOG.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct Target {
     pub gog_id: u64,
     pub platform: Platform,
@@ -133,7 +130,6 @@ impl Track {
 
 /// A base game or DLC in a folder.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct Product {
     pub id: u64,
     /// The installer version, on the installer track.
@@ -173,7 +169,6 @@ pub enum EntryType {
 /// A file a product shipped that won, recorded after split files are
 /// assembled.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct WinningEntry {
     /// Relative to the folder.
     pub path: String,
@@ -202,7 +197,6 @@ pub enum JournalKind {
 
 /// Work in flight, written durably before the folder is touched.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct Journal {
     /// Names the operation's temporary files, `.wineo-<operation>-<n>`.
     pub operation: String,
@@ -228,7 +222,6 @@ impl Journal {
 
 /// An exact GOG file an operation uses.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct Package {
     pub product: u64,
     pub download_id: String,
@@ -240,7 +233,6 @@ pub struct Package {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct Attempted {
     pub path: String,
     #[serde(rename = "type")]
