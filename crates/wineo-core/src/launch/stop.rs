@@ -162,7 +162,10 @@ pub fn stop_run_with(
 
     let (stop_timeout, mut messages) = stop_timeout(paths);
     let runtime = Runtime::new(paths, name);
-    // Stop must still work with a broken config or state file. Only a known
+    // Stop must still work with a broken config or state file, even one
+    // that other commands refuse (an unknown key or newer version): that is
+    // deliberate under plan 0053, so it stops on the default timeout with the
+    // warning from `stop_timeout`. Only a known
     // after hook can extend the wait beyond the ordinary run deadline.
     let has_after = Environment::load(paths, name)
         .ok()

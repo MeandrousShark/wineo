@@ -187,14 +187,24 @@ fn restore_warns_when_the_global_config_fell_back() {
 fn restore_refuses_an_unknown_global_key_after_putting_the_environment_back() {
     let f = Fixture::new();
     f.environment("hades", TARGET);
+    let original = fs::read_to_string(environment_path(&f, "hades")).unwrap();
     let removed = f.run(&["rm", "hades"]);
+    assert_success(&removed);
+    assert!(!environment_path(&f, "hades").exists());
     let id = trash_id(&removed);
 
     f.global_config("foo = 1\n");
     let restored = f.run(&["restore", &id]);
+    assert!(!restored.status.success());
     let message = stderr(&restored);
     assert!(message.contains("unknown field `foo`"), "{message}");
-    assert!(message.contains(UNKNOWN_KEY_HINT), "{message}");
+    assert!(message.trim_end().ends_with(UNKNOWN_KEY_HINT), "{message}");
+    // The environment itself is back; only its desktop entries were refused.
+    assert!(message.contains("was restored"), "{message}");
+    assert_eq!(
+        fs::read_to_string(environment_path(&f, "hades")).unwrap(),
+        original
+    );
 }
 
 #[test]
