@@ -364,7 +364,7 @@ fn declining_terminal_confirmation_keeps_all_builds() {
 }
 
 #[test]
-fn malformed_configs_warn_once_per_file_before_terminal_confirmation() {
+fn malformed_configs_refuse_removal_before_the_terminal_prompt() {
     let f = Fixture::new();
     f.install_runner("wine-tkg");
     f.environment_with_runner("broken", "wine", "");
@@ -374,30 +374,32 @@ fn malformed_configs_warn_once_per_file_before_terminal_confirmation() {
     let template = f.root.path().join("config/wineo/templates/broken.toml");
     let mut command = f.wineo();
     command.args(["runners", "remove", "wine-tkg"]);
+    let (status, output) = Pty::spawn(command).finish();
+    assert_eq!(status.code(), Some(1), "{output}");
+    assert!(!output.contains("[y/N]"), "{output}");
+    for path in [&config, &template] {
+        assert!(
+            output.contains(&format!("can't check {} (", path.display())),
+            "{output}"
+        );
+    }
+    assert!(output.contains("so wine-tkg is kept"), "{output}");
+    assert!(f.root.path().join("data/wineo/runners/wine-tkg").exists());
+
+    std::fs::remove_file(&config).unwrap();
+    std::fs::remove_file(&template).unwrap();
+    let mut command = f.wineo();
+    command.args(["runners", "remove", "wine-tkg"]);
     let mut pty = Pty::spawn(command);
     pty.expect(")? [y/N] ");
-    let seen = pty.seen.lock().unwrap().clone();
-    let prompt = seen.find("Remove runner wine-tkg (").unwrap();
-    for path in [&config, &template] {
-        let warning = format!("warning: skipped {}:", path.display());
-        assert!(seen.find(&warning).is_some_and(|at| at < prompt), "{seen}");
-    }
     pty.send("y");
     let (status, output) = pty.finish();
     assert!(status.success(), "{output}");
-    assert_eq!(
-        output
-            .lines()
-            .filter(|line| line.starts_with("warning:"))
-            .count(),
-        2,
-        "{output}"
-    );
     assert!(!f.root.path().join("data/wineo/runners/wine-tkg").exists());
 }
 
 #[test]
-fn yes_prints_malformed_config_warnings_on_stderr() {
+fn yes_refuses_removal_when_a_config_is_malformed() {
     let f = Fixture::new();
     f.write_template("gaming", "schema_version = 1\ngamemode = true\n");
     f.environment_with_runner("broken", "wine", "");
@@ -408,6 +410,40 @@ fn yes_prints_malformed_config_warnings_on_stderr() {
     f.install_runner("wine-tkg");
     f.install_build("dxvk", "2.0", &["x64", "x32"]);
     f.install_build("vkd3d", "2.0", &["x64", "x86"]);
+    for (args, name, path) in [
+        (
+            ["runners", "remove", "wine-tkg", "--yes"],
+            "wine-tkg",
+            "data/wineo/runners/wine-tkg",
+        ),
+        (
+            ["dxvk", "remove", "2.0", "--yes"],
+            "2.0",
+            "data/wineo/dxvk/2.0",
+        ),
+        (
+            ["vkd3d", "remove", "2.0", "--yes"],
+            "2.0",
+            "data/wineo/vkd3d/2.0",
+        ),
+    ] {
+        let refused = f.run(&args);
+        assert_eq!(refused.status.code(), Some(1), "{}", stderr(&refused));
+        let errors = stderr(&refused);
+        assert!(errors.starts_with("error: can't check "), "{errors}");
+        for config in [&config, &template] {
+            assert!(
+                errors.contains(&format!("can't check {} (", config.display())),
+                "{errors}"
+            );
+        }
+        assert!(errors.contains(&format!("so {name} is kept")), "{errors}");
+        assert!(stdout(&refused).is_empty());
+        assert!(f.root.path().join(path).exists(), "{path} was removed");
+    }
+
+    std::fs::remove_file(&config).unwrap();
+    std::fs::remove_file(&template).unwrap();
     for args in [
         ["runners", "remove", "wine-tkg", "--yes"],
         ["dxvk", "remove", "2.0", "--yes"],
@@ -415,19 +451,7 @@ fn yes_prints_malformed_config_warnings_on_stderr() {
     ] {
         let removed = f.run(&args);
         assert_success(&removed);
-        let warnings = stderr(&removed);
-        assert_eq!(warnings.lines().count(), 2, "{warnings}");
-        assert!(
-            warnings.lines().all(|line| line.starts_with("warning:")),
-            "{warnings}"
-        );
-        for path in [&config, &template] {
-            assert!(
-                warnings.contains(&format!("warning: skipped {}:", path.display())),
-                "{warnings}"
-            );
-        }
-        assert_eq!(stdout(&removed).lines().count(), 1);
+        assert!(stderr(&removed).is_empty(), "{}", stderr(&removed));
         assert!(stdout(&removed).starts_with("Removed "));
     }
 }
