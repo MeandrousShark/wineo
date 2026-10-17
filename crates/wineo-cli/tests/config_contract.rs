@@ -98,7 +98,10 @@ fn status_warns_and_goes_on_for_an_unknown_global_key() {
     let status = f.run(&["status", "hades"]);
     assert_success(&status);
     let message = stderr(&status);
-    assert!(message.starts_with("warning: invalid config "), "{message}");
+    assert!(
+        message.starts_with("warning: using default settings: invalid config "),
+        "{message}"
+    );
     assert!(message.contains("unknown field `foo`"), "{message}");
     assert!(message.trim_end().ends_with(UNKNOWN_KEY_HINT), "{message}");
     assert!(stdout(&status).starts_with("hades: inactive\n"));
@@ -156,4 +159,72 @@ fn a_global_config_that_falls_back_warns_on_stderr_only() {
         );
         assert_eq!(stdout(&status), before, "--json stdout is unchanged");
     }
+}
+
+#[test]
+fn restore_warns_when_the_global_config_fell_back() {
+    let f = Fixture::new();
+    f.environment("hades", TARGET);
+    let removed = f.run(&["rm", "hades"]);
+    assert_success(&removed);
+    let id = trash_id(&removed);
+
+    f.global_config("stop_timeout = [\n");
+    let restored = f.run(&["restore", &id]);
+    assert_success(&restored);
+    assert_eq!(
+        stderr(&restored)
+            .matches("warning: using default settings: ")
+            .count(),
+        1,
+        "{}",
+        stderr(&restored)
+    );
+    assert!(stdout(&restored).starts_with("Restored environment hades"));
+}
+
+#[test]
+fn restore_refuses_an_unknown_global_key_after_putting_the_environment_back() {
+    let f = Fixture::new();
+    f.environment("hades", TARGET);
+    let removed = f.run(&["rm", "hades"]);
+    let id = trash_id(&removed);
+
+    f.global_config("foo = 1\n");
+    let restored = f.run(&["restore", &id]);
+    let message = stderr(&restored);
+    assert!(message.contains("unknown field `foo`"), "{message}");
+    assert!(message.contains(UNKNOWN_KEY_HINT), "{message}");
+}
+
+#[test]
+fn rm_with_a_prefix_warns_when_the_global_config_fell_back() {
+    let f = Fixture::new();
+    f.environment("hades", TARGET);
+    f.global_config("stop_timeout = [\n");
+    let removed = f.run(&["rm", "hades", "--delete-prefix"]);
+    assert_success(&removed);
+    assert_eq!(
+        stderr(&removed)
+            .matches("warning: using default settings: ")
+            .count(),
+        1,
+        "{}",
+        stderr(&removed)
+    );
+}
+
+#[test]
+fn rm_with_a_prefix_refuses_an_unknown_global_key() {
+    let f = Fixture::new();
+    f.environment("hades", TARGET);
+    f.global_config("foo = 1\n");
+    let removed = f.run(&["rm", "hades", "--delete-prefix"]);
+    assert!(!removed.status.success());
+    assert!(
+        stderr(&removed).contains(UNKNOWN_KEY_HINT),
+        "{}",
+        stderr(&removed)
+    );
+    assert!(environment_path(&f, "hades").exists());
 }

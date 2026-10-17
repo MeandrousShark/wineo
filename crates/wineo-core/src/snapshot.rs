@@ -874,6 +874,9 @@ fn rollback_locked(paths: &Paths, marker_path: &Path, marker: &RestoreMarker) ->
         .ok()
         .and_then(|config| {
             let wine = config.wine()?;
+            // Recovery restores a config file and must finish for a global
+            // config that can't be read, so this only skips the advisory
+            // build locks rather than refusing.
             let global = GlobalConfig::load(paths).ok()?;
             build_lock::wine(paths, &global, wine).ok()
         })

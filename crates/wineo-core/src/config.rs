@@ -744,7 +744,20 @@ pub struct Loaded {
     pub warning: Option<String>,
 }
 
+/// The one wording for a global config that was passed over for defaults.
+pub fn default_settings_warning(err: &Error) -> String {
+    format!("using default settings: {}", crate::error::chain(err))
+}
+
 impl Loaded {
+    /// The config, with any warning handed to `sink`.
+    pub fn note_with(self, sink: impl FnOnce(String)) -> GlobalConfig {
+        if let Some(warning) = self.warning {
+            sink(warning);
+        }
+        self.config
+    }
+
     /// The config, with any warning added to `warnings`.
     pub fn note(self, warnings: &mut Vec<String>) -> GlobalConfig {
         warnings.extend(self.warning);
@@ -779,10 +792,7 @@ impl GlobalConfig {
             Err(err @ (Error::SchemaVersion { .. } | Error::ConfigUnknownKey { .. })) => Err(err),
             Err(err) => Ok(Loaded {
                 config: Self::default(),
-                warning: Some(format!(
-                    "using default settings: {}",
-                    crate::error::chain(&err)
-                )),
+                warning: Some(default_settings_warning(&err)),
             }),
         }
     }

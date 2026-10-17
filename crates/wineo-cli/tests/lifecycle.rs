@@ -573,7 +573,7 @@ fn a_broken_global_config_does_not_block_stop() {
     assert_success(&stopped);
     assert_eq!(stdout(&stopped), "Stopped app\n");
     assert!(
-        stderr(&stopped).contains("warning: invalid config"),
+        stderr(&stopped).contains("warning: using default settings: invalid config"),
         "{}",
         stderr(&stopped)
     );

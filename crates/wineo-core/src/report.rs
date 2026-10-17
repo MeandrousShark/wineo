@@ -538,6 +538,8 @@ fn overview_from(
     pending: Option<&crate::trash::PendingScan>,
 ) -> Result<Overview> {
     let locks = Locks::new(paths);
+    // Display only: without a readable global config the Steam rows say the
+    // playtime is unknown, and nothing here writes or launches.
     let global = GlobalConfig::load(paths).ok();
     let mut overview = Overview::default();
     let names = environment::names(paths)?;

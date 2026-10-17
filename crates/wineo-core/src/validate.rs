@@ -497,8 +497,8 @@ pub fn check_environment(paths: &Paths, name: &str) -> Result<Report> {
     if !paths.environment_config(name).is_file() {
         return Err(Error::UnknownEnvironment(name.to_owned()));
     }
-    // A broken global config is only reported by `check_all`. Here it means
-    // defaults, as it does for most commands.
+    // A broken global config is only reported by `check_all`. This report
+    // only displays problems and changes nothing, so defaults are enough.
     let global = GlobalConfig::load(paths).unwrap_or_default();
     let entries = listed_entries(paths)?;
     check_one(paths, &global, name, &entries, &mut report)?;
