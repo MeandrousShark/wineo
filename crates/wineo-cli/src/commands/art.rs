@@ -70,6 +70,7 @@ enum Command {
         remove: bool,
     },
     /// Remove one piece of art
+    #[command(visible_alias = "remove")]
     Rm {
         #[arg(value_name = "ENV[.TARGET]", add = ArgValueCompleter::new(crate::completion::spots))]
         spot: String,

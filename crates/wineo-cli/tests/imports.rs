@@ -833,7 +833,7 @@ fn generic_adoption_preserves_the_source_and_proton_self_link_is_preserved() {
         fs::read_link(destination.join("pfx")).unwrap(),
         Path::new(".")
     );
-    assert_success(&f.run(&["rm", "proton", "--delete-prefix"]));
+    assert_success(&f.run(&["rm", "proton", "--include-prefix"]));
     assert!(!destination.exists());
     assert!(prefix.exists());
 }
@@ -889,7 +889,7 @@ fn adopted_wine_and_proton_prefixes_can_be_deleted_without_following_external_li
             config.contains(configured_root.to_str().unwrap()),
             "{config}"
         );
-        assert_success(&f.run(&["rm", "adopted", "--delete-prefix"]));
+        assert_success(&f.run(&["rm", "adopted", "--include-prefix"]));
         assert!(!configured_root.exists());
         assert!(!config_path.exists());
         assert_eq!(
@@ -922,7 +922,7 @@ fn adopted_prefix_deletion_refuses_registered_aliases_and_retains_failed_removal
         original.replace(prefix.to_str().unwrap(), alias.to_str().unwrap()),
     )
     .unwrap();
-    let refused = f.run(&["rm", "adopted", "--delete-prefix"]);
+    let refused = f.run(&["rm", "adopted", "--include-prefix"]);
     assert!(!refused.status.success());
     assert!(stderr(&refused).contains("also used by other"));
     assert_eq!(
@@ -939,7 +939,7 @@ fn adopted_prefix_deletion_refuses_registered_aliases_and_retains_failed_removal
     let games = prefix.join("drive_c/Games");
     let trash = prefix.parent().unwrap().join(".wineo-trash");
     fs::write(&trash, b"occupied").unwrap();
-    let failed = f.run(&["rm", "adopted", "--delete-prefix"]);
+    let failed = f.run(&["rm", "adopted", "--include-prefix"]);
     assert!(!failed.status.success());
     assert!(
         stderr(&failed).contains(".wineo-trash"),

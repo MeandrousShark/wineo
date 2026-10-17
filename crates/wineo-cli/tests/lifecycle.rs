@@ -1385,7 +1385,7 @@ fn a_proton_prefix_is_removed_whole() {
     assert_success(&f.run(&["new", "-n", "hades", "--runner", "GE-Proton9-20"]));
 
     let prefix = f.root.path().join("data/wineo/prefixes/hades");
-    let removed = f.run(&["rm", "hades", "--delete-prefix"]);
+    let removed = f.run(&["rm", "hades", "--include-prefix"]);
     assert_success(&removed);
     assert!(!prefix.exists());
     assert!(!f.config_dir().join("environments/hades.toml").exists());
@@ -1541,7 +1541,7 @@ fn rm_refuses_a_compatdata_dir_that_holds_no_prefix() {
     let prefix = f.root.path().join("prefixes/hades");
     fs::remove_file(prefix.join("pfx/system.reg")).unwrap();
 
-    let refused = f.run(&["rm", "hades", "--delete-prefix"]);
+    let refused = f.run(&["rm", "hades", "--include-prefix"]);
     assert!(!refused.status.success());
     assert!(
         stderr(&refused).contains("is not a wine prefix"),
@@ -1553,7 +1553,7 @@ fn rm_refuses_a_compatdata_dir_that_holds_no_prefix() {
 }
 
 #[test]
-fn rm_delete_prefix_waits_for_wine_to_exit() {
+fn rm_include_prefix_waits_for_wine_to_exit() {
     let f = Fixture::new();
     f.environment("game", "");
     // Null output, so only the wait on the prefix can outlast the handoff.
@@ -1567,7 +1567,7 @@ fn rm_delete_prefix_waits_for_wine_to_exit() {
     assert!(exec.success());
     assert!(f.fake_program_running("game"));
 
-    let removed = f.run(&["rm", "game", "--delete-prefix"]);
+    let removed = f.run(&["rm", "game", "--include-prefix"]);
     assert_success(&removed);
     assert!(
         stderr(&removed).contains("Waiting for wine to exit in game"),
@@ -1626,7 +1626,7 @@ fn a_real_proton_environment_is_created_used_and_removed() {
     assert_success(&f.run(&["stop", "hades"]));
     assert!(f.state("hades").contains("status = \"stopped\""));
 
-    assert_success(&f.run(&["rm", "hades", "--delete-prefix"]));
+    assert_success(&f.run(&["rm", "hades", "--include-prefix"]));
     assert!(!prefix.exists());
 }
 

@@ -184,7 +184,7 @@ fn rm_prints_restore_and_prune_commands_for_a_native_environment() {
 }
 
 #[test]
-fn rm_delete_prefix_help_matches_the_accepted_wording() {
+fn rm_include_prefix_help_matches_the_accepted_wording() {
     let f = Fixture::new();
     let help = f.run(&["rm", "--help"]);
     assert_success(&help);

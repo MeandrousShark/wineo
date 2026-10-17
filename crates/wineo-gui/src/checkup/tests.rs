@@ -119,7 +119,7 @@ fn snapshot_recovery_requires_separate_confirmation_and_cannot_be_canceled() {
     loaded(
         &mut app,
         Report {
-            problems: vec![problem(Code::RestoreInterrupted, Some(fix.clone()))],
+            problems: vec![problem(Code::SnapshotRestoreInterrupted, Some(fix.clone()))],
             ..Report::default()
         },
     );

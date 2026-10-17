@@ -20,6 +20,7 @@ pub struct Args {
 #[derive(Subcommand)]
 enum Action {
     /// Remove an installed build
+    #[command(visible_alias = "rm")]
     Remove(RemoveArgs),
 }
 

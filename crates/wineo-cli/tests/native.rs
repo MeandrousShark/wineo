@@ -843,7 +843,7 @@ fn prefix_commands_refuse_a_native_environment() {
         );
     }
 
-    let refused = f.run(&["rm", "dusk", "--delete-prefix"]);
+    let refused = f.run(&["rm", "dusk", "--include-prefix"]);
     assert!(!refused.status.success());
     assert_eq!(
         stderr(&refused),

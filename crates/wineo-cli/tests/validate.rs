@@ -423,7 +423,10 @@ fn batch_fix_leaves_a_well_formed_restore_marker_in_place() {
             let result: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
             assert_eq!(result["fixed"], serde_json::json!([]));
             assert_eq!(result["errors"], serde_json::json!([]));
-            assert_eq!(result["problems"][0]["code"], "restore_interrupted");
+            assert_eq!(
+                result["problems"][0]["code"],
+                "snapshot_restore_interrupted"
+            );
             assert_eq!(
                 result["problems"][0]["fix"],
                 "Roll back game's interrupted snapshot restore"

@@ -44,7 +44,7 @@ fn rm_refuses_to_take_a_nested_prefix_along() {
     let f = Fixture::new();
     let (outer, inner) = nested(&f);
     assert_refused(
-        &f.run(&["rm", "outer", "--delete-prefix"]),
+        &f.run(&["rm", "outer", "--include-prefix"]),
         &format!("inner's {INSIDE_OUTER}"),
     );
     assert!(outer.join("system.reg").exists());
@@ -249,7 +249,7 @@ fn trash_restore_refuses_a_prefix_that_now_nests() {
 fn trash_restore_refuses_a_prefix_another_environment_now_names() {
     let f = Fixture::new();
     f.environment("outer", "");
-    let removed = f.run(&["rm", "outer", "--delete-prefix"]);
+    let removed = f.run(&["rm", "outer", "--include-prefix"]);
     assert_success(&removed);
     let id = common::trash_id(&removed);
     let prefix = f.root.path().join("prefixes/outer");

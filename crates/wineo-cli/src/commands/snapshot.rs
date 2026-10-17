@@ -43,7 +43,8 @@ enum Command {
         yes: bool,
     },
     /// Remove a named snapshot
-    Delete {
+    #[command(visible_alias = "rm", alias = "delete")]
+    Remove {
         #[arg(add = ArgValueCompleter::new(crate::completion::environments))]
         env: String,
         #[arg(add = ArgValueCompleter::new(crate::completion::snapshots))]
@@ -61,7 +62,7 @@ pub fn run(paths: &Paths, args: Args, verbose: bool) -> anyhow::Result<ExitCode>
         Command::Create { env, .. }
         | Command::List { env }
         | Command::Restore { env, .. }
-        | Command::Delete { env, .. }
+        | Command::Remove { env, .. }
         | Command::Recover { env } => env,
     };
     // A launcher's prefix is never snapshotted, whatever the subcommand.
@@ -84,9 +85,9 @@ pub fn run(paths: &Paths, args: Args, verbose: bool) -> anyhow::Result<ExitCode>
             Ok(ExitCode::SUCCESS)
         }
         Command::Restore { env, label, yes } => restore(paths, &env, &label, yes),
-        Command::Delete { env, label } => {
+        Command::Remove { env, label } => {
             snapshot::delete(paths, &env, &label)?;
-            println!("Deleted snapshot {label} of {env}");
+            println!("Removed snapshot {label} of {env}");
             Ok(ExitCode::SUCCESS)
         }
         Command::Recover { env } => {

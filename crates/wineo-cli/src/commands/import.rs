@@ -552,9 +552,9 @@ fn print_review<I: Input, W: Write>(
     }
     prompt.say("The source game and launcher must be idle. External game files and saves stay where they are.")?;
     prompt.say(if request.adopt {
-        "Later launches modify the original prefix. `rm --delete-prefix` deletes that original."
+        "Later launches modify the original prefix. `rm --include-prefix` moves that original to trash."
     } else {
-        "The source prefix stays in place. `rm --delete-prefix` deletes the imported copy."
+        "The source prefix stays in place. `rm --include-prefix` moves the imported copy to trash."
     })?;
     Ok(())
 }

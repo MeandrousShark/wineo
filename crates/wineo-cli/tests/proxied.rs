@@ -179,7 +179,7 @@ fn prefix_commands_refuse_a_proxied_environment() {
         &["snapshot", "create", "bg3", "clean"][..],
         &["snapshot", "list", "bg3"][..],
         &["snapshot", "restore", "bg3", "clean"][..],
-        &["snapshot", "delete", "bg3", "clean"][..],
+        &["snapshot", "remove", "bg3", "clean"][..],
         &["snapshot", "recover", "bg3"][..],
         &["clone", "bg3", "bg3-copy"][..],
         &["clone", "bg3", "bg3-copy", "--dir", "/tmp"][..],
@@ -190,7 +190,7 @@ fn prefix_commands_refuse_a_proxied_environment() {
             "--to",
             portable.to_str().unwrap(),
         ][..],
-        &["rm", "bg3", "--delete-prefix"][..],
+        &["rm", "bg3", "--include-prefix"][..],
     ] {
         let refused = f.run(args);
         assert!(!refused.status.success(), "{args:?}");

@@ -57,7 +57,7 @@ fn clone_uses_default_destination_and_keeps_source_independent() {
         fs::read(source.join("drive_c/Games/save.dat")).unwrap(),
         b"original save"
     );
-    assert_success(&f.run(&["rm", "zomboid_modded", "--delete-prefix"]));
+    assert_success(&f.run(&["rm", "zomboid_modded", "--include-prefix"]));
     assert!(!destination.exists());
     assert!(source.exists());
     assert_eq!(f.created_config("zomboid"), original_config);
@@ -99,7 +99,7 @@ fn clone_accepts_an_explicit_destination() {
     ]));
     assert!(destination.join("system.reg").exists());
     assert!(!f.root.path().join("data/wineo/prefixes/custom").exists());
-    assert_success(&f.run(&["rm", "custom", "--delete-prefix"]));
+    assert_success(&f.run(&["rm", "custom", "--include-prefix"]));
     assert!(!destination.exists());
 }
 
@@ -150,7 +150,7 @@ fn clone_copies_art_and_rm_removes_only_the_clones() {
     assert_eq!(fs::read(copy.join("icon.png")).unwrap(), b"icon");
     assert_eq!(fs::read(copy.join("game/grid.jpg")).unwrap(), b"grid");
 
-    let removed = f.run(&["rm", "zomboid_modded", "--delete-prefix"]);
+    let removed = f.run(&["rm", "zomboid_modded", "--include-prefix"]);
     assert_success(&removed);
     let id = common::trash_id(&removed);
     assert!(!copy.exists());
@@ -182,7 +182,7 @@ fn clone_does_not_copy_play_stats() {
     assert!(!f.read_stats_log("zomboid").is_empty());
 
     let stats = f.read_stats_log("zomboid");
-    let removed = f.run(&["rm", "zomboid", "--delete-prefix"]);
+    let removed = f.run(&["rm", "zomboid", "--include-prefix"]);
     assert_success(&removed);
     let id = common::trash_id(&removed);
     assert!(!f.stats_log("zomboid").exists());

@@ -200,7 +200,7 @@ fn real_wine_programs_desktop_entry_icon_and_launch() {
     let stopped = run_wineo(root.path(), &["stop", "app"]);
     assert_success(&stopped);
 
-    let removed = run_wineo(root.path(), &["rm", "app", "--delete-prefix"]);
+    let removed = run_wineo(root.path(), &["rm", "app", "--include-prefix"]);
     assert_success(&removed);
     assert!(!entry.exists(), "rm left the desktop entry behind");
     assert!(
