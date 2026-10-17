@@ -694,7 +694,8 @@ your normal setup with its own throwaway environment.
 8. Corrupt a trash entry: `wineo new --name zz2 --runner wine`, `wineo rm
    zz2`, then add a stray line to `data/trash/*/manifest.toml`. `wineo
    validate` reports `trash_invalid` once, and no `art_config_invalid`
-   problems. Undo the edit; `wineo prune` removes the entry.
+   problems. Undo the edit; `wineo prune --all` removes the entry (this is
+   the throwaway folder's trash only).
 9. Without `WINEO_PORTABLE_DIR` (a new shell): `wineo new --name zz0053
    --runner wine`, give it a target with a desktop entry, and set an icon
    with `wineo art set zz0053 icon <some png>`. Note the entry's icon. Add
@@ -702,15 +703,16 @@ your normal setup with its own throwaway environment.
    target so its entry is rewritten: `wineo set zz0053
    'targets.TARGET.args=["x"]'`. It succeeds and warns `art for TARGET could
    not be read, so its icon was left as it is`, and the entry keeps its
-   icon. Remove the line, then `wineo rm zz0053 --include-prefix` and
-   `wineo prune`.
+   icon. Remove the line, then `wineo rm zz0053 --include-prefix`, and
+   `wineo prune ID` with the ID `wineo trash` shows for it. Not `--all`:
+   this is your real trash.
 10. Renames, back in the portable folder: `wineo snapshot create zz first`,
     then `wineo snapshot delete zz first` warns `snapshot delete is
     deprecated; use snapshot remove` and removes it with `Removed snapshot
     first of zz`. `wineo snapshot create zz second` and `wineo snapshot rm
     zz second` work with no warning. `wineo rm zz --delete-prefix` warns
     `--delete-prefix is deprecated; use --include-prefix` and trashes the
-    prefix; `wineo restore zz` brings it back.
+    prefix; `wineo restore ID` (from `wineo trash`) brings it back.
 11. `wineo set zz dxvk=<an installed version>` (download one again if
     needed), then `wineo status zz --json`: its `dxvk` object has both
     `configured` and `wanted`, with the same value.
