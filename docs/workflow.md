@@ -67,6 +67,11 @@ only adds what it doesn't say. If the two disagree, `AGENTS.md` wins.
   tag and match its shape.
 - Call out behavior changes in the changelog, including ones in the CLI that
   rode along with a GUI plan.
+- For each 1.x minor release, add its upgrade fixture set: add the new tag to
+  the allowlist in `scripts/generate-upgrade-fixtures.sh`, run it for that
+  tag, and commit `crates/wineo-core/tests/fixtures/<tag>/`. The upgrade
+  tests find new sets on their own. The script keeps its builds in
+  `../.worktrees/wineo/fixture-gen`; remove that when done.
 - After pushing the tag, run `cargo clean` in the main checkout. Cargo keeps
   every build's outputs, so a busy stretch of merges can grow `target/` to
   hundreds of GB; worktrees clean up with their own removal.

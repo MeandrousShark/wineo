@@ -92,7 +92,10 @@ Interrupted trash removal, restoration, or pruning is reported as an error.
 Recovery is explicit: review with `wineo validate`, then use
 `wineo validate --fix` to recover the reported operation. Do not use
 conflicting commands until recovery is complete. Invalid or unavailable trash
-storage is reported for attention rather than recovered by ordinary commands.
+storage is reported for attention rather than recovered by ordinary commands. An
+unreadable trash manifest stops every environment from loading, so it's
+reported once, as `trash_invalid`, instead of as a problem with each
+environment.
 
 ## What it checks
 
