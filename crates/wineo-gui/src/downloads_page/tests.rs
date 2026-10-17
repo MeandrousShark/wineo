@@ -190,7 +190,7 @@ fn global_default_is_a_use_and_failed_uses_disable_delete() {
 }
 
 #[test]
-fn delete_confirms_size_then_refreshes_and_preserves_skipped_file_warnings() {
+fn an_unreadable_config_refuses_delete_on_the_row_but_still_warns_until_fixed() {
     let (_root, mut app) = fixture();
     component(&app.paths, Component::Dxvk, "2.5.3");
     component(&app.paths, Component::Dxvk, "2.6");
@@ -225,14 +225,45 @@ fn delete_confirms_size_then_refreshes_and_preserves_skipped_file_warnings() {
         Some(removal::Change::Downloads(Change::Delete(_)))
     ));
     let generation = app.change_generation;
-    let removed = downloads_work::remove(&app.paths, &unused).unwrap();
-    let warnings = downloads_work::warnings(&app.paths, &removed.errors);
-    assert_eq!(removed.bytes, 16);
+    let error = downloads_work::remove(&app.paths, &unused).unwrap_err();
+    assert!(error.starts_with("can't check "), "{error}");
+    assert!(error.contains("broken.toml"), "{error}");
+    assert!(error.ends_with("so 2.5.3 is kept"), "{error}");
+    send(Event::Deleted(generation, Err(error.clone())), &mut app);
+    assert!(app.change.is_none());
+    load(&mut app);
+    assert_eq!(
+        app.downloads_page.row_errors.get(&unused.id()),
+        Some(&error)
+    );
+    assert!(app.paths.default_dxvk_root().join("2.5.3").is_dir());
     assert!(
-        warnings
+        app.downloads_page
+            .snapshot()
+            .unwrap()
+            .builds
+            .iter()
+            .any(|build| build.id() == unused.id())
+    );
+    assert!(
+        app.downloads_page
+            .snapshot()
+            .unwrap()
+            .warnings
             .iter()
             .any(|warning| warning.contains("broken.toml"))
     );
+    let _ = app.downloads_view();
+
+    fs::remove_file(&broken).unwrap();
+    load(&mut app);
+    review(&mut app, &unused);
+    send(Event::Confirm, &mut app);
+    let generation = app.change_generation;
+    let removed = downloads_work::remove(&app.paths, &unused).unwrap();
+    let warnings = downloads_work::warnings(&app.paths, &removed.errors);
+    assert_eq!(removed.bytes, 16);
+    assert!(warnings.is_empty());
     let page_generation = app.downloads_page.generation;
     send(
         Event::Deleted(generation, Ok((removed.bytes, warnings))),
@@ -261,12 +292,7 @@ fn delete_confirms_size_then_refreshes_and_preserves_skipped_file_warnings() {
             .unwrap()
             .contains("16 B freed")
     );
-    assert!(
-        app.downloads_page
-            .warnings
-            .iter()
-            .any(|warning| warning.contains("broken.toml"))
-    );
+    assert!(app.downloads_page.warnings.is_empty());
     assert_eq!(crate::size::format_bytes(1_288_490_189), "1.2 GiB");
 }
 
