@@ -876,3 +876,49 @@ fn a_removed_targets_art_is_cleaned_up() {
     assert!(!remove_target(&paths, "hades", "server").unwrap());
     assert!(!remove_target(&paths, "other", "server").unwrap());
 }
+
+#[test]
+fn an_edit_keeps_a_deprecated_spelling() {
+    let root = tempfile::tempdir().unwrap();
+    let art = root.path();
+    let original = "schema_version = 1\ntest_old_game = 5 # mine\n\n[targets.main.test_old_icon]\nfile = \"icon.png\"\nmanual = \"a.png\"\n";
+    fs::write(art.join(ART_FILE), original).unwrap();
+    assert!(!ArtFile::open(art).unwrap().save().unwrap());
+    assert_eq!(read(art), original);
+
+    let mut file = ArtFile::open(art).unwrap();
+    file.set_game(Some(6)).unwrap();
+    file.set(Some("main"), Kind::Icon, manual(Format::Png, "b.png"))
+        .unwrap();
+    assert!(file.save().unwrap());
+    assert_eq!(
+        read(art),
+        original
+            .replace("= 5", "= 6")
+            .replace("\"a.png\"", "\"b.png\"")
+    );
+
+    let mut file = ArtFile::open(art).unwrap();
+    assert!(file.remove(Some("main"), Kind::Icon));
+    assert!(file.save().unwrap());
+    assert_eq!(read(art), "schema_version = 1\ntest_old_game = 6 # mine\n");
+}
+
+#[test]
+fn a_file_without_deprecated_keys_errors_exactly_as_before() {
+    let path = Path::new("/art/hades/art.toml");
+    for text in [
+        "game = \n",
+        "game = 'hades'\n",
+        "[icon]\nfile = 1\n",
+        "gam = 5\n",
+    ] {
+        let new = config::parse_config::<RawArt>(path, text, crate::deprecated::FileKind::Art)
+            .err()
+            .unwrap();
+        let plain = config::parse_toml::<RawArt>(path, text).err().unwrap();
+        let new = crate::error::chain(&new);
+        assert_eq!(new, crate::error::chain(&plain), "{text}");
+        assert!(new.contains("line "), "{new}");
+    }
+}

@@ -1336,7 +1336,7 @@ fn check_environment_checks_only_that_environment() {
 
 // The JSON output depends on these values, so changing one is a contract change.
 #[rustfmt::skip]
-    const RECORDED_CODES: [(Code, &str, &str, &str); 43] = [
+    const RECORDED_CODES: [(Code, &str, &str, &str); 44] = [
         (Code::GlobalConfigInvalid, "global_config_invalid", "error", "global_config"),
         (Code::TemplateInvalid, "template_invalid", "error", "template"),
         (Code::TemplateUnresolved, "template_unresolved", "warning", "template"),
@@ -1380,6 +1380,7 @@ fn check_environment_checks_only_that_environment() {
         (Code::GogFolderTaken, "gog_folder_taken", "error", "gog"),
         (Code::GogMidUpdate, "gog_mid_update", "error", "gog"),
         (Code::GogOwnerMissing, "gog_owner_missing", "warning", "gog"),
+        (Code::DeprecatedKey, "deprecated_key", "warning", "config"),
     ];
 
 #[test]
@@ -1808,4 +1809,177 @@ mod gog {
             [Code::EnvironmentConfigInvalid, Code::GogStateInvalid]
         );
     }
+}
+
+#[test]
+fn deprecated_keys_are_reported_in_every_kind_of_config() {
+    let f = Fixture::new();
+    f.global("test_old_stop_timeout = 3\n");
+    f.template("coop", "test_old_tags = ['game']\n");
+    f.wine(
+        "zomboid",
+        "test_old_gamemode = false\n[targets.game]\ntest_old_exe = 'C:\\Game\\game.exe'\n",
+    );
+    let art = f.art_dir("zomboid");
+    fs::create_dir_all(&art).unwrap();
+    fs::write(art.join("art.toml"), "test_old_game = 5\n").unwrap();
+
+    let report = f.check();
+    let found: Vec<&Problem> = report
+        .problems
+        .iter()
+        .filter(|problem| problem.code == Code::DeprecatedKey)
+        .collect();
+    assert_eq!(found.len(), 5, "{:#?}", report.problems);
+    assert_eq!(report.errors(), 0, "{:#?}", report.problems);
+    for problem in &found {
+        assert_eq!(problem.level, Level::Warning);
+        assert_eq!(problem.area, Area::Config);
+    }
+    let global = found
+        .iter()
+        .find(|problem| problem.message.contains("test_old_stop_timeout"))
+        .unwrap();
+    assert_eq!(global.environment, None);
+    assert_eq!(
+        global.message,
+        "~/config/wineo/config.toml: `test_old_stop_timeout` is deprecated since wineo 0.0.0; use `stop_timeout`"
+    );
+    assert_eq!(
+        global.fix,
+        Some(Fix::RenameDeprecatedKeys(deprecated::Config::Global))
+    );
+    let template = found
+        .iter()
+        .find(|problem| problem.message.contains("test_old_tags"))
+        .unwrap();
+    assert_eq!(template.template.as_deref(), Some("coop"));
+    let target = found
+        .iter()
+        .find(|problem| problem.message.contains("targets.game.test_old_exe"))
+        .unwrap();
+    assert_eq!(target.environment.as_deref(), Some("zomboid"));
+    assert!(target.message.contains("use `targets.game.exe`"));
+    let art = found
+        .iter()
+        .find(|problem| problem.message.contains("`test_old_game`"))
+        .unwrap();
+    assert_eq!(
+        art.fix,
+        Some(Fix::RenameDeprecatedKeys(deprecated::Config::Art(
+            "zomboid".to_owned()
+        )))
+    );
+    // One rename per file, however many keys it has.
+    assert_eq!(
+        report
+            .fixes()
+            .iter()
+            .filter(|fix| matches!(fix, Fix::RenameDeprecatedKeys(_)))
+            .count(),
+        4
+    );
+
+    let report = check_environment(&f.paths, "zomboid").unwrap();
+    assert_eq!(
+        report
+            .problems
+            .iter()
+            .filter(|problem| problem.code == Code::DeprecatedKey)
+            .count(),
+        3,
+        "{:#?}",
+        report.problems
+    );
+
+    for fix in f.check().fixes() {
+        apply(&f.paths, &fix, no_download).unwrap();
+    }
+    let report = f.check();
+    assert!(
+        !codes(&report).contains(&Code::DeprecatedKey),
+        "{:#?}",
+        report.problems
+    );
+    assert_eq!(report.errors(), 0, "{:#?}", report.problems);
+    assert_eq!(
+        fs::read_to_string(f.paths.global_config()).unwrap(),
+        "stop_timeout = 3\nschema_version = 1\n"
+    );
+    assert_eq!(
+        fs::read_to_string(f.paths.templates_dir().join("coop.toml")).unwrap(),
+        "tags = ['game']\nschema_version = 1\n"
+    );
+    assert_eq!(
+        fs::read_to_string(f.art_dir("zomboid").join("art.toml")).unwrap(),
+        "game = 5\nschema_version = 1\n"
+    );
+}
+
+#[test]
+fn both_spellings_are_the_files_invalid_config_error() {
+    let f = Fixture::new();
+    f.global("stop_timeout = 3\ntest_old_stop_timeout = 3\n");
+    f.template("coop", "tags = []\ntest_old_tags = []\n");
+    f.wine("zomboid", "gamemode = true\ntest_old_gamemode = true\n");
+    let codes = f.codes();
+    for code in [
+        Code::GlobalConfigInvalid,
+        Code::TemplateInvalid,
+        Code::EnvironmentConfigInvalid,
+    ] {
+        assert!(codes.contains(&code), "{codes:?}");
+    }
+    assert!(!codes.contains(&Code::DeprecatedKey), "{codes:?}");
+    let problem = f.only(Code::EnvironmentConfigInvalid);
+    assert!(
+        problem.message.contains("`test_old_gamemode`"),
+        "{}",
+        problem.message
+    );
+    assert!(
+        problem.message.contains("`gamemode`"),
+        "{}",
+        problem.message
+    );
+
+    let f = Fixture::new();
+    f.wine("zomboid", HEALTHY);
+    let art = f.art_dir("zomboid");
+    fs::create_dir_all(&art).unwrap();
+    fs::write(art.join("art.toml"), "game = 5\ntest_old_game = 5\n").unwrap();
+    assert!(f.codes().contains(&Code::ArtConfigInvalid));
+}
+
+#[test]
+fn the_rename_fix_keeps_comments_and_order() {
+    let f = Fixture::new();
+    f.wine(
+        "zomboid",
+        "# launch settings\ntest_old_gamemode = true # on\nmangohud = false\n\n[targets.game]\n# the game\ntest_old_exe = 'C:\\Game\\game.exe'\nargs = ['-x']\n",
+    );
+    let path = f.paths.environment_config("zomboid");
+    let before = fs::read_to_string(&path).unwrap();
+    let problem = f
+        .check()
+        .problems
+        .into_iter()
+        .find(|problem| problem.code == Code::DeprecatedKey)
+        .unwrap();
+    apply(&f.paths, fix(&problem), no_download).unwrap();
+    let after = fs::read_to_string(&path).unwrap();
+    assert_eq!(
+        after,
+        before
+            .replace("test_old_gamemode = true", "gamemode = true")
+            .replace("test_old_exe =", "exe =")
+            .replace(
+                "mangohud = false\n",
+                "mangohud = false\nschema_version = 1\n"
+            )
+    );
+    assert!(!f.codes().contains(&Code::DeprecatedKey));
+    // Nothing left to rename, so a second run changes nothing.
+    apply(&f.paths, fix(&problem), no_download).unwrap();
+    assert_eq!(fs::read_to_string(&path).unwrap(), after);
 }

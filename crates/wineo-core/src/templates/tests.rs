@@ -344,3 +344,23 @@ fn templates_reject_invalid_hooks() {
         assert!(templates(root.path()).resolve("bad").is_err(), "{text}");
     }
 }
+
+/// Templates always deserialized from the parsed table, so that is what the
+/// pass has to match.
+#[test]
+fn a_file_without_deprecated_keys_errors_exactly_as_before() {
+    let path = Path::new("/templates/coop.toml");
+    for text in [
+        "tags = \n",
+        "gamemode = 'yes'\n",
+        "[env]\nFOO = 1\n",
+        "gamemod = true\n",
+    ] {
+        let new = crate::error::chain(&parse(path, text).unwrap_err());
+        let plain = match toml::from_str::<toml::Table>(text) {
+            Err(source) => config::deserialize_error(path, source),
+            Ok(table) => config::deserialize_error(path, table.try_into::<Template>().unwrap_err()),
+        };
+        assert_eq!(new, crate::error::chain(&plain), "{text}");
+    }
+}

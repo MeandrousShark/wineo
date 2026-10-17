@@ -12,6 +12,7 @@ use serde::Deserialize;
 use toml_edit::{Array, DocumentMut, value};
 
 use crate::config::{self, Arch, GamescopeSetting, HooksSetting};
+use crate::deprecated::{self, FileKind, Moved};
 use crate::error::{Error, Result};
 use crate::files;
 use crate::name;
@@ -53,6 +54,9 @@ pub struct Template {
     pub vkd3d: Option<String>,
     #[serde(default)]
     pub env: BTreeMap<String, String>,
+    /// The deprecated keys the file used, moved to their new names.
+    #[serde(skip)]
+    pub deprecated: Vec<Moved>,
 }
 
 impl Template {
@@ -230,7 +234,7 @@ impl Templates {
     }
 }
 
-fn parse(path: &Path, text: &str) -> Result<Template> {
+pub(crate) fn parse(path: &Path, text: &str) -> Result<Template> {
     crate::config::check_schema(path, text)?;
     let mut table: toml::Table =
         toml::from_str(text).map_err(|source| config::deserialize_error(path, source))?;
@@ -245,9 +249,11 @@ fn parse(path: &Path, text: &str) -> Result<Template> {
         }
     }
     table.remove("schema_version");
-    let template: Template = table
+    let deprecated = deprecated::apply(FileKind::Template, path, &mut table)?;
+    let mut template: Template = table
         .try_into()
         .map_err(|source| config::deserialize_error(path, source))?;
+    template.deprecated = deprecated;
     config::validate_tags(&template.tags).map_err(|message| Error::ConfigInvalid {
         path: path.to_owned(),
         message,

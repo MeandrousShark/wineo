@@ -10,6 +10,7 @@ use crate::config::{
     self, EnvironmentConfig, GlobalConfig, Kind, Launcher, WINE_ONLY_KEYS, native_key_message,
     proxied_key_message,
 };
+use crate::deprecated::{self, FileKind};
 use crate::desktop;
 use crate::edit::{self, Scope};
 use crate::environment::Environment;
@@ -77,6 +78,16 @@ pub fn apply(
     pairs: &[(&str, &str)],
     unset: &[&str],
 ) -> anyhow::Result<Applied> {
+    // Every check below goes by the current name, whichever one was given.
+    let given_unset = unset;
+    let (pairs, unset) = current_names(file, pairs, unset);
+    let pairs: Vec<(&str, &str)> = pairs
+        .iter()
+        .map(|(key, raw)| (key.as_str(), *raw))
+        .collect();
+    let pairs = pairs.as_slice();
+    let unset: Vec<&str> = unset.iter().map(String::as_str).collect();
+    let unset = unset.as_slice();
     if let ConfigFile::Environment(name) = file
         && (pairs.iter().any(|(key, _)| *key == "kind") || unset.contains(&"kind"))
     {
@@ -180,7 +191,38 @@ pub fn apply(
     }
     // Held through the desktop step, so its icon extraction runs under it.
     drop(guard);
+    for key in &mut applied.not_set {
+        if let Some(at) = unset.iter().position(|current| current == key) {
+            *key = given_unset[at].to_owned();
+        }
+    }
     Ok(applied)
+}
+
+fn file_kind(file: ConfigFile) -> FileKind {
+    match file {
+        ConfigFile::Global => FileKind::Global,
+        ConfigFile::Environment(_) => FileKind::Environment,
+    }
+}
+
+/// The keys of a set as the current release names them.
+fn current_names<'a>(
+    file: ConfigFile,
+    pairs: &[(&str, &'a str)],
+    unset: &[&str],
+) -> (Vec<(String, &'a str)>, Vec<String>) {
+    let kind = file_kind(file);
+    (
+        pairs
+            .iter()
+            .map(|(key, raw)| (deprecated::current_name(kind, key), *raw))
+            .collect(),
+        unset
+            .iter()
+            .map(|key| deprecated::current_name(kind, key))
+            .collect(),
+    )
 }
 
 /// The part of `apply` that runs once components may have changed.
@@ -562,6 +604,16 @@ fn update_with_writer(
     };
     let before = doc.to_string();
     let targets_before = target_names(&doc);
+    // Edits use the current names, whichever one was given. The file keeps
+    // the spelling it has, since an older release only knows the old one.
+    let renamed = deprecated::rename_document(file_kind(file), &path, &mut doc)?;
+    let given_unset = unset;
+    let (set, unset) = current_names(file, set, unset);
+    let set: Vec<(&str, &str)> = set
+        .iter()
+        .map(|(key, value)| (key.as_str(), *value))
+        .collect();
+    let set = set.as_slice();
 
     for (key, value) in set {
         let value = match (scope, *key) {
@@ -604,11 +656,12 @@ fn update_with_writer(
         }
     }
     let mut missing = Vec::new();
-    for key in unset {
+    for (key, given) in unset.iter().zip(given_unset) {
         if !edit::unset(&mut doc, scope, key)? {
-            missing.push((*key).to_owned());
+            missing.push((*given).to_owned());
         }
     }
+    deprecated::restore_document(&mut doc, &renamed);
 
     let mut updated = doc.to_string();
     let changed = updated != before;

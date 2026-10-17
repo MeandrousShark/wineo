@@ -8,6 +8,7 @@ pub mod clone;
 pub mod components;
 pub mod config;
 pub mod create;
+pub mod deprecated;
 pub mod desktop;
 pub mod download;
 pub mod edit;

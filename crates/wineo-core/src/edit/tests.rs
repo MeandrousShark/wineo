@@ -705,3 +705,13 @@ fn invalid_hooks_edits_leave_the_document_unchanged() {
     assert!(unset(&mut doc, Scope::Environment, "targets.game.hooks.unknown").is_err());
     assert_eq!(doc.to_string(), "");
 }
+
+#[test]
+fn a_global_key_under_its_deprecated_name_counts_as_set() {
+    assert!(global_has_key(
+        "test_old_stop_timeout = 3\n",
+        "stop_timeout"
+    ));
+    assert!(global_has_key("stop_timeout = 3\n", "stop_timeout"));
+    assert!(!global_has_key("log_limit_mb = 3\n", "stop_timeout"));
+}

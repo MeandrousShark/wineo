@@ -1173,3 +1173,37 @@ fn load_or_default_matrix() {
     fs::remove_file(paths.global_config()).unwrap();
     assert_eq!(GlobalConfig::load_or_default(&paths).unwrap().warning, None);
 }
+
+/// The full error text of the parse with the deprecated-keys pass, next to
+/// deserializing straight from the text as before the pass existed.
+fn both_paths<T: serde::de::DeserializeOwned>(file: FileKind, text: &str) -> (String, String) {
+    let path = Path::new(PATH);
+    let new = parse_config::<T>(path, text, file).err().unwrap();
+    let plain = parse_toml::<T>(path, text).err().unwrap();
+    (crate::error::chain(&new), crate::error::chain(&plain))
+}
+
+#[test]
+fn a_file_without_deprecated_keys_errors_exactly_as_before() {
+    for text in [
+        "stop_timeout = \n",
+        "stop_timeout = 'soon'\n",
+        "[defaults]\nrunner = 1\n",
+        "stop_timout = 3\n",
+    ] {
+        let (new, plain) = both_paths::<GlobalConfig>(FileKind::Global, text);
+        assert_eq!(new, plain, "{text}");
+        assert!(new.contains("line "), "{new}");
+    }
+    let env = "prefix = '/p'\nrunner = 'wine'\narch = 'win64'\n";
+    for text in [
+        format!("{env}gamemode = \n"),
+        format!("{env}gamemode = 'yes'\n"),
+        format!("{env}[targets.game]\nexe = 1\n"),
+        format!("{env}gamemod = true\n"),
+    ] {
+        let (new, plain) = both_paths::<RawEnvironmentConfig>(FileKind::Environment, &text);
+        assert_eq!(new, plain, "{text}");
+        assert!(new.contains("line "), "{new}");
+    }
+}
