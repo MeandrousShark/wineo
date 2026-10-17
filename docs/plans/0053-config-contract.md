@@ -43,8 +43,8 @@ On 2026-10-16 the maintainer answered the questions below:
 - **4: A.** Lenient internal files, and cleanup that keeps everything when
   a record is unreadable.
 - **5: A, with warning placement b.** Build the config-key half now and
-  document the rest; outside `validate`, a command prints one summary line
-  for every config using a deprecated key.
+  document the rest. Outside `validate`, a command prints a single summary
+  line covering every config that uses a deprecated key.
 - **6: A.** Fixtures written by real old releases.
 - **7: the recommended review**, read-only and cross-family.
 - **8: B.** Library state lives in a lenient `library.toml`.
