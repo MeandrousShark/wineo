@@ -1003,3 +1003,54 @@ fn a_record_that_fails_validation_keeps_every_redistributable() {
         "redistributable MSVC2017 is invalid",
     );
 }
+
+#[test]
+fn installing_a_game_beside_an_unreadable_record_warns_and_removes_nothing() {
+    let fx = Fixture::new();
+    fx.content
+        .add_build(Fixture::game("100").dependency("MSVC2017"));
+    fx.content.add_build(
+        FakeBuild::new(OTHER, "300")
+            .dependency("MSVC2017")
+            .depot(FakeDepot::new(OTHER).file(FakeFile::new("other.exe", b"other"))),
+    );
+    with_dependencies(&fx, b"runtime v1");
+    fx.install();
+    let first = fx.version_dir("MSVC2017");
+    // A version nothing names, which a clean store would drop.
+    let orphan = fx
+        .paths
+        .gog_redist_dir()
+        .join("MSVC2017")
+        .join("0".repeat(32));
+    fs::create_dir_all(orphan.join("__redist")).unwrap();
+    // The first game's record goes bad.
+    fs::write(folder::sidecar_file(&fx.paths, &fx.folder), b"garbage").unwrap();
+
+    with_dependencies(&fx, b"runtime v2");
+    let other = Request {
+        name: "other".to_owned(),
+        gog_id: OTHER,
+        dir: Some(fx.folder.with_file_name("Other Game")),
+        ..fx.request()
+    };
+    let plan = fx.plan_with(&other).unwrap();
+    let second = fx
+        .paths
+        .gog_redist_dir()
+        .join("MSVC2017")
+        .join(&plan.manifest_for_tests().setup.redist[0].manifest);
+    let installed = fx.apply(&plan).unwrap();
+    assert!(
+        installed
+            .warnings
+            .iter()
+            .any(|warning| warning.starts_with("Couldn't clean up GOG's redistributables")),
+        "{:?}",
+        installed.warnings
+    );
+    assert_ne!(first, second);
+    for dir in [&first, &second, &orphan] {
+        assert!(dir.is_dir(), "{}", dir.display());
+    }
+}
