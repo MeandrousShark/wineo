@@ -343,7 +343,7 @@ pub fn size(paths: &Paths, component: Component, name: &str) -> Result<u64> {
     crate::build_removal::directory_size(&directory)
 }
 
-/// Removes an unused managed build and reports bytes and skipped configs.
+/// Removes an unused managed build, refusing when a config can't be read.
 pub fn remove(
     paths: &Paths,
     component: Component,

@@ -165,6 +165,12 @@ pub enum Error {
     #[error("{name} is used by {users}.")]
     BuildInUse { name: String, users: String },
 
+    #[error("{}", unreadable_configs(.name, .configs))]
+    UnreadableConfigs {
+        name: String,
+        configs: Vec<(PathBuf, String)>,
+    },
+
     #[error("{0} is not a managed build and cannot be removed")]
     UnmanagedBuild(String),
 
@@ -442,6 +448,19 @@ pub fn chain(err: &dyn std::error::Error) -> String {
         source = err.source();
     }
     text
+}
+
+fn unreadable_configs(name: &str, configs: &[(PathBuf, String)]) -> String {
+    configs
+        .iter()
+        .map(|(path, reason)| {
+            format!(
+                "can't check {} ({reason}), so {name} is kept",
+                path.display()
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 /// Collapses every run of whitespace, newlines included, to one space.
