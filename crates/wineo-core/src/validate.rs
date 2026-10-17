@@ -3,7 +3,8 @@
 //!
 //! Checks only read, and nothing launches wine or runs a program. Fixes never
 //! edit an environment config, except explicit snapshot recovery, which restores
-//! the saved bytes. The winetricks fix installs into an idle
+//! the saved bytes, and renaming deprecated keys, which changes only their
+//! names. The winetricks fix installs into an idle
 //! prefix; art fixes only drop records whose file or target is gone.
 
 use std::collections::BTreeSet;
@@ -18,6 +19,7 @@ use serde::{Serialize, Serializer};
 use crate::art::{self, Kind as ArtKind};
 use crate::components::{Builds, Component, LATEST};
 use crate::config::{EnvironmentConfig, GlobalConfig, Kind};
+use crate::deprecated;
 use crate::desktop::{self, Entry, Pending};
 use crate::environment::{self, Environment};
 use crate::error::{Error, IoContext, Result, chain};
@@ -82,6 +84,8 @@ pub enum Area {
     Art,
     Trash,
     Gog,
+    /// Any config file: global, template, environment, or art.
+    Config,
 }
 
 impl Area {
@@ -100,6 +104,7 @@ impl Area {
             Area::Art => "art",
             Area::Trash => "trash",
             Area::Gog => "gog",
+            Area::Config => "config",
         }
     }
 }
@@ -190,6 +195,7 @@ codes! {
     GogFolderTaken => "gog_folder_taken", Level::Error, Area::Gog;
     GogMidUpdate => "gog_mid_update", Level::Error, Area::Gog;
     GogOwnerMissing => "gog_owner_missing", Level::Warning, Area::Gog;
+    DeprecatedKey => "deprecated_key", Level::Warning, Area::Config;
 }
 
 impl fmt::Display for Code {
@@ -259,6 +265,8 @@ pub enum Fix {
         folder: PathBuf,
         owner: String,
     },
+    /// Renames every deprecated key in one config to its new name.
+    RenameDeprecatedKeys(deprecated::Config),
 }
 
 impl Fix {
@@ -321,6 +329,18 @@ impl Fix {
             Fix::ReleaseGogFolder { folder, owner } => {
                 format!("Clear {owner} as the owner of {}", folder.display())
             }
+            Fix::RenameDeprecatedKeys(config) => match config {
+                deprecated::Config::Global => {
+                    "Rename the global config's deprecated keys".to_owned()
+                }
+                deprecated::Config::Environment(name) => {
+                    format!("Rename {name}'s deprecated keys")
+                }
+                deprecated::Config::Template(name) => {
+                    format!("Rename template {name}'s deprecated keys")
+                }
+                deprecated::Config::Art(name) => format!("Rename {name}'s deprecated art keys"),
+            },
         }
     }
 }
@@ -387,6 +407,36 @@ impl Problem {
             template: Some(name.to_owned()),
             ..Self::new(code, None, message, None)
         }
+    }
+}
+
+/// One `deprecated_key` per key `config` used, each offering the rename.
+fn push_deprecated(
+    paths: &Paths,
+    config: deprecated::Config,
+    moved: &[deprecated::Moved],
+    report: &mut Report,
+) {
+    let path = config.path(paths);
+    for moved in moved {
+        let message = format!(
+            "{}: `{}` is deprecated since wineo {}; use `{}`",
+            path.display(),
+            moved.old,
+            moved.since,
+            moved.new
+        );
+        let fix = Some(Fix::RenameDeprecatedKeys(config.clone()));
+        report.push(match &config {
+            deprecated::Config::Global => Problem::new(Code::DeprecatedKey, None, message, fix),
+            deprecated::Config::Template(name) => Problem {
+                fix,
+                ..Problem::template(Code::DeprecatedKey, name, message)
+            },
+            deprecated::Config::Environment(name) | deprecated::Config::Art(name) => {
+                Problem::new(Code::DeprecatedKey, Some(name), message, fix)
+            }
+        });
     }
 }
 
@@ -754,7 +804,15 @@ fn check_trash(
 
 fn check_global(paths: &Paths, report: &mut Report) -> GlobalConfig {
     match GlobalConfig::load(paths) {
-        Ok(global) => global,
+        Ok(global) => {
+            push_deprecated(
+                paths,
+                deprecated::Config::Global,
+                &global.deprecated,
+                report,
+            );
+            global
+        }
         Err(err) => {
             report.push(Problem::new(
                 Code::GlobalConfigInvalid,
@@ -774,7 +832,15 @@ fn check_templates(paths: &Paths, global: &GlobalConfig, report: &mut Report) ->
             continue;
         }
         match templates.resolve(&listed.name) {
-            Ok(template) => check_template(paths, global, &listed.name, &template, report),
+            Ok(template) => {
+                push_deprecated(
+                    paths,
+                    deprecated::Config::Template(listed.name.clone()),
+                    &template.deprecated,
+                    report,
+                );
+                check_template(paths, global, &listed.name, &template, report);
+            }
             Err(err) => report.push(Problem::template(
                 Code::TemplateInvalid,
                 &listed.name,
@@ -918,6 +984,12 @@ fn check_one(
             return Ok(());
         }
     };
+    push_deprecated(
+        paths,
+        deprecated::Config::Environment(name.to_owned()),
+        &config.deprecated,
+        report,
+    );
     let environment = Environment {
         name: name.to_owned(),
         path,
@@ -1354,6 +1426,14 @@ fn check_art(paths: &Paths, name: &str, report: &mut Report) {
             return;
         }
     };
+    if let Ok(config) = art::ArtConfig::load(&paths.art_dir(name)) {
+        push_deprecated(
+            paths,
+            deprecated::Config::Art(name.to_owned()),
+            &config.deprecated,
+            report,
+        );
+    }
     let spot = |target: &Option<String>| match target {
         Some(target) => format!("art for {target}"),
         None => "art".to_owned(),
@@ -1644,6 +1724,9 @@ pub fn apply(
             if !folder::release_missing_owner(paths, folder, &cancel)? {
                 anyhow::bail!("{} changed. Run wineo validate again.", folder.display());
             }
+        }
+        Fix::RenameDeprecatedKeys(config) => {
+            deprecated::rename_in_place(paths, config)?;
         }
     }
     Ok(Vec::new())
