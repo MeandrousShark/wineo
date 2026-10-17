@@ -63,7 +63,7 @@ fn set_refuses_an_unsupported_global_version_with_a_hint() {
 #[test]
 fn an_environment_with_an_unknown_key_shows_the_hint() {
     let f = Fixture::new();
-    f.environment("hades", &format!("{TARGET}"));
+    f.environment("hades", TARGET);
     let path = environment_path(&f, "hades");
     let text = fs::read_to_string(&path).unwrap();
     fs::write(&path, format!("{text}gamemod = true\n")).unwrap();
