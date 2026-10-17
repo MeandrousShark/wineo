@@ -568,6 +568,29 @@ Limits:
   desktop and GUI writers). Each has to keep the spelling the file already
   uses, or it can create the both-spellings error.
 
+### Step 6: renames before the freeze
+
+The naming review (2026-10-16, cross-family) listed eight candidates. The
+maintainer picked four:
+
+- **`rm --delete-prefix` becomes `--include-prefix`**, since the prefix
+  goes to the trash and can be restored. `--delete-prefix` stays as a
+  hidden alias that warns until 2.0.
+- **Removal commands accept both `rm` and `remove`**: `wineo rm`, `art rm`,
+  `runners remove`, `dxvk remove`, and `vkd3d remove` each gain the other
+  spelling as a visible alias, and `snapshot delete` becomes
+  `snapshot remove` (with `rm`), keeping `delete` as a hidden alias that
+  warns.
+- **The component JSON field `wanted` becomes `configured`**, matching the
+  runner object beside it, and is written under both names until 2.0.
+- **The validate code `restore_interrupted` becomes
+  `snapshot_restore_interrupted`**, since trash has restores too. A value
+  can't be written under two names, so before 1.0 it's simply renamed, as
+  a behavior change for the changelog.
+
+Left as they are: `--dir` (to `--prefix` and `--install-dir`), `gameid`
+(it mirrors umu's own `GAMEID`), art.toml's `game`, and `install`.
+
 ## Implementation sequence
 
 1. Unknown keys: the hints for unknown keys and unsupported versions on
