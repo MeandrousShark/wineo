@@ -98,7 +98,8 @@ pub fn stop_with(
         return Ok(outcome);
     };
 
-    let (cleaned, warning) = clean_up_installer(paths, name).with_context(|| {
+    let (cleaned, warning) = clean_up_installer_with(paths, name, global_for_stop(paths))
+        .with_context(|| {
         let record = Runtime::new(paths, name).operation_path();
         format!(
             "failed to clean up after {name}'s last installer. If nothing it started is running any more, delete {} to clear this",
@@ -230,9 +231,10 @@ pub fn stop_run_with(
     if let Ok(environment) = Environment::load(paths, name)
         && let crate::config::Kind::Proxied(proxied) = environment.config.kind
     {
-        // Which Steam to look in comes from the global config, so a config
-        // that can't be interpreted must not read as "nothing to stop".
-        let loaded = GlobalConfig::load_or_default(paths)?;
+        // Stop never refuses over the global config (plan 0053). It only picks
+        // which Steam install to look in, so a default can at worst miss the
+        // game, and the warning says why.
+        let loaded = global_for_stop(paths);
         append_unique_warning(&mut messages, loaded.warning);
         if let Some(install) = steam::active_for(paths, &loaded.config) {
             let mut reapers = steam::matching_reapers(&install, &proxied.app_id)
@@ -361,7 +363,23 @@ pub(crate) fn clean_up_installer(
     paths: &Paths,
     name: &str,
 ) -> Result<(Option<Cleaned>, Option<String>)> {
-    let loaded = GlobalConfig::load_or_default(paths)?;
+    clean_up_installer_with(paths, name, GlobalConfig::load_or_default(paths)?)
+}
+
+/// The global config for a stop, which never refuses over it (plan 0053): one
+/// that can't be used means defaults and a warning, an unknown key included.
+fn global_for_stop(paths: &Paths) -> crate::config::Loaded {
+    GlobalConfig::load_or_default(paths).unwrap_or_else(|err| crate::config::Loaded {
+        config: GlobalConfig::default(),
+        warning: Some(crate::config::default_settings_warning(&err)),
+    })
+}
+
+fn clean_up_installer_with(
+    paths: &Paths,
+    name: &str,
+    loaded: crate::config::Loaded,
+) -> Result<(Option<Cleaned>, Option<String>)> {
     let timeout = installer::clean_up_timeout(&loaded.config);
     let cleaned = installer::clean_up(paths, &loaded.config, name, timeout)?;
     Ok((cleaned, loaded.warning))

@@ -1005,3 +1005,31 @@ fn start_is_refused_while_steam_installs_or_uninstalls_the_game() {
     }
     assert_eq!(s.dispatch_count(), 0);
 }
+
+#[test]
+fn stop_of_a_proxied_game_goes_on_with_defaults_for_an_unreadable_global_config() {
+    for (config, hint) in [
+        (
+            "typo_key = 1\n",
+            "A newer version of wineo may have written it; update wineo or remove the key.",
+        ),
+        (
+            "schema_version = 2\n",
+            "A newer version of wineo wrote it; update wineo to use this file.",
+        ),
+    ] {
+        let s = SteamFixture::new();
+        s.config("");
+        s.f.global_config(config);
+        let stopped = s.run(&["stop", "civ"]);
+        assert_success(&stopped);
+        let message = stderr(&stopped);
+        assert_eq!(
+            message.matches("warning: using default settings: ").count(),
+            1,
+            "{config}: {message}"
+        );
+        assert_eq!(message.matches(hint).count(), 1, "{config}: {message}");
+        assert!(message.contains("civ is not running"), "{message}");
+    }
+}

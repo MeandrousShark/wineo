@@ -615,6 +615,25 @@ fn stop_goes_on_with_defaults_for_a_global_config_it_refuses_elsewhere() {
 }
 
 #[test]
+fn stop_of_an_idle_environment_goes_on_with_defaults_for_an_unreadable_global_config() {
+    for config in ["typo_key = 1\n", "schema_version = 2\n"] {
+        let f = Fixture::new();
+        f.environment("app", APP);
+        fs::write(f.config_dir().join("config.toml"), config).unwrap();
+
+        let stopped = f.run(&["stop", "app"]);
+        assert_success(&stopped);
+        let message = stderr(&stopped);
+        assert_eq!(
+            message.matches("warning: using default settings: ").count(),
+            1,
+            "{config}: {message}"
+        );
+        assert!(message.contains("app is not running"), "{message}");
+    }
+}
+
+#[test]
 fn following_logs_ends_with_the_run() {
     let f = Fixture::new();
     f.environment("app", APP);
