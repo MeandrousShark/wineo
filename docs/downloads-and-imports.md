@@ -101,7 +101,7 @@ wineo dxvk remove 2.5.3
 wineo vkd3d remove 2.14 --yes
 ```
 
-Deletes an installed build from its root. On a terminal it asks first with
+Deletes an installed build from its root. `rm` works in place of `remove`. On a terminal it asks first with
 the build's size, `Remove runner GE-Proton9-20 (1.2 GiB)? [y/N]`, and prints
 `Removed runner GE-Proton9-20 (1.2 GiB freed)`. `--yes` skips the question.
 Without a terminal it needs `--yes`, and otherwise stops with `remove
@@ -329,7 +329,7 @@ Mac games are still refused, since wineo only runs Linux ones.
 ## Removal
 
 `wineo rm my-game` trashes the config, art, and playtime log while leaving the
-prefix and snapshots in place. `wineo rm my-game --delete-prefix` also trashes
+prefix and snapshots in place. `wineo rm my-game --include-prefix` also trashes
 the configured prefix and its snapshots. External game files and Heroic
 metadata are not included. See [Trash and removal](trash.md) for restore,
 prune, and recovery.

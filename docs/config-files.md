@@ -26,7 +26,7 @@ Two environments may share the exact same prefix, but one environment's
 prefix can't sit inside another's or contain it, since restoring, removing,
 or copying the outer one would take the inner one along. `new`, `clone`,
 imports, `set prefix=`, portable copies, snapshot restore, trash restore,
-and `rm --delete-prefix` refuse it: `b's prefix is inside a's prefix. Move
+and `rm --include-prefix` refuse it: `b's prefix is inside a's prefix. Move
 one of them first.` `wineo edit` doesn't check, so a hand edit can still
 nest two prefixes.
 

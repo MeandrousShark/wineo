@@ -81,6 +81,11 @@ only adds what it doesn't say. If the two disagree, `AGENTS.md` wins.
   instead of going through settings edits, as listed in plan 0053's step 3
   notes. Each has to keep the spelling the file already uses, or it can
   create the both-spellings error.
+- A flag or command keeps its old spelling as a hidden clap `alias`, plus a
+  row in `crates/wineo-cli/src/renamed.rs`, which prints
+  `warning: OLD is deprecated; use NEW`.
+- A `--json` field is written under both names until 2.0. An enum value or
+  `validate` code can't be, so renaming one waits for 2.0.
 
 ## Working with the maintainer
 

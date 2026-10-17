@@ -80,8 +80,9 @@ Named status also includes `kind`, `wine`, `native`, or `proxied`; `runner` with
 the prefix's `winetricks.log`, both arrays (see
 [Winetricks dependencies](config-files.md#winetricks-dependencies));
 `desktop`, an array of target names; and nullable `dxvk` and `vkd3d` component
-objects. Each component object has `wanted`, nullable `resolved`, nullable
-`installed`, and `current`.
+objects. Each component object has `configured`, nullable `resolved`,
+nullable `installed`, and `current`. `configured` is also written as
+`wanted`, its old name, until 2.0.
 
 `runner.configured` is the configured value. `runner.resolved` follows the
 same precedence as human status: the active operation's runner, then the
@@ -292,7 +293,7 @@ exits 1 with a diagnostic on stderr and no JSON.
 `wineo validate --json` reports every problem and never asks, even at a
 terminal. With `--fix`, it applies every fix first and then reports what's
 left. The exception is an interrupted snapshot restore
-(`restore_interrupted`), which `wineo snapshot recover` finishes; `--fix`
+(`snapshot_restore_interrupted`), which `wineo snapshot recover` finishes; `--fix`
 leaves it in `problems`, with its `fix` label, and lists it in neither
 `fixed` nor `errors`:
 
@@ -344,7 +345,7 @@ The codes are stable:
 | `target` | `exe_missing`, `cwd_missing`, `gamemode_missing`, `gamescope_missing`, `mangohud_missing`, `wayland_unsupported` |
 | `native_target` | `native_exe_invalid` |
 | `environment` | `target_ambiguous` |
-| `runtime` | `lost_run`, `installer_unresolved`, `restore_interrupted`, `state_dir_stray`, `stats_stray` |
+| `runtime` | `lost_run`, `installer_unresolved`, `snapshot_restore_interrupted`, `state_dir_stray`, `stats_stray` |
 | `desktop` | `desktop_entry_stray`, `desktop_outdated`, `desktop_portable` |
 | `steam` | `steam_not_found`, `steam_install_missing`, `steam_library_unavailable`, `steam_data_unknown` |
 | `trash` | `trash_interrupted`, `trash_invalid` |

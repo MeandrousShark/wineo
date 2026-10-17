@@ -140,7 +140,8 @@ wineo art rm ENV[.TARGET] KIND
 
 Removes one piece of art and prints `Removed grid from hades`. Fails with
 `` `hades` has no grid art `` if there is nothing to remove. Removing a
-target's override never touches the environment's own art.
+target's override never touches the environment's own art. `art remove`
+works in place of `art rm`.
 
 ## Fetching art from SteamGridDB
 

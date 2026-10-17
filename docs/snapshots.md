@@ -7,12 +7,14 @@ environment config as a local restore point.
 wineo snapshot create Zomboid before-mods
 wineo snapshot list Zomboid
 wineo snapshot restore Zomboid before-mods
-wineo snapshot delete Zomboid before-mods
+wineo snapshot remove Zomboid before-mods
 ```
 
 Environment names and labels are required and case sensitive. Labels follow
 the environment naming rules. `list` shows labels in stable order with their
-creation times. A label can only be used once; delete it before reusing it.
+creation times. A label can only be used once; remove it before reusing it.
+`snapshot rm` is the same as `snapshot remove`, and `snapshot delete`, its
+old name, still works until 2.0 with a warning.
 
 In the [desktop app](gui.md#snapshots), open Snapshots with Ctrl+5 or an
 environment's **Snapshots...** action. Create and Restore show frozen reviews;
@@ -91,5 +93,5 @@ stored beside the live prefix and are not backups against filesystem or device
 failure. They do not support automatic retention or cross-filesystem restore.
 
 Plain `wineo rm` leaves the prefix and its snapshots in place; restoring the
-trash entry makes them accessible again. `wineo rm --delete-prefix` retains
+trash entry makes them accessible again. `wineo rm --include-prefix` retains
 both the prefix and snapshots in trash. See [Trash and removal](trash.md).

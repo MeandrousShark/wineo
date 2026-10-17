@@ -9,7 +9,7 @@ The desktop app does the same from an environment's **Remove...** and its
 
 ```sh
 wineo rm hades
-wineo rm hades --delete-prefix
+wineo rm hades --include-prefix
 wineo trash
 wineo restore 20260926T183000Z-a1b2c3d4
 wineo prune 20260926T183000Z-a1b2c3d4
@@ -18,8 +18,9 @@ wineo prune --all --yes
 ```
 
 Plain `rm` trashes the raw config, artwork, and playtime log. It leaves the
-prefix and its snapshots in place. `--delete-prefix` also trashes the configured
-prefix and its snapshots. Transient runtime state and runtime logs are
+prefix and its snapshots in place. `--include-prefix` also trashes the configured
+prefix and its snapshots. Its old name, `--delete-prefix`, still works until
+2.0 with a warning. `wineo remove` is the same command as `wineo rm`. Transient runtime state and runtime logs are
 discarded, and Wineo desktop entries are removed. Native environments have no
 prefix; their external executable folders and other external game files are
 never part of the trash entry.
@@ -40,7 +41,7 @@ removed, and whether the prefix was included. An empty trash prints `Trash is
 empty` on stderr, leaving stdout empty for scripts. Restore returns data to its original name and paths. It refuses
 collisions rather than overwriting existing data. Restoring a plain `rm` entry
 returns its config, art, and playtime while leaving the prefix and snapshots
-where they were; restoring a `--delete-prefix` entry returns those too.
+where they were; restoring a `--include-prefix` entry returns those too.
 
 Restore also refuses an environment whose prefix now sits inside another
 environment's prefix, or one another environment already names (see

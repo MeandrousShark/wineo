@@ -202,7 +202,7 @@ owns their prefix.
 
 **Remove...** asks first. Its config, art, and playtime go to the trash, like
 `wineo rm`. **Also trash the prefix and snapshots** is off by default and
-does what `--delete-prefix` does; the dialog shows the prefix's path and
+does what `--include-prefix` does; the dialog shows the prefix's path and
 size. Native environments have no prefix, so the box isn't there. Remove is
 unavailable while the environment is running or busy, or after a lost run
 until **Clean up**.

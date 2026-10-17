@@ -62,7 +62,7 @@ to. Such an exec runs without a terminal on its input, like `wineo run`.
 If registration fails after the copy, wineo keeps the copied prefix and reports
 its location for recovery. Remove a clone with `wineo rm NAME`; this trashes
 its config and art, leaving the copied prefix in place. Add
-`--delete-prefix` to trash the copied prefix and snapshots too. See
+`--include-prefix` to trash the copied prefix and snapshots too. See
 [Trash and removal](trash.md).
 
 Clone also copies the source's art store to the new name, and the review shows

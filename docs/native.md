@@ -140,7 +140,7 @@ leaves.
 | `desktop`, `art` | Work. The icon comes from art only, and an entry with no art uses the theme's generic icon. |
 | `clone` | Copies the config and art under the new name, with desktop entries off |
 | `portable copy` | Copies the config and art. Absolute exe paths stay host paths and are listed in the review. |
-| `rm` | Works and trashes config, art, and playtime. `--delete-prefix` is refused because there is no prefix. |
+| `rm` | Works and trashes config, art, and playtime. `--include-prefix` is refused because there is no prefix. |
 | `exec`, `winetricks`, `programs`, `snapshot` | Refused: `dusklight is a native environment, so it has no prefix` |
 | `templates`, `import` of a prefix | Wine only |
 
