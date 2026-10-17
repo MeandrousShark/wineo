@@ -903,3 +903,22 @@ fn an_edit_keeps_a_deprecated_spelling() {
     assert!(file.save().unwrap());
     assert_eq!(read(art), "schema_version = 1\ntest_old_game = 6 # mine\n");
 }
+
+#[test]
+fn a_file_without_deprecated_keys_errors_exactly_as_before() {
+    let path = Path::new("/art/hades/art.toml");
+    for text in [
+        "game = \n",
+        "game = 'hades'\n",
+        "[icon]\nfile = 1\n",
+        "gam = 5\n",
+    ] {
+        let new = config::parse_config::<RawArt>(path, text, crate::deprecated::FileKind::Art)
+            .err()
+            .unwrap();
+        let plain = config::parse_toml::<RawArt>(path, text).err().unwrap();
+        let new = crate::error::chain(&new);
+        assert_eq!(new, crate::error::chain(&plain), "{text}");
+        assert!(new.contains("line "), "{new}");
+    }
+}

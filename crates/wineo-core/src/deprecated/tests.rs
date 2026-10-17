@@ -191,16 +191,6 @@ fn reading_never_rewrites_the_file() {
 }
 
 #[test]
-fn an_unknown_key_keeps_its_line_and_column() {
-    let err = EnvironmentConfig::parse(
-        Path::new("/env/hades.toml"),
-        &format!("{ENV}gamemod = true\n"),
-    )
-    .unwrap_err();
-    assert!(err.to_string().contains("line 5"), "{err}");
-}
-
-#[test]
 fn rename_keeps_comments_formatting_and_order() {
     let text = "# top\nschema_version = 1\nprefix = '/p'\n# the switch\ntest_old_gamemode   = true # on\nrunner = 'wine'\narch = 'win64'\n\n[targets.game]\nname = 'Game'\n\"test_old_exe\" = 'C:/game.exe' # here\ndefault = true\n";
     let mut doc: DocumentMut = text.parse().unwrap();
