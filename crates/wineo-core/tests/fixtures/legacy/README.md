@@ -23,6 +23,10 @@ Two sibling roots hold the same three files, in the two shapes a real file had:
   refuses that form in a portable folder (`prefix_refused`), which is why the
   portable root differs.
 
+`xdg/prefixes/notepad` is a minimal hand-made prefix (`system.reg`, `dosdevices/c:`,
+and empty `win.ini` and `notepad.exe`), because wineo refuses a `~/` prefix whose
+parent folder is missing. `portable/` has no prefix, which is only a warning there.
+
 Each root has:
 
 - `config.toml`, the global config, with every key it had then.
@@ -36,5 +40,5 @@ Each file starts with a `# hand written` comment, so a test can tell that a
 
 ## Left out
 
-No prefix, art, trash, snapshot, or playtime log: none of them existed in this
+No art, trash, snapshot, or playtime log: none of them existed in this
 shape of release, or none can be shown without a prefix.
