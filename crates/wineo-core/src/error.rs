@@ -165,6 +165,9 @@ pub enum Error {
     #[error("{name} is used by {users}.")]
     BuildInUse { name: String, users: String },
 
+    #[error("{}", unreadable_configs(.name, .errors))]
+    UnreadableConfigs { name: String, errors: Vec<String> },
+
     #[error("{0} is not a managed build and cannot be removed")]
     UnmanagedBuild(String),
 
@@ -440,6 +443,20 @@ pub fn chain(err: &dyn std::error::Error) -> String {
         text.push_str(": ");
         text.push_str(&err.to_string());
         source = err.source();
+    }
+    text
+}
+
+/// A summary line, then each config's own error, which already names its file.
+fn unreadable_configs(name: &str, errors: &[String]) -> String {
+    let count = match errors {
+        [_] => "a config".to_owned(),
+        _ => format!("{} configs", errors.len()),
+    };
+    let mut text = format!("{name} is kept, since {count} can't be read");
+    for error in errors {
+        text.push('\n');
+        text.push_str(error);
     }
     text
 }

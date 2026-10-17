@@ -20,10 +20,7 @@ pub(crate) fn warnings(paths: &Paths, errors: &[OverviewError]) -> Vec<String> {
     errors
         .iter()
         .map(|error| {
-            let path = match error.name.strip_prefix("template ") {
-                Some(name) => paths.templates_dir().join(format!("{name}.toml")),
-                None => paths.environment_config(&error.name),
-            };
+            let path = build_removal::config_path(paths, error);
             paths.contract_text(&format!(
                 "Skipped {}: {}",
                 path.display(),
@@ -148,9 +145,7 @@ pub(crate) fn remove(paths: &Paths, build: &Build) -> Result<Removed, String> {
 
 pub(crate) fn delete(generation: u64, paths: Paths, build: Build) -> Task<Message> {
     work(
-        move || {
-            remove(&paths, &build).map(|removed| (removed.bytes, warnings(&paths, &removed.errors)))
-        },
+        move || remove(&paths, &build).map(|removed| removed.bytes),
         move |result| Event::Deleted(generation, result),
     )
 }

@@ -20,7 +20,8 @@ use crate::runners::Runners;
 use crate::runtime::{Runtime, State};
 use crate::templates::Templates;
 
-/// Unreadable configs are skipped and reported, like an environment overview.
+/// Listing skips and reports unreadable configs, like an environment overview.
+/// Removal refuses on them instead, see `refuse_unreadable`.
 #[derive(Debug, Default)]
 pub struct Uses {
     pub labels: Vec<String>,
@@ -30,7 +31,6 @@ pub struct Uses {
 #[derive(Debug)]
 pub struct Removed {
     pub bytes: u64,
-    pub errors: Vec<OverviewError>,
 }
 
 pub fn uses(paths: &Paths, build: &Lock) -> Result<Uses> {
@@ -252,6 +252,26 @@ fn runtime_names(paths: &Paths) -> Result<Vec<String>> {
     Ok(names)
 }
 
+/// The config file behind an error name from the uses index.
+pub fn config_path(paths: &Paths, error: &OverviewError) -> PathBuf {
+    match error.name.strip_prefix("template ") {
+        Some(name) => paths.templates_dir().join(format!("{name}.toml")),
+        None => paths.environment_config(&error.name),
+    }
+}
+
+/// A config this wineo can't read may select the build, so removal can't tell
+/// the build is unused.
+pub fn refuse_unreadable(name: &str, errors: &[OverviewError]) -> Result<()> {
+    if errors.is_empty() {
+        return Ok(());
+    }
+    Err(Error::UnreadableConfigs {
+        name: name.to_owned(),
+        errors: errors.iter().map(|error| error.message.clone()).collect(),
+    })
+}
+
 fn in_use(name: &str, labels: &[String]) -> Error {
     let users = match labels {
         [] => "another operation".to_owned(),
@@ -296,7 +316,7 @@ pub(crate) fn directory_size(dir: &Path) -> Result<u64> {
 }
 
 pub(crate) fn remove(paths: &Paths, build: &Lock, directory: &Path) -> Result<Removed> {
-    remove_after_check(paths, build, directory, || {})
+    remove_after_check(paths, build, directory, || {}, || {})
 }
 
 fn remove_after_check(
@@ -304,6 +324,7 @@ fn remove_after_check(
     build: &Lock,
     directory: &Path,
     after_check: impl FnOnce(),
+    after_size: impl FnOnce(),
 ) -> Result<Removed> {
     let root = directory.parent().expect("a build has a parent");
     let first = uses(paths, build)?;
@@ -320,18 +341,23 @@ fn remove_after_check(
     if !current.labels.is_empty() {
         return Err(in_use(build.name(), &current.labels));
     }
+    // References, then held locks, then unreadable configs, so a build another
+    // operation holds reports that, not an unrelated config.
+    refuse_unreadable(build.name(), &current.errors)?;
     managed(directory, build.name())?;
     let bytes = directory_size(directory)?;
+    after_size();
+    // Sizing can take long enough for a config to change, so check once more
+    // right before the move.
+    let last = uses(paths, build)?;
+    if !last.labels.is_empty() {
+        return Err(in_use(build.name(), &last.labels));
+    }
+    refuse_unreadable(build.name(), &last.errors)?;
     let staged = move_out(directory)?;
     fs::remove_dir_all(&staged).context(|| format!("failed to delete {}", staged.display()))?;
     sync(root)?;
-    let mut errors = first.errors;
-    for error in current.errors {
-        if !errors.iter().any(|existing| existing.name == error.name) {
-            errors.push(error);
-        }
-    }
-    Ok(Removed { bytes, errors })
+    Ok(Removed { bytes })
 }
 
 pub(crate) fn sweep_best_effort(paths: &Paths, kind: Kind, root: &Path) {

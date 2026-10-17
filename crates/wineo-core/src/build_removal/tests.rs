@@ -174,7 +174,7 @@ fn component_references_cover_concrete_and_latest_in_environments_and_templates(
 }
 
 #[test]
-fn unreadable_environment_and_template_configs_are_reported_and_skipped() {
+fn unreadable_configs_are_listed_but_block_removal() {
     let f = Fixture::new();
     f.runner("unused");
     f.environment("broken", "runner = [invalid");
@@ -188,7 +188,87 @@ fn unreadable_environment_and_template_configs_are_reported_and_skipped() {
             .collect::<Vec<_>>(),
         ["broken", "template broken"]
     );
-    assert!(crate::runners::remove(&f.paths, "unused").is_ok());
+    assert!(matches!(
+        crate::runners::remove(&f.paths, "unused"),
+        Err(Error::UnreadableConfigs { .. })
+    ));
+    assert!(f.paths.default_runner_root().join("unused").is_dir());
+}
+
+#[test]
+fn an_unreadable_environment_blocks_removal_until_fixed() {
+    let f = Fixture::new();
+    let dir = f.runner("unused");
+    f.environment("hades", "runner = [invalid");
+    let error = crate::runners::remove(&f.paths, "unused").unwrap_err();
+    assert!(matches!(error, Error::UnreadableConfigs { .. }));
+    let text = error.to_string();
+    let (summary, rest) = text.split_once('\n').unwrap();
+    assert_eq!(summary, "unused is kept, since a config can't be read");
+    assert!(
+        rest.starts_with(&format!(
+            "invalid config {}",
+            f.paths.environment_config("hades").display()
+        )),
+        "{text}"
+    );
+    assert!(dir.is_dir());
+    f.environment("hades", "runner = 'wine'");
+    crate::runners::remove(&f.paths, "unused").unwrap();
+    assert!(!dir.exists());
+}
+
+#[test]
+fn an_unreadable_template_blocks_removal_until_fixed() {
+    let f = Fixture::new();
+    let dir = f.runner("unused");
+    f.template("custom", "not valid TOML");
+    let error = crate::runners::remove(&f.paths, "unused").unwrap_err();
+    let text = error.to_string();
+    assert!(text.starts_with("unused is kept, since a config can't be read\n"));
+    assert!(
+        text.contains(
+            &f.paths
+                .templates_dir()
+                .join("custom.toml")
+                .display()
+                .to_string()
+        ),
+        "{text}"
+    );
+    assert!(dir.is_dir());
+    f.template("custom", "");
+    crate::runners::remove(&f.paths, "unused").unwrap();
+    assert!(!dir.exists());
+}
+
+#[test]
+fn an_unreadable_config_blocks_component_removal_too() {
+    for component in Component::ALL {
+        let f = Fixture::new();
+        let dir = f.component(component, "1.0");
+        // The default template selects the newest build, so keep one newer.
+        f.component(component, "2.0");
+        f.environment("hades", "runner = [invalid");
+        assert!(matches!(
+            crate::components::remove(&f.paths, component, "1.0"),
+            Err(Error::UnreadableConfigs { .. })
+        ));
+        assert!(dir.is_dir());
+    }
+}
+
+#[test]
+fn a_build_in_use_still_reports_its_users_before_unreadable_configs() {
+    let f = Fixture::new();
+    let dir = f.runner("used");
+    f.environment("hades", "runner = 'used'");
+    f.environment("broken", "runner = [invalid");
+    assert!(matches!(
+        crate::runners::remove(&f.paths, "used"),
+        Err(Error::BuildInUse { .. })
+    ));
+    assert!(dir.is_dir());
 }
 
 #[test]
@@ -268,10 +348,16 @@ fn config_written_between_first_check_and_lock_is_caught() {
     let f = Fixture::new();
     let dir = f.runner("unused");
     let lock = Lock::new(&f.paths, Kind::Runner, "unused");
-    let error = remove_after_check(&f.paths, &lock, &dir, || {
-        let _guard = lock.shared().unwrap();
-        f.environment("new-user", "runner = 'unused'");
-    })
+    let error = remove_after_check(
+        &f.paths,
+        &lock,
+        &dir,
+        || {
+            let _guard = lock.shared().unwrap();
+            f.environment("new-user", "runner = 'unused'");
+        },
+        || {},
+    )
     .unwrap_err();
     assert_eq!(error.to_string(), "unused is used by new-user.");
     assert!(dir.is_dir());
@@ -483,43 +569,85 @@ fn configured_roots_are_used_and_reading_references_does_not_rewrite_configs() {
 }
 
 #[test]
-fn removal_returns_each_skipped_config_once() {
+fn removal_names_each_unreadable_config_and_keeps_the_build() {
     let f = Fixture::new();
-    f.runner("unused");
+    let dir = f.runner("unused");
     f.environment("broken", "runner = [invalid");
     f.template("broken", "not valid TOML");
-    let removed = crate::runners::remove(&f.paths, "unused").unwrap();
-    assert_eq!(
-        removed
-            .errors
-            .iter()
-            .map(|e| e.name.as_str())
-            .collect::<Vec<_>>(),
-        ["broken", "template broken"]
-    );
-    assert!(!f.paths.default_runner_root().join("unused").exists());
-    assert!(removed.errors.iter().all(|error| !error.message.is_empty()));
+    let error = crate::runners::remove(&f.paths, "unused").unwrap_err();
+    let text = error.to_string();
+    let (summary, rest) = text.split_once('\n').unwrap();
+    assert_eq!(summary, "unused is kept, since 2 configs can't be read");
+    let environment = rest
+        .find(&f.paths.environment_config("broken").display().to_string())
+        .unwrap();
+    let template = rest
+        .find(
+            &f.paths
+                .templates_dir()
+                .join("broken.toml")
+                .display()
+                .to_string(),
+        )
+        .unwrap();
+    assert!(environment < template, "{text}");
+    assert!(dir.is_dir());
 }
 
 #[test]
-fn removal_keeps_skipped_configs_from_both_checks() {
+fn removal_refuses_a_config_that_breaks_between_the_checks() {
     let f = Fixture::new();
     let dir = f.runner("unused");
-    f.environment("initial", "runner = [invalid");
     let lock = Lock::new(&f.paths, Kind::Runner, "unused");
-    let removed = remove_after_check(&f.paths, &lock, &dir, || {
-        f.environment("initial", "runner = 'wine'");
-        f.environment("later", "runner = [invalid");
-    })
-    .unwrap();
-    assert_eq!(
-        removed
-            .errors
-            .iter()
-            .map(|e| e.name.as_str())
-            .collect::<Vec<_>>(),
-        ["initial", "later"]
+    let error = remove_after_check(
+        &f.paths,
+        &lock,
+        &dir,
+        || f.environment("later", "runner = [invalid"),
+        || {},
+    )
+    .unwrap_err();
+    let text = error.to_string();
+    assert!(text.starts_with("unused is kept, since a config can't be read\n"));
+    assert!(
+        text.contains(&f.paths.environment_config("later").display().to_string()),
+        "{text}"
     );
+    assert!(dir.is_dir());
+}
+
+#[test]
+fn removal_refuses_a_config_that_breaks_while_sizing() {
+    let f = Fixture::new();
+    let dir = f.runner("unused");
+    let lock = Lock::new(&f.paths, Kind::Runner, "unused");
+    let error = remove_after_check(
+        &f.paths,
+        &lock,
+        &dir,
+        || {},
+        || f.environment("late", "runner = [invalid"),
+    )
+    .unwrap_err();
+    let text = error.to_string();
+    assert!(text.starts_with("unused is kept, since a config can't be read\n"));
+    assert!(
+        text.contains(&f.paths.environment_config("late").display().to_string()),
+        "{text}"
+    );
+    assert!(dir.is_dir());
+}
+
+#[test]
+fn a_lock_only_user_is_reported_before_an_unreadable_config() {
+    let f = Fixture::new();
+    let dir = f.runner("held");
+    f.environment("broken", "runner = [invalid");
+    let _shared = Lock::new(&f.paths, Kind::Runner, "held").shared().unwrap();
+    let error = crate::runners::remove(&f.paths, "held").unwrap_err();
+    assert!(matches!(error, Error::BuildInUse { .. }), "{error}");
+    assert_eq!(error.to_string(), "held is used by another operation.");
+    assert!(dir.is_dir());
 }
 
 #[test]
