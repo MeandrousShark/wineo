@@ -113,6 +113,7 @@ pub(crate) fn describe(change: &Change, name: &str) -> String {
         Change::Skipped { target, reason } => {
             format!("No desktop entry for {target} in {name}: {reason}")
         }
+        Change::Warning(warning) => format!("warning: {warning}"),
     }
 }
 

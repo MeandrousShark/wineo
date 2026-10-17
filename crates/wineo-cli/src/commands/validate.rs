@@ -139,7 +139,9 @@ struct Failed {
 /// Applies each fix on its own, so one failing leaves the rest to go on.
 /// Returns the ones that worked and why the others didn't.
 fn apply_all(paths: &Paths, fixes: &[Fix]) -> (Vec<Fix>, Vec<Failed>) {
-    let global = GlobalConfig::load_or_default(paths);
+    // The report these fixes came from already carries `global_config_invalid`
+    // for a file that fell back to defaults, so only a refusal matters here.
+    let global = GlobalConfig::load_or_default(paths).map(|loaded| loaded.config);
     let mut applied = Vec::new();
     let mut failed = Vec::new();
     for fix in fixes.iter().filter(|fix| fix.is_batch_safe()) {

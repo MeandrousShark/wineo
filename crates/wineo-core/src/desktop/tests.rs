@@ -1085,3 +1085,21 @@ fn proxied_entries_are_skipped_in_portable_mode() {
     );
     assert!(!entry_path(&paths, "hades", "steam").exists());
 }
+
+#[test]
+fn apply_says_when_the_global_config_fell_back_to_defaults() {
+    let f = Fixture::new();
+    f.environment("[targets.hades]\nexe = \"C:\\\\Hades\\\\Hades.exe\"\n");
+    fs::create_dir_all(f.paths.global_config().parent().unwrap()).unwrap();
+
+    fs::write(f.paths.global_config(), "stop_timeout = [\n").unwrap();
+    let changes = apply(&f.paths, "hades", true).unwrap();
+    assert!(
+        matches!(changes.as_slice(), [Change::Warning(warning)] if warning.starts_with("using default settings: ")),
+        "{changes:?}"
+    );
+
+    fs::write(f.paths.global_config(), "foo = 1\n").unwrap();
+    let err = apply(&f.paths, "hades", true).unwrap_err();
+    assert!(matches!(err, Error::ConfigUnknownKey { .. }), "{err}");
+}
