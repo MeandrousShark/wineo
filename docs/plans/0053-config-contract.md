@@ -42,8 +42,9 @@ On 2026-10-16 the maintainer answered the questions below:
   version, and 2.0 migrates.
 - **4: A.** Lenient internal files, and cleanup that keeps everything when
   a record is unreadable.
-- **5: A.** Build the config-key half now; document the rest. Where the
-  warning shows is still open (see question 5).
+- **5: A, with warning placement b.** Build the config-key half now and
+  document the rest; outside `validate`, a command prints one summary line
+  for every config using a deprecated key.
 - **6: A.** Fixtures written by real old releases.
 - **7: the recommended review**, read-only and cross-family.
 - **8: B.** Library state lives in a lenient `library.toml`.
@@ -281,7 +282,7 @@ release. The parts:
   comments. A wineo edit to that file leaves the old key alone, since
   renaming it would make the file unreadable to a release from before the
   new name.
-- 🧐 **Where the warning shows** (still open) for configs, scenario
+- **Where the warning shows** (answered b) for configs, scenario
   `wineo list` with 22 environments, 3 of them using a deprecated key:
   - a: one line per file, three lines like `warning: hades.toml: old_name is deprecated; use new_name`
   - b (recommended): one summary line: `warning: 3 configs use deprecated keys; see wineo validate`
