@@ -8,16 +8,15 @@ own numbered plan in `docs/plans/`.
 The order the maintainer picked on 2026-10-14, after 0051. Each item gets
 its own plan when it comes up, and the rows below have the details.
 
-1. The 1.0 contract: the config compatibility guarantee with a
-   deprecation path (criteria 4 and 5). The JSON gaps (criterion 3) were
-   closed in 0.30.1.
-2. GUI library views, designed against a library that includes store games.
-3. GUI themes, after library views, so they cover every palette role.
-4. 1.0, once the [1.0 criteria](#10-criteria) are met.
-5. Release packages (deb, rpm, AppImage), shortly after 1.0.
+1. GUI library views, designed against a library that includes store games.
+2. GUI themes, after library views, so they cover every palette role.
+3. 1.0, once the [1.0 criteria](#10-criteria) are met.
+4. Release packages (deb, rpm, AppImage), shortly after 1.0.
 
 Done from this queue: GOG Galaxy builds
-([0052](plans/0052-galaxy-builds.md), 0.33.0 and 0.34.0).
+([0052](plans/0052-galaxy-builds.md), 0.33.0 and 0.34.0), and the 1.0
+config contract ([0053](plans/0053-config-contract.md), 0.35.0), after the
+JSON gaps closed in 0.30.1.
 
 The previous queue (2026-10-06) is done: `--dry-run` (0044), tags in
 `stats` (0045), hooks (0046), Steam installed and owned games (0047,
@@ -90,7 +89,8 @@ Completed: [0043: Runners from Steam, Heroic, and Lutris](plans/0043-external-ru
 Completed: store libraries in [0047](plans/0047-steam-library.md),
 [0048](plans/0048-steam-owned-games.md), [0049](plans/0049-gog-games.md),
 [0050](plans/0050-gog-installs.md), and
-[0052](plans/0052-galaxy-builds.md), and
+[0052](plans/0052-galaxy-builds.md),
+[0053: Config contract](plans/0053-config-contract.md), and
 [0051: Lean and simple](plans/0051-lean-and-simple.md), which also made the
 supervisor wait on events instead of polling.
 Completed without a plan: manpages (`wineo manpages`, 2026-10-05), the
@@ -124,7 +124,6 @@ around the next milestone, 1.0:
 
 | Feature | Category | Priority | Depends on | Why | Notes |
 |---|---|---:|---|---|---|
-| Config compatibility guarantee and deprecation path | Portability/Data | **1** | 0018 | Promise that 1.x configs keep loading, and give renamed keys and flags a warning period | 1.0 criteria 4 and 5, planned together: upgrade tests with fixture configs from earlier releases, and `validate` reporting deprecated keys. Needs a decision on newer keys, since `deny_unknown_fields` makes an older wineo reject them. Planned in [0053](plans/0053-config-contract.md), approved 2026-10-16; implemented, waiting on acceptance. |
 | GUI themes and customization | UX | **1** | 0036 | Let people make the app their own | From the maintainer's 0036 testing (2026-09-28): custom themes with a few presets, added with a GUI settings page. Longer term, a deeply customizable GUI. The palette tokens from 0036 are the starting point. Moved up to 1 by the maintainer (2026-10-14), to land before 1.0. |
 | GUI library views | UX | **1** | 0036 | Browse the library the way that fits the moment | A zoom slider to make the grid bigger or smaller, a list view as an alternative to the grid, and a coverflow-style picker that suits a controller (pairs with gamepad navigation). A poster-only view like Heroic's (from the maintainer, 2026-10-09): titles hidden until hover, then shown wrapped over the poster, with keyboard focus revealing them too. Titles and state/playtime sit beneath the art today per `gui-style.md`, so this view amends the style guide on purpose, and art-less environments need their text tiles to stay readable. Moved up to 1 by the maintainer (2026-10-14), to land before 1.0. Also from the Playnite comparison (2026-10-14): sorting (last played, playtime, date added, name), filtering and grouping (tags, source, state) with saved filter presets, and favorites and hidden games, since they're the same screen. If [0053](plans/0053-config-contract.md) question 8 goes as recommended, this state lives in a lenient `library.toml`, not the env configs or `config.toml`, so a rollback hides a star instead of refusing the file. |
 | GitHub mirror and CI | Distribution | **1** | | Publish wineo at 1.0 while the maintainer keeps working in Gitea | From the maintainer (2026-10-14). Gitea stays primary and push-mirrors to GitHub, tags included. Changes still land by merging into main directly; PRs are for other people. Since the mirror force-pushes GitHub to match Gitea, an outside PR is merged locally and pushed to Gitea, never with GitHub's merge button; GitHub marks it merged when its commits reach main unchanged (a squash or rebase means closing it by hand). GitHub Actions runs fmt, clippy, and the normal tests on outside PRs (no secrets for forks) and on tags, and a tag also builds release binaries for a GitHub Release, where the release packages row's packages land later. Not on every push to main, which is reviewed and tested before merging. `--ignored` tests stay local: they need Wine, umu, and a display. Tags from the mirror trigger Actions since Gitea pushes with a personal access token. The mirror syncs on every push, not just on its interval. The published AUR PKGBUILD clones the GitHub mirror over HTTPS, since the Gitea SSH source only works for the maintainer; a local PKGBUILD can keep using Gitea. Confirmed Gitea primary over GitHub primary on 2026-10-14. |
@@ -212,15 +211,15 @@ maintainer calls it stable, which these criteria are meant to inform.
 4. Make `schema_version` a guarantee: a config written by any 1.x release
    loads in every later 1.x, and an older one either loads or migrates
    cleanly. Add upgrade tests that load fixture configs and state written
-   by earlier releases. In progress (2026-10-16): built in
-   [0053](plans/0053-config-contract.md), with fixture sets written by seven
-   real releases and upgrade tests over every set; waiting on acceptance.
+   by earlier releases. Done (2026-10-16): [0053](plans/0053-config-contract.md)
+   in 0.35.0, with fixture sets written by seven real releases and upgrade
+   tests over every set.
 5. Add a deprecation path: a renamed or removed config key or flag keeps
    working in 1.x with a warning, and `wineo validate` reports it as
-   deprecated. 2.0 is where those become errors. In progress (2026-10-16):
-   built in [0053](plans/0053-config-contract.md), with `deprecated_key` in
+   deprecated. 2.0 is where those become errors. Done (2026-10-16):
+   [0053](plans/0053-config-contract.md) in 0.35.0, with `deprecated_key` in
    `validate`, warning aliases for renamed flags and commands, and four
-   renames made before the freeze; waiting on acceptance.
+   renames made before the freeze.
 6. Close or explain the "Other lifecycle timing failures under load" row,
    so a red test means a real regression.
    Done (2026-10-13): two root causes fixed in 0.30.1 and every test

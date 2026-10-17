@@ -4,6 +4,50 @@ A finished plan bumps the minor version and fixes between plans bump the
 patch version. A plan released in parts bumps the minor version for each
 part. See `AGENTS.md` for the rule.
 
+## 0.35.0 - 2026-10-16
+
+The config contract, from [0053](docs/plans/0053-config-contract.md):
+configs and state from earlier releases are tested to keep loading, renamed
+keys and flags get a warning period, and wineo never quietly swaps a config
+it can't use for defaults. This closes 1.0 criteria 4 and 5.
+
+- A key wineo doesn't know is refused with a hint: `A newer version of wineo
+  may have written it; update wineo or remove the key.` An unsupported
+  `schema_version` adds `A newer version of wineo wrote it; update wineo to
+  use this file.`
+- Deprecated config keys: a key renamed in 1.x keeps working under its old
+  name until 2.0. `wineo validate` reports it as `deprecated_key` (in the new
+  JSON area `config`), `--fix` renames it in place, and commands print
+  `warning: N configs use deprecated keys; see wineo validate`. Nothing is
+  deprecated yet.
+- Renames before 1.0, with the old spellings still working:
+  `wineo rm --include-prefix` (was `--delete-prefix`, which now warns),
+  `snapshot remove` (was `snapshot delete`, which now warns), and every
+  removal command takes both `rm` and `remove`. `status NAME --json`'s
+  `dxvk` and `vkd3d` objects add `configured`, still also written as
+  `wanted`.
+- Upgrade tests run against configs and state written by seven earlier
+  releases, from v0.2.0 on.
+- GOG folder states and Galaxy records accept fields from newer releases,
+  and redistributable cleanup removes nothing when a record can't be read.
+- Behavior changes:
+  - An unknown key or unsupported version in `config.toml` makes commands
+    that act on settings refuse (`set`, `new`, `start`, removals, portable
+    copies, and more) instead of quietly using the defaults. Other damage
+    still uses the defaults, now with `warning: using default settings:
+    ...`. `status`, `stop`, and finishing an interrupted restore warn and
+    carry on.
+  - Removing a runner, DXVK, or vkd3d build refuses when an environment or
+    template config can't be read, instead of warning and removing it.
+  - While `art.toml` can't be read, desktop entries keep their icon and say
+    why, instead of losing it.
+  - `wineo status` warns about any problem with the global config, not only
+    an unsupported version.
+  - JSON: the validate code `restore_interrupted` is now
+    `snapshot_restore_interrupted`.
+- Fixed: one unreadable trash manifest was reported as an art problem for
+  every environment. It's now reported once, as `trash_invalid`.
+
 ## 0.34.1 - 2026-10-16
 
 Import logs no longer share a name with environments.

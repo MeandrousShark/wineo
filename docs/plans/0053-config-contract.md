@@ -1,4 +1,4 @@
-Status: approved
+Status: done
 
 # 0053: Config contract
 
@@ -660,6 +660,8 @@ Steps 1 to 3 touch different files and can run in parallel worktrees.
 - The fixture tests above, in the normal `cargo test` run.
 
 ## Acceptance checklist
+
+The maintainer passed every step on 2026-10-16; released in 0.35.0.
 
 Most steps use a throwaway portable folder, so your real config is never
 touched: in fish, `set -x WINEO_PORTABLE_DIR ~/wineo-0053-test` (the CLI and
