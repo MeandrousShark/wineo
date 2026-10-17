@@ -1416,6 +1416,9 @@ fn check_desktop(
 fn check_art(paths: &Paths, name: &str, report: &mut Report) {
     let listing = match art::list(paths, name) {
         Ok(listing) => listing,
+        // The environment couldn't load because of a trash problem, which
+        // `check_trash` already reported once. It says nothing about the art.
+        Err(Error::Unsettled(_)) => return,
         Err(err) => {
             report.push(Problem::new(
                 Code::ArtConfigInvalid,

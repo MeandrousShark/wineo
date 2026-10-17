@@ -1,0 +1,7 @@
+schema_version = 1
+runner = "wine"
+arch = "win64"
+gamemode = true
+
+[env]
+WINEDEBUG = "-all"

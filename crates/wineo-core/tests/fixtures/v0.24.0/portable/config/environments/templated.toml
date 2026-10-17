@@ -1,0 +1,16 @@
+schema_version = 1
+prefix = "prefixes/templated"
+runner = "wine"
+arch = "win64"
+tags = ["game", "co-op"]
+winetricks = ["corefonts"]
+gamemode = true
+mangohud = true
+env = { WINEDEBUG = "-all" }
+
+[targets.game]
+exe = 'C:\Games\Templated\Templated.exe'
+default = true
+
+[targets.editor]
+exe = 'C:\Games\Templated\Editor.exe'

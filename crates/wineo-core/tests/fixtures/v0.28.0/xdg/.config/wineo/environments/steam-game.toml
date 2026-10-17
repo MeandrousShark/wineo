@@ -1,0 +1,7 @@
+schema_version = 1
+kind = "proxied"
+launcher = "steam"
+app_id = "1086940"
+title = "Hades II"
+tags = ["game"]
+desktop = false

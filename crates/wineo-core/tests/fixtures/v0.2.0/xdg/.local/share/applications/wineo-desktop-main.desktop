@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Desktop Game
+Comment=Runs in the wineo environment desktop
+Exec=wineo start desktop --target main
+Terminal=false
+Categories=Utility;Software;
+StartupWMClass=Desktop.exe
+X-Wineo-Environment=desktop
+X-Wineo-Target=main

@@ -1,0 +1,11 @@
+# hand written
+runner = "wine"
+arch = "win64"
+gamemode = true
+gameid = "umu-12345"
+store = "steam"
+dxvk = "latest"
+vkd3d = "latest"
+
+[env]
+WINEDEBUG = "-all"
