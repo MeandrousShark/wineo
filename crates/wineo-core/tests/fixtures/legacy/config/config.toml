@@ -1,0 +1,11 @@
+# hand written
+stop_timeout = 20
+log_limit_mb = 25
+gamemode = true
+
+[defaults]
+runner = "wine"
+arch = "win32"
+
+[env]
+DXVK_HUD = "fps"
