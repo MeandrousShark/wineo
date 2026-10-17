@@ -182,6 +182,26 @@ fn a_state_from_before_sources_loads_unchanged_as_migrated() {
 }
 
 #[test]
+fn a_state_with_fields_from_a_newer_release_loads_and_a_newer_version_does_not() {
+    let (_root, paths) = setup();
+    let folder = paths.gog_folders_dir().parent().unwrap().join("game");
+    let text = format!(
+        "version = 1\nowner = \"game\"\nfolder = \"{}\"\nadded_later = 1\n\n[committed]\ngog_id = 1\nplatform = \"linux\"\nlanguage = \"en\"\ntrack = \"installer\"\nalso_later = \"x\"\n\n[[committed.products]]\nid = 1\nversion = \"1.0\"\nstatus = \"installed\"\nand_later = true\n",
+        folder.display()
+    );
+    let state = FolderState::parse(&text).unwrap();
+    assert_eq!(state.owner.as_deref(), Some("game"));
+    assert_eq!(state.committed.unwrap().products.len(), 1);
+
+    let newer = text.replacen("version = 1", "version = 2", 1);
+    let error = FolderState::parse(&newer).unwrap_err().to_string();
+    assert!(
+        error.contains("unsupported GOG folder state version 2"),
+        "{error}"
+    );
+}
+
+#[test]
 fn finishing_an_install_records_it_and_later_commits_keep_it() {
     let (root, paths) = setup();
     let folder = root.path().join("g");

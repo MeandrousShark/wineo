@@ -22,7 +22,7 @@ use std::io::{self, Read};
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::Path;
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
@@ -32,7 +32,6 @@ use crate::gog::folder::{Committed, FolderLock, FolderState, JournalKind, Source
 pub const VERSION: u32 = 1;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct Record {
     pub version: u32,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -59,7 +58,6 @@ impl Default for Record {
 
 /// What the committed selection installed.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct Installed {
     /// `digest` of the state's `committed` this was written for.
     pub selection: String,
@@ -72,7 +70,6 @@ pub struct Installed {
 
 /// What an operation in flight is installing.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct Pending {
     /// The journal operation this belongs to.
     pub operation: String,
@@ -98,7 +95,6 @@ pub struct Pending {
 
 /// The manifest an update compares the target with.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct Base {
     pub manifest: Manifest,
     /// Whether it was fetched from GOG for the installed build rather than
@@ -110,7 +106,6 @@ pub struct Base {
 /// The branch a game follows (None for the default one) and the build it's
 /// pinned to. A pinned game stays on its build until unpinned.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct Follow {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub branch: Option<String>,
@@ -121,7 +116,7 @@ pub struct Follow {
 /// A setup step that finished, with what identifies it, so a change runs it
 /// again: a step counts as done only while every field still matches.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+#[serde(tag = "kind", rename_all = "snake_case")]
 pub enum SetupStep {
     /// GOG's script interpreter, run for one product.
     ScriptInterpreter {
@@ -192,7 +187,6 @@ impl SetupStep {
 
 /// One version of a redistributable in the shared store.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct StoreVersion {
     pub dependency: String,
     /// The dependency's depot manifest hash, which names its folder.
@@ -202,7 +196,6 @@ pub struct StoreVersion {
 /// A build's files as wineo installs them: filtered to the selection, with
 /// paths in the form they have on disk.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct Manifest {
     /// The base game's build.
     pub build: String,
@@ -224,7 +217,6 @@ pub struct Manifest {
 /// Who a manifest entry comes from: a product, or a dependency installed
 /// into the game folder. Exactly one is set.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct FileEntry {
     pub path: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -243,7 +235,6 @@ pub struct FileEntry {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct ChunkEntry {
     pub md5: String,
     pub size: u64,
@@ -252,7 +243,6 @@ pub struct ChunkEntry {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct DirEntry {
     pub path: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -262,7 +252,6 @@ pub struct DirEntry {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct LinkEntry {
     pub path: String,
     pub target: String,
@@ -274,7 +263,6 @@ pub struct LinkEntry {
 
 /// What setup runs, kept for the setup step.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct SetupInfo {
     /// Whether GOG's script interpreter runs each product's script.
     #[serde(default)]
@@ -292,7 +280,6 @@ pub struct SetupInfo {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct ProductSetup {
     pub product: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -302,7 +289,6 @@ pub struct ProductSetup {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct Redist {
     pub dependency: String,
     pub manifest: String,
@@ -410,9 +396,14 @@ impl Record {
     /// A record from its file's bytes. None for anything that isn't a valid
     /// version 1 record, which counts as no record.
     pub fn parse(bytes: &[u8]) -> Option<Self> {
-        let record: Self = serde_json::from_slice(bytes).ok()?;
-        record.check().ok()?;
-        Some(record)
+        Self::try_parse(bytes).ok()
+    }
+
+    /// Like `parse`, with why the bytes aren't a valid record.
+    pub fn try_parse(bytes: &[u8]) -> Result<Self, String> {
+        let record: Self = serde_json::from_slice(bytes).map_err(|error| error.to_string())?;
+        record.check()?;
+        Ok(record)
     }
 
     pub fn to_json(&self) -> Result<String> {
@@ -589,12 +580,14 @@ pub fn carries_setup(state: &FolderState, record: &Record) -> Result<bool> {
 }
 
 /// Reads every Galaxy-tracked folder's record without locks, for store
-/// cleanup. Fails when one can't be read at all; one that isn't a valid
-/// record names nothing. A record whose state follows the installer track,
-/// or has no state, is a leftover that only the Galaxy track would read, so
-/// it names nothing either: a crash after a move off Galaxy must not pin
-/// store versions for good. A state that can't be read counts as Galaxy,
-/// since a version might still be needed.
+/// cleanup. Fails when one can't be read at all, or isn't a valid record of
+/// this version (corrupt, invalid, or written by a different release): a
+/// record that can't be read might name versions it still needs, so cleanup
+/// removes nothing until it's fixed. A record whose state follows the
+/// installer track, or has no state, is a leftover that only the Galaxy
+/// track would read, so it names nothing: a crash after a move off Galaxy
+/// must not pin store versions for good. A state that can't be read counts
+/// as Galaxy, since a version might still be needed.
 pub(super) fn all(dir: &Path) -> Result<Vec<Record>> {
     let entries = match std::fs::read_dir(dir) {
         Ok(entries) => entries,
@@ -626,8 +619,12 @@ pub(super) fn all(dir: &Path) -> Result<Vec<Record>> {
                 return Err(error).with_context(|| format!("failed to read {}", path.display()));
             }
         }
-        if let Some(record) = Record::parse(&bytes) {
-            records.push(record);
+        match Record::try_parse(&bytes) {
+            Ok(record) => records.push(record),
+            Err(why) => bail!(
+                "{} can't be read ({why}), so no redistributable is removed",
+                path.display()
+            ),
         }
     }
     Ok(records)
