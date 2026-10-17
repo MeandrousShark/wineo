@@ -122,7 +122,14 @@ async fn remove_worker(
 }
 
 async fn restore_worker(paths: Paths, id: String) -> Result<(), String> {
-    task::join_string(move || trash::restore(&paths, &id).map_err(|error| error.to_string())).await
+    // The undo toast has no line for a notice, and the trash page shows the
+    // restore warnings when the same entry is restored from there.
+    task::join_string(move || {
+        trash::restore(&paths, &id)
+            .map(|_| ())
+            .map_err(|error| error.to_string())
+    })
+    .await
 }
 
 fn measure_size(root: &Path, token: &Token) -> Result<u64, String> {

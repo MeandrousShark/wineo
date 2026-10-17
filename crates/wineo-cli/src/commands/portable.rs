@@ -56,13 +56,14 @@ fn copy(
     print_review(&reviewed, verbose);
 
     let cancellation = Cancellation::new()?;
-    let result = portable::execute_reviewed(
+    let result = portable::execute_reviewed_noting(
         paths,
         &folder,
         &global,
         &reviewed,
         &cancellation.token,
         transfer::copy_progress(),
+        |warning| eprintln!("warning: {warning}"),
     );
     match result {
         Ok(environment) => {

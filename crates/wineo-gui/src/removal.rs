@@ -85,6 +85,12 @@ impl Toast {
                 }
             ));
         }
+        for warning in &entry.warnings {
+            text.push_str(&format!(
+                " Warning: {}",
+                wineo_core::error::one_line(warning)
+            ));
+        }
         if let Some(snapshots) = &entry.snapshots_left
             && snapshots.is_dir()
             && std::fs::read_dir(snapshots).is_ok_and(|mut entries| entries.next().is_some())

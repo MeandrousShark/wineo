@@ -26,6 +26,8 @@ pub(crate) enum Event {
     ReviewLoaded(u64, Result<Box<Review>, String>),
     Progress(u64, String),
     Publishing(u64),
+    /// The copy fell back to default settings and says why.
+    Warning(u64, String),
     Copy,
     CopyFinished(u64, Result<(), String>),
     CopyAnother,
@@ -94,6 +96,7 @@ pub(crate) struct Page {
     finishing: bool,
     action: Option<Action>,
     outcome: Option<String>,
+    warnings: Vec<String>,
 }
 
 impl Page {
@@ -120,6 +123,7 @@ impl Page {
             finishing: false,
             action: None,
             outcome: None,
+            warnings: Vec::new(),
         };
         let load = task::blocking(
             move || {
@@ -210,6 +214,12 @@ impl Page {
                 }
                 Task::none()
             }
+            Event::Warning(generation, warning) => {
+                if generation == self.generation && self.step == Step::Copying {
+                    self.warnings.push(warning);
+                }
+                Task::none()
+            }
             Event::Copy => self.begin_copy(),
             Event::CopyAnother => {
                 if self.step == Step::Finished {
@@ -220,6 +230,7 @@ impl Page {
                     self.error = None;
                     self.dirty = false;
                     self.outcome = None;
+                    self.warnings.clear();
                 }
                 Task::none()
             }
@@ -460,6 +471,12 @@ impl Page {
         if let Some(review) = &self.review {
             content = push_warnings(content, review, palette);
         }
+        for warning in &self.warnings {
+            content = content.push(
+                text(format!("Warning: {}", wineo_core::error::one_line(warning)))
+                    .color(palette.warning),
+            );
+        }
         content = content.push(
             row![
                 secondary_button("Copy to another folder...", palette).on_press(Event::CopyAnother),
@@ -532,6 +549,7 @@ impl Page {
         self.error = None;
         self.finishing = false;
         self.outcome = None;
+        self.warnings.clear();
         let (sender, receiver) = iced::futures::channel::mpsc::unbounded();
         let progress_generation = generation;
         let work = Task::perform(
@@ -675,6 +693,9 @@ fn send_copy_event(
         CopyEvent::Progress(progress) => send_progress(sender, generation, progress),
         CopyEvent::Publishing => {
             let _ = sender.unbounded_send(Event::Publishing(generation));
+        }
+        CopyEvent::Warning(warning) => {
+            let _ = sender.unbounded_send(Event::Warning(generation, warning));
         }
     }
 }
@@ -984,6 +1005,7 @@ mod tests {
             finishing: false,
             action: None,
             outcome: None,
+            warnings: Vec::new(),
         };
         let token = page.token.as_ref().unwrap().clone();
 
@@ -1015,6 +1037,7 @@ mod tests {
             finishing: false,
             action: None,
             outcome: None,
+            warnings: Vec::new(),
         };
 
         let _ = page.update(Event::CopyFinished(
@@ -1048,6 +1071,7 @@ mod tests {
             finishing: false,
             action: None,
             outcome: None,
+            warnings: Vec::new(),
         };
 
         let _ = page.update(Event::ReviewLoaded(8, Err("import cancelled".into())));
@@ -1077,6 +1101,7 @@ mod tests {
             finishing: false,
             action: None,
             outcome: None,
+            warnings: Vec::new(),
         };
 
         let _ = page.update(Event::Progress(2, "old status".into()));
@@ -1107,6 +1132,7 @@ mod tests {
             finishing: false,
             action: None,
             outcome: Some("origin".into()),
+            warnings: Vec::new(),
         };
 
         let _ = page.update(Event::Back);

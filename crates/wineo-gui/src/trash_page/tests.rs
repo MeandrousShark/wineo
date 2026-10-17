@@ -147,7 +147,7 @@ fn finish_restore(app: &mut App, generation: u64, id: &str) -> Result<(), String
     let result = trash::restore(&app.paths, id)
         .map_err(|error| app.paths.contract_text(&format!("{error:#}")));
     send(app, Event::Restored(generation, result.clone()));
-    result
+    result.map(|_| ())
 }
 
 #[test]

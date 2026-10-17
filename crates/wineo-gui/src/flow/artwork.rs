@@ -161,8 +161,8 @@ impl Draft {
         let sequence = self.configuration_sequence;
         task::blocking(
             move || {
-                // Nothing here shows a notice, so a config that fell back to
-                // defaults gives the default kinds without saying so.
+                // A fallback to defaults isn't reported here, since the checkup
+                // already lists it as `global_config_invalid`.
                 let loaded = GlobalConfig::load_or_default(&paths).map_err(|e| e.to_string())?;
                 Ok(loaded.config.art.fetch)
             },

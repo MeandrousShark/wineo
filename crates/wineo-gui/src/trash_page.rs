@@ -171,7 +171,7 @@ pub(crate) enum Event {
     CheckAgain,
     Days(String),
     Restore(String),
-    Restored(u64, Result<(), String>),
+    Restored(u64, Result<Vec<String>, String>),
     Review(Selection),
     ReviewOlder,
     Reviewed(u64, Result<PruneReview, String>),
@@ -276,9 +276,10 @@ pub(crate) fn update(app: &mut App, event: Event) -> Task<Message> {
                 unreachable!()
             };
             match result {
-                Ok(()) => {
+                Ok(notes) => {
                     app.trash_page.notice =
-                        Some(format!("Restored environment {name} from trash {id}."))
+                        Some(format!("Restored environment {name} from trash {id}."));
+                    app.trash_page.notes = notes;
                 }
                 Err(error) => {
                     app.trash_page.row_errors.insert(id, error);

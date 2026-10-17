@@ -33,6 +33,9 @@ pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
             }
         },
     )?;
+    for warning in &entry.warnings {
+        eprintln!("warning: {warning}");
+    }
     if args.delete_prefix && entry.prefix_present == Some(false) {
         eprintln!("The prefix is already gone; its config was retained in trash");
     }

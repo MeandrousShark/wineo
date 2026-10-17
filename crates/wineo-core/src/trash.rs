@@ -201,6 +201,9 @@ pub struct Entry {
     pub prefix_left: Option<PathBuf>,
     pub snapshots_left: Option<PathBuf>,
     pub desktop_removed: usize,
+    /// Set by a removal: things to tell the user that aren't part of the
+    /// entry, such as the global config having been passed over for defaults.
+    pub warnings: Vec<String>,
 }
 
 fn id_valid(id: &str) -> bool {
@@ -319,6 +322,7 @@ fn info(paths: &Paths, manifest: &Manifest) -> Result<Entry> {
         prefix_left,
         snapshots_left,
         desktop_removed: 0,
+        warnings: Vec::new(),
     })
 }
 

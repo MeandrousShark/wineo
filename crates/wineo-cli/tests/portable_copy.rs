@@ -454,3 +454,24 @@ fn a_later_copy_refuses_a_folder_global_config_with_an_unknown_key() {
     assert!(message.contains(UNKNOWN_KEY_HINT), "{message}");
     assert!(!dir.join("config/environments/other.toml").exists());
 }
+
+#[test]
+fn a_later_copy_warns_when_the_folder_global_config_fell_back() {
+    let Some((f, _)) = fixture() else { return };
+    f.environment("other", "");
+    let dir = f.root.path().join("usb");
+    assert_success(&copy(&f, "game", &dir));
+    fs::write(dir.join("config/config.toml"), "stop_timeout = [\n").unwrap();
+
+    let copied = copy(&f, "other", &dir);
+    assert_success(&copied);
+    assert_eq!(
+        stderr(&copied)
+            .matches("warning: using default settings: ")
+            .count(),
+        1,
+        "{}",
+        stderr(&copied)
+    );
+    assert!(!stdout(&copied).contains("using default settings"));
+}

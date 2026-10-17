@@ -322,8 +322,8 @@ pub(crate) fn resolve_exe(paths: &Paths, name: &str, typed: &str) -> Result<Stri
         return Err(environment.config.no_prefix(name).to_string());
     }
     if let Kind::Native = environment.config.kind {
-        // This only checks a typed path, and the page has no line for a
-        // notice, so a fallback to defaults is not reported.
+        // A fallback to defaults isn't reported here, since the checkup
+        // already lists it as `global_config_invalid`.
         let global = GlobalConfig::load_or_default(paths)
             .map_err(|error| error.to_string())?
             .config;
