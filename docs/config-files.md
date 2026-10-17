@@ -1,7 +1,8 @@
 # Config file versioning
 
-Global config, environment configs, and templates carry a top-level
-`schema_version` so a file can outlive the wineo version that wrote it.
+Global config, environment configs, templates, and art.toml carry a
+top-level `schema_version` so a file can outlive the wineo version that
+wrote it.
 Snapshot manifests and internal metadata (component installs, runtime
 records) have their own separate formats and are not covered here.
 
@@ -17,6 +18,7 @@ arch = "win64"
 - `config.toml` (global config)
 - `environments/<name>.toml`
 - `templates/<name>.toml`, including the built-in `gaming` template
+- `art/<env>/art.toml` (see [art.toml](#arttoml))
 
 ## Prefixes inside prefixes
 
@@ -289,13 +291,73 @@ unversioned until the user edits it themselves or a future command writes it.
 of the wrong type are all refused with:
 
 ```
-unsupported schema_version 2 in /home/user/.config/wineo/config.toml
+error: unsupported schema_version 2 in ~/.config/wineo/config.toml
+A newer version of wineo wrote it; update wineo to use this file.
 ```
 
-Wineo never rewrites or downgrades a version it doesn't recognize, and it
-never falls back to defaults for a config in this state. `wineo status`
-prints this as a warning rather than failing outright, since the global
-config only affects its runner version line.
+Wineo never rewrites or downgrades a version it doesn't recognize, and
+nothing acts on a config in this state. A few commands that only finish or
+show something carry on with defaults instead (see [A global config wineo
+can't use](#a-global-config-wineo-cant-use)).
+
+## Unknown keys
+
+Every config refuses a key it doesn't know, so a typo like `gamemod = true`
+fails instead of launching without GameMode:
+
+```
+error: invalid config ~/.config/wineo/environments/hades.toml: TOML parse error at line 4, column 1
+  |
+4 | gamemod = true
+  | ^^^^^^^
+unknown field `gamemod`, expected one of `schema_version`, `kind`, `prefix`, ...
+A newer version of wineo may have written it; update wineo or remove the key.
+```
+
+The same happens when an older wineo opens a file a newer one wrote, say a
+portable folder from another machine or a config after going back to an
+earlier release. Only the files that use the newer key are refused; other
+environments keep working. Reading an older file in a newer wineo always
+works, but going the other way isn't promised.
+
+Settings that only change how the desktop app shows your library, like
+favorites or the sort order, stay out of these files, so that going back to
+an older release only loses those preferences. When they arrive, they'll
+live in their own `library.toml`, which ignores keys it doesn't know.
+
+## A global config wineo can't use
+
+When `config.toml` has an unknown key or an unsupported version, commands
+that act on settings refuse with the errors above: `set`, `new`, `start`,
+removing a runner, portable copies, and the rest. When it's broken in
+another way, like bad TOML or a value of the wrong type, they use the
+default settings and say so:
+
+```
+warning: using default settings: invalid config ~/.config/wineo/config.toml: TOML parse error at line 2, column 10
+```
+
+A few commands carry on with defaults and that warning even for an unknown
+key or an unsupported version, since refusing would leave something half
+done:
+
+- `wineo status`, which only shows things.
+- `wineo stop`. The stop timeout is the only global setting it reads, so a
+  wrong guess costs seconds, and refusing would leave a game you can't stop.
+- Finishing an interrupted snapshot restore or trash removal.
+
+`wineo validate` reports the problem as `global_config_invalid`, with the
+same hint.
+
+## Version bumps
+
+New keys never change `schema_version`. A 1.x release may raise it only
+when an existing value starts to mean something different, and then only in
+the files that use the new meaning; every other file keeps
+`schema_version = 1`, so an older 1.x can still read it. Every later 1.x
+reads every older version by that version's rules, and 2.0 migrates older
+files instead of refusing them. When settings from files with different
+versions combine, each value follows the version of the file it came from.
 
 ## Snapshots
 
@@ -335,6 +397,8 @@ manual = "server.svg"
 ```
 
 Unknown keys are refused, like other configs, and a bad value invalidates
-the whole file. wineo edits art.toml in place, so hand-added comments
+the whole file. While art.toml can't be read, desktop entries keep the icon
+they already have and wineo says why, instead of treating the environment
+as having no art. wineo edits art.toml in place, so hand-added comments
 survive. See [Artwork](art.md) for the commands that read and
 write it.

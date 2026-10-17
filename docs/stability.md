@@ -17,7 +17,11 @@ match the docs.
 - **Config files.** `config.toml`, `environments/<name>.toml`,
   `templates/<name>.toml`, and `art.toml`: their keys, value types, and
   defaults. A file written by any 1.x release loads in every later 1.x
-  release, and an older file loads or migrates cleanly. See
+  release, and an older file loads or migrates cleanly. The promise runs
+  forward only: an older release refuses a key added after it, with a hint
+  to update wineo, rather than ignoring it. A 1.x release raises
+  `schema_version` only in files that use an existing value with a new
+  meaning, and every later 1.x reads every older version. See
   [Config files](config-files.md).
 - **How settings combine.** The order `[env]` variables and other settings
   merge in: global config, then template, then environment, then target.
@@ -54,6 +58,9 @@ match the docs.
   `steam-owned-<steamid>.json` and the GOG lists, details, and downloads,
   temporary
   files, the desktop entries wineo writes, and the on-disk layout of
-  snapshots and the trash. Use the commands to work with them.
+  snapshots and the trash. Use the commands to work with them. Their
+  formats aren't promised, but upgrades read them, and a newer release only
+  adds fields an older one can skip. When wineo can't read one of them,
+  cleanup that depends on it keeps everything instead of guessing.
 - **Test-only variables,** like `WINEO_TEST_*`.
 - **Anything marked experimental** in its docs.

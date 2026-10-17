@@ -123,9 +123,18 @@ environments to an older one. A build that's being downloaded or is held by
 a running program is refused too. System Wine and runners outside the
 runner root can't be removed.
 
-A config that can't be read is skipped with one warning line naming the
-file, before the question, and the removal still happens. Fix the file and
-run `wineo validate` if it might have used the build.
+An environment or template config that can't be read might use the build,
+so the removal is refused before the question and nothing is touched:
+
+```
+error: GE-Proton9-20 is kept, since a config can't be read
+invalid config ~/.config/wineo/environments/hades.toml: missing field `prefix`
+```
+
+Each config's own error follows the first line. Fix or remove the file and
+run the removal again. A build that's in use is reported as in use first.
+The desktop app's Downloads page still lists the builds and what uses them,
+with a warning naming each file it skipped.
 
 The build is renamed out of the way before it's deleted, so an interrupted
 removal never leaves a half build that lists as usable. The next removal in

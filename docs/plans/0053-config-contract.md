@@ -527,7 +527,7 @@ Not scans that could delete on a bad read: stray checks in `validate`
 
 Limits:
 
-- **`runner rm` and component removal** (`build_removal.rs:84`) skipped
+- **`wineo runners remove` and component removal** (`build_removal.rs:84`) skipped
   a config they couldn't read, warned, and removed the build anyway
   (`remove_build.rs:46`), so an older wineo could remove a runner a newer
   config uses. The maintainer chose to refuse (2026-10-16): removal keeps
