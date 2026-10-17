@@ -258,16 +258,31 @@ pub struct OverviewFilter<'a> {
 }
 
 /// What a config asks for against what its prefix actually has.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone)]
 pub struct ComponentReport {
     /// The config value, which may be `latest`.
-    pub wanted: String,
-    /// What `wanted` names right now. None when nothing is installed to pick.
+    pub configured: String,
+    /// What `configured` names right now. None when nothing is installed to pick.
     pub resolved: Option<String>,
     /// What the prefix's manifest records.
     pub installed: Option<String>,
     /// Whether the prefix already has what the config asks for.
     pub current: bool,
+}
+
+// JSON writes the config value as both `configured` and its old name
+// `wanted` until 2.0, so scripts written against `wanted` keep working.
+impl Serialize for ComponentReport {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeStruct as _;
+        let mut object = serializer.serialize_struct("ComponentReport", 5)?;
+        object.serialize_field("configured", &self.configured)?;
+        object.serialize_field("wanted", &self.configured)?;
+        object.serialize_field("resolved", &self.resolved)?;
+        object.serialize_field("installed", &self.installed)?;
+        object.serialize_field("current", &self.current)?;
+        object.end()
+    }
 }
 
 impl EnvironmentReport {
@@ -677,7 +692,7 @@ fn components(
         let current = installed.as_deref() == build.as_deref()
             || installed.as_deref() == Some(asked.as_str());
         Some(ComponentReport {
-            wanted: asked,
+            configured: asked,
             resolved: build,
             installed,
             current,
@@ -688,13 +703,13 @@ fn components(
 
 /// The spelling `status` uses for a component line.
 pub fn component_value(report: &ComponentReport) -> String {
-    let mut value = if report.wanted == LATEST {
+    let mut value = if report.configured == LATEST {
         match &report.resolved {
             Some(resolved) => format!("{LATEST} ({resolved})"),
             None => format!("{LATEST} (nothing installed)"),
         }
     } else {
-        report.wanted.clone()
+        report.configured.clone()
     };
     if !report.current {
         value.push_str(", will be installed on the next launch");

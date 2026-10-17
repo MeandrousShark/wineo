@@ -973,6 +973,21 @@ fn json_named_status_omits_saved_launch_options_and_internal_identity() {
 }
 
 #[test]
+fn status_json_writes_component_config_under_both_names() {
+    let root = tempfile::tempdir().unwrap();
+    let text = format!("{MINIMAL_ENVIRONMENT}dxvk = \"dxvk-2.7\"\nvkd3d = \"latest\"\n");
+    write_environment(root.path(), "game", &text);
+
+    let out = output(wineo(root.path()).args(["status", "game", "--json"]));
+    assert!(out.status.success(), "{}", stderr(&out));
+    let value = parsed_json(&out);
+    for (component, configured) in [("dxvk", "dxvk-2.7"), ("vkd3d", "latest")] {
+        assert_eq!(value[component]["configured"], configured, "{value}");
+        assert_eq!(value[component]["wanted"], configured, "{value}");
+    }
+}
+
+#[test]
 fn json_empty_and_busy_unresolved_collections() {
     let root = tempfile::tempdir().unwrap();
     let empty = output(wineo(root.path()).args(["status", "--json"]));
