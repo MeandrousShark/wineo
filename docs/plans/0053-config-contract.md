@@ -591,6 +591,31 @@ maintainer picked four:
 Left as they are: `--dir` (to `--prefix` and `--install-dir`), `gameid`
 (it mirrors umu's own `GAMEID`), art.toml's `game`, and `install`.
 
+An old spelling is spotted by walking the raw arguments through clap's
+command tree after a successful parse, so a value that happens to equal
+`delete` never warns. The next rename is a hidden `alias` plus one row in
+`crates/wineo-cli/src/renamed.rs`. A limit: shell completion still offers a
+hidden name when the typed prefix matches only it (`snapshot d<TAB>`),
+which is clap_complete's behavior; with an empty or shared prefix it never
+shows.
+
+### Step 4: fixture sets
+
+- Every tag from v0.2.0 has `--portable`, so each set has a portable root
+  plus a home-shaped `xdg/` root for what a portable folder refuses:
+  desktop entries, Steam imports, and external runners.
+- No release has a command that writes a user template, so each set's
+  templates are hand-written in the shape that release documents, marked
+  as such. That's what real users have.
+- Left out because no release can write them offline: GOG-tracked
+  environments (`gog_id`), `heroic_id` (only a Heroic import writes it),
+  and `dxvk` or `vkd3d` on an environment (setting one installs a build,
+  which needs a download; a template carries both keys instead). Global
+  `[art] fetch` first appears in the v0.24.0 set, since earlier `set
+  --global` couldn't write it.
+- The legacy set is hand-written from the code just before
+  `schema_version` (`b73dcfc8^`), in a portable and a `~/` form.
+
 ## Implementation sequence
 
 1. Unknown keys: the hints for unknown keys and unsupported versions on
