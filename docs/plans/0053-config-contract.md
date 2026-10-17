@@ -34,7 +34,9 @@ On 2026-10-16 the maintainer answered the questions below:
 
 - **1: A2**, with the hint worded "A newer version of wineo may have
   written it", which reads better aloud than "a newer wineo". The
-  unsupported-version hint uses the same wording.
+  unsupported-version hint starts the same way, "A newer version of wineo
+  wrote it", since only a newer release writes a version this one doesn't
+  know.
 - **2: C.** Unknown global keys refuse; any other fallback to defaults
   warns.
 - **3: the recommended rule.** 1.x may bump `schema_version` for a change
@@ -281,7 +283,10 @@ release. The parts:
   with a fix that renames the key in place through `toml_edit`, keeping
   comments. A wineo edit to that file leaves the old key alone, since
   renaming it would make the file unreadable to a release from before the
-  new name.
+  new name. Edits resolve the spelling through the same table: `wineo set`
+  with either name updates the key the file already has (the old one, if
+  that's what's there), and `unset` with either name removes it, so an edit
+  never creates the both-keys error.
 - **Where the warning shows** (answered b) for configs, scenario
   `wineo list` with 22 environments, 3 of them using a deprecated key:
   - a: one line per file, three lines like `warning: hades.toml: old_name is deprecated; use new_name`
@@ -404,7 +409,11 @@ restore, and `clone`, all in core. Tags stay in the env configs, since
 they shipped in 0.14.
 
 This plan only records the rule in `stability.md` and `config-files.md`;
-the library views plan builds the file.
+the library views plan builds the file. One constraint carries over: an
+environment's `library.toml` entry rides in its trash entry as an additive
+manifest field, never a new payload kind. Payload kinds are a strict enum
+(`trash.rs:132`), and an older wineo that can't read one manifest refuses
+to load every environment (see scope limits).
 
 ## Proposed design
 
@@ -412,14 +421,18 @@ Follows the answers to every question.
 
 ### Unknown keys (questions 1 and 2)
 
-`parse_toml` (`config.rs:963`) is the one place every config, template,
-and art.toml goes through. An unknown-field error from it gains the hint
-line, and so does `check_schema`'s unsupported-version error.
+Configs deserialize on two paths. `parse_toml` (`config.rs:963`) handles
+the global config, environments, and art.toml. Templates call
+`check_schema` and then deserialize separately with `table.try_into()`
+(`templates.rs:250`). An unknown-field error from either path gains the
+hint line, and so does `check_schema`'s unsupported-version error.
 `load_or_default` returns unknown-field errors like
 `SchemaVersion`, and its other fallbacks return a warning for the caller to
 print. Each of the 18 callers is checked: CLI commands print the warning on
 stderr, the app shows it where it already shows checkup problems, and
-`status` keeps going.
+`status` keeps going. Portable copying's `destination_global`
+(`portable.rs:792`) discards every error with `unwrap_or_default()` today,
+so it passes the refusal on instead.
 
 ### Internal formats (question 4)
 
@@ -433,10 +446,13 @@ limit.
 ### Deprecated keys (question 5)
 
 A `deprecated` module in core holds the table and the in-memory pass,
-called from the same place as `check_schema`. Its result rides with the
-loaded config, so `validate` can report it and the CLI can print the
-summary once per command. The `validate` fix shares the rename with the
-pass, applied to a `toml_edit` document.
+which runs on the parsed table right before deserializing, on both paths
+above. Its result rides with the loaded config, so `validate` can report it
+and the CLI can print the summary once per command. The `validate` fix
+shares the rename with the pass, applied to a `toml_edit` document.
+Settings edits (`settings.rs:571`) write the key exactly as given today, so
+they resolve a deprecated key's spelling through the same table before
+writing or removing it.
 
 ### Fixtures and tests (question 6)
 
@@ -452,15 +468,23 @@ to a temporary portable root and checks, with the current wineo:
 - playtime totals, trash entries, and snapshots read back as written
 - `status --json` and `list --json` show what the files say
 
+Trash manifests record the entry directory's device and inode
+(`trash.rs:108`, `trash.rs:174`), and loading checks them
+(`trash/manifest.rs:59`), so a committed entry never matches after a
+checkout or copy. Fixture setup rewrites only that identity to the copy's
+through a test-only helper, leaving every other byte as the old release
+wrote it; the production check stays as strict as it is.
+
 ## Implementation sequence
 
-1. Unknown keys: the hints for unknown keys and unsupported versions,
-   `load_or_default`'s split, and every caller's warning (questions 1, 2,
-   and 3).
+1. Unknown keys: the hints for unknown keys and unsupported versions on
+   both parse paths, `load_or_default`'s split, and every caller's warning,
+   including portable copying (questions 1, 2, and 3).
 2. Internal formats: the denies, fail-safe cleanup, and the inventory of
    scans that read every file of a kind (question 4).
-3. Deprecated keys: table, pass, summary warning, `deprecated_key` and its
-   fix, with a test-only entry (question 5).
+3. Deprecated keys: table, pass on both parse paths, spelling resolution
+   in settings edits, summary warning, `deprecated_key` and its fix, with a
+   test-only entry (question 5).
 4. Fixture generator and the committed sets (question 6). The primary
    builds the old tags, since that needs the network.
 5. Upgrade tests over the sets.
@@ -479,12 +503,19 @@ Steps 1 to 3 touch different files and can run in parallel worktrees.
 ## Testing and acceptance
 
 - Unit tests for the pass: old key, new key, both, nested tables, a
-  deprecated key inside a target table, and a file that isn't rewritten.
+  deprecated key inside a target table, a template, and a file that isn't
+  rewritten.
+- Edit tests on a file with the old spelling: `set` and `unset` with each
+  spelling, an unrelated edit that leaves the old key alone, and a no-op
+  edit that leaves the file untouched.
 - `validate --fix` renames a deprecated key, keeping comments and order.
+- Unknown keys in a template get the hint, like every other config.
 - CLI tests: the summary line on stderr with `--json` stdout unchanged;
-  `set` and `new` refusing an unknown global key; each fallback warning.
+  `set` and `new` refusing an unknown global key; a portable copy refusing
+  one; each fallback warning.
 - A downgrade test: a Galaxy record with an extra field and one with a
-  newer version both keep their redistributables.
+  newer version both keep their redistributables, and so do a corrupt
+  record and one that parses but fails validation.
 - The fixture tests above, in the normal `cargo test` run.
 
 ## Scope limits
