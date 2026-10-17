@@ -95,6 +95,14 @@ impl Pty {
     }
 }
 
+impl Drop for Pty {
+    fn drop(&mut self) {
+        // A failed test must not leave a child waiting at a prompt.
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
 #[test]
 fn removing_builds_without_a_terminal_needs_yes() {
     let f = Fixture::new();
@@ -374,7 +382,10 @@ fn malformed_configs_refuse_removal_before_the_terminal_prompt() {
     let template = f.root.path().join("config/wineo/templates/broken.toml");
     let mut command = f.wineo();
     command.args(["runners", "remove", "wine-tkg"]);
-    let (status, output) = Pty::spawn(command).finish();
+    let pty = Pty::spawn(command);
+    // Waiting for the refusal fails fast instead of hanging at a prompt.
+    pty.expect("is kept, since 2 configs can't be read");
+    let (status, output) = pty.finish();
     assert_eq!(status.code(), Some(1), "{output}");
     assert!(!output.contains("[y/N]"), "{output}");
     assert!(

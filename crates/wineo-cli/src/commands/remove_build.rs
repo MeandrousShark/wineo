@@ -25,9 +25,11 @@ pub fn run(
 
         let size = size(paths, name)?;
         // Fail before the prompt, since confirming could not change the answer.
-        // A build in use still gets its usual refusal from removal itself.
-        let uses = build_removal::uses(paths, &Lock::new(paths, build_kind, name))?;
-        if uses.labels.is_empty() {
+        // A build in use, by a reference or a held lock, still gets its usual
+        // refusal from removal itself.
+        let lock = Lock::new(paths, build_kind, name);
+        let uses = build_removal::uses(paths, &lock)?;
+        if uses.labels.is_empty() && lock.try_exclusive()?.is_some() {
             build_removal::refuse_unreadable(name, &uses.errors)?;
         }
         print!("Remove {kind} {name} ({})? [y/N] ", style::size(size));
