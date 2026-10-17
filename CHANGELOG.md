@@ -4,6 +4,17 @@ A finished plan bumps the minor version and fixes between plans bump the
 patch version. A plan released in parts bumps the minor version for each
 part. See `AGENTS.md` for the rule.
 
+## 0.34.1 - 2026-10-16
+
+Import logs no longer share a name with environments.
+
+- Heroic import logs (written with `-v`) moved from
+  `~/.local/state/wineo/imports/` to `~/.local/state/wineo/.imports/`.
+  Before, an environment named `imports` used the same folder for its
+  state, so `wineo rm imports` deleted every game's import log.
+- Logs written before this release stay in the old folder, and
+  `wineo validate` doesn't offer to remove it.
+
 ## 0.34.0 - 2026-10-16
 
 GOG Galaxy builds, part B, which finishes
