@@ -475,6 +475,47 @@ checkout or copy. Fixture setup rewrites only that identity to the copy's
 through a test-only helper, leaving every other byte as the old release
 wrote it; the production check stays as strict as it is.
 
+## Decisions during implementation
+
+### Step 2: scans that read every file of a kind
+
+Redistributable cleanup now removes nothing when any Galaxy-tracked
+record is newer, corrupt, or fails validation, and install and update
+report `Couldn't clean up GOG's redistributables: ...` as a warning.
+Records on the installer track or without a state are still skipped:
+they're leftovers of a move off Galaxy, and active Galaxy work holds the
+store's version locks.
+
+Already fail-safe (an unreadable file errors or blocks, never names
+nothing): GOG folder listing, ownership, and overlap checks
+(`gog/folder.rs:845`, `:908`, `:957`); the non-strict skips at
+`gog/folder.rs:1247`, `:1260` and `snapshot.rs:544`, which apply only to
+callers that can't own a game; `gog/update/install.rs:703`, `:726`;
+`validate` and the app's GOG library, which only report; trash markers,
+manifest scans, and listing (`trash/markers.rs:46`, `trash.rs:518`,
+`:325`), with `review_prune` (`trash.rs:634`) skipping only the entry it
+can't read; snapshot listing (`snapshot.rs:276`); run-state reads in
+`installer.rs:629` and `build_removal.rs:233`; and `sharing_prefix` in
+`environment.rs`.
+
+Not scans that could delete on a bad read: stray checks in `validate`
+(by name), desktop entry listing, keyring temp files, the runner
+"Latest" alias, and the app's thumbnail cache.
+
+Limits:
+
+- 🧐 **`runner rm` and component removal** (`build_removal.rs:84`) skip
+  a config they can't read, warn, and remove the build anyway
+  (`remove_build.rs:46`), so an older wineo can remove a runner a newer
+  config uses. Open: refuse, or record as a limit.
+- **The GOG download cache** (`wineo-gog/src/cache.rs:527`) ignores an
+  unreadable cache record, so a download can overwrite a file it names.
+  The cache can always be downloaded again, so this stays.
+- **Strict enums** an older reader can't skip, so a new variant needs a
+  version bump: `SetupStep` in the Galaxy record, and `Source`,
+  `Platform`, `Track`, `ProductStatus`, `EntryType`, and `JournalKind` in
+  the folder state. The same holds for trash payload kinds.
+
 ## Implementation sequence
 
 1. Unknown keys: the hints for unknown keys and unsupported versions on
