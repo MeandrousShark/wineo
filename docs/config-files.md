@@ -349,6 +349,23 @@ done:
 `wineo validate` reports the problem as `global_config_invalid`, with the
 same hint.
 
+## Deprecated keys
+
+Nothing is deprecated yet. When a 1.x release renames a key, the old name
+keeps working until 2.0. wineo reads it as the new one without touching the
+file, and a command prints one line for the whole library:
+
+```
+warning: 3 configs use deprecated keys; see wineo validate
+```
+
+`wineo validate` reports each one as `deprecated_key`, like
+``~/.config/wineo/environments/hades.toml: `old_name` is deprecated since wineo 1.4; use `new_name` ``,
+and its fix renames the key in place, keeping comments and order. Until
+then, `wineo set` and `--unset` take either name and edit the key the file
+already has, so a file stays readable by releases from before the rename.
+Setting both names in one file is an error that names both.
+
 ## Version bumps
 
 New keys never change `schema_version`. A 1.x release may raise it only

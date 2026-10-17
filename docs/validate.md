@@ -75,10 +75,13 @@ Ctrl+C cancels without fixing anything.
 With no terminal, validate only reports. `--fix` applies every fix without
 asking, for scripts.
 
-Fixes never touch a config you wrote or an art file, and the only fix that
+Fixes never touch an art file, and the only fix that
 touches a prefix installs missing [winetricks verbs](config-files.md#winetricks-dependencies),
-the same way `start` would. The only config a fix edits is `art.toml`, to drop a record whose file or target is
-gone, and its comments are kept. A missing prefix or an unsupported
+the same way `start` would. A fix edits a config in two cases: dropping an
+`art.toml` record whose file or target is gone, and renaming
+[deprecated keys](config-files.md#deprecated-keys) to their new names, like
+`Rename hades's deprecated keys`. Both keep comments, formatting, and order,
+and change nothing else. A missing prefix or an unsupported
 `schema_version` is reported, never rewritten.
 
 A fix takes the same lock as the command it stands in for. If an environment
@@ -96,6 +99,7 @@ storage is reported for attention rather than recovered by ordinary commands.
 | Area | Check | Level | Fix |
 |---|---|---|---|
 | `config.toml` | Syntax, unknown keys, bad values, unsupported `schema_version` | error | |
+| Any config | A key under a deprecated name | warning | rename it |
 | Templates | Same parse checks | error | |
 | Templates | Runner or DXVK/vkd3d build that doesn't resolve | warning | |
 | Environment config | Same parse checks | error | |

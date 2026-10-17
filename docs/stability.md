@@ -6,7 +6,12 @@ break as a behavior change.
 
 From 1.0, anything on the stable list keeps working through every 1.x
 release. A change that would break it waits for 2.0, and the old form keeps
-working until then with a warning, which `wineo validate` also reports.
+working until then with a warning, which `wineo validate` also reports. A
+renamed config key is read under either name and `validate --fix` renames
+it ([Deprecated keys](config-files.md#deprecated-keys)). A renamed flag or
+command keeps its old spelling as a hidden alias that warns, a renamed
+`WINEO_*` variable is read under both names and hooks get both, and a
+renamed `--json` field is written under both names.
 Features keep landing in 1.x as long as they leave the stable list intact.
 Fixes for security problems and plain bugs are the exception: when the
 documented behavior was never what wineo actually did, wineo is fixed to

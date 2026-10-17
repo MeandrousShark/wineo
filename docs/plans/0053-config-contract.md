@@ -546,6 +546,28 @@ Limits:
   `Platform`, `Track`, `ProductStatus`, `EntryType`, and `JournalKind` in
   the folder state. The same holds for trash payload kinds.
 
+### Step 3: deprecated keys
+
+- **`deprecated_key` gets its own JSON area, `config`** (maintainer,
+  2026-10-16), since one deprecated key can show up in any of four kinds of
+  file and every other code has exactly one area.
+- **The summary line counts the whole library** (maintainer, 2026-10-16).
+  It points at `validate --fix`, so the number that matters is how many
+  files that would fix. Every command except `validate`, `completions`, and
+  `manpages` prints it once, before it runs. With an empty table the scan
+  is skipped, so it costs nothing until something is deprecated.
+- **A rename changes only a key's last name.** Old and new share every
+  table above them (`targets.*.old` to `targets.*.new`), and a test checks
+  every entry. Moving a key into another table needs more work first.
+- **Test entries** alias real keys under `test_old_*` names behind the
+  existing dev-only `test-support` feature, so a release build ships an
+  empty table.
+- **Before the first real deprecation**, check every writer that names a
+  key directly instead of going through settings edits (targets at
+  `targets.rs:324`, clone's rebasing at `clone.rs:349`, `record_gog_id`,
+  desktop and GUI writers). Each has to keep the spelling the file already
+  uses, or it can create the both-spellings error.
+
 ## Implementation sequence
 
 1. Unknown keys: the hints for unknown keys and unsupported versions on

@@ -336,6 +336,7 @@ The codes are stable:
 
 | Area | Codes |
 |---|---|
+| `config` | `deprecated_key` |
 | `global_config` | `global_config_invalid` |
 | `template` | `template_invalid`, `template_unresolved` |
 | `environment_config` | `environment_config_invalid` |
