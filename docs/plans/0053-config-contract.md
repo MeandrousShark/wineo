@@ -532,8 +532,12 @@ Limits:
   (`remove_build.rs:46`), so an older wineo could remove a runner a newer
   config uses. The maintainer chose to refuse (2026-10-16): removal keeps
   the build and names the configs it couldn't read. The read-only "used
-  by" listing still warns and carries on. A behavior change for the
-  changelog.
+  by" listing still warns and carries on. Removal checks the configs
+  again after sizing the build, just before moving it out, and a build
+  held by another operation reports that before an unreadable config. A
+  config another program breaks between that last check and the move is
+  an accepted limit, since wineo can't lock files other programs edit. A
+  behavior change for the changelog.
 - **The GOG download cache** (`wineo-gog/src/cache.rs:527`) ignores an
   unreadable cache record, so a download can overwrite a file it names.
   The cache can always be downloaded again, so this stays.
