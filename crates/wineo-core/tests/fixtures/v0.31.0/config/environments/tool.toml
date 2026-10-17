@@ -1,0 +1,7 @@
+schema_version = 1
+kind = "native"
+
+[targets.tool]
+exe = "games/tool.sh"
+default = true
+args = ["--fast"]

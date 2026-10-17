@@ -1,0 +1,18 @@
+schema_version = 1
+prefix = "prefixes/lazy"
+runner = "wine"
+arch = "win64"
+tags = ["game"]
+winetricks = ["vcrun2022", "corefonts"]
+wayland = true
+mangohud = true
+
+[targets.main]
+exe = 'C:\Games\Lazy\Lazy.exe'
+default = true
+mangohud = false
+
+[gamescope]
+width = 1280
+height = 720
+fps_limit = 60

@@ -1,0 +1,128 @@
+version = 1
+id = "20261017T052726Z-5c7249d9"
+name = "doomed-prefix"
+removed_at = "2026-10-17T05:27:26.468457983Z"
+include_prefix = true
+prefix_present = true
+prefix_reference = "prefixes/doomed-prefix"
+phase = "trashed"
+
+[entry_identity]
+device = 50
+inode = 36440129
+mount = 63
+birth = [
+    1792214846,
+    465252839,
+]
+
+[prefix_identity]
+device = 50
+inode = 36440105
+mount = 63
+birth = [
+    1792214846,
+    418252836,
+]
+
+[[payloads]]
+kind = "config"
+original = "config/environments/doomed-prefix.toml"
+retained = "data/trash/20261017T052726Z-5c7249d9/config.toml"
+digest = "v2:03b79a38b7c75e15b56950721bc622381ffe3fb8d6b8b6b4ed1240df6b7e81a5"
+step = "retained"
+
+[payloads.identity]
+device = 50
+inode = 36440115
+mount = 63
+birth = [
+    1792214846,
+    423252836,
+]
+
+[payloads.source_parent]
+device = 50
+inode = 36439986
+mount = 63
+birth = [
+    1792214843,
+    212252604,
+]
+
+[payloads.destination_parent]
+device = 50
+inode = 36440129
+mount = 63
+birth = [
+    1792214846,
+    465252839,
+]
+
+[[payloads]]
+kind = "prefix"
+original = "prefixes/doomed-prefix"
+retained = "prefixes/.wineo-trash/20261017T052726Z-5c7249d9/prefix"
+digest = "v2:39f0ee9e31b572e8873629386365c9ceaaad31870f060ea0c454275709e61530"
+step = "retained"
+
+[payloads.identity]
+device = 50
+inode = 36440105
+mount = 63
+birth = [
+    1792214846,
+    418252836,
+]
+
+[payloads.source_parent]
+device = 50
+inode = 36439975
+mount = 63
+birth = [
+    1792214843,
+    206252603,
+]
+
+[payloads.destination_parent]
+device = 50
+inode = 36440131
+mount = 63
+birth = [
+    1792214846,
+    466252839,
+]
+
+[[payloads]]
+kind = "snapshots"
+original = "prefixes/.wineo-snapshots/doomed-prefix"
+retained = "prefixes/.wineo-trash/20261017T052726Z-5c7249d9/snapshots"
+digest = "v2:c9c04b94ede1f8657699405e5dc223a71c6da244f7d3d68e964e23c5adfb2f1a"
+step = "retained"
+
+[payloads.identity]
+device = 50
+inode = 36440116
+mount = 63
+birth = [
+    1792214846,
+    441252838,
+]
+
+[payloads.source_parent]
+device = 50
+inode = 36440042
+mount = 63
+birth = [
+    1792214843,
+    308252611,
+]
+
+[payloads.destination_parent]
+device = 50
+inode = 36440131
+mount = 63
+birth = [
+    1792214846,
+    466252839,
+]
