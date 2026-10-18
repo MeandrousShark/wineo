@@ -1,5 +1,6 @@
 //! Explicit repair of a `library.toml` that can't be read: back it up, then
-//! write a fresh file with what can still be read line by line.
+//! write a fresh file with what can still be read. The TOML parser reads as
+//! much of the file as it accepts; only the broken rest is scanned by hand.
 
 use std::fmt;
 use std::fs::{self, OpenOptions};
@@ -7,7 +8,7 @@ use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
 use jiff::Zoned;
-use toml_edit::{DocumentMut, Item, Key};
+use toml_edit::{DocumentMut, Item, Key, Table};
 
 use super::check::{is_newer, is_offset_datetime};
 use super::{SCHEMA_VERSION, SortKey};
@@ -131,8 +132,8 @@ pub(super) fn repair_at(
             return Ok(None);
         }
     }
-    let units = units(&bytes);
-    if let Some(version) = newer_version(&units) {
+    let salvaged = salvage(&bytes);
+    if let Some(version) = salvaged.newer_version {
         return Err(Error::SchemaVersion {
             path,
             found: version.to_string(),
@@ -142,7 +143,6 @@ pub(super) fn repair_at(
     let backup = back_up(&path, stamp, &bytes)?;
     let dir = path.parent().unwrap_or(Path::new("."));
     sync_dir(dir).context(|| format!("failed to sync {}", dir.display()))?;
-    let salvaged = salvage(units);
     let contents = salvaged.render();
     if let Err(error) = contents.parse::<DocumentMut>() {
         return Err(Error::ConfigParse {
@@ -156,22 +156,7 @@ pub(super) fn repair_at(
 
 /// Whether a file that can't be parsed still says a newer wineo wrote it.
 pub(super) fn declares_newer_version(bytes: &[u8]) -> bool {
-    newer_version(&units(bytes)).is_some()
-}
-
-/// A top-level `schema_version` above this wineo's, read on its own.
-fn newer_version(units: &[Unit]) -> Option<i64> {
-    units
-        .iter()
-        .take_while(|unit| !matches!(unit, Unit::Header(_)))
-        .filter_map(|unit| match unit {
-            Unit::Value {
-                text: Some(text), ..
-            } => text.parse::<DocumentMut>().ok(),
-            _ => None,
-        })
-        .filter_map(|document| document.get("schema_version").and_then(Item::as_integer))
-        .find(|version| *version > SCHEMA_VERSION)
+    salvage(bytes).newer_version.is_some()
 }
 
 /// Copies the file beside itself, never replacing an existing file.
@@ -216,15 +201,73 @@ fn back_up(path: &Path, stamp: &str, bytes: &[u8]) -> Result<PathBuf> {
     }
 }
 
+/// The file split into lines, keeping where each starts so a run of whole
+/// lines can be handed to the parser as written.
+struct Lines<'a> {
+    bytes: &'a [u8],
+    /// Where each line starts, then the end of the file.
+    starts: Vec<usize>,
+}
+
+impl<'a> Lines<'a> {
+    fn new(bytes: &'a [u8]) -> Self {
+        let bytes = bytes.strip_prefix("\u{feff}".as_bytes()).unwrap_or(bytes);
+        let mut starts = vec![0];
+        starts.extend(
+            bytes
+                .iter()
+                .enumerate()
+                .filter(|(_, byte)| **byte == b'\n')
+                .map(|(index, _)| index + 1),
+        );
+        if starts.last() != Some(&bytes.len()) {
+            starts.push(bytes.len());
+        }
+        Self { bytes, starts }
+    }
+
+    fn len(&self) -> usize {
+        self.starts.len() - 1
+    }
+
+    fn line(&self, index: usize) -> &'a [u8] {
+        let line = &self.bytes[self.starts[index]..self.starts[index + 1]];
+        let line = line.strip_suffix(b"\n").unwrap_or(line);
+        line.strip_suffix(b"\r").unwrap_or(line)
+    }
+
+    /// The text of lines `..end`, if it's all UTF-8.
+    fn prefix(&self, end: usize) -> Option<&'a str> {
+        std::str::from_utf8(&self.bytes[..self.starts[end]]).ok()
+    }
+
+    /// The line a byte offset is on.
+    fn line_of(&self, offset: usize) -> usize {
+        self.starts.partition_point(|start| *start <= offset) - 1
+    }
+}
+
 /// A header line, or one `key = value` with every line its value spans.
 enum Unit {
     /// None for a header that isn't `[view]` or `[environments.<name>]`.
-    Header(Option<Header>),
+    Header {
+        start: usize,
+        header: Option<Header>,
+    },
     Value {
+        start: usize,
         /// None when any of its lines isn't valid UTF-8.
         text: Option<String>,
         key_shaped: bool,
     },
+}
+
+impl Unit {
+    fn start(&self) -> usize {
+        match self {
+            Unit::Header { start, .. } | Unit::Value { start, .. } => *start,
+        }
+    }
 }
 
 enum Header {
@@ -232,28 +275,25 @@ enum Header {
     Entry(String),
 }
 
-/// Splits the file into units, so nothing inside a multi-line string or
-/// array is mistaken for a header or a field.
-fn units(bytes: &[u8]) -> Vec<Unit> {
-    let bytes = bytes.strip_prefix("\u{feff}".as_bytes()).unwrap_or(bytes);
-    let lines: Vec<&[u8]> = bytes
-        .split(|byte| *byte == b'\n')
-        .map(|line| line.strip_suffix(b"\r").unwrap_or(line))
-        .collect();
+/// Splits lines `from..` into units, so nothing inside a multi-line string or
+/// array is mistaken for a header or a field. Only trusted where the parser
+/// gave up; see `salvage`.
+fn units(lines: &Lines<'_>, from: usize) -> Vec<Unit> {
     let mut units = Vec::new();
-    let mut index = 0;
+    let mut index = from;
     while index < lines.len() {
-        let first = String::from_utf8_lossy(lines[index]);
+        let first = String::from_utf8_lossy(lines.line(index));
         let trimmed = first.trim();
         if trimmed.is_empty() || trimmed.starts_with('#') {
             index += 1;
             continue;
         }
+        let start = index;
         if trimmed.starts_with('[') {
-            let header = std::str::from_utf8(lines[index])
+            let header = std::str::from_utf8(lines.line(index))
                 .ok()
                 .and_then(|line| header(line.trim()));
-            units.push(Unit::Header(header));
+            units.push(Unit::Header { start, header });
             index += 1;
             continue;
         }
@@ -262,19 +302,21 @@ fn units(bytes: &[u8]) -> Vec<Unit> {
         let key_shaped = scan.equals.is_some_and(|equals| {
             Key::parse(trimmed[..equals].trim()).is_ok_and(|keys| !keys.is_empty())
         });
-        let start = index;
         index += 1;
         // A value left open swallows lines until it closes, or to the end.
         while key_shaped && scan.open() && index < lines.len() {
-            scan.line(&String::from_utf8_lossy(lines[index]), false);
+            scan.line(&String::from_utf8_lossy(lines.line(index)), false);
             index += 1;
         }
-        let text = lines[start..index]
-            .iter()
-            .map(|line| std::str::from_utf8(line).ok())
+        let text = (start..index)
+            .map(|line| std::str::from_utf8(lines.line(line)).ok())
             .collect::<Option<Vec<&str>>>()
             .map(|lines| lines.join("\n").trim().to_owned());
-        units.push(Unit::Value { text, key_shaped });
+        units.push(Unit::Value {
+            start,
+            text,
+            key_shaped,
+        });
     }
     units
 }
@@ -306,19 +348,19 @@ impl Scan {
 
     fn line(&mut self, line: &str, first: bool) {
         let bytes = line.as_bytes();
+        let run = |at: usize, quote: u8| bytes[at..].iter().take_while(|b| **b == quote).count();
         let mut index = 0;
         while index < bytes.len() {
-            let rest = &bytes[index..];
+            let byte = bytes[index];
             match self.quote {
-                Quote::None => match bytes[index] {
+                Quote::None => match byte {
                     b'#' => break,
-                    b'"' if rest.starts_with(b"\"\"\"") => {
-                        self.quote = Quote::MultiBasic;
-                        index += 3;
-                        continue;
-                    }
-                    b'\'' if rest.starts_with(b"'''") => {
-                        self.quote = Quote::MultiLiteral;
+                    b'"' | b'\'' if bytes[index..].starts_with(&[byte; 3]) => {
+                        self.quote = if byte == b'"' {
+                            Quote::MultiBasic
+                        } else {
+                            Quote::MultiLiteral
+                        };
                         index += 3;
                         continue;
                     }
@@ -331,29 +373,34 @@ impl Scan {
                     }
                     _ => {}
                 },
-                Quote::Basic => match bytes[index] {
+                Quote::Basic => match byte {
                     b'\\' => index += 1,
                     b'"' => self.quote = Quote::None,
                     _ => {}
                 },
                 Quote::Literal => {
-                    if bytes[index] == b'\'' {
+                    if byte == b'\'' {
                         self.quote = Quote::None;
                     }
                 }
-                Quote::MultiBasic => {
-                    if bytes[index] == b'\\' {
-                        index += 1;
-                    } else if rest.starts_with(b"\"\"\"") {
-                        self.quote = Quote::None;
-                        index += 3;
+                // A run of three to five quotes closes the string, the ones
+                // past three being content.
+                Quote::MultiBasic | Quote::MultiLiteral => {
+                    let quote = if self.quote == Quote::MultiBasic {
+                        b'"'
+                    } else {
+                        b'\''
+                    };
+                    if byte == b'\\' && quote == b'"' {
+                        index += 2;
                         continue;
                     }
-                }
-                Quote::MultiLiteral => {
-                    if rest.starts_with(b"'''") {
-                        self.quote = Quote::None;
-                        index += 3;
+                    if byte == quote {
+                        let length = run(index, quote);
+                        if length >= 3 {
+                            self.quote = Quote::None;
+                        }
+                        index += length;
                         continue;
                     }
                 }
@@ -372,6 +419,7 @@ struct Salvaged {
     view: Option<Section>,
     entries: Vec<(String, Section)>,
     dropped_text: bool,
+    newer_version: Option<i64>,
 }
 
 /// One recognized table: how many fields the repair recognized in it, and
@@ -379,44 +427,74 @@ struct Salvaged {
 #[derive(Debug, Default)]
 struct Section {
     fields: usize,
-    lines: Vec<String>,
+    kept: usize,
+    table: Table,
 }
 
 impl Section {
     fn recovery(&self) -> ViewRecovery {
-        if self.lines.len() == self.fields {
+        if self.kept == self.fields {
             ViewRecovery::Recovered
-        } else if self.lines.is_empty() {
+        } else if self.kept == 0 {
             ViewRecovery::Lost
         } else {
             ViewRecovery::Partly
         }
     }
 
-    /// Keeps a field that parses alone, is valid, and doesn't clash with a
-    /// field already kept, so the first value wins and the result parses.
+    /// Keeps a valid field the parser read, which can't clash with another.
+    fn read(&mut self, key: &Key, item: &Item, valid: fn(&str, &Item) -> bool) {
+        self.fields += 1;
+        if valid(key.get(), item) {
+            self.table.insert_formatted(key, item.clone());
+            self.kept += 1;
+        }
+    }
+
+    /// Keeps a field from the broken tail that parses alone, is valid, and
+    /// doesn't clash with a field already kept, so the first value wins.
     fn offer(&mut self, text: Option<String>, valid: fn(&str, &Item) -> bool) {
         self.fields += 1;
-        let Some(text) = text else {
-            return;
-        };
-        let Ok(document) = text.parse::<DocumentMut>() else {
+        let Some(document) = text.and_then(|text| text.parse::<DocumentMut>().ok()) else {
             return;
         };
         let mut keys = document.iter();
-        let (Some((key, item)), None) = (keys.next(), keys.next()) else {
+        let (Some((name, item)), None) = (keys.next(), keys.next()) else {
             return;
         };
-        if !valid(key, item) {
-            return;
-        }
-        let mut combined = self.lines.join("\n");
-        combined.push('\n');
-        combined.push_str(&text);
-        if combined.parse::<DocumentMut>().is_ok() {
-            self.lines.push(text);
+        let key = document
+            .as_table()
+            .key(name)
+            .cloned()
+            .unwrap_or_else(|| Key::new(name));
+        if valid(name, item) && merge(&mut self.table, &key, item.clone()) {
+            self.kept += 1;
         }
     }
+}
+
+/// Adds `item` unless it redefines something, merging dotted keys like
+/// `future.a` and `future.b`. All or nothing.
+fn merge(table: &mut Table, key: &Key, item: Item) -> bool {
+    let Some(existing) = table.get_mut(key.get()) else {
+        table.insert_formatted(key, item);
+        return true;
+    };
+    let (Some(existing), Item::Table(new)) = (existing.as_table_mut(), &item) else {
+        return false;
+    };
+    if !existing.is_dotted() || !new.is_dotted() {
+        return false;
+    }
+    let mut merged = existing.clone();
+    for (name, child) in new.iter() {
+        let key = new.key(name).cloned().unwrap_or_else(|| Key::new(name));
+        if !merge(&mut merged, &key, child.clone()) {
+            return false;
+        }
+    }
+    *existing = merged;
+    true
 }
 
 #[derive(Clone, Copy)]
@@ -427,28 +505,24 @@ enum Current {
     Unattributed,
 }
 
-fn salvage(units: Vec<Unit>) -> Salvaged {
+/// Reads as much of the file as the TOML parser accepts, then scans the
+/// broken rest unit by unit.
+fn salvage(bytes: &[u8]) -> Salvaged {
+    let lines = Lines::new(bytes);
+    let (end, document) = parsed_prefix(&lines);
     let mut salvaged = Salvaged::default();
-    let mut current = Current::Top;
-    for unit in units {
+    let mut current = salvaged.read_prefix(&document);
+    let mut top = true;
+    for unit in units(&lines, end) {
         let (text, key_shaped) = match unit {
-            Unit::Header(header) => {
+            Unit::Header { header, .. } => {
+                top = false;
                 current = match header {
                     Some(Header::View) => {
                         salvaged.view.get_or_insert_with(Section::default);
                         Current::View
                     }
-                    Some(Header::Entry(name)) => {
-                        let index =
-                            match salvaged.entries.iter().position(|(seen, _)| *seen == name) {
-                                Some(index) => index,
-                                None => {
-                                    salvaged.entries.push((name, Section::default()));
-                                    salvaged.entries.len() - 1
-                                }
-                            };
-                        Current::Entry(index)
-                    }
+                    Some(Header::Entry(name)) => Current::Entry(salvaged.entry(name)),
                     None => {
                         salvaged.dropped_text = true;
                         Current::Unattributed
@@ -456,16 +530,28 @@ fn salvage(units: Vec<Unit>) -> Salvaged {
                 };
                 continue;
             }
-            Unit::Value { text, key_shaped } => (text, key_shaped),
+            Unit::Value {
+                text, key_shaped, ..
+            } => (text, key_shaped),
         };
         match current {
             Current::Top => {
-                // Written fresh, so an old one isn't a loss.
-                let schema = text
+                let version = text
                     .and_then(|text| text.parse::<DocumentMut>().ok())
-                    .is_some_and(|document| document.contains_key("schema_version"));
-                if !schema {
-                    salvaged.dropped_text = true;
+                    .and_then(|document| {
+                        document.get("schema_version").map(|item| item.as_integer())
+                    });
+                match version {
+                    // Written fresh, so an old one isn't a loss.
+                    Some(version) => {
+                        if top
+                            && salvaged.newer_version.is_none()
+                            && document.get("schema_version").is_none()
+                        {
+                            salvaged.newer_version = version.filter(|v| *v > SCHEMA_VERSION);
+                        }
+                    }
+                    None => salvaged.dropped_text = true,
                 }
             }
             Current::Unattributed => salvaged.dropped_text = true,
@@ -479,6 +565,138 @@ fn salvage(units: Vec<Unit>) -> Salvaged {
         }
     }
     salvaged
+}
+
+/// The longest run of whole lines from the start that parses, and its
+/// document. Stops before any line that isn't UTF-8.
+fn parsed_prefix(lines: &Lines<'_>) -> (usize, DocumentMut) {
+    let limit = (0..lines.len())
+        .find(|index| std::str::from_utf8(lines.line(*index)).is_err())
+        .unwrap_or(lines.len());
+    // Where a unit starts is only a hint for where to try next; whatever
+    // prefix is used, the parser decides what it means.
+    let mut boundaries: Vec<usize> = units(lines, 0)
+        .iter()
+        .map(Unit::start)
+        .filter(|start| *start < limit)
+        .collect();
+    boundaries.insert(0, 0);
+    let mut end = limit;
+    loop {
+        let text = lines.prefix(end).unwrap_or_default();
+        match text.parse::<DocumentMut>() {
+            Ok(document) => return (end, document),
+            Err(error) => {
+                let at = error.span().map_or(text.len(), |span| span.start);
+                let bound = lines.line_of(at).min(end.saturating_sub(1));
+                end = boundaries
+                    .iter()
+                    .rev()
+                    .copied()
+                    .find(|start| *start <= bound)
+                    .unwrap_or(0);
+            }
+        }
+    }
+}
+
+impl Salvaged {
+    fn entry(&mut self, name: String) -> usize {
+        match self.entries.iter().position(|(seen, _)| *seen == name) {
+            Some(index) => index,
+            None => {
+                self.entries.push((name, Section::default()));
+                self.entries.len() - 1
+            }
+        }
+    }
+
+    /// Takes what the parser read, and says which table the broken tail
+    /// continues.
+    fn read_prefix(&mut self, document: &DocumentMut) -> Current {
+        if let Some(version) = document.get("schema_version").and_then(Item::as_integer)
+            && version > SCHEMA_VERSION
+        {
+            self.newer_version = Some(version);
+        }
+        for (key, item) in document.iter() {
+            match (key, item.as_table_like()) {
+                ("schema_version", _) => {}
+                ("view", Some(table)) => {
+                    let view = self.view.get_or_insert_with(Section::default);
+                    for (name, field) in table.iter() {
+                        let key = table.key(name).cloned().unwrap_or_else(|| Key::new(name));
+                        view.read(&key, field, valid_view_field);
+                    }
+                }
+                ("environments", Some(environments)) => {
+                    for (name, entry) in environments.iter() {
+                        let Some(entry) = entry.as_table_like() else {
+                            self.dropped_text = true;
+                            continue;
+                        };
+                        let index = self.entry(name.to_owned());
+                        let section = &mut self.entries[index].1;
+                        for (field, value) in entry.iter() {
+                            let key = entry.key(field).cloned().unwrap_or_else(|| Key::new(field));
+                            section.read(&key, value, valid_entry_field);
+                        }
+                    }
+                }
+                _ => self.dropped_text = true,
+            }
+        }
+        match last_header(document.as_table(), &mut Vec::new(), &mut None) {
+            None => Current::Top,
+            Some(path) => match path.as_slice() {
+                [view] if view == "view" && self.view.is_some() => Current::View,
+                [environments, name] if environments == "environments" => {
+                    match self.entries.iter().position(|(seen, _)| seen == name) {
+                        Some(index) => Current::Entry(index),
+                        None => Current::Unattributed,
+                    }
+                }
+                _ => Current::Unattributed,
+            },
+        }
+    }
+}
+
+/// The path of the header that comes last in the file, which is the table
+/// lines after it would belong to.
+fn last_header(
+    table: &Table,
+    path: &mut Vec<String>,
+    last: &mut Option<(isize, Vec<String>)>,
+) -> Option<Vec<String>> {
+    for (key, item) in table.iter() {
+        path.push(key.to_owned());
+        let mut visit = |child: &Table, path: &mut Vec<String>| {
+            if !child.is_implicit()
+                && !child.is_dotted()
+                && let Some(position) = child.position()
+                && last.as_ref().is_none_or(|(seen, _)| position > *seen)
+            {
+                *last = Some((position, path.clone()));
+            }
+            last_header(child, path, last);
+        };
+        match item {
+            Item::Table(child) => visit(child, path),
+            Item::ArrayOfTables(array) => {
+                for child in array.iter() {
+                    // A line after an array of tables header belongs to
+                    // no recognized table.
+                    path.push(String::new());
+                    visit(child, path);
+                    path.pop();
+                }
+            }
+            _ => {}
+        }
+        path.pop();
+    }
+    last.as_ref().map(|(_, path)| path.clone())
 }
 
 /// A header line on its own: exactly `[view]` or `[environments.<name>]`.
@@ -526,25 +744,24 @@ fn valid_view_field(key: &str, item: &Item) -> bool {
 
 impl Salvaged {
     fn render(&self) -> String {
-        let mut out = format!("schema_version = {SCHEMA_VERSION}\n");
-        if let Some(view) = self.view.as_ref().filter(|view| !view.lines.is_empty()) {
-            out.push_str("\n[view]\n");
-            for line in &view.lines {
-                out.push_str(line);
-                out.push('\n');
-            }
+        let mut document = DocumentMut::new();
+        document.insert("schema_version", Item::Value(SCHEMA_VERSION.into()));
+        if let Some(view) = self.view.as_ref().filter(|view| view.kept > 0) {
+            document.insert("view", Item::Table(fresh_table(&view.table)));
         }
-        for (name, entry) in &self.entries {
-            out.push_str(&format!(
-                "\n[environments.{}]\n",
-                Key::new(name.as_str()).display_repr()
-            ));
-            for line in &entry.lines {
-                out.push_str(line);
-                out.push('\n');
+        if !self.entries.is_empty() {
+            let mut environments = Table::new();
+            environments.set_implicit(true);
+            for (name, entry) in &self.entries {
+                environments.insert(name, Item::Table(fresh_table(&entry.table)));
             }
+            document.insert("environments", Item::Table(environments));
         }
-        out
+        let mut text = document.to_string();
+        if !text.ends_with('\n') {
+            text.push('\n');
+        }
+        text
     }
 
     fn report(&self, backup: PathBuf) -> RepairReport {
@@ -567,6 +784,28 @@ impl Salvaged {
                 .map_or(ViewRecovery::Absent, Section::recovery),
             dropped_text: self.dropped_text,
             backup,
+        }
+    }
+}
+
+/// A header table with the kept fields, laid out in the order they're
+/// written rather than where they were in the broken file.
+fn fresh_table(fields: &Table) -> Table {
+    let mut table = fields.clone();
+    table.set_implicit(false);
+    table.set_dotted(false);
+    *table.decor_mut() = Default::default();
+    clear_positions(&mut table);
+    table
+}
+
+fn clear_positions(table: &mut Table) {
+    table.set_position(None);
+    for (_, item) in table.iter_mut() {
+        match item {
+            Item::Table(child) => clear_positions(child),
+            Item::ArrayOfTables(array) => array.iter_mut().for_each(clear_positions),
+            _ => {}
         }
     }
 }

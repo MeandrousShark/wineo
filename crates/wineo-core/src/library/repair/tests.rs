@@ -492,3 +492,306 @@ fn wording_for_no_entries_and_lost_view() {
         "Recovered 0 of 2 recognized entries fully. Some data could not be recovered.\nOriginal saved as library.toml.broken-1."
     );
 }
+
+#[test]
+#[ignore = "timing, run with --release --ignored --nocapture"]
+fn bench_repair_of_two_thousand_fields() {
+    let mut text = String::new();
+    for index in 0..1000 {
+        text.push_str(&format!(
+            "[environments.game{index}]\nfavorite = true\nadded = 2026-10-17T18:00:00Z\n\n"
+        ));
+    }
+    let mut one_entry = String::from("[environments.big]\n");
+    for index in 0..2000 {
+        one_entry.push_str(&format!("field{index} = {index}\n"));
+    }
+    for (label, broken) in [
+        (
+            "one entry, broken at the end",
+            format!("{one_entry}broken =\n"),
+        ),
+        (
+            "one entry, broken at the start",
+            format!("broken =\n{one_entry}"),
+        ),
+        ("broken at the end", format!("{text}broken =\n")),
+        ("broken at the start", format!("broken =\n{text}")),
+        (
+            "unterminated string at the start",
+            format!("[environments.x]\nnote = \"\"\"\n{text}"),
+        ),
+        (
+            "unterminated string in the middle",
+            format!("{text}note = '''\n{text}"),
+        ),
+    ] {
+        let fixture = Fixture::new();
+        fixture.write(&broken);
+        let started = std::time::Instant::now();
+        repair_at(&fixture.paths, STAMP, sync_dir).unwrap().unwrap();
+        eprintln!("{label}: {:?}", started.elapsed());
+    }
+}
+
+/// Every valid field toml_edit reads from `text`, flattened to
+/// `section/dotted.path -> value`, with string newlines normalized.
+fn attribution(text: &str) -> std::collections::BTreeMap<String, String> {
+    fn canonical(value: &toml_edit::Value) -> String {
+        match value {
+            toml_edit::Value::String(text) => format!("{:?}", text.value().replace("\r\n", "\n")),
+            toml_edit::Value::Array(array) => format!(
+                "[{}]",
+                array.iter().map(canonical).collect::<Vec<_>>().join(",")
+            ),
+            toml_edit::Value::InlineTable(table) => format!(
+                "{{{}}}",
+                table
+                    .iter()
+                    .map(|(key, value)| format!("{key}={}", canonical(value)))
+                    .collect::<Vec<_>>()
+                    .join(",")
+            ),
+            other => {
+                let mut other = other.clone();
+                other.decor_mut().clear();
+                other.to_string()
+            }
+        }
+    }
+    fn flatten(path: String, item: &Item, out: &mut std::collections::BTreeMap<String, String>) {
+        match item {
+            Item::Value(value) => {
+                out.insert(path, canonical(value));
+            }
+            Item::Table(table) => {
+                for (key, child) in table.iter() {
+                    flatten(format!("{path}.{key}"), child, out);
+                }
+            }
+            Item::ArrayOfTables(array) => {
+                for (index, table) in array.iter().enumerate() {
+                    for (key, child) in table.iter() {
+                        flatten(format!("{path}[{index}].{key}"), child, out);
+                    }
+                }
+            }
+            Item::None => {}
+        }
+    }
+    let document = text.parse::<DocumentMut>().expect("a valid document");
+    let mut out = std::collections::BTreeMap::new();
+    let mut section =
+        |name: &str, table: &dyn toml_edit::TableLike, valid: fn(&str, &Item) -> bool| {
+            for (key, item) in table.iter() {
+                if valid(key, item) {
+                    flatten(format!("{name}/{key}"), item, &mut out);
+                }
+            }
+        };
+    if let Some(view) = document.get("view").and_then(Item::as_table_like) {
+        section("[view]", view, valid_view_field);
+    }
+    if let Some(environments) = document.get("environments").and_then(Item::as_table_like) {
+        for (name, entry) in environments.iter() {
+            section(name, entry.as_table_like().unwrap(), valid_entry_field);
+        }
+    }
+    out
+}
+
+/// Valid documents full of constructs a line scanner could misread. Each
+/// is (name, text, the table its last line belongs to).
+const NASTY: &[(&str, &str, &str)] = &[
+    (
+        "quote runs closing basic and literal strings",
+        "[environments.hades]\nnote = \"\"\"ends with one quote\"\"\"\"\nother = \"\"\"ends with two\"\"\"\"\"\nlit = '''one''''\nlit2 = '''two'''''\nempty = \"\"\"\"\"\"\nfavorite = true\n",
+        "hades",
+    ),
+    (
+        "round two: a quote run inside a multi-line array",
+        "[environments.hades]\nnote = [\"\"\"one\"\"\"\", \"\"\"\n]\n[environments.celeste]\nfavorite = true\n\"\"\"]\nhidden = true\n",
+        "hades",
+    ),
+    (
+        "round two with literal strings",
+        "[environments.hades]\nnote = ['''one'''', '''\n]\n[environments.celeste]\nfavorite = true\n''']\nhidden = true\n",
+        "hades",
+    ),
+    (
+        "round one: a header inside a multi-line string",
+        "[environments.hades]\nnote = \"\"\"\n[environments.celeste]\nfavorite = true\n\"\"\"\nhidden = true\n",
+        "hades",
+    ),
+    (
+        "literal strings holding headers and triple quotes",
+        "[environments.celeste]\nnote = '[environments.x]'\nnote2 = '''\n[environments.fake]\nfavorite = true\n\"\"\"\n'''\nescaped = \"\"\"a \\\"\"\" b\"\"\"\nhidden = true\n",
+        "celeste",
+    ),
+    (
+        "comments and brackets inside strings in arrays",
+        "[environments.\"old demo\"]\ntags = [\"#not a comment\", \"]\", \"[\", '''\n]''', # a real comment\n  \"[environments.ghost]\",\n]\nfavorite = true # real comment\n",
+        "old demo",
+    ),
+    (
+        "header-looking lines in multi-line arrays and inline tables",
+        "[view]\nsort = \"added\"\nextra = [\n  \"[environments.ghost]\",\n  { a = \"[view]\" },\n[\n\"x\"]\n]\ndescending = true\n[environments.last]\nhidden = true\n",
+        "last",
+    ),
+    (
+        "dotted keys",
+        "[environments.dotted]\nfuture.a = 1\nfuture.b = \"x\"\nsite.\"google.com\" = true\nfavorite = true\n",
+        "dotted",
+    ),
+    (
+        "CRLF line endings",
+        "[environments.windows]\r\nnote = \"\"\"\r\n[environments.ghost]\r\n\"\"\"\r\nfavorite = true\r\n\r\n[environments.second]\r\nhidden = true\r\n",
+        "second",
+    ),
+];
+
+fn assert_repairs_like_the_parser(original: &str, valid: &str, broken_in: &str, case: &str) {
+    let fixture = Fixture::new();
+    fixture.write(original);
+    let report = repair_at(&fixture.paths, STAMP, sync_dir).unwrap().unwrap();
+
+    let expected = attribution(valid);
+    assert_eq!(attribution(&fixture.read()), expected, "{case}");
+    let document = valid.parse::<DocumentMut>().unwrap();
+    let entries = document
+        .get("environments")
+        .and_then(Item::as_table_like)
+        .map_or(0, |table| table.len());
+    let partly = usize::from(broken_in != "[view]");
+    assert_eq!(
+        (report.entries, report.full, report.partly),
+        (entries, entries - partly, partly),
+        "{case}"
+    );
+    let view = match (document.get("view"), broken_in) {
+        (None, _) => ViewRecovery::Absent,
+        (Some(_), "[view]") => ViewRecovery::Partly,
+        (Some(_), _) => ViewRecovery::Recovered,
+    };
+    assert_eq!(report.view, view, "{case}");
+    assert!(!report.dropped_text, "{case}");
+}
+
+#[test]
+fn a_broken_last_line_leaves_everything_before_it_as_the_parser_reads_it() {
+    for (case, valid, last) in NASTY {
+        valid
+            .parse::<DocumentMut>()
+            .unwrap_or_else(|error| panic!("{case}: {error}"));
+        let original = format!("{valid}broken =\n");
+        assert_repairs_like_the_parser(&original, valid, last, case);
+    }
+}
+
+#[test]
+fn a_broken_line_in_the_middle_leaves_the_tail_attributed_too() {
+    for (case, nasty, _) in NASTY {
+        let head = "[environments.first]\nfavorite = true\n";
+        let original = format!("{head}broken =\n{nasty}");
+        let valid = format!("{head}{nasty}");
+        assert_repairs_like_the_parser(&original, &valid, "first", case);
+    }
+}
+
+#[test]
+fn the_tail_continues_the_table_the_parsed_part_ended_in() {
+    let fixture = Fixture::new();
+    fixture.write(
+        "[environments.hades]\nfavorite = true\nbroken =\nhidden = true\n[environments.celeste]\nhidden = true\n",
+    );
+
+    let report = repair_at(&fixture.paths, STAMP, sync_dir).unwrap().unwrap();
+
+    assert_eq!((report.entries, report.full, report.partly), (2, 1, 1));
+    let library = load(&fixture.paths);
+    assert!(library.environments["hades"].favorite);
+    assert!(library.environments["hades"].hidden);
+    assert!(library.environments["celeste"].hidden);
+}
+
+#[test]
+fn an_entry_split_across_the_parsed_part_and_the_tail_counts_once() {
+    let fixture = Fixture::new();
+    fixture.write(
+        "[environments.hades]\nfavorite = true\nfuture.a = 1\n[view]\nbroken =\n[environments.hades]\nhidden = true\nfavorite = false\nfuture.b = 2\n",
+    );
+
+    let report = repair_at(&fixture.paths, STAMP, sync_dir).unwrap().unwrap();
+
+    // The second `favorite` is a duplicate, so hades is partly recovered.
+    assert_eq!((report.entries, report.full, report.partly), (1, 0, 1));
+    assert_eq!(report.view, ViewRecovery::Lost);
+    let library = load(&fixture.paths);
+    assert!(library.environments["hades"].favorite);
+    assert!(library.environments["hades"].hidden);
+    let text = fixture.read();
+    assert!(
+        text.contains("future.a = 1") && text.contains("future.b = 2"),
+        "{text}"
+    );
+}
+
+#[test]
+fn an_unterminated_string_falls_back_to_the_last_prefix_that_parses() {
+    let fixture = Fixture::new();
+    fixture.write(
+        "[environments.hades]\nfavorite = true\n[environments.celeste]\nnote = '''\n[environments.ghost]\nfavorite = true\n",
+    );
+
+    let report = repair_at(&fixture.paths, STAMP, sync_dir).unwrap().unwrap();
+
+    assert_eq!((report.entries, report.full, report.partly), (2, 1, 0));
+    let library = load(&fixture.paths);
+    assert!(library.environments["hades"].favorite);
+    assert!(library.environments.contains_key("celeste"));
+    assert!(!library.environments.contains_key("ghost"));
+}
+
+#[test]
+fn a_file_with_nothing_that_parses_is_scanned_from_the_start() {
+    let fixture = Fixture::new();
+    fixture.write("note = \"\"\"\n[environments.ghost]\nfavorite = true\n");
+
+    let report = repair_at(&fixture.paths, STAMP, sync_dir).unwrap().unwrap();
+
+    assert_eq!(report.entries, 0);
+    assert!(report.dropped_text);
+}
+
+#[test]
+fn quote_runs_close_multi_line_strings_as_the_spec_says() {
+    let scan = |lines: &[&str]| {
+        let mut scan = Scan::default();
+        for (index, line) in lines.iter().enumerate() {
+            scan.line(line, index == 0);
+        }
+        scan.open()
+    };
+    // Three to five quotes close, the extra ones being content.
+    for close in ["\"\"\"", "\"\"\"\"", "\"\"\"\"\""] {
+        assert!(!scan(&[&format!("a = \"\"\"x{close}")]), "{close}");
+        assert!(!scan(&["a = \"\"\"", &format!("x{close}")]), "{close}");
+    }
+    for close in ["'''", "''''", "'''''"] {
+        assert!(!scan(&[&format!("a = '''x{close}")]), "{close}");
+    }
+    // One or two quotes are content.
+    assert!(scan(&["a = \"\"\"x\"\"", "y\""]));
+    assert!(scan(&["a = '''x''", "y'"]));
+    // Escapes only count in basic strings.
+    assert!(scan(&["a = \"\"\"x\\\"\"\""]));
+    assert!(!scan(&["a = '''x\\'''"]));
+    // A run right after the opening delimiter closes it too.
+    assert!(!scan(&["a = \"\"\"\"\"\""]));
+    // A run of four inside an array closes the string, not the array.
+    assert!(scan(&["a = [\"\"\"one\"\"\"\", \"\"\""]));
+    assert!(!scan(&["a = [\"\"\"one\"\"\"\", \"\"\"", "]", "\"\"\"]"]));
+    // A comment or a quote inside a string doesn't end the value.
+    assert!(!scan(&["a = [\"#\", \"]\"]"]));
+    assert!(scan(&["a = [\"#\", \"]\","]));
+}
