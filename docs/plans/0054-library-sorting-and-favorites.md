@@ -112,7 +112,8 @@ the same day:
 - **Lifecycle writes never block on `library.toml`, with safeguards.**
   `new`, imports, `rm`, `restore`, and `clone` succeed even when the
   library update can't be written; they warn, naming what wasn't saved.
-  A reused name never inherits a stale entry. See "Lifecycle".
+  A reused name clears its old entry whenever `library.toml` is readable.
+  See "Lifecycle".
 - **Re-sorts and filter changes snap in this plan**, like search does
   today. Animating cards to new positions comes with part 2, which needs
   the same per-card motion for zoom.
@@ -128,6 +129,23 @@ the same day:
   doesn't change an open one, and favoriting or hiding in a window never
   writes that window's view back: every write sets only the field it
   changes. Banners for a broken file do update.
+
+A second review round on 2026-10-17 narrowed to the pending-clears journal
+for reused names (crash ordering, portable folders, reads and trash
+capture, growth). The maintainer settled it the same day:
+
+- **No journal; the stale-entry case is a known limit.** Keeping a
+  reused name clean when `library.toml` was unreadable at every chance to
+  clean it would need a small transaction system to protect a star or a
+  hidden flag. The normal case is covered by clearing on reuse, and the
+  rare chain left over is bounded and tested. See "Lifecycle".
+- **A cleanup error is never discarded.** Every failed library write
+  during a lifecycle operation surfaces in its warning with the error
+  itself, never only a generic note, and nothing swallows it.
+- **Enter acts only on a shown card.** Enter launches (or opens the panel
+  for) the selected game only while it's shown in the filtered grid. A
+  search or filter that hides it keeps the selection and the open panel,
+  but Enter does nothing until it's shown again. See "Selection".
 
 ## Existing foundation
 
@@ -589,24 +607,20 @@ backup path) that the CLI's `validate --fix` and Checkup both render.
 updates never block or undo a lifecycle operation. Each one warns when its
 library update can't be written, naming what wasn't saved:
 
-- **`new`, imports, GOG installs, `clone`:** stamp `added` after the
-  environment exists. They also **clear any existing entry for the name**
-  first, so a new `hades` never inherits an old one's star or hidden flag,
-  even if an earlier cleanup failed. If the file is broken, the
-  environment is still created and the warning says the old entry couldn't
-  be cleared. Because nothing in the environment can later tell an old
-  entry from its own, the clear is recorded in a small pending-clears
-  journal in the state dir (lenient, one line per name). Every
-  later write to `library.toml`, including a repair, applies the journal
-  first and then drops the lines it applied, so the old star can't come
-  back once the file is readable again. `added` is stamped by the same
-  write.
+- **`new`, imports, GOG installs, `clone`:** after the environment
+  exists, one write **replaces any existing entry for the name** with a
+  fresh one stamped with `added`, so a new `hades` never inherits an old
+  one's star or hidden flag, even if an earlier cleanup failed. If the
+  file is broken, the environment is still created and the warning says
+  what happened and what it means: `Can't update library.toml: <error>.
+  hades may show an old star or hidden flag once it's repaired.`
 - **`rm`:** the entry is copied into the trash manifest when the manifest
   is written, before payloads move (`trash/remove.rs:304`), so it's part
   of the journaled removal. Removing it from `library.toml` happens after
-  the removal commits; if that write fails, the name goes into the
-  pending-clears journal, the stale entry is harmless meanwhile (it names
-  a missing environment), and `validate` reports it.
+  the removal commits; if that write fails, the warning carries the
+  error, the stale entry is harmless meanwhile (it names a missing
+  environment), and `validate` reports it. The next `new` of that name
+  clears it.
 - **`restore`:** writes the entry back to `library.toml` **before** the
   trash entry is retired (`trash/restore.rs:250`). If that write fails,
   the restore still finishes, and the warning lists the values that
@@ -614,13 +628,24 @@ library update can't be written, naming what wasn't saved:
   set again.
 - **Pruning** drops the manifest copy with the trash entry.
 
-Tests: each operation with a broken `library.toml` (it succeeds, warns, and
-leaves the file untouched); a failed cleanup after `rm` followed by `new`
-with the same name, then a repair (the stale star doesn't come back, and
-the journal is empty afterwards); restore with a failing library write
-(the warning names the lost values); a restore of a name that has a
-journal line keeps the restored entry (the restore's own write applies the
-journal first, then writes the entry, so order alone decides it).
+**Known limit.** If `library.toml` can't be read both when `rm` tries to
+remove an entry and when `new` reuses the name, the old entry survives,
+and once the file is repaired the new environment shows its star or
+hidden flag. Until then, removing the new one copies that stale entry
+into its trash manifest. It takes three rare events in a row, nothing is
+lost, both operations warned at the time, and Show hidden makes a stray
+hidden flag easy to find and undo. Nothing in the environment can tell an
+old entry from its own, so closing this would take a journal with its own
+crash and portability rules; the 2026-10-17 review showed that costs more
+than it protects.
+
+Tests: each operation with a broken `library.toml` (it succeeds, warns
+with the underlying error, and leaves the file untouched); a failed
+cleanup after `rm` followed by `new` with the same name while the file is
+readable (the stale entry is replaced); the known-limit chain (failed
+cleanup, reuse while broken, repair), asserting the warning text and the
+documented outcome, so it can't silently get worse; restore with a
+failing library write (the warning names the lost values).
 
 ### Sort keys
 
@@ -673,7 +698,7 @@ surface like the maintainer's mockup, with the wording from question 11:
 
 Each state is chosen from counts the filtering already has, so it costs
 nothing extra. With nothing shown, the arrow keys do nothing and Enter
-doesn't launch; the selection follows "Selection".
+does nothing, since no card is shown; the selection follows "Selection".
 
 ### Selection
 
@@ -685,8 +710,13 @@ doesn't launch; the selection follows "Selection".
   nothing is left, the selection is cleared and the panel closes. With
   Show hidden on, the card stays shown dimmed and stays selected.
 - **Turning Show hidden off, or a filter change, that removes the selected
-  card** clears the selection and closes the panel, since there's no
-  position it was "in" to inherit.
+  card** keeps it selected with its panel open, like search does today.
+  The panel still shows which game it is, so its Play button works.
+- **Enter acts only on a shown card.** Today Enter opens the selected
+  card's panel, or launches it when the panel is open, even when search
+  hides the card (`keys.rs:202`). Now it does nothing while the selected
+  card isn't in the filtered grid, whatever hid it. The arrow keys move
+  from there to the first shown card, as they do today.
 
 ### Performance
 
@@ -806,13 +836,15 @@ places is part 2. Selection follows "Selection".
   and `restore`, and `validate` reports stale entries. Two writers at once
   (two threads through the core API) both land. A favorite written while
   another process changed `[view]` keeps that `[view]`. The "Lifecycle"
-  tests, including a failed cleanup followed by reuse of the name.
+  tests, including the known-limit chain.
 - GUI: `filtered()` order for every key and direction with never-played
   and unknown-date games, favorites first, hidden with and without the
   switch, source and tag filters, tag search, unknown Steam playtime last
   in both directions; the selection survives a re-sort; hiding the
   selected card selects the one in its place, the previous one when it
-  was last, and nothing when it was the only one; a re-sort snaps without
+  was last, and nothing when it was the only one; a search, filter, or
+  Show hidden change that hides the selected card keeps it selected and
+  Enter does nothing until it's shown again; a re-sort snaps without
   stale bounds; keys move through the sorted order; each empty state appears for its case and
   never for a populated grid; the cached order rebuilds on each kind of
   change and not on an unchanged rescan; `library.toml` isn't re-read when
@@ -844,5 +876,8 @@ places is part 2. Selection follows "Selection".
 - No animation for a re-sort or filter change; they snap (part 2).
 - No copy of a portable environment back out of its folder, so no
   carrying its entry home; a backlog row.
+- A reused name can show an old star or hidden flag when `library.toml`
+  was unreadable through both its removal and its reuse; the known limit
+  in "Lifecycle".
 - Reduced motion still only covers the collapse; the grid and panel ignore
   it today. A separate fix if wanted.
