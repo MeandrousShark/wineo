@@ -43,6 +43,14 @@ die() {
     exit 1
 }
 
+# env.sh and the TOML files quote ROOT, so a path that needs escaping is
+# refused instead of escaped.
+check_root() {
+    case $1 in
+        *\'* | *\"* | *\\* | *$'\n'*) die "ROOT can't contain a quote, backslash, or newline: $1" ;;
+    esac
+}
+
 # Appends one session ending a few seconds ago to every stats log.
 busy() {
     local root=$1 log
@@ -73,8 +81,10 @@ fi
 [[ $# -ge 1 && $# -le 2 ]] || die "usage: $0 ROOT [COUNT] | --busy ROOT"
 count=${2:-300}
 [[ $count =~ ^[1-9][0-9]*$ ]] || die "COUNT must be a positive number"
+check_root "$1"
 mkdir -p -- "$1"
 root=$(realpath -- "$1")
+check_root "$root"
 command -v magick >/dev/null || die "ImageMagick (magick) is needed for the posters"
 
 # Refuse to wipe anything that isn't a previous run's output.
@@ -105,7 +115,9 @@ EOF
 # size, not on every file being unique, and magick is slow.
 echo "Making $POSTER_POOL posters" >&2
 for ((i = 0; i < POSTER_POOL; i++)); do
-    magick -seed $((SEED + i)) -size 600x900 plasma:fractal -blur 0x1.5 \
+    # ImageMagick reads and may write under HOME and XDG, so it gets the root's.
+    HOME=$root XDG_CONFIG_HOME=$root/.config XDG_CACHE_HOME=$root/.cache \
+        magick -seed $((SEED + i)) -size 600x900 plasma:fractal -blur 0x1.5 \
         -quality 82 "$root/pool/$i.jpg"
 done
 
