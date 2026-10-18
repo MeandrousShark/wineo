@@ -878,6 +878,32 @@ places is part 2. Selection follows "Selection".
     (error), and `library_field_invalid`, `library_key_unknown`, and
     `library_entry_stray` (warnings). Only the stray entries get a batch
     fix besides the repair.
+  - Salvage trusts the TOML parser wherever it can: the longest part of
+    the file before the first parse error is read by `toml_edit` itself,
+    so nothing there is ever attributed to the wrong entry. Only the
+    broken rest goes through a line scanner, in units (a header, or a key
+    with every line its value spans), so a multi-line string or array is
+    never read as headers or fields. Inside that broken rest attribution
+    is best effort, and the report says data was lost. Two review rounds
+    found the scanner alone misreading valid TOML (2026-10-18), which is
+    why it's confined there; further findings that need the parse error to
+    come before the tricky construct rate Low. A line that isn't valid
+    UTF-8 is lost, never rewritten. A leading byte order mark is skipped.
+  - When a key repeats, the first value kept wins, and a field is kept
+    only if the entry still parses with it, so dotted keys like `future.a`
+    and `future.b` both survive and the result always parses.
+  - A key line whose value doesn't parse counts as a lost field (the entry
+    is partly recovered); a line with no key is dropped text. Unknown
+    top-level keys are dropped, since they sit under no recognized header,
+    and the report says data was lost.
+  - A `schema_version` above 1 is honored even when the rest of the file
+    doesn't parse: no repair is offered, and `library::repair` refuses.
+  - The backup and its directory are synced before the new file replaces
+    the original, and a repair stops with the original untouched if either
+    sync fails.
+  - A stray or trash-pending entry shows only its stray warning, not its
+    field warnings. The stray fix adds `schema_version = 1` to a file that
+    had none, like every other write.
 - **Restore writes only an entry the trash saved** (2026-10-18, from
   review). A trash entry without one may come from an `rm` that couldn't
   read `library.toml`, which left the real entry in the file; writing

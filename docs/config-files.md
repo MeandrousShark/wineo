@@ -322,8 +322,27 @@ works, but going the other way isn't promised.
 
 Settings that only change how the desktop app shows your library, like
 favorites or the sort order, stay out of these files, so that going back to
-an older release only loses those preferences. When they arrive, they'll
-live in their own `library.toml`, which ignores keys it doesn't know.
+an older release only loses those preferences. They live in `library.toml`
+(see [Library state](#library-state)), which ignores keys it doesn't know.
+
+## Library state
+
+`~/.config/wineo/library.toml` holds how the desktop app shows each
+environment: favorites, hidden games, when it was added, and the saved sort.
+It's written for you, one field at a time, and never stops anything from
+launching. A bad value, like `favorite = "yes"`, counts as unset for that
+field only and stays in the file until you fix it or change that setting.
+
+When the file doesn't parse, or has a `schema_version` this wineo doesn't
+support, favorites and hidden games are off and every write to it is refused,
+so the file stays exactly as it is. `wineo validate --fix` or Checkup can
+repair it: the original is copied to `library.toml.broken-<time>` (with
+`-2`, `-3` if that name is taken), and that copy is synced to disk before
+the new file replaces it. The repair keeps each setting whose line still
+reads correctly on its own, under an entry or `[view]` it can recognize, and
+reports what it couldn't keep. A file from a newer wineo is never repaired;
+update wineo instead. The fix that removes entries for environments that no
+longer exist adds `schema_version = 1` if the file had none.
 
 ## A global config wineo can't use
 
