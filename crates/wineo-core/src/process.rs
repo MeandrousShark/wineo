@@ -776,8 +776,12 @@ fn proc_pids() -> Option<Vec<u32>> {
     Some(pids)
 }
 
+/// A process names itself with arbitrary bytes, and the kernel cuts names at
+/// 15 bytes, even mid-character, so the name in stat need not be UTF-8. The
+/// fields after it always are, so a lossy read keeps them intact.
 fn read_proc_stat(pid: u32) -> io::Result<String> {
-    fs::read_to_string(format!("/proc/{pid}/stat"))
+    let bytes = fs::read(format!("/proc/{pid}/stat"))?;
+    Ok(String::from_utf8_lossy(&bytes).into_owned())
 }
 
 fn denied(err: &io::Error) -> bool {
@@ -844,7 +848,7 @@ fn open_group_members(group: u32) -> Result<Vec<(u32, u64, OwnedFd)>, ()> {
 }
 
 fn read_stat(pid: u32) -> ProcRead {
-    parse_stat_read(fs::read_to_string(format!("/proc/{pid}/stat")))
+    parse_stat_read(read_proc_stat(pid))
 }
 
 fn parse_stat_read(read: io::Result<String>) -> ProcRead {

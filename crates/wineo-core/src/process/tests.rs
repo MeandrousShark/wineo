@@ -335,6 +335,41 @@ fn a_leaderless_group_settles_once_only_zombies_are_left() {
 }
 
 #[test]
+fn a_bystander_whose_name_is_not_utf8_does_not_stop_a_group_scan() {
+    let dir = tempfile::tempdir().unwrap();
+    // The kernel keeps 15 bytes of a name, which splits the final `é` here.
+    let script = dir.path().join("aaaaaaaaaaaaaa\u{e9}");
+    crate::test_script::write_script(&script, "#!/bin/sh\nsleep 30\nexit 0\n");
+    let mut bystander = process_group(&mut Command::new(&script)).spawn().unwrap();
+    let comm = format!("/proc/{}/comm", bystander.id());
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !fs::read(&comm).unwrap().contains(&0xc3) && Instant::now() < deadline {
+        thread::sleep(Duration::from_millis(10));
+    }
+    assert!(std::str::from_utf8(&fs::read(&comm).unwrap()).is_err());
+    assert!(matches!(
+        read_stat(bystander.id()),
+        ProcRead::Found(stat) if stat.group == bystander.id()
+    ));
+
+    let mut leader = process_group(&mut Command::new("sleep"))
+        .arg("30")
+        .spawn()
+        .unwrap();
+    let group = leader.id();
+    assert_eq!(group_has_live_members(group), Some(true));
+    leader.kill().unwrap();
+    leader.wait().unwrap();
+    assert_eq!(group_has_live_members(group), Some(false));
+
+    let _ = rustix::process::kill_process_group(
+        Pid::from_raw(bystander.id() as i32).unwrap(),
+        Signal::KILL,
+    );
+    let _ = bystander.wait();
+}
+
+#[test]
 fn a_live_owner_keeps_its_zombie_leader_as_a_witness_until_children_stop() {
     let mut child = process_group(&mut Command::new("sh"))
         .args(["-c", "sleep 2 >/dev/null 2>&1 & exit 0"])
