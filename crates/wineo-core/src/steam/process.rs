@@ -644,9 +644,11 @@ fn read_arguments(pid: u32) -> io::Result<Option<Vec<Vec<u8>>>> {
     Ok(Some(args))
 }
 
+/// The name in stat can be cut mid-character, so it need not be UTF-8. The
+/// fields after it always are, so a lossy read keeps them intact.
 fn read_stat(pid: u32) -> io::Result<Option<ProcStat>> {
-    match fs::read_to_string(format!("/proc/{pid}/stat")) {
-        Ok(text) => parse_stat(pid, &text)
+    match fs::read(format!("/proc/{pid}/stat")) {
+        Ok(bytes) => parse_stat(pid, &String::from_utf8_lossy(&bytes))
             .map(Some)
             .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "invalid process stat")),
         Err(error) if process_gone(&error) => Ok(None),

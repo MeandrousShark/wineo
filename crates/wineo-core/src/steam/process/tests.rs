@@ -574,6 +574,44 @@ fn client_match_requires_install_exe_with_limited_argv_fallback() {
     assert!(matches_client(&install, &client));
 }
 
+/// Kills a test process's group even when an assertion panics first.
+struct KillGroupOnDrop(std::process::Child);
+
+impl Drop for KillGroupOnDrop {
+    fn drop(&mut self) {
+        if let Some(group) = rustix::process::Pid::from_raw(self.0.id() as i32) {
+            let _ = rustix::process::kill_process_group(group, rustix::process::Signal::KILL);
+        }
+        let _ = self.0.wait();
+    }
+}
+
+#[test]
+fn a_process_whose_name_is_not_utf8_still_has_a_stat() {
+    let dir = tempfile::tempdir().unwrap();
+    // The kernel keeps 15 bytes of a name, which splits the final `é` here.
+    let script = dir.path().join("aaaaaaaaaaaaaa\u{e9}");
+    crate::test_script::write_script(&script, "#!/bin/sh\nsleep 30\nexit 0\n");
+    let child = KillGroupOnDrop(
+        Command::new(&script)
+            .process_group(0)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap(),
+    );
+    let pid = child.0.id();
+    let comm = format!("/proc/{pid}/comm");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while !fs::read(&comm).unwrap().contains(&0xc3) && std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    assert!(std::str::from_utf8(&fs::read(&comm).unwrap()).is_err());
+    let stat = read_stat(pid).unwrap().unwrap();
+    assert_eq!((stat.pid, stat.ppid), (pid, std::process::id()));
+}
+
 #[test]
 fn uptime_ticks_track_current_process_start() {
     let ticks = uptime_ticks().unwrap();
