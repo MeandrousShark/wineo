@@ -1885,8 +1885,8 @@ fn a_proton_run_ends_when_umu_exits() {
     let state = f.state("hades");
     assert!(state.contains("exit_code = 3"), "{state}");
     // umu waited for the game and left nothing in its group, so its exit
-    // ended the run. Proton runs don't record when umu exited, even when
-    // something it started outlives it.
+    // ended the run. umu's exit is only recorded when something it started
+    // outlives it.
     assert!(!state.contains("program_exited_at"), "{state}");
 
     let shown = stdout(&f.run(&["status", "hades"]));
