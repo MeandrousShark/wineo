@@ -1108,3 +1108,40 @@ fn a_quiet_close_takes_the_input_while_it_waits() {
     // An unseen layer takes the mouse; no prompt is drawn.
     let _ = app.view();
 }
+
+#[test]
+fn the_direction_tooltip_names_the_current_order_of_each_key() {
+    let cases = [
+        (SortKey::Name, false, "A to Z"),
+        (SortKey::Name, true, "Z to A"),
+        (SortKey::Source, false, "Sources A to Z"),
+        (SortKey::Source, true, "Sources Z to A"),
+        (SortKey::Playtime, true, "Most played first"),
+        (SortKey::Playtime, false, "Least played first"),
+        (SortKey::LastPlayed, true, "Most recent first"),
+        (SortKey::LastPlayed, false, "Least recent first"),
+        (SortKey::Added, true, "Newest first"),
+        (SortKey::Added, false, "Oldest first"),
+    ];
+    for (key, descending, expected) in cases {
+        assert_eq!(direction_label(key, descending), expected);
+    }
+}
+
+#[test]
+fn the_direction_button_still_flips_from_the_keyboard_with_its_tooltip() {
+    let (_root, app) = loaded();
+    let ran = run_keeping(
+        iced::widget::operation::focus(iced::widget::Id::new(DIRECTION_BUTTON_ID)),
+        true,
+        0,
+    );
+    let mut laid = focus_after(&app, ran.operations);
+    assert_eq!(laid.focused(), [iced::widget::Id::new(DIRECTION_BUTTON_ID)]);
+    let messages = laid.event(&press(Named::Enter));
+    assert!(
+        messages
+            .iter()
+            .any(|message| matches!(message, Message::Sort(Event::FlipDirection)))
+    );
+}

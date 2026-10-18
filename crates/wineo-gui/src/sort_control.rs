@@ -2,7 +2,9 @@
 //! first", the direction button, and saving each change to `library.toml`.
 
 use iced::keyboard::{Key, Modifiers, key::Named};
-use iced::widget::{Space, button, column, container, mouse_area, row, scrollable, svg, text};
+use iced::widget::{
+    Space, button, column, container, mouse_area, row, scrollable, svg, text, tooltip,
+};
 use iced::{Center, Color, Element, Fill, Font, Task, border, font};
 use wineo_core::library::{self, SortKey};
 use wineo_core::paths::Paths;
@@ -100,6 +102,22 @@ pub(crate) fn label(sort: SortKey) -> &'static str {
         SortKey::Playtime => "Playtime",
         SortKey::Added => "Date added",
         SortKey::Source => "Source",
+    }
+}
+
+/// The order the direction button currently gives, for its tooltip.
+pub(crate) fn direction_label(sort: SortKey, descending: bool) -> &'static str {
+    match (sort, descending) {
+        (SortKey::Name, false) => "A to Z",
+        (SortKey::Name, true) => "Z to A",
+        (SortKey::Source, false) => "Sources A to Z",
+        (SortKey::Source, true) => "Sources Z to A",
+        (SortKey::Playtime, true) => "Most played first",
+        (SortKey::Playtime, false) => "Least played first",
+        (SortKey::LastPlayed, true) => "Most recent first",
+        (SortKey::LastPlayed, false) => "Least recent first",
+        (SortKey::Added, true) => "Newest first",
+        (SortKey::Added, false) => "Oldest first",
     }
 }
 
@@ -280,6 +298,17 @@ pub(crate) fn toolbar(app: &App) -> Element<'_, Message> {
         .padding(0)
         .on_press(Message::Sort(Event::FlipDirection))
         .style(move |_, status| ui::secondary_style(palette, status));
+    let flip = tooltip(
+        flip,
+        text(direction_label(app.query.sort, app.query.descending)),
+        tooltip::Position::Bottom,
+    )
+    .style(move |_| {
+        container::Style::default()
+            .background(palette.surface)
+            .border(border::rounded(8).width(1).color(palette.border))
+    })
+    .gap(6);
     row![
         focus_button::control(
             sort.into(),
