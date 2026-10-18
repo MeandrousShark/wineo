@@ -853,6 +853,17 @@ places is part 2. Selection follows "Selection".
   accepted limits; further findings of that kind rate Low.
   `ICED_BACKEND=wgpu` stays allowed on purpose, for measuring the GPU
   path, and the run labels its renderer.
+- **An unsupported `schema_version` in `library.toml` reads like a broken
+  file** (2026-10-17). A version newer than 1, `0`, or a value of the
+  wrong type: no stars or hidden flags show, a banner says
+  `library.toml was written by a newer wineo; update wineo to use it.`,
+  and writes are refused, with the file left untouched. A later version
+  may change what a field means, so an older wineo doesn't guess. A
+  missing `schema_version` reads as 1, like the other config files.
+- **Lifecycle warnings reach the GUI** (2026-10-17). Where a core
+  lifecycle call (like creating a native environment) has no warning
+  channel, step 1 adds one and the GUI shows it through its existing
+  notice display, so a failed library write is never dropped.
 
 ## Measurements
 
