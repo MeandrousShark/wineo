@@ -8,7 +8,8 @@
 //!     -- --ignored --nocapture --test-threads=1
 //!
 //! Run one measurement by naming it instead of `library::bench`:
-//! `rescan_quiet_and_busy`, `rescan_parts`, or `filtered_search_change`.
+//! `rescan_quiet_and_busy`, `rescan_parts`, `stats_overview_cache`, or
+//! `filtered_search_change`.
 //! `WINEO_BENCH_ITERS` sets the iterations per measurement (default 100).
 //!
 //! The profile is release with debug assertions on for iced_core only, which
@@ -235,6 +236,13 @@ fn rescan_parts() {
         "stats::overview (logs + configs)",
         time(iterations, || stats::overview(&paths).unwrap()),
     );
+    let mut cache = stats::Cache::new();
+    millis(
+        "stats::overview_cached (warm)",
+        time(iterations, || {
+            stats::overview_cached(&paths, &mut cache).unwrap()
+        }),
+    );
     millis(
         "stats logs only (read + parse)",
         time(iterations, || {
@@ -274,6 +282,55 @@ fn rescan_parts() {
         "stats logs total {:.1} MiB",
         bytes as f64 / (1 << 20) as f64
     );
+}
+
+/// `stats::overview` against `stats::overview_cached`, the stats part of the
+/// rescan. Quiet: nothing changed and the cache is warm. Busy: a new session
+/// in every log before each call, so the cache re-parses all of them.
+#[test]
+#[ignore = "needs WINEO_BENCH_ROOT and a release-test build"]
+fn stats_overview_cache() {
+    let paths = paths();
+    let iterations = iterations();
+    let cards = library(&paths);
+
+    header("stats overview, quiet (nothing changed)", iterations);
+    millis(
+        "stats::overview",
+        time(iterations, || stats::overview(&paths).unwrap()),
+    );
+    let mut cache = stats::Cache::new();
+    millis(
+        "stats::overview_cached",
+        time(iterations, || {
+            stats::overview_cached(&paths, &mut cache).unwrap()
+        }),
+    );
+
+    header(
+        "stats overview, busy (new session in every log)",
+        iterations,
+    );
+    let logs = Logs::new(&paths, &cards);
+    let mut plain = Vec::new();
+    let mut cached = Vec::new();
+    let mut cache = stats::Cache::new();
+    for round in 0..iterations + 5 {
+        logs.append_session(round as u64);
+        let start = Instant::now();
+        black_box(stats::overview(&paths).unwrap());
+        let plain_elapsed = start.elapsed();
+        logs.append_session(round as u64);
+        let start = Instant::now();
+        black_box(stats::overview_cached(&paths, &mut cache).unwrap());
+        let cached_elapsed = start.elapsed();
+        if round >= 5 {
+            plain.push(plain_elapsed);
+            cached.push(cached_elapsed);
+        }
+    }
+    millis("stats::overview", plain);
+    millis("stats::overview_cached", cached);
 }
 
 /// What a search change costs `filtered()` on the loaded cards: the stand-in
