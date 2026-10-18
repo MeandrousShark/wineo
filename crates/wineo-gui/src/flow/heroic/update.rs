@@ -1,17 +1,19 @@
 //! The Heroic page's event handling.
 
+use std::collections::HashMap;
+
 use iced::Task;
-use wineo_core::cancel::Token;
 use wineo_core::components::Component;
 use wineo_core::download::Provider;
-use wineo_core::gamescope::{Filter, GamescopeSetting, Scaler, Window};
-use wineo_core::heroic::HeroicSource;
+use wineo_core::gamescope::GamescopeSetting;
+use wineo_core::heroic::{HeroicListing, HeroicSource};
 use wineo_core::heroic_import::{self, RunnerSuggestion};
 
 use crate::flow::{Action, artwork};
-use crate::task;
 
-use super::{Draft, Event, Page, Prepared, Prerequisite, Review, ScopeDraft, Step, playtime_note};
+use super::{
+    BatchOptions, Draft, Event, Page, Prepared, Prerequisite, Refreshed, Review, ScopeDraft, Step,
+};
 
 impl Page {
     pub(crate) fn update(&mut self, event: Event) -> Task<Event> {
@@ -50,24 +52,7 @@ impl Page {
                 self.source_path = value;
                 Task::none()
             }
-            Event::OpenSourcePath => {
-                if self.source_path.trim().is_empty() {
-                    self.error = Some("Enter a Heroic config folder".to_owned());
-                    return Task::none();
-                }
-                match self.paths.absolute(&self.source_path) {
-                    Ok(path) => {
-                        let source = HeroicSource::from_config_dir(path);
-                        self.sources.push(source.clone());
-                        self.source = Some(self.sources.len() - 1);
-                        self.list(source)
-                    }
-                    Err(error) => {
-                        self.error = Some(error.to_string());
-                        Task::none()
-                    }
-                }
-            }
+            Event::OpenSourcePath => self.open_source_path(),
             Event::OpenExisting(name) => {
                 self.action = Some(Action::Settings {
                     name,
@@ -108,17 +93,7 @@ impl Page {
                 Task::none()
             }
             Event::Listed(generation, result) if generation == self.generation => {
-                match result {
-                    Ok((listing, already)) => {
-                        let task = self.load_posters(&listing);
-                        self.listing = Some(listing);
-                        self.already = already;
-                        self.status.clear();
-                        return task;
-                    }
-                    Err(error) => self.error = Some(error),
-                }
-                Task::none()
+                self.listed(result)
             }
             Event::ProgressDue(generation) => {
                 self.grid.progress.reveal(generation);
@@ -148,59 +123,10 @@ impl Page {
             }
             Event::ImportSelected => self.import_chosen(),
             Event::BatchPrepared(generation, result) if generation == self.generation => {
-                match result {
-                    Ok(options) => {
-                        self.draft.runner = options.runner.clone();
-                        self.batch_options = Some(options);
-                        self.status.clear();
-                    }
-                    Err(error) => self.error = Some(error),
-                }
-                Task::none()
+                self.batch_prepared(result)
             }
             Event::Prepared(generation, result) if generation == self.generation => {
-                match result {
-                    Ok(prepared) => {
-                        let prepared = *prepared;
-                        self.draft = Draft {
-                            name: heroic_import::default_name(
-                                &prepared.candidate.title,
-                                prepared.candidate.executable.as_deref(),
-                            ),
-                            executable: prepared
-                                .candidate
-                                .executable
-                                .as_ref()
-                                .map(|path| path.display().to_string())
-                                .unwrap_or_default(),
-                            arguments: prepared.arguments.clone(),
-                            unparsed_arguments: prepared.unparsed_arguments.clone(),
-                            working_directory: prepared.working_directory.clone(),
-                            runner: prepared.runner.clone(),
-                            environment: prepared.environment.clone(),
-                            gamemode: prepared.gamemode.unwrap_or(false),
-                            wayland: prepared.wayland.unwrap_or(false),
-                            mangohud: prepared.mangohud.unwrap_or(false),
-                            gamescope: ScopeDraft::from_setting(prepared.gamescope.clone()),
-                            hdr: prepared.hdr,
-                            ..Draft::default()
-                        };
-                        self.status.clear();
-                        self.step = Step::Details;
-                        self.art = artwork::Draft::new();
-                        self.art_generation = self.art_generation.wrapping_add(1);
-                        let art_generation = self.art_generation;
-                        let task = self
-                            .art
-                            .configure(self.paths.clone(), prepared.candidate.title.clone())
-                            .map(move |event| Event::Art(art_generation, event));
-                        self.prepared = Some(prepared);
-                        self.prefill_poster();
-                        return task;
-                    }
-                    Err(error) => self.error = Some(error),
-                }
-                Task::none()
+                self.prepared_game(result)
             }
             Event::Name(value) => {
                 self.draft.name = value;
@@ -243,16 +169,7 @@ impl Page {
                 self.review = None;
                 Task::none()
             }
-            Event::ArgumentAdd => {
-                if !self.draft.argument_input.trim().is_empty() {
-                    self.draft
-                        .arguments
-                        .push(std::mem::take(&mut self.draft.argument_input));
-                    self.draft.unparsed_arguments = None;
-                }
-                self.review = None;
-                Task::none()
-            }
+            Event::ArgumentAdd => self.add_argument(),
             Event::ArgumentRemove(index) => {
                 if index < self.draft.arguments.len() {
                     self.draft.arguments.remove(index);
@@ -272,16 +189,7 @@ impl Page {
                 self.review = None;
                 Task::none()
             }
-            Event::EnvironmentAdd => {
-                if !self.draft.environment_input.trim().is_empty() {
-                    self.draft
-                        .environment
-                        .push(std::mem::take(&mut self.draft.environment_input));
-                    self.draft.environment_dirty = true;
-                }
-                self.review = None;
-                Task::none()
-            }
+            Event::EnvironmentAdd => self.add_environment(),
             Event::EnvironmentRemove(index) => {
                 if index < self.draft.environment.len() {
                     self.draft.environment.remove(index);
@@ -324,19 +232,7 @@ impl Page {
                 self.review = None;
                 Task::none()
             }
-            Event::GamescopeEnabled(value) => {
-                if !value {
-                    self.draft.gamescope.last_on = self.draft.gamescope.scope();
-                }
-                self.draft.gamescope.setting = Some(if value {
-                    GamescopeSetting::On(self.draft.gamescope.scope())
-                } else {
-                    GamescopeSetting::Off
-                });
-                self.draft.gamescope.dirty = true;
-                self.review = None;
-                Task::none()
-            }
+            Event::GamescopeEnabled(value) => self.set_gamescope_enabled(value),
             Event::GamescopeNumber(index, value) => {
                 if let Some(number) = self.draft.gamescope.numbers.get_mut(index) {
                     *number = value;
@@ -345,31 +241,7 @@ impl Page {
                 self.review = None;
                 Task::none()
             }
-            Event::GamescopeChoice(index, value) => {
-                let mut scope = self.draft.gamescope.scope();
-                match index {
-                    0 => {
-                        scope.filter = Filter::ALL
-                            .into_iter()
-                            .find(|choice| choice.as_str() == value)
-                    }
-                    1 => {
-                        scope.scaler = Scaler::ALL
-                            .into_iter()
-                            .find(|choice| choice.as_str() == value)
-                    }
-                    2 => {
-                        scope.window = Window::ALL
-                            .into_iter()
-                            .find(|choice| choice.as_str() == value)
-                    }
-                    _ => return Task::none(),
-                }
-                self.draft.gamescope.setting = Some(GamescopeSetting::On(scope));
-                self.draft.gamescope.dirty = true;
-                self.review = None;
-                Task::none()
-            }
+            Event::GamescopeChoice(index, value) => self.set_gamescope_choice(index, value),
             Event::GamescopeGrab(value) => {
                 let mut scope = self.draft.gamescope.scope();
                 scope.grab_cursor = value;
@@ -383,17 +255,7 @@ impl Page {
                 self.review = None;
                 Task::none()
             }
-            Event::GamescopeArgAdd => {
-                if !self.draft.gamescope.args_input.trim().is_empty() {
-                    self.draft
-                        .gamescope
-                        .args
-                        .push(std::mem::take(&mut self.draft.gamescope.args_input));
-                    self.draft.gamescope.dirty = true;
-                }
-                self.review = None;
-                Task::none()
-            }
+            Event::GamescopeArgAdd => self.add_gamescope_arg(),
             Event::GamescopeArgRemove(index) => {
                 if index < self.draft.gamescope.args.len() {
                     self.draft.gamescope.args.remove(index);
@@ -444,22 +306,7 @@ impl Page {
                 self.relist(Some(on))
             }
             Event::Offered(sequence, session, result) if sequence == self.offer_sequence => {
-                self.answering = false;
-                match result {
-                    Ok(refreshed) if session == self.details_session => self.refreshed(refreshed),
-                    // The answer is saved, but these choices were for a game
-                    // or batch that's no longer open, so read the open one's
-                    // when it has a runner to pick.
-                    Ok(_) if self.step == Step::Details && self.uses_runner() => self.relist(None),
-                    Ok(_) => {
-                        self.offer_answered();
-                        Task::none()
-                    }
-                    Err(error) => {
-                        self.error = Some(error);
-                        Task::none()
-                    }
-                }
+                self.offered(session, result)
             }
             Event::Adopt(value) => {
                 self.draft.adopt = value;
@@ -471,72 +318,18 @@ impl Page {
                 self.review = None;
                 Task::none()
             }
-            Event::FetchBatchArt(value) => {
-                let enabled = self
-                    .batch_options
-                    .as_ref()
-                    .is_some_and(|options| options.art_fetch_enabled);
-                if value && (!enabled || !key_available) {
-                    return Task::none();
-                }
-                self.draft.fetch_batch_art = value;
-                Task::none()
-            }
+            Event::FetchBatchArt(value) => self.set_fetch_batch_art(value, key_available),
             Event::Plan => self.plan(),
-            Event::Planned(generation, result) if generation == self.generation => match result {
-                Ok(review) => {
-                    self.review = Some(*review);
-                    self.status.clear();
-                    self.enter_review()
-                }
-                Err(error) => {
-                    self.error = Some(error);
-                    Task::none()
-                }
-            },
-            Event::CopyRunner => {
-                let Some(Prepared {
-                    suggested: Some(RunnerSuggestion::Copy(copy)),
-                    ..
-                }) = &self.prepared
-                else {
-                    return Task::none();
-                };
-                self.prerequisite(Prerequisite::CopyRunner(copy.clone()))
+            Event::Planned(generation, result) if generation == self.generation => {
+                self.planned(result)
             }
+            Event::CopyRunner => self.copy_runner(),
             Event::DownloadRunner => {
                 self.prerequisite(Prerequisite::Download(Provider::GeProton, None))
             }
-            Event::DownloadBuild(component, version) => {
-                let provider = match component {
-                    Component::Dxvk => Provider::Dxvk,
-                    Component::Vkd3d => Provider::Vkd3d,
-                };
-                self.prerequisite(Prerequisite::Download(provider, version))
-            }
+            Event::DownloadBuild(component, version) => self.download_build(component, version),
             Event::PrerequisiteFinished(generation, result) if generation == self.generation => {
-                self.token = None;
-                self.step = Step::Details;
-                match result {
-                    Ok(name) => {
-                        self.notes.push(format!(
-                            "Installed {name}. It stays installed if this import is canceled."
-                        ));
-                        if self.draft.runner.is_empty()
-                            || self.prepared.as_ref().is_some_and(|prepared| {
-                                matches!(prepared.suggested, Some(RunnerSuggestion::Copy(_)))
-                            })
-                        {
-                            self.draft.runner = name;
-                            self.draft.runner_chosen = true;
-                        }
-                        self.plan()
-                    }
-                    Err(error) => {
-                        self.error = Some(error);
-                        Task::none()
-                    }
-                }
+                self.prerequisite_finished(result)
             }
             Event::Import => self.start_import(),
             Event::Cancel => {
@@ -556,92 +349,15 @@ impl Page {
                 Task::none()
             }
             Event::SingleRegistered(generation, result) if generation == self.generation => {
-                match result {
-                    Ok(registered) => {
-                        if let Some(note) = playtime_note(&registered.playtime) {
-                            self.notes.push(note);
-                        }
-                        let title = match &self.review {
-                            Some(Review::Single { game, .. }) => game.title(),
-                            _ => &registered.environment.name,
-                        };
-                        self.status = format!("Imported {title}. Adding artwork...");
-                        let name = registered.environment.name.clone();
-                        self.registered = Some(registered);
-                        let art = self.art.clone();
-                        let paths = self.paths.clone();
-                        task::blocking(
-                            move || art.apply(&paths, &name),
-                            move |result| Event::ArtFinished(generation, result),
-                        )
-                    }
-                    Err(error) => {
-                        self.token = None;
-                        if error.source_changed {
-                            self.notes.push("Heroic settings changed. Review the refreshed plan before importing.".to_owned());
-                            self.step = Step::Details;
-                            self.plan()
-                        } else {
-                            self.error = Some(error.message);
-                            self.enter_review()
-                        }
-                    }
-                }
+                self.single_registered(generation, result)
             }
             Event::BatchFinished(generation, result) if generation == self.generation => {
-                self.token = None;
-                let (changed, canceled) = match result {
-                    Ok(value) => value,
-                    Err(error) => {
-                        self.error = Some(error);
-                        return self.enter_review();
-                    }
-                };
-                if changed {
-                    self.notes.push(
-                        "Heroic settings changed. Review the remaining games again.".to_owned(),
-                    );
-                    self.step = Step::Details;
-                    self.plan()
-                } else {
-                    self.step = Step::Finished;
-                    self.status = if canceled {
-                        "Batch import canceled. Completed imports remain."
-                    } else {
-                        "Batch import finished"
-                    }
-                    .to_owned();
-                    Task::none()
-                }
+                self.batch_finished(result)
             }
-            Event::ArtFinished(generation, result) if generation == self.generation => match result
-            {
-                Ok(notes) => {
-                    self.notes.extend(notes);
-                    self.finish_art()
-                }
-                Err(error) => {
-                    self.error = Some(format!(
-                        "Artwork failed: {error}. The environment is registered. Retry or skip artwork."
-                    ));
-                    self.finish_art()
-                }
-            },
-            Event::RetryArt => {
-                let Some(registered) = &self.registered else {
-                    return Task::none();
-                };
-                let name = registered.environment.name.clone();
-                let art = self.art.clone();
-                let paths = self.paths.clone();
-                let generation = self.generation;
-                self.token = Some(Token::new());
-                self.error = None;
-                task::blocking(
-                    move || art.apply(&paths, &name),
-                    move |result| Event::ArtFinished(generation, result),
-                )
+            Event::ArtFinished(generation, result) if generation == self.generation => {
+                self.art_finished(result)
             }
+            Event::RetryArt => self.retry_art(),
             Event::SkipArt => {
                 self.error = None;
                 self.step = Step::Finished;
@@ -649,45 +365,172 @@ impl Page {
                 Task::none()
             }
             Event::FinishedRegistered(generation, result) if generation == self.generation => {
-                self.token = None;
-                match result {
-                    Ok(notes) => self.notes.extend(notes),
-                    Err(error) => self.notes.push(format!("Desktop entry: {error}")),
-                }
-                if self.error.is_some() {
-                    self.step = Step::Working;
-                    self.status = "Imported with an artwork issue".to_owned();
-                } else {
-                    self.step = Step::Finished;
-                    self.status = "Import finished".to_owned();
-                }
-                Task::none()
+                self.finished_registered(result)
             }
             Event::Art(generation, event) if generation == self.art_generation => self
                 .art
                 .update_with_key_availability(event, key_available)
                 .map(move |event| Event::Art(generation, event)),
-            Event::OpenSettings => {
-                if let Some(registered) = &self.registered {
-                    self.action = Some(Action::Settings {
-                        name: registered.environment.name.clone(),
-                        launch: false,
-                    });
-                }
-                Task::none()
-            }
-            Event::BackToLibrary => {
-                let name = self
-                    .registered
-                    .as_ref()
-                    .map(|registered| registered.environment.name.clone());
-                self.action = Some(Action::Library {
-                    name,
-                    launch: false,
-                });
-                Task::none()
-            }
+            Event::OpenSettings => self.open_settings(),
+            Event::BackToLibrary => self.back_to_library(),
             _ => Task::none(),
         }
+    }
+
+    fn open_source_path(&mut self) -> Task<Event> {
+        if self.source_path.trim().is_empty() {
+            self.error = Some("Enter a Heroic config folder".to_owned());
+            return Task::none();
+        }
+        match self.paths.absolute(&self.source_path) {
+            Ok(path) => {
+                let source = HeroicSource::from_config_dir(path);
+                self.sources.push(source.clone());
+                self.source = Some(self.sources.len() - 1);
+                self.list(source)
+            }
+            Err(error) => {
+                self.error = Some(error.to_string());
+                Task::none()
+            }
+        }
+    }
+
+    fn listed(
+        &mut self,
+        result: Result<(HeroicListing, HashMap<String, String>), String>,
+    ) -> Task<Event> {
+        match result {
+            Ok((listing, already)) => {
+                let task = self.load_posters(&listing);
+                self.listing = Some(listing);
+                self.already = already;
+                self.status.clear();
+                return task;
+            }
+            Err(error) => self.error = Some(error),
+        }
+        Task::none()
+    }
+
+    fn batch_prepared(&mut self, result: Result<BatchOptions, String>) -> Task<Event> {
+        match result {
+            Ok(options) => {
+                self.draft.runner = options.runner.clone();
+                self.batch_options = Some(options);
+                self.status.clear();
+            }
+            Err(error) => self.error = Some(error),
+        }
+        Task::none()
+    }
+
+    fn prepared_game(&mut self, result: Result<Box<Prepared>, String>) -> Task<Event> {
+        match result {
+            Ok(prepared) => {
+                let prepared = *prepared;
+                self.draft = Draft {
+                    name: heroic_import::default_name(
+                        &prepared.candidate.title,
+                        prepared.candidate.executable.as_deref(),
+                    ),
+                    executable: prepared
+                        .candidate
+                        .executable
+                        .as_ref()
+                        .map(|path| path.display().to_string())
+                        .unwrap_or_default(),
+                    arguments: prepared.arguments.clone(),
+                    unparsed_arguments: prepared.unparsed_arguments.clone(),
+                    working_directory: prepared.working_directory.clone(),
+                    runner: prepared.runner.clone(),
+                    environment: prepared.environment.clone(),
+                    gamemode: prepared.gamemode.unwrap_or(false),
+                    wayland: prepared.wayland.unwrap_or(false),
+                    mangohud: prepared.mangohud.unwrap_or(false),
+                    gamescope: ScopeDraft::from_setting(prepared.gamescope.clone()),
+                    hdr: prepared.hdr,
+                    ..Draft::default()
+                };
+                self.status.clear();
+                self.step = Step::Details;
+                self.art = artwork::Draft::new();
+                self.art_generation = self.art_generation.wrapping_add(1);
+                let art_generation = self.art_generation;
+                let task = self
+                    .art
+                    .configure(self.paths.clone(), prepared.candidate.title.clone())
+                    .map(move |event| Event::Art(art_generation, event));
+                self.prepared = Some(prepared);
+                self.prefill_poster();
+                return task;
+            }
+            Err(error) => self.error = Some(error),
+        }
+        Task::none()
+    }
+
+    fn offered(&mut self, session: u64, result: Result<Refreshed, String>) -> Task<Event> {
+        self.answering = false;
+        match result {
+            Ok(refreshed) if session == self.details_session => self.refreshed(refreshed),
+            // The answer is saved, but these choices were for a game
+            // or batch that's no longer open, so read the open one's
+            // when it has a runner to pick.
+            Ok(_) if self.step == Step::Details && self.uses_runner() => self.relist(None),
+            Ok(_) => {
+                self.offer_answered();
+                Task::none()
+            }
+            Err(error) => {
+                self.error = Some(error);
+                Task::none()
+            }
+        }
+    }
+
+    fn set_fetch_batch_art(&mut self, value: bool, key_available: bool) -> Task<Event> {
+        let enabled = self
+            .batch_options
+            .as_ref()
+            .is_some_and(|options| options.art_fetch_enabled);
+        if value && (!enabled || !key_available) {
+            return Task::none();
+        }
+        self.draft.fetch_batch_art = value;
+        Task::none()
+    }
+
+    fn planned(&mut self, result: Result<Box<Review>, String>) -> Task<Event> {
+        match result {
+            Ok(review) => {
+                self.review = Some(*review);
+                self.status.clear();
+                self.enter_review()
+            }
+            Err(error) => {
+                self.error = Some(error);
+                Task::none()
+            }
+        }
+    }
+
+    fn copy_runner(&mut self) -> Task<Event> {
+        let Some(Prepared {
+            suggested: Some(RunnerSuggestion::Copy(copy)),
+            ..
+        }) = &self.prepared
+        else {
+            return Task::none();
+        };
+        self.prerequisite(Prerequisite::CopyRunner(copy.clone()))
+    }
+
+    fn download_build(&mut self, component: Component, version: Option<String>) -> Task<Event> {
+        let provider = match component {
+            Component::Dxvk => Provider::Dxvk,
+            Component::Vkd3d => Provider::Vkd3d,
+        };
+        self.prerequisite(Prerequisite::Download(provider, version))
     }
 }

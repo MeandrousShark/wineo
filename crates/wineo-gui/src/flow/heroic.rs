@@ -1,3 +1,5 @@
+mod edit;
+mod finish;
 mod update;
 mod view;
 mod work;
