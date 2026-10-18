@@ -4,6 +4,32 @@ A finished plan bumps the minor version and fixes between plans bump the
 patch version. A plan released in parts bumps the minor version for each
 part. See `AGENTS.md` for the rule.
 
+## 0.35.1 - 2026-10-17
+
+Loose ends from [0051](docs/plans/0051-lean-and-simple.md)'s possible bugs
+and a flaky process scan.
+
+- Behavior changes:
+  - A Proton run stays running until everything in umu's process group has
+    exited, not just umu. A launcher that hands off to the game and exits no
+    longer ends the run while the game plays, and a stop keeps escalating
+    until those processes are gone. Snapshots, clones, portable copies, and
+    winetricks wait for them too.
+  - After such a handoff, `wineo status` shows the program as exited with
+    other processes keeping the prefix running, and `status --json` has
+    `run.program_exited_at`, as Wine runs already did.
+- Process-group checks no longer fail with "process-group members could not
+  be inspected" when any process on the machine has a name that isn't valid
+  UTF-8.
+- The app's Art page keeps its previews when the library refreshes instead
+  of decoding them again, and an image that can't be decoded says "Can't
+  show this image" instead of loading forever.
+- Settings shows default folders as `~/Games` and similar, the form a config
+  accepts.
+- Tests no longer leave fake Wine or winetricks processes running after a
+  failure.
+- A `release-fast` Cargo profile for quicker optimized local builds.
+
 ## 0.35.0 - 2026-10-16
 
 The config contract, from [0053](docs/plans/0053-config-contract.md):
