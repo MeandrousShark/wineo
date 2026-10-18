@@ -80,6 +80,16 @@ approved yet):
 - **Empty results must explain themselves** (2026-10-17): a filter that
   matches nothing, or a library where everything is hidden, must never look
   like an empty or deleted library. See "Empty states".
+- **11: A**, neutral wording. **12: A**, store else platform.
+- **13: A, narrowly.** An existing bottleneck the benchmark finds is fixed
+  here only if the fix is small, isolated, and measurably faster;
+  otherwise it gets its own plan. Stamp caches document and test their
+  blind spot (see "Performance").
+- **A broken `library.toml` is never silently replaced** (2026-10-17).
+  Keep the original, refuse writes with a useful error, and back it up
+  before any repair. Question 14 has the details.
+- **Performance gets one manual check on real hardware** (2026-10-17), not
+  only Xvfb with software rendering.
 - **The 2 s rescan must not get more expensive** (2026-10-17): parsing
   `library.toml`, sorting, and redrawing do no work when nothing changed,
   and the plan measures a library of a few hundred games with art. See
@@ -132,8 +142,8 @@ approved yet):
 
 ## Questions for the maintainer
 
-Questions 1 to 10 are answered (see "Settled by the maintainer"); their
-text stays for the record. Questions 11 to 13 are open.
+Questions 1 to 13 are answered (see "Settled by the maintainer"); their
+text stays for the record. Question 14 is open.
 
 The scenarios use the same library in every option: **hades** (Steam,
 40 h, played yesterday), **papers-please** (GOG, 6 h, played last month),
@@ -390,10 +400,46 @@ numbers.
 Recommendation: **A**, since you asked for the measurement in this plan and
 a fix found by it is easiest to verify here.
 
+### 14. A broken `library.toml`
+
+Settled in principle: never silently replace it. The details, using the
+same scenario throughout: `library.toml` holds 40 favorites, and a hand
+edit leaves it broken. You then star hades.
+
+**A. Two kinds of broken (recommended).**
+
+- **The file doesn't parse** (a TOML syntax error). Reads degrade: the
+  library shows and launches work, but with no stars or hidden flags, and
+  a banner says `library.toml can't be read (line 12: expected "=");
+  favorites and hidden games are off until it's fixed`. Writes refuse:
+  starring hades says `Can't save to library.toml: it can't be read. Fix
+  it, or repair it in Checkup.` Repair is explicit, through `wineo
+  validate --fix` or Checkup's fix: it copies the file to
+  `library.toml.broken-<time>` first, then writes a fresh one, carrying
+  over every entry it can still read.
+- **The file parses but an entry is wrong** (`favorite = "yes"`). Only
+  that entry is skipped, with a `validate` warning; everything else works,
+  and starring hades writes normally. `toml_edit` changes only the key
+  being set, so the bad entry stays in the file untouched for the user to
+  fix.
+
+```
+Syntax error, star hades:  refused; 40 favorites still in the file
+Bad entry, star hades:     saved; 39 favorites shown, 1 skipped and kept
+Repair:                    library.toml.broken-2026-10-17T19-20 kept,
+                           fresh file with the 39 readable favorites
+```
+
+**B. Refuse writes for any problem**, including a single bad entry. Safer
+on paper, but one typo turns off starring for the whole library.
+
+Recommendation: **A**. A syntax error means wineo can't know what the file
+holds, so it mustn't write; a bad entry is a known, contained problem.
+
 ## Proposed design
 
-Follows the answers to questions 1 to 10 and the recommendations for 11
-to 13; amended once those are settled.
+Follows the answers to questions 1 to 13 and the recommendation for 14;
+amended once that's settled.
 
 ### `library.toml`
 
@@ -417,10 +463,12 @@ hidden = true
 ```
 
 - Lenient like 0053's internal files: unknown keys and unknown sort names
-  are ignored with `serde(default)`, and a broken file loads as empty with
-  a warning rather than refusing anything. `validate` reports unknown keys,
-  unknown sort names, and entries for environments that don't exist, with
-  `--fix` removing stale entries.
+  are ignored with `serde(default)`. A file that doesn't parse, or an entry
+  that doesn't, follows question 14: it is never overwritten without a
+  backup, and nothing that launches is refused. `validate` reports
+  unknown keys, unknown sort names, bad entries, and entries for
+  environments that don't exist, with `--fix` removing stale entries and
+  repairing a broken file after backing it up.
 - Writes go through `toml_edit` under the config lock pattern core already
   uses, so a newer release's keys survive an older one's edit. Reads and
   no-op edits never rewrite the file (AGENTS.md).
@@ -477,9 +525,20 @@ The rescan runs every 2 s while the window is focused, so nothing this
 plan adds may cost work when nothing changed:
 
 - **`library.toml` is read only when its stamp changes.** The rescan
-  keeps the parsed file with its mtime and size and re-reads it only when
-  those differ, like the Art page's file snapshot. The app's own writes
-  update the cached copy directly.
+  keeps the parsed file with its stamp and re-reads it only when that
+  differs. The app's own writes update the cached copy directly.
+- **The stamp is mtime, ctime, size, and inode.** mtime and size alone
+  (what the Art page's snapshot uses) miss a file replaced with same-sized
+  content and a matching mtime, which `touch -d` or a copy that preserves
+  times can produce. ctime changes on every write and can't be set by
+  hand, and a replace by rename changes the inode, which closes that in
+  practice. The remaining blind spot is a filesystem with coarse
+  timestamps (FAT on a portable drive keeps 2 s), where two same-sized
+  writes in one tick look alike. That's documented in the code beside the
+  stamp and in `config-files.md`, and the next real change, or a restart,
+  catches up. Tests cover a changed size, a changed mtime, a same-size
+  rewrite (caught by ctime), a rename over the file (caught by inode), and
+  the documented coarse-tick case.
 - **Sorting and filtering happen once per change, not per frame.**
   `filtered()` is called from the grid's `view`, which runs every frame
   during card motion, and from 14 other places. It becomes a cached list
@@ -493,10 +552,17 @@ plan adds may cost work when nothing changed:
   with poster art and a stats log of a few hundred sessions, measured on
   0.35.1 and after each step: rescan read time, idle CPU while focused
   (Xvfb, software rendering, as in 0051), the time to apply a sort or
-  filter change, and scroll smoothness. A step may not regress them. If
-  the baseline shows an existing cost dominating (the rescan reads every
-  stats log in full each time), question 13 decides whether this plan
-  fixes it.
+  filter change, and scroll smoothness. A step may not regress them.
+- **One manual check on real hardware.** The same 300-game library in the
+  maintainer's normal session, with the GPU renderer: scroll the grid,
+  change the sort, toggle filters, and leave it focused for a minute while
+  watching CPU. Software rendering in Xvfb shows relative costs; this shows
+  what a person actually feels.
+- **An existing cost the baseline finds** (the rescan reads every stats
+  log in full each time) is fixed here only under question 13's rule:
+  small, isolated, and measurably faster. The likely fix, the same stamp
+  cache for stats logs, qualifies if it stays inside the stats read. Any
+  fix that reaches further gets its own plan.
 
 ### Cards
 
@@ -529,8 +595,9 @@ card selected when it's still shown.
    `library.toml` load.
 2. **Card fields and source.** Raw sort fields and `source` on `Card`, from
    the summary, config, and library file, with the `library.toml` stamp
-   cache. Rescan diff tests. If question 13 is A and the baseline shows the
-   stats logs dominating, their stamp cache lands here too.
+   cache. Rescan diff tests. If the baseline shows the stats logs
+   dominating and question 13's rule holds, their stamp cache lands here
+   as its own commit with before and after numbers.
 3. **Sort.** `SortKey`, the comparator, the cached order behind
    `filtered()`, the "Favorites first" toggle, and the sort control with
    direction. Persist through `[view]`.
@@ -559,7 +626,11 @@ card selected when it's still shown.
   its stamp is unchanged. Driven with `tests::app()` and fake ticks, like
   the existing grid tests.
 - Performance: the step 0 measurements before and after, recorded in this
-  plan.
+  plan, plus the real-hardware check in the acceptance checklist.
+- Corruption: a file that doesn't parse refuses writes with the error
+  and is left byte-for-byte unchanged; a bad entry is skipped and kept
+  through an unrelated write; repair writes the backup before the new
+  file, and a failed backup aborts the repair.
 - Acceptance: a checklist the maintainer runs in a real window on a
   throwaway library, written when the steps land.
 
