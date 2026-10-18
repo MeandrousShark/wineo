@@ -843,6 +843,16 @@ places is part 2. Selection follows "Selection".
   work's real-hardware check needs a 0.35.1 run on the same generated
   library to compare against. Step 0 includes it, and its numbers and
   impressions are recorded here with the Xvfb baseline.
+- **A bound for the bench scripts** (2026-10-17). Two review rounds on
+  `scripts/bench-gui-idle.sh` and `scripts/generate-bench-library.sh`
+  narrowed to shell edge cases. They are dev tools run on throwaway roots.
+  Hard rules: they never touch the real display, HOME, keyring, or a
+  process they didn't start, and they fail loudly rather than report bad
+  numbers. Unusual path characters (a carriage return, a quoted parent
+  directory) and a signal delayed by up to ffmpeg's 6 s capture are
+  accepted limits; further findings of that kind rate Low.
+  `ICED_BACKEND=wgpu` stays allowed on purpose, for measuring the GPU
+  path, and the run labels its renderer.
 
 ## Measurements
 
