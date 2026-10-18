@@ -140,3 +140,23 @@ fn schema_versions_tell_newer_from_unsupported() {
         );
     }
 }
+
+#[test]
+fn a_newer_schema_version_is_found_in_a_file_that_does_not_parse() {
+    let inspection =
+        inspect_text("schema_version = 2\n[environments.hades]\nfavorite = true\nbroken =\n");
+    let unreadable = inspection.unreadable.unwrap();
+    assert!(unreadable.newer);
+    assert_eq!(
+        unreadable.message,
+        "library.toml was written by a newer wineo; update wineo to use it."
+    );
+
+    // Only a top-level one counts, and not one inside a multi-line value.
+    for text in [
+        "[environments.hades]\nschema_version = 2\nbroken =\n",
+        "note = \"\"\"\nschema_version = 2\n\"\"\"\nbroken =\n",
+    ] {
+        assert!(!inspect_text(text).unreadable.unwrap().newer, "{text}");
+    }
+}

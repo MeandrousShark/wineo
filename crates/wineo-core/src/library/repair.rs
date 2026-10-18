@@ -1,7 +1,6 @@
 //! Explicit repair of a `library.toml` that can't be read: back it up, then
 //! write a fresh file with what can still be read line by line.
 
-use std::borrow::Cow;
 use std::fmt;
 use std::fs::{self, OpenOptions};
 use std::io::{self, Write};
@@ -98,10 +97,15 @@ impl fmt::Display for RepairReport {
 /// Refuses a file a newer wineo wrote.
 pub fn repair(paths: &Paths) -> Result<Option<RepairReport>> {
     let stamp = Zoned::now().strftime("%Y-%m-%dT%H-%M-%S").to_string();
-    repair_at(paths, &stamp)
+    repair_at(paths, &stamp, crate::files::sync_dir)
 }
 
-pub(super) fn repair_at(paths: &Paths, stamp: &str) -> Result<Option<RepairReport>> {
+/// `sync_dir` makes the backup's name durable before the original is replaced.
+pub(super) fn repair_at(
+    paths: &Paths,
+    stamp: &str,
+    sync_dir: impl FnOnce(&Path) -> io::Result<()>,
+) -> Result<Option<RepairReport>> {
     let path = paths.library_file();
     let _guard = Locks::new(paths).config(&path)?;
     let bytes = match fs::read(&path) {
@@ -109,8 +113,7 @@ pub(super) fn repair_at(paths: &Paths, stamp: &str) -> Result<Option<RepairRepor
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
         Err(error) => return Err(error).context(|| format!("failed to read {}", path.display())),
     };
-    let text = String::from_utf8_lossy(&bytes);
-    if let Cow::Borrowed(text) = &text
+    if let Ok(text) = std::str::from_utf8(&bytes)
         && let Ok(document) = text.parse::<DocumentMut>()
     {
         if let Some(version) = document.get("schema_version")
@@ -128,9 +131,18 @@ pub(super) fn repair_at(paths: &Paths, stamp: &str) -> Result<Option<RepairRepor
             return Ok(None);
         }
     }
+    let units = units(&bytes);
+    if let Some(version) = newer_version(&units) {
+        return Err(Error::SchemaVersion {
+            path,
+            found: version.to_string(),
+        });
+    }
 
     let backup = back_up(&path, stamp, &bytes)?;
-    let salvaged = salvage(&text);
+    let dir = path.parent().unwrap_or(Path::new("."));
+    sync_dir(dir).context(|| format!("failed to sync {}", dir.display()))?;
+    let salvaged = salvage(units);
     let contents = salvaged.render();
     if let Err(error) = contents.parse::<DocumentMut>() {
         return Err(Error::ConfigParse {
@@ -138,8 +150,28 @@ pub(super) fn repair_at(paths: &Paths, stamp: &str) -> Result<Option<RepairRepor
             source: Box::new(error),
         });
     }
-    crate::files::write_atomic(&path, contents)?;
+    crate::files::write_atomic_synced(&path, contents)?;
     Ok(Some(salvaged.report(backup)))
+}
+
+/// Whether a file that can't be parsed still says a newer wineo wrote it.
+pub(super) fn declares_newer_version(bytes: &[u8]) -> bool {
+    newer_version(&units(bytes)).is_some()
+}
+
+/// A top-level `schema_version` above this wineo's, read on its own.
+fn newer_version(units: &[Unit]) -> Option<i64> {
+    units
+        .iter()
+        .take_while(|unit| !matches!(unit, Unit::Header(_)))
+        .filter_map(|unit| match unit {
+            Unit::Value {
+                text: Some(text), ..
+            } => text.parse::<DocumentMut>().ok(),
+            _ => None,
+        })
+        .filter_map(|document| document.get("schema_version").and_then(Item::as_integer))
+        .find(|version| *version > SCHEMA_VERSION)
 }
 
 /// Copies the file beside itself, never replacing an existing file.
@@ -184,6 +216,157 @@ fn back_up(path: &Path, stamp: &str, bytes: &[u8]) -> Result<PathBuf> {
     }
 }
 
+/// A header line, or one `key = value` with every line its value spans.
+enum Unit {
+    /// None for a header that isn't `[view]` or `[environments.<name>]`.
+    Header(Option<Header>),
+    Value {
+        /// None when any of its lines isn't valid UTF-8.
+        text: Option<String>,
+        key_shaped: bool,
+    },
+}
+
+enum Header {
+    View,
+    Entry(String),
+}
+
+/// Splits the file into units, so nothing inside a multi-line string or
+/// array is mistaken for a header or a field.
+fn units(bytes: &[u8]) -> Vec<Unit> {
+    let bytes = bytes.strip_prefix("\u{feff}".as_bytes()).unwrap_or(bytes);
+    let lines: Vec<&[u8]> = bytes
+        .split(|byte| *byte == b'\n')
+        .map(|line| line.strip_suffix(b"\r").unwrap_or(line))
+        .collect();
+    let mut units = Vec::new();
+    let mut index = 0;
+    while index < lines.len() {
+        let first = String::from_utf8_lossy(lines[index]);
+        let trimmed = first.trim();
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            index += 1;
+            continue;
+        }
+        if trimmed.starts_with('[') {
+            let header = std::str::from_utf8(lines[index])
+                .ok()
+                .and_then(|line| header(line.trim()));
+            units.push(Unit::Header(header));
+            index += 1;
+            continue;
+        }
+        let mut scan = Scan::default();
+        scan.line(trimmed, true);
+        let key_shaped = scan.equals.is_some_and(|equals| {
+            Key::parse(trimmed[..equals].trim()).is_ok_and(|keys| !keys.is_empty())
+        });
+        let start = index;
+        index += 1;
+        // A value left open swallows lines until it closes, or to the end.
+        while key_shaped && scan.open() && index < lines.len() {
+            scan.line(&String::from_utf8_lossy(lines[index]), false);
+            index += 1;
+        }
+        let text = lines[start..index]
+            .iter()
+            .map(|line| std::str::from_utf8(line).ok())
+            .collect::<Option<Vec<&str>>>()
+            .map(|lines| lines.join("\n").trim().to_owned());
+        units.push(Unit::Value { text, key_shaped });
+    }
+    units
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+enum Quote {
+    #[default]
+    None,
+    Basic,
+    Literal,
+    MultiBasic,
+    MultiLiteral,
+}
+
+/// Just enough of a TOML lexer to tell where a value ends.
+#[derive(Debug, Default)]
+struct Scan {
+    quote: Quote,
+    /// Open brackets and braces in the value.
+    depth: usize,
+    /// Where the first line's `=` is, outside any quotes.
+    equals: Option<usize>,
+}
+
+impl Scan {
+    fn open(&self) -> bool {
+        matches!(self.quote, Quote::MultiBasic | Quote::MultiLiteral) || self.depth > 0
+    }
+
+    fn line(&mut self, line: &str, first: bool) {
+        let bytes = line.as_bytes();
+        let mut index = 0;
+        while index < bytes.len() {
+            let rest = &bytes[index..];
+            match self.quote {
+                Quote::None => match bytes[index] {
+                    b'#' => break,
+                    b'"' if rest.starts_with(b"\"\"\"") => {
+                        self.quote = Quote::MultiBasic;
+                        index += 3;
+                        continue;
+                    }
+                    b'\'' if rest.starts_with(b"'''") => {
+                        self.quote = Quote::MultiLiteral;
+                        index += 3;
+                        continue;
+                    }
+                    b'"' => self.quote = Quote::Basic,
+                    b'\'' => self.quote = Quote::Literal,
+                    b'=' if first && self.equals.is_none() => self.equals = Some(index),
+                    b'[' | b'{' if self.equals.is_some() => self.depth += 1,
+                    b']' | b'}' if self.equals.is_some() => {
+                        self.depth = self.depth.saturating_sub(1);
+                    }
+                    _ => {}
+                },
+                Quote::Basic => match bytes[index] {
+                    b'\\' => index += 1,
+                    b'"' => self.quote = Quote::None,
+                    _ => {}
+                },
+                Quote::Literal => {
+                    if bytes[index] == b'\'' {
+                        self.quote = Quote::None;
+                    }
+                }
+                Quote::MultiBasic => {
+                    if bytes[index] == b'\\' {
+                        index += 1;
+                    } else if rest.starts_with(b"\"\"\"") {
+                        self.quote = Quote::None;
+                        index += 3;
+                        continue;
+                    }
+                }
+                Quote::MultiLiteral => {
+                    if rest.starts_with(b"'''") {
+                        self.quote = Quote::None;
+                        index += 3;
+                        continue;
+                    }
+                }
+            }
+            index += 1;
+        }
+        // A single-line string ends with its line, closed or not.
+        if matches!(self.quote, Quote::Basic | Quote::Literal) {
+            self.quote = Quote::None;
+        }
+    }
+}
+
 #[derive(Debug, Default)]
 struct Salvaged {
     view: Option<Section>,
@@ -192,22 +375,46 @@ struct Salvaged {
 }
 
 /// One recognized table: how many fields the repair recognized in it, and
-/// the lines it kept.
+/// the ones it kept.
 #[derive(Debug, Default)]
 struct Section {
     fields: usize,
-    keys: Vec<String>,
     lines: Vec<String>,
 }
 
 impl Section {
     fn recovery(&self) -> ViewRecovery {
-        if self.keys.len() == self.fields {
+        if self.lines.len() == self.fields {
             ViewRecovery::Recovered
-        } else if self.keys.is_empty() {
+        } else if self.lines.is_empty() {
             ViewRecovery::Lost
         } else {
             ViewRecovery::Partly
+        }
+    }
+
+    /// Keeps a field that parses alone, is valid, and doesn't clash with a
+    /// field already kept, so the first value wins and the result parses.
+    fn offer(&mut self, text: Option<String>, valid: fn(&str, &Item) -> bool) {
+        self.fields += 1;
+        let Some(text) = text else {
+            return;
+        };
+        let Ok(document) = text.parse::<DocumentMut>() else {
+            return;
+        };
+        let mut keys = document.iter();
+        let (Some((key, item)), None) = (keys.next(), keys.next()) else {
+            return;
+        };
+        if !valid(key, item) {
+            return;
+        }
+        let mut combined = self.lines.join("\n");
+        combined.push('\n');
+        combined.push_str(&text);
+        if combined.parse::<DocumentMut>().is_ok() {
+            self.lines.push(text);
         }
     }
 }
@@ -220,78 +427,55 @@ enum Current {
     Unattributed,
 }
 
-enum Header {
-    View,
-    Entry(String),
-}
-
-fn salvage(text: &str) -> Salvaged {
+fn salvage(units: Vec<Unit>) -> Salvaged {
     let mut salvaged = Salvaged::default();
     let mut current = Current::Top;
-    for line in text.split('\n') {
-        let line = line.strip_suffix('\r').unwrap_or(line).trim();
-        if line.is_empty() || line.starts_with('#') {
-            continue;
-        }
-        if line.starts_with('[') {
-            current = match header(line) {
-                Some(Header::View) => {
-                    salvaged.view.get_or_insert_with(Section::default);
-                    Current::View
-                }
-                Some(Header::Entry(name)) => {
-                    let index = match salvaged.entries.iter().position(|(seen, _)| *seen == name) {
-                        Some(index) => index,
-                        None => {
-                            salvaged.entries.push((name, Section::default()));
-                            salvaged.entries.len() - 1
-                        }
-                    };
-                    Current::Entry(index)
-                }
-                None => {
-                    salvaged.dropped_text = true;
-                    Current::Unattributed
-                }
-            };
-            continue;
-        }
-        let parsed = line.parse::<DocumentMut>().ok();
-        let (section, valid): (&mut Section, fn(&str, &Item) -> bool) = match current {
+    for unit in units {
+        let (text, key_shaped) = match unit {
+            Unit::Header(header) => {
+                current = match header {
+                    Some(Header::View) => {
+                        salvaged.view.get_or_insert_with(Section::default);
+                        Current::View
+                    }
+                    Some(Header::Entry(name)) => {
+                        let index =
+                            match salvaged.entries.iter().position(|(seen, _)| *seen == name) {
+                                Some(index) => index,
+                                None => {
+                                    salvaged.entries.push((name, Section::default()));
+                                    salvaged.entries.len() - 1
+                                }
+                            };
+                        Current::Entry(index)
+                    }
+                    None => {
+                        salvaged.dropped_text = true;
+                        Current::Unattributed
+                    }
+                };
+                continue;
+            }
+            Unit::Value { text, key_shaped } => (text, key_shaped),
+        };
+        match current {
             Current::Top => {
                 // Written fresh, so an old one isn't a loss.
-                let schema = parsed
-                    .as_ref()
+                let schema = text
+                    .and_then(|text| text.parse::<DocumentMut>().ok())
                     .is_some_and(|document| document.contains_key("schema_version"));
                 if !schema {
                     salvaged.dropped_text = true;
                 }
-                continue;
             }
-            Current::Unattributed => {
-                salvaged.dropped_text = true;
-                continue;
-            }
-            Current::View => (
-                salvaged.view.as_mut().expect("view section was recorded"),
-                valid_view_field,
-            ),
-            Current::Entry(index) => (&mut salvaged.entries[index].1, valid_entry_field),
-        };
-        let field = parsed
-            .as_ref()
-            .and_then(|document| document.iter().next())
-            .map(|(key, item)| (key.to_owned(), item));
-        match field {
-            Some((key, item)) => {
-                section.fields += 1;
-                if !section.keys.contains(&key) && valid(&key, item) {
-                    section.keys.push(key);
-                    section.lines.push(line.to_owned());
-                }
-            }
-            None if looks_like_field(line) => section.fields += 1,
-            None => salvaged.dropped_text = true,
+            Current::Unattributed => salvaged.dropped_text = true,
+            _ if !key_shaped => salvaged.dropped_text = true,
+            Current::View => salvaged
+                .view
+                .as_mut()
+                .expect("view section was recorded")
+                .offer(text, valid_view_field),
+            Current::Entry(index) => salvaged.entries[index].1.offer(text, valid_entry_field),
         }
     }
     salvaged
@@ -321,13 +505,6 @@ fn header(line: &str) -> Option<Header> {
         }
         _ => None,
     }
-}
-
-/// A `key = value` line whose value didn't parse still counts as a field
-/// the repair recognized.
-fn looks_like_field(line: &str) -> bool {
-    line.split_once('=')
-        .is_some_and(|(key, _)| Key::parse(key.trim()).is_ok_and(|keys| !keys.is_empty()))
 }
 
 fn valid_entry_field(key: &str, item: &Item) -> bool {

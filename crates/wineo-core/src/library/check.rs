@@ -2,6 +2,7 @@
 
 use std::collections::BTreeSet;
 use std::fs;
+use std::io;
 
 use toml_edit::{DocumentMut, Item, Key};
 
@@ -69,12 +70,27 @@ pub(crate) fn inspect(paths: &Paths) -> Inspection {
     inspection
 }
 
+const NEWER: &str = "library.toml was written by a newer wineo; update wineo to use it.";
+
 fn unreadable(path: &std::path::Path, failure: ReadFailure) -> Unreadable {
+    // A file that doesn't parse may still say a newer wineo wrote it, and
+    // repairing it would throw that wineo's data away.
+    let declares_newer = || {
+        fs::read(path)
+            .ok()
+            .is_some_and(|bytes| super::repair::declares_newer_version(&bytes))
+    };
     match failure {
+        ReadFailure::Io(error)
+            if error.kind() == io::ErrorKind::InvalidData && declares_newer() =>
+        {
+            newer()
+        }
         ReadFailure::Io(error) => Unreadable {
             message: format!("library.toml can't be read ({error})"),
             newer: false,
         },
+        ReadFailure::Parse { .. } if declares_newer() => newer(),
         ReadFailure::Parse { error, line } => {
             let reason = error.message().trim();
             Unreadable {
@@ -87,22 +103,29 @@ fn unreadable(path: &std::path::Path, failure: ReadFailure) -> Unreadable {
         }
         ReadFailure::Schema(found) => {
             // read_document only returns Schema for a file that parsed.
-            let newer = fs::read_to_string(path)
+            let is_newer = fs::read_to_string(path)
                 .ok()
                 .and_then(|text| text.parse::<DocumentMut>().ok())
                 .is_some_and(|document| is_newer(&document));
-            Unreadable {
-                message: if newer {
-                    "library.toml was written by a newer wineo; update wineo to use it.".to_owned()
-                } else {
-                    format!(
+            if is_newer {
+                newer()
+            } else {
+                Unreadable {
+                    message: format!(
                         "library.toml can't be read (unsupported schema_version {})",
                         found.trim()
-                    )
-                },
-                newer,
+                    ),
+                    newer: false,
+                }
             }
         }
+    }
+}
+
+fn newer() -> Unreadable {
+    Unreadable {
+        message: NEWER.to_owned(),
+        newer: true,
     }
 }
 

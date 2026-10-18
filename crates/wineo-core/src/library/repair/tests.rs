@@ -1,6 +1,7 @@
 use std::ffi::OsString;
 
 use super::*;
+use crate::files::sync_dir;
 use crate::library::{SortKey, load};
 
 struct Fixture {
@@ -91,7 +92,7 @@ fn backs_up_the_original_and_recovers_every_recognized_entry() {
     let fixture = Fixture::new();
     fixture.write(RECOVERABLE);
 
-    let report = repair_at(&fixture.paths, STAMP).unwrap().unwrap();
+    let report = repair_at(&fixture.paths, STAMP, sync_dir).unwrap().unwrap();
 
     assert_eq!(
         report,
@@ -145,7 +146,7 @@ fn counts_partly_and_unrecovered_entries_and_skips_invalid_values() {
     let fixture = Fixture::new();
     fixture.write(DAMAGED);
 
-    let report = repair_at(&fixture.paths, STAMP).unwrap().unwrap();
+    let report = repair_at(&fixture.paths, STAMP, sync_dir).unwrap().unwrap();
 
     // hades keeps hidden but not `favorite = "yes"`; gone's `favorite =`
     // and date-only `added` are recognized but neither is kept; the text
@@ -190,7 +191,7 @@ fn reports_dropped_text_even_when_every_entry_came_back() {
     let fixture = Fixture::new();
     fixture.write("this is not toml\n\n[environments.hades]\nfavorite = true\n");
 
-    let report = repair_at(&fixture.paths, STAMP).unwrap().unwrap();
+    let report = repair_at(&fixture.paths, STAMP, sync_dir).unwrap().unwrap();
 
     assert_eq!((report.entries, report.full), (1, 1));
     assert!(report.dropped_text);
@@ -209,7 +210,7 @@ fn a_line_too_damaged_to_be_a_field_is_dropped_text_not_a_lost_field() {
     let fixture = Fixture::new();
     fixture.write("[environments.hades]\nfavorite = true\n\"unterminated\n");
 
-    let report = repair_at(&fixture.paths, STAMP).unwrap().unwrap();
+    let report = repair_at(&fixture.paths, STAMP, sync_dir).unwrap().unwrap();
 
     assert_eq!((report.entries, report.full, report.partly), (1, 1, 0));
     assert!(report.dropped_text);
@@ -222,7 +223,7 @@ fn a_failed_backup_aborts_and_leaves_the_original_untouched() {
 
     // A stamp naming a missing directory makes only the backup fail, so the
     // file would otherwise be writable.
-    let error = repair_at(&fixture.paths, "missing/dir").unwrap_err();
+    let error = repair_at(&fixture.paths, "missing/dir", sync_dir).unwrap_err();
 
     assert!(error.to_string().contains("failed to back up"), "{error}");
     assert_eq!(fixture.read(), DAMAGED);
@@ -237,7 +238,7 @@ fn an_unwritable_directory_aborts_before_anything_changes() {
     fixture.write(DAMAGED);
     fs::set_permissions(fixture.dir(), fs::Permissions::from_mode(0o500)).unwrap();
 
-    let result = repair_at(&fixture.paths, STAMP);
+    let result = repair_at(&fixture.paths, STAMP, sync_dir);
 
     fs::set_permissions(fixture.dir(), fs::Permissions::from_mode(0o700)).unwrap();
     assert!(result.is_err());
@@ -249,11 +250,11 @@ fn an_unwritable_directory_aborts_before_anything_changes() {
 fn two_repairs_in_the_same_second_keep_both_backups() {
     let fixture = Fixture::new();
     fixture.write(DAMAGED);
-    let first = repair_at(&fixture.paths, STAMP).unwrap().unwrap();
+    let first = repair_at(&fixture.paths, STAMP, sync_dir).unwrap().unwrap();
     let second_original = "[environments.celeste]\nhidden = true\n[environments.celeste]\n";
     fixture.write(second_original);
 
-    let second = repair_at(&fixture.paths, STAMP).unwrap().unwrap();
+    let second = repair_at(&fixture.paths, STAMP, sync_dir).unwrap().unwrap();
 
     assert_eq!(first.backup, fixture.backup(STAMP));
     assert_eq!(second.backup, fixture.backup(&format!("{STAMP}-2")));
@@ -269,12 +270,12 @@ fn two_repairs_in_the_same_second_keep_both_backups() {
 #[test]
 fn a_readable_or_missing_file_is_left_alone() {
     let fixture = Fixture::new();
-    assert_eq!(repair_at(&fixture.paths, STAMP).unwrap(), None);
+    assert_eq!(repair_at(&fixture.paths, STAMP, sync_dir).unwrap(), None);
     assert!(!fixture.paths.library_file().exists());
 
     let readable = "schema_version = 1\n\n[environments.hades]\nfavorite = \"yes\"\n";
     fixture.write(readable);
-    assert_eq!(repair_at(&fixture.paths, STAMP).unwrap(), None);
+    assert_eq!(repair_at(&fixture.paths, STAMP, sync_dir).unwrap(), None);
     assert_eq!(fixture.read(), readable);
     assert_eq!(fixture.files(), ["library.toml"]);
 }
@@ -285,7 +286,7 @@ fn a_newer_schema_version_is_refused() {
     let newer = "schema_version = 2\n\n[environments.hades]\nfavorite = true\n";
     fixture.write(newer);
 
-    let error = repair_at(&fixture.paths, STAMP).unwrap_err();
+    let error = repair_at(&fixture.paths, STAMP, sync_dir).unwrap_err();
 
     assert!(matches!(error, Error::SchemaVersion { .. }), "{error}");
     assert_eq!(fixture.read(), newer);
@@ -300,7 +301,7 @@ fn an_unsupported_older_or_mistyped_schema_version_is_repaired() {
             "schema_version = {version}\n\n[environments.hades]\nfavorite = true\n"
         ));
 
-        let report = repair_at(&fixture.paths, STAMP).unwrap().unwrap();
+        let report = repair_at(&fixture.paths, STAMP, sync_dir).unwrap().unwrap();
 
         assert!(report.complete(), "{report:?}");
         assert!(fixture.read().starts_with("schema_version = 1\n"));
@@ -309,18 +310,144 @@ fn an_unsupported_older_or_mistyped_schema_version_is_repaired() {
 }
 
 #[test]
-fn invalid_utf8_is_salvaged_around() {
+fn a_line_that_is_not_utf8_is_lost_and_reported() {
     let fixture = Fixture::new();
     fs::create_dir_all(fixture.dir()).unwrap();
-    let mut bytes = b"[environments.hades]\nfavorite = true\nnote = \"".to_vec();
-    bytes.extend([0xff, 0xfe]);
-    bytes.extend(b"\"\n");
+    let bytes = b"[environments.hades]\nnote = \"\xff\"\nfavorite = true\n".to_vec();
     fs::write(fixture.paths.library_file(), &bytes).unwrap();
 
-    let report = repair_at(&fixture.paths, STAMP).unwrap().unwrap();
+    let report = repair_at(&fixture.paths, STAMP, sync_dir).unwrap().unwrap();
 
+    assert_eq!((report.entries, report.full, report.partly), (1, 0, 1));
+    assert!(!report.complete());
     assert_eq!(fs::read(&report.backup).unwrap(), bytes);
     assert!(load(&fixture.paths).environments["hades"].favorite);
+}
+
+#[test]
+fn a_leading_byte_order_mark_is_skipped() {
+    let fixture = Fixture::new();
+    fixture.write("\u{FEFF}[environments.hades]\nfavorite = true\nbroken =\n");
+
+    let report = repair_at(&fixture.paths, STAMP, sync_dir).unwrap().unwrap();
+
+    assert_eq!((report.entries, report.partly), (1, 1));
+    assert!(!report.dropped_text);
+    assert!(load(&fixture.paths).environments["hades"].favorite);
+}
+
+#[test]
+fn a_multi_line_value_is_one_field_and_hides_the_headers_inside_it() {
+    let fixture = Fixture::new();
+    fixture.write(
+        "[environments.hades]\nnote = \"\"\"\n[environments.celeste]\nfavorite = true\n\"\"\"\nhidden = true\nbroken =\n",
+    );
+
+    let report = repair_at(&fixture.paths, STAMP, sync_dir).unwrap().unwrap();
+
+    assert_eq!((report.entries, report.full, report.partly), (1, 0, 1));
+    assert!(!report.dropped_text);
+    assert_eq!(
+        fixture.read(),
+        "schema_version = 1\n\n[environments.hades]\nnote = \"\"\"\n[environments.celeste]\nfavorite = true\n\"\"\"\nhidden = true\n"
+    );
+    let library = load(&fixture.paths);
+    assert!(library.environments["hades"].hidden);
+    assert!(!library.environments.contains_key("celeste"));
+}
+
+#[test]
+fn multi_line_arrays_and_literal_strings_are_kept_whole() {
+    let fixture = Fixture::new();
+    let text = "[environments.hades]\ntags = [\n  \"roguelike\", # best\n  \"]\",\n]\nnote = \'\'\'\nfavorite = false\n\'\'\'\nfavorite = true\nbroken =\n";
+    fixture.write(text);
+
+    let report = repair_at(&fixture.paths, STAMP, sync_dir).unwrap().unwrap();
+
+    assert_eq!((report.entries, report.partly), (1, 1));
+    let library = fs::read_to_string(fixture.paths.library_file()).unwrap();
+    assert!(
+        library.contains("tags = [\n  \"roguelike\", # best\n  \"]\",\n]\n"),
+        "{library}"
+    );
+    assert!(load(&fixture.paths).environments["hades"].favorite);
+}
+
+#[test]
+fn an_unterminated_multi_line_value_swallows_the_rest_as_lost() {
+    let fixture = Fixture::new();
+    fixture.write(
+        "[environments.hades]\nfavorite = true\nnote = \"\"\"\n[environments.celeste]\nfavorite = true\n",
+    );
+
+    let report = repair_at(&fixture.paths, STAMP, sync_dir).unwrap().unwrap();
+
+    assert_eq!((report.entries, report.full, report.partly), (1, 0, 1));
+    let library = load(&fixture.paths);
+    assert!(library.environments["hades"].favorite);
+    assert!(!library.environments.contains_key("celeste"));
+}
+
+#[test]
+fn dotted_keys_are_compared_by_their_full_path() {
+    let fixture = Fixture::new();
+    fixture.write(
+        "[environments.hades]\nfuture.a = 1\nfuture.b = 2\nfuture = 3\nfavorite = true\nfavorite = false\nbroken =\n",
+    );
+
+    let report = repair_at(&fixture.paths, STAMP, sync_dir).unwrap().unwrap();
+
+    assert_eq!((report.entries, report.partly), (1, 1));
+    assert_eq!(
+        fixture.read(),
+        "schema_version = 1\n\n[environments.hades]\nfuture.a = 1\nfuture.b = 2\nfavorite = true\n"
+    );
+    assert_eq!(load(&fixture.paths).problem, None);
+}
+
+#[test]
+fn a_newer_schema_version_in_a_file_that_does_not_parse_is_refused() {
+    let fixture = Fixture::new();
+    let newer = "schema_version = 2\n[environments.hades]\nfavorite = true\nbroken =\n";
+    fixture.write(newer);
+
+    let error = repair_at(&fixture.paths, STAMP, sync_dir).unwrap_err();
+
+    assert!(matches!(error, Error::SchemaVersion { .. }), "{error}");
+    assert_eq!(fixture.read(), newer);
+    assert_eq!(fixture.files(), ["library.toml"]);
+}
+
+#[test]
+fn the_backup_is_durable_before_the_original_is_replaced() {
+    let fixture = Fixture::new();
+    fixture.write(DAMAGED);
+
+    let report = repair_at(&fixture.paths, STAMP, |dir| {
+        assert_eq!(dir, fixture.dir());
+        assert_eq!(fixture.read(), DAMAGED);
+        assert_eq!(fs::read_to_string(fixture.backup(STAMP)).unwrap(), DAMAGED);
+        sync_dir(dir)
+    })
+    .unwrap()
+    .unwrap();
+    assert_eq!(report.backup, fixture.backup(STAMP));
+    assert_ne!(fixture.read(), DAMAGED);
+}
+
+#[test]
+fn a_failed_directory_sync_leaves_the_original_and_keeps_the_backup() {
+    let fixture = Fixture::new();
+    fixture.write(DAMAGED);
+
+    let error = repair_at(&fixture.paths, STAMP, |_| {
+        Err(io::Error::other("sync failed"))
+    })
+    .unwrap_err();
+
+    assert!(error.to_string().contains("failed to sync"), "{error}");
+    assert_eq!(fixture.read(), DAMAGED);
+    assert_eq!(fs::read_to_string(fixture.backup(STAMP)).unwrap(), DAMAGED);
 }
 
 #[test]

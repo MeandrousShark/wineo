@@ -2174,6 +2174,13 @@ fn a_library_from_a_newer_wineo_offers_no_repair() {
         "library.toml was written by a newer wineo; update wineo to use it."
     );
 
+    // A newer version still counts in a file that doesn't parse.
+    write_library(
+        &f,
+        "schema_version = 2\n[environments.hades]\nfavorite = true\nbroken =\n",
+    );
+    assert_eq!(f.only(Code::LibraryInvalid).fix, None);
+
     write_library(&f, "schema_version = 0\n");
     assert_eq!(f.only(Code::LibraryInvalid).fix, Some(Fix::RepairLibrary));
 }
