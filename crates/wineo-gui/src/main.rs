@@ -1,11 +1,11 @@
 mod app_art;
-mod app_close;
 mod app_flow;
 mod app_grid;
 mod app_keys;
 mod app_library;
 mod app_operation;
 mod app_selection;
+mod app_window;
 mod art_cache;
 mod art_navigation;
 mod art_page;
@@ -77,7 +77,9 @@ use std::ops::ControlFlow;
 use std::path::PathBuf;
 use std::process::ExitCode;
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+#[cfg(test)]
+use std::time::Duration;
+use std::time::Instant;
 
 use iced::widget::{image, scrollable};
 use iced::{Settings, Subscription, Task, Theme, keyboard, window};
@@ -871,13 +873,7 @@ impl App {
                 Task::none()
             }
             Message::ArtLoaded(key, dimmed, result) => self.art_result(key, dimmed, result)?,
-            Message::Scrolled(viewport) => {
-                self.viewport_width = viewport.bounds().width;
-                self.viewport_height = viewport.bounds().height;
-                self.on_scroll_offset(viewport.absolute_offset().y);
-                self.scroll_visible_until = Some(Instant::now() + Duration::from_millis(850));
-                self.load_visible_art()
-            }
+            Message::Scrolled(viewport) => self.grid_scrolled(viewport),
             Message::GridCardLocated(name, generation, bounds) => {
                 self.grid_card_located(name, generation, bounds)?
             }
@@ -894,13 +890,7 @@ impl App {
                 Task::none()
             }
             Message::Window(window::Event::Resized(size) | window::Event::Opened { size, .. }) => {
-                self.window_size = size;
-                self.viewport_width = (size.width - sidebar::WIDTH).max(0.0);
-                self.viewport_height = (size.height - 48.0).max(0.0);
-                self.grid_motion
-                    .snap(self.panel_open, self.filtered().len());
-                self.collapse.reset();
-                self.load_visible_art()
+                self.window_resized(size)
             }
             Message::Window(window::Event::CloseRequested) => self.close_requested(),
             Message::Window(window::Event::Unfocused) => {

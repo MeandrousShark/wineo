@@ -2,7 +2,7 @@
 
 use iced::Task;
 
-use crate::{App, Message};
+use crate::{App, Message, sidebar};
 
 impl App {
     pub(crate) fn close_requested(&mut self) -> Task<Message> {
@@ -48,5 +48,15 @@ impl App {
         } else {
             Task::none()
         }
+    }
+
+    pub(crate) fn window_resized(&mut self, size: iced::Size) -> Task<Message> {
+        self.window_size = size;
+        self.viewport_width = (size.width - sidebar::WIDTH).max(0.0);
+        self.viewport_height = (size.height - 48.0).max(0.0);
+        self.grid_motion
+            .snap(self.panel_open, self.filtered().len());
+        self.collapse.reset();
+        self.load_visible_art()
     }
 }

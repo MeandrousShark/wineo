@@ -1,7 +1,7 @@
 //! Message handlers for the card grid's scroll position and motion.
 
 use std::ops::ControlFlow;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use iced::Task;
 use iced::widget::scrollable;
@@ -72,5 +72,13 @@ impl App {
             ),
             self.load_visible_art(),
         ])
+    }
+
+    pub(crate) fn grid_scrolled(&mut self, viewport: scrollable::Viewport) -> Task<Message> {
+        self.viewport_width = viewport.bounds().width;
+        self.viewport_height = viewport.bounds().height;
+        self.on_scroll_offset(viewport.absolute_offset().y);
+        self.scroll_visible_until = Some(Instant::now() + Duration::from_millis(850));
+        self.load_visible_art()
     }
 }
