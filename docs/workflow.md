@@ -101,7 +101,9 @@ only adds what it doesn't say. If the two disagree, `AGENTS.md` wins.
   source of truth. An idea joins the roadmap as a `features.md` row.
   - "Plan queue" holds one card per queued plan, in queue order, top
     first. When a plan starts, its card goes to Done and its steps get
-    To-Do cards.
+    To-Do cards. It mirrors the Queue section of `features.md`, which stays
+    the public roadmap, so a change to the queue updates both in the same
+    stretch of work (maintainer, 2026-10-18).
   - Move a card with the `task_bucket_update` action (project 4, kanban
     view 16, bucket ids: Ideas 15, Plan queue 20, To-Do 12, Doing 13,
     Waiting on you 16, Done 14). Updating a task's `bucket_id` echoes it
