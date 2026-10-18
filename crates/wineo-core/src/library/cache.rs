@@ -13,7 +13,8 @@ use super::{Library, ReadFailure, document_from_bytes, library_from};
 pub struct Cache {
     library: Library,
     seen: Seen,
-    #[cfg(test)]
+    /// How many times the file was read, for tests that pin a cache hit.
+    #[cfg(any(test, feature = "test-support"))]
     reads: usize,
 }
 
@@ -38,6 +39,12 @@ impl Seen {
 }
 
 impl Cache {
+    #[cfg(any(test, feature = "test-support"))]
+    #[doc(hidden)]
+    pub fn reads(&self) -> usize {
+        self.reads
+    }
+
     /// The library, read again only when the file changed since last time.
     pub fn read(&mut self, paths: &Paths) -> &Library {
         let now = Seen::now(paths);
@@ -57,7 +64,7 @@ impl Cache {
     /// landing meanwhile leaves the cache untrusted instead of pairing the
     /// old contents with the new stamp.
     fn reload(&mut self, paths: &Paths) {
-        #[cfg(test)]
+        #[cfg(any(test, feature = "test-support"))]
         {
             self.reads += 1;
         }
