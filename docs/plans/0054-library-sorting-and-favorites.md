@@ -87,13 +87,22 @@ approved yet):
   blind spot (see "Performance").
 - **A broken `library.toml` is never silently replaced** (2026-10-17).
   Keep the original, refuse writes with a useful error, and back it up
-  before any repair. Question 14 has the details.
+  before any repair.
+- **14: A, with field-level recovery and honest reporting.** A bad value
+  falls back to its default for that field only; the entry's other fields
+  stay usable. An explicit repair salvages field by field and says exactly
+  how much it recovered, since not every corruption can be undone. See
+  "Corruption and recovery".
 - **Performance gets one manual check on real hardware** (2026-10-17), not
   only Xvfb with software rendering.
-- **The 2 s rescan must not get more expensive** (2026-10-17): parsing
+- **The 2 s rescan avoids unnecessary work** (2026-10-17): parsing
   `library.toml`, sorting, and redrawing do no work when nothing changed,
-  and the plan measures a library of a few hundred games with art. See
-  "Performance".
+  and the plan measures a library of a few hundred games with art. Some
+  overhead from the new features is expected, so the bar is no material
+  regression outside normal measurement variance: the numbers are
+  recorded, meaningful regressions are investigated, and the app stays
+  responsive. See "Performance".
+- **The cache is never stale after a failed write** (2026-10-17).
 
 ## Existing foundation
 
@@ -142,8 +151,8 @@ approved yet):
 
 ## Questions for the maintainer
 
-Questions 1 to 13 are answered (see "Settled by the maintainer"); their
-text stays for the record. Question 14 is open.
+Every question is answered (see "Settled by the maintainer"); their text
+stays for the record.
 
 The scenarios use the same library in every option: **hades** (Steam,
 40 h, played yesterday), **papers-please** (GOG, 6 h, played last month),
@@ -438,8 +447,7 @@ holds, so it mustn't write; a bad entry is a known, contained problem.
 
 ## Proposed design
 
-Follows the answers to questions 1 to 13 and the recommendation for 14;
-amended once that's settled.
+Follows the answers to every question.
 
 ### `library.toml`
 
@@ -463,12 +471,11 @@ hidden = true
 ```
 
 - Lenient like 0053's internal files: unknown keys and unknown sort names
-  are ignored with `serde(default)`. A file that doesn't parse, or an entry
-  that doesn't, follows question 14: it is never overwritten without a
-  backup, and nothing that launches is refused. `validate` reports
-  unknown keys, unknown sort names, bad entries, and entries for
-  environments that don't exist, with `--fix` removing stale entries and
-  repairing a broken file after backing it up.
+  are ignored. Bad values and a file that doesn't parse follow
+  "Corruption and recovery": nothing is overwritten without a backup, and
+  nothing that launches is refused. `validate` reports unknown keys,
+  unknown sort names, bad fields, and entries for environments that don't
+  exist, with `--fix` removing stale entries and repairing a broken file.
 - Writes go through `toml_edit` under the config lock pattern core already
   uses, so a newer release's keys survive an older one's edit. Reads and
   no-op edits never rewrite the file (AGENTS.md).
@@ -477,6 +484,52 @@ hidden = true
   follow question 8.
 - The `[environments.<name>]` table leaves room for completion status and
   notes (their backlog row), which fit the same "how you see it" rule.
+
+### Corruption and recovery
+
+**Fields are read one at a time.** Each `[environments.<name>]` table is
+read field by field from the `toml_edit` document, not deserialized as one
+struct, so a bad value costs only its own field:
+
+```toml
+[environments.hades]
+favorite = "yes"                 # bad: hades reads as not a favorite
+added = 2026-10-17T18:00:00Z     # still used
+hidden = true                    # still used
+```
+
+The bad field falls back to its default (`favorite = false`), `validate`
+reports it (`library.toml: environments.hades.favorite: expected true or
+false, found "yes"`), and the value stays in the file untouched. Starring
+hades replaces just that value, which is the user's intent. The `[view]`
+table works the same way, so a bad `sort` doesn't reset `descending`.
+
+**A file that doesn't parse** degrades reads and refuses writes, as in
+question 14: the library shows and launches work with no stars or hidden
+flags, a banner names the error and line, and a write says `Can't save to
+library.toml: it can't be read. Fix it, or repair it in Checkup.`
+
+**Repair is explicit** (`wineo validate --fix` or Checkup's fix) and works
+in this order:
+
+1. Copy the file to `library.toml.broken-<time>`. If the copy fails, stop
+   and change nothing.
+2. Salvage field by field. Each `[environments.<name>]` header the repair
+   can find counts as a recognized entry; for each, it keeps every field
+   whose line still parses on its own. Text it can't attribute to an entry
+   is dropped (it's in the backup).
+3. Write the salvaged file and report exactly what came back:
+
+```
+Recovered 20 of 40 recognized entries. Some data could not be recovered.
+Original saved as library.toml.broken-2026-10-17T19-20.
+```
+
+When everything comes back, it says `Recovered all 40 recognized
+entries. Original saved as ...`. Entries are counted from headers the
+repair could find, so a header too damaged to recognize isn't in either
+number; the wording says "recognized" for that reason. It can't promise
+to undo every corruption, so it never claims more than it counted.
 
 ### Sort keys
 
@@ -521,12 +574,18 @@ grid.
 
 ### Performance
 
-The rescan runs every 2 s while the window is focused, so nothing this
-plan adds may cost work when nothing changed:
+The rescan runs every 2 s while the window is focused. A quiet rescan,
+where nothing changed, should do no work this plan adds; when things do
+change, the new features cost some time, and the bar is no material
+regression outside normal measurement variance:
 
 - **`library.toml` is read only when its stamp changes.** The rescan
   keeps the parsed file with its stamp and re-reads it only when that
-  differs. The app's own writes update the cached copy directly.
+  differs. A successful write updates the cached copy and its stamp
+  together. A failed write (refused, disk full, lock held) never updates
+  the cache with the value it meant to write: the cache is dropped and the
+  next read loads what's really on disk, so the app can't show a star
+  that wasn't saved. Tests force each failure and check the card.
 - **The stamp is mtime, ctime, size, and inode.** mtime and size alone
   (what the Art page's snapshot uses) miss a file replaced with same-sized
   content and a matching mtime, which `touch -d` or a copy that preserves
@@ -550,9 +609,17 @@ plan adds may cost work when nothing changed:
   so they don't add spurious differences.
 - **Measured, not assumed.** A generated library of 300 environments, each
   with poster art and a stats log of a few hundred sessions, measured on
-  0.35.1 and after each step: rescan read time, idle CPU while focused
-  (Xvfb, software rendering, as in 0051), the time to apply a sort or
-  filter change, and scroll smoothness. A step may not regress them.
+  0.35.1 and after each step: rescan time, idle CPU while focused (Xvfb,
+  software rendering, as in 0051), the time to apply a sort or filter
+  change, and scroll smoothness. Two rescans are timed separately: a
+  **quiet** one, where nothing changed, and a **busy** one, where all 300
+  environments genuinely changed (new sessions in every stats log, a
+  `library.toml` edit touching every entry). Each measurement is repeated
+  enough to know its normal spread. The numbers go in this plan after each
+  step; a regression beyond that spread gets investigated before the next
+  step, and either explained (a cost the feature needs, kept as small as
+  practical) or fixed. Responsiveness is the bar: sorting, filtering, and
+  starring feel instant, and scrolling stays smooth.
 - **One manual check on real hardware.** The same 300-game library in the
   maintainer's normal session, with the GPU renderer: scroll the grid,
   change the sort, toggle filters, and leave it focused for a minute while
@@ -628,9 +695,14 @@ card selected when it's still shown.
 - Performance: the step 0 measurements before and after, recorded in this
   plan, plus the real-hardware check in the acceptance checklist.
 - Corruption: a file that doesn't parse refuses writes with the error
-  and is left byte-for-byte unchanged; a bad entry is skipped and kept
-  through an unrelated write; repair writes the backup before the new
-  file, and a failed backup aborts the repair.
+  and is left byte-for-byte unchanged; a bad field falls back to its
+  default while the same entry's other fields still apply (the
+  `favorite = "yes"` example), and survives an unrelated write; repair
+  writes the backup before the new file, a failed backup aborts it, and
+  its report's counts match what was salvaged, for a fully and a
+  partly recoverable file.
+- Cache: after each kind of failed write, the card and the cache match
+  the file on disk.
 - Acceptance: a checklist the maintainer runs in a real window on a
   throwaway library, written when the steps land.
 
