@@ -165,8 +165,10 @@ impl Host {
     ) -> Result<()> {
         match self {
             // umu's exit doesn't end the run: what it handed off to can still
-            // be running in its group. Without a recorded group there is
+            // be running in its group. Without a recorded identity there is
             // nothing to watch, so the run ends with umu as it always has.
+            // Erroring instead would leave the run marked live for good over
+            // a rare failure to read /proc.
             Host::Wine { runner, .. } if runner.is_proton() => match identity {
                 Some(_) => runner::wait_for_live_group(identity, unbounded),
                 None => Ok(()),
