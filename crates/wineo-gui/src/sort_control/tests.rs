@@ -817,6 +817,44 @@ fn press(named: Named) -> iced::Event {
     })
 }
 
+/// Runs `task` with the widget operations it asks for answered by the
+/// window's real layout, and returns the messages it sent.
+fn answers(app: &App, task: Task<Message>) -> Vec<Message> {
+    use iced::futures::StreamExt;
+    let Some(mut stream) = iced_runtime::task::into_stream(task) else {
+        return Vec::new();
+    };
+    let mut laid = crate::layout_probe::lay_out(app.view(), iced::Size::new(1200.0, 800.0));
+    let mut messages = Vec::new();
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    runtime.block_on(async {
+        while let Ok(Some(action)) =
+            tokio::time::timeout(Duration::from_millis(500), stream.next()).await
+        {
+            match action {
+                iced_runtime::Action::Output(message) => messages.push(message),
+                iced_runtime::Action::Widget(operation) => laid.run(operation),
+                _ => {}
+            }
+        }
+    });
+    messages
+}
+
+/// Opens the menu the way Enter on the Sort button does, and returns the
+/// task that focuses its row.
+fn open_from_keyboard(app: &mut App) -> Task<Message> {
+    let task = app.update(Message::Sort(Event::ToggleMenuFromKeyboard));
+    let mut focus = Vec::new();
+    for message in answers(app, task) {
+        focus.push(app.update(message));
+    }
+    Task::batch(focus)
+}
+
 /// Lays out the window and runs `operations` in it, as the runtime does
 /// after an update.
 fn focus_after<'a>(
@@ -914,10 +952,10 @@ fn opening_the_menu_from_the_keyboard_focuses_the_current_key() {
     assert!(
         messages
             .iter()
-            .any(|message| matches!(message, Message::Sort(Event::ToggleMenu)))
+            .any(|message| matches!(message, Message::Sort(Event::ToggleMenuFromKeyboard)))
     );
 
-    let ran = run_keeping(app.update(Message::Sort(Event::ToggleMenu)), true, 0);
+    let ran = run_keeping(open_from_keyboard(&mut app), true, 0);
     assert!(app.sort_menu_shown());
     let mut laid = focus_after(&app, ran.operations);
     assert_eq!(
@@ -931,11 +969,10 @@ fn opening_the_menu_from_the_keyboard_focuses_the_current_key() {
             .iter()
             .any(|message| matches!(message, Message::Sort(Event::Pick(SortKey::Playtime))))
     );
-    assert!(
-        !messages
-            .iter()
-            .any(|message| matches!(message, Message::Sort(Event::ToggleMenu)))
-    );
+    assert!(!messages.iter().any(|message| matches!(
+        message,
+        Message::Sort(Event::ToggleMenu | Event::ToggleMenuFromKeyboard)
+    )));
 }
 
 /// A removed environment, so there's an Undo toast.
@@ -1147,4 +1184,77 @@ fn the_direction_button_still_flips_from_the_keyboard_with_its_tooltip() {
             .iter()
             .any(|message| matches!(message, Message::Sort(Event::FlipDirection)))
     );
+}
+
+/// The Sort button's bounds in the laid out window.
+fn sort_button_bounds(app: &App) -> iced::Rectangle {
+    let mut laid = crate::layout_probe::lay_out(app.view(), iced::Size::new(1200.0, 800.0));
+    let found = std::sync::Arc::new(std::sync::Mutex::new(None));
+    let sink = found.clone();
+    laid.run(Box::new(iced::advanced::widget::operation::map(
+        bounds_of(SORT_BUTTON_ID),
+        move |bounds| *sink.lock().unwrap() = bounds,
+    )));
+    let bounds = *found.lock().unwrap();
+    bounds.expect("the Sort button registers its bounds")
+}
+
+#[test]
+fn the_menu_opened_from_the_keyboard_sits_under_the_sort_button() {
+    let (_root, mut app) = loaded();
+    let button = sort_button_bounds(&app);
+    assert!(button.width > 0.0 && button.x > 0.0, "{button:?}");
+    // A pointer position far from the button, as after using the grid.
+    let _ = app.update(Message::MenuAnchor(iced::Point::new(900.0, 600.0)));
+
+    let _ = open_from_keyboard(&mut app);
+    assert!(app.sort_menu_shown());
+    let shown = menu_position(
+        app.sort_menu_position,
+        app.window_size,
+        menu_height(app.window_size.height),
+    );
+    assert_eq!(
+        shown,
+        iced::Point::new(button.x, button.y + button.height + 4.0)
+    );
+
+    // Enter on the button again, which the menu's focus rules out in the
+    // app, still closes it rather than moving it.
+    let _ = app.update(Message::Sort(Event::ToggleMenuFromKeyboard));
+    assert!(!app.sort_menu);
+
+    // A click keeps opening at the cursor.
+    let _ = app.update(Message::Sort(Event::ToggleMenu));
+    assert!(app.sort_menu_shown());
+    assert_eq!(app.sort_menu_position, iced::Point::new(900.0, 600.0));
+}
+
+#[test]
+fn a_keyboard_menu_with_no_button_found_falls_back_to_the_anchor() {
+    let (_root, mut app) = loaded();
+    let _ = app.update(Message::MenuAnchor(iced::Point::new(40.0, 50.0)));
+    let _ = app.update(Message::Sort(Event::OpenUnder(None)));
+    assert!(app.sort_menu_shown());
+    assert_eq!(app.sort_menu_position, iced::Point::new(40.0, 50.0));
+}
+
+#[test]
+fn the_keyboard_menu_position_is_clamped_like_the_pointer_one() {
+    let (_root, mut app) = loaded();
+    app.window_size = iced::Size::new(300.0, 400.0);
+    let _ = app.update(Message::Sort(Event::OpenUnder(Some(iced::Rectangle::new(
+        iced::Point::new(250.0, 20.0),
+        iced::Size::new(120.0, 32.0),
+    )))));
+    let shown = menu_position(
+        app.sort_menu_position,
+        app.window_size,
+        menu_height(app.window_size.height),
+    );
+    assert_eq!(
+        shown.x,
+        app.window_size.width - ACTION_MENU_WIDTH - ACTION_MENU_MARGIN
+    );
+    assert_eq!(shown.y, 56.0);
 }

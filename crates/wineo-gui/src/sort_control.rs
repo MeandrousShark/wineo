@@ -5,7 +5,7 @@ use iced::keyboard::{Key, Modifiers, key::Named};
 use iced::widget::{
     Space, button, column, container, mouse_area, row, scrollable, svg, text, tooltip,
 };
-use iced::{Center, Color, Element, Fill, Font, Task, border, font};
+use iced::{Center, Color, Element, Fill, Font, Point, Rectangle, Task, border, font};
 use wineo_core::library::{self, SortKey};
 use wineo_core::paths::Paths;
 
@@ -29,7 +29,12 @@ const CHECK: &[u8] = br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1
 
 #[derive(Debug, Clone)]
 pub(crate) enum Event {
+    /// A click on the Sort button, which opens the menu at the cursor.
     ToggleMenu,
+    /// Enter or Space on the focused Sort button.
+    ToggleMenuFromKeyboard,
+    /// The Sort button's bounds, found for a menu the keyboard is opening.
+    OpenUnder(Option<Rectangle>),
     /// A click outside the menu.
     CloseMenu,
     Pick(SortKey),
@@ -194,16 +199,24 @@ impl App {
 pub(crate) fn update(app: &mut App, event: Event) -> Task<Message> {
     match event {
         Event::ToggleMenu => {
-            app.action_menu = None;
-            app.sort_menu = !app.sort_menu;
-            app.sort_menu_position = app.menu_anchor;
             if app.sort_menu {
-                // Focus moves into the menu, so a second Enter or Space
-                // picks a row instead of closing it again.
-                iced::widget::operation::focus(iced::widget::Id::new(row_id(app.query.sort)))
-            } else {
-                Task::none()
+                app.sort_menu = false;
+                return Task::none();
             }
+            open_menu(app, app.menu_anchor)
+        }
+        Event::ToggleMenuFromKeyboard => {
+            if app.sort_menu {
+                app.sort_menu = false;
+                return Task::none();
+            }
+            // The pointer may be anywhere, so the menu waits for where
+            // the button is.
+            iced::advanced::widget::operate(bounds_of(SORT_BUTTON_ID))
+                .map(|bounds| Message::Sort(Event::OpenUnder(bounds)))
+        }
+        Event::OpenUnder(bounds) => {
+            open_menu(app, bounds.map_or(app.menu_anchor, menu_anchor_under))
         }
         Event::CloseMenu => {
             app.sort_menu = false;
@@ -246,6 +259,58 @@ pub(crate) fn update(app: &mut App, event: Event) -> Task<Message> {
                 app.save_field(written)
             }
         }
+    }
+}
+
+fn open_menu(app: &mut App, position: Point) -> Task<Message> {
+    app.action_menu = None;
+    app.sort_menu = true;
+    app.sort_menu_position = position;
+    // Focus moves into the menu, so a second Enter or Space picks a row
+    // instead of closing it again.
+    iced::widget::operation::focus(iced::widget::Id::new(row_id(app.query.sort)))
+}
+
+/// The pointer position that puts the menu a small gap under the button's
+/// left edge. `menu_position` offsets a pointer by 4 px each way.
+fn menu_anchor_under(button: Rectangle) -> Point {
+    Point::new(button.x - 4.0, button.y + button.height)
+}
+
+/// Finds the bounds of the focus control with `id`, if it is on screen.
+fn bounds_of(id: &'static str) -> impl iced::advanced::widget::Operation<Option<Rectangle>> {
+    struct Bounds {
+        id: iced::widget::Id,
+        found: Option<Rectangle>,
+    }
+
+    impl iced::advanced::widget::Operation<Option<Rectangle>> for Bounds {
+        fn traverse(
+            &mut self,
+            operate: &mut dyn FnMut(&mut dyn iced::advanced::widget::Operation<Option<Rectangle>>),
+        ) {
+            operate(self);
+        }
+
+        fn focusable(
+            &mut self,
+            id: Option<&iced::widget::Id>,
+            bounds: Rectangle,
+            _state: &mut dyn iced::advanced::widget::operation::Focusable,
+        ) {
+            if id == Some(&self.id) {
+                self.found = Some(bounds);
+            }
+        }
+
+        fn finish(&self) -> iced::advanced::widget::operation::Outcome<Option<Rectangle>> {
+            iced::advanced::widget::operation::Outcome::Some(self.found)
+        }
+    }
+
+    Bounds {
+        id: iced::widget::Id::new(id),
+        found: None,
     }
 }
 
@@ -317,7 +382,7 @@ pub(crate) fn toolbar(app: &App) -> Element<'_, Message> {
             sort.into(),
             true,
             SORT_BUTTON_ID,
-            Message::Sort(Event::ToggleMenu)
+            Message::Sort(Event::ToggleMenuFromKeyboard)
         ),
         focus_button::control(
             flip.into(),
