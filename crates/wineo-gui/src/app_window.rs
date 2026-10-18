@@ -1,4 +1,4 @@
-//! Message handlers for closing the window and canceling work on the way out.
+//! Message handlers for the window: resizing, closing, and canceling work on the way out.
 
 use iced::Task;
 
