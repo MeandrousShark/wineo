@@ -603,8 +603,11 @@ fn a_write_that_errors_keeps_the_view_says_why_and_refreshes_the_cache() {
     assert!(app.query.descending);
     assert_eq!(shown(&app)[0], "steam-game");
     let (notice, _) = app.feature_notice.clone().expect("a notice");
-    assert!(notice.starts_with("Couldn't save the sort: "), "{notice}");
-    assert!(notice.contains("library.toml"), "{notice}");
+    // The cause is kept and the home directory is shortened.
+    assert_eq!(
+        notice,
+        "Couldn't save the sort: failed to read ~/.config/wineo/library.toml: Is a directory (os error 21)"
+    );
     assert_eq!(app.shown.library_reads(), reads + 1);
     assert!(app.view_writes.descending.is_none());
 }
