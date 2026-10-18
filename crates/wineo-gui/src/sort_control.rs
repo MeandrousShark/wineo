@@ -179,7 +179,13 @@ pub(crate) fn update(app: &mut App, event: Event) -> Task<Message> {
             app.action_menu = None;
             app.sort_menu = !app.sort_menu;
             app.sort_menu_position = app.menu_anchor;
-            Task::none()
+            if app.sort_menu {
+                // Focus moves into the menu, so a second Enter or Space
+                // picks a row instead of closing it again.
+                iced::widget::operation::focus(iced::widget::Id::new(row_id(app.query.sort)))
+            } else {
+                Task::none()
+            }
         }
         Event::CloseMenu => {
             app.sort_menu = false;
