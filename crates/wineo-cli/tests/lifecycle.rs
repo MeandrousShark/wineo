@@ -1893,6 +1893,55 @@ fn a_proton_run_ends_when_umu_exits() {
 }
 
 #[test]
+fn a_proton_run_lasts_until_what_umu_handed_off_to_exits() {
+    let f = Fixture::new();
+    f.install_proton("GE-Proton9-20");
+    f.proton_environment(
+        "hades",
+        "GE-Proton9-20",
+        "[targets.hades]\nexe = \"handoff\"\n",
+    );
+
+    assert_success(&f.run(&["start", "hades"]));
+    wait_for("umu to exit", || f.state("hades").contains("exit_code = 0"));
+    // umu is gone, but what it left in its group still holds the run.
+    let state = f.state("hades");
+    assert!(state.contains("status = \"running\""), "{state}");
+    assert!(f.runtime("hades").is_running().unwrap());
+    assert!(!f.prefix("hades").join("handoff-done").exists());
+
+    f.wait_for_run_end("hades", "exited");
+    assert!(f.prefix("hades").join("handoff-done").exists());
+}
+
+#[test]
+fn stop_kills_what_a_proton_run_leaves_after_umu_closes() {
+    let f = Fixture::new();
+    f.global_config("stop_timeout = 1\n");
+    f.install_proton("GE-Proton9-20");
+    f.proton_environment(
+        "hades",
+        "GE-Proton9-20",
+        "[targets.hades]\nexe = \"stubborn-child\"\n",
+    );
+
+    assert_success(&f.run(&["start", "hades"]));
+    wait_for("the program to start", || f.fake_program_running("hades"));
+    let child = fs::read_to_string(f.prefix("hades").join("stubborn-child")).unwrap();
+    let child = PathBuf::from(format!("/proc/{}", child.trim()));
+
+    let began = Instant::now();
+    assert_success(&f.run(&["stop", "hades"]));
+    // umu closes on the request, so only the kill after the timeout can end
+    // what it left behind.
+    assert!(began.elapsed() >= Duration::from_secs(1));
+    let log = f.log("hades");
+    assert!(log.contains("wineo: killing"), "{log}");
+    wait_for("the leftover to be reaped", || !child.exists());
+    assert!(f.state("hades").contains("status = \"stopped\""));
+}
+
+#[test]
 fn stop_forces_a_proton_run_that_ignores_sigterm() {
     let f = Fixture::new();
     f.global_config("stop_timeout = 1\n");

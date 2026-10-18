@@ -286,8 +286,8 @@ impl Runner {
     }
 
     /// Blocks until every process in the prefix has exited and wineserver has
-    /// shut down. A Proton run is over when umu returns, so there is nothing
-    /// to wait for.
+    /// shut down. Proton has no wineserver to wait on, so this returns at
+    /// once; a Proton run waits on umu's process group instead.
     pub fn wait_idle(&self, prefix: &Path) -> Result<()> {
         let Some(mut command) = self.wineserver(prefix) else {
             return Ok(());

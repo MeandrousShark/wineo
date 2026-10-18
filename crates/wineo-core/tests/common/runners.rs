@@ -306,6 +306,15 @@ handoff)
     (sleep 2; touch "$WINEPREFIX/handoff-done") &
     exit 0
     ;;
+stubborn-child)
+    # umu closes when asked, but leaves something in its group that ignores
+    # the request.
+    (trap '' TERM; while :; do sleep 0.1; done) &
+    echo "$!" >"$WINEPREFIX/stubborn-child"
+    trap 'rm -f "$pids"; exit 0' TERM
+    echo "$$ $!" >"$pids"
+    wait
+    ;;
 esac
 sleep 60 &
 trap 'kill "$!" 2>/dev/null; rm -f "$pids"; exit 0' TERM

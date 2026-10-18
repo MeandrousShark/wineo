@@ -143,14 +143,21 @@ impl Host {
         }
     }
 
-    /// Waits until the run is over: the prefix is idle, or for a native run,
-    /// its whole process group is gone.
+    /// Waits until the run is over: the prefix is idle, or for a Proton or
+    /// native run, its whole process group is gone.
     pub(crate) fn wait_idle(
         &self,
         identity: Option<&crate::process::Identity>,
         unbounded: bool,
     ) -> Result<()> {
         match self {
+            // umu's exit doesn't end the run: what it handed off to can still
+            // be running in its group. Without a recorded group there is
+            // nothing to watch, so the run ends with umu as it always has.
+            Host::Wine { runner, .. } if runner.is_proton() => match identity {
+                Some(_) => runner::wait_for_live_group(identity, unbounded),
+                None => Ok(()),
+            },
             Host::Wine { runner, prefix } => runner.wait_idle(prefix),
             Host::Native { .. } => runner::wait_for_live_group(identity, unbounded),
             Host::Proxied { .. } => Err(Error::Unsettled(

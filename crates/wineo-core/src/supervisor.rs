@@ -108,7 +108,8 @@ pub enum Watched {
 /// How a watch knows that everything the program started has stopped.
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum Settle {
-    /// Once wineserver goes idle. A Proton run is over when umu returns.
+    /// Once wineserver goes idle, or for a Proton run, once umu's process
+    /// group is empty.
     Idle,
     /// Only once that is confirmed, including that nothing is left in a Proton
     /// program's process group.
@@ -218,8 +219,9 @@ impl Supervisor {
         mut notify: impl FnMut(Notice),
     ) -> Result<()> {
         let outlives = launch.host.outlives_program();
-        // A run is over once the prefix looks idle, whether or not that could
-        // be confirmed, so `settled` is not looked at.
+        // No `give_up`: a launcher can hand off to a game that runs for hours,
+        // and a stop already escalates to kills until the run is over. When
+        // the end can't be confirmed, the run is left marked live below.
         let ending = self.watch(
             &launch.host,
             state.identity(),
