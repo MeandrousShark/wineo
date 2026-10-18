@@ -601,6 +601,46 @@ a record naming their environment beside the folder's in-use lock for as
 long as they hold it. When none can be named, the refusal says `Something
 is running from rimworld's game folder. Stop it first.`
 
+### Library state
+
+`library` owns `library.toml` (`Paths::library_file()`), the lenient file
+for how the library is shown: favorites, hidden games, added dates, and the
+saved sort. Plan [0054](plans/0054-library-sorting-and-favorites.md)
+added it.
+
+- `library::load(paths) -> Library`: never fails. A missing file is an
+  empty library. A file that can't be read, doesn't parse, or has an
+  unsupported `schema_version` comes back empty with `problem` set
+  (`Problem::line` for a syntax error, `newer_version` for the schema
+  case), so a frontend can show a banner. A bad field falls back to its
+  default without affecting the entry's other fields.
+- `set_favorite`, `set_hidden` (per environment) and `set_sort`,
+  `set_descending`, `set_favorites_first` (the `[view]` table): each
+  changes one field. It reads the file fresh and holds its config lock
+  through the atomic replace, so it never writes back a frontend's cached
+  copy. `Ok(true)` means the file changed, `Ok(false)` a no-op that left
+  it untouched, and an error means nothing was written. A file that can't
+  be read refuses with `Error::LibraryUnreadable` and stays byte-for-byte
+  as it was. Its `newer_version` says a newer wineo wrote the file, which
+  has no repair, so the refusal says to update wineo instead.
+- `stamp_added`, `fresh`, `remove`, and `put` are the lifecycle edits.
+  Core calls them itself when environments are created, cloned, imported,
+  installed from GOG, removed, restored, or copied to a portable folder, so
+  a frontend doesn't. Those operations never fail because of
+  `library.toml`; they warn instead.
+
+Lifecycle warnings arrive on the channel each operation already has:
+`CreateEvent::Warning` and `ImportProgress::Warning` for creation, imports,
+and clones; `CopyEvent::Warning` for portable copies; the removal entry's
+`warnings`; and the notes `trash::restore` and `trash::recover` return.
+Native creation (`Environment::create_native`, `create_native_titled`),
+`clone::execute_native`, `import::register_native`, and the older
+`portable::execute_reviewed` and `execute_native` take a final
+`FnMut(String)` for theirs. A GOG migration from Heroic returns them in
+`Registered.warnings`. A portable copy whose source `library.toml` can't
+be read clears any stale destination entry for the name and warns that
+the copy's favorite, hidden flag, and added date weren't carried over.
+
 ## Not in core yet
 
 - `StopOutcome` carries ready-made message strings rather than typed
