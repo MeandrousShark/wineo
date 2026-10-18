@@ -56,6 +56,35 @@ feature, but this plan's sort keys are built so adding one is one new key
 - **Sorts go both ways**, and include playtime and library source
   (2026-10-17).
 
+On 2026-10-17 the maintainer answered the questions below (the plan is not
+approved yet):
+
+- **1: C.** Favorites can lead the current sort through a "Favorites
+  first" toggle, off by default. Sections stay for part 4.
+- **2: A.** Hidden games leave the grid and search unless "Show hidden" is
+  on.
+- **3: as proposed, with playtime's ends swapped.** Most played puts
+  never-played games at the bottom; least played puts them at the top.
+  Name sorts by the displayed title. Tags are a filter now and grouping in
+  part 4.
+- **4: A.** `added` is recorded from now on; older environments are
+  unknown.
+- **5: store and integration are separate internally.** See "Sources".
+- **6: A, but Show hidden resets too.** Only the sort, its direction, and
+  "Favorites first" are remembered.
+- **7: as proposed.**
+- **8: as recommended.** Clones start fresh; portable copies carry the
+  entry both ways.
+- **9: A.** GUI only, with the core API built now.
+- **10: parts 1 and 2 gate 1.0**; parts 3 to 5 can land in 1.x.
+- **Empty results must explain themselves** (2026-10-17): a filter that
+  matches nothing, or a library where everything is hidden, must never look
+  like an empty or deleted library. See "Empty states".
+- **The 2 s rescan must not get more expensive** (2026-10-17): parsing
+  `library.toml`, sorting, and redrawing do no work when nothing changed,
+  and the plan measures a library of a few hundred games with art. See
+  "Performance".
+
 ## Existing foundation
 
 - **Cards.** `Card` (`crates/wineo-gui/src/library.rs:77-100`) is built in
@@ -102,6 +131,9 @@ feature, but this plan's sort keys are built so adding one is one new key
   (0053:413-416).
 
 ## Questions for the maintainer
+
+Questions 1 to 10 are answered (see "Settled by the maintainer"); their
+text stays for the record. Questions 11 to 13 are open.
 
 The scenarios use the same library in every option: **hades** (Steam,
 40 h, played yesterday), **papers-please** (GOG, 6 h, played last month),
@@ -294,9 +326,74 @@ some? Recommendation: parts 1 and 2 gate 1.0, since they're what people
 meet every day and they settle the palette roles themes need; parts 3 to 5
 can be 1.x, since none of them changes a contract.
 
+### 11. Empty-state wording
+
+wineo is for regular software too, so generic copy stays neutral ("Add
+something"). The proposed states, in the same grouped surface as the
+maintainer's mockup:
+
+```
+No matches:     (search icon)
+                Nothing matches your filters
+                Try another search or clear your filters.
+                [ Clear filters ]
+
+All hidden:     (eye icon)
+                Everything here is hidden
+                3 hidden. Show them to unhide any.
+                [ Show hidden ]
+```
+
+**A. Neutral, as above (recommended).** **B. "No games match your
+filters"**, as in the mockup, accepting that it reads oddly for a library
+of apps.
+
+### 12. What "Source" shows
+
+Internally each environment gets a **store** (Steam, GOG, Epic, Amazon, or
+none) and an **integration** (how wineo knows it: Steam library, GOG
+install, Heroic import, or plain), plus whether it's native or Windows.
+
+**A. Store, else platform (recommended).** The Source sort and filter use
+the store when there is one and the platform otherwise:
+
+```
+hades          Steam      (store; integration: Steam library)
+papers-please  GOG        (store; integration: GOG install)
+a Heroic Epic import  Epic   (store; integration: Heroic import)
+balatro        Native     (no store)
+notepad-plus-plus  Windows  (no store)
+```
+
+The integration stays internal for now, for part 4's grouping and any
+future badge.
+
+**B. Two filters**, Store and "Added through", each with its own sort key.
+
+Recommendation: **A**. One "Source" reads as where it came from, which is
+what the old list (GOG, Steam, native, Windows) meant; B doubles the
+controls for a distinction most people won't need yet.
+
+### 13. Existing rescan costs the benchmark finds
+
+The library read already loads every environment's config and its whole
+stats log every 2 s. At a few hundred games with long play histories that
+may dominate before this plan adds anything.
+
+**A. Fix what the benchmark shows dominating, in this plan (recommended).**
+The likely fix is the same stamp cache for stats logs (re-read a log only
+when its mtime or size changes), as its own step with before and after
+numbers.
+
+**B. Measure only**, and file anything found as a separate patch or plan.
+
+Recommendation: **A**, since you asked for the measurement in this plan and
+a fix found by it is easiest to verify here.
+
 ## Proposed design
 
-Assumes the recommended answers; amended once the questions are settled.
+Follows the answers to questions 1 to 10 and the recommendations for 11
+to 13; amended once those are settled.
 
 ### `library.toml`
 
@@ -309,7 +406,7 @@ schema_version = 1
 [view]
 sort = "last-played"
 descending = true
-show_hidden = false
+favorites_first = false
 
 [environments.hades]
 favorite = true
@@ -341,6 +438,66 @@ small `SortFields` struct the GUI fills from each card. An unknown name in
 the file falls back to the default (Name, ascending). A metadata key later
 is a variant, a name, and a match arm.
 
+Missing values follow question 3's answer: a never-played game counts as
+the least played and the least recently played, so it's at the bottom of
+Most played and Recently played and at the top of their reverses. An
+unknown `added` date sorts after every known one in both directions, since
+"unknown" isn't oldest. Ties fall back to Name, ascending.
+
+### Sources
+
+`Source` in core has `store: Option<Store>` (`Steam`, `Gog`, `Epic`,
+`Amazon`), `integration` (`SteamLibrary`, `GogInstall`, `HeroicImport`,
+`Plain`), and `native: bool`. Steam is `CardKind::Proxied`; a `gog_id`
+means GOG; a `heroic_id` means a Heroic import, whose store comes from its
+`store` hint (`egs`, `gog`, `amazon`, none for sideloaded). The label
+follows question 12.
+
+### Empty states
+
+The grid area shows one of these instead of a blank page, in a grouped
+surface like the maintainer's mockup, with the wording from question 11:
+
+- **Library empty** (no environments at all): today's "Your library is
+  empty" and **Add something**, unchanged.
+- **Everything hidden** (environments exist, every one hidden, Show hidden
+  off, no search or filters): the hidden count and **Show hidden**.
+- **No matches** (search or filters exclude everything shown): **Clear
+  filters**, which clears search, source and tag filters, and leaves the
+  sort alone. If hidden games would match, the text says so ("2 hidden
+  games match") with **Show hidden** beside it.
+
+Each state is chosen from counts the filtering already has, so it costs
+nothing extra, and the arrow keys and the panel treat it like an empty
+grid.
+
+### Performance
+
+The rescan runs every 2 s while the window is focused, so nothing this
+plan adds may cost work when nothing changed:
+
+- **`library.toml` is read only when its stamp changes.** The rescan
+  keeps the parsed file with its mtime and size and re-reads it only when
+  those differ, like the Art page's file snapshot. The app's own writes
+  update the cached copy directly.
+- **Sorting and filtering happen once per change, not per frame.**
+  `filtered()` is called from the grid's `view`, which runs every frame
+  during card motion, and from 14 other places. It becomes a cached list
+  of card indices, rebuilt only when the cards, search, sort, or filters
+  change, and every caller reads the cache. Sort keys (lowercased titles,
+  timestamps) are computed once per rebuild, not per comparison.
+- **No redraw when the order didn't change.** The rescan already sends a
+  message only when cards differ; the new card fields are stable values,
+  so they don't add spurious differences.
+- **Measured, not assumed.** A generated library of 300 environments, each
+  with poster art and a stats log of a few hundred sessions, measured on
+  0.35.1 and after each step: rescan read time, idle CPU while focused
+  (Xvfb, software rendering, as in 0051), the time to apply a sort or
+  filter change, and scroll smoothness. A step may not regress them. If
+  the baseline shows an existing cost dominating (the rescan reads every
+  stats log in full each time), question 13 decides whether this plan
+  fixes it.
+
 ### Cards
 
 `Card` gains raw `seconds`, `last_played`, `added`, `favorite`, `hidden`,
@@ -353,13 +510,17 @@ values are stable ones, not "today" labels.
 
 `filtered()` becomes: drop hidden unless Show hidden; keep sources and tags
 that match the active filters; match search against title, identifier,
-and tags; then sort with favorites first. It's still the single hook, so
-keys, art loading, and motion follow. A change of sort or filter retargets
+and tags; then sort, with favorites first when that toggle is on. It's
+still the single hook, now backed by the cache in "Performance", so keys,
+art loading, and motion follow. A change of sort or filter retargets
 the grid motion like a filter change does today and keeps the selected
 card selected when it's still shown.
 
 ## Implementation sequence
 
+0. **Benchmark baseline.** A script that generates a 300-environment
+   library with art and stats logs under a throwaway root, and the
+   measurements from "Performance" taken on 0.35.1.
 1. **Core `library.toml`.** `Paths::library_file()`, the lenient types,
    load and `toml_edit` writes, the core API (set favorite, set hidden, set
    view, stamp added), stamping `added` in `new`, imports, GOG installs,
@@ -367,14 +528,19 @@ card selected when it's still shown.
    `validate` checks. Upgrade fixtures: a missing file and an older
    `library.toml` load.
 2. **Card fields and source.** Raw sort fields and `source` on `Card`, from
-   the summary, config, and library file. Rescan diff tests.
-3. **Sort.** `SortKey`, the comparator, favorites first, and the sort
-   control with direction. Persist through `[view]`.
-4. **Filters and search.** Source and tag filters, Show hidden with its
-   count, tag matching in search, and the filter popup.
+   the summary, config, and library file, with the `library.toml` stamp
+   cache. Rescan diff tests. If question 13 is A and the baseline shows the
+   stats logs dominating, their stamp cache lands here too.
+3. **Sort.** `SortKey`, the comparator, the cached order behind
+   `filtered()`, the "Favorites first" toggle, and the sort control with
+   direction. Persist through `[view]`.
+4. **Filters, search, and empty states.** Source and tag filters, Show
+   hidden with its count, tag matching in search, the filter popup, and the
+   three empty states.
 5. **Favorite and hide actions.** Context menu rows, the panel star, the
    `F` key, the poster star mark, and the dimmed hidden treatment.
-6. **Docs.** `gui.md`, `config-files.md` (its `library.toml` placeholder at
+6. **Benchmark again** on the finished work against step 0's numbers.
+7. **Docs.** `gui.md`, `config-files.md` (its `library.toml` placeholder at
    323-326 becomes the real schema), `features.md` rows, and `gui-style.md`
    for the toolbar and the star and hidden marks.
 
@@ -387,8 +553,13 @@ card selected when it's still shown.
   and unknown-date games, favorites first, hidden with and without the
   switch, source and tag filters, tag search; the selection survives a
   re-sort; the grid motion retargets without stale bounds; keys move
-  through the sorted order. Driven with `tests::app()` and fake ticks, like
+  through the sorted order; each empty state appears for its case and
+  never for a populated grid; the cached order rebuilds on each kind of
+  change and not on an unchanged rescan; `library.toml` isn't re-read when
+  its stamp is unchanged. Driven with `tests::app()` and fake ticks, like
   the existing grid tests.
+- Performance: the step 0 measurements before and after, recorded in this
+  plan.
 - Acceptance: a checklist the maintainer runs in a real window on a
   throwaway library, written when the steps land.
 
