@@ -122,6 +122,12 @@ impl Watch {
             .refresh(paths);
     }
 
+    /// Holds the rescan's caches, as a stalled scan would.
+    #[cfg(test)]
+    pub(crate) fn hold_caches(&self) -> std::sync::MutexGuard<'_, RescanCaches> {
+        self.0.caches.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
     #[cfg(test)]
     pub(crate) fn library_reads(&self) -> usize {
         self.0

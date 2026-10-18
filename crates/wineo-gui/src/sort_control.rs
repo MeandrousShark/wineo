@@ -212,6 +212,9 @@ pub(crate) fn update(app: &mut App, event: Event) -> Task<Message> {
         }
         Event::Saved(written, result) => {
             app.view_writes.finish(written);
+            if app.exiting {
+                return Task::none();
+            }
             if let Err(error) = result {
                 // The window keeps the view it chose.
                 app.feature_notice = Some((error, std::time::Instant::now() + NOTICE_TIME));

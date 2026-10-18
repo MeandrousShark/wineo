@@ -985,3 +985,52 @@ fn tab_cycles_the_menu_rows_even_with_an_undo_toast() {
     assert_eq!(focused, [iced::widget::Id::new(row_id(SortKey::Name))]);
     assert_ne!(focused, [iced::widget::Id::new(focus_button::UNDO_ID)]);
 }
+
+#[test]
+fn closing_gives_up_on_a_stalled_write_after_the_bound() {
+    let (_root, mut app) = loaded();
+    let write = app.update(Message::Sort(Event::FlipDirection));
+    let _ = app.update(Message::Sort(Event::FlipDirection));
+    let asked = Instant::now();
+    assert!(
+        !run(
+            app.update(Message::Window(iced::window::Event::CloseRequested)),
+            0
+        )
+        .exits
+    );
+    let due = app.close_wake.due().expect("a wakeup for the bound");
+    assert!(due >= asked + crate::app_window::SORT_SAVE_WAIT);
+    assert!(due <= Instant::now() + crate::app_window::SORT_SAVE_WAIT);
+
+    // A rescan stalled while holding the caches keeps the write from
+    // finishing.
+    let watch = app.shown.clone();
+    let held = watch.hold_caches();
+    let writer = std::thread::spawn(move || saved(run(write, 1)));
+    let stale = app.update(Message::CloseWaitOver(app.close_wake.generation() - 1));
+    assert!(!run(stale, 0).exits);
+    let over = app.update(Message::CloseWaitOver(app.close_wake.generation()));
+    assert!(run(over, 0).exits);
+
+    // The write finishing after the window chose to exit only drops: no
+    // rewrite of the newer value and no notice.
+    drop(held);
+    let late = writer.join().unwrap();
+    assert_eq!(late.len(), 1);
+    for message in late {
+        assert!(run(app.update(message), 0).messages.is_empty());
+    }
+    assert!(!app.view_writes.pending());
+    assert!(app.feature_notice.is_none());
+}
+
+#[test]
+fn a_second_close_while_waiting_exits_at_once() {
+    let (_root, mut app) = loaded();
+    let _write = app.update(Message::Sort(Event::FlipDirection));
+    let close = || Message::Window(iced::window::Event::CloseRequested);
+    assert!(!run(app.update(close()), 0).exits);
+    assert!(run(app.update(close()), 0).exits);
+    assert!(app.view_writes.pending(), "the write was given up on");
+}

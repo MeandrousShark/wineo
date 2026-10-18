@@ -223,6 +223,11 @@ pub(crate) struct App {
     change: Option<removal::Change>,
     toast: Option<removal::Toast>,
     toast_wake: wake::Wake,
+    /// When a close waiting on sort writes gives up and exits anyway.
+    close_by: Option<Instant>,
+    close_wake: wake::Wake,
+    /// The window chose to exit, so late results only drop.
+    exiting: bool,
     feature_notice: Option<(String, Instant)>,
     change_generation: u64,
     library_generation: u64,
@@ -388,6 +393,8 @@ pub(crate) enum Message {
     Downloads(downloads_page::Event),
     Checkup(checkup::Event),
     Sort(sort_control::Event),
+    /// The wait for sort writes on close is over, tagged with its wakeup.
+    CloseWaitOver(u64),
 }
 
 impl App {
@@ -487,6 +494,9 @@ impl App {
             change: None,
             toast: None,
             toast_wake: wake::Wake::default(),
+            close_by: None,
+            close_wake: wake::Wake::default(),
+            exiting: false,
             feature_notice: None,
             change_generation: 0,
             library_generation: 0,
@@ -663,6 +673,7 @@ impl App {
                 .arm(self.scroll_visible_until, Message::ScrollIdle),
             self.toast_wake
                 .arm(self.next_toast_deadline(), Message::ToastTick),
+            self.close_wake.arm(self.close_by, Message::CloseWaitOver),
         ]);
         Task::batch([task, focus, wakes])
     }
@@ -934,6 +945,13 @@ impl App {
                 self.window_resized(size)
             }
             Message::Window(window::Event::CloseRequested) => self.close_requested(),
+            Message::CloseWaitOver(generation) => {
+                if self.close_wake.fired(generation) && self.close_by.is_some() {
+                    self.exit_now()
+                } else {
+                    Task::none()
+                }
+            }
             Message::Window(window::Event::Unfocused) => {
                 self.focused = false;
                 Task::none()

@@ -1,26 +1,42 @@
 //! Message handlers for the window: resizing, closing, and canceling work on the way out.
 
+use std::time::{Duration, Instant};
+
 use iced::Task;
 
 use crate::{App, Message, sidebar};
 
+/// How long a close waits for sort writes: one config lock wait, about 5 s,
+/// and a margin. A write stalled past that is given up on.
+pub(crate) const SORT_SAVE_WAIT: Duration = Duration::from_secs(6);
+
 impl App {
     pub(crate) fn close_requested(&mut self) -> Task<Message> {
-        if self.foreground_busy() {
+        if self.close_by.is_some() {
+            // Asked again while waiting on sort writes.
+            self.exit_now()
+        } else if self.foreground_busy() {
             self.close_prompt = true;
             Task::none()
         } else if self.view_writes.pending() {
-            // A sort write ends on its own within the config lock's wait,
-            // so the window closes once the file has the final view.
+            // The window closes once the file has the final view, or when
+            // the wait runs out.
             self.closing = true;
+            self.close_by = Some(Instant::now() + SORT_SAVE_WAIT);
             Task::none()
         } else {
-            for page in self.art_pages.values() {
-                page.cancel_thumbnails();
-            }
-            self.cancel_remove_dialog();
-            iced::exit()
+            self.exit_now()
         }
+    }
+
+    pub(crate) fn exit_now(&mut self) -> Task<Message> {
+        self.exiting = true;
+        self.close_by = None;
+        for page in self.art_pages.values() {
+            page.cancel_thumbnails();
+        }
+        self.cancel_remove_dialog();
+        iced::exit()
     }
 
     pub(crate) fn cancel_and_close(&mut self, event: Message) -> Task<Message> {
