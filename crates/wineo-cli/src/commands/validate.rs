@@ -5,7 +5,7 @@ use serde::Serialize;
 use wineo_core::cancel::Token;
 use wineo_core::config::GlobalConfig;
 use wineo_core::paths::Paths;
-use wineo_core::validate::{self, Fix, Level, Note, Problem, Report};
+use wineo_core::validate::{self, Area, Fix, Level, Note, Problem, Report};
 
 use super::{components, json};
 use crate::cancel;
@@ -259,6 +259,8 @@ fn review<I: Input, W: Write>(
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Group {
     Global,
+    /// `library.toml` as a whole, not one environment's entry.
+    Library,
     Template(String),
     Environment(String),
 }
@@ -269,6 +271,8 @@ impl Group {
             Group::Template(template.clone())
         } else if let Some(name) = problem.environment.as_ref().or(problem.stray.as_ref()) {
             Group::Environment(name.clone())
+        } else if problem.area == Area::Library {
+            Group::Library
         } else {
             Group::Global
         }
@@ -282,6 +286,7 @@ impl Group {
         };
         match self {
             Group::Global => shown(paths.global_config()),
+            Group::Library => shown(paths.library_file()),
             Group::Template(name) => shown(paths.templates_dir().join(format!("{name}.toml"))),
             Group::Environment(name) => name.clone(),
         }
@@ -312,6 +317,15 @@ fn print_report(
         if !groups.contains(&group) {
             groups.push(group);
         }
+    }
+    // Right after the global config, or first without it.
+    if let Some(index) = groups.iter().position(|group| *group == Group::Library) {
+        groups.remove(index);
+        let at = groups
+            .iter()
+            .position(|group| *group == Group::Global)
+            .map_or(0, |global| global + 1);
+        groups.insert(at, Group::Library);
     }
     for group in &groups {
         let heading = style::title_with_color(group.heading(paths), color);

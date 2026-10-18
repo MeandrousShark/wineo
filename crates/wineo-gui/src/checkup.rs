@@ -4,7 +4,7 @@ use iced::keyboard::{Key, Modifiers, key::Named};
 use iced::widget::{button, checkbox, column, row, scrollable, text};
 use iced::{Center, Element, Fill, Task};
 use wineo_core::cancel::Token;
-use wineo_core::validate::{Fix, Level, Problem, Report};
+use wineo_core::validate::{Area, Fix, Level, Problem, Report};
 use wineo_core::winetricks::WinetricksEvent;
 
 use crate::prefix_facts::{Facts, Live};
@@ -38,6 +38,8 @@ impl Scope {
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Group {
     Global,
+    /// `library.toml` as a whole, not one environment's entry.
+    Library,
     Template(String),
     Environment(String),
     Leftover(String),
@@ -52,6 +54,8 @@ impl Group {
             Self::Environment(name.clone())
         } else if let Some(name) = &problem.stray {
             Self::Leftover(name.clone())
+        } else if problem.area == Area::Library {
+            Self::Library
         } else {
             Self::Global
         }
@@ -72,6 +76,7 @@ impl Group {
         };
         match self {
             Self::Global => shown(paths.global_config()),
+            Self::Library => shown(paths.library_file()),
             Self::Template(name) => shown(paths.templates_dir().join(format!("{name}.toml"))),
             Self::Environment(name) | Self::Leftover(name) => name.clone(),
             Self::Panel => String::new(),
@@ -92,6 +97,18 @@ fn groups<'a>(report: &'a Report, scope: &Scope) -> Vec<(Group, Vec<(usize, &'a 
         } else {
             groups.push((group, vec![(index, problem)]));
         }
+    }
+    // Right after the global config, or first without it.
+    if let Some(index) = groups
+        .iter()
+        .position(|(group, _)| *group == Group::Library)
+    {
+        let library = groups.remove(index);
+        let at = groups
+            .iter()
+            .position(|(group, _)| *group == Group::Global)
+            .map_or(0, |global| global + 1);
+        groups.insert(at, library);
     }
     groups
 }

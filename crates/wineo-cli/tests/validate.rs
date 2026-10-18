@@ -504,3 +504,46 @@ fn json_fix_repairs_the_library_without_printing_the_report() {
     );
     assert_eq!(json["problems"], serde_json::json!([]));
 }
+
+#[test]
+fn library_wide_problems_are_listed_under_library_toml_after_the_global_config() {
+    let f = Fixture::new();
+    f.global_config("bogus_key = 1\n");
+    f.environment("hades", "");
+    let library = f.config_dir().join("library.toml");
+    fs::write(&library, "[environments.hades]\nfavorite true\n").unwrap();
+
+    let output = f.run(&["validate"]);
+    let text = stdout(&output);
+    let global = format!("{}\n  error", f.config_dir().join("config.toml").display());
+    let heading = format!(
+        "{}\n  error    library.toml can't be read (line 2: key with no value, expected `=`)\n",
+        library.display()
+    );
+    let global = text.find(&global).unwrap_or_else(|| panic!("{text}"));
+    let heading = text.find(&heading).unwrap_or_else(|| panic!("{text}"));
+    assert!(global < heading, "{text}");
+    assert!(text.ends_with("\n\n2 errors.\n"), "{text}");
+}
+
+#[test]
+fn a_view_warning_is_under_library_toml_and_an_entry_warning_under_its_environment() {
+    let f = Fixture::new();
+    f.environment("hades", "");
+    let library = f.config_dir().join("library.toml");
+    fs::write(
+        &library,
+        "schema_version = 1\n[view]\nlayout = \"grid\"\n[environments.hades]\nfavorite = \"yes\"\n",
+    )
+    .unwrap();
+
+    let output = f.run(&["validate"]);
+    assert_success(&output);
+    assert_eq!(
+        stdout(&output),
+        format!(
+            "{}\n  warning  library.toml: view.layout: unknown key, ignored\nhades\n  warning  library.toml: environments.hades.favorite: expected true or false, found \"yes\"\n\n2 warnings.\n",
+            library.display()
+        )
+    );
+}
