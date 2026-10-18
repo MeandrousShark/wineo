@@ -580,7 +580,9 @@ fn a_write_to_an_unreadable_file_keeps_the_view_says_why_and_refreshes_the_cache
     assert_eq!(shown(&app)[0], "notepad");
     assert_eq!(
         app.feature_notice.as_ref().map(|(text, _)| text.as_str()),
-        Some("Can't save to library.toml: it can't be read. Fix it, or repair it in Checkup.")
+        Some(
+            "Couldn't save the sort: Can't save to library.toml: it can't be read. Fix it, or repair it in Checkup."
+        )
     );
     assert_eq!(app.shown.library_reads(), reads + 1);
     assert_eq!(
@@ -601,6 +603,7 @@ fn a_write_that_errors_keeps_the_view_says_why_and_refreshes_the_cache() {
     assert!(app.query.descending);
     assert_eq!(shown(&app)[0], "steam-game");
     let (notice, _) = app.feature_notice.clone().expect("a notice");
+    assert!(notice.starts_with("Couldn't save the sort: "), "{notice}");
     assert!(notice.contains("library.toml"), "{notice}");
     assert_eq!(app.shown.library_reads(), reads + 1);
     assert!(app.view_writes.descending.is_none());

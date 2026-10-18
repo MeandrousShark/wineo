@@ -235,7 +235,10 @@ pub(crate) fn update(app: &mut App, event: Event) -> Task<Message> {
             }
             if let Err(error) = result {
                 // The window keeps the view it chose.
-                app.feature_notice = Some((error, std::time::Instant::now() + NOTICE_TIME));
+                app.feature_notice = Some((
+                    format!("Couldn't save the sort: {error}"),
+                    std::time::Instant::now() + NOTICE_TIME,
+                ));
             }
             if app.current(written) == written {
                 Task::none()
