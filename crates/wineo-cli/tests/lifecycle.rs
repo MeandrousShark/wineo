@@ -1884,8 +1884,9 @@ fn a_proton_run_ends_when_umu_exits() {
     f.wait_for_run_end("hades", "failed");
     let state = f.state("hades");
     assert!(state.contains("exit_code = 3"), "{state}");
-    // umu waits for the game, so its exit is the end of the run. Nothing can
-    // still be running in a container that is gone.
+    // umu waited for the game and left nothing in its group, so its exit
+    // ended the run. Proton runs don't record when umu exited, even when
+    // something it started outlives it.
     assert!(!state.contains("program_exited_at"), "{state}");
 
     let shown = stdout(&f.run(&["status", "hades"]));
@@ -1899,7 +1900,7 @@ fn a_proton_run_lasts_until_what_umu_handed_off_to_exits() {
     f.proton_environment(
         "hades",
         "GE-Proton9-20",
-        "[targets.hades]\nexe = \"handoff\"\n",
+        "[targets.hades]\nexe = \"handoff-held\"\n",
     );
 
     assert_success(&f.run(&["start", "hades"]));
@@ -1910,6 +1911,7 @@ fn a_proton_run_lasts_until_what_umu_handed_off_to_exits() {
     assert!(f.runtime("hades").is_running().unwrap());
     assert!(!f.prefix("hades").join("handoff-done").exists());
 
+    fs::write(f.prefix("hades").join("handoff-release"), "").unwrap();
     f.wait_for_run_end("hades", "exited");
     assert!(f.prefix("hades").join("handoff-done").exists());
 }
@@ -1927,8 +1929,12 @@ fn stop_kills_what_a_proton_run_leaves_after_umu_closes() {
 
     assert_success(&f.run(&["start", "hades"]));
     wait_for("the program to start", || f.fake_program_running("hades"));
-    let child = fs::read_to_string(f.prefix("hades").join("stubborn-child")).unwrap();
-    let child = PathBuf::from(format!("/proc/{}", child.trim()));
+    let group: u32 = f
+        .state("hades")
+        .lines()
+        .find_map(|line| line.strip_prefix("group = "))
+        .and_then(|value| value.trim().parse().ok())
+        .expect("a recorded process group");
 
     let began = Instant::now();
     assert_success(&f.run(&["stop", "hades"]));
@@ -1937,7 +1943,12 @@ fn stop_kills_what_a_proton_run_leaves_after_umu_closes() {
     assert!(began.elapsed() >= Duration::from_secs(1));
     let log = f.log("hades");
     assert!(log.contains("wineo: killing"), "{log}");
-    wait_for("the leftover to be reaped", || !child.exists());
+    // What the supervisor waits on, so a leftover that is dead but not yet
+    // reaped counts as gone.
+    assert_eq!(
+        wineo_core::process::group_has_live_members(group),
+        Some(false)
+    );
     assert!(f.state("hades").contains("status = \"stopped\""));
 }
 

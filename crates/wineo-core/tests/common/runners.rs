@@ -306,12 +306,35 @@ handoff)
     (sleep 2; touch "$WINEPREFIX/handoff-done") &
     exit 0
     ;;
+handoff-held)
+    # Like handoff, but what is left runs until the test creates
+    # handoff-release, or for a minute at most. Its pid stays in the pids
+    # file until then, so the fixture can kill it.
+    (
+        i=0
+        while [ ! -e "$WINEPREFIX/handoff-release" ] && [ "$i" -lt 600 ]; do
+            sleep 0.1
+            i=$((i + 1))
+        done
+        touch "$WINEPREFIX/handoff-done"
+        rm -f "$pids"
+    ) &
+    echo "$!" >"$pids"
+    exit 0
+    ;;
 stubborn-child)
     # umu closes when asked, but leaves something in its group that ignores
-    # the request.
-    (trap '' TERM; while :; do sleep 0.1; done) &
-    echo "$!" >"$WINEPREFIX/stubborn-child"
-    trap 'rm -f "$pids"; exit 0' TERM
+    # the request, for a minute at most. The pids file outlives umu, so the
+    # fixture can still kill what it left.
+    (
+        trap '' TERM
+        i=0
+        while [ "$i" -lt 600 ]; do
+            sleep 0.1
+            i=$((i + 1))
+        done
+    ) &
+    trap 'exit 0' TERM
     echo "$$ $!" >"$pids"
     wait
     ;;
