@@ -476,11 +476,15 @@ fn environment_table_mut<'a>(document: &'a mut DocumentMut, name: &str) -> &'a m
 }
 
 fn table_mut<'a>(parent: &'a mut Table, name: &str) -> &'a mut dyn TableLike {
-    let item = parent
-        .entry(name)
-        .or_insert_with(|| Item::Table(Table::new()));
+    // Implicit, so a parent that only holds sub-tables writes no header of its own.
+    let implicit = || {
+        let mut table = Table::new();
+        table.set_implicit(true);
+        Item::Table(table)
+    };
+    let item = parent.entry(name).or_insert_with(implicit);
     if !item.is_table_like() {
-        *item = Item::Table(Table::new());
+        *item = implicit();
     }
     item.as_table_like_mut()
         .expect("table item was just made a table")

@@ -86,6 +86,16 @@ future_entry = "kept"
 }
 
 #[test]
+fn a_first_write_has_no_empty_parent_header() {
+    let fixture = Fixture::new();
+    assert!(set_favorite(&fixture.paths, "hades", true).unwrap());
+    assert_eq!(
+        fixture.read(),
+        "schema_version = 1\n\n[environments.hades]\nfavorite = true\n"
+    );
+}
+
+#[test]
 fn bad_fields_fall_back_independently_and_survive_unrelated_edits() {
     let fixture = Fixture::new();
     fixture.write(
