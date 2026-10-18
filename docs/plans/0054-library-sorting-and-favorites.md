@@ -27,7 +27,9 @@ keeps their ideas in one place.
    the mouse wheel change it. The grid animates smoothly between sizes and
    keeps the selected game in view. Poster-only (titles hidden until hover
    or keyboard focus, then shown wrapped over the poster, like Heroic) is a
-   toggle on the grid, not a separate view; it amends the "titles beneath
+   toggle on the grid, not a separate view. Part 2 also brings per-card
+   motion, so cards animate to new positions on a zoom, a re-sort, or a
+   filter change (0054 snaps them); it amends the "titles beneath
    the art" rule in `gui-style.md` on purpose, and art-less environments
    need their text tiles to stay readable. Grid thumbnails decode at most
    320 x 480 (`artwork.rs:59`), so zoom past about 2x needs bigger decodes.
@@ -104,6 +106,29 @@ approved yet):
   responsive. See "Performance".
 - **The cache is never stale after a failed write** (2026-10-17).
 
+A cross-family review on 2026-10-17 raised points the maintainer settled
+the same day:
+
+- **Lifecycle writes never block on `library.toml`, with safeguards.**
+  `new`, imports, `rm`, `restore`, and `clone` succeed even when the
+  library update can't be written; they warn, naming what wasn't saved.
+  A reused name never inherits a stale entry. See "Lifecycle".
+- **Re-sorts and filter changes snap in this plan**, like search does
+  today. Animating cards to new positions comes with part 2, which needs
+  the same per-card motion for zoom.
+- **Portable copies carry the entry into the portable folder only.**
+  wineo has no copy back out of a portable folder (`portable.rs:102`);
+  that's a backlog row, and amends question 8's "both ways".
+- **Unknown playtime sorts last in both directions**, like an unknown
+  added date. Steam playtime that can't be read is unknown, not never
+  played.
+- **Hiding the selected card selects the one that takes its place.** See
+  "Selection".
+- **An open window keeps its own view.** Another window saving a sort
+  doesn't change an open one, and favoriting or hiding in a window never
+  writes that window's view back: every write sets only the field it
+  changes. Banners for a broken file do update.
+
 ## Existing foundation
 
 - **Cards.** `Card` (`crates/wineo-gui/src/library.rs:77-100`) is built in
@@ -131,11 +156,19 @@ approved yet):
 - **Date added.** Nothing records when an environment was created. Configs
   are written by temp file and rename (`files.rs:147`), so their times mean
   "last edited".
-- **Motion.** Cards move between old and new slots with a damped spring
-  (`grid_motion.rs:19-25`), and `gui-style.md` already requires filtering
-  and changed contents to settle or retarget safely, so a re-sort animates
-  with what exists. Only the collapse honors reduced motion today
+- **Motion.** Grid motion only moves cards between the panel-closed and
+  panel-open layouts, by slot index (`grid_motion.rs:365`); `retarget`
+  does nothing when the panel state hasn't changed (`grid_motion.rs:93`),
+  and a search change snaps (`app_grid.rs:61`). So a re-sort can snap
+  safely today, but animating cards to new positions needs per-card motion
+  that doesn't exist yet. Only the collapse honors reduced motion
   (`main.rs:1114`).
+- **Selection.** A search that excludes the selected card keeps it
+  selected with the panel open, and Enter can still launch it
+  (`keys.rs:201`).
+- **Unknown playtime.** Steam playtime that can't be read is `seconds = 0`
+  with `playtime_unknown = true` (`stats.rs:704`), shown as "unknown"
+  (`library.rs:276`), which is different from never played.
 - **Context menu and panel.** The right-click menu and the docked panel
   (`panel.rs:734`, detail rows at 974-978) are where per-game actions live.
 - **No saved GUI state.** Plan [0036](0036-gui-library-launcher.md) chose
@@ -476,12 +509,19 @@ hidden = true
   nothing that launches is refused. `validate` reports unknown keys,
   unknown sort names, bad fields, and entries for environments that don't
   exist, with `--fix` removing stale entries and repairing a broken file.
-- Writes go through `toml_edit` under the config lock pattern core already
-  uses, so a newer release's keys survive an older one's edit. Reads and
+- **Every write is one field.** Starring hades reads the file fresh,
+  changes `environments.hades.favorite`, and writes it back; it never
+  writes a whole struct, so it can't carry a window's cached `[view]` or
+  another environment's stale values with it. The `[view]` table is only
+  written by the sort control, and only the field that changed.
+- **Writes hold the config lock across the whole read, edit, and atomic
+  replace** (`operation.rs:597`), not just the rename, so two writers (the
+  GUI and the CLI, or two windows) can't lose each other's edit. The cached
+  copy and its stamp come from the same version of the file. Reads and
   no-op edits never rewrite the file (AGENTS.md).
-- `rm` moves the entry into the trash manifest as an additive field;
-  `restore` puts it back; pruning drops it. `clone` and portable copies
-  follow question 8.
+- Lifecycle operations keep entries in step as in "Lifecycle". `clone`
+  starts fresh, and a portable copy carries the entry into the portable
+  folder's `library.toml` (there's no copy back out).
 - The `[environments.<name>]` table leaves room for completion status and
   notes (their backlog row), which fit the same "how you see it" rule.
 
@@ -502,7 +542,8 @@ The bad field falls back to its default (`favorite = false`), `validate`
 reports it (`library.toml: environments.hades.favorite: expected true or
 false, found "yes"`), and the value stays in the file untouched. Starring
 hades replaces just that value, which is the user's intent. The `[view]`
-table works the same way, so a bad `sort` doesn't reset `descending`.
+table works the same way: a bad `sort` falls back to Name and keeps
+`descending` as written.
 
 **A file that doesn't parse** degrades reads and refuses writes, as in
 question 14: the library shows and launches work with no stars or hidden
@@ -512,47 +553,109 @@ library.toml: it can't be read. Fix it, or repair it in Checkup.`
 **Repair is explicit** (`wineo validate --fix` or Checkup's fix) and works
 in this order:
 
-1. Copy the file to `library.toml.broken-<time>`. If the copy fails, stop
-   and change nothing.
+1. Copy the file to `library.toml.broken-<time>`, with the time to the
+   second. The copy is created exclusively, so it never replaces an
+   existing file: on a clash it tries `-2`, `-3`, and so on. If the copy
+   fails, stop and change nothing.
 2. Salvage field by field. Each `[environments.<name>]` header the repair
-   can find counts as a recognized entry; for each, it keeps every field
-   whose line still parses on its own. Text it can't attribute to an entry
-   is dropped (it's in the backup).
-3. Write the salvaged file and report exactly what came back:
+   can find counts as a recognized entry. For each, a field is kept only
+   if its line parses on its own **and** its value is valid for that field
+   (`favorite = "yes"` parses but isn't kept). `[view]` is salvaged the same
+   way. Text it can't attribute to an entry is dropped (it's in the
+   backup).
+3. Write the salvaged file and report exactly what came back. An entry is
+   **fully** recovered when every field the repair recognized in it was
+   kept, and **partly** recovered when some were. Fields too damaged to
+   recognize can't be counted, which is why the wording says
+   "recognized":
 
 ```
-Recovered 20 of 40 recognized entries. Some data could not be recovered.
-Original saved as library.toml.broken-2026-10-17T19-20.
+Recovered 38 of 40 recognized entries fully and 2 partly. Some data could
+not be recovered. Sort settings recovered.
+Original saved as library.toml.broken-2026-10-17T19-20-05.
 ```
 
-When everything comes back, it says `Recovered all 40 recognized
-entries. Original saved as ...`. Entries are counted from headers the
-repair could find, so a header too damaged to recognize isn't in either
-number; the wording says "recognized" for that reason. It can't promise
-to undo every corruption, so it never claims more than it counted.
+When everything comes back, it says `Recovered all 40 recognized entries.
+Original saved as ...`. It never claims more than it counted.
+
+The fix needs more than today's validate fix API, which returns only
+`Vec<Note>` with `Note::Warning` (`validate.rs:1666`, `354`). The repair
+returns a structured report (counts, whether `[view]` came back, the
+backup path) that the CLI's `validate --fix` and Checkup both render.
+
+### Lifecycle
+
+`library.toml` is secondary to the environments it describes, so its
+updates never block or undo a lifecycle operation. Each one warns when its
+library update can't be written, naming what wasn't saved:
+
+- **`new`, imports, GOG installs, `clone`:** stamp `added` after the
+  environment exists. They also **clear any existing entry for the name**
+  first, so a new `hades` never inherits an old one's star or hidden flag,
+  even if an earlier cleanup failed. If the file is broken, the
+  environment is still created and the warning says the old entry couldn't
+  be cleared. Because nothing in the environment can later tell an old
+  entry from its own, the clear is recorded in a small pending-clears
+  journal in the state dir (lenient, one line per name). Every
+  later write to `library.toml`, including a repair, applies the journal
+  first and then drops the lines it applied, so the old star can't come
+  back once the file is readable again. `added` is stamped by the same
+  write.
+- **`rm`:** the entry is copied into the trash manifest when the manifest
+  is written, before payloads move (`trash/remove.rs:304`), so it's part
+  of the journaled removal. Removing it from `library.toml` happens after
+  the removal commits; if that write fails, the name goes into the
+  pending-clears journal, the stale entry is harmless meanwhile (it names
+  a missing environment), and `validate` reports it.
+- **`restore`:** writes the entry back to `library.toml` **before** the
+  trash entry is retired (`trash/restore.rs:250`). If that write fails,
+  the restore still finishes, and the warning lists the values that
+  weren't restored (`favorite, hidden, added 2026-10-17`) so they can be
+  set again.
+- **Pruning** drops the manifest copy with the trash entry.
+
+Tests: each operation with a broken `library.toml` (it succeeds, warns, and
+leaves the file untouched); a failed cleanup after `rm` followed by `new`
+with the same name, then a repair (the stale star doesn't come back, and
+the journal is empty afterwards); restore with a failing library write
+(the warning names the lost values); a restore of a name that has a
+journal line keeps the restored entry (the restore's own write applies the
+journal first, then writes the entry, so order alone decides it).
 
 ### Sort keys
 
 A `SortKey` enum in core with a stable string name per key (`name`,
 `last-played`, `playtime`, `added`, `source`) and a comparator over a
 small `SortFields` struct the GUI fills from each card. An unknown name in
-the file falls back to the default (Name, ascending). A metadata key later
-is a variant, a name, and a match arm.
+the file falls back to Name, keeping `descending` as written. A metadata
+key later is a variant, a name, and a match arm.
 
 Missing values follow question 3's answer: a never-played game counts as
 the least played and the least recently played, so it's at the bottom of
-Most played and Recently played and at the top of their reverses. An
-unknown `added` date sorts after every known one in both directions, since
-"unknown" isn't oldest. Ties fall back to Name, ascending.
+Most played and Recently played and at the top of their reverses.
+Unknown values sort after every known one in both directions, since
+unknown isn't oldest or least: an unknown `added` date, and Steam
+playtime that couldn't be read (`playtime_unknown`). Ties fall back to
+Name, ascending.
 
 ### Sources
 
 `Source` in core has `store: Option<Store>` (`Steam`, `Gog`, `Epic`,
 `Amazon`), `integration` (`SteamLibrary`, `GogInstall`, `HeroicImport`,
-`Plain`), and `native: bool`. Steam is `CardKind::Proxied`; a `gog_id`
-means GOG; a `heroic_id` means a Heroic import, whose store comes from its
-`store` hint (`egs`, `gog`, `amazon`, none for sideloaded). The label
-follows question 12.
+`Plain`), and `native: bool`. The label follows question 12. Precedence,
+first match wins:
+
+1. `CardKind::Proxied`: store Steam, integration Steam library.
+2. A `gog_id`: store GOG. Integration is Heroic import if there's also a
+   `heroic_id`, otherwise GOG install.
+3. A `heroic_id`: integration Heroic import. The store comes from the
+   `store` hint, which only Wine configs have (`config.rs:330`): `egs` is
+   Epic, `gog` is GOG, `amazon` is Amazon, and anything else or none means
+   no store. A native Heroic import has no hint, so no store.
+4. Otherwise: integration plain, no store.
+
+`native` comes from `CardKind::Native` in every case, so a store-less
+entry's label is Native or Windows.
 
 ### Empty states
 
@@ -569,8 +672,21 @@ surface like the maintainer's mockup, with the wording from question 11:
   games match") with **Show hidden** beside it.
 
 Each state is chosen from counts the filtering already has, so it costs
-nothing extra, and the arrow keys and the panel treat it like an empty
-grid.
+nothing extra. With nothing shown, the arrow keys do nothing and Enter
+doesn't launch; the selection follows "Selection".
+
+### Selection
+
+- **A re-sort or filter change** keeps the selected card selected and
+  scrolls it into view if it's still shown. Search keeps today's behavior.
+- **Hiding the selected card** (with Show hidden off) selects the card
+  that takes its place: the one now at the same position in the shown
+  order. If the hidden card was last, the new last card is selected. If
+  nothing is left, the selection is cleared and the panel closes. With
+  Show hidden on, the card stays shown dimmed and stays selected.
+- **Turning Show hidden off, or a filter change, that removes the selected
+  card** clears the selection and closes the panel, since there's no
+  position it was "in" to inherit.
 
 ### Performance
 
@@ -604,9 +720,13 @@ regression outside normal measurement variance:
   of card indices, rebuilt only when the cards, search, sort, or filters
   change, and every caller reads the cache. Sort keys (lowercased titles,
   timestamps) are computed once per rebuild, not per comparison.
-- **No redraw when the order didn't change.** The rescan already sends a
-  message only when cards differ; the new card fields are stable values,
-  so they don't add spurious differences.
+- **No redraw when the order didn't change.** The rescan sends a message
+  only when its result differs (`rescan.rs:145`). Its payload grows from
+  `Result<Vec<Card>, String>` (`rescan.rs:176`) to include the library
+  file's diagnostics (a parse error banner appearing or clearing), so
+  those are noticed too. The saved `[view]` isn't part of it: an open
+  window keeps its own view. The new card fields are stable values, so
+  they don't add spurious differences.
 - **Measured, not assumed.** A generated library of 300 environments, each
   with poster art and a stats log of a few hundred sessions, measured on
   0.35.1 and after each step: rescan time, idle CPU while focused (Xvfb,
@@ -644,10 +764,10 @@ values are stable ones, not "today" labels.
 `filtered()` becomes: drop hidden unless Show hidden; keep sources and tags
 that match the active filters; match search against title, identifier,
 and tags; then sort, with favorites first when that toggle is on. It's
-still the single hook, now backed by the cache in "Performance", so keys,
-art loading, and motion follow. A change of sort or filter retargets
-the grid motion like a filter change does today and keeps the selected
-card selected when it's still shown.
+still the single hook, now backed by the cache in "Performance", so keys
+and art loading follow. A change of sort or filter snaps the grid, like a
+search change does today (`app_grid.rs:61`); animating cards to their new
+places is part 2. Selection follows "Selection".
 
 ## Implementation sequence
 
@@ -656,9 +776,10 @@ card selected when it's still shown.
    measurements from "Performance" taken on 0.35.1.
 1. **Core `library.toml`.** `Paths::library_file()`, the lenient types,
    load and `toml_edit` writes, the core API (set favorite, set hidden, set
-   view, stamp added), stamping `added` in `new`, imports, GOG installs,
-   and `clone`, the trash manifest field with restore, portable copies, and
-   `validate` checks. Upgrade fixtures: a missing file and an older
+   view, stamp added), one-field writes under the config lock, the
+   "Lifecycle" rules for `new`, imports, GOG installs, `clone`, `rm`,
+   `restore`, and pruning, carrying the entry into portable copies, and
+   `validate` checks with the structured repair report. Upgrade fixtures: a missing file and an older
    `library.toml` load.
 2. **Card fields and source.** Raw sort fields and `source` on `Card`, from
    the summary, config, and library file, with the `library.toml` stamp
@@ -669,8 +790,8 @@ card selected when it's still shown.
    `filtered()`, the "Favorites first" toggle, and the sort control with
    direction. Persist through `[view]`.
 4. **Filters, search, and empty states.** Source and tag filters, Show
-   hidden with its count, tag matching in search, the filter popup, and the
-   three empty states.
+   hidden with its count, tag matching in search, the filter popup, the
+   three empty states, and the "Selection" rules.
 5. **Favorite and hide actions.** Context menu rows, the panel star, the
    `F` key, the poster star mark, and the dimmed hidden treatment.
 6. **Benchmark again** on the finished work against step 0's numbers.
@@ -682,12 +803,17 @@ card selected when it's still shown.
 
 - Core: `library.toml` round-trips, ignores unknown keys, keeps a newer
   release's keys through an edit, never rewrites on read, survives `rm`
-  and `restore`, and `validate` reports stale entries.
+  and `restore`, and `validate` reports stale entries. Two writers at once
+  (two threads through the core API) both land. A favorite written while
+  another process changed `[view]` keeps that `[view]`. The "Lifecycle"
+  tests, including a failed cleanup followed by reuse of the name.
 - GUI: `filtered()` order for every key and direction with never-played
   and unknown-date games, favorites first, hidden with and without the
-  switch, source and tag filters, tag search; the selection survives a
-  re-sort; the grid motion retargets without stale bounds; keys move
-  through the sorted order; each empty state appears for its case and
+  switch, source and tag filters, tag search, unknown Steam playtime last
+  in both directions; the selection survives a re-sort; hiding the
+  selected card selects the one in its place, the previous one when it
+  was last, and nothing when it was the only one; a re-sort snaps without
+  stale bounds; keys move through the sorted order; each empty state appears for its case and
   never for a populated grid; the cached order rebuilds on each kind of
   change and not on an unchanged rescan; `library.toml` isn't re-read when
   its stamp is unchanged. Driven with `tests::app()` and fake ticks, like
@@ -698,9 +824,10 @@ card selected when it's still shown.
   and is left byte-for-byte unchanged; a bad field falls back to its
   default while the same entry's other fields still apply (the
   `favorite = "yes"` example), and survives an unrelated write; repair
-  writes the backup before the new file, a failed backup aborts it, and
-  its report's counts match what was salvaged, for a fully and a
-  partly recoverable file.
+  writes the backup before the new file, a failed backup aborts it, two
+  repairs in the same second keep both backups, a parseable but invalid
+  value isn't salvaged, and the report's full and partial counts match
+  what was salvaged, for a fully and a partly recoverable file.
 - Cache: after each kind of failed write, the card and the cache match
   the file on disk.
 - Acceptance: a checklist the maintainer runs in a real window on a
@@ -714,5 +841,8 @@ card selected when it's still shown.
   rescan can't afford.
 - No metadata sorts until there's metadata.
 - No CLI surface (question 9).
+- No animation for a re-sort or filter change; they snap (part 2).
+- No copy of a portable environment back out of its folder, so no
+  carrying its entry home; a backlog row.
 - Reduced motion still only covers the collapse; the grid and panel ignore
-  it today, and a re-sort uses the same motion. A separate fix if wanted.
+  it today. A separate fix if wanted.
