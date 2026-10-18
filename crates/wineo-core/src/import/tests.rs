@@ -640,6 +640,44 @@ fn import_reports_checking_and_stops_when_canceled_during_a_check() {
 }
 
 #[test]
+fn broken_library_does_not_block_prefix_import() {
+    let root = tempfile::tempdir().unwrap();
+    let paths = paths(root.path());
+    let runner_root = root.path().join("runners");
+    let prefix_root = root.path().join("prefixes");
+    wine_runner(&runner_root, "wine-build");
+    let source = root.path().join("source");
+    prefix(&source, "win64");
+    let global = base_global(&runner_root, &prefix_root);
+    let library = paths.library_file();
+    fs::create_dir_all(library.parent().unwrap()).unwrap();
+    let broken = b"[broken\n";
+    fs::write(&library, broken).unwrap();
+    let request = ImportRequest {
+        source,
+        name: "imported".to_owned(),
+        runner: "wine-build".to_owned(),
+        destination: None,
+        adopt: true,
+        arch: None,
+    };
+    let mut events = Vec::new();
+    execute(&paths, &global, request, &Token::new(), |event| {
+        events.push(event)
+    })
+    .unwrap();
+    assert!(paths.environment_config("imported").exists());
+    assert!(
+        events
+            .iter()
+            .any(|event| matches!(event, ImportProgress::Warning(warning)
+        if warning.starts_with("Can't update library.toml: ")
+        && warning.contains("it can't be read")))
+    );
+    assert_eq!(fs::read(&library).unwrap(), broken);
+}
+
+#[test]
 fn staged_validation_rejects_missing_targets_and_link_cycles() {
     let root = tempfile::tempdir().unwrap();
     let staging = root.path().join("staging");

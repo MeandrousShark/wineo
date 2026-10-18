@@ -447,6 +447,7 @@ fn a_queued_write_refuses_a_same_name_environment_replacement() {
         "game",
         None,
         false,
+        |_| {},
     )
     .unwrap();
     let source = png(root.path());
@@ -819,8 +820,15 @@ fn picker_use_refuses_replacement_in_the_last_progress_callback() {
                     root.path().join("old-game.toml"),
                 )
                 .unwrap();
-                Environment::create_native(&paths, &GlobalConfig::default(), "game", None, false)
-                    .unwrap();
+                Environment::create_native(
+                    &paths,
+                    &GlobalConfig::default(),
+                    "game",
+                    None,
+                    false,
+                    |_| {},
+                )
+                .unwrap();
                 art::set_manual(&paths, "game", None, Kind::Grid, &replacement, None).unwrap();
                 replaced = true;
             }

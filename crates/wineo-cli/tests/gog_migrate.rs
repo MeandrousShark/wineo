@@ -207,6 +207,34 @@ fn a_windows_game_adopts_heroics_prefix_with_a_runner() {
 }
 
 #[test]
+fn a_broken_library_toml_warns_but_never_stops_a_migration() {
+    for windows in [false, true] {
+        let f = fixture();
+        let id = if windows {
+            f.install_proton("GE-Proton10-4");
+            f.heroic_disco(proton("GE-Proton10-4"));
+            DISCO
+        } else {
+            f.heroic_rimworld();
+            RIMWORLD
+        };
+        let library = f.config_dir().join("library.toml");
+        let broken = "[environments.old]\nfavorite = true\n[broken\n";
+        fs::create_dir_all(library.parent().unwrap()).unwrap();
+        fs::write(&library, broken).unwrap();
+
+        let out = import(&f, &["--game", &game(id), "--yes"]);
+        assert_success(&out);
+        let err = stderr(&out);
+        assert!(
+            err.contains("warning: Can't update library.toml: it can't be read: "),
+            "{err}"
+        );
+        assert_eq!(fs::read_to_string(&library).unwrap(), broken);
+    }
+}
+
+#[test]
 fn a_windows_game_without_a_runner_wineo_has_fails() {
     let f = fixture();
     f.heroic_disco(proton("GE-Proton10-4"));

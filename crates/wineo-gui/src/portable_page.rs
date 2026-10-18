@@ -662,6 +662,7 @@ fn send_progress(
         ImportProgress::Started { entries } => Some(format!("Copying {entries} files...")),
         ImportProgress::Copied { .. } => None,
         ImportProgress::Finished { entries } => Some(format!("Checked {entries} files.")),
+        ImportProgress::Warning(warning) => Some(warning),
     };
     if let Some(status) = status {
         let _ = sender.unbounded_send(Event::Progress(generation, status));

@@ -383,13 +383,22 @@ pub(super) fn apply_game(
     source: &HeroicSource,
     game: &Game,
     token: &Token,
-    progress: impl FnMut(import::ImportProgress),
+    mut progress: impl FnMut(import::ImportProgress),
 ) -> anyhow::Result<Registered> {
     if token.is_canceled() {
         anyhow::bail!("Import canceled");
     }
     match game {
-        Game::Windows(plan) => heroic_import::apply(paths, global, source, plan, token, progress),
+        Game::Windows(plan) => {
+            let mut warnings = Vec::new();
+            let mut registered =
+                heroic_import::apply(paths, global, source, plan, token, |event| match event {
+                    import::ImportProgress::Warning(warning) => warnings.push(warning),
+                    event => progress(event),
+                })?;
+            registered.warnings.extend(warnings);
+            Ok(registered)
+        }
         Game::Native(plan) => heroic_import::apply_native(paths, source, plan),
     }
 }
@@ -488,6 +497,7 @@ impl CopyProgress {
                 format!("checking prefix ({} files)", grouped(*entries))
             }
             import::ImportProgress::Finished { .. } => "finishing".to_owned(),
+            import::ImportProgress::Warning(warning) => warning.clone(),
         }
     }
 }
@@ -605,6 +615,7 @@ pub(crate) fn install_prerequisite(
                             import::ImportProgress::Finished { .. } => {
                                 format!("Finishing copy of {}", copy.name)
                             }
+                            import::ImportProgress::Warning(warning) => warning,
                         };
                         report(line);
                     }

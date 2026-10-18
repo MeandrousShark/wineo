@@ -247,18 +247,57 @@ fn restore_locked_noting(
         Ok(warning) => (None, warning),
         Err(err) => (Some(err), None),
     };
-    if manifest.payloads.iter().any(|payload| payload.kept) {
-        keep_changed(paths, manifest, notes)?;
+    // A manifest without an entry also covers a library.toml that was
+    // unreadable at removal, when the real entry stayed in the file. Writing
+    // None then would delete it once the file is repaired.
+    let library_warning = match (rollback, manifest.library.as_ref()) {
+        (false, Some(entry)) => crate::library::put(paths, &manifest.name, Some(entry))
+            .err()
+            .map(|err| {
+                let mut values = Vec::new();
+                if entry.favorite {
+                    values.push("favorite".to_owned());
+                }
+                if entry.hidden {
+                    values.push("hidden".to_owned());
+                }
+                if let Some(added) = entry.added {
+                    values.push(format!("added {}", added.strftime("%Y-%m-%d")));
+                }
+                let lost = if values.is_empty() {
+                    String::new()
+                } else {
+                    format!(" Values not restored: {}.", values.join(", "))
+                };
+                format!(
+                    "Can't restore {} in library.toml: {}.{lost}",
+                    manifest.name,
+                    crate::library_lifecycle::cause(&err),
+                )
+            }),
+        _ => None,
+    };
+    let completed = if manifest.payloads.iter().any(|payload| payload.kept) {
+        keep_changed(paths, manifest, notes)
     } else {
-        complete_entry(paths, manifest)?;
-    }
+        complete_entry(paths, manifest)
+    };
+    completed.map_err(|err| match &library_warning {
+        Some(warning) => err.context(warning.clone()),
+        None => err,
+    })?;
     notes.extend(warning);
     if let Some(err) = desktop_error {
-        bail!(
+        let err = anyhow!(
             "environment {} was restored, but its desktop entries need attention: {err:#}",
             manifest.name
         );
+        return Err(match library_warning {
+            Some(warning) => err.context(warning),
+            None => err,
+        });
     }
+    notes.extend(library_warning);
     Ok(())
 }
 

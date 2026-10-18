@@ -25,6 +25,7 @@ pub(crate) enum Event {
     Review,
     ReviewLoaded(u64, Result<Box<Review>, String>),
     Progress(u64, String),
+    Warning(u64, String),
     Clone,
     CloneFinished(u64, Result<String, String>),
     Dependencies(bool),
@@ -59,6 +60,7 @@ pub(crate) struct Page {
     review: Option<Review>,
     step: Step,
     error: Option<String>,
+    warning: Option<String>,
     status: String,
     show_dependencies: bool,
     dirty: bool,
@@ -79,6 +81,7 @@ impl Page {
             review: None,
             step: Step::Details,
             error: None,
+            warning: None,
             status: String::new(),
             show_dependencies: false,
             dirty: false,
@@ -180,6 +183,12 @@ impl Page {
                 }
                 Task::none()
             }
+            Event::Warning(generation, warning) => {
+                if generation == self.generation {
+                    self.warning = Some(warning);
+                }
+                Task::none()
+            }
             Event::Clone => self.begin_clone(),
             Event::CloneFinished(generation, result) => {
                 if generation != self.generation || self.step != Step::Working {
@@ -266,6 +275,9 @@ impl Page {
         .max_width(760);
         if let Some(error) = &self.error {
             content = content.push(text(error.as_str()).size(13).color(palette.danger));
+        }
+        if let Some(warning) = &self.warning {
+            content = content.push(text(warning.as_str()).size(13).color(palette.warning));
         }
         let base: Element<'_, Event> =
             container(scrollable(content).wineo_style(palette).height(Fill))
@@ -504,6 +516,7 @@ impl Page {
         self.step = Step::Working;
         self.status = "Cloning environment...".to_owned();
         self.error = None;
+        self.warning = None;
         let (sender, receiver) = iced::futures::channel::mpsc::unbounded();
         let progress_generation = generation;
         let work = Task::perform(
@@ -520,6 +533,12 @@ impl Page {
                                 {
                                     let mut copied = 0_u64;
                                     move |progress| {
+                                        if let ImportProgress::Warning(warning) = &progress {
+                                            let _ = sender.unbounded_send(Event::Warning(
+                                                progress_generation,
+                                                warning.clone(),
+                                            ));
+                                        }
                                         if let ImportProgress::Copied { .. } = progress {
                                             copied += 1;
                                             if copied.is_multiple_of(250) {
@@ -536,7 +555,10 @@ impl Page {
                         }
                         Review::Native(review) => {
                             let name = review.new_name.clone();
-                            clone::execute_native(&paths, &review)?;
+                            clone::execute_native(&paths, &review, |warning| {
+                                let _ = sender
+                                    .unbounded_send(Event::Warning(progress_generation, warning));
+                            })?;
                             Ok(name)
                         }
                     },
@@ -847,7 +869,7 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let paths = paths(root.path());
         let global = GlobalConfig::default();
-        Environment::create_native(&paths, &global, "origin", None, false).unwrap();
+        Environment::create_native(&paths, &global, "origin", None, false, |_| {}).unwrap();
         let review = inspect_clone(&paths, "origin", "copy", "", &Token::new()).unwrap();
         let Review::Native(review) = review else {
             panic!("expected native clone review");
@@ -862,7 +884,7 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let paths = paths(root.path());
         let global = GlobalConfig::default();
-        Environment::create_native(&paths, &global, "origin", None, false).unwrap();
+        Environment::create_native(&paths, &global, "origin", None, false, |_| {}).unwrap();
         let mut page = Page::new(paths, "origin".to_owned()).0;
         page.native = Some(true);
         page.name = "copy".to_owned();

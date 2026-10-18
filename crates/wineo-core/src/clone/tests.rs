@@ -152,6 +152,49 @@ fn clone_keeps_source_and_rewrites_only_selected_config_fields() {
 }
 
 #[test]
+fn wine_clone_replaces_stale_library_entry_and_warns_when_broken() {
+    let root = tempfile::tempdir().unwrap();
+    let (paths, _, _) = setup(root.path(), false);
+    crate::library::set_favorite(&paths, "copy", true).unwrap();
+    crate::library::set_hidden(&paths, "copy", true).unwrap();
+    let review = inspect(&paths, &GlobalConfig::default(), "source", "copy", None).unwrap();
+    let mut events = Vec::new();
+    execute_reviewed(
+        &paths,
+        &GlobalConfig::default(),
+        &review,
+        &Token::new(),
+        |event| events.push(event),
+    )
+    .unwrap();
+    assert!(!crate::library::load(&paths).environments["copy"].favorite);
+    assert!(!crate::library::load(&paths).environments["copy"].hidden);
+
+    let library = paths.library_file();
+    let mut broken = fs::read(&library).unwrap();
+    broken.extend_from_slice(b"\n[broken\n");
+    fs::write(&library, &broken).unwrap();
+    let review = inspect(&paths, &GlobalConfig::default(), "source", "another", None).unwrap();
+    execute_reviewed(
+        &paths,
+        &GlobalConfig::default(),
+        &review,
+        &Token::new(),
+        |event| events.push(event),
+    )
+    .unwrap();
+    assert!(paths.environment_config("another").exists());
+    assert!(
+        events
+            .iter()
+            .any(|event| matches!(event, ImportProgress::Warning(warning)
+        if warning.starts_with("Can't update library.toml: ")
+        && warning.contains("it can't be read")))
+    );
+    assert_eq!(fs::read(&library).unwrap(), broken);
+}
+
+#[test]
 fn cloning_a_legacy_config_versions_only_the_copy() {
     let root = tempfile::tempdir().unwrap();
     let (paths, _source, original) = setup(root.path(), false);

@@ -15,6 +15,7 @@ use crate::download::{InstallLock, publish};
 use crate::environment::{self, Environment};
 use crate::files;
 use crate::import::{self, ExternalDependency, ImportLayout, ImportProgress, SourceFingerprint};
+use crate::library;
 use crate::operation::{Locks, Operation};
 use crate::paths::{self, Paths};
 use crate::runners::Runners;
@@ -248,8 +249,9 @@ pub fn execute_reviewed(
     reviewed: &CopyInspection,
     cancel: &Token,
     progress: impl FnMut(ImportProgress),
+    warn: impl FnMut(String),
 ) -> Result<Environment> {
-    execute_reviewed_noting(from, to, global, reviewed, cancel, progress, |_| {})
+    execute_reviewed_noting(from, to, global, reviewed, cancel, progress, warn)
 }
 
 /// `execute_reviewed` that also hands warnings, such as the folder's global
@@ -304,7 +306,7 @@ pub fn execute_reviewed_with(
     ensure_same(
         reviewed,
         &inspect_with(from, to, global, name, cancel, |event| {
-            events(CopyEvent::Progress(event))
+            emit_import_progress(&mut events, event)
         })?,
     )?;
     for shared in environment::sharing_prefix(from, name, &reviewed.source_root)?.names {
@@ -340,7 +342,7 @@ pub fn execute_reviewed_with(
         &reviewed.destination,
         &links,
         cancel,
-        &mut |event| events(CopyEvent::Progress(event)),
+        &mut |event| emit_import_progress(&mut events, event),
     )?;
     // A snapshot becomes the live prefix again on restore, so its links into
     // the prefix or its other snapshots follow the copy too.
@@ -363,7 +365,7 @@ pub fn execute_reviewed_with(
             &destination_snapshots.join(label),
             &snapshot_links,
             cancel,
-            &mut |event| events(CopyEvent::Progress(event)),
+            &mut |event| emit_import_progress(&mut events, event),
         )?;
         let layout = snapshot::relocate_manifest(to, &staged, &reviewed.destination)?;
         let saved_path = staged.join("config.toml");
@@ -392,13 +394,13 @@ pub fn execute_reviewed_with(
             &staged_templates,
             &to.templates_dir(),
             cancel,
-            &mut |event| events(CopyEvent::Progress(event)),
+            &mut |event| emit_import_progress(&mut events, event),
         )?;
     }
     import::check_cancelled(cancel)?;
 
     if import::fingerprint_with(&reviewed.source_root, cancel, &mut |event| {
-        events(CopyEvent::Progress(event))
+        emit_import_progress(&mut events, event)
     })? != reviewed.prefix.fingerprint
     {
         bail!(
@@ -412,7 +414,7 @@ pub fn execute_reviewed_with(
         .zip(&reviewed.snapshot_fingerprints)
     {
         if import::fingerprint_with(&source_snapshots.join(label), cancel, &mut |event| {
-            events(CopyEvent::Progress(event))
+            emit_import_progress(&mut events, event)
         })? != *expected
         {
             bail!("snapshot `{label}` changed while it was being copied; try again");
@@ -420,7 +422,7 @@ pub fn execute_reviewed_with(
     }
     if let Some(expected) = reviewed.templates_fingerprint
         && import::fingerprint_with(&from.templates_dir(), cancel, &mut |event| {
-            events(CopyEvent::Progress(event))
+            emit_import_progress(&mut events, event)
         })? != expected
     {
         bail!("templates changed while they were being copied; try again");
@@ -436,7 +438,7 @@ pub fn execute_reviewed_with(
         &to.art_dir(name),
         staging.path(),
         cancel,
-        &mut |event| events(CopyEvent::Progress(event)),
+        &mut |event| emit_import_progress(&mut events, event),
     )?;
     import::check_cancelled(cancel)?;
     events(CopyEvent::Publishing);
@@ -504,6 +506,7 @@ pub fn execute_reviewed_with(
         write_environment_once(to, &destination_global, name, &reviewed.config_text)
     })();
     result.map_err(|err| recovery(&published, err))?;
+    transfer_library_entry(from, to, name, &mut events);
     events(CopyEvent::Progress(ImportProgress::Finished {
         entries: reviewed.prefix.fingerprint.entries,
     }));
@@ -690,8 +693,13 @@ pub fn execute_native(
     to: &Paths,
     reviewed: &NativeCopyInspection,
     cancel: &Token,
+    mut warn: impl FnMut(String),
 ) -> Result<Environment> {
-    execute_native_with(from, to, reviewed, cancel, |_| {})
+    execute_native_with(from, to, reviewed, cancel, |event| {
+        if let CopyEvent::Warning(warning) = event {
+            warn(warning);
+        }
+    })
 }
 
 /// Executes a native copy with copy progress and a publishing boundary.
@@ -716,7 +724,7 @@ pub fn execute_native_with(
     let _operation = locks.acquire(Operation::Create, name, &[])?;
     let _source_config = source_locks.config(&from.environment_config(name))?;
     let current = inspect_native_with(from, to, name, cancel, |event| {
-        events(CopyEvent::Progress(event))
+        emit_import_progress(&mut events, event)
     })?;
     if current.source_config != reviewed.source_config
         || current.config_text != reviewed.config_text
@@ -736,13 +744,13 @@ pub fn execute_native_with(
             &staged_templates,
             &to.templates_dir(),
             cancel,
-            &mut |event| events(CopyEvent::Progress(event)),
+            &mut |event| emit_import_progress(&mut events, event),
         )?;
         if reviewed.templates_fingerprint
             != Some(import::fingerprint_with(
                 &from.templates_dir(),
                 cancel,
-                &mut |event| events(CopyEvent::Progress(event)),
+                &mut |event| emit_import_progress(&mut events, event),
             )?)
         {
             bail!("templates changed while they were being copied; try again");
@@ -754,7 +762,7 @@ pub fn execute_native_with(
         &to.art_dir(name),
         staging.path(),
         cancel,
-        &mut |event| events(CopyEvent::Progress(event)),
+        &mut |event| emit_import_progress(&mut events, event),
     )?;
     import::check_cancelled(cancel)?;
     events(CopyEvent::Publishing);
@@ -805,6 +813,7 @@ pub fn execute_native_with(
             paths.join(", ")
         )
     })?;
+    transfer_library_entry(from, to, name, &mut events);
     events(CopyEvent::Progress(ImportProgress::Finished {
         entries: copied.get(),
     }));
@@ -818,6 +827,41 @@ fn destination_global(to: &Paths, copied: Option<&str>) -> Result<config::Loaded
             warning: None,
         }),
         None => Ok(GlobalConfig::load_or_default(to)?),
+    }
+}
+
+fn emit_import_progress(events: &mut impl FnMut(CopyEvent), event: ImportProgress) {
+    match event {
+        ImportProgress::Warning(warning) => events(CopyEvent::Warning(warning)),
+        event => events(CopyEvent::Progress(event)),
+    }
+}
+
+fn transfer_library_entry(
+    from: &Paths,
+    to: &Paths,
+    name: &str,
+    events: &mut impl FnMut(CopyEvent),
+) {
+    let source = library::load(from);
+    if let Some(problem) = &source.problem {
+        let reason = if problem.newer_version {
+            "it was written by a newer wineo".to_owned()
+        } else {
+            problem.reason.trim_end().trim_end_matches('.').to_owned()
+        };
+        events(CopyEvent::Warning(format!(
+            "Can't read the source library.toml: {reason}. The copy of {name} didn't keep its favorite, hidden flag, or added date."
+        )));
+    }
+    // The copy is new at the destination, so any entry there under its name
+    // is stale and is cleared even when the source couldn't be read.
+    let entry = source.environments.get(name).cloned();
+    if let Err(error) = library::put(to, name, entry.as_ref()) {
+        events(CopyEvent::Warning(format!(
+            "Can't update library.toml: {}. The copy of {name} may not keep its favorite or hidden flag.",
+            crate::library_lifecycle::cause(&error)
+        )));
     }
 }
 

@@ -294,8 +294,9 @@ impl Environment {
         name: &str,
         exe: Option<&str>,
         desktop: bool,
+        warnings: impl FnMut(String),
     ) -> Result<Self> {
-        Self::create_native_titled(paths, global, name, exe, None, desktop)
+        Self::create_native_titled(paths, global, name, exe, None, desktop, warnings)
     }
 
     /// Like `create_native`, with `title` naming the default target's desktop
@@ -307,6 +308,7 @@ impl Environment {
         exe: Option<&str>,
         title: Option<&str>,
         desktop: bool,
+        mut warnings: impl FnMut(String),
     ) -> Result<Self> {
         Self::plan_native(paths, global, name, exe)?;
         let path = paths.environment_config(name);
@@ -329,6 +331,9 @@ impl Environment {
         }
         let _guard = Locks::new(paths).config(&path)?;
         write_new(&path, &doc.to_string())?;
+        if let Some(warning) = crate::library_lifecycle::fresh_warning(paths, name) {
+            warnings(warning);
+        }
         Self::load(paths, name)
     }
 

@@ -48,6 +48,7 @@ pub enum Playtime {
 pub struct Registered {
     pub environment: Environment,
     pub playtime: Playtime,
+    pub warnings: Vec<String>,
     runner: Option<Runner>,
     destination: Option<PathBuf>,
 }
@@ -101,6 +102,7 @@ pub fn apply(
     Ok(Registered {
         environment,
         playtime,
+        warnings: Vec::new(),
         runner: Some(plan.runner().clone()),
         destination: Some(plan.destination().to_owned()),
     })
@@ -115,11 +117,15 @@ pub fn apply_native(
     plan: &NativePlan,
 ) -> anyhow::Result<Registered> {
     ensure_unchanged(source, &plan.heroic().id, &plan.heroic().fingerprint)?;
-    let environment = import::register_native(paths, plan.name(), &plan.settings())?;
+    let mut warnings = Vec::new();
+    let environment = import::register_native(paths, plan.name(), &plan.settings(), |warning| {
+        warnings.push(warning)
+    })?;
     let playtime = import_playtime(paths, source, &plan.heroic().id, &environment.name);
     Ok(Registered {
         environment,
         playtime,
+        warnings,
         runner: None,
         destination: None,
     })

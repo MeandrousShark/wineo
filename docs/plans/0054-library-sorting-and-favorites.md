@@ -613,7 +613,7 @@ library update can't be written, naming what wasn't saved:
   one's star or hidden flag, even if an earlier cleanup failed. If the
   file is broken, the environment is still created and the warning says
   what happened and what it means: `Can't update library.toml: <error>.
-  hades may show an old star or hidden flag once it's repaired.`
+  hades may show an old star or hidden flag once it can be read.`
 - **`rm`:** the entry is copied into the trash manifest when the manifest
   is written, before payloads move (`trash/remove.rs:304`), so it's part
   of the journaled removal. Removing it from `library.toml` happens after
@@ -864,6 +864,27 @@ places is part 2. Selection follows "Selection".
   lifecycle call (like creating a native environment) has no warning
   channel, step 1 adds one and the GUI shows it through its existing
   notice display, so a failed library write is never dropped.
+- **Step 1 ships in two parts** (2026-10-17): 1a is the file, its writes,
+  and the lifecycle rules; 1b is validate, repair, and the report. The rest
+  of the plan is built by Claude coders and reviewed by GPT (2026-10-18).
+- **Repair details** (2026-10-18):
+  - A `schema_version` newer than 1 is reported, but no repair is offered,
+    since repairing would downgrade what a newer wineo wrote. `0` or a
+    value of the wrong type gets the repair.
+  - Salvage keeps an unknown key whose line parses on its own, since a
+    newer release may have written it.
+  - The backup's name uses local time, since people read it.
+  - New validate codes, in a new `library` area: `library_invalid`
+    (error), and `library_field_invalid`, `library_key_unknown`, and
+    `library_entry_stray` (warnings). Only the stray entries get a batch
+    fix besides the repair.
+- **Restore writes only an entry the trash saved** (2026-10-18, from
+  review). A trash entry without one may come from an `rm` that couldn't
+  read `library.toml`, which left the real entry in the file; writing
+  "no entry" on restore would delete it once the file was repaired.
+- **No older `library.toml` fixture yet** (2026-10-18). Schema 1 is the
+  first, so step 1's upgrade fixtures cover a missing file only. An older
+  file joins the upgrade fixtures with the first tagged set that has one.
 
 ## Measurements
 

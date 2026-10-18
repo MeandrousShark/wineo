@@ -395,6 +395,35 @@ fn a_windows_install_creates_the_environment_runs_each_installer_and_commits() {
 }
 
 #[test]
+fn broken_library_does_not_block_windows_gog_install() {
+    let fx = offered();
+    let plan = fx.plan_windows(&request()).unwrap();
+    let library = fx.paths.library_file();
+    fs::create_dir_all(library.parent().unwrap()).unwrap();
+    let broken = b"[broken\n";
+    fs::write(&library, broken).unwrap();
+    let mut warnings = Vec::new();
+    install::apply_with_events(
+        &fx.paths,
+        &mut fx.session(),
+        &plan,
+        &Token::new(),
+        |_| {},
+        |event| {
+            if let Event::Create(crate::create::CreateEvent::Warning(warning)) = event {
+                warnings.push(warning);
+            }
+        },
+    )
+    .unwrap();
+    assert!(fx.paths.environment_config("rimworld").exists());
+    assert!(warnings.iter().any(|warning| {
+        warning.starts_with("Can't update library.toml: ") && warning.contains("it can't be read")
+    }));
+    assert_eq!(fs::read(&library).unwrap(), broken);
+}
+
+#[test]
 fn a_game_with_only_windows_installers_defaults_to_windows_and_linux_can_be_asked_for() {
     let fx = offered();
     fx.offer(RIMWORLD, "RimWorld", "1.0", &base_v1());

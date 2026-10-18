@@ -292,6 +292,9 @@ fn run_with_access(
             Err(error) => return Err(error),
         };
         report_playtime(&registered.playtime);
+        for warning in &registered.warnings {
+            eprintln!("warning: {warning}");
+        }
         let environment = &registered.environment;
         let mut prompt = (art.enabled && prompt::interactive())
             .then(|| Terminal::open().ok())
@@ -589,6 +592,9 @@ fn guided<I: Input, W: Write>(
     let log_body = verbose.then(|| plan.log_text(global, &source) + &art.log_line());
     let registered = apply_plan(paths, global, &source, &plan)?;
     report_playtime(&registered.playtime);
+    for warning in &registered.warnings {
+        eprintln!("warning: {warning}");
+    }
     let environment = &registered.environment;
     let fetched = fetch_art(
         paths,

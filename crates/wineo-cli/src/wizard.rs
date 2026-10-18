@@ -1118,16 +1118,19 @@ fn create_native<I: Input, W: Write>(
     exe: String,
     art: Option<(Key, String)>,
 ) -> anyhow::Result<ExitCode> {
-    let environment = match Environment::create_native(paths, global, name, None, false) {
-        Ok(environment) => environment,
-        Err(err) => {
-            prompt.say(format!("error: {:#}", anyhow::Error::from(err)))?;
-            prompt.say(format!(
-                "{name} wasn't created. Fix that, then run `wineo new` again."
-            ))?;
-            return Ok(ExitCode::FAILURE);
-        }
-    };
+    let environment =
+        match Environment::create_native(paths, global, name, None, false, |warning| {
+            eprintln!("warning: {warning}")
+        }) {
+            Ok(environment) => environment,
+            Err(err) => {
+                prompt.say(format!("error: {:#}", anyhow::Error::from(err)))?;
+                prompt.say(format!(
+                    "{name} wasn't created. Fix that, then run `wineo new` again."
+                ))?;
+                return Ok(ExitCode::FAILURE);
+            }
+        };
     guided.registered = Some(name.to_owned());
     prompt.say(format!("Created {name}."))?;
     if let Some((key, term)) = &art {
@@ -1323,6 +1326,7 @@ impl<I: Input, W: Write> create::Hooks for WizardHooks<'_, I, W> {
     fn event(&mut self, event: CreateEvent) {
         let (name, shown) = (self.name, self.shown);
         match event {
+            CreateEvent::Warning(warning) => eprintln!("warning: {warning}"),
             CreateEvent::BuildingPrefix { runner, .. } => {
                 let _ = self.prompt.say(if runner.is_proton() {
                     format!("Creating a Proton prefix in {shown}, which takes a while")

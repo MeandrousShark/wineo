@@ -2094,6 +2094,7 @@ fn perform(
             exe,
             draft.target_title().as_deref(),
             draft.desktop,
+            |warning| report.notes.push(warning),
         ) {
             Ok(environment) => {
                 report.registered = true;
@@ -2215,6 +2216,7 @@ impl<P: FnMut(String), L: FnMut(String)> create::Hooks for Hooks<'_, P, L> {
     fn event(&mut self, event: CreateEvent) {
         let progress = &mut self.progress;
         match event {
+            CreateEvent::Warning(warning) => self.report.notes.push(warning),
             CreateEvent::BuildingPrefix { dir, .. } => {
                 progress(format!("Building prefix in {}", dir.display()))
             }

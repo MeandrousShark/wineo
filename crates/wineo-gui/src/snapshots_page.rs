@@ -914,6 +914,7 @@ fn progress_status(progress: &ImportProgress) -> String {
         ImportProgress::Started { entries } => format!("Copying {entries} entries..."),
         ImportProgress::Copied { path } => format!("Copying {}...", path.display()),
         ImportProgress::Finished { .. } => "Copy complete.".into(),
+        ImportProgress::Warning(warning) => warning.clone(),
     }
 }
 

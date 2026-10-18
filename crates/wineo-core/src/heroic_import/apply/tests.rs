@@ -116,6 +116,35 @@ fn apply_registers_the_plan_and_carries_playtime() {
 }
 
 #[test]
+fn broken_library_does_not_block_heroic_windows_import() {
+    let root = tempdir().unwrap();
+    let (paths, global, source) = library(root.path());
+    let plan = plan(&paths, &global, &source);
+    let library = paths.library_file();
+    fs::create_dir_all(library.parent().unwrap()).unwrap();
+    let broken = b"[broken\n";
+    fs::write(&library, broken).unwrap();
+    let mut events = Vec::new();
+    let registered = apply(&paths, &global, &source, &plan, &Token::new(), |event| {
+        events.push(event)
+    })
+    .unwrap();
+    assert!(
+        paths
+            .environment_config(&registered.environment.name)
+            .exists()
+    );
+    assert!(
+        events
+            .iter()
+            .any(|event| matches!(event, ImportProgress::Warning(warning)
+        if warning.starts_with("Can't update library.toml: ")
+        && warning.contains("it can't be read")))
+    );
+    assert_eq!(fs::read(&library).unwrap(), broken);
+}
+
+#[test]
 fn apply_carries_heroic_scripts_into_validated_hooks() {
     let root = tempdir().unwrap();
     let (paths, global, source) = library(root.path());

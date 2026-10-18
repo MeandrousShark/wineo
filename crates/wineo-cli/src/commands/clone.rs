@@ -96,7 +96,9 @@ fn clone_native(paths: &Paths, source: &str, name: &str) -> anyhow::Result<ExitC
     for setting in &reviewed.changed_settings {
         println!("  change: {setting}");
     }
-    let environment = clone::execute_native(paths, &reviewed)?;
+    let environment = clone::execute_native(paths, &reviewed, |warning| {
+        eprintln!("warning: {warning}");
+    })?;
     println!("Cloned {} as {}", reviewed.source_name, environment.name);
     Ok(ExitCode::SUCCESS)
 }

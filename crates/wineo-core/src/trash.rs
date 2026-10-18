@@ -192,6 +192,8 @@ struct Manifest {
     /// restore claims again.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     gog_folders: Vec<PathBuf>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    library: Option<crate::library::Entry>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -755,8 +757,8 @@ pub fn prune_reviewed(paths: &Paths, review: &PruneReview) -> Vec<(String, Resul
         .collect()
 }
 
-pub fn recover(paths: &Paths, id: &str) -> Result<()> {
-    recover_noting(paths, id).map(|_| ())
+pub fn recover(paths: &Paths, id: &str) -> Result<Vec<String>> {
+    recover_noting(paths, id)
 }
 
 /// `recover`, returning what a rollback kept in the trash instead of

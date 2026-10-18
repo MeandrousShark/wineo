@@ -245,7 +245,11 @@ pub fn execute_reviewed(
             config_path.display()
         )
     })?;
-    Ok(Environment::load(paths, &reviewed.new_name)?)
+    let environment = Environment::load(paths, &reviewed.new_name)?;
+    if let Some(warning) = crate::library_lifecycle::fresh_warning(paths, &reviewed.new_name) {
+        progress(ImportProgress::Warning(warning));
+    }
+    Ok(environment)
 }
 
 fn ensure_same(expected: &CloneInspection, actual: &CloneInspection) -> Result<()> {
@@ -455,7 +459,11 @@ pub fn inspect_native(
 
 /// Clones a reviewed native environment. The art is published before the
 /// config, which registers the copy.
-pub fn execute_native(paths: &Paths, reviewed: &NativeCloneInspection) -> Result<Environment> {
+pub fn execute_native(
+    paths: &Paths,
+    reviewed: &NativeCloneInspection,
+    mut warnings: impl FnMut(String),
+) -> Result<Environment> {
     let locks = Locks::new(paths);
     let _operation = locks.acquire(Operation::Create, &reviewed.new_name, &[])?;
     let _source_config_lock = locks.config(&paths.environment_config(&reviewed.source_name))?;
@@ -480,7 +488,11 @@ pub fn execute_native(paths: &Paths, reviewed: &NativeCloneInspection) -> Result
         ),
         None => err,
     })?;
-    Ok(Environment::load(paths, &reviewed.new_name)?)
+    let environment = Environment::load(paths, &reviewed.new_name)?;
+    if let Some(warning) = crate::library_lifecycle::fresh_warning(paths, &reviewed.new_name) {
+        warnings(warning);
+    }
+    Ok(environment)
 }
 
 fn replace_existing(table: &mut dyn TableLike, field: &str, mut new: Value) -> Result<()> {

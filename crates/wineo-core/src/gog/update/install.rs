@@ -1290,10 +1290,18 @@ fn run(
     // The state comes first, naming this environment as owner, so a crash
     // before the config leaves a journal that installing again finishes,
     // never a config whose state is lost.
+    let mut library_warning = None;
     if !plan.has_config {
         let config = import::native_config(paths, &settings(plan))?;
         import::write_native_config(paths, name, &config)?;
-        failpoint("install.config.after")?;
+        if let Some(warning) = crate::library_lifecycle::fresh_warning(paths, name) {
+            warnings.push(warning.clone());
+            library_warning = Some(warning);
+        }
+        failpoint("install.config.after").map_err(|error| match &library_warning {
+            Some(warning) => anyhow::anyhow!("{error:#}; {warning}"),
+            None => error,
+        })?;
     }
     // The state now covers the folder, so other installs and migrations see
     // it in their overlap checks.
@@ -1316,7 +1324,11 @@ fn run(
         progress,
         journaled,
         &mut warnings,
-    )?;
+    )
+    .map_err(|error| match &library_warning {
+        Some(warning) => anyhow::anyhow!("{error:#}; {warning}"),
+        None => error,
+    })?;
     drop(operation);
     Ok(Installed {
         environment: name.to_owned(),

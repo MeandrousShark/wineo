@@ -290,6 +290,7 @@ pub fn remove_with_force(
         prefix_identity: prefix_present,
         phase: Phase::Removing,
         payloads,
+        library: crate::library::load(paths).environments.remove(name),
         gog_folders: gog
             .iter()
             .filter(|(_, state)| {
@@ -322,6 +323,12 @@ pub fn remove_with_force(
     retire_marker(paths, &manifest)?;
     let mut entry = info(paths, &manifest)?;
     entry.desktop_removed = desktop_removed;
+    if let Err(err) = crate::library::remove(paths, name) {
+        warnings.push(format!(
+            "Can't remove {name} from library.toml: {}.",
+            crate::library_lifecycle::cause(&err)
+        ));
+    }
     entry.warnings = warnings;
     Ok(entry)
 }

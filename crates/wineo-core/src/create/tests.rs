@@ -35,6 +35,7 @@ fn request(name: &str) -> CreateRequest {
 
 fn build_registry(event: CreateEvent, events: &mut Vec<&'static str>) {
     match event {
+        CreateEvent::Warning(_) => events.push("warning"),
         CreateEvent::BuildingPrefix { dir, .. } => {
             events.push("building");
             fs::write(dir.join("system.reg"), "WINE REGISTRY Version 2\n").unwrap();
@@ -95,6 +96,36 @@ fn planning_new_prefix_writes_nothing_and_reports_target() {
     assert_eq!(plan.exe(), Some(exe.to_str().unwrap()));
     assert_eq!(plan.target_name(), "Game Title");
     assert!(plan.desktop());
+}
+
+#[test]
+fn broken_library_does_not_block_wine_creation() {
+    let root = tempfile::tempdir().unwrap();
+    let paths = paths(root.path());
+    fake_runner(&paths, "fake");
+    let library = paths.library_file();
+    fs::create_dir_all(library.parent().unwrap()).unwrap();
+    let broken = b"[broken\n";
+    fs::write(&library, broken).unwrap();
+    let mut warnings = Vec::new();
+    let created = apply(
+        &paths,
+        plan(&paths, request("game")).unwrap(),
+        &Token::new(),
+        |event| match event {
+            CreateEvent::Warning(warning) => warnings.push(warning),
+            CreateEvent::BuildingPrefix { dir, .. } => {
+                fs::write(dir.join("system.reg"), "WINE REGISTRY Version 2\n").unwrap();
+            }
+            _ => {}
+        },
+    )
+    .unwrap();
+    assert!(paths.environment_config(&created.environment.name).exists());
+    assert!(warnings.iter().any(|warning| {
+        warning.starts_with("Can't update library.toml: ") && warning.contains("it can't be read")
+    }));
+    assert_eq!(fs::read(&library).unwrap(), broken);
 }
 
 #[test]
@@ -662,6 +693,7 @@ impl Hooks for Recorder {
 
     fn event(&mut self, event: CreateEvent) {
         self.record(match event {
+            CreateEvent::Warning(_) => "warning",
             CreateEvent::BuildingPrefix { .. } => "building",
             CreateEvent::Saved => "saved",
             CreateEvent::Registered { .. } => "registered",

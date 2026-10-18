@@ -1454,6 +1454,7 @@ fn run(
         report
             .warnings
             .extend(heroic::playtime_note(&registered.playtime));
+        report.warnings.extend(registered.warnings.iter().cloned());
     }
     let icon = if token.is_canceled() {
         report

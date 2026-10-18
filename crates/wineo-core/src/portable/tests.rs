@@ -1,6 +1,9 @@
 use std::ffi::OsString;
 
+use jiff::Timestamp;
+
 use super::*;
+use crate::library::{Entry, SortKey};
 
 fn paths(home: &Path, portable: Option<&Path>) -> Paths {
     let home = home.to_owned();
@@ -9,6 +12,159 @@ fn paths(home: &Path, portable: Option<&Path>) -> Paths {
         portable,
     )
     .unwrap()
+}
+
+fn test_entry(favorite: bool, hidden: bool, seconds: Option<i64>) -> Entry {
+    Entry {
+        favorite,
+        hidden,
+        added: seconds.map(|seconds| Timestamp::from_second(seconds).unwrap()),
+    }
+}
+
+#[test]
+fn portable_copies_transfer_library_entry_and_keep_destination_view_and_entries() {
+    for native in [false, true] {
+        let f = Fixture::new(native);
+        let copied = test_entry(true, true, Some(1_792_254_000));
+        let other = test_entry(false, true, Some(1_792_200_000));
+        let old_game = test_entry(false, false, None);
+        library::put(&f.from, "game", Some(&copied)).unwrap();
+        library::set_sort(&f.to, SortKey::Added).unwrap();
+        library::set_descending(&f.to, true).unwrap();
+        library::set_favorites_first(&f.to, true).unwrap();
+        library::put(&f.to, "other", Some(&other)).unwrap();
+        library::put(&f.to, "game", Some(&old_game)).unwrap();
+
+        let mut events = Vec::new();
+        let environment = if native {
+            let review = inspect_native(&f.from, &f.to, "game").unwrap();
+            execute_native_with(&f.from, &f.to, &review, &Token::new(), |event| {
+                events.push(event)
+            })
+            .unwrap()
+        } else {
+            let review = inspect(&f.from, &f.to, &f.global, "game").unwrap();
+            execute_reviewed_with(&f.from, &f.to, &f.global, &review, &Token::new(), |event| {
+                events.push(event)
+            })
+            .unwrap()
+        };
+
+        assert_eq!(environment.name, "game");
+        let library = library::load(&f.to);
+        assert_eq!(library.environments.get("game"), Some(&copied));
+        assert_eq!(library.environments.get("other"), Some(&other));
+        assert_eq!(library.view.sort, SortKey::Added);
+        assert!(library.view.descending);
+        assert!(library.view.favorites_first);
+        assert!(
+            !events
+                .iter()
+                .any(|event| matches!(event, CopyEvent::Warning(_)))
+        );
+    }
+}
+
+#[test]
+fn portable_copies_warn_and_leave_a_broken_destination_library_unchanged() {
+    for native in [false, true] {
+        let f = Fixture::new(native);
+        library::put(
+            &f.from,
+            "game",
+            Some(&test_entry(true, true, Some(1_792_254_000))),
+        )
+        .unwrap();
+        fs::create_dir_all(f.to.library_file().parent().unwrap()).unwrap();
+        let broken = b"[view\nsort = \"added\"\n";
+        fs::write(f.to.library_file(), broken).unwrap();
+
+        let mut warnings = Vec::new();
+        let environment = if native {
+            let review = inspect_native(&f.from, &f.to, "game").unwrap();
+            execute_native_with(&f.from, &f.to, &review, &Token::new(), |event| {
+                if let CopyEvent::Warning(warning) = event {
+                    warnings.push(warning);
+                }
+            })
+            .unwrap()
+        } else {
+            let review = inspect(&f.from, &f.to, &f.global, "game").unwrap();
+            execute_reviewed_with(&f.from, &f.to, &f.global, &review, &Token::new(), |event| {
+                if let CopyEvent::Warning(warning) = event {
+                    warnings.push(warning);
+                }
+            })
+            .unwrap()
+        };
+
+        assert_eq!(environment.name, "game");
+        assert!(f.to.environment_config("game").exists());
+        assert_eq!(fs::read(f.to.library_file()).unwrap(), broken);
+        assert_eq!(warnings.len(), 1);
+        assert!(warnings[0].starts_with("Can't update library.toml: it can't be read: "));
+        assert!(!warnings[0].contains(".:"), "{warnings:?}");
+        assert!(warnings[0].contains("TOML parse error"), "{warnings:?}");
+    }
+}
+
+#[test]
+fn portable_copies_warn_and_clear_a_stale_destination_entry_when_the_source_library_is_broken() {
+    for native in [false, true] {
+        let f = Fixture::new(native);
+        fs::create_dir_all(f.from.library_file().parent().unwrap()).unwrap();
+        fs::write(
+            f.from.library_file(),
+            "[environments.game]\nfavorite = true\n[broken\n",
+        )
+        .unwrap();
+        library::put(
+            &f.to,
+            "game",
+            Some(&test_entry(true, false, Some(1_792_254_000))),
+        )
+        .unwrap();
+        library::set_favorite(&f.to, "other", true).unwrap();
+
+        let mut warnings = Vec::new();
+        let mut collect = |event| {
+            if let CopyEvent::Warning(warning) = event {
+                warnings.push(warning);
+            }
+        };
+        if native {
+            let review = inspect_native(&f.from, &f.to, "game").unwrap();
+            execute_native_with(&f.from, &f.to, &review, &Token::new(), &mut collect).unwrap();
+        } else {
+            let review = inspect(&f.from, &f.to, &f.global, "game").unwrap();
+            execute_reviewed_with(
+                &f.from,
+                &f.to,
+                &f.global,
+                &review,
+                &Token::new(),
+                &mut collect,
+            )
+            .unwrap();
+        }
+
+        assert!(f.to.environment_config("game").exists());
+        let destination = library::load(&f.to);
+        assert!(!destination.environments.contains_key("game"));
+        assert!(destination.environments["other"].favorite);
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
+        assert!(
+            warnings[0].starts_with("Can't read the source library.toml: "),
+            "{warnings:?}"
+        );
+        assert!(
+            warnings[0].ends_with(
+                "The copy of game didn't keep its favorite, hidden flag, or added date."
+            ),
+            "{warnings:?}"
+        );
+    }
 }
 
 #[test]
@@ -37,7 +193,8 @@ fn a_canceled_copy_publishes_nothing() {
     let reviewed = inspect(&from, &to, &global, "game").unwrap();
     let canceled = Token::new();
     canceled.cancel();
-    let err = execute_reviewed(&from, &to, &global, &reviewed, &canceled, |_| {}).unwrap_err();
+    let err =
+        execute_reviewed(&from, &to, &global, &reviewed, &canceled, |_| {}, |_| {}).unwrap_err();
     assert!(err.is::<Canceled>(), "{err}");
     assert!(!usb.join("prefixes/game").exists());
     assert!(!to.environment_config("game").exists());
@@ -239,15 +396,23 @@ fn destination_appearing_during_review_is_not_replaced() {
     // The last check of the locked review runs after its destination
     // test, so creating it then is only caught by the copy itself.
     let mut seen = 0;
-    let err = execute_reviewed(&f.from, &f.to, &f.global, &review, &Token::new(), |event| {
-        if let ImportProgress::Checking { .. } = event {
-            seen += 1;
-            if seen == checks {
-                fs::create_dir_all(&destination).unwrap();
-                fs::write(destination.join("theirs"), "keep").unwrap();
+    let err = execute_reviewed(
+        &f.from,
+        &f.to,
+        &f.global,
+        &review,
+        &Token::new(),
+        |event| {
+            if let ImportProgress::Checking { .. } = event {
+                seen += 1;
+                if seen == checks {
+                    fs::create_dir_all(&destination).unwrap();
+                    fs::write(destination.join("theirs"), "keep").unwrap();
+                }
             }
-        }
-    })
+        },
+        |_| {},
+    )
     .unwrap_err();
     assert_eq!(
         err.to_string(),
@@ -422,8 +587,16 @@ fn a_prefix_change_after_review_is_refused_under_the_lock() {
         .unwrap()
         .set_modified(modified)
         .unwrap();
-    let err =
-        execute_reviewed(&f.from, &f.to, &f.global, &review, &Token::new(), |_| {}).unwrap_err();
+    let err = execute_reviewed(
+        &f.from,
+        &f.to,
+        &f.global,
+        &review,
+        &Token::new(),
+        |_| {},
+        |_| {},
+    )
+    .unwrap_err();
     assert_eq!(
         err.to_string(),
         "the reviewed prefix changed; inspect it again before importing"
@@ -438,8 +611,16 @@ fn an_interrupted_restore_after_review_is_reported_as_one() {
     let marker = f.from.restore_marker("game");
     fs::create_dir_all(marker.parent().unwrap()).unwrap();
     fs::write(&marker, "{}").unwrap();
-    let err =
-        execute_reviewed(&f.from, &f.to, &f.global, &review, &Token::new(), |_| {}).unwrap_err();
+    let err = execute_reviewed(
+        &f.from,
+        &f.to,
+        &f.global,
+        &review,
+        &Token::new(),
+        |_| {},
+        |_| {},
+    )
+    .unwrap_err();
     assert!(
         err.to_string()
             .contains("interrupted snapshot restore; run `wineo snapshot recover game`"),
