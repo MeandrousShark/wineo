@@ -904,6 +904,14 @@ places is part 2. Selection follows "Selection".
   - A stray or trash-pending entry shows only its stray warning, not its
     field warnings. The stray fix adds `schema_version = 1` to a file that
     had none, like every other write.
+  - Problems with the whole file (it can't be read, `[view]`, top-level
+    keys) are listed under their own `library.toml` heading in `validate`
+    and Checkup, right after `config.toml` (maintainer, 2026-10-18). An
+    entry's problems stay under its environment, and a stray entry stays
+    with that name's other leftovers.
+  - `validate --json --fix` doesn't include the repair report, since JSON
+    output has no field for fix notes yet (maintainer, 2026-10-18); a
+    backlog row in `features.md` covers it.
 - **Restore writes only an entry the trash saved** (2026-10-18, from
   review). A trash entry without one may come from an `rm` that couldn't
   read `library.toml`, which left the real entry in the file; writing

@@ -112,6 +112,10 @@ Original saved as library.toml.broken-2026-10-17T19-20-05.
 A file a newer wineo wrote is never repaired, even when it's also damaged,
 since that would throw away what the newer release saved.
 
+Problems with `library.toml` as a whole are listed under its own heading,
+right after `config.toml`. One environment's entry is listed with that
+environment.
+
 ## What it checks
 
 | Area | Check | Level | Fix |
