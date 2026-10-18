@@ -130,6 +130,7 @@ fn gog_art_is_labeled_with_its_game() {
         preview: None,
         dimensions: Some((342, 482)),
         preview_error: None,
+        stamp: None,
     };
     assert_eq!(
         source_label(&row(Source::Gog(1207658924))),
@@ -1068,6 +1069,7 @@ fn rich_page(row_error: &str) -> (tempfile::TempDir, Page) {
                 preview: Some(image::Handle::from_rgba(2, 3, vec![255; 24])),
                 dimensions: Some((600, 900)),
                 preview_error: None,
+                stamp: None,
             },
         );
     }
@@ -1299,4 +1301,156 @@ fn leaving_drops_decoded_previews() {
     page.leave();
     assert!(!page.has_preview(&spot));
     assert!(page.rows.get(&spot).unwrap().resolved.is_some());
+}
+
+/// Loads a fresh snapshot and returns how many decodes the reload scheduled.
+fn reload_units(page: &mut Page, paths: &Paths) -> usize {
+    page.load_sequence = page.load_sequence.wrapping_add(1);
+    let state = load_snapshot(paths, &page.name).unwrap();
+    page.update(
+        paths,
+        Event::Loaded(page.load_sequence, Ok(state)),
+        decodes(),
+    )
+    .task
+    .units()
+}
+
+fn deliver_preview(page: &mut Page, paths: &Paths, spot: Spot) {
+    let handle = image::Handle::from_rgba(1, 1, vec![0; 4]);
+    let event = Event::Previewed(page.load_sequence, spot, Ok((handle, Some((8, 12)))));
+    let _ = page.update(paths, event, decodes());
+}
+
+#[test]
+fn reload_with_unchanged_files_keeps_previews_and_decodes_nothing() {
+    let (root, paths, mut page) = fixture();
+    let source = png(root.path());
+    art::set_manual(&paths, "game", None, Kind::Grid, &source, None).unwrap();
+    assert_eq!(reload_units(&mut page, &paths), 1);
+    let spot = (None, Kind::Grid);
+    deliver_preview(&mut page, &paths, spot.clone());
+    assert!(page.has_preview(&spot));
+
+    assert_eq!(reload_units(&mut page, &paths), 0);
+    assert!(page.has_preview(&spot));
+    assert_eq!(page.rows.get(&spot).unwrap().dimensions, Some((8, 12)));
+}
+
+#[test]
+fn reload_keeps_a_failed_decode_without_retrying_it() {
+    let (root, paths, mut page) = fixture();
+    let source = png(root.path());
+    art::set_manual(&paths, "game", None, Kind::Grid, &source, None).unwrap();
+    reload_units(&mut page, &paths);
+    let spot = (None, Kind::Grid);
+    let _ = page.update(
+        &paths,
+        Event::Previewed(page.load_sequence, spot.clone(), Err("bad".into())),
+        decodes(),
+    );
+
+    assert_eq!(reload_units(&mut page, &paths), 0);
+    assert_eq!(
+        page.rows.get(&spot).unwrap().preview_error.as_deref(),
+        Some("bad")
+    );
+}
+
+#[test]
+fn reload_redecodes_only_the_row_whose_file_changed() {
+    let (root, paths, mut page) = fixture();
+    let source = png(root.path());
+    art::set_manual(&paths, "game", None, Kind::Grid, &source, None).unwrap();
+    art::set_manual(&paths, "game", None, Kind::Hero, &source, None).unwrap();
+    assert_eq!(reload_units(&mut page, &paths), 2);
+    let grid = (None, Kind::Grid);
+    let hero = (None, Kind::Hero);
+    deliver_preview(&mut page, &paths, grid.clone());
+    deliver_preview(&mut page, &paths, hero.clone());
+
+    // A different size makes the identity differ even if the mtime ties.
+    let path = page.rows[&grid]
+        .resolved
+        .as_ref()
+        .unwrap()
+        .found
+        .path
+        .clone();
+    ::image::RgbaImage::from_pixel(16, 24, ::image::Rgba([0, 255, 0, 255]))
+        .save_with_format(&path, ::image::ImageFormat::Png)
+        .unwrap();
+
+    assert_eq!(reload_units(&mut page, &paths), 1);
+    assert!(!page.has_preview(&grid));
+    assert!(page.has_preview(&hero));
+}
+
+#[test]
+fn reload_drops_the_preview_of_a_removed_row() {
+    let (root, paths, mut page) = fixture();
+    let source = png(root.path());
+    art::set_manual(&paths, "game", None, Kind::Grid, &source, None).unwrap();
+    reload_units(&mut page, &paths);
+    let spot = (None, Kind::Grid);
+    deliver_preview(&mut page, &paths, spot.clone());
+    let path = page.rows[&spot]
+        .resolved
+        .as_ref()
+        .unwrap()
+        .found
+        .path
+        .clone();
+    fs::remove_file(path).unwrap();
+
+    assert_eq!(reload_units(&mut page, &paths), 0);
+    let row = &page.rows[&spot];
+    assert!(row.preview.is_none() && row.resolved.is_none());
+}
+
+#[test]
+fn a_decode_from_before_a_reload_cannot_land_on_the_new_row() {
+    let (root, paths, mut page) = fixture();
+    let source = png(root.path());
+    art::set_manual(&paths, "game", None, Kind::Grid, &source, None).unwrap();
+    reload_units(&mut page, &paths);
+    let stale = page.load_sequence;
+    reload_units(&mut page, &paths);
+    let spot = (None, Kind::Grid);
+    let _ = page.update(
+        &paths,
+        Event::Previewed(stale, spot.clone(), Err("old".into())),
+        decodes(),
+    );
+    let row = &page.rows[&spot];
+    assert!(row.preview.is_none() && row.preview_error.is_none());
+}
+
+#[test]
+fn a_failed_decode_does_not_read_as_loading() {
+    let (_root, page) = rich_page("");
+    let mut row = page.rows[&(page.showing.clone(), Kind::Grid)].clone();
+    assert_eq!(preview_placeholder(Some(&row)), "Loading...");
+    row.preview_error = Some("bad".into());
+    assert_eq!(preview_placeholder(Some(&row)), "Can't show this image");
+    row.resolved = None;
+    row.preview_error = None;
+    assert_eq!(preview_placeholder(Some(&row)), "No art");
+    assert_eq!(preview_placeholder(None), "No art");
+}
+
+#[test]
+fn leaving_clears_a_failed_decode_so_reopening_retries() {
+    let (root, paths, mut page) = fixture();
+    let source = png(root.path());
+    art::set_manual(&paths, "game", None, Kind::Grid, &source, None).unwrap();
+    reload_units(&mut page, &paths);
+    let spot = (None, Kind::Grid);
+    let _ = page.update(
+        &paths,
+        Event::Previewed(page.load_sequence, spot, Err("bad".into())),
+        decodes(),
+    );
+    page.leave();
+    assert_eq!(reload_units(&mut page, &paths), 1);
 }

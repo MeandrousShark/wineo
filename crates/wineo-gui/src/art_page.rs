@@ -116,7 +116,13 @@ struct RowData {
     preview: Option<image::Handle>,
     dimensions: Option<(u32, u32)>,
     preview_error: Option<String>,
+    /// The file the preview (or its error) was decoded from at load time. A
+    /// reload keeps the preview only while the file still has this identity.
+    stamp: Option<Stamp>,
 }
+
+/// A file's modification time and size.
+type Stamp = (std::time::SystemTime, u64);
 
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct Snapshot {
@@ -125,7 +131,7 @@ pub(crate) struct Snapshot {
     rows: BTreeMap<Spot, Option<Resolved>>,
     /// Each resolved file's modification time and size, so the rescan sees
     /// art replaced under the same name.
-    files: Vec<Option<(std::time::SystemTime, u64)>>,
+    files: BTreeMap<Spot, Option<Stamp>>,
 }
 
 #[derive(Debug, Clone)]
@@ -294,6 +300,7 @@ impl Page {
         for row in self.rows.values_mut() {
             row.preview = None;
             row.dimensions = None;
+            row.preview_error = None;
         }
     }
 
@@ -482,17 +489,33 @@ impl Page {
                             self.looked_up = None;
                             self.lookup_sequence = self.lookup_sequence.wrapping_add(1);
                         }
+                        // A reload fires on any library change, so keep what was
+                        // already decoded for files that did not change.
+                        let mut old = std::mem::take(&mut self.rows);
+                        let mut files = snapshot.files;
                         self.rows = snapshot
                             .rows
                             .into_iter()
                             .map(|(spot, resolved)| {
+                                let stamp = files.remove(&spot).flatten();
+                                let kept = old.remove(&spot).filter(|row| {
+                                    stamp.is_some()
+                                        && row.stamp == stamp
+                                        && row.resolved.as_ref().map(|r| &r.found.path)
+                                            == resolved.as_ref().map(|r| &r.found.path)
+                                });
+                                let (preview, dimensions, preview_error) = kept
+                                    .map_or((None, None, None), |row| {
+                                        (row.preview, row.dimensions, row.preview_error)
+                                    });
                                 (
                                     spot,
                                     RowData {
                                         resolved,
-                                        preview: None,
-                                        dimensions: None,
-                                        preview_error: None,
+                                        preview,
+                                        dimensions,
+                                        preview_error,
+                                        stamp,
                                     },
                                 )
                             })
@@ -1083,15 +1106,9 @@ impl Page {
                     .into()
             } else {
                 container(
-                    text(
-                        if row_data.and_then(|row| row.resolved.as_ref()).is_some() {
-                            "Loading..."
-                        } else {
-                            "No art"
-                        },
-                    )
-                    .size(12)
-                    .color(palette.muted),
+                    text(preview_placeholder(row_data))
+                        .size(12)
+                        .color(palette.muted),
                 )
                 .width(width)
                 .height(height)
@@ -1343,11 +1360,13 @@ pub(crate) fn load_snapshot(paths: &Paths, name: &str) -> Result<Snapshot, Strin
         }
     }
     let files = rows
-        .values()
-        .flatten()
-        .map(|resolved| {
-            let metadata = fs::metadata(&resolved.found.path).ok()?;
-            Some((metadata.modified().ok()?, metadata.len()))
+        .iter()
+        .filter_map(|(spot, resolved)| {
+            let resolved = resolved.as_ref()?;
+            let stamp = fs::metadata(&resolved.found.path)
+                .ok()
+                .and_then(|metadata| Some((metadata.modified().ok()?, metadata.len())));
+            Some((spot.clone(), stamp))
         })
         .collect();
     Ok(Snapshot {
@@ -1356,6 +1375,16 @@ pub(crate) fn load_snapshot(paths: &Paths, name: &str) -> Result<Snapshot, Strin
         rows,
         files,
     })
+}
+
+/// What a row without a decoded preview says. A failed decode must not read
+/// as still loading.
+fn preview_placeholder(row: Option<&RowData>) -> &'static str {
+    match row {
+        Some(row) if row.preview_error.is_some() => "Can't show this image",
+        Some(row) if row.resolved.is_some() => "Loading...",
+        _ => "No art",
+    }
 }
 
 fn decode(
