@@ -60,3 +60,13 @@ inherits = "release"
 lto = false
 codegen-units = 16
 incremental = true
+
+# The GUI's tests render through iced's null renderer, which iced_core only
+# compiles with debug assertions, so `cargo test --release` can't build them.
+# This keeps release speed everywhere else, for timing tests such as the
+# library benchmark in crates/wineo-gui/src/library/bench.rs.
+[profile.release-test]
+inherits = "release"
+
+[profile.release-test.package.iced_core]
+debug-assertions = true

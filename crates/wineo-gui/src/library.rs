@@ -421,4 +421,6 @@ pub(super) fn load_library(paths: &Paths) -> anyhow::Result<Vec<Card>> {
 }
 
 #[cfg(test)]
+mod bench;
+#[cfg(test)]
 mod tests;
