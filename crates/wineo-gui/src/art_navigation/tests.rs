@@ -12,7 +12,8 @@ fn fixture() -> (tempfile::TempDir, App) {
         Paths::from_lookup(|key| (key == "HOME").then(|| root.path().as_os_str().to_owned()))
             .unwrap();
     for name in ["game", "other"] {
-        Environment::create_native(&paths, &GlobalConfig::default(), name, None, false).unwrap();
+        Environment::create_native(&paths, &GlobalConfig::default(), name, None, false, |_| {})
+            .unwrap();
     }
     let mut app = App::boot(paths.clone()).0;
     app.merge(crate::library::load_library(&paths).unwrap());
@@ -286,7 +287,15 @@ fn same_name_recreation_gets_a_fresh_art_page() {
     let old_identity = app.art_pages["game"].identity;
     let retained = root.path().join("retained-game.toml");
     fs::rename(app.paths.environment_config("game"), retained).unwrap();
-    Environment::create_native(&app.paths, &GlobalConfig::default(), "game", None, false).unwrap();
+    Environment::create_native(
+        &app.paths,
+        &GlobalConfig::default(),
+        "game",
+        None,
+        false,
+        |_| {},
+    )
+    .unwrap();
 
     let cards = crate::library::load_library(&app.paths).unwrap();
     let _ = app.update(Message::Loaded(Ok(cards)));

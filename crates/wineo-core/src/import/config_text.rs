@@ -144,6 +144,7 @@ pub fn register_native(
     paths: &Paths,
     name: &str,
     settings: &ImportedSettings,
+    mut warnings: impl FnMut(String),
 ) -> Result<Environment> {
     if !name::is_valid(name) {
         bail!("invalid environment name `{name}`");
@@ -154,7 +155,11 @@ pub fn register_native(
     }
     let text = native_config_text(&stored_settings(paths, settings)?)?;
     let _operation = Locks::new(paths).acquire(Operation::Create, name, &[])?;
-    write_native_config(paths, name, &text)
+    let environment = write_native_config(paths, name, &text)?;
+    if let Some(warning) = crate::library_lifecycle::fresh_warning(paths, name) {
+        warnings(warning);
+    }
+    Ok(environment)
 }
 
 /// The config `register_native` writes for `settings`, checked but not

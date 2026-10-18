@@ -132,6 +132,7 @@ impl CreatePlan {
 
 #[derive(Debug)]
 pub enum CreateEvent {
+    Warning(String),
     TemplateComponentsOmitted {
         runner: String,
     },
@@ -389,6 +390,9 @@ fn apply_with(
             }
         },
     )?;
+    if let Some(warning) = crate::library_lifecycle::fresh_warning(paths, &environment.name) {
+        events(CreateEvent::Warning(warning));
+    }
     events(CreateEvent::Saved);
     let target = match exe {
         Some(exe) if add_default_target(paths, &environment, &exe, target_title, desktop)? => {

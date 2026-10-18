@@ -248,6 +248,38 @@ fn native_executable_titles_its_target() {
 }
 
 #[test]
+fn native_creation_keeps_library_warning_in_report() {
+    let root = tempfile::tempdir().unwrap();
+    let paths =
+        Paths::from_lookup(|key| (key == "HOME").then(|| OsString::from(root.path()))).unwrap();
+    let library = paths.library_file();
+    fs::create_dir_all(library.parent().unwrap()).unwrap();
+    fs::write(&library, "[broken\n").unwrap();
+    let draft = Draft {
+        title: "Broken Library".to_owned(),
+        kind: Kind::Native,
+        ..Draft::default()
+    };
+    let review = prepare(&paths, &draft).unwrap();
+    let report = perform(
+        &paths,
+        draft,
+        review,
+        artwork::Draft::new(),
+        Token::new(),
+        |_| {},
+        |_| {},
+    );
+    assert!(report.registered, "{:?}", report.notes);
+    assert!(report.notes.iter().any(|note| {
+        note.starts_with("Can't update library.toml:")
+            && note.contains("broken-library")
+            && note.contains("may show an old star or hidden flag once it's repaired")
+    }));
+    assert_eq!(fs::read(&library).unwrap(), b"[broken\n");
+}
+
+#[test]
 fn picked_installer_program_takes_the_title() {
     let spec = target_spec(
         "C:\\Game\\game.exe".to_owned(),

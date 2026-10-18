@@ -269,6 +269,22 @@ fn a_clean_install_with_dlc_creates_the_environment_and_commits_every_product() 
 }
 
 #[test]
+fn broken_library_does_not_block_native_gog_install() {
+    let fx = offered();
+    let plan = fx.install_plan(&request()).unwrap();
+    let library = fx.paths.library_file();
+    fs::create_dir_all(library.parent().unwrap()).unwrap();
+    let broken = b"[broken\n";
+    fs::write(&library, broken).unwrap();
+    let installed = fx.install_with(&plan, &Token::new(), |_| {}).unwrap();
+    assert!(fx.paths.environment_config("rimworld").exists());
+    assert!(installed.warnings.iter().any(|warning| {
+        warning.starts_with("Can't update library.toml: ") && warning.contains("it can't be read")
+    }));
+    assert_eq!(fs::read(&library).unwrap(), broken);
+}
+
+#[test]
 fn listed_sizes_are_the_rounded_estimates() {
     let fx = offered();
     fx.pad(RIMWORLD);

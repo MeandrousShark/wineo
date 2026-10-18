@@ -704,6 +704,7 @@ fn apply(
 /// Says what creating a Windows game's environment did, like `new`.
 fn created(paths: &Paths, name: &str, event: CreateEvent) {
     match event {
+        CreateEvent::Warning(warning) => eprintln!("warning: {warning}"),
         CreateEvent::BuildingPrefix { dir, runner } => {
             let dir = style::path(paths, &dir);
             if runner.is_proton() {

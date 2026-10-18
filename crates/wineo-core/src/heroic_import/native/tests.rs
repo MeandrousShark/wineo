@@ -50,6 +50,28 @@ fn native_planning_and_exe_check_leave_the_roots_unchanged() {
 }
 
 #[test]
+fn broken_library_does_not_block_heroic_native_import() {
+    let root = tempdir().unwrap();
+    let source = dusklight(root.path(), "{}");
+    let paths = paths(root.path());
+    let plan = plan_native(&source, "dusk", None).unwrap();
+    let library = paths.library_file();
+    fs::create_dir_all(library.parent().unwrap()).unwrap();
+    let broken = b"[broken\n";
+    fs::write(&library, broken).unwrap();
+    let registered = apply_native(&paths, &source, &plan).unwrap();
+    assert!(
+        paths
+            .environment_config(&registered.environment.name)
+            .exists()
+    );
+    assert!(registered.warnings.iter().any(|warning| {
+        warning.starts_with("Can't update library.toml: ") && warning.contains("it can't be read")
+    }));
+    assert_eq!(fs::read(&library).unwrap(), broken);
+}
+
+#[test]
 fn native_launch_edits_preserve_the_heroic_source_and_resolve_arguments() {
     let root = tempdir().unwrap();
     let source = dusklight(root.path(), r#"{"launcherArgs":"\"unclosed"}"#);

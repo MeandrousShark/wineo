@@ -25,6 +25,9 @@ pub fn wait_idle(paths: &Paths, global: &GlobalConfig, name: &str) -> anyhow::Re
 pub fn copy_progress() -> impl FnMut(ImportProgress) {
     let mut copied = 0_u64;
     move |event| {
+        if let ImportProgress::Warning(warning) = &event {
+            eprintln!("warning: {warning}");
+        }
         if let ImportProgress::Copied { .. } = event {
             copied += 1;
             if copied.is_multiple_of(500) {

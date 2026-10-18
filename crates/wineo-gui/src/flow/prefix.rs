@@ -32,6 +32,7 @@ pub(crate) enum Event {
     RunnersLoaded(Result<Box<RunnerListing>, String>),
     ReviewLoaded(u64, Result<Box<Review>, String>),
     Progress(u64, String),
+    Warning(u64, String),
     Next,
     Import,
     ImportFinished(u64, Result<Box<ImportOutcome>, String>),
@@ -109,6 +110,7 @@ pub(crate) struct Page {
     review: Option<Review>,
     step: Step,
     error: Option<String>,
+    warning: Option<String>,
     status: String,
     show_dependencies: bool,
     dirty: bool,
@@ -135,6 +137,7 @@ impl Page {
             review: None,
             step: Step::Details,
             error: None,
+            warning: None,
             status: String::new(),
             show_dependencies: false,
             dirty: false,
@@ -286,6 +289,12 @@ impl Page {
             Event::Progress(generation, status) => {
                 if generation == self.generation && self.step == Step::Working {
                     self.status = status;
+                }
+                Task::none()
+            }
+            Event::Warning(generation, warning) => {
+                if generation == self.generation {
+                    self.warning = Some(warning);
                 }
                 Task::none()
             }
@@ -465,6 +474,9 @@ impl Page {
         .max_width(760);
         if let Some(error) = &self.error {
             content = content.push(text(error.as_str()).size(13).color(palette.danger));
+        }
+        if let Some(warning) = &self.warning {
+            content = content.push(text(warning.as_str()).size(13).color(palette.warning));
         }
         let base: Element<'_, Event> =
             container(scrollable(content).wineo_style(palette).height(Fill))
@@ -755,6 +767,7 @@ impl Page {
         self.step = Step::Working;
         self.status = "Importing prefix...".to_owned();
         self.error = None;
+        self.warning = None;
         self.generation = self.generation.wrapping_add(1);
         let generation = self.generation;
         let request = ImportRequest {
@@ -784,6 +797,12 @@ impl Page {
                             {
                                 let mut copied = 0_u64;
                                 move |progress| {
+                                    if let import::ImportProgress::Warning(warning) = &progress {
+                                        let _ = sender.unbounded_send(Event::Warning(
+                                            progress_generation,
+                                            warning.clone(),
+                                        ));
+                                    }
                                     if let import::ImportProgress::Copied { .. } = progress {
                                         copied += 1;
                                         if copied.is_multiple_of(250) {

@@ -1045,6 +1045,7 @@ impl Page {
                                     },
                                 )?;
                                 let mut notes = Vec::new();
+                                notes.extend(registered.warnings.iter().cloned());
                                 if let Some(note) = playtime_note(&registered.playtime) {
                                     notes.push(note);
                                 }

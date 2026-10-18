@@ -1540,6 +1540,7 @@ pub(crate) fn install_with(
         .ok_or_else(|| Failure::new(LOGGED_OUT))?;
     let labels = names.product_labels();
     let say = std::cell::RefCell::new(&mut say);
+    let library_warnings = std::cell::RefCell::new(Vec::new());
     let installed = match plan {
         Plan::Installer(offline) => {
             let mut reporter = Reporter::new(labels.clone(), PROGRESS_INTERVAL);
@@ -1554,6 +1555,9 @@ pub(crate) fn install_with(
                     }
                 },
                 |event| {
+                    if let WindowsEvent::Create(CreateEvent::Warning(warning)) = &event {
+                        library_warnings.borrow_mut().push(warning.clone());
+                    }
                     if let Some(line) = event_line(event, &labels) {
                         (say.borrow_mut())(line);
                     }
@@ -1573,6 +1577,9 @@ pub(crate) fn install_with(
                     }
                 },
                 |event| {
+                    if let WindowsEvent::Create(CreateEvent::Warning(warning)) = &event {
+                        library_warnings.borrow_mut().push(warning.clone());
+                    }
                     if let Some(line) = event_line(event, &labels) {
                         (say.borrow_mut())(line);
                     }
@@ -1580,9 +1587,17 @@ pub(crate) fn install_with(
             )
         }
     }
-    .map_err(|error| failure(paths, &error, plan, &labels))?;
+    .map_err(|error| {
+        let mut failed = failure(paths, &error, plan, &labels);
+        for warning in library_warnings.borrow().iter() {
+            failed.message.push_str(&format!("\n{warning}"));
+        }
+        failed
+    })?;
     let say = say.into_inner();
-    Ok(finish(paths, plan, names, &installed, token, say, extras))
+    let mut done = finish(paths, plan, names, &installed, token, say, extras);
+    done.warnings.extend(library_warnings.into_inner());
+    Ok(done)
 }
 
 /// The status line for something an install's Windows side reports.

@@ -296,6 +296,7 @@ fn art_app() -> (tempfile::TempDir, App) {
         "game",
         None,
         false,
+        |_| {},
     )
     .unwrap();
     let _ = app.update(Message::Loaded(library(&app.paths)));

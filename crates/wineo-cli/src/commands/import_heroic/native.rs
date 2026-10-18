@@ -149,6 +149,9 @@ pub(super) fn direct(
     }
     let registered = apply_native(paths, source, &plan)?;
     super::report_playtime(&registered.playtime);
+    for warning in &registered.warnings {
+        eprintln!("warning: {warning}");
+    }
     let environment = &registered.environment;
     let mut prompt = (art.enabled && prompt::interactive())
         .then(|| Terminal::open().ok())
@@ -272,6 +275,9 @@ pub(super) fn guided<I: Input, W: Write>(
     plan.check_exe(paths, global)?;
     let registered = apply_native(paths, source, &plan)?;
     super::report_playtime(&registered.playtime);
+    for warning in &registered.warnings {
+        eprintln!("warning: {warning}");
+    }
     let environment = &registered.environment;
     let fetched = fetch_art(
         paths,
@@ -319,6 +325,9 @@ pub(super) fn import_one(
     };
     let registered = apply_native(paths, bulk.source, &plan)?;
     super::report_playtime(&registered.playtime);
+    for warning in &registered.warnings {
+        eprintln!("warning: {warning}");
+    }
     let top = Pick::<NoInput, Vec<u8>>::Top(out);
     // A top match can't be canceled.
     let _ = fetch_art(

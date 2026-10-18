@@ -127,6 +127,7 @@ pub struct ImportedSettings {
 /// Events emitted while checking and copying a prefix or runner tree.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ImportProgress {
+    Warning(String),
     /// Entries walked so far by the current source check. Each check starts
     /// counting from zero again.
     Checking {
@@ -536,13 +537,17 @@ pub fn execute_reviewed(
             config_path.display()
         );
     }
-    Environment::load(paths, &request.name).map_err(|err| {
+    let environment = Environment::load(paths, &request.name).map_err(|err| {
         anyhow!(
             "prefix {} and config {} are ready, but the config could not be reloaded: {err}",
             destination.display(),
             config_path.display()
         )
-    })
+    })?;
+    if let Some(warning) = crate::library_lifecycle::fresh_warning(paths, &request.name) {
+        progress(ImportProgress::Warning(warning));
+    }
+    Ok(environment)
 }
 
 pub(crate) fn ensure_same_review(expected: &Inspection, actual: &Inspection) -> Result<()> {

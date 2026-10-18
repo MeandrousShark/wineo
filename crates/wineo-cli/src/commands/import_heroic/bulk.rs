@@ -577,6 +577,9 @@ pub(super) fn import_one(
         .then(|| plan.log_text(global, bulk.source) + &art.log_line());
     let registered = apply_plan_with_cancellation(paths, global, bulk.source, &plan, cancellation)?;
     report_playtime(&registered.playtime);
+    for warning in &registered.warnings {
+        eprintln!("warning: {warning}");
+    }
     let environment = &registered.environment;
     let top = Pick::<NoInput, Vec<u8>>::Top(out);
     // A top match can't be canceled.

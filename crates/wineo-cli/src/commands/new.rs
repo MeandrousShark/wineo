@@ -228,6 +228,7 @@ impl Hooks for WineHooks<'_> {
     fn event(&mut self, event: CreateEvent) {
         let paths = self.paths;
         match event {
+            CreateEvent::Warning(warning) => eprintln!("warning: {warning}"),
             CreateEvent::TemplateComponentsOmitted { runner } => eprintln!(
                 "{runner} bundles its own DXVK and vkd3d-proton, so the template's are left out"
             ),
@@ -437,7 +438,9 @@ fn new_native(
     art: bool,
 ) -> anyhow::Result<ExitCode> {
     let global = GlobalConfig::load(paths)?;
-    let environment = Environment::create_native(paths, &global, name, exe, desktop)?;
+    let environment = Environment::create_native(paths, &global, name, exe, desktop, |warning| {
+        eprintln!("warning: {warning}")
+    })?;
     match exe {
         Some(_) => println!("Created native environment {name} with target {name}"),
         None => {

@@ -119,6 +119,25 @@ fn plan_and_apply_write_the_proxied_config_and_match_a_custom_name() {
 }
 
 #[test]
+fn broken_library_does_not_block_steam_import() {
+    let temp = tempfile::tempdir().unwrap();
+    let paths = paths(temp.path(), false);
+    let root = steam_root(&paths, false);
+    manifest(&root, "42", "My Game", 4, 4096);
+    let planned = ready(&paths, &GlobalConfig::default(), "42", Some("custom"));
+    let library = paths.library_file();
+    fs::create_dir_all(library.parent().unwrap()).unwrap();
+    let broken = b"[broken\n";
+    fs::write(&library, broken).unwrap();
+    let applied = imported(&paths, &planned);
+    assert!(paths.environment_config("custom").exists());
+    assert!(applied.warnings.iter().any(|warning| {
+        warning.starts_with("Can't update library.toml: ") && warning.contains("it can't be read")
+    }));
+    assert_eq!(fs::read(&library).unwrap(), broken);
+}
+
+#[test]
 fn names_tools_and_missing_games_are_refused() {
     let temp = tempfile::tempdir().unwrap();
     let paths = paths(temp.path(), false);

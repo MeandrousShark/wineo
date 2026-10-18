@@ -478,6 +478,9 @@ pub fn apply(
     let environment = Environment::load(paths, &plan.name)?;
     let mut art = Vec::new();
     let mut warnings = Vec::new();
+    if let Some(warning) = crate::library_lifecycle::fresh_warning(paths, &plan.name) {
+        warnings.push(warning);
+    }
     for (kind, source) in steam::art_files(&install, &plan.app_id) {
         if cancel.is_canceled() {
             break;

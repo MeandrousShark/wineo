@@ -1295,6 +1295,7 @@ fn a_corrupt_poster_is_neither_prefilled_nor_stored() {
         "dawn",
         None,
         false,
+        |_| {},
     )
     .unwrap();
     assert_eq!(store_heroic_poster(&paths, "dawn", "dawn", None), None);
@@ -1366,6 +1367,7 @@ fn a_batch_decodes_posters_the_grid_had_not_yet() {
             name,
             None,
             false,
+            |_| {},
         )
         .unwrap();
         assert_eq!(

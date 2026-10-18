@@ -236,7 +236,15 @@ fn paths(root: &Path) -> Paths {
 fn local_art_works_without_fetching_and_preserves_source_bytes() {
     let root = tempfile::tempdir().unwrap();
     let paths = paths(root.path());
-    Environment::create_native(&paths, &GlobalConfig::default(), "game", None, false).unwrap();
+    Environment::create_native(
+        &paths,
+        &GlobalConfig::default(),
+        "game",
+        None,
+        false,
+        |_| {},
+    )
+    .unwrap();
     let source = root.path().join("my-image.data");
     let bytes = br#"<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20"><rect width="20" height="20" fill="red"/></svg>"#;
     std::fs::write(&source, bytes).unwrap();
@@ -343,7 +351,15 @@ fn title_change_refreshes_unedited_search_without_accepting_stale_results() {
 fn failed_art_does_not_remove_registration() {
     let root = tempfile::tempdir().unwrap();
     let paths = paths(root.path());
-    Environment::create_native(&paths, &GlobalConfig::default(), "game", None, false).unwrap();
+    Environment::create_native(
+        &paths,
+        &GlobalConfig::default(),
+        "game",
+        None,
+        false,
+        |_| {},
+    )
+    .unwrap();
     let mut draft = Draft::new();
     draft.local.insert(
         Kind::Logo,
@@ -436,7 +452,15 @@ fn current_fetched_result_stores_image_and_preview() {
 fn none_found_preview_skips_fetch_and_reports_note() {
     let root = tempfile::tempdir().unwrap();
     let paths = paths(root.path());
-    Environment::create_native(&paths, &GlobalConfig::default(), "game", None, false).unwrap();
+    Environment::create_native(
+        &paths,
+        &GlobalConfig::default(),
+        "game",
+        None,
+        false,
+        |_| {},
+    )
+    .unwrap();
     let mut draft = Draft::new();
     draft.fetch = true;
     draft.kinds = vec![Kind::Grid];
@@ -619,7 +643,15 @@ fn apply_stores_held_art_without_a_request() {
     const PNG: &[u8] = b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR";
     let root = tempfile::tempdir().unwrap();
     let paths = paths(root.path());
-    Environment::create_native(&paths, &GlobalConfig::default(), "game", None, false).unwrap();
+    Environment::create_native(
+        &paths,
+        &GlobalConfig::default(),
+        "game",
+        None,
+        false,
+        |_| {},
+    )
+    .unwrap();
     let mut draft = Draft::new();
     draft.fetch = true;
     draft.kinds = vec![Kind::Grid];
@@ -687,7 +719,8 @@ fn a_prefilled_pick_is_stored_under_its_name_until_removed_or_replaced() {
             .clone()
     };
     for env in ["kept", "removed", "replaced"] {
-        Environment::create_native(&paths, &GlobalConfig::default(), env, None, false).unwrap();
+        Environment::create_native(&paths, &GlobalConfig::default(), env, None, false, |_| {})
+            .unwrap();
     }
 
     let mut draft = fetched();

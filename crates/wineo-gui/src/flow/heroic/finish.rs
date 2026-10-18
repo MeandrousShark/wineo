@@ -45,6 +45,7 @@ impl Page {
     ) -> Task<Event> {
         match result {
             Ok(registered) => {
+                self.notes.extend(registered.warnings.iter().cloned());
                 if let Some(note) = playtime_note(&registered.playtime) {
                     self.notes.push(note);
                 }
