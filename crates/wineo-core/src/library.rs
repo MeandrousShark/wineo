@@ -19,10 +19,12 @@ use crate::paths::Paths;
 mod cache;
 mod check;
 mod repair;
+mod sort;
 
 pub use cache::Cache;
 pub(crate) use check::{FindingKind, inspect, remove_strays};
 pub use repair::{RepairReport, ViewRecovery, repair};
+pub use sort::{SortFields, compare};
 
 const SCHEMA_VERSION: i64 = 1;
 
@@ -38,6 +40,14 @@ pub enum SortKey {
 }
 
 impl SortKey {
+    pub const ALL: [Self; 5] = [
+        Self::Name,
+        Self::LastPlayed,
+        Self::Playtime,
+        Self::Added,
+        Self::Source,
+    ];
+
     fn from_str(value: &str) -> Option<Self> {
         match value {
             "name" => Some(Self::Name),
