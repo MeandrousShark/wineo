@@ -261,23 +261,30 @@ fn read_document(path: &Path) -> std::result::Result<Option<DocumentMut>, ReadFa
 }
 
 fn unreadable_error(path: &Path, failure: ReadFailure) -> Error {
-    let source = match failure {
+    let (newer_version, source) = match failure {
         ReadFailure::Io(error) => {
             return Error::Io {
                 context: format!("failed to read {}", path.display()),
                 source: error,
             };
         }
-        ReadFailure::Parse { error: source, .. } => Error::ConfigParse {
-            path: path.to_owned(),
-            source: Box::new(source),
-        },
-        ReadFailure::Schema(found) => Error::SchemaVersion {
-            path: path.to_owned(),
-            found,
-        },
+        ReadFailure::Parse { error: source, .. } => (
+            false,
+            Error::ConfigParse {
+                path: path.to_owned(),
+                source: Box::new(source),
+            },
+        ),
+        ReadFailure::Schema(found) => (
+            true,
+            Error::SchemaVersion {
+                path: path.to_owned(),
+                found,
+            },
+        ),
     };
     Error::LibraryUnreadable {
+        newer_version,
         source: Box::new(source),
     }
 }

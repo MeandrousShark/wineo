@@ -325,8 +325,8 @@ pub fn remove_with_force(
     entry.desktop_removed = desktop_removed;
     if let Err(err) = crate::library::remove(paths, name) {
         warnings.push(format!(
-            "Can't remove {name} from library.toml: {}",
-            crate::error::chain(&err)
+            "Can't remove {name} from library.toml: {}.",
+            crate::library_lifecycle::cause(&err)
         ));
     }
     entry.warnings = warnings;

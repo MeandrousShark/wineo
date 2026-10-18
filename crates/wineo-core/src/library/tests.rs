@@ -262,7 +262,7 @@ fn unsupported_schema_versions_degrade_reads_and_refuse_writes() {
         let error = set_hidden(&fixture.paths, "hades", true).unwrap_err();
         assert_eq!(
             error.to_string(),
-            "Can't save to library.toml: it can't be read. Fix it, or repair it in Checkup."
+            "library.toml was written by a newer wineo; update wineo to use it."
         );
         assert!(crate::error::chain(&error).contains("unsupported schema_version"));
         assert_eq!(fixture.read(), original);

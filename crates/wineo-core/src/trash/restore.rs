@@ -272,7 +272,7 @@ fn restore_locked_noting(
                 format!(
                     "Can't restore {} in library.toml: {}.{lost}",
                     manifest.name,
-                    crate::error::chain(&err),
+                    crate::library_lifecycle::cause(&err),
                 )
             }),
         _ => None,

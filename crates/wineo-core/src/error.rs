@@ -106,8 +106,10 @@ pub enum Error {
     #[error("unsupported schema_version {found} in {}\n{NEWER_VERSION_HINT}", .path.display())]
     SchemaVersion { path: PathBuf, found: String },
 
-    #[error("Can't save to library.toml: it can't be read. Fix it, or repair it in Checkup.")]
+    /// A newer file has no repair to offer, so it gets its own refusal.
+    #[error("{}", library_unreadable_message(*.newer_version))]
     LibraryUnreadable {
+        newer_version: bool,
         #[source]
         source: Box<dyn std::error::Error + Send + Sync>,
     },
@@ -467,6 +469,14 @@ pub fn chain(err: &dyn std::error::Error) -> String {
         source = err.source();
     }
     text
+}
+
+fn library_unreadable_message(newer_version: bool) -> &'static str {
+    if newer_version {
+        "library.toml was written by a newer wineo; update wineo to use it."
+    } else {
+        "Can't save to library.toml: it can't be read. Fix it, or repair it in Checkup."
+    }
 }
 
 /// A summary line, then each config's own error, which already names its file.
