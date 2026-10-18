@@ -247,18 +247,56 @@ fn restore_locked_noting(
         Ok(warning) => (None, warning),
         Err(err) => (Some(err), None),
     };
-    if manifest.payloads.iter().any(|payload| payload.kept) {
-        keep_changed(paths, manifest, notes)?;
+    let library_warning = if rollback {
+        None
     } else {
-        complete_entry(paths, manifest)?;
-    }
+        crate::library::put(paths, &manifest.name, manifest.library.as_ref())
+            .err()
+            .map(|err| {
+                let mut values = Vec::new();
+                if let Some(entry) = &manifest.library {
+                    if entry.favorite {
+                        values.push("favorite".to_owned());
+                    }
+                    if entry.hidden {
+                        values.push("hidden".to_owned());
+                    }
+                    if let Some(added) = entry.added {
+                        values.push(format!("added {}", added.strftime("%Y-%m-%d")));
+                    }
+                }
+                if values.is_empty() {
+                    values.push("library entry".to_owned());
+                }
+                format!(
+                    "Can't restore {} in library.toml: {}. Values not restored: {}.",
+                    manifest.name,
+                    crate::error::chain(&err),
+                    values.join(", ")
+                )
+            })
+    };
+    let completed = if manifest.payloads.iter().any(|payload| payload.kept) {
+        keep_changed(paths, manifest, notes)
+    } else {
+        complete_entry(paths, manifest)
+    };
+    completed.map_err(|err| match &library_warning {
+        Some(warning) => err.context(warning.clone()),
+        None => err,
+    })?;
     notes.extend(warning);
     if let Some(err) = desktop_error {
-        bail!(
+        let err = anyhow!(
             "environment {} was restored, but its desktop entries need attention: {err:#}",
             manifest.name
         );
+        return Err(match library_warning {
+            Some(warning) => err.context(warning),
+            None => err,
+        });
     }
+    notes.extend(library_warning);
     Ok(())
 }
 

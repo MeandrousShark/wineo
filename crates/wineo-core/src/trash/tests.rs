@@ -901,6 +901,7 @@ fn marker_created_before_manifest_publication_recovers_without_guessing() {
         phase: Phase::Removing,
         payloads: vec![payload],
         gog_folders: Vec::new(),
+        library: None,
     };
     start_marker(&f.paths, &manifest, Intent::Remove).unwrap();
     assert!(check_pending(&f.paths, "game", &[]).is_err());
@@ -1559,6 +1560,7 @@ fn interrupted_art_copy_of(
         phase: Phase::Removing,
         payloads: vec![payload],
         gog_folders: Vec::new(),
+        library: None,
     };
     write_manifest(&f.paths, &manifest).unwrap();
     Some((f, other, source, retained, manifest))
@@ -1681,6 +1683,7 @@ fn copied_config(home: &Path, config_home: &Path) -> (Paths, PathBuf, Option<&'s
         phase: Phase::Removing,
         payloads: vec![payload],
         gog_folders: Vec::new(),
+        library: None,
     };
     write_manifest(&paths, &manifest).unwrap();
     (paths, source, Some(id))
@@ -1901,6 +1904,7 @@ fn removal_recovers_when_both_metadata_copies_survive_a_crash() {
         phase: Phase::Removing,
         payloads: vec![payload],
         gog_folders: Vec::new(),
+        library: None,
     };
     write_manifest(&paths, &manifest).unwrap();
     manifest.payloads[0].copied_identity = Some(reserve_copy(&source, &dest).unwrap());
@@ -2438,4 +2442,124 @@ fn rebinding_refuses_entries_that_are_mid_operation() {
     write_manifest(&f.paths, &manifest).unwrap();
     let err = rebind_identities(&f.paths).unwrap_err();
     assert!(err.to_string().contains("mid-operation"), "{err}");
+}
+
+fn library_entry() -> crate::library::Entry {
+    crate::library::Entry {
+        favorite: true,
+        hidden: true,
+        added: Some("2026-10-17T18:00:00Z".parse().unwrap()),
+    }
+}
+
+#[test]
+fn library_entry_is_journaled_before_payloads_move() {
+    let f = Fixture::new();
+    f.config("game", "kind = 'native'\n");
+    let saved = library_entry();
+    crate::library::put(&f.paths, "game", Some(&saved)).unwrap();
+    set_trash_failpoint(Some("remove.after_manifest"));
+    assert!(remove(&f.paths, "game", false).is_err());
+    let entries = list(&f.paths).unwrap();
+    let manifest = read_manifest(&f.paths, &entries[0].id).unwrap();
+    assert_eq!(manifest.library, Some(saved.clone()));
+    assert!(f.paths.environment_config("game").exists());
+    recover(&f.paths, &manifest.id).unwrap();
+    assert_eq!(crate::library::load(&f.paths).environments["game"], saved);
+}
+
+#[test]
+fn library_entry_survives_remove_and_restore_without_touching_other_state() {
+    let f = Fixture::new();
+    f.config("game", "kind = 'native'\n");
+    let saved = library_entry();
+    crate::library::put(&f.paths, "game", Some(&saved)).unwrap();
+    crate::library::set_favorite(&f.paths, "other", true).unwrap();
+    crate::library::set_descending(&f.paths, true).unwrap();
+    let entry = remove(&f.paths, "game", false).unwrap();
+    assert!(entry.warnings.is_empty(), "{:?}", entry.warnings);
+    assert!(
+        !crate::library::load(&f.paths)
+            .environments
+            .contains_key("game")
+    );
+    assert_eq!(
+        read_manifest(&f.paths, &entry.id).unwrap().library,
+        Some(saved.clone())
+    );
+    assert!(restore(&f.paths, &entry.id).unwrap().is_empty());
+    let library = crate::library::load(&f.paths);
+    assert_eq!(library.environments["game"], saved);
+    assert!(library.environments["other"].favorite);
+    assert!(library.view.descending);
+    assert!(!entry_dir(&f.paths, &entry.id).unwrap().exists());
+}
+
+#[test]
+fn broken_library_does_not_block_remove_and_reports_underlying_error() {
+    let f = Fixture::new();
+    f.config("game", "kind = 'native'\n");
+    let broken = "[environments.game]\nfavorite = true\n[broken\n";
+    fs::write(f.paths.library_file(), broken).unwrap();
+    let entry = remove(&f.paths, "game", false).unwrap();
+    assert!(!f.paths.environment_config("game").exists());
+    assert_eq!(fs::read_to_string(f.paths.library_file()).unwrap(), broken);
+    assert_eq!(entry.warnings.len(), 1, "{:?}", entry.warnings);
+    assert!(entry.warnings[0].contains("Can't remove game from library.toml:"));
+    assert!(
+        entry.warnings[0].contains("TOML parse error"),
+        "{:?}",
+        entry.warnings
+    );
+}
+
+#[test]
+fn broken_library_restore_reports_lost_values_and_finishes() {
+    let f = Fixture::new();
+    f.config("game", "kind = 'native'\n");
+    crate::library::put(&f.paths, "game", Some(&library_entry())).unwrap();
+    let entry = remove(&f.paths, "game", false).unwrap();
+    let broken = "[broken\n";
+    fs::write(f.paths.library_file(), broken).unwrap();
+    let notes = restore(&f.paths, &entry.id).unwrap();
+    assert!(f.paths.environment_config("game").exists());
+    assert!(!entry_dir(&f.paths, &entry.id).unwrap().exists());
+    assert_eq!(fs::read_to_string(f.paths.library_file()).unwrap(), broken);
+    assert_eq!(notes.len(), 1, "{notes:?}");
+    assert!(notes[0].contains("TOML parse error"), "{notes:?}");
+    assert!(
+        notes[0].contains("favorite, hidden, added 2026-10-17"),
+        "{notes:?}"
+    );
+}
+
+#[test]
+fn prune_drops_saved_library_entry_without_reading_broken_library() {
+    let f = Fixture::new();
+    f.config("game", "kind = 'native'\n");
+    crate::library::put(&f.paths, "game", Some(&library_entry())).unwrap();
+    let entry = remove(&f.paths, "game", false).unwrap();
+    let broken = "[broken\n";
+    fs::write(f.paths.library_file(), broken).unwrap();
+    let review = review_prune(&f.paths, Selector::Id(&entry.id)).unwrap();
+    let results = prune_reviewed(&f.paths, &review);
+    assert!(results.iter().all(|(_, result)| result.is_ok()));
+    assert!(!entry_dir(&f.paths, &entry.id).unwrap().exists());
+    assert_eq!(fs::read_to_string(f.paths.library_file()).unwrap(), broken);
+}
+
+#[test]
+fn older_trash_manifest_without_library_entry_still_restores() {
+    let f = Fixture::new();
+    f.config("game", "kind = 'native'\n");
+    let entry = remove(&f.paths, "game", false).unwrap();
+    let manifest = read_manifest(&f.paths, &entry.id).unwrap();
+    assert!(manifest.library.is_none());
+    assert!(
+        !fs::read_to_string(entry_dir(&f.paths, &entry.id).unwrap().join(MANIFEST))
+            .unwrap()
+            .contains("[library]")
+    );
+    assert!(restore(&f.paths, &entry.id).unwrap().is_empty());
+    assert!(Environment::load(&f.paths, "game").is_ok());
 }
