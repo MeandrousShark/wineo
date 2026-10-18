@@ -729,11 +729,16 @@ struct Ran {
     exits: bool,
 }
 
-/// Runs `task` the way the runtime would, on a runtime with a blocking pool.
-/// Widget operations are kept only when `keep` says so. There's no window
-/// to run them in, so a task waiting on an operation's answer would wait
-/// forever; the run ends once nothing new arrives for a while.
-fn run_keeping(task: Task<Message>, keep: bool) -> Ran {
+/// How long a test waits for a write's result before failing. Well past a
+/// config lock wait, so a slow machine never drops a real completion.
+const SAVE_PATIENCE: Duration = Duration::from_secs(30);
+
+/// Runs `task` the way the runtime would, on a runtime with a blocking pool,
+/// until it has sent `saves` write results. Widget operations are kept only
+/// when `keep` says so. There's no window to run them in, so a task waiting
+/// on an operation's answer would wait forever: once every write result is
+/// in, the run ends when nothing new arrives for a moment.
+fn run_keeping(task: Task<Message>, keep: bool, saves: usize) -> Ran {
     use iced::futures::StreamExt;
     let mut ran = Ran {
         messages: Vec::new(),
@@ -741,6 +746,7 @@ fn run_keeping(task: Task<Message>, keep: bool) -> Ran {
         exits: false,
     };
     let Some(mut stream) = iced_runtime::task::into_stream(task) else {
+        assert_eq!(saves, 0, "the task does nothing, so no write can finish");
         return ran;
     };
     let runtime = tokio::runtime::Builder::new_current_thread()
@@ -748,11 +754,29 @@ fn run_keeping(task: Task<Message>, keep: bool) -> Ran {
         .build()
         .unwrap();
     runtime.block_on(async {
-        while let Ok(Some(action)) =
-            tokio::time::timeout(Duration::from_millis(500), stream.next()).await
-        {
+        let mut seen = 0;
+        loop {
+            let waiting = seen < saves;
+            let patience = if waiting {
+                SAVE_PATIENCE
+            } else {
+                Duration::from_millis(500)
+            };
+            let action = match tokio::time::timeout(patience, stream.next()).await {
+                Ok(Some(action)) => action,
+                Ok(None) if waiting => panic!("the task ended after {seen} of {saves} writes"),
+                Err(_) if waiting => {
+                    panic!("only {seen} of {saves} writes finished within {SAVE_PATIENCE:?}")
+                }
+                _ => break,
+            };
             match action {
-                iced_runtime::Action::Output(message) => ran.messages.push(message),
+                iced_runtime::Action::Output(message) => {
+                    if matches!(message, Message::Sort(Event::Saved(..))) {
+                        seen += 1;
+                    }
+                    ran.messages.push(message);
+                }
                 iced_runtime::Action::Widget(operation) if keep => ran.operations.push(operation),
                 iced_runtime::Action::Exit => ran.exits = true,
                 _ => {}
@@ -762,8 +786,9 @@ fn run_keeping(task: Task<Message>, keep: bool) -> Ran {
     ran
 }
 
-fn run(task: Task<Message>) -> Ran {
-    run_keeping(task, false)
+/// `run_keeping` without the widget operations.
+fn run(task: Task<Message>, saves: usize) -> Ran {
+    run_keeping(task, false, saves)
 }
 
 /// The messages the sort's writes sent back.
@@ -809,13 +834,13 @@ fn a_control_writes_off_the_ui_thread_through_its_task() {
     // The update only started the write.
     assert!(!app.paths.library_file().exists());
     assert_eq!(app.view_writes.descending, Some(true));
-    let messages = saved(run(task));
+    let messages = saved(run(task, 1));
     assert!(matches!(
         messages.as_slice(),
         [Message::Sort(Event::Saved(Field::Descending(true), Ok(())))]
     ));
     for message in messages {
-        assert_eq!(run(app.update(message)).messages.len(), 0);
+        assert_eq!(run(app.update(message), 0).messages.len(), 0);
     }
     assert!(app.view_writes.descending.is_none());
     assert!(wineo_core::library::load(&app.paths).view.descending);
@@ -830,20 +855,20 @@ fn closing_waits_until_the_file_has_the_final_view() {
     let close = app.update(Message::Window(iced::window::Event::CloseRequested));
     assert!(app.closing);
     assert!(!app.close_prompt, "nothing to cancel, so no prompt");
-    assert!(!run(close).exits);
+    assert!(!run(close, 0).exits);
 
     // The first write lands, and the final value still has to be written.
-    let messages = saved(run(first));
+    let messages = saved(run(first, 1));
     assert_eq!(messages.len(), 1);
     let reissue = app.update(messages.into_iter().next().unwrap());
     assert_eq!(app.view_writes.descending, Some(false));
-    let ran = run(reissue);
+    let ran = run(reissue, 1);
     assert!(!ran.exits);
     let messages = saved(ran);
     assert_eq!(messages.len(), 1);
 
     let done = app.update(messages.into_iter().next().unwrap());
-    assert!(run(done).exits);
+    assert!(run(done, 0).exits);
     assert!(!wineo_core::library::load(&app.paths).view.descending);
 }
 
@@ -853,15 +878,21 @@ fn closing_still_ends_when_the_write_fails() {
     write_library(&app.paths, "[view\n");
     let write = app.update(Message::Sort(Event::ToggleFavoritesFirst));
     let _ = app.update(Message::Window(iced::window::Event::CloseRequested));
-    let messages = saved(run(write));
+    let messages = saved(run(write, 1));
     let done = app.update(messages.into_iter().next().unwrap());
-    assert!(run(done).exits);
+    assert!(run(done, 0).exits);
 }
 
 #[test]
 fn closing_with_nothing_to_save_exits_at_once() {
     let (_root, mut app) = loaded();
-    assert!(run(app.update(Message::Window(iced::window::Event::CloseRequested))).exits);
+    assert!(
+        run(
+            app.update(Message::Window(iced::window::Event::CloseRequested)),
+            0
+        )
+        .exits
+    );
 }
 
 #[test]
@@ -871,6 +902,7 @@ fn opening_the_menu_from_the_keyboard_focuses_the_current_key() {
     let ran = run_keeping(
         iced::widget::operation::focus(iced::widget::Id::new(SORT_BUTTON_ID)),
         true,
+        0,
     );
     let mut laid = focus_after(&app, ran.operations);
     assert_eq!(laid.focused(), [iced::widget::Id::new(SORT_BUTTON_ID)]);
@@ -882,7 +914,7 @@ fn opening_the_menu_from_the_keyboard_focuses_the_current_key() {
             .any(|message| matches!(message, Message::Sort(Event::ToggleMenu)))
     );
 
-    let ran = run_keeping(app.update(Message::Sort(Event::ToggleMenu)), true);
+    let ran = run_keeping(app.update(Message::Sort(Event::ToggleMenu)), true, 0);
     assert!(app.sort_menu_shown());
     let mut laid = focus_after(&app, ran.operations);
     assert_eq!(
@@ -949,7 +981,7 @@ fn tab_cycles_the_menu_rows_even_with_an_undo_toast() {
         Modifiers::empty(),
         iced::event::Status::Ignored,
     ));
-    let focused = focus_after(&app, run_keeping(task, true).operations).focused();
+    let focused = focus_after(&app, run_keeping(task, true, 0).operations).focused();
     assert_eq!(focused, [iced::widget::Id::new(row_id(SortKey::Name))]);
     assert_ne!(focused, [iced::widget::Id::new(focus_button::UNDO_ID)]);
 }
