@@ -1,4 +1,4 @@
-Status: draft
+Status: approved
 
 # 0054: Library sorting, filters, and favorites
 
@@ -717,6 +717,10 @@ does nothing, since no card is shown; the selection follows "Selection".
   hides the card (`keys.rs:202`). Now it does nothing while the selected
   card isn't in the filtered grid, whatever hid it. The arrow keys move
   from there to the first shown card, as they do today.
+- **Arrows on an empty grid keep the selection.** Today a move with
+  nothing shown saves `move_index`'s `None` as the selection
+  (`keys.rs:191`, `keys.rs:246`), which would drop a selection the rules
+  above keep. With nothing shown, a move changes nothing.
 
 ### Performance
 
@@ -836,7 +840,9 @@ places is part 2. Selection follows "Selection".
   and `restore`, and `validate` reports stale entries. Two writers at once
   (two threads through the core API) both land. A favorite written while
   another process changed `[view]` keeps that `[view]`. The "Lifecycle"
-  tests, including the known-limit chain.
+  tests, including the known-limit chain. A portable copy carries the
+  entry into the folder's `library.toml` and leaves the folder's other
+  entries and its `[view]` as they were.
 - GUI: `filtered()` order for every key and direction with never-played
   and unknown-date games, favorites first, hidden with and without the
   switch, source and tag filters, tag search, unknown Steam playtime last
@@ -844,7 +850,9 @@ places is part 2. Selection follows "Selection".
   selected card selects the one in its place, the previous one when it
   was last, and nothing when it was the only one; a search, filter, or
   Show hidden change that hides the selected card keeps it selected and
-  Enter does nothing until it's shown again; a re-sort snaps without
+  Enter does nothing until it's shown again; with every card filtered
+  out, each arrow key leaves the selection and panel unchanged; a re-sort
+  snaps without
   stale bounds; keys move through the sorted order; each empty state appears for its case and
   never for a populated grid; the cached order rebuilds on each kind of
   change and not on an unchanged rescan; `library.toml` isn't re-read when
