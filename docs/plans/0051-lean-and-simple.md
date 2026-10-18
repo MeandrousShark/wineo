@@ -250,19 +250,34 @@ maintainer approved all of them on 2026-10-14.
 
 ## Possible bugs (fix as patches if confirmed)
 
-- The Art page re-reads and re-decodes every preview every 2 s, flashing
-  "Loading...".
+- Fixed: the Art page re-decoded every preview whenever the library
+  reloaded, flashing "Loading...". Rows now keep a preview while its file's
+  mtime and size are unchanged, and a failed decode says "Can't show this
+  image" instead of loading forever.
 - `list`, `status`, and the app's overview clean up a lost Steam run from a
-  read path (`report.rs:481`). Possibly intended.
+  read path (`report.rs:496`). Intended, confirmed by the maintainer
+  (2026-10-17): it's what keeps a crashed Steam game from reading Running.
+  Its doc comment claimed a `lost` session was logged; Steam runs log no
+  sessions by design (`stats.md`), so the comment was fixed instead.
 - Fixed: CLI tables padded by bytes, so non-ASCII titles misaligned
   (`table::render_columns`, `render_bulk_table`).
-- The app's `recorded_games` lacks the CLI's portable guard (harmless today).
-- Two test fake-wine processes from an earlier test run were still alive
-  11 hours later: a fixture misses cleanup.
-- The supervisor settles a stopped run with `Settle::Idle` (`supervisor.rs`),
-  and Proton's idle wait returns at once, so when a launcher exits during a
-  cancel, a run can read `Stopped` while a non-Wine descendant still runs.
-  Found in the C6 review; predates it.
+- Not a bug: `recorded_games` has the portable guard in core
+  (`gog/update.rs`), which both the app and the CLI call.
+- Fixed: two test fake-wine processes from an earlier test run were still
+  alive 11 hours later. Two winetricks tests ran a fake that looped forever,
+  and several tests spawned children with no cleanup on panic. Long-lived
+  test spawns now use a kill-on-drop guard, fake loops are bounded, and
+  fixture drop sweeps fakes whose environment config is already gone.
+- Fixed: the supervisor settles a run with `Settle::Idle` (`supervisor.rs`),
+  and Proton's idle wait returned at once, so a run could read `Stopped`
+  while something umu handed off to still ran. Found in the C6 review;
+  predates it. A Proton run now waits, with no timeout, for umu's process
+  group to empty, like a native run (the maintainer approved a timeout, but
+  one would end a game that runs for hours after a handoff; stops are still
+  bounded by `stop_timeout`). `status` shows the program as exited only when
+  something outlives umu. With no recorded identity the run still ends with
+  umu, as decided by the maintainer. Members that leave the group, and the
+  winetricks settle gap, are backlog rows in `features.md`.
 
 ## Sequencing
 
