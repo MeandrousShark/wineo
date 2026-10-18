@@ -16,6 +16,12 @@ use crate::error::{Error, IoContext, Result};
 use crate::operation::Locks;
 use crate::paths::Paths;
 
+mod check;
+mod repair;
+
+pub(crate) use check::{FindingKind, inspect, remove_strays};
+pub use repair::{RepairReport, ViewRecovery, repair};
+
 const SCHEMA_VERSION: i64 = 1;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]

@@ -97,6 +97,25 @@ unreadable trash manifest stops every environment from loading, so it's
 reported once, as `trash_invalid`, instead of as a problem with each
 environment.
 
+A broken [`library.toml`](config-files.md#library-state) is the one file a
+fix rewrites. The repair first copies it to
+`library.toml.broken-<time>` beside it and makes sure that copy is on disk,
+then writes a new file with every entry and setting it can still read, and
+says how much came back:
+
+```
+Recovered 38 of 40 recognized entries fully and 2 partly. Some data could
+not be recovered. Sort settings recovered.
+Original saved as library.toml.broken-2026-10-17T19-20-05.
+```
+
+A file a newer wineo wrote is never repaired, even when it's also damaged,
+since that would throw away what the newer release saved.
+
+Problems with `library.toml` as a whole are listed under its own heading,
+right after `config.toml`. One environment's entry is listed with that
+environment.
+
 ## What it checks
 
 | Area | Check | Level | Fix |
@@ -143,6 +162,11 @@ environment.
 | Art | Recorded file missing, or a target that no longer exists | warning | drop the record |
 | Art | Duplicate files for one kind | warning | |
 | Art | Art dir for an environment that no longer exists | warning | |
+| Library | `library.toml` can't be read, doesn't parse, or has an unsupported `schema_version` | error | repair it, keeping a copy |
+| Library | `library.toml` from a newer wineo | error | hint: update wineo |
+| Library | A bad value, like `favorite = "yes"` or an unknown sort | warning | |
+| Library | A key it doesn't know | warning | |
+| Library | An entry for an environment that no longer exists | warning | remove it |
 
 Some things are left out on purpose:
 

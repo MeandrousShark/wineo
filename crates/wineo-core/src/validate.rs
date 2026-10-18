@@ -28,6 +28,7 @@ use crate::gog::folder::{self, DeviceOf, FolderState};
 use crate::install::{self, Wanted};
 use crate::installer::{self, Cleaned};
 use crate::launch;
+use crate::library::{self, FindingKind};
 use crate::name;
 use crate::operation::{Locks, Operation};
 use crate::paths::Paths;
@@ -84,6 +85,7 @@ pub enum Area {
     Art,
     Trash,
     Gog,
+    Library,
     /// Any config file: global, template, environment, or art.
     Config,
 }
@@ -104,6 +106,7 @@ impl Area {
             Area::Art => "art",
             Area::Trash => "trash",
             Area::Gog => "gog",
+            Area::Library => "library",
             Area::Config => "config",
         }
     }
@@ -196,6 +199,10 @@ codes! {
     GogMidUpdate => "gog_mid_update", Level::Error, Area::Gog;
     GogOwnerMissing => "gog_owner_missing", Level::Warning, Area::Gog;
     DeprecatedKey => "deprecated_key", Level::Warning, Area::Config;
+    LibraryInvalid => "library_invalid", Level::Error, Area::Library;
+    LibraryFieldInvalid => "library_field_invalid", Level::Warning, Area::Library;
+    LibraryKeyUnknown => "library_key_unknown", Level::Warning, Area::Library;
+    LibraryEntryStray => "library_entry_stray", Level::Warning, Area::Library;
 }
 
 impl fmt::Display for Code {
@@ -267,6 +274,11 @@ pub enum Fix {
     },
     /// Renames every deprecated key in one config to its new name.
     RenameDeprecatedKeys(deprecated::Config),
+    /// Backs up an unreadable `library.toml` and writes what can be salvaged.
+    RepairLibrary,
+    /// Removes every `library.toml` entry whose environment doesn't exist,
+    /// worked out again when it's applied.
+    RemoveStrayLibraryEntries,
 }
 
 impl Fix {
@@ -341,6 +353,10 @@ impl Fix {
                 }
                 deprecated::Config::Art(name) => format!("Rename {name}'s deprecated art keys"),
             },
+            Fix::RepairLibrary => "Repair library.toml, keeping a copy of the original".to_owned(),
+            Fix::RemoveStrayLibraryEntries => {
+                "Remove library.toml entries for environments that don't exist".to_owned()
+            }
         }
     }
 }
@@ -354,6 +370,16 @@ impl fmt::Display for Fix {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Note {
     Warning(String),
+    LibraryRepaired(library::RepairReport),
+}
+
+impl fmt::Display for Note {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Note::Warning(warning) => f.write_str(warning),
+            Note::LibraryRepaired(report) => report.fmt(f),
+        }
+    }
 }
 
 impl Serialize for Fix {
@@ -509,13 +535,14 @@ pub fn check_all(paths: &Paths) -> Result<Report> {
         &folder::device_of,
         &mut report,
     );
-    let mut protected = names.clone();
-    protected.extend(pending);
-    if !report
+    let trash_readable = !report
         .problems
         .iter()
-        .any(|problem| problem.code == Code::TrashInvalid)
-    {
+        .any(|problem| problem.code == Code::TrashInvalid);
+    check_library(paths, None, &names, &pending, trash_readable, &mut report);
+    let mut protected = names.clone();
+    protected.extend(pending);
+    if trash_readable {
         check_strays(paths, &protected, &entries, &mut report)?;
     }
     report.environments = names;
@@ -561,8 +588,84 @@ pub fn check_environment(paths: &Paths, name: &str) -> Result<Report> {
         &folder::device_of,
         &mut report,
     );
+    check_library(paths, Some(name), &names, &pending, false, &mut report);
     contract(paths, &mut report);
     Ok(report)
+}
+
+/// `library.toml` as a whole, and its entries. With `selected`, only that
+/// environment's entry, since a file that can't be read affects every one.
+/// `strays` reports entries for environments that don't exist; leave it off
+/// when the trash can't be read, since a pending name would look stray.
+fn check_library(
+    paths: &Paths,
+    selected: Option<&str>,
+    names: &[String],
+    pending: &BTreeSet<String>,
+    strays: bool,
+    report: &mut Report,
+) {
+    let inspection = library::inspect(paths);
+    if let Some(unreadable) = inspection.unreadable {
+        let fix = (!unreadable.newer).then_some(Fix::RepairLibrary);
+        report.push(Problem::new(
+            Code::LibraryInvalid,
+            None,
+            unreadable.message,
+            fix,
+        ));
+        return;
+    }
+    let exists = |name: &str| names.iter().any(|known| known == name);
+    for finding in inspection.findings {
+        match (finding.environment.as_deref(), selected) {
+            (None, Some(_)) => continue,
+            (Some(name), Some(selected)) if name != selected => continue,
+            // A stray entry's fields are noise next to the entry itself.
+            (Some(name), _) if pending.contains(name) || !exists(name) => continue,
+            _ => {}
+        }
+        let code = match finding.kind {
+            FindingKind::FieldInvalid => Code::LibraryFieldInvalid,
+            FindingKind::KeyUnknown => Code::LibraryKeyUnknown,
+        };
+        report.push(Problem::new(
+            code,
+            finding.environment.as_deref(),
+            finding.message,
+            None,
+        ));
+    }
+    if strays {
+        for name in inspection.entries {
+            if exists(&name) || pending.contains(&name) {
+                continue;
+            }
+            report.push(Problem::stray(
+                Code::LibraryEntryStray,
+                &name,
+                format!("library.toml has an entry for {name}, which doesn't exist"),
+                Some(Fix::RemoveStrayLibraryEntries),
+            ));
+        }
+    }
+}
+
+/// Every environment, and every name a trash operation is partway through.
+fn library_names(paths: &Paths) -> anyhow::Result<BTreeSet<String>> {
+    let mut known: BTreeSet<String> = environment::names(paths)?.into_iter().collect();
+    known.extend(
+        trash::pending_entries(paths)?
+            .into_iter()
+            .map(|entry| entry.name),
+    );
+    known.extend(
+        trash::list(paths)?
+            .into_iter()
+            .filter(|entry| entry.phase != Phase::Trashed)
+            .map(|entry| entry.name),
+    );
+    Ok(known)
 }
 
 /// GOG folder states, and environments whose `gog_id` names a game. Host
@@ -1730,6 +1833,15 @@ pub fn apply(
         }
         Fix::RenameDeprecatedKeys(config) => {
             deprecated::rename_in_place(paths, config)?;
+        }
+        Fix::RepairLibrary => {
+            return Ok(library::repair(paths)?
+                .map(Note::LibraryRepaired)
+                .into_iter()
+                .collect());
+        }
+        Fix::RemoveStrayLibraryEntries => {
+            library::remove_strays(paths, || library_names(paths))?;
         }
     }
     Ok(Vec::new())

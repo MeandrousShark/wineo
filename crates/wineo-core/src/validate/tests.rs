@@ -1359,7 +1359,7 @@ fn check_environment_checks_only_that_environment() {
 
 // The JSON output depends on these values, so changing one is a contract change.
 #[rustfmt::skip]
-    const RECORDED_CODES: [(Code, &str, &str, &str); 44] = [
+    const RECORDED_CODES: [(Code, &str, &str, &str); 48] = [
         (Code::GlobalConfigInvalid, "global_config_invalid", "error", "global_config"),
         (Code::TemplateInvalid, "template_invalid", "error", "template"),
         (Code::TemplateUnresolved, "template_unresolved", "warning", "template"),
@@ -1404,6 +1404,10 @@ fn check_environment_checks_only_that_environment() {
         (Code::GogMidUpdate, "gog_mid_update", "error", "gog"),
         (Code::GogOwnerMissing, "gog_owner_missing", "warning", "gog"),
         (Code::DeprecatedKey, "deprecated_key", "warning", "config"),
+        (Code::LibraryInvalid, "library_invalid", "error", "library"),
+        (Code::LibraryFieldInvalid, "library_field_invalid", "warning", "library"),
+        (Code::LibraryKeyUnknown, "library_key_unknown", "warning", "library"),
+        (Code::LibraryEntryStray, "library_entry_stray", "warning", "library"),
     ];
 
 #[test]
@@ -2005,4 +2009,310 @@ fn the_rename_fix_keeps_comments_and_order() {
     // Nothing left to rename, so a second run changes nothing.
     apply(&f.paths, fix(&problem), no_download).unwrap();
     assert_eq!(fs::read_to_string(&path).unwrap(), after);
+}
+
+fn write_library(f: &Fixture, text: &str) {
+    let path = f.paths.library_file();
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    fs::write(path, text).unwrap();
+}
+
+fn library_problems(report: &Report) -> Vec<(Code, Option<String>, Option<String>, String)> {
+    report
+        .problems
+        .iter()
+        .filter(|problem| problem.area == Area::Library)
+        .map(|problem| {
+            (
+                problem.code,
+                problem.environment.clone(),
+                problem.stray.clone(),
+                problem.message.clone(),
+            )
+        })
+        .collect()
+}
+
+#[test]
+fn a_clean_library_reports_nothing() {
+    let f = Fixture::new();
+    f.wine("hades", HEALTHY);
+    assert_eq!(library_problems(&f.check()), []);
+    write_library(
+        &f,
+        "schema_version = 1\n[view]\nsort = \"added\"\n[environments.hades]\nfavorite = true\n",
+    );
+    assert_eq!(library_problems(&f.check()), []);
+    assert_eq!(
+        library_problems(&check_environment(&f.paths, "hades").unwrap()),
+        []
+    );
+}
+
+#[test]
+fn library_fields_unknown_keys_and_stray_entries_are_reported() {
+    let f = Fixture::new();
+    f.wine("hades", HEALTHY);
+    write_library(
+        &f,
+        "schema_version = 1\nzoom = 2\n[view]\nsort = \"random\"\n[environments.hades]\nfavorite = \"yes\"\nnotes = \"x\"\n[environments.gone]\nfavorite = \"yes\"\n",
+    );
+    let report = f.check();
+    let hades = Some("hades".to_owned());
+    assert_eq!(
+        library_problems(&report),
+        [
+            (
+                Code::LibraryKeyUnknown,
+                None,
+                None,
+                "library.toml: zoom: unknown key, ignored".to_owned()
+            ),
+            (
+                Code::LibraryFieldInvalid,
+                None,
+                None,
+                "library.toml: view.sort: expected one of name, last-played, playtime, added, source, found \"random\"".to_owned()
+            ),
+            (
+                Code::LibraryFieldInvalid,
+                hades.clone(),
+                None,
+                "library.toml: environments.hades.favorite: expected true or false, found \"yes\"".to_owned()
+            ),
+            (
+                Code::LibraryKeyUnknown,
+                hades,
+                None,
+                "library.toml: environments.hades.notes: unknown key, ignored".to_owned()
+            ),
+            (
+                Code::LibraryEntryStray,
+                None,
+                Some("gone".to_owned()),
+                "library.toml has an entry for gone, which doesn't exist".to_owned()
+            ),
+        ]
+    );
+    let fixes: Vec<_> = report
+        .problems
+        .iter()
+        .filter(|problem| problem.area == Area::Library)
+        .map(|problem| problem.fix.clone())
+        .collect();
+    assert_eq!(
+        fixes,
+        [None, None, None, None, Some(Fix::RemoveStrayLibraryEntries)]
+    );
+}
+
+#[test]
+fn check_environment_reports_only_its_own_library_entry() {
+    let f = Fixture::new();
+    f.wine("hades", HEALTHY);
+    f.wine("celeste", HEALTHY);
+    write_library(
+        &f,
+        "zoom = 2\n[view]\nlayout = 1\n[environments.hades]\nfavorite = 1\n[environments.celeste]\nhidden = 1\n[environments.gone]\n",
+    );
+    let report = check_environment(&f.paths, "hades").unwrap();
+    assert_eq!(
+        library_problems(&report),
+        [(
+            Code::LibraryFieldInvalid,
+            Some("hades".to_owned()),
+            None,
+            "library.toml: environments.hades.favorite: expected true or false, found 1".to_owned()
+        )]
+    );
+
+    write_library(
+        &f,
+        "[environments.hades]\nfavorite = true\n[environments.hades]\n",
+    );
+    let problem = check_environment(&f.paths, "hades")
+        .unwrap()
+        .problems
+        .into_iter()
+        .find(|problem| problem.code == Code::LibraryInvalid)
+        .unwrap();
+    assert_eq!(problem.fix, Some(Fix::RepairLibrary));
+}
+
+#[test]
+fn an_unreadable_library_is_one_error_with_a_repair() {
+    let f = Fixture::new();
+    f.wine("hades", HEALTHY);
+    write_library(
+        &f,
+        "schema_version = 1\n\n[environments.gone]\nfavorite true\n",
+    );
+    let report = f.check();
+    let problems = library_problems(&report);
+    assert_eq!(problems.len(), 1, "{problems:#?}");
+    let (code, environment, _, message) = &problems[0];
+    assert_eq!(
+        (*code, environment.as_deref()),
+        (Code::LibraryInvalid, None)
+    );
+    assert!(
+        message.starts_with("library.toml can't be read (line 4: "),
+        "{message}"
+    );
+    assert!(report.fixes().contains(&Fix::RepairLibrary));
+}
+
+#[test]
+fn a_library_from_a_newer_wineo_offers_no_repair() {
+    let f = Fixture::new();
+    f.wine("hades", HEALTHY);
+    write_library(&f, "schema_version = 3\n");
+    let problem = f.only(Code::LibraryInvalid);
+    assert_eq!(problem.fix, None);
+    assert_eq!(
+        problem.message,
+        "library.toml was written by a newer wineo; update wineo to use it."
+    );
+
+    // A newer version still counts in a file that doesn't parse.
+    write_library(
+        &f,
+        "schema_version = 2\n[environments.hades]\nfavorite = true\nbroken =\n",
+    );
+    assert_eq!(f.only(Code::LibraryInvalid).fix, None);
+
+    write_library(&f, "schema_version = 0\n");
+    assert_eq!(f.only(Code::LibraryInvalid).fix, Some(Fix::RepairLibrary));
+}
+
+#[test]
+fn repairing_the_library_returns_its_report() {
+    let f = Fixture::new();
+    f.wine("hades", HEALTHY);
+    let broken = "[environments.hades]\nfavorite = true\n[environments.hades]\n";
+    write_library(&f, broken);
+    let notes = apply(&f.paths, &Fix::RepairLibrary, no_download).unwrap();
+    let [Note::LibraryRepaired(report)] = notes.as_slice() else {
+        panic!("{notes:?}");
+    };
+    assert_eq!((report.entries, report.full), (1, 1));
+    assert_eq!(fs::read_to_string(&report.backup).unwrap(), broken);
+    assert!(notes[0].to_string().starts_with(
+        "Recovered the one recognized entry.\nOriginal saved as library.toml.broken-"
+    ));
+    assert_eq!(library_problems(&f.check()), []);
+    assert!(crate::library::load(&f.paths).environments["hades"].favorite);
+
+    // Nothing left to repair.
+    assert_eq!(
+        apply(&f.paths, &Fix::RepairLibrary, no_download).unwrap(),
+        []
+    );
+}
+
+#[test]
+fn entries_pending_in_the_trash_are_not_stray() {
+    let f = Fixture::new();
+    f.wine("kept", HEALTHY);
+    f.wine("gone", HEALTHY);
+    let entry = crate::trash::remove(&f.paths, "gone", false).unwrap();
+    write_library(
+        &f,
+        "[environments.kept]\n[environments.gone]\nfavorite = 1\n",
+    );
+    let stray = f.only(Code::LibraryEntryStray);
+    assert_eq!(stray.stray.as_deref(), Some("gone"));
+
+    let manifest = f.paths.trash_dir().join(&entry.id).join("manifest.toml");
+    let text = fs::read_to_string(&manifest).unwrap();
+    assert!(text.contains("phase = \"trashed\""), "{text}");
+    fs::write(
+        &manifest,
+        text.replace("phase = \"trashed\"", "phase = \"removing\""),
+    )
+    .unwrap();
+    let report = f.check();
+    assert!(
+        report
+            .problems
+            .iter()
+            .any(|problem| problem.code == Code::TrashInterrupted)
+    );
+    assert_eq!(library_problems(&report), []);
+
+    // The fix works the names out again and keeps the pending one too.
+    let before = fs::read_to_string(f.paths.library_file()).unwrap();
+    apply(&f.paths, &Fix::RemoveStrayLibraryEntries, no_download).unwrap();
+    assert_eq!(fs::read_to_string(f.paths.library_file()).unwrap(), before);
+}
+
+#[test]
+fn removing_stray_entries_leaves_every_other_byte_alone() {
+    let f = Fixture::new();
+    f.wine("hades", HEALTHY);
+    f.wine("celeste", HEALTHY);
+    let text = r#"schema_version = 1
+# my library
+future = "kept"
+
+[view]
+sort = "added" # newest first
+
+[environments.hades]
+favorite = true
+odd   =   "spacing"
+
+[environments.gone]
+hidden = true
+
+[environments.celeste]
+hidden = true
+
+[environments."old demo"]
+favorite = "yes"
+"#;
+    write_library(&f, text);
+    let report = f.check();
+    let strays: Vec<_> = report
+        .problems
+        .iter()
+        .filter(|problem| problem.code == Code::LibraryEntryStray)
+        .collect();
+    assert_eq!(strays.len(), 2);
+    assert_eq!(report.fixes(), [Fix::RemoveStrayLibraryEntries]);
+
+    apply(&f.paths, &Fix::RemoveStrayLibraryEntries, no_download).unwrap();
+
+    assert_eq!(
+        fs::read_to_string(f.paths.library_file()).unwrap(),
+        text.replace("[environments.gone]\nhidden = true\n\n", "")
+            .replace("\n[environments.\"old demo\"]\nfavorite = \"yes\"\n", "")
+    );
+    assert!(!f.codes().contains(&Code::LibraryEntryStray));
+}
+
+#[test]
+fn removing_stray_entries_keeps_one_created_since_the_check() {
+    let f = Fixture::new();
+    write_library(
+        &f,
+        "schema_version = 1\n[environments.later]\nfavorite = true\n",
+    );
+    assert_eq!(
+        f.only(Code::LibraryEntryStray).stray.as_deref(),
+        Some("later")
+    );
+    f.wine("later", HEALTHY);
+    let before = fs::read_to_string(f.paths.library_file()).unwrap();
+    apply(&f.paths, &Fix::RemoveStrayLibraryEntries, no_download).unwrap();
+    assert_eq!(fs::read_to_string(f.paths.library_file()).unwrap(), before);
+}
+
+#[test]
+fn removing_stray_entries_never_writes_an_unreadable_file() {
+    let f = Fixture::new();
+    let broken = "[environments.gone]\nfavorite true\n";
+    write_library(&f, broken);
+    assert!(apply(&f.paths, &Fix::RemoveStrayLibraryEntries, no_download).is_err());
+    assert_eq!(fs::read_to_string(f.paths.library_file()).unwrap(), broken);
 }

@@ -296,6 +296,7 @@ fn completion_rechecks_and_reloads_both_with_persistent_partial_results() {
     let outcome = Outcome {
         applied: vec![download()],
         failed: vec![(other_fix(), "busy".into())],
+        notes: Vec::new(),
         warnings: vec!["left something behind".into()],
         canceled: true,
         skipped: 1,
@@ -779,5 +780,126 @@ fn stale_check_and_fix_results_never_win() {
             .unwrap()
             .problems
             .is_empty()
+    );
+}
+
+#[test]
+fn a_library_repair_shows_its_report_under_the_fixed_line() {
+    let (_root, mut app) = fixture();
+    let broken = "[environments.game]\nfavorite = true\n[environments.game]\n";
+    std::fs::write(app.paths.library_file(), broken).unwrap();
+    open(&mut app);
+    let report = crate::checkup_work::check_report(&app.paths, &scope()).unwrap();
+    let fixes = report.fixes();
+    assert_eq!(fixes, [Fix::RepairLibrary]);
+    loaded(&mut app, report);
+    send(&mut app, Event::Fix(scope()));
+    let generation = app.change_generation;
+
+    let paths = app.paths.clone();
+    let outcome = crate::checkup_work::run_fixes(&fixes, &Token::new(), |fix, token| {
+        wineo_core::validate::apply(
+            &paths,
+            fix,
+            token,
+            wineo_core::winetricks::EnsureOutput::Stderr,
+            |_| {},
+            |_, _| unreachable!("a repair downloads nothing"),
+        )
+    });
+    send(&mut app, Event::Finished(generation, Ok(outcome)));
+    let after = crate::checkup_work::check_report(&app.paths, &scope()).unwrap();
+    loaded(&mut app, after);
+
+    let lines = lines(&app);
+    assert_eq!(lines.len(), 3, "{lines:?}");
+    assert_eq!(lines[0], ("Fixed 1 problem.".to_owned(), None));
+    assert_eq!(
+        lines[1],
+        ("Recovered the one recognized entry.".to_owned(), None)
+    );
+    assert!(
+        lines[2]
+            .0
+            .starts_with("Original saved as library.toml.broken-"),
+        "{lines:?}"
+    );
+    assert_eq!(lines[2].1, None);
+    let backup = lines[2]
+        .0
+        .strip_prefix("Original saved as ")
+        .and_then(|name| name.strip_suffix('.'))
+        .unwrap();
+    let backup = app.paths.library_file().with_file_name(backup);
+    assert_eq!(std::fs::read_to_string(backup).unwrap(), broken);
+}
+
+fn grouped(app: &App) -> Vec<(String, Vec<Code>)> {
+    let report = crate::checkup_work::check_report(&app.paths, &Scope::Global).unwrap();
+    groups(&report, &Scope::Global)
+        .into_iter()
+        .map(|(group, problems)| {
+            (
+                group.heading(&app.paths),
+                problems.iter().map(|(_, problem)| problem.code).collect(),
+            )
+        })
+        .collect()
+}
+
+#[test]
+fn library_wide_problems_get_a_library_toml_heading_after_the_global_config() {
+    let (_root, app) = fixture();
+    std::fs::write(app.paths.global_config(), "bogus_key = 1\n").unwrap();
+    std::fs::write(
+        app.paths.library_file(),
+        "[environments.game]\nfavorite true\n",
+    )
+    .unwrap();
+    let shown = |path: std::path::PathBuf| app.paths.contract(&path).unwrap();
+
+    let groups = grouped(&app);
+
+    assert_eq!(
+        groups[..2],
+        [
+            (
+                shown(app.paths.global_config()),
+                vec![Code::GlobalConfigInvalid]
+            ),
+            (shown(app.paths.library_file()), vec![Code::LibraryInvalid]),
+        ],
+        "{groups:#?}"
+    );
+    assert!(shown(app.paths.library_file()).starts_with("~/"));
+}
+
+#[test]
+fn a_view_warning_is_under_library_toml_and_an_entry_warning_under_its_environment() {
+    let (_root, app) = fixture();
+    std::fs::write(
+        app.paths.library_file(),
+        "schema_version = 1\n[view]\nlayout = \"grid\"\n[environments.game]\nfavorite = \"yes\"\n",
+    )
+    .unwrap();
+
+    let groups = grouped(&app);
+
+    let library = app.paths.contract(&app.paths.library_file()).unwrap();
+    assert_eq!(
+        groups[0],
+        (library, vec![Code::LibraryKeyUnknown]),
+        "{groups:#?}"
+    );
+    let game = groups
+        .iter()
+        .find(|(heading, _)| heading == "game")
+        .unwrap_or_else(|| panic!("{groups:#?}"));
+    assert!(game.1.contains(&Code::LibraryFieldInvalid), "{groups:#?}");
+    assert!(
+        groups
+            .iter()
+            .filter(|(heading, _)| heading != "game")
+            .all(|(_, codes)| !codes.contains(&Code::LibraryFieldInvalid))
     );
 }
