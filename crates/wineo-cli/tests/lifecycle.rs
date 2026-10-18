@@ -370,6 +370,13 @@ fn a_guard_leaves_the_group_of_a_leader_that_was_already_reaped() {
         fs::read_to_string(&recorded).is_ok_and(|text| text.ends_with('\n'))
     });
     let sleeper = fs::read_to_string(&recorded).unwrap().trim().to_owned();
+    // Held from before anything can reap the sleeper, so the cleanup below
+    // can't signal a process that reused its number.
+    let sleeper_fd = rustix::process::pidfd_open(
+        rustix::process::Pid::from_raw(sleeper.parse().unwrap()).unwrap(),
+        rustix::process::PidfdFlags::empty(),
+    )
+    .unwrap();
     leader.wait().unwrap();
 
     // The leader's number is free to be reused once it is reaped, so the
@@ -382,7 +389,7 @@ fn a_guard_leaves_the_group_of_a_leader_that_was_already_reaped() {
     let state = fs::read_to_string(format!("/proc/{sleeper}/stat")).unwrap_or_default();
     let state = state.rsplit(')').next().unwrap_or("").trim_start();
     assert!(state.starts_with('S'), "the guard killed the old group");
-    let _ = Command::new("kill").arg(&sleeper).status();
+    let _ = rustix::process::pidfd_send_signal(&sleeper_fd, rustix::process::Signal::TERM);
 }
 
 #[test]
