@@ -1,6 +1,7 @@
 mod app_art;
 mod app_flow;
 mod app_library;
+mod app_operation;
 mod art_cache;
 mod art_navigation;
 mod art_page;
@@ -802,18 +803,7 @@ impl App {
             Message::Play => self.start_selected(),
             Message::Install => self.install_selected(),
             Message::Uninstall(name) => self.uninstall(name),
-            Message::SteamRequested(name, result) => {
-                if self.steam_request.as_deref() == Some(&name) {
-                    self.steam_request = None;
-                }
-                if self.selected.as_deref() == Some(&name) {
-                    match result {
-                        Ok(note) => self.panel_note = Some(note),
-                        Err(error) => self.panel_error = Some(error),
-                    }
-                }
-                self.reload_library_once()
-            }
+            Message::SteamRequested(name, result) => self.steam_requested(name, result),
             Message::Stop | Message::CleanUp => self.stop_selected(),
             Message::ConfirmHookStop => self.confirm_hook_stop(),
             Message::CancelHookStop => {
@@ -821,100 +811,18 @@ impl App {
                 self.hook_stop_identity = None;
                 Task::none()
             }
-            Message::AfterHookPhase(name, token) => {
-                if let Some(operation) = &mut self.operation
-                    && operation.name == name
-                    && operation.kind == OperationKind::Start
-                {
-                    operation.token = Some(token);
-                    operation.status = "Running its after hook".to_owned();
-                    operation.after_hook = true;
-                }
-                Task::none()
-            }
-            Message::CancelStart => {
-                if let Some(operation) = &mut self.operation
-                    && operation.kind == OperationKind::Start
-                {
-                    if let Some(token) = &operation.token {
-                        if operation.cancelled {
-                            token.force();
-                            operation.status = "Force stopping...".to_owned();
-                        } else {
-                            token.cancel();
-                            operation.status = "Canceling...".to_owned();
-                        }
-                    }
-                    operation.cancelled = true;
-                }
-                Task::none()
-            }
-            Message::LaunchProgress(name, status) => {
-                if let Some(operation) = &mut self.operation
-                    && operation.name == name
-                    && operation.kind == OperationKind::Start
-                    && !operation.cancelled
-                {
-                    operation.status = status;
-                }
-                Task::none()
-            }
-            Message::InstallPhase(name, installing) => {
-                if let Some(operation) = &mut self.operation
-                    && operation.name == name
-                    && operation.kind == OperationKind::Start
-                {
-                    operation.installing = installing;
-                }
-                Task::none()
-            }
+            Message::AfterHookPhase(name, token) => self.after_hook_phase(name, token),
+            Message::CancelStart => self.cancel_start(),
+            Message::LaunchProgress(name, status) => self.launch_progress(name, status),
+            Message::InstallPhase(name, installing) => self.install_phase(name, installing),
             Message::LaunchNote(name, note) => {
                 if self.selected.as_deref() == Some(&name) {
                     self.panel_note = Some(note);
                 }
                 Task::none()
             }
-            Message::StartFinished(name, result) => {
-                let cancelled = self
-                    .operation
-                    .as_ref()
-                    .is_some_and(|operation| operation.name == name && operation.cancelled);
-                if self.operation.as_ref().is_some_and(|operation| {
-                    operation.name == name && operation.kind == OperationKind::Start
-                }) {
-                    self.operation = None;
-                }
-                if self.selected.as_deref() == Some(&name)
-                    && let Err(error) = result
-                    && !cancelled
-                {
-                    self.panel_error = Some(error);
-                }
-                self.reload_library_once()
-            }
-            Message::StopFinished(name, result) => {
-                if self.operation.as_ref().is_some_and(|operation| {
-                    operation.name == name && operation.kind == OperationKind::Stop
-                }) {
-                    self.operation = None;
-                }
-                if self
-                    .force_stop_at
-                    .as_ref()
-                    .is_some_and(|(stopping, _)| *stopping == name)
-                {
-                    self.force_stop_at = None;
-                }
-                if self.selected.as_deref() == Some(&name) {
-                    match result {
-                        Ok(messages) => {
-                            self.panel_note = (!messages.is_empty()).then(|| messages.join("\n"))
-                        }
-                        Err(error) => self.panel_error = Some(error),
-                    }
-                }
-                self.reload_library_once()
-            }
+            Message::StartFinished(name, result) => self.start_finished(name, result),
+            Message::StopFinished(name, result) => self.stop_finished(name, result),
             Message::OpenLog => self.open_log(),
             Message::CloseLog => {
                 self.close_log();
