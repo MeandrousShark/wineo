@@ -267,13 +267,6 @@ pub fn execute_reviewed_noting(
 ) -> Result<Environment> {
     execute_reviewed_with(from, to, global, reviewed, cancel, |event| match event {
         CopyEvent::Progress(event) => {
-            let event = match event {
-                ImportProgress::Warning(warning) => {
-                    warn(warning);
-                    return;
-                }
-                event => event,
-            };
             if let ImportProgress::Copied { path } = &event
                 && path.starts_with(from.art_dir(&reviewed.name))
             {
