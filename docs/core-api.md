@@ -641,6 +641,24 @@ Native creation (`Environment::create_native`, `create_native_titled`),
 be read clears any stale destination entry for the name and warns that
 the copy's favorite, hidden flag, and added date weren't carried over.
 
+For a frontend that rereads often, like the desktop app's 2 s rescan:
+
+- `library::Cache`: `read(paths)` rereads `library.toml` only when its
+  stamp changed, and `refresh(paths)` always rereads. It has no way to set
+  a value, so after any write, saved or refused, call `refresh`; the cache
+  then can't show something that isn't on disk.
+- `stats::Cache` with `stats::overview_cached(paths, &mut cache)`: the same
+  overview as `stats::overview`, rereading only the playtime logs whose
+  stamp changed. Totals and labels are recomputed on every call.
+- Both use one stamp (times, size, device, inode) taken from the same open
+  handle as the bytes, so a cached value always matches the version it was
+  read from. On a filesystem with coarse times, two same-size in-place
+  edits within one tick can look alike until the next change.
+- `source::Source::of(config)` says where an environment comes from: a
+  store (Steam, GOG, Epic, Amazon, or none), how wineo knows it (Steam
+  library, GOG install, Heroic import, or plain), and whether it's native.
+  `label()` gives the store, or Native or Windows when there's none.
+
 ## Not in core yet
 
 - `StopOutcome` carries ready-made message strings rather than typed

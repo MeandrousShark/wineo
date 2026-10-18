@@ -344,6 +344,13 @@ reports what it couldn't keep. A file from a newer wineo is never repaired;
 update wineo instead. The fix that removes entries for environments that no
 longer exist adds `schema_version = 1` if the file had none.
 
+The desktop app notices an edit to `library.toml` or a playtime log by its
+times, size, and inode, without reading it again every two seconds. On a
+filesystem that keeps coarse times, like FAT on a portable drive (2 s), two
+same-size edits made in place within one tick can look like one, so the
+second shows up with the next change or a restart. wineo's own writes
+replace the file or grow the log, so this only affects hand edits.
+
 ## A global config wineo can't use
 
 When `config.toml` has an unknown key or an unsupported version, commands

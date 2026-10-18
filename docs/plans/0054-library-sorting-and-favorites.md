@@ -925,6 +925,20 @@ places is part 2. Selection follows "Selection".
   in the rescan result, so a banner can appear or clear; the banner itself
   is drawn in step 4, when hidden games leave the grid and a broken file
   becomes the only reason they'd reappear.
+- **Step 2 details** (2026-10-18):
+  - The raw last-played time is `Card::last_played_at`, since the
+    formatted `last_played` string keeps its name.
+  - The rescan's caches live in its `Watch` state behind a mutex, so they
+    survive the rescan restarting when the trash or Art page opens. The UI
+    thread never takes that lock.
+  - The library file's problem travels beside the cards in the rescan
+    result. Only the 2 s rescan reads it today, so a banner would appear
+    one tick after boot or an explicit reload; step 4, which draws the
+    banner, makes boot and reloads carry it too.
+  - Reads go through `files::read_stamped`, which takes the bytes and the
+    stamp from one open handle and checks the path still names that file,
+    so a cached value can't pair one version's contents with another's
+    stamp (found in review).
 - **No older `library.toml` fixture yet** (2026-10-18). Schema 1 is the
   first, so step 1's upgrade fixtures cover a missing file only. An older
   file joins the upgrade fixtures with the first tagged set that has one.
