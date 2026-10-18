@@ -687,3 +687,30 @@ fn tab_and_arrows_cycle_the_menu_rows() {
     key(&mut app, Named::ArrowUp);
     assert_eq!(focus_button::take_cycles().len(), 3);
 }
+
+#[test]
+fn delete_leaves_the_selected_card_alone_while_the_menu_is_open() {
+    let (_root, mut app) = loaded();
+    let _ = app.update(Message::Select("hades".into()));
+    let _ = app.update(Message::Sort(Event::ToggleMenu));
+    let _ = app.update(Message::Key(
+        Key::Named(Named::Delete),
+        Modifiers::empty(),
+        iced::event::Status::Ignored,
+    ));
+    // What the focus check behind Delete answers with nothing focused.
+    let _ = app.update(Message::RemoveFocus(
+        iced::event::Status::Ignored,
+        false,
+        false,
+    ));
+    key(&mut app, Named::Delete);
+    assert!(app.removal.is_none());
+    let _ = app.update(Message::Sort(Event::CloseMenu));
+    let _ = app.update(Message::RemoveFocus(
+        iced::event::Status::Ignored,
+        false,
+        false,
+    ));
+    assert!(app.removal.is_some());
+}

@@ -723,6 +723,7 @@ impl App {
             && self.settings.is_none()
             && self.art_page.is_none()
             && self.action_menu.is_none()
+            && !self.sort_menu
             && !self.search_focused
             && self.flow.is_none()
             && self.removal.is_none()

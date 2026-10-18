@@ -78,6 +78,9 @@ impl App {
         if self.section == crate::sidebar::Section::Library {
             self.search_focused = search_focused;
         }
+        if self.sort_menu_shown() {
+            return crate::sort_control::key(self, &key, modifiers);
+        }
         if let Some(task) = crate::checkup::key(
             self,
             &key,
@@ -95,9 +98,6 @@ impl App {
         }
         if self.section != crate::sidebar::Section::Library {
             return Task::none();
-        }
-        if self.sort_menu_shown() {
-            return crate::sort_control::key(self, &key, modifiers);
         }
         if key == Key::Named(Named::Tab)
             && let Some(task) = crate::removal::key(

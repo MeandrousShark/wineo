@@ -140,6 +140,10 @@ impl Order {
                 .filter_map(|&index| cards.get(index))
                 .collect();
         }
+        // Only tests set the cards or search without `App::reorder`, so a
+        // debug run of the app stops here rather than sort every frame.
+        #[cfg(all(debug_assertions, not(test)))]
+        debug_assert!(false, "the library changed without App::reorder");
         #[cfg(test)]
         self.misses.set(self.misses.get() + 1);
         Self::sorted(cards, search, query)
