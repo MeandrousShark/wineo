@@ -16,9 +16,11 @@ use crate::error::{Error, IoContext, Result};
 use crate::operation::Locks;
 use crate::paths::Paths;
 
+mod cache;
 mod check;
 mod repair;
 
+pub use cache::Cache;
 pub(crate) use check::{FindingKind, inspect, remove_strays};
 pub use repair::{RepairReport, ViewRecovery, repair};
 
