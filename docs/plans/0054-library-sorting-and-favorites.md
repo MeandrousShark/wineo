@@ -871,15 +871,29 @@ rescan down to about 25 ms, and it lands in step 2 with before and after
 numbers. The Steam `/proc` sweep that 0051 found in a real library isn't
 in these numbers, since the generated library has no proxied Steam games.
 
-Xvfb idle CPU and scroll: pending a rerun with software rendering forced
-(`ICED_BACKEND=tiny-skia`). The first run didn't pin the renderer, so
-wgpu may have used the GPU.
+Xvfb with software rendering forced (`ICED_BACKEND=tiny-skia`; the
+script checks `/proc/PID/maps` and aborts if a GPU stack is loaded), 8
+fresh launches, 20 s focused idle sample:
+
+| Measurement | min | median | p90 | max |
+|---|---:|---:|---:|---:|
+| Idle CPU, % of one core | 3.60 | 3.75 | 4.00 | 4.00 |
+| RSS, MiB | 80 | 80 | 81 | 81 |
+| Scroll CPU, % of one core | 60.8 | 62.7 | 64.0 | 64.0 |
+| Scroll frames/s | 7.3 | 9.9 | 10.8 | 10.8 |
+
+Idle CPU is the rescan (72 ms every 2 s is about 3.6%), with no
+main-thread wakeups. Scroll on the CPU renderer is main-thread-bound, so
+it's a relative number for comparing steps, not what a person feels.
+A first run that didn't pin the renderer had used the GPU through
+Vulkan; its numbers were dropped.
 
 Real hardware (the maintainer's session, GPU renderer, 7680x2160): idle
 while focused 4 to 7% CPU; scrolling top to bottom 20 to 40%, back up 10
 to 20% (posters decode on the way down and are reused on the way up);
 search 8 to 12% while typing. Scrolling was smooth and search felt
-instant.
+instant. The bench library was being regenerated during part of this
+run, which may have made some rescans busier than a quiet idle.
 
 ## Testing and acceptance
 
