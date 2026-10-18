@@ -128,20 +128,21 @@ struct Logs(Vec<(PathBuf, u64)>);
 
 impl Logs {
     /// Refuses logs that could reach outside the bench root, since this
-    /// appends to and truncates them.
+    /// appends to and truncates them. Every log must already exist: creating
+    /// one would skip these checks for its directory and leave a file behind.
     fn new(paths: &Paths, cards: &[Card]) -> Self {
         let root = bench_root();
         for card in cards {
             let log = paths.stats_log(&card.name);
             let dir = log.parent().expect("a log has a directory");
             for path in [dir, log.as_path()] {
-                let meta = match fs::symlink_metadata(path) {
-                    Ok(meta) => meta,
-                    // Appending creates a missing log; a missing directory is
-                    // caught by the check on the first log that has one.
-                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
-                    Err(error) => panic!("can't stat {}: {error}", path.display()),
-                };
+                let meta = fs::symlink_metadata(path).unwrap_or_else(|error| {
+                    panic!(
+                        "can't stat {}: {error}; regenerate the bench library with \
+                         scripts/generate-bench-library.sh",
+                        path.display()
+                    )
+                });
                 assert!(
                     !meta.file_type().is_symlink(),
                     "{} is a symlink, refusing to write through it",
@@ -162,7 +163,7 @@ impl Logs {
                 .iter()
                 .map(|card| paths.stats_log(&card.name))
                 .map(|path| {
-                    let len = fs::metadata(&path).map_or(0, |meta| meta.len());
+                    let len = fs::metadata(&path).unwrap().len();
                     (path, len)
                 })
                 .collect(),
