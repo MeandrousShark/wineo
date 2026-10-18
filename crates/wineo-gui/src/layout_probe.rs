@@ -53,6 +53,7 @@ pub(crate) struct Laid<'a, M> {
     tree: Tree,
     pub(crate) node: Node,
     renderer: iced::Renderer,
+    size: Size,
 }
 
 pub(crate) fn lay_out<'a, M>(mut element: Element<'a, M>, size: Size) -> Laid<'a, M> {
@@ -68,6 +69,7 @@ pub(crate) fn lay_out<'a, M>(mut element: Element<'a, M>, size: Size) -> Laid<'a
         tree,
         node,
         renderer,
+        size,
     }
 }
 
@@ -86,6 +88,55 @@ impl<M> Laid<'_, M> {
                 _ => break,
             }
         }
+    }
+
+    /// The ids of the focused widgets.
+    pub(crate) fn focused(&mut self) -> Vec<Id> {
+        struct Focused(Vec<Id>);
+        impl Operation for Focused {
+            fn traverse(&mut self, operate: &mut dyn FnMut(&mut dyn Operation)) {
+                operate(self);
+            }
+
+            fn focusable(
+                &mut self,
+                id: Option<&Id>,
+                _bounds: Rectangle,
+                state: &mut dyn iced::advanced::widget::operation::Focusable,
+            ) {
+                if state.is_focused()
+                    && let Some(id) = id
+                {
+                    self.0.push(id.clone());
+                }
+            }
+        }
+        let mut focused = Box::new(Focused(Vec::new()));
+        self.element.as_widget_mut().operate(
+            &mut self.tree,
+            Layout::new(&self.node),
+            &self.renderer,
+            focused.as_mut(),
+        );
+        focused.0
+    }
+
+    /// Hands `event` to the tree, with no cursor, and returns what it
+    /// published.
+    pub(crate) fn event(&mut self, event: &iced::Event) -> Vec<M> {
+        let mut messages = Vec::new();
+        let mut shell = iced::advanced::Shell::new(&mut messages);
+        self.element.as_widget_mut().update(
+            &mut self.tree,
+            event,
+            Layout::new(&self.node),
+            iced::mouse::Cursor::Unavailable,
+            &self.renderer,
+            &mut iced::advanced::clipboard::Null,
+            &mut shell,
+            &Rectangle::with_size(self.size),
+        );
+        messages
     }
 
     /// The scroll offsets of every scrollable, top first.

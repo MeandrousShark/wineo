@@ -720,3 +720,236 @@ fn delete_leaves_the_selected_card_alone_while_the_menu_is_open() {
     ));
     assert!(app.removal.is_some());
 }
+
+/// What a task does once the runtime has it: the messages it sends back,
+/// the widget operations it asks for, and whether it exits.
+struct Ran {
+    messages: Vec<Message>,
+    operations: Vec<Box<dyn iced::advanced::widget::Operation>>,
+    exits: bool,
+}
+
+/// Runs `task` the way the runtime would, on a runtime with a blocking pool.
+/// Widget operations are kept only when `keep` says so. There's no window
+/// to run them in, so a task waiting on an operation's answer would wait
+/// forever; the run ends once nothing new arrives for a while.
+fn run_keeping(task: Task<Message>, keep: bool) -> Ran {
+    use iced::futures::StreamExt;
+    let mut ran = Ran {
+        messages: Vec::new(),
+        operations: Vec::new(),
+        exits: false,
+    };
+    let Some(mut stream) = iced_runtime::task::into_stream(task) else {
+        return ran;
+    };
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    runtime.block_on(async {
+        while let Ok(Some(action)) =
+            tokio::time::timeout(Duration::from_millis(500), stream.next()).await
+        {
+            match action {
+                iced_runtime::Action::Output(message) => ran.messages.push(message),
+                iced_runtime::Action::Widget(operation) if keep => ran.operations.push(operation),
+                iced_runtime::Action::Exit => ran.exits = true,
+                _ => {}
+            }
+        }
+    });
+    ran
+}
+
+fn run(task: Task<Message>) -> Ran {
+    run_keeping(task, false)
+}
+
+/// The messages the sort's writes sent back.
+fn saved(ran: Ran) -> Vec<Message> {
+    ran.messages
+        .into_iter()
+        .filter(|message| matches!(message, Message::Sort(Event::Saved(..))))
+        .collect()
+}
+
+fn press(named: Named) -> iced::Event {
+    let key = Key::Named(named);
+    iced::Event::Keyboard(iced::keyboard::Event::KeyPressed {
+        key: key.clone(),
+        modified_key: key,
+        physical_key: iced::keyboard::key::Physical::Unidentified(
+            iced::keyboard::key::NativeCode::Unidentified,
+        ),
+        location: iced::keyboard::Location::Standard,
+        modifiers: Modifiers::empty(),
+        text: None,
+        repeat: false,
+    })
+}
+
+/// Lays out the window and runs `operations` in it, as the runtime does
+/// after an update.
+fn focus_after<'a>(
+    app: &'a App,
+    operations: Vec<Box<dyn iced::advanced::widget::Operation>>,
+) -> crate::layout_probe::Laid<'a, Message> {
+    let mut laid = crate::layout_probe::lay_out(app.view(), iced::Size::new(1200.0, 800.0));
+    for operation in operations {
+        laid.run(operation);
+    }
+    laid
+}
+
+#[test]
+fn a_control_writes_off_the_ui_thread_through_its_task() {
+    let (_root, mut app) = loaded();
+    let task = app.update(Message::Sort(Event::FlipDirection));
+    // The update only started the write.
+    assert!(!app.paths.library_file().exists());
+    assert_eq!(app.view_writes.descending, Some(true));
+    let messages = saved(run(task));
+    assert!(matches!(
+        messages.as_slice(),
+        [Message::Sort(Event::Saved(Field::Descending(true), Ok(())))]
+    ));
+    for message in messages {
+        assert_eq!(run(app.update(message)).messages.len(), 0);
+    }
+    assert!(app.view_writes.descending.is_none());
+    assert!(wineo_core::library::load(&app.paths).view.descending);
+}
+
+#[test]
+fn closing_waits_until_the_file_has_the_final_view() {
+    let (_root, mut app) = loaded();
+    let first = app.update(Message::Sort(Event::FlipDirection));
+    let _ = app.update(Message::Sort(Event::FlipDirection));
+    assert!(!app.query.descending);
+    let close = app.update(Message::Window(iced::window::Event::CloseRequested));
+    assert!(app.closing);
+    assert!(!app.close_prompt, "nothing to cancel, so no prompt");
+    assert!(!run(close).exits);
+
+    // The first write lands, and the final value still has to be written.
+    let messages = saved(run(first));
+    assert_eq!(messages.len(), 1);
+    let reissue = app.update(messages.into_iter().next().unwrap());
+    assert_eq!(app.view_writes.descending, Some(false));
+    let ran = run(reissue);
+    assert!(!ran.exits);
+    let messages = saved(ran);
+    assert_eq!(messages.len(), 1);
+
+    let done = app.update(messages.into_iter().next().unwrap());
+    assert!(run(done).exits);
+    assert!(!wineo_core::library::load(&app.paths).view.descending);
+}
+
+#[test]
+fn closing_still_ends_when_the_write_fails() {
+    let (_root, mut app) = loaded();
+    write_library(&app.paths, "[view\n");
+    let write = app.update(Message::Sort(Event::ToggleFavoritesFirst));
+    let _ = app.update(Message::Window(iced::window::Event::CloseRequested));
+    let messages = saved(run(write));
+    let done = app.update(messages.into_iter().next().unwrap());
+    assert!(run(done).exits);
+}
+
+#[test]
+fn closing_with_nothing_to_save_exits_at_once() {
+    let (_root, mut app) = loaded();
+    assert!(run(app.update(Message::Window(iced::window::Event::CloseRequested))).exits);
+}
+
+#[test]
+fn opening_the_menu_from_the_keyboard_focuses_the_current_key() {
+    let (_root, mut app) = loaded();
+    let _ = app.update(Message::Sort(Event::Pick(SortKey::Playtime)));
+    let ran = run_keeping(
+        iced::widget::operation::focus(iced::widget::Id::new(SORT_BUTTON_ID)),
+        true,
+    );
+    let mut laid = focus_after(&app, ran.operations);
+    assert_eq!(laid.focused(), [iced::widget::Id::new(SORT_BUTTON_ID)]);
+    let messages = laid.event(&press(Named::Enter));
+    drop(laid);
+    assert!(
+        messages
+            .iter()
+            .any(|message| matches!(message, Message::Sort(Event::ToggleMenu)))
+    );
+
+    let ran = run_keeping(app.update(Message::Sort(Event::ToggleMenu)), true);
+    assert!(app.sort_menu_shown());
+    let mut laid = focus_after(&app, ran.operations);
+    assert_eq!(
+        laid.focused(),
+        [iced::widget::Id::new(row_id(SortKey::Playtime))]
+    );
+    // A second Enter picks the focused row rather than closing the menu.
+    let messages = laid.event(&press(Named::Enter));
+    assert!(
+        messages
+            .iter()
+            .any(|message| matches!(message, Message::Sort(Event::Pick(SortKey::Playtime))))
+    );
+    assert!(
+        !messages
+            .iter()
+            .any(|message| matches!(message, Message::Sort(Event::ToggleMenu)))
+    );
+}
+
+/// A removed environment, so there's an Undo toast.
+fn with_toast(app: &mut App) {
+    let config = app.paths.environment_config("gone");
+    fs::create_dir_all(config.parent().unwrap()).unwrap();
+    fs::write(&config, "kind = 'native'\n").unwrap();
+    let entry = wineo_core::trash::remove(&app.paths, "gone", false).unwrap();
+    app.toast = Some(crate::removal::Toast::new(entry));
+}
+
+#[test]
+fn shortcuts_wait_while_the_menu_is_open() {
+    let (_root, mut app) = loaded();
+    with_toast(&mut app);
+    let _ = app.update(Message::Sort(Event::ToggleMenu));
+
+    let _ = app.update(Message::Key(
+        Key::Character("n".into()),
+        Modifiers::CTRL,
+        iced::event::Status::Ignored,
+    ));
+    assert!(app.flow.is_none(), "Ctrl+N");
+
+    crate::shortcuts::tests::press(&mut app, "2", Modifiers::CTRL);
+    assert_eq!(app.section, crate::sidebar::Section::Library, "Ctrl+2");
+
+    // The shortcut layer publishes Undo before any key handler sees Ctrl+Z.
+    let _ = app.update(Message::Undo);
+    let _ = app.update(Message::Key(
+        Key::Character("z".into()),
+        Modifiers::CTRL,
+        iced::event::Status::Ignored,
+    ));
+    assert!(app.change.is_none(), "Undo");
+    assert!(app.sort_menu_shown());
+}
+
+#[test]
+fn tab_cycles_the_menu_rows_even_with_an_undo_toast() {
+    let (_root, mut app) = loaded();
+    with_toast(&mut app);
+    let _ = app.update(Message::Sort(Event::ToggleMenu));
+    let task = app.update(Message::Key(
+        Key::Named(Named::Tab),
+        Modifiers::empty(),
+        iced::event::Status::Ignored,
+    ));
+    let focused = focus_after(&app, run_keeping(task, true).operations).focused();
+    assert_eq!(focused, [iced::widget::Id::new(row_id(SortKey::Name))]);
+    assert_ne!(focused, [iced::widget::Id::new(focus_button::UNDO_ID)]);
+}

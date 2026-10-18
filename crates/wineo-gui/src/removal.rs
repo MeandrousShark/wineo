@@ -72,7 +72,7 @@ pub(crate) struct Toast {
 }
 
 impl Toast {
-    fn new(entry: Entry) -> Self {
+    pub(crate) fn new(entry: Entry) -> Self {
         let mut text = format!("Removed {} to the trash.", entry.name);
         if entry.prefix_left.is_some() && entry.prefix_present == Some(true) {
             text.push_str(" Prefix kept.");

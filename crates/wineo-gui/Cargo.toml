@@ -29,6 +29,8 @@ tar.workspace = true
 zip.workspace = true
 wineo-core = { workspace = true, features = ["test-support"] }
 wineo-gog = { workspace = true, features = ["test-server"] }
+# Runs the tasks `update` returns, to check what they do off the UI thread.
+iced_runtime = "0.14"
 # Paused time drives the rescan stream in tests.
 tokio = { version = "1", features = ["test-util"] }
 
