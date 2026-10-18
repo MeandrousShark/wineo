@@ -7,10 +7,11 @@
 //! `imported` line it sees. Totals are computed on read, so nothing has to
 //! stay in sync.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use jiff::civil::Date;
 use jiff::{Span, Timestamp};
@@ -165,6 +166,10 @@ pub fn read(path: &Path) -> Result<Log> {
     else {
         return Ok(Log::default());
     };
+    Ok(parse(path, &text))
+}
+
+fn parse(path: &Path, text: &str) -> Log {
     let mut log = Log::default();
     for (number, line) in text.lines().enumerate() {
         if line.trim().is_empty() {
@@ -180,7 +185,69 @@ pub fn read(path: &Path) -> Result<Log> {
             )),
         }
     }
-    Ok(log)
+    log
+}
+
+/// Parsed play logs kept between overviews, for a caller that builds one
+/// every few seconds (the GUI's rescan). Only the parse is kept, never a
+/// `Summary`: those depend on the clock and on the live run, so they are
+/// recomputed from the cached sessions on every call.
+#[derive(Debug, Default)]
+pub struct Cache {
+    logs: HashMap<PathBuf, CachedLog>,
+    /// How many logs were read and parsed, for tests that pin a cache hit.
+    #[cfg(test)]
+    parses: usize,
+}
+
+#[derive(Debug)]
+struct CachedLog {
+    stamp: files::Stamp,
+    log: Arc<Log>,
+}
+
+impl Cache {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// The log at `path`, parsed only if its file changed since the cached
+    /// parse. Anything unusual (no file, an unreadable one, a file that
+    /// changed while being read) is read and returned as `read` would and
+    /// leaves nothing cached, so errors and warnings match an uncached read.
+    fn read(&mut self, path: &Path) -> Result<Arc<Log>> {
+        if let Some(stamp) = files::Stamp::of(path).ok().flatten()
+            && let Some(cached) = self.logs.get(path)
+            && cached.stamp == stamp
+        {
+            return Ok(Arc::clone(&cached.log));
+        }
+        self.logs.remove(path);
+        #[cfg(test)]
+        {
+            self.parses += 1;
+        }
+        let Some((bytes, stamp)) =
+            files::read_stamped(path).context(|| format!("failed to read {}", path.display()))?
+        else {
+            return Ok(Arc::new(Log::default()));
+        };
+        let Ok(text) = String::from_utf8(bytes) else {
+            // Not text: read it the plain way, which reports the same error.
+            return read(path).map(Arc::new);
+        };
+        let log = Arc::new(parse(path, &text));
+        if let Some(stamp) = stamp {
+            self.logs.insert(
+                path.to_owned(),
+                CachedLog {
+                    stamp,
+                    log: Arc::clone(&log),
+                },
+            );
+        }
+        Ok(log)
+    }
 }
 
 /// A session that hasn't ended yet, read from the live `RunState`.
@@ -285,9 +352,28 @@ pub fn overview(paths: &Paths) -> Result<Overview> {
     overview_with_options(paths, OverviewOptions::default())
 }
 
+/// `overview` that re-parses only the logs that changed since `cache` last
+/// saw them, and drops the entries of environments that are gone.
+pub fn overview_cached(paths: &Paths, cache: &mut Cache) -> Result<Overview> {
+    overview_cached_at(paths, cache, Timestamp::now())
+}
+
+/// `overview_cached` as of `now`, so a test can move the clock.
+fn overview_cached_at(paths: &Paths, cache: &mut Cache, now: Timestamp) -> Result<Overview> {
+    overview_inner(paths, OverviewOptions::default(), Some(cache), now)
+}
+
 /// Loads configs only when filtering or collecting tags for a breakdown.
 pub fn overview_with_options(paths: &Paths, options: OverviewOptions<'_>) -> Result<Overview> {
-    let now = Timestamp::now();
+    overview_inner(paths, options, None, Timestamp::now())
+}
+
+fn overview_inner(
+    paths: &Paths,
+    options: OverviewOptions<'_>,
+    mut cache: Option<&mut Cache>,
+    now: Timestamp,
+) -> Result<Overview> {
     let tz = LocalZone::new();
     let mut rows = Vec::new();
     let mut tags = BTreeMap::new();
@@ -296,6 +382,12 @@ pub fn overview_with_options(paths: &Paths, options: OverviewOptions<'_>) -> Res
     // One reading of Steam's files for every Steam game in the overview.
     let steam = SteamPlaytimes::new(paths);
     let names = environment::names(paths)?;
+    if let Some(cache) = cache.as_deref_mut() {
+        // Every name counts, including ones a tag filter skips, so a filtered
+        // overview doesn't evict the logs an unfiltered one will want.
+        let live: HashSet<PathBuf> = names.iter().map(|name| paths.stats_log(name)).collect();
+        cache.logs.retain(|path, _| live.contains(path));
+    }
     let loads_configs = options.tags.is_some() || options.load_tags;
     // Nothing here trashes or restores, so one trash scan serves every load.
     let pending = loads_configs.then(|| crate::trash::PendingScan::new(paths));
@@ -325,8 +417,13 @@ pub fn overview_with_options(paths: &Paths, options: OverviewOptions<'_>) -> Res
         };
         // A config the tags already loaded isn't read and parsed again.
         let config = loaded.or_else(|| lenient_config(paths, &name));
-        match summary_of(paths, &name, config.as_ref(), &steam, now, &tz) {
-            Ok((summary, _, warns)) => {
+        let summary = match cache.as_deref_mut() {
+            Some(cache) => summary_cached(paths, &name, config.as_ref(), &steam, cache, now, &tz),
+            None => summary_of(paths, &name, config.as_ref(), &steam, now, &tz)
+                .map(|(summary, _, warns)| (summary, warns)),
+        };
+        match summary {
+            Ok((summary, warns)) => {
                 warnings.extend(warns);
                 if let Some(environment_tags) = environment_tags {
                     tags.insert(name.clone(), environment_tags);
@@ -649,14 +746,8 @@ fn summary_of(
     now: Timestamp,
     tz: &dyn Zone,
 ) -> Result<(Summary, Option<Log>, Vec<String>)> {
-    if let Some(config) = config
-        && let crate::config::Kind::Proxied(proxied) = &config.kind
-    {
-        return Ok((
-            summarize_steam(steam.playtime(&proxied.app_id)),
-            None,
-            Vec::new(),
-        ));
+    if let Some(summary) = steam_summary(config, steam) {
+        return Ok((summary, None, Vec::new()));
     }
     let log = read(&paths.stats_log(name))?;
     let running = running_session(paths, name)?;
@@ -666,6 +757,40 @@ fn summary_of(
         Some(log),
         warnings,
     ))
+}
+
+/// `summary_of` for an overview with a cache: the log comes from the cache
+/// when its file is unchanged, and the summary is built fresh either way.
+fn summary_cached(
+    paths: &Paths,
+    name: &str,
+    config: Option<&crate::config::EnvironmentConfig>,
+    steam: &SteamPlaytimes<'_>,
+    cache: &mut Cache,
+    now: Timestamp,
+    tz: &dyn Zone,
+) -> Result<(Summary, Vec<String>)> {
+    if let Some(summary) = steam_summary(config, steam) {
+        return Ok((summary, Vec::new()));
+    }
+    let log = cache.read(&paths.stats_log(name))?;
+    let running = running_session(paths, name)?;
+    Ok((
+        summarize(&log, running.as_ref(), now, tz),
+        log.warnings.clone(),
+    ))
+}
+
+/// The summary of a Steam-backed environment, or `None` for a Wineo one.
+fn steam_summary(
+    config: Option<&crate::config::EnvironmentConfig>,
+    steam: &SteamPlaytimes<'_>,
+) -> Option<Summary> {
+    let config = config?;
+    let crate::config::Kind::Proxied(proxied) = &config.kind else {
+        return None;
+    };
+    Some(summarize_steam(steam.playtime(&proxied.app_id)))
 }
 
 /// Steam's playtime for the games of one overview. The global config, the

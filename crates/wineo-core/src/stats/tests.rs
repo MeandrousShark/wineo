@@ -739,3 +739,298 @@ fn copied_log_never_replaces_one_already_there() {
         1
     );
 }
+
+fn library_paths(root: &Path, names: &[&str]) -> Paths {
+    let home = root.join("home");
+    let paths =
+        Paths::from_lookup(move |key| (key == "HOME").then(|| OsString::from(home.as_os_str())))
+            .unwrap();
+    fs::create_dir_all(paths.environments_dir()).unwrap();
+    for name in names {
+        fs::write(paths.environments_dir().join(format!("{name}.toml")), "").unwrap();
+    }
+    paths
+}
+
+fn append_session(paths: &Paths, name: &str, target: &str, start: &str, seconds: i64) {
+    let started_at = ts(start);
+    append(
+        &paths.stats_log(name),
+        &Session::new(
+            target.to_owned(),
+            started_at,
+            started_at + jiff::SignedDuration::from_secs(seconds),
+            End::Exited,
+        ),
+    )
+    .unwrap();
+}
+
+/// Everything an overview holds except the clock it was taken at.
+fn same_overview(a: &Overview, b: &Overview) {
+    assert_eq!(a.rows, b.rows);
+    assert_eq!(a.tags, b.tags);
+    assert_eq!(a.played, b.played);
+    assert_eq!(a.total_seconds, b.total_seconds);
+    assert_eq!(a.never_played, b.never_played);
+    assert_eq!(a.steam_games, b.steam_games);
+    assert_eq!(a.unknown_steam_games, b.unknown_steam_games);
+    assert_eq!(a.warnings, b.warnings);
+    assert_eq!(a.errors, b.errors);
+}
+
+fn seconds_of(overview: &Overview, name: &str) -> i64 {
+    overview
+        .rows
+        .iter()
+        .find(|(row, _)| row == name)
+        .unwrap()
+        .1
+        .seconds
+}
+
+#[test]
+fn a_cached_overview_equals_the_uncached_one() {
+    let root = tempfile::tempdir().unwrap();
+    let paths = library_paths(root.path(), &["alpha", "beta", "never", "torn"]);
+    append_session(&paths, "alpha", "game", "2026-09-20T19:00:00Z", 3600);
+    append_session(&paths, "alpha", "tool", "2026-09-21T19:00:00Z", 60);
+    append_session(&paths, "beta", "game", "2026-09-22T19:00:00Z", 7200);
+    append_session(&paths, "torn", "game", "2026-09-22T19:00:00Z", 100);
+    let mut torn = fs::read_to_string(paths.stats_log("torn")).unwrap();
+    torn.push_str("{\"target\":\n");
+    fs::write(paths.stats_log("torn"), torn).unwrap();
+
+    let mut cache = Cache::new();
+    for _ in 0..2 {
+        let cached = overview_cached(&paths, &mut cache).unwrap();
+        let plain = overview(&paths).unwrap();
+        same_overview(&cached, &plain);
+        assert_eq!(cached.warnings.len(), 1);
+    }
+    // Three logs exist; "never" has no file to cache.
+    assert_eq!(cache.logs.len(), 3);
+}
+
+#[test]
+fn an_unchanged_log_is_not_parsed_again() {
+    let root = tempfile::tempdir().unwrap();
+    let paths = library_paths(root.path(), &["alpha", "beta"]);
+    append_session(&paths, "alpha", "game", "2026-09-20T19:00:00Z", 3600);
+    append_session(&paths, "beta", "game", "2026-09-20T19:00:00Z", 60);
+
+    let mut cache = Cache::new();
+    overview_cached(&paths, &mut cache).unwrap();
+    assert_eq!(cache.parses, 2);
+    overview_cached(&paths, &mut cache).unwrap();
+    overview_cached(&paths, &mut cache).unwrap();
+    assert_eq!(cache.parses, 2);
+}
+
+#[test]
+fn an_appended_session_is_parsed_and_counted() {
+    let root = tempfile::tempdir().unwrap();
+    let paths = library_paths(root.path(), &["alpha", "beta"]);
+    append_session(&paths, "alpha", "game", "2026-09-20T19:00:00Z", 3600);
+    append_session(&paths, "beta", "game", "2026-09-20T19:00:00Z", 60);
+    let mut cache = Cache::new();
+    overview_cached(&paths, &mut cache).unwrap();
+
+    append_session(&paths, "alpha", "game", "2026-09-21T19:00:00Z", 1800);
+    let after = overview_cached(&paths, &mut cache).unwrap();
+    // Only the log that grew is read again.
+    assert_eq!(cache.parses, 3);
+    assert_eq!(seconds_of(&after, "alpha"), 5400);
+    assert_eq!(seconds_of(&after, "beta"), 60);
+    same_overview(&after, &overview(&paths).unwrap());
+}
+
+#[test]
+fn a_log_cut_back_to_an_earlier_size_is_parsed_again() {
+    let root = tempfile::tempdir().unwrap();
+    let paths = library_paths(root.path(), &["alpha"]);
+    let log = paths.stats_log("alpha");
+    append_session(&paths, "alpha", "game", "2026-09-20T19:00:00Z", 3600);
+    let short = fs::metadata(&log).unwrap().len();
+    let mut cache = Cache::new();
+    overview_cached(&paths, &mut cache).unwrap();
+    append_session(&paths, "alpha", "game", "2026-09-21T19:00:00Z", 1800);
+    assert_eq!(
+        seconds_of(&overview_cached(&paths, &mut cache).unwrap(), "alpha"),
+        5400
+    );
+
+    fs::OpenOptions::new()
+        .write(true)
+        .open(&log)
+        .unwrap()
+        .set_len(short)
+        .unwrap();
+    let cut = overview_cached(&paths, &mut cache).unwrap();
+    assert_eq!(cache.parses, 3);
+    assert_eq!(seconds_of(&cut, "alpha"), 3600);
+}
+
+#[test]
+fn a_removed_environment_drops_its_entry() {
+    let root = tempfile::tempdir().unwrap();
+    let paths = library_paths(root.path(), &["alpha", "beta"]);
+    append_session(&paths, "alpha", "game", "2026-09-20T19:00:00Z", 3600);
+    append_session(&paths, "beta", "game", "2026-09-20T19:00:00Z", 60);
+    let mut cache = Cache::new();
+    overview_cached(&paths, &mut cache).unwrap();
+    assert_eq!(cache.logs.len(), 2);
+
+    fs::remove_file(paths.environment_config("beta")).unwrap();
+    fs::remove_file(paths.stats_log("beta")).unwrap();
+    let after = overview_cached(&paths, &mut cache).unwrap();
+    assert_eq!(after.rows.len(), 1);
+    assert_eq!(
+        cache.logs.keys().collect::<Vec<_>>(),
+        [&paths.stats_log("alpha")]
+    );
+}
+
+#[test]
+fn a_filtered_overview_keeps_the_entries_it_skipped() {
+    let root = tempfile::tempdir().unwrap();
+    let paths = tag_paths(root.path());
+    tagged_environment(&paths, "alpha", &[]);
+    tagged_environment(&paths, "beta", &["keep"]);
+    append_session(&paths, "alpha", "game", "2026-09-20T19:00:00Z", 3600);
+    append_session(&paths, "beta", "game", "2026-09-20T19:00:00Z", 60);
+    let mut cache = Cache::new();
+    overview_cached(&paths, &mut cache).unwrap();
+
+    let filter = ["keep".to_owned()];
+    let options = OverviewOptions {
+        tags: Some(&filter),
+        load_tags: false,
+    };
+    let filtered = overview_inner(&paths, options, Some(&mut cache), Timestamp::now()).unwrap();
+    assert_eq!(filtered.rows.len(), 1);
+    assert_eq!(cache.logs.len(), 2);
+}
+
+/// Rewrites `path` with `contents` and puts its mtime back, as `touch -d`
+/// or a copy that keeps times would.
+fn rewrite_keeping_mtime(path: &Path, contents: &str, mtime: std::time::SystemTime) {
+    fs::write(path, contents).unwrap();
+    fs::OpenOptions::new()
+        .write(true)
+        .open(path)
+        .unwrap()
+        .set_modified(mtime)
+        .unwrap();
+}
+
+#[test]
+fn a_same_size_rewrite_is_caught() {
+    let root = tempfile::tempdir().unwrap();
+    let paths = library_paths(root.path(), &["alpha"]);
+    let log = paths.stats_log("alpha");
+    append_session(&paths, "alpha", "gamea", "2026-09-20T19:00:00Z", 3600);
+    let mut cache = Cache::new();
+    overview_cached(&paths, &mut cache).unwrap();
+
+    let text = fs::read_to_string(&log).unwrap();
+    let mtime = fs::metadata(&log).unwrap().modified().unwrap();
+    rewrite_keeping_mtime(&log, &text.replace("gamea", "gameb"), mtime);
+    assert_eq!(fs::metadata(&log).unwrap().len(), text.len() as u64);
+    let after = overview_cached(&paths, &mut cache).unwrap();
+    assert_eq!(cache.parses, 2);
+    let (_, summary) = &after.rows[0];
+    assert_eq!(summary.targets[0].target, "gameb");
+}
+
+#[test]
+fn a_rename_over_the_log_is_caught() {
+    let root = tempfile::tempdir().unwrap();
+    let paths = library_paths(root.path(), &["alpha"]);
+    let log = paths.stats_log("alpha");
+    append_session(&paths, "alpha", "gamea", "2026-09-20T19:00:00Z", 3600);
+    let mut cache = Cache::new();
+    overview_cached(&paths, &mut cache).unwrap();
+
+    let text = fs::read_to_string(&log).unwrap();
+    let mtime = fs::metadata(&log).unwrap().modified().unwrap();
+    let staged = log.with_extension("new");
+    rewrite_keeping_mtime(&staged, &text.replace("gamea", "gameb"), mtime);
+    fs::rename(&staged, &log).unwrap();
+    let after = overview_cached(&paths, &mut cache).unwrap();
+    assert_eq!(cache.parses, 2);
+    assert_eq!(after.rows[0].1.targets[0].target, "gameb");
+}
+
+#[test]
+fn a_later_now_changes_the_overview_without_a_parse() {
+    let root = tempfile::tempdir().unwrap();
+    let paths = library_paths(root.path(), &["alpha"]);
+    append_session(&paths, "alpha", "game", "2026-09-23T19:00:00Z", 3600);
+    let mut cache = Cache::new();
+
+    let september = overview_cached_at(&paths, &mut cache, ts("2026-09-24T12:00:00Z")).unwrap();
+    let october = overview_cached_at(&paths, &mut cache, ts("2026-10-20T12:00:00Z")).unwrap();
+    assert_eq!(cache.parses, 1);
+    let (_, early) = &september.rows[0];
+    let (_, late) = &october.rows[0];
+    assert_eq!(
+        (early.this_week_seconds, early.this_month_seconds),
+        (3600, 3600)
+    );
+    assert_eq!((late.this_week_seconds, late.this_month_seconds), (0, 0));
+    assert_eq!(late.seconds, early.seconds);
+    assert_eq!(october.now, ts("2026-10-20T12:00:00Z"));
+}
+
+#[test]
+fn a_running_session_appears_and_ends_on_a_warm_cache() {
+    let root = tempfile::tempdir().unwrap();
+    let paths = library_paths(root.path(), &["live"]);
+    append_session(&paths, "live", "game", "2026-09-20T19:00:00Z", 3600);
+    let mut cache = Cache::new();
+    let idle = overview_cached(&paths, &mut cache).unwrap();
+    assert!(!idle.rows[0].1.running);
+
+    let runtime = Runtime::new(&paths, "live");
+    let lock = runtime.try_lock().unwrap().unwrap();
+    let mut run = crate::runtime::RunState::running(
+        crate::runtime::RunMode::Detached,
+        "game".to_owned(),
+        std::process::id(),
+        None,
+        &Default::default(),
+    );
+    run.started_at = Timestamp::now() - jiff::SignedDuration::from_secs(7200);
+    runtime.write_state(&run).unwrap();
+    let live = overview_cached(&paths, &mut cache).unwrap();
+    let (_, summary) = &live.rows[0];
+    assert!(summary.running);
+    assert_eq!(summary.sessions, 2);
+    assert!(summary.seconds >= 3600 + 7200);
+
+    drop(lock);
+    let ended = overview_cached(&paths, &mut cache).unwrap();
+    assert!(!ended.rows[0].1.running);
+    assert_eq!(ended.rows[0].1.seconds, 3600);
+    // The log never changed, so it was parsed once through all three.
+    assert_eq!(cache.parses, 1);
+}
+
+#[test]
+fn a_log_that_cannot_be_read_errors_as_before_and_is_not_cached() {
+    let root = tempfile::tempdir().unwrap();
+    let paths = library_paths(root.path(), &["alpha", "broken"]);
+    append_session(&paths, "alpha", "game", "2026-09-20T19:00:00Z", 3600);
+    // A directory where the log should be stats and then fails to read.
+    fs::create_dir_all(paths.stats_log("broken")).unwrap();
+
+    let mut cache = Cache::new();
+    for _ in 0..2 {
+        let cached = overview_cached(&paths, &mut cache).unwrap();
+        let plain = overview(&paths).unwrap();
+        same_overview(&cached, &plain);
+        assert_eq!(cached.errors.len(), 1);
+    }
+    assert_eq!(cache.logs.len(), 1);
+}

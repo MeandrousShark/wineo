@@ -8,7 +8,8 @@
 //!     -- --ignored --nocapture --test-threads=1
 //!
 //! Run one measurement by naming it instead of `library::bench`:
-//! `rescan_quiet_and_busy`, `rescan_parts`, or `filtered_search_change`.
+//! `rescan_quiet_and_busy`, `rescan_parts`, `stats_overview_cache`, or
+//! `filtered_search_change`.
 //! `WINEO_BENCH_ITERS` sets the iterations per measurement (default 100).
 //!
 //! The profile is release with debug assertions on for iced_core only, which
@@ -44,7 +45,7 @@ fn iterations() -> usize {
         .unwrap_or(100)
 }
 
-fn paths() -> Paths {
+fn bench_root() -> PathBuf {
     if cfg!(debug_assertions) {
         panic!("build with --profile release-test, a debug build's timings mean nothing");
     }
@@ -57,6 +58,11 @@ fn paths() -> Paths {
         "{} was not made by generate-bench-library.sh",
         root.display()
     );
+    root
+}
+
+fn paths() -> Paths {
+    let root = bench_root();
     Paths::from_lookup(|key| (key == "HOME").then(|| root.clone().into_os_string())).unwrap()
 }
 
@@ -121,13 +127,43 @@ fn time<T>(iterations: usize, mut work: impl FnMut() -> T) -> Vec<Duration> {
 struct Logs(Vec<(PathBuf, u64)>);
 
 impl Logs {
+    /// Refuses logs that could reach outside the bench root, since this
+    /// appends to and truncates them. Every log must already exist: creating
+    /// one would skip these checks for its directory and leave a file behind.
     fn new(paths: &Paths, cards: &[Card]) -> Self {
+        let root = bench_root();
+        for card in cards {
+            let log = paths.stats_log(&card.name);
+            let dir = log.parent().expect("a log has a directory");
+            for path in [dir, log.as_path()] {
+                let meta = fs::symlink_metadata(path).unwrap_or_else(|error| {
+                    panic!(
+                        "can't stat {}: {error}; regenerate the bench library with \
+                         scripts/generate-bench-library.sh",
+                        path.display()
+                    )
+                });
+                assert!(
+                    !meta.file_type().is_symlink(),
+                    "{} is a symlink, refusing to write through it",
+                    path.display()
+                );
+                let real = fs::canonicalize(path).unwrap();
+                assert!(
+                    real.starts_with(&root),
+                    "{} resolves to {}, outside the bench root {}",
+                    path.display(),
+                    real.display(),
+                    root.display()
+                );
+            }
+        }
         Self(
             cards
                 .iter()
                 .map(|card| paths.stats_log(&card.name))
                 .map(|path| {
-                    let len = fs::metadata(&path).map_or(0, |meta| meta.len());
+                    let len = fs::metadata(&path).unwrap().len();
                     (path, len)
                 })
                 .collect(),
@@ -235,6 +271,13 @@ fn rescan_parts() {
         "stats::overview (logs + configs)",
         time(iterations, || stats::overview(&paths).unwrap()),
     );
+    let mut cache = stats::Cache::new();
+    millis(
+        "stats::overview_cached (warm)",
+        time(iterations, || {
+            stats::overview_cached(&paths, &mut cache).unwrap()
+        }),
+    );
     millis(
         "stats logs only (read + parse)",
         time(iterations, || {
@@ -274,6 +317,62 @@ fn rescan_parts() {
         "stats logs total {:.1} MiB",
         bytes as f64 / (1 << 20) as f64
     );
+}
+
+/// `stats::overview` against `stats::overview_cached`, the stats part of the
+/// rescan. Quiet: nothing changed and the cache is warm. Busy: a new session
+/// in every log before each call, so the cache re-parses all of them.
+#[test]
+#[ignore = "needs WINEO_BENCH_ROOT and a release-test build"]
+fn stats_overview_cache() {
+    let paths = paths();
+    let iterations = iterations();
+    let cards = library(&paths);
+
+    header("stats overview, quiet (nothing changed)", iterations);
+    millis(
+        "stats::overview",
+        time(iterations, || stats::overview(&paths).unwrap()),
+    );
+    let mut cache = stats::Cache::new();
+    millis(
+        "stats::overview_cached",
+        time(iterations, || {
+            stats::overview_cached(&paths, &mut cache).unwrap()
+        }),
+    );
+
+    header(
+        "stats overview, busy (new session in every log)",
+        iterations,
+    );
+    let logs = Logs::new(&paths, &cards);
+    let mut plain = Vec::new();
+    let mut cached = Vec::new();
+    let mut cache = stats::Cache::new();
+    for round in 0..iterations + 5 {
+        // One change both calls see, and the order alternates so neither
+        // always gets the colder page cache.
+        logs.append_session(round as u64);
+        let (mut plain_elapsed, mut cached_elapsed) = (Duration::ZERO, Duration::ZERO);
+        for step in 0..2 {
+            if (step == 0) == (round % 2 == 0) {
+                let start = Instant::now();
+                black_box(stats::overview(&paths).unwrap());
+                plain_elapsed = start.elapsed();
+            } else {
+                let start = Instant::now();
+                black_box(stats::overview_cached(&paths, &mut cache).unwrap());
+                cached_elapsed = start.elapsed();
+            }
+        }
+        if round >= 5 {
+            plain.push(plain_elapsed);
+            cached.push(cached_elapsed);
+        }
+    }
+    millis("stats::overview", plain);
+    millis("stats::overview_cached", cached);
 }
 
 /// What a search change costs `filtered()` on the loaded cards: the stand-in

@@ -1,5 +1,5 @@
 use std::fs::{self, File, OpenOptions};
-use std::io::{self, Write};
+use std::io::{self, Read, Write};
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -60,10 +60,6 @@ fn found<T>(result: io::Result<T>) -> io::Result<Option<T>> {
 /// 2 s): two same-size in-place writes in one tick look alike until the next
 /// change.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "the plan 0054 step 2 caches use it")
-)]
 pub(crate) struct Stamp {
     mtime: (i64, i64),
     ctime: (i64, i64),
@@ -72,10 +68,6 @@ pub(crate) struct Stamp {
     ino: u64,
 }
 
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "the plan 0054 step 2 caches use it")
-)]
 impl Stamp {
     /// The stamp of the file at `path`, or `None` when there is none.
     pub(crate) fn of(path: &Path) -> io::Result<Option<Self>> {
@@ -89,6 +81,49 @@ impl Stamp {
             size: metadata.size(),
             dev: metadata.dev(),
             ino: metadata.ino(),
+        }
+    }
+}
+
+/// Reads a file with the stamp it had while being read, or `None` when there
+/// is none. The stamp is `None` if the file changed during the read or the
+/// path now names another file; the bytes are returned either way.
+pub(crate) fn read_stamped(path: &Path) -> io::Result<Option<(Vec<u8>, Option<Stamp>)>> {
+    let Some(mut file) = found(File::open(path))? else {
+        return Ok(None);
+    };
+    // Stamped through the handle that is read, so a path that is repointed
+    // meanwhile can't lend its stamp to another file's bytes.
+    let before = Stamp::from_metadata(&file.metadata()?);
+    let mut bytes = Vec::new();
+    file.read_to_end(&mut bytes)?;
+    #[cfg(test)]
+    between_read_and_check::run();
+    let after = Stamp::from_metadata(&file.metadata()?);
+    let at_path = Stamp::of(path).ok().flatten();
+    let stable = after == before && at_path == Some(before);
+    Ok(Some((bytes, stable.then_some(before))))
+}
+
+/// Test-only: runs once between the read and the checks of `read_stamped`,
+/// to change the file at exactly the moment a cache is at risk.
+#[cfg(test)]
+pub(crate) mod between_read_and_check {
+    use std::cell::RefCell;
+
+    type Hook = Box<dyn FnOnce()>;
+
+    thread_local! {
+        static HOOK: RefCell<Option<Hook>> = const { RefCell::new(None) };
+    }
+
+    pub(crate) fn set(hook: impl FnOnce() + 'static) {
+        HOOK.with(|slot| *slot.borrow_mut() = Some(Box::new(hook)));
+    }
+
+    pub(super) fn run() {
+        if let Some(hook) = HOOK.with(|slot| slot.borrow_mut().take()) {
+            hook();
         }
     }
 }
@@ -328,6 +363,83 @@ mod tests {
         };
         let rewritten = coarse;
         assert_eq!(coarse, rewritten);
+    }
+
+    #[test]
+    fn a_stable_file_reads_with_its_stamp() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("log");
+        assert!(read_stamped(&path).unwrap().is_none());
+        fs::write(&path, "one").unwrap();
+        let (bytes, found) = read_stamped(&path).unwrap().unwrap();
+        assert_eq!(bytes, b"one");
+        assert_eq!(found, Some(stamp(&path)));
+    }
+
+    #[test]
+    fn a_read_that_fails_is_an_error() {
+        let root = tempfile::tempdir().unwrap();
+        assert!(read_stamped(root.path()).is_err());
+    }
+
+    #[test]
+    fn an_append_during_the_read_leaves_no_stamp() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("log");
+        fs::write(&path, "one\n").unwrap();
+        let appended = path.clone();
+        between_read_and_check::set(move || {
+            let mut file = OpenOptions::new().append(true).open(&appended).unwrap();
+            file.write_all(b"two\n").unwrap();
+        });
+        let (bytes, found) = read_stamped(&path).unwrap().unwrap();
+        assert_eq!(bytes, b"one\n");
+        assert_eq!(found, None);
+    }
+
+    #[test]
+    fn a_rename_over_the_path_during_the_read_leaves_no_stamp() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("log");
+        fs::write(&path, "one").unwrap();
+        let mtime = fs::metadata(&path).unwrap().modified().unwrap();
+        let (renamed, staged) = (path.clone(), root.path().join("staged"));
+        between_read_and_check::set(move || {
+            fs::write(&staged, "two").unwrap();
+            set_mtime(&staged, mtime);
+            fs::rename(&staged, &renamed).unwrap();
+        });
+        let (bytes, found) = read_stamped(&path).unwrap().unwrap();
+        assert_eq!(bytes, b"one");
+        assert_eq!(found, None);
+    }
+
+    #[test]
+    fn a_symlink_repointed_during_the_read_is_not_trusted() {
+        // The bytes come from the file the path named at open. After the
+        // swap the path names B, so A's stamp must not be returned for a
+        // read that no longer matches the path.
+        let root = tempfile::tempdir().unwrap();
+        let (a, b, link) = (
+            root.path().join("a"),
+            root.path().join("b"),
+            root.path().join("link"),
+        );
+        fs::write(&a, "from a").unwrap();
+        fs::write(&b, "from b").unwrap();
+        std::os::unix::fs::symlink(&a, &link).unwrap();
+        let (swap_link, swap_b) = (link.clone(), b.clone());
+        between_read_and_check::set(move || {
+            fs::remove_file(&swap_link).unwrap();
+            std::os::unix::fs::symlink(&swap_b, &swap_link).unwrap();
+        });
+        let (bytes, found) = read_stamped(&link).unwrap().unwrap();
+        assert_eq!(bytes, b"from a");
+        assert_eq!(found, None);
+        // Settled on B, the next read is stable and stamped as B.
+        let (bytes, found) = read_stamped(&link).unwrap().unwrap();
+        assert_eq!(bytes, b"from b");
+        assert_eq!(found, Some(stamp(&b)));
     }
 
     #[test]
