@@ -440,3 +440,67 @@ fn batch_fix_leaves_a_well_formed_restore_marker_in_place() {
         assert!(staging.path().exists());
     }
 }
+
+#[test]
+fn fix_repairs_an_unreadable_library_and_prints_what_came_back() {
+    let f = Fixture::new();
+    f.environment("hades", "");
+    let library = f.config_dir().join("library.toml");
+    let broken = "[environments.hades]\nfavorite = true\n\n[environments.hades]\nfavorite true\n";
+    fs::write(&library, broken).unwrap();
+
+    let output = f.run(&["validate"]);
+    assert_eq!(output.status.code(), Some(1));
+    assert!(
+        stdout(&output).contains("error    library.toml can't be read (line 5: "),
+        "{}",
+        stdout(&output)
+    );
+    assert_eq!(fs::read_to_string(&library).unwrap(), broken);
+
+    let output = f.run(&["validate", "--fix"]);
+    assert_success(&output);
+    let text = stdout(&output);
+    let (_, repaired) = text
+        .split_once("1 error.\n")
+        .unwrap_or_else(|| panic!("{text}"));
+    let backup = repaired
+        .strip_prefix(
+            "Recovered the one recognized entry. Some data could not be recovered.\nOriginal saved as ",
+        )
+        .and_then(|rest| rest.strip_suffix(".\nFixed 1 problem.\n"))
+        .unwrap_or_else(|| panic!("{text}"));
+    assert!(backup.starts_with("library.toml.broken-"), "{backup}");
+    assert_eq!(
+        fs::read_to_string(f.config_dir().join(backup)).unwrap(),
+        broken
+    );
+    assert_eq!(
+        fs::read_to_string(&library).unwrap(),
+        "schema_version = 1\n\n[environments.hades]\nfavorite = true\n"
+    );
+    assert_eq!(
+        stdout(&f.run(&["validate"])),
+        "No problems in 1 environment.\n"
+    );
+}
+
+#[test]
+fn json_fix_repairs_the_library_without_printing_the_report() {
+    let f = Fixture::new();
+    f.environment("hades", "");
+    fs::write(
+        f.config_dir().join("library.toml"),
+        "[environments.hades]\nfavorite true\n",
+    )
+    .unwrap();
+
+    let output = f.run(&["validate", "--json", "--fix"]);
+    assert_success(&output);
+    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(
+        json["fixed"],
+        serde_json::json!(["Repair library.toml, keeping a copy of the original"])
+    );
+    assert_eq!(json["problems"], serde_json::json!([]));
+}
