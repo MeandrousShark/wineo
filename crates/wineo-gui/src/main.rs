@@ -68,6 +68,7 @@ mod wheel;
 mod worker;
 
 use std::collections::{HashMap, HashSet};
+use std::ops::ControlFlow;
 use std::path::PathBuf;
 use std::process::ExitCode;
 use std::sync::{Arc, Mutex};
@@ -94,6 +95,9 @@ const SEARCH_ID: &str = "library-search";
 const WHEEL_STEP_SCALE: f32 = 0.7;
 const MAX_DECODES: usize = 2;
 type ArtKey = (ArtFile, artwork::Kind);
+/// What a message handler hands back to `update_message`. `Break` is an early
+/// exit that skips the panel bookkeeping after the match.
+pub(crate) type Early = ControlFlow<Task<Message>, Task<Message>>;
 
 pub(crate) struct App {
     paths: Paths,
@@ -636,6 +640,18 @@ impl App {
         {
             self.feature_notice = None;
         }
+        if self.message_blocked(&message) {
+            return Task::none();
+        }
+        let task = match self.route(message) {
+            ControlFlow::Break(task) => return task,
+            ControlFlow::Continue(task) => task,
+        };
+        self.settle_panel(panel_was_open, task)
+    }
+
+    /// Messages ignored while an overlay or the card collapse owns the input.
+    fn message_blocked(&self, message: &Message) -> bool {
         if (self.flow.is_some()
             || self.removal.is_some()
             || self.trash_confirm_open()
@@ -676,9 +692,9 @@ impl App {
                             | checkup::Event::OpenInstallLog(_)
                             | checkup::Event::Environment(_)
                     )
-            ) || matches!(&message, Message::Version(event) if event.is_input()))
+            ) || matches!(message, Message::Version(event) if event.is_input()))
         {
-            return Task::none();
+            return true;
         }
         if !self.collapse.idle()
             && matches!(
@@ -686,9 +702,15 @@ impl App {
                 Message::Select(_) | Message::DoubleClick(_) | Message::Context(_)
             )
         {
-            return Task::none();
+            return true;
         }
-        let task = match message {
+        false
+    }
+
+    /// Routes one message to its handler. `Break` skips the bookkeeping
+    /// `update_message` does after a handler that ran to the end.
+    fn route(&mut self, message: Message) -> Early {
+        ControlFlow::Continue(match message {
             Message::SnapshotsEnvironment(name) => self.open_snapshots(Some(name)),
             Message::Snapshots(event) => self.snapshots_update(event),
             Message::CopyPortable(name) => self.open_portable(name),
@@ -1023,7 +1045,7 @@ impl App {
             Message::ArtLoaded(key, dimmed, result) => {
                 self.loading.remove(&(key.clone(), dimmed));
                 if self.current_art.get(&key.0.path) != Some(&key.0.identity) {
-                    return Task::none();
+                    return ControlFlow::Break(Task::none());
                 }
                 match result {
                     Ok(handle) => self.art_loaded(key, dimmed, handle),
@@ -1045,7 +1067,7 @@ impl App {
                     || self.panel_hidden()
                     || generation != self.grid_motion.generation()
                 {
-                    return Task::none();
+                    return ControlFlow::Break(Task::none());
                 }
                 let top = bounds.card.y - bounds.viewport.y;
                 let bottom = top + bounds.card.height;
@@ -1054,7 +1076,7 @@ impl App {
                 } else if bottom > bounds.offset.y + bounds.viewport.height {
                     bottom - bounds.viewport.height
                 } else {
-                    return Task::none();
+                    return ControlFlow::Break(Task::none());
                 };
                 self.scroll_offset = offset.max(0.0);
                 iced::widget::operation::scroll_to(
@@ -1123,9 +1145,9 @@ impl App {
                         if let Some(name) = self.grid_scroll_after_settle.take()
                             && self.selected.as_deref() == Some(&name)
                         {
-                            return Task::batch([art, self.scroll_selection()]);
+                            return ControlFlow::Break(Task::batch([art, self.scroll_selection()]));
                         }
-                        return art;
+                        return ControlFlow::Break(art);
                     }
                 }
                 Task::none()
@@ -1151,7 +1173,7 @@ impl App {
             Message::Key(key, modifiers, status) if self.flow.is_some() => {
                 use iced::keyboard::{Key, key::Named};
                 if sidebar::shortcut(&key, modifiers).is_some() {
-                    return Task::none();
+                    return ControlFlow::Break(Task::none());
                 }
                 let generation = self.flow_generation;
                 let width = self.flow_width();
@@ -1173,7 +1195,7 @@ impl App {
                                 "3" => flow::Event::Heroic,
                                 "4" => flow::Event::Steam,
                                 "5" => flow::Event::Gog,
-                                _ => return Task::none(),
+                                _ => return ControlFlow::Break(Task::none()),
                             };
                             self.flow_update(self.flow_generation, event)
                         }
@@ -1204,7 +1226,7 @@ impl App {
                 let results_tab = self.checkup_key_scope().is_some()
                     && key == keyboard::Key::Named(keyboard::key::Named::Tab);
                 if !results_tab && let Some(task) = removal::key(self, &key, modifiers, status) {
-                    return task;
+                    return ControlFlow::Break(task);
                 }
                 // shortcuts::capture normally takes these first. This covers a
                 // key an open overlay saw and left uncaptured.
@@ -1253,13 +1275,13 @@ impl App {
             Message::Settings(event) => self.settings_update(event),
             Message::SteamGridDbKeyChangedAt(sequence, available) => {
                 if sequence != self.steamgriddb_completed_sequence {
-                    return Task::none();
+                    return ControlFlow::Break(Task::none());
                 }
                 self.set_steamgriddb_availability(sequence, available)
             }
             Message::SteamGridDbKeyPresenceLoaded(sequence, available) => {
                 if sequence <= self.steamgriddb_completed_sequence {
-                    return Task::none();
+                    return ControlFlow::Break(Task::none());
                 }
                 self.steamgriddb_sequence = self.steamgriddb_sequence.max(sequence);
                 self.steamgriddb_completed_sequence = sequence;
@@ -1279,7 +1301,7 @@ impl App {
                     || self.flow.is_some()
                     || self.section != sidebar::Section::Library
                 {
-                    return Task::none();
+                    return ControlFlow::Break(Task::none());
                 }
                 self.close_log();
                 self.action_menu = None;
@@ -1307,7 +1329,7 @@ impl App {
                             && self.gog_update_enabled(card)
                     });
                 if !enabled {
-                    return Task::none();
+                    return ControlFlow::Break(Task::none());
                 }
                 self.open_gog_update(name, None)
             }
@@ -1320,7 +1342,7 @@ impl App {
                     || self.art_page.is_some()
                     || self.flow.is_some()
                 {
-                    return Task::none();
+                    return ControlFlow::Break(Task::none());
                 }
                 self.close_log();
                 self.action_menu = None;
@@ -1404,7 +1426,12 @@ impl App {
                     Task::none()
                 }
             }
-        };
+        })
+    }
+
+    /// Keeps the panel, grid, and collapse animations consistent with where
+    /// the handler left the panel.
+    fn settle_panel(&mut self, panel_was_open: bool, task: Task<Message>) -> Task<Message> {
         if !panel_was_open && self.panel_open {
             self.panel_motion.open(Instant::now());
         }
