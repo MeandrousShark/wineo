@@ -733,6 +733,16 @@ impl App {
         {
             return true;
         }
+        // The sidebar shortcuts and Undo are taken before any key handler,
+        // so they're stopped here.
+        if self.sort_menu_shown()
+            && matches!(
+                message,
+                Message::Section(_) | Message::SectionClicked(_) | Message::Undo | Message::Add
+            )
+        {
+            return true;
+        }
         if !self.collapse.idle()
             && matches!(
                 message,
@@ -957,6 +967,10 @@ impl App {
             }
             Message::Key(key, modifiers, _) if self.trash_confirm_open() => {
                 trash_page::key(self, &key, modifiers)
+            }
+            // Only the menu's own keys work while it's open.
+            Message::Key(key, modifiers, _) if self.sort_menu_shown() => {
+                sort_control::key(self, &key, modifiers)
             }
             Message::Key(key, modifiers, status) if self.flow.is_some() => {
                 self.flow_key(key, modifiers, status)?

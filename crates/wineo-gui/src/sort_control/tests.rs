@@ -663,9 +663,15 @@ fn the_sort_menu_and_the_action_menu_replace_each_other() {
 fn leaving_the_library_closes_the_menu_and_overlays_block_the_controls() {
     let (_root, mut app) = loaded();
     let _ = app.update(Message::Sort(Event::ToggleMenu));
+    // The sidebar waits while the menu is open; anything that still leaves
+    // the Library, like a page opened by its own work, closes it.
     let _ = app.update(Message::Section(crate::sidebar::Section::Trash));
+    assert_eq!(app.section, crate::sidebar::Section::Library);
+    app.section = crate::sidebar::Section::Trash;
+    let _ = app.update(Message::Hover(None));
     assert!(!app.sort_menu);
-    let _ = app.update(Message::Section(crate::sidebar::Section::Library));
+    app.section = crate::sidebar::Section::Library;
+    let _ = app.update(Message::Hover(None));
     assert!(!app.sort_menu_shown());
 
     let _ = app.update(Message::Add);

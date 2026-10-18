@@ -131,7 +131,10 @@ pub(crate) fn save(paths: &Paths, watch: &rescan::Watch, field: Field) -> Result
 impl App {
     /// The menu shows only over the Library itself.
     pub(crate) fn sort_menu_shown(&self) -> bool {
-        self.sort_menu && self.section == crate::sidebar::Section::Library && !self.panel_hidden()
+        self.sort_menu
+            && self.section == crate::sidebar::Section::Library
+            && !self.panel_hidden()
+            && self.hook_stop_confirm.is_none()
     }
 
     /// The window's current value of `field`'s field.
