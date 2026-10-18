@@ -711,7 +711,7 @@ fn create(
     source: &HeroicSource,
     migration: &Migration,
     token: &Token,
-    progress: impl FnMut(ImportProgress),
+    mut progress: impl FnMut(ImportProgress),
     cancel: &dyn Fn() -> bool,
 ) -> Result<Outcome> {
     let name = migration
@@ -740,13 +740,21 @@ fn create(
         }
     }
 
-    let registered = match &migration.target {
+    // Warnings join the native ones in `Registered::warnings`, so a caller
+    // that ignores progress still reports them.
+    let mut warnings = Vec::new();
+    let mut registered = match &migration.target {
         Target::Windows {
             plan: Some(plan), ..
-        } => heroic_import::apply(paths, global, source, plan, token, progress)?,
+        } => heroic_import::apply(paths, global, source, plan, token, |event| match event {
+            ImportProgress::Warning(warning) => warnings.push(warning),
+            event => progress(event),
+        })?,
         Target::Native(plan) => heroic_import::apply_native(paths, source, plan)?,
         _ => return Err(MigrateError::NeedsRunner.into()),
     };
+
+    registered.warnings.extend(warnings);
 
     #[cfg(test)]
     tests::after_create();

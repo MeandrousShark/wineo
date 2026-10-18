@@ -480,6 +480,28 @@ fn a_galaxy_windows_game_becomes_a_new_environment_from_heroic_settings() {
 }
 
 #[test]
+fn a_broken_library_does_not_stop_a_migration_and_its_warning_is_returned() {
+    let mut fx = Fixture::new();
+    fx.disco();
+    let mut migration = fx.migration(DISCO);
+    migration
+        .plan_runner(&fx.paths, &fx.global, "fake", None, None)
+        .unwrap();
+    let broken = "[environments.old]\nfavorite = true\n[broken\n";
+    fs::create_dir_all(fx.paths.library_file().parent().unwrap()).unwrap();
+    fs::write(fx.paths.library_file(), broken).unwrap();
+
+    let registered = fx.migrated(&migration).registered.unwrap();
+    assert_eq!(registered.warnings.len(), 1, "{:?}", registered.warnings);
+    assert!(
+        registered.warnings[0].starts_with("Can't update library.toml: it can't be read: "),
+        "{:?}",
+        registered.warnings
+    );
+    assert_eq!(fs::read_to_string(fx.paths.library_file()).unwrap(), broken);
+}
+
+#[test]
 fn a_windows_game_without_a_build_is_on_the_installer_track() {
     let mut fx = Fixture::new();
     let folder = fx.disco_in("Games/Disco", "");

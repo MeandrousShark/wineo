@@ -436,6 +436,25 @@ fn migrating_reports_like_the_cli_and_adds_the_extras() {
     assert!(config.contains(RIMWORLD), "{config}");
 }
 
+#[test]
+fn migrating_with_a_broken_library_keeps_its_warning_in_the_report() {
+    let mut fx = Fixture::new();
+    fx.native(RIMWORLD, "RimWorld", &[]);
+    let prepared = fx.prepared(RIMWORLD);
+    let broken = "[environments.old]\nfavorite = true\n[broken\n";
+    fs::create_dir_all(fx.paths.library_file().parent().unwrap()).unwrap();
+    fs::write(fx.paths.library_file(), broken).unwrap();
+
+    let report = run(&fx.paths, &prepared, &Token::new(), |_| {}, no_extras).unwrap();
+    assert_eq!(report.warnings.len(), 1, "{:?}", report.warnings);
+    assert!(
+        report.warnings[0].starts_with("Can't update library.toml: it can't be read: "),
+        "{:?}",
+        report.warnings
+    );
+    assert_eq!(fs::read_to_string(fx.paths.library_file()).unwrap(), broken);
+}
+
 /// A cancel that comes after the migration committed, while GOG's
 /// playtime and art are being fetched, reaches that work through the
 /// page's token: it stops, and the migration stays done.

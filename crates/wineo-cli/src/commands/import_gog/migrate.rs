@@ -306,6 +306,9 @@ fn report(
         Outcome::Migrated(migrated) => {
             if let Some(registered) = &migrated.registered {
                 report_playtime(&registered.playtime);
+                for warning in &registered.warnings {
+                    warn(warning);
+                }
             }
             // Before the desktop entries, so a new icon is in them.
             let game = migration.game();
