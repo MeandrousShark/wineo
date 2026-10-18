@@ -1008,6 +1008,43 @@ Same library and machine, `release-test`, 100 iterations each:
 
 Within the step 0 spread; the stats logs are still most of a quiet rescan.
 
+### After step 2 (71a035ec, 2026-10-18)
+
+Same library, machine, and profile, with nothing else building. The stats
+log cache passes question 13's rule: it stays inside the stats read and
+halves a quiet rescan.
+
+| Measurement | min | median | p90 | max |
+|---|---:|---:|---:|---:|
+| Quiet rescan, ms | 34.0 | 34.7 | 35.6 | 36.0 |
+| Busy rescan, ms | 74.7 | 80.7 | 87.2 | 88.9 |
+| `stats::overview`, uncached, ms | 45.0 | 45.9 | 46.3 | 46.4 |
+| `stats::overview_cached`, warm, ms | 10.9 | 11.0 | 11.4 | 11.8 |
+| Busy `stats::overview`, ms | 47.2 | 53.6 | 58.8 | 66.8 |
+| Busy `stats::overview_cached`, ms | 50.3 | 56.2 | 61.6 | 66.2 |
+| A cold library read (`load_library`), ms | 67.7 | 69.7 | 70.5 | 73.8 |
+
+A quiet rescan went from 68.0 to 34.7 ms. The plan's guess was about
+25 ms; the rest is the report overview (8.4 ms) and config parsing, which
+aren't cached. A busy rescan, where every log changed, costs about 3 ms
+more in the stats read than before (stamping and replacing each entry),
+and stays inside step 0's busy range (72 to 104 ms). Real rescans are
+almost always quiet. A cold read gained under 2 ms for the new card fields
+and `library.toml`.
+
+Xvfb with software rendering, 8 fresh launches:
+
+| Measurement | min | median | p90 | max |
+|---|---:|---:|---:|---:|
+| Idle CPU, % of one core | 1.75 | 1.80 | 1.85 | 1.85 |
+| RSS, MiB | 90 | 91 | 93 | 93 |
+| Scroll CPU, % of one core | 59.5 | 60.8 | 62.3 | 62.3 |
+| Scroll frames/s | 9.8 | 10.1 | 11.4 | 11.4 |
+
+Idle CPU halved with the rescan (3.75% to 1.80%). RSS grew about 11 MiB,
+the parsed playtime logs the cache keeps (10.3 MiB of logs on disk).
+Scrolling is unchanged, and the main thread still doesn't wake while idle.
+
 ## Testing and acceptance
 
 - Core: `library.toml` round-trips, ignores unknown keys, keeps a newer
