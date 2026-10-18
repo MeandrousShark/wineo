@@ -32,6 +32,14 @@ fn send(event: Event) -> Message {
     Message::Settings(event)
 }
 
+// Shown in the config's own `~/...` form, which is also what the field accepts.
+fn root_placeholder(field: global::Field, paths: &Paths) -> String {
+    let root = field.default_root(paths);
+    paths
+        .contract(&root)
+        .unwrap_or_else(|_| root.display().to_string())
+}
+
 fn semibold() -> Font {
     Font {
         weight: font::Weight::Semibold,
@@ -390,7 +398,7 @@ fn global_view<'a>(
     ]
     .spacing(12);
     for field in global::Field::ROOTS {
-        let placeholder = field.default_root(paths).display().to_string();
+        let placeholder = root_placeholder(field, paths);
         new_env = new_env.push(setting_row(
             field.label(),
             text_field(
@@ -834,7 +842,7 @@ fn gog_install_rows<'a>(
     let portable = paths.portable_root().is_some();
     let off = locked || portable;
     let games = global::Field::GamesRoot;
-    let placeholder = games.default_root(paths).display().to_string();
+    let placeholder = root_placeholder(games, paths);
     let mut rows = column![
         setting_row(
             games.label(),
