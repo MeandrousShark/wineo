@@ -1,6 +1,6 @@
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Write};
-use std::os::unix::fs::OpenOptionsExt;
+use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -48,6 +48,48 @@ fn found<T>(result: io::Result<T>) -> io::Result<Option<T>> {
         Ok(value) => Ok(Some(value)),
         Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
         Err(error) => Err(error),
+    }
+}
+
+/// What a cache compares to tell whether a file changed without reading it.
+///
+/// mtime and size alone miss a same-size rewrite whose mtime was set back,
+/// which `touch -d` or a copy that keeps times can do. ctime changes on every
+/// write and can't be set by hand, and a replace by rename changes the inode.
+/// The blind spot left is a filesystem with coarse timestamps (FAT keeps
+/// 2 s): two same-size in-place writes in one tick look alike until the next
+/// change.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(
+    not(test),
+    expect(dead_code, reason = "the plan 0054 step 2 caches use it")
+)]
+pub(crate) struct Stamp {
+    mtime: (i64, i64),
+    ctime: (i64, i64),
+    size: u64,
+    dev: u64,
+    ino: u64,
+}
+
+#[cfg_attr(
+    not(test),
+    expect(dead_code, reason = "the plan 0054 step 2 caches use it")
+)]
+impl Stamp {
+    /// The stamp of the file at `path`, or `None` when there is none.
+    pub(crate) fn of(path: &Path) -> io::Result<Option<Self>> {
+        Ok(found(fs::metadata(path))?.map(|metadata| Self::from_metadata(&metadata)))
+    }
+
+    pub(crate) fn from_metadata(metadata: &fs::Metadata) -> Self {
+        Self {
+            mtime: (metadata.mtime(), metadata.mtime_nsec()),
+            ctime: (metadata.ctime(), metadata.ctime_nsec()),
+            size: metadata.size(),
+            dev: metadata.dev(),
+            ino: metadata.ino(),
+        }
     }
 }
 
@@ -192,6 +234,100 @@ mod tests {
                 .starts_with(&format!("failed to create {}", blocker.display())),
             "{error}"
         );
+    }
+
+    fn stamp(path: &Path) -> Stamp {
+        Stamp::of(path).unwrap().unwrap()
+    }
+
+    // File times come from a clock that can be a few ms coarse, so a test
+    // that needs a new ctime waits past one tick first.
+    fn next_tick() {
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+
+    fn set_mtime(path: &Path, time: std::time::SystemTime) {
+        File::options()
+            .write(true)
+            .open(path)
+            .unwrap()
+            .set_modified(time)
+            .unwrap();
+    }
+
+    #[test]
+    fn a_missing_file_has_no_stamp_and_reading_changes_nothing() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("library.toml");
+        assert_eq!(Stamp::of(&path).unwrap(), None);
+        fs::write(&path, "one").unwrap();
+        assert_eq!(stamp(&path), stamp(&path));
+    }
+
+    #[test]
+    fn a_stamp_changes_with_the_size() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("library.toml");
+        fs::write(&path, "one").unwrap();
+        let before = stamp(&path);
+        fs::write(&path, "three").unwrap();
+        assert_ne!(stamp(&path), before);
+    }
+
+    #[test]
+    fn a_stamp_changes_with_the_mtime() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("library.toml");
+        fs::write(&path, "one").unwrap();
+        let before = stamp(&path);
+        let earlier =
+            fs::metadata(&path).unwrap().modified().unwrap() - std::time::Duration::from_secs(60);
+        set_mtime(&path, earlier);
+        assert_ne!(stamp(&path), before);
+    }
+
+    #[test]
+    fn a_same_size_rewrite_with_its_mtime_set_back_is_caught_by_ctime() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("library.toml");
+        fs::write(&path, "one").unwrap();
+        let mtime = fs::metadata(&path).unwrap().modified().unwrap();
+        let before = stamp(&path);
+        next_tick();
+        fs::write(&path, "two").unwrap();
+        set_mtime(&path, mtime);
+        let after = stamp(&path);
+        assert_eq!((after.mtime, after.size), (before.mtime, before.size));
+        assert_ne!(after, before);
+    }
+
+    #[test]
+    fn a_rename_over_the_file_is_caught_by_the_inode() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("library.toml");
+        fs::write(&path, "one").unwrap();
+        let before = stamp(&path);
+        let other = root.path().join("other.toml");
+        fs::write(&other, "one").unwrap();
+        fs::rename(&other, &path).unwrap();
+        assert_ne!(stamp(&path).ino, before.ino);
+        assert_ne!(stamp(&path), before);
+    }
+
+    #[test]
+    fn a_coarse_clock_hides_a_same_size_rewrite_within_one_tick() {
+        // The documented blind spot: on a filesystem that keeps whole
+        // seconds, an in-place same-size write in the same second leaves
+        // every field equal.
+        let coarse = Stamp {
+            mtime: (1_792_254_000, 0),
+            ctime: (1_792_254_000, 0),
+            size: 3,
+            dev: 1,
+            ino: 2,
+        };
+        let rewritten = coarse;
+        assert_eq!(coarse, rewritten);
     }
 
     #[test]
