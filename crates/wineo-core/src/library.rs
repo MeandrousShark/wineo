@@ -1,4 +1,7 @@
 //! Lenient display state for environments.
+//!
+//! Every write sets one field under the file lock, so a window never writes
+//! back state it merely read. `Ok(false)` means the file wasn't touched.
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -119,21 +122,18 @@ pub fn load(paths: &Paths) -> Library {
     read_library(&document)
 }
 
-/// Sets one environment field. Returns whether the file changed.
 pub fn set_favorite(paths: &Paths, name: &str, favorite: bool) -> Result<bool> {
     edit(paths, |document| {
         set_environment_bool(document, name, "favorite", favorite)
     })
 }
 
-/// Sets one environment field. Returns whether the file changed.
 pub fn set_hidden(paths: &Paths, name: &str, hidden: bool) -> Result<bool> {
     edit(paths, |document| {
         set_environment_bool(document, name, "hidden", hidden)
     })
 }
 
-/// Sets the sort key. Returns whether the file changed.
 pub fn set_sort(paths: &Paths, sort: SortKey) -> Result<bool> {
     edit(paths, |document| {
         let current = document
@@ -159,26 +159,22 @@ pub fn set_sort(paths: &Paths, sort: SortKey) -> Result<bool> {
     })
 }
 
-/// Sets the sort direction. Returns whether the file changed.
 pub fn set_descending(paths: &Paths, descending: bool) -> Result<bool> {
     edit(paths, |document| {
         set_view_bool(document, "descending", descending)
     })
 }
 
-/// Sets whether favorites lead the current sort. Returns whether the file changed.
 pub fn set_favorites_first(paths: &Paths, favorites_first: bool) -> Result<bool> {
     edit(paths, |document| {
         set_view_bool(document, "favorites_first", favorites_first)
     })
 }
 
-/// Records the current time as an environment's added date.
 pub fn stamp_added(paths: &Paths, name: &str) -> Result<bool> {
     set_added(paths, name, Timestamp::now())
 }
 
-/// Replaces an environment's library entry with a fresh entry.
 pub fn fresh(paths: &Paths, name: &str) -> Result<bool> {
     let entry = Entry {
         added: Some(Timestamp::now()),
@@ -187,12 +183,10 @@ pub fn fresh(paths: &Paths, name: &str) -> Result<bool> {
     put(paths, name, Some(&entry))
 }
 
-/// Removes an environment's library entry.
 pub fn remove(paths: &Paths, name: &str) -> Result<bool> {
     put(paths, name, None)
 }
 
-/// Replaces or removes one environment entry.
 pub fn put(paths: &Paths, name: &str, entry: Option<&Entry>) -> Result<bool> {
     edit(paths, |document| match entry {
         Some(entry) => {
@@ -214,7 +208,8 @@ pub fn put(paths: &Paths, name: &str, entry: Option<&Entry>) -> Result<bool> {
     })
 }
 
-/// Applies one fresh edit while holding the file lock from read through replace.
+/// Reads, changes, and replaces the file under one lock. `change` returns
+/// whether it altered the document.
 fn edit(paths: &Paths, change: impl FnOnce(&mut DocumentMut) -> bool) -> Result<bool> {
     let path = paths.library_file();
     let _guard = Locks::new(paths).config(&path)?;
