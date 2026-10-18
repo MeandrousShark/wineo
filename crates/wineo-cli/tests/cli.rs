@@ -13,7 +13,7 @@ use wineo_core::runtime::{RunMode, RunState, RunStatus, Runtime};
 
 #[path = "../../wineo-core/tests/common/test_script.rs"]
 mod test_script;
-use test_script::write_script;
+use test_script::{KillOnDrop, write_script};
 
 /// Points every XDG dir into `root` so tests never touch the real config.
 fn wineo(root: &Path) -> Command {
@@ -2125,14 +2125,19 @@ fn winetricks_holds_the_environment_until_it_finishes() {
     let root = tempfile::tempdir().unwrap();
     let marker = root.path().join("started");
     let release = root.path().join("release");
-    let script = "#!/bin/sh\ntouch \"$MARKER\"\nwhile [ ! -e \"$RELEASE\" ]; do sleep 0.05; done\n";
+    // Gives up after 30 seconds, so a killed test can't leave it looping.
+    let script = "#!/bin/sh\ntouch \"$MARKER\"\ni=0\nwhile [ ! -e \"$RELEASE\" ] && [ \"$i\" -lt 600 ]; do sleep 0.05; i=$((i + 1)); done\n";
 
-    let mut child = winetricks_fixture(root.path(), "", Some(script))
-        .env("MARKER", &marker)
-        .env("RELEASE", &release)
-        .args(["winetricks", "notepad"])
-        .spawn()
-        .unwrap();
+    // Its own process group, so the guard also takes down the winetricks it started.
+    let mut child = KillOnDrop::group(
+        winetricks_fixture(root.path(), "", Some(script))
+            .env("MARKER", &marker)
+            .env("RELEASE", &release)
+            .args(["winetricks", "notepad"])
+            .process_group(0)
+            .spawn()
+            .unwrap(),
+    );
     wait_for("winetricks to start", || marker.exists());
 
     let out = output(wineo(root.path()).args(["rm", "notepad"]));
@@ -2157,17 +2162,20 @@ fn winetricks_holds_the_environment_until_it_finishes() {
 fn canceling_winetricks_cleans_up_before_letting_go() {
     let root = tempfile::tempdir().unwrap();
     let marker = root.path().join("started");
-    let script = "#!/bin/sh\ntouch \"$MARKER\"\nwhile true; do sleep 0.05; done\n";
+    // Gives up after 30 seconds, so a killed test can't leave it looping.
+    let script = "#!/bin/sh\ntouch \"$MARKER\"\ni=0\nwhile [ \"$i\" -lt 600 ]; do sleep 0.05; i=$((i + 1)); done\n";
 
     // Its own process group, so the interrupt reaches wineo and winetricks
     // together, the way Ctrl+C in a terminal would.
-    let child = winetricks_fixture(root.path(), "", Some(script))
-        .env("MARKER", &marker)
-        .args(["winetricks", "notepad"])
-        .stderr(Stdio::piped())
-        .process_group(0)
-        .spawn()
-        .unwrap();
+    let child = KillOnDrop::group(
+        winetricks_fixture(root.path(), "", Some(script))
+            .env("MARKER", &marker)
+            .args(["winetricks", "notepad"])
+            .stderr(Stdio::piped())
+            .process_group(0)
+            .spawn()
+            .unwrap(),
+    );
     wait_for("winetricks to start", || marker.exists());
 
     let group = format!("-{}", child.id());

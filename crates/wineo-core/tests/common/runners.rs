@@ -217,8 +217,12 @@ pub const FAKE_WINESERVER: &str = r#"#!/bin/sh
 pids="$WINEPREFIX/fake-pids"
 case "$1" in
 -w)
-    while read -r program _ 2>/dev/null <"$pids" && kill -0 "$program" 2>/dev/null; do
+    # Gives up after a minute, so a recorded pid that never goes away can't hold
+    # it forever.
+    i=0
+    while [ "$i" -lt 600 ] && read -r program _ 2>/dev/null <"$pids" && kill -0 "$program" 2>/dev/null; do
         sleep 0.1
+        i=$((i + 1))
     done
     ;;
 -k)
@@ -290,7 +294,12 @@ stubborn)
     # the process group ends this.
     trap '' TERM
     echo "$$ $$" >"$pids"
-    while :; do sleep 0.1; done
+    # Gives up after a minute, so a killed test can't leave it looping.
+    i=0
+    while [ "$i" -lt 600 ]; do
+        sleep 0.1
+        i=$((i + 1))
+    done
     ;;
 handoff)
     # Leaves something in umu's process group after umu itself has exited.

@@ -3,7 +3,7 @@ use std::fs;
 use std::os::unix::fs::symlink;
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
+use std::process::{Command, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -19,7 +19,7 @@ use wineo_core::runtime::{RunMode, RunState, Runtime, exit_code};
 
 #[path = "common/test_script.rs"]
 mod test_script;
-use test_script::write_script;
+use test_script::{KillOnDrop, kill_fake_programs, write_script};
 #[allow(dead_code)]
 #[path = "common/runners.rs"]
 mod runners;
@@ -70,6 +70,13 @@ fn paths(root: &Path) -> Paths {
 fn script(path: &Path, body: &str) {
     fs::create_dir_all(path.parent().unwrap()).unwrap();
     write_script(path, body);
+}
+
+impl Drop for Fixture {
+    /// A failed assertion must not leave the fake programs running.
+    fn drop(&mut self) {
+        kill_fake_programs(self.root.path());
+    }
 }
 
 impl Fixture {
@@ -174,17 +181,6 @@ fn wait_for(mut ready: impl FnMut() -> bool) {
     while !ready() {
         assert!(Instant::now() < deadline, "timed out");
         thread::sleep(Duration::from_millis(10));
-    }
-}
-
-struct Running(Child);
-
-impl Drop for Running {
-    fn drop(&mut self) {
-        if let Some(pid) = rustix::process::Pid::from_raw(self.0.id() as i32) {
-            let _ = rustix::process::kill_process_group(pid, rustix::process::Signal::KILL);
-        }
-        let _ = self.0.wait();
     }
 }
 
@@ -532,7 +528,7 @@ fn cancellation_holds_locks_and_only_kills_the_started_group() {
         &BTreeMap::new(),
     )
     .unwrap();
-    let mut other = Running(
+    let mut other = KillOnDrop::group(
         tracked
             .command()
             .stdout(Stdio::null())
@@ -544,8 +540,8 @@ fn cancellation_holds_locks_and_only_kills_the_started_group() {
     let state = RunState::running(
         RunMode::Detached,
         "app".to_owned(),
-        other.0.id(),
-        Some(other.0.id()),
+        other.id(),
+        Some(other.id()),
         &Overrides::default(),
     );
     runtime.write_state(&state).unwrap();
@@ -596,7 +592,7 @@ fn cancellation_holds_locks_and_only_kills_the_started_group() {
         .map(|pid| pid.parse().unwrap())
         .collect();
     wait_for(|| wineo_core::process::group_has_live_members(pids[0]) == Some(false));
-    assert!(other.0.try_wait().unwrap().is_none());
+    assert!(other.try_wait().unwrap().is_none());
     assert_eq!(runtime.read_state().unwrap(), state_before);
     assert!(!f.paths.stats_log("app").exists());
     drop(_tracked_guard);

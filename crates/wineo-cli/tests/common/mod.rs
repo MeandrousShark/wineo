@@ -19,7 +19,10 @@ mod runners;
 #[path = "../../../wineo-core/tests/common/test_script.rs"]
 mod test_script;
 pub use runners::{FAKE_CMD, FAKE_GAMEMODERUN, FAKE_UMU, FAKE_WINE, FAKE_WINESERVER};
-pub use test_script::write_script;
+pub use test_script::{kill_fake_programs, write_script};
+// Only some test files guard a spawned process.
+#[allow(unused_imports)]
+pub use test_script::KillOnDrop;
 pub mod gog_api;
 pub mod gog_world;
 pub mod pty;
@@ -566,19 +569,20 @@ impl Fixture {
 impl Drop for Fixture {
     /// A failed assertion must not leave supervisors or fake programs running.
     fn drop(&mut self) {
-        let Ok(entries) = fs::read_dir(self.config_dir().join("environments")) else {
-            return;
-        };
-        for entry in entries.flatten() {
-            if let Some(name) = entry.path().file_stem().and_then(|stem| stem.to_str()) {
-                let _ = self
-                    .wineo()
-                    .args(["stop", "--force", name])
-                    .stdout(Stdio::null())
-                    .stderr(Stdio::null())
-                    .status();
+        if let Ok(entries) = fs::read_dir(self.config_dir().join("environments")) {
+            for entry in entries.flatten() {
+                if let Some(name) = entry.path().file_stem().and_then(|stem| stem.to_str()) {
+                    let _ = self
+                        .wineo()
+                        .args(["stop", "--force", name])
+                        .stdout(Stdio::null())
+                        .stderr(Stdio::null())
+                        .status();
+                }
             }
         }
+        // A stop by name can't reach an environment whose config is gone.
+        kill_fake_programs(self.root.path());
     }
 }
 

@@ -3,9 +3,9 @@ mod common;
 use std::fs;
 use std::os::unix::process::CommandExt;
 use std::path::PathBuf;
-use std::process::{Child, Command, Stdio};
+use std::process::{Command, Stdio};
 
-use common::{Fixture, assert_success, write_script};
+use common::{Fixture, KillOnDrop, assert_success, write_script};
 use wineo_core::config::{EnvironmentConfig, GlobalConfig};
 use wineo_core::environment::Environment;
 use wineo_core::operation::Operation;
@@ -41,21 +41,16 @@ fn paths(f: &Fixture) -> Paths {
     .unwrap()
 }
 
-fn disposable_group() -> Child {
-    Command::new("sleep")
-        .arg("60")
-        .process_group(0)
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .unwrap()
-}
-
-fn stop_child(child: &mut Child) {
-    if child.try_wait().unwrap().is_none() {
-        let _ = child.kill();
-    }
-    let _ = child.wait();
+fn disposable_group() -> KillOnDrop {
+    KillOnDrop::group(
+        Command::new("sleep")
+            .arg("60")
+            .process_group(0)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap(),
+    )
 }
 
 #[test]
@@ -247,7 +242,7 @@ fn lost_run_cleanup_uses_its_snapshot_when_the_alias_has_no_candidates() {
     .unwrap();
     fs::create_dir_all(f.root.path().join("prefix")).unwrap();
     let prefix = fs::canonicalize(f.root.path().join("prefix")).unwrap();
-    let mut child = disposable_group();
+    let child = disposable_group();
     let pid = child.id();
     let mut state = wineo_core::runtime::RunState::running(
         wineo_core::runtime::RunMode::Detached,
@@ -264,7 +259,6 @@ fn lost_run_cleanup_uses_its_snapshot_when_the_alias_has_no_candidates() {
     runtime.write_state(&state).unwrap();
     fs::remove_dir_all(runner_root(&f)).unwrap();
     let stopped = f.run(&["stop", "test"]);
-    stop_child(&mut child);
     assert_success(&stopped);
     assert_eq!(
         runtime.read_state().unwrap().unwrap().status,
@@ -289,7 +283,7 @@ fn installer_cleanup_uses_its_snapshot_when_the_alias_has_no_candidates() {
     let runtime = Runtime::new(&paths, "test");
     fs::create_dir_all(f.root.path().join("prefix")).unwrap();
     let prefix = fs::canonicalize(f.root.path().join("prefix")).unwrap();
-    let mut child = disposable_group();
+    let child = disposable_group();
     let pid = child.id();
     runtime
         .write_operation(&OperationState {
@@ -306,7 +300,6 @@ fn installer_cleanup_uses_its_snapshot_when_the_alias_has_no_candidates() {
         .unwrap();
     fs::remove_dir_all(runner_root(&f)).unwrap();
     let stopped = f.run(&["stop", "test"]);
-    stop_child(&mut child);
     assert_success(&stopped);
     assert!(runtime.read_operation().unwrap().is_none());
 }

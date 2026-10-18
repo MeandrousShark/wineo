@@ -43,6 +43,8 @@ static void append_pid(const char *path, pid_t pid) {
 
 int main(int argc, char **argv) {
     if (argc < 5 || strcmp(argv[1], "SteamLaunch") || strncmp(argv[2], "AppId=", 6)) return 2;
+    // Nothing in a test needs it for ten minutes, so a leaked one ends itself.
+    alarm(600);
     if (!strcmp(argv[4], "exit")) {
         struct timespec delay = {.tv_sec = 1, .tv_nsec = 500000000};
         nanosleep(&delay, NULL);
@@ -52,6 +54,7 @@ int main(int argc, char **argv) {
         pid_t child = fork();
         if (child == 0) {
             strcpy(argv[1], "other");
+            alarm(600);
             signal(SIGTERM, SIG_IGN);
             for (;;) pause();
         }
@@ -95,6 +98,7 @@ static void append_pid(const char *path, pid_t pid) {
 
 int main(int argc, char **argv) {
     if (argc != 5) return 2;
+    alarm(600);
     struct sigaction action = {0};
     action.sa_handler = reap;
     sigaction(SIGCHLD, &action, NULL);

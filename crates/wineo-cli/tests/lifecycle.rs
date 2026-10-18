@@ -6,7 +6,7 @@ mod common;
 use std::fs;
 use std::os::unix::fs::symlink;
 use std::os::unix::process::CommandExt;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -327,6 +327,28 @@ fn stop_kills_what_ignores_a_request_to_close() {
         "{log}"
     );
     assert!(f.state("app").contains("status = \"stopped\""));
+}
+
+#[test]
+fn dropping_the_fixture_kills_fakes_whose_config_is_gone() {
+    let f = Fixture::new();
+    f.environment("app", "[targets.app]\nexe = \"app\"\n");
+    assert_success(&f.run(&["start", "app"]));
+    wait_for("the program to start", || f.fake_program_running("app"));
+    let pids: Vec<String> = fs::read_to_string(f.prefix("app").join("fake-pids"))
+        .unwrap()
+        .split_whitespace()
+        .map(|pid| format!("/proc/{pid}"))
+        .collect();
+    assert_eq!(pids.len(), 2);
+    // A stop by name has nothing to find without the config.
+    fs::remove_file(f.config_dir().join("environments/app.toml")).unwrap();
+
+    drop(f);
+
+    wait_for("the fake programs to be gone", || {
+        pids.iter().all(|pid| !Path::new(pid).exists())
+    });
 }
 
 #[test]
@@ -2871,11 +2893,13 @@ fn a_process_group_that_reused_the_number_is_never_signalled() {
     let boot = fs::read_to_string("/proc/sys/kernel/random/boot_id").unwrap();
     for (boot_id, reused) in [(boot.trim(), true), ("some-other-boot", false)] {
         // Something unrelated now leads a group with the recorded number.
-        let mut bystander = Command::new("sleep")
-            .arg("30")
-            .process_group(0)
-            .spawn()
-            .unwrap();
+        let mut bystander = KillOnDrop::new(
+            Command::new("sleep")
+                .arg("30")
+                .process_group(0)
+                .spawn()
+                .unwrap(),
+        );
         let group = bystander.id();
         let started = fs::read_to_string(format!("/proc/{group}/stat")).unwrap();
         let started: u64 = started[started.rfind(')').unwrap() + 1..]
@@ -2904,8 +2928,6 @@ fn a_process_group_that_reused_the_number_is_never_signalled() {
         );
         assert!(bystander.try_wait().unwrap().is_none(), "it was signalled");
         assert!(!f.installer_recorded("hades"));
-        bystander.kill().unwrap();
-        bystander.wait().unwrap();
     }
 }
 

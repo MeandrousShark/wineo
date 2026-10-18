@@ -8,7 +8,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use common::steam::{SteamFixture, read_pid};
-use common::{assert_success, stderr, stdout, wait_for};
+use common::{KillOnDrop, assert_success, stderr, stdout, wait_for};
 
 fn signal(pid: u32, kind: &str) {
     assert!(
@@ -721,22 +721,23 @@ fn dropping_the_fixture_kills_every_tracked_process() {
 fn fixture_cleanup_spares_a_foreign_process_with_a_stale_logged_pid() {
     let s = SteamFixture::new();
     s.config("");
-    let mut foreign = Command::new("sleep")
-        .arg("30")
-        .process_group(s.client_pid() as i32)
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .unwrap();
+    // Not a group guard: this process sits in the fake Steam client's group.
+    let mut foreign = KillOnDrop::new(
+        Command::new("sleep")
+            .arg("30")
+            .process_group(s.client_pid() as i32)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap(),
+    );
     // A historical PID can now name a stranger, even in the client's group.
     fs::write(&s.request_pids, format!("{}\n", foreign.id())).unwrap();
 
     drop(s);
 
     let survived = foreign.try_wait().unwrap().is_none();
-    let _ = foreign.kill();
-    let _ = foreign.wait();
     assert!(survived, "fixture cleanup signaled a foreign process");
 }
 
