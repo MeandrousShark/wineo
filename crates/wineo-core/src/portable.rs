@@ -844,11 +844,20 @@ fn transfer_library_entry(
     events: &mut impl FnMut(CopyEvent),
 ) {
     let source = library::load(from);
+    // An unreadable source says nothing about the entry, so writing "no
+    // entry" would erase one the destination may already have.
+    if let Some(problem) = &source.problem {
+        events(CopyEvent::Warning(format!(
+            "Can't read library.toml: {}. The copy of {name} didn't keep its favorite, hidden flag, or added date.",
+            problem.reason.trim_end().trim_end_matches('.')
+        )));
+        return;
+    }
     let entry = source.environments.get(name).cloned();
     if let Err(error) = library::put(to, name, entry.as_ref()) {
         events(CopyEvent::Warning(format!(
             "Can't update library.toml: {}. The copy of {name} may not keep its favorite or hidden flag.",
-            crate::error::chain(&error)
+            crate::library_lifecycle::cause(&error)
         )));
     }
 }

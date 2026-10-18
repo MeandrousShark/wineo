@@ -103,9 +103,65 @@ fn portable_copies_warn_and_leave_a_broken_destination_library_unchanged() {
         assert!(f.to.environment_config("game").exists());
         assert_eq!(fs::read(f.to.library_file()).unwrap(), broken);
         assert_eq!(warnings.len(), 1);
-        assert!(warnings[0].contains("Can't save to library.toml: it can't be read."));
-        assert!(warnings[0].contains("Checkup."));
+        assert!(warnings[0].starts_with("Can't update library.toml: it can't be read: "));
+        assert!(!warnings[0].contains(".:"), "{warnings:?}");
         assert!(warnings[0].contains("TOML parse error"), "{warnings:?}");
+    }
+}
+
+#[test]
+fn portable_copies_warn_and_leave_the_destination_alone_when_the_source_library_is_broken() {
+    for native in [false, true] {
+        let f = Fixture::new(native);
+        fs::create_dir_all(f.from.library_file().parent().unwrap()).unwrap();
+        fs::write(
+            f.from.library_file(),
+            "[environments.game]\nfavorite = true\n[broken\n",
+        )
+        .unwrap();
+        library::put(
+            &f.to,
+            "game",
+            Some(&test_entry(true, false, Some(1_792_254_000))),
+        )
+        .unwrap();
+        let before = fs::read(f.to.library_file()).unwrap();
+
+        let mut warnings = Vec::new();
+        let mut collect = |event| {
+            if let CopyEvent::Warning(warning) = event {
+                warnings.push(warning);
+            }
+        };
+        if native {
+            let review = inspect_native(&f.from, &f.to, "game").unwrap();
+            execute_native_with(&f.from, &f.to, &review, &Token::new(), &mut collect).unwrap();
+        } else {
+            let review = inspect(&f.from, &f.to, &f.global, "game").unwrap();
+            execute_reviewed_with(
+                &f.from,
+                &f.to,
+                &f.global,
+                &review,
+                &Token::new(),
+                &mut collect,
+            )
+            .unwrap();
+        }
+
+        assert!(f.to.environment_config("game").exists());
+        assert_eq!(fs::read(f.to.library_file()).unwrap(), before);
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
+        assert!(
+            warnings[0].starts_with("Can't read library.toml: "),
+            "{warnings:?}"
+        );
+        assert!(
+            warnings[0].ends_with(
+                "The copy of game didn't keep its favorite, hidden flag, or added date."
+            ),
+            "{warnings:?}"
+        );
     }
 }
 
