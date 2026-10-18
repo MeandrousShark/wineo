@@ -1,9 +1,11 @@
 mod app_art;
+mod app_close;
 mod app_flow;
 mod app_grid;
 mod app_keys;
 mod app_library;
 mod app_operation;
+mod app_selection;
 mod art_cache;
 mod art_navigation;
 mod art_page;
@@ -738,62 +740,9 @@ impl App {
             | Message::ToastTick(_)
             | Message::ToastFocus(..)
             | Message::ToastAnswer(..)) => removal::update(self, message),
-            Message::SearchChanged(search) => {
-                self.search = search;
-                self.collapse.reset();
-                self.grid_motion
-                    .snap(self.panel_open, self.filtered().len());
-                self.grid_scroll_after_settle = None;
-                self.scroll_offset = 0.0;
-                Task::batch([
-                    iced::widget::operation::scroll_to(
-                        iced::widget::Id::new(SCROLL_ID),
-                        scrollable::AbsoluteOffset { x: 0.0, y: 0.0 },
-                    ),
-                    self.load_visible_art(),
-                ])
-            }
-            Message::Select(name) => {
-                if self.selected.as_deref() == Some(&name) && self.panel_open {
-                    self.card_click_target = Some((name, self.target.clone()));
-                    self.close_panel();
-                    Task::none()
-                } else {
-                    let was_open = self.panel_open;
-                    self.close_log();
-                    if self.selected.as_deref() != Some(&name) {
-                        self.close_checkup();
-                    }
-                    self.selected = Some(name.clone());
-                    self.panel_open = true;
-                    if !was_open {
-                        self.panel_motion.open(Instant::now());
-                    }
-                    self.target = self
-                        .cards
-                        .iter()
-                        .find(|card| card.name == name)
-                        .and_then(|card| card.default_target.clone());
-                    self.panel_error = None;
-                    self.panel_note = None;
-                    self.load_panel_art()
-                }
-            }
-            Message::DoubleClick(name) => {
-                let prior_target = self
-                    .card_click_target
-                    .take()
-                    .and_then(|(clicked, target)| (clicked == name).then_some(target));
-                let panel_art = if self.selected.as_deref() != Some(&name) || !self.panel_open {
-                    self.update(Message::Select(name))
-                } else {
-                    Task::none()
-                };
-                if let Some(target) = prior_target {
-                    self.target = target;
-                }
-                Task::batch([panel_art, self.load_panel_art(), self.start_selected()])
-            }
+            Message::SearchChanged(search) => self.search_changed(search),
+            Message::Select(name) => self.select_card(name),
+            Message::DoubleClick(name) => self.double_click_card(name),
             Message::ClosePanel => {
                 self.close_panel();
                 Task::none()
@@ -854,20 +803,7 @@ impl App {
                 self.hovered = name;
                 Task::none()
             }
-            Message::Refresh => {
-                let library = self.reload_library_once();
-                let badge = if self.trash_refreshing {
-                    Task::none()
-                } else {
-                    self.trash_refreshing = true;
-                    if self.section == sidebar::Section::Trash {
-                        self.reload_trash_page()
-                    } else {
-                        self.reload_badge()
-                    }
-                };
-                Task::batch([library, badge, self.settings_tick()])
-            }
+            Message::Refresh => self.refresh(),
             Message::Rescanned(scan) => self.rescanned(*scan),
             Message::SettingsTick => self.settings_tick(),
             Message::Pressed | Message::Window(window::Event::Focused) => {
@@ -926,25 +862,7 @@ impl App {
                 self.trash_badge = badge;
                 Task::none()
             }
-            Message::Loaded(Ok(cards)) => {
-                self.refreshing = false;
-                self.loaded = true;
-                if self.hook_stop_confirm.as_ref().is_some_and(|name| {
-                    !cards.iter().any(|card| {
-                        &card.name == name
-                            && card.busy_holder
-                                == Some(wineo_core::operation::Operation::Hook(
-                                    wineo_core::hooks::Phase::After,
-                                ))
-                    })
-                }) {
-                    self.hook_stop_confirm = None;
-                    self.hook_stop_identity = None;
-                }
-                let art = self.refresh_art(&cards);
-                let checks = self.merge_checked(cards);
-                Task::batch([art, checks, self.load_visible_art(), self.load_panel_art()])
-            }
+            Message::Loaded(Ok(cards)) => self.cards_loaded(cards),
             Message::Loaded(Err(error)) => {
                 self.refreshing = false;
                 self.loaded = true;
@@ -984,18 +902,7 @@ impl App {
                 self.collapse.reset();
                 self.load_visible_art()
             }
-            Message::Window(window::Event::CloseRequested) => {
-                if self.foreground_busy() {
-                    self.close_prompt = true;
-                    Task::none()
-                } else {
-                    for page in self.art_pages.values() {
-                        page.cancel_thumbnails();
-                    }
-                    self.cancel_remove_dialog();
-                    iced::exit()
-                }
-            }
+            Message::Window(window::Event::CloseRequested) => self.close_requested(),
             Message::Window(window::Event::Unfocused) => {
                 self.focused = false;
                 Task::none()
@@ -1116,35 +1023,7 @@ impl App {
                 Task::none()
             }
             event @ (Message::CancelAndClose | Message::ForceCloseWork) => {
-                let force = matches!(event, Message::ForceCloseWork);
-                self.closing = true;
-                self.cancel_management();
-                self.cancel_features(force);
-                for page in self.art_pages.values() {
-                    page.cancel_thumbnails();
-                }
-                for token in self.pending_art_cancels.values() {
-                    token.cancel();
-                }
-                self.cancel_checkup(force);
-                if let Some(page) = &mut self.flow {
-                    page.cancel(force);
-                }
-                if let Some(operation) = &mut self.operation
-                    && let Some(token) = &operation.token
-                {
-                    if force {
-                        token.force();
-                    } else {
-                        token.cancel();
-                    }
-                    operation.cancelled = true;
-                }
-                if !self.foreground_busy() {
-                    iced::exit()
-                } else {
-                    Task::none()
-                }
+                self.cancel_and_close(event)
             }
         })
     }

@@ -6,7 +6,7 @@ use std::time::Instant;
 use iced::Task;
 use iced::widget::scrollable;
 
-use crate::{App, Early, SCROLL_ID, grid_motion, sidebar};
+use crate::{App, Early, Message, SCROLL_ID, grid_motion, sidebar};
 
 impl App {
     pub(crate) fn grid_card_located(
@@ -56,5 +56,21 @@ impl App {
             }
         }
         ControlFlow::Continue(Task::none())
+    }
+
+    pub(crate) fn search_changed(&mut self, search: String) -> Task<Message> {
+        self.search = search;
+        self.collapse.reset();
+        self.grid_motion
+            .snap(self.panel_open, self.filtered().len());
+        self.grid_scroll_after_settle = None;
+        self.scroll_offset = 0.0;
+        Task::batch([
+            iced::widget::operation::scroll_to(
+                iced::widget::Id::new(SCROLL_ID),
+                scrollable::AbsoluteOffset { x: 0.0, y: 0.0 },
+            ),
+            self.load_visible_art(),
+        ])
     }
 }

@@ -154,4 +154,39 @@ impl App {
             .retain(|(art, _)| self.current_art.get(&art.path) == Some(&art.identity));
         self.error = None;
     }
+
+    pub(crate) fn refresh(&mut self) -> Task<Message> {
+        let library = self.reload_library_once();
+        let badge = if self.trash_refreshing {
+            Task::none()
+        } else {
+            self.trash_refreshing = true;
+            if self.section == sidebar::Section::Trash {
+                self.reload_trash_page()
+            } else {
+                self.reload_badge()
+            }
+        };
+        Task::batch([library, badge, self.settings_tick()])
+    }
+
+    pub(crate) fn cards_loaded(&mut self, cards: Vec<Card>) -> Task<Message> {
+        self.refreshing = false;
+        self.loaded = true;
+        if self.hook_stop_confirm.as_ref().is_some_and(|name| {
+            !cards.iter().any(|card| {
+                &card.name == name
+                    && card.busy_holder
+                        == Some(wineo_core::operation::Operation::Hook(
+                            wineo_core::hooks::Phase::After,
+                        ))
+            })
+        }) {
+            self.hook_stop_confirm = None;
+            self.hook_stop_identity = None;
+        }
+        let art = self.refresh_art(&cards);
+        let checks = self.merge_checked(cards);
+        Task::batch([art, checks, self.load_visible_art(), self.load_panel_art()])
+    }
 }
