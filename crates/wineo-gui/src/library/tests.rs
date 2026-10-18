@@ -78,6 +78,13 @@ fn launch_button_label_uses_the_exact_game_tag() {
         playtime: "never played".into(),
         sessions: "0".to_owned(),
         last_played: "never".into(),
+        seconds: 0,
+        playtime_unknown: false,
+        last_played_at: None,
+        added: None,
+        favorite: false,
+        hidden: false,
+        source: wineo_core::source::Source::new(Default::default()),
         tags: tags.into_iter().map(str::to_owned).collect(),
         targets: Vec::new(),
         default_target: None,
@@ -366,4 +373,149 @@ fn missing_art_file_has_no_identity() {
     assert_eq!(art.identity.len, 5);
     fs::remove_file(&path).unwrap();
     assert!(ArtFile::resolve(path).is_none());
+}
+
+#[test]
+fn cards_carry_raw_sort_fields_and_their_source() {
+    use wineo_core::source::{Integration, Store};
+    use wineo_core::stats::{self, End, Session};
+
+    let root = tempfile::tempdir().unwrap();
+    let paths =
+        Paths::from_lookup(|key| (key == "HOME").then(|| root.path().as_os_str().to_owned()))
+            .unwrap();
+    fs::create_dir_all(paths.environments_dir()).unwrap();
+    let wine = "prefix = '/tmp/p'\nrunner = 'wine'\narch = 'win64'\n";
+    for (name, text) in [
+        (
+            "bg3",
+            "kind = 'proxied'\nlauncher = 'steam'\napp_id = '1086940'\n".to_owned(),
+        ),
+        ("dusk", "kind = 'native'\n".to_owned()),
+        (
+            "native-heroic",
+            "kind = 'native'\nheroic_id = 'h1'\n".to_owned(),
+        ),
+        ("notes", wine.to_owned()),
+        ("witcher", format!("{wine}gog_id = '1207664643'\n")),
+        (
+            "heroic-gog",
+            format!("{wine}gog_id = '1207664643'\nheroic_id = '1207664643'\n"),
+        ),
+        (
+            "fortnite",
+            format!("{wine}heroic_id = 'f'\nstore = 'egs'\n"),
+        ),
+        (
+            "sideload",
+            format!("{wine}heroic_id = 's'\nstore = 'other'\n"),
+        ),
+        ("broken", "not toml [".to_owned()),
+    ] {
+        fs::write(paths.environment_config(name), text).unwrap();
+    }
+    let ended: jiff::Timestamp = "2026-10-01T12:00:00Z".parse().unwrap();
+    let started = ended - jiff::SignedDuration::from_secs(3600);
+    stats::append(
+        &paths.stats_log("dusk"),
+        &Session::new("game".into(), started, ended, End::Exited),
+    )
+    .unwrap();
+    let added: jiff::Timestamp = "2026-09-01T08:00:00Z".parse().unwrap();
+    fs::write(
+        paths.library_file(),
+        format!(
+            "[environments.dusk]\nfavorite = true\nadded = {added}\n\
+             [environments.notes]\nhidden = true\n\
+             [environments.broken]\nfavorite = true\n"
+        ),
+    )
+    .unwrap();
+
+    let cards = load_library(&paths).unwrap();
+    let card = |name: &str| cards.iter().find(|card| card.name == name).unwrap();
+
+    let dusk = card("dusk");
+    assert_eq!(dusk.seconds, 3600);
+    assert!(!dusk.playtime_unknown);
+    assert_eq!(dusk.last_played_at, Some(started));
+    assert_eq!(dusk.added, Some(added));
+    assert!(dusk.favorite && !dusk.hidden);
+
+    let notes = card("notes");
+    assert_eq!((notes.seconds, notes.last_played_at), (0, None));
+    assert!(!notes.playtime_unknown);
+    assert_eq!(notes.playtime, "never played");
+    assert!(notes.hidden && !notes.favorite);
+    assert_eq!(notes.added, None);
+
+    // No Steam here, so its playtime is unknown, not zero.
+    let bg3 = card("bg3");
+    assert!(bg3.playtime_unknown);
+    assert_eq!((bg3.seconds, bg3.last_played_at), (0, None));
+
+    // A config that can't be read still gets its library.toml entry.
+    assert!(card("broken").favorite);
+
+    let source = |name: &str| {
+        let source = card(name).source;
+        (source.store, source.integration, source.label())
+    };
+    assert_eq!(
+        source("bg3"),
+        (Some(Store::Steam), Integration::SteamLibrary, "Steam")
+    );
+    assert_eq!(source("dusk"), (None, Integration::Plain, "Native"));
+    assert_eq!(
+        source("native-heroic"),
+        (None, Integration::HeroicImport, "Native")
+    );
+    assert_eq!(source("notes"), (None, Integration::Plain, "Windows"));
+    assert_eq!(
+        source("witcher"),
+        (Some(Store::Gog), Integration::GogInstall, "GOG")
+    );
+    assert_eq!(
+        source("heroic-gog"),
+        (Some(Store::Gog), Integration::HeroicImport, "GOG")
+    );
+    assert_eq!(
+        source("fortnite"),
+        (Some(Store::Epic), Integration::HeroicImport, "Epic")
+    );
+    assert_eq!(
+        source("sideload"),
+        (None, Integration::HeroicImport, "Windows")
+    );
+    assert_eq!(source("broken"), (None, Integration::Plain, "Windows"));
+}
+
+#[test]
+fn missing_stats_fall_back_to_never_played_or_unknown_raw_values() {
+    for kind in [Some(CardKind::Wine), Some(CardKind::Native), None] {
+        let played = fallback_played(kind);
+        assert_eq!((played.seconds, played.last_played_at), (0, None));
+        assert!(!played.playtime_unknown);
+    }
+    let steam = fallback_played(Some(CardKind::Proxied));
+    assert_eq!((steam.seconds, steam.last_played_at), (0, None));
+    assert!(steam.playtime_unknown);
+}
+
+#[test]
+fn a_bad_library_field_falls_back_alone() {
+    let root = tempfile::tempdir().unwrap();
+    let paths =
+        Paths::from_lookup(|key| (key == "HOME").then(|| root.path().as_os_str().to_owned()))
+            .unwrap();
+    fs::create_dir_all(paths.environments_dir()).unwrap();
+    fs::write(paths.environment_config("game"), "kind = 'native'\n").unwrap();
+    fs::write(
+        paths.library_file(),
+        "[environments.game]\nfavorite = \"yes\"\nhidden = true\n",
+    )
+    .unwrap();
+    let card = load_library(&paths).unwrap().remove(0);
+    assert!(!card.favorite);
+    assert!(card.hidden);
 }

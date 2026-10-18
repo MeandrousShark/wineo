@@ -4,6 +4,7 @@ use std::path::PathBuf;
 use std::time::SystemTime;
 
 use iced::Color;
+use jiff::Timestamp;
 use wineo_core::art::{self, ArtConfig};
 use wineo_core::config::{Kind, Target};
 use wineo_core::environment::Environment;
@@ -11,6 +12,7 @@ use wineo_core::launch;
 use wineo_core::paths::Paths;
 use wineo_core::report::{self, OverviewFilter};
 use wineo_core::runtime::State;
+use wineo_core::source::{Facts, Source};
 use wineo_core::trash::PendingScan;
 use wineo_core::{stats, steam, time};
 
@@ -89,6 +91,16 @@ pub(super) struct Card {
     pub(super) playtime: String,
     pub(super) sessions: String,
     pub(super) last_played: String,
+    /// Raw values for sorting. Unlike the labels above they never depend on
+    /// today's date, so a quiet rescan finds no change.
+    pub(super) seconds: i64,
+    pub(super) playtime_unknown: bool,
+    pub(super) last_played_at: Option<Timestamp>,
+    /// From `library.toml`.
+    pub(super) added: Option<Timestamp>,
+    pub(super) favorite: bool,
+    pub(super) hidden: bool,
+    pub(super) source: Source,
     pub(super) tags: Vec<String>,
     pub(super) targets: Vec<String>,
     pub(super) default_target: Option<String>,
@@ -238,6 +250,17 @@ pub(super) fn playtime_label(seconds: i64) -> String {
     }
 }
 
+/// A card's playtime fields, as labels and raw values.
+#[derive(Clone)]
+struct Played {
+    playtime: String,
+    sessions: String,
+    last_played: String,
+    seconds: i64,
+    playtime_unknown: bool,
+    last_played_at: Option<Timestamp>,
+}
+
 /// Playtime, sessions, and last played when no stats summary came back.
 /// Steam's playtime isn't known then, so it never shows as zero.
 fn fallback_stats(kind: Option<CardKind>) -> (String, String, String) {
@@ -253,7 +276,31 @@ fn fallback_stats(kind: Option<CardKind>) -> (String, String, String) {
     )
 }
 
+/// `fallback_stats` with the raw values: never played, or unknown for Steam.
+fn fallback_played(kind: Option<CardKind>) -> Played {
+    let (playtime, sessions, last_played) = fallback_stats(kind);
+    Played {
+        playtime,
+        sessions,
+        last_played,
+        seconds: 0,
+        playtime_unknown: kind == Some(CardKind::Proxied),
+        last_played_at: None,
+    }
+}
+
 pub(super) fn load_library(paths: &Paths) -> anyhow::Result<Vec<Card>> {
+    load_library_with(paths, &wineo_core::library::load(paths), None)
+}
+
+/// `load_library` with `library.toml` already read and, when given, the
+/// stats logs read through a cache, so a caller that reads often can skip
+/// what didn't change.
+pub(super) fn load_library_with(
+    paths: &Paths,
+    saved: &wineo_core::library::Library,
+    stats: Option<&mut stats::Cache>,
+) -> anyhow::Result<Vec<Card>> {
     // Building cards never trashes or restores, so the overview and every
     // card's config load share one read of the trash.
     let pending = PendingScan::new(paths);
@@ -264,7 +311,10 @@ pub(super) fn load_library(paths: &Paths) -> anyhow::Result<Vec<Card>> {
         .and_then(|steam| steam.install.as_ref())
         .map(steam::compat_tools)
         .unwrap_or_default();
-    let stats = stats::overview(paths)?;
+    let stats = match stats {
+        Some(cache) => stats::overview_cached(paths, cache)?,
+        None => stats::overview(paths)?,
+    };
     let played: HashMap<_, _> = stats
         .rows
         .into_iter()
@@ -283,7 +333,15 @@ pub(super) fn load_library(paths: &Paths) -> anyhow::Result<Vec<Card>> {
             } else {
                 summary.sessions.to_string()
             };
-            (name, (playtime, sessions, last))
+            let played = Played {
+                playtime,
+                sessions,
+                last_played: last,
+                seconds: summary.seconds,
+                playtime_unknown: summary.playtime_unknown,
+                last_played_at: summary.last_played,
+            };
+            (name, played)
         })
         .collect();
     let gog = crate::gog_library::Folders::read(paths);
@@ -313,9 +371,16 @@ pub(super) fn load_library(paths: &Paths) -> anyhow::Result<Vec<Card>> {
         let mut title = item.name.clone();
         let mut panel_art = HashMap::new();
         let mut gog_card = None;
+        // The overview's kind, for when the config can't be loaded here.
+        let mut source = Source::new(Facts {
+            steam: matches!(item.kind, Some(report::KindReport::Proxied { .. })),
+            native: matches!(item.kind, Some(report::KindReport::Native)),
+            ..Facts::default()
+        });
         let (error, art) = match Environment::load_with_pending(paths, &item.name, &pending) {
             Ok(env) => {
                 kind = Some(CardKind::new(&env.config.kind));
+                source = Source::of(&env.config);
                 gog_card = gog.card(paths, &env);
                 prefix = env.prefix(paths).ok();
                 targets = env.config.targets.keys().cloned().collect();
@@ -357,14 +422,22 @@ pub(super) fn load_library(paths: &Paths) -> anyhow::Result<Vec<Card>> {
             }
             Err(error) => (Some(error.to_string()), None),
         };
-        let (playtime, sessions, last_played) = played
+        let played = played
             .get(&item.name)
             .cloned()
-            .unwrap_or_else(|| fallback_stats(kind));
+            .unwrap_or_else(|| fallback_played(kind));
+        let entry = saved.environments.get(&item.name);
         cards.push(Card {
-            playtime,
-            sessions,
-            last_played,
+            playtime: played.playtime,
+            sessions: played.sessions,
+            last_played: played.last_played,
+            seconds: played.seconds,
+            playtime_unknown: played.playtime_unknown,
+            last_played_at: played.last_played_at,
+            added: entry.and_then(|entry| entry.added),
+            favorite: entry.is_some_and(|entry| entry.favorite),
+            hidden: entry.is_some_and(|entry| entry.hidden),
+            source,
             tags: item.tags,
             name: item.name,
             kind,
@@ -388,15 +461,23 @@ pub(super) fn load_library(paths: &Paths) -> anyhow::Result<Vec<Card>> {
         if cards.iter().any(|card| card.name == error.name) {
             continue;
         }
-        let (playtime, sessions, last_played) = played
+        let played = played
             .get(&error.name)
             .cloned()
-            .unwrap_or_else(|| fallback_stats(None));
+            .unwrap_or_else(|| fallback_played(None));
+        let entry = saved.environments.get(&error.name);
         let title = error.name.clone();
         cards.push(Card {
-            playtime,
-            sessions,
-            last_played,
+            playtime: played.playtime,
+            sessions: played.sessions,
+            last_played: played.last_played,
+            seconds: played.seconds,
+            playtime_unknown: played.playtime_unknown,
+            last_played_at: played.last_played_at,
+            added: entry.and_then(|entry| entry.added),
+            favorite: entry.is_some_and(|entry| entry.favorite),
+            hidden: entry.is_some_and(|entry| entry.hidden),
+            source: Source::new(Facts::default()),
             tags: Vec::new(),
             name: error.name,
             kind: None,

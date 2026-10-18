@@ -16,9 +16,11 @@ use crate::error::{Error, IoContext, Result};
 use crate::operation::Locks;
 use crate::paths::Paths;
 
+mod cache;
 mod check;
 mod repair;
 
+pub use cache::Cache;
 pub(crate) use check::{FindingKind, inspect, remove_strays};
 pub use repair::{RepairReport, ViewRecovery, repair};
 
@@ -88,8 +90,11 @@ enum ReadFailure {
 
 /// Reads display state, falling back to defaults when the file can't be used.
 pub fn load(paths: &Paths) -> Library {
-    let path = paths.library_file();
-    let document = match read_document(&path) {
+    library_from(read_document(&paths.library_file()))
+}
+
+fn library_from(read: std::result::Result<Option<DocumentMut>, ReadFailure>) -> Library {
+    let document = match read {
         Ok(Some(document)) => document,
         Ok(None) => return Library::default(),
         Err(ReadFailure::Io(error)) => {
@@ -244,6 +249,22 @@ fn read_document(path: &Path) -> std::result::Result<Option<DocumentMut>, ReadFa
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
         Err(error) => return Err(ReadFailure::Io(error)),
     };
+    parse_document(&text).map(Some)
+}
+
+/// `read_document` for bytes already read.
+fn document_from_bytes(bytes: Vec<u8>) -> std::result::Result<DocumentMut, ReadFailure> {
+    let text = String::from_utf8(bytes).map_err(|_| {
+        // What `fs::read_to_string` says, so both reads report alike.
+        ReadFailure::Io(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "stream did not contain valid UTF-8",
+        ))
+    })?;
+    parse_document(&text)
+}
+
+fn parse_document(text: &str) -> std::result::Result<DocumentMut, ReadFailure> {
     let document = text.parse::<DocumentMut>().map_err(|error| {
         let line = error.span().map(|span| {
             1 + text.as_bytes()[..span.start]
@@ -258,7 +279,7 @@ fn read_document(path: &Path) -> std::result::Result<Option<DocumentMut>, ReadFa
     {
         return Err(ReadFailure::Schema(version.to_string()));
     }
-    Ok(Some(document))
+    Ok(document)
 }
 
 fn unreadable_error(path: &Path, failure: ReadFailure) -> Error {

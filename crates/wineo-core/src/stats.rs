@@ -196,7 +196,7 @@ fn parse(path: &Path, text: &str) -> Log {
 pub struct Cache {
     logs: HashMap<PathBuf, CachedLog>,
     /// How many logs were read and parsed, for tests that pin a cache hit.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     parses: usize,
 }
 
@@ -211,6 +211,12 @@ impl Cache {
         Self::default()
     }
 
+    #[cfg(any(test, feature = "test-support"))]
+    #[doc(hidden)]
+    pub fn parses(&self) -> usize {
+        self.parses
+    }
+
     /// The log at `path`, parsed only if its file changed since the cached
     /// parse. Anything unusual (no file, an unreadable one, a file that
     /// changed while being read) is read and returned as `read` would and
@@ -223,7 +229,7 @@ impl Cache {
             return Ok(Arc::clone(&cached.log));
         }
         self.logs.remove(path);
-        #[cfg(test)]
+        #[cfg(any(test, feature = "test-support"))]
         {
             self.parses += 1;
         }

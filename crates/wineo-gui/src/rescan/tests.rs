@@ -6,6 +6,7 @@ use wineo_core::trash::{self, PendingEntry};
 
 use super::*;
 use crate::App;
+use crate::library::load_library;
 use crate::sidebar::Section;
 use crate::tests::card;
 
@@ -433,4 +434,152 @@ fn the_stream_stays_silent_until_something_changes() {
         };
         assert!(scan.library.is_some() && scan.trash.is_none());
     });
+}
+
+#[test]
+fn every_sort_field_counts_as_a_change() {
+    use wineo_core::source::{Facts, Source};
+
+    let watch = Watch::default();
+    let base = card("game", State::Inactive, 0);
+    watch.show_library(Ok(vec![base.clone()]));
+    let scan = |cards: Vec<Card>| Scan {
+        library: Some(Ok(cards)),
+        ..Scan::default()
+    };
+    assert!(watch.changes(scan(vec![base.clone()]), now()).is_none());
+    let when: jiff::Timestamp = "2026-10-01T12:00:00Z".parse().unwrap();
+    let changes: [fn(&mut Card, jiff::Timestamp); 7] = [
+        |card, _| card.seconds = 60,
+        |card, _| card.playtime_unknown = true,
+        |card, when| card.last_played_at = Some(when),
+        |card, when| card.added = Some(when),
+        |card, _| card.favorite = true,
+        |card, _| card.hidden = true,
+        |card, _| {
+            card.source = Source::new(Facts {
+                native: true,
+                ..Facts::default()
+            })
+        },
+    ];
+    for change in changes {
+        let mut changed = base.clone();
+        change(&mut changed, when);
+        assert!(watch.changes(scan(vec![changed]), now()).is_some());
+    }
+}
+
+fn write_library(app: &App, text: &str) {
+    let path = app.paths.library_file();
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    fs::write(path, text).unwrap();
+}
+
+#[test]
+fn a_library_problem_appearing_and_clearing_is_reported() {
+    let (_root, mut app) = shown(&["game"]);
+    assert!(app.shown.changes(rescan(&app, false), now()).is_none());
+
+    write_library(&app, "[environments.game\n");
+    let scan = app.shown.changes(rescan(&app, false), now()).unwrap();
+    // The cards read the same with the file unusable.
+    assert!(scan.library.is_none());
+    assert!(matches!(scan.problem, Some(Some(_))));
+    let _ = app.update(Message::Rescanned(Box::new(scan)));
+    assert!(app.library_problem.is_some());
+    assert!(app.shown.changes(rescan(&app, false), now()).is_none());
+
+    write_library(&app, "[environments.game]\nfavorite = true\n");
+    let scan = app.shown.changes(rescan(&app, false), now()).unwrap();
+    assert_eq!(scan.problem, Some(None));
+    assert!(scan.library.is_some());
+    let _ = app.update(Message::Rescanned(Box::new(scan)));
+    assert_eq!(app.library_problem, None);
+    assert!(app.cards[0].favorite);
+    assert!(app.shown.changes(rescan(&app, false), now()).is_none());
+}
+
+#[test]
+fn a_problem_waits_for_the_first_load_to_be_shown() {
+    let (_root, mut app) = fixture();
+    native(&app.paths, "game");
+    write_library(&app, "[environments.game\n");
+    assert!(app.shown.changes(rescan(&app, false), now()).is_none());
+    let _ = app.update(Message::Loaded(library(&app.paths)));
+    let scan = app.shown.changes(rescan(&app, false), now()).unwrap();
+    assert!(scan.library.is_none());
+    assert!(matches!(scan.problem, Some(Some(_))));
+}
+
+#[test]
+fn a_problem_read_before_a_reload_started_is_dropped() {
+    let (_root, app) = shown(&["game"]);
+    write_library(&app, "[environments.game\n");
+    let scan = rescan(&app, false);
+    app.shown.reloading_library();
+    let scan = app.shown.current(scan);
+    assert!(scan.library.is_none());
+    assert!(scan.problem.is_none());
+}
+
+#[test]
+fn a_library_toml_change_reaches_the_cards_once() {
+    let (_root, mut app) = shown(&["game", "other"]);
+    write_library(
+        &app,
+        "[environments.game]\nfavorite = true\n[environments.other]\nhidden = true\n",
+    );
+    let scan = app.shown.changes(rescan(&app, false), now()).unwrap();
+    assert_eq!(scan.problem, None);
+    let _ = app.update(Message::Rescanned(Box::new(scan)));
+    let card = |name: &str| app.cards.iter().find(|card| card.name == name).unwrap();
+    assert!(card("game").favorite && !card("game").hidden);
+    assert!(card("other").hidden && !card("other").favorite);
+    assert!(app.shown.changes(rescan(&app, false), now()).is_none());
+}
+
+#[test]
+fn the_caches_survive_a_subscription_restart() {
+    use wineo_core::stats::{self, End, Session};
+
+    let (_root, app) = shown(&["game"]);
+    write_library(&app, "[environments.game]\nfavorite = true\n");
+    let ended = jiff::Timestamp::now();
+    stats::append(
+        &app.paths.stats_log("game"),
+        &Session::new(
+            "game".into(),
+            ended - jiff::SignedDuration::from_secs(60),
+            ended,
+            End::Exited,
+        ),
+    )
+    .unwrap();
+    let counts = || {
+        let caches = app.shown.0.caches.lock().unwrap();
+        (caches.scans, caches.library.reads(), caches.stats.parses())
+    };
+    let run = |trash_page: bool, art_page: Option<&str>| {
+        let rescan = Rescan {
+            paths: app.paths.clone(),
+            watch: app.shown.clone(),
+            trash_page,
+            art_page: art_page.map(str::to_owned),
+        };
+        paused(async {
+            let mut stream = Box::pin(stream(&rescan));
+            let _ = tokio::time::timeout(INTERVAL * 3, stream.next()).await;
+        });
+    };
+    run(false, None);
+    let (scans, reads, parses) = counts();
+    assert!(scans > 0);
+    assert_eq!((reads, parses), (1, 1));
+    // Opening the trash page, then an Art page, restarts the subscription.
+    run(true, None);
+    run(false, Some("game"));
+    let (after, reads, parses) = counts();
+    assert!(after > scans, "the restarted streams scanned");
+    assert_eq!((reads, parses), (1, 1), "nothing unchanged was read again");
 }

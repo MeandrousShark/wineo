@@ -138,6 +138,8 @@ pub(crate) struct App {
     failed_images: HashSet<ArtKey>,
     current_art: HashMap<PathBuf, ArtIdentity>,
     error: Option<String>,
+    /// Why `library.toml` couldn't be used, as of the last rescan.
+    library_problem: Option<wineo_core::library::Problem>,
     refreshing: bool,
     /// The first library load has answered, so an empty library is real.
     loaded: bool,
@@ -403,6 +405,7 @@ impl App {
             failed_images: HashSet::new(),
             current_art: HashMap::new(),
             error: None,
+            library_problem: None,
             refreshing: true,
             loaded: false,
             viewport_width: 1200.0 - sidebar::WIDTH,
