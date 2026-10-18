@@ -662,6 +662,16 @@ impl App {
         if self.sort_menu && !self.sort_menu_shown() {
             self.sort_menu = false;
         }
+        // Whichever way a close got here, once only sort writes are left
+        // they get a bounded wait.
+        if self.closing
+            && !self.exiting
+            && self.close_by.is_none()
+            && !self.foreground_busy()
+            && self.view_writes.pending()
+        {
+            self.close_by = Some(Instant::now() + app_window::SORT_SAVE_WAIT);
+        }
         let focus = if poll_focus {
             self.poll_toast_focus()
         } else {

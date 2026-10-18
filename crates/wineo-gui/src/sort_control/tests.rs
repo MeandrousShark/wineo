@@ -1034,3 +1034,41 @@ fn a_second_close_while_waiting_exits_at_once() {
     assert!(run(app.update(close()), 0).exits);
     assert!(app.view_writes.pending(), "the write was given up on");
 }
+
+#[test]
+fn a_close_that_cancels_foreground_work_still_bounds_the_sort_wait() {
+    let (_root, mut app) = loaded();
+    let _stalled = app.update(Message::Sort(Event::FlipDirection));
+    let _ = app.update(Message::Select("hades".into()));
+    app.operation = Some(crate::Operation {
+        name: "hades".into(),
+        kind: crate::OperationKind::Start,
+        token: Some(wineo_core::cancel::Token::new()),
+        cancelled: false,
+        status: "Starting...".into(),
+        install_done: None,
+        installing: false,
+        after_hook: false,
+    });
+    let _ = app.update(Message::Window(iced::window::Event::CloseRequested));
+    assert!(app.close_prompt);
+    assert!(!run(app.update(Message::CancelAndClose), 0).exits);
+    assert!(app.closing);
+    assert!(app.close_by.is_none(), "the launch is still running");
+
+    let asked = Instant::now();
+    let finished = app.update(Message::StartFinished(
+        "hades".into(),
+        Err(crate::panel::PanelError {
+            text: "canceled".into(),
+            cleanup: false,
+            output: None,
+        }),
+    ));
+    assert!(!run(finished, 0).exits);
+    assert!(app.operation.is_none());
+    let due = app.close_wake.due().expect("the sort wait is bounded");
+    assert!(due >= asked + crate::app_window::SORT_SAVE_WAIT);
+    let over = app.update(Message::CloseWaitOver(app.close_wake.generation()));
+    assert!(run(over, 0).exits);
+}
