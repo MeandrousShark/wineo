@@ -1,7 +1,7 @@
-use crate::files::Stamp;
+use crate::files::{self, Stamp};
 use crate::paths::Paths;
 
-use super::{Library, load};
+use super::{Library, ReadFailure, document_from_bytes, library_from};
 
 /// `load` for a caller that reads often, like the GUI's rescan: the file is
 /// parsed again only when its stamp changed.
@@ -42,32 +42,35 @@ impl Cache {
     pub fn read(&mut self, paths: &Paths) -> &Library {
         let now = Seen::now(paths);
         if now == Seen::Untrusted || now != self.seen {
-            self.reload(paths, now);
+            self.reload(paths);
         }
         &self.library
     }
 
     /// The library as it is on disk now.
     pub fn refresh(&mut self, paths: &Paths) -> &Library {
-        let now = Seen::now(paths);
-        self.reload(paths, now);
+        self.reload(paths);
         &self.library
     }
 
-    /// The stamp is taken on both sides of the read, so a write landing in
-    /// between can't pair the old contents with the new stamp.
-    fn reload(&mut self, paths: &Paths, before: Seen) {
-        self.library = load(paths);
+    /// The bytes and the stamp come from one read of one handle, so a write
+    /// landing meanwhile leaves the cache untrusted instead of pairing the
+    /// old contents with the new stamp.
+    fn reload(&mut self, paths: &Paths) {
         #[cfg(test)]
         {
             self.reads += 1;
         }
-        let after = Seen::now(paths);
-        self.seen = if before == after {
-            after
-        } else {
-            Seen::Untrusted
+        let (read, seen) = match files::read_stamped(&paths.library_file()) {
+            Ok(None) => (Ok(None), Seen::Missing),
+            Ok(Some((bytes, stamp))) => (
+                document_from_bytes(bytes).map(Some),
+                stamp.map_or(Seen::Untrusted, Seen::File),
+            ),
+            Err(error) => (Err(ReadFailure::Io(error)), Seen::Untrusted),
         };
+        self.library = library_from(read);
+        self.seen = seen;
     }
 }
 
@@ -250,13 +253,28 @@ mod tests {
     }
 
     #[test]
-    fn a_file_that_changed_while_read_is_read_again() {
+    fn a_rewrite_during_the_read_leaves_the_cache_untrusted() {
         let mut fixture = Fixture::new();
-        fixture.write(FAVORITE);
-        // What `reload` records when the stamps on both sides differ.
-        fixture.cache.reload(&fixture.paths, Seen::Missing);
+        fixture.write(PLAIN);
+        let path = fixture.paths.library_file();
+        files::between_read_and_check::set(move || {
+            fs::write(&path, FAVORITE).unwrap();
+        });
+        // The first read got the old bytes, so it can't keep the new stamp.
+        assert!(fixture.read());
         assert_eq!(fixture.cache.seen, Seen::Untrusted);
         assert!(fixture.read());
+        assert!(fixture.favorite("game"));
+        assert!(!fixture.read());
+    }
+
+    #[test]
+    fn bytes_that_are_not_text_read_like_load() {
+        let mut fixture = Fixture::new();
+        fs::write(fixture.paths.library_file(), b"\xff\xfe").unwrap();
+        let cached = fixture.cache.read(&fixture.paths).clone();
+        assert_eq!(cached, super::super::load(&fixture.paths));
+        assert!(cached.problem.is_some());
         assert!(!fixture.read());
     }
 }
