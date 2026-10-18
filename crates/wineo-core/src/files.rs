@@ -60,10 +60,6 @@ fn found<T>(result: io::Result<T>) -> io::Result<Option<T>> {
 /// 2 s): two same-size in-place writes in one tick look alike until the next
 /// change.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "the plan 0054 step 2 caches use it")
-)]
 pub(crate) struct Stamp {
     mtime: (i64, i64),
     ctime: (i64, i64),
@@ -72,10 +68,6 @@ pub(crate) struct Stamp {
     ino: u64,
 }
 
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "the plan 0054 step 2 caches use it")
-)]
 impl Stamp {
     /// The stamp of the file at `path`, or `None` when there is none.
     pub(crate) fn of(path: &Path) -> io::Result<Option<Self>> {
