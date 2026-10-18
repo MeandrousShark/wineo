@@ -106,6 +106,10 @@ impl Paths {
         self.config.join("config.toml")
     }
 
+    pub fn library_file(&self) -> PathBuf {
+        self.config.join("library.toml")
+    }
+
     pub fn environments_dir(&self) -> PathBuf {
         self.config.join("environments")
     }

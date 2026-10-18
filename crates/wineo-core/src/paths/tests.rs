@@ -36,6 +36,10 @@ fn defaults_follow_xdg_fallbacks() {
         Path::new("/home/me/.config/wineo/config.toml")
     );
     assert_eq!(
+        paths.library_file(),
+        Path::new("/home/me/.config/wineo/library.toml")
+    );
+    assert_eq!(
         paths.environment_config("notepad"),
         Path::new("/home/me/.config/wineo/environments/notepad.toml")
     );
@@ -222,6 +226,10 @@ fn portable_layout_keeps_host_data_and_runtime_on_the_host() {
     assert_eq!(
         paths.environment_config("hades"),
         Path::new("/mnt/usb/wineo/config/environments/hades.toml")
+    );
+    assert_eq!(
+        paths.library_file(),
+        Path::new("/mnt/usb/wineo/config/library.toml")
     );
     assert_eq!(
         paths.templates_dir(),

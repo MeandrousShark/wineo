@@ -27,6 +27,8 @@ pub mod install;
 pub mod installer;
 pub mod key_store;
 pub mod launch;
+pub mod library;
+pub(crate) mod library_lifecycle;
 pub mod log;
 pub mod name;
 pub mod operation;

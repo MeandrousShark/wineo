@@ -106,6 +106,12 @@ pub enum Error {
     #[error("unsupported schema_version {found} in {}\n{NEWER_VERSION_HINT}", .path.display())]
     SchemaVersion { path: PathBuf, found: String },
 
+    #[error("Can't save to library.toml: it can't be read. Fix it, or repair it in Checkup.")]
+    LibraryUnreadable {
+        #[source]
+        source: Box<dyn std::error::Error + Send + Sync>,
+    },
+
     #[error(transparent)]
     Edit(#[from] crate::edit::EditError),
 
