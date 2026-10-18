@@ -218,20 +218,21 @@ impl Supervisor {
         stats_log: &Path,
         mut notify: impl FnMut(Notice),
     ) -> Result<()> {
-        let outlives = launch.host.outlives_program();
+        let identity = state.identity();
         // No `give_up`: a launcher can hand off to a game that runs for hours,
         // and a stop already escalates to kills until the run is over. When
         // the end can't be confirmed, the run is left marked live below.
         let ending = self.watch(
             &launch.host,
-            state.identity(),
+            identity.clone(),
             child,
             stop_timeout,
             Settle::Idle,
             None,
             |watched| match watched {
                 Watched::Exited(code) => {
-                    state.program_exited(code, outlives);
+                    let lingering = launch.host.outlived_by(identity.as_ref());
+                    state.program_exited(code, lingering);
                     if let Err(err) = runtime.write_state(state) {
                         notify(Notice::Warning(err));
                     }

@@ -201,11 +201,11 @@ impl Runner {
         }
     }
 
-    /// Whether a run expects other processes to outlive the launched program,
-    /// so it records when the program exited. Wine keeps a prefix alive after a
-    /// launcher hands off. umu usually waits for its game, so a Proton run
-    /// doesn't record umu's exit, though the run still lasts until nothing is
-    /// left in umu's process group.
+    /// Whether other processes are expected to outlive the launched program,
+    /// so a run records when the program exited. Wine keeps a prefix alive
+    /// after a launcher hands off. umu usually waits for its game, so for
+    /// Proton that is decided at umu's exit by whether anything is still live
+    /// in its process group (`Host::outlived_by`).
     pub fn outlives_program(&self) -> bool {
         !self.is_proton()
     }

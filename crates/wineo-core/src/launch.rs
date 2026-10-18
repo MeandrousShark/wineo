@@ -143,6 +143,19 @@ impl Host {
         }
     }
 
+    /// Whether something the program started may still be running once it
+    /// has exited, checked at that moment. umu usually waits for its game, so
+    /// a Proton run only counts as outlived when something is still live in
+    /// umu's process group.
+    pub(crate) fn outlived_by(&self, identity: Option<&crate::process::Identity>) -> bool {
+        match self {
+            Host::Wine { runner, .. } if runner.is_proton() => identity.is_some_and(|identity| {
+                crate::process::group_has_live_members(identity.group) == Some(true)
+            }),
+            _ => self.outlives_program(),
+        }
+    }
+
     /// Waits until the run is over: the prefix is idle, or for a Proton or
     /// native run, its whole process group is gone.
     pub(crate) fn wait_idle(

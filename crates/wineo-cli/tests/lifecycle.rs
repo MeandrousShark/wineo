@@ -1910,6 +1910,18 @@ fn a_proton_run_lasts_until_what_umu_handed_off_to_exits() {
     assert!(state.contains("status = \"running\""), "{state}");
     assert!(f.runtime("hades").is_running().unwrap());
     assert!(!f.prefix("hades").join("handoff-done").exists());
+    assert!(state.contains("program_exited_at"), "{state}");
+    let shown = stdout(&f.run(&["status", "hades"]));
+    assert!(shown.contains("exited"), "{shown}");
+    assert!(
+        shown.contains("other processes are keeping the prefix running"),
+        "{shown}"
+    );
+    let json = f.run(&["status", "hades", "--json"]);
+    assert_success(&json);
+    let value: serde_json::Value = serde_json::from_slice(&json.stdout).unwrap();
+    assert_eq!(value["state"], "running", "{value}");
+    assert!(value["run"]["program_exited_at"].is_string(), "{value}");
 
     fs::write(f.prefix("hades").join("handoff-release"), "").unwrap();
     f.wait_for_run_end("hades", "exited");
