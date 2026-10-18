@@ -916,6 +916,15 @@ places is part 2. Selection follows "Selection".
   review). A trash entry without one may come from an `rm` that couldn't
   read `library.toml`, which left the real entry in the file; writing
   "no entry" on restore would delete it once the file was repaired.
+- **Step 2's seams** (2026-10-18). One `files::Stamp` (mtime, ctime,
+  size, device, inode) serves both caches, with the coarse-timestamp blind
+  spot documented beside it. The `library.toml` cache has no way to set a
+  value: it reads (re-reading when the stamp changed) or refreshes from
+  disk, and every write path, successful or not, refreshes, so the cache
+  can't hold a value that wasn't saved. Step 2 carries the file's problem
+  in the rescan result, so a banner can appear or clear; the banner itself
+  is drawn in step 4, when hidden games leave the grid and a broken file
+  becomes the only reason they'd reappear.
 - **No older `library.toml` fixture yet** (2026-10-18). Schema 1 is the
   first, so step 1's upgrade fixtures cover a missing file only. An older
   file joins the upgrade fixtures with the first tagged set that has one.
@@ -970,6 +979,20 @@ to 20% (posters decode on the way down and are reused on the way up);
 search 8 to 12% while typing. Scrolling was smooth and search felt
 instant. The bench library was being regenerated during part of this
 run, which may have made some rescans busier than a quiet idle.
+
+### After step 1 (ff78914d, 2026-10-18)
+
+Step 1 doesn't touch the rescan, so this run is also step 2's baseline.
+Same library and machine, `release-test`, 100 iterations each:
+
+| Measurement | min | median | p90 | max |
+|---|---:|---:|---:|---:|
+| Quiet rescan, ms | 67.5 | 68.0 | 69.1 | 76.0 |
+| Busy rescan, ms | 68.4 | 75.1 | 80.3 | 87.4 |
+| `stats::overview`, ms | 45.0 | 45.1 | 45.3 | 46.0 |
+| Stats logs read and parsed, ms | 33.3 | 33.4 | 33.6 | 33.9 |
+
+Within the step 0 spread; the stats logs are still most of a quiet rescan.
 
 ## Testing and acceptance
 
