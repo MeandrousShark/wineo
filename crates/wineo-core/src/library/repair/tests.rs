@@ -794,4 +794,24 @@ fn quote_runs_close_multi_line_strings_as_the_spec_says() {
     // A comment or a quote inside a string doesn't end the value.
     assert!(!scan(&["a = [\"#\", \"]\"]"]));
     assert!(scan(&["a = [\"#\", \"]\","]));
+    // A run of six or more is invalid TOML; the scanner closes the string and
+    // takes the whole run, so the next line starts a new unit.
+    assert!(!scan(&["a = \"\"\"x\"\"\"\"\"\""]));
+    assert!(scan(&["a = [\"\"\"one\"\"\"\"\"\", \"\"\""]));
+}
+
+#[test]
+fn an_invalid_run_of_six_quotes_hides_no_header_from_its_entry() {
+    let fixture = Fixture::new();
+    fixture.write(
+        "[environments.hades]\nfavorite = true\nnote = [\"\"\"one\"\"\"\"\"\", \"\"\"\n[environments.ghost]\n\"\"\"]\nhidden = true\n",
+    );
+
+    let report = repair_at(&fixture.paths, STAMP, sync_dir).unwrap().unwrap();
+
+    assert_eq!((report.entries, report.full, report.partly), (1, 0, 1));
+    let library = load(&fixture.paths);
+    assert!(library.environments["hades"].favorite);
+    assert!(library.environments["hades"].hidden);
+    assert!(!library.environments.contains_key("ghost"));
 }
