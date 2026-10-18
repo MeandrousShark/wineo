@@ -406,6 +406,14 @@ impl App {
                 .on_scroll(|_| Message::OverlayInput),
             ));
         }
+        if self.close_prompt && self.close_quietly {
+            return page
+                .push(iced::widget::opaque(
+                    mouse_area(Space::new().width(Fill).height(Fill))
+                        .on_scroll(|_| Message::OverlayInput),
+                ))
+                .into();
+        }
         if self.close_prompt {
             let message = if self.closing {
                 if self.feature_finishing() {

@@ -1,6 +1,6 @@
 //! Message handlers for the window: resizing, closing, and canceling work on the way out.
 
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use iced::Task;
 
@@ -20,9 +20,11 @@ impl App {
             Task::none()
         } else if self.view_writes.pending() {
             // The window closes once the file has the final view, or when
-            // the wait runs out.
+            // the wait runs out. Like any accepted close it takes the input,
+            // but it shows nothing.
             self.closing = true;
-            self.close_by = Some(Instant::now() + SORT_SAVE_WAIT);
+            self.close_prompt = true;
+            self.close_quietly = true;
             Task::none()
         } else {
             self.exit_now()

@@ -854,7 +854,7 @@ fn closing_waits_until_the_file_has_the_final_view() {
     assert!(!app.query.descending);
     let close = app.update(Message::Window(iced::window::Event::CloseRequested));
     assert!(app.closing);
-    assert!(!app.close_prompt, "nothing to cancel, so no prompt");
+    assert!(app.close_quietly, "nothing to cancel, so no prompt shows");
     assert!(!run(close, 0).exits);
 
     // The first write lands, and the final value still has to be written.
@@ -1051,7 +1051,7 @@ fn a_close_that_cancels_foreground_work_still_bounds_the_sort_wait() {
         after_hook: false,
     });
     let _ = app.update(Message::Window(iced::window::Event::CloseRequested));
-    assert!(app.close_prompt);
+    assert!(app.close_prompt && !app.close_quietly);
     assert!(!run(app.update(Message::CancelAndClose), 0).exits);
     assert!(app.closing);
     assert!(app.close_by.is_none(), "the launch is still running");
@@ -1071,4 +1071,40 @@ fn a_close_that_cancels_foreground_work_still_bounds_the_sort_wait() {
     assert!(due >= asked + crate::app_window::SORT_SAVE_WAIT);
     let over = app.update(Message::CloseWaitOver(app.close_wake.generation()));
     assert!(run(over, 0).exits);
+}
+
+/// A launch, Add, and their keys, which start foreground work.
+fn try_to_start_work(app: &mut App) {
+    let _ = app.update(Message::Play);
+    let _ = app.update(Message::Add);
+    let _ = app.update(Message::Key(
+        Key::Character("n".into()),
+        Modifiers::CTRL,
+        iced::event::Status::Ignored,
+    ));
+    key(app, Named::Enter);
+}
+
+#[test]
+fn a_quiet_close_takes_the_input_while_it_waits() {
+    // Without a close, the same input starts a launch.
+    let (_root, mut open) = loaded();
+    let _ = open.update(Message::Select("hades".into()));
+    try_to_start_work(&mut open);
+    assert!(open.operation.is_some());
+
+    let (_root, mut app) = loaded();
+    let _ = app.update(Message::Select("hades".into()));
+    let _stalled = app.update(Message::Sort(Event::FlipDirection));
+    let _ = app.update(Message::Window(iced::window::Event::CloseRequested));
+    assert!(app.close_quietly && app.close_by.is_some());
+    try_to_start_work(&mut app);
+    let _ = app.update(Message::Sort(Event::FlipDirection));
+    crate::shortcuts::tests::press(&mut app, "3", Modifiers::CTRL);
+    assert!(app.operation.is_none());
+    assert!(app.flow.is_none());
+    assert!(app.query.descending);
+    assert_eq!(app.section, crate::sidebar::Section::Library);
+    // An unseen layer takes the mouse; no prompt is drawn.
+    let _ = app.view();
 }

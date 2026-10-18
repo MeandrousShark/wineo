@@ -217,6 +217,8 @@ pub(crate) struct App {
     action_menu_position: iced::Point,
     window_size: iced::Size,
     close_prompt: bool,
+    /// A close waiting only on sort writes, which shows no prompt.
+    close_quietly: bool,
     closing: bool,
     removal: Option<removal::Dialog>,
     remove_generation: u64,
@@ -488,6 +490,7 @@ impl App {
             action_menu_position: iced::Point::ORIGIN,
             window_size: iced::Size::new(1200.0, 800.0),
             close_prompt: false,
+            close_quietly: false,
             closing: false,
             removal: None,
             remove_generation: 0,
@@ -710,6 +713,7 @@ impl App {
     /// Messages ignored while an overlay or the card collapse owns the input.
     fn message_blocked(&self, message: &Message) -> bool {
         if (self.flow.is_some()
+            || self.close_prompt
             || self.removal.is_some()
             || self.trash_confirm_open()
             || self.downloads_confirm_open()
