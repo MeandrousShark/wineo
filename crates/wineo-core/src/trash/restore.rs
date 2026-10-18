@@ -247,34 +247,35 @@ fn restore_locked_noting(
         Ok(warning) => (None, warning),
         Err(err) => (Some(err), None),
     };
-    let library_warning = if rollback {
-        None
-    } else {
-        crate::library::put(paths, &manifest.name, manifest.library.as_ref())
+    // A manifest without an entry also covers a library.toml that was
+    // unreadable at removal, when the real entry stayed in the file. Writing
+    // None then would delete it once the file is repaired.
+    let library_warning = match (rollback, manifest.library.as_ref()) {
+        (false, Some(entry)) => crate::library::put(paths, &manifest.name, Some(entry))
             .err()
             .map(|err| {
                 let mut values = Vec::new();
-                if let Some(entry) = &manifest.library {
-                    if entry.favorite {
-                        values.push("favorite".to_owned());
-                    }
-                    if entry.hidden {
-                        values.push("hidden".to_owned());
-                    }
-                    if let Some(added) = entry.added {
-                        values.push(format!("added {}", added.strftime("%Y-%m-%d")));
-                    }
+                if entry.favorite {
+                    values.push("favorite".to_owned());
                 }
-                if values.is_empty() {
-                    values.push("library entry".to_owned());
+                if entry.hidden {
+                    values.push("hidden".to_owned());
                 }
+                if let Some(added) = entry.added {
+                    values.push(format!("added {}", added.strftime("%Y-%m-%d")));
+                }
+                let lost = if values.is_empty() {
+                    String::new()
+                } else {
+                    format!(" Values not restored: {}.", values.join(", "))
+                };
                 format!(
-                    "Can't restore {} in library.toml: {}. Values not restored: {}.",
+                    "Can't restore {} in library.toml: {}.{lost}",
                     manifest.name,
                     crate::error::chain(&err),
-                    values.join(", ")
                 )
-            })
+            }),
+        _ => None,
     };
     let completed = if manifest.payloads.iter().any(|payload| payload.kept) {
         keep_changed(paths, manifest, notes)

@@ -2563,3 +2563,47 @@ fn older_trash_manifest_without_library_entry_still_restores() {
     assert!(restore(&f.paths, &entry.id).unwrap().is_empty());
     assert!(Environment::load(&f.paths, "game").is_ok());
 }
+
+#[test]
+fn restore_after_a_broken_library_at_removal_keeps_the_repaired_entry() {
+    let f = Fixture::new();
+    f.config("game", "kind = 'native'\n");
+    fs::write(
+        f.paths.library_file(),
+        "[environments.game]\nfavorite = true\n[broken\n",
+    )
+    .unwrap();
+    let entry = remove(&f.paths, "game", false).unwrap();
+    assert!(
+        read_manifest(&f.paths, &entry.id)
+            .unwrap()
+            .library
+            .is_none()
+    );
+    let repaired = "schema_version = 1\n\n[environments.game]\nfavorite = true\n";
+    fs::write(f.paths.library_file(), repaired).unwrap();
+    assert!(restore(&f.paths, &entry.id).unwrap().is_empty());
+    assert_eq!(
+        fs::read_to_string(f.paths.library_file()).unwrap(),
+        repaired
+    );
+    assert!(crate::library::load(&f.paths).environments["game"].favorite);
+}
+
+#[test]
+fn restore_without_a_saved_entry_leaves_a_broken_library_alone() {
+    let f = Fixture::new();
+    f.config("game", "kind = 'native'\n");
+    let entry = remove(&f.paths, "game", false).unwrap();
+    assert!(
+        read_manifest(&f.paths, &entry.id)
+            .unwrap()
+            .library
+            .is_none()
+    );
+    let broken = "[broken\n";
+    fs::write(f.paths.library_file(), broken).unwrap();
+    assert!(restore(&f.paths, &entry.id).unwrap().is_empty());
+    assert!(f.paths.environment_config("game").exists());
+    assert_eq!(fs::read_to_string(f.paths.library_file()).unwrap(), broken);
+}
