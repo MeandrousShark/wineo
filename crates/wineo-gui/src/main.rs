@@ -1102,7 +1102,7 @@ impl App {
         } else {
             task
         };
-        if self.closing && !self.foreground_busy() {
+        if self.closing && !self.exit_waits() {
             task.chain(iced::exit())
         } else {
             task
@@ -1115,6 +1115,12 @@ impl App {
             Task::none()
         }
     }
+    /// What closing the window waits for: foreground work, and sort writes
+    /// that haven't reached the file yet.
+    fn exit_waits(&self) -> bool {
+        self.foreground_busy() || self.view_writes.pending()
+    }
+
     fn foreground_busy(&self) -> bool {
         self.filesystem_busy()
             || self.tools_busy()

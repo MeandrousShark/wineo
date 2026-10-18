@@ -9,6 +9,11 @@ impl App {
         if self.foreground_busy() {
             self.close_prompt = true;
             Task::none()
+        } else if self.view_writes.pending() {
+            // A sort write ends on its own within the config lock's wait,
+            // so the window closes once the file has the final view.
+            self.closing = true;
+            Task::none()
         } else {
             for page in self.art_pages.values() {
                 page.cancel_thumbnails();
@@ -43,7 +48,7 @@ impl App {
             }
             operation.cancelled = true;
         }
-        if !self.foreground_busy() {
+        if !self.exit_waits() {
             iced::exit()
         } else {
             Task::none()

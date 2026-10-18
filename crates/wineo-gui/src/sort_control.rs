@@ -79,6 +79,11 @@ impl Writes {
         }
     }
 
+    /// A write is in flight, which closing the window waits for.
+    pub(crate) fn pending(&self) -> bool {
+        self.sort.is_some() || self.descending.is_some() || self.favorites_first.is_some()
+    }
+
     fn finish(&mut self, field: Field) {
         match field {
             Field::Sort(_) => self.sort = None,
