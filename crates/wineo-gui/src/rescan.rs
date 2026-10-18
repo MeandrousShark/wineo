@@ -8,11 +8,12 @@ use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
 use iced::futures::Stream;
+use wineo_core::library::{self as saved, Problem};
 use wineo_core::paths::Paths;
 
 use crate::Message;
 use crate::art_page::{self, EnvironmentIdentity};
-use crate::library::{Card, load_library};
+use crate::library::{Card, load_library_with};
 use crate::sidebar::TrashBadge;
 use crate::trash_page::{Snapshot, entry_label};
 
@@ -24,6 +25,8 @@ pub(crate) const INTERVAL: Duration = Duration::from_secs(2);
 #[derive(Default)]
 struct Shown {
     library: Option<Result<Vec<Card>, String>>,
+    /// `library.toml`'s problem, which only rescans read.
+    problem: Option<Problem>,
     badge: Option<TrashBadge>,
     /// The trash page's snapshot, with its "removed N ago" labels as of
     /// when it was applied.
@@ -55,6 +58,15 @@ pub(crate) struct Watch(Arc<Inner>);
 struct Inner {
     shown: Mutex<Shown>,
     scanning: AtomicBool,
+    caches: Mutex<RescanCaches>,
+}
+
+/// What rescans keep between reads, so a quiet one skips files that didn't
+/// change. Held by the `Watch`, so it outlives subscription restarts.
+#[derive(Default)]
+pub(crate) struct RescanCaches {
+    library: saved::Cache,
+    // The stats log cache goes here.
 }
 
 /// Held by the one running scan, released when its read finishes even if
@@ -96,6 +108,10 @@ impl Watch {
         shown.revisions.library += 1;
     }
 
+    pub(crate) fn show_problem(&self, problem: Option<Problem>) {
+        self.shown().problem = problem;
+    }
+
     pub(crate) fn show_badge(&self, badge: TrashBadge) {
         let mut shown = self.shown();
         shown.badge = Some(badge);
@@ -127,6 +143,7 @@ impl Watch {
         let now = self.revisions();
         if scan.revisions.library != now.library {
             scan.library = None;
+            scan.problem = None;
         }
         if scan.revisions.trash != now.trash {
             scan.trash = None;
@@ -145,6 +162,9 @@ impl Watch {
         let library = scan
             .library
             .filter(|library| shown.library.as_ref().is_some_and(|shown| shown != library));
+        let problem = scan
+            .problem
+            .filter(|problem| shown.library.is_some() && shown.problem != *problem);
         let trash = scan.trash.filter(|trash| match trash {
             Trash::Badge(badge) => shown.badge.as_ref().is_some_and(|shown| shown != badge),
             Trash::Page(snapshot) => shown.trash.as_ref().is_some_and(|(shown, labels)| {
@@ -160,12 +180,15 @@ impl Watch {
                         && (art.identity != Some(*identity) || *snapshot != art.snapshot)
                 })
         });
-        (library.is_some() || trash.is_some() || art.is_some()).then_some(Scan {
-            revisions: scan.revisions,
-            library,
-            trash,
-            art,
-        })
+        (library.is_some() || problem.is_some() || trash.is_some() || art.is_some()).then_some(
+            Scan {
+                revisions: scan.revisions,
+                library,
+                problem,
+                trash,
+                art,
+            },
+        )
     }
 }
 
@@ -174,6 +197,8 @@ pub(crate) struct Scan {
     /// What was shown when the read started.
     pub(crate) revisions: Revisions,
     pub(crate) library: Option<Result<Vec<Card>, String>>,
+    /// `library.toml`'s problem, read with `library`.
+    pub(crate) problem: Option<Option<Problem>>,
     pub(crate) trash: Option<Trash>,
     pub(crate) art: Option<Art>,
 }
@@ -210,11 +235,29 @@ impl Hash for Rescan {
     }
 }
 
+/// A rescan through the caches `watch` holds.
 pub(crate) fn read(paths: &Paths, watch: &Watch, trash_page: bool, art_page: Option<&str>) -> Scan {
+    let mut caches = watch
+        .0
+        .caches
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner);
+    read_with(paths, watch, &mut caches, trash_page, art_page)
+}
+
+pub(crate) fn read_with(
+    paths: &Paths,
+    watch: &Watch,
+    caches: &mut RescanCaches,
+    trash_page: bool,
+    art_page: Option<&str>,
+) -> Scan {
     let revisions = watch.revisions();
+    let saved = caches.library.read(paths);
     Scan {
         revisions,
-        library: Some(load_library(paths).map_err(|error| error.to_string())),
+        library: Some(load_library_with(paths, saved).map_err(|error| error.to_string())),
+        problem: Some(saved.problem.clone()),
         trash: Some(if trash_page {
             Trash::Page(crate::trash_work::read(paths))
         } else {

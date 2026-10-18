@@ -48,6 +48,11 @@ impl App {
             }
             _ => Task::none(),
         };
+        // Explicit reloads don't read the problem, so the rescan's always applies.
+        if let Some(problem) = scan.problem {
+            self.shown.show_problem(problem.clone());
+            self.library_problem = problem;
+        }
         let library = match scan.library {
             Some(result) if !self.refreshing => self.update(Message::Loaded(result)),
             _ => Task::none(),
