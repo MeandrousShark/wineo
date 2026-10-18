@@ -1,11 +1,12 @@
 //! Loading, decoding, and evicting the library's card art.
 
 use std::collections::HashSet;
+use std::ops::ControlFlow;
 
 use iced::Task;
 use iced::widget::image;
 
-use crate::{App, ArtKey, GAP, Message, artwork, grid, grid_motion};
+use crate::{App, ArtKey, Early, GAP, Message, artwork, grid, grid_motion};
 
 impl App {
     /// Whether any card draws `key` in color, and whether any draws it dimmed.
@@ -153,6 +154,25 @@ impl App {
             ));
         }
         Task::batch(tasks)
+    }
+
+    pub(crate) fn art_result(
+        &mut self,
+        key: ArtKey,
+        dimmed: bool,
+        result: Result<image::Handle, String>,
+    ) -> Early {
+        self.loading.remove(&(key.clone(), dimmed));
+        if self.current_art.get(&key.0.path) != Some(&key.0.identity) {
+            return ControlFlow::Break(Task::none());
+        }
+        match result {
+            Ok(handle) => self.art_loaded(key, dimmed, handle),
+            Err(_) => {
+                self.failed_images.insert(key);
+            }
+        }
+        ControlFlow::Continue(Task::none())
     }
 }
 

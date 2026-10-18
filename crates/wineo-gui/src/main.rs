@@ -1,5 +1,7 @@
 mod app_art;
 mod app_flow;
+mod app_grid;
+mod app_keys;
 mod app_library;
 mod app_operation;
 mod art_cache;
@@ -950,19 +952,7 @@ impl App {
                 self.error = Some(error);
                 Task::none()
             }
-            Message::ArtLoaded(key, dimmed, result) => {
-                self.loading.remove(&(key.clone(), dimmed));
-                if self.current_art.get(&key.0.path) != Some(&key.0.identity) {
-                    return ControlFlow::Break(Task::none());
-                }
-                match result {
-                    Ok(handle) => self.art_loaded(key, dimmed, handle),
-                    Err(_) => {
-                        self.failed_images.insert(key);
-                    }
-                }
-                Task::none()
-            }
+            Message::ArtLoaded(key, dimmed, result) => self.art_result(key, dimmed, result)?,
             Message::Scrolled(viewport) => {
                 self.viewport_width = viewport.bounds().width;
                 self.viewport_height = viewport.bounds().height;
@@ -971,29 +961,7 @@ impl App {
                 self.load_visible_art()
             }
             Message::GridCardLocated(name, generation, bounds) => {
-                if self.selected.as_deref() != Some(&name)
-                    || self.panel_hidden()
-                    || generation != self.grid_motion.generation()
-                {
-                    return ControlFlow::Break(Task::none());
-                }
-                let top = bounds.card.y - bounds.viewport.y;
-                let bottom = top + bounds.card.height;
-                let offset = if top < bounds.offset.y {
-                    top
-                } else if bottom > bounds.offset.y + bounds.viewport.height {
-                    bottom - bounds.viewport.height
-                } else {
-                    return ControlFlow::Break(Task::none());
-                };
-                self.scroll_offset = offset.max(0.0);
-                iced::widget::operation::scroll_to(
-                    iced::widget::Id::new(SCROLL_ID),
-                    scrollable::AbsoluteOffset {
-                        x: 0.0,
-                        y: self.scroll_offset,
-                    },
-                )
+                self.grid_card_located(name, generation, bounds)?
             }
             // Handled in `update`, which polls the toast's focus for it.
             Message::FocusRecheck => Task::none(),
@@ -1043,23 +1011,7 @@ impl App {
                 }
                 Task::none()
             }
-            Message::GridTick(generation, now) => {
-                if self.section == sidebar::Section::Library {
-                    let was_active = self.grid_motion.active();
-                    self.grid_motion.tick(generation, now);
-                    if was_active && !self.grid_motion.active() {
-                        // Drops the protection the motion's sweep needed.
-                        let art = self.load_visible_art();
-                        if let Some(name) = self.grid_scroll_after_settle.take()
-                            && self.selected.as_deref() == Some(&name)
-                        {
-                            return ControlFlow::Break(Task::batch([art, self.scroll_selection()]));
-                        }
-                        return ControlFlow::Break(art);
-                    }
-                }
-                Task::none()
-            }
+            Message::GridTick(generation, now) => self.grid_tick(generation, now)?,
             Message::Key(key, _, _) if self.close_prompt => {
                 if key == keyboard::Key::Named(keyboard::key::Named::Escape) && !self.closing {
                     self.close_prompt = false;
@@ -1079,96 +1031,9 @@ impl App {
                 trash_page::key(self, &key, modifiers)
             }
             Message::Key(key, modifiers, status) if self.flow.is_some() => {
-                use iced::keyboard::{Key, key::Named};
-                if sidebar::shortcut(&key, modifiers).is_some() {
-                    return ControlFlow::Break(Task::none());
-                }
-                let generation = self.flow_generation;
-                let width = self.flow_width();
-                let own = if status == iced::event::Status::Captured {
-                    None
-                } else {
-                    self.flow.as_mut().unwrap().key(&key, modifiers, width)
-                };
-                if let Some(task) = own {
-                    task.map(move |event| Message::Flow(generation, event))
-                } else {
-                    match key.as_ref() {
-                        Key::Character(choice)
-                            if matches!(self.flow, Some(flow::Page::Choose(_))) =>
-                        {
-                            let event = match choice {
-                                "1" => flow::Event::New,
-                                "2" => flow::Event::Prefix,
-                                "3" => flow::Event::Heroic,
-                                "4" => flow::Event::Steam,
-                                "5" => flow::Event::Gog,
-                                _ => return ControlFlow::Break(Task::none()),
-                            };
-                            self.flow_update(self.flow_generation, event)
-                        }
-                        Key::Named(Named::Enter) if modifiers.control() => {
-                            let generation = self.flow_generation;
-                            let task = self
-                                .flow
-                                .as_mut()
-                                .unwrap()
-                                .submit()
-                                .map(move |event| Message::Flow(generation, event));
-                            task.chain(self.flow_update(generation, flow::Event::AfterSubmit))
-                        }
-                        Key::Named(Named::Tab) if modifiers.shift() => {
-                            iced::widget::operation::focus_previous()
-                        }
-                        Key::Named(Named::Tab) => iced::widget::operation::focus_next(),
-                        Key::Named(Named::Escape)
-                            if status != iced::event::Status::Captured && !self.close_prompt =>
-                        {
-                            self.flow_update(self.flow_generation, flow::Event::Back)
-                        }
-                        _ => Task::none(),
-                    }
-                }
+                self.flow_key(key, modifiers, status)?
             }
-            Message::Key(key, modifiers, status) => {
-                let results_tab = self.checkup_key_scope().is_some()
-                    && key == keyboard::Key::Named(keyboard::key::Named::Tab);
-                if !results_tab && let Some(task) = removal::key(self, &key, modifiers, status) {
-                    return ControlFlow::Break(task);
-                }
-                // shortcuts::capture normally takes these first. This covers a
-                // key an open overlay saw and left uncaptured.
-                if let Some(section) = sidebar::shortcut(&key, modifiers) {
-                    if status == iced::event::Status::Captured {
-                        Task::none()
-                    } else {
-                        self.navigate_section(section)
-                    }
-                } else if self.settings.is_some() {
-                    self.settings_key(&key, modifiers, status == iced::event::Status::Captured)
-                } else if self.art_page.is_some() {
-                    self.art_key(&key, modifiers, status == iced::event::Status::Captured)
-                } else if self.feature_page_open() {
-                    self.feature_key(&key, modifiers, status == iced::event::Status::Captured)
-                } else if self.section == sidebar::Section::Downloads {
-                    downloads_page::key(
-                        self,
-                        &key,
-                        modifiers,
-                        status == iced::event::Status::Captured,
-                    )
-                } else if modifiers.control()
-                    && matches!(key.as_ref(), keyboard::Key::Character("n" | "N"))
-                {
-                    self.update(Message::Add)
-                } else {
-                    iced::widget::operation::is_focused(iced::widget::Id::new(SEARCH_ID)).map(
-                        move |focused| {
-                            Message::KeyWithFocus(key.clone(), modifiers, status, focused)
-                        },
-                    )
-                }
-            }
+            Message::Key(key, modifiers, status) => self.page_key(key, modifiers, status)?,
             Message::KeyWithFocus(key, modifiers, status, focused) => self.handle_key(
                 key,
                 modifiers,
@@ -1201,24 +1066,7 @@ impl App {
             },
             Message::ContextArt(name) => self.open_art(name),
             Message::ArtPage(name, generation, event) => self.art_update(name, generation, event),
-            Message::Add => {
-                if self.management_busy()
-                    || self.operation.is_some()
-                    || self.settings.is_some()
-                    || self.art_page.is_some()
-                    || self.flow.is_some()
-                    || self.section != sidebar::Section::Library
-                {
-                    return ControlFlow::Break(Task::none());
-                }
-                self.close_log();
-                self.action_menu = None;
-                self.flow_generation = self.flow_generation.wrapping_add(1);
-                self.flow = Some(flow::Page::choose(self.paths.clone()));
-                iced::advanced::widget::operate(
-                    iced::advanced::widget::operation::focusable::unfocus(),
-                )
-            }
+            Message::Add => self.add_environment()?,
             Message::GogChecked(asked, result) => {
                 gog_library::checked_since(self, &asked, result);
                 Task::none()
@@ -1227,44 +1075,8 @@ impl App {
                 gog_library::rechecked(self, name, generation, result);
                 Task::none()
             }
-            Message::GogUpdate(name) => {
-                let enabled = self
-                    .cards
-                    .iter()
-                    .find(|card| card.name == name)
-                    .is_some_and(|card| {
-                        (card.finish_update() || self.gog_update_action(&name))
-                            && self.gog_update_enabled(card)
-                    });
-                if !enabled {
-                    return ControlFlow::Break(Task::none());
-                }
-                self.open_gog_update(name, None)
-            }
-            Message::CloneEnvironment(name) => {
-                if self.management_busy()
-                    || !self.transfer_actions(&name)
-                    || self.operation.is_some()
-                    || self.remove_reason(&name).is_some()
-                    || self.settings.is_some()
-                    || self.art_page.is_some()
-                    || self.flow.is_some()
-                {
-                    return ControlFlow::Break(Task::none());
-                }
-                self.close_log();
-                self.action_menu = None;
-                self.flow_generation = self.flow_generation.wrapping_add(1);
-                let generation = self.flow_generation;
-                let (page, task) = flow::Page::clone(self.paths.clone(), name);
-                self.flow = Some(page);
-                Task::batch([
-                    task.map(move |event| Message::Flow(generation, event)),
-                    iced::advanced::widget::operate(
-                        iced::advanced::widget::operation::focusable::unfocus(),
-                    ),
-                ])
-            }
+            Message::GogUpdate(name) => self.gog_update_requested(name)?,
+            Message::CloneEnvironment(name) => self.clone_environment(name)?,
             Message::Context(name) => {
                 self.action_menu_position = self.menu_anchor;
                 self.action_menu = if self.action_menu.as_deref() == Some(&name) {

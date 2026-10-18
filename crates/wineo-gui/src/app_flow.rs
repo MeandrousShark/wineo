@@ -1,11 +1,12 @@
 //! Hosting the Add flow: routing its events and landing in the library when it finishes.
 
+use std::ops::ControlFlow;
 use std::time::Instant;
 
 use iced::Task;
 
 use crate::library::{Card, load_library};
-use crate::{App, Message, flow, task};
+use crate::{App, Early, Message, flow, sidebar, task};
 
 impl App {
     /// Opens the update page for `name`'s GOG game: an update, or the end
@@ -168,5 +169,62 @@ impl App {
             }
         }
         Task::batch(tasks)
+    }
+
+    pub(crate) fn add_environment(&mut self) -> Early {
+        if self.management_busy()
+            || self.operation.is_some()
+            || self.settings.is_some()
+            || self.art_page.is_some()
+            || self.flow.is_some()
+            || self.section != sidebar::Section::Library
+        {
+            return ControlFlow::Break(Task::none());
+        }
+        self.close_log();
+        self.action_menu = None;
+        self.flow_generation = self.flow_generation.wrapping_add(1);
+        self.flow = Some(flow::Page::choose(self.paths.clone()));
+        ControlFlow::Continue(iced::advanced::widget::operate(
+            iced::advanced::widget::operation::focusable::unfocus(),
+        ))
+    }
+
+    pub(crate) fn gog_update_requested(&mut self, name: String) -> Early {
+        let enabled = self
+            .cards
+            .iter()
+            .find(|card| card.name == name)
+            .is_some_and(|card| {
+                (card.finish_update() || self.gog_update_action(&name))
+                    && self.gog_update_enabled(card)
+            });
+        if !enabled {
+            return ControlFlow::Break(Task::none());
+        }
+        ControlFlow::Continue(self.open_gog_update(name, None))
+    }
+
+    pub(crate) fn clone_environment(&mut self, name: String) -> Early {
+        if self.management_busy()
+            || !self.transfer_actions(&name)
+            || self.operation.is_some()
+            || self.remove_reason(&name).is_some()
+            || self.settings.is_some()
+            || self.art_page.is_some()
+            || self.flow.is_some()
+        {
+            return ControlFlow::Break(Task::none());
+        }
+        self.close_log();
+        self.action_menu = None;
+        self.flow_generation = self.flow_generation.wrapping_add(1);
+        let generation = self.flow_generation;
+        let (page, task) = flow::Page::clone(self.paths.clone(), name);
+        self.flow = Some(page);
+        ControlFlow::Continue(Task::batch([
+            task.map(move |event| Message::Flow(generation, event)),
+            iced::advanced::widget::operate(iced::advanced::widget::operation::focusable::unfocus()),
+        ]))
     }
 }
