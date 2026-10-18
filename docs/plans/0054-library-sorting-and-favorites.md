@@ -774,11 +774,13 @@ regression outside normal measurement variance:
   step, and either explained (a cost the feature needs, kept as small as
   practical) or fixed. Responsiveness is the bar: sorting, filtering, and
   starring feel instant, and scrolling stays smooth.
-- **One manual check on real hardware.** The same 300-game library in the
-  maintainer's normal session, with the GPU renderer: scroll the grid,
-  change the sort, toggle filters, and leave it focused for a minute while
-  watching CPU. Software rendering in Xvfb shows relative costs; this shows
-  what a person actually feels.
+- **Two manual checks on real hardware.** The same 300-game library in
+  the maintainer's normal session, with the GPU renderer: once on 0.35.1
+  before step 1 (scroll the grid, search, and leave it focused for a
+  minute while watching CPU), and once on the finished work (the same,
+  plus changing the sort and toggling filters). Software rendering in Xvfb
+  shows relative costs; these show what a person actually feels, and the
+  first gives the second something to compare against.
 - **An existing cost the baseline finds** (the rescan reads every stats
   log in full each time) is fixed here only under question 13's rule:
   small, isolated, and measurably faster. The likely fix, the same stamp
@@ -807,7 +809,8 @@ places is part 2. Selection follows "Selection".
 
 0. **Benchmark baseline.** A script that generates a 300-environment
    library with art and stats logs under a throwaway root, and the
-   measurements from "Performance" taken on 0.35.1.
+   measurements from "Performance" taken on 0.35.1, including the
+   maintainer's real-hardware baseline before step 1 starts.
 1. **Core `library.toml`.** `Paths::library_file()`, the lenient types,
    load and `toml_edit` writes, the core API (set favorite, set hidden, set
    view, stamp added), one-field writes under the config lock, the
@@ -832,6 +835,14 @@ places is part 2. Selection follows "Selection".
 7. **Docs.** `gui.md`, `config-files.md` (its `library.toml` placeholder at
    323-326 becomes the real schema), `features.md` rows, and `gui-style.md`
    for the toolbar and the star and hidden marks.
+
+## Decisions during implementation
+
+- **A real-hardware baseline before step 1** (2026-10-17). GPU rendering
+  can differ enough from Xvfb's software rendering that the finished
+  work's real-hardware check needs a 0.35.1 run on the same generated
+  library to compare against. Step 0 includes it, and its numbers and
+  impressions are recorded here with the Xvfb baseline.
 
 ## Testing and acceptance
 
@@ -859,7 +870,8 @@ places is part 2. Selection follows "Selection".
   its stamp is unchanged. Driven with `tests::app()` and fake ticks, like
   the existing grid tests.
 - Performance: the step 0 measurements before and after, recorded in this
-  plan, plus the real-hardware check in the acceptance checklist.
+  plan, plus the real-hardware baseline from step 0 and the matching
+  check in the acceptance checklist.
 - Corruption: a file that doesn't parse refuses writes with the error
   and is left byte-for-byte unchanged; a bad field falls back to its
   default while the same entry's other fields still apply (the
