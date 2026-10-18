@@ -36,6 +36,7 @@ mod layout_probe;
 mod library;
 mod logview;
 mod menu_anchor;
+mod order;
 mod panel;
 mod panel_motion;
 mod picker;
@@ -51,6 +52,7 @@ mod shortcuts;
 mod sidebar;
 mod size;
 mod snapshots_page;
+mod sort_control;
 mod spinner;
 mod task;
 #[cfg(test)]
@@ -112,6 +114,15 @@ pub(crate) struct App {
     search: String,
     search_focused: bool,
     cards: Vec<Card>,
+    /// How the library is sorted. The open window keeps its own, whatever
+    /// another window or process saves.
+    query: order::Query,
+    /// The shown order, rebuilt by `reorder`.
+    order: order::Order,
+    /// The sort menu is open.
+    sort_menu: bool,
+    sort_menu_position: iced::Point,
+    view_writes: sort_control::Writes,
     /// What `view` reads in place of the disk; see `prefix_facts`.
     facts: prefix_facts::Stored,
     pub(crate) selected: Option<String>,
@@ -376,6 +387,7 @@ pub(crate) enum Message {
     Trash(trash_page::Event),
     Downloads(downloads_page::Event),
     Checkup(checkup::Event),
+    Sort(sort_control::Event),
 }
 
 impl App {
@@ -386,6 +398,11 @@ impl App {
             search: String::new(),
             search_focused: false,
             cards: Vec::new(),
+            query: order::Query::default(),
+            order: order::Order::default(),
+            sort_menu: false,
+            sort_menu_position: iced::Point::ORIGIN,
+            view_writes: sort_control::Writes::default(),
             facts: prefix_facts::Stored::default(),
             selected: None,
             panel_open: false,
@@ -481,6 +498,10 @@ impl App {
             checkups: HashMap::new(),
             check_generation: 0,
         };
+        // Read once, here, so the first cards already show in the saved
+        // order. A read takes no lock and never writes.
+        app.query = wineo_core::library::load(&app.paths).view.into();
+        app.reorder();
         let load = app.reload_library();
         let badge = app.reload_badge();
         let cache = app.paths.art_cache_dir();
@@ -626,6 +647,11 @@ impl App {
             self.refresh_facts();
         }
         self.settle_toast();
+        // Leaving the Library or opening anything over it closes the menu,
+        // so it doesn't come back on its own later.
+        if self.sort_menu && !self.sort_menu_shown() {
+            self.sort_menu = false;
+        }
         let focus = if poll_focus {
             self.poll_toast_focus()
         } else {
@@ -702,7 +728,8 @@ impl App {
                             | checkup::Event::OpenInstallLog(_)
                             | checkup::Event::Environment(_)
                     )
-            ) || matches!(message, Message::Version(event) if event.is_input()))
+            ) || matches!(message, Message::Version(event) if event.is_input())
+                || matches!(message, Message::Sort(event) if event.is_input()))
         {
             return true;
         }
@@ -731,6 +758,7 @@ impl App {
             Message::Version(event) => version_picker::update(self, event),
             Message::Trash(event) => trash_page::update(self, event),
             Message::Downloads(event) => downloads_page::update(self, event),
+            Message::Sort(event) => sort_control::update(self, event),
             message @ (Message::Remove(_)
             | Message::RemovePrefix(_)
             | Message::RemoveSize(..)
@@ -978,6 +1006,7 @@ impl App {
             Message::GogUpdate(name) => self.gog_update_requested(name)?,
             Message::CloneEnvironment(name) => self.clone_environment(name)?,
             Message::Context(name) => {
+                self.sort_menu = false;
                 self.action_menu_position = self.menu_anchor;
                 self.action_menu = if self.action_menu.as_deref() == Some(&name) {
                     None
@@ -1152,15 +1181,14 @@ impl App {
             );
         }
     }
+    /// The shown cards in shown order, from the cache `reorder` keeps.
     pub(crate) fn filtered(&self) -> Vec<&Card> {
-        let needle = self.search.to_lowercase();
-        self.cards
-            .iter()
-            .filter(|card| {
-                card.display_title.to_lowercase().contains(&needle)
-                    || card.name.to_lowercase().contains(&needle)
-            })
-            .collect()
+        self.order.shown(&self.cards, &self.search, self.query)
+    }
+
+    /// Rebuilds the shown order after the cards, search, or sort changed.
+    pub(crate) fn reorder(&mut self) {
+        self.order.rebuild(&self.cards, &self.search, self.query);
     }
     fn columns(&self) -> usize {
         grid_motion::columns_for_viewport(self.viewport_width, self.panel_open)

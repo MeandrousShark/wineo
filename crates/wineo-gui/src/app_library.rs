@@ -3,7 +3,7 @@
 use iced::Task;
 
 use crate::library::{Card, load_library};
-use crate::{App, Message, rescan, sidebar, task, trash_page};
+use crate::{App, Message, order, rescan, sidebar, task, trash_page};
 
 impl App {
     pub(crate) fn reload_library(&mut self) -> Task<Message> {
@@ -96,21 +96,21 @@ impl App {
     }
 
     fn merge_cards(&mut self, cards: Vec<Card>) {
-        let needle = self.search.to_lowercase();
-        let old_layout: Vec<_> = self
-            .filtered()
-            .iter()
-            .map(|card| (&card.name, &card.display_title))
-            .collect();
-        let new_layout: Vec<_> = cards
-            .iter()
-            .filter(|card| {
-                card.display_title.to_lowercase().contains(&needle)
-                    || card.name.to_lowercase().contains(&needle)
-            })
-            .map(|card| (&card.name, &card.display_title))
-            .collect();
-        let layout_changed = old_layout != new_layout;
+        // A rescan that changed nothing the order reads keeps the order.
+        let new_order = (self.cards.len() != cards.len()
+            || !self
+                .cards
+                .iter()
+                .zip(&cards)
+                .all(|(old, new)| order::same_inputs(old, new)))
+        .then(|| order::Order::sorted(&cards, &self.search, self.query));
+        let layout_changed = new_order.as_ref().is_some_and(|indices| {
+            let old = self.filtered();
+            old.len() != indices.len()
+                || old.iter().zip(indices).any(|(old, &index)| {
+                    old.name != cards[index].name || old.display_title != cards[index].display_title
+                })
+        });
         if self
             .selected
             .as_ref()
@@ -132,6 +132,12 @@ impl App {
         }
         self.shown.show_library(Ok(cards.clone()));
         self.cards = cards;
+        match new_order {
+            Some(indices) => self
+                .order
+                .replace(indices, &self.cards, &self.search, self.query),
+            None => self.order.keep(&self.cards, &self.search, self.query),
+        }
         self.refresh_facts();
         if layout_changed {
             self.grid_motion

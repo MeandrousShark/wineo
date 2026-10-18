@@ -96,6 +96,9 @@ impl App {
         if self.section != crate::sidebar::Section::Library {
             return Task::none();
         }
+        if self.sort_menu_shown() {
+            return crate::sort_control::key(self, &key, modifiers);
+        }
         if key == Key::Named(Named::Tab)
             && let Some(task) = crate::removal::key(
                 self,
