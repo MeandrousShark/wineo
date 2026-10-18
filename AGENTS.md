@@ -16,7 +16,7 @@ The primary session reads `docs/workflow.md` at the start of each session.
 
 - Build on Linux with stable Rust supporting edition 2024 and `pkg-config`.
 - Build: `cargo build --release -p wineo-cli`. For a quicker optimized local build, use `--profile release-fast` (output in `target/release-fast`). Run locally: `cargo run -p wineo-cli -- <args>`.
-- Checks: `cargo fmt`, `cargo clippy --all-targets -- -D warnings`, `cargo test`. Both crates inherit `unsafe_code = "forbid"`.
+- Checks: `cargo fmt`, `cargo clippy --all-targets -- -D warnings`, `cargo clippy --release --workspace -- -D warnings`, `cargo test`. Both crates inherit `unsafe_code = "forbid"`.
 - Focused tests: `cargo test -p wineo-core <filter>` or `cargo test -p wineo-cli --test lifecycle <test_name> -- --exact`.
 - Tests that create an executable they then run use `write_script` or `write_executable` (`crates/wineo-core/tests/common/test_script.rs`, shared through `#[path]`), never `fs::write` plus `set_permissions`: another test thread forking mid-write makes running it fail with "Text file busy".
 - CLI integration tests reuse `crates/wineo-cli/tests/common/mod.rs`: fake Wine/umu runners, temporary XDG roots, isolated keyring access, and process cleanup on fixture drop.
