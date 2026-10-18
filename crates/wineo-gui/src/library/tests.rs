@@ -501,3 +501,21 @@ fn missing_stats_fall_back_to_never_played_or_unknown_raw_values() {
     assert_eq!((steam.seconds, steam.last_played_at), (0, None));
     assert!(steam.playtime_unknown);
 }
+
+#[test]
+fn a_bad_library_field_falls_back_alone() {
+    let root = tempfile::tempdir().unwrap();
+    let paths =
+        Paths::from_lookup(|key| (key == "HOME").then(|| root.path().as_os_str().to_owned()))
+            .unwrap();
+    fs::create_dir_all(paths.environments_dir()).unwrap();
+    fs::write(paths.environment_config("game"), "kind = 'native'\n").unwrap();
+    fs::write(
+        paths.library_file(),
+        "[environments.game]\nfavorite = \"yes\"\nhidden = true\n",
+    )
+    .unwrap();
+    let card = load_library(&paths).unwrap().remove(0);
+    assert!(!card.favorite);
+    assert!(card.hidden);
+}

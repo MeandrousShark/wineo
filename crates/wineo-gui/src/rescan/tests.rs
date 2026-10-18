@@ -538,3 +538,48 @@ fn a_library_toml_change_reaches_the_cards_once() {
     assert!(card("other").hidden && !card("other").favorite);
     assert!(app.shown.changes(rescan(&app, false), now()).is_none());
 }
+
+#[test]
+fn the_caches_survive_a_subscription_restart() {
+    use wineo_core::stats::{self, End, Session};
+
+    let (_root, app) = shown(&["game"]);
+    write_library(&app, "[environments.game]\nfavorite = true\n");
+    let ended = jiff::Timestamp::now();
+    stats::append(
+        &app.paths.stats_log("game"),
+        &Session::new(
+            "game".into(),
+            ended - jiff::SignedDuration::from_secs(60),
+            ended,
+            End::Exited,
+        ),
+    )
+    .unwrap();
+    let counts = || {
+        let caches = app.shown.0.caches.lock().unwrap();
+        (caches.scans, caches.library.reads(), caches.stats.parses())
+    };
+    let run = |trash_page: bool, art_page: Option<&str>| {
+        let rescan = Rescan {
+            paths: app.paths.clone(),
+            watch: app.shown.clone(),
+            trash_page,
+            art_page: art_page.map(str::to_owned),
+        };
+        paused(async {
+            let mut stream = Box::pin(stream(&rescan));
+            let _ = tokio::time::timeout(INTERVAL * 3, stream.next()).await;
+        });
+    };
+    run(false, None);
+    let (scans, reads, parses) = counts();
+    assert!(scans > 0);
+    assert_eq!((reads, parses), (1, 1));
+    // Opening the trash page, then an Art page, restarts the subscription.
+    run(true, None);
+    run(false, Some("game"));
+    let (after, reads, parses) = counts();
+    assert!(after > scans, "the restarted streams scanned");
+    assert_eq!((reads, parses), (1, 1), "nothing unchanged was read again");
+}

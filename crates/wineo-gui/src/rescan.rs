@@ -67,6 +67,8 @@ struct Inner {
 pub(crate) struct RescanCaches {
     library: saved::Cache,
     stats: wineo_core::stats::Cache,
+    #[cfg(test)]
+    scans: usize,
 }
 
 /// Held by the one running scan, released when its read finishes even if
@@ -253,6 +255,10 @@ pub(crate) fn read_with(
     art_page: Option<&str>,
 ) -> Scan {
     let revisions = watch.revisions();
+    #[cfg(test)]
+    {
+        caches.scans += 1;
+    }
     let saved = caches.library.read(paths);
     Scan {
         revisions,
