@@ -274,7 +274,7 @@ fn native_creation_keeps_library_warning_in_report() {
     assert!(report.notes.iter().any(|note| {
         note.starts_with("Can't update library.toml:")
             && note.contains("broken-library")
-            && note.contains("may show an old star or hidden flag once it's repaired")
+            && note.contains("may show an old star or hidden flag once it can be read")
     }));
     assert_eq!(fs::read(&library).unwrap(), b"[broken\n");
 }

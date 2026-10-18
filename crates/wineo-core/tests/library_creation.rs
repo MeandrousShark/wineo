@@ -99,7 +99,7 @@ fn reuse_while_library_is_broken_retains_old_flags_after_repair() {
     assert_eq!(
         warnings[0],
         format!(
-            "Can't update library.toml: {expected_error}. hades may show an old star or hidden flag once it's repaired."
+            "Can't update library.toml: {expected_error}. hades may show an old star or hidden flag once it can be read."
         )
     );
     assert!(!warnings[0].contains("Can't save"), "{warnings:?}");
@@ -157,7 +157,7 @@ fn newer_library_warning_names_the_newer_wineo_not_a_repair() {
     assert_eq!(
         warnings,
         [
-            "Can't update library.toml: library.toml was written by a newer wineo; update wineo to use it. hades may show an old star or hidden flag once it's repaired."
+            "Can't update library.toml: library.toml was written by a newer wineo; update wineo to use it. hades may show an old star or hidden flag once it can be read."
         ]
     );
 }

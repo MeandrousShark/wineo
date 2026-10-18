@@ -110,7 +110,7 @@ fn portable_copies_warn_and_leave_a_broken_destination_library_unchanged() {
 }
 
 #[test]
-fn portable_copies_warn_and_leave_the_destination_alone_when_the_source_library_is_broken() {
+fn portable_copies_warn_and_clear_a_stale_destination_entry_when_the_source_library_is_broken() {
     for native in [false, true] {
         let f = Fixture::new(native);
         fs::create_dir_all(f.from.library_file().parent().unwrap()).unwrap();
@@ -125,7 +125,7 @@ fn portable_copies_warn_and_leave_the_destination_alone_when_the_source_library_
             Some(&test_entry(true, false, Some(1_792_254_000))),
         )
         .unwrap();
-        let before = fs::read(f.to.library_file()).unwrap();
+        library::set_favorite(&f.to, "other", true).unwrap();
 
         let mut warnings = Vec::new();
         let mut collect = |event| {
@@ -150,10 +150,12 @@ fn portable_copies_warn_and_leave_the_destination_alone_when_the_source_library_
         }
 
         assert!(f.to.environment_config("game").exists());
-        assert_eq!(fs::read(f.to.library_file()).unwrap(), before);
+        let destination = library::load(&f.to);
+        assert!(!destination.environments.contains_key("game"));
+        assert!(destination.environments["other"].favorite);
         assert_eq!(warnings.len(), 1, "{warnings:?}");
         assert!(
-            warnings[0].starts_with("Can't read library.toml: "),
+            warnings[0].starts_with("Can't read the source library.toml: "),
             "{warnings:?}"
         );
         assert!(

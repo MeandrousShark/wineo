@@ -844,15 +844,18 @@ fn transfer_library_entry(
     events: &mut impl FnMut(CopyEvent),
 ) {
     let source = library::load(from);
-    // An unreadable source says nothing about the entry, so writing "no
-    // entry" would erase one the destination may already have.
     if let Some(problem) = &source.problem {
+        let reason = if problem.newer_version {
+            "it was written by a newer wineo".to_owned()
+        } else {
+            problem.reason.trim_end().trim_end_matches('.').to_owned()
+        };
         events(CopyEvent::Warning(format!(
-            "Can't read library.toml: {}. The copy of {name} didn't keep its favorite, hidden flag, or added date.",
-            problem.reason.trim_end().trim_end_matches('.')
+            "Can't read the source library.toml: {reason}. The copy of {name} didn't keep its favorite, hidden flag, or added date."
         )));
-        return;
     }
+    // The copy is new at the destination, so any entry there under its name
+    // is stale and is cleared even when the source couldn't be read.
     let entry = source.environments.get(name).cloned();
     if let Err(error) = library::put(to, name, entry.as_ref()) {
         events(CopyEvent::Warning(format!(
