@@ -1234,7 +1234,8 @@ fn the_menu_opened_from_the_keyboard_sits_under_the_sort_button() {
 fn a_keyboard_menu_with_no_button_found_falls_back_to_the_anchor() {
     let (_root, mut app) = loaded();
     let _ = app.update(Message::MenuAnchor(iced::Point::new(40.0, 50.0)));
-    let _ = app.update(Message::Sort(Event::OpenUnder(None)));
+    let request = press_sort(&mut app);
+    let _ = app.update(Message::Sort(Event::OpenUnder(request, None)));
     assert!(app.sort_menu_shown());
     assert_eq!(app.sort_menu_position, iced::Point::new(40.0, 50.0));
 }
@@ -1243,10 +1244,14 @@ fn a_keyboard_menu_with_no_button_found_falls_back_to_the_anchor() {
 fn the_keyboard_menu_position_is_clamped_like_the_pointer_one() {
     let (_root, mut app) = loaded();
     app.window_size = iced::Size::new(300.0, 400.0);
-    let _ = app.update(Message::Sort(Event::OpenUnder(Some(iced::Rectangle::new(
-        iced::Point::new(250.0, 20.0),
-        iced::Size::new(120.0, 32.0),
-    )))));
+    let request = press_sort(&mut app);
+    let _ = app.update(Message::Sort(Event::OpenUnder(
+        request,
+        Some(iced::Rectangle::new(
+            iced::Point::new(250.0, 20.0),
+            iced::Size::new(120.0, 32.0),
+        )),
+    )));
     let shown = menu_position(
         app.sort_menu_position,
         app.window_size,
@@ -1257,4 +1262,100 @@ fn the_keyboard_menu_position_is_clamped_like_the_pointer_one() {
         app.window_size.width - ACTION_MENU_WIDTH - ACTION_MENU_MARGIN
     );
     assert_eq!(shown.y, 56.0);
+}
+
+/// Presses Enter on the Sort button and keeps the reply back, returning
+/// its request number.
+fn press_sort(app: &mut App) -> u64 {
+    let _ = app.update(Message::Sort(Event::ToggleMenuFromKeyboard));
+    app.sort_opening
+        .pending
+        .expect("a request waits for the button")
+}
+
+fn reply(app: &mut App, request: u64) {
+    let bounds = iced::Rectangle::new(iced::Point::new(300.0, 20.0), iced::Size::new(90.0, 32.0));
+    let _ = app.update(Message::Sort(Event::OpenUnder(request, Some(bounds))));
+}
+
+#[test]
+fn a_late_reply_does_not_replace_an_action_menu() {
+    let (_root, mut app) = loaded();
+    let request = press_sort(&mut app);
+    let _ = app.update(Message::Context("hades".into()));
+    reply(&mut app, request);
+    assert!(!app.sort_menu);
+    assert_eq!(app.action_menu.as_deref(), Some("hades"));
+
+    // Whatever else opened it, the reply checks the window on arrival.
+    app.action_menu = None;
+    let request = press_sort(&mut app);
+    app.action_menu = Some("hades".into());
+    reply(&mut app, request);
+    assert!(!app.sort_menu);
+    assert_eq!(app.action_menu.as_deref(), Some("hades"));
+}
+
+#[test]
+fn closing_the_menu_cancels_a_pending_keyboard_open() {
+    let (_root, mut app) = loaded();
+    let request = press_sort(&mut app);
+    let _ = app.update(Message::Sort(Event::CloseMenu));
+    reply(&mut app, request);
+    assert!(!app.sort_menu);
+}
+
+#[test]
+fn a_second_keyboard_press_cancels_the_pending_open() {
+    let (_root, mut app) = loaded();
+    let first = press_sort(&mut app);
+    let _ = app.update(Message::Sort(Event::ToggleMenuFromKeyboard));
+    assert!(app.sort_opening.pending.is_none());
+    reply(&mut app, first);
+    assert!(!app.sort_menu);
+
+    // A later press starts a fresh request, and the old reply stays dead.
+    let second = press_sort(&mut app);
+    assert_ne!(first, second);
+    reply(&mut app, first);
+    assert!(!app.sort_menu);
+    reply(&mut app, second);
+    assert!(app.sort_menu_shown());
+    // The reply is used once.
+    let _ = app.update(Message::Sort(Event::CloseMenu));
+    reply(&mut app, second);
+    assert!(!app.sort_menu);
+}
+
+#[test]
+fn a_late_reply_does_not_open_while_exiting_closing_or_off_the_library() {
+    let (_root, mut app) = loaded();
+    let request = press_sort(&mut app);
+    app.exiting = true;
+    reply(&mut app, request);
+    assert!(!app.sort_menu);
+    app.exiting = false;
+
+    let request = press_sort(&mut app);
+    app.closing = true;
+    reply(&mut app, request);
+    assert!(!app.sort_menu);
+    app.closing = false;
+
+    let request = press_sort(&mut app);
+    app.section = crate::sidebar::Section::Trash;
+    reply(&mut app, request);
+    assert!(!app.sort_menu);
+    assert!(app.sort_opening.pending.is_none());
+}
+
+#[test]
+fn a_click_cancels_a_pending_keyboard_open() {
+    let (_root, mut app) = loaded();
+    let request = press_sort(&mut app);
+    let _ = app.update(Message::Sort(Event::ToggleMenu));
+    assert!(app.sort_menu);
+    let _ = app.update(Message::Sort(Event::CloseMenu));
+    reply(&mut app, request);
+    assert!(!app.sort_menu);
 }

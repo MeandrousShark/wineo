@@ -123,6 +123,7 @@ pub(crate) struct App {
     sort_menu: bool,
     sort_menu_position: iced::Point,
     view_writes: sort_control::Writes,
+    sort_opening: sort_control::Opening,
     /// What `view` reads in place of the disk; see `prefix_facts`.
     facts: prefix_facts::Stored,
     pub(crate) selected: Option<String>,
@@ -410,6 +411,7 @@ impl App {
             query: order::Query::default(),
             order: order::Order::default(),
             sort_menu: false,
+            sort_opening: sort_control::Opening::default(),
             sort_menu_position: iced::Point::ORIGIN,
             view_writes: sort_control::Writes::default(),
             facts: prefix_facts::Stored::default(),
@@ -1053,6 +1055,7 @@ impl App {
             Message::CloneEnvironment(name) => self.clone_environment(name)?,
             Message::Context(name) => {
                 self.sort_menu = false;
+                self.sort_opening.cancel();
                 self.action_menu_position = self.menu_anchor;
                 self.action_menu = if self.action_menu.as_deref() == Some(&name) {
                     None

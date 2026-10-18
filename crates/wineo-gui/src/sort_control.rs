@@ -33,8 +33,9 @@ pub(crate) enum Event {
     ToggleMenu,
     /// Enter or Space on the focused Sort button.
     ToggleMenuFromKeyboard,
-    /// The Sort button's bounds, found for a menu the keyboard is opening.
-    OpenUnder(Option<Rectangle>),
+    /// The Sort button's bounds, found for the keyboard's open request with
+    /// this number.
+    OpenUnder(u64, Option<Rectangle>),
     /// A click outside the menu.
     CloseMenu,
     Pick(SortKey),
@@ -47,7 +48,9 @@ pub(crate) enum Event {
 impl Event {
     /// Input from the controls, which an overlay or dialog blocks.
     pub(crate) fn is_input(&self) -> bool {
-        !matches!(self, Self::Saved(..))
+        // The reply always arrives, so it can clear its request even when
+        // an overlay is up; `OpenUnder` checks the window itself.
+        !matches!(self, Self::Saved(..) | Self::OpenUnder(..))
     }
 }
 
@@ -97,6 +100,20 @@ impl Writes {
             Field::Descending(_) => self.descending = None,
             Field::FavoritesFirst(_) => self.favorites_first = None,
         }
+    }
+}
+
+/// The keyboard's request to open the menu while it looks up the button.
+#[derive(Debug, Default)]
+pub(crate) struct Opening {
+    last: u64,
+    pending: Option<u64>,
+}
+
+impl Opening {
+    /// Drops the request in flight, so its reply is ignored.
+    pub(crate) fn cancel(&mut self) {
+        self.pending = None;
     }
 }
 
@@ -199,6 +216,7 @@ impl App {
 pub(crate) fn update(app: &mut App, event: Event) -> Task<Message> {
     match event {
         Event::ToggleMenu => {
+            app.sort_opening.cancel();
             if app.sort_menu {
                 app.sort_menu = false;
                 return Task::none();
@@ -206,19 +224,41 @@ pub(crate) fn update(app: &mut App, event: Event) -> Task<Message> {
             open_menu(app, app.menu_anchor)
         }
         Event::ToggleMenuFromKeyboard => {
-            if app.sort_menu {
+            // A second press while the first waits for the button, or on
+            // an open menu, closes it like any toggle.
+            if app.sort_menu || app.sort_opening.pending.is_some() {
+                app.sort_opening.cancel();
                 app.sort_menu = false;
                 return Task::none();
             }
             // The pointer may be anywhere, so the menu waits for where
             // the button is.
+            app.sort_opening.last += 1;
+            let request = app.sort_opening.last;
+            app.sort_opening.pending = Some(request);
             iced::advanced::widget::operate(bounds_of(SORT_BUTTON_ID))
-                .map(|bounds| Message::Sort(Event::OpenUnder(bounds)))
+                .map(move |bounds| Message::Sort(Event::OpenUnder(request, bounds)))
         }
-        Event::OpenUnder(bounds) => {
+        Event::OpenUnder(request, bounds) => {
+            if app.sort_opening.pending != Some(request) {
+                return Task::none();
+            }
+            app.sort_opening.cancel();
+            // Whatever took the window since the press keeps it.
+            if app.exiting
+                || app.closing
+                || app.sort_menu
+                || app.action_menu.is_some()
+                || app.hook_stop_confirm.is_some()
+                || app.section != crate::sidebar::Section::Library
+                || app.panel_hidden()
+            {
+                return Task::none();
+            }
             open_menu(app, bounds.map_or(app.menu_anchor, menu_anchor_under))
         }
         Event::CloseMenu => {
+            app.sort_opening.cancel();
             app.sort_menu = false;
             Task::none()
         }
