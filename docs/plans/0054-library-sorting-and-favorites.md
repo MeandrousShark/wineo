@@ -844,6 +844,43 @@ places is part 2. Selection follows "Selection".
   library to compare against. Step 0 includes it, and its numbers and
   impressions are recorded here with the Xvfb baseline.
 
+## Measurements
+
+### Step 0 baseline (0.35.1, 2026-10-17)
+
+The generated library: 300 environments (210 Wine, 50 native, 10 GOG, 10
+Heroic imports, 20 with a Steam store hint), each with a 600x900 poster
+and 150 to 450 sessions (89k stats lines, 10.3 MiB). Ryzen 7 5800X, fat
+LTO build under the `release-test` profile.
+
+| Measurement | min | median | p90 | max |
+|---|---:|---:|---:|---:|
+| Quiet rescan (nothing changed), ms | 71.4 | 72.0 | 73.2 | 79.9 |
+| Busy rescan (a new session in every log), ms | 72.4 | 85.8 | 96.6 | 104.0 |
+| `filtered()` per search change, us | 4.3 | 17.3 | 25.0 | 40.7 |
+
+A primary-session rerun matched (quiet median 72.9 ms, busy 77.7 ms).
+
+Where the quiet rescan goes (medians, ms): `stats::overview` 47.5, of
+which reading and parsing the stats logs is 35.2 (the file reads alone
+are 1.7, so it's the JSON parsing); `report::overview_with_pending` 8.6;
+300 config loads 4.3; the GOG folder state 0.09; the trash scan under
+0.01. Configs are parsed three times per rescan, a few ms each. Question
+13's rule applies: a stamp cache for the stats logs should bring a quiet
+rescan down to about 25 ms, and it lands in step 2 with before and after
+numbers. The Steam `/proc` sweep that 0051 found in a real library isn't
+in these numbers, since the generated library has no proxied Steam games.
+
+Xvfb idle CPU and scroll: pending a rerun with software rendering forced
+(`ICED_BACKEND=tiny-skia`). The first run didn't pin the renderer, so
+wgpu may have used the GPU.
+
+Real hardware (the maintainer's session, GPU renderer, 7680x2160): idle
+while focused 4 to 7% CPU; scrolling top to bottom 20 to 40%, back up 10
+to 20% (posters decode on the way down and are reused on the way up);
+search 8 to 12% while typing. Scrolling was smooth and search felt
+instant.
+
 ## Testing and acceptance
 
 - Core: `library.toml` round-trips, ignores unknown keys, keeps a newer
