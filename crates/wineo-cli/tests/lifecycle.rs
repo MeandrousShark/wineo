@@ -352,6 +352,75 @@ fn dropping_the_fixture_kills_fakes_whose_config_is_gone() {
 }
 
 #[test]
+fn a_guard_leaves_the_group_of_a_leader_that_was_already_reaped() {
+    let dir = tempfile::tempdir().unwrap();
+    let recorded = dir.path().join("leftover");
+    // The leader exits at once and leaves a sleeper in its group.
+    let mut leader = KillOnDrop::group(
+        Command::new("sh")
+            .args(["-c", "sleep 30 & echo $! >\"$1\"", "sh"])
+            .arg(&recorded)
+            .process_group(0)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap(),
+    );
+    wait_for("the sleeper to be recorded", || {
+        fs::read_to_string(&recorded).is_ok_and(|text| text.ends_with('\n'))
+    });
+    let sleeper = fs::read_to_string(&recorded).unwrap().trim().to_owned();
+    leader.wait().unwrap();
+
+    // The leader's number is free to be reused once it is reaped, so the
+    // guard must not signal the group it led.
+    drop(leader);
+
+    // A signalled process takes a moment to die, and a dead one lingers as a
+    // zombie until reaped, so look after giving a kill time to land.
+    thread::sleep(Duration::from_millis(300));
+    let state = fs::read_to_string(format!("/proc/{sleeper}/stat")).unwrap_or_default();
+    let state = state.rsplit(')').next().unwrap_or("").trim_start();
+    assert!(state.starts_with('S'), "the guard killed the old group");
+    let _ = Command::new("kill").arg(&sleeper).status();
+}
+
+#[test]
+fn the_fake_sweep_finds_fakes_through_a_symlinked_root() {
+    use std::os::unix::process::ExitStatusExt;
+
+    let dir = tempfile::tempdir().unwrap();
+    let real = fs::canonicalize(dir.path()).unwrap().join("real");
+    let prefix = real.join("prefixes/app");
+    fs::create_dir_all(&prefix).unwrap();
+    let link = dir.path().join("link");
+    symlink(&real, &link).unwrap();
+
+    // wineo hands Wine the canonical prefix, however the root was reached.
+    let fake = |wineprefix: &Path| {
+        KillOnDrop::new(
+            Command::new("sleep")
+                .arg("30")
+                .env("WINEPREFIX", wineprefix)
+                .spawn()
+                .unwrap(),
+        )
+    };
+    let mut ours = fake(&prefix);
+    let mut stranger = fake(dir.path());
+    fs::write(
+        prefix.join("fake-pids"),
+        format!("{} {}\n", ours.id(), stranger.id()),
+    )
+    .unwrap();
+
+    kill_fake_programs(&link);
+
+    assert_eq!(ours.wait().unwrap().signal(), Some(9));
+    assert!(stranger.try_wait().unwrap().is_none(), "it was signalled");
+}
+
+#[test]
 fn force_stop_kills_right_away() {
     let f = Fixture::new();
     fs::create_dir_all(f.config_dir()).unwrap();

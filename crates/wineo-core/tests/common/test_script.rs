@@ -6,11 +6,11 @@
 
 use std::fs;
 use std::io::{self, Write};
-use std::ops::{Deref, DerefMut};
-use std::path::Path;
-use std::process::{Child, Command, Output, Stdio};
+use std::os::unix::ffi::OsStrExt;
+use std::path::{Path, PathBuf};
+use std::process::{Child, Command, ExitStatus, Output, Stdio};
 
-use rustix::process::{Pid, Signal, kill_process, kill_process_group};
+use rustix::process::{Pid, PidfdFlags, Signal, kill_process_group, pidfd_open, pidfd_send_signal};
 
 /// Writes an executable script with mode 0o755; see [`write_executable`].
 pub fn write_script(path: impl AsRef<Path>, body: impl AsRef<[u8]>) {
@@ -53,9 +53,15 @@ pub fn write_executable(path: impl AsRef<Path>, body: impl AsRef<[u8]>, mode: u3
 
 /// A spawned process that is killed and reaped when the guard drops, so a
 /// failed assertion can't leave it running after the test.
+///
+/// It wraps the few `Child` calls tests need instead of exposing the child,
+/// so it always knows whether the leader has been reaped. Once it has, the
+/// group number is no longer reserved and may belong to an unrelated group by
+/// now, so the drop never signals it.
 pub struct KillOnDrop {
     child: Option<Child>,
     group: bool,
+    reaped: bool,
 }
 
 impl KillOnDrop {
@@ -64,6 +70,7 @@ impl KillOnDrop {
         Self {
             child: Some(child),
             group: false,
+            reaped: false,
         }
     }
 
@@ -74,7 +81,28 @@ impl KillOnDrop {
         Self {
             child: Some(child),
             group: true,
+            reaped: false,
         }
+    }
+
+    pub fn id(&self) -> u32 {
+        self.child.as_ref().unwrap().id()
+    }
+
+    /// Waits for the child to exit. Anything it left in its group is no
+    /// longer killed on drop.
+    pub fn wait(&mut self) -> io::Result<ExitStatus> {
+        let status = self.child.as_mut().unwrap().wait()?;
+        self.reaped = true;
+        Ok(status)
+    }
+
+    /// Checks whether the child has exited, with the same effect on the
+    /// group as [`wait`](Self::wait) once it has.
+    pub fn try_wait(&mut self) -> io::Result<Option<ExitStatus>> {
+        let status = self.child.as_mut().unwrap().try_wait()?;
+        self.reaped |= status.is_some();
+        Ok(status)
     }
 
     /// Waits for the child and collects its output. The guard is spent, so
@@ -86,27 +114,15 @@ impl KillOnDrop {
     }
 }
 
-impl Deref for KillOnDrop {
-    type Target = Child;
-
-    fn deref(&self) -> &Child {
-        self.child.as_ref().unwrap()
-    }
-}
-
-impl DerefMut for KillOnDrop {
-    fn deref_mut(&mut self) -> &mut Child {
-        self.child.as_mut().unwrap()
-    }
-}
-
 impl Drop for KillOnDrop {
     fn drop(&mut self) {
         let Some(mut child) = self.child.take() else {
             return;
         };
-        // Before the reap below, while the id is still the child's own.
+        // Only while the leader is still unreaped, which keeps its id from
+        // being handed to anything else.
         if self.group
+            && !self.reaped
             && let Some(pid) = Pid::from_raw(child.id() as i32)
         {
             let _ = kill_process_group(pid, Signal::KILL);
@@ -120,9 +136,9 @@ impl Drop for KillOnDrop {
 /// `root`, found through the `fake-pids` files they write into their prefix.
 ///
 /// For a fixture whose environment config is already gone, which a stop by
-/// name can no longer reach. A pid is only killed when the process still has
-/// that prefix as its `WINEPREFIX`, which the fakes and their `sleep` inherit,
-/// so a pid the system has handed to something else is left alone.
+/// name can no longer reach. A process is only killed when it still has that
+/// prefix as its `WINEPREFIX`, which the fakes and their `sleep` inherit, so a
+/// pid the system has handed to something else is left alone.
 pub fn kill_fake_programs(root: &Path) {
     let mut folders = vec![root.to_owned()];
     while let Some(folder) = folders.pop() {
@@ -152,21 +168,32 @@ fn kill_recorded(prefix: &Path, pids: &Path) {
         return;
     };
     for pid in text.split_whitespace().filter_map(|pid| pid.parse().ok()) {
-        if runs_in_prefix(pid, prefix)
-            && let Some(pid) = Pid::from_raw(pid as i32)
-        {
-            let _ = kill_process(pid, Signal::KILL);
+        let Some(pid) = Pid::from_raw(pid) else {
+            continue;
+        };
+        // The descriptor pins this process, so the checks and the signal
+        // can't land on something that took over its number meanwhile.
+        let Ok(pidfd) = pidfd_open(pid, PidfdFlags::empty()) else {
+            continue;
+        };
+        if runs_in_prefix(pid.as_raw_nonzero().get(), prefix) {
+            let _ = pidfd_send_signal(&pidfd, Signal::KILL);
         }
     }
 }
 
-fn runs_in_prefix(pid: u32, prefix: &Path) -> bool {
+fn runs_in_prefix(pid: i32, prefix: &Path) -> bool {
     let Ok(environment) = fs::read(format!("/proc/{pid}/environ")) else {
         return false;
     };
-    let mut wanted = b"WINEPREFIX=".to_vec();
-    wanted.extend_from_slice(prefix.as_os_str().as_encoded_bytes());
+    let prefix = fs::canonicalize(prefix).unwrap_or_else(|_| prefix.to_owned());
+    // wineo canonicalizes the prefix it hands to Wine, so the fixture root
+    // may reach the same folder through a symlink.
     environment
         .split(|byte| *byte == 0)
-        .any(|var| var == wanted)
+        .filter_map(|var| var.strip_prefix(b"WINEPREFIX="))
+        .any(|value| {
+            let value = PathBuf::from(std::ffi::OsStr::from_bytes(value));
+            fs::canonicalize(&value).unwrap_or(value) == prefix
+        })
 }

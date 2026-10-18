@@ -2125,8 +2125,8 @@ fn winetricks_holds_the_environment_until_it_finishes() {
     let root = tempfile::tempdir().unwrap();
     let marker = root.path().join("started");
     let release = root.path().join("release");
-    // Gives up after 30 seconds, so a killed test can't leave it looping.
-    let script = "#!/bin/sh\ntouch \"$MARKER\"\ni=0\nwhile [ ! -e \"$RELEASE\" ] && [ \"$i\" -lt 600 ]; do sleep 0.05; i=$((i + 1)); done\n";
+    // Gives up after two minutes, well past the polling allowance,, so a killed test can't leave it looping.
+    let script = "#!/bin/sh\ntouch \"$MARKER\"\ni=0\nwhile [ ! -e \"$RELEASE\" ] && [ \"$i\" -lt 2400 ]; do sleep 0.05; i=$((i + 1)); done\n";
 
     // Its own process group, so the guard also takes down the winetricks it started.
     let mut child = KillOnDrop::group(
@@ -2162,8 +2162,8 @@ fn winetricks_holds_the_environment_until_it_finishes() {
 fn canceling_winetricks_cleans_up_before_letting_go() {
     let root = tempfile::tempdir().unwrap();
     let marker = root.path().join("started");
-    // Gives up after 30 seconds, so a killed test can't leave it looping.
-    let script = "#!/bin/sh\ntouch \"$MARKER\"\ni=0\nwhile [ \"$i\" -lt 600 ]; do sleep 0.05; i=$((i + 1)); done\n";
+    // Gives up after two minutes, well past the polling allowance,, so a killed test can't leave it looping.
+    let script = "#!/bin/sh\ntouch \"$MARKER\"\ni=0\nwhile [ \"$i\" -lt 2400 ]; do sleep 0.05; i=$((i + 1)); done\n";
 
     // Its own process group, so the interrupt reaches wineo and winetricks
     // together, the way Ctrl+C in a terminal would.
