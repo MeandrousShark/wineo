@@ -6,7 +6,7 @@ use clap_complete::ArgValueCompleter;
 use wineo_core::config::{GlobalConfig, Kind};
 use wineo_core::environment::Environment;
 use wineo_core::paths::Paths;
-use wineo_core::portable::{self, CopyInspection, Storage};
+use wineo_core::portable::{self, CopyEvent, CopyInspection, Storage};
 
 use super::transfer::{self, Cancellation};
 use crate::cancel;
@@ -118,7 +118,11 @@ fn copy_native(paths: &Paths, folder: &Paths, name: &str) -> anyhow::Result<Exit
     println!("The source stays as it is. External game files stay where they are.");
 
     let cancellation = Cancellation::new()?;
-    match portable::execute_native(paths, folder, &reviewed, &cancellation.token) {
+    match portable::execute_native_with(paths, folder, &reviewed, &cancellation.token, |event| {
+        if let CopyEvent::Warning(warning) = event {
+            eprintln!("warning: {warning}");
+        }
+    }) {
         Ok(environment) => {
             println!(
                 "Copied {} to {}",
