@@ -166,6 +166,10 @@ pub fn read(path: &Path) -> Result<Log> {
     else {
         return Ok(Log::default());
     };
+    Ok(parse(path, &text))
+}
+
+fn parse(path: &Path, text: &str) -> Log {
     let mut log = Log::default();
     for (number, line) in text.lines().enumerate() {
         if line.trim().is_empty() {
@@ -181,7 +185,7 @@ pub fn read(path: &Path) -> Result<Log> {
             )),
         }
     }
-    Ok(log)
+    log
 }
 
 /// Parsed play logs kept between overviews, for a caller that builds one
@@ -212,8 +216,7 @@ impl Cache {
     /// changed while being read) is read and returned as `read` would and
     /// leaves nothing cached, so errors and warnings match an uncached read.
     fn read(&mut self, path: &Path) -> Result<Arc<Log>> {
-        let before = files::Stamp::of(path).ok().flatten();
-        if let Some(stamp) = before
+        if let Some(stamp) = files::Stamp::of(path).ok().flatten()
             && let Some(cached) = self.logs.get(path)
             && cached.stamp == stamp
         {
@@ -224,12 +227,17 @@ impl Cache {
         {
             self.parses += 1;
         }
-        let log = Arc::new(read(path)?);
-        // A stamp taken after the read that matches the one before it means
-        // the parse is of the file the stamp describes.
-        if let Some(stamp) = before
-            && files::Stamp::of(path).ok().flatten() == Some(stamp)
-        {
+        let Some((bytes, stamp)) =
+            files::read_stamped(path).context(|| format!("failed to read {}", path.display()))?
+        else {
+            return Ok(Arc::new(Log::default()));
+        };
+        let Ok(text) = String::from_utf8(bytes) else {
+            // Not text: read it the plain way, which reports the same error.
+            return read(path).map(Arc::new);
+        };
+        let log = Arc::new(parse(path, &text));
+        if let Some(stamp) = stamp {
             self.logs.insert(
                 path.to_owned(),
                 CachedLog {
@@ -347,20 +355,25 @@ pub fn overview(paths: &Paths) -> Result<Overview> {
 /// `overview` that re-parses only the logs that changed since `cache` last
 /// saw them, and drops the entries of environments that are gone.
 pub fn overview_cached(paths: &Paths, cache: &mut Cache) -> Result<Overview> {
-    overview_inner(paths, OverviewOptions::default(), Some(cache))
+    overview_cached_at(paths, cache, Timestamp::now())
+}
+
+/// `overview_cached` as of `now`, so a test can move the clock.
+fn overview_cached_at(paths: &Paths, cache: &mut Cache, now: Timestamp) -> Result<Overview> {
+    overview_inner(paths, OverviewOptions::default(), Some(cache), now)
 }
 
 /// Loads configs only when filtering or collecting tags for a breakdown.
 pub fn overview_with_options(paths: &Paths, options: OverviewOptions<'_>) -> Result<Overview> {
-    overview_inner(paths, options, None)
+    overview_inner(paths, options, None, Timestamp::now())
 }
 
 fn overview_inner(
     paths: &Paths,
     options: OverviewOptions<'_>,
     mut cache: Option<&mut Cache>,
+    now: Timestamp,
 ) -> Result<Overview> {
-    let now = Timestamp::now();
     let tz = LocalZone::new();
     let mut rows = Vec::new();
     let mut tags = BTreeMap::new();

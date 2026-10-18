@@ -773,6 +773,8 @@ fn same_overview(a: &Overview, b: &Overview) {
     assert_eq!(a.played, b.played);
     assert_eq!(a.total_seconds, b.total_seconds);
     assert_eq!(a.never_played, b.never_played);
+    assert_eq!(a.steam_games, b.steam_games);
+    assert_eq!(a.unknown_steam_games, b.unknown_steam_games);
     assert_eq!(a.warnings, b.warnings);
     assert_eq!(a.errors, b.errors);
 }
@@ -905,7 +907,7 @@ fn a_filtered_overview_keeps_the_entries_it_skipped() {
         tags: Some(&filter),
         load_tags: false,
     };
-    let filtered = overview_inner(&paths, options, Some(&mut cache)).unwrap();
+    let filtered = overview_inner(&paths, options, Some(&mut cache), Timestamp::now()).unwrap();
     assert_eq!(filtered.rows.len(), 1);
     assert_eq!(cache.logs.len(), 2);
 }
@@ -961,23 +963,58 @@ fn a_rename_over_the_log_is_caught() {
 }
 
 #[test]
-fn a_later_now_changes_the_summary_without_a_parse() {
+fn a_later_now_changes_the_overview_without_a_parse() {
     let root = tempfile::tempdir().unwrap();
     let paths = library_paths(root.path(), &["alpha"]);
-    // A Wednesday; the next Monday starts a new week.
     append_session(&paths, "alpha", "game", "2026-09-23T19:00:00Z", 3600);
-    let log = paths.stats_log("alpha");
     let mut cache = Cache::new();
 
-    let early = cache.read(&log).unwrap();
-    let wednesday = summarize(&early, None, ts("2026-09-24T12:00:00Z"), &TimeZone::UTC);
-    let late = cache.read(&log).unwrap();
-    let next_week = summarize(&late, None, ts("2026-09-29T12:00:00Z"), &TimeZone::UTC);
+    let september = overview_cached_at(&paths, &mut cache, ts("2026-09-24T12:00:00Z")).unwrap();
+    let october = overview_cached_at(&paths, &mut cache, ts("2026-10-20T12:00:00Z")).unwrap();
     assert_eq!(cache.parses, 1);
-    assert_eq!(wednesday.this_week_seconds, 3600);
-    assert_eq!(next_week.this_week_seconds, 0);
-    assert_eq!(next_week.this_month_seconds, 3600);
-    assert_eq!(next_week.seconds, wednesday.seconds);
+    let (_, early) = &september.rows[0];
+    let (_, late) = &october.rows[0];
+    assert_eq!(
+        (early.this_week_seconds, early.this_month_seconds),
+        (3600, 3600)
+    );
+    assert_eq!((late.this_week_seconds, late.this_month_seconds), (0, 0));
+    assert_eq!(late.seconds, early.seconds);
+    assert_eq!(october.now, ts("2026-10-20T12:00:00Z"));
+}
+
+#[test]
+fn a_running_session_appears_and_ends_on_a_warm_cache() {
+    let root = tempfile::tempdir().unwrap();
+    let paths = library_paths(root.path(), &["live"]);
+    append_session(&paths, "live", "game", "2026-09-20T19:00:00Z", 3600);
+    let mut cache = Cache::new();
+    let idle = overview_cached(&paths, &mut cache).unwrap();
+    assert!(!idle.rows[0].1.running);
+
+    let runtime = Runtime::new(&paths, "live");
+    let lock = runtime.try_lock().unwrap().unwrap();
+    let mut run = crate::runtime::RunState::running(
+        crate::runtime::RunMode::Detached,
+        "game".to_owned(),
+        std::process::id(),
+        None,
+        &Default::default(),
+    );
+    run.started_at = Timestamp::now() - jiff::SignedDuration::from_secs(7200);
+    runtime.write_state(&run).unwrap();
+    let live = overview_cached(&paths, &mut cache).unwrap();
+    let (_, summary) = &live.rows[0];
+    assert!(summary.running);
+    assert_eq!(summary.sessions, 2);
+    assert!(summary.seconds >= 3600 + 7200);
+
+    drop(lock);
+    let ended = overview_cached(&paths, &mut cache).unwrap();
+    assert!(!ended.rows[0].1.running);
+    assert_eq!(ended.rows[0].1.seconds, 3600);
+    // The log never changed, so it was parsed once through all three.
+    assert_eq!(cache.parses, 1);
 }
 
 #[test]
