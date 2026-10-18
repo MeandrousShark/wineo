@@ -66,7 +66,7 @@ struct Inner {
 #[derive(Default)]
 pub(crate) struct RescanCaches {
     library: saved::Cache,
-    // The stats log cache goes here.
+    stats: wineo_core::stats::Cache,
 }
 
 /// Held by the one running scan, released when its read finishes even if
@@ -256,7 +256,10 @@ pub(crate) fn read_with(
     let saved = caches.library.read(paths);
     Scan {
         revisions,
-        library: Some(load_library_with(paths, saved).map_err(|error| error.to_string())),
+        library: Some(
+            load_library_with(paths, saved, Some(&mut caches.stats))
+                .map_err(|error| error.to_string()),
+        ),
         problem: Some(saved.problem.clone()),
         trash: Some(if trash_page {
             Trash::Page(crate::trash_work::read(paths))

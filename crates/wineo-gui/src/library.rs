@@ -290,13 +290,16 @@ fn fallback_played(kind: Option<CardKind>) -> Played {
 }
 
 pub(super) fn load_library(paths: &Paths) -> anyhow::Result<Vec<Card>> {
-    load_library_with(paths, &wineo_core::library::load(paths))
+    load_library_with(paths, &wineo_core::library::load(paths), None)
 }
 
-/// `load_library` with `library.toml` already read, so a caller can cache it.
+/// `load_library` with `library.toml` already read and, when given, the
+/// stats logs read through a cache, so a caller that reads often can skip
+/// what didn't change.
 pub(super) fn load_library_with(
     paths: &Paths,
     saved: &wineo_core::library::Library,
+    stats: Option<&mut stats::Cache>,
 ) -> anyhow::Result<Vec<Card>> {
     // Building cards never trashes or restores, so the overview and every
     // card's config load share one read of the trash.
@@ -308,7 +311,10 @@ pub(super) fn load_library_with(
         .and_then(|steam| steam.install.as_ref())
         .map(steam::compat_tools)
         .unwrap_or_default();
-    let stats = stats::overview(paths)?;
+    let stats = match stats {
+        Some(cache) => stats::overview_cached(paths, cache)?,
+        None => stats::overview(paths)?,
+    };
     let played: HashMap<_, _> = stats
         .rows
         .into_iter()
