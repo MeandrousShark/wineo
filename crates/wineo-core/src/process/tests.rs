@@ -334,22 +334,34 @@ fn a_leaderless_group_settles_once_only_zombies_are_left() {
     assert_eq!(leaderless_group_settled(group), Some(true));
 }
 
+/// Kills a test process's group even when an assertion panics first.
+struct KillGroupOnDrop(Child);
+
+impl Drop for KillGroupOnDrop {
+    fn drop(&mut self) {
+        if let Some(group) = Pid::from_raw(self.0.id() as i32) {
+            let _ = rustix::process::kill_process_group(group, Signal::KILL);
+        }
+        let _ = self.0.wait();
+    }
+}
+
 #[test]
 fn a_bystander_whose_name_is_not_utf8_does_not_stop_a_group_scan() {
     let dir = tempfile::tempdir().unwrap();
     // The kernel keeps 15 bytes of a name, which splits the final `é` here.
     let script = dir.path().join("aaaaaaaaaaaaaa\u{e9}");
     crate::test_script::write_script(&script, "#!/bin/sh\nsleep 30\nexit 0\n");
-    let mut bystander = process_group(&mut Command::new(&script)).spawn().unwrap();
-    let comm = format!("/proc/{}/comm", bystander.id());
+    let bystander = KillGroupOnDrop(process_group(&mut Command::new(&script)).spawn().unwrap());
+    let comm = format!("/proc/{}/comm", bystander.0.id());
     let deadline = Instant::now() + Duration::from_secs(5);
     while !fs::read(&comm).unwrap().contains(&0xc3) && Instant::now() < deadline {
         thread::sleep(Duration::from_millis(10));
     }
     assert!(std::str::from_utf8(&fs::read(&comm).unwrap()).is_err());
     assert!(matches!(
-        read_stat(bystander.id()),
-        ProcRead::Found(stat) if stat.group == bystander.id()
+        read_stat(bystander.0.id()),
+        ProcRead::Found(stat) if stat.group == bystander.0.id()
     ));
 
     let mut leader = process_group(&mut Command::new("sleep"))
@@ -361,12 +373,6 @@ fn a_bystander_whose_name_is_not_utf8_does_not_stop_a_group_scan() {
     leader.kill().unwrap();
     leader.wait().unwrap();
     assert_eq!(group_has_live_members(group), Some(false));
-
-    let _ = rustix::process::kill_process_group(
-        Pid::from_raw(bystander.id() as i32).unwrap(),
-        Signal::KILL,
-    );
-    let _ = bystander.wait();
 }
 
 #[test]
