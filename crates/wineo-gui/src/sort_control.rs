@@ -368,7 +368,8 @@ pub(crate) fn toolbar(app: &App) -> Element<'_, Message> {
         .style(move |_, status| ui::secondary_style(palette, status));
     let flip = tooltip(
         flip,
-        text(direction_label(app.query.sort, app.query.descending)),
+        container(text(direction_label(app.query.sort, app.query.descending)).size(13))
+            .padding([4, 8]),
         tooltip::Position::Bottom,
     )
     .style(move |_| {
