@@ -23,9 +23,6 @@ use wineo_core::heroic::{HeroicCandidate, HeroicGameKind, HeroicListing, HeroicS
 use wineo_core::heroic_import::{self, Game, LibraryPlan, Registered, RunnerSuggestion};
 use wineo_core::paths::Paths;
 
-pub(super) use super::frame::{
-    PAGE_MAX_WIDTH, PAGE_PADDING, SCROLL_GUTTER, page_frame, pinned, scroll_body,
-};
 use super::import_grid::{GridKey, ImportGrid};
 use super::{Action, artwork, posters};
 use crate::runner_label::{self, Choice};

@@ -28,7 +28,7 @@ use wineo_core::secret_service::SecretServiceKeyring;
 use wineo_core::supervisor::{Notice, Watched};
 
 use super::Action;
-use super::heroic;
+use super::frame;
 use crate::task;
 use crate::theme::Palette;
 use crate::ui::{accent_base, secondary_button};
@@ -642,9 +642,9 @@ impl Page {
         }
         let back = secondary_button("Back", palette)
             .on_press_maybe((!self.busy() && self.step != Step::Finished).then_some(Event::Back));
-        let mut page = column![row![back], heroic::scroll_body(body, None, palette)]
+        let mut page = column![row![back], frame::scroll_body(body, None, palette)]
             .spacing(12)
-            .max_width(heroic::PAGE_MAX_WIDTH)
+            .max_width(frame::PAGE_MAX_WIDTH)
             .height(Fill);
         let footer: Option<Element<'_, Event>> = match self.step {
             Step::Review => self.ready.as_ref().map(|ready| {
@@ -679,7 +679,7 @@ impl Page {
                     .border(border::rounded(8).width(1).color(palette.border))
             }));
         }
-        heroic::page_frame(page)
+        frame::page_frame(page)
     }
 }
 

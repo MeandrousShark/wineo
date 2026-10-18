@@ -8,7 +8,7 @@ fn the_editor_fits_narrow_and_wide_dialogs() {
     use crate::layout_probe::probe;
     let draft = Draft::new();
     // Page padding and the scrollbar gutter come off the dialog width.
-    let gutter = crate::flow::heroic::SCROLL_GUTTER;
+    let gutter = crate::flow::frame::SCROLL_GUTTER;
     for width in [280.0_f32 - 48.0 - gutter, 780.0 - gutter] {
         let mut view: Element<'_, Event> =
             iced::widget::scrollable(draft.view(Palette::DARK, true))
@@ -51,7 +51,7 @@ fn the_editor_with_picks_fits_narrow_and_wide_dialogs() {
             },
         );
     }
-    let gutter = crate::flow::heroic::SCROLL_GUTTER;
+    let gutter = crate::flow::frame::SCROLL_GUTTER;
     for width in [280.0_f32 - 48.0 - gutter, 780.0 - gutter] {
         let mut view: Element<'_, Event> =
             iced::widget::scrollable(draft.view(Palette::DARK, true))

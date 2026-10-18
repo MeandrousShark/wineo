@@ -2071,7 +2071,7 @@ pub(super) mod tests {
         for &(width, height) in sizes {
             let (body, footer) = page.view(iced::widget::column![], Palette::DARK);
             let mut view =
-                iced::widget::column![super::heroic::scroll_body(body, None, Palette::DARK)]
+                iced::widget::column![crate::flow::frame::scroll_body(body, None, Palette::DARK)]
                     .height(Fill);
             if let Some(footer) = footer {
                 view = view.push(footer);

@@ -32,6 +32,7 @@ use wineo_core::secret_service::SecretServiceKeyring;
 use wineo_core::steamgriddb;
 
 use super::Action;
+use super::frame;
 use super::gog_install::{self, Install, Leave, Offer};
 use super::gog_posters::{self, Job, Network, Source as PosterSource};
 use super::heroic::{self, Prerequisite};
@@ -843,7 +844,7 @@ impl Page {
             .on_press_maybe((!self.busy() && !finished).then_some(Event::Back));
         let mut page = column![]
             .spacing(12)
-            .max_width(heroic::PAGE_MAX_WIDTH)
+            .max_width(frame::PAGE_MAX_WIDTH)
             .height(Fill);
         if let (Step::Install, Some(install)) = (self.step, &self.install) {
             let (body, footer) = install.view(column![].spacing(14).width(Fill), palette);
@@ -852,14 +853,14 @@ impl Page {
                 Element::from(body).map(move |event| Event::Installing(instance, Box::new(event)));
             page = page
                 .push(row![back].align_y(Center))
-                .push(heroic::scroll_body(body, None, palette));
+                .push(frame::scroll_body(body, None, palette));
             if let Some(footer) = footer {
-                page = page.push(heroic::pinned(
+                page = page.push(frame::pinned(
                     footer.map(move |event| Event::Installing(instance, Box::new(event))),
                     palette,
                 ));
             }
-            return heroic::page_frame(page);
+            return frame::page_frame(page);
         }
         let title = match self.step {
             Step::Games => "Choose a GOG game",
@@ -917,7 +918,7 @@ impl Page {
         page = if self.step == Step::Games {
             page.push(self.games_view(body, palette, width))
         } else {
-            page.push(heroic::scroll_body(body, None, palette))
+            page.push(frame::scroll_body(body, None, palette))
         };
         let footer: Option<Element<'_, Event>> = match self.step {
             Step::Review => self.prepared.as_ref().map(|prepared| {
@@ -944,9 +945,9 @@ impl Page {
             Step::Install => None,
         };
         if let Some(footer) = footer {
-            page = page.push(heroic::pinned(footer, palette));
+            page = page.push(frame::pinned(footer, palette));
         }
-        heroic::page_frame(page)
+        frame::page_frame(page)
     }
 
     fn games_view<'a>(
@@ -956,7 +957,7 @@ impl Page {
         width: f32,
     ) -> Element<'a, Event> {
         let Some(listing) = &self.listing else {
-            return heroic::scroll_body(body, None, palette);
+            return frame::scroll_body(body, None, palette);
         };
         for issue in &listing.issues {
             body = body.push(text(issue).size(13).color(palette.warning));
@@ -971,7 +972,7 @@ impl Page {
             } else {
                 "You don't own any GOG games."
             };
-            return heroic::scroll_body(body.push(text(empty).color(palette.muted)), None, palette);
+            return frame::scroll_body(body.push(text(empty).color(palette.muted)), None, palette);
         }
         let tiles = entries.iter().enumerate().map(|(position, entry)| {
             let (id, title, reason, note, event) = match *entry {

@@ -16,7 +16,7 @@ use wineo_core::steam_import::{
     self, Applying, EntryState, Failure, NO_KEY_HINT, OwnedData, Wanted,
 };
 
-use super::heroic;
+use super::frame;
 use super::import_grid::{GridKey, ImportGrid, Tile};
 use super::{Action, posters};
 use crate::task;
@@ -777,11 +777,11 @@ impl Page {
                     .height(Fill)
                     .into()
             }
-            _ => heroic::scroll_body(body, None, palette),
+            _ => frame::scroll_body(body, None, palette),
         };
         let mut page = column![row![back], content]
             .spacing(12)
-            .max_width(heroic::PAGE_MAX_WIDTH)
+            .max_width(frame::PAGE_MAX_WIDTH)
             .height(Fill);
         let footer: Option<Element<'_, Event>> = match self.step {
             Step::Details => Some(
@@ -813,9 +813,9 @@ impl Page {
             Step::Games => None,
         };
         if let Some(footer) = footer {
-            page = page.push(heroic::pinned(footer, palette));
+            page = page.push(frame::pinned(footer, palette));
         }
-        heroic::page_frame(page)
+        frame::page_frame(page)
     }
 }
 

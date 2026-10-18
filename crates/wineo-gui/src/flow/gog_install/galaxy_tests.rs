@@ -73,8 +73,9 @@ fn install(
 fn fits(page: &Install) {
     for (width, height) in [(280.0, 240.0), (360.0, 480.0), (900.0, 720.0)] {
         let (body, footer) = page.view(iced::widget::column![], Palette::DARK);
-        let mut view = iced::widget::column![super::heroic::scroll_body(body, None, Palette::DARK)]
-            .height(Fill);
+        let mut view =
+            iced::widget::column![crate::flow::frame::scroll_body(body, None, Palette::DARK)]
+                .height(Fill);
         if let Some(footer) = footer {
             view = view.push(footer);
         }

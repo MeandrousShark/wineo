@@ -8,7 +8,7 @@ use iced::keyboard::{self, Key, key::Named};
 use iced::widget::{Row, column, container, image, mouse_area, row, scrollable, stack, text};
 use iced::{Center, Color, ContentFit, Element, Fill, Font, Task, border, mouse};
 
-use super::heroic::{PAGE_MAX_WIDTH, PAGE_PADDING, SCROLL_GUTTER};
+use super::frame::{PAGE_MAX_WIDTH, PAGE_PADDING, SCROLL_GUTTER};
 use super::posters;
 use crate::ends::{MIN_LEFT, ends};
 use crate::progress::Delayed;
