@@ -293,6 +293,13 @@ fn a_lost_proxied_run_is_released_without_signaling() {
         run.heartbeat_at
     );
     assert!(runtime.read_state().unwrap().unwrap().lost);
+    // Steam's own total is the playtime, so no session is logged for it.
+    assert!(!stats_log.exists());
+    let again = runtime
+        .clean_up_lost_run(Duration::from_secs(1), &stats_log)
+        .unwrap();
+    assert!(matches!(again, LostRunCleanup::NotLost), "{again:?}");
+    assert!(!stats_log.exists());
     assert!(child.try_wait().unwrap().is_none());
     assert!(runtime.try_lock().unwrap().is_some());
     runtime.check_quiet("game").unwrap();

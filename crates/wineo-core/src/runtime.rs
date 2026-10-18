@@ -548,9 +548,11 @@ impl Runtime {
     }
 
     /// Kills whatever a run left in the prefix when the process that owned it
-    /// died, then records the run as stopped so this only happens once. Its
-    /// session is logged to `stats_log` as `lost`, ending at its last
-    /// heartbeat rather than whenever this cleanup happened to run.
+    /// died, then records the run as stopped so this only happens once. A
+    /// Wine or native run's session is logged to `stats_log` as `lost`,
+    /// ending at its last heartbeat rather than whenever this cleanup
+    /// happened to run. A proxied (Steam) run is only released and logs
+    /// nothing.
     pub fn clean_up_lost_run(
         &self,
         settle_timeout: Duration,
@@ -573,6 +575,8 @@ impl Runtime {
             Err(err) => return unresolved(Some(chain(&err))),
         };
         if matches!(run.kind(), RunKind::Proxied(_)) {
+            // Steam playtime comes from Steam, so wineo records no sessions
+            // for Steam games, lost or not (docs/stats.md, "Steam playtime").
             run.finish(RunStatus::Stopped);
             run.lost = true;
             run.ended_at = Some(run.heartbeat_at.unwrap_or(run.started_at));
