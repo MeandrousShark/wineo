@@ -1,4 +1,5 @@
-//! Timings for the library read the 2 s rescan runs, and for `filtered()`.
+//! Timings for the library read the 2 s rescan runs, and for rebuilding the
+//! order `filtered()` reads.
 //! Ignored by default: they need a generated library and an optimized build.
 //!
 //! Generate a library (see `scripts/generate-bench-library.sh`), then:
@@ -8,8 +9,8 @@
 //!     -- --ignored --nocapture --test-threads=1
 //!
 //! Run one measurement by naming it instead of `library::bench`:
-//! `rescan_quiet_and_busy`, `rescan_parts`, `stats_overview_cache`, or
-//! `filtered_search_change`.
+//! `rescan_quiet_and_busy`, `rescan_parts`, `stats_overview_cache`,
+//! `filtered_search_change`, or `sort_change`.
 //! `WINEO_BENCH_ITERS` sets the iterations per measurement (default 100).
 //!
 //! The profile is release with debug assertions on for iced_core only, which
@@ -375,34 +376,78 @@ fn stats_overview_cache() {
     millis("stats::overview_cached", cached);
 }
 
-/// What a search change costs `filtered()` on the loaded cards: the stand-in
-/// for the sort and filter change time the plan measures once those exist.
-/// The cards are the real ones from the generated library.
+/// What a search change costs: rebuilding the cached order, which
+/// `filtered()` then only reads. The cards are the real ones from the
+/// generated library.
 #[test]
 #[ignore = "needs WINEO_BENCH_ROOT and a release-test build"]
 fn filtered_search_change() {
     let paths = paths();
-    let cards = library(&paths);
     let mut app = crate::tests::app();
-    app.cards = cards;
+    app.cards = library(&paths);
     // Mixes empty, broad, narrow, and no-match searches, since each lowercases
     // and scans every card.
     let searches = ["", "a", "ar", "arc", "iron", "harbor 3", "zzz", "gar", "e"];
     let iterations = iterations() * 20;
 
-    header("filtered(), one call per search change", iterations);
+    header("order rebuild, one per search change", iterations);
     let mut samples = Vec::with_capacity(iterations);
     let mut matched = 0;
     for round in 0..iterations + 100 {
         app.search = searches[round % searches.len()].to_owned();
         let start = Instant::now();
-        let found = black_box(app.filtered());
+        app.reorder();
         let elapsed = start.elapsed();
-        matched += found.len();
+        matched += black_box(app.filtered()).len();
         if round >= 100 {
             samples.push(elapsed);
         }
     }
     black_box(matched);
-    report("filtered() on cards", samples, "us", 1e6);
+    report("reorder() per search", samples, "us", 1e6);
+}
+
+/// What a sort change costs: the order rebuilt after a new key or
+/// direction, with every key and both directions, favorites first off and
+/// on.
+#[test]
+#[ignore = "needs WINEO_BENCH_ROOT and a release-test build"]
+fn sort_change() {
+    use wineo_core::library::SortKey;
+
+    let paths = paths();
+    let mut app = crate::tests::app();
+    app.cards = library(&paths);
+    app.search = String::new();
+    let mut queries = Vec::new();
+    for favorites_first in [false, true] {
+        for sort in SortKey::ALL {
+            for descending in [false, true] {
+                queries.push(crate::order::Query {
+                    sort,
+                    descending,
+                    favorites_first,
+                });
+            }
+        }
+    }
+    let iterations = iterations() * 20;
+
+    header("order rebuild, one per sort change", iterations);
+    let mut samples = Vec::with_capacity(iterations);
+    let mut first = 0;
+    for round in 0..iterations + 100 {
+        app.query = queries[round % queries.len()];
+        let start = Instant::now();
+        app.reorder();
+        let elapsed = start.elapsed();
+        first += black_box(app.filtered())
+            .first()
+            .map_or(0, |card| card.name.len());
+        if round >= 100 {
+            samples.push(elapsed);
+        }
+    }
+    black_box(first);
+    report("reorder() per sort", samples, "us", 1e6);
 }
