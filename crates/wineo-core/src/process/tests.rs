@@ -364,14 +364,15 @@ fn a_bystander_whose_name_is_not_utf8_does_not_stop_a_group_scan() {
         ProcRead::Found(stat) if stat.group == bystander.0.id()
     ));
 
-    let mut leader = process_group(&mut Command::new("sleep"))
-        .arg("30")
-        .spawn()
-        .unwrap();
-    let group = leader.id();
+    let leader = KillGroupOnDrop(
+        process_group(&mut Command::new("sleep"))
+            .arg("30")
+            .spawn()
+            .unwrap(),
+    );
+    let group = leader.0.id();
     assert_eq!(group_has_live_members(group), Some(true));
-    leader.kill().unwrap();
-    leader.wait().unwrap();
+    drop(leader);
     assert_eq!(group_has_live_members(group), Some(false));
 }
 
