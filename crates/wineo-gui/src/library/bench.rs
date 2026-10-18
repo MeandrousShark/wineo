@@ -45,7 +45,7 @@ fn iterations() -> usize {
         .unwrap_or(100)
 }
 
-fn paths() -> Paths {
+fn bench_root() -> PathBuf {
     if cfg!(debug_assertions) {
         panic!("build with --profile release-test, a debug build's timings mean nothing");
     }
@@ -58,6 +58,11 @@ fn paths() -> Paths {
         "{} was not made by generate-bench-library.sh",
         root.display()
     );
+    root
+}
+
+fn paths() -> Paths {
+    let root = bench_root();
     Paths::from_lookup(|key| (key == "HOME").then(|| root.clone().into_os_string())).unwrap()
 }
 
@@ -122,7 +127,36 @@ fn time<T>(iterations: usize, mut work: impl FnMut() -> T) -> Vec<Duration> {
 struct Logs(Vec<(PathBuf, u64)>);
 
 impl Logs {
+    /// Refuses logs that could reach outside the bench root, since this
+    /// appends to and truncates them.
     fn new(paths: &Paths, cards: &[Card]) -> Self {
+        let root = bench_root();
+        for card in cards {
+            let log = paths.stats_log(&card.name);
+            let dir = log.parent().expect("a log has a directory");
+            for path in [dir, log.as_path()] {
+                let meta = match fs::symlink_metadata(path) {
+                    Ok(meta) => meta,
+                    // Appending creates a missing log; a missing directory is
+                    // caught by the check on the first log that has one.
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+                    Err(error) => panic!("can't stat {}: {error}", path.display()),
+                };
+                assert!(
+                    !meta.file_type().is_symlink(),
+                    "{} is a symlink, refusing to write through it",
+                    path.display()
+                );
+                let real = fs::canonicalize(path).unwrap();
+                assert!(
+                    real.starts_with(&root),
+                    "{} resolves to {}, outside the bench root {}",
+                    path.display(),
+                    real.display(),
+                    root.display()
+                );
+            }
+        }
         Self(
             cards
                 .iter()
@@ -316,14 +350,21 @@ fn stats_overview_cache() {
     let mut cached = Vec::new();
     let mut cache = stats::Cache::new();
     for round in 0..iterations + 5 {
+        // One change both calls see, and the order alternates so neither
+        // always gets the colder page cache.
         logs.append_session(round as u64);
-        let start = Instant::now();
-        black_box(stats::overview(&paths).unwrap());
-        let plain_elapsed = start.elapsed();
-        logs.append_session(round as u64);
-        let start = Instant::now();
-        black_box(stats::overview_cached(&paths, &mut cache).unwrap());
-        let cached_elapsed = start.elapsed();
+        let (mut plain_elapsed, mut cached_elapsed) = (Duration::ZERO, Duration::ZERO);
+        for step in 0..2 {
+            if (step == 0) == (round % 2 == 0) {
+                let start = Instant::now();
+                black_box(stats::overview(&paths).unwrap());
+                plain_elapsed = start.elapsed();
+            } else {
+                let start = Instant::now();
+                black_box(stats::overview_cached(&paths, &mut cache).unwrap());
+                cached_elapsed = start.elapsed();
+            }
+        }
         if round >= 5 {
             plain.push(plain_elapsed);
             cached.push(cached_elapsed);
