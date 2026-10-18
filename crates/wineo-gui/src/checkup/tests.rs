@@ -782,3 +782,54 @@ fn stale_check_and_fix_results_never_win() {
             .is_empty()
     );
 }
+
+#[test]
+fn a_library_repair_shows_its_report_under_the_fixed_line() {
+    let (_root, mut app) = fixture();
+    let broken = "[environments.game]\nfavorite = true\n[environments.game]\n";
+    std::fs::write(app.paths.library_file(), broken).unwrap();
+    open(&mut app);
+    let report = crate::checkup_work::check_report(&app.paths, &scope()).unwrap();
+    let fixes = report.fixes();
+    assert_eq!(fixes, [Fix::RepairLibrary]);
+    loaded(&mut app, report);
+    send(&mut app, Event::Fix(scope()));
+    let generation = app.change_generation;
+
+    let paths = app.paths.clone();
+    let outcome = crate::checkup_work::run_fixes(&fixes, &Token::new(), |fix, token| {
+        wineo_core::validate::apply(
+            &paths,
+            fix,
+            token,
+            wineo_core::winetricks::EnsureOutput::Stderr,
+            |_| {},
+            |_, _| unreachable!("a repair downloads nothing"),
+        )
+    });
+    send(&mut app, Event::Finished(generation, Ok(outcome)));
+    let after = crate::checkup_work::check_report(&app.paths, &scope()).unwrap();
+    loaded(&mut app, after);
+
+    let lines = lines(&app);
+    assert_eq!(lines.len(), 3, "{lines:?}");
+    assert_eq!(lines[0], ("Fixed 1 problem.".to_owned(), None));
+    assert_eq!(
+        lines[1],
+        ("Recovered the one recognized entry.".to_owned(), None)
+    );
+    assert!(
+        lines[2]
+            .0
+            .starts_with("Original saved as library.toml.broken-"),
+        "{lines:?}"
+    );
+    assert_eq!(lines[2].1, None);
+    let backup = lines[2]
+        .0
+        .strip_prefix("Original saved as ")
+        .and_then(|name| name.strip_suffix('.'))
+        .unwrap();
+    let backup = app.paths.library_file().with_file_name(backup);
+    assert_eq!(std::fs::read_to_string(backup).unwrap(), broken);
+}
