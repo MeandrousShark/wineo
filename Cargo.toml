@@ -52,3 +52,11 @@ strip = "symbols"
 # Smallest binaries and lowest memory of the options measured in plan 0051.
 lto = "fat"
 codegen-units = 1
+
+# Optimized local builds without fat LTO's long link, for trying a change at
+# release speed. Packages and measurements use `release`.
+[profile.release-fast]
+inherits = "release"
+lto = false
+codegen-units = 16
+incremental = true
