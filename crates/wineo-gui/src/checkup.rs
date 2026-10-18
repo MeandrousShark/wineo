@@ -100,6 +100,8 @@ fn groups<'a>(report: &'a Report, scope: &Scope) -> Vec<(Group, Vec<(usize, &'a 
 pub(crate) struct Outcome {
     pub(crate) applied: Vec<Fix>,
     pub(crate) failed: Vec<(Fix, String)>,
+    /// What a fix reported doing, like a library repair, one entry per report.
+    pub(crate) notes: Vec<String>,
     pub(crate) warnings: Vec<String>,
     pub(crate) canceled: bool,
     pub(crate) skipped: usize,
@@ -113,6 +115,12 @@ impl Outcome {
             format!("Fixed {}.", plural(fixed, "problem", "problems"))
         };
         let mut lines = vec![(done, None)];
+        lines.extend(
+            self.notes
+                .iter()
+                .flat_map(|note| note.lines())
+                .map(|line| (line.to_owned(), None)),
+        );
         lines.extend(self.failed.iter().map(|(fix, error)| {
             (
                 format!("error: {} failed: {error}", fix.label()),

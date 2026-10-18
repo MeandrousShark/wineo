@@ -68,16 +68,14 @@ pub(crate) fn recover_snapshot(generation: u64, paths: Paths, fix: Fix) -> Task<
                 |_, _| unreachable!("snapshot recovery does not download builds"),
             );
             let outcome = match result {
-                Ok(notes) => Outcome {
-                    applied: vec![fix],
-                    warnings: notes
-                        .into_iter()
-                        .map(|note| match note {
-                            Note::Warning(message) => message,
-                        })
-                        .collect(),
-                    ..Outcome::default()
-                },
+                Ok(notes) => {
+                    let mut outcome = Outcome {
+                        applied: vec![fix],
+                        ..Outcome::default()
+                    };
+                    outcome.add_notes(notes);
+                    outcome
+                }
                 Err(error) => Outcome {
                     failed: vec![(fix, paths.contract_text(&format!("{error:#}")))],
                     ..Outcome::default()
@@ -97,6 +95,7 @@ pub(crate) fn run_fixes(
     let mut outcome = Outcome {
         applied: Vec::new(),
         failed: Vec::new(),
+        notes: Vec::new(),
         warnings: Vec::new(),
         canceled: false,
         skipped: 0,
@@ -119,11 +118,7 @@ pub(crate) fn run_fixes(
         match apply_one(fix, token) {
             Ok(notes) => {
                 outcome.applied.push(fix.clone());
-                outcome
-                    .warnings
-                    .extend(notes.into_iter().map(|note| match note {
-                        Note::Warning(warning) => warning,
-                    }));
+                outcome.add_notes(notes);
             }
             Err(error) if is_canceled(&error) => {
                 outcome.canceled = true;
@@ -139,6 +134,17 @@ pub(crate) fn run_fixes(
     }
 
     outcome
+}
+
+impl Outcome {
+    fn add_notes(&mut self, notes: Vec<Note>) {
+        for note in notes {
+            match note {
+                Note::Warning(warning) => self.warnings.push(warning),
+                note @ Note::LibraryRepaired(_) => self.notes.push(note.to_string()),
+            }
+        }
+    }
 }
 
 fn is_canceled(error: &anyhow::Error) -> bool {

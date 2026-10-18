@@ -88,7 +88,7 @@ pub(crate) fn recover_entry(paths: &Paths, id: String) -> Result<Vec<String>, St
     .map(|notes| {
         notes
             .into_iter()
-            .map(|validate::Note::Warning(note)| paths.contract_text(&note))
+            .map(|note| paths.contract_text(&note.to_string()))
             .collect()
     })
     .map_err(|error| paths.contract_text(&format!("{error:#}")))

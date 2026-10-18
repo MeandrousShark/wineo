@@ -296,6 +296,7 @@ fn completion_rechecks_and_reloads_both_with_persistent_partial_results() {
     let outcome = Outcome {
         applied: vec![download()],
         failed: vec![(other_fix(), "busy".into())],
+        notes: Vec::new(),
         warnings: vec!["left something behind".into()],
         canceled: true,
         skipped: 1,
