@@ -102,8 +102,9 @@ reap() {
         ((alive)) || break
         sleep 0.1
     done
+    # Only what is still alive: a pid that already exited may have been reused.
     for pid in "$@"; do
-        [[ -n $pid ]] && kill -9 "$pid" 2>/dev/null || true
+        [[ -n $pid ]] && kill -0 "$pid" 2>/dev/null && kill -9 "$pid" 2>/dev/null || true
     done
 }
 cleanup() {
