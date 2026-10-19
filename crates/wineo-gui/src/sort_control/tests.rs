@@ -805,7 +805,7 @@ fn saved(ran: Ran) -> Vec<Message> {
         .collect()
 }
 
-fn press(named: Named) -> iced::Event {
+pub(crate) fn press(named: Named) -> iced::Event {
     let key = Key::Named(named);
     iced::Event::Keyboard(iced::keyboard::Event::KeyPressed {
         key: key.clone(),
@@ -822,7 +822,7 @@ fn press(named: Named) -> iced::Event {
 
 /// Runs `task` with the widget operations it asks for answered by the
 /// window's real layout, and returns the messages it sent.
-fn answers(app: &App, task: Task<Message>) -> Vec<Message> {
+pub(crate) fn answers(app: &App, task: Task<Message>) -> Vec<Message> {
     use iced::futures::StreamExt;
     let Some(mut stream) = iced_runtime::task::into_stream(task) else {
         return Vec::new();
@@ -860,7 +860,7 @@ fn open_from_keyboard(app: &mut App) -> Task<Message> {
 
 /// Lays out the window and runs `operations` in it, as the runtime does
 /// after an update.
-fn focus_after<'a>(
+pub(crate) fn focus_after<'a>(
     app: &'a App,
     operations: Vec<Box<dyn iced::advanced::widget::Operation>>,
 ) -> crate::layout_probe::Laid<'a, Message> {
