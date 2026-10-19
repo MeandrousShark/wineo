@@ -14,6 +14,7 @@ use crate::{App, Message, focus_button};
 
 pub(crate) const SHOW_HIDDEN_ID: &str = "library-empty-show-hidden";
 pub(crate) const CLEAR_ID: &str = "library-empty-clear";
+pub(crate) const CHECKUP_ID: &str = "library-banner-checkup";
 
 const SEARCH_ICON: &[u8] = br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><circle cx="10.5" cy="10.5" r="6.5" fill="none" stroke="#000" stroke-width="1.8"/><path d="M15.5 15.5L20 20" fill="none" stroke="#000" stroke-width="1.8" stroke-linecap="round"/></svg>"##;
 const EYE_ICON: &[u8] = br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12z" fill="none" stroke="#000" stroke-width="1.8" stroke-linejoin="round"/><circle cx="12" cy="12" r="3" fill="none" stroke="#000" stroke-width="1.8"/><path d="M4 20L20 4" fill="none" stroke="#000" stroke-width="1.8" stroke-linecap="round"/></svg>"##;
@@ -151,8 +152,14 @@ impl App {
         } else {
             crate::ends::ends(
                 message,
-                ui::secondary_button("Open Checkup", palette)
-                    .on_press(Message::Section(crate::sidebar::Section::Checkup)),
+                focus_button::control(
+                    ui::secondary_button("Open Checkup", palette)
+                        .on_press(Message::Section(crate::sidebar::Section::Checkup))
+                        .into(),
+                    true,
+                    CHECKUP_ID,
+                    Message::Section(crate::sidebar::Section::Checkup),
+                ),
                 12.0,
                 crate::ends::MIN_LEFT,
             )
@@ -207,16 +214,13 @@ fn banner_style(palette: Palette) -> container::Style {
 /// The banner's words: what `validate` says about the file, and what that
 /// means for the library.
 pub(crate) fn banner_text(problem: &Problem) -> String {
+    let message = problem.message();
+    // The newer-wineo message is already a sentence.
+    let message = message.trim_end_matches('.');
     if problem.newer_version {
-        format!(
-            "{} Favorites and hidden games are off until then.",
-            problem.message()
-        )
+        format!("{message}. Favorites and hiding are off until then.")
     } else {
-        format!(
-            "{}; favorites and hidden games are off until it's fixed. Fix it, or repair it in Checkup.",
-            problem.message()
-        )
+        format!("{message}. Favorites and hiding are off until it's fixed.")
     }
 }
 
@@ -229,12 +233,12 @@ pub(crate) fn all_hidden_note(hidden: usize) -> String {
     }
 }
 
-/// How many hidden games the search and filters would show.
+/// How many hidden cards the search and filters would show.
 pub(crate) fn matching_note(count: usize) -> String {
     if count == 1 {
-        "1 hidden game matches".to_owned()
+        "1 match is hidden".to_owned()
     } else {
-        format!("{count} hidden games match")
+        format!("{count} matches are hidden")
     }
 }
 

@@ -172,8 +172,8 @@ fn no_matches_says_how_many_hidden_games_match() {
         app.empty_state(),
         Some(Empty::NoMatches { hidden_matching: 1 })
     );
-    assert_eq!(matching_note(1), "1 hidden game matches");
-    assert_eq!(matching_note(2), "2 hidden games match");
+    assert_eq!(matching_note(1), "1 match is hidden");
+    assert_eq!(matching_note(2), "2 matches are hidden");
     assert!(bounds(&app, SHOW_HIDDEN_ID).is_some());
 
     // Show hidden shows the match; Show hidden on, nothing more to say.
@@ -236,14 +236,46 @@ fn the_banner_shows_from_boot_with_the_validate_message() {
         text.starts_with("library.toml can't be read (line 2: "),
         "{text}"
     );
-    assert!(
-        text.ends_with(
-            "; favorites and hidden games are off until it's fixed. Fix it, or repair it in Checkup."
-        ),
-        "{text}"
+    assert_eq!(
+        text,
+        format!(
+            "{}. Favorites and hiding are off until it's fixed.",
+            problem.message()
+        )
     );
     assert!(app.library_banner().is_some());
+    assert!(bounds(&app, CHECKUP_ID).is_some());
     draw(&app);
+}
+
+#[test]
+fn a_zero_schema_version_points_to_checkup() {
+    let root = tempfile::tempdir().unwrap();
+    let paths = paths(&root);
+    write_library(&paths, "schema_version = 0\n");
+    let app = App::boot(paths).0;
+    let problem = app.library_problem.clone().expect("boot read the problem");
+    assert!(!problem.newer_version);
+    assert_eq!(
+        banner_text(&problem),
+        "library.toml can't be read (unsupported schema_version 0). Favorites and hiding are off until it's fixed."
+    );
+    let messages = press_control(&app, CHECKUP_ID);
+    assert!(
+        messages
+            .iter()
+            .any(|message| matches!(message, Message::Section(crate::sidebar::Section::Checkup)))
+    );
+}
+
+#[test]
+fn a_newer_file_has_no_checkup_button() {
+    let root = tempfile::tempdir().unwrap();
+    let paths = paths(&root);
+    write_library(&paths, "schema_version = 2\n");
+    let app = App::boot(paths).0;
+    assert!(app.library_banner().is_some());
+    assert!(bounds(&app, CHECKUP_ID).is_none());
 }
 
 #[test]
@@ -255,7 +287,7 @@ fn a_newer_file_points_to_an_update_not_a_repair() {
     };
     assert_eq!(
         banner_text(&problem),
-        "library.toml was written by a newer wineo; update wineo to use it. Favorites and hidden games are off until then."
+        "library.toml was written by a newer wineo; update wineo to use it. Favorites and hiding are off until then."
     );
 }
 
