@@ -117,7 +117,7 @@ impl App {
         };
         // The docked panel covers the right side, so the message stays
         // clear of it.
-        let right = if self.panel_open {
+        let right = if self.panel_reserved() {
             crate::grid_motion::DOCK_WIDTH
         } else {
             0.0

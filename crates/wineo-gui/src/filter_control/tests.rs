@@ -359,11 +359,17 @@ fn the_popup_opens_at_the_anchor_takes_the_keys_and_escape_closes_it() {
     // waits, and Escape closes the popup before the panel.
     key(&mut app, Named::ArrowRight);
     key(&mut app, Named::Enter);
+    let _ = app.update(Message::Key(
+        Key::Named(Named::Delete),
+        Modifiers::empty(),
+        iced::event::Status::Ignored,
+    ));
     let _ = app.update(Message::RemoveFocus(
         iced::event::Status::Ignored,
         false,
         false,
     ));
+    key(&mut app, Named::Delete);
     assert!(app.removal.is_none());
     assert_eq!(app.selected.as_deref(), Some("hades"));
     assert!(app.operation.is_none());
@@ -387,6 +393,14 @@ fn the_popup_opens_at_the_anchor_takes_the_keys_and_escape_closes_it() {
     assert!(app.filter_menu);
     let _ = filter(&mut app, Event::CloseMenu);
     assert!(!app.filter_menu);
+
+    // Delete works again once it's closed.
+    let _ = app.update(Message::RemoveFocus(
+        iced::event::Status::Ignored,
+        false,
+        false,
+    ));
+    assert!(app.removal.is_some());
 }
 
 #[test]
