@@ -346,3 +346,26 @@ fn library_file_is_loaded_from_the_selected_config_root() {
     );
     assert!(Path::new(&fixture.paths.library_file()).is_absolute());
 }
+
+#[test]
+fn a_problem_reads_like_its_validate_message() {
+    let fixture = Fixture::new();
+    fixture.write("schema_version = 1\n[view]\nsort = \"name\"\nthis is broken\n");
+    let message = load(&fixture.paths).problem.unwrap().message();
+    assert!(
+        message.starts_with("library.toml can't be read (line 4: "),
+        "{message}"
+    );
+    assert_eq!(
+        Some(message),
+        inspect(&fixture.paths)
+            .unreadable
+            .map(|unreadable| unreadable.message)
+    );
+
+    fixture.write("schema_version = 2\n");
+    assert_eq!(
+        load(&fixture.paths).problem.unwrap().message(),
+        "library.toml was written by a newer wineo; update wineo to use it."
+    );
+}

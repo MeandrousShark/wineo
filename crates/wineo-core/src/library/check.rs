@@ -87,20 +87,14 @@ fn unreadable(path: &std::path::Path, failure: ReadFailure) -> Unreadable {
             newer()
         }
         ReadFailure::Io(error) => Unreadable {
-            message: format!("library.toml can't be read ({error})"),
+            message: super::unreadable_message(None, &error.to_string()),
             newer: false,
         },
         ReadFailure::Parse { .. } if declares_newer() => newer(),
-        ReadFailure::Parse { error, line } => {
-            let reason = error.message().trim();
-            Unreadable {
-                message: match line {
-                    Some(line) => format!("library.toml can't be read (line {line}: {reason})"),
-                    None => format!("library.toml can't be read ({reason})"),
-                },
-                newer: false,
-            }
-        }
+        ReadFailure::Parse { error, line } => Unreadable {
+            message: super::unreadable_message(line, error.message()),
+            newer: false,
+        },
         ReadFailure::Schema(found) => {
             // read_document only returns Schema for a file that parsed.
             let is_newer = fs::read_to_string(path)

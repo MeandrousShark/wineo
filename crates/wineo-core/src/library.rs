@@ -82,6 +82,26 @@ pub struct Problem {
     pub newer_version: bool,
 }
 
+impl Problem {
+    /// What `validate` and Checkup say about the file.
+    pub fn message(&self) -> String {
+        if self.newer_version {
+            self.reason.clone()
+        } else {
+            unreadable_message(self.line, &self.reason)
+        }
+    }
+}
+
+/// `library.toml can't be read (line N: reason)`, shared with `validate`.
+pub(crate) fn unreadable_message(line: Option<usize>, reason: &str) -> String {
+    let reason = reason.trim();
+    match line {
+        Some(line) => format!("library.toml can't be read (line {line}: {reason})"),
+        None => format!("library.toml can't be read ({reason})"),
+    }
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Library {
     pub view: View,
