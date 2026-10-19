@@ -946,6 +946,64 @@ fn compatibility_tool_in_app_ids_ignore_case() {
 }
 
 #[test]
+fn proton_platform_needs_the_games_own_entry_or_a_prefix() {
+    use crate::source::Platform::Windows;
+
+    let library = tempfile::tempdir().unwrap();
+    let library = library.path();
+    let default_only = HashMap::from([("0".to_owned(), "proton_default".to_owned())]);
+    let mut tools = default_only.clone();
+    tools.insert("42".to_owned(), "GE-Proton".to_owned());
+    tools.insert("empty".to_owned(), String::new());
+
+    // The game's own entry counts, whatever the case, with or without a
+    // library; the "0" default alone doesn't.
+    assert_eq!(proton_platform(&tools, "42", None), Some(Windows));
+    assert_eq!(proton_platform(&tools, "42", Some(library)), Some(Windows));
+    assert_eq!(proton_platform(&tools, "EMPTY", None), None);
+    assert_eq!(proton_platform(&default_only, "42", Some(library)), None);
+    assert_eq!(proton_platform(&HashMap::new(), "42", None), None);
+
+    // Only a prefix inside compatdata counts, not an empty folder.
+    let compatdata = library.join("steamapps/compatdata");
+    fs::create_dir_all(compatdata.join("42")).unwrap();
+    assert_eq!(proton_platform(&default_only, "42", Some(library)), None);
+    fs::create_dir_all(compatdata.join("42/pfx")).unwrap();
+    assert_eq!(
+        proton_platform(&default_only, "42", Some(library)),
+        Some(Windows)
+    );
+    assert_eq!(proton_platform(&default_only, "43", Some(library)), None);
+}
+
+#[test]
+fn proton_platform_never_builds_a_path_from_an_app_id_that_is_not_digits() {
+    let library = tempfile::tempdir().unwrap();
+    let library = library.path();
+    // compatdata/../pfx would be steamapps/pfx.
+    fs::create_dir_all(library.join("steamapps/compatdata")).unwrap();
+    fs::create_dir_all(library.join("steamapps/pfx")).unwrap();
+    for app_id in ["..", "", "1/../..", "4x"] {
+        assert_eq!(
+            proton_platform(&HashMap::new(), app_id, Some(library)),
+            None,
+            "{app_id:?}"
+        );
+    }
+}
+
+#[test]
+fn an_unreadable_config_leaves_no_platform_and_no_error() {
+    let home = tempfile::tempdir().unwrap();
+    let root = native(home.path());
+    let install = only(home.path());
+    fs::create_dir_all(root.join("config/config.vdf")).unwrap();
+    let tools = compat_tools(&install);
+    assert!(tools.is_empty());
+    assert_eq!(proton_platform(&tools, "42", Some(&root)), None);
+}
+
+#[test]
 fn the_compatibility_tool_falls_back_to_the_default() {
     let home = tempfile::tempdir().unwrap();
     let home = home.path();

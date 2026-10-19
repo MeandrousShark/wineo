@@ -3,6 +3,7 @@
 
 use std::collections::HashMap;
 use std::fs;
+use std::path::Path;
 
 use super::vdf;
 use super::{Install, number};
@@ -174,6 +175,33 @@ pub fn compat_tools(install: &Install) -> HashMap<String, String> {
         tools.entry(app_id.to_ascii_lowercase()).or_insert(name);
     }
     tools
+}
+
+/// Windows when Steam has run a game under Proton: it has a Proton entry of
+/// its own in `tools` (not the `"0"` default, which only covers games without
+/// a Linux build), or a prefix exists under its library's `compatdata`. None
+/// when neither shows it, since Steam doesn't say whether a game uses Proton.
+/// `library` is the folder holding the game's `steamapps`; the prefix check
+/// is one stat.
+pub fn proton_platform(
+    tools: &HashMap<String, String>,
+    app_id: &str,
+    library: Option<&Path>,
+) -> Option<crate::source::Platform> {
+    let own_entry = tools
+        .get(&app_id.to_ascii_lowercase())
+        .is_some_and(|name| !name.is_empty());
+    // The id becomes a path component, so only plain digits get one.
+    let prefix = library.is_some_and(|library| {
+        !app_id.is_empty()
+            && app_id.bytes().all(|byte| byte.is_ascii_digit())
+            && library
+                .join("steamapps/compatdata")
+                .join(app_id)
+                .join("pfx")
+                .exists()
+    });
+    (own_entry || prefix).then_some(crate::source::Platform::Windows)
 }
 
 /// The Proton build a game is set to, or the `"0"` default when the game has

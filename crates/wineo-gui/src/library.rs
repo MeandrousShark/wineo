@@ -359,17 +359,21 @@ pub(super) fn load_library_with(
     let gog = crate::gog_library::Folders::read(paths);
     let mut cards = Vec::new();
     for item in overview.environments {
+        let mut steam_platform = None;
         let steam = if let Some(report::KindReport::Proxied {
             app_id, install, ..
         }) = &item.kind
         {
+            let entry = overview
+                .steam
+                .as_ref()
+                .and_then(|steam| steam.manifests.iter().find(|entry| entry.app_id == *app_id));
+            steam_platform =
+                steam::proton_platform(&tools, app_id, entry.map(|entry| entry.library.as_path()));
             Some(SteamDetails {
                 install: install.clone(),
                 proton: steam::compat_tool_in(&tools, app_id),
-                size: overview
-                    .steam
-                    .as_ref()
-                    .and_then(|steam| steam.manifests.iter().find(|entry| entry.app_id == *app_id))
+                size: entry
                     .and_then(|entry| entry.manifest.as_ref().ok())
                     .map(|manifest| manifest.size_on_disk),
             })
@@ -387,12 +391,13 @@ pub(super) fn load_library_with(
         let mut source = Source::new(Facts {
             steam: matches!(item.kind, Some(report::KindReport::Proxied { .. })),
             native: matches!(item.kind, Some(report::KindReport::Native)),
+            steam_platform,
             ..Facts::default()
         });
         let (error, art) = match Environment::load_with_pending(paths, &item.name, &pending) {
             Ok(env) => {
                 kind = Some(CardKind::new(&env.config.kind));
-                source = Source::of(&env.config);
+                source = Source::of(&env.config, steam_platform);
                 gog_card = gog.card(paths, &env);
                 prefix = env.prefix(paths).ok();
                 targets = env.config.targets.keys().cloned().collect();

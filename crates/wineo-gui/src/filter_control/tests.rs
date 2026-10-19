@@ -32,6 +32,7 @@ const STEAM: Facts<'static> = Facts {
     gog_id: None,
     heroic_id: None,
     store_hint: None,
+    steam_platform: None,
 };
 const GOG: Facts<'static> = Facts {
     steam: false,
@@ -39,6 +40,7 @@ const GOG: Facts<'static> = Facts {
     gog_id: Some("1"),
     heroic_id: None,
     store_hint: None,
+    steam_platform: None,
 };
 const NATIVE: Facts<'static> = Facts {
     steam: false,
@@ -46,6 +48,7 @@ const NATIVE: Facts<'static> = Facts {
     gog_id: None,
     heroic_id: None,
     store_hint: None,
+    steam_platform: None,
 };
 const WINDOWS: Facts<'static> = Facts {
     steam: false,
@@ -53,6 +56,7 @@ const WINDOWS: Facts<'static> = Facts {
     gog_id: None,
     heroic_id: None,
     store_hint: None,
+    steam_platform: None,
 };
 
 /// hades and old-demo are tagged rpg, old-demo is hidden, and notepad is
@@ -243,6 +247,25 @@ fn a_proxied_steam_game_matches_steam_but_neither_platform() {
         shown(&app),
         ["balatro", "notepad", "papers-please", "rimworld"]
     );
+}
+
+#[test]
+fn a_steam_game_steam_shows_on_proton_matches_steam_and_windows() {
+    let (_root, mut app) = fixture();
+    let proton = Facts {
+        steam_platform: Some(wineo_core::source::Platform::Windows),
+        ..STEAM
+    };
+    let cards = vec![
+        tagged("hades", STEAM, &[]),
+        tagged("stardew", proton, &[]),
+        tagged("notepad", WINDOWS, &[]),
+    ];
+    let _ = app.update(Message::Loaded(Ok(cards)));
+    let _ = filter(&mut app, Event::TogglePlatform("Windows"));
+    assert_eq!(shown(&app), ["notepad", "stardew"]);
+    let _ = filter(&mut app, Event::ToggleStore("Steam"));
+    assert_eq!(shown(&app), ["stardew"]);
 }
 
 #[test]

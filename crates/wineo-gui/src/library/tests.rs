@@ -211,6 +211,77 @@ fn steam_cards_read_live_state_title_size_proton_and_implicit_art() {
 }
 
 #[test]
+fn steam_cards_run_on_windows_only_when_steam_shows_proton() {
+    use wineo_core::source::Platform;
+
+    let root = tempfile::tempdir().unwrap();
+    let paths =
+        Paths::from_lookup(|key| (key == "HOME").then(|| root.path().as_os_str().to_owned()))
+            .unwrap();
+    let steam = root.path().join(".local/share/Steam");
+    let steamapps = steam.join("steamapps");
+    fs::create_dir_all(&steamapps).unwrap();
+    fs::create_dir_all(steam.join("config")).unwrap();
+    fs::create_dir_all(paths.environments_dir()).unwrap();
+    // Installed games: forced onto Proton (own), prefix on disk (pfx), only
+    // the global default (default), and an empty compatdata folder (empty).
+    // gone has its own entry but isn't installed anywhere.
+    for (name, id) in [
+        ("own", "100"),
+        ("pfx", "200"),
+        ("default", "300"),
+        ("empty", "400"),
+        ("gone", "500"),
+    ] {
+        fs::write(
+            paths.environment_config(name),
+            format!("kind = 'proxied'\nlauncher = 'steam'\napp_id = '{id}'\n"),
+        )
+        .unwrap();
+        if name != "gone" {
+            fs::write(
+                steamapps.join(format!("appmanifest_{id}.acf")),
+                format!(
+                    r#""AppState" {{ "appid" "{id}" "name" "{name}" "installdir" "G" "StateFlags" "4" }}"#
+                ),
+            )
+            .unwrap();
+        }
+    }
+    fs::create_dir_all(steamapps.join("compatdata/200/pfx")).unwrap();
+    fs::create_dir_all(steamapps.join("compatdata/400")).unwrap();
+    fs::write(
+        steam.join("config/config.vdf"),
+        r#""InstallConfigStore" { "Software" { "Valve" { "Steam" { "CompatToolMapping" {
+            "0" { "name" "proton_experimental" }
+            "100" { "name" "GE-Proton9-20" }
+            "500" { "name" "GE-Proton9-20" }
+        } } } } }"#,
+    )
+    .unwrap();
+
+    let platforms = |paths: &Paths| {
+        let cards = load_library(paths).unwrap();
+        ["own", "pfx", "default", "empty", "gone"].map(|name| {
+            cards
+                .iter()
+                .find(|card| card.name == name)
+                .unwrap()
+                .source
+                .platform
+        })
+    };
+    let windows = Some(Platform::Windows);
+    assert_eq!(platforms(&paths), [windows, windows, None, None, windows]);
+
+    // An unreadable config.vdf leaves only the prefix to go on, and loading
+    // doesn't fail.
+    fs::remove_file(steam.join("config/config.vdf")).unwrap();
+    fs::create_dir(steam.join("config/config.vdf")).unwrap();
+    assert_eq!(platforms(&paths), [None, windows, None, None, None]);
+}
+
+#[test]
 fn steam_install_progress_flows_from_the_manifest_to_the_card() {
     let root = tempfile::tempdir().unwrap();
     let paths =
@@ -459,7 +530,7 @@ fn cards_carry_raw_sort_fields_and_their_source() {
 
     let source = |name: &str| {
         let source = card(name).source;
-        (source.store, source.integration, source.platform())
+        (source.store, source.integration, source.platform)
     };
     assert_eq!(
         source("bg3"),

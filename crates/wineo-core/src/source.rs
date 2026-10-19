@@ -51,6 +51,9 @@ pub struct Source {
     pub store: Option<Store>,
     pub integration: Integration,
     pub native: bool,
+    /// What it runs on. A proxied Steam game takes it from `Facts` and has
+    /// none when Steam doesn't say.
+    pub platform: Option<Platform>,
 }
 
 /// What a `Source` is decided from.
@@ -63,6 +66,9 @@ pub struct Facts<'a> {
     pub heroic_id: Option<&'a str>,
     /// The Wine config's `store`, which only Heroic imports usually set.
     pub store_hint: Option<&'a str>,
+    /// What a proxied Steam game runs on, when something shows it (see
+    /// `steam::proton_platform`). Ignored for every other game.
+    pub steam_platform: Option<Platform>,
 }
 
 impl Source {
@@ -89,14 +95,22 @@ impl Source {
         } else {
             (None, Integration::Plain)
         };
+        let platform = if facts.steam {
+            facts.steam_platform
+        } else if facts.native {
+            Some(Platform::Native)
+        } else {
+            Some(Platform::Windows)
+        };
         Self {
             store,
             integration,
             native: facts.native,
+            platform,
         }
     }
 
-    pub fn of(config: &EnvironmentConfig) -> Self {
+    pub fn of(config: &EnvironmentConfig, steam_platform: Option<Platform>) -> Self {
         Self::new(Facts {
             steam: matches!(config.kind, Kind::Proxied(_)),
             native: matches!(config.kind, Kind::Native),
@@ -106,19 +120,8 @@ impl Source {
                 Kind::Wine(wine) => wine.store.as_deref(),
                 _ => None,
             },
+            steam_platform,
         })
-    }
-
-    /// Native or Windows. A proxied Steam game has none, since Steam
-    /// doesn't say whether it runs under Proton.
-    pub fn platform(&self) -> Option<Platform> {
-        if self.integration == Integration::SteamLibrary {
-            None
-        } else if self.native {
-            Some(Platform::Native)
-        } else {
-            Some(Platform::Windows)
-        }
     }
 }
 
@@ -128,7 +131,7 @@ mod tests {
 
     fn source(facts: Facts<'_>) -> (Option<Store>, Integration, Option<Platform>) {
         let source = Source::new(facts);
-        (source.store, source.integration, source.platform())
+        (source.store, source.integration, source.platform)
     }
 
     #[test]
@@ -279,15 +282,30 @@ mod tests {
     }
 
     #[test]
-    fn a_proxied_steam_game_has_no_platform_even_flagged_native() {
-        for native in [false, true] {
+    fn a_proxied_steam_game_has_the_platform_it_was_given_or_none() {
+        for (native, given) in [
+            (false, None),
+            (true, None),
+            (false, Some(Platform::Windows)),
+            (false, Some(Platform::Native)),
+        ] {
             let facts = Facts {
                 steam: true,
                 native,
+                steam_platform: given,
                 ..Facts::default()
             };
-            assert_eq!(Source::new(facts).platform(), None);
+            assert_eq!(Source::new(facts).platform, given);
         }
+    }
+
+    #[test]
+    fn a_steam_platform_is_ignored_for_other_games() {
+        let facts = Facts {
+            steam_platform: Some(Platform::Native),
+            ..Facts::default()
+        };
+        assert_eq!(Source::new(facts).platform, Some(Platform::Windows));
     }
 
     #[test]
@@ -308,7 +326,7 @@ mod tests {
              store = 'egs'\nheroic_id = 'abc'\n",
         )
         .unwrap();
-        let source = Source::of(&wine);
+        let source = Source::of(&wine, None);
         assert_eq!(
             (source.store, source.integration, source.native),
             (Some(Store::Epic), Integration::HeroicImport, false)

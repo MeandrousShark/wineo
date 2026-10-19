@@ -485,7 +485,7 @@ fn filter_change() {
     // one that narrows.
     let platform = app.cards[0]
         .source
-        .platform()
+        .platform
         .map(wineo_core::source::Platform::label)
         .expect("the generated library has no Steam games");
     println!(
@@ -495,7 +495,7 @@ fn filter_change() {
             .iter()
             .filter(|card| {
                 card.source
-                    .platform()
+                    .platform
                     .map(wineo_core::source::Platform::label)
                     == Some(platform)
             })

@@ -22,7 +22,7 @@ use crate::art;
 
 pub use account::{
     Playtime, Playtimes, active_account, active_steam_id, compat_tool, compat_tool_in,
-    compat_tools, playtime,
+    compat_tools, playtime, proton_platform,
 };
 pub use process::{
     Baseline, Reaper, baseline, eligible_reapers, matching_reapers, open_reaper, reapers_by_app,

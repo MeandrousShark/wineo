@@ -61,7 +61,7 @@ impl Filters {
             && (self.platforms.is_empty()
                 || card
                     .source
-                    .platform()
+                    .platform
                     .is_some_and(|platform| self.platforms.contains(platform.label())))
             && (self.tags.is_empty() || card.tags.iter().any(|tag| self.tags.contains(tag)))
     }
@@ -101,7 +101,7 @@ impl Options {
             labels
         };
         let stores = labels(|card| card.source.store.map(Store::label));
-        let platforms = labels(|card| card.source.platform().map(Platform::label));
+        let platforms = labels(|card| card.source.platform.map(Platform::label));
         let mut tags: Vec<String> = cards
             .iter()
             .flat_map(|card| card.tags.iter().cloned())
