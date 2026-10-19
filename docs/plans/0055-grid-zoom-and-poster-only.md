@@ -44,27 +44,43 @@ this plan (2026-10-19):
   156 x 236. Under it sit a two-line 14 px semibold title, a muted 12 px
   identifier when it differs, and a meta row with the state dot, state
   word, and playtime (`grid.rs:236-277`, heights in `grid.rs:39-67`).
-- **Columns.** `grid_motion::columns` divides the viewport width by card
-  width plus gap, and `columns_for_viewport` takes the docked panel off
-  first (`grid_motion.rs:158-166`). The app keeps `viewport_width` from
-  the scrollable's bounds and the window size. The grid's own layout reads
+- **Code that reads the card size.** Besides the constants: meta row
+  wrapping (`grid.rs:58`), title measuring (`grid.rs:233`), the card's
+  width and identifier truncation (`grid.rs:269, 272`), columns, slots,
+  and poster hit bounds (`grid_motion.rs:159, 198, 296`), and art loading
+  (`app_art.rs:66-104`). The import and Art page previews have their own
+  fixed sizes and stay as they are.
+- **Columns.** `floor((width - 2 * padding + gap) / (card width + gap))`,
+  at least one (`grid_motion.rs:158-162`); `columns_for_viewport` takes
+  the docked panel off first. The app keeps `viewport_width` from the
+  scrollable's bounds and the window size. The grid's own layout reads
   its limits instead; whether a scrollbar makes the two differ is
   unverified and step 2 checks it.
 - **Motion.** `GridMotion` springs each card between its closed and open
   slots when the panel docks (about 300 ms, up to 35 ms stagger), driven
   by a `window::frames()` subscription only while it runs. It only
   interpolates between those two slot sets, so a zoom, re-sort, or filter
-  change snaps today. Other code that hardcodes the 160 x 240 poster (hit
-  tests and per-card motion) has to follow the zoom too.
-- **Art.** Grid thumbnails decode to at most 320 x 480, cover fit, and
-  never upscale (`artwork.rs:55-68, 347-360`), cached on disk by size in
-  the file name and in a 96 MiB memory cache keyed without size
-  (`art_cache.rs`). Two decodes run at once, for the visible rows plus two
-  rows of margin.
-- **Hover and selection.** Hovering a card dims its poster to 85%
-  (`grid.rs:130-151`). The selected card has a 2 px primary border; arrows
-  move by index or by `columns`, and the grid scrolls the selected card
-  just into view (`keys.rs:282-322`).
+  change snaps today, and so does a window resize (`app_window.rs:76-83`).
+  Its widget matches children to cards by index (`grid_motion.rs:325-331`).
+- **Art.** Grid thumbnails decode to a cover-fit target of 320 x 480,
+  keeping the aspect ratio and never upscaling, so a wide source can come
+  out wider than 320 (`artwork.rs:55-68, 347-360`). They're cached on disk
+  by size in the file name and in memory keyed without size
+  (`art_cache.rs`), under a 96 MiB soft budget that art in use may exceed
+  (`art_cache.rs:135-151`). Loading (`app_art.rs:66-104`) covers the
+  visible rows of both the docked and undocked layouts plus two rows of
+  margin, and while the dock moves, every index between them. Two decodes
+  run at once.
+- **Poster layers.** Over the art: the GOG pill top-left (Update
+  available, Finish update, Finish install; `grid.rs:182-204`), the
+  favorite and hidden marks top-right, the Steam mark bottom-right
+  (`grid.rs:159-180`), and Steam's install bar along the bottom edge
+  (`grid.rs:209-215`).
+- **Hover and selection.** Hovering an ordinary card dims its poster to
+  85%; hidden and uninstalled cards keep their stronger dimming
+  (`grid.rs:119-151`). The selected card has a 2 px primary border; arrows
+  move by index or by `columns` (`keys.rs:282-322`), and the grid scrolls
+  the selected card just into view (`app_grid.rs:12-40`).
 - **Art-less cards** show the title centered on a muted text tile, and the
   same title again under it.
 - **Wheel.** The grid's scrollable takes the wheel through `wheel::scale`
@@ -72,15 +88,25 @@ this plan (2026-10-19):
   so **Ctrl+wheel scrolls the grid now**, and this plan changes that.
 - **Shortcuts.** `Ctrl+=`, `Ctrl++`, `Ctrl+-`, and `Ctrl+0` are free.
   Taken: Ctrl+F, `/`, `F`, Ctrl+1 to 5, Ctrl+`,`, Ctrl+Z, Ctrl+N.
+- **Toolbar.** The "wineo" wordmark, then a fixed 320 px search box,
+  **Sort** with the direction button, **Filters**, and **Add**
+  (`grid.rs:895-1000`). Nothing shrinks and the window has no minimum
+  size, so a narrow window clips the right end. Tab goes from **Filters**
+  into the filter tab's chips (`filter_tab.rs:490-539`).
+- **iced's slider** can't take focus: it steps on the arrow keys only
+  while the pointer is over it, and steps on Ctrl+wheel
+  (`iced_widget-0.14.2/src/slider.rs:375-407`).
 - **`library.toml`.** `[view]` holds `sort`, `descending`, and
   `favorites_first` (`library.rs:62-66`), written one field at a time
   under the lock, with bool and sort setters. `validate` flags `[view]`
-  keys it doesn't know (`library/check.rs:89-115`), so new keys join that
-  list.
+  keys it doesn't know (`library/check.rs:89-115`), and repair keeps only
+  `[view]` values it recognizes as valid (`library/repair.rs:737-742`), so
+  new keys join both lists.
 - **Benchmarks.** `scripts/bench-gui-idle.sh` measures idle CPU, RSS, and
-  scroll smoothness in Xvfb, and `library/bench.rs` times the rescan and
-  order rebuilds. The `0054-step0` worktree keeps a warm build and the
-  generated 300-environment library for them.
+  scroll smoothness in Xvfb, counting sampled frames whose image changed
+  (`bench-gui-idle.sh:210-224, 265-275`), and `library/bench.rs` times
+  the rescan and order rebuilds. The `0054-step0` worktree keeps the
+  generated 300-environment library; its build is 0.35.1.
 
 ## Answered by the maintainer (2026-10-19)
 
@@ -106,6 +132,34 @@ this plan (2026-10-19):
    new ones fade in where they land and leaving ones fade out, over about
    150 ms.
 
+## Open questions
+
+### 7. The status chip and the GOG pill
+
+Both want the poster's top-left corner. Only poster-only mode shows the
+chip (the normal view keeps the state under the poster), but a running
+game can also have an update waiting.
+
+- A: in one row. The chip sits in the corner and the pill moves to its
+  right, 4 px apart.
+- B: stacked. The pill keeps the corner and the chip sits under it.
+
+Recommendation: **A**. The chip is a 24 px dot, so the pill only moves
+over a little, and the corner reads left to right.
+
+### 8. A narrow window's toolbar
+
+The slider and toggle add about 150 px to a toolbar that clips today
+once the window is narrower than roughly 750 px plus the sidebar.
+
+- A: search shrinks first, from 320 px down to 160 px, then the right end
+  clips as today.
+- B: under a width, the slider and toggle wrap to a second toolbar row.
+- C: give the window a minimum width that fits the whole toolbar.
+
+Recommendation: **A**. It's a small change that buys back about 160 px,
+and Ctrl+wheel and the zoom keys still work when the slider is clipped.
+
 ## Proposed design
 
 ### Zoom
@@ -114,71 +168,118 @@ this plan (2026-10-19):
   `160 * Z / 100`, poster height 1.5 times that, rounded to whole pixels.
   Gaps and the grid's padding stay 16 px. Text sizes stay as they are,
   except the text tile's title, which scales with the poster between 12
-  and 18 px so it stays readable at both ends. Poster marks keep their
-  24 px size.
+  and 18 px so it stays readable at both ends. Poster marks, the GOG pill,
+  and the Steam mark keep their sizes.
 - One `Layout` value carries the zoomed geometry and replaces the
-  constants wherever they're read: card size, columns, slots, card
-  height, hit tests, art loading margins, and per-card motion. At 100%
-  everything matches 0.36.0 to the pixel, and tests pin it.
-- **Toolbar.** It reads **Add**, search, **Sort**, the direction button,
-  **Filters**, the slider, and the poster-only toggle, and Tab follows
-  that order. The slider has no label or readout; its tooltip says
-  "Zoom", and the toggle's says "Show titles" or "Hide titles". Both are
-  32 px high like the rest, and the slider shows a small tick at 100%.
+  constants everywhere the foundation lists. At 100% everything matches
+  0.36.0 to the pixel, and tests pin it. The decode target, its disk
+  file names, and the cache keys don't change.
+- **Toolbar.** It reads the wordmark, **Add**, search, **Sort**, the
+  direction button, **Filters**, the slider, and the poster-only toggle.
+  Tab follows that order, with the filter tab's chips right after
+  **Filters** as today, so they stay next to the button they hang from.
+  The slider has no label or readout; its tooltip says "Zoom", and the
+  toggle's says "Show titles" or "Hide titles". Both are 32 px high like
+  the rest, and the slider shows a small tick at 100%.
+- **The slider** is wineo's own widget, since iced's can't take focus. It
+  takes focus with Tab, shows the usual focus ring, and steps on the left
+  and right arrows like `Ctrl+-` and `Ctrl+=`. Ctrl+wheel over it zooms
+  like Ctrl+wheel over the grid; the plain wheel over it does nothing.
 - The slider changes the zoom as it moves; the grid follows without a
-  tween. Within 5 points of 100% it snaps to 100%, so the default is
-  easy to find by feel. Key steps and wheel notches go to the next
+  tween, and a drag takes over at once from a tween in progress. It snaps
+  to 100% once within 5 points of it and lets go past 7, so it doesn't
+  flicker at the edge. Key steps and wheel notches go to the next
   multiple of 10 in their direction (a dragged 87% steps up to 90%), so
-  they always pass through 100%. Arrow keys on the focused slider step like
-  `Ctrl+=` and `Ctrl+-`. Keys and wheel notches tween the zoom over about 160 ms, and
-  steps taken during a tween retarget it. Trackpad wheels (pixel deltas)
-  add up until they make a step.
+  they always pass through 100%. Repeated steps count from the zoom
+  they're heading to, not from the tween's current frame, and tween there
+  over about 160 ms.
+- Trackpad wheels (pixel deltas) add up until they make a step. The sum
+  resets when Ctrl is released, the direction reverses, or the pointer
+  leaves the grid. A zoom gesture at either end of the range is still
+  taken, so it never scrolls instead.
 - `Ctrl+=` and `Ctrl++` (with or without Shift, and the keypad's `+`) zoom
-  in, `Ctrl+-` zooms out, `Ctrl+0` resets. They work while the grid or
-  the search box has focus, and not while a menu, popup, or dialog takes
-  the keys.
-- Ctrl+wheel zooms only over the grid; over the panel, a menu, or the
-  filter tab it does what the wheel does there without Ctrl.
-- **Keeping the place.** The anchor is the selected card if it's on
-  screen, otherwise the first card whose top is in view. Through the zoom
-  the anchor keeps its top at the same height in the viewport; if the
-  selected card was off screen, the selection still scrolls into view at
-  the end like an arrow key would.
-- **Saving.** The zoom saves like the sort: off the UI thread, the last
-  value wins, and the close wait covers it. A drag saves once, after it
-  ends. A window keeps its own zoom while it's open, as it does the sort.
+  in, `Ctrl+-` zooms out, `Ctrl+0` resets. They work while the grid, the
+  search box, or a toolbar control has focus, leave that focus where it
+  is, and do nothing while a menu, popup, or dialog takes the keys.
+- Ctrl+wheel zooms over the grid and the slider; over the panel, a menu,
+  or the filter tab it does what the wheel does there without Ctrl.
+- **Keeping the place.** At the start of a gesture (a drag, or a run of
+  steps), the anchor is the selected card if any of it is on screen,
+  otherwise the first card that intersects the viewport. The anchor's name
+  and its top's offset in the viewport are stored once for the gesture,
+  and every frame puts its top back at that offset, clamped to the scroll
+  range; a card taller than the viewport aligns its top. A manual scroll,
+  arrow key, or click ends the gesture's anchoring, and replies about an
+  older layout are ignored. If the selected card was off screen, it
+  scrolls into view at the end like an arrow key would.
+- **Saving.** The saved value is the integer the zoom is heading to, never
+  a tween frame. It saves like the sort: off the UI thread, one field at a
+  time under the lock, the last value wins, and a failed save shows the
+  sort's notice. A drag saves once when it ends; a drag still unsaved when
+  the window closes is saved by the close wait. Setting either key back
+  to its default removes it. A window keeps its own zoom and poster-only
+  state while it's open, as it does the sort.
 
 ### Motion
 
-- `GridMotion` generalizes from "closed to open" into "from these slots to
-  those", per card by name. The dock, a zoom that changes the column
-  count, a re-sort, and a filter or search change all start a transition
-  from where each card is now to its new slot, with the existing spring,
-  stagger, and settle. A transition that starts during another continues
-  from the current positions.
-- Within a column count, a zoom just scales: every card's slot is a
-  function of the zoom, so there's nothing to spring. Only the cards that
-  change row or column when the count changes spring.
-- Cards entering on a filter change fade in at their slot; cards leaving
-  fade out where they were and take no input. The 2 s rescan's changes
-  (a game added or removed outside the app) snap as today.
+- **One owner.** `GridMotion` becomes the only thing that moves cards. For
+  each card, by name, it keeps the displayed position, size, opacity, and
+  velocity. A layout change of any kind sets new targets and the springs
+  carry each card from where it's drawn now, so a column change halfway
+  through a zoom tween, or a re-sort during a dock, never jumps. A slider
+  drag sets sizes directly; steps tween them.
+- **What moves.** The dock, a zoom that changes the column count, the
+  poster-only toggle (row heights change; the anchor holds the place), a
+  re-sort, a favorite that moves a card while favorites come first, and a
+  search, filter, or Show hidden change. Within a column count, a zoom
+  just scales: every slot is a function of the zoom, so there's nothing to
+  spring.
+- **What snaps.** A window resize (every frame of a drag would restart the
+  springs) and the 2 s rescan's changes, as today. A rescan that lands
+  mid-transition settles it first.
+- **Cards that leave** stay in a short-lived outgoing set: drawn where
+  they were, fading out over about 150 ms, taking no input. A card that
+  comes back mid-fade fades in again from where it is. The grid keeps its
+  scroll height until the fades end, so the scrollbar doesn't jump. The
+  widget matches children to cards by name instead of index, so a card's
+  hover and state follow it. When a filter leaves nothing, the empty
+  message shows once the last card has faded.
+- Search and filter changes keep today's scroll behavior; selection that
+  a filter hides behaves as today.
 - Animation runs only while something moves; idle CPU stays where 0.36.0
   has it. A reduced-motion setting belongs to the "GUI accessibility
   settings" row, not this plan.
 
+### Art loading
+
+- Art loading reads the same `Layout` as the grid. It loads what's
+  visible first, then where moving cards are headed, then cards fading
+  out that are still on screen. The current sweep of every index between
+  two layouts only fits the dock; for a re-sort it could cover the whole
+  library, so it's replaced by these sets.
+- At 60%, and more so in poster-only, many more posters fit on screen.
+  Step 6 checks that the memory cache's soft budget holds there.
+
 ### Poster-only
 
-- The toolbar toggle. With it on, a card is just its poster,
-  plus marks: the favorite and hidden marks on the right, and the status
-  chip on the left for any state but idle: the state dot on the marks'
-  backing, 24 px like them.
-- Hovering a card, or selecting it, shows its title over the bottom of
-  the poster on a dark gradient, in white semibold, up to two lines. The
-  identifier isn't shown; the panel has it.
-- Art-less cards already show their title on the tile, so they show no
-  overlay; their tile keeps working as the label.
-- A hidden card shown with Show hidden keeps its 45% art; its overlay
-  title is muted like its title under the poster.
+- The toolbar toggle. With it on, a card is just its poster with its
+  layers: the marks top-right, the Steam mark bottom-right, the install
+  bar along the bottom, and top-left the status chip for any state but
+  idle (the state dot on the marks' backing, 24 px like them) placed with
+  the GOG pill per question 7.
+- Hovering a card, or selecting it, shows its title over the bottom of the
+  poster on a dark gradient, in white semibold, up to two lines. It's
+  drawn inside the poster's clipped frame and under the selection border,
+  and it's not a pointer target. It sits above the install bar and leaves
+  room on the right for the Steam mark. The identifier isn't shown; the
+  panel has it.
+- The gradient is dark in both themes, so white text works in both; a
+  hidden card shown with Show hidden keeps its 45% art and a muted title,
+  and step 5 checks that title's contrast in both themes.
+- Only cards with no art at all show their title on the tile, and they
+  show no overlay. A card whose art is still loading or failed to decode
+  follows the art cards' rules, so its title doesn't vanish when the art
+  arrives.
 - Rows are shorter without the text, so more fit, and keyboard Up and
   Down still move by columns.
 - `gui-style.md` gets the amendment: titles beneath the art by default,
@@ -189,48 +290,64 @@ this plan (2026-10-19):
 - `[view]` gains `zoom` (whole percent, 60 to 200, default 100) and
   `poster_only` (default `false`), read leniently like the other keys: a
   value out of range or of the wrong type counts as unset. Core gets an
-  integer setter beside the bool and sort ones, and `validate`'s list of
-  `[view]` keys grows by two.
+  integer setter beside the bool and sort ones. `validate`'s list of
+  `[view]` keys and repair's list of valid `[view]` values each grow by
+  two, so repairing an unrelated broken line keeps a saved zoom. Edits keep
+  the file's comments, like every other `library.toml` write.
 
 ## Implementation sequence
 
-0. **Benchmark baseline.** Add a zoom measurement to
-   `scripts/bench-gui-idle.sh`: `Ctrl+=` and `Ctrl+-` presses captured
-   like the scroll run, reporting presented frames and the longest gap.
-   Record 0.36.0's scroll and idle numbers at 100% as the baseline, in
-   the `0054-step0` worktree.
+0. **Benchmark baseline.** Build 0.36.0 (the `v0.36.0` tag) in the
+   `0054-step0` worktree, which keeps the generated library. Add zoom runs
+   to `scripts/bench-gui-idle.sh` (see Testing) and record 0.36.0's scroll,
+   idle, and dock numbers at 100%.
 1. **Core `[view]` keys.** `zoom` and `poster_only` in `View`, lenient
-   reads, the integer setter, the `validate` key list, and
+   reads, the integer setter, the `validate` and repair lists, and
    `config-files.md`.
-2. **Geometry as a function of zoom.** The `Layout` value, columns, slots,
-   heights, hit tests, art margins, and every hardcoded poster size;
-   identical at 100% (tests pin it). Confirms whether the scrollbar width
-   makes `viewport_width` and the layout width disagree.
-3. **Zoom controls.** **Add** moved to the toolbar's left, the slider
-   and toggle after **Filters**, the keys, Ctrl+wheel, tweened steps, the anchor, and the save.
-4. **Motion.** Generalized slot-to-slot transitions for zoom, re-sort,
-   filter, and search changes, fades for cards coming and going, and the
-   dock moved onto the same path.
-5. **Poster-only.** The overlay, the status chip, art-less tiles, hidden
-   cards, and the style guide amendment.
-6. **Benchmark again** against step 0, at 100% and at both ends of the
-   range.
-7. **Docs.** `gui.md` (zoom, keys, poster-only), `gui-style.md`,
-   `config-files.md`, and `features.md`.
+2. **Geometry as a function of zoom.** The `Layout` value through every
+   place the foundation lists, identical at 100% (tests pin it). Confirms
+   whether the scrollbar width makes `viewport_width` and the layout width
+   disagree.
+3. **Zoom controls.** **Add** moved left, the shrinking search box (per
+   question 8), the focusable slider and the toggle, the keys, Ctrl+wheel,
+   tweened steps, the anchor, and the save.
+4. **Motion.** `GridMotion` as the one owner, name-keyed children, the
+   outgoing set and fades, every trigger above, the dock on the same path,
+   and art loading on the shared layout.
+5. **Poster-only.** The overlay, the status chip with the GOG pill, the
+   art-less and loading cases, hidden cards, and the style guide
+   amendment.
+6. **Benchmark again** against step 0.
+7. **Docs.** `gui.md` (zoom, keys, poster-only, Tab order),
+   `gui-style.md`, `config-files.md`, and `features.md`.
 
 ## Testing and acceptance
 
 - Layout probe tests: geometry at 60, 100, and 200%, with 100% matching
   0.36.0's numbers; column counts with and without the panel; the anchor
-  staying put through a zoom; overlay shown on hover and selection only.
-- Key tests for every zoom shortcut, including Shift and keypad forms,
-  and for keys that must not zoom while a menu or dialog takes them.
-- Ctrl+wheel over the grid zooms and over the panel or filter tab
-  doesn't; a wheel without Ctrl still scrolls everywhere.
+  staying put through a zoom, at the scroll limits, and with an oversized
+  card; overlay shown on hover and selection only; the chip and the GOG
+  pill together.
+- Key tests for every zoom shortcut, including Shift and keypad forms, for
+  focus staying put, for the slider's arrows and Tab order, and for keys
+  that must not zoom while a menu or dialog takes them.
+- Ctrl+wheel over the grid and slider zooms and over the panel or filter
+  tab doesn't; a wheel without Ctrl still scrolls everywhere; a gesture at
+  the range's ends doesn't scroll; pixel deltas add up and reset.
+- Snap tests: entering at 5 points, leaving past 7, steps from a dragged
+  value landing on multiples of 10.
 - Motion tests drive the frame clock: transitions settle at their slots,
-  retarget mid-flight, and stop the frame subscription when done.
-- Core tests for `[view]` reads, writes, no-op writes at defaults, and
-  `validate`.
+  retarget mid-flight from displayed positions, fade cards out and back
+  in, hold the scroll height through fades, and stop the frame
+  subscription when done.
+- Core tests for `[view]` reads, writes, removal at defaults, comment
+  preservation, `validate`, and repair keeping valid values.
+- Benchmarks in Xvfb with tiny-skia: idle CPU and RSS after motion stops;
+  frame gaps (p90 and max) during single steps, held-down steps, slider
+  drags across column changes, sort and filter fades, and the dock; cold
+  and warm art at 60, 100, and 200%, with titles and poster-only. Xvfb
+  measures CPU rendering, so acceptance also checks the feel on the
+  maintainer's GPU.
 - The acceptance checklist is written once the work lands.
 
 ## Scope limits
@@ -241,3 +358,4 @@ this plan (2026-10-19):
 - No reduced-motion setting: the "GUI accessibility settings" row.
 - No change to the art-less tile's repeated title in the normal view.
 - No zoom in other pages' grids (Art, imports); only the Library.
+- No animated window resizes.
