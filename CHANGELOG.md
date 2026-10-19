@@ -4,6 +4,49 @@ A finished plan bumps the minor version and fixes between plans bump the
 patch version. A plan released in parts bumps the minor version for each
 part. See `AGENTS.md` for the rule.
 
+## 0.36.0 - 2026-10-19
+
+Sorting, filters, and favorites in the desktop app's library, part 1 of the
+library views work, from
+[0054](docs/plans/0054-library-sorting-and-favorites.md). What the app
+remembers about each environment lives in a new, lenient
+`~/.config/wineo/library.toml`.
+
+- Behavior changes:
+  - wineo keeps `library.toml` up to date from the CLI too. Creating or
+    importing an environment records when it was added, `rm` drops its
+    entry and keeps it with the environment in the trash, `restore` brings
+    it back, a clone starts with a fresh entry, and a portable copy takes
+    its entry along.
+  - `wineo validate` checks `library.toml` and lists problems with the
+    whole file under its own heading. `--fix` repairs a file that can't be
+    read, keeping the original as `library.toml.broken-<time>`, and removes
+    entries for environments that no longer exist. A file from a newer
+    wineo is refused with a hint to update. Checkup in the app does the
+    same.
+  - Problems updating library entries while migrating GOG games show as
+    warnings in the CLI and the app.
+- Sort the library by name, last played, playtime, or date added. Each key
+  starts in its natural direction, the arrow flips it, and **Favorites
+  first** puts favorites ahead. The sort is saved.
+- **Filters** narrows the library by store (Steam, GOG, Epic, Amazon),
+  platform (Native, Windows), and tag. While any are on, a tab under the
+  button shows each with an x, plus one x that clears them all. Search
+  matches tags too.
+- A Steam game counts as Windows once Steam shows it runs through Proton.
+- Star favorites from the panel, the right-click menu, or `F`, and hide
+  games you don't want to see; **Show hidden** brings them back dimmed.
+  Posters mark both.
+- Empty states for no matches and for everything hidden, and a banner with
+  **Open Checkup** when `library.toml` has a problem.
+- The Sort menu and Filters popup work from the keyboard.
+- The library's refresh reads stats logs and `library.toml` only when they
+  change, roughly halving the app's idle CPU.
+- The right-click menu grows to 600 px before it scrolls, and Enter no
+  longer acts on a card while the menu is open.
+- Scripts to generate a benchmark library and measure the app's idle CPU
+  and scrolling.
+
 ## 0.35.1 - 2026-10-17
 
 Loose ends from [0051](docs/plans/0051-lean-and-simple.md)'s possible bugs

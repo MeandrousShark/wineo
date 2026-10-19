@@ -1,4 +1,4 @@
-Status: approved
+Status: done
 
 # 0054: Library sorting, filters, and favorites
 
@@ -1381,8 +1381,9 @@ on real hardware was run on 2026-10-18 (see "After step 6").
     the popup. Tab reaches the x's after Filters. Scroll: posters pass
     under the tab, and the wheel over it scrolls the grid.
 
-Results: items 2 and 4 to 10 passed (2026-10-18 and 2026-10-19). Items 1,
-3, and 11 cover step 8 and wait for a re-check.
+Results: items 2 and 4 to 10 passed (2026-10-18 and 2026-10-19), and
+items 1, 3, and 11, re-checked after step 8, passed on the maintainer's
+own library (2026-10-19). Released in 0.36.0.
 
 Fixes found during acceptance:
 

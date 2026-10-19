@@ -14,9 +14,10 @@ its own plan when it comes up, and the rows below have the details.
 4. Release packages (deb, rpm, AppImage), shortly after 1.0.
 
 Done from this queue: GOG Galaxy builds
-([0052](plans/0052-galaxy-builds.md), 0.33.0 and 0.34.0), and the 1.0
-config contract ([0053](plans/0053-config-contract.md), 0.35.0), after the
-JSON gaps closed in 0.30.1.
+([0052](plans/0052-galaxy-builds.md), 0.33.0 and 0.34.0), the 1.0 config
+contract ([0053](plans/0053-config-contract.md), 0.35.0), after the JSON
+gaps closed in 0.30.1, and library views part 1, sorting, filters, and
+favorites ([0054](plans/0054-library-sorting-and-favorites.md), 0.36.0).
 
 The previous queue (2026-10-06) is done: `--dry-run` (0044), tags in
 `stats` (0045), hooks (0046), Steam installed and owned games (0047,
