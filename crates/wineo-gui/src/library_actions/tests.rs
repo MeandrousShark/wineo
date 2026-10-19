@@ -981,3 +981,47 @@ fn enter_does_nothing_while_the_context_menu_is_open() {
     assert!(app.panel_open);
     assert_eq!(app.selected.as_deref(), Some("bravo"));
 }
+
+#[test]
+fn a_dropped_rescan_still_delivers_its_other_changes_next_time() {
+    let (_root, mut app) = loaded();
+    let _ = toggle(&mut app, "bravo", Flag::Favorite);
+    // A rescan that started before the write finished also found a new
+    // environment and a broken library.toml.
+    let problem = wineo_core::library::Problem {
+        reason: "expected `]`".into(),
+        line: Some(1),
+        newer_version: false,
+    };
+    let mut found = library();
+    found.push(card("foxtrot", State::Inactive, 0));
+    let stale = crate::rescan::Scan {
+        revisions: app.shown.revisions(),
+        library: Some(Ok(found.clone())),
+        problem: Some(Some(problem.clone())),
+        ..Default::default()
+    };
+    let _ = finish(&mut app, "bravo", Flag::Favorite);
+    let _ = app.update(Message::Rescanned(Box::new(stale)));
+    assert!(!shown(&app).contains(&"foxtrot"));
+    assert!(app.library_problem.is_none());
+
+    // The next scan reads the same things and they still count as changes.
+    found[1].favorite = true;
+    let next = crate::rescan::Scan {
+        revisions: app.shown.revisions(),
+        library: Some(Ok(found)),
+        problem: Some(Some(problem.clone())),
+        ..Default::default()
+    };
+    let next = app.shown.current(next);
+    let next = app
+        .shown
+        .changes(next, jiff::Timestamp::now())
+        .expect("the new environment and the banner are still news");
+    let _ = app.update(Message::Rescanned(Box::new(next)));
+    assert!(shown(&app).contains(&"foxtrot"));
+    assert!(flag(&app, "bravo", Flag::Favorite));
+    assert_eq!(app.library_problem, Some(problem));
+    assert!(app.library_banner().is_some());
+}
