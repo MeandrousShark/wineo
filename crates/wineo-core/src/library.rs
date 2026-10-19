@@ -637,8 +637,11 @@ fn table_mut<'a>(parent: &'a mut Table, name: &str) -> &'a mut dyn TableLike {
 }
 
 fn store_value(table: &mut dyn TableLike, field: &str, mut value: Value) {
-    if let Some(old) = table.get(field).and_then(Item::as_value) {
+    // Replacing in place keeps the key, and with it a comment line above it.
+    if let Some(old) = table.get_mut(field).and_then(Item::as_value_mut) {
         *value.decor_mut() = old.decor().clone();
+        *old = value;
+        return;
     }
     table.insert(field, Item::Value(value));
 }

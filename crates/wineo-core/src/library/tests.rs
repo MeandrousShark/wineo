@@ -555,3 +555,20 @@ fn a_guarded_write_to_a_broken_file_is_refused() {
     assert!(matches!(error, Error::LibraryUnreadable { .. }), "{error}");
     assert_eq!(fixture.read(), "[environments.hades\n");
 }
+
+#[test]
+fn a_comment_line_above_a_written_key_stays() {
+    let fixture = Fixture::new();
+    fixture.write(
+        "schema_version = 1\n\n[view]\n# newest first\ndescending = true\n\n[environments.hades]\n# my favorite\nfavorite = false\n",
+    );
+
+    assert!(set_descending(&fixture.paths, false).unwrap());
+    assert!(set_favorite(&fixture.paths, "hades", true).unwrap());
+    let text = fixture.read();
+    assert!(
+        text.contains("# newest first\ndescending = false"),
+        "{text}"
+    );
+    assert!(text.contains("# my favorite\nfavorite = true"), "{text}");
+}
