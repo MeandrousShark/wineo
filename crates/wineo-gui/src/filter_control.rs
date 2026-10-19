@@ -54,6 +54,8 @@ pub(crate) enum Event {
     ClearChips,
     /// Enter or Space on the filter tab's x.
     ClearChipsFromKeyboard,
+    /// A wheel turn over the filter tab, which scrolls the grid under it.
+    Wheel(iced::mouse::ScrollDelta),
 }
 
 impl Event {
@@ -235,6 +237,7 @@ pub(crate) fn update(app: &mut App, event: Event) -> Task<Message> {
         Event::RemoveFromKeyboard(chip) => crate::filter_tab::remove(app, &chip, true),
         Event::ClearChips => crate::filter_tab::clear(app, false),
         Event::ClearChipsFromKeyboard => crate::filter_tab::clear(app, true),
+        Event::Wheel(delta) => crate::filter_tab::wheel(delta),
     }
 }
 

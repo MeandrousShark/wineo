@@ -148,7 +148,7 @@ where
     }
 }
 
-fn scale_delta(delta: mouse::ScrollDelta, factor: f32) -> mouse::ScrollDelta {
+pub(crate) fn scale_delta(delta: mouse::ScrollDelta, factor: f32) -> mouse::ScrollDelta {
     match delta {
         mouse::ScrollDelta::Lines { x, y } => mouse::ScrollDelta::Lines {
             x: x * factor,

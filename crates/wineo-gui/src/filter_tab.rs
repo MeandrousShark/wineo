@@ -251,9 +251,12 @@ impl App {
                             .bottom_right(TAB_RADIUS),
                     })
             });
-        // Shows a pointer over the whole tab, so the grid underneath takes
-        // no clicks or hover through it.
-        let shield = mouse_area(content).interaction(mouse::Interaction::Idle);
+        // Claims the pointer over the whole tab, so the grid underneath takes
+        // no clicks or hover through it. That keeps the wheel from it too, so
+        // the wheel is handed on.
+        let shield = mouse_area(content)
+            .interaction(mouse::Interaction::Idle)
+            .on_scroll(|delta| Message::Filter(Event::Wheel(delta)));
         container(shield)
             .padding(iced::Padding {
                 top: tab.button.y + tab.button.height - TAB_BORDER,
@@ -456,6 +459,21 @@ pub(crate) fn clear(app: &mut App, keyboard: bool) -> Task<Message> {
         resorted,
         iced::widget::operation::focus(Id::new(FILTER_BUTTON_ID)),
     ])
+}
+
+/// Scrolls the grid by a wheel turn over the tab, as the grid's own
+/// scrollable would.
+pub(crate) fn wheel(delta: mouse::ScrollDelta) -> Task<Message> {
+    // iced's scrollable moves 60 px per line.
+    const LINE: f32 = 60.0;
+    let y = match crate::wheel::scale_delta(delta, crate::WHEEL_STEP_SCALE) {
+        mouse::ScrollDelta::Lines { y, .. } => -y * LINE,
+        mouse::ScrollDelta::Pixels { y, .. } => -y,
+    };
+    iced::widget::operation::scroll_by(
+        Id::new(crate::SCROLL_ID),
+        iced::widget::scrollable::AbsoluteOffset { x: 0.0, y },
+    )
 }
 
 /// Tab and Shift+Tab while the tab shows. Its controls come last in the

@@ -689,3 +689,48 @@ fn rows_under_the_toolbar_keep_the_tab_away() {
     app.error = Some("broken".into());
     assert!(app.filter_tab().is_none());
 }
+
+#[test]
+fn the_wheel_over_the_tab_scrolls_the_grid_like_the_grid_itself() {
+    let mut app = crate::tests::app();
+    let cards = (0..40)
+        .map(|index| {
+            let mut card = crate::tests::card(
+                &format!("game-{index:02}"),
+                wineo_core::runtime::State::Inactive,
+                0,
+            );
+            card.tags = vec!["game".into()];
+            card
+        })
+        .collect();
+    let _ = app.update(Message::Loaded(Ok(cards)));
+    let _ = filter(&mut app, Event::ToggleTag("game".into()));
+    placed(&mut app);
+    let probe = crate::layout_probe::probe(&mut app.view(), app.window_size);
+    let tab = bounds_at(&probe.node, &[1, 0]);
+    let wheel = iced::Event::Mouse(mouse::Event::WheelScrolled {
+        delta: mouse::ScrollDelta::Lines { x: 0.0, y: -2.0 },
+    });
+    let grid_offset =
+        |laid: &mut Laid<'_, Message>| laid.offsets().into_iter().fold(0.0_f32, f32::max);
+
+    // On the grid itself.
+    let mut laid = lay_out(app.view(), app.window_size);
+    let below = Point::new(tab.center_x(), tab.y + tab.height + 100.0);
+    let _ = laid.event_at(&wheel, Cursor::Available(below));
+    let direct = grid_offset(&mut laid);
+    assert!(direct > 0.0);
+    drop(laid);
+
+    // On the tab, which hands it on and nothing else.
+    let mut laid = lay_out(app.view(), app.window_size);
+    let messages = laid.event_at(&wheel, Cursor::Available(tab.center()));
+    assert_eq!(grid_offset(&mut laid), 0.0);
+    let [Message::Filter(Event::Wheel(delta))] = messages.as_slice() else {
+        panic!("{messages:?}");
+    };
+    // The update hands the turn to `wheel`, which doesn't touch the app.
+    drive(&mut laid, super::wheel(*delta));
+    assert_eq!(grid_offset(&mut laid), direct);
+}
