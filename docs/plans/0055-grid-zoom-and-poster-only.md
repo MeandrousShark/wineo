@@ -340,3 +340,44 @@ The maintainer approved the plan on 2026-10-19.
 - No change to the art-less tile's repeated title in the normal view.
 - No zoom in other pages' grids (Art, imports); only the Library.
 - No animated window resizes.
+
+## Results
+
+### Step 0 baseline (0.36.0, 2026-10-19)
+
+`scripts/bench-gui-idle.sh` (e2835caa) gained dock, resort, and zoom runs:
+each is a timed list of actions captured at 60 fps, reporting CPU, changed
+frames per second of motion, frame gaps, and `active_ms`, the average time
+from an action to its last changed frame. The baseline ran the `v0.36.0`
+tag's `release` build in the `0054-step0` worktree, on its generated
+300-environment library, in Xvfb with tiny-skia, 1200 x 800, 5 fresh
+launches, with `ZOOM=0` since 0.36.0 has no zoom. Ryzen 7 5800X.
+
+| Measurement | min | median | p90 | max |
+|---|---:|---:|---:|---:|
+| Idle CPU, % of one core | 1.75 | 1.80 | 1.85 | 1.85 |
+| RSS, MiB | 91 | 92 | 93 | 93 |
+| Scroll CPU, % | 59.7 | 60.7 | 62.0 | 62.0 |
+| Scroll frames/s | 8.8 | 10.3 | 10.6 | 10.6 |
+| Scroll gap p90 / max, ms | 133 / 133 | 150 / 167 | 150 / 167 | 150 / 167 |
+| Dock CPU, % | 38.3 | 38.8 | 39.8 | 39.8 |
+| Dock frames/s | 18.6 | 18.9 | 20.7 | 20.7 |
+| Dock gap p90 / max, ms | 83 / 89 | 83 / 100 | 83 / 100 | 83 / 100 |
+| Dock active, ms | 530 | 539 | 555 | 555 |
+| Resort CPU, % | 16.0 | 16.6 | 17.1 | 17.1 |
+| Resort frames/s | 8.4 | 8.9 | 9.0 | 9.0 |
+| Resort gap p90 / max, ms | 133 / 133 | 133 / 133 | 133 / 181 | 133 / 181 |
+| Resort active, ms | 209 | 223 | 226 | 226 |
+
+Main-thread wakeups stayed at 0 while idle, with 21 threads. The dock is
+the only run with motion today: its spring draws at about 19 frames/s on
+the CPU renderer and settles in about 540 ms. A re-sort snaps, and that
+one re-laid-out frame takes about 130 ms to draw, so the resort numbers
+are the cost of a full-grid repaint, which step 4's springs will repeat
+every frame. As in 0054, these are relative numbers for comparing steps
+in Xvfb, not what a GPU feels.
+
+The runs park the mouse at fixed points: card 1 at (236, 190), the
+direction button at (697, 24), and an empty header spot at (900, 24) for
+zoom. Step 3 moves **Add** to the left and adds the slider, which shifts
+the toolbar, so step 3 updates those coordinates before step 6 compares.
