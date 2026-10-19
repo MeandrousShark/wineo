@@ -8,6 +8,7 @@ use iced::{
 };
 
 use crate::library::Card;
+use crate::library_actions::{Event, Flag};
 use crate::theme::Palette;
 use crate::ui::{self, ScrollStyle, secondary_button};
 use crate::wheel;
@@ -102,7 +103,7 @@ impl App {
         };
         Some((art.unwrap_or(placeholder).clone(), opacity))
     }
-    fn card<'a>(&'a self, card: &'a Card) -> Element<'a, Message> {
+    pub(crate) fn card<'a>(&'a self, card: &'a Card) -> Element<'a, Message> {
         let alpha = self.collapse.alpha();
         let caption = self.collapse.caption_alpha();
         let palette = self.palette.faded(alpha);
@@ -113,6 +114,9 @@ impl App {
             self.images
                 .shown(&(art.clone(), crate::artwork::Kind::Grid), dimmed)
         });
+        // A hidden card fades without the grayscale, which stays the sign of
+        // a game that isn't installed.
+        let faded = dimmed || card.hidden;
         let poster: Element<'_, Message> = match art {
             Some(handle) => image(handle.clone())
                 .width(Fill)
@@ -121,7 +125,7 @@ impl App {
                 .border_radius(4)
                 .opacity(
                     alpha
-                        * if dimmed {
+                        * if faded {
                             crate::panel::DIMMED_OPACITY
                         } else if hovered {
                             0.85_f32
@@ -141,7 +145,7 @@ impl App {
             .padding(12)
             .center(Fill)
             .style(move |_| {
-                container::Style::default().background(palette.surface.scale_alpha(if dimmed {
+                container::Style::default().background(palette.surface.scale_alpha(if faded {
                     crate::panel::DIMMED_OPACITY
                 } else if hovered {
                     0.85
@@ -160,7 +164,7 @@ impl App {
             .height(20)
             .opacity(
                 alpha
-                    * if dimmed {
+                    * if faded {
                         crate::panel::DIMMED_OPACITY
                     } else {
                         1.0_f32
@@ -198,6 +202,9 @@ impl App {
                     .align_top(Fill)
                     .padding(8),
             );
+        }
+        if let Some(marks) = crate::library_actions::poster_marks(card, alpha) {
+            layers = layers.push(marks);
         }
         if let Some(percent) = card.install_progress() {
             layers = layers.push(
@@ -249,7 +256,7 @@ impl App {
                 .height(crate::tile_title::two_line_height(CARD_TITLE_SIZE))
                 .font(title_font)
                 .color(
-                    if dimmed {
+                    if faded {
                         palette.muted
                     } else {
                         palette.foreground
@@ -487,18 +494,34 @@ impl App {
                 .iter()
                 .any(|card| card.name == *name && crate::version_picker::has_version(card));
             let removal_reason = self.remove_reason_with(&self.facts, name);
-            let menu_buttons = 4
+            let card = self.cards.iter().find(|card| card.name == *name);
+            let favorite = card.is_some_and(|card| card.favorite);
+            let hidden = card.is_some_and(|card| card.hidden);
+            let menu_buttons = 6
                 + usize::from(wine_actions) * 3
                 + usize::from(transfer_actions) * 2
                 + usize::from(uninstall_action)
                 + usize::from(update_action)
                 + usize::from(version_action);
-            let menu_dividers = 1 + usize::from(wine_actions);
+            let menu_dividers = 2 + usize::from(wine_actions);
             let body_content_height =
                 action_menu_body_height(menu_buttons, menu_dividers, removal_reason.as_deref());
             let menu_height = action_menu_height(self.window_size.height, body_content_height);
             let position = menu_position(self.action_menu_position, self.window_size, menu_height);
             let mut scroll_items = column![
+                context_menu_button(
+                    Flag::Favorite.action_label(favorite),
+                    palette,
+                    false,
+                    Some(Message::Mark(Event::Toggle(name.clone(), Flag::Favorite))),
+                ),
+                context_menu_button(
+                    Flag::Hidden.action_label(hidden),
+                    palette,
+                    false,
+                    Some(Message::Mark(Event::Toggle(name.clone(), Flag::Hidden))),
+                ),
+                ui::separator(palette).padding([3, 0]),
                 context_menu_button(
                     "Settings",
                     palette,

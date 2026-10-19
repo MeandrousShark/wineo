@@ -243,4 +243,4 @@ pub(crate) fn matching_note(count: usize) -> String {
 }
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;

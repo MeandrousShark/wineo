@@ -6,19 +6,19 @@ use iced::Task;
 
 use crate::{App, Message, sidebar};
 
-/// How long a close waits for sort writes: one config lock wait, about 5 s,
-/// and a margin. A write stalled past that is given up on.
+/// How long a close waits for `library.toml` writes: one config lock wait,
+/// about 5 s, and a margin. A write stalled past that is given up on.
 pub(crate) const SORT_SAVE_WAIT: Duration = Duration::from_secs(6);
 
 impl App {
     pub(crate) fn close_requested(&mut self) -> Task<Message> {
         if self.close_by.is_some() {
-            // Asked again while waiting on sort writes.
+            // Asked again while waiting on library writes.
             self.exit_now()
         } else if self.foreground_busy() {
             self.close_prompt = true;
             Task::none()
-        } else if self.view_writes.pending() {
+        } else if self.library_writes_pending() {
             // The window closes once the file has the final view, or when
             // the wait runs out. Like any accepted close it takes the input,
             // but it shows nothing.

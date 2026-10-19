@@ -122,6 +122,20 @@ impl Watch {
             .refresh(paths);
     }
 
+    /// `refresh_library`, returning `name`'s entry as it is on disk now.
+    pub(crate) fn refresh_library_entry(&self, paths: &Paths, name: &str) -> saved::Entry {
+        self.0
+            .caches
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .library
+            .refresh(paths)
+            .environments
+            .get(name)
+            .cloned()
+            .unwrap_or_default()
+    }
+
     /// Holds the rescan's caches, as a stalled scan would.
     #[cfg(test)]
     pub(crate) fn hold_caches(&self) -> std::sync::MutexGuard<'_, RescanCaches> {

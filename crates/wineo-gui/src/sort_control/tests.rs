@@ -729,10 +729,10 @@ fn delete_leaves_the_selected_card_alone_while_the_menu_is_open() {
 
 /// What a task does once the runtime has it: the messages it sends back,
 /// the widget operations it asks for, and whether it exits.
-struct Ran {
-    messages: Vec<Message>,
-    operations: Vec<Box<dyn iced::advanced::widget::Operation>>,
-    exits: bool,
+pub(crate) struct Ran {
+    pub(crate) messages: Vec<Message>,
+    pub(crate) operations: Vec<Box<dyn iced::advanced::widget::Operation>>,
+    pub(crate) exits: bool,
 }
 
 /// How long a test waits for a write's result before failing. Well past a
@@ -745,6 +745,18 @@ const SAVE_PATIENCE: Duration = Duration::from_secs(30);
 /// on an operation's answer would wait forever: once every write result is
 /// in, the run ends when nothing new arrives for a moment.
 fn run_keeping(task: Task<Message>, keep: bool, saves: usize) -> Ran {
+    run_counting(task, keep, saves, |message| {
+        matches!(message, Message::Sort(Event::Saved(..)))
+    })
+}
+
+/// `run_keeping`, counting the write results `is_save` picks out.
+pub(crate) fn run_counting(
+    task: Task<Message>,
+    keep: bool,
+    saves: usize,
+    is_save: fn(&Message) -> bool,
+) -> Ran {
     use iced::futures::StreamExt;
     let mut ran = Ran {
         messages: Vec::new(),
@@ -778,7 +790,7 @@ fn run_keeping(task: Task<Message>, keep: bool, saves: usize) -> Ran {
             };
             match action {
                 iced_runtime::Action::Output(message) => {
-                    if matches!(message, Message::Sort(Event::Saved(..))) {
+                    if is_save(&message) {
                         seen += 1;
                     }
                     ran.messages.push(message);
