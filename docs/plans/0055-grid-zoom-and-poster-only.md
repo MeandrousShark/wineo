@@ -34,8 +34,6 @@ this plan (2026-10-19):
   re-sort, or a filter change (0054 snaps them).
 - This amends `gui-style.md`'s "titles beneath the art" rule on purpose.
 - Environments without art keep readable text tiles.
-- Whether the overlay shows playtime is open (question 3): it may be too
-  busy.
 
 ## Existing foundation
 
@@ -84,99 +82,31 @@ this plan (2026-10-19):
   order rebuilds. The `0054-step0` worktree keeps a warm build and the
   generated 300-environment library for them.
 
-## Questions for the maintainer
+## Answered by the maintainer (2026-10-19)
 
-### 1. Zoom range and steps
-
-The art's inner frame at 200% is 312 x 472, still inside the 320 x 480
-decode cap, so a range that stops at 200% needs no art changes. Past it,
-posters would upscale unless the cap grows, and a 640 x 960 cap means new
-thumbnail files and a memory cache that holds about 40 posters instead of
-about 160.
-
-- A: 60% to 200% (posters 96 to 320 px wide). The slider moves freely;
-  `Ctrl+=`, `Ctrl+-`, and each wheel notch step by 10 points; `Ctrl+0`
-  goes back to 100%.
-- B: 60% to 300%, with a bigger decode cap above 200%.
-- C: a few fixed sizes (like 75, 100, 125, 150, 200%) that the slider
-  snaps to.
-
-Recommendation: **A**. 200% already fits about three posters across a
-1080p window beside the panel, and it keeps the art pipeline as it is.
-
-### 2. Where the slider lives
-
-The toolbar today: search (it stretches), **Sort**, the direction arrow,
-**Filters**, and **Add**.
-
-- A: in the toolbar after **Filters**, a 96 px slider with a small
-  poster-only toggle button beside it. Always one drag away, but it costs
-  about 150 px, so the search box narrows in a small window.
-- B: a **View** button after **Filters**, opening a popup like Sort's
-  with the slider and a **Poster only** check row. The toolbar barely
-  grows, and part 3's list view switch can join the same popup, but the
-  slider is one click further away.
-- C: a slim footer under the grid with the slider and toggle at the
-  right, like a file manager's status bar. Leaves the toolbar alone, but
-  takes about 36 px of height everywhere.
-
-Recommendation: **A**, since dragging while watching the grid change is
-the point of a slider; Ctrl+wheel covers small windows.
-
-### 3. What the overlay shows in poster-only mode
-
-- A: the title only, up to two lines, on a dark gradient at the poster's
-  bottom.
-- B: the title plus one muted line with the state and playtime, like the
-  meta row under a poster today.
-- C: the title, plus the playtime only on the selected card.
-
-Recommendation: **A**. The panel has the playtime one click away, and the
-overlay stays quiet when the mouse sweeps across the grid.
-
-### 4. A running game in poster-only mode
-
-Today the state dot and word sit under the poster. With titles hidden, a
-running, starting, or updating game has nothing to say so until you point
-at it.
-
-- A: a small status chip in the poster's top-left corner, always shown
-  for any state but idle (the state dot, like the poster marks on the
-  right), and nothing for an idle game.
-- B: the state shows only inside the overlay, on hover or selection.
-
-Recommendation: **A**, so a game left running is visible at a glance.
-
-### 5. The `[view]` keys
-
-```toml
-# A
-[view]
-zoom = 125            # percent
-poster_only = true
-
-# B
-[view]
-zoom = 1.25           # scale
-titles = "over"       # "below" or "over"
-```
-
-Recommendation: **A**. Whole percents never round-trip oddly, and the key
-reads like the control. Both default to off (100, `false`) and write
-nothing at their defaults. An older wineo's `validate` reports these as
-unknown keys, a warning only, since `library.toml` is lenient.
-
-### 6. Cards that come and go on a filter change
-
-- A: cards that stay spring to their new places; new ones fade in where
-  they land and leaving ones fade out, over about 150 ms.
-- B: cards that stay spring; the rest appear and vanish at once.
-
-Recommendation: **A**.
+1. **Range: A.** 60% to 200% (posters 96 to 320 px wide), inside today's
+   320 x 480 decode cap, so the art pipeline stays as it is. `Ctrl+=`,
+   `Ctrl+-`, and each wheel notch step by 10 points; `Ctrl+0` goes back
+   to 100%. The UI never shows a percentage, and the slider snaps to
+   100% when dragged near it.
+2. **Slider: A, for now.** In the toolbar after **Filters**, a 96 px
+   slider with a small poster-only toggle beside it. **Add** moves to the
+   toolbar's far left, before search, so it stands apart from the
+   display controls. The maintainer is open to a better home for either
+   later.
+3. **Overlay: A.** The title only, up to two lines, on a dark gradient at
+   the poster's bottom. No playtime: it gets busy when the mouse sweeps
+   across the grid, and the panel has it one click away.
+4. **Running games: A.** A small status chip in the poster's top-left
+   corner for any state but idle, mirroring the marks on the right.
+5. **Keys: A.** `zoom = 125` (whole percent) and `poster_only = true`.
+   Both write nothing at their defaults (100, `false`). An older wineo's
+   `validate` reports them as unknown keys, a warning only.
+6. **Filter changes: A.** Cards that stay spring to their new places;
+   new ones fade in where they land and leaving ones fade out, over about
+   150 ms.
 
 ## Proposed design
-
-Details here assume the recommendations; the answers amend them.
 
 ### Zoom
 
@@ -190,8 +120,17 @@ Details here assume the recommendations; the answers amend them.
   constants wherever they're read: card size, columns, slots, card
   height, hit tests, art loading margins, and per-card motion. At 100%
   everything matches 0.36.0 to the pixel, and tests pin it.
+- **Toolbar.** It reads **Add**, search, **Sort**, the direction button,
+  **Filters**, the slider, and the poster-only toggle, and Tab follows
+  that order. The slider has no label or readout; its tooltip says
+  "Zoom", and the toggle's says "Show titles" or "Hide titles". Both are
+  32 px high like the rest, and the slider shows a small tick at 100%.
 - The slider changes the zoom as it moves; the grid follows without a
-  tween. Keys and wheel notches tween the zoom over about 160 ms, and
+  tween. Within 5 points of 100% it snaps to 100%, so the default is
+  easy to find by feel. Key steps and wheel notches go to the next
+  multiple of 10 in their direction (a dragged 87% steps up to 90%), so
+  they always pass through 100%. Arrow keys on the focused slider step like
+  `Ctrl+=` and `Ctrl+-`. Keys and wheel notches tween the zoom over about 160 ms, and
   steps taken during a tween retarget it. Trackpad wheels (pixel deltas)
   add up until they make a step.
 - `Ctrl+=` and `Ctrl++` (with or without Shift, and the keypad's `+`) zoom
@@ -229,9 +168,10 @@ Details here assume the recommendations; the answers amend them.
 
 ### Poster-only
 
-- A toggle (question 2 places it). With it on, a card is just its poster,
+- The toolbar toggle. With it on, a card is just its poster,
   plus marks: the favorite and hidden marks on the right, and the status
-  chip on the left for any state but idle (question 4).
+  chip on the left for any state but idle: the state dot on the marks'
+  backing, 24 px like them.
 - Hovering a card, or selecting it, shows its title over the bottom of
   the poster on a dark gradient, in white semibold, up to two lines. The
   identifier isn't shown; the panel has it.
@@ -266,8 +206,8 @@ Details here assume the recommendations; the answers amend them.
    heights, hit tests, art margins, and every hardcoded poster size;
    identical at 100% (tests pin it). Confirms whether the scrollbar width
    makes `viewport_width` and the layout width disagree.
-3. **Zoom controls.** The slider and toggle where question 2 puts them,
-   the keys, Ctrl+wheel, tweened steps, the anchor, and the save.
+3. **Zoom controls.** **Add** moved to the toolbar's left, the slider
+   and toggle after **Filters**, the keys, Ctrl+wheel, tweened steps, the anchor, and the save.
 4. **Motion.** Generalized slot-to-slot transitions for zoom, re-sort,
    filter, and search changes, fades for cards coming and going, and the
    dock moved onto the same path.
@@ -296,7 +236,8 @@ Details here assume the recommendations; the answers amend them.
 ## Scope limits
 
 - No list view, presets, grouping, or coverflow: parts 3 to 5.
-- No zoom past 200% and no bigger art decodes (question 1).
+- No zoom past 200% and no bigger art decodes (answer 1).
+- No percentage readout anywhere (answer 1).
 - No reduced-motion setting: the "GUI accessibility settings" row.
 - No change to the art-less tile's repeated title in the normal view.
 - No zoom in other pages' grids (Art, imports); only the Library.
