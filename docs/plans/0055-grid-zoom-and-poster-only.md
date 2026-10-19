@@ -1,4 +1,4 @@
-Status: draft
+Status: approved
 
 # 0055: Grid zoom and poster-only view
 
@@ -132,33 +132,14 @@ this plan (2026-10-19):
    new ones fade in where they land and leaving ones fade out, over about
    150 ms.
 
-## Open questions
+From the plan review, the same day:
 
-### 7. The status chip and the GOG pill
+7. **Status chip and GOG pill: A.** One row: the chip sits in the corner
+   and the pill moves to its right, 4 px apart.
+8. **Narrow window: A.** Search shrinks first, from 320 px down to 160 px,
+   then the right end clips as today.
 
-Both want the poster's top-left corner. Only poster-only mode shows the
-chip (the normal view keeps the state under the poster), but a running
-game can also have an update waiting.
-
-- A: in one row. The chip sits in the corner and the pill moves to its
-  right, 4 px apart.
-- B: stacked. The pill keeps the corner and the chip sits under it.
-
-Recommendation: **A**. The chip is a 24 px dot, so the pill only moves
-over a little, and the corner reads left to right.
-
-### 8. A narrow window's toolbar
-
-The slider and toggle add about 150 px to a toolbar that clips today
-once the window is narrower than roughly 750 px plus the sidebar.
-
-- A: search shrinks first, from 320 px down to 160 px, then the right end
-  clips as today.
-- B: under a width, the slider and toggle wrap to a second toolbar row.
-- C: give the window a minimum width that fits the whole toolbar.
-
-Recommendation: **A**. It's a small change that buys back about 160 px,
-and Ctrl+wheel and the zoom keys still work when the slider is clipped.
+The maintainer approved the plan on 2026-10-19.
 
 ## Proposed design
 
@@ -265,8 +246,8 @@ and Ctrl+wheel and the zoom keys still work when the slider is clipped.
 - The toolbar toggle. With it on, a card is just its poster with its
   layers: the marks top-right, the Steam mark bottom-right, the install
   bar along the bottom, and top-left the status chip for any state but
-  idle (the state dot on the marks' backing, 24 px like them) placed with
-  the GOG pill per question 7.
+  idle (the state dot on the marks' backing, 24 px like them), with the
+  GOG pill to its right (answer 7).
 - Hovering a card, or selecting it, shows its title over the bottom of the
   poster on a dark gradient, in white semibold, up to two lines. It's
   drawn inside the poster's clipped frame and under the selection border,
@@ -308,9 +289,9 @@ and Ctrl+wheel and the zoom keys still work when the slider is clipped.
    place the foundation lists, identical at 100% (tests pin it). Confirms
    whether the scrollbar width makes `viewport_width` and the layout width
    disagree.
-3. **Zoom controls.** **Add** moved left, the shrinking search box (per
-   question 8), the focusable slider and the toggle, the keys, Ctrl+wheel,
-   tweened steps, the anchor, and the save.
+3. **Zoom controls.** **Add** moved left, the search box that shrinks
+   first (answer 8), the focusable slider and the toggle, the keys,
+   Ctrl+wheel, tweened steps, the anchor, and the save.
 4. **Motion.** `GridMotion` as the one owner, name-keyed children, the
    outgoing set and fades, every trigger above, the dock on the same path,
    and art loading on the shared layout.
