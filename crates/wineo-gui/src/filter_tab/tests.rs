@@ -1,5 +1,6 @@
 use std::sync::{Arc, Mutex};
 
+use iced::keyboard;
 use iced::keyboard::key::Named;
 use iced::mouse::{self, Cursor};
 use iced::{Point, Size};
@@ -709,30 +710,49 @@ fn the_wheel_over_the_tab_scrolls_the_grid_like_the_grid_itself() {
     placed(&mut app);
     let probe = crate::layout_probe::probe(&mut app.view(), app.window_size);
     let tab = bounds_at(&probe.node, &[1, 0]);
-    let wheel = iced::Event::Mouse(mouse::Event::WheelScrolled {
-        delta: mouse::ScrollDelta::Lines { x: 0.0, y: -2.0 },
-    });
     let grid_offset =
         |laid: &mut Laid<'_, Message>| laid.offsets().into_iter().fold(0.0_f32, f32::max);
-
-    // On the grid itself.
-    let mut laid = lay_out(app.view(), app.window_size);
     let below = Point::new(tab.center_x(), tab.y + tab.height + 100.0);
-    let _ = laid.event_at(&wheel, Cursor::Available(below));
-    let direct = grid_offset(&mut laid);
-    assert!(direct > 0.0);
-    drop(laid);
+    let lines = |x, y| mouse::ScrollDelta::Lines { x, y };
+    let cases = [
+        (lines(0.0, -2.0), false),
+        // Shift turns a line turn sideways, which the grid can't scroll.
+        (lines(0.0, -2.0), true),
+        (lines(-2.0, 0.0), true),
+        (mouse::ScrollDelta::Pixels { x: 0.0, y: -90.0 }, false),
+        (mouse::ScrollDelta::Pixels { x: 0.0, y: -90.0 }, true),
+    ];
+    for (delta, shift) in cases {
+        let modifiers = if shift {
+            keyboard::Modifiers::SHIFT
+        } else {
+            keyboard::Modifiers::empty()
+        };
+        let held = iced::Event::Keyboard(keyboard::Event::ModifiersChanged(modifiers));
+        let wheel = iced::Event::Mouse(mouse::Event::WheelScrolled { delta });
 
-    // On the tab, which hands it on and nothing else.
-    let mut laid = lay_out(app.view(), app.window_size);
-    let messages = laid.event_at(&wheel, Cursor::Available(tab.center()));
-    assert_eq!(grid_offset(&mut laid), 0.0);
-    let [Message::Filter(Event::Wheel(delta))] = messages.as_slice() else {
-        panic!("{messages:?}");
-    };
-    // The update hands the turn to `wheel`, which doesn't touch the app.
-    drive(&mut laid, super::wheel(*delta));
-    assert_eq!(grid_offset(&mut laid), direct);
+        // On the grid itself.
+        let mut laid = lay_out(app.view(), app.window_size);
+        let _ = laid.event_at(&held, Cursor::Available(below));
+        let _ = laid.event_at(&wheel, Cursor::Available(below));
+        let direct = grid_offset(&mut laid);
+        if !shift || matches!(delta, mouse::ScrollDelta::Pixels { .. }) {
+            assert!(direct > 0.0, "{delta:?} {shift}");
+        }
+        drop(laid);
+
+        // On the tab, which hands it on and nothing else.
+        let _ =
+            app.update(crate::event_message(held.clone(), iced::event::Status::Ignored).unwrap());
+        let mut laid = lay_out(app.view(), app.window_size);
+        let messages = laid.event_at(&wheel, Cursor::Available(tab.center()));
+        assert_eq!(grid_offset(&mut laid), 0.0);
+        let [Message::Filter(Event::Wheel(delta))] = messages.as_slice() else {
+            panic!("{messages:?}");
+        };
+        drive(&mut laid, super::wheel(*delta, app.modifiers.shift()));
+        assert_eq!(grid_offset(&mut laid), direct, "{delta:?} {shift}");
+    }
 }
 
 #[test]

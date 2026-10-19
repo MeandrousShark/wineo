@@ -124,6 +124,8 @@ pub(crate) struct App {
     query: order::Query,
     /// Store, platform, and tag filters and Show hidden, which reset each launch.
     filters: order::Filters,
+    /// The held modifier keys, for a wheel turn the filter tab hands to the grid.
+    modifiers: keyboard::Modifiers,
     /// The shown order, rebuilt by `reorder`.
     order: order::Order,
     /// The sort menu is open.
@@ -345,6 +347,7 @@ pub(crate) enum Message {
     PanelTick(u64, Instant),
     GridTick(u64, Instant),
     Key(keyboard::Key, keyboard::Modifiers, iced::event::Status),
+    Modifiers(keyboard::Modifiers),
     KeyWithFocus(
         keyboard::Key,
         keyboard::Modifiers,
@@ -437,6 +440,7 @@ impl App {
             cards: Vec::new(),
             query: order::Query::default(),
             filters: order::Filters::default(),
+            modifiers: keyboard::Modifiers::empty(),
             order: order::Order::default(),
             sort_menu: false,
             sort_opening: library_menu::Opening::default(),
@@ -1033,6 +1037,10 @@ impl App {
                 Task::none()
             }
             Message::GridTick(generation, now) => self.grid_tick(generation, now)?,
+            Message::Modifiers(modifiers) => {
+                self.modifiers = modifiers;
+                Task::none()
+            }
             Message::Key(key, _, _) if self.close_prompt => {
                 if key == keyboard::Key::Named(keyboard::key::Named::Escape) && !self.closing {
                     self.close_prompt = false;
@@ -1475,6 +1483,9 @@ pub(crate) fn event_message(event: iced::Event, status: iced::event::Status) -> 
     match event {
         iced::Event::Keyboard(keyboard::Event::KeyPressed { key, modifiers, .. }) => {
             Some(Message::Key(key, modifiers, status))
+        }
+        iced::Event::Keyboard(keyboard::Event::ModifiersChanged(modifiers)) => {
+            Some(Message::Modifiers(modifiers))
         }
         // Ignored regardless of status: a text input or button that saw the
         // click must not turn Back into a captured key that pages skip.

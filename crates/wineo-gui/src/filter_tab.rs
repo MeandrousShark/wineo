@@ -470,10 +470,12 @@ pub(crate) fn clear(app: &mut App, keyboard: bool) -> Task<Message> {
 
 /// Scrolls the grid by a wheel turn over the tab, as the grid's own
 /// scrollable would.
-pub(crate) fn wheel(delta: mouse::ScrollDelta) -> Task<Message> {
-    // iced's scrollable moves 60 px per line.
+pub(crate) fn wheel(delta: mouse::ScrollDelta, shift: bool) -> Task<Message> {
+    // iced's scrollable moves 60 px per line, and swaps a line turn's axes
+    // while Shift is held.
     const LINE: f32 = 60.0;
     let y = match crate::wheel::scale_delta(delta, crate::WHEEL_STEP_SCALE) {
+        mouse::ScrollDelta::Lines { x, .. } if shift => -x * LINE,
         mouse::ScrollDelta::Lines { y, .. } => -y * LINE,
         mouse::ScrollDelta::Pixels { y, .. } => -y,
     };
