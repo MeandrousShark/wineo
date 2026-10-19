@@ -239,15 +239,18 @@ impl Order {
         {
             self.rebuilds += 1;
         }
+        // A search, sort, or filter change keeps the cards and what they
+        // offer.
+        if self.built_from.cards != of.cards_key() {
+            self.options = Options::of(of.cards);
+        }
         self.keep(of);
     }
 
     /// Records that the order still fits new cards whose sort, filter, and
-    /// search inputs match the old ones card for card.
+    /// search inputs match the old ones card for card, so their sources and
+    /// tags are the same too.
     pub(crate) fn keep(&mut self, of: Of<'_>) {
-        if self.built_from.cards != of.cards_key() {
-            self.options = Options::of(of.cards);
-        }
         self.built_from = Inputs::of(of);
     }
 
