@@ -161,6 +161,8 @@ pub(crate) fn reveal_focused(scroll: &'static str) -> impl iced::advanced::widge
         /// The viewport, the content, and the current offset.
         view: Option<(Rectangle, Rectangle, f32)>,
         focused: Option<Rectangle>,
+        /// The top of every focusable control, to find the menu's first row.
+        tops: Vec<f32>,
     }
 
     impl iced::advanced::widget::Operation for Reveal {
@@ -190,6 +192,7 @@ pub(crate) fn reveal_focused(scroll: &'static str) -> impl iced::advanced::widge
             bounds: Rectangle,
             state: &mut dyn Focusable,
         ) {
+            self.tops.push(bounds.y);
             if state.is_focused() {
                 self.focused = Some(bounds);
             }
@@ -205,7 +208,19 @@ pub(crate) fn reveal_focused(scroll: &'static str) -> impl iced::advanced::widge
             if start < 0.0 || end > content.height + 0.5 {
                 return Outcome::None;
             }
-            let target = if start < offset {
+            // The first row takes the menu back to its top, so the header
+            // and the first section's label show with it.
+            let first = self
+                .tops
+                .iter()
+                .filter(|top| **top >= content.y && **top < content.y + content.height)
+                .all(|top| *top >= row.y);
+            let target = if first {
+                if offset <= 0.0 {
+                    return Outcome::None;
+                }
+                0.0
+            } else if start < offset {
                 start
             } else if end > offset + viewport.height {
                 end - viewport.height
@@ -226,6 +241,7 @@ pub(crate) fn reveal_focused(scroll: &'static str) -> impl iced::advanced::widge
         id: iced::widget::Id::new(scroll),
         view: None,
         focused: None,
+        tops: Vec::new(),
     }
 }
 

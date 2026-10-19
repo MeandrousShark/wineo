@@ -874,15 +874,12 @@ fn keyboard_focus_scrolls_the_popup_to_the_focused_row() {
         "{row:?} {viewport:?} {offset}"
     );
 
-    // Wrapping around to the first row scrolls back up to it.
-    let last = offset;
+    // Wrapping around to the first row scrolls back to the very top, so the
+    // header and the Source label show with it.
     let _ = filter(&mut app, Event::CloseMenu);
     let (offset, row, viewport) = after_keys(&mut app, Named::ArrowDown, rows);
-    assert!(offset < last, "{offset}");
-    assert!(
-        row.y - offset >= viewport.y - 0.5,
-        "{row:?} {viewport:?} {offset}"
-    );
+    assert_eq!(offset, 0.0);
+    assert!(row.y >= viewport.y, "{row:?} {viewport:?}");
 }
 
 #[test]
