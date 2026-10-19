@@ -166,25 +166,123 @@ fn hidden_cards_leave_the_grid_and_search_unless_show_hidden_is_on() {
 }
 
 #[test]
-fn source_filters_keep_any_chosen_source() {
+fn store_filters_keep_any_chosen_store() {
     let (_root, mut app) = loaded();
-    let _ = filter(&mut app, Event::ToggleSource("Steam"));
+    let _ = filter(&mut app, Event::ToggleStore("Steam"));
     assert_eq!(shown(&app), ["hades"]);
-    let _ = filter(&mut app, Event::ToggleSource("Windows"));
-    assert_eq!(shown(&app), ["hades", "notepad"]);
-    let _ = filter(&mut app, Event::ToggleSource("Steam"));
-    assert_eq!(shown(&app), ["notepad"]);
+    let _ = filter(&mut app, Event::ToggleStore("GOG"));
+    assert_eq!(shown(&app), ["hades", "papers-please"]);
+    let _ = filter(&mut app, Event::ToggleStore("Steam"));
+    assert_eq!(shown(&app), ["papers-please"]);
 }
 
 #[test]
-fn tag_filters_keep_cards_with_any_chosen_tag_within_the_sources() {
+fn platform_filters_keep_any_chosen_platform_and_skip_steam_games() {
+    let (_root, mut app) = loaded();
+    let _ = filter(&mut app, Event::TogglePlatform("Windows"));
+    assert_eq!(shown(&app), ["notepad", "papers-please"]);
+    let _ = filter(&mut app, Event::TogglePlatform("Native"));
+    assert_eq!(shown(&app), ["balatro", "notepad", "papers-please"]);
+    let _ = filter(&mut app, Event::TogglePlatform("Windows"));
+    assert_eq!(shown(&app), ["balatro"]);
+}
+
+/// A native GOG game like RimWorld, a proxied Steam game, a Windows GOG
+/// game, and a game with neither store nor platform filters to match.
+fn mixed() -> Vec<Card> {
+    let native_gog = Facts {
+        native: true,
+        gog_id: Some("2"),
+        ..Facts::default()
+    };
+    let mut cards = vec![
+        tagged("rimworld", native_gog, &["game"]),
+        tagged("hades", STEAM, &["game"]),
+        tagged("papers-please", GOG, &["game", "Indie"]),
+        tagged("notepad", WINDOWS, &["tool"]),
+        tagged("balatro", NATIVE, &["game", "Indie"]),
+    ];
+    cards.sort_by(|a, b| a.name.cmp(&b.name));
+    cards
+}
+
+fn mixed_app() -> (tempfile::TempDir, App) {
+    let (root, mut app) = fixture();
+    let _ = app.update(Message::Loaded(Ok(mixed())));
+    (root, app)
+}
+
+#[test]
+fn a_native_gog_game_matches_both_gog_and_native() {
+    let (_root, mut app) = mixed_app();
+    let _ = filter(&mut app, Event::ToggleStore("GOG"));
+    assert_eq!(shown(&app), ["papers-please", "rimworld"]);
+    let _ = filter(&mut app, Event::ToggleStore("GOG"));
+    let _ = filter(&mut app, Event::TogglePlatform("Native"));
+    assert_eq!(shown(&app), ["balatro", "rimworld"]);
+    // Both groups have to match.
+    let _ = filter(&mut app, Event::ToggleStore("GOG"));
+    assert_eq!(shown(&app), ["rimworld"]);
+}
+
+#[test]
+fn a_proxied_steam_game_matches_steam_but_neither_platform() {
+    let (_root, mut app) = mixed_app();
+    let _ = filter(&mut app, Event::ToggleStore("Steam"));
+    assert_eq!(shown(&app), ["hades"]);
+    let _ = filter(&mut app, Event::TogglePlatform("Windows"));
+    assert!(shown(&app).is_empty());
+    let _ = filter(&mut app, Event::TogglePlatform("Windows"));
+    let _ = filter(&mut app, Event::TogglePlatform("Native"));
+    assert!(shown(&app).is_empty());
+    // Every platform checked still leaves the Steam game out.
+    let _ = filter(&mut app, Event::Clear);
+    let _ = filter(&mut app, Event::TogglePlatform("Native"));
+    let _ = filter(&mut app, Event::TogglePlatform("Windows"));
+    assert_eq!(
+        shown(&app),
+        ["balatro", "notepad", "papers-please", "rimworld"]
+    );
+}
+
+#[test]
+fn a_game_with_no_store_matches_no_store_entry() {
+    let (_root, mut app) = mixed_app();
+    for store in ["Steam", "GOG", "Epic", "Amazon"] {
+        let _ = filter(&mut app, Event::ToggleStore(store));
+        assert!(
+            !shown(&app).contains(&"notepad") && !shown(&app).contains(&"balatro"),
+            "{store}"
+        );
+        let _ = filter(&mut app, Event::ToggleStore(store));
+    }
+}
+
+#[test]
+fn store_platform_and_tag_filters_all_have_to_match() {
+    let (_root, mut app) = mixed_app();
+    let _ = filter(&mut app, Event::ToggleStore("GOG"));
+    let _ = filter(&mut app, Event::TogglePlatform("Windows"));
+    assert_eq!(shown(&app), ["papers-please"]);
+    let _ = filter(&mut app, Event::ToggleTag("Indie".into()));
+    assert_eq!(shown(&app), ["papers-please"]);
+    let _ = filter(&mut app, Event::ToggleTag("Indie".into()));
+    let _ = filter(&mut app, Event::ToggleTag("tool".into()));
+    assert!(shown(&app).is_empty());
+    // Tags within the group are any-of, and stores still narrow them.
+    let _ = filter(&mut app, Event::ToggleTag("Indie".into()));
+    assert_eq!(shown(&app), ["papers-please"]);
+}
+
+#[test]
+fn tag_filters_keep_cards_with_any_chosen_tag_within_the_platforms() {
     let (_root, mut app) = loaded();
     let _ = filter(&mut app, Event::ToggleTag("rpg".into()));
     assert_eq!(shown(&app), ["hades"]);
     let _ = filter(&mut app, Event::ToggleTag("tool".into()));
     assert_eq!(shown(&app), ["hades", "notepad"]);
-    // Sources and tags both have to match.
-    let _ = filter(&mut app, Event::ToggleSource("Windows"));
+    // Platforms and tags both have to match.
+    let _ = filter(&mut app, Event::TogglePlatform("Windows"));
     assert_eq!(shown(&app), ["notepad"]);
     let _ = filter(&mut app, Event::ToggleShowHidden);
     assert_eq!(shown(&app), ["notepad", "old-demo"]);
@@ -240,7 +338,7 @@ fn filter_changes_and_new_hidden_flags_or_tags_rebuild_the_order() {
     let (_root, mut app) = loaded();
     let rebuilds = |app: &App| app.order.rebuilds;
     let before = rebuilds(&app);
-    let _ = filter(&mut app, Event::ToggleSource("GOG"));
+    let _ = filter(&mut app, Event::ToggleStore("GOG"));
     assert_eq!(rebuilds(&app), before + 1, "source");
     let _ = filter(&mut app, Event::ToggleTag("rpg".into()));
     assert_eq!(rebuilds(&app), before + 2, "tag");
@@ -274,7 +372,7 @@ fn filter_changes_and_new_hidden_flags_or_tags_rebuild_the_order() {
 #[test]
 fn filters_are_never_saved_and_reset_on_launch() {
     let (_root, mut app) = loaded();
-    let _ = filter(&mut app, Event::ToggleSource("Steam"));
+    let _ = filter(&mut app, Event::ToggleStore("Steam"));
     let _ = filter(&mut app, Event::ToggleTag("rpg".into()));
     let _ = filter(&mut app, Event::ToggleShowHidden);
     let _ = filter(&mut app, Event::Clear);
@@ -290,7 +388,7 @@ fn filters_leave_an_existing_file_alone() {
     fs::create_dir_all(app.paths.library_file().parent().unwrap()).unwrap();
     let original = "schema_version = 1\n[view]\nsort = \"name\"\n";
     fs::write(app.paths.library_file(), original).unwrap();
-    let _ = filter(&mut app, Event::ToggleSource("Steam"));
+    let _ = filter(&mut app, Event::ToggleStore("Steam"));
     let _ = filter(&mut app, Event::ToggleShowHidden);
     let _ = filter(&mut app, Event::Clear);
     assert_eq!(
@@ -300,30 +398,38 @@ fn filters_leave_an_existing_file_alone() {
 }
 
 #[test]
-fn the_button_counts_source_and_tag_filters() {
+fn the_button_counts_store_platform_and_tag_filters() {
     let (_root, mut app) = loaded();
     assert_eq!(button_label(&app), "Filters");
     let _ = app.update(Message::SearchChanged("a".into()));
     let _ = filter(&mut app, Event::ToggleShowHidden);
     assert_eq!(button_label(&app), "Filters");
-    let _ = filter(&mut app, Event::ToggleSource("Steam"));
+    let _ = filter(&mut app, Event::ToggleStore("Steam"));
     let _ = filter(&mut app, Event::ToggleTag("rpg".into()));
     let _ = filter(&mut app, Event::ToggleTag("tool".into()));
     assert_eq!(button_label(&app), "Filters (3)");
+    let _ = filter(&mut app, Event::TogglePlatform("Windows"));
+    let _ = filter(&mut app, Event::TogglePlatform("Native"));
+    let _ = filter(&mut app, Event::ToggleStore("GOG"));
+    assert_eq!(button_label(&app), "Filters (6)");
+    let _ = filter(&mut app, Event::ToggleStore("Steam"));
+    assert_eq!(button_label(&app), "Filters (5)");
 }
 
 #[test]
-fn clear_filters_clears_search_sources_and_tags_but_not_the_sort_or_show_hidden() {
+fn clear_filters_clears_search_stores_platforms_and_tags_but_not_the_sort_or_show_hidden() {
     let (_root, mut app) = loaded();
     let _ = app.update(Message::Sort(crate::sort_control::Event::FlipDirection));
     let _ = app.update(Message::SearchChanged("zzz".into()));
-    let _ = filter(&mut app, Event::ToggleSource("Steam"));
+    let _ = filter(&mut app, Event::ToggleStore("Steam"));
+    let _ = filter(&mut app, Event::TogglePlatform("Windows"));
     let _ = filter(&mut app, Event::ToggleTag("rpg".into()));
     let _ = filter(&mut app, Event::ToggleShowHidden);
     assert!(app.filters_clearable());
     let _ = filter(&mut app, Event::Clear);
     assert!(app.search.is_empty());
-    assert!(app.filters.sources.is_empty());
+    assert!(app.filters.stores.is_empty());
+    assert!(app.filters.platforms.is_empty());
     assert!(app.filters.tags.is_empty());
     assert!(app.filters.show_hidden);
     assert!(app.query.descending);
@@ -342,36 +448,93 @@ fn clear_filters_in_the_popup_closes_it_and_focuses_the_filters_button() {
 }
 
 #[test]
-fn the_popup_offers_the_library_sources_and_tags_in_order() {
+fn the_popup_offers_the_library_stores_platforms_and_tags_in_order() {
     let (_root, app) = loaded();
     assert_eq!(
         app.offered(),
-        (
-            vec!["GOG", "Native", "Steam", "Windows"],
-            ["game", "Indie", "rpg", "tool"].map(str::to_owned).to_vec()
-        )
+        Offered {
+            stores: vec!["GOG", "Steam"],
+            platforms: vec!["Native", "Windows"],
+            tags: ["game", "Indie", "rpg", "tool"].map(str::to_owned).to_vec(),
+        }
+    );
+}
+
+#[test]
+fn the_popup_lists_only_present_values_and_omits_empty_groups() {
+    let (_root, mut app) = fixture();
+    // Only Steam games: a store and no platform.
+    let steam_only = vec![tagged("hades", STEAM, &[])];
+    let _ = app.update(Message::Loaded(Ok(steam_only)));
+    assert_eq!(
+        app.offered(),
+        Offered {
+            stores: vec!["Steam"],
+            platforms: vec![],
+            tags: vec![],
+        }
+    );
+    assert_eq!(app.filter_menu_ids()[0], "library-filter-store-steam");
+    let ids = app.filter_menu_ids();
+    assert!(!ids.iter().any(|id| id.contains("platform")), "{ids:?}");
+    let _ = filter(&mut app, Event::ToggleMenu);
+    let _ = app.view();
+
+    // Only store-less games: platforms and no store.
+    let plain = vec![
+        tagged("notepad", WINDOWS, &[]),
+        tagged("balatro", NATIVE, &[]),
+    ];
+    let _ = app.update(Message::Loaded(Ok(plain)));
+    let offered = app.offered();
+    assert!(offered.stores.is_empty());
+    assert_eq!(offered.platforms, ["Native", "Windows"]);
+    assert_eq!(
+        app.filter_menu_ids()[..2],
+        [
+            "library-filter-platform-native",
+            "library-filter-platform-windows"
+        ]
+    );
+}
+
+#[test]
+fn the_popup_rows_run_stores_then_platforms_then_tags() {
+    let (_root, app) = loaded();
+    let ids = app.filter_menu_ids();
+    assert_eq!(
+        ids[..6],
+        [
+            "library-filter-store-gog",
+            "library-filter-store-steam",
+            "library-filter-platform-native",
+            "library-filter-platform-windows",
+            "library-filter-tag-game",
+            "library-filter-tag-Indie",
+        ]
     );
 }
 
 #[test]
 fn a_chosen_filter_the_library_lost_stays_on_and_offered() {
     let (_root, mut app) = loaded();
-    let _ = filter(&mut app, Event::ToggleSource("Steam"));
+    let _ = filter(&mut app, Event::ToggleStore("Steam"));
     let _ = filter(&mut app, Event::ToggleTag("tool".into()));
     let lost: Vec<Card> = library()
         .into_iter()
         .filter(|card| card.name != "hades" && card.name != "notepad")
         .collect();
     let _ = app.update(Message::Loaded(Ok(lost)));
-    assert!(app.filters.sources.contains("Steam"));
+    assert!(app.filters.stores.contains("Steam"));
     assert!(app.filters.tags.contains("tool"));
-    let (sources, tags) = app.offered();
-    assert_eq!(sources, ["GOG", "Native", "Steam", "Windows"]);
-    assert_eq!(tags, ["game", "Indie", "rpg", "tool"]);
+    let offered = app.offered();
+    assert_eq!(offered.stores, ["GOG", "Steam"]);
+    assert_eq!(offered.platforms, ["Native", "Windows"]);
+    assert_eq!(offered.tags, ["game", "Indie", "rpg", "tool"]);
     assert!(shown(&app).is_empty());
     // It can still be turned off from the popup.
     let _ = filter(&mut app, Event::ToggleTag("tool".into()));
-    let _ = filter(&mut app, Event::ToggleSource("Steam"));
+    let _ = filter(&mut app, Event::ToggleStore("Steam"));
     assert_eq!(shown(&app), ["balatro", "papers-please"]);
 }
 
@@ -418,7 +581,7 @@ fn the_popup_opens_at_the_anchor_takes_the_keys_and_escape_closes_it() {
 
     // Toggles leave it open; a click outside closes it.
     let _ = filter(&mut app, Event::ToggleMenu);
-    let _ = filter(&mut app, Event::ToggleSource("Steam"));
+    let _ = filter(&mut app, Event::ToggleStore("Steam"));
     let _ = filter(&mut app, Event::ToggleShowHidden);
     assert!(app.filter_menu);
     let _ = filter(&mut app, Event::CloseMenu);
@@ -469,7 +632,7 @@ fn tab_and_arrows_cycle_the_popup_rows() {
     let ids = app.filter_menu_ids();
     assert_eq!(
         ids.first().map(String::as_str),
-        Some("library-filter-source-gog")
+        Some("library-filter-store-gog")
     );
     assert!(ids.contains(&"library-filter-tag-rpg".to_owned()));
     assert_eq!(ids.last().map(String::as_str), Some(CLEAR_ID));
@@ -508,13 +671,13 @@ fn the_popup_opened_from_the_keyboard_sits_under_the_filters_button() {
     drive(&mut laid, Task::batch(focus));
     assert_eq!(
         laid.focused(),
-        [iced::widget::Id::new("library-filter-source-gog")]
+        [iced::widget::Id::new("library-filter-store-gog")]
     );
     let messages = laid.event(&press(Named::Enter));
     assert!(
         messages
             .iter()
-            .any(|message| matches!(message, Message::Filter(Event::ToggleSource("GOG"))))
+            .any(|message| matches!(message, Message::Filter(Event::ToggleStore("GOG"))))
     );
 }
 
@@ -633,10 +796,11 @@ fn overlays_block_the_filter_controls() {
     let (_root, mut app) = loaded();
     let _ = app.update(Message::Add);
     assert!(app.flow.is_some());
-    let _ = filter(&mut app, Event::ToggleSource("Steam"));
+    let _ = filter(&mut app, Event::ToggleStore("Steam"));
     let _ = filter(&mut app, Event::ToggleMenu);
     let _ = filter(&mut app, Event::Clear);
-    assert!(app.filters.sources.is_empty());
+    assert!(app.filters.stores.is_empty());
+    assert!(app.filters.platforms.is_empty());
     assert!(!app.filter_menu);
 }
 
@@ -674,7 +838,7 @@ fn a_filter_change_keeps_the_selection_and_scrolls_to_it() {
 fn a_filter_or_show_hidden_off_that_removes_the_selection_keeps_it_with_its_panel() {
     let (_root, mut app) = loaded();
     let _ = app.update(Message::Select("papers-please".into()));
-    let _ = filter(&mut app, Event::ToggleSource("Steam"));
+    let _ = filter(&mut app, Event::ToggleStore("Steam"));
     assert!(!shown(&app).contains(&"papers-please"));
     assert_eq!(app.selected.as_deref(), Some("papers-please"));
     assert!(app.panel_open);
@@ -696,8 +860,8 @@ fn enter_does_nothing_unless_the_selected_card_is_shown() {
         ("search", |app| {
             let _ = app.update(Message::SearchChanged("hades".into()));
         }),
-        ("source", |app| {
-            let _ = filter(app, Event::ToggleSource("Steam"));
+        ("store", |app| {
+            let _ = filter(app, Event::ToggleStore("Steam"));
         }),
         ("tag", |app| {
             let _ = filter(app, Event::ToggleTag("rpg".into()));
@@ -875,7 +1039,7 @@ fn keyboard_focus_scrolls_the_popup_to_the_focused_row() {
     );
 
     // Wrapping around to the first row scrolls back to the very top, so the
-    // header and the Source label show with it.
+    // header and the Store label show with it.
     let _ = filter(&mut app, Event::CloseMenu);
     let (offset, row, viewport) = after_keys(&mut app, Named::ArrowDown, rows);
     assert_eq!(offset, 0.0);

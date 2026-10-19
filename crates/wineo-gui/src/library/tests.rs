@@ -377,7 +377,7 @@ fn missing_art_file_has_no_identity() {
 
 #[test]
 fn cards_carry_raw_sort_fields_and_their_source() {
-    use wineo_core::source::{Integration, Store};
+    use wineo_core::source::{Integration, Platform, Store};
     use wineo_core::stats::{self, End, Session};
 
     let root = tempfile::tempdir().unwrap();
@@ -459,35 +459,56 @@ fn cards_carry_raw_sort_fields_and_their_source() {
 
     let source = |name: &str| {
         let source = card(name).source;
-        (source.store, source.integration, source.label())
+        (source.store, source.integration, source.platform())
     };
     assert_eq!(
         source("bg3"),
-        (Some(Store::Steam), Integration::SteamLibrary, "Steam")
+        (Some(Store::Steam), Integration::SteamLibrary, None)
     );
-    assert_eq!(source("dusk"), (None, Integration::Plain, "Native"));
+    assert_eq!(
+        source("dusk"),
+        (None, Integration::Plain, Some(Platform::Native))
+    );
     assert_eq!(
         source("native-heroic"),
-        (None, Integration::HeroicImport, "Native")
+        (None, Integration::HeroicImport, Some(Platform::Native))
     );
-    assert_eq!(source("notes"), (None, Integration::Plain, "Windows"));
+    assert_eq!(
+        source("notes"),
+        (None, Integration::Plain, Some(Platform::Windows))
+    );
     assert_eq!(
         source("witcher"),
-        (Some(Store::Gog), Integration::GogInstall, "GOG")
+        (
+            Some(Store::Gog),
+            Integration::GogInstall,
+            Some(Platform::Windows)
+        )
     );
     assert_eq!(
         source("heroic-gog"),
-        (Some(Store::Gog), Integration::HeroicImport, "GOG")
+        (
+            Some(Store::Gog),
+            Integration::HeroicImport,
+            Some(Platform::Windows)
+        )
     );
     assert_eq!(
         source("fortnite"),
-        (Some(Store::Epic), Integration::HeroicImport, "Epic")
+        (
+            Some(Store::Epic),
+            Integration::HeroicImport,
+            Some(Platform::Windows)
+        )
     );
     assert_eq!(
         source("sideload"),
-        (None, Integration::HeroicImport, "Windows")
+        (None, Integration::HeroicImport, Some(Platform::Windows))
     );
-    assert_eq!(source("broken"), (None, Integration::Plain, "Windows"));
+    assert_eq!(
+        source("broken"),
+        (None, Integration::Plain, Some(Platform::Windows))
+    );
 }
 
 #[test]

@@ -96,7 +96,7 @@ fn a_populated_grid_never_shows_an_empty_state() {
     filter(&mut app, Event::ToggleTag("rpg".into()));
     assert_eq!(app.empty_state(), None);
     filter(&mut app, Event::ToggleShowHidden);
-    filter(&mut app, Event::ToggleSource("Windows"));
+    filter(&mut app, Event::TogglePlatform("Windows"));
     assert_eq!(app.empty_state(), None);
     let _ = app.update(Message::SearchChanged("demo".into()));
     assert_eq!(app.empty_state(), None);
@@ -143,7 +143,7 @@ fn everything_hidden_with_a_search_or_filter_on_is_no_matches() {
         Some(Empty::NoMatches { hidden_matching: 2 })
     );
     let _ = app.update(Message::SearchChanged(String::new()));
-    filter(&mut app, Event::ToggleSource("Steam"));
+    filter(&mut app, Event::ToggleStore("Steam"));
     assert_eq!(
         app.empty_state(),
         Some(Empty::NoMatches { hidden_matching: 1 })
@@ -166,7 +166,7 @@ fn no_matches_says_how_many_hidden_games_match() {
     assert!(bounds(&app, CLEAR_ID).is_some());
 
     let _ = app.update(Message::SearchChanged(String::new()));
-    filter(&mut app, Event::ToggleSource("Windows"));
+    filter(&mut app, Event::TogglePlatform("Windows"));
     filter(&mut app, Event::ToggleTag("rpg".into()));
     assert_eq!(
         app.empty_state(),
@@ -185,8 +185,8 @@ fn no_matches_says_how_many_hidden_games_match() {
     );
     filter(&mut app, Event::ShowHidden);
     assert_eq!(app.empty_state(), None);
-    filter(&mut app, Event::ToggleSource("Windows"));
-    filter(&mut app, Event::ToggleSource("GOG"));
+    filter(&mut app, Event::TogglePlatform("Windows"));
+    filter(&mut app, Event::ToggleStore("GOG"));
     assert_eq!(
         app.empty_state(),
         Some(Empty::NoMatches { hidden_matching: 0 })
@@ -197,7 +197,7 @@ fn no_matches_says_how_many_hidden_games_match() {
 fn clear_filters_from_no_matches_shows_the_library_again() {
     let (_root, mut app) = loaded();
     let _ = app.update(Message::SearchChanged("zzz".into()));
-    filter(&mut app, Event::ToggleSource("Steam"));
+    filter(&mut app, Event::ToggleStore("Steam"));
     let messages = press_control(&app, CLEAR_ID);
     assert!(
         messages

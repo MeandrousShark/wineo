@@ -121,7 +121,7 @@ pub(crate) struct App {
     /// How the library is sorted. The open window keeps its own, whatever
     /// another window or process saves.
     query: order::Query,
-    /// Source and tag filters and Show hidden, which reset each launch.
+    /// Store, platform, and tag filters and Show hidden, which reset each launch.
     filters: order::Filters,
     /// The shown order, rebuilt by `reorder`.
     order: order::Order,

@@ -453,7 +453,7 @@ fn sort_change() {
 }
 
 /// What a filter change costs: the order rebuilt after toggling a tag
-/// filter, a source filter, or Show hidden. Some cards are marked favorite
+/// filter, a platform filter, or Show hidden. Some cards are marked favorite
 /// and hidden in memory so the Show hidden toggle has something to do; the
 /// bench root isn't touched.
 #[test]
@@ -481,13 +481,24 @@ fn filter_change() {
         .max_by_key(|&(_, &count)| count)
         .map(|(tag, _)| (*tag).to_owned())
         .expect("the generated library has tags");
-    let source = app.cards[0].source.label();
+    // The generated library has no stores, so the platform filter is the
+    // one that narrows.
+    let platform = app.cards[0]
+        .source
+        .platform()
+        .map(wineo_core::source::Platform::label)
+        .expect("the generated library has no Steam games");
     println!(
-        "filters: tag {tag:?} on {} cards, source {source:?} on {} cards, {} hidden",
+        "filters: tag {tag:?} on {} cards, platform {platform:?} on {} cards, {} hidden",
         tag_counts[tag.as_str()],
         app.cards
             .iter()
-            .filter(|card| card.source.label() == source)
+            .filter(|card| {
+                card.source
+                    .platform()
+                    .map(wineo_core::source::Platform::label)
+                    == Some(platform)
+            })
             .count(),
         app.cards.iter().filter(|card| card.hidden).count(),
     );
@@ -505,10 +516,10 @@ fn filter_change() {
             }),
         ),
         (
-            "reorder() per source filter",
+            "reorder() per platform filter",
             Box::new(move |filters| {
-                if !filters.sources.remove(source) {
-                    filters.sources.insert(source);
+                if !filters.platforms.remove(platform) {
+                    filters.platforms.insert(platform);
                 }
             }),
         ),

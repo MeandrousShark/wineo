@@ -6,6 +6,7 @@ use std::borrow::Cow;
 use std::collections::BTreeSet;
 
 use wineo_core::library::{self, SortFields, SortKey};
+use wineo_core::source::{Platform, Store};
 
 use crate::library::Card;
 
@@ -32,21 +33,36 @@ impl From<library::View> for Query {
 /// launch starts with the whole library.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct Filters {
-    /// Source labels; a card matches any of them.
-    pub(crate) sources: BTreeSet<&'static str>,
+    /// Store labels; a card matches any of them. A game with no store
+    /// matches none.
+    pub(crate) stores: BTreeSet<&'static str>,
+    /// Platform labels, the same way. A game with no platform matches none.
+    pub(crate) platforms: BTreeSet<&'static str>,
     /// A card matches when it has any of these.
     pub(crate) tags: BTreeSet<String>,
     pub(crate) show_hidden: bool,
 }
 
 impl Filters {
-    /// How many source and tag filters are on, for the Filters button.
+    /// How many store, platform, and tag filters are on, for the Filters
+    /// button.
     pub(crate) fn active(&self) -> usize {
-        self.sources.len() + self.tags.len()
+        self.stores.len() + self.platforms.len() + self.tags.len()
     }
 
+    /// Any checked value within a group matches, and every group with a
+    /// check has to.
     fn admit(&self, card: &Card) -> bool {
-        (self.sources.is_empty() || self.sources.contains(card.source.label()))
+        (self.stores.is_empty()
+            || card
+                .source
+                .store
+                .is_some_and(|store| self.stores.contains(store.label())))
+            && (self.platforms.is_empty()
+                || card
+                    .source
+                    .platform()
+                    .is_some_and(|platform| self.platforms.contains(platform.label())))
             && (self.tags.is_empty() || card.tags.iter().any(|tag| self.tags.contains(tag)))
     }
 }
@@ -61,24 +77,31 @@ pub(crate) struct Counts {
     pub(crate) hidden: usize,
 }
 
-/// The sources and tags the library has, for the filter popup.
+/// The stores, platforms, and tags the library has, for the filter popup.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct Options {
-    /// Source labels, A to Z like the Source sort.
-    pub(crate) sources: Vec<&'static str>,
+    /// Store labels, A to Z.
+    pub(crate) stores: Vec<&'static str>,
+    /// Platform labels, A to Z.
+    pub(crate) platforms: Vec<&'static str>,
     /// Tags, A to Z ignoring case.
     pub(crate) tags: Vec<String>,
 }
 
 impl Options {
     fn of(cards: &[Card]) -> Self {
-        let mut sources: Vec<&'static str> = cards
-            .iter()
-            .map(|card| card.source.label())
-            .collect::<BTreeSet<_>>()
-            .into_iter()
-            .collect();
-        sources.sort_unstable_by_key(|label| label.to_lowercase());
+        let labels = |label: fn(&Card) -> Option<&'static str>| {
+            let mut labels: Vec<&'static str> = cards
+                .iter()
+                .filter_map(label)
+                .collect::<BTreeSet<_>>()
+                .into_iter()
+                .collect();
+            labels.sort_unstable_by_key(|label| label.to_lowercase());
+            labels
+        };
+        let stores = labels(|card| card.source.store.map(Store::label));
+        let platforms = labels(|card| card.source.platform().map(Platform::label));
         let mut tags: Vec<String> = cards
             .iter()
             .flat_map(|card| card.tags.iter().cloned())
@@ -86,7 +109,11 @@ impl Options {
             .into_iter()
             .collect();
         tags.sort_by_cached_key(|tag| (tag.to_lowercase(), tag.clone()));
-        Self { sources, tags }
+        Self {
+            stores,
+            platforms,
+            tags,
+        }
     }
 }
 
@@ -165,7 +192,7 @@ impl Inputs {
 
 impl Order {
     /// The shown indices for `of`, with the empty states' counts. Hidden
-    /// cards go unless Show hidden is on, then the source and tag filters
+    /// cards go unless Show hidden is on, then the store, platform, and tag filters
     /// and the search narrow, and what's left is sorted. Sort keys are
     /// computed once here, not per comparison.
     pub(crate) fn sorted(of: Of<'_>) -> Built {
@@ -247,8 +274,8 @@ impl Order {
     }
 
     /// Records that the order still fits new cards whose sort, filter, and
-    /// search inputs match the old ones card for card, so their sources and
-    /// tags are the same too.
+    /// search inputs match the old ones card for card, so their stores,
+    /// platforms, and tags are the same too.
     pub(crate) fn keep(&mut self, of: Of<'_>) {
         self.built_from = Inputs::of(of);
     }

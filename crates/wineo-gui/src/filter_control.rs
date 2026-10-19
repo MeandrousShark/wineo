@@ -1,5 +1,7 @@
-//! The library's Filters popup: source and tag filters, Show hidden, and
+//! The library's Filters popup: store, platform, and tag filters, Show hidden, and
 //! Clear filters. None of it is saved, so each launch shows everything.
+
+use std::collections::BTreeSet;
 
 use iced::keyboard::{Key, Modifiers, key::Named};
 use iced::widget::{Row, button, column, container, row, scrollable, text};
@@ -33,12 +35,13 @@ pub(crate) enum Event {
     OpenUnder(u64, Option<Rectangle>),
     /// A click outside the popup.
     CloseMenu,
-    ToggleSource(&'static str),
+    ToggleStore(&'static str),
+    TogglePlatform(&'static str),
     ToggleTag(String),
     ToggleShowHidden,
     /// An empty state's Show hidden, which only turns it on.
     ShowHidden,
-    /// Clears the search and the source and tag filters, leaving the sort
+    /// Clears the search and the store, platform, and tag filters, leaving the sort
     /// and Show hidden alone.
     Clear,
 }
@@ -52,8 +55,32 @@ impl Event {
     }
 }
 
-fn source_id(label: &str) -> String {
-    format!("library-filter-source-{}", label.to_lowercase())
+fn store_id(label: &str) -> String {
+    format!("library-filter-store-{}", label.to_lowercase())
+}
+
+fn platform_id(label: &str) -> String {
+    format!("library-filter-platform-{}", label.to_lowercase())
+}
+
+/// What the popup offers, each group A to Z.
+#[derive(Debug, PartialEq, Eq)]
+struct Offered {
+    stores: Vec<&'static str>,
+    platforms: Vec<&'static str>,
+    tags: Vec<String>,
+}
+
+/// `listed` plus any `chosen` it lacks, sorted A to Z.
+fn with_chosen(listed: &[&'static str], chosen: &BTreeSet<&'static str>) -> Vec<&'static str> {
+    let mut labels = listed.to_vec();
+    for label in chosen {
+        if !labels.contains(label) {
+            labels.push(label);
+        }
+    }
+    labels.sort_by_key(|label| label.to_lowercase());
+    labels
 }
 
 fn tag_id(tag: &str) -> String {
@@ -74,18 +101,13 @@ impl App {
         !self.search.is_empty() || self.filters.active() > 0
     }
 
-    /// The sources and tags the popup offers: the library's, plus any chosen
-    /// one it no longer has, so a filter never turns off behind your back
-    /// and can still be turned off here.
-    fn offered(&self) -> (Vec<&'static str>, Vec<String>) {
+    /// What the popup offers: the library's stores, platforms, and tags,
+    /// plus any chosen one it no longer has, so a filter never turns off
+    /// behind your back and can still be turned off here.
+    fn offered(&self) -> Offered {
         let options = self.order.options(self.order_inputs());
-        let mut sources = options.sources.clone();
-        for chosen in &self.filters.sources {
-            if !sources.contains(chosen) {
-                sources.push(chosen);
-            }
-        }
-        sources.sort_by_key(|label| label.to_lowercase());
+        let stores = with_chosen(&options.stores, &self.filters.stores);
+        let platforms = with_chosen(&options.platforms, &self.filters.platforms);
         let mut tags = options.tags.clone();
         let mut gone = false;
         for chosen in &self.filters.tags {
@@ -97,14 +119,19 @@ impl App {
         if gone {
             tags.sort_by_cached_key(|tag| (tag.to_lowercase(), tag.clone()));
         }
-        (sources, tags)
+        Offered {
+            stores,
+            platforms,
+            tags,
+        }
     }
 
     /// The popup's focusable rows, in order.
     fn filter_menu_ids(&self) -> Vec<String> {
-        let (sources, tags) = self.offered();
-        let mut ids: Vec<String> = sources.iter().map(|label| source_id(label)).collect();
-        ids.extend(tags.iter().map(|tag| tag_id(tag)));
+        let offered = self.offered();
+        let mut ids: Vec<String> = offered.stores.iter().map(|label| store_id(label)).collect();
+        ids.extend(offered.platforms.iter().map(|label| platform_id(label)));
+        ids.extend(offered.tags.iter().map(|tag| tag_id(tag)));
         ids.push(SHOW_HIDDEN_ID.to_owned());
         if self.filters_clearable() {
             ids.push(CLEAR_ID.to_owned());
@@ -146,9 +173,15 @@ pub(crate) fn update(app: &mut App, event: Event) -> Task<Message> {
             app.filter_menu = false;
             Task::none()
         }
-        Event::ToggleSource(label) => {
-            if !app.filters.sources.remove(label) {
-                app.filters.sources.insert(label);
+        Event::ToggleStore(label) => {
+            if !app.filters.stores.remove(label) {
+                app.filters.stores.insert(label);
+            }
+            app.resorted()
+        }
+        Event::TogglePlatform(label) => {
+            if !app.filters.platforms.remove(label) {
+                app.filters.platforms.insert(label);
             }
             app.resorted()
         }
@@ -174,7 +207,8 @@ pub(crate) fn update(app: &mut App, event: Event) -> Task<Message> {
                 return Task::none();
             }
             app.search.clear();
-            app.filters.sources.clear();
+            app.filters.stores.clear();
+            app.filters.platforms.clear();
             app.filters.tags.clear();
             let resorted = app.resorted();
             if !app.filter_menu {
@@ -219,7 +253,7 @@ pub(crate) fn key(app: &mut App, key: &Key, modifiers: Modifiers) -> Task<Messag
     }
 }
 
-/// The Filters button's label, with how many source and tag filters are on.
+/// The Filters button's label, with how many store, platform, and tag filters are on.
 pub(crate) fn button_label(app: &App) -> String {
     match app.filters.active() {
         0 => "Filters".to_owned(),
@@ -303,7 +337,11 @@ impl App {
         let palette = self.palette;
         let position = menu_position(self.filter_menu_position, self.window_size, MIN_HEIGHT);
         let max_height = (self.window_size.height - position.y - ACTION_MENU_MARGIN).max(0.0);
-        let (sources, tags) = self.offered();
+        let Offered {
+            stores,
+            platforms,
+            tags,
+        } = self.offered();
         let counts = self.order.counts(self.order_inputs());
         let mut rows = column![
             text("Filters")
@@ -317,12 +355,38 @@ impl App {
                 .align_y(Center),
         ]
         .spacing(ACTION_MENU_SPACING);
-        if !sources.is_empty() {
-            rows = rows.push(heading("Source", palette));
-            for label in sources {
+        type Group<'a> = (
+            &'a str,
+            Vec<&'static str>,
+            &'a BTreeSet<&'static str>,
+            fn(&str) -> String,
+            fn(&'static str) -> Event,
+        );
+        let groups: [Group<'_>; 2] = [
+            (
+                "Store",
+                stores,
+                &self.filters.stores,
+                store_id,
+                Event::ToggleStore,
+            ),
+            (
+                "Platform",
+                platforms,
+                &self.filters.platforms,
+                platform_id,
+                Event::TogglePlatform,
+            ),
+        ];
+        for (title, labels, checked, id, toggle) in groups {
+            if labels.is_empty() {
+                continue;
+            }
+            rows = rows.push(heading(title, palette));
+            for label in labels {
                 rows = rows.push(menu_row(
                     row![
-                        check_box(self.filters.sources.contains(label), palette),
+                        check_box(checked.contains(label), palette),
                         text(label).size(14),
                     ]
                     .spacing(8)
@@ -330,8 +394,8 @@ impl App {
                     .into(),
                     palette,
                     false,
-                    source_id(label),
-                    Message::Filter(Event::ToggleSource(label)),
+                    id(label),
+                    Message::Filter(toggle(label)),
                 ));
             }
         }

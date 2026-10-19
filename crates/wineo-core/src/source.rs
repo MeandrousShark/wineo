@@ -10,6 +10,33 @@ pub enum Store {
     Amazon,
 }
 
+impl Store {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Steam => "Steam",
+            Self::Gog => "GOG",
+            Self::Epic => "Epic",
+            Self::Amazon => "Amazon",
+        }
+    }
+}
+
+/// What an environment runs on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Platform {
+    Native,
+    Windows,
+}
+
+impl Platform {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Native => "Native",
+            Self::Windows => "Windows",
+        }
+    }
+}
+
 /// How wineo knows about an environment.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Integration {
@@ -82,15 +109,15 @@ impl Source {
         })
     }
 
-    /// The store when there is one, otherwise the platform.
-    pub fn label(&self) -> &'static str {
-        match self.store {
-            Some(Store::Steam) => "Steam",
-            Some(Store::Gog) => "GOG",
-            Some(Store::Epic) => "Epic",
-            Some(Store::Amazon) => "Amazon",
-            None if self.native => "Native",
-            None => "Windows",
+    /// Native or Windows. A proxied Steam game has none, since Steam
+    /// doesn't say whether it runs under Proton.
+    pub fn platform(&self) -> Option<Platform> {
+        if self.integration == Integration::SteamLibrary {
+            None
+        } else if self.native {
+            Some(Platform::Native)
+        } else {
+            Some(Platform::Windows)
         }
     }
 }
@@ -99,9 +126,9 @@ impl Source {
 mod tests {
     use super::*;
 
-    fn source(facts: Facts<'_>) -> (Option<Store>, Integration, &'static str) {
+    fn source(facts: Facts<'_>) -> (Option<Store>, Integration, Option<Platform>) {
         let source = Source::new(facts);
-        (source.store, source.integration, source.label())
+        (source.store, source.integration, source.platform())
     }
 
     #[test]
@@ -115,7 +142,7 @@ mod tests {
         };
         assert_eq!(
             source(facts),
-            (Some(Store::Steam), Integration::SteamLibrary, "Steam")
+            (Some(Store::Steam), Integration::SteamLibrary, None)
         );
     }
 
@@ -127,7 +154,11 @@ mod tests {
         };
         assert_eq!(
             source(facts),
-            (Some(Store::Gog), Integration::GogInstall, "GOG")
+            (
+                Some(Store::Gog),
+                Integration::GogInstall,
+                Some(Platform::Windows)
+            )
         );
     }
 
@@ -142,16 +173,20 @@ mod tests {
         };
         assert_eq!(
             source(facts),
-            (Some(Store::Gog), Integration::HeroicImport, "GOG")
+            (
+                Some(Store::Gog),
+                Integration::HeroicImport,
+                Some(Platform::Windows)
+            )
         );
     }
 
     #[test]
     fn a_heroic_import_takes_its_store_from_the_hint() {
-        for (hint, store, label) in [
-            ("egs", Store::Epic, "Epic"),
-            ("gog", Store::Gog, "GOG"),
-            ("amazon", Store::Amazon, "Amazon"),
+        for (hint, store) in [
+            ("egs", Store::Epic),
+            ("gog", Store::Gog),
+            ("amazon", Store::Amazon),
         ] {
             let facts = Facts {
                 heroic_id: Some("id"),
@@ -160,7 +195,11 @@ mod tests {
             };
             assert_eq!(
                 source(facts),
-                (Some(store), Integration::HeroicImport, label)
+                (
+                    Some(store),
+                    Integration::HeroicImport,
+                    Some(Platform::Windows)
+                )
             );
         }
     }
@@ -175,7 +214,7 @@ mod tests {
             };
             assert_eq!(
                 source(facts),
-                (None, Integration::HeroicImport, "Windows"),
+                (None, Integration::HeroicImport, Some(Platform::Windows)),
                 "{hint:?}"
             );
         }
@@ -188,7 +227,10 @@ mod tests {
             heroic_id: Some("id"),
             ..Facts::default()
         };
-        assert_eq!(source(facts), (None, Integration::HeroicImport, "Native"));
+        assert_eq!(
+            source(facts),
+            (None, Integration::HeroicImport, Some(Platform::Native))
+        );
     }
 
     #[test]
@@ -197,7 +239,10 @@ mod tests {
             store_hint: Some("egs"),
             ..Facts::default()
         };
-        assert_eq!(source(facts), (None, Integration::Plain, "Windows"));
+        assert_eq!(
+            source(facts),
+            (None, Integration::Plain, Some(Platform::Windows))
+        );
     }
 
     #[test]
@@ -206,10 +251,52 @@ mod tests {
             native: true,
             ..Facts::default()
         };
-        assert_eq!(source(native), (None, Integration::Plain, "Native"));
+        assert_eq!(
+            source(native),
+            (None, Integration::Plain, Some(Platform::Native))
+        );
         assert_eq!(
             source(Facts::default()),
-            (None, Integration::Plain, "Windows")
+            (None, Integration::Plain, Some(Platform::Windows))
+        );
+    }
+
+    #[test]
+    fn a_native_gog_game_is_in_gog_and_native() {
+        let facts = Facts {
+            native: true,
+            gog_id: Some("1207658924"),
+            ..Facts::default()
+        };
+        assert_eq!(
+            source(facts),
+            (
+                Some(Store::Gog),
+                Integration::GogInstall,
+                Some(Platform::Native)
+            )
+        );
+    }
+
+    #[test]
+    fn a_proxied_steam_game_has_no_platform_even_flagged_native() {
+        for native in [false, true] {
+            let facts = Facts {
+                steam: true,
+                native,
+                ..Facts::default()
+            };
+            assert_eq!(Source::new(facts).platform(), None);
+        }
+    }
+
+    #[test]
+    fn labels_name_each_store_and_platform() {
+        let stores = [Store::Steam, Store::Gog, Store::Epic, Store::Amazon];
+        assert_eq!(stores.map(Store::label), ["Steam", "GOG", "Epic", "Amazon"]);
+        assert_eq!(
+            [Platform::Native, Platform::Windows].map(Platform::label),
+            ["Native", "Windows"]
         );
     }
 
