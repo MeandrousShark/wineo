@@ -101,19 +101,49 @@ fn counts(app: &App) -> crate::order::Counts {
     app.order.counts(app.order_inputs())
 }
 
-/// The widget operations `task` asks for.
+/// The widget operations `task` asks for, without answering them, so a
+/// task chained after one never starts.
 fn run_operations(task: Task<Message>) -> Vec<Box<dyn iced::advanced::widget::Operation>> {
     use iced::futures::StreamExt;
-    let Some(stream) = iced_runtime::task::into_stream(task) else {
+    let Some(mut stream) = iced_runtime::task::into_stream(task) else {
         return Vec::new();
     };
-    iced::futures::executor::block_on(stream.collect::<Vec<_>>())
-        .into_iter()
-        .filter_map(|action| match action {
-            iced_runtime::Action::Widget(operation) => Some(operation),
-            _ => None,
-        })
-        .collect()
+    let mut operations = Vec::new();
+    iced::futures::executor::block_on(async {
+        while let Some(Some(action)) = iced::futures::FutureExt::now_or_never(stream.next()) {
+            if let iced_runtime::Action::Widget(operation) = action {
+                operations.push(operation);
+            }
+        }
+    });
+    operations
+}
+
+/// Runs `task` against `laid` the way the runtime does, answering each
+/// widget operation as it comes so chained work follows, and returns the
+/// messages it sent.
+fn drive(laid: &mut crate::layout_probe::Laid<'_, Message>, task: Task<Message>) -> Vec<Message> {
+    use iced::futures::StreamExt;
+    let Some(mut stream) = iced_runtime::task::into_stream(task) else {
+        return Vec::new();
+    };
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let mut messages = Vec::new();
+    runtime.block_on(async {
+        while let Ok(Some(action)) =
+            tokio::time::timeout(std::time::Duration::from_millis(500), stream.next()).await
+        {
+            match action {
+                iced_runtime::Action::Output(message) => messages.push(message),
+                iced_runtime::Action::Widget(operation) => laid.run(operation),
+                _ => {}
+            }
+        }
+    });
+    messages
 }
 
 #[test]
@@ -474,7 +504,8 @@ fn the_popup_opened_from_the_keyboard_sits_under_the_filters_button() {
         iced::Point::new(button.x - 4.0, button.y + button.height)
     );
     // Focus moves to the first row, so Enter toggles it instead of closing.
-    let mut laid = focus_after(&app, run_operations(Task::batch(focus)));
+    let mut laid = crate::layout_probe::lay_out(app.view(), iced::Size::new(1200.0, 800.0));
+    drive(&mut laid, Task::batch(focus));
     assert_eq!(
         laid.focused(),
         [iced::widget::Id::new("library-filter-source-gog")]
@@ -759,4 +790,117 @@ fn down_from_the_search_box_on_an_empty_grid_changes_nothing() {
         true,
     ));
     assert_eq!(app.selected.as_deref(), Some("notepad"));
+}
+
+/// The popup's scroll offset and the focused row's bounds, in a short window
+/// after `keys` presses of `named`.
+fn after_keys(app: &mut App, named: Named, keys: usize) -> (f32, Rectangle, Rectangle) {
+    // Arrow keys don't change the app, so their tasks can be taken first and
+    // run in order against one laid out window that keeps its focus.
+    let open = filter(app, Event::ToggleMenuFromKeyboard);
+    let mut opened = Vec::new();
+    for message in answers(app, open) {
+        opened.push(app.update(message));
+    }
+    let presses: Vec<Task<Message>> = (0..keys)
+        .map(|_| {
+            app.update(Message::Key(
+                Key::Named(named),
+                Modifiers::empty(),
+                iced::event::Status::Ignored,
+            ))
+        })
+        .collect();
+    let app = &*app;
+    let mut laid = crate::layout_probe::lay_out(app.view(), app.window_size);
+    drive(&mut laid, Task::batch(opened));
+    for task in presses {
+        drive(&mut laid, task);
+    }
+    let offset = laid
+        .offsets()
+        .into_iter()
+        .rev()
+        .find(|offset| *offset > 0.0);
+    let focused = laid.focused();
+    assert_eq!(focused.len(), 1);
+    let found = std::sync::Arc::new(std::sync::Mutex::new(None));
+    let sink = found.clone();
+    let viewport = crate::layout_probe::probe(&mut app.view(), app.window_size)
+        .scrollables
+        .into_iter()
+        .map(|(viewport, _)| viewport)
+        .find(|viewport| viewport.width < ACTION_MENU_WIDTH)
+        .expect("the popup scrolls");
+    struct Focused(std::sync::Arc<std::sync::Mutex<Option<Rectangle>>>);
+    impl iced::advanced::widget::Operation for Focused {
+        fn traverse(
+            &mut self,
+            operate: &mut dyn FnMut(&mut dyn iced::advanced::widget::Operation),
+        ) {
+            operate(self);
+        }
+        fn focusable(
+            &mut self,
+            _id: Option<&iced::widget::Id>,
+            bounds: Rectangle,
+            state: &mut dyn iced::advanced::widget::operation::Focusable,
+        ) {
+            if state.is_focused() {
+                *self.0.lock().unwrap() = Some(bounds);
+            }
+        }
+    }
+    laid.run(Box::new(Focused(sink)));
+    let row = found.lock().unwrap().expect("a row has focus");
+    (offset.unwrap_or(0.0), row, viewport)
+}
+
+#[test]
+fn keyboard_focus_scrolls_the_popup_to_the_focused_row() {
+    let (_root, mut app) = loaded();
+    app.window_size = iced::Size::new(1200.0, 260.0);
+    // Down to the last row, Clear filters, which needs a filter on.
+    let _ = filter(&mut app, Event::ToggleTag("tool".into()));
+    let rows = app.filter_menu_ids().len();
+    let (offset, row, viewport) = after_keys(&mut app, Named::ArrowDown, rows - 1);
+    assert!(offset > 0.0, "the popup scrolled");
+    // Content bounds don't move with the scroll, so the row's place in the
+    // viewport is its bounds less the offset.
+    let top = row.y - offset;
+    assert!(top >= viewport.y - 0.5, "{row:?} {viewport:?} {offset}");
+    assert!(
+        top + row.height <= viewport.y + viewport.height + 0.5,
+        "{row:?} {viewport:?} {offset}"
+    );
+
+    // Wrapping around to the first row scrolls back up to it.
+    let last = offset;
+    let _ = filter(&mut app, Event::CloseMenu);
+    let (offset, row, viewport) = after_keys(&mut app, Named::ArrowDown, rows);
+    assert!(offset < last, "{offset}");
+    assert!(
+        row.y - offset >= viewport.y - 0.5,
+        "{row:?} {viewport:?} {offset}"
+    );
+}
+
+#[test]
+fn keyboard_focus_scrolls_the_sort_menu_in_a_short_window() {
+    let (_root, mut app) = loaded();
+    app.window_size = iced::Size::new(1200.0, 160.0);
+    let _ = app.update(Message::Sort(crate::sort_control::Event::ToggleMenu));
+    // Up from no focus goes to the last row, Favorites first.
+    let task = app.update(Message::Key(
+        Key::Named(Named::ArrowUp),
+        Modifiers::empty(),
+        iced::event::Status::Ignored,
+    ));
+    let mut laid = crate::layout_probe::lay_out(app.view(), app.window_size);
+    drive(&mut laid, task);
+    assert_eq!(
+        laid.focused(),
+        [iced::widget::Id::new("library-sort-favorites-first")]
+    );
+    assert!(laid.offsets().iter().any(|offset| *offset > 0.0));
 }

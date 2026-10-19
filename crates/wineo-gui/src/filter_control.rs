@@ -17,6 +17,7 @@ use crate::{App, Message, focus_button};
 pub(crate) const FILTER_BUTTON_ID: &str = "library-filters";
 const SHOW_HIDDEN_ID: &str = "library-filter-show-hidden";
 const CLEAR_ID: &str = "library-filter-clear";
+const MENU_SCROLL_ID: &str = "library-filter-menu";
 /// What the popup's placement assumes it needs at least, so a pointer near
 /// the bottom of a short window still leaves room for a few rows.
 const MIN_HEIGHT: f32 = 200.0;
@@ -197,7 +198,7 @@ fn open_menu(app: &mut App, position: Point) -> Task<Message> {
     // Focus moves into the popup, so a second Enter or Space toggles a row
     // instead of closing it again.
     let first = app.filter_menu_ids().swap_remove(0);
-    iced::widget::operation::focus(iced::widget::Id::from(first))
+    crate::library_menu::focus(first, MENU_SCROLL_ID)
 }
 
 /// Keys while the popup is open: Escape closes it, Tab and the up and down
@@ -212,8 +213,7 @@ pub(crate) fn key(app: &mut App, key: &Key, modifiers: Modifiers) -> Task<Messag
         Key::Named(Named::Tab | Named::ArrowDown | Named::ArrowUp) => {
             let reverse = *key == Key::Named(Named::ArrowUp)
                 || (*key == Key::Named(Named::Tab) && modifiers.shift());
-            iced::advanced::widget::operate(focus_button::cycle(&app.filter_menu_ids(), reverse))
-                .discard()
+            crate::library_menu::cycle(&app.filter_menu_ids(), reverse, MENU_SCROLL_ID)
         }
         _ => Task::none(),
     }
@@ -370,11 +370,15 @@ impl App {
                 CLEAR_ID,
                 clear_message,
             ));
-        let menu = container(scrollable(rows).wineo_style(palette))
-            .padding(ACTION_MENU_PADDING)
-            .width(ACTION_MENU_WIDTH)
-            .max_height(max_height)
-            .style(move |_| crate::library_menu::surface_style(palette));
+        let menu = container(
+            scrollable(rows)
+                .id(iced::widget::Id::new(MENU_SCROLL_ID))
+                .wineo_style(palette),
+        )
+        .padding(ACTION_MENU_PADDING)
+        .width(ACTION_MENU_WIDTH)
+        .max_height(max_height)
+        .style(move |_| crate::library_menu::surface_style(palette));
         crate::library_menu::layers(menu.into(), position, Message::Filter(Event::CloseMenu))
     }
 }

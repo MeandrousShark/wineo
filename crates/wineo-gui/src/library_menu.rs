@@ -132,6 +132,103 @@ pub(crate) fn bounds_of(
     }
 }
 
+/// Focuses `id`, then scrolls `scroll` so it's in view.
+pub(crate) fn focus(id: impl Into<iced::widget::Id>, scroll: &'static str) -> Task<Message> {
+    iced::widget::operation::focus(id.into())
+        .chain(iced::advanced::widget::operate(reveal_focused(scroll)).discard())
+}
+
+/// Moves keyboard focus through `ids` like `focus_button::cycle`, then
+/// scrolls the menu's `scroll` so the focused row is in view, since a short
+/// window or a long list leaves rows below the visible part.
+pub(crate) fn cycle<S: AsRef<str> + 'static>(
+    ids: &[S],
+    reverse: bool,
+    scroll: &'static str,
+) -> Task<Message> {
+    iced::advanced::widget::operate(focus_button::cycle(ids, reverse))
+        .discard()
+        .chain(iced::advanced::widget::operate(reveal_focused(scroll)).discard())
+}
+
+/// Scrolls the scrollable `scroll` just enough to show the focused control
+/// inside it.
+pub(crate) fn reveal_focused(scroll: &'static str) -> impl iced::advanced::widget::Operation {
+    use iced::advanced::widget::operation::{Focusable, Outcome, Scrollable, scrollable};
+
+    struct Reveal {
+        id: iced::widget::Id,
+        /// The viewport, the content, and the current offset.
+        view: Option<(Rectangle, Rectangle, f32)>,
+        focused: Option<Rectangle>,
+    }
+
+    impl iced::advanced::widget::Operation for Reveal {
+        fn traverse(
+            &mut self,
+            operate: &mut dyn FnMut(&mut dyn iced::advanced::widget::Operation),
+        ) {
+            operate(self);
+        }
+
+        fn scrollable(
+            &mut self,
+            id: Option<&iced::widget::Id>,
+            bounds: Rectangle,
+            content_bounds: Rectangle,
+            translation: iced::Vector,
+            _state: &mut dyn Scrollable,
+        ) {
+            if id == Some(&self.id) {
+                self.view = Some((bounds, content_bounds, translation.y));
+            }
+        }
+
+        fn focusable(
+            &mut self,
+            _id: Option<&iced::widget::Id>,
+            bounds: Rectangle,
+            state: &mut dyn Focusable,
+        ) {
+            if state.is_focused() {
+                self.focused = Some(bounds);
+            }
+        }
+
+        fn finish(&self) -> Outcome<()> {
+            let (Some((viewport, content, offset)), Some(row)) = (self.view, self.focused) else {
+                return Outcome::None;
+            };
+            // Focus outside the menu isn't the menu's to reveal.
+            let start = row.y - content.y;
+            let end = start + row.height;
+            if start < 0.0 || end > content.height + 0.5 {
+                return Outcome::None;
+            }
+            let target = if start < offset {
+                start
+            } else if end > offset + viewport.height {
+                end - viewport.height
+            } else {
+                return Outcome::None;
+            };
+            Outcome::Chain(Box::new(scrollable::scroll_to(
+                self.id.clone(),
+                iced::widget::scrollable::AbsoluteOffset {
+                    x: None,
+                    y: Some(target),
+                },
+            )))
+        }
+    }
+
+    Reveal {
+        id: iced::widget::Id::new(scroll),
+        view: None,
+        focused: None,
+    }
+}
+
 pub(crate) fn icon(bytes: &'static [u8], color: Color, size: f32) -> svg::Svg<'static> {
     svg(svg::Handle::from_memory(bytes))
         .width(size)

@@ -20,6 +20,7 @@ use crate::{App, Message, focus_button, rescan};
 pub(crate) const SORT_BUTTON_ID: &str = "library-sort";
 pub(crate) const DIRECTION_BUTTON_ID: &str = "library-sort-direction";
 const FAVORITES_FIRST_ID: &str = "library-sort-favorites-first";
+const MENU_SCROLL_ID: &str = "library-sort-menu";
 const NOTICE_TIME: std::time::Duration = std::time::Duration::from_secs(8);
 
 const ARROW_DOWN: &[u8] = br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><path d="M8 2.5v11M3.5 9l4.5 4.5L12.5 9" fill="none" stroke="#000" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>"##;
@@ -286,7 +287,7 @@ fn open_menu(app: &mut App, position: Point) -> Task<Message> {
     app.sort_menu_position = position;
     // Focus moves into the menu, so a second Enter or Space picks a row
     // instead of closing it again.
-    iced::widget::operation::focus(iced::widget::Id::new(row_id(app.query.sort)))
+    crate::library_menu::focus(row_id(app.query.sort), MENU_SCROLL_ID)
 }
 
 /// Keys while the menu is open: Escape closes it, Tab and the up and down
@@ -301,7 +302,7 @@ pub(crate) fn key(app: &mut App, key: &Key, modifiers: Modifiers) -> Task<Messag
         Key::Named(Named::Tab | Named::ArrowDown | Named::ArrowUp) => {
             let reverse = *key == Key::Named(Named::ArrowUp)
                 || (*key == Key::Named(Named::Tab) && modifiers.shift());
-            iced::advanced::widget::operate(focus_button::cycle(&menu_ids(), reverse)).discard()
+            crate::library_menu::cycle(&menu_ids(), reverse, MENU_SCROLL_ID)
         }
         _ => Task::none(),
     }
@@ -418,11 +419,16 @@ impl App {
                 FAVORITES_FIRST_ID,
                 Message::Sort(Event::ToggleFavoritesFirst),
             ));
-        let menu = container(scrollable(rows).wineo_style(palette).height(Fill))
-            .padding(ACTION_MENU_PADDING)
-            .width(ACTION_MENU_WIDTH)
-            .height(height)
-            .style(move |_| crate::library_menu::surface_style(palette));
+        let menu = container(
+            scrollable(rows)
+                .id(iced::widget::Id::new(MENU_SCROLL_ID))
+                .wineo_style(palette)
+                .height(Fill),
+        )
+        .padding(ACTION_MENU_PADDING)
+        .width(ACTION_MENU_WIDTH)
+        .height(height)
+        .style(move |_| crate::library_menu::surface_style(palette));
         crate::library_menu::layers(menu.into(), position, Message::Sort(Event::CloseMenu))
     }
 }
