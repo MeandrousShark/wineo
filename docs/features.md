@@ -9,9 +9,11 @@ The order the maintainer picked on 2026-10-14, after 0051. Each item gets
 its own plan when it comes up, and the rows below have the details.
 
 1. GUI library views, designed against a library that includes store games.
-2. GUI themes, after library views, so they cover every palette role.
-3. 1.0, once the [1.0 criteria](#10-criteria) are met.
-4. Release packages (deb, rpm, AppImage), shortly after 1.0.
+2. GUI polish, small touches gathered along the way, after library views
+   part 2 (maintainer, 2026-10-19).
+3. GUI themes, after library views, so they cover every palette role.
+4. 1.0, once the [1.0 criteria](#10-criteria) are met.
+5. Release packages (deb, rpm, AppImage), shortly after 1.0.
 
 Done from this queue: GOG Galaxy builds
 ([0052](plans/0052-galaxy-builds.md), 0.33.0 and 0.34.0), the 1.0 config
@@ -126,7 +128,8 @@ around the next milestone, 1.0:
 | Feature | Category | Priority | Depends on | Why | Notes |
 |---|---|---:|---|---|---|
 | GUI themes and customization | UX | **1** | 0036 | Let people make the app their own | From the maintainer's 0036 testing (2026-09-28): custom themes with a few presets, added with a GUI settings page. Longer term, a deeply customizable GUI. The palette tokens from 0036 are the starting point. Moved up to 1 by the maintainer (2026-10-14), to land before 1.0. |
-| GUI library views | UX | **1** | 0036 | Browse the library the way that fits the moment | Split by the maintainer into five plans (2026-10-17): 1) sorting, filters, favorites, and hidden games, [0054](plans/0054-library-sorting-and-favorites.md), released in 0.36.0; 2) grid zoom and the poster-only toggle; 3) list view; 4) saved presets and grouping; 5) coverflow with controller navigation. 0054's Series section keeps the ideas for each. Parts 1 and 2 land before 1.0; parts 3 to 5 can land in 1.x (maintainer, 2026-10-17). |
+| GUI library views | UX | **1** | 0036 | Browse the library the way that fits the moment | Split by the maintainer into five plans (2026-10-17): 1) sorting, filters, favorites, and hidden games, [0054](plans/0054-library-sorting-and-favorites.md), released in 0.36.0; 2) grid zoom and the poster-only toggle, [0055](plans/0055-grid-zoom-and-poster-only.md); 3) list view; 4) saved presets and grouping; 5) coverflow with controller navigation. 0054's Series section keeps the ideas for each. Parts 1 and 2 land before 1.0; parts 3 to 5 can land in 1.x (maintainer, 2026-10-17). |
+| GUI polish | UX | **1** | 0055 | Small touches that make the desktop app nicer to use, too small for a plan each | Queued by the maintainer after 0055 (2026-10-19), to collect small UI touches into one plan. First item: star a game from its poster on hover, with a clickable star in the top-right marks slot, outlined on hover and filled for a favorite, toggling without opening the panel (maintainer, 2026-10-18). That amends `gui-style.md`'s rule that poster marks aren't clickable; F, the panel star, and the menu stay for keyboards, touch, and controllers. |
 | GitHub mirror and CI | Distribution | **1** | | Publish wineo at 1.0 while the maintainer keeps working in Gitea | Gitea stays primary and push-mirrors to GitHub at 1.0, with Actions on outside PRs and tags. Details in the [sketch](sketches/github-mirror.md). |
 | Edit hooks in GUI Settings | UX | **2** | 0046 | Set a game's hooks without editing TOML or using `wineo set` | Left out of [0046](plans/0046-launch-hooks.md) by the maintainer (2026-10-06). The GUI already runs hooks. |
 | Bulk tagging | UX | **2** | 0033 | Add or remove a tag on many environments at once instead of one `wineo set` per environment | Suggested by the maintainer during 0045 acceptance (2026-10-07), mostly for the GUI. Today `tags=[...]` replaces the whole list, and GUI tags are edited one environment at a time in Settings. Likely shape: `wineo tag add TAG NAME...` and `wineo tag remove TAG NAME...`, plus multi-select in the Library with an add/remove tag action. The GUI part needs a design pass on how multi-select works with the grid and keyboard. |
