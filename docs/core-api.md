@@ -611,8 +611,12 @@ added it.
 - `library::load(paths) -> Library`: never fails. A missing file is an
   empty library. A file that can't be read, doesn't parse, or has an
   unsupported `schema_version` comes back empty with `problem` set
-  (`Problem::line` for a syntax error, `newer_version` for the schema
-  case), so a frontend can show a banner. A bad field falls back to its
+  (`Problem::line` for a syntax error, `newer_version` when a newer
+  wineo wrote it), so a frontend can show a banner. Only a
+  `schema_version` above 1 counts as newer, including in a file that
+  doesn't parse but still declares one; `0` or a wrong type is a broken
+  file that validate can repair. `load`, validate, and the write refusal
+  share that rule, so a banner and Checkup never disagree. A bad field falls back to its
   default without affecting the entry's other fields.
 - `set_favorite`, `set_hidden` (per environment) and `set_sort`,
   `set_descending`, `set_favorites_first` (the `[view]` table): each

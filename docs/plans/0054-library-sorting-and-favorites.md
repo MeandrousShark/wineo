@@ -860,6 +860,9 @@ places is part 2. Selection follows "Selection".
   and writes are refused, with the file left untouched. A later version
   may change what a field means, so an older wineo doesn't guess. A
   missing `schema_version` reads as 1, like the other config files.
+  Amended 2026-10-18 (step 4): only a higher version says "newer wineo";
+  `0` or a wrong type reads as a broken file that Checkup can repair, the
+  same rule validate uses (see "Filter and banner calls").
 - **Lifecycle warnings reach the GUI** (2026-10-17). Where a core
   lifecycle call (like creating a native environment) has no warning
   channel, step 1 adds one and the GUI shows it through its existing
@@ -978,6 +981,54 @@ places is part 2. Selection follows "Selection".
   a write stuck on a stalled drive keeps the process alive after the
   window closes. Step 3 bounds its own wait; the process exit is a
   backlog row ("Exit with background work stuck").
+- **Step 4 details** (2026-10-18):
+  - The filters (sources, tags, Show hidden) sit on `App` beside the sort
+    `Query`, are never saved, and never write `library.toml`. The order
+    cache's rebuild also counts what's shown, how many hidden games
+    would match, and how many are hidden, so the empty states cost
+    nothing per frame. The popup's source and tag lists are rebuilt only
+    when the cards change.
+  - The Sort menu and the Filters popup share one module for the
+    keyboard open request, the checks when its answer arrives, one menu
+    open at a time (the right-click menu included), and their chrome.
+  - Keyboard focus moving through a menu scrolls it just enough to show
+    the focused row, and to the top when the first row is focused and
+    fits there (found in review).
+  - The empty states sit over the grid area, at most 440 px wide and
+    clear of the docked panel, so the open panel doesn't jump when a
+    search empties the grid. Their buttons take keyboard focus.
+  - Down from the search box with nothing shown changes nothing, and
+    focus stays in the search box (found in review).
+  - Boot, explicit reloads, and rescans all carry the `library.toml`
+    problem, so the banner shows on the first frame and clears when the
+    file is fixed.
+  - A selected tag chip shows a check and the accent tint, so selection
+    doesn't rest on color alone, and the focus ring stays separate.
+- **Filter and banner calls** (maintainer, 2026-10-18), after seeing
+  step 4:
+  - `Filters (N)` counts chosen sources and tags. Search and Show hidden
+    don't count.
+  - The popup offers only the sources present in the library, A to Z,
+    and tags A to Z ignoring case.
+  - Clear filters clears search, sources, and tags, and leaves Show
+    hidden and the sort alone. A chosen source or tag that a rescan no
+    longer finds stays on and listed, so it can be unchecked.
+  - The no-matches state says "1 match is hidden" or "N matches are
+    hidden", keeping generic copy neutral.
+  - The banner reads `<the validate message>. Favorites and hiding are
+    off until it's fixed.` with **Open Checkup**. For a file a newer
+    wineo wrote, it ends "until then." with no button, since no repair
+    is offered.
+  - The banner and Checkup classify `schema_version` the same way: only
+    a higher version means a newer wineo wrote the file. Zero or a wrong
+    type is a repairable problem (found in step 4's work).
+- **Known limit: menu shadows in the software renderer** (maintainer,
+  2026-10-18). iced_tiny_skia 0.14.1 draws a quad's shadow without the
+  clip mask its fill uses, so a partial redraw greys a menu everywhere
+  but the changed row. It predates this plan (the right-click menu shows
+  it too) and wgpu is unaffected. It's fixed upstream but unreleased, so
+  it's a backlog row ("Menu shadows in the software renderer") rather
+  than a patched dependency.
 - **No older `library.toml` fixture yet** (2026-10-18). Schema 1 is the
   first, so step 1's upgrade fixtures cover a missing file only. An older
   file joins the upgrade fixtures with the first tagged set that has one.
