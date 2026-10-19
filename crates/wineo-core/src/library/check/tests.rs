@@ -160,3 +160,50 @@ fn a_newer_schema_version_is_found_in_a_file_that_does_not_parse() {
         assert!(!inspect_text(text).unreadable.unwrap().newer, "{text}");
     }
 }
+
+#[test]
+fn zoom_and_poster_only_are_known_view_keys() {
+    let inspection = inspect_text("schema_version = 1\n[view]\nzoom = 60\nposter_only = true\n");
+    assert_eq!(inspection.findings, []);
+    let inspection = inspect_text("[view]\nzoom = 200\nposter_only = false\n");
+    assert_eq!(inspection.findings, []);
+    let inspection = inspect_text("[view]\nzoom = 125\nzoom_steps = 3\n");
+    assert_eq!(
+        messages(&inspection, FindingKind::KeyUnknown),
+        ["library.toml: view.zoom_steps: unknown key, ignored"]
+    );
+    assert_eq!(
+        messages(&inspection, FindingKind::FieldInvalid),
+        [] as [String; 0]
+    );
+}
+
+#[test]
+fn bad_zoom_and_poster_only_values_are_reported_like_the_other_view_keys() {
+    let inspection = inspect_text(
+        r#"[view]
+zoom = 59
+poster_only = "yes"
+"#,
+    );
+    assert_eq!(
+        messages(&inspection, FindingKind::FieldInvalid),
+        [
+            "library.toml: view.zoom: expected a whole number from 60 to 200, found 59",
+            "library.toml: view.poster_only: expected true or false, found \"yes\"",
+        ]
+    );
+    for bad in ["201", "0", "-5", "1.25", "\"125\"", "true"] {
+        let inspection = inspect_text(&format!("[view]\nzoom = {bad}\n"));
+        assert_eq!(
+            messages(&inspection, FindingKind::FieldInvalid).len(),
+            1,
+            "{bad}"
+        );
+        assert_eq!(
+            messages(&inspection, FindingKind::KeyUnknown).len(),
+            0,
+            "{bad}"
+        );
+    }
+}

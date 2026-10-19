@@ -815,3 +815,34 @@ fn an_invalid_run_of_six_quotes_hides_no_header_from_its_entry() {
     assert!(library.environments["hades"].hidden);
     assert!(!library.environments.contains_key("ghost"));
 }
+
+#[test]
+fn repair_keeps_a_valid_zoom_and_poster_only_and_drops_invalid_ones() {
+    let fixture = Fixture::new();
+    fixture.write(
+        "schema_version = 1\n\n[view]\nzoom = 125\nposter_only = true\n\n[environments.hades]\nfavorite = true\nthis is broken\n",
+    );
+    repair_at(&fixture.paths, STAMP, sync_dir).unwrap().unwrap();
+    let text = fixture.read();
+    assert!(text.contains("zoom = 125"), "{text}");
+    assert!(text.contains("poster_only = true"), "{text}");
+    let view = load(&fixture.paths).view;
+    assert_eq!((view.zoom, view.poster_only), (125, true));
+
+    for bad in ["59", "201", "1.25", "\"125\"", "true"] {
+        let fixture = Fixture::new();
+        fixture.write(&format!(
+            "[view]\nzoom = {bad}\nposter_only = \"yes\"\ndescending = true\nthis is broken\n"
+        ));
+        let report = repair_at(&fixture.paths, STAMP, sync_dir).unwrap().unwrap();
+        assert_eq!(report.view, ViewRecovery::Partly, "{bad}");
+        let text = fixture.read();
+        assert!(!text.contains("zoom"), "{bad}: {text}");
+        assert!(!text.contains("poster_only"), "{bad}: {text}");
+        let view = load(&fixture.paths).view;
+        assert_eq!(
+            (view.zoom, view.poster_only, view.descending),
+            (100, false, true)
+        );
+    }
+}

@@ -58,11 +58,38 @@ impl SortKey {
     }
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+/// The grid's zoom in whole percent: any integer in range is valid, so the
+/// slider can rest anywhere.
+pub const ZOOM_MIN: u16 = 60;
+pub const ZOOM_MAX: u16 = 200;
+pub const ZOOM_DEFAULT: u16 = 100;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct View {
     pub sort: SortKey,
     pub descending: bool,
     pub favorites_first: bool,
+    pub zoom: u16,
+    pub poster_only: bool,
+}
+
+impl Default for View {
+    fn default() -> Self {
+        Self {
+            sort: SortKey::default(),
+            descending: false,
+            favorites_first: false,
+            zoom: ZOOM_DEFAULT,
+            poster_only: false,
+        }
+    }
+}
+
+/// A saved zoom, or None for a value that isn't an integer in range.
+fn read_zoom(item: &Item) -> Option<u16> {
+    item.as_integer()
+        .and_then(|value| u16::try_from(value).ok())
+        .filter(|value| (ZOOM_MIN..=ZOOM_MAX).contains(value))
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -279,6 +306,19 @@ pub fn set_favorites_first(paths: &Paths, favorites_first: bool) -> Result<bool>
     })
 }
 
+/// Out-of-range zooms clamp, so a caller never saves a value the reader
+/// would ignore.
+pub fn set_zoom(paths: &Paths, zoom: u16) -> Result<bool> {
+    let zoom = zoom.clamp(ZOOM_MIN, ZOOM_MAX);
+    edit(paths, |document| set_view_zoom(document, zoom))
+}
+
+pub fn set_poster_only(paths: &Paths, poster_only: bool) -> Result<bool> {
+    edit(paths, |document| {
+        set_view_bool(document, "poster_only", poster_only)
+    })
+}
+
 pub fn stamp_added(paths: &Paths, name: &str) -> Result<bool> {
     set_added(paths, name, Timestamp::now())
 }
@@ -430,6 +470,14 @@ fn read_library(document: &DocumentMut) -> Library {
                 .get("favorites_first")
                 .and_then(Item::as_bool)
                 .unwrap_or_default(),
+            zoom: table
+                .get("zoom")
+                .and_then(read_zoom)
+                .unwrap_or(ZOOM_DEFAULT),
+            poster_only: table
+                .get("poster_only")
+                .and_then(Item::as_bool)
+                .unwrap_or_default(),
         })
         .unwrap_or_default();
     let environments = document
@@ -527,6 +575,26 @@ fn set_view_bool(document: &mut DocumentMut, field: &str, value: bool) -> bool {
         return false;
     }
     store_value(view_table_mut(document), field, Value::from(value));
+    true
+}
+
+fn set_view_zoom(document: &mut DocumentMut, zoom: u16) -> bool {
+    let current = document
+        .get("view")
+        .and_then(Item::as_table_like)
+        .and_then(|table| table.get("zoom"));
+    let matches = match current {
+        None => zoom == ZOOM_DEFAULT,
+        Some(item) => read_zoom(item) == Some(zoom),
+    };
+    if matches {
+        return false;
+    }
+    store_value(
+        view_table_mut(document),
+        "zoom",
+        Value::from(i64::from(zoom)),
+    );
     true
 }
 

@@ -6,7 +6,9 @@ use std::fs;
 
 use toml_edit::{DocumentMut, Item, Key};
 
-use super::{ReadFailure, SCHEMA_VERSION, SortKey, edit, read_document};
+use super::{
+    ReadFailure, SCHEMA_VERSION, SortKey, ZOOM_MAX, ZOOM_MIN, edit, read_document, read_zoom,
+};
 use crate::paths::Paths;
 
 /// The file as a whole can't be used.
@@ -100,8 +102,12 @@ fn inspect_view(item: &Item, inspection: &mut Inspection) {
                 Some(name) if SortKey::from_str(name).is_some() => continue,
                 _ => sort_expected(),
             },
-            "descending" | "favorites_first" if value.as_bool().is_some() => continue,
-            "descending" | "favorites_first" => BOOL.to_owned(),
+            "descending" | "favorites_first" | "poster_only" if value.as_bool().is_some() => {
+                continue;
+            }
+            "descending" | "favorites_first" | "poster_only" => BOOL.to_owned(),
+            "zoom" if read_zoom(value).is_some() => continue,
+            "zoom" => format!("expected a whole number from {ZOOM_MIN} to {ZOOM_MAX}"),
             _ => {
                 inspection.findings.push(unknown(None, &path));
                 continue;

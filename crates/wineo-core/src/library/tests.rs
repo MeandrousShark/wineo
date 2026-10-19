@@ -572,3 +572,206 @@ fn a_comment_line_above_a_written_key_stays() {
     );
     assert!(text.contains("# my favorite\nfavorite = true"), "{text}");
 }
+
+fn zoom_of(fixture: &Fixture, text: &str) -> u16 {
+    fixture.write(&format!("schema_version = 1\n\n[view]\n{text}\n"));
+    load(&fixture.paths).view.zoom
+}
+
+#[test]
+fn zoom_and_poster_only_default_when_absent() {
+    let fixture = Fixture::new();
+    let view = load(&fixture.paths).view;
+    assert_eq!((view.zoom, view.poster_only), (100, false));
+    assert_eq!(view, View::default());
+    assert_eq!(ZOOM_DEFAULT, 100);
+
+    fixture.write("schema_version = 1\n\n[view]\nsort = \"name\"\n");
+    let view = load(&fixture.paths).view;
+    assert_eq!((view.zoom, view.poster_only), (100, false));
+}
+
+#[test]
+fn any_whole_zoom_in_range_reads_back() {
+    let fixture = Fixture::new();
+    for zoom in [60, 61, 99, 100, 125, 133, 199, 200] {
+        assert_eq!(zoom_of(&fixture, &format!("zoom = {zoom}")), zoom);
+    }
+    fixture.write("schema_version = 1\n\n[view]\nzoom = 75\nposter_only = true\n");
+    let view = load(&fixture.paths).view;
+    assert_eq!((view.zoom, view.poster_only), (75, true));
+}
+
+#[test]
+fn a_bad_zoom_reads_as_the_default_and_touches_no_other_field() {
+    let fixture = Fixture::new();
+    for text in [
+        "zoom = 59",
+        "zoom = 201",
+        "zoom = 0",
+        "zoom = -100",
+        "zoom = 70000",
+        "zoom = 1.25",
+        "zoom = 125.0",
+        "zoom = \"125\"",
+        "zoom = true",
+        "zoom = [125]",
+    ] {
+        assert_eq!(zoom_of(&fixture, text), 100, "{text}");
+    }
+
+    fixture.write(
+        "schema_version = 1\n\n[view]\nsort = \"playtime\"\nzoom = 500\ndescending = true\nposter_only = \"yes\"\nfavorites_first = true\n",
+    );
+    let library = load(&fixture.paths);
+    assert_eq!(library.problem, None);
+    assert_eq!(
+        library.view,
+        View {
+            sort: SortKey::Playtime,
+            descending: true,
+            favorites_first: true,
+            zoom: 100,
+            poster_only: false,
+        }
+    );
+
+    fixture.write("schema_version = 1\n\n[view]\nzoom = 150\nposter_only = 1\n");
+    let view = load(&fixture.paths).view;
+    assert_eq!((view.zoom, view.poster_only), (150, false));
+}
+
+#[test]
+fn set_zoom_writes_replaces_and_clamps() {
+    let fixture = Fixture::new();
+    assert!(set_zoom(&fixture.paths, 125).unwrap());
+    assert!(fixture.read().contains("zoom = 125"), "{}", fixture.read());
+    assert_eq!(load(&fixture.paths).view.zoom, 125);
+
+    assert!(set_zoom(&fixture.paths, 80).unwrap());
+    assert_eq!(load(&fixture.paths).view.zoom, 80);
+
+    assert!(set_zoom(&fixture.paths, 5000).unwrap());
+    assert_eq!(load(&fixture.paths).view.zoom, 200);
+    assert!(set_zoom(&fixture.paths, 0).unwrap());
+    assert_eq!(load(&fixture.paths).view.zoom, 60);
+    // Clamped to the value already saved is no change.
+    assert!(!set_zoom(&fixture.paths, 10).unwrap());
+
+    // A written default stays: only an absent key skips the write.
+    assert!(set_zoom(&fixture.paths, 100).unwrap());
+    assert!(fixture.read().contains("zoom = 100"), "{}", fixture.read());
+    assert!(!set_zoom(&fixture.paths, 100).unwrap());
+}
+
+#[test]
+fn set_zoom_replaces_a_bad_value_even_with_the_default() {
+    let fixture = Fixture::new();
+    for bad in ["59", "1.25", "\"125\"", "true", "-1"] {
+        fixture.write(&format!("schema_version = 1\n\n[view]\nzoom = {bad}\n"));
+        assert!(set_zoom(&fixture.paths, 100).unwrap(), "{bad}");
+        assert_eq!(fixture.read(), "schema_version = 1\n\n[view]\nzoom = 100\n");
+    }
+    fixture.write("schema_version = 1\n\n[view]\nzoom = \"125\"\n");
+    assert!(set_zoom(&fixture.paths, 125).unwrap());
+    assert_eq!(load(&fixture.paths).view.zoom, 125);
+}
+
+#[test]
+fn set_poster_only_writes_replaces_and_skips_no_ops() {
+    let fixture = Fixture::new();
+    assert!(!set_poster_only(&fixture.paths, false).unwrap());
+    assert!(!fixture.paths.library_file().exists());
+
+    assert!(set_poster_only(&fixture.paths, true).unwrap());
+    assert!(load(&fixture.paths).view.poster_only);
+    assert!(!set_poster_only(&fixture.paths, true).unwrap());
+
+    // A written default stays.
+    assert!(set_poster_only(&fixture.paths, false).unwrap());
+    assert!(
+        fixture.read().contains("poster_only = false"),
+        "{}",
+        fixture.read()
+    );
+    assert!(!set_poster_only(&fixture.paths, false).unwrap());
+
+    fixture.write("schema_version = 1\n\n[view]\nposter_only = \"yes\"\n");
+    assert!(set_poster_only(&fixture.paths, false).unwrap());
+    assert_eq!(
+        fixture.read(),
+        "schema_version = 1\n\n[view]\nposter_only = false\n"
+    );
+}
+
+#[test]
+fn zoom_and_poster_only_no_ops_leave_the_file_alone() {
+    let fixture = Fixture::new();
+    fixture
+        .write("# keep formatting\nschema_version = 1\n\n[view]\nzoom = 125\nposter_only = true\n");
+    let path = fixture.paths.library_file();
+    let before = fs::metadata(&path).unwrap().ino();
+    let bytes = fs::read(&path).unwrap();
+
+    assert!(!set_zoom(&fixture.paths, 125).unwrap());
+    assert!(!set_poster_only(&fixture.paths, true).unwrap());
+    assert_eq!(fs::read(&path).unwrap(), bytes);
+    assert_eq!(fs::metadata(&path).unwrap().ino(), before);
+
+    let absent = Fixture::new();
+    absent.write("# keep formatting\nschema_version = 1\n\n[view]\nsort = \"name\"\n");
+    let bytes = fs::read(absent.paths.library_file()).unwrap();
+    assert!(!set_zoom(&absent.paths, 100).unwrap());
+    assert!(!set_poster_only(&absent.paths, false).unwrap());
+    assert_eq!(fs::read(absent.paths.library_file()).unwrap(), bytes);
+}
+
+#[test]
+fn zoom_and_poster_only_edits_keep_comments_and_other_keys() {
+    let fixture = Fixture::new();
+    fixture.write(
+        "# my library\nschema_version = 1\n\n[view]\n# newest first\ndescending = true\nzoom = 90 # small\nfuture_view = \"kept\"\n\n[environments.hades]\n# my favorite\nfavorite = true\n",
+    );
+
+    assert!(set_zoom(&fixture.paths, 130).unwrap());
+    assert!(set_poster_only(&fixture.paths, true).unwrap());
+    let text = fixture.read();
+    assert!(
+        text.starts_with("# my library\nschema_version = 1\n"),
+        "{text}"
+    );
+    assert!(text.contains("# newest first\ndescending = true"), "{text}");
+    assert!(text.contains("zoom = 130 # small"), "{text}");
+    assert!(text.contains("future_view = \"kept\""), "{text}");
+    assert!(text.contains("poster_only = true"), "{text}");
+    assert!(text.contains("# my favorite\nfavorite = true"), "{text}");
+}
+
+#[test]
+fn zoom_and_poster_only_edits_leave_the_other_view_keys_alone() {
+    let fixture = Fixture::new();
+    assert!(set_order(&fixture.paths, SortKey::Playtime, true).unwrap());
+    assert!(set_favorites_first(&fixture.paths, true).unwrap());
+    assert!(set_zoom(&fixture.paths, 70).unwrap());
+    assert!(set_poster_only(&fixture.paths, true).unwrap());
+    assert_eq!(
+        load(&fixture.paths).view,
+        View {
+            sort: SortKey::Playtime,
+            descending: true,
+            favorites_first: true,
+            zoom: 70,
+            poster_only: true,
+        }
+    );
+}
+
+#[test]
+fn zoom_and_poster_only_edits_are_refused_on_a_broken_file() {
+    let fixture = Fixture::new();
+    let original = "schema_version = 1\n[view]\nzoom = 120\nthis is broken\n";
+    fixture.write(original);
+    assert!(set_zoom(&fixture.paths, 130).is_err());
+    assert!(set_poster_only(&fixture.paths, true).is_err());
+    assert_eq!(fixture.read(), original);
+}

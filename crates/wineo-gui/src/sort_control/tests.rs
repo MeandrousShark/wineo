@@ -539,6 +539,7 @@ fn each_control_writes_only_its_field() {
             sort: SortKey::Playtime,
             descending: true,
             favorites_first: false,
+            ..Default::default()
         }
     );
     assert!(saved.environments["hades"].favorite);
