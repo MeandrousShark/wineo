@@ -333,6 +333,31 @@ It's written for you, one field at a time, and never stops anything from
 launching. A bad value, like `favorite = "yes"`, counts as unset for that
 field only and stays in the file until you fix it or change that setting.
 
+```toml
+schema_version = 1
+
+[view]
+sort = "playtime"         # name, last-played, playtime, added, or source
+descending = true
+favorites_first = true
+
+[environments.hades]
+favorite = true
+added = 2026-10-18T19:30:00Z
+
+[environments.old-demo]
+hidden = true
+```
+
+`[view]` is the desktop app's saved sort: `sort` defaults to `name`, and
+`descending` and `favorites_first` to `false`. Filters and Show hidden
+aren't saved. Each `[environments.<name>]` entry is keyed by the
+environment's name. `favorite` and `hidden` default to `false`. `added` is
+when wineo created or imported it, a TOML datetime in UTC; environments
+made before wineo recorded it have none and sort last by date added. A
+clone starts with a fresh entry, a removed environment's entry is dropped
+(and kept with it in the trash), and a portable copy takes its entry along.
+
 When the file doesn't parse, or has a `schema_version` this wineo doesn't
 support, favorites and hidden games are off and every write to it is refused,
 so the file stays exactly as it is. `wineo validate --fix` or Checkup can

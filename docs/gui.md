@@ -64,7 +64,71 @@ the one Steam has, and its playtime is Steam's total, with `-` for sessions.
 The library refreshes every 2 seconds, so a game started or stopped from
 the CLI shows up without doing anything.
 
-Type in the search field to filter by desktop title or environment name.
+Type in the search field to filter by desktop title, environment name, or
+tag, so `rpg` finds games tagged `rpg`.
+
+### Sorting
+
+**Sort** beside the search field picks the order: Name (the title shown on
+the card), Last played, Playtime, Date added, or Source. The arrow button
+next to it flips the direction, and its tooltip names the order you have,
+like "Most played first" or "A to Z". **Favorites first**, at the bottom of
+the Sort menu, puts favorites ahead of everything else in the same order.
+
+A game with no date added (one made before wineo recorded it) or a playtime
+wineo can't read goes last in either direction. A game never played is a
+real value: it's least played and least recent. Ties go to the title,
+A to Z.
+
+The sort, its direction, and Favorites first are saved in `library.toml`
+(see [Library state](config-files.md#library-state)), so the next launch
+opens the same way. A window keeps its own order while it's open, even if
+another window changes the saved one. If the save fails, the window keeps
+the order you picked and says why.
+
+### Filters and hidden games
+
+**Filters** opens a popup with the sources in your library (GOG, Steam,
+Native, Windows, and so on), your tags, **Show hidden**, and **Clear
+filters**. Checking sources or tags keeps the games that match any of them;
+the button counts them, as in **Filters (2)**. Clear filters clears the
+search, sources, and tags, and leaves the sort and Show hidden alone.
+Filters and Show hidden start fresh at every launch.
+
+A hidden game leaves the grid and search. Show hidden brings it back
+dimmed, with a crossed-out eye on its poster, so you can unhide it.
+
+### Favorites
+
+Star a game with the star beside its title in the panel, **Add to
+favorites** in its right-click menu, or `F` on the selected card. Favorites
+show a star on the poster. Hide a game with **Hide** in the same menu; there's
+no key for it, since the game disappears. Both save to `library.toml` right
+away. If a save fails, the card goes back to what's saved and a notice says
+why, like `Couldn't hide Hades: ...`.
+
+### When nothing shows
+
+An empty grid always says why, so it never looks like a deleted library:
+
+- **Nothing matches your filters**, with **Clear filters**, when a search
+  or filter rules everything out. If hidden games would match, it says so,
+  as in "2 matches are hidden", with **Show hidden** beside it.
+- **Everything here is hidden**, with the count and **Show hidden**, when
+  every game is hidden.
+- **Your library is empty**, with **Add something**, when there's nothing
+  yet.
+
+The buttons can be reached with Tab.
+
+### A library.toml that can't be read
+
+If `library.toml` doesn't parse, a banner above the grid names the problem
+and its line, says favorites and hiding are off until it's fixed, and
+offers **Open Checkup**, where it can be repaired. Every game still shows
+and launches, without stars or hidden flags. A file written by a newer
+wineo gets the same banner without the button, since the fix is updating
+wineo. The banner clears on its own once the file reads again.
 
 ## The detail panel
 
@@ -189,7 +253,9 @@ If wineo lost track of a run, for example after a crash, the error has a
 **Settings** opens the environment's settings page, and **Art** opens its
 [Art](#art) page.
 
-The detail actions menu and each card's right-click menu also offer
+Each card's right-click menu starts with **Add to favorites** (or
+**Remove from favorites**) and **Hide** (or **Unhide**). The detail actions
+menu and the right-click menu also offer
 **Settings**, **Art...**, **Clone**, **Check for problems**, and
 **Remove...**. Cloning
 has a review page; Wine clones copy the prefix and art, while native clones
@@ -691,7 +757,8 @@ portable folder leaves them alone.
 | Key | Does |
 |---|---|
 | Arrow keys | Move between cards |
-| Enter | Open the panel, or play when it's open |
+| Enter | Open the panel, or play when it's open (only for a card that's shown) |
+| F | Add the selected card to favorites, or remove it (only for a card that's shown) |
 | Esc | Close the log, version picker, or results, then the panel, then clear the search |
 | `/` or Ctrl+F | Search |
 | Ctrl+N | Open Add (Library only) |
@@ -704,6 +771,15 @@ portable folder leaves them alone.
 
 The mouse Back button does whatever Esc does on the current page, here and
 in every table below. Forward does nothing.
+
+In the Sort menu and the Filters popup, which take every key while open:
+
+| Key | Does |
+|---|---|
+| Enter, Space (on Sort or Filters) | Open the menu under its button, on the current choice |
+| Arrow keys, Tab, Shift+Tab | Move between rows |
+| Enter, Space | Pick a sort, or toggle a check box or tag |
+| Esc | Close the menu and go back to its button |
 
 In the SteamGridDB picker:
 
@@ -745,3 +821,6 @@ the palette, spacing, control states, motion, and layout rules for future pages.
 ## Not yet
 
 - Gamepad navigation.
+- Grid zoom, a poster-only grid, a list view, saved filter presets, and
+  grouping (the later parts of the library views series in
+  [plan 0054](plans/0054-library-sorting-and-favorites.md#series)).

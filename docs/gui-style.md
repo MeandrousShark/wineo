@@ -18,8 +18,8 @@ and oversized preview posters are not implementation requirements.
   should support browsing without dominating the window.
 - Use the named default target's desktop title when available, with the
   environment identifier as the fallback. Keep the identifier visible as
-  muted context when the title differs. Search matches both; operations and
-  selection always use the identifier.
+  muted context when the title differs. Search matches both, and tags;
+  operations and selection always use the identifier.
 - Use a 420 px docked detail panel with a distinct surface, thin border, and
   subtle shadow. Keep hero art bounded and actions easy to reach.
 - Page titles use 22 px semibold text. Section headings use 16 px semibold;
@@ -84,7 +84,55 @@ color. Their popups use the same surface and corners, a subtle shadow, and a
 readable selected row. Reuse the native chooser behavior and preserve open
 and close callbacks. Context menus use quiet, full-width rows, separators
 between action groups, and a danger treatment for Remove. Bound long content
-to the window and keep the Close control reachable.
+to the window and keep the Close control reachable. A card's context menu
+grows to 600 px before it scrolls; the window bounds it below that.
+
+## Library toolbar and marks
+
+Plan [0054](plans/0054-library-sorting-and-favorites.md) added these.
+
+- The toolbar reads search, **Sort: <key>** with a chevron, a 32 px square
+  direction button, **Filters** (or **Filters (N)** with N chosen sources
+  and tags), then the accent **Add**. All are 32 px high.
+- Icons that Noto Sans lacks (arrows, chevron, check, star, crossed-out
+  eye, search) are inline SVGs tinted with palette tokens, never glyphs.
+- A tooltip is 13 px text padded 4 by 8 on the surface color, with a 1 px
+  border, 8 px corners, and a 6 px gap. Toolbar tooltips sit below their
+  button. The direction button's names the current order ("Most played
+  first", "A to Z").
+- The Sort menu and the Filters popup share the context menu's chrome,
+  248 px wide. Only one of them or the context menu is open at a time. A
+  click opens it at the pointer; Enter or Space opens it under its button.
+  It opens with focus on the current choice and takes every key while open:
+  Tab and the arrows move between rows, scrolling the menu just enough to
+  show the focused row (to the top for the first row), and Esc closes it and
+  returns focus to its button. The Filters popup grows with its content up
+  to the window's edge, then scrolls.
+- Check rows ("Favorites first", sources, "Show hidden (N)") use a drawn
+  16 px check box: a bordered square with 4 px corners, filled with the
+  primary color and a check in its ink color when on.
+- Tag chips are pills that wrap. A selected chip shows a check before its
+  label, a 15% primary tint, and a primary border, so selection never rests
+  on color alone. The keyboard focus ring stays a separate outline outside
+  the chip.
+- An empty grid shows one grouped surface over the grid area, at most
+  440 px wide and clear of the docked panel: a muted SVG icon, a 16 px
+  semibold heading, one muted line, and one accent action. A secondary
+  action, like **Show hidden** beside "2 matches are hidden", stays neutral.
+  Copy stays neutral ("matches", not "games").
+- A file problem that affects the whole library shows a warning-tinted,
+  rounded strip under the toolbar with the message and at most one neutral
+  action (**Open Checkup**). It clears itself when the problem does.
+- Poster marks sit in the poster's top-right corner: a 24 px round chip in
+  black at 55% opacity with a 14 px white icon, a star for a favorite and a
+  crossed-out eye for a hidden game, stacked when both apply. They aren't
+  clickable, and they don't change the card's size.
+- A hidden card shown with Show hidden on keeps its color art at 45%
+  opacity with a muted title; its marks stay at full strength. Grayscale
+  stays the not-installed signal.
+- The panel's star is a 32 px neutral button at the right of the title
+  (through `ends`): filled in the primary color for a favorite, an outline
+  in the foreground color otherwise, with a tooltip naming the action.
 
 ## Panel motion
 

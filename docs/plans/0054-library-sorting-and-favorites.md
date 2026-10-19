@@ -1283,7 +1283,50 @@ cleanly on the GPU renderer.
 - Cache: after each kind of failed write, the card and the cache match
   the file on disk.
 - Acceptance: a checklist the maintainer runs in a real window on a
-  throwaway library, written when the steps land.
+  throwaway library, written when the steps land (below).
+
+### Acceptance checklist
+
+Setup, from the repo: `scripts/generate-bench-library.sh ~/wineo-accept 40`
+and `scripts/generate-bench-library.sh ~/wineo-accept-3 3`, then
+`cargo build --release -p wineo-gui`. Run the app on a library with
+`bash -c '. ~/wineo-accept/env.sh && exec target/release/wineo-gui'` (or
+`wineo-accept-3`). Delete both folders when done. The performance check
+on real hardware was run on 2026-10-18 (see "After step 6").
+
+1. **Sort.** Try every key in both directions; the arrow's tooltip names
+   the order each time. Turn on Favorites first. Close and reopen: the
+   sort, direction, and Favorites first come back.
+2. **Keyboard menus.** Tab to Sort and press Enter: the menu opens under
+   the button on the current key. Arrows and Tab move, Esc closes and
+   returns to the button. The same for Filters.
+3. **Filters.** Check a source and a tag: the grid narrows to games
+   matching either, the button says **Filters (2)**, and the chips read
+   as selected. Clear filters clears them and the search. Close and
+   reopen: filters are off.
+4. **Search by tag.** Type a tag, like `indie`: games with that tag show.
+5. **Favorites.** Star one game from the panel's star, one from the
+   right-click menu, and one with `F`. Each poster shows a star. Close and
+   reopen: they're still starred.
+6. **Hide.** Select a game in the middle of a row and hide it from the
+   right-click menu: it leaves, and the card that took its place is
+   selected. Turn on Show hidden: it's back, dimmed, with the crossed-out
+   eye; unhide it from its menu.
+7. **Empty states.** Search for `zzz`: "Nothing matches your filters" with
+   Clear filters. Search for a hidden game's name: it also says "1 match
+   is hidden" with Show hidden. In `wineo-accept-3`, hide all three:
+   "Everything here is hidden" with Show hidden.
+8. **Broken file.** With the app open, edit
+   `~/wineo-accept/.config/wineo/library.toml` and change a `favorite = true`
+   to `favorite = tru`. Within a few seconds the banner names the line,
+   stars disappear, and every game still shows. Open Checkup and repair:
+   the banner clears and a `library.toml.broken-<time>` copy sits beside
+   the file.
+9. **Look.** Repeat a few of the above in your desktop's other palette
+   (light or dark): menus, chips, check boxes, poster marks, the banner,
+   and the empty states read well in both.
+10. **Feel.** On your normal session, sorting, filtering, starring, and
+    hiding feel instant, and scrolling stays smooth.
 
 ## Scope limits
 
