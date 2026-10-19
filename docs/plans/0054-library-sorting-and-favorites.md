@@ -1371,6 +1371,34 @@ toolbar after **Filters**, which squeezes the search box in a small
 window. C: only an x on the **Filters** button. Recommendation: **A**,
 with screenshots before it's final.
 
+Answered by the maintainer (2026-10-18): **A1 A, A2 A, A3 A.** For A4,
+the maintainer drew a mockup instead: a small tab hanging from the bottom
+of **Filters**, like a phone's notch, over the gap between the toolbar and
+the grid so it doesn't push the grid down. Each filter is a chip with a
+small x, and one larger x at the tab's right end clears them all, with no
+extra text. A controller way to reach the x's is a later problem
+(coverflow, part 5). Calls made while building it, for review with the
+screenshots:
+
+- The tab grows to the right as filters are added. When the chips don't
+  fit before the window's edge, or the docked panel when it's open, the
+  last chip becomes **+N**, which opens the Filters popup.
+- The large x clears what the tab shows (stores, platforms, and tags) and
+  leaves the search alone, since the search isn't in the tab. The popup's
+  **Clear filters** still clears the search too.
+- Each x has a tooltip ("Remove filter: GOG", "Clear all filters") and
+  takes keyboard focus in order after **Filters**.
+- Steam games have no platform, since Steam doesn't say whether it runs
+  them under Proton, so they match no Platform filter.
+
+8. **Acceptance changes.** A1: picking a sort key sets its natural
+   direction and saves both. A2: Source leaves the Sort menu and
+   `SortKey`; a saved `source` reads as Name. A3: Store and Platform
+   groups in the Filters popup and the filter model, from core's `Source`
+   (`store` and `native`, Steam games without a platform), with the
+   button's count over both groups and tags. A4: the filter tab. Then the
+   docs and the acceptance checklist follow.
+
 ## Scope limits
 
 - No zoom, poster-only, list view, presets, grouping, sections, coverflow,
