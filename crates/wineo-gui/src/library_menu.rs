@@ -154,94 +154,120 @@ pub(crate) fn cycle<S: AsRef<str> + 'static>(
 /// Scrolls the scrollable `scroll` just enough to show the focused control
 /// inside it.
 pub(crate) fn reveal_focused(scroll: &'static str) -> impl iced::advanced::widget::Operation {
-    use iced::advanced::widget::operation::{Focusable, Outcome, Scrollable, scrollable};
-
-    struct Reveal {
-        id: iced::widget::Id,
-        /// The viewport, the content, and the current offset.
-        view: Option<(Rectangle, Rectangle, f32)>,
-        focused: Option<Rectangle>,
-        /// The top of every focusable control, to find the menu's first row.
-        tops: Vec<f32>,
-    }
-
-    impl iced::advanced::widget::Operation for Reveal {
-        fn traverse(
-            &mut self,
-            operate: &mut dyn FnMut(&mut dyn iced::advanced::widget::Operation),
-        ) {
-            operate(self);
-        }
-
-        fn scrollable(
-            &mut self,
-            id: Option<&iced::widget::Id>,
-            bounds: Rectangle,
-            content_bounds: Rectangle,
-            translation: iced::Vector,
-            _state: &mut dyn Scrollable,
-        ) {
-            if id == Some(&self.id) {
-                self.view = Some((bounds, content_bounds, translation.y));
-            }
-        }
-
-        fn focusable(
-            &mut self,
-            _id: Option<&iced::widget::Id>,
-            bounds: Rectangle,
-            state: &mut dyn Focusable,
-        ) {
-            self.tops.push(bounds.y);
-            if state.is_focused() {
-                self.focused = Some(bounds);
-            }
-        }
-
-        fn finish(&self) -> Outcome<()> {
-            let (Some((viewport, content, offset)), Some(row)) = (self.view, self.focused) else {
-                return Outcome::None;
-            };
-            // Focus outside the menu isn't the menu's to reveal.
-            let start = row.y - content.y;
-            let end = start + row.height;
-            if start < 0.0 || end > content.height + 0.5 {
-                return Outcome::None;
-            }
-            // The first row takes the menu back to its top, so the header
-            // and the first section's label show with it.
-            let first = self
-                .tops
-                .iter()
-                .filter(|top| **top >= content.y && **top < content.y + content.height)
-                .all(|top| *top >= row.y);
-            let target = if first {
-                if offset <= 0.0 {
-                    return Outcome::None;
-                }
-                0.0
-            } else if start < offset {
-                start
-            } else if end > offset + viewport.height {
-                end - viewport.height
-            } else {
-                return Outcome::None;
-            };
-            Outcome::Chain(Box::new(scrollable::scroll_to(
-                self.id.clone(),
-                iced::widget::scrollable::AbsoluteOffset {
-                    x: None,
-                    y: Some(target),
-                },
-            )))
-        }
-    }
-
     Reveal {
         id: iced::widget::Id::new(scroll),
         view: None,
+        entering: false,
+        depth: 0,
         focused: None,
-        tops: Vec::new(),
+        first: None,
+    }
+}
+
+struct Reveal {
+    id: iced::widget::Id,
+    /// The viewport, the content, and the current offset.
+    view: Option<(Rectangle, Rectangle, f32)>,
+    /// The next traversal is into the target scrollable.
+    entering: bool,
+    /// How deep inside the target scrollable the traversal is.
+    depth: usize,
+    /// The focused control inside it.
+    focused: Option<Rectangle>,
+    /// The top of the first focusable control inside it.
+    first: Option<f32>,
+}
+
+impl iced::advanced::widget::Operation for Reveal {
+    fn traverse(&mut self, operate: &mut dyn FnMut(&mut dyn iced::advanced::widget::Operation)) {
+        // A scrollable reports itself, then traverses its content.
+        let entering = std::mem::take(&mut self.entering);
+        let inside = entering || self.depth > 0;
+        if inside {
+            self.depth += 1;
+        }
+        operate(self);
+        if inside {
+            self.depth -= 1;
+        }
+    }
+
+    fn scrollable(
+        &mut self,
+        id: Option<&iced::widget::Id>,
+        bounds: Rectangle,
+        content_bounds: Rectangle,
+        translation: iced::Vector,
+        _state: &mut dyn iced::advanced::widget::operation::Scrollable,
+    ) {
+        if self.depth == 0 && id == Some(&self.id) {
+            self.view = Some((bounds, content_bounds, translation.y));
+            self.entering = true;
+        }
+    }
+
+    fn focusable(
+        &mut self,
+        _id: Option<&iced::widget::Id>,
+        bounds: Rectangle,
+        state: &mut dyn iced::advanced::widget::operation::Focusable,
+    ) {
+        if self.depth == 0 {
+            return;
+        }
+        if self.first.is_none_or(|first| bounds.y < first) {
+            self.first = Some(bounds.y);
+        }
+        if state.is_focused() {
+            self.focused = Some(bounds);
+        }
+    }
+
+    fn finish(&self) -> iced::advanced::widget::operation::Outcome<()> {
+        use iced::advanced::widget::operation::{Outcome, scrollable};
+        let (Some((viewport, content, offset)), Some(row)) = (self.view, self.focused) else {
+            return Outcome::None;
+        };
+        let target = reveal_offset(
+            row.y - content.y,
+            row.height,
+            viewport.height,
+            offset,
+            self.first.is_some_and(|first| row.y <= first),
+        );
+        match target {
+            Some(target) if (target - offset).abs() > 0.25 => {
+                Outcome::Chain(Box::new(scrollable::scroll_to(
+                    self.id.clone(),
+                    iced::widget::scrollable::AbsoluteOffset {
+                        x: None,
+                        y: Some(target),
+                    },
+                )))
+            }
+            _ => Outcome::None,
+        }
+    }
+}
+
+/// Where to scroll so a row starting `start` into the content and `height`
+/// tall shows in a viewport `viewport` tall now scrolled to `offset`. The
+/// first row goes back to the top, header and all, when it fits there. A
+/// row taller than the viewport shows its top, so repeated reveals agree.
+fn reveal_offset(start: f32, height: f32, viewport: f32, offset: f32, first: bool) -> Option<f32> {
+    let end = start + height;
+    if first && end <= viewport {
+        return Some(0.0);
+    }
+    if height >= viewport {
+        return Some(start);
+    }
+    if start < offset {
+        Some(start)
+    } else if end > offset + viewport {
+        Some(end - viewport)
+    } else {
+        None
     }
 }
 
@@ -343,3 +369,6 @@ pub(crate) fn layers<'a>(
             .into(),
     ]
 }
+
+#[cfg(test)]
+mod tests;
