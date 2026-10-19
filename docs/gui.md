@@ -90,8 +90,9 @@ the order you picked and says why.
 
 **Filters** opens a popup with the sources in your library (GOG, Steam,
 Native, Windows, and so on), your tags, **Show hidden**, and **Clear
-filters**. Checking sources or tags keeps the games that match any of them;
-the button counts them, as in **Filters (2)**. Clear filters clears the
+filters**. Checked sources keep games from any of them, checked tags keep
+games with any of them, and with both, a game has to match each; the
+button counts them, as in **Filters (2)**. Clear filters clears the
 search, sources, and tags, and leaves the sort and Show hidden alone.
 Filters and Show hidden start fresh at every launch.
 

@@ -1300,9 +1300,10 @@ on real hardware was run on 2026-10-18 (see "After step 6").
 2. **Keyboard menus.** Tab to Sort and press Enter: the menu opens under
    the button on the current key. Arrows and Tab move, Esc closes and
    returns to the button. The same for Filters.
-3. **Filters.** Check a source and a tag: the grid narrows to games
-   matching either, the button says **Filters (2)**, and the chips read
-   as selected. Clear filters clears them and the search. Close and
+3. **Filters.** Check a source and a tag: the grid narrows to games from
+   that source with that tag, the button says **Filters (2)**, and the
+   chip reads as selected. A second tag widens it to games with either
+   tag. Clear filters clears them and the search. Close and
    reopen: filters are off.
 4. **Search by tag.** Type a tag, like `indie`: games with that tag show.
 5. **Favorites.** Star one game from the panel's star, one from the
