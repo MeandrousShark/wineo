@@ -124,13 +124,19 @@ impl<M> Laid<'_, M> {
     /// Hands `event` to the tree, with no cursor, and returns what it
     /// published.
     pub(crate) fn event(&mut self, event: &iced::Event) -> Vec<M> {
+        self.event_at(event, iced::mouse::Cursor::Unavailable)
+    }
+
+    /// Hands `event` to the tree with the cursor at `cursor`, and returns
+    /// what it published.
+    pub(crate) fn event_at(&mut self, event: &iced::Event, cursor: iced::mouse::Cursor) -> Vec<M> {
         let mut messages = Vec::new();
         let mut shell = iced::advanced::Shell::new(&mut messages);
         self.element.as_widget_mut().update(
             &mut self.tree,
             event,
             Layout::new(&self.node),
-            iced::mouse::Cursor::Unavailable,
+            cursor,
             &self.renderer,
             &mut iced::advanced::clipboard::Null,
             &mut shell,
