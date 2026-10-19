@@ -72,7 +72,7 @@ pub(crate) struct Toast {
 }
 
 impl Toast {
-    fn new(entry: Entry) -> Self {
+    pub(crate) fn new(entry: Entry) -> Self {
         let mut text = format!("Removed {} to the trash.", entry.name);
         if entry.prefix_left.is_some() && entry.prefix_present == Some(true) {
             text.push_str(" Prefix kept.");
@@ -205,6 +205,7 @@ pub(crate) fn delete_key(app: &mut App, search: bool, captured: bool) -> Task<Me
         && !app.version_visible()
         && !app.checkup_visible()
         && app.action_menu.is_none()
+        && !app.sort_menu
     {
         app.selected
             .clone()

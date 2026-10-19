@@ -60,10 +60,37 @@ impl App {
 
     pub(crate) fn search_changed(&mut self, search: String) -> Task<Message> {
         self.search = search;
+        self.reorder();
+        self.snap_grid();
+        self.scroll_to_top()
+    }
+
+    /// Applies a new sort. Like a search it snaps the cards to their new
+    /// slots, but the selection stays in view when it's shown.
+    pub(crate) fn resorted(&mut self) -> Task<Message> {
+        self.reorder();
+        self.snap_grid();
+        let shown = self
+            .selected
+            .as_ref()
+            .is_some_and(|name| self.filtered().iter().any(|card| &card.name == name));
+        if shown {
+            Task::batch([self.scroll_selection(), self.load_visible_art()])
+        } else {
+            self.scroll_to_top()
+        }
+    }
+
+    /// Puts every card in its new slot at once, with nothing in motion that
+    /// could report a stale position.
+    fn snap_grid(&mut self) {
         self.collapse.reset();
         self.grid_motion
             .snap(self.panel_open, self.filtered().len());
         self.grid_scroll_after_settle = None;
+    }
+
+    fn scroll_to_top(&mut self) -> Task<Message> {
         self.scroll_offset = 0.0;
         Task::batch([
             iced::widget::operation::scroll_to(

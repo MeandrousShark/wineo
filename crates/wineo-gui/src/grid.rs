@@ -13,12 +13,12 @@ use crate::ui::{self, ScrollStyle, secondary_button};
 use crate::wheel;
 use crate::{App, CARD_WIDTH, Message, SCROLL_ID, SEARCH_ID, WHEEL_STEP_SCALE};
 
-const ACTION_MENU_WIDTH: f32 = 248.0;
+pub(crate) const ACTION_MENU_WIDTH: f32 = 248.0;
 const ACTION_MENU_MAX_HEIGHT: f32 = 448.0;
-const ACTION_MENU_MARGIN: f32 = 8.0;
-const ACTION_MENU_PADDING: f32 = 12.0;
-const ACTION_MENU_SPACING: f32 = 4.0;
-const ACTION_MENU_HEADER_HEIGHT: f32 = 20.0;
+pub(crate) const ACTION_MENU_MARGIN: f32 = 8.0;
+pub(crate) const ACTION_MENU_PADDING: f32 = 12.0;
+pub(crate) const ACTION_MENU_SPACING: f32 = 4.0;
+pub(crate) const ACTION_MENU_HEADER_HEIGHT: f32 = 20.0;
 const INSTALL_BAR_HEIGHT: f32 = 4.0;
 const CARD_TITLE_SIZE: f32 = 14.0;
 pub(crate) const CARD_POSTER_HEIGHT: f32 = 240.0;
@@ -406,6 +406,14 @@ impl App {
                 .on_scroll(|_| Message::OverlayInput),
             ));
         }
+        if self.close_prompt && self.close_quietly {
+            return page
+                .push(iced::widget::opaque(
+                    mouse_area(Space::new().width(Fill).height(Fill))
+                        .on_scroll(|_| Message::OverlayInput),
+                ))
+                .into();
+        }
         if self.close_prompt {
             let message = if self.closing {
                 if self.feature_finishing() {
@@ -459,6 +467,10 @@ impl App {
                         }),
                 ))
                 .into();
+        }
+        if self.sort_menu_shown() {
+            let [backdrop, menu] = self.sort_menu_view();
+            return page.push(backdrop).push(menu).into();
         }
         if let Some(name) = &self.action_menu {
             let palette = self.palette;
@@ -928,7 +940,9 @@ impl App {
                         ..Font::DEFAULT
                     })
                     .color(palette.foreground),
-                search,
+                row![search, crate::sort_control::toolbar(self)]
+                    .spacing(8)
+                    .align_y(Center),
                 crate::ui::accent_control(
                     "Add",
                     palette.primary,
@@ -987,7 +1001,7 @@ fn text_width(content: &str) -> f32 {
     .width
 }
 
-fn menu_position(pointer: iced::Point, window: Size, menu_height: f32) -> iced::Point {
+pub(crate) fn menu_position(pointer: iced::Point, window: Size, menu_height: f32) -> iced::Point {
     iced::Point::new(
         (pointer.x + 4.0).clamp(
             ACTION_MENU_MARGIN,
@@ -1055,29 +1069,36 @@ fn context_menu_button(
         .height(ui::BUTTON_HEIGHT)
         .padding([0, 10])
         .on_press_maybe(message)
-        .style(move |_, status| {
-            let background = match status {
-                button::Status::Active | button::Status::Disabled => Color::TRANSPARENT,
-                button::Status::Hovered if danger => palette.danger.scale_alpha(0.12),
-                button::Status::Pressed if danger => palette.danger.scale_alpha(0.2),
-                button::Status::Hovered => palette.foreground.scale_alpha(0.06),
-                button::Status::Pressed => palette.primary.scale_alpha(0.16),
-            };
-            iced::widget::button::Style {
-                background: Some(background.into()),
-                text_color: if status == button::Status::Disabled {
-                    palette.muted
-                } else if danger {
-                    palette.danger
-                } else {
-                    palette.foreground
-                },
-                border: border::rounded(ui::CONTROL_RADIUS)
-                    .width(1)
-                    .color(Color::TRANSPARENT),
-                ..iced::widget::button::Style::default()
-            }
-        })
+        .style(move |_, status| context_menu_style(palette, danger, status))
+}
+
+/// A quiet menu row, with danger for Remove.
+pub(crate) fn context_menu_style(
+    palette: Palette,
+    danger: bool,
+    status: button::Status,
+) -> button::Style {
+    let background = match status {
+        button::Status::Active | button::Status::Disabled => Color::TRANSPARENT,
+        button::Status::Hovered if danger => palette.danger.scale_alpha(0.12),
+        button::Status::Pressed if danger => palette.danger.scale_alpha(0.2),
+        button::Status::Hovered => palette.foreground.scale_alpha(0.06),
+        button::Status::Pressed => palette.primary.scale_alpha(0.16),
+    };
+    iced::widget::button::Style {
+        background: Some(background.into()),
+        text_color: if status == button::Status::Disabled {
+            palette.muted
+        } else if danger {
+            palette.danger
+        } else {
+            palette.foreground
+        },
+        border: border::rounded(ui::CONTROL_RADIUS)
+            .width(1)
+            .color(Color::TRANSPARENT),
+        ..iced::widget::button::Style::default()
+    }
 }
 
 fn truncate_name(name: &str, max_width: f32) -> String {

@@ -36,6 +36,7 @@ mod layout_probe;
 mod library;
 mod logview;
 mod menu_anchor;
+mod order;
 mod panel;
 mod panel_motion;
 mod picker;
@@ -51,6 +52,7 @@ mod shortcuts;
 mod sidebar;
 mod size;
 mod snapshots_page;
+mod sort_control;
 mod spinner;
 mod task;
 #[cfg(test)]
@@ -112,6 +114,16 @@ pub(crate) struct App {
     search: String,
     search_focused: bool,
     cards: Vec<Card>,
+    /// How the library is sorted. The open window keeps its own, whatever
+    /// another window or process saves.
+    query: order::Query,
+    /// The shown order, rebuilt by `reorder`.
+    order: order::Order,
+    /// The sort menu is open.
+    sort_menu: bool,
+    sort_menu_position: iced::Point,
+    view_writes: sort_control::Writes,
+    sort_opening: sort_control::Opening,
     /// What `view` reads in place of the disk; see `prefix_facts`.
     facts: prefix_facts::Stored,
     pub(crate) selected: Option<String>,
@@ -206,12 +218,19 @@ pub(crate) struct App {
     action_menu_position: iced::Point,
     window_size: iced::Size,
     close_prompt: bool,
+    /// A close waiting only on sort writes, which shows no prompt.
+    close_quietly: bool,
     closing: bool,
     removal: Option<removal::Dialog>,
     remove_generation: u64,
     change: Option<removal::Change>,
     toast: Option<removal::Toast>,
     toast_wake: wake::Wake,
+    /// When a close waiting on sort writes gives up and exits anyway.
+    close_by: Option<Instant>,
+    close_wake: wake::Wake,
+    /// The window chose to exit, so late results only drop.
+    exiting: bool,
     feature_notice: Option<(String, Instant)>,
     change_generation: u64,
     library_generation: u64,
@@ -376,6 +395,9 @@ pub(crate) enum Message {
     Trash(trash_page::Event),
     Downloads(downloads_page::Event),
     Checkup(checkup::Event),
+    Sort(sort_control::Event),
+    /// The wait for sort writes on close is over, tagged with its wakeup.
+    CloseWaitOver(u64),
 }
 
 impl App {
@@ -386,6 +408,12 @@ impl App {
             search: String::new(),
             search_focused: false,
             cards: Vec::new(),
+            query: order::Query::default(),
+            order: order::Order::default(),
+            sort_menu: false,
+            sort_opening: sort_control::Opening::default(),
+            sort_menu_position: iced::Point::ORIGIN,
+            view_writes: sort_control::Writes::default(),
             facts: prefix_facts::Stored::default(),
             selected: None,
             panel_open: false,
@@ -464,12 +492,16 @@ impl App {
             action_menu_position: iced::Point::ORIGIN,
             window_size: iced::Size::new(1200.0, 800.0),
             close_prompt: false,
+            close_quietly: false,
             closing: false,
             removal: None,
             remove_generation: 0,
             change: None,
             toast: None,
             toast_wake: wake::Wake::default(),
+            close_by: None,
+            close_wake: wake::Wake::default(),
+            exiting: false,
             feature_notice: None,
             change_generation: 0,
             library_generation: 0,
@@ -481,6 +513,10 @@ impl App {
             checkups: HashMap::new(),
             check_generation: 0,
         };
+        // Read once, here, so the first cards already show in the saved
+        // order. A read takes no lock and never writes.
+        app.query = wineo_core::library::load(&app.paths).view.into();
+        app.reorder();
         let load = app.reload_library();
         let badge = app.reload_badge();
         let cache = app.paths.art_cache_dir();
@@ -626,6 +662,21 @@ impl App {
             self.refresh_facts();
         }
         self.settle_toast();
+        // Leaving the Library or opening anything over it closes the menu,
+        // so it doesn't come back on its own later.
+        if self.sort_menu && !self.sort_menu_shown() {
+            self.sort_menu = false;
+        }
+        // Whichever way a close got here, once only sort writes are left
+        // they get a bounded wait.
+        if self.closing
+            && !self.exiting
+            && self.close_by.is_none()
+            && !self.foreground_busy()
+            && self.view_writes.pending()
+        {
+            self.close_by = Some(Instant::now() + app_window::SORT_SAVE_WAIT);
+        }
         let focus = if poll_focus {
             self.poll_toast_focus()
         } else {
@@ -637,6 +688,7 @@ impl App {
                 .arm(self.scroll_visible_until, Message::ScrollIdle),
             self.toast_wake
                 .arm(self.next_toast_deadline(), Message::ToastTick),
+            self.close_wake.arm(self.close_by, Message::CloseWaitOver),
         ]);
         Task::batch([task, focus, wakes])
     }
@@ -663,6 +715,7 @@ impl App {
     /// Messages ignored while an overlay or the card collapse owns the input.
     fn message_blocked(&self, message: &Message) -> bool {
         if (self.flow.is_some()
+            || self.close_prompt
             || self.removal.is_some()
             || self.trash_confirm_open()
             || self.downloads_confirm_open()
@@ -702,7 +755,18 @@ impl App {
                             | checkup::Event::OpenInstallLog(_)
                             | checkup::Event::Environment(_)
                     )
-            ) || matches!(message, Message::Version(event) if event.is_input()))
+            ) || matches!(message, Message::Version(event) if event.is_input())
+                || matches!(message, Message::Sort(event) if event.is_input()))
+        {
+            return true;
+        }
+        // The sidebar shortcuts and Undo are taken before any key handler,
+        // so they're stopped here.
+        if self.sort_menu_shown()
+            && matches!(
+                message,
+                Message::Section(_) | Message::SectionClicked(_) | Message::Undo | Message::Add
+            )
         {
             return true;
         }
@@ -731,6 +795,7 @@ impl App {
             Message::Version(event) => version_picker::update(self, event),
             Message::Trash(event) => trash_page::update(self, event),
             Message::Downloads(event) => downloads_page::update(self, event),
+            Message::Sort(event) => sort_control::update(self, event),
             message @ (Message::Remove(_)
             | Message::RemovePrefix(_)
             | Message::RemoveSize(..)
@@ -896,6 +961,13 @@ impl App {
                 self.window_resized(size)
             }
             Message::Window(window::Event::CloseRequested) => self.close_requested(),
+            Message::CloseWaitOver(generation) => {
+                if self.close_wake.fired(generation) && self.close_by.is_some() {
+                    self.exit_now()
+                } else {
+                    Task::none()
+                }
+            }
             Message::Window(window::Event::Unfocused) => {
                 self.focused = false;
                 Task::none()
@@ -929,6 +1001,10 @@ impl App {
             }
             Message::Key(key, modifiers, _) if self.trash_confirm_open() => {
                 trash_page::key(self, &key, modifiers)
+            }
+            // Only the menu's own keys work while it's open.
+            Message::Key(key, modifiers, _) if self.sort_menu_shown() => {
+                sort_control::key(self, &key, modifiers)
             }
             Message::Key(key, modifiers, status) if self.flow.is_some() => {
                 self.flow_key(key, modifiers, status)?
@@ -978,6 +1054,8 @@ impl App {
             Message::GogUpdate(name) => self.gog_update_requested(name)?,
             Message::CloneEnvironment(name) => self.clone_environment(name)?,
             Message::Context(name) => {
+                self.sort_menu = false;
+                self.sort_opening.cancel();
                 self.action_menu_position = self.menu_anchor;
                 self.action_menu = if self.action_menu.as_deref() == Some(&name) {
                     None
@@ -1059,7 +1137,7 @@ impl App {
         } else {
             task
         };
-        if self.closing && !self.foreground_busy() {
+        if self.closing && !self.exit_waits() {
             task.chain(iced::exit())
         } else {
             task
@@ -1072,6 +1150,12 @@ impl App {
             Task::none()
         }
     }
+    /// What closing the window waits for: foreground work, and sort writes
+    /// that haven't reached the file yet.
+    fn exit_waits(&self) -> bool {
+        self.foreground_busy() || self.view_writes.pending()
+    }
+
     fn foreground_busy(&self) -> bool {
         self.filesystem_busy()
             || self.tools_busy()
@@ -1152,15 +1236,14 @@ impl App {
             );
         }
     }
+    /// The shown cards in shown order, from the cache `reorder` keeps.
     pub(crate) fn filtered(&self) -> Vec<&Card> {
-        let needle = self.search.to_lowercase();
-        self.cards
-            .iter()
-            .filter(|card| {
-                card.display_title.to_lowercase().contains(&needle)
-                    || card.name.to_lowercase().contains(&needle)
-            })
-            .collect()
+        self.order.shown(&self.cards, &self.search, self.query)
+    }
+
+    /// Rebuilds the shown order after the cards, search, or sort changed.
+    pub(crate) fn reorder(&mut self) {
+        self.order.rebuild(&self.cards, &self.search, self.query);
     }
     fn columns(&self) -> usize {
         grid_motion::columns_for_viewport(self.viewport_width, self.panel_open)

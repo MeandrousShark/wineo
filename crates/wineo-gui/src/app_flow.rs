@@ -113,7 +113,7 @@ impl App {
         result: Result<Vec<Card>, String>,
     ) -> Task<Message> {
         if self.closing {
-            return if self.foreground_busy() {
+            return if self.exit_waits() {
                 Task::none()
             } else {
                 iced::exit()
@@ -136,6 +136,7 @@ impl App {
             return checks;
         };
         self.search.clear();
+        self.reorder();
         if self.selected.as_deref() != Some(&name) {
             self.close_checkup();
         }

@@ -110,6 +110,34 @@ impl Watch {
         shown.revisions.library += 1;
     }
 
+    /// Rereads `library.toml` into the rescan's cache after a write, whether
+    /// it saved or not, so the cache never holds a value that wasn't saved.
+    /// Blocks while a scan reads, so only worker threads call it.
+    pub(crate) fn refresh_library(&self, paths: &Paths) {
+        self.0
+            .caches
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .library
+            .refresh(paths);
+    }
+
+    /// Holds the rescan's caches, as a stalled scan would.
+    #[cfg(test)]
+    pub(crate) fn hold_caches(&self) -> std::sync::MutexGuard<'_, RescanCaches> {
+        self.0.caches.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn library_reads(&self) -> usize {
+        self.0
+            .caches
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .library
+            .reads()
+    }
+
     pub(crate) fn show_problem(&self, problem: Option<Problem>) {
         self.shown().problem = problem;
     }
