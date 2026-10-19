@@ -199,8 +199,8 @@ The maintainer approved the plan on 2026-10-19.
   sort's notice. A drag saves once when it ends; a drag still unsaved when
   the window closes is saved by the close wait. Like the other `[view]`
   keys, a key that's absent isn't written while it holds its default, and
-  one already in the file stays and is updated. A window keeps its own zoom and poster-only
-  state while it's open, as it does the sort.
+  one already in the file stays and is updated. A window keeps its own
+  zoom and poster-only state while it's open, as it does the sort.
 
 ### Motion
 
