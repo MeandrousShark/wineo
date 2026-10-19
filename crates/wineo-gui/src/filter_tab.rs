@@ -175,11 +175,16 @@ impl App {
     }
 
     /// The tab shows over the Library while a store, platform, or tag
-    /// filter is on, once the Filters button has reported where it is.
+    /// filter is on, once the Filters button has reported where it is. It
+    /// stays away while a row under the toolbar shows, so it never covers a
+    /// warning, and when even +N and its x don't fit.
     pub(crate) fn filter_tab(&self) -> Option<Tab> {
         if self.filters.active() == 0
             || self.section != crate::sidebar::Section::Library
             || self.panel_hidden()
+            || self.change.is_some()
+            || self.library_problem.is_some()
+            || self.error.is_some()
         {
             return None;
         }
@@ -193,6 +198,9 @@ impl App {
             right - button.x - 2.0 * TAB_BORDER - TAB_PADDING_LEFT - TAB_PADDING_RIGHT - CLEAR_SIZE;
         let widths: Vec<f32> = chips.iter().map(|chip| chip_width(chip.label())).collect();
         let visible = fit(&widths, more_width, room);
+        if visible == 0 && more_width(chips.len()) + SPACING > room {
+            return None;
+        }
         Some(Tab {
             button,
             chips,

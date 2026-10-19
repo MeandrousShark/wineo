@@ -608,3 +608,84 @@ fn an_open_menu_keeps_the_tab_drawn_but_inert() {
         app.close_library_menus();
     }
 }
+
+/// Every filter on and the panel open, in a window `width` wide.
+fn with_panel(width: f32) -> App {
+    let mut app = loaded(width);
+    every_filter(&mut app);
+    let _ = app.update(Message::Select("balatro".into()));
+    app.panel_motion.snap(true);
+    placed(&mut app);
+    app
+}
+
+#[test]
+fn no_tab_when_even_more_and_its_x_dont_fit_before_the_panel() {
+    // At the default size the panel starts left of the Filters button's
+    // right edge.
+    let app = with_panel(1200.0);
+    assert!(app.filters.active() > 0);
+    assert!(app.filter_tab().is_none());
+    let probe = crate::layout_probe::probe(&mut app.view(), app.window_size);
+    assert_eq!(bounds_at(&probe.node, &[1]).width, 0.0);
+    assert_eq!(crate::filter_control::button_label(&app), "Filters (8)");
+}
+
+#[test]
+fn the_tab_shows_just_more_and_its_x_when_only_they_fit() {
+    let app = with_panel(1600.0);
+    let button = app.filter_button.unwrap();
+    let chips = app.filter_chips().len();
+    // The narrowest window whose cap leaves room for +8 and the x.
+    let width = button.x
+        + 2.0 * TAB_BORDER
+        + TAB_PADDING_LEFT
+        + TAB_PADDING_RIGHT
+        + CLEAR_SIZE
+        + more_width(chips)
+        + SPACING
+        + MARGIN
+        + crate::grid_motion::DOCK_WIDTH;
+    let mut app = app;
+    app.window_size.width = width;
+    let tab = app.filter_tab().expect("+N and the x fit");
+    assert_eq!((tab.visible, tab.hidden()), (0, chips));
+    let (right, more) = tab_extent(&app);
+    assert_eq!(more, Some(chips));
+    assert!(
+        right <= width - crate::grid_motion::DOCK_WIDTH - MARGIN,
+        "{right}"
+    );
+    app.window_size.width = width - 1.0;
+    assert!(app.filter_tab().is_none());
+}
+
+#[test]
+fn rows_under_the_toolbar_keep_the_tab_away() {
+    let root = tempfile::tempdir().unwrap();
+    let home = root.path().to_owned();
+    let paths = wineo_core::paths::Paths::from_lookup(move |key| {
+        (key == "HOME").then(|| home.as_os_str().to_owned())
+    })
+    .unwrap();
+    let mut app = App::boot(paths).0;
+    let _ = app.update(Message::Loaded(Ok(library())));
+    let _ = filter(&mut app, Event::ToggleTag("game".into()));
+    placed(&mut app);
+    assert!(app.filter_tab().is_some());
+
+    let file = app.paths.library_file();
+    std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+    std::fs::write(&file, "[environments.alpha\nfavorite = true\n").unwrap();
+    app.problem_read(wineo_core::library::load(&app.paths).problem);
+    assert!(app.library_banner().is_some());
+    assert!(app.filter_tab().is_none());
+    let mut laid = lay_out(app.view(), app.window_size);
+    assert!(tab_controls(&mut laid).is_empty());
+    drop(laid);
+    app.problem_read(None);
+    assert!(app.filter_tab().is_some());
+
+    app.error = Some("broken".into());
+    assert!(app.filter_tab().is_none());
+}
