@@ -786,6 +786,142 @@ mod tests {
     }
 
     #[test]
+    fn layout_scales_cards_and_posters_with_the_zoom() {
+        for (zoom, width, poster, art) in [
+            (60, 96.0, 144.0, Size::new(92.0, 140.0)),
+            (100, 160.0, 240.0, Size::new(156.0, 236.0)),
+            (200, 320.0, 480.0, Size::new(316.0, 476.0)),
+        ] {
+            let layout = GridLayout::new(zoom);
+            assert_eq!(layout.card_width(), width, "{zoom}");
+            assert_eq!(layout.poster_height(), poster, "{zoom}");
+            assert_eq!(layout.art_frame(), art, "{zoom}");
+        }
+        assert_eq!(GridLayout::default(), GridLayout::new(100));
+        // The widest art frame still fits the 320 x 480 grid decode.
+        let art = GridLayout::new(ZOOM_MAX).art_frame();
+        assert!(art.width <= 320.0 && art.height <= 480.0);
+    }
+
+    #[test]
+    fn layout_rounds_the_width_before_the_poster() {
+        // 116.8 rounds to 117, and the poster is 1.5 times that: 175.5.
+        let layout = GridLayout::new(73);
+        assert_eq!(layout.card_width(), 117.0);
+        assert_eq!(layout.poster_height(), 176.0);
+        // 219.2 rounds to 219, then 328.5 rounds up.
+        let layout = GridLayout::new(137);
+        assert_eq!(layout.card_width(), 219.0);
+        assert_eq!(layout.poster_height(), 329.0);
+        for zoom in ZOOM_MIN..=ZOOM_MAX {
+            let layout = GridLayout::new(zoom);
+            assert_eq!(layout.card_width().fract(), 0.0, "{zoom}");
+            assert_eq!(layout.poster_height().fract(), 0.0, "{zoom}");
+            assert_eq!(
+                layout.poster_height(),
+                (layout.card_width() * 1.5).round(),
+                "{zoom}"
+            );
+        }
+    }
+
+    #[test]
+    fn layout_clamps_zooms_outside_the_range() {
+        assert_eq!(GridLayout::new(0), GridLayout::new(ZOOM_MIN));
+        assert_eq!(GridLayout::new(59), GridLayout::new(ZOOM_MIN));
+        assert_eq!(GridLayout::new(201), GridLayout::new(ZOOM_MAX));
+        assert_eq!(GridLayout::new(u16::MAX), GridLayout::new(ZOOM_MAX));
+        assert_eq!(GridLayout::new(0).card_width(), 96.0);
+        assert_eq!(GridLayout::new(u16::MAX).card_width(), 320.0);
+    }
+
+    #[test]
+    fn tile_titles_scale_with_the_poster_inside_their_limits() {
+        assert_eq!(GridLayout::new(100).tile_title_size(), 14.0);
+        assert_eq!(GridLayout::new(60).tile_title_size(), 12.0);
+        assert_eq!(GridLayout::new(85).tile_title_size(), 12.0);
+        assert_eq!(GridLayout::new(120).tile_title_size(), 16.8);
+        assert_eq!(GridLayout::new(150).tile_title_size(), 18.0);
+        assert_eq!(GridLayout::new(200).tile_title_size(), 18.0);
+    }
+
+    #[test]
+    fn columns_follow_the_zoom_and_the_docked_panel() {
+        let at = |zoom| GridLayout::new(zoom);
+        // A column fits once the width reaches 2 * padding + n * card + (n - 1) * gap.
+        for (zoom, width, closed) in [
+            (100, 895.0, 4),
+            (100, 896.0, 5),
+            (100, 1000.0, 5),
+            (60, 575.0, 4),
+            (60, 576.0, 5),
+            (60, 1000.0, 8),
+            (200, 687.0, 1),
+            (200, 688.0, 2),
+            (200, 1000.0, 2),
+            (200, 100.0, 1),
+        ] {
+            assert_eq!(
+                columns_for_viewport(width, false, at(zoom)),
+                closed,
+                "{zoom}% at {width}"
+            );
+        }
+        for (zoom, width, open) in [
+            (100, 1325.0, 4),
+            (100, 1326.0, 5),
+            (60, 1006.0, 5),
+            (200, 1118.0, 2),
+            (200, 1117.0, 1),
+            (100, 400.0, 1),
+        ] {
+            assert_eq!(
+                columns_for_viewport(width, true, at(zoom)),
+                open,
+                "{zoom}% at {width} docked"
+            );
+        }
+    }
+
+    #[test]
+    fn slots_and_poster_bounds_follow_the_zoom() {
+        for (zoom, step) in [(60, 96.0 + GAP), (200, 320.0 + GAP)] {
+            let layout = GridLayout::new(zoom);
+            let card = Size::new(layout.card_width(), layout.poster_height() + 60.0);
+            let (points, height) = slots(&[card; 5], 2, layout);
+            let xs: Vec<f32> = points.iter().map(|point| point.x).collect();
+            assert_eq!(
+                xs,
+                [PADDING, PADDING + step, PADDING, PADDING + step, PADDING]
+            );
+            assert_eq!(points[2].y, PADDING + card.height + GAP);
+            assert_eq!(height, PADDING + 3.0 * card.height + 2.0 * GAP + PADDING);
+
+            let bounds = Rectangle::new(points[1], card);
+            let poster = poster_bounds(bounds, layout);
+            assert_eq!(poster.position(), points[1] + Vector::new(2.0, 2.0));
+            assert_eq!(poster.size(), layout.art_frame());
+            let look = Look::Loose {
+                position: bounds.position(),
+                rotation: 0.0,
+            };
+            let inside = poster.position() + Vector::new(poster.width - 1.0, poster.height - 1.0);
+            assert!(hit(look, bounds, inside, layout), "{zoom}");
+            let below = Point::new(poster.center().x, poster.y + poster.height + 4.0);
+            assert!(!hit(look, bounds, below, layout), "{zoom}");
+        }
+        // A point on a 200% poster's lower corner is outside the 60% one.
+        let corner = Point::new(PADDING + 300.0, PADDING + 400.0);
+        let card = Rectangle::new(Point::new(PADDING, PADDING), Size::new(320.0, 540.0));
+        let look = Look::Loose {
+            position: card.position(),
+            rotation: 0.0,
+        };
+        assert!(hit(look, card, corner, GridLayout::new(200)));
+        assert!(!hit(look, card, corner, GridLayout::new(60)));
+    }
+
+    #[test]
     fn slots_use_tallest_card_in_each_row() {
         let sizes = [
             Size::new(160.0, 280.0),

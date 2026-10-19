@@ -466,6 +466,30 @@ fn boot_applies_the_saved_view_without_writing() {
 }
 
 #[test]
+fn boot_applies_the_saved_zoom_to_the_grid() {
+    let root = tempfile::tempdir().unwrap();
+    let paths = paths(&root);
+    let app = App::boot(paths.clone()).0;
+    assert_eq!(app.zoom, 100);
+    assert_eq!(app.grid_layout().card_width(), 160.0);
+
+    let text = "[view]\nzoom = 150\n";
+    write_library(&paths, text);
+    let mut app = App::boot(paths.clone()).0;
+    assert_eq!(app.zoom, 150);
+    assert_eq!(app.grid_layout().card_width(), 240.0);
+    assert_eq!(app.grid_layout().poster_height(), 360.0);
+    // A library load reads the cards, not the view.
+    let _ = app.update(Message::Loaded(Ok(library())));
+    assert_eq!(app.zoom, 150);
+    assert_eq!(fs::read_to_string(paths.library_file()).unwrap(), text);
+
+    write_library(&paths, "[view]\nzoom = 300\n");
+    let app = App::boot(paths.clone()).0;
+    assert_eq!(app.zoom, 100);
+}
+
+#[test]
 fn a_saved_source_sort_boots_as_name_with_the_saved_direction() {
     let root = tempfile::tempdir().unwrap();
     let paths = paths(&root);

@@ -1245,6 +1245,213 @@ mod tests {
         );
     }
 
+    fn cards(count: usize) -> Vec<Card> {
+        (0..count)
+            .map(|index| {
+                crate::tests::card(
+                    &format!("game-{index:03}"),
+                    wineo_core::runtime::State::Inactive,
+                    60,
+                )
+            })
+            .collect()
+    }
+
+    #[test]
+    fn the_grid_lays_out_cards_at_the_zoomed_size() {
+        use crate::layout_probe::{bounds_at, layout};
+        let mut app = crate::tests::app();
+        app.merge(cards(6));
+        // At 100% the cards keep 0.36.0's places and sizes, and at 150%
+        // they scale with the gap and padding unchanged.
+        for (zoom, columns, xs, width, poster) in [
+            (100, 5, vec![16.0, 192.0, 368.0, 544.0, 720.0], 160.0, 240.0),
+            (150, 4, vec![16.0, 272.0, 528.0, 784.0], 240.0, 360.0),
+        ] {
+            app.zoom = zoom;
+            let grid = app.grid_layout();
+            assert_eq!(grid.card_width(), width);
+            let height = card_height(&app.cards[0], grid);
+            let mut view = app.grid();
+            let node = layout(&mut view, Size::new(1060.0, 2000.0));
+            for index in 0..6 {
+                let card = bounds_at(&node, &[index]);
+                let (row, column) = (index / columns, index % columns);
+                assert_eq!(card.x, xs[column], "{zoom}% card {index}");
+                assert_eq!(card.y, 16.0 + row as f32 * (height + 16.0), "{zoom}%");
+                assert_eq!(card.size(), Size::new(width, height), "{zoom}%");
+                let frame = bounds_at(&node, &[index, 0]);
+                assert_eq!(frame.size(), Size::new(width, poster), "{zoom}%");
+                let art = bounds_at(&node, &[index, 0, 0]);
+                assert_eq!(art.size(), grid.art_frame(), "{zoom}%");
+                assert_eq!(
+                    art.position(),
+                    frame.position() + iced::Vector::new(2.0, 2.0)
+                );
+            }
+        }
+        // 0.36.0's card: a 160 x 240 poster, then the two-line title and
+        // the state and playtime row.
+        app.zoom = 100;
+        let mut view = app.card(&app.cards[0]);
+        assert_eq!(
+            layout(&mut view, Size::new(400.0, 900.0)).bounds().height,
+            card_height(&app.cards[0], GridLayout::default())
+        );
+    }
+
+    #[test]
+    fn card_heights_predict_the_layout_at_every_zoom() {
+        use crate::layout_probe::layout;
+        use wineo_core::runtime::State;
+        let mut app = crate::tests::app();
+        let mut titled =
+            crate::tests::card("a-very-long-identifier-for-a-game", State::SteamRunning, 60);
+        titled.display_title = "Halo: The Master Chief Collection".to_owned();
+        titled.playtime = "1234 hours 56 minutes across many sessions".to_owned();
+        let plain = crate::tests::card("game", State::Inactive, 60);
+        for zoom in [60, 73, 100, 137, 150, 200] {
+            app.zoom = zoom;
+            for card in [&plain, &titled] {
+                let mut view = app.card(card);
+                let built = layout(&mut view, Size::new(800.0, 2000.0)).bounds();
+                assert_eq!(
+                    built.height,
+                    card_height(card, app.grid_layout()),
+                    "{zoom}%"
+                );
+                assert_eq!(built.width, app.grid_layout().card_width(), "{zoom}%");
+            }
+        }
+    }
+
+    #[test]
+    fn art_less_tiles_scale_their_title_only() {
+        use crate::layout_probe::{bounds_at, layout};
+        let mut app = crate::tests::app();
+        let card = crate::tests::card("game", wineo_core::runtime::State::Inactive, 60);
+        let mut sizes = Vec::new();
+        for zoom in [60, 100, 200] {
+            app.zoom = zoom;
+            let mut view = app.card(&card);
+            let node = layout(&mut view, Size::new(800.0, 2000.0));
+            // The tile's title, and the title under the poster.
+            let tile = bounds_at(&node, &[0, 0, 0, 0, 0]);
+            let below = bounds_at(&node, &[1]);
+            sizes.push((tile.height, below.height));
+        }
+        let line = |size: f32| {
+            iced::widget::text::LineHeight::default()
+                .to_absolute(size.into())
+                .0
+        };
+        assert_eq!(sizes[0].0, line(12.0));
+        assert_eq!(sizes[1].0, line(14.0));
+        assert_eq!(sizes[2].0, line(18.0));
+        assert!(sizes.iter().all(|(_, below)| *below == sizes[1].1));
+    }
+
+    /// The library scrollable's viewport and the bounds of the cards with
+    /// these ids, in order.
+    struct Placed {
+        ids: Vec<iced::widget::Id>,
+        found: std::sync::Arc<std::sync::Mutex<(Option<iced::Rectangle>, Vec<iced::Rectangle>)>>,
+    }
+
+    impl iced::advanced::widget::Operation for Placed {
+        fn traverse(
+            &mut self,
+            operate: &mut dyn FnMut(&mut dyn iced::advanced::widget::Operation),
+        ) {
+            operate(self);
+        }
+
+        fn container(&mut self, id: Option<&iced::widget::Id>, bounds: iced::Rectangle) {
+            if id.is_some_and(|id| self.ids.contains(id)) {
+                self.found.lock().unwrap().1.push(bounds);
+            }
+        }
+
+        fn scrollable(
+            &mut self,
+            id: Option<&iced::widget::Id>,
+            bounds: iced::Rectangle,
+            _content_bounds: iced::Rectangle,
+            _translation: iced::Vector,
+            _state: &mut dyn iced::advanced::widget::operation::Scrollable,
+        ) {
+            if id == Some(&iced::widget::Id::new(SCROLL_ID)) {
+                self.found.lock().unwrap().0 = Some(bounds);
+            }
+        }
+    }
+
+    /// The library viewport's width and how many cards the grid put in its
+    /// first row, laid out the way the window draws them.
+    fn drawn_columns(app: &App) -> (f32, usize) {
+        let mut laid = crate::layout_probe::lay_out(app.view(), app.window_size);
+        let found = std::sync::Arc::default();
+        laid.run(Box::new(Placed {
+            ids: app
+                .filtered()
+                .iter()
+                .map(|card| iced::widget::Id::from(format!("library-card:{}", card.name)))
+                .collect(),
+            found: std::sync::Arc::clone(&found),
+        }));
+        let (viewport, cards) = std::mem::take(&mut *found.lock().unwrap());
+        let viewport = viewport.expect("the library scrollable");
+        let first_row = cards.iter().filter(|card| card.y == cards[0].y).count();
+        (viewport.width, first_row)
+    }
+
+    #[test]
+    fn the_grid_and_the_app_agree_on_columns_with_a_scrollbar() {
+        use std::time::{Duration, Instant};
+        let mut app = crate::tests::app();
+        // Enough rows that the scrollbar shows at every zoom here.
+        app.merge(cards(120));
+        // Viewports one pixel either side of a column boundary, closed and
+        // docked: 896 fits five 160 px cards, and 896 more than the dock.
+        let closed = [1035.0, 1036.0, 1037.0];
+        let docked = [1465.0, 1466.0, 1467.0];
+        for zoom in [60, 100, 150, 200] {
+            app.zoom = zoom;
+            for width in closed {
+                let _ = app.window_resized(Size::new(width, 800.0));
+                let (viewport, drawn) = drawn_columns(&app);
+                assert_eq!(viewport, app.viewport_width, "{zoom}% at {width}");
+                assert_eq!(drawn, app.columns(), "{zoom}% at {width}");
+            }
+        }
+        app.zoom = 100;
+        let _ = app.window_resized(Size::new(1035.0, 800.0));
+        assert_eq!(drawn_columns(&app).1, 4);
+        let _ = app.window_resized(Size::new(1036.0, 800.0));
+        assert_eq!(drawn_columns(&app).1, 5);
+        let _ = app.window_resized(Size::new(1466.0, 800.0));
+        let _ = app.update(Message::Select(app.cards[0].name.clone()));
+        let _ = app.update(Message::GridTick(
+            app.grid_motion.generation(),
+            Instant::now() + Duration::from_secs(1),
+        ));
+        assert!(app.panel_open && !app.grid_motion.active());
+        for zoom in [60, 100, 150, 200] {
+            app.zoom = zoom;
+            for width in docked {
+                let _ = app.window_resized(Size::new(width, 800.0));
+                let (viewport, drawn) = drawn_columns(&app);
+                assert_eq!(viewport, app.viewport_width, "{zoom}% docked at {width}");
+                assert_eq!(drawn, app.columns(), "{zoom}% docked at {width}");
+            }
+        }
+        app.zoom = 100;
+        let _ = app.window_resized(Size::new(1465.0, 800.0));
+        assert_eq!(drawn_columns(&app).1, 4);
+        let _ = app.window_resized(Size::new(1466.0, 800.0));
+        assert_eq!(drawn_columns(&app).1, 5);
+    }
+
     #[test]
     fn context_menu_follows_pointer_and_stays_inside_window() {
         let height = action_menu_height(800.0, 400.0);
