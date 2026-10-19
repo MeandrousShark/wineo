@@ -15,6 +15,9 @@ only adds what it doesn't say. If the two disagree, `AGENTS.md` wins.
 - Once implementation lands, the plan gets an acceptance checklist (see
   below).
 - Ideas for later are parked as rows in [`features.md`](features.md), not built.
+  When a row's notes outgrow a few sentences (about 800 characters), the
+  detail moves to `docs/sketches/<slug>.md` and the row keeps a short
+  summary with a link. The row stays the place for priority and status.
 
 ## Who does what
 
@@ -134,6 +137,8 @@ only adds what it doesn't say. If the two disagree, `AGENTS.md` wins.
 - `CHANGELOG.md`: one section per released version.
 - `docs/plans/`: numbered plans and their decisions.
 - `docs/features.md`: backlog, completed-plan links, and GUI entry criteria.
+- `docs/sketches/`: research and design notes for backlog rows too long to
+  keep in the table.
 - `docs/gui.md`: the desktop app. `docs/core-api.md`: core API for frontends.
 - `docs/gui-style.md`: the approved visual language for future GUI changes.
 - `docs/config-files.md`: config schema and versioning rules, with
