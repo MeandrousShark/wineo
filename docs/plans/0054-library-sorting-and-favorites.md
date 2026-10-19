@@ -939,6 +939,45 @@ places is part 2. Selection follows "Selection".
     stamp from one open handle and checks the path still names that file,
     so a cached value can't pair one version's contents with another's
     stamp (found in review).
+- **Step 3 details** (2026-10-18):
+  - Sort saves run off the UI thread, one in flight per field, and the
+    last state wins: a change made while a save runs is written when it
+    returns.
+  - Closing the window while a save runs waits up to 6 s for it, then
+    exits anyway. A second close exits at once. While it waits, the
+    window takes no input, through the same guard the close prompt uses.
+  - The shown order is cached and rebuilt in `update` when the cards,
+    the search, or the sort change. If it's ever stale, it sorts on the
+    spot; a debug build of the app asserts instead, since only tests skip
+    the rebuild.
+  - The search text stays on `App`, outside the sort `Query`.
+  - Boot reads `[view]` before the first frame, so the library never
+    shows unsorted.
+  - A re-sort with no selected card on screen scrolls to the top.
+  - `iced_runtime` is a GUI dev-dependency, so tests can run the tasks
+    `update` returns and check the work done off the UI thread.
+- **Sort control calls** (maintainer, 2026-10-18), after seeing step 3:
+  - The direction button's tooltip names the current order for the
+    current key: "A to Z" and "Z to A" for Name, "Sources A to Z" and
+    "Sources Z to A" for Source, "Most played first" and "Least played
+    first", "Most recent first" and "Least recent first" for Last played,
+    "Newest first" and "Oldest first" for Added.
+  - The menu opens under the Sort button when opened from the keyboard,
+    and at the pointer when clicked.
+  - A failed save shows `Couldn't save the sort: <error>`, and the window
+    keeps the order it chose. The error carries its cause, with the path
+    shortened to `~`, except an unreadable `library.toml`, whose message
+    already points to Checkup.
+  - The menu waits a moment for the Sort button's position when opened
+    from the keyboard. A click, a close, a second press, or anything else
+    that took the window in that moment wins, and the late answer is
+    dropped (found in review).
+- **Known limit: quitting with stuck background work** (maintainer,
+  2026-10-18). Found in step 3's review, and older than this plan:
+  dropping the Tokio runtime waits for every blocking task it started, so
+  a write stuck on a stalled drive keeps the process alive after the
+  window closes. Step 3 bounds its own wait; the process exit is a
+  backlog row ("Exit with background work stuck").
 - **No older `library.toml` fixture yet** (2026-10-18). Schema 1 is the
   first, so step 1's upgrade fixtures cover a missing file only. An older
   file joins the upgrade fixtures with the first tagged set that has one.
