@@ -40,15 +40,15 @@ pub(crate) fn card_height(card: &Card, layout: GridLayout) -> f32 {
     let line = iced::widget::text::LineHeight::default()
         .to_absolute(CARD_CONTEXT_SIZE.into())
         .0;
-    let mut height = layout.poster_height()
-        + CARD_SPACING
-        + crate::tile_title::two_line_height(CARD_TITLE_SIZE)
-        + CARD_SPACING
-        + meta_height(card, layout);
+    // Summed in the column's order, so the float rounding matches too.
+    let mut height =
+        layout.poster_height() + CARD_SPACING + crate::tile_title::two_line_height(CARD_TITLE_SIZE);
     if shows_identifier(card) {
-        height += CARD_SPACING + line;
+        height += CARD_SPACING;
+        height += line;
     }
-    height
+    height += CARD_SPACING;
+    height + meta_height(card, layout)
 }
 
 /// The state and playtime row's height. Its labels wrap when they outgrow
