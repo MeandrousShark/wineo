@@ -10,7 +10,10 @@ use crate::filter_control::Event;
 use crate::library_menu::icon;
 use crate::theme::Palette;
 use crate::ui;
-use crate::{App, Message};
+use crate::{App, Message, focus_button};
+
+pub(crate) const SHOW_HIDDEN_ID: &str = "library-empty-show-hidden";
+pub(crate) const CLEAR_ID: &str = "library-empty-clear";
 
 const SEARCH_ICON: &[u8] = br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><circle cx="10.5" cy="10.5" r="6.5" fill="none" stroke="#000" stroke-width="1.8"/><path d="M15.5 15.5L20 20" fill="none" stroke="#000" stroke-width="1.8" stroke-linecap="round"/></svg>"##;
 const EYE_ICON: &[u8] = br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12z" fill="none" stroke="#000" stroke-width="1.8" stroke-linejoin="round"/><circle cx="12" cy="12" r="3" fill="none" stroke="#000" stroke-width="1.8"/><path d="M4 20L20 4" fill="none" stroke="#000" stroke-width="1.8" stroke-linecap="round"/></svg>"##;
@@ -63,12 +66,12 @@ impl App {
                 icon(EYE_ICON, palette.muted, 32.0),
                 ui::section_heading("Everything here is hidden", palette),
                 text(all_hidden_note(hidden)).size(14).color(palette.muted),
-                ui::accent_control(
+                show_hidden(ui::accent_control(
                     "Show hidden",
                     palette.primary,
                     true,
                     Message::Filter(Event::ShowHidden),
-                ),
+                )),
             ]
             .spacing(8)
             .into(),
@@ -79,10 +82,16 @@ impl App {
                     text("Try another search or clear your filters.")
                         .size(14)
                         .color(palette.muted),
-                    ui::accent_control(
-                        "Clear filters",
-                        palette.primary,
+                    focus_button::control(
+                        ui::accent_control(
+                            "Clear filters",
+                            palette.primary,
+                            self.filters_clearable(),
+                            Message::Filter(Event::Clear),
+                        )
+                        .into(),
                         self.filters_clearable(),
+                        CLEAR_ID,
                         Message::Filter(Event::Clear),
                     ),
                 ]
@@ -93,8 +102,10 @@ impl App {
                             text(matching_note(hidden_matching))
                                 .size(14)
                                 .color(palette.muted),
-                            ui::secondary_button("Show hidden", palette)
-                                .on_press(Message::Filter(Event::ShowHidden)),
+                            show_hidden(
+                                ui::secondary_button("Show hidden", palette)
+                                    .on_press(Message::Filter(Event::ShowHidden))
+                            ),
                         ]
                         .spacing(12)
                         .align_y(Center),
@@ -161,6 +172,16 @@ impl App {
             .into(),
         )
     }
+}
+
+/// The empty states' Show hidden, reachable from the keyboard.
+fn show_hidden(button: iced::widget::Button<'_, Message>) -> Element<'_, Message> {
+    focus_button::control(
+        button.into(),
+        true,
+        SHOW_HIDDEN_ID,
+        Message::Filter(Event::ShowHidden),
+    )
 }
 
 fn warning_mark(palette: Palette) -> Element<'static, Message> {
