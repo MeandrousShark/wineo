@@ -328,7 +328,8 @@ an older release only loses those preferences. They live in `library.toml`
 ## Library state
 
 `~/.config/wineo/library.toml` holds how the desktop app shows each
-environment: favorites, hidden games, when it was added, and the saved sort.
+environment: favorites, hidden games, when it was added, and the saved sort
+and grid view.
 It's written for you, one field at a time, and never stops anything from
 launching. A bad value, like `favorite = "yes"`, counts as unset for that
 field only and stays in the file until you fix it or change that setting.
@@ -340,6 +341,8 @@ schema_version = 1
 sort = "playtime"         # name, last-played, playtime, or added
 descending = true
 favorites_first = true
+zoom = 125                # grid size in percent, 60 to 200
+poster_only = true
 
 [environments.hades]
 favorite = true
@@ -349,9 +352,11 @@ added = 2026-10-18T19:30:00Z
 hidden = true
 ```
 
-`[view]` is the desktop app's saved sort: `sort` defaults to `name`, and
-`descending` and `favorites_first` to `false`. Filters and Show hidden
-aren't saved. Each `[environments.<name>]` entry is keyed by the
+`[view]` is the desktop app's saved sort and grid view: `sort` defaults to
+`name`, and `descending` and `favorites_first` to `false`. `zoom` is the
+grid's size in whole percent, any integer from 60 to 200, and defaults to
+100. `poster_only` hides titles under the posters and defaults to `false`.
+Filters and Show hidden aren't saved. Each `[environments.<name>]` entry is keyed by the
 environment's name. `favorite` and `hidden` default to `false`. `added` is
 when wineo created or imported it, a TOML datetime in UTC; environments
 made before wineo recorded it have none and sort last by date added. A
