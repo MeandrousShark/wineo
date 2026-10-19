@@ -350,7 +350,7 @@ fn the_rebuild_counts_shown_hidden_and_hidden_matches() {
     let rebuilds = app.order.rebuilds;
     let _ = app.view();
     let _ = app.empty_state();
-    let _ = filter(&mut app, Event::ToggleMenu);
+    open_filters(&mut app);
     let _ = app.view();
     assert_eq!(app.order.rebuilds, rebuilds);
     assert_eq!(app.order.misses.get(), 0);
@@ -462,7 +462,7 @@ fn clear_filters_clears_search_stores_platforms_and_tags_but_not_the_sort_or_sho
 #[test]
 fn clear_filters_in_the_popup_closes_it_and_focuses_the_filters_button() {
     let (_root, mut app) = loaded();
-    let _ = filter(&mut app, Event::ToggleMenu);
+    open_filters(&mut app);
     let _ = filter(&mut app, Event::ToggleTag("rpg".into()));
     let task = filter(&mut app, Event::Clear);
     assert!(!app.filter_menu);
@@ -500,7 +500,7 @@ fn the_popup_lists_only_present_values_and_omits_empty_groups() {
     assert_eq!(app.filter_menu_ids()[0], "library-filter-store-steam");
     let ids = app.filter_menu_ids();
     assert!(!ids.iter().any(|id| id.contains("platform")), "{ids:?}");
-    let _ = filter(&mut app, Event::ToggleMenu);
+    open_filters(&mut app);
     let _ = app.view();
 
     // Only store-less games: platforms and no store.
@@ -562,13 +562,14 @@ fn a_chosen_filter_the_library_lost_stays_on_and_offered() {
 }
 
 #[test]
-fn the_popup_opens_at_the_anchor_takes_the_keys_and_escape_closes_it() {
+fn the_popup_opens_under_its_button_takes_the_keys_and_escape_closes_it() {
     let (_root, mut app) = loaded();
     let _ = app.update(Message::Select("hades".into()));
+    // The pointer is somewhere else; the popup still drops from the button.
     let _ = app.update(Message::MenuAnchor(iced::Point::new(600.0, 30.0)));
-    let _ = filter(&mut app, Event::ToggleMenu);
+    open_filters(&mut app);
     assert!(app.filter_menu_shown());
-    assert_eq!(app.filter_menu_position, iced::Point::new(600.0, 30.0));
+    assert_eq!(app.filter_menu_position, iced::Point::new(496.0, 52.0));
     let _ = app.view();
 
     // The grid behind it doesn't move, launch, or remove, the sidebar
@@ -603,7 +604,7 @@ fn the_popup_opens_at_the_anchor_takes_the_keys_and_escape_closes_it() {
     assert_eq!(focused, [iced::widget::Id::new(FILTER_BUTTON_ID)]);
 
     // Toggles leave it open; a click outside closes it.
-    let _ = filter(&mut app, Event::ToggleMenu);
+    open_filters(&mut app);
     let _ = filter(&mut app, Event::ToggleStore("Steam"));
     let _ = filter(&mut app, Event::ToggleShowHidden);
     assert!(app.filter_menu);
@@ -622,16 +623,22 @@ fn the_popup_opens_at_the_anchor_takes_the_keys_and_escape_closes_it() {
 #[test]
 fn only_one_menu_is_open_at_a_time() {
     let (_root, mut app) = loaded();
+    // A press on a toolbar button lands on an open menu's backdrop, so an
+    // open request that arrives anyway leaves that menu up.
     let _ = app.update(Message::Context("hades".into()));
-    let _ = filter(&mut app, Event::ToggleMenu);
-    assert!(app.filter_menu);
-    assert!(app.action_menu.is_none());
+    open_filters(&mut app);
+    assert!(!app.filter_menu);
+    assert_eq!(app.action_menu.as_deref(), Some("hades"));
+    let _ = app.update(Message::CloseMenu);
 
-    let _ = app.update(Message::Sort(crate::sort_control::Event::ToggleMenu));
+    crate::sort_control::tests::open_sort(&mut app);
+    open_filters(&mut app);
     assert!(app.sort_menu);
     assert!(!app.filter_menu);
+    let _ = app.update(Message::Sort(crate::sort_control::Event::CloseMenu));
 
-    let _ = filter(&mut app, Event::ToggleMenu);
+    open_filters(&mut app);
+    crate::sort_control::tests::open_sort(&mut app);
     assert!(app.filter_menu);
     assert!(!app.sort_menu);
 
@@ -643,7 +650,7 @@ fn only_one_menu_is_open_at_a_time() {
 #[test]
 fn tab_and_arrows_cycle_the_popup_rows() {
     let (_root, mut app) = loaded();
-    let _ = filter(&mut app, Event::ToggleMenu);
+    open_filters(&mut app);
     let _ = focus_button::take_cycles();
     key(&mut app, Named::ArrowDown);
     key(&mut app, Named::Tab);
@@ -678,7 +685,7 @@ fn filter_button_bounds(app: &App) -> Rectangle {
 fn the_popup_opened_from_the_keyboard_sits_under_the_filters_button() {
     let (_root, mut app) = loaded();
     let _ = app.update(Message::MenuAnchor(iced::Point::new(900.0, 600.0)));
-    let task = filter(&mut app, Event::ToggleMenuFromKeyboard);
+    let task = filter(&mut app, Event::ToggleMenu);
     let mut focus = Vec::new();
     for message in answers(&app, task) {
         focus.push(app.update(message));
@@ -708,8 +715,7 @@ fn the_popup_opened_from_the_keyboard_sits_under_the_filters_button() {
 fn the_popup_stays_inside_a_short_window_and_scrolls() {
     let (_root, mut app) = loaded();
     app.window_size = iced::Size::new(900.0, 260.0);
-    let _ = app.update(Message::MenuAnchor(iced::Point::new(10.0, 40.0)));
-    let _ = filter(&mut app, Event::ToggleMenu);
+    open_filters(&mut app);
     let probe = crate::layout_probe::probe(&mut app.view(), app.window_size);
     let (viewport, content) = probe
         .scrollables
@@ -724,8 +730,14 @@ fn the_popup_stays_inside_a_short_window_and_scrolls() {
     assert!(content.height > viewport.height, "{content:?}");
 }
 
+/// Opens the popup under a Filters button at 500, 20.
+pub(crate) fn open_filters(app: &mut App) {
+    let request = press_filters(app);
+    reply(app, request);
+}
+
 fn press_filters(app: &mut App) -> u64 {
-    let _ = filter(app, Event::ToggleMenuFromKeyboard);
+    let _ = filter(app, Event::ToggleMenu);
     app.filter_opening
         .pending
         .expect("a request waits for the button")
@@ -741,7 +753,7 @@ fn a_late_keyboard_reply_is_dropped_when_something_else_took_the_window() {
     let (_root, mut app) = loaded();
     // Another menu opened meanwhile.
     let request = press_filters(&mut app);
-    let _ = app.update(Message::Sort(crate::sort_control::Event::ToggleMenu));
+    crate::sort_control::tests::open_sort(&mut app);
     reply(&mut app, request);
     assert!(!app.filter_menu);
     assert!(app.sort_menu);
@@ -756,7 +768,7 @@ fn a_late_keyboard_reply_is_dropped_when_something_else_took_the_window() {
 
     // A second press, a close, or a click cancels it.
     let request = press_filters(&mut app);
-    let _ = filter(&mut app, Event::ToggleMenuFromKeyboard);
+    let _ = filter(&mut app, Event::ToggleMenu);
     assert!(app.filter_opening.pending.is_none());
     reply(&mut app, request);
     assert!(!app.filter_menu);
@@ -795,11 +807,9 @@ fn a_late_keyboard_reply_is_dropped_when_something_else_took_the_window() {
 #[test]
 fn opening_one_menu_drops_the_other_menus_pending_keyboard_open() {
     let (_root, mut app) = loaded();
-    let _ = app.update(Message::Sort(
-        crate::sort_control::Event::ToggleMenuFromKeyboard,
-    ));
+    let _ = app.update(Message::Sort(crate::sort_control::Event::ToggleMenu));
     let sort_request = app.sort_opening.pending.unwrap();
-    let _ = filter(&mut app, Event::ToggleMenu);
+    open_filters(&mut app);
     let _ = filter(&mut app, Event::CloseMenu);
     let _ = app.update(Message::Sort(crate::sort_control::Event::OpenUnder(
         sort_request,
@@ -808,7 +818,7 @@ fn opening_one_menu_drops_the_other_menus_pending_keyboard_open() {
     assert!(!app.sort_menu);
 
     let request = press_filters(&mut app);
-    let _ = app.update(Message::Sort(crate::sort_control::Event::ToggleMenu));
+    crate::sort_control::tests::open_sort(&mut app);
     let _ = app.update(Message::Sort(crate::sort_control::Event::CloseMenu));
     reply(&mut app, request);
     assert!(!app.filter_menu);
@@ -984,7 +994,7 @@ fn down_from_the_search_box_on_an_empty_grid_changes_nothing() {
 fn after_keys(app: &mut App, named: Named, keys: usize) -> (f32, Rectangle, Rectangle) {
     // Arrow keys don't change the app, so their tasks can be taken first and
     // run in order against one laid out window that keeps its focus.
-    let open = filter(app, Event::ToggleMenuFromKeyboard);
+    let open = filter(app, Event::ToggleMenu);
     let mut opened = Vec::new();
     for message in answers(app, open) {
         opened.push(app.update(message));
@@ -1073,7 +1083,7 @@ fn keyboard_focus_scrolls_the_popup_to_the_focused_row() {
 fn keyboard_focus_scrolls_the_sort_menu_in_a_short_window() {
     let (_root, mut app) = loaded();
     app.window_size = iced::Size::new(1200.0, 160.0);
-    let _ = app.update(Message::Sort(crate::sort_control::Event::ToggleMenu));
+    crate::sort_control::tests::open_sort(&mut app);
     // Up from no focus goes to the last row, Favorites first.
     let task = app.update(Message::Key(
         Key::Named(Named::ArrowUp),

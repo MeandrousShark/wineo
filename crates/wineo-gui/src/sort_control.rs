@@ -28,12 +28,11 @@ const ARROW_UP: &[u8] = br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 
 
 #[derive(Debug, Clone)]
 pub(crate) enum Event {
-    /// A click on the Sort button, which opens the menu at the cursor.
+    /// A click, Enter, or Space on the Sort button, which opens the menu
+    /// under it once its bounds are found.
     ToggleMenu,
-    /// Enter or Space on the focused Sort button.
-    ToggleMenuFromKeyboard,
-    /// The Sort button's bounds, found for the keyboard's open request with
-    /// this number.
+    /// The Sort button's bounds, found for the open request with this
+    /// number.
     OpenUnder(u64, Option<Rectangle>),
     /// A click outside the menu.
     CloseMenu,
@@ -210,14 +209,6 @@ impl App {
 pub(crate) fn update(app: &mut App, event: Event) -> Task<Message> {
     match event {
         Event::ToggleMenu => {
-            app.sort_opening.cancel();
-            if app.sort_menu {
-                app.sort_menu = false;
-                return Task::none();
-            }
-            open_menu(app, app.menu_anchor)
-        }
-        Event::ToggleMenuFromKeyboard => {
             // A second press while the first waits for the button, or on
             // an open menu, closes it like any toggle.
             if app.sort_menu || app.sort_opening.pending.is_some() {
@@ -225,7 +216,7 @@ pub(crate) fn update(app: &mut App, event: Event) -> Task<Message> {
                 app.sort_menu = false;
                 return Task::none();
             }
-            // The pointer may be anywhere, so the menu waits for where
+            // The menu drops from the button, so it waits for where
             // the button is.
             crate::library_menu::request_bounds(
                 &mut app.sort_opening,
@@ -238,7 +229,10 @@ pub(crate) fn update(app: &mut App, event: Event) -> Task<Message> {
             if !app.sort_opening.answer(request) || !app.library_menu_may_open() {
                 return Task::none();
             }
-            open_menu(app, bounds.map_or(app.menu_anchor, anchor_under))
+            match bounds {
+                Some(bounds) => open_menu(app, anchor_under(bounds)),
+                None => Task::none(),
+            }
         }
         Event::CloseMenu => {
             app.sort_opening.cancel();
@@ -363,7 +357,7 @@ pub(crate) fn toolbar(app: &App) -> Element<'_, Message> {
             sort.into(),
             true,
             SORT_BUTTON_ID,
-            Message::Sort(Event::ToggleMenuFromKeyboard)
+            Message::Sort(Event::ToggleMenu)
         ),
         focus_button::control(
             flip.into(),

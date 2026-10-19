@@ -1,5 +1,5 @@
 //! What the library toolbar's Sort menu and Filters popup share: one open at
-//! a time, opening under their button from the keyboard, and their rows.
+//! a time, opening under their button, and their rows.
 
 use iced::widget::{Space, button, container, mouse_area, svg};
 use iced::{Color, Element, Fill, Point, Rectangle, Task, border};
@@ -12,7 +12,7 @@ use crate::{App, Message, focus_button};
 pub(crate) const CHECK: &[u8] = br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><path d="M3.5 8.5l3 3 6-6.5" fill="none" stroke="#000" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>"##;
 pub(crate) const CHEVRON: &[u8] = br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><path d="M4 6l4 4 4-4" fill="none" stroke="#000" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>"##;
 
-/// A keyboard request to open a menu while it looks up its button.
+/// A request to open a menu while it looks up its button.
 #[derive(Debug, Default)]
 pub(crate) struct Opening {
     last: u64,
@@ -64,7 +64,7 @@ impl App {
     }
 
     /// Whether a menu can open: nothing took the window since it was asked
-    /// for, which a keyboard open's late reply checks on arrival.
+    /// for, which an open's late reply checks on arrival.
     pub(crate) fn library_menu_may_open(&self) -> bool {
         !(self.exiting
             || self.closing
@@ -76,7 +76,7 @@ impl App {
             || self.panel_hidden())
     }
 
-    /// Closes every menu and drops any keyboard open still waiting, so only
+    /// Closes every menu and drops any open still waiting, so only
     /// one menu is ever open.
     pub(crate) fn close_library_menus(&mut self) {
         self.sort_menu = false;
@@ -88,7 +88,7 @@ impl App {
 }
 
 /// The pointer position that puts a menu a small gap under the button's
-/// left edge. `menu_position` offsets a pointer by 4 px each way.
+/// left edge. `menu_position` offsets the point by 4 px each way.
 pub(crate) fn anchor_under(button: Rectangle) -> Point {
     Point::new(button.x - 4.0, button.y + button.height)
 }

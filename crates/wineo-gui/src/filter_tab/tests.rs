@@ -362,9 +362,16 @@ fn more_opens_the_filters_popup() {
     );
     drop(laid);
     for message in messages {
-        let _ = app.update(message);
+        let task = app.update(message);
+        for answer in answers(&app, task) {
+            let _ = app.update(answer);
+        }
     }
     assert!(app.filter_menu_shown());
+    assert_eq!(
+        app.filter_menu_position,
+        crate::library_menu::anchor_under(tab.button)
+    );
     let _ = filter(&mut app, Event::CloseMenu);
 
     // From the keyboard it opens under the Filters button, like Filters.
@@ -375,7 +382,7 @@ fn more_opens_the_filters_popup() {
     assert!(
         messages
             .iter()
-            .any(|message| matches!(message, Message::Filter(Event::ToggleMenuFromKeyboard))),
+            .any(|message| matches!(message, Message::Filter(Event::ToggleMenu))),
         "{messages:?}"
     );
     for message in messages {
@@ -571,12 +578,8 @@ fn an_open_menu_keeps_the_tab_drawn_but_inert() {
     drop(laid);
 
     let menus: [fn(&mut App); 3] = [
-        |app| {
-            let _ = app.update(Message::Sort(crate::sort_control::Event::ToggleMenu));
-        },
-        |app| {
-            let _ = app.update(Message::Filter(Event::ToggleMenu));
-        },
+        crate::sort_control::tests::open_sort,
+        crate::filter_control::tests::open_filters,
         |app| {
             let _ = app.update(Message::Context("hades".into()));
         },

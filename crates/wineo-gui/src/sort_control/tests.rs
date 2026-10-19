@@ -619,13 +619,14 @@ fn a_successful_write_refreshes_the_cache() {
 }
 
 #[test]
-fn the_menu_opens_at_the_anchor_and_escape_closes_it() {
+fn the_menu_opens_under_its_button_and_escape_closes_it() {
     let (_root, mut app) = loaded();
     let _ = app.update(Message::Select("hades".into()));
+    // The pointer is somewhere else; the menu still drops from the button.
     let _ = app.update(Message::MenuAnchor(iced::Point::new(500.0, 30.0)));
-    let _ = app.update(Message::Sort(Event::ToggleMenu));
+    open_sort(&mut app);
     assert!(app.sort_menu_shown());
-    assert_eq!(app.sort_menu_position, iced::Point::new(500.0, 30.0));
+    assert_eq!(app.sort_menu_position, iced::Point::new(296.0, 52.0));
     let _ = app.view();
 
     // The grid behind it doesn't move, and Escape closes the menu before
@@ -638,11 +639,11 @@ fn the_menu_opens_at_the_anchor_and_escape_closes_it() {
     assert!(!app.sort_menu);
     assert!(app.panel_open);
 
-    let _ = app.update(Message::Sort(Event::ToggleMenu));
+    open_sort(&mut app);
     let _ = app.update(Message::Sort(Event::Pick(SortKey::Added)));
     assert!(!app.sort_menu);
     assert_eq!(app.query.sort, SortKey::Added);
-    let _ = app.update(Message::Sort(Event::ToggleMenu));
+    open_sort(&mut app);
     let _ = app.update(Message::Sort(Event::ToggleFavoritesFirst));
     assert!(app.sort_menu, "the toggle leaves the menu open");
     let _ = app.update(Message::Sort(Event::CloseMenu));
@@ -650,11 +651,16 @@ fn the_menu_opens_at_the_anchor_and_escape_closes_it() {
 }
 
 #[test]
-fn the_sort_menu_and_the_action_menu_replace_each_other() {
+fn the_action_menu_replaces_the_sort_menu_and_holds_off_its_open() {
     let (_root, mut app) = loaded();
+    // A press on Sort lands on the action menu's backdrop, so an open
+    // request that arrives anyway leaves the action menu up.
     let _ = app.update(Message::Context("hades".into()));
-    let _ = app.update(Message::Sort(Event::ToggleMenu));
-    assert!(app.action_menu.is_none());
+    open_sort(&mut app);
+    assert_eq!(app.action_menu.as_deref(), Some("hades"));
+    assert!(!app.sort_menu);
+    let _ = app.update(Message::CloseMenu);
+    open_sort(&mut app);
     assert!(app.sort_menu);
     let _ = app.update(Message::Context("hades".into()));
     assert!(!app.sort_menu);
@@ -664,7 +670,7 @@ fn the_sort_menu_and_the_action_menu_replace_each_other() {
 #[test]
 fn leaving_the_library_closes_the_menu_and_overlays_block_the_controls() {
     let (_root, mut app) = loaded();
-    let _ = app.update(Message::Sort(Event::ToggleMenu));
+    open_sort(&mut app);
     // The sidebar waits while the menu is open; anything that still leaves
     // the Library, like a page opened by its own work, closes it.
     let _ = app.update(Message::Section(crate::sidebar::Section::Trash));
@@ -688,7 +694,7 @@ fn leaving_the_library_closes_the_menu_and_overlays_block_the_controls() {
 #[test]
 fn tab_and_arrows_cycle_the_menu_rows() {
     let (_root, mut app) = loaded();
-    let _ = app.update(Message::Sort(Event::ToggleMenu));
+    open_sort(&mut app);
     let _ = focus_button::take_cycles();
     key(&mut app, Named::ArrowDown);
     key(&mut app, Named::Tab);
@@ -700,7 +706,7 @@ fn tab_and_arrows_cycle_the_menu_rows() {
 fn delete_leaves_the_selected_card_alone_while_the_menu_is_open() {
     let (_root, mut app) = loaded();
     let _ = app.update(Message::Select("hades".into()));
-    let _ = app.update(Message::Sort(Event::ToggleMenu));
+    open_sort(&mut app);
     let _ = app.update(Message::Key(
         Key::Named(Named::Delete),
         Modifiers::empty(),
@@ -858,7 +864,7 @@ pub(crate) fn answers(app: &App, task: Task<Message>) -> Vec<Message> {
 /// Opens the menu the way Enter on the Sort button does, and returns the
 /// task that focuses its row.
 fn open_from_keyboard(app: &mut App) -> Task<Message> {
-    let task = app.update(Message::Sort(Event::ToggleMenuFromKeyboard));
+    let task = app.update(Message::Sort(Event::ToggleMenu));
     let mut focus = Vec::new();
     for message in answers(app, task) {
         focus.push(app.update(message));
@@ -963,7 +969,7 @@ fn opening_the_menu_from_the_keyboard_focuses_the_current_key() {
     assert!(
         messages
             .iter()
-            .any(|message| matches!(message, Message::Sort(Event::ToggleMenuFromKeyboard)))
+            .any(|message| matches!(message, Message::Sort(Event::ToggleMenu)))
     );
 
     let ran = run_keeping(open_from_keyboard(&mut app), true, 0);
@@ -980,10 +986,11 @@ fn opening_the_menu_from_the_keyboard_focuses_the_current_key() {
             .iter()
             .any(|message| matches!(message, Message::Sort(Event::Pick(SortKey::Playtime))))
     );
-    assert!(!messages.iter().any(|message| matches!(
-        message,
-        Message::Sort(Event::ToggleMenu | Event::ToggleMenuFromKeyboard)
-    )));
+    assert!(
+        !messages
+            .iter()
+            .any(|message| matches!(message, Message::Sort(Event::ToggleMenu)))
+    );
 }
 
 /// A removed environment, so there's an Undo toast.
@@ -999,7 +1006,7 @@ fn with_toast(app: &mut App) {
 fn shortcuts_wait_while_the_menu_is_open() {
     let (_root, mut app) = loaded();
     with_toast(&mut app);
-    let _ = app.update(Message::Sort(Event::ToggleMenu));
+    open_sort(&mut app);
 
     let _ = app.update(Message::Key(
         Key::Character("n".into()),
@@ -1026,7 +1033,7 @@ fn shortcuts_wait_while_the_menu_is_open() {
 fn tab_cycles_the_menu_rows_even_with_an_undo_toast() {
     let (_root, mut app) = loaded();
     with_toast(&mut app);
-    let _ = app.update(Message::Sort(Event::ToggleMenu));
+    open_sort(&mut app);
     let task = app.update(Message::Key(
         Key::Named(Named::Tab),
         Modifiers::empty(),
@@ -1228,25 +1235,20 @@ fn the_menu_opened_from_the_keyboard_sits_under_the_sort_button() {
         iced::Point::new(button.x, button.y + button.height + 4.0)
     );
 
-    // Enter on the button again, which the menu's focus rules out in the
-    // app, still closes it rather than moving it.
-    let _ = app.update(Message::Sort(Event::ToggleMenuFromKeyboard));
-    assert!(!app.sort_menu);
-
-    // A click keeps opening at the cursor.
+    // A press on the button again, which the menu's focus or backdrop
+    // rules out in the app, still closes it rather than moving it.
     let _ = app.update(Message::Sort(Event::ToggleMenu));
-    assert!(app.sort_menu_shown());
-    assert_eq!(app.sort_menu_position, iced::Point::new(900.0, 600.0));
+    assert!(!app.sort_menu);
 }
 
 #[test]
-fn a_keyboard_menu_with_no_button_found_falls_back_to_the_anchor() {
+fn a_menu_with_no_button_found_stays_closed() {
     let (_root, mut app) = loaded();
     let _ = app.update(Message::MenuAnchor(iced::Point::new(40.0, 50.0)));
     let request = press_sort(&mut app);
     let _ = app.update(Message::Sort(Event::OpenUnder(request, None)));
-    assert!(app.sort_menu_shown());
-    assert_eq!(app.sort_menu_position, iced::Point::new(40.0, 50.0));
+    assert!(!app.sort_menu);
+    assert!(app.sort_opening.pending.is_none());
 }
 
 #[test]
@@ -1273,10 +1275,16 @@ fn the_keyboard_menu_position_is_clamped_like_the_pointer_one() {
     assert_eq!(shown.y, 56.0);
 }
 
-/// Presses Enter on the Sort button and keeps the reply back, returning
-/// its request number.
+/// Opens the menu under a Sort button at 300, 20.
+pub(crate) fn open_sort(app: &mut App) {
+    let request = press_sort(app);
+    reply(app, request);
+}
+
+/// Presses the Sort button and keeps the reply back, returning its request
+/// number.
 fn press_sort(app: &mut App) -> u64 {
-    let _ = app.update(Message::Sort(Event::ToggleMenuFromKeyboard));
+    let _ = app.update(Message::Sort(Event::ToggleMenu));
     app.sort_opening
         .pending
         .expect("a request waits for the button")
@@ -1318,7 +1326,7 @@ fn closing_the_menu_cancels_a_pending_keyboard_open() {
 fn a_second_keyboard_press_cancels_the_pending_open() {
     let (_root, mut app) = loaded();
     let first = press_sort(&mut app);
-    let _ = app.update(Message::Sort(Event::ToggleMenuFromKeyboard));
+    let _ = app.update(Message::Sort(Event::ToggleMenu));
     assert!(app.sort_opening.pending.is_none());
     reply(&mut app, first);
     assert!(!app.sort_menu);
@@ -1363,8 +1371,7 @@ fn a_click_cancels_a_pending_keyboard_open() {
     let (_root, mut app) = loaded();
     let request = press_sort(&mut app);
     let _ = app.update(Message::Sort(Event::ToggleMenu));
-    assert!(app.sort_menu);
-    let _ = app.update(Message::Sort(Event::CloseMenu));
+    assert!(app.sort_opening.pending.is_none());
     reply(&mut app, request);
     assert!(!app.sort_menu);
 }

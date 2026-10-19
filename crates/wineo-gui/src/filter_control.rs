@@ -20,18 +20,18 @@ pub(crate) const FILTER_BUTTON_ID: &str = "library-filters";
 const SHOW_HIDDEN_ID: &str = "library-filter-show-hidden";
 const CLEAR_ID: &str = "library-filter-clear";
 const MENU_SCROLL_ID: &str = "library-filter-menu";
-/// What the popup's placement assumes it needs at least, so a pointer near
+/// What the popup's placement assumes it needs at least, so a button near
 /// the bottom of a short window still leaves room for a few rows.
 const MIN_HEIGHT: f32 = 200.0;
 
 #[derive(Debug, Clone)]
 pub(crate) enum Event {
-    /// A click on the Filters button, which opens the popup at the cursor.
+    /// A click, Enter, or Space on the Filters button or the filter tab's
+    /// +N, which opens the popup under the Filters button once its bounds
+    /// are found.
     ToggleMenu,
-    /// Enter or Space on the focused Filters button.
-    ToggleMenuFromKeyboard,
-    /// The Filters button's bounds, found for the keyboard's open request
-    /// with this number.
+    /// The Filters button's bounds, found for the open request with this
+    /// number.
     OpenUnder(u64, Option<Rectangle>),
     /// A click outside the popup.
     CloseMenu,
@@ -153,14 +153,6 @@ impl App {
 pub(crate) fn update(app: &mut App, event: Event) -> Task<Message> {
     match event {
         Event::ToggleMenu => {
-            app.filter_opening.cancel();
-            if app.filter_menu {
-                app.filter_menu = false;
-                return Task::none();
-            }
-            open_menu(app, app.menu_anchor)
-        }
-        Event::ToggleMenuFromKeyboard => {
             if app.filter_menu || app.filter_opening.pending.is_some() {
                 app.filter_opening.cancel();
                 app.filter_menu = false;
@@ -176,7 +168,10 @@ pub(crate) fn update(app: &mut App, event: Event) -> Task<Message> {
             if !app.filter_opening.answer(request) || !app.library_menu_may_open() {
                 return Task::none();
             }
-            open_menu(app, bounds.map_or(app.menu_anchor, anchor_under))
+            match bounds {
+                Some(bounds) => open_menu(app, anchor_under(bounds)),
+                None => Task::none(),
+            }
         }
         Event::CloseMenu => {
             app.filter_opening.cancel();
@@ -299,7 +294,7 @@ pub(crate) fn toolbar(app: &App) -> Element<'_, Message> {
         filters.into(),
         true,
         FILTER_BUTTON_ID,
-        Message::Filter(Event::ToggleMenuFromKeyboard),
+        Message::Filter(Event::ToggleMenu),
     ))
 }
 

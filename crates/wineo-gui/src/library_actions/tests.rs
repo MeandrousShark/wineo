@@ -216,7 +216,7 @@ fn f_does_nothing_unless_the_selected_card_is_shown_and_the_keys_are_free() {
     assert!(!favorite(&app), "the context menu is open");
     let _ = app.update(Message::CloseMenu);
 
-    let _ = app.update(Message::Sort(crate::sort_control::Event::ToggleMenu));
+    crate::sort_control::tests::open_sort(&mut app);
     assert!(app.sort_menu_shown());
     let _ = app.update(Message::Key(
         Key::Character("f".into()),
@@ -227,7 +227,7 @@ fn f_does_nothing_unless_the_selected_card_is_shown_and_the_keys_are_free() {
     assert!(!favorite(&app), "the sort menu is open");
     let _ = app.update(Message::Sort(crate::sort_control::Event::CloseMenu));
 
-    let _ = app.update(Message::Filter(crate::filter_control::Event::ToggleMenu));
+    crate::filter_control::tests::open_filters(&mut app);
     assert!(app.filter_menu_shown());
     f(&mut app);
     assert!(!favorite(&app), "the filters popup is open");

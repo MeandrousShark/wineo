@@ -384,7 +384,7 @@ fn more_view(hidden: usize, palette: Palette, live: bool) -> Element<'static, Me
         tip(more.into(), label, palette, live),
         live,
         MORE_ID,
-        Message::Filter(Event::ToggleMenuFromKeyboard),
+        Message::Filter(Event::ToggleMenu),
     )
 }
 
