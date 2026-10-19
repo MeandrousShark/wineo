@@ -65,16 +65,12 @@ impl App {
         self.scroll_to_top()
     }
 
-    /// Applies a new sort. Like a search it snaps the cards to their new
-    /// slots, but the selection stays in view when it's shown.
+    /// Applies a new sort or filter. Like a search it snaps the cards to
+    /// their new slots, but the selection stays in view when it's shown.
     pub(crate) fn resorted(&mut self) -> Task<Message> {
         self.reorder();
         self.snap_grid();
-        let shown = self
-            .selected
-            .as_ref()
-            .is_some_and(|name| self.filtered().iter().any(|card| &card.name == name));
-        if shown {
+        if self.selected_shown() {
             Task::batch([self.scroll_selection(), self.load_visible_art()])
         } else {
             self.scroll_to_top()

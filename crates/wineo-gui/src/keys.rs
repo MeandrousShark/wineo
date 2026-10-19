@@ -81,6 +81,9 @@ impl App {
         if self.sort_menu_shown() {
             return crate::sort_control::key(self, &key, modifiers);
         }
+        if self.filter_menu_shown() {
+            return crate::filter_control::key(self, &key, modifiers);
+        }
         if let Some(task) = crate::checkup::key(
             self,
             &key,
@@ -162,6 +165,11 @@ impl App {
             }
             Action::ClearSearch => self.update(Message::SearchChanged(String::new())),
             Action::GridFromSearch => {
+                // With nothing shown there's nowhere to go, so the kept
+                // selection and the search's focus both stay.
+                if self.filtered().is_empty() {
+                    return Task::none();
+                }
                 let old = self.selected.clone();
                 self.selected = self.filtered().first().map(|card| card.name.clone());
                 if self.selected != old {
@@ -184,6 +192,11 @@ impl App {
             Action::Move(direction) => {
                 let old = self.selected.clone();
                 let filtered = self.filtered();
+                // A selection the filters hide stays put when there's
+                // nothing to move to.
+                if filtered.is_empty() {
+                    return Task::none();
+                }
                 let current = self
                     .selected
                     .as_ref()
@@ -202,7 +215,10 @@ impl App {
                 ])
             }
             Action::OpenOrPlay => {
-                if self.version_visible() || (self.checkup_visible() && !self.panel_log_visible()) {
+                if self.version_visible()
+                    || (self.checkup_visible() && !self.panel_log_visible())
+                    || !self.selected_shown()
+                {
                     Task::none()
                 } else if self.panel_open {
                     self.start_selected()
@@ -213,6 +229,13 @@ impl App {
                 }
             }
         }
+    }
+
+    /// The selected card is in the shown grid, whatever else hides it.
+    pub(crate) fn selected_shown(&self) -> bool {
+        self.selected
+            .as_ref()
+            .is_some_and(|name| self.filtered().iter().any(|card| &card.name == name))
     }
 
     fn selection_changed(&mut self) {

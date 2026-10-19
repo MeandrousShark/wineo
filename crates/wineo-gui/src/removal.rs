@@ -205,7 +205,7 @@ pub(crate) fn delete_key(app: &mut App, search: bool, captured: bool) -> Task<Me
         && !app.version_visible()
         && !app.checkup_visible()
         && app.action_menu.is_none()
-        && !app.sort_menu
+        && !app.library_menu_open()
     {
         app.selected
             .clone()

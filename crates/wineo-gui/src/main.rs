@@ -19,6 +19,7 @@ mod download_progress;
 mod downloads_page;
 mod downloads_work;
 mod ends;
+mod filter_control;
 mod flow;
 mod focus_button;
 mod fonts;
@@ -34,6 +35,8 @@ mod keys;
 #[cfg(test)]
 mod layout_probe;
 mod library;
+mod library_menu;
+mod library_states;
 mod logview;
 mod menu_anchor;
 mod order;
@@ -117,13 +120,19 @@ pub(crate) struct App {
     /// How the library is sorted. The open window keeps its own, whatever
     /// another window or process saves.
     query: order::Query,
+    /// Source and tag filters and Show hidden, which reset each launch.
+    filters: order::Filters,
     /// The shown order, rebuilt by `reorder`.
     order: order::Order,
     /// The sort menu is open.
     sort_menu: bool,
     sort_menu_position: iced::Point,
     view_writes: sort_control::Writes,
-    sort_opening: sort_control::Opening,
+    sort_opening: library_menu::Opening,
+    /// The Filters popup is open.
+    filter_menu: bool,
+    filter_menu_position: iced::Point,
+    filter_opening: library_menu::Opening,
     /// What `view` reads in place of the disk; see `prefix_facts`.
     facts: prefix_facts::Stored,
     pub(crate) selected: Option<String>,
@@ -150,7 +159,7 @@ pub(crate) struct App {
     failed_images: HashSet<ArtKey>,
     current_art: HashMap<PathBuf, ArtIdentity>,
     error: Option<String>,
-    /// Why `library.toml` couldn't be used, as of the last rescan.
+    /// Why `library.toml` couldn't be used, as of the last read.
     library_problem: Option<wineo_core::library::Problem>,
     refreshing: bool,
     /// The first library load has answered, so an empty library is real.
@@ -304,6 +313,13 @@ pub(crate) enum Message {
     Pressed,
     Loaded(Result<Vec<Card>, String>),
     LibraryReloaded(u64, Result<Vec<Card>, String>),
+    /// An explicit reload's cards with `library.toml`'s problem from the
+    /// same read.
+    LibraryRead(
+        u64,
+        Result<Vec<Card>, String>,
+        Option<wineo_core::library::Problem>,
+    ),
     TrashReloaded(u64, sidebar::TrashBadge),
     Section(sidebar::Section),
     /// A sidebar row was clicked, as opposed to a keyboard shortcut.
@@ -396,6 +412,7 @@ pub(crate) enum Message {
     Downloads(downloads_page::Event),
     Checkup(checkup::Event),
     Sort(sort_control::Event),
+    Filter(filter_control::Event),
     /// The wait for sort writes on close is over, tagged with its wakeup.
     CloseWaitOver(u64),
 }
@@ -409,9 +426,13 @@ impl App {
             search_focused: false,
             cards: Vec::new(),
             query: order::Query::default(),
+            filters: order::Filters::default(),
             order: order::Order::default(),
             sort_menu: false,
-            sort_opening: sort_control::Opening::default(),
+            sort_opening: library_menu::Opening::default(),
+            filter_menu: false,
+            filter_menu_position: iced::Point::ORIGIN,
+            filter_opening: library_menu::Opening::default(),
             sort_menu_position: iced::Point::ORIGIN,
             view_writes: sort_control::Writes::default(),
             facts: prefix_facts::Stored::default(),
@@ -515,7 +536,10 @@ impl App {
         };
         // Read once, here, so the first cards already show in the saved
         // order. A read takes no lock and never writes.
-        app.query = wineo_core::library::load(&app.paths).view.into();
+        let saved = wineo_core::library::load(&app.paths);
+        app.query = saved.view.into();
+        // The banner shows from the first frame, before the cards arrive.
+        app.problem_read(saved.problem);
         app.reorder();
         let load = app.reload_library();
         let badge = app.reload_badge();
@@ -667,6 +691,9 @@ impl App {
         if self.sort_menu && !self.sort_menu_shown() {
             self.sort_menu = false;
         }
+        if self.filter_menu && !self.filter_menu_shown() {
+            self.filter_menu = false;
+        }
         // Whichever way a close got here, once only sort writes are left
         // they get a bounded wait.
         if self.closing
@@ -756,13 +783,14 @@ impl App {
                             | checkup::Event::Environment(_)
                     )
             ) || matches!(message, Message::Version(event) if event.is_input())
-                || matches!(message, Message::Sort(event) if event.is_input()))
+                || matches!(message, Message::Sort(event) if event.is_input())
+                || matches!(message, Message::Filter(event) if event.is_input()))
         {
             return true;
         }
         // The sidebar shortcuts and Undo are taken before any key handler,
         // so they're stopped here.
-        if self.sort_menu_shown()
+        if self.library_menu_shown()
             && matches!(
                 message,
                 Message::Section(_) | Message::SectionClicked(_) | Message::Undo | Message::Add
@@ -796,6 +824,7 @@ impl App {
             Message::Trash(event) => trash_page::update(self, event),
             Message::Downloads(event) => downloads_page::update(self, event),
             Message::Sort(event) => sort_control::update(self, event),
+            Message::Filter(event) => filter_control::update(self, event),
             message @ (Message::Remove(_)
             | Message::RemovePrefix(_)
             | Message::RemoveSize(..)
@@ -912,6 +941,12 @@ impl App {
                 self.reduced_motion = reduced;
                 Task::none()
             }
+            Message::LibraryRead(generation, result, problem) => {
+                if generation == self.library_generation {
+                    self.problem_read(problem);
+                }
+                self.update(Message::LibraryReloaded(generation, result))
+            }
             Message::LibraryReloaded(generation, result) => {
                 if generation == self.library_generation {
                     self.update(Message::Loaded(result))
@@ -1006,6 +1041,9 @@ impl App {
             Message::Key(key, modifiers, _) if self.sort_menu_shown() => {
                 sort_control::key(self, &key, modifiers)
             }
+            Message::Key(key, modifiers, _) if self.filter_menu_shown() => {
+                filter_control::key(self, &key, modifiers)
+            }
             Message::Key(key, modifiers, status) if self.flow.is_some() => {
                 self.flow_key(key, modifiers, status)?
             }
@@ -1054,8 +1092,9 @@ impl App {
             Message::GogUpdate(name) => self.gog_update_requested(name)?,
             Message::CloneEnvironment(name) => self.clone_environment(name)?,
             Message::Context(name) => {
-                self.sort_menu = false;
-                self.sort_opening.cancel();
+                let open = self.action_menu.take();
+                self.close_library_menus();
+                self.action_menu = open;
                 self.action_menu_position = self.menu_anchor;
                 self.action_menu = if self.action_menu.as_deref() == Some(&name) {
                     None
@@ -1238,12 +1277,29 @@ impl App {
     }
     /// The shown cards in shown order, from the cache `reorder` keeps.
     pub(crate) fn filtered(&self) -> Vec<&Card> {
-        self.order.shown(&self.cards, &self.search, self.query)
+        self.order.shown(self.order_inputs())
     }
 
-    /// Rebuilds the shown order after the cards, search, or sort changed.
+    /// What the shown order is built from.
+    pub(crate) fn order_inputs(&self) -> order::Of<'_> {
+        order::Of {
+            cards: &self.cards,
+            search: &self.search,
+            query: self.query,
+            filters: &self.filters,
+        }
+    }
+
+    /// Rebuilds the shown order after the cards, search, sort, or filters
+    /// changed.
     pub(crate) fn reorder(&mut self) {
-        self.order.rebuild(&self.cards, &self.search, self.query);
+        let of = order::Of {
+            cards: &self.cards,
+            search: &self.search,
+            query: self.query,
+            filters: &self.filters,
+        };
+        self.order.rebuild(of);
     }
     fn columns(&self) -> usize {
         grid_motion::columns_for_viewport(self.viewport_width, self.panel_open)
