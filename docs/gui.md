@@ -70,9 +70,11 @@ tag, so `rpg` finds games tagged `rpg`.
 ### Sorting
 
 **Sort** beside the search field picks the order: Name (the title shown on
-the card), Last played, Playtime, Date added, or Source. The arrow button
-next to it flips the direction, and its tooltip names the order you have,
-like "Most played first" or "A to Z". **Favorites first**, at the bottom of
+the card), Last played, Playtime, or Date added. Picking one starts it in
+its natural direction: Name A to Z, Last played most recent first, Playtime
+most played first, and Date added newest first. The arrow button next to it
+flips the direction, and its tooltip names the order you have, like "Most
+played first" or "A to Z". **Favorites first**, at the bottom of
 the Sort menu, puts favorites ahead of everything else in the same order.
 
 A game with no date added (one made before wineo recorded it) or a playtime
@@ -88,13 +90,25 @@ the order you picked and says why.
 
 ### Filters and hidden games
 
-**Filters** opens a popup with the sources in your library (GOG, Steam,
-Native, Windows, and so on), your tags, **Show hidden**, and **Clear
-filters**. Checked sources keep games from any of them, checked tags keep
-games with any of them, and with both, a game has to match each; the
-button counts them, as in **Filters (2)**. Clear filters clears the
-search, sources, and tags, and leaves the sort and Show hidden alone.
-Filters and Show hidden start fresh at every launch.
+**Filters** opens a popup with the stores your games came from (Steam,
+GOG, Epic, Amazon), the platforms they run on (Native, Windows), your
+tags, **Show hidden**, and **Clear filters**, listing only what's in your
+library. Within each group, a game has to match any of the checked
+entries, and with checks in more than one group, it has to match each of
+them; the button counts them, as in **Filters (2)**. Clear filters clears
+the search, stores, platforms, and tags, and leaves the sort and Show
+hidden alone. Filters and Show hidden start fresh at every launch.
+
+A Steam game counts as Windows once Steam shows it runs through Proton:
+it has its own Proton setting in Steam, or a Proton prefix from its first
+run. Until then it has no platform, so only the Store filter finds it.
+
+While a store, platform, or tag filter is on, a tab hangs under
+**Filters** with a chip for each. A chip's x removes that filter, and the
+larger x at the end clears them all but leaves the search. When the chips
+don't fit, the last one becomes **+N**, which opens the popup. Tab reaches
+the x's right after Filters. The grid scrolls under the tab, and the tab
+steps aside while a notice shows under the toolbar.
 
 A hidden game leaves the grid and search. Show hidden brings it back
 dimmed, with a crossed-out eye on its poster, so you can unhide it.

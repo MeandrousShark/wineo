@@ -92,8 +92,9 @@ grows to 600 px before it scrolls; the window bounds it below that.
 Plan [0054](plans/0054-library-sorting-and-favorites.md) added these.
 
 - The toolbar reads search, **Sort: <key>** with a chevron, a 32 px square
-  direction button, **Filters** (or **Filters (N)** with N chosen sources
-  and tags), then the accent **Add**. All are 32 px high.
+  direction button, **Filters** (or **Filters (N)** with N chosen stores,
+  platforms, and tags), then the accent **Add**. All are 32 px high. Its
+  bottom padding is 15 px, room for the filter tab.
 - Icons that Noto Sans lacks (arrows, chevron, check, star, crossed-out
   eye, search) are inline SVGs tinted with palette tokens, never glyphs.
 - A tooltip is 13 px text padded 4 by 8 on the surface color, with a 1 px
@@ -102,15 +103,25 @@ Plan [0054](plans/0054-library-sorting-and-favorites.md) added these.
   first", "A to Z").
 - The Sort menu and the Filters popup share the context menu's chrome,
   248 px wide. Only one of them or the context menu is open at a time. A
-  click opens it at the pointer; Enter or Space opens it under its button.
+  click, Enter, or Space opens it under its button.
   It opens with focus on the current choice and takes every key while open:
   Tab and the arrows move between rows, scrolling the menu just enough to
   show the focused row (to the top for the first row), and Esc closes it and
   returns focus to its button. The Filters popup grows with its content up
   to the window's edge, then scrolls.
-- Check rows ("Favorites first", sources, "Show hidden (N)") use a drawn
-  16 px check box: a bordered square with 4 px corners, filled with the
-  primary color and a check in its ink color when on.
+- The filter tab floats 3 px under **Filters**, left edges aligned, over
+  the gap above the grid: 26 px high, the surface color, a 1 px border,
+  8 px corners, and 4 px between items. It leaves 3 px above the first
+  poster, and the grid sits in the same place with or without it. A chip
+  is a pill with a 1 px border, a 13 px label, and a 12 px x in a 16 px
+  round target; **+N** is the same pill as a button. The clear-all x is
+  14 px in a 24 px round target. The x's are quiet: no fill until hovered,
+  and a primary border while pressed. The tab keeps 16 px from the
+  window's edge or the docked panel. While a menu is open over it, it
+  shows but takes no input.
+- Check rows ("Favorites first", stores, platforms, "Show hidden (N)")
+  use a drawn 16 px check box: a bordered square with 4 px corners, filled
+  with the primary color and a check in its ink color when on.
 - Tag chips are pills that wrap. A selected chip shows a check before its
   label, a 15% primary tint, and a primary border, so selection never rests
   on color alone. The keyboard focus ring stays a separate outline outside

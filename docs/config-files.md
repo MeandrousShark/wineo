@@ -337,7 +337,7 @@ field only and stays in the file until you fix it or change that setting.
 schema_version = 1
 
 [view]
-sort = "playtime"         # name, last-played, playtime, added, or source
+sort = "playtime"         # name, last-played, playtime, or added
 descending = true
 favorites_first = true
 

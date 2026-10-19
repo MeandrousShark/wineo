@@ -835,6 +835,13 @@ places is part 2. Selection follows "Selection".
 7. **Docs.** `gui.md`, `config-files.md` (its `library.toml` placeholder at
    323-326 becomes the real schema), `features.md` rows, and `gui-style.md`
    for the toolbar and the star and hidden marks.
+8. **Acceptance changes.** A1: picking a sort key sets its natural
+   direction and saves both. A2: Source leaves the Sort menu and
+   `SortKey`; a saved `source` reads as Name. A3: Store and Platform
+   groups in the Filters popup and the filter model, from core's `Source`
+   (`store` and `native`; A5 gives Steam games their platform), with the
+   button's count over both groups and tags. A4: the filter tab. Then the
+   docs and the acceptance checklist follow.
 
 ## Decisions during implementation
 
@@ -1075,6 +1082,40 @@ places is part 2. Selection follows "Selection".
     the keys. Ctrl+F still focuses search.
   - Enter no longer acts while the right-click menu is open, matching
     `F` (an older gap found in step 5).
+- **Step 8 details** (2026-10-18 and 2026-10-19):
+  - A1: each key's natural direction is Name A to Z, Last played most
+    recent first, Playtime most played first, and Date added newest
+    first. Picking a key sets it and saves both; the arrow flips from
+    there.
+  - A2: Source left `SortKey`. A saved `sort = "source"` from a build
+    before this step counts as unset, so it reads as Name.
+  - A3: core's `Source` gives each game a store (Steam, GOG, Epic, Amazon,
+    or none) and a platform (Native, Windows, or none), and the popup
+    lists each group with only what the library has. The button counts
+    stores, platforms, and tags.
+  - A5: a Steam game is Windows when `CompatToolMapping` has its own
+    entry or `compatdata/<appid>/pfx` exists. The global `"0"` entry
+    never counts as a game's own, app 0 included (found in review).
+  - The Sort menu and Filters popup open under their button for a click
+    too, not at the pointer, so they stay put next to the tab.
+  - The tab hides while a notice row (a library change, a library
+    problem, or an error) shows under the toolbar, so it never covers a
+    warning, and when even **+N** and the clear-all x don't fit. While a
+    menu is open over it, it shows but takes no input.
+  - The tab claims the pointer over its own bounds, so the grid under it
+    takes no clicks or hover, and hands the wheel on to the grid the way
+    the grid's own scrollable takes it, Shift included (found in review).
+  - A mouse click on an x leaves no focus ring on the tab; removing a
+    chip from the keyboard moves focus to the next x, else the previous
+    one, else Filters.
+- **Filter tab calls** (maintainer, 2026-10-19), after screenshots of four
+  looks: the tab floats apart from **Filters**, all corners rounded, 3 px
+  below the button and 3 px above the first poster. The Library toolbar's
+  bottom padding grows from 8 to 15 px for it, all the time, so the grid
+  never moves when filters change. A tab joined to the button like a
+  folder's was tried and dropped. The grid scrolls under the tab rather
+  than the tab hiding while scrolled. Exclude filters, raised at the same
+  time, are a `features.md` row.
 - **No older `library.toml` fixture yet** (2026-10-18). Schema 1 is the
   first, so step 1's upgrade fixtures cover a missing file only. An older
   file joins the upgrade fixtures with the first tagged set that has one.
@@ -1294,16 +1335,21 @@ and `scripts/generate-bench-library.sh ~/wineo-accept-3 3`, then
 `wineo-accept-3`). Delete both folders when done. The performance check
 on real hardware was run on 2026-10-18 (see "After step 6").
 
-1. **Sort.** Try every key in both directions; the arrow's tooltip names
-   the order each time. Turn on Favorites first. Close and reopen: the
-   sort, direction, and Favorites first come back.
+1. **Sort.** Pick each key: Name starts A to Z, Last played most recent
+   first, Playtime most played first, and Date added newest first. Flip
+   each with the arrow; its tooltip names the order each time. There's no
+   Source key. Turn on Favorites first. Close and reopen: the sort,
+   direction, and Favorites first come back.
 2. **Keyboard menus.** Tab to Sort and press Enter: the menu opens under
    the button on the current key. Arrows and Tab move, Esc closes and
-   returns to the button. The same for Filters.
-3. **Filters.** Check a source and a tag: the grid narrows to games from
-   that source with that tag, the button says **Filters (2)**, and the
-   chip reads as selected. A second tag widens it to games with either
-   tag. Clear filters clears them and the search. Close and
+   returns to the button. The same for Filters. A click opens each under
+   its button too.
+3. **Filters.** The popup has Store and Platform groups. Check a store
+   and a tag: the grid narrows to games from that store with that tag,
+   the button says **Filters (2)**, and the chip reads as selected. A
+   second tag widens it to games with either tag. Native GOG games show
+   under both GOG and Native, and a Steam game you've run through Proton
+   under Windows. Clear filters clears them and the search. Close and
    reopen: filters are off.
 4. **Search by tag.** Type a tag, like `indie`: games with that tag show.
 5. **Favorites.** Star one game from the panel's star, one from the
@@ -1328,11 +1374,22 @@ on real hardware was run on 2026-10-18 (see "After step 6").
    and the empty states read well in both.
 10. **Feel.** On your normal session, sorting, filtering, starring, and
     hiding feel instant, and scrolling stays smooth.
+11. **Filter tab.** With filters on, a rounded tab floats under Filters
+    with a chip per filter, clear of the posters. A chip's x removes it,
+    and the big x clears them all but leaves the search. Narrow the
+    window or open the panel: the last chips fold into **+N**, which opens
+    the popup. Tab reaches the x's after Filters. Scroll: posters pass
+    under the tab, and the wheel over it scrolls the grid.
+
+Results: items 2 and 4 to 10 passed (2026-10-18 and 2026-10-19). Items 1,
+3, and 11 cover step 8 and wait for a re-check.
 
 Fixes found during acceptance:
 
 - The Sort and Filters labels sat at the top of their 32 px buttons; their
   label rows now fill the button's height so they center (2026-10-18).
+- The maintainer's trials before the checklist raised A1 to A5 (below),
+  which became step 8.
 
 ### Questions from acceptance trials
 
@@ -1389,7 +1446,7 @@ screenshots:
 - Each x has a tooltip ("Remove filter: GOG", "Clear all filters") and
   takes keyboard focus in order after **Filters**.
 - Steam games have no platform, since Steam doesn't say whether it runs
-  them under Proton, so they match no Platform filter.
+  them under Proton, so they match no Platform filter. A5 replaced this.
 
 **A5. A platform for Steam games.** The maintainer finds it confusing
 that a Steam game running through Proton doesn't show under Windows. What
@@ -1414,13 +1471,8 @@ games have one, in each app's `oslist`.
 Recommendation: **A** in this plan and B as its own small follow-up, since
 A fixes the confusing case for every game that's been played.
 
-8. **Acceptance changes.** A1: picking a sort key sets its natural
-   direction and saves both. A2: Source leaves the Sort menu and
-   `SortKey`; a saved `source` reads as Name. A3: Store and Platform
-   groups in the Filters popup and the filter model, from core's `Source`
-   (`store` and `native`, Steam games without a platform), with the
-   button's count over both groups and tags. A4: the filter tab. Then the
-   docs and the acceptance checklist follow.
+Answered by the maintainer (2026-10-18): **A5 A**. B is parked as a
+`features.md` row, "Exact Steam platforms".
 
 ## Scope limits
 
