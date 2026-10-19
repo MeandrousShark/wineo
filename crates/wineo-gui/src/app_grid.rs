@@ -79,7 +79,7 @@ impl App {
 
     /// Puts every card in its new slot at once, with nothing in motion that
     /// could report a stale position.
-    fn snap_grid(&mut self) {
+    pub(crate) fn snap_grid(&mut self) {
         self.collapse.reset();
         self.grid_motion
             .snap(self.panel_open, self.filtered().len());

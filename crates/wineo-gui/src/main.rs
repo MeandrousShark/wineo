@@ -35,6 +35,7 @@ mod keys;
 #[cfg(test)]
 mod layout_probe;
 mod library;
+mod library_actions;
 mod library_menu;
 mod library_states;
 mod logview;
@@ -128,6 +129,8 @@ pub(crate) struct App {
     sort_menu: bool,
     sort_menu_position: iced::Point,
     view_writes: sort_control::Writes,
+    /// Favorite and hidden writes in flight.
+    flag_writes: library_actions::Writes,
     sort_opening: library_menu::Opening,
     /// The Filters popup is open.
     filter_menu: bool,
@@ -413,7 +416,10 @@ pub(crate) enum Message {
     Checkup(checkup::Event),
     Sort(sort_control::Event),
     Filter(filter_control::Event),
-    /// The wait for sort writes on close is over, tagged with its wakeup.
+    /// Favoriting and hiding a card.
+    Mark(library_actions::Event),
+    /// The wait for `library.toml` writes on close is over, tagged with its
+    /// wakeup.
     CloseWaitOver(u64),
 }
 
@@ -435,6 +441,7 @@ impl App {
             filter_opening: library_menu::Opening::default(),
             sort_menu_position: iced::Point::ORIGIN,
             view_writes: sort_control::Writes::default(),
+            flag_writes: library_actions::Writes::default(),
             facts: prefix_facts::Stored::default(),
             selected: None,
             panel_open: false,
@@ -694,13 +701,13 @@ impl App {
         if self.filter_menu && !self.filter_menu_shown() {
             self.filter_menu = false;
         }
-        // Whichever way a close got here, once only sort writes are left
-        // they get a bounded wait.
+        // Whichever way a close got here, once only `library.toml` writes
+        // are left they get a bounded wait.
         if self.closing
             && !self.exiting
             && self.close_by.is_none()
             && !self.foreground_busy()
-            && self.view_writes.pending()
+            && self.library_writes_pending()
         {
             self.close_by = Some(Instant::now() + app_window::SORT_SAVE_WAIT);
         }
@@ -784,7 +791,8 @@ impl App {
                     )
             ) || matches!(message, Message::Version(event) if event.is_input())
                 || matches!(message, Message::Sort(event) if event.is_input())
-                || matches!(message, Message::Filter(event) if event.is_input()))
+                || matches!(message, Message::Filter(event) if event.is_input())
+                || matches!(message, Message::Mark(event) if event.is_input()))
         {
             return true;
         }
@@ -825,6 +833,7 @@ impl App {
             Message::Downloads(event) => downloads_page::update(self, event),
             Message::Sort(event) => sort_control::update(self, event),
             Message::Filter(event) => filter_control::update(self, event),
+            Message::Mark(event) => library_actions::update(self, event),
             message @ (Message::Remove(_)
             | Message::RemovePrefix(_)
             | Message::RemoveSize(..)
@@ -1189,10 +1198,15 @@ impl App {
             Task::none()
         }
     }
-    /// What closing the window waits for: foreground work, and sort writes
-    /// that haven't reached the file yet.
+    /// What closing the window waits for: foreground work, and
+    /// `library.toml` writes that haven't reached the file yet.
     fn exit_waits(&self) -> bool {
-        self.foreground_busy() || self.view_writes.pending()
+        self.foreground_busy() || self.library_writes_pending()
+    }
+
+    /// A sort, favorite, or hidden write is in flight.
+    fn library_writes_pending(&self) -> bool {
+        self.view_writes.pending() || self.flag_writes.pending()
     }
 
     fn foreground_busy(&self) -> bool {

@@ -59,7 +59,7 @@ fn bounds(app: &App, id: &'static str) -> Option<iced::Rectangle> {
 }
 
 /// Focuses the control `id` and presses Enter on it.
-fn press_control(app: &App, id: &'static str) -> Vec<Message> {
+pub(crate) fn press_control(app: &App, id: &'static str) -> Vec<Message> {
     let focus: Task<Message> = iced::widget::operation::focus(iced::widget::Id::new(id));
     let operations = iced_runtime::task::into_stream(focus)
         .map(|stream| {

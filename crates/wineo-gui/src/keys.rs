@@ -21,6 +21,7 @@ pub(crate) enum Action {
     ClosePanel,
     ClearSearch,
     FocusSearch,
+    ToggleFavorite,
 }
 
 pub(crate) fn action(
@@ -36,6 +37,14 @@ pub(crate) fn action(
             Action::FocusSearch
         }
         Key::Character("/") if !search_focused => Action::FocusSearch,
+        // Shift is allowed, so Caps Lock doesn't matter.
+        Key::Character(character)
+            if !search_focused
+                && !(modifiers.control() || modifiers.alt() || modifiers.logo())
+                && character.eq_ignore_ascii_case("f") =>
+        {
+            Action::ToggleFavorite
+        }
         Key::Named(Named::Escape) if log_open => Action::CloseLog,
         Key::Named(Named::Escape) if panel_open => Action::ClosePanel,
         Key::Named(Named::Escape) if !search_empty => Action::ClearSearch,
@@ -214,8 +223,25 @@ impl App {
                     self.load_panel_art(),
                 ])
             }
+            // Same rule as Enter: only a shown card, and only when nothing
+            // else has the keys.
+            Action::ToggleFavorite => {
+                if captured
+                    || self.action_menu.is_some()
+                    || self.version_visible()
+                    || (self.checkup_visible() && !self.panel_log_visible())
+                    || !self.selected_shown()
+                {
+                    return Task::none();
+                }
+                match self.selected.clone() {
+                    Some(name) => self.toggle_flag(&name, crate::library_actions::Flag::Favorite),
+                    None => Task::none(),
+                }
+            }
             Action::OpenOrPlay => {
-                if self.version_visible()
+                if self.action_menu.is_some()
+                    || self.version_visible()
                     || (self.checkup_visible() && !self.panel_log_visible())
                     || !self.selected_shown()
                 {
@@ -238,7 +264,7 @@ impl App {
             .is_some_and(|name| self.filtered().iter().any(|card| &card.name == name))
     }
 
-    fn selection_changed(&mut self) {
+    pub(crate) fn selection_changed(&mut self) {
         self.close_log();
         self.close_checkup();
         self.target = self

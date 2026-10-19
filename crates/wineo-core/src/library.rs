@@ -195,6 +195,66 @@ pub fn set_hidden(paths: &Paths, name: &str, hidden: bool) -> Result<bool> {
     })
 }
 
+/// What a write for one particular environment did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Guarded {
+    /// The field was set, and whether that changed the file.
+    Set(bool),
+    /// The environment is gone, or it was removed and made again since its
+    /// entry was read, so nothing was written.
+    Gone,
+}
+
+/// `set_favorite` for the environment whose entry had `added`, which only
+/// creating an environment stamps, so it tells a recreated one apart. Both
+/// checks happen under the lock, so a write that lands after `rm` cleaned
+/// up can't bring the entry back.
+pub fn set_favorite_for(
+    paths: &Paths,
+    name: &str,
+    added: Option<Timestamp>,
+    favorite: bool,
+) -> Result<Guarded> {
+    set_bool_for(paths, name, added, "favorite", favorite)
+}
+
+/// `set_favorite_for` for `hidden`.
+pub fn set_hidden_for(
+    paths: &Paths,
+    name: &str,
+    added: Option<Timestamp>,
+    hidden: bool,
+) -> Result<Guarded> {
+    set_bool_for(paths, name, added, "hidden", hidden)
+}
+
+fn set_bool_for(
+    paths: &Paths,
+    name: &str,
+    added: Option<Timestamp>,
+    field: &str,
+    value: bool,
+) -> Result<Guarded> {
+    let mut gone = false;
+    let changed = edit(paths, |document| {
+        let current = document
+            .get("environments")
+            .and_then(Item::as_table_like)
+            .and_then(|table| table.get(name))
+            .and_then(|item| read_entry(item).added);
+        if current != added || !paths.environment_config(name).exists() {
+            gone = true;
+            return false;
+        }
+        set_environment_bool(document, name, field, value)
+    })?;
+    Ok(if gone {
+        Guarded::Gone
+    } else {
+        Guarded::Set(changed)
+    })
+}
+
 pub fn set_sort(paths: &Paths, sort: SortKey) -> Result<bool> {
     edit(paths, |document| {
         let current = document

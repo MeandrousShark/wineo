@@ -825,6 +825,12 @@ impl App {
         if card.display_title != card.name {
             heading = heading.push(text(&card.name).size(13).color(palette.muted));
         }
+        let heading = crate::ends::ends(
+            heading.width(Fill),
+            self.favorite_star(card),
+            8.0,
+            crate::ends::MIN_LEFT,
+        );
         body = body.push(container(heading).width(Fill).padding([12, 16]));
         let operation_busy =
             self.operation.is_some() || self.tool_blocks_launch_with(&self.facts, &card.name);

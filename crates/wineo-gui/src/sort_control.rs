@@ -155,12 +155,19 @@ pub(crate) fn save(paths: &Paths, watch: &rescan::Watch, field: Field) -> Result
         Field::FavoritesFirst(first) => library::set_favorites_first(paths, first),
     };
     watch.refresh_library(paths);
-    result.map(|_| ()).map_err(|error| match error {
+    result
+        .map(|_| ())
+        .map_err(|error| error_text(paths, &error))
+}
+
+/// How a failed `library.toml` write reads in a notice.
+pub(crate) fn error_text(paths: &Paths, error: &wineo_core::error::Error) -> String {
+    match error {
         // Its message already says what to do; the source is the raw
         // parse error, which Checkup shows.
         wineo_core::error::Error::LibraryUnreadable { .. } => error.to_string(),
-        _ => paths.contract_text(&wineo_core::error::chain(&error)),
-    })
+        _ => paths.contract_text(&wineo_core::error::chain(error)),
+    }
 }
 
 impl App {

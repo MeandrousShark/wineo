@@ -8,13 +8,14 @@ use iced::{
 };
 
 use crate::library::Card;
+use crate::library_actions::{Event, Flag};
 use crate::theme::Palette;
 use crate::ui::{self, ScrollStyle, secondary_button};
 use crate::wheel;
 use crate::{App, CARD_WIDTH, Message, SCROLL_ID, SEARCH_ID, WHEEL_STEP_SCALE};
 
 pub(crate) const ACTION_MENU_WIDTH: f32 = 248.0;
-const ACTION_MENU_MAX_HEIGHT: f32 = 448.0;
+const ACTION_MENU_MAX_HEIGHT: f32 = 600.0;
 pub(crate) const ACTION_MENU_MARGIN: f32 = 8.0;
 pub(crate) const ACTION_MENU_PADDING: f32 = 12.0;
 pub(crate) const ACTION_MENU_SPACING: f32 = 4.0;
@@ -102,7 +103,7 @@ impl App {
         };
         Some((art.unwrap_or(placeholder).clone(), opacity))
     }
-    fn card<'a>(&'a self, card: &'a Card) -> Element<'a, Message> {
+    pub(crate) fn card<'a>(&'a self, card: &'a Card) -> Element<'a, Message> {
         let alpha = self.collapse.alpha();
         let caption = self.collapse.caption_alpha();
         let palette = self.palette.faded(alpha);
@@ -113,6 +114,9 @@ impl App {
             self.images
                 .shown(&(art.clone(), crate::artwork::Kind::Grid), dimmed)
         });
+        // A hidden card fades without the grayscale, which stays the sign of
+        // a game that isn't installed.
+        let faded = dimmed || card.hidden;
         let poster: Element<'_, Message> = match art {
             Some(handle) => image(handle.clone())
                 .width(Fill)
@@ -121,7 +125,7 @@ impl App {
                 .border_radius(4)
                 .opacity(
                     alpha
-                        * if dimmed {
+                        * if faded {
                             crate::panel::DIMMED_OPACITY
                         } else if hovered {
                             0.85_f32
@@ -141,7 +145,7 @@ impl App {
             .padding(12)
             .center(Fill)
             .style(move |_| {
-                container::Style::default().background(palette.surface.scale_alpha(if dimmed {
+                container::Style::default().background(palette.surface.scale_alpha(if faded {
                     crate::panel::DIMMED_OPACITY
                 } else if hovered {
                     0.85
@@ -160,7 +164,7 @@ impl App {
             .height(20)
             .opacity(
                 alpha
-                    * if dimmed {
+                    * if faded {
                         crate::panel::DIMMED_OPACITY
                     } else {
                         1.0_f32
@@ -198,6 +202,9 @@ impl App {
                     .align_top(Fill)
                     .padding(8),
             );
+        }
+        if let Some(marks) = crate::library_actions::poster_marks(card, alpha) {
+            layers = layers.push(marks);
         }
         if let Some(percent) = card.install_progress() {
             layers = layers.push(
@@ -249,7 +256,7 @@ impl App {
                 .height(crate::tile_title::two_line_height(CARD_TITLE_SIZE))
                 .font(title_font)
                 .color(
-                    if dimmed {
+                    if faded {
                         palette.muted
                     } else {
                         palette.foreground
@@ -487,18 +494,34 @@ impl App {
                 .iter()
                 .any(|card| card.name == *name && crate::version_picker::has_version(card));
             let removal_reason = self.remove_reason_with(&self.facts, name);
-            let menu_buttons = 4
+            let card = self.cards.iter().find(|card| card.name == *name);
+            let favorite = card.is_some_and(|card| card.favorite);
+            let hidden = card.is_some_and(|card| card.hidden);
+            let menu_buttons = 6
                 + usize::from(wine_actions) * 3
                 + usize::from(transfer_actions) * 2
                 + usize::from(uninstall_action)
                 + usize::from(update_action)
                 + usize::from(version_action);
-            let menu_dividers = 1 + usize::from(wine_actions);
+            let menu_dividers = 2 + usize::from(wine_actions);
             let body_content_height =
                 action_menu_body_height(menu_buttons, menu_dividers, removal_reason.as_deref());
             let menu_height = action_menu_height(self.window_size.height, body_content_height);
             let position = menu_position(self.action_menu_position, self.window_size, menu_height);
             let mut scroll_items = column![
+                context_menu_button(
+                    Flag::Favorite.action_label(favorite),
+                    palette,
+                    false,
+                    Some(Message::Mark(Event::Toggle(name.clone(), Flag::Favorite))),
+                ),
+                context_menu_button(
+                    Flag::Hidden.action_label(hidden),
+                    palette,
+                    false,
+                    Some(Message::Mark(Event::Toggle(name.clone(), Flag::Hidden))),
+                ),
+                ui::separator(palette).padding([3, 0]),
                 context_menu_button(
                     "Settings",
                     palette,
@@ -1223,7 +1246,7 @@ mod tests {
             Size::new(1200.0, 800.0),
             height,
         );
-        assert_eq!(position, iced::Point::new(944.0, 344.0));
+        assert_eq!(position, iced::Point::new(944.0, 308.0));
         assert_eq!(
             menu_position(
                 iced::Point::ORIGIN,
@@ -1247,12 +1270,28 @@ mod tests {
         assert!(scroll_height > 0.0);
         assert!(height <= window.height - ACTION_MENU_MARGIN * 2.0);
         assert!(position.y + height <= window.height - ACTION_MENU_MARGIN);
-        assert_eq!(height, ACTION_MENU_MAX_HEIGHT);
+        assert_eq!(height, window.height - ACTION_MENU_MARGIN * 2.0);
+        // A tall window still caps it.
+        assert_eq!(
+            action_menu_height(2000.0, content_height),
+            ACTION_MENU_MAX_HEIGHT
+        );
     }
 
     #[test]
     fn context_menu_shrinks_to_its_content_for_native_environments() {
-        let body_height = action_menu_body_height(6, 1, None);
-        assert_eq!(action_menu_height(800.0, body_height), 307.0);
+        // Favorite and Hide, Settings, Art, Copy, Check, Clone, Remove.
+        let body_height = action_menu_body_height(8, 2, None);
+        assert_eq!(action_menu_height(800.0, body_height), 390.0);
+    }
+
+    #[test]
+    fn a_wine_prefix_menu_fits_without_scrolling_in_an_800_px_window() {
+        // Favorite and Hide, Settings, Art, Snapshots, Copy, Run program,
+        // Winetricks, Check, Clone, Remove, with three separators.
+        let content_height = action_menu_body_height(11, 3, None);
+        let height = action_menu_height(800.0, content_height);
+        assert_eq!(height, 509.0);
+        assert!(action_menu_scroll_height(height) >= content_height);
     }
 }
