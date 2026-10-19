@@ -731,3 +731,32 @@ fn arrows_on_an_empty_grid_change_nothing() {
     key(&mut app, Named::ArrowRight);
     assert_eq!(app.selected.as_deref(), Some("notepad"));
 }
+
+#[test]
+fn down_from_the_search_box_on_an_empty_grid_changes_nothing() {
+    let (_root, mut app) = loaded();
+    let _ = app.update(Message::Select("hades".into()));
+    let _ = app.update(Message::SearchChanged("zzz".into()));
+    assert!(shown(&app).is_empty());
+    let task = app.update(Message::KeyWithFocus(
+        Key::Named(Named::ArrowDown),
+        Modifiers::empty(),
+        iced::event::Status::Ignored,
+        true,
+    ));
+    assert_eq!(app.selected.as_deref(), Some("hades"));
+    assert!(app.panel_open);
+    assert!(app.search_focused);
+    // Nothing unfocuses the search box.
+    assert!(run_operations(task).is_empty());
+
+    // With cards shown, Down still moves to the first one.
+    let _ = app.update(Message::SearchChanged("pad".into()));
+    let _ = app.update(Message::KeyWithFocus(
+        Key::Named(Named::ArrowDown),
+        Modifiers::empty(),
+        iced::event::Status::Ignored,
+        true,
+    ));
+    assert_eq!(app.selected.as_deref(), Some("notepad"));
+}

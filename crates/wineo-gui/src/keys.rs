@@ -165,6 +165,11 @@ impl App {
             }
             Action::ClearSearch => self.update(Message::SearchChanged(String::new())),
             Action::GridFromSearch => {
+                // With nothing shown there's nowhere to go, so the kept
+                // selection and the search's focus both stay.
+                if self.filtered().is_empty() {
+                    return Task::none();
+                }
                 let old = self.selected.clone();
                 self.selected = self.filtered().first().map(|card| card.name.clone());
                 if self.selected != old {
