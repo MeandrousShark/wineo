@@ -98,15 +98,23 @@ only adds what it doesn't say. If the two disagree, `AGENTS.md` wins.
 ## Working with the maintainer
 
 - Record the answers to design questions in the plan.
-- The private Vikunja project `wineo` mirrors status: a task per plan step,
-  open questions and acceptance items in "Waiting on you", and raw ideas in
-  "Ideas". Only the primary session writes to it, and the repo stays the
-  source of truth. An idea joins the roadmap as a `features.md` row.
+- The private Vikunja project `wineo` mirrors status: the plan in progress
+  in "Doing", open questions and acceptance items in "Waiting on you", and
+  raw ideas in "Ideas". Only the primary session writes to it, and the repo
+  stays the source of truth. An idea joins the roadmap as a `features.md`
+  row.
   - "Plan queue" holds one card per queued plan, in queue order, top
-    first. When a plan starts, its card goes to Done and its steps get
-    To-Do cards. It mirrors the Queue section of `features.md`, which stays
-    the public roadmap, so a change to the queue updates both in the same
+    first. It mirrors the Queue section of `features.md`, which stays the
+    public roadmap, so a change to the queue updates both in the same
     stretch of work (maintainer, 2026-10-18).
+  - When a plan is approved, its queue card moves to "Doing", the only card
+    there, and its description gets a checkbox per implementation step
+    (`- [ ] Step N: ...` in Markdown), ticked as each step lands. Progress
+    notes (coder done, QA verdicts, fixes) are comments on that card. It
+    moves to Done when the plan is released (maintainer, 2026-10-19).
+  - Each 🧐 question and each acceptance item is its own card in "Waiting on
+    you", still asked in chat too. Once the answer is in the plan, the card
+    moves to Done.
   - Move a card with the `task_bucket_update` action (project 4, kanban
     view 16, bucket ids: Ideas 15, Plan queue 20, To-Do 12, Doing 13,
     Waiting on you 16, Done 14). Updating a task's `bucket_id` echoes it
