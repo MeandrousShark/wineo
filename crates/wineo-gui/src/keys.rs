@@ -240,7 +240,8 @@ impl App {
                 }
             }
             Action::OpenOrPlay => {
-                if self.version_visible()
+                if self.action_menu.is_some()
+                    || self.version_visible()
                     || (self.checkup_visible() && !self.panel_log_visible())
                     || !self.selected_shown()
                 {

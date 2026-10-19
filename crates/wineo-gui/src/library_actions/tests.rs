@@ -947,3 +947,37 @@ fn a_reply_for_the_old_environment_is_ignored_by_the_new_one() {
     let _ = finish(&mut app, "alpha", Flag::Favorite);
     assert!(entry(&app, "alpha").unwrap().favorite);
 }
+
+#[test]
+fn enter_does_nothing_while_the_context_menu_is_open() {
+    let (_root, mut app) = loaded();
+    let enter = |app: &mut App| {
+        let _ = app.update(Message::KeyWithFocus(
+            Key::Named(iced::keyboard::key::Named::Enter),
+            Modifiers::empty(),
+            iced::event::Status::Ignored,
+            false,
+        ));
+    };
+    // Closed panel: Enter would open it.
+    let _ = app.update(Message::Select("bravo".into()));
+    let _ = app.update(Message::ClosePanel);
+    let _ = app.update(Message::Context("charlie".into()));
+    enter(&mut app);
+    assert!(!app.panel_open);
+    assert_eq!(app.selected.as_deref(), Some("bravo"));
+    assert_eq!(app.action_menu.as_deref(), Some("charlie"));
+
+    // Open panel: Enter would launch.
+    let _ = app.update(Message::CloseMenu);
+    enter(&mut app);
+    assert!(
+        app.panel_open,
+        "Enter opens the panel once the menu is closed"
+    );
+    let _ = app.update(Message::Context("charlie".into()));
+    enter(&mut app);
+    assert!(app.operation.is_none());
+    assert!(app.panel_open);
+    assert_eq!(app.selected.as_deref(), Some("bravo"));
+}
