@@ -340,7 +340,7 @@ fn chip_view(chip: Chip, palette: Palette, live: bool) -> Element<'static, Messa
         .on_press_maybe(live.then(|| Message::Filter(Event::Remove(chip.clone()))))
         .style(move |_, status| quiet_style(palette, CHIP_X / 2.0, status));
     let x = tip(x.into(), format!("Remove filter: {label}"), palette, live);
-    let x = focus_button::control(
+    let x = focus_button::keyboard_control(
         x,
         live,
         id,
@@ -391,7 +391,7 @@ fn more_view(hidden: usize, palette: Palette, live: bool) -> Element<'static, Me
     } else {
         format!("{hidden} more filters")
     };
-    focus_button::control(
+    focus_button::keyboard_control(
         tip(more.into(), label, palette, live),
         live,
         MORE_ID,
@@ -407,7 +407,7 @@ fn clear_view(palette: Palette, live: bool) -> Element<'static, Message> {
             .padding(0)
             .on_press_maybe(live.then_some(Message::Filter(Event::ClearChips)))
             .style(move |_, status| quiet_style(palette, CLEAR_SIZE / 2.0, status));
-    focus_button::control(
+    focus_button::keyboard_control(
         tip(clear.into(), "Clear all filters".to_owned(), palette, live),
         live,
         CLEAR_ID,
@@ -432,7 +432,7 @@ pub(crate) fn remove(app: &mut App, chip: &Chip, keyboard: bool) -> Task<Message
     }
     let resorted = app.resorted();
     let Some(index) = index.filter(|_| keyboard) else {
-        return resorted;
+        return Task::batch([resorted, unfocus()]);
     };
     let target = match app.filter_tab() {
         Some(tab) if index < tab.chips.len() => tab.id_at(index),
@@ -440,6 +440,13 @@ pub(crate) fn remove(app: &mut App, chip: &Chip, keyboard: bool) -> Task<Message
         _ => FILTER_BUTTON_ID.to_owned(),
     };
     Task::batch([resorted, iced::widget::operation::focus(Id::from(target))])
+}
+
+/// A click on the tab ends like a click on any control that then goes
+/// away: nothing keeps focus, including a control beneath the tab that the
+/// press never reached.
+fn unfocus() -> Task<Message> {
+    iced::advanced::widget::operate(iced::advanced::widget::operation::focusable::unfocus())
 }
 
 /// Clears the store, platform, and tag filters, leaving the search alone
@@ -453,7 +460,7 @@ pub(crate) fn clear(app: &mut App, keyboard: bool) -> Task<Message> {
     app.filters.tags.clear();
     let resorted = app.resorted();
     if !keyboard {
-        return resorted;
+        return Task::batch([resorted, unfocus()]);
     }
     Task::batch([
         resorted,

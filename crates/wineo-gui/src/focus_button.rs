@@ -25,6 +25,25 @@ pub(crate) fn control<'a, M: Clone + 'a>(
         enabled,
         id: id.into(),
         on_press,
+        mouse_focus: true,
+    })
+}
+
+/// A control that takes focus only from the keyboard, for a layer over the
+/// page: its press never reaches the controls beneath, so taking focus on
+/// one would leave theirs showing too.
+pub(crate) fn keyboard_control<'a, M: Clone + 'a>(
+    content: Element<'a, M>,
+    enabled: bool,
+    id: impl Into<iced::widget::Id>,
+    on_press: M,
+) -> Element<'a, M> {
+    Element::new(FocusControl {
+        content,
+        enabled,
+        id: id.into(),
+        on_press,
+        mouse_focus: false,
     })
 }
 
@@ -137,6 +156,7 @@ struct FocusControl<'a, M, R: AdvancedRenderer = iced::Renderer> {
     enabled: bool,
     id: iced::widget::Id,
     on_press: M,
+    mouse_focus: bool,
 }
 
 #[derive(Default)]
@@ -238,7 +258,7 @@ where
         match event {
             Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left))
             | Event::Touch(iced::touch::Event::FingerPressed { .. }) => {
-                let focused = self.enabled && cursor.is_over(layout.bounds());
+                let focused = self.enabled && self.mouse_focus && cursor.is_over(layout.bounds());
                 if state.focused != focused {
                     state.focused = focused;
                     shell.request_redraw();
@@ -355,6 +375,7 @@ mod tests {
             enabled,
             id: UNDO_ID.into(),
             on_press: crate::Message::Undo,
+            mouse_focus: true,
         });
         let mut tree = tree::Tree::new(widget.as_widget());
         let bounds = Size::new(100.0, 32.0);
@@ -394,6 +415,7 @@ mod tests {
             enabled: true,
             id: UNDO_ID.into(),
             on_press: crate::Message::Undo,
+            mouse_focus: true,
         });
         let mut tree = tree::Tree::new(widget.as_widget());
         let bounds = Size::new(100.0, 32.0);
@@ -437,6 +459,7 @@ mod tests {
             enabled: true,
             id: UNDO_ID.into(),
             on_press: crate::Message::Undo,
+            mouse_focus: true,
         });
         let mut tree = tree::Tree::new(widget.as_widget());
         let bounds = Size::new(100.0, 32.0);
@@ -582,6 +605,7 @@ mod tests {
                         enabled: true,
                         id: id.into(),
                         on_press: on_press.clone(),
+                        mouse_focus: true,
                     });
                 let mut tree = tree::Tree::new(widget.as_widget());
                 tree.state.downcast_mut::<State>().focus();

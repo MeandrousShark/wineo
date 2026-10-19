@@ -73,7 +73,32 @@ pub(crate) fn lay_out<'a, M>(mut element: Element<'a, M>, size: Size) -> Laid<'a
     }
 }
 
+/// Lays out `element` over `tree` from an earlier layout, diffed the way
+/// the runtime does after an update, so widget state carries over.
+pub(crate) fn relay_out<'a, M>(element: Element<'a, M>, mut tree: Tree, size: Size) -> Laid<'a, M> {
+    let renderer = renderer();
+    tree.diff(element.as_widget());
+    let mut element = element;
+    let node = element.as_widget_mut().layout(
+        &mut tree,
+        &renderer,
+        &layout::Limits::new(Size::ZERO, size),
+    );
+    Laid {
+        element,
+        tree,
+        node,
+        renderer,
+        size,
+    }
+}
+
 impl<M> Laid<'_, M> {
+    /// The widget state, for `relay_out` after the view is rebuilt.
+    pub(crate) fn into_tree(self) -> Tree {
+        self.tree
+    }
+
     /// Runs `operation` and any operation it chains to.
     pub(crate) fn run(&mut self, mut operation: Box<dyn Operation>) {
         loop {

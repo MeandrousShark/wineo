@@ -734,3 +734,57 @@ fn the_wheel_over_the_tab_scrolls_the_grid_like_the_grid_itself() {
     drive(&mut laid, super::wheel(*delta));
     assert_eq!(grid_offset(&mut laid), direct);
 }
+
+#[test]
+fn a_mouse_removal_leaves_no_ring_on_the_tab() {
+    let mut app = loaded(1600.0);
+    for event in [
+        Event::ToggleStore("GOG"),
+        Event::TogglePlatform("Windows"),
+        Event::ToggleTag("Indie".into()),
+        Event::ToggleTag("rpg".into()),
+    ] {
+        let _ = filter(&mut app, event);
+    }
+    placed(&mut app);
+    for start in [Some(FILTER_BUTTON_ID), None] {
+        let mut laid = lay_out(app.view(), app.window_size);
+        if let Some(id) = start {
+            // Where Esc from the popup leaves focus.
+            focus(&mut laid, id);
+        }
+        let x = bounds(&mut laid, Chip::Store("GOG").id()).unwrap();
+        let messages = click(&mut laid, x.center());
+        // At most one control has focus at any point, and never the tab's.
+        let focused = laid.focused();
+        assert!(focused.len() <= 1, "{focused:?}");
+        let tab: Vec<Id> = app
+            .filter_tab()
+            .unwrap()
+            .ids()
+            .into_iter()
+            .map(Id::from)
+            .collect();
+        assert!(!focused.iter().any(|id| tab.contains(id)), "{focused:?}");
+        let tree = laid.into_tree();
+        let tasks: Vec<_> = messages
+            .into_iter()
+            .map(|message| app.update(message))
+            .collect();
+        assert!(!app.filters.stores.contains("GOG"));
+        let mut laid = crate::layout_probe::relay_out(app.view(), tree, app.window_size);
+        drive(&mut laid, Task::batch(tasks));
+        let focused = laid.focused();
+        assert!(focused.len() <= 1, "{focused:?}");
+        let tab: Vec<Id> = app
+            .filter_tab()
+            .unwrap()
+            .ids()
+            .into_iter()
+            .map(Id::from)
+            .collect();
+        assert!(!focused.iter().any(|id| tab.contains(id)), "{focused:?}");
+        drop(laid);
+        let _ = filter(&mut app, Event::ToggleStore("GOG"));
+    }
+}
