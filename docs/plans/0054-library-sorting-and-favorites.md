@@ -1181,6 +1181,69 @@ Idle CPU halved with the rescan (3.75% to 1.80%). RSS grew about 11 MiB,
 the parsed playtime logs the cache keeps (10.3 MiB of logs on disk).
 Scrolling is unchanged, and the main thread still doesn't wake while idle.
 
+### After step 6 (d53426cc, 2026-10-18)
+
+The finished work, same library, machine, and `release-test` profile,
+each bench on its own with nothing else running. `filter_change` is new
+(67880ee9); it toggles filters in memory with 30 cards hidden.
+
+| Measurement | min | median | p90 | max |
+|---|---:|---:|---:|---:|
+| Quiet rescan, ms | 34.1 | 34.5 | 35.1 | 35.8 |
+| Busy rescan, ms | 73.3 | 79.4 | 85.0 | 86.5 |
+| `stats::overview_cached`, warm, ms | 10.9 | 11.0 | 11.1 | 12.4 |
+| A cold library read (`load_library`), ms | 68.4 | 69.1 | 69.8 | 70.6 |
+| Order rebuild per search change, us | 27.3 | 37.5 | 40.6 | 53.0 |
+| Order rebuild per sort change, us | 21.3 | 28.8 | 35.0 | 45.3 |
+| Order rebuild per tag filter toggle, us | 22.7 | 24.6 | 25.4 | 40.8 |
+| Order rebuild per source filter toggle, us | 21.8 | 24.1 | 24.6 | 39.3 |
+| Order rebuild per Show hidden toggle, us | 23.9 | 25.9 | 26.4 | 31.4 |
+
+Rescans and the stats read match step 2. The search row isn't
+comparable to step 0's 17.3 us: step 0 timed the old `filtered()`, which
+only filtered in library order, while the rebuild now also builds the
+sort keys and sorts what matched. It runs once per change, and every
+frame after reads the cached order. A sort or filter change costs about
+25 us.
+
+Xvfb with software rendering, 8 fresh launches:
+
+| Measurement | min | median | p90 | max |
+|---|---:|---:|---:|---:|
+| Idle CPU, % of one core | 1.75 | 1.80 | 1.85 | 1.85 |
+| RSS, MiB | 91 | 92 | 93 | 93 |
+| Scroll CPU, % of one core | 60.2 | 61.3 | 63.2 | 63.2 |
+| Scroll frames/s | 8.8 | 9.3 | 10.5 | 10.5 |
+
+Idle CPU stays half of step 0's, with no main-thread wakeups. RSS is
+step 2's plus 1 MiB, so steps 3 to 5 added no meaningful memory. Scroll
+frames/s sits inside step 0's wide spread (7.3 to 10.8), with scroll CPU
+unchanged.
+
+Real hardware (2026-10-18, run by the primary session with the
+maintainer's go-ahead): the maintainer's Hyprland session on the GPU
+renderer (Radeon Vulkan), the window alone on a 3840x2160 monitor, the
+same 300-game library copied so writes couldn't touch the bench root,
+and no session bus. Each build ran twice, alternating, with the same
+script: 15 s to settle, 30 s focused idle, then a keyboard sweep from the
+top row to the bottom and back (19 rows, about 5 per second):
+
+| Measurement | 0.35.1 | finished work |
+|---|---|---|
+| Focused idle CPU, % | 3.43 to 3.47 | 1.80 |
+| Sweep down, % per second | 13 to 33 | 12 to 30 |
+| Sweep back up, % per second | 1 to 24 | 4 to 26 |
+| RSS idle, MiB | 173 | 185 |
+| RSS after the sweeps, MiB | 222 | 246 to 248 |
+
+A first launch on the fresh copy, measured before these, spent about
+100% of a core for 3 s on the first sweep down, a one-time cost of
+cold files that neither build repeated. In the same session, a search
+for "ember", a sort change to Playtime, the GOG source filter, and `F`
+on a card each showed their result within 150 ms of the key, at 3 to 9%
+CPU, and the favorite wrote one field to `library.toml`. The menus drew
+cleanly on the GPU renderer.
+
 ## Testing and acceptance
 
 - Core: `library.toml` round-trips, ignores unknown keys, keeps a newer
