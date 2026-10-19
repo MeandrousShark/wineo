@@ -2,7 +2,7 @@
 
 use iced::Task;
 
-use crate::library::{Card, load_library};
+use crate::library::{Card, load_library_and_problem};
 use crate::{App, Message, order, rescan, sidebar, task, trash_page};
 
 impl App {
@@ -11,9 +11,15 @@ impl App {
         self.shown.reloading_library();
         let generation = self.library_generation;
         let paths = self.paths.clone();
-        task::blocking(
-            move || load_library(&paths).map_err(|e| e.to_string()),
-            move |result| Message::LibraryReloaded(generation, result),
+        task::blocking_value(
+            move || {
+                let (cards, problem) = load_library_and_problem(&paths);
+                (cards.map_err(|e| e.to_string()), problem)
+            },
+            move |result| match result {
+                Ok((cards, problem)) => Message::LibraryRead(generation, cards, problem),
+                Err(error) => Message::LibraryReloaded(generation, Err(error)),
+            },
         )
     }
 
@@ -48,10 +54,8 @@ impl App {
             }
             _ => Task::none(),
         };
-        // Explicit reloads don't read the problem, so the rescan's always applies.
         if let Some(problem) = scan.problem {
-            self.shown.show_problem(problem.clone());
-            self.library_problem = problem;
+            self.problem_read(problem);
         }
         let library = match scan.library {
             Some(result) if !self.refreshing => self.update(Message::Loaded(result)),
@@ -71,6 +75,13 @@ impl App {
             _ => Task::none(),
         };
         Task::batch([library, trash, art])
+    }
+
+    /// Shows or clears the banner for `library.toml`, and has the rescan
+    /// compare against it.
+    pub(crate) fn problem_read(&mut self, problem: Option<wineo_core::library::Problem>) {
+        self.shown.show_problem(problem.clone());
+        self.library_problem = problem;
     }
 
     /// `merge_checked` for tests, which don't run the checks it schedules.
@@ -103,8 +114,16 @@ impl App {
                 .iter()
                 .zip(&cards)
                 .all(|(old, new)| order::same_inputs(old, new)))
-        .then(|| order::Order::sorted(&cards, &self.search, self.query));
-        let layout_changed = new_order.as_ref().is_some_and(|indices| {
+        .then(|| {
+            order::Order::sorted(order::Of {
+                cards: &cards,
+                search: &self.search,
+                query: self.query,
+                filters: &self.filters,
+            })
+        });
+        let layout_changed = new_order.as_ref().is_some_and(|built| {
+            let indices = built.indices();
             let old = self.filtered();
             old.len() != indices.len()
                 || old.iter().zip(indices).any(|(old, &index)| {
@@ -132,11 +151,15 @@ impl App {
         }
         self.shown.show_library(Ok(cards.clone()));
         self.cards = cards;
+        let of = order::Of {
+            cards: &self.cards,
+            search: &self.search,
+            query: self.query,
+            filters: &self.filters,
+        };
         match new_order {
-            Some(indices) => self
-                .order
-                .replace(indices, &self.cards, &self.search, self.query),
-            None => self.order.keep(&self.cards, &self.search, self.query),
+            Some(built) => self.order.replace(built, of),
+            None => self.order.keep(of),
         }
         self.refresh_facts();
         if layout_changed {

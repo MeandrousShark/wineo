@@ -2,18 +2,18 @@
 //! first", the direction button, and saving each change to `library.toml`.
 
 use iced::keyboard::{Key, Modifiers, key::Named};
-use iced::widget::{
-    Space, button, column, container, mouse_area, row, scrollable, svg, text, tooltip,
-};
-use iced::{Center, Color, Element, Fill, Font, Point, Rectangle, Task, border, font};
+use iced::widget::{button, column, container, row, scrollable, text, tooltip};
+use iced::{Center, Element, Fill, Font, Point, Rectangle, Task, border, font};
 use wineo_core::library::{self, SortKey};
 use wineo_core::paths::Paths;
 
 use crate::grid::{
     ACTION_MENU_HEADER_HEIGHT, ACTION_MENU_MARGIN, ACTION_MENU_PADDING, ACTION_MENU_SPACING,
-    ACTION_MENU_WIDTH, context_menu_style, menu_position,
+    ACTION_MENU_WIDTH, menu_position,
 };
-use crate::theme::Palette;
+#[cfg(test)]
+use crate::library_menu::bounds_of;
+use crate::library_menu::{CHEVRON, anchor_under, check_box, icon, menu_row};
 use crate::ui::{self, ScrollStyle};
 use crate::{App, Message, focus_button, rescan};
 
@@ -22,10 +22,8 @@ pub(crate) const DIRECTION_BUTTON_ID: &str = "library-sort-direction";
 const FAVORITES_FIRST_ID: &str = "library-sort-favorites-first";
 const NOTICE_TIME: std::time::Duration = std::time::Duration::from_secs(8);
 
-const CHEVRON: &[u8] = br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><path d="M4 6l4 4 4-4" fill="none" stroke="#000" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>"##;
 const ARROW_DOWN: &[u8] = br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><path d="M8 2.5v11M3.5 9l4.5 4.5L12.5 9" fill="none" stroke="#000" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>"##;
 const ARROW_UP: &[u8] = br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><path d="M8 13.5v-11M3.5 7l4.5-4.5L12.5 7" fill="none" stroke="#000" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>"##;
-const CHECK: &[u8] = br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><path d="M3.5 8.5l3 3 6-6.5" fill="none" stroke="#000" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>"##;
 
 #[derive(Debug, Clone)]
 pub(crate) enum Event {
@@ -100,20 +98,6 @@ impl Writes {
             Field::Descending(_) => self.descending = None,
             Field::FavoritesFirst(_) => self.favorites_first = None,
         }
-    }
-}
-
-/// The keyboard's request to open the menu while it looks up the button.
-#[derive(Debug, Default)]
-pub(crate) struct Opening {
-    last: u64,
-    pending: Option<u64>,
-}
-
-impl Opening {
-    /// Drops the request in flight, so its reply is ignored.
-    pub(crate) fn cancel(&mut self) {
-        self.pending = None;
     }
 }
 
@@ -238,29 +222,18 @@ pub(crate) fn update(app: &mut App, event: Event) -> Task<Message> {
             }
             // The pointer may be anywhere, so the menu waits for where
             // the button is.
-            app.sort_opening.last += 1;
-            let request = app.sort_opening.last;
-            app.sort_opening.pending = Some(request);
-            iced::advanced::widget::operate(bounds_of(SORT_BUTTON_ID))
-                .map(move |bounds| Message::Sort(Event::OpenUnder(request, bounds)))
+            crate::library_menu::request_bounds(
+                &mut app.sort_opening,
+                SORT_BUTTON_ID,
+                |request, bounds| Message::Sort(Event::OpenUnder(request, bounds)),
+            )
         }
         Event::OpenUnder(request, bounds) => {
-            if app.sort_opening.pending != Some(request) {
-                return Task::none();
-            }
-            app.sort_opening.cancel();
             // Whatever took the window since the press keeps it.
-            if app.exiting
-                || app.closing
-                || app.sort_menu
-                || app.action_menu.is_some()
-                || app.hook_stop_confirm.is_some()
-                || app.section != crate::sidebar::Section::Library
-                || app.panel_hidden()
-            {
+            if !app.sort_opening.answer(request) || !app.library_menu_may_open() {
                 return Task::none();
             }
-            open_menu(app, bounds.map_or(app.menu_anchor, menu_anchor_under))
+            open_menu(app, bounds.map_or(app.menu_anchor, anchor_under))
         }
         Event::CloseMenu => {
             app.sort_opening.cancel();
@@ -308,55 +281,12 @@ pub(crate) fn update(app: &mut App, event: Event) -> Task<Message> {
 }
 
 fn open_menu(app: &mut App, position: Point) -> Task<Message> {
-    app.action_menu = None;
+    app.close_library_menus();
     app.sort_menu = true;
     app.sort_menu_position = position;
     // Focus moves into the menu, so a second Enter or Space picks a row
     // instead of closing it again.
     iced::widget::operation::focus(iced::widget::Id::new(row_id(app.query.sort)))
-}
-
-/// The pointer position that puts the menu a small gap under the button's
-/// left edge. `menu_position` offsets a pointer by 4 px each way.
-fn menu_anchor_under(button: Rectangle) -> Point {
-    Point::new(button.x - 4.0, button.y + button.height)
-}
-
-/// Finds the bounds of the focus control with `id`, if it is on screen.
-fn bounds_of(id: &'static str) -> impl iced::advanced::widget::Operation<Option<Rectangle>> {
-    struct Bounds {
-        id: iced::widget::Id,
-        found: Option<Rectangle>,
-    }
-
-    impl iced::advanced::widget::Operation<Option<Rectangle>> for Bounds {
-        fn traverse(
-            &mut self,
-            operate: &mut dyn FnMut(&mut dyn iced::advanced::widget::Operation<Option<Rectangle>>),
-        ) {
-            operate(self);
-        }
-
-        fn focusable(
-            &mut self,
-            id: Option<&iced::widget::Id>,
-            bounds: Rectangle,
-            _state: &mut dyn iced::advanced::widget::operation::Focusable,
-        ) {
-            if id == Some(&self.id) {
-                self.found = Some(bounds);
-            }
-        }
-
-        fn finish(&self) -> iced::advanced::widget::operation::Outcome<Option<Rectangle>> {
-            iced::advanced::widget::operation::Outcome::Some(self.found)
-        }
-    }
-
-    Bounds {
-        id: iced::widget::Id::new(id),
-        found: None,
-    }
 }
 
 /// Keys while the menu is open: Escape closes it, Tab and the up and down
@@ -375,13 +305,6 @@ pub(crate) fn key(app: &mut App, key: &Key, modifiers: Modifiers) -> Task<Messag
         }
         _ => Task::none(),
     }
-}
-
-fn icon(bytes: &'static [u8], color: Color, size: f32) -> svg::Svg<'static> {
-    svg(svg::Handle::from_memory(bytes))
-        .width(size)
-        .height(size)
-        .style(move |_, _| svg::Style { color: Some(color) })
 }
 
 /// The Sort button and the direction button, for the toolbar beside the
@@ -453,55 +376,6 @@ fn menu_height(window_height: f32) -> f32 {
     (content + 2.0 * ACTION_MENU_PADDING).min((window_height - 2.0 * ACTION_MENU_MARGIN).max(0.0))
 }
 
-fn menu_row<'a>(
-    content: Element<'a, Message>,
-    palette: Palette,
-    chosen: bool,
-    id: &'static str,
-    message: Message,
-) -> Element<'a, Message> {
-    let row = button(container(content).height(Fill).center_y(Fill))
-        .width(Fill)
-        .height(ui::BUTTON_HEIGHT)
-        .padding([0, 10])
-        .on_press(message.clone())
-        .style(move |_, status| {
-            let mut style = context_menu_style(palette, false, status);
-            if chosen && status == button::Status::Active {
-                style.background = Some(palette.primary.scale_alpha(0.12).into());
-            }
-            style
-        });
-    focus_button::control(row.into(), true, id, message)
-}
-
-/// A box that shows whether "Favorites first" is on.
-fn check_box(on: bool, palette: Palette) -> Element<'static, Message> {
-    let mark: Element<'static, Message> = if on {
-        icon(CHECK, ui::accent_ink(palette.primary), 12.0).into()
-    } else {
-        Space::new().into()
-    };
-    container(mark)
-        .width(16)
-        .height(16)
-        .center(16)
-        .style(move |_| {
-            let style =
-                container::Style::default().border(border::rounded(4).width(1).color(if on {
-                    palette.primary
-                } else {
-                    palette.muted
-                }));
-            if on {
-                style.background(palette.primary)
-            } else {
-                style
-            }
-        })
-        .into()
-}
-
 impl App {
     /// The open Sort menu over the page, placed like the action menu.
     pub(crate) fn sort_menu_view(&self) -> [Element<'_, Message>; 2] {
@@ -548,36 +422,8 @@ impl App {
             .padding(ACTION_MENU_PADDING)
             .width(ACTION_MENU_WIDTH)
             .height(height)
-            .style(move |_| {
-                container::Style::default()
-                    .background(palette.surface)
-                    .border(
-                        border::rounded(ui::SECTION_RADIUS)
-                            .width(1)
-                            .color(palette.border),
-                    )
-                    .shadow(iced::Shadow {
-                        color: Color::BLACK.scale_alpha(0.2),
-                        offset: iced::Vector::new(0.0, 4.0),
-                        blur_radius: 14.0,
-                    })
-            });
-        [
-            mouse_area(Space::new().width(Fill).height(Fill))
-                .on_press(Message::Sort(Event::CloseMenu))
-                .on_right_press(Message::Sort(Event::CloseMenu))
-                .into(),
-            container(menu)
-                .padding(iced::Padding {
-                    top: position.y,
-                    left: position.x,
-                    right: 0.0,
-                    bottom: 0.0,
-                })
-                .width(Fill)
-                .height(Fill)
-                .into(),
-        ]
+            .style(move |_| crate::library_menu::surface_style(palette));
+        crate::library_menu::layers(menu.into(), position, Message::Sort(Event::CloseMenu))
     }
 }
 

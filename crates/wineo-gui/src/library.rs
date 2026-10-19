@@ -290,7 +290,19 @@ fn fallback_played(kind: Option<CardKind>) -> Played {
 }
 
 pub(super) fn load_library(paths: &Paths) -> anyhow::Result<Vec<Card>> {
-    load_library_with(paths, &wineo_core::library::load(paths), None)
+    load_library_and_problem(paths).0
+}
+
+/// `load_library` with `library.toml`'s problem from the same read, so an
+/// explicit reload shows or clears the banner itself.
+pub(super) fn load_library_and_problem(
+    paths: &Paths,
+) -> (
+    anyhow::Result<Vec<Card>>,
+    Option<wineo_core::library::Problem>,
+) {
+    let saved = wineo_core::library::load(paths);
+    (load_library_with(paths, &saved, None), saved.problem)
 }
 
 /// `load_library` with `library.toml` already read and, when given, the

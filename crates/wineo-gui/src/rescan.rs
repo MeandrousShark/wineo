@@ -25,7 +25,7 @@ pub(crate) const INTERVAL: Duration = Duration::from_secs(2);
 #[derive(Default)]
 struct Shown {
     library: Option<Result<Vec<Card>, String>>,
-    /// `library.toml`'s problem, which only rescans read.
+    /// `library.toml`'s problem, as last shown.
     problem: Option<Problem>,
     badge: Option<TrashBadge>,
     /// The trash page's snapshot, with its "removed N ago" labels as of

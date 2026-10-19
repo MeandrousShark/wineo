@@ -472,6 +472,10 @@ impl App {
             let [backdrop, menu] = self.sort_menu_view();
             return page.push(backdrop).push(menu).into();
         }
+        if self.filter_menu_shown() {
+            let [backdrop, menu] = self.filter_menu_view();
+            return page.push(backdrop).push(menu).into();
+        }
         if let Some(name) = &self.action_menu {
             let palette = self.palette;
             let wine_actions = self.wine_actions_with(&self.facts, name);
@@ -770,6 +774,9 @@ impl App {
             .style(move |_| container::Style::default().background(palette.background))
             .into();
         }
+        if let Some(banner) = self.library_banner() {
+            page = page.push(banner);
+        }
         if let Some(error) = &self.error {
             page = page.push(
                 container(text(format!("Failed to load library: {error}")).color(palette.danger))
@@ -852,7 +859,8 @@ impl App {
         } else {
             container(Space::new()).width(Fill).height(Fill).into()
         };
-        let content = stack![library, panel_layer];
+        // Always a layer, so the panel's place in the tree never moves.
+        let content = stack![library, self.empty_state_view(), panel_layer];
         container(page.push(content))
             .width(Fill)
             .height(Fill)
@@ -940,9 +948,13 @@ impl App {
                         ..Font::DEFAULT
                     })
                     .color(palette.foreground),
-                row![search, crate::sort_control::toolbar(self)]
-                    .spacing(8)
-                    .align_y(Center),
+                row![
+                    search,
+                    crate::sort_control::toolbar(self),
+                    crate::filter_control::toolbar(self)
+                ]
+                .spacing(8)
+                .align_y(Center),
                 crate::ui::accent_control(
                     "Add",
                     palette.primary,
