@@ -36,17 +36,10 @@ pub enum SortKey {
     LastPlayed,
     Playtime,
     Added,
-    Source,
 }
 
 impl SortKey {
-    pub const ALL: [Self; 5] = [
-        Self::Name,
-        Self::LastPlayed,
-        Self::Playtime,
-        Self::Added,
-        Self::Source,
-    ];
+    pub const ALL: [Self; 4] = [Self::Name, Self::LastPlayed, Self::Playtime, Self::Added];
 
     /// Whether the key starts descending when picked: names run A to Z, and
     /// the rest lead with the most recent, most played, or newest.
@@ -60,7 +53,6 @@ impl SortKey {
             "last-played" => Some(Self::LastPlayed),
             "playtime" => Some(Self::Playtime),
             "added" => Some(Self::Added),
-            "source" => Some(Self::Source),
             _ => None,
         }
     }
@@ -657,7 +649,6 @@ fn sort_name(sort: SortKey) -> &'static str {
         SortKey::LastPlayed => "last-played",
         SortKey::Playtime => "playtime",
         SortKey::Added => "added",
-        SortKey::Source => "source",
     }
 }
 

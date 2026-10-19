@@ -18,7 +18,6 @@ pub struct SortFields<'a> {
     pub playtime_unknown: bool,
     pub last_played: Option<Timestamp>,
     pub added: Option<Timestamp>,
-    pub source: &'a str,
     pub favorite: bool,
 }
 
@@ -60,7 +59,6 @@ fn compare_key(
 ) -> Ordering {
     match sort {
         SortKey::Name => directed(Value::Known(a.title), Value::Known(b.title), descending),
-        SortKey::Source => directed(Value::Known(a.source), Value::Known(b.source), descending),
         SortKey::Playtime => directed(playtime(a), playtime(b), descending),
         // Never played is None, which is older than any time.
         SortKey::LastPlayed => directed(last_played(a), last_played(b), descending),
@@ -107,7 +105,6 @@ mod tests {
         playtime_unknown: bool,
         last_played: Option<Timestamp>,
         added: Option<Timestamp>,
-        source: &'static str,
         favorite: bool,
     }
 
@@ -123,7 +120,6 @@ mod tests {
             playtime_unknown: false,
             last_played: None,
             added: None,
-            source: "Windows",
             favorite: false,
         }
     }
@@ -141,13 +137,11 @@ mod tests {
     fn library() -> Vec<Game> {
         vec![
             Game {
-                source: "Steam",
                 favorite: true,
                 added: at(40),
                 ..played("hades", 40 * 3600, 90)
             },
             Game {
-                source: "GOG",
                 added: at(10),
                 ..played("papers-please", 6 * 3600, 60)
             },
@@ -156,7 +150,6 @@ mod tests {
                 ..game("notepad")
             },
             Game {
-                source: "Native",
                 favorite: true,
                 ..played("balatro", 20 * 3600, 100)
             },
@@ -177,7 +170,6 @@ mod tests {
                 playtime_unknown: game.playtime_unknown,
                 last_played: game.last_played,
                 added: game.added,
-                source: game.source,
                 favorite: game.favorite,
             })
             .collect();
@@ -266,37 +258,6 @@ mod tests {
     }
 
     #[test]
-    fn source_sorts_by_label_and_ties_by_name_ascending() {
-        let mut games = library();
-        games.push(Game {
-            source: "GOG",
-            ..game("disco")
-        });
-        assert_eq!(
-            order(&games, SortKey::Source, false, false),
-            [
-                "disco",
-                "papers-please",
-                "balatro",
-                "hades",
-                "notepad",
-                "old-demo"
-            ]
-        );
-        assert_eq!(
-            order(&games, SortKey::Source, true, false),
-            [
-                "notepad",
-                "old-demo",
-                "hades",
-                "balatro",
-                "disco",
-                "papers-please"
-            ]
-        );
-    }
-
-    #[test]
     fn favorites_lead_either_direction_only_when_asked() {
         let games = library();
         assert_eq!(
@@ -332,7 +293,6 @@ mod tests {
             SortKey::LastPlayed,
             SortKey::Playtime,
             SortKey::Added,
-            SortKey::Source,
         ] {
             assert_eq!(
                 order(&games, sort, false, false),

@@ -131,7 +131,7 @@ fn favorites_write(writes: &Writes) -> Option<Field> {
 #[test]
 fn every_key_and_direction_orders_the_grid() {
     let (_root, mut app) = loaded();
-    let cases: [(SortKey, bool, [&str; 6]); 10] = [
+    let cases: [(SortKey, bool, [&str; 6]); 8] = [
         (
             SortKey::Name,
             false,
@@ -226,30 +226,6 @@ fn every_key_and_direction_orders_the_grid() {
                 "hades",
                 "steam-game",
                 "balatro",
-            ],
-        ),
-        (
-            SortKey::Source,
-            false,
-            [
-                "papers-please",
-                "balatro",
-                "hades",
-                "steam-game",
-                "notepad",
-                "old-demo",
-            ],
-        ),
-        (
-            SortKey::Source,
-            true,
-            [
-                "notepad",
-                "old-demo",
-                "hades",
-                "steam-game",
-                "balatro",
-                "papers-please",
             ],
         ),
     ];
@@ -487,6 +463,20 @@ fn boot_applies_the_saved_view_without_writing() {
     assert!(app.view_writes.sort.is_none());
     assert!(app.view_writes.descending.is_none());
     assert!(app.view_writes.favorites_first.is_none());
+}
+
+#[test]
+fn a_saved_source_sort_boots_as_name_with_the_saved_direction() {
+    let root = tempfile::tempdir().unwrap();
+    let paths = paths(&root);
+    let text = "[view]\nsort = \"source\"\ndescending = true\n";
+    write_library(&paths, text);
+    let mut app = App::boot(paths.clone()).0;
+    assert_eq!(app.query.sort, SortKey::Name);
+    assert!(app.query.descending);
+    let _ = app.update(Message::Loaded(Ok(library())));
+    assert_eq!(shown(&app)[0], "steam-game");
+    assert_eq!(fs::read_to_string(paths.library_file()).unwrap(), text);
 }
 
 #[test]
@@ -1175,8 +1165,6 @@ fn the_direction_tooltip_names_the_current_order_of_each_key() {
     let cases = [
         (SortKey::Name, false, "A to Z"),
         (SortKey::Name, true, "Z to A"),
-        (SortKey::Source, false, "Sources A to Z"),
-        (SortKey::Source, true, "Sources Z to A"),
         (SortKey::Playtime, true, "Most played first"),
         (SortKey::Playtime, false, "Least played first"),
         (SortKey::LastPlayed, true, "Most recent first"),

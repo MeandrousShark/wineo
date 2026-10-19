@@ -211,7 +211,6 @@ impl Order {
                 playtime_unknown: card.playtime_unknown,
                 last_played: card.last_played_at,
                 added: card.added,
-                source: card.source.label(),
                 favorite: card.favorite,
             })
             .collect();
