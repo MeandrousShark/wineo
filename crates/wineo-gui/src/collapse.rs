@@ -32,8 +32,6 @@ const FADE_IN: Duration = Duration::from_millis(800);
 const CAPTION_DELAY: Duration = Duration::from_millis(150);
 const CAPTION_FADE: Duration = Duration::from_millis(150);
 const HOME: f32 = 0.98;
-/// The poster's half size inside its 2 px selection frame.
-const HALF_POSTER: Vector = Vector::new(78.0, 118.0);
 const FRAME: f32 = 2.0;
 
 /// Recent Library row clicks. Only a burst inside a short sliding window
@@ -80,6 +78,9 @@ pub(crate) struct Area {
     pub(crate) width: f32,
     pub(crate) columns: usize,
     pub(crate) drop: f32,
+    /// The poster's half size inside its 2 px selection frame, at the
+    /// grid's zoom.
+    pub(crate) half_poster: Vector,
 }
 
 #[derive(Debug, Default)]
@@ -248,7 +249,7 @@ impl Collapse {
                 let settle = falls
                     .iter()
                     .flatten()
-                    .map(|fall| fall.delay + fall.settle(area.drop))
+                    .map(|fall| fall.delay + fall.settle(area.drop, area.half_poster))
                     .fold(0.0, f32::max);
                 if fall_seconds(*started, now) >= settle {
                     *resting = true;
@@ -425,11 +426,12 @@ impl Fall {
     fn rest(&self, slot: Point, area: Area) -> (Point, f32) {
         let rotation = self.spin;
         // The lowest point of the rotated poster touches the floor.
-        let extent = HALF_POSTER.x * rotation.sin().abs() + HALF_POSTER.y * rotation.cos().abs();
+        let half = area.half_poster;
+        let extent = half.x * rotation.sin().abs() + half.y * rotation.cos().abs();
         let center_y = area.floor - extent - self.stack;
-        let max_x = (area.width - 2.0 * (HALF_POSTER.x + FRAME)).max(0.0);
+        let max_x = (area.width - 2.0 * (half.x + FRAME)).max(0.0);
         let x = (slot.x + self.drift).clamp(0.0, max_x);
-        (Point::new(x, center_y - HALF_POSTER.y - FRAME), rotation)
+        (Point::new(x, center_y - half.y - FRAME), rotation)
     }
 
     /// The upward speed at release. Cards already below their resting
@@ -448,9 +450,8 @@ impl Fall {
     /// ends. The slot isn't known here, so this takes the worse of the
     /// longest drop (`drop`, from the highest visible slot) and the longest
     /// climb (a card whose slot sits at the floor, below where it rests).
-    fn settle(&self, drop: f32) -> f32 {
-        let climb =
-            -(2.0 * HALF_POSTER.y + 2.0 * FRAME + HALF_POSTER.x.hypot(HALF_POSTER.y) + self.stack);
+    fn settle(&self, drop: f32, half: Vector) -> f32 {
+        let climb = -(2.0 * half.y + 2.0 * FRAME + half.x.hypot(half.y) + self.stack);
         [drop.max(0.0), climb]
             .into_iter()
             .map(|height| {

@@ -15,6 +15,7 @@ use iced::{
 
 use crate::collapse::{Collapse, Look};
 use crate::{CARD_WIDTH, GAP, SCROLL_ID};
+use wineo_core::library::{ZOOM_DEFAULT, ZOOM_MAX, ZOOM_MIN};
 
 const DURATION: Duration = Duration::from_millis(300);
 const FREQUENCY: f32 = 28.0;
@@ -27,6 +28,68 @@ pub(crate) const PANEL_WIDTH: f32 = 420.0;
 pub(crate) const RAIL_WIDTH: f32 = 10.0;
 pub(crate) const DOCK_WIDTH: f32 = PANEL_WIDTH + RAIL_WIDTH;
 pub(crate) const PADDING: f32 = 16.0;
+/// The poster's height at 100%, a 2:3 cover under the base `CARD_WIDTH`.
+const BASE_POSTER_HEIGHT: f32 = 240.0;
+/// The selection border and the gap inside it, on each side of the art.
+const FRAME_INSET: f32 = 4.0;
+const TILE_TITLE_SIZE: f32 = 14.0;
+const TILE_TITLE_MIN: f32 = 12.0;
+const TILE_TITLE_MAX: f32 = 18.0;
+
+/// The library grid's card geometry at one zoom. The gap between cards and
+/// the grid's padding (`GAP`, `PADDING`) stay fixed at every zoom.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct GridLayout {
+    zoom: u16,
+    card_width: f32,
+    poster_height: f32,
+}
+
+impl Default for GridLayout {
+    fn default() -> Self {
+        Self::new(ZOOM_DEFAULT)
+    }
+}
+
+impl GridLayout {
+    /// The geometry at `zoom` percent, clamped to the saved range. The card
+    /// width rounds to whole pixels first, and the poster is then 1.5 times
+    /// that rounded width, rounded, so every zoom keeps whole-pixel cards
+    /// and the same width always gets the same poster.
+    pub(crate) fn new(zoom: u16) -> Self {
+        let zoom = zoom.clamp(ZOOM_MIN, ZOOM_MAX);
+        let card_width = (CARD_WIDTH * f32::from(zoom) / 100.0).round();
+        let poster_height = (card_width * BASE_POSTER_HEIGHT / CARD_WIDTH).round();
+        Self {
+            zoom,
+            card_width,
+            poster_height,
+        }
+    }
+
+    pub(crate) fn card_width(self) -> f32 {
+        self.card_width
+    }
+
+    /// The poster's frame, selection border included.
+    pub(crate) fn poster_height(self) -> f32 {
+        self.poster_height
+    }
+
+    /// The art's size inside the poster's selection frame.
+    pub(crate) fn art_frame(self) -> Size {
+        Size::new(
+            self.card_width - FRAME_INSET,
+            self.poster_height - FRAME_INSET,
+        )
+    }
+
+    /// The title on an art-less card's tile follows the poster's size, but
+    /// stays readable when small and modest when large.
+    pub(crate) fn tile_title_size(self) -> f32 {
+        (TILE_TITLE_SIZE * f32::from(self.zoom) / 100.0).clamp(TILE_TITLE_MIN, TILE_TITLE_MAX)
+    }
+}
 
 #[derive(Debug, Clone, Copy)]
 struct Spring {
@@ -155,14 +218,14 @@ impl GridMotion {
     }
 }
 
-fn columns(width: f32) -> usize {
-    ((width - 2.0 * PADDING + GAP) / (CARD_WIDTH + GAP))
+fn columns(width: f32, layout: GridLayout) -> usize {
+    ((width - 2.0 * PADDING + GAP) / (layout.card_width + GAP))
         .floor()
         .max(1.0) as usize
 }
 
-pub(crate) fn columns_for_viewport(width: f32, open: bool) -> usize {
-    columns(width - if open { DOCK_WIDTH } else { 0.0 })
+pub(crate) fn columns_for_viewport(width: f32, open: bool, layout: GridLayout) -> usize {
+    columns(width - if open { DOCK_WIDTH } else { 0.0 }, layout)
 }
 
 /// The cards whose rows overlap `top..bottom`, with rows stacked the way
@@ -190,12 +253,15 @@ pub(crate) fn cards_between(
     first.map_or(0..0, |first| first..last)
 }
 
-fn slots(sizes: &[Size], columns: usize) -> (Vec<Point>, f32) {
+fn slots(sizes: &[Size], columns: usize, layout: GridLayout) -> (Vec<Point>, f32) {
     let mut result = Vec::with_capacity(sizes.len());
     let mut y = PADDING;
     for row in sizes.chunks(columns) {
         for (column, _) in row.iter().enumerate() {
-            result.push(Point::new(PADDING + column as f32 * (CARD_WIDTH + GAP), y));
+            result.push(Point::new(
+                PADDING + column as f32 * (layout.card_width + GAP),
+                y,
+            ));
         }
         y += row.iter().map(|size| size.height).fold(0.0, f32::max) + GAP;
     }
@@ -234,10 +300,12 @@ pub(crate) fn grid<'a, Message: Clone + 'a>(
     names: Vec<String>,
     motion: &GridMotion,
     scene: Option<Scene<'a, Message>>,
+    layout: GridLayout,
 ) -> Element<'a, Message> {
     Element::new(Grid {
         cards,
         names,
+        layout,
         positions: (0..motion.springs.len())
             .map(|index| motion.progress(index))
             .collect(),
@@ -249,6 +317,7 @@ pub(crate) fn grid<'a, Message: Clone + 'a>(
 struct Grid<'a, Message> {
     cards: Vec<Element<'a, Message>>,
     names: Vec<String>,
+    layout: GridLayout,
     positions: Vec<f32>,
     fallback: f32,
     scene: Option<Scene<'a, Message>>,
@@ -257,6 +326,7 @@ struct Grid<'a, Message> {
 #[derive(Default)]
 struct GridState {
     width: f32,
+    layout: GridLayout,
     sizes: Vec<Size>,
     closed: Vec<Point>,
     open: Vec<Point>,
@@ -274,12 +344,12 @@ impl GridState {
 
 /// Whether `point` is over a card drawn with `look` at `bounds`. A loose
 /// card only answers over its rotated poster.
-fn hit(look: Look, bounds: Rectangle, point: Point) -> bool {
+fn hit(look: Look, bounds: Rectangle, point: Point, layout: GridLayout) -> bool {
     match look {
         Look::Hidden => false,
         Look::Normal(_) => bounds.contains(point),
         Look::Loose { rotation, .. } => {
-            let poster = poster_bounds(bounds);
+            let poster = poster_bounds(bounds, layout);
             let offset = point - poster.center();
             let (sin, cos) = rotation.sin_cos();
             let x = offset.x * cos + offset.y * sin;
@@ -290,10 +360,10 @@ fn hit(look: Look, bounds: Rectangle, point: Point) -> bool {
 }
 
 /// The poster's area inside a card's node, within its selection frame.
-fn poster_bounds(card: Rectangle) -> Rectangle {
+fn poster_bounds(card: Rectangle, layout: GridLayout) -> Rectangle {
     Rectangle::new(
-        card.position() + Vector::new(2.0, 2.0),
-        Size::new(CARD_WIDTH - 4.0, crate::grid::CARD_POSTER_HEIGHT - 4.0),
+        card.position() + Vector::new(FRAME_INSET / 2.0, FRAME_INSET / 2.0),
+        layout.art_frame(),
     )
 }
 
@@ -350,11 +420,13 @@ impl<Message: Clone> Widget<Message, Theme, Renderer> for Grid<'_, Message> {
             .collect();
         let sizes: Vec<_> = nodes.iter().map(layout::Node::size).collect();
         let state = tree.state.downcast_mut::<GridState>();
-        if state.width != width || state.sizes != sizes {
+        let grid = self.layout;
+        if state.width != width || state.layout != grid || state.sizes != sizes {
             state.width = width;
+            state.layout = grid;
             state.sizes = sizes.clone();
-            state.closed = slots(&sizes, columns(width)).0;
-            state.open = slots(&sizes, columns(width - DOCK_WIDTH)).0;
+            state.closed = slots(&sizes, columns(width, grid), grid).0;
+            state.open = slots(&sizes, columns(width - DOCK_WIDTH, grid), grid).0;
         }
         let mut height = 2.0 * PADDING;
         let collapse = self.scene.as_ref().map(|scene| scene.collapse);
@@ -425,10 +497,9 @@ impl<Message: Clone> Widget<Message, Theme, Renderer> for Grid<'_, Message> {
                 && viewport.contains(point)
             {
                 let state = tree.state.downcast_ref::<GridState>();
-                let over = layout
-                    .children()
-                    .enumerate()
-                    .any(|(index, layout)| hit(state.look(index), layout.bounds(), point));
+                let over = layout.children().enumerate().any(|(index, layout)| {
+                    hit(state.look(index), layout.bounds(), point, self.layout)
+                });
                 if over {
                     if *button == mouse::Button::Left
                         && let Some(message) = &scene.on_press
@@ -491,7 +562,7 @@ impl<Message: Clone> Widget<Message, Theme, Renderer> for Grid<'_, Message> {
                     else {
                         continue;
                     };
-                    let frame = poster_bounds(layout.bounds());
+                    let frame = poster_bounds(layout.bounds(), self.layout);
                     // Clipped only to the view, so the rotated corners show.
                     renderer.draw_image(
                         iced::advanced::image::Image::new(handle.clone())
@@ -516,10 +587,9 @@ impl<Message: Clone> Widget<Message, Theme, Renderer> for Grid<'_, Message> {
         if self.scene.is_some() {
             let state = tree.state.downcast_ref::<GridState>();
             let over = cursor.position().is_some_and(|point| {
-                layout
-                    .children()
-                    .enumerate()
-                    .any(|(index, layout)| hit(state.look(index), layout.bounds(), point))
+                layout.children().enumerate().any(|(index, layout)| {
+                    hit(state.look(index), layout.bounds(), point, self.layout)
+                })
             });
             return if over {
                 mouse::Interaction::Pointer
@@ -695,7 +765,8 @@ mod tests {
     #[test]
     fn loose_cards_answer_clicks_only_over_their_rotated_poster() {
         let bounds = Rectangle::new(Point::new(100.0, 100.0), Size::new(160.0, 300.0));
-        let poster = poster_bounds(bounds);
+        let grid = GridLayout::default();
+        let poster = poster_bounds(bounds, grid);
         let corner = poster.position() + Vector::new(4.0, 4.0);
         let caption = Point::new(180.0, 380.0);
         let upright = Look::Loose {
@@ -706,12 +777,12 @@ mod tests {
             position: bounds.position(),
             rotation: std::f32::consts::FRAC_PI_4,
         };
-        assert!(hit(upright, bounds, corner));
-        assert!(!hit(upright, bounds, caption));
-        assert!(!hit(turned, bounds, corner));
-        assert!(hit(turned, bounds, poster.center()));
-        assert!(hit(Look::Normal(Vector::ZERO), bounds, caption));
-        assert!(!hit(Look::Hidden, bounds, poster.center()));
+        assert!(hit(upright, bounds, corner, grid));
+        assert!(!hit(upright, bounds, caption, grid));
+        assert!(!hit(turned, bounds, corner, grid));
+        assert!(hit(turned, bounds, poster.center(), grid));
+        assert!(hit(Look::Normal(Vector::ZERO), bounds, caption, grid));
+        assert!(!hit(Look::Hidden, bounds, poster.center(), grid));
     }
 
     #[test]
@@ -721,7 +792,7 @@ mod tests {
             Size::new(160.0, 315.0),
             Size::new(160.0, 270.0),
         ];
-        let (points, height) = slots(&sizes, 2);
+        let (points, height) = slots(&sizes, 2, GridLayout::default());
         assert_eq!(points[2].y, PADDING + 315.0 + GAP);
         assert_eq!(height, PADDING + 315.0 + GAP + 270.0 + PADDING);
     }

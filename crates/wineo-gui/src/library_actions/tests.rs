@@ -780,7 +780,10 @@ fn posters_mark_favorites_and_hidden_cards() {
         layout(&mut view, size).bounds().height
     };
     assert_eq!(height(&both), height(&plain));
-    assert_eq!(height(&both), crate::grid::card_height(&both));
+    assert_eq!(
+        height(&both),
+        crate::grid::card_height(&both, crate::grid_motion::GridLayout::default())
+    );
 
     let _ = app.update(Message::Filter(
         crate::filter_control::Event::ToggleShowHidden,

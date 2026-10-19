@@ -757,7 +757,7 @@ fn deep_scrolls_load_art_for_every_visible_row_of_mixed_heights() {
     let mut app = app();
     app.viewport_width = 1000.0;
     app.viewport_height = 800.0;
-    let columns = grid_motion::columns_for_viewport(app.viewport_width, false);
+    let columns = grid_motion::columns_for_viewport(app.viewport_width, false, app.grid_layout());
     app.cards = (0..columns * 120)
         .map(|index| {
             let mut card = card(&format!("game-{index:04}"), State::Inactive, 0);
@@ -781,7 +781,11 @@ fn deep_scrolls_load_art_for_every_visible_row_of_mixed_heights() {
     let row_heights: Vec<f32> = app
         .cards
         .chunks(columns)
-        .map(|row| row.iter().map(grid::card_height).fold(0.0, f32::max))
+        .map(|row| {
+            row.iter()
+                .map(|card| grid::card_height(card, app.grid_layout()))
+                .fold(0.0, f32::max)
+        })
         .collect();
     assert_ne!(row_heights[0], row_heights[1]);
     let row_top = |row: usize| 16.0 + row_heights[..row].iter().map(|h| h + GAP).sum::<f32>();
@@ -898,7 +902,7 @@ fn art_scrolled_out_of_range_is_evicted_and_reloads_when_it_returns() {
     let mut app = app();
     app.viewport_width = 1000.0;
     app.viewport_height = 800.0;
-    let columns = grid_motion::columns_for_viewport(app.viewport_width, false);
+    let columns = grid_motion::columns_for_viewport(app.viewport_width, false, app.grid_layout());
     app.merge(
         (0..columns * 60)
             .map(|index| {
@@ -1184,12 +1188,16 @@ fn opening_the_panel_keeps_art_for_cards_sweeping_through_the_viewport() {
             .collect(),
     );
     app.scroll_offset = 9600.0;
-    let heights: Vec<f32> = app.cards.iter().map(grid::card_height).collect();
+    let heights: Vec<f32> = app
+        .cards
+        .iter()
+        .map(|card| grid::card_height(card, app.grid_layout()))
+        .collect();
     let margin = 2.0 * (heights[0] + GAP);
     let range = |open| {
         grid_motion::cards_between(
             &heights,
-            grid_motion::columns_for_viewport(app.viewport_width, open),
+            grid_motion::columns_for_viewport(app.viewport_width, open, app.grid_layout()),
             app.scroll_offset - margin,
             app.scroll_offset + app.viewport_height + margin,
         )
@@ -1241,12 +1249,16 @@ fn closing_the_panel_near_the_bottom_keeps_art_for_cards_rising_into_view() {
     ));
     assert!(app.panel_open && !app.grid_motion.active());
     app.scroll_offset = 25000.0;
-    let heights: Vec<f32> = app.cards.iter().map(grid::card_height).collect();
+    let heights: Vec<f32> = app
+        .cards
+        .iter()
+        .map(|card| grid::card_height(card, app.grid_layout()))
+        .collect();
     let margin = 2.0 * (heights[0] + GAP);
     let range = |open| {
         grid_motion::cards_between(
             &heights,
-            grid_motion::columns_for_viewport(app.viewport_width, open),
+            grid_motion::columns_for_viewport(app.viewport_width, open, app.grid_layout()),
             app.scroll_offset - margin,
             app.scroll_offset + app.viewport_height + margin,
         )

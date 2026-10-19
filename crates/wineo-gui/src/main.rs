@@ -122,6 +122,8 @@ pub(crate) struct App {
     /// How the library is sorted. The open window keeps its own, whatever
     /// another window or process saves.
     query: order::Query,
+    /// The library grid's zoom in whole percent, from the saved view.
+    zoom: u16,
     /// Store, platform, and tag filters and Show hidden, which reset each launch.
     filters: order::Filters,
     /// The held modifier keys, for a wheel turn the filter tab hands to the grid.
@@ -439,6 +441,7 @@ impl App {
             search_focused: false,
             cards: Vec::new(),
             query: order::Query::default(),
+            zoom: wineo_core::library::ZOOM_DEFAULT,
             filters: order::Filters::default(),
             modifiers: keyboard::Modifiers::empty(),
             order: order::Order::default(),
@@ -553,6 +556,7 @@ impl App {
         // Read once, here, so the first cards already show in the saved
         // order. A read takes no lock and never writes.
         let saved = wineo_core::library::load(&app.paths);
+        app.zoom = saved.view.zoom;
         app.query = saved.view.into();
         // The banner shows from the first frame, before the cards arrive.
         app.problem_read(saved.problem);
@@ -1267,12 +1271,13 @@ impl App {
         if self.reduced_motion {
             self.collapse.fade(now);
         } else {
+            let layout = self.grid_layout();
             let filtered = self.filtered();
             let heights: Vec<f32> = filtered
                 .iter()
-                .map(|card| grid::card_height(card))
+                .map(|card| grid::card_height(card, layout))
                 .collect();
-            let columns = grid_motion::columns_for_viewport(self.viewport_width, false);
+            let columns = grid_motion::columns_for_viewport(self.viewport_width, false, layout);
             let floor = self.scroll_offset + self.viewport_height;
             let visible = grid_motion::cards_between(&heights, columns, self.scroll_offset, floor);
             // Nothing in view would leave only hidden cards and nothing to click.
@@ -1294,6 +1299,10 @@ impl App {
                     floor,
                     width: self.viewport_width,
                     columns,
+                    half_poster: {
+                        let frame = layout.art_frame();
+                        iced::Vector::new(frame.width / 2.0, frame.height / 2.0)
+                    },
                     // A partly visible top row can start a card height above.
                     drop: self.viewport_height + heights.iter().copied().fold(0.0, f32::max),
                 },
@@ -1329,7 +1338,10 @@ impl App {
         self.order.rebuild(of);
     }
     fn columns(&self) -> usize {
-        grid_motion::columns_for_viewport(self.viewport_width, self.panel_open)
+        grid_motion::columns_for_viewport(self.viewport_width, self.panel_open, self.grid_layout())
+    }
+    pub(crate) fn grid_layout(&self) -> grid_motion::GridLayout {
+        grid_motion::GridLayout::new(self.zoom)
     }
     fn panel_reserved(&self) -> bool {
         self.section == sidebar::Section::Library && self.panel_motion.reserved()

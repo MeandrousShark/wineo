@@ -9,6 +9,7 @@ const AREA: Area = Area {
     width: 900.0,
     columns: 3,
     drop: 700.0,
+    half_poster: Vector::new(78.0, 118.0),
 };
 
 #[test]
@@ -52,9 +53,9 @@ fn cards_fall_to_rest_above_the_floor_and_go_quiet() {
         let Look::Loose { position, .. } = collapse.look(index, slot) else {
             panic!("card {index} should lie in the heap");
         };
-        let bottom = position.y + FRAME + 2.0 * HALF_POSTER.y;
-        assert!(bottom > AREA.floor - 2.0 * HALF_POSTER.y - 60.0);
-        assert!(position.y + FRAME + HALF_POSTER.y < AREA.floor);
+        let bottom = position.y + FRAME + 2.0 * AREA.half_poster.y;
+        assert!(bottom > AREA.floor - 2.0 * AREA.half_poster.y - 60.0);
+        assert!(position.y + FRAME + AREA.half_poster.y < AREA.floor);
         assert!(position.x >= 0.0 && position.x + 160.0 <= AREA.width);
     }
 }

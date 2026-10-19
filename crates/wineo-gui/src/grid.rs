@@ -7,12 +7,13 @@ use iced::{
     Center, Color, ContentFit, Element, Fill, FillPortion, Font, Size, border, font, mouse,
 };
 
+use crate::grid_motion::GridLayout;
 use crate::library::Card;
 use crate::library_actions::{Event, Flag};
 use crate::theme::Palette;
 use crate::ui::{self, ScrollStyle, secondary_button};
 use crate::wheel;
-use crate::{App, CARD_WIDTH, Message, SCROLL_ID, SEARCH_ID, WHEEL_STEP_SCALE};
+use crate::{App, Message, SCROLL_ID, SEARCH_ID, WHEEL_STEP_SCALE};
 
 pub(crate) const ACTION_MENU_WIDTH: f32 = 248.0;
 const ACTION_MENU_MAX_HEIGHT: f32 = 600.0;
@@ -22,7 +23,6 @@ pub(crate) const ACTION_MENU_SPACING: f32 = 4.0;
 pub(crate) const ACTION_MENU_HEADER_HEIGHT: f32 = 20.0;
 const INSTALL_BAR_HEIGHT: f32 = 4.0;
 const CARD_TITLE_SIZE: f32 = 14.0;
-pub(crate) const CARD_POSTER_HEIGHT: f32 = 240.0;
 const CARD_SPACING: f32 = 4.0;
 /// The identifier line and the state and playtime row.
 const CARD_CONTEXT_SIZE: f32 = 12.0;
@@ -36,15 +36,15 @@ fn shows_identifier(card: &Card) -> bool {
 
 /// A card's laid out height, from the same sizes `App::card` builds it with,
 /// so lazy art loading can follow the grid's real row geometry.
-pub(crate) fn card_height(card: &Card) -> f32 {
+pub(crate) fn card_height(card: &Card, layout: GridLayout) -> f32 {
     let line = iced::widget::text::LineHeight::default()
         .to_absolute(CARD_CONTEXT_SIZE.into())
         .0;
-    let mut height = CARD_POSTER_HEIGHT
+    let mut height = layout.poster_height()
         + CARD_SPACING
         + crate::tile_title::two_line_height(CARD_TITLE_SIZE)
         + CARD_SPACING
-        + meta_height(card);
+        + meta_height(card, layout);
     if shows_identifier(card) {
         height += CARD_SPACING + line;
     }
@@ -54,8 +54,8 @@ pub(crate) fn card_height(card: &Card) -> f32 {
 /// The state and playtime row's height. Its labels wrap when they outgrow
 /// the card, and a row hands each child whatever width the ones before it
 /// left, so this measures them in that order.
-fn meta_height(card: &Card) -> f32 {
-    let mut available = CARD_WIDTH - 2.0 * CARD_META_SPACING - CARD_DOT;
+fn meta_height(card: &Card, layout: GridLayout) -> f32 {
+    let mut available = layout.card_width() - 2.0 * CARD_META_SPACING - CARD_DOT;
     let mut height = CARD_DOT;
     for label in [card.state_word(), card.playtime()] {
         let size =
@@ -85,7 +85,7 @@ impl App {
             on_press: self.collapse.restorable().then_some(Message::Rebuild),
         });
         let cards = filtered.into_iter().map(|card| self.card(card)).collect();
-        crate::grid_motion::grid(cards, names, &self.grid_motion, scene)
+        crate::grid_motion::grid(cards, names, &self.grid_motion, scene, self.grid_layout())
     }
     /// The poster a collapsed card shows on its own, or a plain surface
     /// when it has no art.
@@ -104,6 +104,7 @@ impl App {
         Some((art.unwrap_or(placeholder).clone(), opacity))
     }
     pub(crate) fn card<'a>(&'a self, card: &'a Card) -> Element<'a, Message> {
+        let layout = self.grid_layout();
         let alpha = self.collapse.alpha();
         let caption = self.collapse.caption_alpha();
         let palette = self.palette.faded(alpha);
@@ -136,7 +137,7 @@ impl App {
                 .into(),
             None => container(
                 text(&card.display_title)
-                    .size(14)
+                    .size(layout.tile_title_size())
                     .color(palette.muted)
                     .center(),
             )
@@ -215,8 +216,8 @@ impl App {
             );
         }
         let framed = container(container(layers).clip(true))
-            .width(CARD_WIDTH)
-            .height(CARD_POSTER_HEIGHT)
+            .width(layout.card_width())
+            .height(layout.poster_height())
             .padding(2)
             .style(move |_| {
                 container::Style::default().border(border::rounded(6).width(2).color(if selected {
@@ -229,9 +230,13 @@ impl App {
             weight: font::Weight::Semibold,
             ..Font::DEFAULT
         };
-        let label =
-            crate::tile_title::lines(&card.display_title, CARD_WIDTH, CARD_TITLE_SIZE, title_font)
-                .join("\n");
+        let label = crate::tile_title::lines(
+            &card.display_title,
+            layout.card_width(),
+            CARD_TITLE_SIZE,
+            title_font,
+        )
+        .join("\n");
         let dot_color = card.dot(palette).scale_alpha(caption);
         let meta = row![
             container(Space::new())
@@ -266,10 +271,10 @@ impl App {
                 .wrapping(iced::widget::text::Wrapping::None),
         ]
         .spacing(CARD_SPACING)
-        .width(CARD_WIDTH);
+        .width(layout.card_width());
         if shows_identifier(card) {
             content = content.push(
-                text(truncate_name(&card.name, CARD_WIDTH))
+                text(truncate_name(&card.name, layout.card_width()))
                     .size(CARD_CONTEXT_SIZE)
                     .color(palette.muted.scale_alpha(caption))
                     .wrapping(iced::widget::text::Wrapping::None),
@@ -1175,6 +1180,7 @@ mod tests {
         use crate::layout_probe::layout;
         use wineo_core::runtime::State;
         let app = crate::tests::app();
+        let grid = GridLayout::default();
         let plain = crate::tests::card("game", State::Inactive, 60);
         let mut steam = crate::tests::card("game", State::SteamRunning, 60);
         steam.display_title = "Game".to_owned();
@@ -1185,10 +1191,10 @@ mod tests {
         for card in [&plain, &steam, &long_playtime, &both] {
             let mut view = app.card(card);
             let built = layout(&mut view, Size::new(400.0, 900.0)).bounds().height;
-            assert_eq!(card_height(card), built, "{:?}", card.state);
+            assert_eq!(card_height(card, grid), built, "{:?}", card.state);
         }
-        assert!(card_height(&steam) > card_height(&plain) + 15.0);
-        assert!(card_height(&long_playtime) > card_height(&plain));
+        assert!(card_height(&steam, grid) > card_height(&plain, grid) + 15.0);
+        assert!(card_height(&long_playtime, grid) > card_height(&plain, grid));
     }
 
     #[test]
@@ -1199,7 +1205,9 @@ mod tests {
             weight: font::Weight::Semibold,
             ..Font::DEFAULT
         };
-        let lines = |title| crate::tile_title::lines(title, CARD_WIDTH, CARD_TITLE_SIZE, font);
+        let grid = GridLayout::default();
+        let lines =
+            |title| crate::tile_title::lines(title, grid.card_width(), CARD_TITLE_SIZE, font);
         assert_eq!(
             lines("Halo: The Master Chief Collection"),
             ["Halo: The Master", "Chief Collection"]
@@ -1225,14 +1233,14 @@ mod tests {
         let mut untitled = crate::tests::card("game", wineo_core::runtime::State::Inactive, 60);
         let mut view = app.card(&untitled);
         assert_eq!(
-            card_height(&untitled),
+            card_height(&untitled, grid),
             layout(&mut view, Size::new(400.0, 600.0)).bounds().height
         );
         drop(view);
         untitled.display_title = "Game".to_owned();
         let mut view = app.card(&untitled);
         assert_eq!(
-            card_height(&untitled),
+            card_height(&untitled, grid),
             layout(&mut view, Size::new(400.0, 600.0)).bounds().height
         );
     }

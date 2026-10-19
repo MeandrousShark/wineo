@@ -64,10 +64,11 @@ impl App {
     }
 
     pub(crate) fn load_visible_art(&mut self) -> Task<Message> {
+        let layout = self.grid_layout();
         let filtered = self.filtered();
         let heights: Vec<f32> = filtered
             .iter()
-            .map(|card| grid::card_height(card))
+            .map(|card| grid::card_height(card, layout))
             .collect();
         // Two rows either side start decoding before a card scrolls in.
         let margin = 2.0 * (heights.iter().copied().fold(0.0, f32::max) + GAP);
@@ -77,7 +78,7 @@ impl App {
         let mut ranges: Vec<_> = [false, true]
             .into_iter()
             .map(|open| {
-                let columns = grid_motion::columns_for_viewport(self.viewport_width, open);
+                let columns = grid_motion::columns_for_viewport(self.viewport_width, open, layout);
                 let range = grid_motion::cards_between(&heights, columns, top, bottom);
                 // The margin reaches above the first row, so an empty range
                 // means the viewport is past this layout's last row.
