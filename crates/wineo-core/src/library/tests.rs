@@ -724,6 +724,10 @@ fn zoom_and_poster_only_no_ops_leave_the_file_alone() {
     assert!(!set_zoom(&absent.paths, 100).unwrap());
     assert!(!set_poster_only(&absent.paths, false).unwrap());
     assert_eq!(fs::read(absent.paths.library_file()).unwrap(), bytes);
+
+    let missing = Fixture::new();
+    assert!(!set_zoom(&missing.paths, 100).unwrap());
+    assert!(!missing.paths.library_file().exists());
 }
 
 #[test]
