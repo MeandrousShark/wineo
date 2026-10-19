@@ -188,9 +188,10 @@ pub fn proton_platform(
     app_id: &str,
     library: Option<&Path>,
 ) -> Option<crate::source::Platform> {
-    let own_entry = tools
-        .get(&app_id.to_ascii_lowercase())
-        .is_some_and(|name| !name.is_empty());
+    let own_entry = app_id != "0"
+        && tools
+            .get(&app_id.to_ascii_lowercase())
+            .is_some_and(|name| !name.is_empty());
     // The id becomes a path component, so only plain digits get one.
     let prefix = library.is_some_and(|library| {
         !app_id.is_empty()
