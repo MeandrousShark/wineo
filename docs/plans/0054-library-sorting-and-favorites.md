@@ -1334,6 +1334,43 @@ Fixes found during acceptance:
 - The Sort and Filters labels sat at the top of their 32 px buttons; their
   label rows now fill the button's height so they center (2026-10-18).
 
+### Questions from acceptance trials
+
+From the maintainer's own use before the checklist (2026-10-18).
+
+**A1. Direction when changing the sort key.** One direction is shared by
+every key, so going from Name A to Z to Last played gives oldest first.
+A: picking a key starts it in its natural order (Name and Source A to Z,
+Last played most recent first, Playtime most played first, Date added
+newest first), and the arrow flips it from there. B: remember a direction
+per key in `library.toml`. Recommendation: **A**, as file managers do; it
+needs no new state.
+
+**A2. Sorting by source.** Without a visible source on most posters, the
+Source sort reads as a shuffle. What was meant was sections with a header
+per source, which is part 4's grouping. A: drop Source from the Sort menu
+now and bring it back as source sections in part 4; a saved
+`sort = "source"` falls back to Name like any unknown key. B: keep it
+until part 4. C: pull source sections into this plan. Recommendation:
+**A**.
+
+**A3. Native GOG games aren't Native.** RimWorld, FTL, and Papers,
+Please are native environments with a `gog_id`, and question 5's table
+checks `gog_id` first, so they're under GOG only. Sources mix where a game
+came from with what it runs on. A: split the filter into **Store** (GOG,
+Heroic or its store, Steam) and **Platform** (Native, Windows), any of the
+checked within a group and each group that has a check, like sources and
+tags today. B: keep one list, but a game can count under more than one
+entry. Recommendation: **A**.
+
+**A4. Clearing filters from the toolbar.** Today it takes opening the
+popup. A: while filters are on, a row under the toolbar shows each checked
+source and tag as a chip with an x, and **Clear all** at the end; it wraps
+in a narrow window. B: Steam's way, the chips and one x inline in the
+toolbar after **Filters**, which squeezes the search box in a small
+window. C: only an x on the **Filters** button. Recommendation: **A**,
+with screenshots before it's final.
+
 ## Scope limits
 
 - No zoom, poster-only, list view, presets, grouping, sections, coverflow,
