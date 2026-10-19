@@ -1029,6 +1029,52 @@ places is part 2. Selection follows "Selection".
   it too) and wgpu is unaffected. It's fixed upstream but unreleased, so
   it's a backlog row ("Menu shadows in the software renderer") rather
   than a patched dependency.
+- **Step 5 details** (2026-10-18):
+  - A favorite or hide shows at once, and its write runs off the UI
+    thread like the sort's. A toggle made while a write runs is queued,
+    so the window's last choice is what gets written, and the close wait
+    covers these writes too. Whatever happens, the write refreshes the
+    rescan's cache, and on failure the card goes back to what the file
+    has.
+  - A rescan or reload that read the file before a write finished is
+    dropped when it arrives, so it can't undo that write on screen; the
+    next read carries anything else it held (found in review).
+  - A write is tied to the environment it was made for, by the entry's
+    `added` stamp. Under the library lock, core's `set_favorite_for` and
+    `set_hidden_for` write nothing if the environment is gone or was
+    recreated, so a late write can't bring back an entry `rm` cleared or
+    land on a new environment with the same name. When a card leaves the
+    library, its pending and queued writes are dropped (found in review).
+    Removing and recreating a name while `library.toml` can't be written
+    at either step can still match, which is the stale-entry limit
+    under "Lifecycle".
+  - Hiding the selected card records its position first, so the card
+    that takes its place is selected, as "Selection" says.
+- **Favorite and hide calls** (maintainer, 2026-10-18), after seeing
+  step 5:
+  - The right-click menu starts with "Add to favorites" or "Remove from
+    favorites", then "Hide" or "Unhide", then a separator. A row closes
+    the menu without selecting the card.
+  - The right-click menu's height cap is 600 px, up from 448, so a Wine
+    prefix's menu fits again with the new rows; the window still bounds
+    it.
+  - Posters mark favorites and hidden cards in the top-right corner, a
+    small dark round chip with a white star or crossed-out eye, stacked
+    when both apply. They aren't clickable, and there's no hover star.
+  - With Show hidden on, a hidden card's art shows at the existing 45%
+    dim with a muted title. Grayscale stays the not-installed signal.
+  - The panel's star sits right of the title, filled in the accent color
+    for a favorite and an outline otherwise, with a tooltip.
+  - A failed write says `Couldn't add <title> to favorites: <error>`,
+    `Couldn't remove <title> from favorites: <error>`, `Couldn't hide
+    <title>: <error>`, or `Couldn't unhide <title>: <error>`.
+  - With a broken `library.toml`, the controls stay enabled and an
+    action is refused with core's own message, changing nothing.
+  - `F` (with or without Shift) toggles the selected card's favorite
+    only when that card is shown and no menu, dialog, or text box has
+    the keys. Ctrl+F still focuses search.
+  - Enter no longer acts while the right-click menu is open, matching
+    `F` (an older gap found in step 5).
 - **No older `library.toml` fixture yet** (2026-10-18). Schema 1 is the
   first, so step 1's upgrade fixtures cover a missing file only. An older
   file joins the upgrade fixtures with the first tagged set that has one.

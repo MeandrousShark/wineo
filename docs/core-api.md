@@ -627,6 +627,12 @@ added it.
   be read refuses with `Error::LibraryUnreadable` and stays byte-for-byte
   as it was. Its `newer_version` says a newer wineo wrote the file, which
   has no repair, so the refusal says to update wineo instead.
+- `set_favorite_for` and `set_hidden_for(paths, name, added, value)` are
+  the same writes tied to one environment: under the lock they check that
+  the environment's config still exists and that its entry's `added`
+  matches, and otherwise write nothing and return `Guarded::Gone`. A
+  frontend whose write may land late uses these, so it can't recreate an
+  entry `rm` cleared or mark a new environment that reused the name.
 - `stamp_added`, `fresh`, `remove`, and `put` are the lifecycle edits.
   Core calls them itself when environments are created, cloned, imported,
   installed from GOG, removed, restored, or copied to a portable folder, so
