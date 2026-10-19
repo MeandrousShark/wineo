@@ -1329,6 +1329,11 @@ on real hardware was run on 2026-10-18 (see "After step 6").
 10. **Feel.** On your normal session, sorting, filtering, starring, and
     hiding feel instant, and scrolling stays smooth.
 
+Fixes found during acceptance:
+
+- The Sort and Filters labels sat at the top of their 32 px buttons; their
+  label rows now fill the button's height so they center (2026-10-18).
+
 ## Scope limits
 
 - No zoom, poster-only, list view, presets, grouping, sections, coverflow,

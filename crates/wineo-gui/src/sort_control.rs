@@ -325,6 +325,7 @@ pub(crate) fn toolbar(app: &App) -> Element<'_, Message> {
             icon(CHEVRON, palette.muted, 16.0),
         ]
         .spacing(6)
+        .height(Fill)
         .align_y(Center),
     )
     .height(ui::BUTTON_HEIGHT)
