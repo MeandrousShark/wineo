@@ -202,6 +202,12 @@ fn f_does_nothing_unless_the_selected_card_is_shown_and_the_keys_are_free() {
     assert!(!favorite(&app), "the sort menu is open");
     let _ = app.update(Message::Sort(crate::sort_control::Event::CloseMenu));
 
+    let _ = app.update(Message::Filter(crate::filter_control::Event::ToggleMenu));
+    assert!(app.filter_menu_shown());
+    f(&mut app);
+    assert!(!favorite(&app), "the filters popup is open");
+    let _ = app.update(Message::Filter(crate::filter_control::Event::CloseMenu));
+
     let _ = app.update(Message::Add);
     assert!(app.flow.is_some());
     f(&mut app);

@@ -287,6 +287,11 @@ impl App {
     /// now on, and the order is rebuilt; cards that moved snap, and the
     /// selection stays in view.
     fn set_flag(&mut self, name: &str, flag: Flag, value: bool) -> Task<Message> {
+        let before: Vec<String> = self
+            .filtered()
+            .iter()
+            .map(|card| card.name.clone())
+            .collect();
         let Some(card) = self.cards.iter_mut().find(|card| card.name == name) else {
             return Task::none();
         };
@@ -294,11 +299,6 @@ impl App {
             return Task::none();
         }
         flag.set(card, value);
-        let before: Vec<String> = self
-            .filtered()
-            .iter()
-            .map(|card| card.name.clone())
-            .collect();
         self.shown.show_library(Ok(self.cards.clone()));
         self.reorder();
         let moved = {
