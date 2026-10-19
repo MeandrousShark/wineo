@@ -197,8 +197,9 @@ The maintainer approved the plan on 2026-10-19.
   a tween frame. It saves like the sort: off the UI thread, one field at a
   time under the lock, the last value wins, and a failed save shows the
   sort's notice. A drag saves once when it ends; a drag still unsaved when
-  the window closes is saved by the close wait. Setting either key back
-  to its default removes it. A window keeps its own zoom and poster-only
+  the window closes is saved by the close wait. Like the other `[view]`
+  keys, a key that's absent isn't written while it holds its default, and
+  one already in the file stays and is updated. A window keeps its own zoom and poster-only
   state while it's open, as it does the sort.
 
 ### Motion
@@ -321,7 +322,7 @@ The maintainer approved the plan on 2026-10-19.
   retarget mid-flight from displayed positions, fade cards out and back
   in, hold the scroll height through fades, and stop the frame
   subscription when done.
-- Core tests for `[view]` reads, writes, removal at defaults, comment
+- Core tests for `[view]` reads, writes, no write while absent at the default, comment
   preservation, `validate`, and repair keeping valid values.
 - Benchmarks in Xvfb with tiny-skia: idle CPU and RSS after motion stops;
   frame gaps (p90 and max) during single steps, held-down steps, slider
@@ -340,6 +341,14 @@ The maintainer approved the plan on 2026-10-19.
 - No change to the art-less tile's repeated title in the normal view.
 - No zoom in other pages' grids (Art, imports); only the Library.
 - No animated window resizes.
+
+## Decisions during implementation
+
+- **Defaults aren't removed** (2026-10-19, step 1). The draft said setting
+  a key back to its default removes it; the existing `[view]` setters
+  instead skip the write while the key is absent and keep a written key,
+  and answer 5 only asks for nothing written at the defaults. The new keys
+  follow the existing ones.
 
 ## Results
 
