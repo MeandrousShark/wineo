@@ -394,8 +394,74 @@ fn a_read_from_before_the_write_landed_keeps_the_choice_on_screen() {
     assert!(flag(&app, "bravo", Flag::Favorite));
     let _ = finish(&mut app, "bravo", Flag::Favorite);
     assert!(flag(&app, "bravo", Flag::Favorite));
-    // Once nothing is pending, a read shows what it read.
-    let _ = app.update(Message::Loaded(Ok(library())));
+}
+
+/// The library as the file has it once bravo is a favorite.
+fn starred() -> Vec<Card> {
+    let mut cards = library();
+    cards[1].favorite = true;
+    cards
+}
+
+#[test]
+fn a_rescan_that_read_before_the_write_finished_is_dropped() {
+    let (_root, mut app) = loaded();
+    let _ = toggle(&mut app, "bravo", Flag::Favorite);
+    // A rescan starts after the card changed and reads the old file.
+    let stale = crate::rescan::Scan {
+        revisions: app.shown.revisions(),
+        library: Some(Ok(library())),
+        ..Default::default()
+    };
+    let _ = finish(&mut app, "bravo", Flag::Favorite);
+    assert!(app.flag_writes.get("bravo", Flag::Favorite).is_none());
+    let _ = app.update(Message::Rescanned(Box::new(stale)));
+    assert!(flag(&app, "bravo", Flag::Favorite));
+
+    // One that starts after the write is taken.
+    let fresh = crate::rescan::Scan {
+        revisions: app.shown.revisions(),
+        library: Some(Ok(starred())),
+        ..Default::default()
+    };
+    let fresh = app.shown.current(fresh);
+    assert!(fresh.library.is_some());
+    assert!(app.shown.changes(fresh, jiff::Timestamp::now()).is_none());
+    assert!(wineo_core::library::load(&app.paths).environments["bravo"].favorite);
+}
+
+#[test]
+fn a_reload_that_started_before_the_write_finished_starts_over() {
+    let (_root, mut app) = loaded();
+    let _ = toggle(&mut app, "bravo", Flag::Favorite);
+    let _ = app.update(Message::Refresh);
+    assert!(app.refreshing);
+    let stale = app.library_generation;
+    let _ = finish(&mut app, "bravo", Flag::Favorite);
+    assert_ne!(app.library_generation, stale, "a new read started");
+    let _ = app.update(Message::LibraryRead(stale, Ok(library()), None));
+    assert!(flag(&app, "bravo", Flag::Favorite));
+    assert!(app.refreshing, "still waiting on the new read");
+    let current = app.library_generation;
+    let _ = app.update(Message::LibraryRead(current, Ok(starred()), None));
+    assert!(!app.refreshing);
+    assert!(flag(&app, "bravo", Flag::Favorite));
+}
+
+#[test]
+fn a_failed_write_also_drops_older_reads() {
+    let (_root, mut app) = loaded();
+    fs::create_dir_all(app.paths.library_file()).unwrap();
+    let _ = toggle(&mut app, "bravo", Flag::Favorite);
+    // This read raced the optimistic star and saw it.
+    let stale = crate::rescan::Scan {
+        revisions: app.shown.revisions(),
+        library: Some(Ok(starred())),
+        ..Default::default()
+    };
+    let _ = finish(&mut app, "bravo", Flag::Favorite);
+    assert!(!flag(&app, "bravo", Flag::Favorite));
+    let _ = app.update(Message::Rescanned(Box::new(stale)));
     assert!(!flag(&app, "bravo", Flag::Favorite));
 }
 

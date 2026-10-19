@@ -252,7 +252,8 @@ impl App {
         if self.exiting {
             return Task::none();
         }
-        match saved.result {
+        let reads = self.outdate_reads();
+        let shown = match saved.result {
             Ok(()) => match next {
                 Some(next) => self.write_flag(&saved.name, saved.flag, next),
                 // Normally what was written; another writer may have
@@ -276,6 +277,20 @@ impl App {
                     None => self.reload_library_once(),
                 }
             }
+        };
+        Task::batch([reads, shown])
+    }
+
+    /// Drops every library read that started before now, since it may have
+    /// read the file before a write that just finished. The card already
+    /// shows that write's result, so an older read must not replace it: the
+    /// rescan's comes back stale, and an explicit reload starts over.
+    fn outdate_reads(&mut self) -> Task<Message> {
+        self.shown.reloading_library();
+        if self.refreshing {
+            self.reload_library()
+        } else {
+            Task::none()
         }
     }
 
