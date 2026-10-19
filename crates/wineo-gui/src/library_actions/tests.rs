@@ -27,10 +27,21 @@ fn library() -> Vec<Card> {
     cards
 }
 
+/// Gives `name` a config, as an environment has.
+fn make_config(paths: &Paths, name: &str) {
+    let path = paths.environment_config(name);
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    fs::write(path, "").unwrap();
+}
+
 /// An app on its own throwaway HOME with `library()` loaded.
 fn loaded() -> (tempfile::TempDir, App) {
     let root = tempfile::tempdir().unwrap();
-    let mut app = App::boot(paths(&root)).0;
+    let paths = paths(&root);
+    for card in library() {
+        make_config(&paths, &card.name);
+    }
+    let mut app = App::boot(paths).0;
     let _ = app.update(Message::Loaded(Ok(library())));
     (root, app)
 }
@@ -58,14 +69,28 @@ fn notice(app: &App) -> Option<&str> {
 /// hands the result back to the app.
 fn finish(app: &mut App, name: &str, flag: Flag) -> Task<Message> {
     let pending = app.flag_writes.get(name, flag).expect("a write in flight");
-    let (result, on_disk) = save(&app.paths, &app.shown, name, flag, pending.writing);
-    app.update(Message::Mark(Event::Saved(Saved {
+    let saved = reply(app, name, pending.added, flag, pending.writing);
+    app.update(saved)
+}
+
+/// The reply a write of `value` for this `name` and `added` gets from the
+/// file as it is now.
+fn reply(
+    app: &App,
+    name: &str,
+    added: Option<jiff::Timestamp>,
+    flag: Flag,
+    value: bool,
+) -> Message {
+    let (result, on_disk) = save(&app.paths, &app.shown, name, added, flag, value);
+    Message::Mark(Event::Saved(Saved {
         name: name.into(),
+        added,
         flag,
-        value: pending.writing,
+        value,
         result,
         on_disk: Some(on_disk),
-    })))
+    }))
 }
 
 fn press_f(app: &mut App, modifiers: Modifiers, focused: bool, captured: bool) {
@@ -237,7 +262,7 @@ fn a_toggle_writes_off_the_ui_thread_and_refreshes_the_cache() {
     let messages = saved(task, 1);
     assert!(matches!(
         messages.as_slice(),
-        [Message::Mark(Event::Saved(Saved { name, flag: Flag::Favorite, value: true, result: Ok(()), on_disk: Some(true) }))]
+        [Message::Mark(Event::Saved(Saved { name, flag: Flag::Favorite, value: true, result: Ok(library::Guarded::Set(true)), on_disk: Some(true), .. }))]
             if name == "bravo"
     ));
     assert_eq!(app.shown.library_reads(), reads + 1);
@@ -315,6 +340,7 @@ fn a_dead_worker_reloads_the_library_rather_than_guess() {
     let _ = toggle(&mut app, "alpha", Flag::Favorite);
     let task = app.update(Message::Mark(Event::Saved(Saved {
         name: "alpha".into(),
+        added: None,
         flag: Flag::Favorite,
         value: true,
         result: Err("worker panicked".into()),
@@ -340,6 +366,7 @@ fn rapid_toggles_end_with_the_last_state_written() {
     assert_eq!(
         app.flag_writes.get("bravo", Flag::Favorite),
         Some(Pending {
+            added: None,
             writing: true,
             next: Some(false),
         })
@@ -349,6 +376,7 @@ fn rapid_toggles_end_with_the_last_state_written() {
     assert_eq!(
         app.flag_writes.get("bravo", Flag::Favorite),
         Some(Pending {
+            added: None,
             writing: false,
             next: None,
         })
@@ -760,4 +788,162 @@ fn posters_mark_favorites_and_hidden_cards() {
     let _ = toggle(&mut app, "bravo", Flag::Favorite);
     let _ = toggle(&mut app, "bravo", Flag::Hidden);
     let _ = app.view();
+}
+
+// Environments that leave, or come back under the same name.
+
+fn without(name: &str) -> Vec<Card> {
+    library()
+        .into_iter()
+        .filter(|card| card.name != name)
+        .collect()
+}
+
+/// What `rm` leaves behind: no config and no entry.
+fn remove(app: &App, name: &str) {
+    fs::remove_file(app.paths.environment_config(name)).unwrap();
+    wineo_core::library::remove(&app.paths, name).unwrap();
+}
+
+fn entry(app: &App, name: &str) -> Option<wineo_core::library::Entry> {
+    wineo_core::library::load(&app.paths)
+        .environments
+        .get(name)
+        .cloned()
+}
+
+#[test]
+fn a_card_that_leaves_drops_its_write_and_ignores_the_late_reply() {
+    let (_root, mut app) = loaded();
+    let _ = toggle(&mut app, "alpha", Flag::Favorite);
+    let _ = toggle(&mut app, "alpha", Flag::Favorite);
+    remove(&app, "alpha");
+    let _ = app.update(Message::Loaded(Ok(without("alpha"))));
+    assert!(!app.flag_writes.pending(), "nothing left to wait for");
+    // The write had landed before `rm`; its reply changes nothing and
+    // starts nothing.
+    let late = Message::Mark(Event::Saved(Saved {
+        name: "alpha".into(),
+        added: None,
+        flag: Flag::Favorite,
+        value: true,
+        result: Ok(library::Guarded::Set(true)),
+        on_disk: Some(true),
+    }));
+    assert!(saved(app.update(late), 0).is_empty());
+    assert!(app.feature_notice.is_none());
+    assert!(!app.refreshing);
+    assert_eq!(entry(&app, "alpha"), None);
+}
+
+#[test]
+fn a_write_for_a_removed_environment_recreates_nothing() {
+    let (_root, mut app) = loaded();
+    let _ = toggle(&mut app, "alpha", Flag::Hidden);
+    // A second toggle waits behind the first.
+    let _ = toggle(&mut app, "alpha", Flag::Hidden);
+    // `rm` ran before the write reached the file, and before any read
+    // told the window.
+    remove(&app, "alpha");
+    let task = finish(&mut app, "alpha", Flag::Hidden);
+    assert_eq!(entry(&app, "alpha"), None, "no stray entry");
+    assert!(!app.flag_writes.pending());
+    assert!(app.feature_notice.is_none());
+    assert!(app.refreshing, "a reload shows it gone");
+    // The queued toggle never started.
+    assert!(saved(task, 0).is_empty());
+}
+
+#[test]
+fn a_queued_toggle_never_starts_once_its_card_is_gone() {
+    let (_root, mut app) = loaded();
+    let _ = toggle(&mut app, "alpha", Flag::Favorite);
+    let _ = toggle(&mut app, "alpha", Flag::Favorite);
+    let reply = reply(&app, "alpha", None, Flag::Favorite, true);
+    remove(&app, "alpha");
+    let _ = app.update(Message::Loaded(Ok(without("alpha"))));
+    assert!(saved(app.update(reply), 0).is_empty());
+    assert!(!app.flag_writes.pending());
+    assert_eq!(entry(&app, "alpha"), None);
+}
+
+#[test]
+fn a_recreated_environment_gets_none_of_the_old_choice() {
+    let (_root, mut app) = loaded();
+    let first = toggle(&mut app, "alpha", Flag::Favorite);
+    let _ = toggle(&mut app, "alpha", Flag::Favorite);
+    let _ = toggle(&mut app, "alpha", Flag::Favorite);
+    // `rm`, then `new alpha`, before the write ran: the new one has a fresh
+    // entry stamped with when it was made.
+    remove(&app, "alpha");
+    make_config(&app.paths, "alpha");
+    wineo_core::library::fresh(&app.paths, "alpha").unwrap();
+    let added = entry(&app, "alpha").unwrap().added;
+    assert!(added.is_some());
+    let fresh = entry(&app, "alpha");
+
+    // The old write reaches the file now and is refused.
+    let messages = saved(first, 1);
+    assert!(matches!(
+        messages.as_slice(),
+        [Message::Mark(Event::Saved(Saved {
+            result: Ok(library::Guarded::Gone),
+            ..
+        }))]
+    ));
+    assert_eq!(entry(&app, "alpha"), fresh);
+
+    // The window learns of the new one before the reply arrives.
+    let mut cards = library();
+    cards[0].added = added;
+    let _ = app.update(Message::Loaded(Ok(cards)));
+    assert!(!flag(&app, "alpha", Flag::Favorite));
+    assert!(!app.flag_writes.pending());
+    for message in messages {
+        assert!(saved(app.update(message), 0).is_empty());
+    }
+    assert!(app.feature_notice.is_none());
+    assert_eq!(entry(&app, "alpha"), fresh);
+
+    // The new one can be starred as usual.
+    let _ = toggle(&mut app, "alpha", Flag::Favorite);
+    let _ = finish(&mut app, "alpha", Flag::Favorite);
+    let now = entry(&app, "alpha").unwrap();
+    assert!(now.favorite);
+    assert_eq!(now.added, added);
+}
+
+#[test]
+fn a_reply_for_the_old_environment_is_ignored_by_the_new_one() {
+    let (_root, mut app) = loaded();
+    let _ = toggle(&mut app, "alpha", Flag::Favorite);
+    // Recreated, seen by a read, and starred again, all before the old
+    // write's reply.
+    remove(&app, "alpha");
+    make_config(&app.paths, "alpha");
+    wineo_core::library::fresh(&app.paths, "alpha").unwrap();
+    let added = entry(&app, "alpha").unwrap().added;
+    let mut cards = library();
+    cards[0].added = added;
+    let _ = app.update(Message::Loaded(Ok(cards)));
+    let _ = toggle(&mut app, "alpha", Flag::Favorite);
+    assert_eq!(
+        app.flag_writes.get("alpha", Flag::Favorite).unwrap().added,
+        added
+    );
+    let old = Message::Mark(Event::Saved(Saved {
+        name: "alpha".into(),
+        added: None,
+        flag: Flag::Favorite,
+        value: true,
+        result: Err("failed".into()),
+        on_disk: Some(false),
+    }));
+    let _ = app.update(old);
+    // The new write is still awaited, and the old failure isn't shown.
+    assert!(app.flag_writes.get("alpha", Flag::Favorite).is_some());
+    assert!(flag(&app, "alpha", Flag::Favorite));
+    assert!(app.feature_notice.is_none());
+    let _ = finish(&mut app, "alpha", Flag::Favorite);
+    assert!(entry(&app, "alpha").unwrap().favorite);
 }

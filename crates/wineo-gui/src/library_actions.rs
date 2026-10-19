@@ -6,6 +6,7 @@ use std::time::{Duration, Instant};
 
 use iced::widget::{button, column, container, tooltip};
 use iced::{Color, Element, Fill, Task, border};
+use jiff::Timestamp;
 use wineo_core::library;
 use wineo_core::paths::Paths;
 
@@ -95,10 +96,12 @@ impl Event {
 #[derive(Debug, Clone)]
 pub(crate) struct Saved {
     pub(crate) name: String,
+    /// Which environment of that name the write was for; see `Pending`.
+    pub(crate) added: Option<Timestamp>,
     pub(crate) flag: Flag,
     /// The value written.
     pub(crate) value: bool,
-    pub(crate) result: Result<(), String>,
+    pub(crate) result: Result<library::Guarded, String>,
     /// The flag as the file has it once the write is over, or None when the
     /// worker died before it could look.
     pub(crate) on_disk: Option<bool>,
@@ -111,6 +114,9 @@ pub(crate) struct Writes(BTreeMap<(String, Flag), Pending>);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct Pending {
+    /// The card's `added` when it was toggled. Only creating an environment
+    /// stamps it, so a removed and recreated one of the same name differs.
+    pub(crate) added: Option<Timestamp>,
     pub(crate) writing: bool,
     /// What to write once `writing` lands, when the window wants otherwise.
     pub(crate) next: Option<bool>,
@@ -133,14 +139,31 @@ impl Writes {
         self.0.get(&(name.to_owned(), flag)).copied()
     }
 
-    /// Puts the window's pending choices over cards just read, so a read
-    /// made before a write landed doesn't undo it on screen meanwhile.
-    pub(crate) fn overlay(&self, cards: &mut [Card]) {
-        for ((name, flag), pending) in &self.0 {
-            if let Some(card) = cards.iter_mut().find(|card| &card.name == name) {
-                flag.set(card, pending.wanted());
+    /// Matches the writes to cards just read. A write whose environment is
+    /// gone, or was removed and made again, is forgotten: its queued toggle
+    /// never starts and its reply is ignored. The rest put the window's
+    /// choice over the cards, so a read made before a write landed doesn't
+    /// undo it on screen meanwhile.
+    pub(crate) fn reconcile(&mut self, cards: &mut [Card]) {
+        self.0.retain(|(name, flag), pending| {
+            match cards
+                .iter_mut()
+                .find(|card| &card.name == name && card.added == pending.added)
+            {
+                Some(card) => {
+                    flag.set(card, pending.wanted());
+                    true
+                }
+                None => false,
             }
-        }
+        });
+    }
+
+    /// Whether `saved` answers the write this window is waiting on.
+    fn expects(&self, saved: &Saved) -> bool {
+        self.0
+            .get(&(saved.name.clone(), saved.flag))
+            .is_some_and(|pending| pending.added == saved.added)
     }
 }
 
@@ -150,18 +173,17 @@ pub(crate) fn save(
     paths: &Paths,
     watch: &rescan::Watch,
     name: &str,
+    added: Option<Timestamp>,
     flag: Flag,
     value: bool,
-) -> (Result<(), String>, bool) {
+) -> (Result<library::Guarded, String>, bool) {
     let result = match flag {
-        Flag::Favorite => library::set_favorite(paths, name, value),
-        Flag::Hidden => library::set_hidden(paths, name, value),
+        Flag::Favorite => library::set_favorite_for(paths, name, added, value),
+        Flag::Hidden => library::set_hidden_for(paths, name, added, value),
     };
     let entry = watch.refresh_library_entry(paths, name);
     (
-        result
-            .map(|_| ())
-            .map_err(|error| crate::sort_control::error_text(paths, &error)),
+        result.map_err(|error| crate::sort_control::error_text(paths, &error)),
         flag.in_entry(&entry),
     )
 }
@@ -184,6 +206,7 @@ impl App {
             return Task::none();
         };
         let value = !flag.of(card);
+        let added = card.added;
         // The banner already says the file can't be used, so nothing is
         // written and nothing changes.
         if let Some(problem) = &self.library_problem {
@@ -202,21 +225,32 @@ impl App {
             && self.selected.as_deref() == Some(name))
         .then(|| self.filtered().iter().position(|card| card.name == name))
         .flatten();
-        let write = self.write_flag(name, flag, value);
+        let write = self.write_flag(name, added, flag, value);
         let shown = self.set_flag(name, flag, value);
         let selection = place.map_or_else(Task::none, |place| self.select_in_place(place));
         Task::batch([shown, selection, write])
     }
 
     /// Starts writing `value`, or queues it behind the write in flight.
-    fn write_flag(&mut self, name: &str, flag: Flag, value: bool) -> Task<Message> {
-        if let Some(pending) = self.flag_writes.0.get_mut(&(name.to_owned(), flag)) {
+    fn write_flag(
+        &mut self,
+        name: &str,
+        added: Option<Timestamp>,
+        flag: Flag,
+        value: bool,
+    ) -> Task<Message> {
+        if let Some(pending) = self.flag_writes.0.get_mut(&(name.to_owned(), flag))
+            && pending.added == added
+        {
             pending.next = (value != pending.writing).then_some(value);
             return Task::none();
         }
+        // Any other write of this name was for an environment that's gone,
+        // so its reply no longer matches and is ignored.
         self.flag_writes.0.insert(
             (name.to_owned(), flag),
             Pending {
+                added,
                 writing: value,
                 next: None,
             },
@@ -226,7 +260,7 @@ impl App {
         let name = name.to_owned();
         let reply = name.clone();
         crate::task::blocking_value(
-            move || save(&paths, &watch, &name, flag, value),
+            move || save(&paths, &watch, &name, added, flag, value),
             move |result| {
                 let (result, on_disk) = match result {
                     Ok((result, on_disk)) => (result, Some(on_disk)),
@@ -234,6 +268,7 @@ impl App {
                 };
                 Message::Mark(Event::Saved(Saved {
                     name: reply,
+                    added,
                     flag,
                     value,
                     result,
@@ -244,6 +279,10 @@ impl App {
     }
 
     fn flag_saved(&mut self, saved: Saved) -> Task<Message> {
+        // A write for an environment that has since left the library.
+        if !self.flag_writes.expects(&saved) {
+            return Task::none();
+        }
         let next = self
             .flag_writes
             .0
@@ -254,8 +293,20 @@ impl App {
         }
         let reads = self.outdate_reads();
         let shown = match saved.result {
-            Ok(()) => match next {
-                Some(next) => self.write_flag(&saved.name, saved.flag, next),
+            // Removed, or removed and made again, before the write: nothing
+            // was written, and a reload shows what's there now.
+            Ok(library::Guarded::Gone) => self.reload_library_once(),
+            Ok(library::Guarded::Set(_)) => match next {
+                // Only while the card is still the one it was queued for.
+                Some(next)
+                    if self
+                        .cards
+                        .iter()
+                        .any(|card| card.name == saved.name && card.added == saved.added) =>
+                {
+                    self.write_flag(&saved.name, saved.added, saved.flag, next)
+                }
+                Some(_) => Task::none(),
                 // Normally what was written; another writer may have
                 // changed it since.
                 None => saved.on_disk.map_or_else(Task::none, |on_disk| {

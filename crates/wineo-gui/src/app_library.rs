@@ -107,7 +107,7 @@ impl App {
     }
 
     fn merge_cards(&mut self, mut cards: Vec<Card>) {
-        self.flag_writes.overlay(&mut cards);
+        self.flag_writes.reconcile(&mut cards);
         // A rescan that changed nothing the order reads keeps the order.
         let new_order = (self.cards.len() != cards.len()
             || !self

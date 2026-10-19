@@ -435,3 +435,87 @@ fn a_problem_reads_like_its_validate_message() {
         "library.toml was written by a newer wineo; update wineo to use it."
     );
 }
+
+fn make_config(paths: &Paths, name: &str) {
+    let path = paths.environment_config(name);
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    fs::write(path, "").unwrap();
+}
+
+#[test]
+fn a_guarded_write_sets_the_field_for_the_same_environment() {
+    let fixture = Fixture::new();
+    let added: Timestamp = "2026-10-17T19:20:05Z".parse().unwrap();
+    fixture.write("[environments.hades]\nadded = 2026-10-17T19:20:05Z\n");
+    make_config(&fixture.paths, "hades");
+    assert_eq!(
+        set_favorite_for(&fixture.paths, "hades", Some(added), true).unwrap(),
+        Guarded::Set(true)
+    );
+    assert_eq!(
+        set_favorite_for(&fixture.paths, "hades", Some(added), true).unwrap(),
+        Guarded::Set(false)
+    );
+    assert_eq!(
+        set_hidden_for(&fixture.paths, "hades", Some(added), true).unwrap(),
+        Guarded::Set(true)
+    );
+    let entry = &load(&fixture.paths).environments["hades"];
+    assert!(entry.favorite && entry.hidden);
+
+    // An environment from before `added` was recorded has none.
+    make_config(&fixture.paths, "old");
+    assert_eq!(
+        set_hidden_for(&fixture.paths, "old", None, true).unwrap(),
+        Guarded::Set(true)
+    );
+    assert!(load(&fixture.paths).environments["old"].hidden);
+}
+
+#[test]
+fn a_guarded_write_for_a_removed_environment_writes_nothing() {
+    let fixture = Fixture::new();
+    // `rm` already cleaned up its entry, and its config is gone.
+    fixture.write("schema_version = 1\n");
+    let before = fixture.read();
+    assert_eq!(
+        set_favorite_for(&fixture.paths, "hades", None, true).unwrap(),
+        Guarded::Gone
+    );
+    // Or the entry is still there, but the config isn't.
+    fixture.write("[environments.hades]\nfavorite = true\n");
+    let lingering = fixture.read();
+    assert_eq!(
+        set_hidden_for(&fixture.paths, "hades", None, true).unwrap(),
+        Guarded::Gone
+    );
+    assert_eq!(fixture.read(), lingering);
+    assert_ne!(before, lingering);
+}
+
+#[test]
+fn a_guarded_write_for_a_recreated_environment_writes_nothing() {
+    let fixture = Fixture::new();
+    make_config(&fixture.paths, "hades");
+    // A new hades was made after the old one's entry was read.
+    let text = "[environments.hades]\nadded = 2026-10-18T09:00:00Z\n";
+    fixture.write(text);
+    let old: Timestamp = "2026-10-17T19:20:05Z".parse().unwrap();
+    for added in [Some(old), None] {
+        assert_eq!(
+            set_favorite_for(&fixture.paths, "hades", added, true).unwrap(),
+            Guarded::Gone
+        );
+    }
+    assert_eq!(fixture.read(), text);
+}
+
+#[test]
+fn a_guarded_write_to_a_broken_file_is_refused() {
+    let fixture = Fixture::new();
+    make_config(&fixture.paths, "hades");
+    fixture.write("[environments.hades\n");
+    let error = set_favorite_for(&fixture.paths, "hades", None, true).unwrap_err();
+    assert!(matches!(error, Error::LibraryUnreadable { .. }), "{error}");
+    assert_eq!(fixture.read(), "[environments.hades\n");
+}
