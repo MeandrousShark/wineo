@@ -10,7 +10,7 @@
 //!
 //! Run one measurement by naming it instead of `library::bench`:
 //! `rescan_quiet_and_busy`, `rescan_parts`, `stats_overview_cache`,
-//! `filtered_search_change`, or `sort_change`.
+//! `filtered_search_change`, `sort_change`, or `filter_change`.
 //! `WINEO_BENCH_ITERS` sets the iterations per measurement (default 100).
 //!
 //! The profile is release with debug assertions on for iced_core only, which
@@ -450,4 +450,91 @@ fn sort_change() {
     }
     black_box(first);
     report("reorder() per sort", samples, "us", 1e6);
+}
+
+/// What a filter change costs: the order rebuilt after toggling a tag
+/// filter, a source filter, or Show hidden. Some cards are marked favorite
+/// and hidden in memory so the Show hidden toggle has something to do; the
+/// bench root isn't touched.
+#[test]
+#[ignore = "needs WINEO_BENCH_ROOT and a release-test build"]
+fn filter_change() {
+    use std::collections::BTreeMap;
+
+    let paths = paths();
+    let mut app = crate::tests::app();
+    app.cards = library(&paths);
+    app.search = String::new();
+    for (index, card) in app.cards.iter_mut().enumerate() {
+        card.hidden = index % 10 == 3;
+        card.favorite = index % 7 == 0;
+    }
+    // The most common tag that doesn't cover every card, so the filter
+    // really narrows.
+    let mut tag_counts: BTreeMap<&str, usize> = BTreeMap::new();
+    for tag in app.cards.iter().flat_map(|card| &card.tags) {
+        *tag_counts.entry(tag.as_str()).or_default() += 1;
+    }
+    let tag = tag_counts
+        .iter()
+        .filter(|&(_, &count)| count < app.cards.len())
+        .max_by_key(|&(_, &count)| count)
+        .map(|(tag, _)| (*tag).to_owned())
+        .expect("the generated library has tags");
+    let source = app.cards[0].source.label();
+    println!(
+        "filters: tag {tag:?} on {} cards, source {source:?} on {} cards, {} hidden",
+        tag_counts[tag.as_str()],
+        app.cards
+            .iter()
+            .filter(|card| card.source.label() == source)
+            .count(),
+        app.cards.iter().filter(|card| card.hidden).count(),
+    );
+    let iterations = iterations() * 20;
+
+    header("order rebuild, one per filter change", iterations);
+    type Toggle = Box<dyn Fn(&mut crate::order::Filters)>;
+    let toggles: [(&str, Toggle); 3] = [
+        (
+            "reorder() per tag filter",
+            Box::new(move |filters| {
+                if !filters.tags.remove(&tag) {
+                    filters.tags.insert(tag.clone());
+                }
+            }),
+        ),
+        (
+            "reorder() per source filter",
+            Box::new(move |filters| {
+                if !filters.sources.remove(source) {
+                    filters.sources.insert(source);
+                }
+            }),
+        ),
+        (
+            "reorder() per Show hidden",
+            Box::new(|filters| filters.show_hidden = !filters.show_hidden),
+        ),
+    ];
+    let mut all = Vec::new();
+    for (label, toggle) in &toggles {
+        app.filters = crate::order::Filters::default();
+        let mut samples = Vec::with_capacity(iterations);
+        let mut shown = 0;
+        for round in 0..iterations + 100 {
+            toggle(&mut app.filters);
+            let start = Instant::now();
+            app.reorder();
+            let elapsed = start.elapsed();
+            shown += black_box(app.filtered()).len();
+            if round >= 100 {
+                samples.push(elapsed);
+            }
+        }
+        black_box(shown);
+        report(label, samples.clone(), "us", 1e6);
+        all.extend(samples);
+    }
+    report("reorder() per filter, all", all, "us", 1e6);
 }
