@@ -44,6 +44,16 @@ pub(crate) enum Event {
     /// Clears the search and the store, platform, and tag filters, leaving the sort
     /// and Show hidden alone.
     Clear,
+    /// Where the Filters button is now, for the filter tab.
+    ButtonBounds(Rectangle),
+    /// A filter tab chip's x.
+    Remove(crate::filter_tab::Chip),
+    /// Enter or Space on a filter tab chip's x.
+    RemoveFromKeyboard(crate::filter_tab::Chip),
+    /// The filter tab's x, which leaves the search alone.
+    ClearChips,
+    /// Enter or Space on the filter tab's x.
+    ClearChipsFromKeyboard,
 }
 
 impl Event {
@@ -51,7 +61,7 @@ impl Event {
     pub(crate) fn is_input(&self) -> bool {
         // The reply always arrives, so it can clear its request even when
         // an overlay is up; `OpenUnder` checks the window itself.
-        !matches!(self, Self::OpenUnder(..))
+        !matches!(self, Self::OpenUnder(..) | Self::ButtonBounds(_))
     }
 }
 
@@ -65,10 +75,10 @@ fn platform_id(label: &str) -> String {
 
 /// What the popup offers, each group A to Z.
 #[derive(Debug, PartialEq, Eq)]
-struct Offered {
-    stores: Vec<&'static str>,
-    platforms: Vec<&'static str>,
-    tags: Vec<String>,
+pub(crate) struct Offered {
+    pub(crate) stores: Vec<&'static str>,
+    pub(crate) platforms: Vec<&'static str>,
+    pub(crate) tags: Vec<String>,
 }
 
 /// `listed` plus any `chosen` it lacks, sorted A to Z.
@@ -104,7 +114,7 @@ impl App {
     /// What the popup offers: the library's stores, platforms, and tags,
     /// plus any chosen one it no longer has, so a filter never turns off
     /// behind your back and can still be turned off here.
-    fn offered(&self) -> Offered {
+    pub(crate) fn offered(&self) -> Offered {
         let options = self.order.options(self.order_inputs());
         let stores = with_chosen(&options.stores, &self.filters.stores);
         let platforms = with_chosen(&options.platforms, &self.filters.platforms);
@@ -222,6 +232,14 @@ pub(crate) fn update(app: &mut App, event: Event) -> Task<Message> {
                 iced::widget::operation::focus(iced::widget::Id::new(FILTER_BUTTON_ID)),
             ])
         }
+        Event::ButtonBounds(bounds) => {
+            app.filter_button = Some(bounds);
+            Task::none()
+        }
+        Event::Remove(chip) => crate::filter_tab::remove(app, &chip, false),
+        Event::RemoveFromKeyboard(chip) => crate::filter_tab::remove(app, &chip, true),
+        Event::ClearChips => crate::filter_tab::clear(app, false),
+        Event::ClearChipsFromKeyboard => crate::filter_tab::clear(app, true),
     }
 }
 
@@ -277,12 +295,12 @@ pub(crate) fn toolbar(app: &App) -> Element<'_, Message> {
     .padding([0, 12])
     .on_press(Message::Filter(Event::ToggleMenu))
     .style(move |_, status| ui::secondary_style(palette, status));
-    focus_button::control(
+    crate::filter_tab::track(focus_button::control(
         filters.into(),
         true,
         FILTER_BUTTON_ID,
         Message::Filter(Event::ToggleMenuFromKeyboard),
-    )
+    ))
 }
 
 fn heading(label: &str, palette: Palette) -> Element<'_, Message> {

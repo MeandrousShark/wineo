@@ -129,6 +129,9 @@ impl App {
             return crate::removal::delete_key(self, search_focused, captured);
         }
         if key == Key::Named(Named::Tab) && !captured && !modifiers.control() {
+            if self.filter_tab().is_some() {
+                return crate::filter_tab::step(self, modifiers.shift());
+            }
             return if modifiers.shift() {
                 iced::widget::operation::focus_previous()
             } else {

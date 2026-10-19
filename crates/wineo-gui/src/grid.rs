@@ -317,7 +317,9 @@ impl App {
         let mut page = stack![
             row![self.sidebar(), self.page_view()]
                 .width(Fill)
-                .height(Fill)
+                .height(Fill),
+            // Always a layer, so the ones above keep their places.
+            self.filter_tab_view(),
         ];
         if let Some((message, _)) = &self.feature_notice {
             let palette = self.palette;

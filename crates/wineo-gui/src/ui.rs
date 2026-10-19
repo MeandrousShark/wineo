@@ -302,7 +302,7 @@ pub(crate) fn accent_ink(background: Color) -> Color {
     }
 }
 
-fn blend(color: Color, toward: Color, amount: f32) -> Color {
+pub(crate) fn blend(color: Color, toward: Color, amount: f32) -> Color {
     Color {
         r: color.r + (toward.r - color.r) * amount,
         g: color.g + (toward.g - color.g) * amount,

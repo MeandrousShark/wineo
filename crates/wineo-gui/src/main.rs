@@ -20,6 +20,7 @@ mod downloads_page;
 mod downloads_work;
 mod ends;
 mod filter_control;
+mod filter_tab;
 mod flow;
 mod focus_button;
 mod fonts;
@@ -136,6 +137,9 @@ pub(crate) struct App {
     filter_menu: bool,
     filter_menu_position: iced::Point,
     filter_opening: library_menu::Opening,
+    /// The Filters button's bounds as last laid out, which the filter tab
+    /// hangs from.
+    filter_button: Option<iced::Rectangle>,
     /// What `view` reads in place of the disk; see `prefix_facts`.
     facts: prefix_facts::Stored,
     pub(crate) selected: Option<String>,
@@ -439,6 +443,7 @@ impl App {
             filter_menu: false,
             filter_menu_position: iced::Point::ORIGIN,
             filter_opening: library_menu::Opening::default(),
+            filter_button: None,
             sort_menu_position: iced::Point::ORIGIN,
             view_writes: sort_control::Writes::default(),
             flag_writes: library_actions::Writes::default(),

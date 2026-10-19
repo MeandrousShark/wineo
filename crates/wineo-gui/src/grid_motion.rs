@@ -26,7 +26,7 @@ const MAX_STAGGER: Duration = Duration::from_millis(35);
 pub(crate) const PANEL_WIDTH: f32 = 420.0;
 pub(crate) const RAIL_WIDTH: f32 = 10.0;
 pub(crate) const DOCK_WIDTH: f32 = PANEL_WIDTH + RAIL_WIDTH;
-const PADDING: f32 = 16.0;
+pub(crate) const PADDING: f32 = 16.0;
 
 #[derive(Debug, Clone, Copy)]
 struct Spring {
