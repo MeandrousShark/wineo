@@ -115,7 +115,9 @@ fn finish_write(app: &mut App, field: fn(&Writes) -> Option<Field>) {
 }
 
 fn sort_write(writes: &Writes) -> Option<Field> {
-    writes.sort.map(Field::Sort)
+    writes
+        .sort
+        .map(|(sort, descending)| Field::Sort(sort, descending))
 }
 
 fn descending_write(writes: &Writes) -> Option<Field> {
@@ -511,22 +513,26 @@ fn each_control_writes_only_its_field() {
         "[view]\n# theirs\ndescending = true\nfavorites_first = true\n\n[environments.hades]\nfavorite = true\n",
     );
 
-    let _ = app.update(Message::Sort(Event::Pick(SortKey::Source)));
+    // Picking writes the key with its direction in one edit and leaves
+    // everything else alone.
+    let _ = app.update(Message::Sort(Event::Pick(SortKey::Playtime)));
     assert!(app.view_writes.descending.is_none());
     assert!(app.view_writes.favorites_first.is_none());
+    assert_eq!(app.view_writes.sort, Some((SortKey::Playtime, true)));
     finish_write(&mut app, sort_write);
     assert_eq!(
         fs::read_to_string(paths.library_file()).unwrap(),
-        "schema_version = 1\n[view]\n# theirs\ndescending = true\nfavorites_first = true\nsort = \"source\"\n\n[environments.hades]\nfavorite = true\n"
+        "schema_version = 1\n[view]\n# theirs\ndescending = true\nfavorites_first = true\nsort = \"playtime\"\n\n[environments.hades]\nfavorite = true\n"
     );
 
-    // This window's direction was ascending, so flipping it writes
-    // descending, which the file already has, and nothing else.
+    // Flipping writes only the direction.
     let _ = app.update(Message::Sort(Event::FlipDirection));
     assert!(app.view_writes.sort.is_none());
-    let before = fs::read_to_string(paths.library_file()).unwrap();
     finish_write(&mut app, descending_write);
-    assert_eq!(fs::read_to_string(paths.library_file()).unwrap(), before);
+    let saved = wineo_core::library::load(&paths);
+    assert!(!saved.view.descending);
+    assert_eq!(saved.view.sort, SortKey::Playtime);
+    assert!(saved.view.favorites_first);
 
     let _ = app.update(Message::Sort(Event::FlipDirection));
     finish_write(&mut app, descending_write);
@@ -540,8 +546,8 @@ fn each_control_writes_only_its_field() {
     assert_eq!(
         saved.view,
         wineo_core::library::View {
-            sort: SortKey::Source,
-            descending: false,
+            sort: SortKey::Playtime,
+            descending: true,
             favorites_first: false,
         }
     );
@@ -577,7 +583,7 @@ fn a_write_to_an_unreadable_file_keeps_the_view_says_why_and_refreshes_the_cache
     let _ = app.update(Message::Sort(Event::Pick(SortKey::Playtime)));
     finish_write(&mut app, sort_write);
     assert_eq!(app.query.sort, SortKey::Playtime);
-    assert_eq!(shown(&app)[0], "notepad");
+    assert_eq!(shown(&app)[0], "hades");
     assert_eq!(
         app.feature_notice.as_ref().map(|(text, _)| text.as_str()),
         Some(
@@ -1373,4 +1379,70 @@ fn a_click_cancels_a_pending_keyboard_open() {
     let _ = app.update(Message::Sort(Event::CloseMenu));
     reply(&mut app, request);
     assert!(!app.sort_menu);
+}
+
+#[test]
+fn picking_a_key_starts_it_in_its_natural_order_and_saves_both() {
+    let cases = [
+        (SortKey::Name, false),
+        (SortKey::LastPlayed, true),
+        (SortKey::Playtime, true),
+        (SortKey::Added, true),
+    ];
+    for (key, descending) in cases {
+        // From either direction of any other key.
+        for from in [SortKey::Name, SortKey::Playtime] {
+            for flipped in [false, true] {
+                if from == key {
+                    continue;
+                }
+                let (_root, mut app) = loaded();
+                app.query.sort = from;
+                app.query.descending = flipped;
+                let _ = app.update(Message::Sort(Event::Pick(key)));
+                assert_eq!(app.query.sort, key, "{key:?} from {from:?}");
+                assert_eq!(app.query.descending, descending, "{key:?} from {from:?}");
+                assert_eq!(app.view_writes.sort, Some((key, descending)));
+                assert!(app.view_writes.descending.is_none(), "one write per pick");
+                finish_write(&mut app, sort_write);
+                let view = wineo_core::library::load(&app.paths).view;
+                assert_eq!((view.sort, view.descending), (key, descending));
+            }
+        }
+    }
+}
+
+#[test]
+fn picking_the_selected_key_keeps_the_direction_and_flipping_still_works() {
+    let (_root, mut app) = loaded();
+    let _ = app.update(Message::Sort(Event::Pick(SortKey::Playtime)));
+    finish_write(&mut app, sort_write);
+    assert!(app.query.descending);
+    let _ = app.update(Message::Sort(Event::FlipDirection));
+    finish_write(&mut app, descending_write);
+    assert!(!app.query.descending);
+
+    let _ = app.update(Message::Sort(Event::Pick(SortKey::Playtime)));
+    assert!(!app.query.descending, "the same key leaves the direction");
+    assert!(app.view_writes.sort.is_none());
+    assert!(app.view_writes.descending.is_none());
+    assert_eq!(shown(&app)[0], "notepad");
+
+    let _ = app.update(Message::Sort(Event::FlipDirection));
+    assert!(app.query.descending);
+    assert_eq!(shown(&app)[0], "hades");
+}
+
+#[test]
+fn a_pick_made_while_a_write_runs_is_written_when_it_finishes() {
+    let (_root, mut app) = loaded();
+    let _ = app.update(Message::Sort(Event::Pick(SortKey::Playtime)));
+    let _ = app.update(Message::Sort(Event::Pick(SortKey::Name)));
+    assert_eq!(app.view_writes.sort, Some((SortKey::Playtime, true)));
+    finish_write(&mut app, sort_write);
+    assert_eq!(app.view_writes.sort, Some((SortKey::Name, false)));
+    finish_write(&mut app, sort_write);
+    assert!(app.view_writes.sort.is_none());
+    let view = wineo_core::library::load(&app.paths).view;
+    assert_eq!((view.sort, view.descending), (SortKey::Name, false));
 }

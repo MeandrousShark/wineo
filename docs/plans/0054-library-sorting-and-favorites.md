@@ -1391,6 +1391,29 @@ screenshots:
 - Steam games have no platform, since Steam doesn't say whether it runs
   them under Proton, so they match no Platform filter.
 
+**A5. A platform for Steam games.** The maintainer finds it confusing
+that a Steam game running through Proton doesn't show under Windows. What
+Steam leaves on disk, checked on the maintainer's install (2026-10-18):
+`config.vdf`'s `CompatToolMapping` names a Proton build for games forced
+onto it (core reads it already, `steam::compat_tools`), and
+`compatdata/<appid>/pfx` exists once a game has run through Proton
+(Stardew Valley, a native game, has an empty `compatdata` folder). The
+global `"0"` entry applies only to games without a Linux build, and only
+the binary `appcache/appinfo.vdf` (4.5 MB here, rewritten often) says which
+games have one, in each app's `oslist`.
+
+- A: Windows when the game has its own Proton entry or a `pfx`; otherwise
+  no platform. Cheap. On the maintainer's library it places every game
+  but Stardew Valley, which shows under neither, and a Windows game never
+  launched also shows under neither until its first run.
+- B: A, plus reading `oslist` from `appinfo.vdf` (cached by its stamp,
+  only the installed app IDs): no Linux build, or its own Proton entry,
+  is Windows; a Linux build without one is Native. Exact, but a binary
+  format Steam has changed before (falls back to A when it can't be read).
+
+Recommendation: **A** in this plan and B as its own small follow-up, since
+A fixes the confusing case for every game that's been played.
+
 8. **Acceptance changes.** A1: picking a sort key sets its natural
    direction and saves both. A2: Source leaves the Sort menu and
    `SortKey`; a saved `source` reads as Name. A3: Store and Platform

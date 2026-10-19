@@ -151,6 +151,29 @@ future_entry = "kept"
 }
 
 #[test]
+fn set_order_writes_the_key_and_direction_in_one_edit() {
+    let fixture = Fixture::new();
+    fixture.write("schema_version = 1\n\n[view]\nsort = \"name\" # keep\n");
+    assert!(set_order(&fixture.paths, SortKey::Playtime, true).unwrap());
+    let view = load(&fixture.paths).view;
+    assert_eq!((view.sort, view.descending), (SortKey::Playtime, true));
+    assert!(fixture.read().contains("sort = \"playtime\" # keep"));
+
+    assert!(!set_order(&fixture.paths, SortKey::Playtime, true).unwrap());
+    assert!(set_order(&fixture.paths, SortKey::Playtime, false).unwrap());
+    assert!(set_order(&fixture.paths, SortKey::Name, false).unwrap());
+    let view = load(&fixture.paths).view;
+    assert_eq!((view.sort, view.descending), (SortKey::Name, false));
+}
+
+#[test]
+fn only_name_starts_ascending() {
+    for sort in SortKey::ALL {
+        assert_eq!(sort.starts_descending(), sort != SortKey::Name, "{sort:?}");
+    }
+}
+
+#[test]
 fn no_op_edits_and_reads_do_not_replace_the_file() {
     let fixture = Fixture::new();
     fixture

@@ -53,11 +53,12 @@ impl Event {
     }
 }
 
-/// One `[view]` field and the value written to it. Each write sets only its
-/// own field, so a window never writes back state it merely read.
+/// One `[view]` write and the values written. Each write sets only its own
+/// fields, so a window never writes back state it merely read. Picking a
+/// key writes its direction with it, in one edit.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Field {
-    Sort(SortKey),
+    Sort(SortKey, bool),
     Descending(bool),
     FavoritesFirst(bool),
 }
@@ -66,7 +67,7 @@ pub(crate) enum Field {
 /// runs at a time; a change made meanwhile is written when it finishes.
 #[derive(Debug, Default)]
 pub(crate) struct Writes {
-    pub(crate) sort: Option<SortKey>,
+    pub(crate) sort: Option<(SortKey, bool)>,
     pub(crate) descending: Option<bool>,
     pub(crate) favorites_first: Option<bool>,
 }
@@ -74,7 +75,7 @@ pub(crate) struct Writes {
 impl Writes {
     fn busy(&self, field: Field) -> bool {
         match field {
-            Field::Sort(_) => self.sort.is_some(),
+            Field::Sort(..) => self.sort.is_some(),
             Field::Descending(_) => self.descending.is_some(),
             Field::FavoritesFirst(_) => self.favorites_first.is_some(),
         }
@@ -82,7 +83,7 @@ impl Writes {
 
     fn start(&mut self, field: Field) {
         match field {
-            Field::Sort(value) => self.sort = Some(value),
+            Field::Sort(sort, descending) => self.sort = Some((sort, descending)),
             Field::Descending(value) => self.descending = Some(value),
             Field::FavoritesFirst(value) => self.favorites_first = Some(value),
         }
@@ -95,7 +96,7 @@ impl Writes {
 
     fn finish(&mut self, field: Field) {
         match field {
-            Field::Sort(_) => self.sort = None,
+            Field::Sort(..) => self.sort = None,
             Field::Descending(_) => self.descending = None,
             Field::FavoritesFirst(_) => self.favorites_first = None,
         }
@@ -150,7 +151,7 @@ fn menu_ids() -> Vec<&'static str> {
 /// Writes one field, then rereads the rescan's cache whatever happened.
 pub(crate) fn save(paths: &Paths, watch: &rescan::Watch, field: Field) -> Result<(), String> {
     let result = match field {
-        Field::Sort(sort) => library::set_sort(paths, sort),
+        Field::Sort(sort, descending) => library::set_order(paths, sort, descending),
         Field::Descending(descending) => library::set_descending(paths, descending),
         Field::FavoritesFirst(first) => library::set_favorites_first(paths, first),
     };
@@ -182,7 +183,7 @@ impl App {
     /// The window's current value of `field`'s field.
     fn current(&self, field: Field) -> Field {
         match field {
-            Field::Sort(_) => Field::Sort(self.query.sort),
+            Field::Sort(..) => Field::Sort(self.query.sort, self.query.descending),
             Field::Descending(_) => Field::Descending(self.query.descending),
             Field::FavoritesFirst(_) => Field::FavoritesFirst(self.query.favorites_first),
         }
@@ -256,8 +257,14 @@ pub(crate) fn update(app: &mut App, event: Event) -> Task<Message> {
             if sort == app.query.sort {
                 return focus;
             }
+            // Each key starts in its own order, so Name to Last played
+            // doesn't give the oldest first.
             app.query.sort = sort;
-            Task::batch([focus, app.sort_changed(Field::Sort(sort))])
+            app.query.descending = sort.starts_descending();
+            Task::batch([
+                focus,
+                app.sort_changed(Field::Sort(sort, app.query.descending)),
+            ])
         }
         Event::FlipDirection => {
             app.query.descending = !app.query.descending;

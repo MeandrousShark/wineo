@@ -48,6 +48,12 @@ impl SortKey {
         Self::Source,
     ];
 
+    /// Whether the key starts descending when picked: names run A to Z, and
+    /// the rest lead with the most recent, most played, or newest.
+    pub fn starts_descending(self) -> bool {
+        self != Self::Name
+    }
+
     fn from_str(value: &str) -> Option<Self> {
         match value {
             "name" => Some(Self::Name),
@@ -256,27 +262,16 @@ fn set_bool_for(
 }
 
 pub fn set_sort(paths: &Paths, sort: SortKey) -> Result<bool> {
+    edit(paths, |document| set_view_sort(document, sort))
+}
+
+/// `set_sort` and `set_descending` in one write, for picking a key that
+/// starts in its own direction.
+pub fn set_order(paths: &Paths, sort: SortKey, descending: bool) -> Result<bool> {
     edit(paths, |document| {
-        let current = document
-            .get("view")
-            .and_then(Item::as_table_like)
-            .and_then(|table| table.get("sort"));
-        let matches = match current {
-            None => sort == SortKey::default(),
-            Some(item) => item
-                .as_str()
-                .and_then(SortKey::from_str)
-                .is_some_and(|current| current == sort),
-        };
-        if matches {
-            return false;
-        }
-        store_value(
-            view_table_mut(document),
-            "sort",
-            Value::from(sort_name(sort)),
-        );
-        true
+        let sorted = set_view_sort(document, sort);
+        let directed = set_view_bool(document, "descending", descending);
+        sorted || directed
     })
 }
 
@@ -500,6 +495,29 @@ fn set_environment_bool(document: &mut DocumentMut, name: &str, field: &str, val
         environment_table_mut(document, name),
         field,
         Value::from(value),
+    );
+    true
+}
+
+fn set_view_sort(document: &mut DocumentMut, sort: SortKey) -> bool {
+    let current = document
+        .get("view")
+        .and_then(Item::as_table_like)
+        .and_then(|table| table.get("sort"));
+    let matches = match current {
+        None => sort == SortKey::default(),
+        Some(item) => item
+            .as_str()
+            .and_then(SortKey::from_str)
+            .is_some_and(|current| current == sort),
+    };
+    if matches {
+        return false;
+    }
+    store_value(
+        view_table_mut(document),
+        "sort",
+        Value::from(sort_name(sort)),
     );
     true
 }
