@@ -21,11 +21,15 @@ pub(crate) const CROSS: &[u8] = br##"<svg xmlns="http://www.w3.org/2000/svg" vie
 const MORE_ID: &str = "library-filter-tab-more";
 const CLEAR_ID: &str = "library-filter-tab-clear";
 
-/// The gap from the Filters button's bottom edge to the first poster is
-/// 25 px (8 px of toolbar padding, the 1 px rule, and 16 px of grid
-/// padding). The tab starts 1 px up so its top border runs along the
-/// button's, and ends where the posters start.
+/// The room the tab leaves above and below itself, between the Filters
+/// button and the first poster.
+const TAB_GAP: f32 = 3.0;
 const TAB_HEIGHT: f32 = 26.0;
+/// The Library toolbar's bottom padding. With the 1 px rule under the
+/// toolbar and the grid's padding, it makes room for the tab and a gap on
+/// each side, so the tab never covers a poster at the top of the grid.
+pub(crate) const TOOLBAR_PADDING_BOTTOM: f32 =
+    2.0 * TAB_GAP + TAB_HEIGHT - 1.0 - crate::grid_motion::PADDING;
 const TAB_RADIUS: f32 = 8.0;
 const TAB_PADDING_LEFT: f32 = 4.0;
 const TAB_PADDING_RIGHT: f32 = 1.0;
@@ -246,9 +250,7 @@ impl App {
                     .border(iced::Border {
                         color: palette.border,
                         width: TAB_BORDER,
-                        radius: border::Radius::default()
-                            .bottom_left(TAB_RADIUS)
-                            .bottom_right(TAB_RADIUS),
+                        radius: TAB_RADIUS.into(),
                     })
             });
         // Claims the pointer over the whole tab, so the grid underneath takes
@@ -259,7 +261,7 @@ impl App {
             .on_scroll(|delta| Message::Filter(Event::Wheel(delta)));
         container(shield)
             .padding(iced::Padding {
-                top: tab.button.y + tab.button.height - TAB_BORDER,
+                top: tab.button.y + tab.button.height + TAB_GAP,
                 left: tab.button.x,
                 right: 0.0,
                 bottom: 0.0,

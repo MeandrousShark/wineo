@@ -990,7 +990,12 @@ impl App {
             .spacing(16)
             .align_y(Center),
         )
-        .padding([8, 16])
+        .padding(iced::Padding {
+            top: 8.0,
+            bottom: crate::filter_tab::TOOLBAR_PADDING_BOTTOM,
+            left: 16.0,
+            right: 16.0,
+        })
         .width(Fill)
         .into()
     }

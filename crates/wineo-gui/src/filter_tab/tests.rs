@@ -173,12 +173,12 @@ fn the_tab_hangs_in_the_gap_above_the_first_poster() {
         .max_by(|a, b| a.0.width.total_cmp(&b.0.width))
         .unwrap();
     let poster_top = grid.y + crate::grid_motion::PADDING;
-    // The measured gap: 8 px of toolbar padding, the rule, and 16 px of
+    // The measured gap: 15 px of toolbar padding, the rule, and 16 px of
     // grid padding.
-    assert_eq!(poster_top - (button.y + button.height), 25.0);
+    assert_eq!(poster_top - (button.y + button.height), 32.0);
     assert_eq!(tab.x, button.x);
-    assert_eq!(tab.y, button.y + button.height - 1.0);
-    assert_eq!(tab.y + tab.height, poster_top);
+    assert_eq!(tab.y, button.y + button.height + 3.0);
+    assert_eq!(tab.y + tab.height, poster_top - 3.0);
     let mut laid = lay_out(app.view(), app.window_size);
     let clear = bounds(&mut laid, CLEAR_ID).unwrap();
     assert!(crate::layout_probe::within(clear, tab), "{clear:?} {tab:?}");
