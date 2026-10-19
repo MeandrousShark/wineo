@@ -18,6 +18,10 @@
 #   SETTLE     seconds after focusing before sampling (default 5)
 #   SAMPLE     seconds of idle sampled (default 20)
 #   SCROLL     0 skips the scroll measurement
+#   DOCK       0 skips the details panel open and close measurement
+#   RESORT     0 skips the sort direction measurement
+#   ZOOM       0 skips the zoom key measurement; a build without zoom (before
+#              plan 0055) has to run with ZOOM=0
 #   ICED_BACKEND  the renderer (default tiny-skia, iced's CPU renderer).
 #              Without it iced's wgpu may drive the real GPU through Vulkan
 #              even under Xvfb, which is not software rendering.
@@ -30,15 +34,30 @@
 # are the smoothness numbers. The grab is sampled, so gaps are good to about
 # 17 ms, and software rendering shows relative costs, not what a GPU feels.
 #
+# Three more runs follow the scroll, each a timed list of actions with the
+# mouse parked where hover cannot change a frame: dock (click a card to open
+# the details panel, Escape to close it, three times), resort (click the sort
+# direction button six times), and zoom (Ctrl+= then Ctrl+- four times each
+# about 600 ms apart, so each step settles, then six of each about 100 ms
+# apart, so held-down steps retarget mid-tween). A build that snaps still
+# shows up as one changed frame per action. Each prints <run>_cpu, then
+# <run>_frames (changed frames per second of motion, not of the whole run),
+# <run>_gap_p90 and <run>_gap_max, and <run>_active_ms: per action, the time
+# from the action to the last changed frame before the next action,
+# averaged. The pauses between actions are not gaps: a gap that spans an
+# action counts from the action, so the first one is the response time.
+# Rapid presses cap active_ms at their spacing.
+#
 # "Focused" matters: the 2 s rescan only runs while the window has focus,
 # and on X11 without a window manager a click counts as focus, so the run
 # clicks an empty spot in the header before sampling.
 #
 # A run fails loudly, instead of reporting zero activity, if the display is
-# not the script's own, ffmpeg is missing or captures nothing, or the scroll
-# changed no frames.
+# not the script's own, ffmpeg is missing or captures nothing, or the scroll,
+# dock, resort, or zoom changed no frames.
 #
-# Needs Xvfb, xdpyinfo, xdotool, ffmpeg (for scroll), and GNU awk (asort).
+# Needs Xvfb, xdpyinfo, xdotool, ffmpeg (for the motion runs), and GNU awk
+# (asort).
 
 set -euo pipefail
 
@@ -54,6 +73,9 @@ warmup=${WARMUP:-15}
 settle=${SETTLE:-5}
 sample=${SAMPLE:-20}
 scroll=${SCROLL:-1}
+dock=${DOCK:-1}
+resort=${RESORT:-1}
+zoom=${ZOOM:-1}
 [[ -f $root/.bench-library ]] || {
     echo "$root was not made by generate-bench-library.sh" >&2
     exit 1
@@ -64,7 +86,7 @@ scroll=${SCROLL:-1}
 }
 
 need=(Xvfb xdpyinfo xdotool)
-[[ $scroll != 0 ]] && need+=(ffmpeg)
+[[ $scroll != 0 || $dock != 0 || $resort != 0 || $zoom != 0 ]] && need+=(ffmpeg)
 for tool in "${need[@]}"; do
     command -v "$tool" >/dev/null || {
         echo "$tool is needed but not on PATH" >&2
@@ -207,26 +229,148 @@ renderer() {
     fi
 }
 
-# Prints "frames/s p90_gap_ms max_gap_ms" from ffmpeg's framemd5 lines.
+# Prints "frames/s p90_gap_ms max_gap_ms" from ffmpeg's framemd5 lines. With
+# a second file of action times (seconds after the first frame, one per
+# line) it also prints active_ms, and the numbers describe each action's
+# motion alone: its changed frames run from the action until one gap over
+# 400 ms (or the next action), so a stray repaint long after the motion, such
+# as a once-a-second panel refresh, is not counted, and neither are the
+# pauses between actions. The first gap of an action is its response time.
+# Times stay in the grab's 1/60 s ticks until printed.
 frame_stats() {
-    awk -F', *' '
+    awk -F', *' -v actions="${2:-}" '
+        BEGIN {
+            if (actions != "") while ((getline line < actions) > 0) a[++na] = line * 60
+        }
         /^#/ { next }
         {
             # The first frame has nothing before it to differ from.
-            if (++frame > 1 && $6 != last) { n++; t = $3 + 0; if (prev != "") { gaps[++g] = t - prev }; prev = t; if (first == "") first = t }
+            if (++frame > 1 && $6 != last) c[++n] = $3 + 0
             last = $6
         }
         END {
-            if (g < 2) { exit 1 }
+            if (na == 0) {
+                if (n < 3) exit 1
+                for (k = 2; k <= n; k++) gaps[k - 1] = c[k] - c[k - 1]
+                m = asort(gaps)
+                printf "%.1f %.0f %.0f\n", m / ((c[n] - c[1]) / 60), gaps[int(m * 0.9) + 1] * 1000 / 60, gaps[m] * 1000 / 60
+                exit
+            }
+            j = 1
+            for (i = 1; i <= na; i++) {
+                hi = (i < na) ? a[i + 1] : 1e18
+                while (j <= n && c[j] < a[i]) j++
+                at = a[i]
+                while (j <= n && c[j] < hi && c[j] - at <= 24) {
+                    gaps[++g] = c[j] - at
+                    at = c[j]
+                    j++
+                    frames++
+                }
+                sum += at - a[i]
+                while (j <= n && c[j] < hi) j++
+            }
+            if (g < 2 || sum <= 0) exit 1
             m = asort(gaps)
-            span = prev - first
-            printf "%.1f %.0f %.0f\n", g / (span / 60), gaps[int(m * 0.9) + 1] * 1000 / 60, gaps[m] * 1000 / 60
+            printf "%.1f %.0f %.0f %.0f\n", frames / (sum / 60), gaps[int(m * 0.9) + 1] * 1000 / 60, gaps[m] * 1000 / 60, sum * 1000 / 60 / na
         }' "$1"
 }
 
 fail() {
     echo "bench-gui-idle: $*" >&2
     exit 1
+}
+
+# Runs ACTION in the background while ffmpeg grabs Xvfb for SECONDS, then
+# sets cpu (share of one core over SECONDS) and, from the grab, frames, p90,
+# max, and (with marks) active. ACTION starts a second after ffmpeg's first
+# frame, and mark times are measured from that frame. An action calls mark
+# right before each thing it sends, to record when it happened. WHAT names
+# the run in failures.
+capture() {
+    local what=$1 seconds=$2 action=$3 cpu0 cpu1 count
+    rm -f "$work/sent"
+    : >"$work/frames"
+    : >"$work/marks"
+    read -r cpu0 _ < <(snapshot)
+    (
+        for _ in $(seq 500); do
+            awk '!/^#/ { found = 1; exit } END { exit !found }' "$work/frames" && break
+            sleep 0.01
+        done
+        date +%s.%N >"$work/origin"
+        sleep 1
+        "$action"
+    ) &
+    actor=$!
+    helper_pids+=("$actor")
+    ffmpeg -nostdin -loglevel error -f x11grab -draw_mouse 0 -framerate 60 -video_size 1200x800 -t "$seconds" \
+        -i "$display" -vf scale=320:200 -f framemd5 - >"$work/frames" 2>"$work/ffmpeg.log" \
+        || fail "ffmpeg failed to capture $display: $(<"$work/ffmpeg.log")"
+    wait "$actor" || fail "xdotool could not send the $what"
+    helper_pids=()
+    read -r cpu1 _ < <(snapshot)
+    count=$(grep -vc '^#' "$work/frames" || true)
+    ((count >= seconds * 100 / 3)) || fail "ffmpeg captured only $count frames in $seconds s (about $((seconds * 60)) expected)"
+    cpu=$(awk -v a="$cpu0" -v b="$cpu1" -v c="$clk" -v s="$seconds" 'BEGIN { printf "%.2f", (b - a) / c / s * 100 }')
+    if [[ -s $work/marks ]]; then
+        read -r frames p90 max active < <(frame_stats "$work/frames" "$work/marks") || return 1
+    else
+        read -r frames p90 max < <(frame_stats "$work/frames") || return 1
+    fi
+}
+
+# Seconds since the first frame, for the actions below. The origin lives in a
+# file because the actions run in capture's subshell.
+mark() {
+    awk -v a="$(<"$work/origin")" -v b="$(date +%s.%N)" 'BEGIN { printf "%.3f\n", b - a }' >>"$work/marks"
+}
+
+scroll_action() {
+    local start
+    start=$(date +%s.%N)
+    xdotool click --repeat 180 --delay 16 5 || exit 1
+    awk -v a="$start" -v b="$(date +%s.%N)" 'BEGIN { printf "%.1f\n", 180 / (b - a) }' >"$work/sent"
+}
+
+# Click the first card to open the panel, Escape to close it. The mouse
+# stays on that card, so hover never changes. The pause lets the dock spring
+# settle.
+dock_action() {
+    for _ in 1 2 3; do
+        mark
+        xdotool click 1 || exit 1
+        sleep 1
+        mark
+        xdotool key Escape || exit 1
+        sleep 1
+    done
+}
+
+resort_action() {
+    for _ in 1 2 3 4 5 6; do
+        mark
+        xdotool click 1 || exit 1
+        sleep 1
+    done
+}
+
+# Spaced presses settle, close ones retarget a tween in flight (xdotool
+# itself takes about 50 ms per key, hence the short sleeps). Four or six
+# of each way keep the zoom inside its range from 100%.
+zoom_action() {
+    local pair key presses delay i
+    for pair in "4 0.55" "6 0.07"; do
+        read -r presses delay <<<"$pair"
+        for key in ctrl+equal ctrl+minus; do
+            for ((i = 0; i < presses; i++)); do
+                mark
+                xdotool key "$key" || exit 1
+                sleep "$delay"
+            done
+            sleep 0.5
+        done
+    done
 }
 
 results="$work/results"
@@ -252,27 +396,38 @@ for ((run = 1; run <= runs; run++)); do
     line="$run renderer=$shown idle_cpu=${idle}% main_wakeups=${wake}/s rss=${rss}MiB threads=$threads"
     if [[ $scroll != 0 ]]; then
         xdotool mousemove 600 400
-        read -r cpu0 _ < <(snapshot)
-        rm -f "$work/sent"
-        (
-            sleep 1
-            start=$(date +%s.%N)
-            xdotool click --repeat 180 --delay 16 5 || exit 1
-            awk -v a="$start" -v b="$(date +%s.%N)" 'BEGIN { printf "%.1f\n", 180 / (b - a) }' >"$work/sent"
-        ) &
-        scroller=$!
-        helper_pids+=("$scroller")
-        ffmpeg -nostdin -loglevel error -f x11grab -draw_mouse 0 -framerate 60 -video_size 1200x800 -t 6 \
-            -i "$display" -vf scale=320:200 -f framemd5 - >"$work/frames" 2>"$work/ffmpeg.log" \
-            || fail "ffmpeg failed to capture $display: $(<"$work/ffmpeg.log")"
-        wait "$scroller" || fail "xdotool could not send the scroll"
-        helper_pids=()
-        read -r cpu1 _ < <(snapshot)
-        frames=$(grep -vc '^#' "$work/frames" || true)
-        ((frames >= 200)) || fail "ffmpeg captured only $frames frames in 6 s (about 360 expected)"
-        scroll_cpu=$(awk -v a="$cpu0" -v b="$cpu1" -v c="$clk" 'BEGIN { printf "%.2f", (b - a) / c / 6 * 100 }')
-        read -r fps p90 max < <(frame_stats "$work/frames") || fail "scrolling changed no frames on screen"
-        line+=" scroll_cpu=${scroll_cpu}% clicks_sent=$(<"$work/sent")/s scroll_frames=${fps}/s gap_p90=${p90}ms gap_max=${max}ms"
+        capture scroll 6 scroll_action || fail "scrolling changed no frames on screen"
+        line+=" scroll_cpu=${cpu}% clicks_sent=$(<"$work/sent")/s scroll_frames=${frames}/s gap_p90=${p90}ms gap_max=${max}ms"
+    fi
+    if [[ $dock != 0 || $resort != 0 || $zoom != 0 ]]; then
+        # No window manager hands out keyboard focus, so the keys of these
+        # runs need it set by hand. Only after the idle and scroll numbers,
+        # which the plans compare against, are taken.
+        read -r win < <(xdotool search --onlyvisible --pid "$gui_pid")
+        [[ -n $win ]] || fail "no window found for the app (pid $gui_pid)"
+        xdotool windowfocus "$win"
+    fi
+    if [[ $dock != 0 ]]; then
+        # The first card, so the panel opening reflows the grid but never
+        # moves the card under the pointer.
+        xdotool mousemove 236 190
+        nap 1
+        capture dock 8 dock_action || fail "opening and closing the panel changed no frames on screen"
+        line+=" dock_cpu=${cpu}% dock_frames=${frames}/s dock_gap_p90=${p90}ms dock_gap_max=${max}ms dock_active_ms=${active}ms"
+    fi
+    if [[ $resort != 0 ]]; then
+        # The sort direction button in the toolbar.
+        xdotool mousemove 697 24
+        nap 1
+        capture resort 8 resort_action || fail "the sort direction button changed no frames on screen"
+        line+=" resort_cpu=${cpu}% resort_frames=${frames}/s resort_gap_p90=${p90}ms resort_gap_max=${max}ms resort_active_ms=${active}ms"
+    fi
+    if [[ $zoom != 0 ]]; then
+        # An empty spot in the header, as for focusing.
+        xdotool mousemove 900 24
+        nap 1
+        capture zoom 11 zoom_action || fail "zoom keys changed no frames on screen: the build may predate zoom (ZOOM=0 skips this run)"
+        line+=" zoom_cpu=${cpu}% zoom_frames=${frames}/s zoom_gap_p90=${p90}ms zoom_gap_max=${max}ms zoom_active_ms=${active}ms"
     fi
     echo "$line"
     echo "$line" >>"$results"
@@ -282,7 +437,8 @@ done
 # min / median / p90 / max of one key's numbers across runs.
 summarize() {
     local key=$1
-    { grep -o "$key=[0-9.]*" "$results" || true; } | cut -d= -f2 | sort -n | awk -v key="$key" '
+    # The space keeps gap_p90 from also matching dock_gap_p90.
+    { grep -oE " $key=[0-9.]*" "$results" || true; } | cut -d= -f2 | sort -n | awk -v key="$key" '
         { v[NR] = $1 }
         END {
             if (NR == 0) exit
@@ -291,6 +447,9 @@ summarize() {
 }
 echo
 echo "Across $runs runs:"
-for key in idle_cpu main_wakeups rss threads scroll_cpu clicks_sent scroll_frames gap_p90 gap_max; do
+for key in idle_cpu main_wakeups rss threads scroll_cpu clicks_sent scroll_frames gap_p90 gap_max \
+    dock_cpu dock_frames dock_gap_p90 dock_gap_max dock_active_ms \
+    resort_cpu resort_frames resort_gap_p90 resort_gap_max resort_active_ms \
+    zoom_cpu zoom_frames zoom_gap_p90 zoom_gap_max zoom_active_ms; do
     summarize "$key"
 done
