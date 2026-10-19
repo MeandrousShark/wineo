@@ -109,13 +109,62 @@ pub struct Library {
     pub problem: Option<Problem>,
 }
 
+/// Why the file can't be used. `newer` says a newer wineo wrote it: its
+/// `schema_version` is above this one's, even when the rest doesn't parse,
+/// so there's nothing to repair, only wineo to update.
 enum ReadFailure {
     Io(io::Error),
+    NotUtf8 {
+        newer: bool,
+    },
     Parse {
         error: toml_edit::TomlError,
         line: Option<usize>,
+        newer: bool,
     },
-    Schema(String),
+    Schema {
+        found: String,
+        newer: bool,
+    },
+}
+
+const NEWER: &str = "library.toml was written by a newer wineo; update wineo to use it.";
+const NOT_UTF8: &str = "stream did not contain valid UTF-8";
+
+impl ReadFailure {
+    fn newer(&self) -> bool {
+        match self {
+            Self::Io(_) => false,
+            Self::NotUtf8 { newer } | Self::Parse { newer, .. } | Self::Schema { newer, .. } => {
+                *newer
+            }
+        }
+    }
+
+    /// The one classification every reader shares, so the banner, a
+    /// refused write, and `validate` always agree on whether to repair.
+    fn problem(&self) -> Problem {
+        let (reason, line) = match self {
+            _ if self.newer() => {
+                return Problem {
+                    reason: NEWER.to_owned(),
+                    line: None,
+                    newer_version: true,
+                };
+            }
+            Self::Io(error) => (error.to_string(), None),
+            Self::NotUtf8 { .. } => (NOT_UTF8.to_owned(), None),
+            Self::Parse { error, line, .. } => (error.message().trim().to_owned(), *line),
+            Self::Schema { found, .. } => {
+                (format!("unsupported schema_version {}", found.trim()), None)
+            }
+        };
+        Problem {
+            reason,
+            line,
+            newer_version: false,
+        }
+    }
 }
 
 /// Reads display state, falling back to defaults when the file can't be used.
@@ -124,43 +173,14 @@ pub fn load(paths: &Paths) -> Library {
 }
 
 fn library_from(read: std::result::Result<Option<DocumentMut>, ReadFailure>) -> Library {
-    let document = match read {
-        Ok(Some(document)) => document,
-        Ok(None) => return Library::default(),
-        Err(ReadFailure::Io(error)) => {
-            return Library {
-                problem: Some(Problem {
-                    reason: error.to_string(),
-                    line: None,
-                    newer_version: false,
-                }),
-                ..Library::default()
-            };
-        }
-        Err(ReadFailure::Parse { error, line }) => {
-            return Library {
-                problem: Some(Problem {
-                    reason: error.message().to_owned(),
-                    line,
-                    newer_version: false,
-                }),
-                ..Library::default()
-            };
-        }
-        Err(ReadFailure::Schema(_)) => {
-            return Library {
-                problem: Some(Problem {
-                    reason: "library.toml was written by a newer wineo; update wineo to use it."
-                        .to_owned(),
-                    line: None,
-                    newer_version: true,
-                }),
-                ..Library::default()
-            };
-        }
-    };
-
-    read_library(&document)
+    match read {
+        Ok(Some(document)) => read_library(&document),
+        Ok(None) => Library::default(),
+        Err(failure) => Library {
+            problem: Some(failure.problem()),
+            ..Library::default()
+        },
+    }
 }
 
 pub fn set_favorite(paths: &Paths, name: &str, favorite: bool) -> Result<bool> {
@@ -260,6 +280,10 @@ fn edit(paths: &Paths, change: impl FnOnce(&mut DocumentMut) -> bool) -> Result<
         Err(ReadFailure::Io(error)) => {
             return Err(error).context(|| format!("failed to read {}", path.display()));
         }
+        Err(ReadFailure::NotUtf8 { newer: false }) => {
+            return Err(io::Error::new(io::ErrorKind::InvalidData, NOT_UTF8))
+                .context(|| format!("failed to read {}", path.display()));
+        }
         Err(failure) => return Err(unreadable_error(&path, failure)),
     };
     let add_schema_version = missing || document.get("schema_version").is_none();
@@ -274,22 +298,17 @@ fn edit(paths: &Paths, change: impl FnOnce(&mut DocumentMut) -> bool) -> Result<
 }
 
 fn read_document(path: &Path) -> std::result::Result<Option<DocumentMut>, ReadFailure> {
-    let text = match fs::read_to_string(path) {
-        Ok(text) => text,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
-        Err(error) => return Err(ReadFailure::Io(error)),
-    };
-    parse_document(&text).map(Some)
+    match fs::read(path) {
+        Ok(bytes) => document_from_bytes(bytes).map(Some),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(ReadFailure::Io(error)),
+    }
 }
 
 /// `read_document` for bytes already read.
 fn document_from_bytes(bytes: Vec<u8>) -> std::result::Result<DocumentMut, ReadFailure> {
-    let text = String::from_utf8(bytes).map_err(|_| {
-        // What `fs::read_to_string` says, so both reads report alike.
-        ReadFailure::Io(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "stream did not contain valid UTF-8",
-        ))
+    let text = String::from_utf8(bytes).map_err(|error| ReadFailure::NotUtf8 {
+        newer: repair::declares_newer_version(error.as_bytes()),
     })?;
     parse_document(&text)
 }
@@ -302,38 +321,43 @@ fn parse_document(text: &str) -> std::result::Result<DocumentMut, ReadFailure> {
                 .filter(|byte| **byte == b'\n')
                 .count()
         });
-        ReadFailure::Parse { error, line }
+        // A file that doesn't parse may still say a newer wineo wrote it,
+        // and repairing it would throw that wineo's data away.
+        let newer = repair::declares_newer_version(text.as_bytes());
+        ReadFailure::Parse { error, line, newer }
     })?;
     if let Some(version) = document.get("schema_version")
         && version.as_integer() != Some(SCHEMA_VERSION)
     {
-        return Err(ReadFailure::Schema(version.to_string()));
+        return Err(ReadFailure::Schema {
+            found: version.to_string(),
+            newer: check::is_newer(&document),
+        });
     }
     Ok(document)
 }
 
 fn unreadable_error(path: &Path, failure: ReadFailure) -> Error {
-    let (newer_version, source) = match failure {
+    let newer_version = failure.newer();
+    let source = match failure {
         ReadFailure::Io(error) => {
             return Error::Io {
                 context: format!("failed to read {}", path.display()),
                 source: error,
             };
         }
-        ReadFailure::Parse { error: source, .. } => (
-            false,
-            Error::ConfigParse {
-                path: path.to_owned(),
-                source: Box::new(source),
-            },
-        ),
-        ReadFailure::Schema(found) => (
-            true,
-            Error::SchemaVersion {
-                path: path.to_owned(),
-                found,
-            },
-        ),
+        ReadFailure::NotUtf8 { .. } => Error::Io {
+            context: format!("failed to read {}", path.display()),
+            source: io::Error::new(io::ErrorKind::InvalidData, NOT_UTF8),
+        },
+        ReadFailure::Parse { error: source, .. } => Error::ConfigParse {
+            path: path.to_owned(),
+            source: Box::new(source),
+        },
+        ReadFailure::Schema { found, .. } => Error::SchemaVersion {
+            path: path.to_owned(),
+            found,
+        },
     };
     Error::LibraryUnreadable {
         newer_version,

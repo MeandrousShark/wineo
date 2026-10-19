@@ -248,10 +248,24 @@ fn syntax_errors_degrade_reads_and_refuse_writes_without_changing_bytes() {
 
 #[test]
 fn unsupported_schema_versions_degrade_reads_and_refuse_writes() {
-    for original in [
-        "schema_version = 0\n[environments.hades]\nfavorite = true\n",
-        "schema_version = 2\n[environments.hades]\nfavorite = true\n",
-        "schema_version = \"one\"\n[environments.hades]\nfavorite = true\n",
+    // Only a higher version is a newer wineo's file; 0 or a value of the
+    // wrong type is broken, and Checkup can repair it.
+    for (original, newer, reason) in [
+        (
+            "schema_version = 0\n[environments.hades]\nfavorite = true\n",
+            false,
+            "unsupported schema_version 0",
+        ),
+        (
+            "schema_version = 2\n[environments.hades]\nfavorite = true\n",
+            true,
+            "library.toml was written by a newer wineo; update wineo to use it.",
+        ),
+        (
+            "schema_version = \"one\"\n[environments.hades]\nfavorite = true\n",
+            false,
+            "unsupported schema_version \"one\"",
+        ),
     ] {
         let fixture = Fixture::new();
         fixture.write(original);
@@ -261,22 +275,74 @@ fn unsupported_schema_versions_degrade_reads_and_refuse_writes() {
             library,
             Library {
                 problem: Some(Problem {
-                    reason: "library.toml was written by a newer wineo; update wineo to use it."
-                        .to_owned(),
+                    reason: reason.to_owned(),
                     line: None,
-                    newer_version: true,
+                    newer_version: newer,
                 }),
                 ..Library::default()
             }
         );
         let error = set_hidden(&fixture.paths, "hades", true).unwrap_err();
+        assert!(matches!(
+            error,
+            crate::error::Error::LibraryUnreadable { newer_version, .. } if newer_version == newer
+        ));
         assert_eq!(
             error.to_string(),
-            "library.toml was written by a newer wineo; update wineo to use it."
+            if newer {
+                "library.toml was written by a newer wineo; update wineo to use it."
+            } else {
+                "Can't save to library.toml: it can't be read. Fix it, or repair it in Checkup."
+            }
         );
         assert!(crate::error::chain(&error).contains("unsupported schema_version"));
         assert_eq!(fixture.read(), original);
     }
+}
+
+/// What `load` and `validate` each say about a file whose version is off.
+fn load_and_validate(fixture: &Fixture, text: &str) -> (Problem, check::Unreadable) {
+    fixture.write(text);
+    let problem = load(&fixture.paths).problem.expect("load finds a problem");
+    let unreadable = inspect(&fixture.paths)
+        .unreadable
+        .expect("validate finds a problem");
+    (problem, unreadable)
+}
+
+#[test]
+fn load_and_validate_classify_schema_versions_alike() {
+    let fixture = Fixture::new();
+    for (text, newer) in [
+        ("schema_version = 0\n", false),
+        ("schema_version = \"one\"\n", false),
+        ("schema_version = 1.5\n", false),
+        ("schema_version = 2\n", true),
+        // Doesn't parse, but says a newer wineo wrote it.
+        ("schema_version = 2\nthis is broken\n", true),
+        // Doesn't parse and says nothing newer.
+        ("schema_version = 1\nthis is broken\n", false),
+        ("schema_version = 0\nthis is broken\n", false),
+    ] {
+        let (problem, unreadable) = load_and_validate(&fixture, text);
+        assert_eq!(problem.newer_version, newer, "{text:?}");
+        assert_eq!(unreadable.newer, newer, "{text:?}");
+        assert_eq!(problem.message(), unreadable.message, "{text:?}");
+        // A refused write agrees too.
+        let error = set_favorite(&fixture.paths, "hades", true).unwrap_err();
+        assert!(
+            matches!(
+                error,
+                crate::error::Error::LibraryUnreadable { newer_version, .. } if newer_version == newer
+            ),
+            "{text:?}: {error}"
+        );
+    }
+    let (problem, _) = load_and_validate(&fixture, "schema_version = 0\n");
+    assert_eq!(
+        problem.message(),
+        "library.toml can't be read (unsupported schema_version 0)"
+    );
 }
 
 #[test]
