@@ -963,6 +963,8 @@ fn proton_platform_needs_the_games_own_entry_or_a_prefix() {
     assert_eq!(proton_platform(&tools, "EMPTY", None), None);
     assert_eq!(proton_platform(&default_only, "42", Some(library)), None);
     assert_eq!(proton_platform(&HashMap::new(), "42", None), None);
+    // An app id of "0" would otherwise find the default as its own entry.
+    assert_eq!(proton_platform(&default_only, "0", None), None);
 
     // Only a prefix inside compatdata counts, not an empty folder.
     let compatdata = library.join("steamapps/compatdata");
