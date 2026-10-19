@@ -9,7 +9,7 @@ use crate::grid::{
     ACTION_MENU_HEADER_HEIGHT, ACTION_MENU_MARGIN, ACTION_MENU_PADDING, ACTION_MENU_SPACING,
     ACTION_MENU_WIDTH, context_menu_style, menu_position,
 };
-use crate::library_menu::{CHEVRON, anchor_under, check_box, icon, menu_row};
+use crate::library_menu::{CHECK, CHEVRON, anchor_under, check_box, icon, menu_row};
 use crate::theme::Palette;
 use crate::ui::{self, ScrollStyle};
 use crate::{App, Message, focus_button};
@@ -259,11 +259,21 @@ fn heading(label: &str, palette: Palette) -> Element<'_, Message> {
         .into()
 }
 
-/// A tag that toggles its filter, tinted while it's on.
+/// A tag that toggles its filter. While it's on it has a check mark and
+/// the accent tint and border the sidebar's selected item uses, so it reads
+/// as chosen without color alone, and the focus ring stays outside it.
 fn chip(tag: String, on: bool, palette: Palette) -> Element<'static, Message> {
     let id = tag_id(&tag);
     let message = Message::Filter(Event::ToggleTag(tag.clone()));
-    let chip = button(text(tag).size(13))
+    let label: Element<'static, Message> = if on {
+        row![icon(CHECK, palette.primary, 12.0), text(tag).size(13)]
+            .spacing(4)
+            .align_y(Center)
+            .into()
+    } else {
+        text(tag).size(13).into()
+    };
+    let chip = button(label)
         .padding([4, 10])
         .on_press(message.clone())
         .style(move |_, status| {
@@ -273,8 +283,12 @@ fn chip(tag: String, on: bool, palette: Palette) -> Element<'static, Message> {
             } else {
                 palette.border
             });
-            if on && matches!(status, button::Status::Active) {
-                style.background = Some(palette.primary.scale_alpha(0.16).into());
+            if on {
+                let tint = match status {
+                    button::Status::Hovered | button::Status::Pressed => 0.24,
+                    _ => 0.15,
+                };
+                style.background = Some(palette.primary.scale_alpha(tint).into());
             }
             style
         });
