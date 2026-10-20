@@ -139,6 +139,15 @@ From the plan review, the same day:
 8. **Narrow window: A.** Search shrinks first, from 320 px down to 160 px,
    then the right end clips as today.
 
+From the step 2 screenshots, the same day:
+
+9. **Text under small posters: A.** Below 90% the identifier and the
+   state and playtime row drop out, leaving the title, and a running
+   game gets the status chip from poster-only (answer 4) instead. At 80%
+   (128 px cards) a playtime like "250 h 57 m" already wraps, while 90%
+   (144 px) fits it. Every card switches together, so rows keep one
+   shape.
+
 The maintainer approved the plan on 2026-10-19.
 
 ## Proposed design
@@ -149,7 +158,9 @@ The maintainer approved the plan on 2026-10-19.
   `160 * Z / 100`, poster height 1.5 times that, rounded to whole pixels.
   Gaps and the grid's padding stay 16 px. Text sizes stay as they are,
   except the text tile's title, which scales with the poster between 12
-  and 18 px so it stays readable at both ends. Poster marks, the GOG pill,
+  and 18 px so it stays readable at both ends. Below 90% the text under
+  the poster is the title alone, with the status chip on the poster
+  (answer 9). Poster marks, the GOG pill,
   and the Steam mark keep their sizes.
 - One `Layout` value carries the zoomed geometry and replaces the
   constants everywhere the foundation lists. At 100% everything matches
@@ -264,6 +275,9 @@ The maintainer approved the plan on 2026-10-19.
   arrives.
 - Rows are shorter without the text, so more fit, and keyboard Up and
   Down still move by columns.
+- Below 90% with titles shown (answer 9), cards keep the title under the
+  poster and drop the identifier and the state row; the status chip and
+  the GOG pill sit on the poster exactly as in poster-only.
 - `gui-style.md` gets the amendment: titles beneath the art by default,
   over it in poster-only.
 
@@ -297,8 +311,8 @@ The maintainer approved the plan on 2026-10-19.
    outgoing set and fades, every trigger above, the dock on the same path,
    and art loading on the shared layout.
 5. **Poster-only.** The overlay, the status chip with the GOG pill, the
-   art-less and loading cases, hidden cards, and the style guide
-   amendment.
+   compact text below 90% (answer 9), the art-less and loading cases,
+   hidden cards, and the style guide amendment.
 6. **Benchmark again** against step 0.
 7. **Docs.** `gui.md` (zoom, keys, poster-only, Tab order),
    `gui-style.md`, `config-files.md`, and `features.md`.
@@ -309,7 +323,7 @@ The maintainer approved the plan on 2026-10-19.
   0.36.0's numbers; column counts with and without the panel; the anchor
   staying put through a zoom, at the scroll limits, and with an oversized
   card; overlay shown on hover and selection only; the chip and the GOG
-  pill together.
+  pill together; card heights switching at 90% with titles shown.
 - Key tests for every zoom shortcut, including Shift and keypad forms, for
   focus staying put, for the slider's arrows and Tab order, and for keys
   that must not zoom while a menu or dialog takes them.
