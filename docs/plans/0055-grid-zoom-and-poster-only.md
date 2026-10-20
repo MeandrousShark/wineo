@@ -158,6 +158,20 @@ From step 3, the same day:
     this in `GridMotion`. Review findings of this kind are rated Low unless
     a scroll still fires after its motion ended.
 
+From step 5, the same day:
+
+12. **Hidden titles in the overlay: A.** A hidden card's overlay title is
+    white at 60% in both themes. The theme's muted ink measured 1.7 to 2.9
+    against the dark gradient in the light theme; white at 60% gives 5.0 to
+    7.4 over bright and dark art in both themes.
+13. **The GOG pill on small posters: A.** When the pill can't fit its
+    longest word on one line, it becomes a 24 px GOG badge like the marks
+    and the chip: a circle in the pill's color with an arrow glyph. The
+    panel keeps the words. At 60% with a chip and both marks, the pill had
+    20 px.
+14. **Toggle icon, after seeing it work: keep it** (answer 10's
+    follow-up).
+
 The maintainer approved the plan on 2026-10-19.
 
 ## Proposed design
