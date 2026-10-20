@@ -95,18 +95,21 @@ impl App {
     /// before, so the app forgets it, and the check puts the Update row back.
     pub(crate) fn merge_checked(&mut self, cards: Vec<Card>) -> Task<Message> {
         let changed = crate::gog_library::local_changes(&self.cards, &cards);
-        self.merge_cards(cards);
-        Task::batch(changed.into_iter().map(|(name, check)| {
+        let settled = self.merge_cards(cards);
+        let rechecks = Task::batch(changed.into_iter().map(|(name, check)| {
             self.gog_updates.changed(&name);
             if check {
                 crate::gog_library::recheck(self, name)
             } else {
                 Task::none()
             }
-        }))
+        }));
+        Task::batch([settled, rechecks])
     }
 
-    fn merge_cards(&mut self, mut cards: Vec<Card>) {
+    /// Shows `cards`, and returns the scroll a motion it settled was
+    /// waiting for.
+    fn merge_cards(&mut self, mut cards: Vec<Card>) -> Task<Message> {
         self.flag_writes.reconcile(&mut cards);
         // A rescan that changed nothing the order reads keeps the order.
         let new_order = (self.cards.len() != cards.len()
@@ -166,9 +169,9 @@ impl App {
         if layout_changed {
             self.grid_motion
                 .snap(self.panel_open, self.filtered().len());
-            self.grid_scroll_after_settle = None;
             self.collapse.reset();
         }
+
         self.current_art = self
             .cards
             .iter()
@@ -188,6 +191,7 @@ impl App {
         self.failed_images
             .retain(|(art, _)| self.current_art.get(&art.path) == Some(&art.identity));
         self.error = None;
+        self.motion_ended(true)
     }
 
     pub(crate) fn refresh(&mut self) -> Task<Message> {

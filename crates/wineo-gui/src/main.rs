@@ -1212,7 +1212,7 @@ impl App {
         if self.grid_motion.active() && self.panel_hidden() {
             self.grid_motion
                 .snap(self.panel_open, self.filtered().len());
-            self.grid_scroll_after_settle = None;
+            let _ = self.motion_ended(false);
         }
         // Whatever covers the grid takes the pointer, so a drag ends here.
         let task = if self.panel_hidden() {
@@ -1295,7 +1295,7 @@ impl App {
         }
         self.panel_motion.snap(false);
         self.grid_motion.snap(false, self.filtered().len());
-        self.grid_scroll_after_settle = None;
+        let _ = self.motion_ended(false);
         self.action_menu = None;
         self.hovered = None;
         if self.reduced_motion {

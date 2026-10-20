@@ -1234,3 +1234,50 @@ fn leaving_the_library_mid_tween_drops_an_arrows_waiting_scroll() {
     let _ = app.update(Message::Section(crate::sidebar::Section::Library));
     assert!(app.grid_scroll_after_settle.is_none());
 }
+
+#[test]
+fn a_resize_during_the_dock_resolves_an_arrows_waiting_scroll_once() {
+    let (_root, mut app) = library(120);
+    let first = app.filtered()[0].name.clone();
+    let _ = app.update(Message::Select(first));
+    assert!(app.panel_open && app.grid_motion.active());
+    let _ = zoom(&mut app, Event::Key(Key::In));
+    let _ = frame(&mut app, 40);
+    app.selected = Some(app.filtered()[98].name.clone());
+    arrow_right(&mut app);
+    let name = app.selected.clone().unwrap();
+    // The zoom ends while the dock still moves, which keeps the scroll.
+    let task = settle(&mut app);
+    assert!(app.grid_motion.active());
+    assert!(!located(&app, task, &name));
+    assert_eq!(app.grid_scroll_after_settle.as_deref(), Some(name.as_str()));
+    // The resize snaps the dock, which is the last motion to end.
+    let task = app.update(Message::Window(iced::window::Event::Resized(Size::new(
+        1300.0, 800.0,
+    ))));
+    assert!(!app.grid_motion.active());
+    assert!(app.grid_scroll_after_settle.is_none());
+    assert_eq!(
+        crate::sort_control::tests::answers(&app, task)
+            .iter()
+            .filter(
+                |message| matches!(message, Message::GridCardLocated(found, ..) if *found == name)
+            )
+            .count(),
+        1
+    );
+    // A later panel close and open has nothing left to scroll back to.
+    app.scroll_offset = 0.0;
+    let _ = app.update(Message::ClosePanel);
+    let _ = app.update(Message::GridTick(
+        app.grid_motion.generation(),
+        Instant::now() + Duration::from_secs(1),
+    ));
+    let close_open = app.update(Message::Select(name.clone()));
+    let tick = app.update(Message::GridTick(
+        app.grid_motion.generation(),
+        Instant::now() + Duration::from_secs(1),
+    ));
+    assert!(app.grid_scroll_after_settle.is_none());
+    assert!(!located(&app, Task::batch([close_open, tick]), &name));
+}

@@ -87,6 +87,7 @@ impl App {
         self.grid_motion
             .snap(self.panel_open, self.filtered().len());
         self.collapse.reset();
-        self.load_visible_art()
+        let waited = self.motion_ended(true);
+        Task::batch([self.load_visible_art(), waited])
     }
 }

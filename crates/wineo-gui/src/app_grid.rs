@@ -47,15 +47,32 @@ impl App {
             if was_active && !self.grid_motion.active() {
                 // Drops the protection the motion's sweep needed.
                 let art = self.load_visible_art();
-                if let Some(name) = self.grid_scroll_after_settle.take()
-                    && self.selected.as_deref() == Some(&name)
-                {
-                    return ControlFlow::Break(Task::batch([art, self.scroll_selection()]));
-                }
-                return ControlFlow::Break(art);
+                return ControlFlow::Break(Task::batch([art, self.motion_ended(true)]));
             }
         }
         ControlFlow::Continue(Task::none())
+    }
+
+    /// A selection scroll waits only while the grid moves: the dock's
+    /// motion or the zoom. When the last of them ends, by whatever path,
+    /// it scrolls once if `scroll` and its card is still the shown
+    /// selection, and is dropped otherwise.
+    pub(crate) fn motion_ended(&mut self, scroll: bool) -> Task<Message> {
+        if self.grid_motion.active() || self.zooming.moving() {
+            return Task::none();
+        }
+        let Some(name) = self.grid_scroll_after_settle.take() else {
+            return Task::none();
+        };
+        if scroll
+            && !self.panel_hidden()
+            && self.selected.as_deref() == Some(&name)
+            && self.selected_shown()
+        {
+            self.scroll_selection()
+        } else {
+            Task::none()
+        }
     }
 
     pub(crate) fn search_changed(&mut self, search: String) -> Task<Message> {
@@ -83,7 +100,8 @@ impl App {
         self.collapse.reset();
         self.grid_motion
             .snap(self.panel_open, self.filtered().len());
-        self.grid_scroll_after_settle = None;
+        // The caller scrolls for the new order itself.
+        let _ = self.motion_ended(false);
     }
 
     fn scroll_to_top(&mut self) -> Task<Message> {

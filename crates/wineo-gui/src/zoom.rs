@@ -292,21 +292,16 @@ impl App {
             .gesture
             .take()
             .is_some_and(|gesture| gesture.reveal);
-        let deferred = if self.grid_motion.active() {
-            None
-        } else {
-            self.grid_scroll_after_settle.take()
-        };
-        let moved = deferred.is_some_and(|name| self.selected.as_deref() == Some(&name));
+        // An off-screen selection joins the scroll a key may have left
+        // waiting, so it happens once, now or when the dock settles.
+        if reveal {
+            self.grid_scroll_after_settle = self.selected.clone();
+        }
+        let waited = self.motion_ended(true);
         if self.panel_hidden() {
             return Task::none();
         }
-        let art = self.load_visible_art();
-        if (reveal || moved) && self.selected_shown() {
-            Task::batch([art, self.scroll_selection()])
-        } else {
-            art
-        }
+        Task::batch([self.load_visible_art(), waited])
     }
 
     /// Stops the zoom where it's heading, as when the Library is covered
