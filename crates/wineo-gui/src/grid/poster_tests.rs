@@ -550,6 +550,17 @@ fn every_state_the_row_shows_as_activity_or_a_warning_gets_the_chip_in_its_dot_c
     }
 }
 
+/// The GOG pill's or badge's bounds in the corner, and whether it's the
+/// badge.
+fn gog_at(node: &Node, chip: bool) -> (Rectangle, bool) {
+    let bounds = if chip {
+        bounds_at(node, &[0, 0, 0, 1, 0, 1])
+    } else {
+        bounds_at(node, &[0, 0, 0, 1, 0])
+    };
+    (bounds, bounds.size() == Size::new(24.0, 24.0))
+}
+
 #[test]
 fn the_corner_keeps_clear_of_the_marks() {
     let mut app = crate::tests::app();
@@ -568,34 +579,124 @@ fn the_corner_keeps_clear_of_the_marks() {
                 let node = card_node(&app, &card);
                 let marks = bounds_at(&node, &[0, 0, 0, 2, 0]);
                 let chip = state == State::Running && app.grid_layout().text().chip();
-                let pill = if chip {
-                    bounds_at(&node, &[0, 0, 0, 1, 0, 1, 0])
-                } else {
-                    bounds_at(&node, &[0, 0, 0, 1, 0])
-                };
-                assert!(pill.width > 0.0, "{what}");
+                let (gog, badge) = gog_at(&node, chip);
+                assert!(gog.width > 0.0, "{what}");
+                // A pill keeps a 4 px gap; a badge at 60% has to give it
+                // up, but never overlaps.
+                let gap = if badge { 0.0 } else { 4.0 };
                 assert!(
-                    pill.x + pill.width <= marks.x - 4.0 + 0.01,
-                    "{what}: {pill:?} against {marks:?}"
+                    gog.x + gog.width <= marks.x - gap + 0.01,
+                    "{what}: {gog:?} against {marks:?}"
                 );
                 if zoom == 200 {
                     // Room to spare: the pill keeps its one-line size.
                     let mut plain = card.clone();
                     plain.favorite = false;
                     plain.hidden = false;
-                    let node = card_node(&app, &plain);
-                    let alone = if chip {
-                        bounds_at(&node, &[0, 0, 0, 1, 0, 1, 0])
-                    } else {
-                        bounds_at(&node, &[0, 0, 0, 1, 0])
-                    };
-                    assert_eq!(pill.size(), alone.size(), "{what}");
+                    let (alone, _) = gog_at(&card_node(&app, &plain), chip);
+                    assert!(!badge, "{what}");
+                    assert_eq!(gog.size(), alone.size(), "{what}");
                 }
                 if zoom == 60 && chip && favorite && hidden {
-                    // The least room there is: 20 px, 4 px inside its padding.
-                    assert_eq!(pill.width, 20.0);
+                    assert!(badge, "{what}");
                 }
             }
         }
     }
+}
+
+#[test]
+fn a_pill_too_small_for_its_words_becomes_a_round_badge() {
+    let mut app = crate::tests::app();
+    app.poster_only = true;
+    app.zoom = 60;
+    let mut card = crate::tests::card("game", State::Running, 60);
+    gog(&mut card);
+    card.favorite = true;
+    card.hidden = true;
+    // With the chip and both marks: 4 px right of the chip, in its row.
+    let node = card_node(&app, &card);
+    let art = bounds_at(&node, &[0, 0]);
+    let chip = bounds_at(&node, &[0, 0, 0, 1, 0, 0]);
+    let (badge, is_badge) = gog_at(&node, true);
+    assert!(is_badge);
+    assert_eq!(badge.position(), chip.position() + Vector::new(28.0, 0.0));
+    assert_eq!(chip.position(), art.position() + Vector::new(8.0, 8.0));
+    assert!(badge.x + badge.width <= bounds_at(&node, &[0, 0, 0, 2, 0]).x);
+    // The pill's color, with a down arrow in its ink at the center.
+    let size = Size::new(96.0, 144.0);
+    let pixels = render(&mut app.card(&card), size);
+    let pixel = |x: f32, y: f32| {
+        let at = (y as usize * 96 + x as usize) * 4;
+        [pixels[at], pixels[at + 1], pixels[at + 2]]
+    };
+    let warning = app.palette.warning.into_rgba8();
+    assert_eq!(pixel(badge.x + 4.0, badge.center_y()), warning[..3]);
+    // The arrow's stroke is under 2 px, so its darkest pixel near the
+    // center comes close to the ink without matching it.
+    let ink = ui::accent_ink(app.palette.warning).into_rgba8();
+    let closest = (-3..=3)
+        .flat_map(|dx| (-3..=3).map(move |dy| (dx, dy)))
+        .map(|(dx, dy)| pixel(badge.center_x() + dx as f32, badge.center_y() + dy as f32))
+        .map(|rgb| {
+            rgb.iter()
+                .zip(&ink)
+                .map(|(a, b)| a.abs_diff(*b))
+                .max()
+                .unwrap()
+        })
+        .min()
+        .unwrap();
+    assert!(closest <= 24, "{closest}");
+    // In the corner when there's no chip.
+    card.state = State::Inactive;
+    let node = card_node(&app, &card);
+    let (badge, is_badge) = gog_at(&node, false);
+    assert!(is_badge);
+    assert_eq!(badge.position(), art.position() + Vector::new(8.0, 8.0));
+    // It fades with the card.
+    let layout = app.grid_layout();
+    let gone = render(&mut app.card_drawn(&card, 0.0, layout), size);
+    assert!(gone.chunks(4).all(|pixel| pixel[3] == 0));
+}
+
+#[test]
+fn the_pill_keeps_its_words_wherever_they_fit() {
+    let mut app = crate::tests::app();
+    let mut card = crate::tests::card("game", State::Running, 60);
+    gog(&mut card);
+    card.favorite = true;
+    card.hidden = true;
+    // 0.36.0's pill at 100%.
+    let (today, _) = gog_at(&card_node(&app, &card), false);
+    for zoom in [100, 200] {
+        for poster_only in [false, true] {
+            app.zoom = zoom;
+            app.poster_only = poster_only;
+            let chip = app.grid_layout().text().chip();
+            let node = card_node(&app, &card);
+            let (pill, badge) = gog_at(&node, chip);
+            assert!(!badge, "{zoom}%, poster-only {poster_only}");
+            let pill = if chip {
+                bounds_at(&node, &[0, 0, 0, 1, 0, 1, 0])
+            } else {
+                pill
+            };
+            // At 100% beside the chip and the marks, "Finish update" is
+            // 2 px too wide for one line, so it wraps between its words.
+            if chip && zoom == 100 {
+                assert!(pill.height > today.height);
+            } else {
+                assert_eq!(
+                    pill.size(),
+                    today.size(),
+                    "{zoom}%, poster-only {poster_only}"
+                );
+            }
+        }
+    }
+    // The choice follows the measured words: the badge only when the
+    // longest won't fit.
+    assert!(pill_fits("Finish update", 16.0 + 37.0));
+    assert!(!pill_fits("Finish update", 16.0 + 36.0));
 }

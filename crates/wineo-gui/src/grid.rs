@@ -35,6 +35,8 @@ const CORNER_PADDING: f32 = 8.0;
 /// its margin, a mark, and the gap the chip and pill keep.
 const MARKS_ROOM: f32 = CORNER_PADDING + crate::library_actions::MARK_SIZE + 4.0;
 const GOG_PILL_PADDING: f32 = 2.0;
+const GOG_PILL_SIDE: f32 = 8.0;
+const GOG_BADGE_ICON: f32 = 14.0;
 /// The poster-only title's margin from the art's edges.
 const OVERLAY_PADDING: f32 = 8.0;
 /// How far the overlay's gradient fades in above the title.
@@ -295,35 +297,54 @@ impl App {
         let chip = (text_mode.chip() && !card.idle())
             .then(|| crate::library_actions::status_chip(card.dot(palette), alpha));
         // The marks draw above the corner, so it keeps clear of their
-        // column. A pill squeezed by them or the chip wraps, by the glyph
-        // when a word doesn't fit, and clips rather than spill under a mark.
+        // column. A pill squeezed by them or the chip wraps between words
+        // and clips rather than spill under a mark.
         let marks = card.favorite || card.hidden;
         let squeezed = marks || chip.is_some();
-        let pill =
-            crate::gog_library::badge(card.gog.as_ref(), self.gog_updates.status(&card.name)).map(
-                |badge| {
-                    let color = match badge {
-                        crate::gog_library::Badge::UpdateAvailable => palette.primary,
-                        crate::gog_library::Badge::FinishUpdate
-                        | crate::gog_library::Badge::FinishInstall => palette.warning,
-                    };
-                    let ink = ui::accent_ink(color).scale_alpha(alpha);
-                    let mut label = text(badge.label()).size(GOG_PILL_SIZE).color(ink);
-                    if squeezed {
-                        label = label.wrapping(iced::widget::text::Wrapping::WordOrGlyph);
-                    }
-                    container(label)
-                        .padding([GOG_PILL_PADDING, 8.0])
-                        .clip(squeezed)
-                        .style(move |_| {
-                            container::Style::default()
-                                .background(color)
-                                .border(border::rounded(8))
-                        })
-                },
-            );
-        let corner: Option<Element<'_, Message>> = match (chip, pill) {
-            (Some(chip), Some(pill)) => {
+        let room = layout.art_frame().width
+            - CORNER_PADDING
+            - if marks { MARKS_ROOM } else { CORNER_PADDING }
+            - if chip.is_some() {
+                crate::library_actions::MARK_SIZE + 4.0
+            } else {
+                0.0
+            };
+        let gog = crate::gog_library::badge(card.gog.as_ref(), self.gog_updates.status(&card.name))
+            .map(|badge| {
+                let color = match badge {
+                    crate::gog_library::Badge::UpdateAvailable => palette.primary,
+                    crate::gog_library::Badge::FinishUpdate
+                    | crate::gog_library::Badge::FinishInstall => palette.warning,
+                };
+                let ink = ui::accent_ink(color);
+                if !pill_fits(badge.label(), room) {
+                    return Gog::Badge(gog_badge(color, ink, alpha));
+                }
+                Gog::Pill(
+                    container(
+                        text(badge.label())
+                            .size(GOG_PILL_SIZE)
+                            .color(ink.scale_alpha(alpha)),
+                    )
+                    .padding([GOG_PILL_PADDING, GOG_PILL_SIDE])
+                    .clip(squeezed)
+                    .style(move |_| {
+                        container::Style::default()
+                            .background(color)
+                            .border(border::rounded(8))
+                    })
+                    .into(),
+                )
+            });
+        // Below about 63% three 24 px circles and their margins outgrow the
+        // art, so a badge may give up its gap to the marks, never more.
+        let right = match &gog {
+            _ if !marks => CORNER_PADDING,
+            Some(Gog::Badge(_)) => CORNER_PADDING + crate::library_actions::MARK_SIZE,
+            _ => MARKS_ROOM,
+        };
+        let corner: Option<Element<'_, Message>> = match (chip, gog) {
+            (Some(chip), Some(Gog::Pill(pill))) => {
                 // The chip keeps the corner, mirroring the marks, and a
                 // one-line pill centers on it. On a small poster the pill
                 // wraps, growing down instead of pushing the chip.
@@ -337,8 +358,9 @@ impl App {
                 });
                 Some(row![chip, pill].spacing(4).into())
             }
+            (Some(chip), Some(Gog::Badge(badge))) => Some(row![chip, badge].spacing(4).into()),
             (Some(chip), None) => Some(chip),
-            (None, Some(pill)) => Some(pill.into()),
+            (None, Some(Gog::Pill(gog) | Gog::Badge(gog))) => Some(gog),
             (None, None) => None,
         };
         if let Some(corner) = corner {
@@ -349,7 +371,7 @@ impl App {
                     .align_left(Fill)
                     .align_top(Fill)
                     .padding(iced::Padding {
-                        right: if marks { MARKS_ROOM } else { CORNER_PADDING },
+                        right,
                         ..iced::Padding::new(CORNER_PADDING)
                     }),
             );
@@ -1177,6 +1199,45 @@ impl App {
 
 /// A thin bar along the poster's bottom edge while Steam installs. It only
 /// moves when the library reloads, so nothing animates while idle.
+/// The GOG pill, or the badge that stands in for it on a poster too small
+/// for its words.
+enum Gog<'a> {
+    Pill(Element<'a, Message>),
+    Badge(Element<'a, Message>),
+}
+
+/// Whether the pill's longest word fits on one line in `room`, the width
+/// the corner leaves it. A pill that fits wraps between its words at most.
+fn pill_fits(label: &str, room: f32) -> bool {
+    let longest = label
+        .split_whitespace()
+        .map(|word| {
+            crate::tile_title::wrapped_size(word, f32::INFINITY, GOG_PILL_SIZE, Font::DEFAULT).width
+        })
+        .fold(0.0, f32::max);
+    longest <= room - 2.0 * GOG_PILL_SIDE
+}
+
+/// The GOG pill as a round badge like the marks: its color, with a down
+/// arrow in its ink. `color` carries the card's fade already.
+fn gog_badge(color: Color, ink: Color, alpha: f32) -> Element<'static, Message> {
+    let size = crate::library_actions::MARK_SIZE;
+    // The renderer's tint ignores its alpha, so the arrow fades by opacity.
+    container(
+        crate::library_menu::icon(crate::sort_control::ARROW_DOWN, ink, GOG_BADGE_ICON)
+            .opacity(alpha),
+    )
+    .width(size)
+    .height(size)
+    .center(size)
+    .style(move |_| {
+        container::Style::default()
+            .background(color)
+            .border(border::rounded(size / 2.0))
+    })
+    .into()
+}
+
 /// A card's content as one pointer target.
 fn card_area<'a>(content: impl Into<Element<'a, Message>>, card: &Card) -> Element<'a, Message> {
     mouse_area(content)

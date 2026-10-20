@@ -23,7 +23,7 @@ const FAVORITES_FIRST_ID: &str = "library-sort-favorites-first";
 const MENU_SCROLL_ID: &str = "library-sort-menu";
 const NOTICE_TIME: std::time::Duration = std::time::Duration::from_secs(8);
 
-const ARROW_DOWN: &[u8] = br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><path d="M8 2.5v11M3.5 9l4.5 4.5L12.5 9" fill="none" stroke="#000" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>"##;
+pub(crate) const ARROW_DOWN: &[u8] = br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><path d="M8 2.5v11M3.5 9l4.5 4.5L12.5 9" fill="none" stroke="#000" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>"##;
 const ARROW_UP: &[u8] = br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><path d="M8 13.5v-11M3.5 7l4.5-4.5L12.5 7" fill="none" stroke="#000" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>"##;
 
 #[derive(Debug, Clone)]
