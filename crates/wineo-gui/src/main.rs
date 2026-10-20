@@ -157,6 +157,8 @@ pub(crate) struct App {
     panel_open: bool,
     panel_motion: panel_motion::PanelMotion,
     grid_motion: grid_motion::GridMotion,
+    /// `grid_places` for the inputs it was measured from.
+    places: std::cell::RefCell<Option<(grid_motion::PlacesKey, std::rc::Rc<grid_motion::Places>)>>,
     collapse: collapse::Collapse,
     /// The desktop asked for reduced motion, read once at startup.
     reduced_motion: bool,
@@ -469,6 +471,7 @@ impl App {
             panel_open: false,
             panel_motion: panel_motion::PanelMotion::default(),
             grid_motion: grid_motion::GridMotion::default(),
+            places: Default::default(),
             collapse: collapse::Collapse::default(),
             reduced_motion: false,
             grid_scroll_after_settle: None,

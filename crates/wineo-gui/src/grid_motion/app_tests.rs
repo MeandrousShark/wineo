@@ -455,3 +455,52 @@ fn a_resort_scrolls_an_off_screen_selection_once_to_where_it_lands() {
     assert_eq!(located(&app, task, "game-00"), 0);
     assert_eq!(app.scroll_offset, landing);
 }
+
+#[test]
+fn leaving_cards_keep_the_size_they_left_with_through_a_zoom() {
+    let mut names = named("drop", 9);
+    names.push("keep-00".into());
+    let (_root, mut app) = fixture(&names);
+    let _ = search(&mut app, "keep");
+    let left = app.grid_motion.leaving()[0].clone();
+    assert_eq!(left.bounds.width, 160.0);
+    let _ = app.update(Message::Zoom(crate::zoom::Event::Drag(150.0)));
+    assert_eq!(app.zoom, 150);
+    assert!(!app.grid_motion.leaving().is_empty());
+    let node = grid_node(&app);
+    assert_eq!(bounds_at(&node, &[0]).width, 240.0);
+    assert_eq!(bounds_at(&node, &[1]), left.bounds);
+    // Its poster is the one it left with, not one squeezed from 150%.
+    assert_eq!(
+        bounds_at(&node, &[1, 0]).size(),
+        Size::new(160.0, super::GridLayout::default().poster_height())
+    );
+}
+
+#[test]
+fn places_are_measured_again_only_when_their_inputs_change() {
+    let (_root, mut app) = fixture(&named("game", 12));
+    let first = app.grid_places();
+    // Reading again, as every held frame does, reuses the measure.
+    assert!(std::rc::Rc::ptr_eq(&first, &app.grid_places()));
+    type Change = fn(&mut App);
+    let changes: [(&str, Change); 4] = [
+        ("order", |app| {
+            let _ = flip(app);
+        }),
+        ("columns", |app| {
+            let _ = app.update(Message::Select("game-03".into()));
+        }),
+        ("zoom", |app| {
+            let _ = app.update(Message::Zoom(crate::zoom::Event::Drag(130.0)));
+        }),
+        ("cards", |app| app.merge(cards(&named("game", 13)))),
+    ];
+    for (change, run) in changes {
+        let before = app.grid_places();
+        run(&mut app);
+        let after = app.grid_places();
+        assert!(!std::rc::Rc::ptr_eq(&before, &after), "{change}");
+        assert!(std::rc::Rc::ptr_eq(&after, &app.grid_places()), "{change}");
+    }
+}

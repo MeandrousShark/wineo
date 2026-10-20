@@ -6,6 +6,7 @@ use iced::{Point, Rectangle, Size};
 use wineo_core::runtime::State;
 
 use super::*;
+use crate::grid_motion;
 use crate::layout_probe::{Laid, bounds_at, lay_out, layout};
 use crate::sort_control::{Writes, save};
 use crate::zoom_control::{POSTER_ONLY_ID, SLIDER_ID};
@@ -1434,4 +1435,56 @@ fn a_zoom_springs_only_when_the_column_count_changes_and_then_goes_idle() {
         assert_eq!(frames(&app), 0, "{}%", app.zoom);
     }
     assert!(changed > 0);
+}
+
+#[test]
+fn a_search_during_a_zoom_ends_its_anchoring_and_its_reveal() {
+    let (_root, mut app) = library(120);
+    let (tops, _) = drawn_tops(&app);
+    app.scroll_offset = tops[40];
+    // Off screen, so the gesture would reveal it at the end.
+    let name = app.filtered()[110].name.clone();
+    app.selected = Some(name.clone());
+    let _ = zoom(&mut app, Event::Key(Key::In));
+    assert!(app.zooming.anchoring());
+    assert!(app.zooming.gesture.as_ref().unwrap().reveal);
+    let _ = frame(&mut app, 40);
+    // Every card still matches, the anchor included.
+    let _ = app.update(Message::SearchChanged("game-".into()));
+    assert_eq!(app.filtered().len(), 120);
+    assert_eq!(app.scroll_offset, 0.0);
+    assert!(!app.zooming.anchoring());
+    let next = frame(&mut app, 80);
+    assert_eq!(app.scroll_offset, 0.0);
+    let end = settle(&mut app);
+    let settled = crate::tests::settle_grid(&mut app);
+    assert_eq!(app.scroll_offset, 0.0);
+    assert!(!located(&app, Task::batch([next, end, settled]), &name));
+}
+
+#[test]
+fn a_resort_during_a_zoom_scrolls_an_off_screen_selection_once_at_the_end() {
+    let (_root, mut app) = library(120);
+    let name = app.filtered()[100].name.clone();
+    app.selected = Some(name.clone());
+    let _ = zoom(&mut app, Event::Key(Key::In));
+    let _ = frame(&mut app, 40);
+    // Nothing asks where the card is drawn mid-motion, so no early reply
+    // can scroll to its old place.
+    let resort = app.update(Message::Sort(crate::sort_control::Event::FlipDirection));
+    assert!(app.selected_shown());
+    assert_eq!(app.grid_scroll_after_settle.as_deref(), Some(name.as_str()));
+    assert!(!located(&app, resort, &name));
+    let end = settle(&mut app);
+    let settled = crate::tests::settle_grid(&mut app);
+    assert!(app.grid_scroll_after_settle.is_none());
+    assert_eq!(
+        crate::sort_control::tests::answers(&app, Task::batch([end, settled]))
+            .iter()
+            .filter(
+                |message| matches!(message, Message::GridCardLocated(found, ..) if *found == name)
+            )
+            .count(),
+        1
+    );
 }

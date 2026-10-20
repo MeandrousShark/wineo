@@ -251,6 +251,17 @@ pub(crate) struct Places {
     pub(crate) columns: usize,
     /// The grid's content height with every card in its slot.
     pub(crate) height: f32,
+    pub(crate) layout: GridLayout,
+    indices: HashMap<String, usize>,
+}
+
+/// What `Places` is measured from, besides the zoom and dock it names.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct PlacesKey {
+    pub(crate) order: u64,
+    pub(crate) layout: GridLayout,
+    pub(crate) columns: usize,
+    pub(crate) poster_only: bool,
 }
 
 impl Places {
@@ -267,6 +278,11 @@ impl Places {
             .collect();
         let (points, height) = slots(&sizes, columns, layout);
         Self {
+            indices: names
+                .iter()
+                .enumerate()
+                .map(|(index, name)| (name.clone(), index))
+                .collect(),
             names,
             slots: points
                 .into_iter()
@@ -275,11 +291,12 @@ impl Places {
                 .collect(),
             columns,
             height,
+            layout,
         }
     }
 
     pub(crate) fn index(&self, name: &str) -> Option<usize> {
-        self.names.iter().position(|shown| shown == name)
+        self.indices.get(name).copied()
     }
 }
 
@@ -325,6 +342,8 @@ fn bounded(offset: f32, from: f32) -> f32 {
 pub(crate) struct Leaving {
     pub(crate) name: String,
     pub(crate) bounds: Rectangle,
+    /// The geometry it left with, which a zoom during the fade keeps.
+    pub(crate) layout: GridLayout,
     pub(crate) opacity: f32,
 }
 
@@ -338,6 +357,7 @@ pub(crate) struct GridMotion {
     leaving: Vec<Leaving>,
     columns: usize,
     height: f32,
+    layout: GridLayout,
     /// The content height kept while cards fade out, so the scroll range
     /// doesn't jump under them.
     hold: Option<f32>,
@@ -372,6 +392,7 @@ impl GridMotion {
         self.leaving.clear();
         self.columns = places.columns;
         self.height = places.height;
+        self.layout = places.layout;
         self.hold = None;
         self.anchor = None;
         self.last_tick = None;
@@ -425,11 +446,13 @@ impl GridMotion {
             .extend(left.into_iter().map(|(name, body)| Leaving {
                 name,
                 bounds: Rectangle::new(body.slot.position() + body.offset(), body.slot.size()),
+                layout: self.layout,
                 opacity: body.opacity,
             }));
         self.hold = (!self.leaving.is_empty()).then_some(previous_height);
         self.columns = places.columns;
         self.height = places.height;
+        self.layout = places.layout;
         self.deadline = moving.then_some(now + DURATION);
         self.last_tick = Some(now);
         self.generation = self.generation.wrapping_add(1);
@@ -446,6 +469,7 @@ impl GridMotion {
         }
         self.columns = places.columns;
         self.height = places.height;
+        self.layout = places.layout;
     }
 
     /// Moves to `places` the way a zoom does: springs when the column count
@@ -549,12 +573,17 @@ impl GridMotion {
             .collect()
     }
 
+    /// Where the card at `index` in `places` is drawn now.
+    pub(crate) fn drawn(&self, places: &Places, index: usize) -> Rectangle {
+        places.slots[index] + self.offset(&places.names[index])
+    }
+
     /// The grid's drawn content height: its slots', or more while cards
     /// overshoot, fade out, or hold the height for those that did.
-    pub(crate) fn content_height(&self, places: &Places, shown: &[Rectangle]) -> f32 {
-        shown
-            .iter()
-            .chain(self.leaving.iter().map(|card| &card.bounds))
+    pub(crate) fn content_height(&self, places: &Places) -> f32 {
+        let moving = (0..places.names.len()).map(|index| self.drawn(places, index));
+        moving
+            .chain(self.leaving.iter().map(|card| card.bounds))
             .map(|bounds| bounds.y + bounds.height + PADDING)
             .fold(places.height, f32::max)
             .max(self.hold.unwrap_or(0.0))
@@ -670,10 +699,11 @@ pub(crate) struct Scene<'a, Message> {
     pub(crate) on_press: Option<Message>,
 }
 
-/// A card leaving the grid: its element and where it's drawn.
+/// A card leaving the grid: its element, built at the geometry it left
+/// with, and where it's drawn at that size.
 pub(crate) struct Outgoing<'a, Message> {
     pub(crate) name: String,
-    pub(crate) at: Point,
+    pub(crate) bounds: Rectangle,
     pub(crate) card: Element<'a, Message>,
 }
 
@@ -698,7 +728,7 @@ pub(crate) fn grid<'a, Message: Clone + 'a>(
     let mut outgoing = Vec::with_capacity(leaving.len());
     for card in leaving {
         names.push(card.name);
-        outgoing.push(card.at);
+        outgoing.push(card.bounds);
         elements.push(card.card);
     }
     Element::new(Grid {
@@ -720,7 +750,7 @@ struct Grid<'a, Message> {
     names: Vec<String>,
     shown: usize,
     offsets: Vec<Vector>,
-    outgoing: Vec<Point>,
+    outgoing: Vec<Rectangle>,
     hold: f32,
     open: bool,
     layout: GridLayout,
@@ -843,7 +873,15 @@ impl<Message: Clone> Widget<Message, Theme, Renderer> for Grid<'_, Message> {
             .cards
             .iter_mut()
             .zip(&mut tree.children)
-            .map(|(card, state)| card.as_widget_mut().layout(state, renderer, &card_limits))
+            .enumerate()
+            .map(|(index, (card, state))| {
+                // A leaving card keeps the size it left with.
+                let limits = match index.checked_sub(self.shown) {
+                    Some(leaving) => layout::Limits::new(Size::ZERO, self.outgoing[leaving].size()),
+                    None => card_limits,
+                };
+                card.as_widget_mut().layout(state, renderer, &limits)
+            })
             .collect();
         let sizes: Vec<_> = nodes[..self.shown].iter().map(layout::Node::size).collect();
         let state = tree.state.downcast_mut::<GridState>();
@@ -868,9 +906,9 @@ impl<Message: Clone> Widget<Message, Theme, Renderer> for Grid<'_, Message> {
             .enumerate()
             .map(|(index, node)| {
                 let Some(slot) = state.slots.get(index) else {
-                    let position = self.outgoing[index - self.shown];
-                    height = height.max(position.y + node.size().height + PADDING);
-                    return node.move_to(position);
+                    let bounds = self.outgoing[index - self.shown];
+                    height = height.max(bounds.y + bounds.height + PADDING);
+                    return node.move_to(bounds.position());
                 };
                 let offset = self.offsets.get(index).copied().unwrap_or(Vector::ZERO);
                 let position = *slot + offset;
@@ -1541,8 +1579,7 @@ mod tests {
         assert_eq!(motion.leaving()[0].opacity, 1.0);
         // The scroll height holds for the cards fading out.
         assert_eq!(motion.hold(), Some(all.height));
-        let shown = motion.shown(&fewer);
-        assert_eq!(motion.content_height(&fewer, &shown), all.height);
+        assert_eq!(motion.content_height(&fewer), all.height);
         assert!(fewer.height < all.height);
 
         let mid = start + FADE / 2;

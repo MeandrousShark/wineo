@@ -140,6 +140,8 @@ pub(crate) struct Order {
     /// `App::reorder`, so in the app this always matches; tests that set
     /// the cards or search directly get an order computed on the spot.
     built_from: Inputs,
+    /// Grows each time the order is rebuilt or kept for new cards.
+    revision: u64,
     #[cfg(test)]
     pub(crate) rebuilds: usize,
     /// Reads that found the cache didn't fit and sorted on the spot.
@@ -278,6 +280,14 @@ impl Order {
     /// platforms, and tags are the same too.
     pub(crate) fn keep(&mut self, of: Of<'_>) {
         self.built_from = Inputs::of(of);
+        self.revision = self.revision.wrapping_add(1);
+    }
+
+    /// Changes whenever the shown order or the cards in it may have, while
+    /// the order fits `of`. Cards only change as a whole or through
+    /// `App::reorder`, so the same revision means the same cards.
+    pub(crate) fn revision(&self, of: Of<'_>) -> Option<u64> {
+        self.built_from.fit(of).then_some(self.revision)
     }
 
     fn fits(&self, of: Of<'_>) -> bool {

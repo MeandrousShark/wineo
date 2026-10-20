@@ -72,6 +72,7 @@ fn meta_height(card: &Card, layout: GridLayout) -> f32 {
 
 impl App {
     pub(crate) fn grid(&self) -> Element<'_, Message> {
+        let layout = self.grid_layout();
         let filtered = self.filtered();
         let scene = (!self.collapse.idle()).then(|| crate::grid_motion::Scene {
             collapse: &self.collapse,
@@ -91,7 +92,7 @@ impl App {
             .into_iter()
             .map(|card| {
                 let opacity = self.grid_motion.opacity(&card.name);
-                (card.name.clone(), self.card_drawn(card, opacity))
+                (card.name.clone(), self.card_drawn(card, opacity, layout))
             })
             .collect();
         // Only the leaving cards near the view are worth building every
@@ -120,8 +121,8 @@ impl App {
                 let card = by_name.get(leaving.name.as_str())?;
                 Some(crate::grid_motion::Outgoing {
                     name: leaving.name.clone(),
-                    at: leaving.bounds.position(),
-                    card: self.card_drawn(card, leaving.opacity),
+                    bounds: leaving.bounds,
+                    card: self.card_drawn(card, leaving.opacity, leaving.layout),
                 })
             })
             .collect();
@@ -152,12 +153,17 @@ impl App {
     }
     #[cfg(test)]
     pub(crate) fn card<'a>(&'a self, card: &'a Card) -> Element<'a, Message> {
-        self.card_drawn(card, 1.0)
+        self.card_drawn(card, 1.0, self.grid_layout())
     }
 
-    /// A card drawn at `opacity`, as it fades in or out of the grid.
-    fn card_drawn<'a>(&'a self, card: &'a Card, opacity: f32) -> Element<'a, Message> {
-        let layout = self.grid_layout();
+    /// A card drawn at `opacity` and `layout`, as it fades in or out of the
+    /// grid.
+    fn card_drawn<'a>(
+        &'a self,
+        card: &'a Card,
+        opacity: f32,
+        layout: GridLayout,
+    ) -> Element<'a, Message> {
         let alpha = self.collapse.alpha() * opacity;
         let caption = self.collapse.caption_alpha() * opacity;
         let palette = self.palette.faded(alpha);
@@ -241,7 +247,8 @@ impl App {
                 crate::gog_library::Badge::FinishUpdate
                 | crate::gog_library::Badge::FinishInstall => palette.warning,
             };
-            let pill = container(text(badge.label()).size(11).color(ui::accent_ink(color)))
+            let ink = ui::accent_ink(color).scale_alpha(alpha);
+            let pill = container(text(badge.label()).size(11).color(ink))
                 .padding([2, 8])
                 .style(move |_| {
                     container::Style::default()
@@ -262,7 +269,7 @@ impl App {
         }
         if let Some(percent) = card.install_progress() {
             layers = layers.push(
-                container(install_bar(percent, palette))
+                container(install_bar(percent, palette, alpha))
                     .width(Fill)
                     .height(Fill)
                     .align_bottom(Fill),
@@ -1085,7 +1092,7 @@ impl App {
 
 /// A thin bar along the poster's bottom edge while Steam installs. It only
 /// moves when the library reloads, so nothing animates while idle.
-fn install_bar(percent: u8, palette: Palette) -> Element<'static, Message> {
+fn install_bar(percent: u8, palette: Palette, alpha: f32) -> Element<'static, Message> {
     let done = u16::from(percent.min(100));
     let mut bar = row![].width(Fill).height(INSTALL_BAR_HEIGHT);
     if done > 0 {
@@ -1102,7 +1109,9 @@ fn install_bar(percent: u8, palette: Palette) -> Element<'static, Message> {
     container(bar)
         .width(Fill)
         .height(INSTALL_BAR_HEIGHT)
-        .style(|_| container::Style::default().background(Color::BLACK.scale_alpha(0.55)))
+        .style(move |_| {
+            container::Style::default().background(Color::BLACK.scale_alpha(0.55 * alpha))
+        })
         .into()
 }
 
@@ -1250,6 +1259,38 @@ fn truncate_name(name: &str, max_width: f32) -> String {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn every_poster_layer_fades_with_its_card() {
+        use wineo_core::runtime::State;
+        let mut app = crate::tests::app();
+        let mut card = crate::tests::card("game", State::Inactive, 60);
+        card.kind = Some(crate::library::CardKind::Proxied);
+        card.steam = Some(crate::library::SteamDetails {
+            install: wineo_core::steam::AppState::Installing(Some(40)).into(),
+            proton: None,
+            size: None,
+        });
+        // A pill, both marks, the Steam mark, the install bar, and the
+        // selection border.
+        card.gog = Some(crate::gog_library::GogCard {
+            gog_id: Some("1".into()),
+            unfinished: true,
+            blocked_by: None,
+            install: true,
+            version: None,
+        });
+        card.favorite = true;
+        card.hidden = true;
+        app.selected = Some("game".into());
+        assert!(card.install_progress().is_some());
+        let size = Size::new(200.0, 400.0);
+        let layout = GridLayout::default();
+        let shown = crate::layout_probe::render(&mut app.card_drawn(&card, 1.0, layout), size);
+        assert!(shown.chunks(4).any(|pixel| pixel[3] > 0));
+        let gone = crate::layout_probe::render(&mut app.card_drawn(&card, 0.0, layout), size);
+        assert!(gone.chunks(4).all(|pixel| pixel[3] == 0));
+    }
     use super::*;
 
     #[test]

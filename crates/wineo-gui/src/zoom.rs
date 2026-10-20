@@ -10,7 +10,7 @@ use iced::{Subscription, Task, window};
 use wineo_core::library::{ZOOM_DEFAULT, ZOOM_MAX, ZOOM_MIN};
 
 use crate::sort_control::Field;
-use crate::{App, Message, SCROLL_ID, grid_motion};
+use crate::{App, Message, SCROLL_ID};
 
 /// Keys and wheel notches move to the next multiple of this.
 const STEP: u16 = 10;
@@ -215,20 +215,14 @@ impl App {
         self.library_menu_may_open()
     }
 
-    /// Where each card is drawn now and the grid's drawn height, so a
-    /// place kept mid-motion is the one on screen.
-    fn grid_drawn(&self) -> (grid_motion::Places, Vec<iced::Rectangle>, f32) {
-        let places = self.grid_places();
-        let shown = self.grid_motion.shown(&places);
-        let height = self.grid_motion.content_height(&places, &shown);
-        (places, shown, height)
-    }
-
     /// The card that keeps the place: the selected one when any of it is on
     /// screen, otherwise the first card in view, with its top's offset in
-    /// the viewport. Also whether the selection is off screen.
+    /// the viewport, read from where cards are drawn now, so a place kept
+    /// mid-motion is the one on screen. Also whether the selection is off
+    /// screen.
     fn find_anchor(&self) -> (Option<(String, f32)>, bool) {
-        let (places, shown, _) = self.grid_drawn();
+        let places = self.grid_places();
+        let shown = self.grid_motion.shown(&places);
         let top = self.scroll_offset;
         let bottom = top + self.viewport_height;
         let in_view = |index: usize| {
@@ -270,11 +264,12 @@ impl App {
         else {
             return Task::none();
         };
-        let (places, shown, height) = self.grid_drawn();
+        let places = self.grid_places();
         let Some(index) = places.index(&name) else {
             return Task::none();
         };
-        let card = shown[index];
+        let card = self.grid_motion.drawn(&places, index);
+        let height = self.grid_motion.content_height(&places);
         let wanted = if card.height > self.viewport_height {
             card.y
         } else {

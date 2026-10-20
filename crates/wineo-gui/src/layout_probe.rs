@@ -17,6 +17,38 @@ fn renderer() -> iced::Renderer {
     .expect("tiny-skia renderer")
 }
 
+/// Draws `element` laid out in `size` onto a transparent background with
+/// the CPU renderer, and returns its RGBA pixels.
+pub(crate) fn render<M>(element: &mut Element<'_, M>, size: Size) -> Vec<u8> {
+    use iced::advanced::Renderer as _;
+    let mut renderer = renderer();
+    let mut tree = Tree::new(element.as_widget());
+    let node = element.as_widget_mut().layout(
+        &mut tree,
+        &renderer,
+        &layout::Limits::new(Size::ZERO, size),
+    );
+    let viewport = Rectangle::with_size(size);
+    renderer.with_layer(viewport, |renderer| {
+        element.as_widget().draw(
+            &tree,
+            renderer,
+            &iced::Theme::Dark,
+            &iced::advanced::renderer::Style {
+                text_color: iced::Color::WHITE,
+            },
+            Layout::new(&node),
+            iced::mouse::Cursor::Unavailable,
+            &viewport,
+        );
+    });
+    renderer.screenshot(
+        iced::Size::new(size.width as u32, size.height as u32),
+        1.0,
+        iced::Color::TRANSPARENT,
+    )
+}
+
 pub(crate) fn layout<M>(element: &mut Element<'_, M>, size: Size) -> Node {
     probe(element, size).node
 }

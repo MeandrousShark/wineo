@@ -435,7 +435,8 @@ pub(crate) fn poster_marks(card: &Card, alpha: f32) -> Option<Element<'static, M
 }
 
 fn mark(bytes: &'static [u8], alpha: f32) -> Element<'static, Message> {
-    container(icon(bytes, Color::WHITE.scale_alpha(alpha), MARK_ICON))
+    // The renderer's tint ignores its alpha, so the icon fades by opacity.
+    container(icon(bytes, Color::WHITE, MARK_ICON).opacity(alpha))
         .width(MARK_SIZE)
         .height(MARK_SIZE)
         .center(MARK_SIZE)

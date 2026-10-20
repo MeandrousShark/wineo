@@ -1,6 +1,7 @@
 //! Message handlers for the card grid's scroll position and motion.
 
 use std::ops::ControlFlow;
+use std::rc::Rc;
 use std::time::{Duration, Instant};
 
 use iced::Task;
@@ -55,16 +56,42 @@ impl App {
         ControlFlow::Continue(Task::none())
     }
 
-    /// Where the shown cards belong at the shown zoom and dock.
-    pub(crate) fn grid_places(&self) -> grid_motion::Places {
+    /// Where the shown cards belong at the shown zoom and dock. It's
+    /// measured again only when the order or its cards (a rebuilt or kept
+    /// order, or new cards), the zoom frame, the column count, or the
+    /// poster-only view changed, so frames that only read it allocate
+    /// nothing.
+    pub(crate) fn grid_places(&self) -> Rc<grid_motion::Places> {
         let layout = self.grid_layout();
+        let key = self
+            .order
+            .revision(self.order_inputs())
+            .map(|order| grid_motion::PlacesKey {
+                order,
+                layout,
+                columns: self.columns(),
+                poster_only: self.poster_only,
+            });
+        if let Some(key) = &key
+            && let Some((cached, places)) = &*self.places.borrow()
+            && cached == key
+        {
+            return places.clone();
+        }
         let filtered = self.filtered();
         let heights: Vec<f32> = filtered
             .iter()
             .map(|card| grid::card_height(card, layout))
             .collect();
         let names = filtered.iter().map(|card| card.name.clone()).collect();
-        grid_motion::Places::new(names, &heights, self.columns(), layout)
+        let places = Rc::new(grid_motion::Places::new(
+            names,
+            &heights,
+            self.columns(),
+            layout,
+        ));
+        *self.places.borrow_mut() = key.map(|key| (key, places.clone()));
+        places
     }
 
     /// Springs the cards to their slots from where they're drawn, or puts
@@ -146,10 +173,12 @@ impl App {
     /// Brings the selection just into view where a new order is moving it,
     /// once, rather than where it's drawn now and again when it lands. A
     /// zoom in progress holds the scroll itself, so then it waits for the
-    /// zoom like any selection scroll.
+    /// zoom like any selection scroll, without asking where the card is
+    /// drawn now.
     pub(crate) fn scroll_to_landing(&mut self) -> Task<Message> {
         if self.zooming.moving() {
-            return self.scroll_selection();
+            self.grid_scroll_after_settle = self.selected.clone();
+            return Task::none();
         }
         let places = self.grid_places();
         let Some(slot) = self
@@ -181,9 +210,10 @@ impl App {
     pub(crate) fn reflow_grid(&mut self) {
         self.collapse.reset();
         // The caller scrolls for the new order itself, which a zoom's
-        // anchor would fight.
+        // anchor or its reveal at the end would fight, as a manual scroll
+        // would.
         let _ = self.motion_ended(false);
-        self.grid_motion.anchor = None;
+        self.interrupt_zoom();
         let _ = self.move_grid();
     }
 
