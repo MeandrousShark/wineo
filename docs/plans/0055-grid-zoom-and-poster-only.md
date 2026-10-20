@@ -368,7 +368,7 @@ The maintainer approved the plan on 2026-10-19.
   and warm art at 60, 100, and 200%, with titles and poster-only. Xvfb
   measures CPU rendering, so acceptance also checks the feel on the
   maintainer's GPU.
-- The acceptance checklist is written once the work lands.
+- The acceptance checklist is at the end, under Results.
 
 ## Scope limits
 
@@ -516,3 +516,53 @@ to its last frame.
   normally; the run is a bench limitation, not an app one.
 - Xvfb measures the CPU renderer. Acceptance checks the feel on the
   maintainer's GPU.
+
+## Acceptance checklist
+
+Setup, from the repo: `scripts/generate-bench-library.sh ~/wineo-accept 300`,
+then `cargo build --release -p wineo-gui`, and run the app on it with
+`bash -c '. ~/wineo-accept/env.sh && exec target/release/wineo-gui'`.
+Items 4 and 8 need games that aren't idle and a GOG game with an update,
+so check those on your own library; zoom and titles save to its
+`library.toml`, and Ctrl+0 and the toggle put them back. Delete
+`~/wineo-accept` when done.
+
+1. **Toolbar.** It reads wineo, **Add**, search, **Sort**, the arrow,
+   **Filters**, the slider, and the titles button. Narrow the window: the
+   search shrinks to about half before anything clips. Tab from **Add**
+   walks that order, with filter chips after **Filters**. The slider's
+   tooltip says "Zoom"; the button's says "Hide titles", then "Show
+   titles".
+2. **Slider.** Drag it: the posters follow as you drag, no number shows,
+   and it settles on the usual size when you pass near the tick. Tab to
+   it and press Left and Right: each press is a step, animated.
+3. **Keys and wheel.** Ctrl+= and Ctrl+- step, Ctrl+0 goes back. Ctrl+wheel
+   over the grid or the slider zooms, also on a trackpad; over the panel
+   or the filter tab it scrolls as usual, and a plain wheel always
+   scrolls. With the search focused, Ctrl+= zooms and you can keep typing.
+   With the Sort menu open, Ctrl+= does nothing.
+4. **Keeping the place.** Scroll to the middle, select a card, and zoom in
+   and out a few steps, by keys and by dragging: the selected card stays
+   where it was on screen. Do it again with the panel opening.
+5. **Small posters.** At 80%, only titles sit under the posters. A game
+   that's running, installing, or has a problem shows a dot in its
+   poster's top-left corner; idle games show none.
+6. **Poster-only.** Click the titles button: cards become posters and
+   rows get shorter, without losing your place. Hover a card and select
+   another: each shows its title over the bottom on a dark gradient. A
+   card with no art shows its title on its tile. Turn on Show hidden: a
+   hidden card's title is dimmer but readable. Switch to the light theme
+   and check the same.
+7. **Motion.** Flip the sort, filter by a tag, search, and favorite a game
+   with Favorites first on: cards slide to their places, leaving ones fade
+   out, new ones fade in. Do one while the panel is still opening, and one
+   mid-zoom: nothing jumps. Resize the window: the grid snaps. It should
+   feel smooth on your GPU.
+8. **GOG badge.** At 60% with titles hidden, a GOG game with an update
+   shows a small round arrow badge instead of the words when they don't
+   fit, and its pill with words at 100%. Nothing covers the star or the
+   eye.
+9. **Saved.** Close and reopen: the zoom and the titles setting come back.
+   `library.toml` has `zoom` and `poster_only` under `[view]`. On a
+   library that never changed them, there's no `library.toml` written.
+
