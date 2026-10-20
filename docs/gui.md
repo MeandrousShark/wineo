@@ -32,7 +32,9 @@ yet.
 ## The library
 
 Each environment gets a card with its grid art, or its name when it has
-none. Posters are 160 x 240 px, with the title and compact metadata below.
+none. Posters are 160 x 240 px at the usual size (see
+[Zoom and poster-only](#zoom-and-poster-only)), with the title and compact
+metadata below.
 The title comes from the default target's explicit desktop entry name when
 that entry is enabled. Otherwise it uses the environment name. The environment
 name remains visible as muted context when different, and choosing another
@@ -121,6 +123,29 @@ show a star on the poster. Hide a game with **Hide** in the same menu; there's
 no key for it, since the game disappears. Both save to `library.toml` right
 away. If a save fails, the card goes back to what's saved and a notice says
 why, like `Couldn't hide Hades: ...`.
+
+### Zoom and poster-only
+
+The slider at the right of the toolbar sizes the posters, from 60% to 200%
+of the usual 160 x 240 px, and snaps to the usual size when you drag near
+it. Ctrl+= (or Ctrl++) and Ctrl+- step 10 points at a time, and Ctrl+0
+goes back to the usual size. Ctrl+wheel over the grid or the slider zooms
+too, and a trackpad works. A zoom keeps your place: the selected card, or
+the first one in view, stays where it was on screen.
+
+Below 90%, only the title shows under each poster. A game that's running,
+busy, installing, or has a problem gets a status dot in its poster's
+top-left corner instead, and a GOG badge that doesn't fit beside it becomes
+a small arrow; the panel has the details.
+
+The button beside the slider hides the titles. Each card is then just its
+poster, and hovering or selecting one shows its title over the bottom. The
+zoom and the titles setting save to `library.toml` (`zoom` and
+`poster_only` under `[view]`; see [config files](config-files.md)).
+
+Sorting, filtering, searching, and favorites that move a card animate the
+cards to their new places: cards that stay slide, new ones fade in, and
+ones that leave fade out.
 
 ### When nothing shows
 
@@ -777,12 +802,15 @@ portable folder leaves them alone.
 | Esc | Close the log, version picker, or results, then the panel, then clear the search |
 | `/` or Ctrl+F | Search |
 | Ctrl+N | Open Add (Library only) |
+| Ctrl+= or Ctrl++, Ctrl+- | Make the posters bigger or smaller (Library only) |
+| Ctrl+0 | Posters back to the usual size (Library only) |
 | Delete | Remove the selected environment, asking first (on the details) |
 | Ctrl+Z | Undo a removal while its bar shows |
 | Ctrl+1, Ctrl+2, Ctrl+3, Ctrl+4, Ctrl+5 | Library, Trash, Checkup, Downloads, Snapshots |
 | Ctrl+, | Global settings |
 | Down (in the search) | Back to the cards |
-| Tab, Shift+Tab | Move focus through library controls and panel actions |
+| Tab, Shift+Tab | Move focus through the toolbar from Add to the titles button, then panel actions |
+| Left, Right (on the zoom slider) | Make the posters smaller or bigger |
 
 The mouse Back button does whatever Esc does on the current page, here and
 in every table below. Forward does nothing.
