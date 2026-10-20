@@ -306,9 +306,21 @@ fn a_resort_keeps_the_selection_and_scrolls_to_it() {
     sort(&mut app, SortKey::Playtime, true);
     assert_eq!(app.selected.as_deref(), Some("old-demo"));
     assert!(app.panel_open);
-    // It's shown, so the grid stays put until the card reports where it
-    // landed.
-    assert_eq!(app.scroll_offset, 400.0);
+    // It's shown, so the grid scrolls it just into view at the slot it's
+    // moving to, once, with nothing left for when it lands.
+    let places = app.grid_places();
+    let slot = places.slots[places.index("old-demo").unwrap()];
+    assert_eq!(app.scroll_offset, slot.y);
+    assert!(app.grid_motion.active());
+    assert!(app.grid_scroll_after_settle.is_none());
+    let landed = app.scroll_offset;
+    let settled = crate::tests::settle_grid(&mut app);
+    assert_eq!(app.scroll_offset, landed);
+    assert!(
+        !answers(&app, settled)
+            .iter()
+            .any(|message| matches!(message, Message::GridCardLocated(..)))
+    );
     let now = app.grid_motion.generation();
     assert_ne!(now, generation);
     let bounds = grid_motion::CardBounds {
@@ -324,9 +336,7 @@ fn a_resort_keeps_the_selection_and_scrolls_to_it() {
         generation,
         bounds,
     ));
-    assert_eq!(app.scroll_offset, 400.0, "bounds from before the sort");
-    let _ = app.update(Message::GridCardLocated("old-demo".into(), now, bounds));
-    assert_eq!(app.scroll_offset, 1300.0);
+    assert_eq!(app.scroll_offset, landed, "bounds from before the sort");
 }
 
 #[test]
@@ -352,8 +362,9 @@ fn a_resort_retargets_cards_in_motion() {
     // The cards carry on to their new slots from where they're drawn.
     assert!(app.grid_motion.active());
     assert_ne!(app.grid_motion.generation(), generation);
-    // The resort's own scroll replaced the dock's, and waits for the cards.
-    assert_eq!(app.grid_scroll_after_settle.as_deref(), Some("hades"));
+    // The resort scrolls to where the selection lands at once, so the
+    // dock's waiting scroll is gone and nothing waits for the cards.
+    assert!(app.grid_scroll_after_settle.is_none());
     let _ = app.update(Message::GridTick(
         generation,
         Instant::now() + Duration::from_millis(310),

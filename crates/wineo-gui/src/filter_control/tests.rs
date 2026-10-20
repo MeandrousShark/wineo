@@ -6,7 +6,6 @@ use wineo_core::runtime::State;
 use wineo_core::source::{Facts, Source};
 
 use super::*;
-use crate::grid_motion;
 use crate::library::Card;
 use crate::sort_control::tests::{answers, focus_after, press};
 use crate::tests::card;
@@ -846,25 +845,13 @@ fn a_filter_change_keeps_the_selection_and_scrolls_to_it() {
     let _ = filter(&mut app, Event::ToggleTag("game".into()));
     assert_eq!(app.selected.as_deref(), Some("papers-please"));
     assert!(app.panel_open);
-    // It's shown, so the grid stays put until the card reports where it
-    // landed.
-    assert_eq!(app.scroll_offset, 400.0);
-    let now = app.grid_motion.generation();
-    assert_ne!(now, generation);
-    let bounds = grid_motion::CardBounds {
-        card: Rectangle::new(
-            iced::Point::new(32.0, 1650.0),
-            iced::Size::new(160.0, 300.0),
-        ),
-        viewport: Rectangle::new(iced::Point::new(0.0, 50.0), iced::Size::new(800.0, 600.0)),
-        offset: iced::Vector::new(0.0, 400.0),
-    };
-    let _ = app.update(Message::GridCardLocated(
-        "papers-please".into(),
-        now,
-        bounds,
-    ));
-    assert_eq!(app.scroll_offset, 1300.0);
+    // It's shown, so the grid scrolls it just into view at the slot it's
+    // moving to, once, with nothing left for when it lands.
+    assert_ne!(app.grid_motion.generation(), generation);
+    let places = app.grid_places();
+    let slot = places.slots[places.index("papers-please").unwrap()];
+    assert_eq!(app.scroll_offset, slot.y);
+    assert!(app.grid_scroll_after_settle.is_none());
 }
 
 #[test]

@@ -380,7 +380,7 @@ impl App {
         }
         self.reflow_grid();
         if self.selected_shown() {
-            Task::batch([self.scroll_selection(), self.load_visible_art()])
+            Task::batch([self.scroll_to_landing(), self.load_visible_art()])
         } else {
             self.load_visible_art()
         }

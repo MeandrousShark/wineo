@@ -137,10 +137,44 @@ impl App {
         self.reorder();
         self.reflow_grid();
         if self.selected_shown() {
-            Task::batch([self.scroll_selection(), self.load_visible_art()])
+            Task::batch([self.scroll_to_landing(), self.load_visible_art()])
         } else {
             self.scroll_to_top()
         }
+    }
+
+    /// Brings the selection just into view where a new order is moving it,
+    /// once, rather than where it's drawn now and again when it lands. A
+    /// zoom in progress holds the scroll itself, so then it waits for the
+    /// zoom like any selection scroll.
+    pub(crate) fn scroll_to_landing(&mut self) -> Task<Message> {
+        if self.zooming.moving() {
+            return self.scroll_selection();
+        }
+        let places = self.grid_places();
+        let Some(slot) = self
+            .selected
+            .as_ref()
+            .and_then(|name| places.index(name))
+            .map(|index| places.slots[index])
+        else {
+            return Task::none();
+        };
+        let offset = if slot.y < self.scroll_offset {
+            slot.y
+        } else if slot.y + slot.height > self.scroll_offset + self.viewport_height {
+            slot.y + slot.height - self.viewport_height
+        } else {
+            return Task::none();
+        };
+        self.scroll_offset = offset.max(0.0);
+        iced::widget::operation::scroll_to(
+            iced::widget::Id::new(SCROLL_ID),
+            scrollable::AbsoluteOffset {
+                x: 0.0,
+                y: self.scroll_offset,
+            },
+        )
     }
 
     /// Moves every card to its slot in a new order.

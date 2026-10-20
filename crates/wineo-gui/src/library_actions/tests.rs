@@ -718,8 +718,9 @@ fn favoriting_resorts_only_with_favorites_first_and_keeps_the_selection() {
     assert_eq!(shown(&app)[..2], ["delta", "echo"]);
     assert_eq!(app.selected.as_deref(), Some("delta"));
     assert!(app.panel_open);
-    // The selected card is looked up to scroll it into view.
-    assert!(!run_counting(task, true, 1, is_saved).operations.is_empty());
+    // The selected card lands where it's already in view, so nothing
+    // scrolls.
+    assert!(run_counting(task, true, 1, is_saved).operations.is_empty());
 }
 
 // The window's own view.

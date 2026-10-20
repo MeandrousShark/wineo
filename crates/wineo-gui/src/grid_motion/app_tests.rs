@@ -431,3 +431,27 @@ fn the_poster_only_toggle_moves_cards_only_when_their_rows_change() {
     assert!(app.grid_motion.anchor.is_none());
     assert_eq!(frames(&app), 0);
 }
+
+#[test]
+fn a_resort_scrolls_an_off_screen_selection_once_to_where_it_lands() {
+    let (_root, mut app) = fixture(&named("game", 60));
+    app.selected = Some("game-00".into());
+    assert_eq!(app.scroll_offset, 0.0);
+    let task = flip(&mut app);
+    assert_eq!(shown(&app).last().map(String::as_str), Some("game-00"));
+    assert!(app.grid_motion.active());
+    // Straight to the bottom of its new slot, the way an arrow key would
+    // bring it just into view, while it's still drawn at the top.
+    let places = app.grid_places();
+    let slot = places.slots[places.index("game-00").unwrap()];
+    let landing = slot.y + slot.height - app.viewport_height;
+    assert!(landing > 0.0);
+    assert_eq!(app.scroll_offset, landing);
+    assert!(app.grid_motion.offset("game-00") != Vector::ZERO);
+    assert!(app.grid_scroll_after_settle.is_none());
+    assert_eq!(located(&app, task, "game-00"), 0);
+    // Nothing scrolls again when the cards settle.
+    let task = settle_grid(&mut app);
+    assert_eq!(located(&app, task, "game-00"), 0);
+    assert_eq!(app.scroll_offset, landing);
+}
