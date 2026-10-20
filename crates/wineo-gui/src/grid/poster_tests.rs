@@ -352,3 +352,134 @@ fn every_poster_only_layer_fades_with_its_card() {
     let gone = render(&mut app.card_drawn(&card, 0.0, layout), size);
     assert!(gone.chunks(4).all(|pixel| pixel[3] == 0));
 }
+
+fn steam_card(name: &str, state: State, install: wineo_core::steam::AppState) -> Card {
+    let mut card = crate::tests::card(name, state, 60);
+    card.kind = Some(crate::library::CardKind::Proxied);
+    card.steam = Some(crate::library::SteamDetails {
+        install: install.into(),
+        proton: None,
+        size: None,
+    });
+    card
+}
+
+#[test]
+fn every_state_the_row_shows_as_activity_or_a_warning_gets_the_chip_in_its_dot_color() {
+    use wineo_core::steam::AppState;
+    let mut app = crate::tests::app();
+    let mut busy = crate::tests::card("busy", State::Inactive, 60);
+    busy.busy = true;
+    let mut error = crate::tests::card("error", State::Inactive, 60);
+    error.error = Some("broken".into());
+    // Each card, what its state row says, and whether that's at rest.
+    let cards = [
+        (
+            crate::tests::card("a", State::Running, 60),
+            "running",
+            false,
+        ),
+        (
+            crate::tests::card("b", State::Starting, 60),
+            "starting",
+            false,
+        ),
+        (
+            crate::tests::card("c", State::SteamRunning, 60),
+            "running (started from Steam)",
+            false,
+        ),
+        (crate::tests::card("d", State::Failed, 60), "failed", false),
+        (busy, "busy", false),
+        (error, "error", false),
+        (crate::tests::card("e", State::Exited, 60), "exited", true),
+        (crate::tests::card("f", State::Stopped, 60), "stopped", true),
+        (
+            crate::tests::card("g", State::Inactive, 60),
+            "inactive",
+            true,
+        ),
+        (
+            steam_card("h", State::Inactive, AppState::Installed),
+            "inactive",
+            true,
+        ),
+        (
+            steam_card("i", State::Inactive, AppState::NotInstalled),
+            "not installed",
+            true,
+        ),
+        (
+            steam_card("j", State::Inactive, AppState::Updating),
+            "updating",
+            false,
+        ),
+        (
+            steam_card("k", State::Inactive, AppState::Installing(Some(40))),
+            "installing",
+            false,
+        ),
+        (
+            steam_card("l", State::Inactive, AppState::Installing(None)),
+            "installing",
+            false,
+        ),
+        (
+            steam_card("m", State::Inactive, AppState::InstallQueued),
+            "install queued",
+            false,
+        ),
+        (
+            steam_card("n", State::Inactive, AppState::Uninstalling),
+            "uninstalling",
+            false,
+        ),
+        (
+            steam_card("o", State::Inactive, AppState::Unavailable("/lib".into())),
+            "unavailable",
+            false,
+        ),
+        (
+            steam_card("p", State::Inactive, AppState::Unknown("no Steam".into())),
+            "unknown",
+            false,
+        ),
+        (
+            steam_card("q", State::Running, AppState::Updating),
+            "running",
+            false,
+        ),
+    ];
+    for (poster_only, zoom) in [(true, 100), (false, 80)] {
+        app.poster_only = poster_only;
+        app.zoom = zoom;
+        let size = Size::new(200.0, 400.0);
+        for (card, word, idle) in &cards {
+            assert_eq!(card.state_word(), *word, "{}", card.name);
+            assert_eq!(card.idle(), *idle, "{word}");
+            let node = card_node(&app, card);
+            let art = bounds_at(&node, &[0, 0]);
+            let chip = (1..layers(&node).len())
+                .map(|index| bounds_at(&node, &[0, 0, 0, index, 0]))
+                .find(|first| {
+                    *first
+                        == Rectangle::new(
+                            art.position() + Vector::new(8.0, 8.0),
+                            Size::new(24.0, 24.0),
+                        )
+                });
+            assert_eq!(chip.is_some(), !idle, "{word} at {zoom}%");
+            if *idle {
+                continue;
+            }
+            let center = chip.unwrap().center();
+            let pixels = render(&mut app.card(card), size);
+            let at = (center.y as usize * 200 + center.x as usize) * 4;
+            assert_eq!(
+                pixels[at..at + 3],
+                card.dot(app.palette).into_rgba8()[..3],
+                "{word}"
+            );
+        }
+    }
+}

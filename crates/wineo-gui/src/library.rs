@@ -225,10 +225,21 @@ impl Card {
             || self.state == State::Failed
             || self.install_warning().is_some()
     }
-    /// Nothing to tell at a glance: the state dot would be muted. The
-    /// poster's status chip shows for anything else.
+    /// Nothing to tell at a glance: the state row shows no activity or
+    /// warning, only a resting state (inactive, exited, stopped, or not
+    /// installed). The poster's status chip shows for anything else.
     pub(super) fn idle(&self) -> bool {
-        !self.warns() && !self.active()
+        !self.warns() && !self.active() && !self.steam_working()
+    }
+    /// Steam is changing the install, which the state row names with a
+    /// muted dot.
+    fn steam_working(&self) -> bool {
+        self.steam.as_ref().is_some_and(|steam| {
+            matches!(
+                steam.install.state,
+                "updating" | "installing" | "install_queued" | "uninstalling"
+            )
+        })
     }
     pub(super) fn playtime(&self) -> &str {
         &self.playtime
