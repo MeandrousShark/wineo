@@ -3,10 +3,10 @@
 use std::collections::HashSet;
 use std::ops::ControlFlow;
 
-use iced::Task;
 use iced::widget::image;
+use iced::{Rectangle, Task};
 
-use crate::{App, ArtKey, Early, GAP, Message, artwork, grid, grid_motion};
+use crate::{App, ArtKey, Early, GAP, Message, artwork};
 
 impl App {
     /// Whether any card draws `key` in color, and whether any draws it dimmed.
@@ -63,55 +63,48 @@ impl App {
             .evict(|key| visible.contains(key) || panel.contains(key));
     }
 
+    /// Loads the art the grid draws, in the order it's needed: cards drawn
+    /// in view, then moving cards headed into view or crossing it on the
+    /// way, then leaving cards still in view as they fade.
     pub(crate) fn load_visible_art(&mut self) -> Task<Message> {
-        let layout = self.grid_layout();
-        let filtered = self.filtered();
-        let heights: Vec<f32> = filtered
-            .iter()
-            .map(|card| grid::card_height(card, layout))
-            .collect();
+        let places = self.grid_places();
+        let shown = self.grid_motion.shown(&places);
         // Two rows either side start decoding before a card scrolls in.
-        let margin = 2.0 * (heights.iter().copied().fold(0.0, f32::max) + GAP);
+        let tallest = places
+            .slots
+            .iter()
+            .map(|slot| slot.height)
+            .fold(0.0, f32::max);
+        let margin = 2.0 * (tallest + GAP);
         let top = self.scroll_offset - margin;
         let bottom = self.scroll_offset + self.viewport_height + margin;
-        let count = filtered.len();
-        let mut ranges: Vec<_> = [false, true]
-            .into_iter()
-            .map(|open| {
-                let columns = grid_motion::columns_for_viewport(self.viewport_width, open, layout);
-                let range = grid_motion::cards_between(&heights, columns, top, bottom);
-                // The margin reaches above the first row, so an empty range
-                // means the viewport is past this layout's last row.
-                if range.is_empty() {
-                    count..count
-                } else {
-                    range
-                }
-            })
-            .collect();
-        // A card moving between its two slots can cross the viewport while
-        // neither slot is in it, but only cards between the two ranges move
-        // through it, or from the other range to the end of the list when
-        // one layout ends above the viewport. Both layouts are known when the
-        // motion starts, so this holds for the whole motion; the tick that
-        // settles it narrows again.
-        if self.grid_motion.active()
-            && let (Some(start), Some(end)) = (
-                ranges.iter().map(|range| range.start).min(),
-                ranges.iter().map(|range| range.end).max(),
-            )
-        {
-            ranges = std::iter::once(start..end).collect();
-        }
+        let near = |bounds: Rectangle| bounds.y <= bottom && bounds.y + bounds.height >= top;
+        let filtered = self.filtered();
+        let in_view = (0..shown.len()).filter(|&index| near(shown[index]));
+        // A card's path stays within the box its two ends span, give or
+        // take the few pixels of overshoot, so one crossing the view while
+        // neither end is in it still counts.
+        let headed = (0..shown.len()).filter(|&index| {
+            let (now, slot) = (shown[index], places.slots[index]);
+            now != slot && !near(now) && near(now.union(&slot))
+        });
+        let leaving = self
+            .grid_motion
+            .leaving()
+            .iter()
+            .filter(|card| near(card.bounds))
+            .filter_map(|leaving| self.cards.iter().find(|card| card.name == leaving.name));
         let mut seen = HashSet::new();
         let mut keys = Vec::new();
-        for range in ranges {
-            for card in &filtered[range] {
-                if let Some(art) = &card.art {
-                    let key = (art.clone(), artwork::Kind::Grid);
-                    if seen.insert(key.clone()) {
-                        keys.push((key, card.not_installed()));
-                    }
+        for card in in_view
+            .chain(headed)
+            .map(|index| filtered[index])
+            .chain(leaving)
+        {
+            if let Some(art) = &card.art {
+                let key = (art.clone(), artwork::Kind::Grid);
+                if seen.insert(key.clone()) {
+                    keys.push((key, card.not_installed()));
                 }
             }
         }

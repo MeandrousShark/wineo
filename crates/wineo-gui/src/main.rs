@@ -655,13 +655,10 @@ impl App {
         } else {
             Subscription::none()
         };
-        let grid_motion = if !self.panel_hidden() && self.grid_motion.active() {
-            let generation = self.grid_motion.generation();
-            window::frames()
-                .with(generation)
-                .map(|(generation, now)| Message::GridTick(generation, now))
-        } else {
+        let grid_motion = if self.panel_hidden() {
             Subscription::none()
+        } else {
+            self.grid_motion.subscription()
         };
         let zoom = if self.panel_hidden() {
             Subscription::none()
@@ -1195,13 +1192,7 @@ impl App {
             self.panel_motion.open(Instant::now());
         }
         let task = if panel_was_open != self.panel_open {
-            if self.panel_hidden() {
-                self.grid_motion
-                    .snap(self.panel_open, self.filtered().len());
-            } else {
-                self.grid_motion
-                    .retarget(self.panel_open, self.filtered().len(), Instant::now());
-            }
+            self.move_grid();
             task.chain(self.load_visible_art())
         } else {
             task
@@ -1210,8 +1201,7 @@ impl App {
             self.panel_motion.snap(self.panel_open);
         }
         if self.grid_motion.active() && self.panel_hidden() {
-            self.grid_motion
-                .snap(self.panel_open, self.filtered().len());
+            self.snap_grid();
         }
         // Whatever covers the grid takes the pointer, so a drag ends here,
         // and with every motion snapped a waiting scroll has nothing to do.
@@ -1296,7 +1286,7 @@ impl App {
             self.close_panel();
         }
         self.panel_motion.snap(false);
-        self.grid_motion.snap(false, self.filtered().len());
+        self.snap_grid();
         let _ = self.motion_ended(false);
         self.action_menu = None;
         self.hovered = None;

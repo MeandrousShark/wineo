@@ -709,6 +709,8 @@ fn the_anchor_clamps_to_the_scroll_range() {
     app.selected = Some(app.filtered()[app.columns()].name.clone());
     let _ = zoom(&mut app, Event::Key(Key::Out));
     let _ = settle(&mut app);
+    // The column change springs the cards on past the tween.
+    let _ = crate::tests::settle_grid(&mut app);
     assert_eq!(app.scroll_offset, 0.0);
     assert_eq!(drawn_tops(&app).0[app.columns() - 1], 16.0);
 }
@@ -1188,7 +1190,7 @@ fn arrow_right(app: &mut App) {
 }
 
 #[test]
-fn an_arrow_before_a_drag_cuts_the_tween_short_scrolls_once_at_the_release() {
+fn an_arrow_before_a_drag_cuts_the_tween_short_scrolls_once_the_cards_settle() {
     let (_root, mut app) = library(120);
     let _ = zoom(&mut app, Event::Key(Key::In));
     let _ = frame(&mut app, 40);
@@ -1201,9 +1203,13 @@ fn an_arrow_before_a_drag_cuts_the_tween_short_scrolls_once_at_the_release() {
     assert!(!app.zooming.active());
     assert_eq!(app.grid_scroll_after_settle.as_deref(), Some(name.as_str()));
     let release = zoom(&mut app, Event::DragEnded);
+    // 150% has fewer columns, so the cards still spring after the release.
+    assert!(app.grid_motion.active());
+    assert_eq!(app.grid_scroll_after_settle.as_deref(), Some(name.as_str()));
+    let settled = crate::tests::settle_grid(&mut app);
     assert!(app.grid_scroll_after_settle.is_none());
     assert_eq!(
-        crate::sort_control::tests::answers(&app, release)
+        crate::sort_control::tests::answers(&app, Task::batch([release, settled]))
             .iter()
             .filter(
                 |message| matches!(message, Message::GridCardLocated(found, ..) if *found == name)
@@ -1327,9 +1333,17 @@ fn a_sort_or_filter_during_a_zoom_replaces_the_arrows_scroll_with_its_own() {
         let (_root, mut app, name) = arrow_during_a_zoom(change);
         assert_eq!(app.grid_scroll_after_settle.as_deref(), Some(name.as_str()));
         let task = settle(&mut app);
+        // A sort's cards are still moving after the tween; a filter that
+        // keeps every card moves none.
+        let settled = if app.grid_motion.active() {
+            assert_eq!(app.grid_scroll_after_settle.as_deref(), Some(name.as_str()));
+            crate::tests::settle_grid(&mut app)
+        } else {
+            Task::none()
+        };
         assert!(app.grid_scroll_after_settle.is_none());
         assert_eq!(
-            crate::sort_control::tests::answers(&app, task)
+            crate::sort_control::tests::answers(&app, Task::batch([task, settled]))
                 .iter()
                 .filter(
                     |message| matches!(message, Message::GridCardLocated(found, ..) if *found == name)

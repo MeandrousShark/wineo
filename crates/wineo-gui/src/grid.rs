@@ -73,7 +73,6 @@ fn meta_height(card: &Card, layout: GridLayout) -> f32 {
 impl App {
     pub(crate) fn grid(&self) -> Element<'_, Message> {
         let filtered = self.filtered();
-        let names = filtered.iter().map(|card| card.name.clone()).collect();
         let scene = (!self.collapse.idle()).then(|| crate::grid_motion::Scene {
             collapse: &self.collapse,
             posters: filtered
@@ -88,8 +87,34 @@ impl App {
                 .collect(),
             on_press: self.collapse.restorable().then_some(Message::Rebuild),
         });
-        let cards = filtered.into_iter().map(|card| self.card(card)).collect();
-        crate::grid_motion::grid(cards, names, &self.grid_motion, scene, self.grid_layout())
+        let cards = filtered
+            .into_iter()
+            .map(|card| {
+                let opacity = self.grid_motion.opacity(&card.name);
+                (card.name.clone(), self.card_drawn(card, opacity))
+            })
+            .collect();
+        let leaving = self
+            .grid_motion
+            .leaving()
+            .iter()
+            .filter_map(|leaving| {
+                let card = self.cards.iter().find(|card| card.name == leaving.name)?;
+                Some(crate::grid_motion::Outgoing {
+                    name: leaving.name.clone(),
+                    at: leaving.bounds.position(),
+                    card: self.card_drawn(card, leaving.opacity),
+                })
+            })
+            .collect();
+        crate::grid_motion::grid(
+            cards,
+            leaving,
+            &self.grid_motion,
+            self.panel_open,
+            scene,
+            self.grid_layout(),
+        )
     }
     /// The poster a collapsed card shows on its own, or a plain surface
     /// when it has no art.
@@ -107,10 +132,16 @@ impl App {
         };
         Some((art.unwrap_or(placeholder).clone(), opacity))
     }
+    #[cfg(test)]
     pub(crate) fn card<'a>(&'a self, card: &'a Card) -> Element<'a, Message> {
+        self.card_drawn(card, 1.0)
+    }
+
+    /// A card drawn at `opacity`, as it fades in or out of the grid.
+    fn card_drawn<'a>(&'a self, card: &'a Card, opacity: f32) -> Element<'a, Message> {
         let layout = self.grid_layout();
-        let alpha = self.collapse.alpha();
-        let caption = self.collapse.caption_alpha();
+        let alpha = self.collapse.alpha() * opacity;
+        let caption = self.collapse.caption_alpha() * opacity;
         let palette = self.palette.faded(alpha);
         let hovered = self.hovered.as_ref() == Some(&card.name);
         let selected = self.selected.as_ref() == Some(&card.name);

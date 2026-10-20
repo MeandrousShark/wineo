@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
 use iced::advanced::image::Renderer as _;
@@ -18,6 +19,8 @@ use crate::{CARD_WIDTH, GAP, SCROLL_ID};
 use wineo_core::library::{ZOOM_DEFAULT, ZOOM_MAX, ZOOM_MIN};
 
 const DURATION: Duration = Duration::from_millis(300);
+/// Cards that arrive or leave fade over this long.
+const FADE: Duration = Duration::from_millis(150);
 const FREQUENCY: f32 = 28.0;
 const DAMPING: f32 = 0.62;
 const SETTLE: Duration = Duration::from_millis(70);
@@ -107,6 +110,16 @@ struct Spring {
 }
 
 impl Spring {
+    fn at(position: f32, velocity: f32, delay_until: Instant) -> Self {
+        Self {
+            position,
+            velocity,
+            raw_position: position,
+            raw_velocity: velocity,
+            delay_until,
+        }
+    }
+
     fn advance(&mut self, target: f32, seconds: f32) {
         let decay = (-DAMPING * FREQUENCY * seconds).exp();
         let wave = FREQUENCY * (1.0 - DAMPING * DAMPING).sqrt();
@@ -129,10 +142,32 @@ impl Spring {
         self.position = target + error * envelope;
         self.velocity = self.raw_velocity * envelope + error * derivative;
     }
+
+    /// One frame toward `target`, starting no earlier than its delay.
+    fn step(&mut self, target: f32, previous: Instant, deadline: Instant, now: Instant) {
+        let start = previous.max(self.delay_until);
+        if now > start {
+            self.advance(target, now.duration_since(start).as_secs_f32());
+        }
+        self.present(target, deadline, now);
+    }
+
+    fn rest(&mut self, target: f32) {
+        self.position = target;
+        self.velocity = 0.0;
+        self.raw_position = target;
+        self.raw_velocity = 0.0;
+    }
 }
 
+fn stagger(index: usize) -> Duration {
+    (STAGGER * (index % 8) as u32).min(MAX_STAGGER)
+}
+
+/// A staggered spring per card from 0 to 1 or back, for motion that only
+/// goes between two fixed sets of places.
 #[derive(Debug, Default)]
-pub(crate) struct GridMotion {
+pub(crate) struct Sweep {
     springs: Vec<Spring>,
     target: f32,
     last_tick: Option<Instant>,
@@ -140,20 +175,10 @@ pub(crate) struct GridMotion {
     generation: u64,
 }
 
-impl GridMotion {
+impl Sweep {
     pub(crate) fn snap(&mut self, open: bool, count: usize) {
         self.target = if open { 1.0 } else { 0.0 };
-        let now = Instant::now();
-        self.springs = vec![
-            Spring {
-                position: self.target,
-                velocity: 0.0,
-                raw_position: self.target,
-                raw_velocity: 0.0,
-                delay_until: now,
-            };
-            count
-        ];
+        self.springs = vec![Spring::at(self.target, 0.0, Instant::now()); count];
         self.last_tick = None;
         self.deadline = None;
         self.generation = self.generation.wrapping_add(1);
@@ -178,7 +203,7 @@ impl GridMotion {
             spring.delay_until = if was_active {
                 now
             } else {
-                now + (STAGGER * (index % 8) as u32).min(MAX_STAGGER)
+                now + stagger(index)
             };
         }
     }
@@ -189,20 +214,13 @@ impl GridMotion {
         }
         let previous = self.last_tick.unwrap_or(now);
         self.last_tick = Some(now);
-        let deadline = self.deadline.expect("active grid motion has a deadline");
+        let deadline = self.deadline.expect("an active sweep has a deadline");
         for spring in &mut self.springs {
-            let start = previous.max(spring.delay_until);
-            if now > start {
-                spring.advance(self.target, now.duration_since(start).as_secs_f32());
-            }
-            spring.present(self.target, deadline, now);
+            spring.step(self.target, previous, deadline, now);
         }
         if now >= deadline {
             for spring in &mut self.springs {
-                spring.position = self.target;
-                spring.velocity = 0.0;
-                spring.raw_position = self.target;
-                spring.raw_velocity = 0.0;
+                spring.rest(self.target);
             }
             self.deadline = None;
             self.last_tick = None;
@@ -221,6 +239,339 @@ impl GridMotion {
 
     pub(crate) fn generation(&self) -> u64 {
         self.generation
+    }
+}
+
+/// Where the grid's cards belong, in shown order, measured the way the
+/// grid lays them out.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub(crate) struct Places {
+    pub(crate) names: Vec<String>,
+    pub(crate) slots: Vec<Rectangle>,
+    pub(crate) columns: usize,
+    /// The grid's content height with every card in its slot.
+    pub(crate) height: f32,
+}
+
+impl Places {
+    pub(crate) fn new(
+        names: Vec<String>,
+        heights: &[f32],
+        columns: usize,
+        layout: GridLayout,
+    ) -> Self {
+        let columns = columns.max(1);
+        let sizes: Vec<Size> = heights
+            .iter()
+            .map(|height| Size::new(layout.card_width, *height))
+            .collect();
+        let (points, height) = slots(&sizes, columns, layout);
+        Self {
+            names,
+            slots: points
+                .into_iter()
+                .zip(sizes)
+                .map(|(point, size)| Rectangle::new(point, size))
+                .collect(),
+            columns,
+            height,
+        }
+    }
+
+    pub(crate) fn index(&self, name: &str) -> Option<usize> {
+        self.names.iter().position(|shown| shown == name)
+    }
+}
+
+/// A card on the grid: the slot it was last given, and how far from it and
+/// how faded it's drawn.
+#[derive(Debug, Clone, Copy)]
+struct Body {
+    slot: Rectangle,
+    x: Spring,
+    y: Spring,
+    /// The offset each axis set out from, which bounds its overshoot.
+    from: Vector,
+    opacity: f32,
+}
+
+impl Body {
+    fn offset(&self) -> Vector {
+        Vector::new(
+            bounded(self.x.position, self.from.x),
+            bounded(self.y.position, self.from.y),
+        )
+    }
+
+    fn moving(&self) -> bool {
+        self.x.position != 0.0 || self.y.position != 0.0
+    }
+}
+
+/// An offset springing back to zero from `from`, with any overshoot past
+/// either end held to a few pixels, the way `bounded_axis` holds progress.
+fn bounded(offset: f32, from: f32) -> f32 {
+    if offset * from < 0.0 || (from == 0.0 && offset != 0.0) {
+        MAX_OVERSHOOT * (offset / MAX_OVERSHOOT).tanh()
+    } else if offset.abs() > from.abs() {
+        from + MAX_OVERSHOOT * ((offset - from) / MAX_OVERSHOOT).tanh()
+    } else {
+        offset
+    }
+}
+
+/// A card that left the grid, drawn where it was while it fades out.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct Leaving {
+    pub(crate) name: String,
+    pub(crate) bounds: Rectangle,
+    pub(crate) opacity: f32,
+}
+
+/// The one thing that moves the grid's cards. Each card, by name, is drawn
+/// at an offset from its slot that springs back to zero, so any change of
+/// slots carries every card on from where it's drawn now. Cards that arrive
+/// fade in at their slot, and cards that leave fade out where they were.
+#[derive(Debug, Default)]
+pub(crate) struct GridMotion {
+    bodies: HashMap<String, Body>,
+    leaving: Vec<Leaving>,
+    columns: usize,
+    height: f32,
+    /// The content height kept while cards fade out, so the scroll range
+    /// doesn't jump under them.
+    hold: Option<f32>,
+    /// A zoom's anchor, kept in place until the cards it set moving stop.
+    pub(crate) anchor: Option<(String, f32)>,
+    last_tick: Option<Instant>,
+    deadline: Option<Instant>,
+    generation: u64,
+}
+
+impl GridMotion {
+    /// Puts every card in its slot at once, ending any motion.
+    pub(crate) fn snap_to(&mut self, places: &Places) {
+        let now = Instant::now();
+        self.bodies = places
+            .names
+            .iter()
+            .zip(&places.slots)
+            .map(|(name, slot)| {
+                (
+                    name.clone(),
+                    Body {
+                        slot: *slot,
+                        x: Spring::at(0.0, 0.0, now),
+                        y: Spring::at(0.0, 0.0, now),
+                        from: Vector::ZERO,
+                        opacity: 1.0,
+                    },
+                )
+            })
+            .collect();
+        self.leaving.clear();
+        self.columns = places.columns;
+        self.height = places.height;
+        self.hold = None;
+        self.anchor = None;
+        self.last_tick = None;
+        self.deadline = None;
+        self.generation = self.generation.wrapping_add(1);
+    }
+
+    /// Gives the cards new slots and springs each from where it's drawn.
+    pub(crate) fn spring_to(&mut self, places: &Places, now: Instant) {
+        let was_active = self.active();
+        let previous_height = self.content_height_now();
+        let mut old = std::mem::take(&mut self.bodies);
+        let mut moving = false;
+        for (index, (name, slot)) in places.names.iter().zip(&places.slots).enumerate() {
+            let delay = if was_active {
+                now
+            } else {
+                now + stagger(index)
+            };
+            let (drawn, velocity, opacity) = if let Some(body) = old.remove(name) {
+                (
+                    body.slot.position() + body.offset(),
+                    Vector::new(body.x.velocity, body.y.velocity),
+                    body.opacity,
+                )
+            } else if let Some(at) = self.leaving.iter().position(|card| &card.name == name) {
+                let card = self.leaving.remove(at);
+                (card.bounds.position(), Vector::ZERO, card.opacity)
+            } else {
+                (slot.position(), Vector::ZERO, 0.0)
+            };
+            let offset = drawn - slot.position();
+            let body = Body {
+                slot: *slot,
+                x: Spring::at(offset.x, velocity.x, delay),
+                y: Spring::at(offset.y, velocity.y, delay),
+                from: offset,
+                opacity,
+            };
+            moving |= body.moving() || velocity != Vector::ZERO;
+            self.bodies.insert(name.clone(), body);
+        }
+        let mut left: Vec<_> = old.into_iter().collect();
+        // Shown order, so the oldest cards draw first, beneath the rest.
+        left.sort_by(|(_, a), (_, b)| {
+            (a.slot.y, a.slot.x)
+                .partial_cmp(&(b.slot.y, b.slot.x))
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+        self.leaving
+            .extend(left.into_iter().map(|(name, body)| Leaving {
+                name,
+                bounds: Rectangle::new(body.slot.position() + body.offset(), body.slot.size()),
+                opacity: body.opacity,
+            }));
+        self.hold = (!self.leaving.is_empty()).then_some(previous_height);
+        self.columns = places.columns;
+        self.height = places.height;
+        self.deadline = moving.then_some(now + DURATION);
+        self.last_tick = Some(now);
+        self.generation = self.generation.wrapping_add(1);
+    }
+
+    /// Gives the cards new slots without moving them from those slots: a
+    /// zoom within one column count only scales the grid, and a spring in
+    /// flight carries on toward the scaled slot.
+    pub(crate) fn scale_to(&mut self, places: &Places) {
+        for (name, slot) in places.names.iter().zip(&places.slots) {
+            if let Some(body) = self.bodies.get_mut(name) {
+                body.slot = *slot;
+            }
+        }
+        self.columns = places.columns;
+        self.height = places.height;
+    }
+
+    /// Moves to `places` the way a zoom does: springs when the column count
+    /// or the cards changed, and only scales otherwise.
+    pub(crate) fn zoom_to(&mut self, places: &Places, now: Instant) {
+        let same = places.columns == self.columns
+            && places.names.len() == self.bodies.len()
+            && places
+                .names
+                .iter()
+                .all(|name| self.bodies.contains_key(name));
+        if same {
+            self.scale_to(places);
+        } else {
+            self.spring_to(places, now);
+        }
+    }
+
+    pub(crate) fn tick(&mut self, generation: u64, now: Instant) {
+        if generation != self.generation || !self.active() {
+            return;
+        }
+        let previous = self.last_tick.unwrap_or(now);
+        self.last_tick = Some(now);
+        let fade = now.saturating_duration_since(previous).as_secs_f32() / FADE.as_secs_f32();
+        let settled = self.deadline.is_some_and(|deadline| now >= deadline);
+        for body in self.bodies.values_mut() {
+            if let Some(deadline) = self.deadline {
+                if settled {
+                    body.x.rest(0.0);
+                    body.y.rest(0.0);
+                } else {
+                    body.x.step(0.0, previous, deadline, now);
+                    body.y.step(0.0, previous, deadline, now);
+                }
+            }
+            body.opacity = (body.opacity + fade).min(1.0);
+        }
+        if settled {
+            self.deadline = None;
+        }
+        for card in &mut self.leaving {
+            card.opacity -= fade;
+        }
+        self.leaving.retain(|card| card.opacity > 0.0);
+        if self.leaving.is_empty() {
+            self.hold = None;
+        }
+        if !self.active() {
+            self.last_tick = None;
+        }
+    }
+
+    /// Springs are in flight or cards are fading.
+    pub(crate) fn active(&self) -> bool {
+        self.deadline.is_some()
+            || !self.leaving.is_empty()
+            || self.bodies.values().any(|body| body.opacity < 1.0)
+    }
+
+    pub(crate) fn generation(&self) -> u64 {
+        self.generation
+    }
+
+    /// Frames only while something moves, so an idle grid asks for none.
+    pub(crate) fn subscription(&self) -> iced::Subscription<crate::Message> {
+        if self.active() {
+            iced::window::frames()
+                .with(self.generation)
+                .map(|(generation, now)| crate::Message::GridTick(generation, now))
+        } else {
+            iced::Subscription::none()
+        }
+    }
+
+    /// How far from its slot `name` is drawn.
+    pub(crate) fn offset(&self, name: &str) -> Vector {
+        self.bodies.get(name).map_or(Vector::ZERO, Body::offset)
+    }
+
+    pub(crate) fn opacity(&self, name: &str) -> f32 {
+        self.bodies.get(name).map_or(1.0, |body| body.opacity)
+    }
+
+    pub(crate) fn leaving(&self) -> &[Leaving] {
+        &self.leaving
+    }
+
+    /// The content height kept for cards fading out.
+    pub(crate) fn hold(&self) -> Option<f32> {
+        self.hold
+    }
+
+    /// Where each card in `places` is drawn now.
+    pub(crate) fn shown(&self, places: &Places) -> Vec<Rectangle> {
+        places
+            .names
+            .iter()
+            .zip(&places.slots)
+            .map(|(name, slot)| *slot + self.offset(name))
+            .collect()
+    }
+
+    /// The grid's drawn content height: its slots', or more while cards
+    /// overshoot, fade out, or hold the height for those that did.
+    pub(crate) fn content_height(&self, places: &Places, shown: &[Rectangle]) -> f32 {
+        shown
+            .iter()
+            .chain(self.leaving.iter().map(|card| &card.bounds))
+            .map(|bounds| bounds.y + bounds.height + PADDING)
+            .fold(places.height, f32::max)
+            .max(self.hold.unwrap_or(0.0))
+    }
+
+    /// The drawn height from the slots last given, for holding it.
+    fn content_height_now(&self) -> f32 {
+        self.bodies
+            .values()
+            .map(|body| body.slot.y + body.offset().y + body.slot.height + PADDING)
+            .chain(
+                self.leaving
+                    .iter()
+                    .map(|card| card.bounds.y + card.bounds.height + PADDING),
+            )
+            .fold(self.height, f32::max)
+            .max(self.hold.unwrap_or(0.0))
     }
 }
 
@@ -261,6 +612,7 @@ pub(crate) fn cards_between(
 
 /// Each card's top in the grid and the grid's height, with rows stacked the
 /// way `slots` stacks them.
+#[cfg(test)]
 pub(crate) fn card_tops(heights: &[f32], columns: usize) -> (Vec<f32>, f32) {
     let mut tops = Vec::with_capacity(heights.len());
     let mut y = PADDING;
@@ -318,41 +670,72 @@ pub(crate) struct Scene<'a, Message> {
     pub(crate) on_press: Option<Message>,
 }
 
+/// A card leaving the grid: its element and where it's drawn.
+pub(crate) struct Outgoing<'a, Message> {
+    pub(crate) name: String,
+    pub(crate) at: Point,
+    pub(crate) card: Element<'a, Message>,
+}
+
+/// The grid of `cards`, each with its name, in shown order, then `leaving`
+/// drawn beneath them. `open` picks the docked panel's column count.
 pub(crate) fn grid<'a, Message: Clone + 'a>(
-    cards: Vec<Element<'a, Message>>,
-    names: Vec<String>,
+    cards: Vec<(String, Element<'a, Message>)>,
+    leaving: Vec<Outgoing<'a, Message>>,
     motion: &GridMotion,
+    open: bool,
     scene: Option<Scene<'a, Message>>,
     layout: GridLayout,
 ) -> Element<'a, Message> {
+    let shown = cards.len();
+    let offsets = cards.iter().map(|(name, _)| motion.offset(name)).collect();
+    let mut names = Vec::with_capacity(shown + leaving.len());
+    let mut elements = Vec::with_capacity(shown + leaving.len());
+    for (name, card) in cards {
+        names.push(name);
+        elements.push(card);
+    }
+    let mut outgoing = Vec::with_capacity(leaving.len());
+    for card in leaving {
+        names.push(card.name);
+        outgoing.push(card.at);
+        elements.push(card.card);
+    }
     Element::new(Grid {
-        cards,
+        cards: elements,
         names,
+        shown,
+        offsets,
+        outgoing,
+        hold: motion.hold().unwrap_or(0.0),
+        open,
         layout,
-        positions: (0..motion.springs.len())
-            .map(|index| motion.progress(index))
-            .collect(),
-        fallback: motion.target,
         scene,
     })
 }
 
 struct Grid<'a, Message> {
+    /// The shown cards, then the leaving ones.
     cards: Vec<Element<'a, Message>>,
     names: Vec<String>,
+    shown: usize,
+    offsets: Vec<Vector>,
+    outgoing: Vec<Point>,
+    hold: f32,
+    open: bool,
     layout: GridLayout,
-    positions: Vec<f32>,
-    fallback: f32,
     scene: Option<Scene<'a, Message>>,
 }
 
 #[derive(Default)]
 struct GridState {
+    /// Each child's card, so a card keeps its state when the order changes.
+    names: Vec<String>,
     width: f32,
+    open: bool,
     layout: GridLayout,
     sizes: Vec<Size>,
-    closed: Vec<Point>,
-    open: Vec<Point>,
+    slots: Vec<Point>,
     looks: Vec<Look>,
 }
 
@@ -420,6 +803,24 @@ impl<Message: Clone> Widget<Message, Theme, Renderer> for Grid<'_, Message> {
     }
 
     fn diff(&self, tree: &mut Tree) {
+        let state = tree.state.downcast_mut::<GridState>();
+        if state.names != self.names {
+            // iced matches children by index; a card's hover and widget
+            // state belong to the card, wherever it moved.
+            if state.names.len() == tree.children.len() {
+                let mut old: HashMap<String, Tree> = std::mem::take(&mut state.names)
+                    .into_iter()
+                    .zip(std::mem::take(&mut tree.children))
+                    .collect();
+                tree.children = self
+                    .names
+                    .iter()
+                    .zip(&self.cards)
+                    .map(|(name, card)| old.remove(name).unwrap_or_else(|| Tree::new(card)))
+                    .collect();
+            }
+            state.names = self.names.clone();
+        }
         tree.diff_children(&self.cards);
     }
 
@@ -441,28 +842,35 @@ impl<Message: Clone> Widget<Message, Theme, Renderer> for Grid<'_, Message> {
             .zip(&mut tree.children)
             .map(|(card, state)| card.as_widget_mut().layout(state, renderer, &card_limits))
             .collect();
-        let sizes: Vec<_> = nodes.iter().map(layout::Node::size).collect();
+        let sizes: Vec<_> = nodes[..self.shown].iter().map(layout::Node::size).collect();
         let state = tree.state.downcast_mut::<GridState>();
         let grid = self.layout;
-        if state.width != width || state.layout != grid || state.sizes != sizes {
+        if state.width != width
+            || state.open != self.open
+            || state.layout != grid
+            || state.sizes != sizes
+        {
             state.width = width;
+            state.open = self.open;
             state.layout = grid;
             state.sizes = sizes.clone();
-            state.closed = slots(&sizes, columns(width, grid), grid).0;
-            state.open = slots(&sizes, columns(width - DOCK_WIDTH, grid), grid).0;
+            let columns = columns(width - if self.open { DOCK_WIDTH } else { 0.0 }, grid);
+            state.slots = slots(&sizes, columns, grid).0;
         }
-        let mut height = 2.0 * PADDING;
+        let mut height = (2.0 * PADDING).max(self.hold);
         let collapse = self.scene.as_ref().map(|scene| scene.collapse);
         state.looks.clear();
         let children = nodes
             .into_iter()
             .enumerate()
             .map(|(index, node)| {
-                let progress = self.positions.get(index).copied().unwrap_or(self.fallback);
-                let position = Point::new(
-                    bounded_axis(state.closed[index].x, state.open[index].x, progress),
-                    bounded_axis(state.closed[index].y, state.open[index].y, progress),
-                );
+                let Some(slot) = state.slots.get(index) else {
+                    let position = self.outgoing[index - self.shown];
+                    height = height.max(position.y + node.size().height + PADDING);
+                    return node.move_to(position);
+                };
+                let offset = self.offsets.get(index).copied().unwrap_or(Vector::ZERO);
+                let position = *slot + offset;
                 // The content height follows the real slots only, so a
                 // collapse never changes the scroll range.
                 height = height.max(position.y + sizes[index].height + PADDING);
@@ -489,7 +897,8 @@ impl<Message: Clone> Widget<Message, Theme, Renderer> for Grid<'_, Message> {
     ) {
         operation.container(None, layout.bounds());
         operation.traverse(&mut |operation| {
-            self.cards
+            // Leaving cards are no target for focus or a scroll to them.
+            self.cards[..self.shown]
                 .iter_mut()
                 .zip(&mut tree.children)
                 .zip(layout.children())
@@ -520,9 +929,13 @@ impl<Message: Clone> Widget<Message, Theme, Renderer> for Grid<'_, Message> {
                 && viewport.contains(point)
             {
                 let state = tree.state.downcast_ref::<GridState>();
-                let over = layout.children().enumerate().any(|(index, layout)| {
-                    hit(state.look(index), layout.bounds(), point, self.layout)
-                });
+                let over = layout
+                    .children()
+                    .take(self.shown)
+                    .enumerate()
+                    .any(|(index, layout)| {
+                        hit(state.look(index), layout.bounds(), point, self.layout)
+                    });
                 if over {
                     if *button == mouse::Button::Left
                         && let Some(message) = &scene.on_press
@@ -534,12 +947,12 @@ impl<Message: Clone> Widget<Message, Theme, Renderer> for Grid<'_, Message> {
             }
             return;
         }
-        for ((card, state), layout) in self
-            .cards
+        // Leaving cards take no input.
+        for ((card, state), layout) in self.cards[..self.shown]
             .iter_mut()
+            .zip(&mut tree.children)
+            .zip(layout.children())
             .rev()
-            .zip(tree.children.iter_mut().rev())
-            .zip(layout.children().rev())
         {
             card.as_widget_mut().update(
                 state, event, layout, cursor, renderer, clipboard, shell, viewport,
@@ -564,13 +977,21 @@ impl<Message: Clone> Widget<Message, Theme, Renderer> for Grid<'_, Message> {
         viewport: &Rectangle,
     ) {
         let grid = tree.state.downcast_ref::<GridState>();
-        for (index, ((card, state), layout)) in self
+        let children: Vec<_> = self
             .cards
             .iter()
             .zip(&tree.children)
             .zip(layout.children())
-            .enumerate()
-        {
+            .collect();
+        let (shown, leaving) = children.split_at(self.shown.min(children.len()));
+        for ((card, state), layout) in leaving {
+            if layout.bounds().intersects(viewport) {
+                card.as_widget()
+                    .draw(state, renderer, theme, style, *layout, cursor, viewport);
+            }
+        }
+        for (index, ((card, state), layout)) in shown.iter().enumerate() {
+            let layout = *layout;
             match grid.look(index) {
                 Look::Hidden => {}
                 Look::Normal(_) => {
@@ -610,9 +1031,13 @@ impl<Message: Clone> Widget<Message, Theme, Renderer> for Grid<'_, Message> {
         if self.scene.is_some() {
             let state = tree.state.downcast_ref::<GridState>();
             let over = cursor.position().is_some_and(|point| {
-                layout.children().enumerate().any(|(index, layout)| {
-                    hit(state.look(index), layout.bounds(), point, self.layout)
-                })
+                layout
+                    .children()
+                    .take(self.shown)
+                    .enumerate()
+                    .any(|(index, layout)| {
+                        hit(state.look(index), layout.bounds(), point, self.layout)
+                    })
             });
             return if over {
                 mouse::Interaction::Pointer
@@ -620,11 +1045,11 @@ impl<Message: Clone> Widget<Message, Theme, Renderer> for Grid<'_, Message> {
                 mouse::Interaction::default()
             };
         }
-        self.cards
+        self.cards[..self.shown]
             .iter()
+            .zip(&tree.children)
+            .zip(layout.children())
             .rev()
-            .zip(tree.children.iter().rev())
-            .zip(layout.children().rev())
             .find_map(|((card, state), layout)| {
                 if !cursor.is_over(layout.bounds()) {
                     return None;
@@ -649,7 +1074,7 @@ impl<Message: Clone> Widget<Message, Theme, Renderer> for Grid<'_, Message> {
             return None;
         }
         overlay::from_children(
-            &mut self.cards,
+            &mut self.cards[..self.shown],
             tree,
             layout,
             renderer,
@@ -733,7 +1158,7 @@ mod tests {
     #[test]
     fn spring_reverses_continuously_and_settles() {
         let start = Instant::now();
-        let mut motion = GridMotion::default();
+        let mut motion = Sweep::default();
         motion.snap(false, 4);
         motion.retarget(true, 4, start);
         motion.tick(motion.generation(), start + Duration::from_millis(90));
@@ -751,7 +1176,7 @@ mod tests {
     #[test]
     fn long_slot_travel_has_small_overshoot_and_smooth_deadline() {
         let start = Instant::now();
-        let mut motion = GridMotion::default();
+        let mut motion = Sweep::default();
         motion.snap(false, 1);
         motion.retarget(true, 1, start);
         let generation = motion.generation();
@@ -770,7 +1195,7 @@ mod tests {
     #[test]
     fn stale_ticks_cannot_move_a_retargeted_grid() {
         let start = Instant::now();
-        let mut motion = GridMotion::default();
+        let mut motion = Sweep::default();
         motion.snap(false, 8);
         motion.retarget(true, 8, start);
         let stale = motion.generation();

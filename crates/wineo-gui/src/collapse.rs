@@ -11,7 +11,7 @@ use std::time::{Duration, Instant};
 use iced::widget::image;
 use iced::{Point, Vector};
 
-use crate::grid_motion::{GridMotion, bounded_axis};
+use crate::grid_motion::{Sweep, bounded_axis};
 
 const CLICKS: usize = 10;
 const WINDOW: Duration = Duration::from_secs(3);
@@ -103,7 +103,7 @@ enum Phase {
         /// Seconds into the fall when the rebuild began, which fixes where
         /// each card flies back from.
         from: f32,
-        motion: GridMotion,
+        motion: Sweep,
     },
     FadeOut {
         started: Instant,
@@ -210,7 +210,7 @@ impl Collapse {
                 placeholder,
                 ..
             } => {
-                let mut motion = GridMotion::default();
+                let mut motion = Sweep::default();
                 motion.snap(false, falls.len());
                 motion.retarget(true, falls.len(), now);
                 self.phase = Phase::Rebuild {

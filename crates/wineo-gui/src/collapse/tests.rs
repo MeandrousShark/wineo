@@ -131,7 +131,7 @@ mod app {
         app.cards = (1..=count)
             .map(|index| card(&format!("game-{index}"), State::Inactive, 0))
             .collect();
-        app.grid_motion.snap(false, count);
+        app.snap_grid();
         app
     }
 

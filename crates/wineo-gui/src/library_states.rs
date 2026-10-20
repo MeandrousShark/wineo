@@ -62,7 +62,13 @@ impl App {
     /// nothing. The empty library keeps its own message above the grid.
     pub(crate) fn empty_state_view(&self) -> Element<'_, Message> {
         let palette = self.palette;
-        let content: Element<'_, Message> = match self.empty_state() {
+        // It waits for the last leaving card to fade, so the two never overlap.
+        let empty = if self.grid_motion.leaving().is_empty() {
+            self.empty_state()
+        } else {
+            None
+        };
+        let content: Element<'_, Message> = match empty {
             Some(Empty::AllHidden { hidden }) => column![
                 icon(EYE_ICON, palette.muted, 32.0),
                 ui::section_heading("Everything here is hidden", palette),

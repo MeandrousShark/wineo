@@ -10,7 +10,7 @@ use iced::{Subscription, Task, window};
 use wineo_core::library::{ZOOM_DEFAULT, ZOOM_MAX, ZOOM_MIN};
 
 use crate::sort_control::Field;
-use crate::{App, Message, SCROLL_ID, grid, grid_motion};
+use crate::{App, Message, SCROLL_ID, grid_motion};
 
 /// Keys and wheel notches move to the next multiple of this.
 const STEP: u16 = 10;
@@ -215,63 +215,70 @@ impl App {
         self.library_menu_may_open()
     }
 
-    /// Each card's height, top, and the grid's height at the shown layout.
-    fn grid_rows(&self) -> (Vec<f32>, Vec<f32>, f32) {
-        let layout = self.grid_layout();
-        let heights: Vec<f32> = self
-            .filtered()
-            .iter()
-            .map(|card| grid::card_height(card, layout))
-            .collect();
-        let (tops, height) = grid_motion::card_tops(&heights, self.columns());
-        (heights, tops, height)
+    /// Where each card is drawn now and the grid's drawn height, so a
+    /// place kept mid-motion is the one on screen.
+    fn grid_drawn(&self) -> (grid_motion::Places, Vec<iced::Rectangle>, f32) {
+        let places = self.grid_places();
+        let shown = self.grid_motion.shown(&places);
+        let height = self.grid_motion.content_height(&places, &shown);
+        (places, shown, height)
     }
 
-    /// Starts a gesture unless one is running: the selected card anchors it
-    /// when any of it is on screen, otherwise the first card in view.
+    /// The card that keeps the place: the selected one when any of it is on
+    /// screen, otherwise the first card in view, with its top's offset in
+    /// the viewport. Also whether the selection is off screen.
+    fn find_anchor(&self) -> (Option<(String, f32)>, bool) {
+        let (places, shown, _) = self.grid_drawn();
+        let top = self.scroll_offset;
+        let bottom = top + self.viewport_height;
+        let in_view = |index: usize| {
+            let card: iced::Rectangle = shown[index];
+            card.y < bottom && card.y + card.height > top
+        };
+        let selected = self.selected.as_ref().and_then(|name| places.index(name));
+        let (anchor, reveal) = match selected {
+            Some(index) if in_view(index) => (Some(index), false),
+            selected => (
+                (0..shown.len()).find(|&index| in_view(index)),
+                selected.is_some(),
+            ),
+        };
+        let anchor = anchor.map(|index| (places.names[index].clone(), shown[index].y - top));
+        (anchor, reveal)
+    }
+
+    /// Starts a gesture unless one is running.
     fn begin_gesture(&mut self) {
         if self.zooming.gesture.is_some() {
             return;
         }
-        let (heights, tops, _) = self.grid_rows();
-        let top = self.scroll_offset;
-        let bottom = top + self.viewport_height;
-        let in_view = |index: usize| tops[index] < bottom && tops[index] + heights[index] > top;
-        let filtered = self.filtered();
-        let selected = self
-            .selected
-            .as_ref()
-            .and_then(|name| filtered.iter().position(|card| &card.name == name));
-        let (anchor, reveal) = match selected {
-            Some(index) if in_view(index) => (Some(index), false),
-            selected => (
-                (0..filtered.len()).find(|&index| in_view(index)),
-                selected.is_some(),
-            ),
-        };
-        let anchor = anchor.map(|index| (filtered[index].name.clone(), tops[index] - top));
+        let (anchor, reveal) = self.find_anchor();
+        self.grid_motion.anchor = None;
         self.zooming.gesture = Some(Gesture { anchor, reveal });
     }
 
     /// Puts the anchor card's top back where the gesture found it, within
     /// the scroll range. A card taller than the viewport shows its top.
-    fn hold_anchor(&mut self) -> Task<Message> {
+    /// After the zoom stops, the cards it set moving keep the anchor too.
+    pub(crate) fn hold_anchor(&mut self) -> Task<Message> {
         let Some((name, offset)) = self
             .zooming
             .gesture
             .as_ref()
             .and_then(|gesture| gesture.anchor.clone())
+            .or_else(|| self.grid_motion.anchor.clone())
         else {
             return Task::none();
         };
-        let Some(index) = self.filtered().iter().position(|card| card.name == name) else {
+        let (places, shown, height) = self.grid_drawn();
+        let Some(index) = places.index(&name) else {
             return Task::none();
         };
-        let (heights, tops, height) = self.grid_rows();
-        let wanted = if heights[index] > self.viewport_height {
-            tops[index]
+        let card = shown[index];
+        let wanted = if card.height > self.viewport_height {
+            card.y
         } else {
-            tops[index] - offset
+            card.y - offset
         };
         let offset = wanted.clamp(0.0, (height - self.viewport_height).max(0.0));
         self.on_scroll_offset(offset);
@@ -281,17 +288,24 @@ impl App {
         )
     }
 
+    /// Gives the cards their slots at the zoom now shown: they spring when
+    /// the column count changed and only scale otherwise.
+    fn zoom_grid(&mut self, now: Instant) {
+        let places = self.grid_places();
+        self.grid_motion.zoom_to(&places, now);
+    }
+
     /// Where every way a zoom stops moving ends: a tween's last frame, a
     /// drag's release, closing, or leaving the Library. It brings the
     /// selection into view, once, if the gesture found it off screen or a
     /// key moved it while the zoom was moving. The dock's motion keeps a
     /// scroll it is still waiting for.
     fn end_gesture(&mut self) -> Task<Message> {
-        let reveal = self
-            .zooming
-            .gesture
-            .take()
-            .is_some_and(|gesture| gesture.reveal);
+        let gesture = self.zooming.gesture.take().unwrap_or_default();
+        let reveal = gesture.reveal;
+        if self.grid_motion.active() {
+            self.grid_motion.anchor = gesture.anchor;
+        }
         // An off-screen selection joins the scroll a key may have left
         // waiting, so it happens once, now or when the dock settles.
         if reveal {
@@ -311,6 +325,12 @@ impl App {
             return Task::none();
         }
         self.zooming.finish();
+        let places = self.grid_places();
+        if self.panel_hidden() {
+            self.grid_motion.snap_to(&places);
+        } else {
+            self.grid_motion.zoom_to(&places, Instant::now());
+        }
         if self.zooming.dragging() {
             self.end_zoom_drag()
         } else {
@@ -321,6 +341,7 @@ impl App {
     /// Ends the gesture's anchoring, for input that moves the grid by hand.
     pub(crate) fn interrupt_zoom(&mut self) {
         self.zooming.gesture = None;
+        self.grid_motion.anchor = None;
     }
 
     /// Tweens to `target` from whatever the grid shows now and saves it.
@@ -357,6 +378,7 @@ impl App {
             self.zooming.tween = None;
             self.zooming.generation = self.zooming.generation.wrapping_add(1);
         }
+        self.zoom_grid(now);
         let hold = self.hold_anchor();
         if done {
             Task::batch([hold, self.end_gesture()])
@@ -368,9 +390,11 @@ impl App {
     fn zoom_drag(&mut self, raw: f32) -> Task<Message> {
         self.begin_gesture();
         // A drag takes over from a tween at once, keeping its gesture.
+        let now = Instant::now();
         if self.zooming.tween.take().is_some() {
             self.zooming.generation = self.zooming.generation.wrapping_add(1);
             self.zooming.moved();
+            self.zoom_grid(now);
         }
         let (zoom, held) = snap(raw, self.zooming.drag.unwrap_or(false));
         self.zooming.drag = Some(held);
@@ -379,7 +403,28 @@ impl App {
         }
         self.zoom = zoom;
         self.zooming.moved();
+        self.zoom_grid(now);
         Task::batch([self.hold_anchor(), self.load_visible_art()])
+    }
+
+    /// Moves the cards to the rows the toggle gives them, keeping the
+    /// place the way a zoom does, and saves it.
+    fn toggled_poster_only(&mut self) -> Task<Message> {
+        let save = self.save_field(Field::PosterOnly(self.poster_only));
+        // A zoom in progress keeps its own anchor.
+        let anchor = if self.zooming.gesture.is_some() {
+            None
+        } else {
+            self.find_anchor().0
+        };
+        self.move_grid();
+        if !self.grid_motion.active() {
+            return save;
+        }
+        if anchor.is_some() {
+            self.grid_motion.anchor = anchor;
+        }
+        Task::batch([save, self.hold_anchor(), self.load_visible_art()])
     }
 
     /// Ends a drag, saving where it let go. Closing the window ends one too.
@@ -418,7 +463,7 @@ pub(crate) fn update(app: &mut App, event: Event) -> Task<Message> {
         Event::DragEnded => app.end_zoom_drag(),
         Event::TogglePosterOnly => {
             app.poster_only = !app.poster_only;
-            app.save_field(Field::PosterOnly(app.poster_only))
+            app.toggled_poster_only()
         }
         Event::Interrupted => {
             app.interrupt_zoom();

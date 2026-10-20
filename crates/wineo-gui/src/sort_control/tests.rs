@@ -341,7 +341,7 @@ fn a_resort_without_a_shown_selection_goes_back_to_the_top() {
 }
 
 #[test]
-fn a_resort_snaps_cards_in_motion() {
+fn a_resort_retargets_cards_in_motion() {
     let (_root, mut app) = loaded();
     let _ = app.update(Message::Select("hades".into()));
     assert!(app.grid_motion.active());
@@ -349,17 +349,22 @@ fn a_resort_snaps_cards_in_motion() {
     let _ = app.scroll_selection();
     assert_eq!(app.grid_scroll_after_settle.as_deref(), Some("hades"));
     let _ = app.update(Message::Sort(Event::FlipDirection));
-    assert!(!app.grid_motion.active());
+    // The cards carry on to their new slots from where they're drawn.
+    assert!(app.grid_motion.active());
     assert_ne!(app.grid_motion.generation(), generation);
-    // The old scroll-after-settle can't fire later with stale bounds.
-    assert!(app.grid_scroll_after_settle.is_none());
+    // The resort's own scroll replaced the dock's, and waits for the cards.
+    assert_eq!(app.grid_scroll_after_settle.as_deref(), Some("hades"));
     let _ = app.update(Message::GridTick(
         generation,
         Instant::now() + Duration::from_millis(310),
     ));
+    assert!(app.grid_motion.active());
+    let _ = crate::tests::settle_grid(&mut app);
     assert!(!app.grid_motion.active());
-    assert_eq!(app.grid_motion.progress(0), 1.0);
-    assert_eq!(app.grid_motion.progress(5), 1.0);
+    assert!(app.grid_scroll_after_settle.is_none());
+    for name in shown(&app) {
+        assert_eq!(app.grid_motion.offset(name), iced::Vector::ZERO, "{name}");
+    }
 }
 
 #[test]

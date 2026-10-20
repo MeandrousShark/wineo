@@ -167,9 +167,12 @@ impl App {
         }
         self.refresh_facts();
         if layout_changed {
-            self.grid_motion
-                .snap(self.panel_open, self.filtered().len());
+            // Settles a transition in flight too.
+            self.snap_grid();
             self.collapse.reset();
+        } else {
+            let places = self.grid_places();
+            self.grid_motion.scale_to(&places);
         }
 
         self.current_art = self

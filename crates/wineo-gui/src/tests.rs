@@ -45,6 +45,14 @@ pub(crate) fn card(name: &str, state: State, seconds: i64) -> Card {
         gog: None,
     }
 }
+/// Runs the grid's motion to its end.
+pub(crate) fn settle_grid(app: &mut App) -> Task<Message> {
+    app.update(Message::GridTick(
+        app.grid_motion.generation(),
+        Instant::now() + Duration::from_secs(1),
+    ))
+}
+
 pub(crate) fn app() -> App {
     let paths =
         Paths::from_lookup(|key| (key == "HOME").then(|| "/tmp/wineo-gui-tests".into())).unwrap();
@@ -1750,11 +1758,20 @@ fn unchanged_refresh_does_not_cut_grid_motion_short() {
         generation,
         Instant::now() + Duration::from_millis(90),
     ));
-    let position = app.grid_motion.progress(0);
+    let drawn = (
+        app.grid_motion.offset("game"),
+        app.grid_motion.opacity("game"),
+    );
     app.merge(app.cards.clone());
     assert!(app.grid_motion.active());
     assert_eq!(app.grid_motion.generation(), generation);
-    assert_eq!(app.grid_motion.progress(0), position);
+    assert_eq!(
+        (
+            app.grid_motion.offset("game"),
+            app.grid_motion.opacity("game")
+        ),
+        drawn
+    );
 }
 
 #[test]

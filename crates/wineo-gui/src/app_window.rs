@@ -84,8 +84,8 @@ impl App {
         self.window_size = size;
         self.viewport_width = (size.width - sidebar::WIDTH).max(0.0);
         self.viewport_height = (size.height - 48.0).max(0.0);
-        self.grid_motion
-            .snap(self.panel_open, self.filtered().len());
+        // Every frame of a drag would restart the springs.
+        self.snap_grid();
         self.collapse.reset();
         let waited = self.motion_ended(true);
         Task::batch([self.load_visible_art(), waited])

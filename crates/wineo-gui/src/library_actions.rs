@@ -378,7 +378,7 @@ impl App {
         if !moved {
             return Task::none();
         }
-        self.snap_grid();
+        self.reflow_grid();
         if self.selected_shown() {
             Task::batch([self.scroll_selection(), self.load_visible_art()])
         } else {

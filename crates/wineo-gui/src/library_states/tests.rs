@@ -158,6 +158,9 @@ fn no_matches_says_how_many_hidden_games_match() {
         app.empty_state(),
         Some(Empty::NoMatches { hidden_matching: 0 })
     );
+    // The message waits for the last card to fade out.
+    assert!(bounds(&app, CLEAR_ID).is_none());
+    let _ = crate::tests::settle_grid(&mut app);
     draw(&app);
     assert!(
         bounds(&app, SHOW_HIDDEN_ID).is_none(),
@@ -168,6 +171,7 @@ fn no_matches_says_how_many_hidden_games_match() {
     let _ = app.update(Message::SearchChanged(String::new()));
     filter(&mut app, Event::TogglePlatform("Windows"));
     filter(&mut app, Event::ToggleTag("rpg".into()));
+    let _ = crate::tests::settle_grid(&mut app);
     assert_eq!(
         app.empty_state(),
         Some(Empty::NoMatches { hidden_matching: 1 })
@@ -198,6 +202,7 @@ fn clear_filters_from_no_matches_shows_the_library_again() {
     let (_root, mut app) = loaded();
     let _ = app.update(Message::SearchChanged("zzz".into()));
     filter(&mut app, Event::ToggleStore("Steam"));
+    let _ = crate::tests::settle_grid(&mut app);
     let messages = press_control(&app, CLEAR_ID);
     assert!(
         messages
@@ -215,6 +220,7 @@ fn the_empty_state_stays_clear_of_the_open_panel() {
     let _ = app.update(Message::Select("hades".into()));
     let _ = app.update(Message::SearchChanged("zzz".into()));
     assert!(app.panel_open);
+    let _ = crate::tests::settle_grid(&mut app);
     let clear = bounds(&app, CLEAR_ID).expect("Clear filters is drawn");
     assert!(
         clear.x + clear.width <= app.window_size.width - crate::grid_motion::DOCK_WIDTH,
