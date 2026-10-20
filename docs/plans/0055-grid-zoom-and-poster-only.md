@@ -470,3 +470,49 @@ read 101 MiB. Medians:
 
 A re-sort now springs (about 540 ms) instead of snapping, at about 11
 frames/s on the CPU renderer.
+
+### Step 6 (2026-10-19)
+
+0.36.0 and 0deeb58c, both `release` builds, run back to back in one
+sitting, 3 fresh launches per row, each from a freshly written `[view]`
+(`scratchpad step6-bench.sh`, kept with its raw lines in the
+`step6-bench` worktree folder). Warm art unless marked cold; cold deletes
+the grid thumbnails before each launch and skips the dock and resort runs.
+Medians:
+
+| Row | Idle CPU, % | RSS, MiB | Scroll frames/s, gap p90 | Dock frames/s, active | Resort frames/s, active |
+|---|---:|---:|---|---|---|
+| 0.36.0, 100% | 2.25 | 92 | 9.3, 150 ms | 17.6, 550 ms | (step 0: 8.9, 223 ms, snaps) |
+| HEAD, 100% | 2.25 | 92 | 10.4, 133 ms | 17.2, 546 ms | 11.0, 551 ms |
+| HEAD, 60% | 2.15 | 122 | 7.0, 167 ms | (see below) | 14.6, 589 ms |
+| HEAD, 60% poster-only | 2.20 | 129 | 9.5, 133 ms | 18.6, 496 ms | 15.9, 536 ms |
+| HEAD, 200% | 2.25 | 78 | 14.3, 83 ms | 30.7, 429 ms | 19.6, 467 ms |
+| HEAD, 200% poster-only | 2.15 | 69 | 24.6, 50 ms | 40.4, 416 ms | 28.0, 428 ms |
+| Cold 0.36.0, 100% | 2.15 | 129 | 8.7, 150 ms | | |
+| Cold HEAD, 100% | 2.20 | 129 | 9.3, 150 ms | | |
+| Cold HEAD, 60% poster-only | 2.15 | 165 | 12.7, 133 ms | | |
+
+HEAD's zoom run at 100%: 14.8 frames/s, gap p90 117 ms, 241 ms from a key
+to its last frame.
+
+- At 100% HEAD matches 0.36.0: idle CPU, RSS, scroll, dock, and cold art.
+  The idle CPU of both builds sits about 0.45 points above step 0's,
+  which was the machine (step 4 check).
+- A re-sort now springs for about 550 ms at 11 frames/s on the CPU
+  renderer, where 0.36.0 drew one frame. The step 6 rows for 0.36.0's
+  resort are left out: the bench's moved click spot lands on a different
+  control in 0.36.0's toolbar, so the step 0 numbers stand for it.
+- Smaller posters cost more per frame in software: 60% with titles
+  scrolls at 7 frames/s (45 titles on screen against 15), poster-only at
+  60% at 9.5. Bigger posters are cheaper: 200% poster-only scrolls at 25.
+- The dense views hold more art: 60% poster-only reaches 129 MiB warm and
+  165 MiB cold against 92 and 129 at 100%, about four times the posters
+  on screen. That is art in use going over the cache's 96 MiB soft
+  budget, which the cache allows; it stays bounded and RSS returns with
+  the zoom.
+- The dock run at 60% with titles failed in all three launches: after the
+  scroll run, its fixed click at (236, 190) falls in the gap between two
+  rows, so nothing opens. A click there in a screenshot opens the panel
+  normally; the run is a bench limitation, not an app one.
+- Xvfb measures the CPU renderer. Acceptance checks the feel on the
+  maintainer's GPU.
