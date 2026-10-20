@@ -28,6 +28,7 @@ const CARD_SPACING: f32 = 4.0;
 const CARD_CONTEXT_SIZE: f32 = 12.0;
 const CARD_DOT: f32 = 8.0;
 const CARD_META_SPACING: f32 = 8.0;
+pub(crate) const ADD_ID: &str = "library-add";
 /// The search box's width, which a narrow window shrinks down to the minimum.
 pub(crate) const SEARCH_WIDTH: f32 = 320.0;
 pub(crate) const SEARCH_MIN_WIDTH: f32 = 160.0;
@@ -999,12 +1000,16 @@ impl App {
                         ..Font::DEFAULT
                     })
                     .color(palette.foreground),
-                crate::ui::accent_control(
-                    "Add",
-                    palette.primary,
-                    !self.management_busy() && self.operation.is_none(),
-                    Message::Add,
-                ),
+                {
+                    let enabled = !self.management_busy() && self.operation.is_none();
+                    crate::focus_button::control(
+                        crate::ui::accent_control("Add", palette.primary, enabled, Message::Add)
+                            .into(),
+                        enabled,
+                        ADD_ID,
+                        Message::Add,
+                    )
+                },
                 row![
                     search,
                     crate::sort_control::toolbar(self),

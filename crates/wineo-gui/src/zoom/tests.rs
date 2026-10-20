@@ -905,3 +905,127 @@ fn the_toggle_saves_poster_only_and_boot_reads_it() {
     assert!(app.poster_only);
     drop(root);
 }
+
+/// Presses Tab the way the app does, against the view laid out over
+/// `tree`, and returns the tree and what has focus after.
+fn press_tab(
+    app: &mut App,
+    tree: iced::advanced::widget::Tree,
+) -> (iced::advanced::widget::Tree, Vec<iced::widget::Id>) {
+    let task = app.update(Message::KeyWithFocus(
+        keyboard::Key::Named(Named::Tab),
+        Modifiers::empty(),
+        iced::event::Status::Ignored,
+        false,
+    ));
+    let mut laid = crate::layout_probe::relay_out(app.view(), tree, app.window_size);
+    drive(&mut laid, task);
+    let focused = laid.focused();
+    (laid.into_tree(), focused)
+}
+
+fn busy() -> crate::Operation {
+    crate::Operation {
+        name: "game-000".into(),
+        kind: crate::OperationKind::Start,
+        token: None,
+        cancelled: false,
+        status: String::new(),
+        install_done: None,
+        installing: false,
+        after_hook: false,
+    }
+}
+
+#[test]
+fn tab_cycles_the_toolbar_from_add_in_its_order() {
+    let (_root, mut app) = library(4);
+    let order = [
+        crate::grid::ADD_ID,
+        crate::SEARCH_ID,
+        crate::sort_control::SORT_BUTTON_ID,
+        crate::sort_control::DIRECTION_BUTTON_ID,
+        crate::filter_control::FILTER_BUTTON_ID,
+        SLIDER_ID,
+        POSTER_ONLY_ID,
+    ];
+    let mut laid = lay_out(app.view(), app.window_size);
+    focus(&mut laid, crate::grid::ADD_ID);
+    let mut tree = laid.into_tree();
+    let mut seen = Vec::new();
+    for _ in 0..order.len() + 1 {
+        let (next, focused) = press_tab(&mut app, tree);
+        tree = next;
+        seen.push(focused);
+    }
+    let expected: Vec<Vec<iced::widget::Id>> = order[1..]
+        .iter()
+        .map(|id| vec![iced::widget::Id::new(id)])
+        .collect();
+    assert_eq!(seen[..expected.len()], expected[..], "{seen:?}");
+    // Past the toggle focus leaves the toolbar, and the next Tab starts
+    // over at Add.
+    assert_eq!(seen[expected.len()], Vec::<iced::widget::Id>::new());
+    assert_eq!(
+        seen[expected.len() + 1],
+        [iced::widget::Id::new(crate::grid::ADD_ID)]
+    );
+}
+
+#[test]
+fn enter_and_space_on_add_send_what_a_click_does() {
+    let (_root, app) = library(4);
+    let mut laid = lay_out(app.view(), app.window_size);
+    focus(&mut laid, crate::grid::ADD_ID);
+    for key in [Named::Enter, Named::Space] {
+        let messages = laid.event(&crate::sort_control::tests::press(key));
+        assert!(
+            matches!(messages.as_slice(), [Message::Add]),
+            "{messages:?}"
+        );
+    }
+}
+
+#[test]
+fn a_disabled_add_takes_no_focus_and_tab_skips_it() {
+    let (_root, mut app) = library(4);
+    let mut laid = lay_out(app.view(), app.window_size);
+    focus(&mut laid, crate::grid::ADD_ID);
+    assert_eq!(laid.focused(), [iced::widget::Id::new(crate::grid::ADD_ID)]);
+    let tree = laid.into_tree();
+    // Busy work disables Add while it has focus; the focus goes, and Tab
+    // starts the cycle at the search box.
+    app.operation = Some(busy());
+    let mut laid = crate::layout_probe::relay_out(app.view(), tree, app.window_size);
+    assert!(laid.focused().is_empty());
+    assert!(
+        laid.event(&crate::sort_control::tests::press(Named::Enter))
+            .iter()
+            .all(|message| !matches!(message, Message::Add))
+    );
+    focus(&mut laid, crate::grid::ADD_ID);
+    assert!(laid.focused().is_empty());
+    let mut tree = laid.into_tree();
+    let mut seen = Vec::new();
+    for _ in 0..9 {
+        let (next, focused) = press_tab(&mut app, tree);
+        tree = next;
+        seen.push(focused);
+    }
+    assert_eq!(
+        seen[0],
+        [iced::widget::Id::new(crate::SEARCH_ID)],
+        "{seen:?}"
+    );
+    assert!(
+        seen.iter()
+            .flatten()
+            .all(|id| *id != iced::widget::Id::new(crate::grid::ADD_ID))
+    );
+    assert_eq!(seen[6], Vec::<iced::widget::Id>::new(), "{seen:?}");
+    assert_eq!(
+        seen[7],
+        [iced::widget::Id::new(crate::SEARCH_ID)],
+        "{seen:?}"
+    );
+}
