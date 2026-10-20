@@ -42,6 +42,8 @@ const OVERLAY_FADE: f32 = 24.0;
 /// The gradient's darkness where the title starts and at the bottom edge.
 const OVERLAY_SHADE: f32 = 0.75;
 const OVERLAY_SHADE_BOTTOM: f32 = 0.85;
+/// A hidden or uninstalled card's overlay title: white at this opacity.
+const OVERLAY_MUTED: f32 = 0.6;
 /// Room the title leaves on the right for the Steam mark: the mark and its
 /// margin, and a small gap.
 const STEAM_MARK_ROOM: f32 = 8.0 + 20.0 + 4.0;
@@ -261,12 +263,9 @@ impl App {
                 &card.display_title,
                 layout,
                 steam_mark,
-                // The muted title a faded card has under its poster.
-                if faded {
-                    palette.muted
-                } else {
-                    Color::WHITE.scale_alpha(alpha)
-                },
+                // Muted when faded, like the title under the poster, but in
+                // white so it reads on the dark gradient in both themes.
+                Color::WHITE.scale_alpha(alpha * if faded { OVERLAY_MUTED } else { 1.0 }),
                 alpha,
             ));
         }

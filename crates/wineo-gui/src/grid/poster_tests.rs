@@ -321,18 +321,84 @@ fn the_overlay_is_dark_white_text_and_a_hidden_cards_title_is_muted() {
     decoded(&mut app, &card, [128, 128, 128]);
     let pixels = render(&mut app.card(&card), size);
     assert!(brightest(&pixels, width, text.clone(), title.clone()) >= 250);
+    // A hidden card's title is white at 60%, the same in both themes, and
+    // reads at 4.5:1 or better against the gradient over its 45% art on
+    // the theme's background, measured in the rendered pixels.
     card.hidden = true;
+    let mut seen = Vec::new();
     for mode in [Mode::Dark, Mode::Light] {
         app.palette = crate::theme::Palette::from_mode(mode);
-        let muted = app.palette.muted.into_rgba8();
-        let pixels = render(&mut app.card(&card), size);
-        let brightest = brightest(&pixels, width, text.clone(), title.clone());
-        let expected = muted[..3].iter().copied().max().unwrap();
-        assert!(
-            brightest.abs_diff(expected) <= 4,
-            "{mode:?}: {brightest} against {expected}"
-        );
+        for art in [255, 128, 0] {
+            decoded(&mut app, &card, [art; 3]);
+            let background = app.palette.background;
+            let mut view: Element<'_, Message> = container(app.card(&card))
+                .style(move |_| container::Style::default().background(background))
+                .into();
+            let pixels = render(&mut view, size);
+            let ink = lightest(&pixels, width, text.clone(), title.clone());
+            // The lightest backdrop behind the title's rows, past its end.
+            let backdrop = lightest(&pixels, width, text.clone(), 140..150);
+            let ratio = contrast(ink, backdrop);
+            assert!(ratio >= 4.5, "{mode:?} on {art}: {ratio:.2}");
+            seen.push(ink);
+        }
     }
+    // White at 60% over the dark gradient, never the palette's muted gray.
+    assert!(
+        seen.iter()
+            .all(|ink| ink.iter().max().unwrap() - ink.iter().min().unwrap() <= 2)
+    );
+    assert!(
+        seen.iter().all(|ink| (150..=180).contains(&ink[0])),
+        "{seen:?}"
+    );
+    // A game that isn't installed, and isn't hidden, gets the same title.
+    let mut absent = steam_card(
+        "absent",
+        State::Inactive,
+        wineo_core::steam::AppState::NotInstalled,
+    );
+    absent.art = card.art.clone();
+    absent.display_title = card.display_title.clone();
+    decoded(&mut app, &absent, [128; 3]);
+    app.hovered = Some(absent.name.clone());
+    let pixels = render(&mut app.card(&absent), size);
+    let ink = lightest(&pixels, width, text.clone(), title.clone());
+    assert!((150..=180).contains(&ink[0]), "{ink:?}");
+}
+
+/// The pixel with the highest luminance in `rows` at `columns`.
+fn lightest(
+    pixels: &[u8],
+    width: usize,
+    rows: std::ops::Range<usize>,
+    columns: std::ops::Range<usize>,
+) -> [u8; 3] {
+    rows.flat_map(|y| columns.clone().map(move |x| (y, x)))
+        .map(|(y, x)| {
+            let pixel = &pixels[(y * width + x) * 4..][..3];
+            [pixel[0], pixel[1], pixel[2]]
+        })
+        .max_by(|a, b| luminance(*a).total_cmp(&luminance(*b)))
+        .unwrap()
+}
+
+/// WCAG relative luminance.
+fn luminance(rgb: [u8; 3]) -> f32 {
+    let channel = |value: u8| {
+        let value = f32::from(value) / 255.0;
+        if value <= 0.04045 {
+            value / 12.92
+        } else {
+            ((value + 0.055) / 1.055).powf(2.4)
+        }
+    };
+    0.2126 * channel(rgb[0]) + 0.7152 * channel(rgb[1]) + 0.0722 * channel(rgb[2])
+}
+
+fn contrast(a: [u8; 3], b: [u8; 3]) -> f32 {
+    let (a, b) = (luminance(a), luminance(b));
+    (a.max(b) + 0.05) / (a.min(b) + 0.05)
 }
 
 #[test]
