@@ -483,3 +483,53 @@ fn every_state_the_row_shows_as_activity_or_a_warning_gets_the_chip_in_its_dot_c
         }
     }
 }
+
+#[test]
+fn the_corner_keeps_clear_of_the_marks() {
+    let mut app = crate::tests::app();
+    for (favorite, hidden) in [(true, false), (false, true), (true, true)] {
+        for (poster_only, zoom) in [(true, 60), (true, 200), (false, 60), (false, 200)] {
+            app.poster_only = poster_only;
+            app.zoom = zoom;
+            for state in [State::Running, State::Inactive] {
+                let mut card = crate::tests::card("game", state, 60);
+                gog(&mut card);
+                card.favorite = favorite;
+                card.hidden = hidden;
+                let what = format!(
+                    "favorite {favorite}, hidden {hidden}, poster-only {poster_only} at {zoom}%, {state:?}"
+                );
+                let node = card_node(&app, &card);
+                let marks = bounds_at(&node, &[0, 0, 0, 2, 0]);
+                let chip = state == State::Running && app.grid_layout().text().chip();
+                let pill = if chip {
+                    bounds_at(&node, &[0, 0, 0, 1, 0, 1, 0])
+                } else {
+                    bounds_at(&node, &[0, 0, 0, 1, 0])
+                };
+                assert!(pill.width > 0.0, "{what}");
+                assert!(
+                    pill.x + pill.width <= marks.x - 4.0 + 0.01,
+                    "{what}: {pill:?} against {marks:?}"
+                );
+                if zoom == 200 {
+                    // Room to spare: the pill keeps its one-line size.
+                    let mut plain = card.clone();
+                    plain.favorite = false;
+                    plain.hidden = false;
+                    let node = card_node(&app, &plain);
+                    let alone = if chip {
+                        bounds_at(&node, &[0, 0, 0, 1, 0, 1, 0])
+                    } else {
+                        bounds_at(&node, &[0, 0, 0, 1, 0])
+                    };
+                    assert_eq!(pill.size(), alone.size(), "{what}");
+                }
+                if zoom == 60 && chip && favorite && hidden {
+                    // The least room there is: 20 px, 4 px inside its padding.
+                    assert_eq!(pill.width, 20.0);
+                }
+            }
+        }
+    }
+}

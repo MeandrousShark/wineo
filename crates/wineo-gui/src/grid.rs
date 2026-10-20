@@ -29,6 +29,11 @@ const CARD_CONTEXT_SIZE: f32 = 12.0;
 const CARD_DOT: f32 = 8.0;
 const CARD_META_SPACING: f32 = 8.0;
 const GOG_PILL_SIZE: f32 = 11.0;
+/// The poster's corner layers sit this far from the art's edges.
+const CORNER_PADDING: f32 = 8.0;
+/// Room the top-left corner leaves for the marks' column on the right:
+/// its margin, a mark, and the gap the chip and pill keep.
+const MARKS_ROOM: f32 = CORNER_PADDING + crate::library_actions::MARK_SIZE + 4.0;
 const GOG_PILL_PADDING: f32 = 2.0;
 /// The poster-only title's margin from the art's edges.
 const OVERLAY_PADDING: f32 = 8.0;
@@ -288,6 +293,13 @@ impl App {
                     .padding(8),
             );
         }
+        let chip = (text_mode.chip() && !card.idle())
+            .then(|| crate::library_actions::status_chip(card.dot(palette), alpha));
+        // The marks draw above the corner, so it keeps clear of their
+        // column. A pill squeezed by them or the chip wraps, by the glyph
+        // when a word doesn't fit, and clips rather than spill under a mark.
+        let marks = card.favorite || card.hidden;
+        let squeezed = marks || chip.is_some();
         let pill =
             crate::gog_library::badge(card.gog.as_ref(), self.gog_updates.status(&card.name)).map(
                 |badge| {
@@ -297,8 +309,13 @@ impl App {
                         | crate::gog_library::Badge::FinishInstall => palette.warning,
                     };
                     let ink = ui::accent_ink(color).scale_alpha(alpha);
-                    container(text(badge.label()).size(GOG_PILL_SIZE).color(ink))
+                    let mut label = text(badge.label()).size(GOG_PILL_SIZE).color(ink);
+                    if squeezed {
+                        label = label.wrapping(iced::widget::text::Wrapping::WordOrGlyph);
+                    }
+                    container(label)
                         .padding([GOG_PILL_PADDING, 8.0])
+                        .clip(squeezed)
                         .style(move |_| {
                             container::Style::default()
                                 .background(color)
@@ -306,8 +323,6 @@ impl App {
                         })
                 },
             );
-        let chip = (text_mode.chip() && !card.idle())
-            .then(|| crate::library_actions::status_chip(card.dot(palette), alpha));
         let corner: Option<Element<'_, Message>> = match (chip, pill) {
             (Some(chip), Some(pill)) => {
                 // The chip keeps the corner, mirroring the marks, and a
@@ -334,7 +349,10 @@ impl App {
                     .height(Fill)
                     .align_left(Fill)
                     .align_top(Fill)
-                    .padding(8),
+                    .padding(iced::Padding {
+                        right: if marks { MARKS_ROOM } else { CORNER_PADDING },
+                        ..iced::Padding::new(CORNER_PADDING)
+                    }),
             );
         }
         if let Some(marks) = crate::library_actions::poster_marks(card, alpha) {
