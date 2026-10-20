@@ -148,6 +148,16 @@ From the step 2 screenshots, the same day:
    (144 px) fits it. Every card switches together, so rows keep one
    shape.
 
+From step 3, the same day:
+
+10. **Toggle icon: A.** The outline poster with a line under it stays
+    until step 5 shows the toggle working; the icon is judged then.
+11. **Stale deferred scrolls: A.** A deferred selection scroll lives only
+    while something moves; every way the last motion ends resolves it
+    once or drops it, and a new order drops it at once. Step 4 enforces
+    this in `GridMotion`. Review findings of this kind are rated Low unless
+    a scroll still fires after its motion ended.
+
 The maintainer approved the plan on 2026-10-19.
 
 ## Proposed design
@@ -355,6 +365,8 @@ The maintainer approved the plan on 2026-10-19.
 - No change to the art-less tile's repeated title in the normal view.
 - No zoom in other pages' grids (Art, imports); only the Library.
 - No animated window resizes.
+- Deferred selection scrolls follow answer 11; further cases of a scroll
+  outliving its motion through rarer combinations are rated Low.
 
 ## Decisions during implementation
 
