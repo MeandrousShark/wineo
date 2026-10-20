@@ -9,6 +9,7 @@ fn element(value: f32, dragging: bool) -> Element<'static, Message> {
     Element::new(Slider {
         value,
         dragging,
+        modifiers: keyboard::Modifiers::empty(),
         palette: Palette::DARK,
     })
 }
@@ -148,4 +149,39 @@ fn a_drag_the_app_ended_without_a_release_stays_ended() {
         laid.event_at(&moved, Cursor::Available(Point::new(300.0, 16.0)))
             .is_empty()
     );
+}
+
+#[test]
+fn the_slider_starts_from_and_follows_the_apps_modifiers() {
+    let element = |modifiers| {
+        Element::new(Slider {
+            value: 100.0,
+            dragging: false,
+            modifiers,
+            palette: Palette::DARK,
+        })
+    };
+    let notch = mouse(mouse::Event::WheelScrolled {
+        delta: ScrollDelta::Lines { x: 0.0, y: 1.0 },
+    });
+    // Ctrl went down before the slider was built.
+    let mut laid = lay_out(element(keyboard::Modifiers::CTRL), Size::new(400.0, 100.0));
+    let center = laid.node.bounds().center();
+    assert!(matches!(
+        laid.event_at(&notch, Cursor::Available(center)).as_slice(),
+        [Message::Zoom(ZoomEvent::Wheel(_))]
+    ));
+    // Losing the window's focus lets Ctrl go.
+    let _ = laid.event(&Event::Window(iced::window::Event::Unfocused));
+    assert!(laid.event_at(&notch, Cursor::Available(center)).is_empty());
+    // A rebuild takes the app's view of the keys.
+    let mut laid = crate::layout_probe::relay_out(
+        element(keyboard::Modifiers::CTRL),
+        laid.into_tree(),
+        Size::new(400.0, 100.0),
+    );
+    assert!(matches!(
+        laid.event_at(&notch, Cursor::Available(center)).as_slice(),
+        [Message::Zoom(ZoomEvent::Wheel(_))]
+    ));
 }

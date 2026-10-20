@@ -120,6 +120,8 @@ pub(crate) struct Zoom {
     gesture: Option<Gesture>,
     /// Trackpad pixels toward the next step, signed by direction.
     pixels: f32,
+    /// Grows each time the zoom changes the drawn geometry.
+    revision: u64,
 }
 
 impl Zoom {
@@ -130,6 +132,14 @@ impl Zoom {
 
     pub(crate) fn active(&self) -> bool {
         self.tween.is_some()
+    }
+
+    pub(crate) fn revision(&self) -> u64 {
+        self.revision
+    }
+
+    fn moved(&mut self) {
+        self.revision = self.revision.wrapping_add(1);
     }
 
     pub(crate) fn dragging(&self) -> bool {
@@ -183,6 +193,7 @@ impl Zoom {
     pub(crate) fn finish(&mut self) {
         if self.tween.take().is_some() {
             self.generation = self.generation.wrapping_add(1);
+            self.moved();
         }
         self.gesture = None;
     }
@@ -315,13 +326,26 @@ impl App {
             .clamp(0.0, 1.0);
         tween.shown = tween.from + (f32::from(tween.to) - tween.from) * ease_out(t);
         let done = t >= 1.0;
+        self.zooming.moved();
         if done {
             self.zooming.tween = None;
             self.zooming.generation = self.zooming.generation.wrapping_add(1);
         }
         let hold = self.hold_anchor();
         if done {
-            Task::batch([hold, self.end_gesture()])
+            // A selection that moved during the tween waited for it.
+            let moved = match self.grid_scroll_after_settle.take() {
+                Some(name)
+                    if !self.grid_motion.active() && self.selected.as_deref() == Some(&name) =>
+                {
+                    self.scroll_selection()
+                }
+                other => {
+                    self.grid_scroll_after_settle = other;
+                    Task::none()
+                }
+            };
+            Task::batch([hold, self.end_gesture(), moved])
         } else {
             hold
         }
@@ -332,6 +356,7 @@ impl App {
         // A drag takes over from a tween at once, keeping its gesture.
         if self.zooming.tween.take().is_some() {
             self.zooming.generation = self.zooming.generation.wrapping_add(1);
+            self.zooming.moved();
         }
         let (zoom, held) = snap(raw, self.zooming.drag.unwrap_or(false));
         self.zooming.drag = Some(held);
@@ -339,6 +364,7 @@ impl App {
             return Task::none();
         }
         self.zoom = zoom;
+        self.zooming.moved();
         Task::batch([self.hold_anchor(), self.load_visible_art()])
     }
 

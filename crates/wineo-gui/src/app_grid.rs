@@ -17,7 +17,7 @@ impl App {
     ) -> Early {
         if self.selected.as_deref() != Some(&name)
             || self.panel_hidden()
-            || generation != self.grid_motion.generation()
+            || generation != self.grid_revision()
         {
             return ControlFlow::Break(Task::none());
         }

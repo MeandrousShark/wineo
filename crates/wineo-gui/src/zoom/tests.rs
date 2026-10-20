@@ -1029,3 +1029,151 @@ fn a_disabled_add_takes_no_focus_and_tab_skips_it() {
         "{seen:?}"
     );
 }
+
+#[test]
+fn a_drag_saves_only_its_release_even_when_a_step_write_finishes_during_it() {
+    let (_root, mut app) = library(4);
+    let _ = zoom(&mut app, Event::Key(Key::In));
+    assert_eq!(app.view_writes.zoom, Some(110));
+    for raw in [130.0, 140.0] {
+        let _ = zoom(&mut app, Event::Drag(raw));
+    }
+    // The step's write finishing starts nothing for the values in between.
+    finish_write(&mut app);
+    assert_eq!(app.view_writes.zoom, None);
+    assert_eq!(wineo_core::library::load(&app.paths).view.zoom, 110);
+    let _ = zoom(&mut app, Event::Drag(150.0));
+    let _ = zoom(&mut app, Event::DragEnded);
+    assert_eq!(app.view_writes.zoom, Some(150));
+    finish_write(&mut app);
+    assert_eq!(app.view_writes.zoom, None);
+    assert_eq!(wineo_core::library::load(&app.paths).view.zoom, 150);
+
+    // A release while the step's write still runs saves the release after it.
+    let _ = settle(&mut app);
+    let _ = zoom(&mut app, Event::Key(Key::In));
+    let _ = zoom(&mut app, Event::Drag(130.0));
+    let _ = zoom(&mut app, Event::Drag(170.0));
+    let _ = zoom(&mut app, Event::DragEnded);
+    assert_eq!(app.view_writes.zoom, Some(160));
+    finish_write(&mut app);
+    assert_eq!(app.view_writes.zoom, Some(170));
+    finish_write(&mut app);
+    assert_eq!(wineo_core::library::load(&app.paths).view.zoom, 170);
+
+    // So does a close that interrupts the drag.
+    let _ = zoom(&mut app, Event::Key(Key::Out));
+    let _ = zoom(&mut app, Event::Drag(80.0));
+    let _ = app.update(Message::Window(iced::window::Event::CloseRequested));
+    assert!(app.closing && !app.exiting);
+    finish_write(&mut app);
+    assert_eq!(app.view_writes.zoom, Some(80));
+    finish_write(&mut app);
+    assert_eq!(wineo_core::library::load(&app.paths).view.zoom, 80);
+}
+
+#[test]
+fn ctrl_held_before_the_grid_was_built_still_zooms() {
+    let (_root, mut app) = library(60);
+    // Ctrl went down, then Ctrl+2 and Ctrl+1 left and came back, so the
+    // grid and the slider are new while Ctrl stays down.
+    let _ = app.update(Message::Modifiers(Modifiers::CTRL));
+    let _ = app.update(Message::Section(crate::sidebar::Section::Trash));
+    let _ = app.update(Message::Section(crate::sidebar::Section::Library));
+    let mut laid = lay_out(app.view(), app.window_size);
+    let slider = bounds(&mut laid, SLIDER_ID);
+    let mut sent = Vec::new();
+    for at in [over_grid(), slider.center()] {
+        let messages = laid.event_at(&wheel(NOTCH_UP), Cursor::Available(at));
+        assert!(
+            messages
+                .iter()
+                .any(|message| matches!(message, Message::Zoom(Event::Wheel(_)))),
+            "{messages:?}"
+        );
+        sent.extend(messages);
+    }
+    assert_eq!(grid_offset(&mut laid), 0.0);
+    drop(laid);
+    for message in sent {
+        let _ = app.update(message);
+    }
+    assert_eq!(app.zoom, 120);
+
+    // Losing focus with Ctrl down doesn't leave it stuck.
+    let _ = app.update(Message::Window(iced::window::Event::Unfocused));
+    assert_eq!(app.modifiers, Modifiers::empty());
+    let mut laid = lay_out(app.view(), app.window_size);
+    let messages = laid.event_at(&wheel(NOTCH_DOWN), Cursor::Available(over_grid()));
+    assert!(
+        messages
+            .iter()
+            .all(|message| !matches!(message, Message::Zoom(Event::Wheel(_))))
+    );
+    assert!(grid_offset(&mut laid) > 0.0);
+    drop(laid);
+    // The grid built before the focus left lets Ctrl go too.
+    let _ = app.update(Message::Modifiers(Modifiers::CTRL));
+    let mut laid = lay_out(app.view(), app.window_size);
+    let _ = laid.event(&iced::Event::Window(iced::window::Event::Unfocused));
+    let messages = laid.event_at(&wheel(NOTCH_DOWN), Cursor::Available(over_grid()));
+    assert!(
+        messages
+            .iter()
+            .all(|message| !matches!(message, Message::Zoom(Event::Wheel(_))))
+    );
+}
+
+#[test]
+fn a_selection_located_before_a_zoom_frame_is_dropped() {
+    let (_root, mut app) = library(120);
+    let name = app.filtered()[60].name.clone();
+    app.selected = Some(name.clone());
+    let before = app.grid_revision();
+    let stale = crate::grid_motion::CardBounds {
+        card: Rectangle::new(Point::new(32.0, 5000.0), Size::new(160.0, 300.0)),
+        viewport: Rectangle::new(Point::new(0.0, 50.0), Size::new(800.0, 600.0)),
+        offset: iced::Vector::ZERO,
+    };
+    // Steps and drags that change the drawn grid each move the revision.
+    let _ = zoom(&mut app, Event::Key(Key::In));
+    let _ = frame(&mut app, 40);
+    assert_ne!(app.grid_revision(), before);
+    let offset = app.scroll_offset;
+    let _ = app.update(Message::GridCardLocated(name.clone(), before, stale));
+    assert_eq!(app.scroll_offset, offset);
+    let during = app.grid_revision();
+    let _ = frame(&mut app, 80);
+    assert_ne!(app.grid_revision(), during);
+    let _ = app.update(Message::GridCardLocated(name.clone(), during, stale));
+    assert_eq!(app.scroll_offset, offset);
+    let _ = settle(&mut app);
+    let dragged = app.grid_revision();
+    let _ = zoom(&mut app, Event::Drag(150.0));
+    assert_ne!(app.grid_revision(), dragged);
+    let _ = zoom(&mut app, Event::DragEnded);
+    let offset = app.scroll_offset;
+    let _ = app.update(Message::GridCardLocated(name.clone(), dragged, stale));
+    assert_eq!(app.scroll_offset, offset);
+    // One measured now still scrolls.
+    let _ = app.update(Message::GridCardLocated(name, app.grid_revision(), stale));
+    assert_eq!(app.scroll_offset, 5000.0 - 50.0 + 300.0 - 600.0);
+}
+
+#[test]
+fn an_arrow_during_a_tween_scrolls_its_selection_once_the_tween_ends() {
+    let (_root, mut app) = library(120);
+    let _ = zoom(&mut app, Event::Key(Key::In));
+    let _ = frame(&mut app, 40);
+    app.selected = Some(app.filtered()[99].name.clone());
+    let _ = app.update(Message::KeyWithFocus(
+        keyboard::Key::Named(Named::ArrowRight),
+        Modifiers::empty(),
+        iced::event::Status::Ignored,
+        false,
+    ));
+    let name = app.selected.clone().unwrap();
+    assert_eq!(app.grid_scroll_after_settle.as_deref(), Some(name.as_str()));
+    let task = settle(&mut app);
+    assert!(located(&app, task, &name));
+}

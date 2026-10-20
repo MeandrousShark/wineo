@@ -34,6 +34,7 @@ pub(crate) fn toolbar(app: &App) -> Element<'_, Message> {
         Element::new(Slider {
             value: zoom,
             dragging: app.zooming.dragging(),
+            modifiers: app.modifiers,
             palette,
         }),
         "Zoom",
@@ -117,6 +118,9 @@ struct Slider {
     /// The app still follows a drag. A dialog that opens mid-drag takes
     /// the release, and the app ends the drag without it.
     dragging: bool,
+    /// The keys the app knows are held, which the slider starts from and
+    /// follows on each rebuild, like the grid's wheel.
+    modifiers: keyboard::Modifiers,
     palette: Palette,
 }
 
@@ -169,15 +173,20 @@ impl Widget<Message, Theme, Renderer> for Slider {
     }
 
     fn state(&self) -> tree::State {
-        tree::State::new(State::default())
+        tree::State::new(State {
+            modifiers: self.modifiers,
+            ..State::default()
+        })
     }
 
     fn diff(&self, tree: &mut tree::Tree) {
         // A rebuild comes after the press's own message, so a drag the app
         // has let go of is over here too.
+        let state = tree.state.downcast_mut::<State>();
         if !self.dragging {
-            tree.state.downcast_mut::<State>().dragging = false;
+            state.dragging = false;
         }
+        state.modifiers = self.modifiers;
     }
 
     fn size(&self) -> Size<Length> {
@@ -252,6 +261,9 @@ impl Widget<Message, Theme, Renderer> for Slider {
             }
             Event::Keyboard(keyboard::Event::ModifiersChanged(modifiers)) => {
                 state.modifiers = *modifiers;
+            }
+            Event::Window(iced::window::Event::Unfocused) => {
+                state.modifiers = keyboard::Modifiers::empty();
             }
             Event::Keyboard(keyboard::Event::KeyPressed {
                 key: keyboard::Key::Named(named @ (Named::ArrowLeft | Named::ArrowRight)),

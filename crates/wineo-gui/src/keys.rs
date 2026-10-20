@@ -286,10 +286,10 @@ impl App {
             return Task::none();
         };
         let name = name.to_owned();
-        if self.grid_motion.active() {
+        if self.grid_motion.active() || self.zooming.active() {
             self.grid_scroll_after_settle = Some(name.clone());
         }
-        let generation = self.grid_motion.generation();
+        let generation = self.grid_revision();
         crate::grid_motion::locate_card(&name)
             .map(move |bounds| Message::GridCardLocated(name.clone(), generation, bounds))
     }

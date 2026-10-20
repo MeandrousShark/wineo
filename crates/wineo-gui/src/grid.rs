@@ -860,6 +860,7 @@ impl App {
                     .zooming
                     .anchoring()
                     .then_some(Message::Zoom(crate::zoom::Event::Interrupted)),
+                modifiers: self.modifiers,
             },
         ))
         .on_exit(Message::Zoom(crate::zoom::Event::PointerLeft));

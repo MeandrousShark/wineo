@@ -1046,6 +1046,10 @@ impl App {
             }
             Message::Window(window::Event::Unfocused) => {
                 self.focused = false;
+                // Keys released elsewhere never report here, so Ctrl
+                // can't be trusted to still be down.
+                self.modifiers = keyboard::Modifiers::empty();
+                self.zooming.modifiers_changed(self.modifiers);
                 Task::none()
             }
             Message::Window(_) => Task::none(),
@@ -1372,6 +1376,14 @@ impl App {
             Some(zoom) => grid_motion::GridLayout::at(zoom),
             None => grid_motion::GridLayout::new(self.zoom),
         }
+    }
+    /// Changes whenever the cards' drawn places may have: the dock's motion
+    /// or the zoom. Both counters only grow, so their sum does too, and a
+    /// card's location measured under an older one is stale.
+    pub(crate) fn grid_revision(&self) -> u64 {
+        self.grid_motion
+            .generation()
+            .wrapping_add(self.zooming.revision())
     }
     fn panel_reserved(&self) -> bool {
         self.section == sidebar::Section::Library && self.panel_motion.reserved()

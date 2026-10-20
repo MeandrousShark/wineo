@@ -156,6 +156,10 @@ pub(crate) struct Zoom<Message> {
     pub(crate) on_zoom: Option<fn(mouse::ScrollDelta) -> Message>,
     /// Sent for a plain wheel turn or a press, which move the grid by hand.
     pub(crate) on_input: Option<Message>,
+    /// The keys the app knows are held, which this starts from and follows
+    /// on each rebuild, since a key that went down while the grid wasn't
+    /// shown never reported here.
+    pub(crate) modifiers: iced::keyboard::Modifiers,
 }
 
 /// Hands Ctrl+wheel over `content` to `zoom` instead of scrolling it. It
@@ -191,7 +195,7 @@ where
     }
 
     fn state(&self) -> tree::State {
-        tree::State::new(iced::keyboard::Modifiers::default())
+        tree::State::new(self.zoom.modifiers)
     }
 
     fn children(&self) -> Vec<tree::Tree> {
@@ -199,6 +203,7 @@ where
     }
 
     fn diff(&self, tree: &mut tree::Tree) {
+        *tree.state.downcast_mut::<iced::keyboard::Modifiers>() = self.zoom.modifiers;
         tree.diff_children(std::slice::from_ref(&self.content));
     }
 
@@ -249,6 +254,9 @@ where
         match event {
             Event::Keyboard(iced::keyboard::Event::ModifiersChanged(held)) => {
                 *modifiers = *held;
+            }
+            Event::Window(iced::window::Event::Unfocused) => {
+                *modifiers = iced::keyboard::Modifiers::empty();
             }
             Event::Mouse(mouse::Event::WheelScrolled { delta }) if over => {
                 if modifiers.control()

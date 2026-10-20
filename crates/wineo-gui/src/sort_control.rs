@@ -299,7 +299,11 @@ pub(crate) fn update(app: &mut App, event: Event) -> Task<Message> {
                     std::time::Instant::now() + NOTICE_TIME,
                 ));
             }
-            if app.current(written) == written {
+            // A drag saves only where it lets go, so the values it passes
+            // through wait for its release.
+            if app.current(written) == written
+                || (matches!(written, Field::Zoom(_)) && app.zooming.dragging())
+            {
                 Task::none()
             } else {
                 app.save_field(written)
