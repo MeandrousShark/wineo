@@ -384,7 +384,7 @@ for ((run = 1; run <= runs; run++)); do
         fail "ICED_BACKEND=tiny-skia but the app loaded a GPU stack: $shown"
     fi
     # An empty spot in the header: focuses the window without selecting a card.
-    xdotool mousemove 900 24 click 1
+    xdotool mousemove 1100 24 click 1
     nap "$settle"
     read -r cpu0 sw0 < <(snapshot)
     nap "$sample"
@@ -417,14 +417,14 @@ for ((run = 1; run <= runs; run++)); do
     fi
     if [[ $resort != 0 ]]; then
         # The sort direction button in the toolbar.
-        xdotool mousemove 697 24
+        xdotool mousemove 770 24
         nap 1
         capture resort 8 resort_action || fail "the sort direction button changed no frames on screen"
         line+=" resort_cpu=${cpu}% resort_frames=${frames}/s resort_gap_p90=${p90}ms resort_gap_max=${max}ms resort_active_ms=${active}ms"
     fi
     if [[ $zoom != 0 ]]; then
         # An empty spot in the header, as for focusing.
-        xdotool mousemove 900 24
+        xdotool mousemove 1100 24
         nap 1
         capture zoom 11 zoom_action || fail "zoom keys changed no frames on screen: the build may predate zoom (ZOOM=0 skips this run)"
         line+=" zoom_cpu=${cpu}% zoom_frames=${frames}/s zoom_gap_p90=${p90}ms zoom_gap_max=${max}ms zoom_active_ms=${active}ms"
