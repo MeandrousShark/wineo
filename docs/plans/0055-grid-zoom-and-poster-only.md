@@ -363,6 +363,17 @@ The maintainer approved the plan on 2026-10-19.
   instead skip the write while the key is absent and keep a written key,
   and answer 5 only asks for nothing written at the defaults. The new keys
   follow the existing ones.
+- **Add takes focus** (2026-10-19, step 3). Add was a plain button outside
+  the Tab order; it now takes focus first in the toolbar, so Tab follows
+  the order the Zoom section gives. A disabled Add is skipped.
+- **Trackpad steps** (2026-10-19, step 3). Pixel deltas make a step every
+  60 px, iced's wheel line, since the plan gave no number.
+- **Save notice** (2026-10-19, step 3). A failed zoom or poster-only save
+  says "Couldn't save the view: ..."; the sort's notices keep their text.
+- **Anchoring during a dock** (2026-10-19, step 3 review). A zoom that
+  starts while the panel's animation still moves cards anchors to the
+  dock's target layout, not the drawn one, so the place can drift. Step 4
+  fixes it: the anchor reads GridMotion's displayed positions and height.
 
 ## Results
 
