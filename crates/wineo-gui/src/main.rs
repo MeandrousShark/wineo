@@ -1212,11 +1212,13 @@ impl App {
         if self.grid_motion.active() && self.panel_hidden() {
             self.grid_motion
                 .snap(self.panel_open, self.filtered().len());
-            let _ = self.motion_ended(false);
         }
-        // Whatever covers the grid takes the pointer, so a drag ends here.
+        // Whatever covers the grid takes the pointer, so a drag ends here,
+        // and with every motion snapped a waiting scroll has nothing to do.
         let task = if self.panel_hidden() {
-            task.chain(self.stop_zoom())
+            let stopped = self.stop_zoom();
+            let _ = self.motion_ended(false);
+            task.chain(stopped)
         } else {
             task
         };
