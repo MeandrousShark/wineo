@@ -1353,3 +1353,85 @@ fn a_sort_or_filter_during_a_zoom_replaces_the_arrows_scroll_with_its_own() {
         );
     }
 }
+
+fn close_to(a: f32, b: f32) -> bool {
+    (a - b).abs() < 0.01
+}
+
+#[test]
+fn a_zoom_started_mid_dock_keeps_the_place_as_drawn() {
+    let (_root, mut app) = library(120);
+    let (tops, _) = drawn_tops(&app);
+    app.scroll_offset = tops[21] - 120.0;
+    let name = app.filtered()[21].name.clone();
+    let _ = app.update(Message::Select(name.clone()));
+    assert!(app.panel_open && app.grid_motion.active());
+    let start = Instant::now();
+    let at = |ms: u64| start + Duration::from_millis(100 + ms);
+    let _ = app.update(Message::GridTick(app.grid_motion.generation(), at(0)));
+    // Scrolled so the moving card is in view, where it anchors.
+    app.scroll_offset = drawn_tops(&app).0[21] - 120.0;
+    let drawn = 120.0;
+    // The dock's target layout puts the card somewhere else, which is what
+    // the anchor used to read.
+    let target = app.grid_places().slots[21].y - app.scroll_offset;
+    assert!((drawn - target).abs() > 20.0, "{drawn} vs {target}");
+
+    let _ = zoom(&mut app, Event::Key(Key::In));
+    let anchor = app
+        .zooming
+        .gesture
+        .as_ref()
+        .unwrap()
+        .anchor
+        .clone()
+        .unwrap();
+    assert_eq!(anchor.0, name);
+    assert!(close_to(anchor.1, drawn), "{anchor:?} vs {drawn}");
+    let generation = app.zooming.generation;
+    // The tween starts on the dock's clock, so neither depends on how long
+    // the test takes.
+    app.zooming.tween.as_mut().unwrap().start = at(0);
+    for ms in [20, 80, 160] {
+        let _ = app.update(Message::GridTick(app.grid_motion.generation(), at(ms)));
+        let _ = zoom(&mut app, Event::Frame(generation, at(ms)));
+        let top = drawn_tops(&app).0[21] - app.scroll_offset;
+        assert!(close_to(top, drawn), "{top} vs {drawn} at {ms} ms");
+    }
+    assert!(!app.zooming.moving());
+    // The cards the dock and the zoom left moving still keep the place
+    // until they stop.
+    assert!(app.grid_motion.active());
+    let _ = app.update(Message::GridTick(app.grid_motion.generation(), at(200)));
+    let top = drawn_tops(&app).0[21] - app.scroll_offset;
+    assert!(close_to(top, drawn), "{top} vs {drawn}");
+    let _ = crate::tests::settle_grid(&mut app);
+    assert!(!app.grid_motion.active());
+    assert!(app.grid_motion.anchor.is_none());
+    let top = drawn_tops(&app).0[21] - app.scroll_offset;
+    assert!(close_to(top, drawn), "{top} vs {drawn}");
+}
+
+#[test]
+fn a_zoom_springs_only_when_the_column_count_changes_and_then_goes_idle() {
+    let (_root, mut app) = library(120);
+    let frames = |app: &App| {
+        iced::advanced::subscription::into_recipes(app.grid_motion.subscription()).len()
+    };
+    let mut changed = 0;
+    while app.zoom < ZOOM_MAX {
+        let columns = app.columns();
+        let _ = zoom(&mut app, Event::Key(Key::In));
+        let _ = settle(&mut app);
+        if app.columns() == columns {
+            assert!(!app.grid_motion.active(), "{}%", app.zoom);
+        } else {
+            changed += 1;
+            assert!(app.grid_motion.active(), "{}%", app.zoom);
+            assert_eq!(frames(&app), 1);
+            let _ = crate::tests::settle_grid(&mut app);
+        }
+        assert_eq!(frames(&app), 0, "{}%", app.zoom);
+    }
+    assert!(changed > 0);
+}

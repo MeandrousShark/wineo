@@ -68,8 +68,10 @@ impl App {
     }
 
     /// Springs the cards to their slots from where they're drawn, or puts
-    /// them there at once while the grid is covered.
-    pub(crate) fn move_grid(&mut self) {
+    /// them there at once while the grid is covered. Returns the scroll a
+    /// motion this ended was waiting for.
+    pub(crate) fn move_grid(&mut self) -> Task<Message> {
+        let was_active = self.grid_motion.active();
         let places = self.grid_places();
         if self.panel_hidden() {
             self.grid_motion.snap_to(&places);
@@ -83,6 +85,12 @@ impl App {
             .is_some_and(|name| places.index(name).is_none())
         {
             self.hovered = None;
+        }
+        // New slots that match where every card is drawn end the motion.
+        if was_active && !self.grid_motion.active() {
+            self.motion_ended(true)
+        } else {
+            Task::none()
         }
     }
 
@@ -142,7 +150,7 @@ impl App {
         // anchor would fight.
         let _ = self.motion_ended(false);
         self.grid_motion.anchor = None;
-        self.move_grid();
+        let _ = self.move_grid();
     }
 
     fn scroll_to_top(&mut self) -> Task<Message> {

@@ -417,9 +417,9 @@ impl App {
         } else {
             self.find_anchor().0
         };
-        self.move_grid();
+        let waited = self.move_grid();
         if !self.grid_motion.active() {
-            return save;
+            return Task::batch([save, waited]);
         }
         if anchor.is_some() {
             self.grid_motion.anchor = anchor;

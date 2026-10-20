@@ -1192,8 +1192,8 @@ impl App {
             self.panel_motion.open(Instant::now());
         }
         let task = if panel_was_open != self.panel_open {
-            self.move_grid();
-            task.chain(self.load_visible_art())
+            let waited = self.move_grid();
+            task.chain(self.load_visible_art()).chain(waited)
         } else {
             task
         };

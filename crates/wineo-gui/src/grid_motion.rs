@@ -795,7 +795,10 @@ impl<Message: Clone> Widget<Message, Theme, Renderer> for Grid<'_, Message> {
     }
 
     fn state(&self) -> tree::State {
-        tree::State::new(GridState::default())
+        tree::State::new(GridState {
+            names: self.names.clone(),
+            ..GridState::default()
+        })
     }
 
     fn children(&self) -> Vec<Tree> {
@@ -1152,6 +1155,9 @@ pub(crate) fn locate(card_id: Id, scroll_id: Id) -> Task<CardBounds> {
 }
 
 #[cfg(test)]
+mod app_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -1404,5 +1410,223 @@ mod tests {
         let (points, height) = slots(&sizes, 2, GridLayout::default());
         assert_eq!(points[2].y, PADDING + 315.0 + GAP);
         assert_eq!(height, PADDING + 315.0 + GAP + 270.0 + PADDING);
+    }
+
+    fn places(names: &[&str], columns: usize, layout: GridLayout) -> Places {
+        let heights = vec![layout.poster_height() + 60.0; names.len()];
+        Places::new(
+            names.iter().map(|name| (*name).to_owned()).collect(),
+            &heights,
+            columns,
+            layout,
+        )
+    }
+
+    fn drawn(motion: &GridMotion, places: &Places, name: &str) -> Point {
+        motion.shown(places)[places.index(name).unwrap()].position()
+    }
+
+    fn frames(motion: &GridMotion) -> usize {
+        iced::advanced::subscription::into_recipes(motion.subscription()).len()
+    }
+
+    fn close(a: Point, b: Point) -> bool {
+        (a.x - b.x).abs() < 0.01 && (a.y - b.y).abs() < 0.01
+    }
+
+    #[test]
+    fn a_new_order_settles_every_card_at_its_slot() {
+        let layout = GridLayout::default();
+        let start = Instant::now();
+        let mut motion = GridMotion::default();
+        let before = places(&["a", "b", "c", "d", "e"], 2, layout);
+        motion.snap_to(&before);
+        assert!(!motion.active());
+        assert_eq!(frames(&motion), 0);
+        let after = places(&["e", "d", "c", "b", "a"], 2, layout);
+        motion.spring_to(&after, start);
+        assert!(motion.active());
+        assert_eq!(frames(&motion), 1);
+        // Each card starts where it was drawn.
+        for name in ["a", "b", "c", "d", "e"] {
+            assert_eq!(
+                drawn(&motion, &after, name),
+                before.slots[before.index(name).unwrap()].position()
+            );
+        }
+        let generation = motion.generation();
+        motion.tick(generation, start + Duration::from_millis(140));
+        assert!(motion.active());
+        motion.tick(generation, start + DURATION);
+        assert!(!motion.active());
+        assert_eq!(frames(&motion), 0);
+        for (name, slot) in after.names.iter().zip(&after.slots) {
+            assert_eq!(drawn(&motion, &after, name), slot.position());
+        }
+    }
+
+    #[test]
+    fn a_retarget_mid_flight_starts_from_the_drawn_place() {
+        let layout = GridLayout::default();
+        let start = Instant::now();
+        let mut motion = GridMotion::default();
+        // The dock: three columns become two.
+        motion.snap_to(&places(&["a", "b", "c", "d"], 3, layout));
+        let docked = places(&["a", "b", "c", "d"], 2, layout);
+        motion.spring_to(&docked, start);
+        let mid = start + Duration::from_millis(90);
+        motion.tick(motion.generation(), mid);
+        let at = drawn(&motion, &docked, "c");
+        let velocity = motion.bodies["c"].y.velocity;
+        assert!(at != docked.slots[2].position());
+        // A re-sort lands halfway through.
+        let sorted = places(&["d", "c", "b", "a"], 2, layout);
+        motion.spring_to(&sorted, mid);
+        assert!(close(drawn(&motion, &sorted, "c"), at));
+        assert_eq!(motion.bodies["c"].y.velocity, velocity);
+        let generation = motion.generation();
+        motion.tick(generation, mid + Duration::from_millis(16));
+        // It carries on smoothly instead of jumping to either slot.
+        let next = drawn(&motion, &sorted, "c");
+        assert!((next.y - at.y).abs() < 40.0, "{at:?} to {next:?}");
+        motion.tick(generation, mid + DURATION);
+        assert!(!motion.active());
+        assert_eq!(drawn(&motion, &sorted, "c"), sorted.slots[1].position());
+    }
+
+    #[test]
+    fn a_zoom_scales_within_a_column_count_and_springs_across_one() {
+        let start = Instant::now();
+        let mut motion = GridMotion::default();
+        let names = ["a", "b", "c", "d", "e"];
+        motion.snap_to(&places(&names, 4, GridLayout::new(100)));
+        let generation = motion.generation();
+        // Same columns: the slots scale and nothing springs.
+        let scaled = places(&names, 4, GridLayout::new(105));
+        motion.zoom_to(&scaled, start);
+        assert!(!motion.active());
+        assert_eq!(motion.generation(), generation);
+        assert_eq!(drawn(&motion, &scaled, "e"), scaled.slots[4].position());
+        // Halfway through a tween the column count drops, and each card
+        // springs from where the last frame drew it.
+        let before = drawn(&motion, &scaled, "e");
+        let fewer = places(&names, 3, GridLayout::new(110));
+        motion.zoom_to(&fewer, start);
+        assert!(motion.active());
+        assert_ne!(motion.generation(), generation);
+        assert!(close(drawn(&motion, &fewer, "e"), before));
+        // Later frames scale the slots while the springs carry on.
+        let later = places(&names, 3, GridLayout::new(115));
+        let generation = motion.generation();
+        motion.zoom_to(&later, start + Duration::from_millis(16));
+        assert_eq!(motion.generation(), generation);
+        assert!(motion.active());
+        motion.tick(generation, start + DURATION);
+        assert_eq!(drawn(&motion, &later, "e"), later.slots[4].position());
+    }
+
+    #[test]
+    fn leaving_cards_fade_where_they_were_and_come_back_mid_fade() {
+        let layout = GridLayout::default();
+        let start = Instant::now();
+        let mut motion = GridMotion::default();
+        let all = places(&["a", "b", "c", "d", "e", "f"], 3, layout);
+        motion.snap_to(&all);
+        let b = all.slots[1];
+        let fewer = places(&["a", "c"], 3, layout);
+        motion.spring_to(&fewer, start);
+        let leaving: Vec<_> = motion.leaving().iter().map(|card| &card.name).collect();
+        assert_eq!(leaving, ["b", "d", "e", "f"]);
+        assert_eq!(motion.leaving()[0].bounds, b);
+        assert_eq!(motion.leaving()[0].opacity, 1.0);
+        // The scroll height holds for the cards fading out.
+        assert_eq!(motion.hold(), Some(all.height));
+        let shown = motion.shown(&fewer);
+        assert_eq!(motion.content_height(&fewer, &shown), all.height);
+        assert!(fewer.height < all.height);
+
+        let mid = start + FADE / 2;
+        motion.tick(motion.generation(), mid);
+        let faded = motion.leaving()[0].opacity;
+        assert!((faded - 0.5).abs() < 0.01, "{faded}");
+        assert_eq!(motion.leaving()[0].bounds, b);
+        // "b" comes back halfway out: it fades in from there, springing
+        // from where it was drawn to its new slot.
+        let back = places(&["a", "b", "c"], 3, layout);
+        motion.spring_to(&back, mid);
+        assert_eq!(motion.opacity("b"), faded);
+        assert!(close(drawn(&motion, &back, "b"), b.position()));
+        assert!(motion.leaving().iter().all(|card| card.name != "b"));
+        let generation = motion.generation();
+        motion.tick(generation, mid + FADE / 4);
+        assert!(motion.opacity("b") > faded);
+        // The other leaving cards fade on, and the height lets go with the
+        // last of them.
+        motion.tick(generation, mid + FADE);
+        assert!(motion.leaving().is_empty());
+        assert_eq!(motion.hold(), None);
+        assert_eq!(motion.opacity("b"), 1.0);
+        motion.tick(generation, mid + DURATION);
+        assert!(!motion.active());
+        assert_eq!(frames(&motion), 0);
+    }
+
+    #[test]
+    fn arriving_cards_fade_in_where_they_land() {
+        let layout = GridLayout::default();
+        let start = Instant::now();
+        let mut motion = GridMotion::default();
+        motion.snap_to(&places(&["a", "c"], 3, layout));
+        let more = places(&["a", "b", "c"], 3, layout);
+        motion.spring_to(&more, start);
+        assert_eq!(motion.opacity("b"), 0.0);
+        assert_eq!(drawn(&motion, &more, "b"), more.slots[1].position());
+        let generation = motion.generation();
+        motion.tick(generation, start + FADE / 3);
+        assert!(motion.opacity("b") > 0.0 && motion.opacity("b") < 1.0);
+        assert_eq!(drawn(&motion, &more, "b"), more.slots[1].position());
+        motion.tick(generation, start + DURATION);
+        assert!(!motion.active());
+        assert_eq!(motion.opacity("b"), 1.0);
+    }
+
+    #[test]
+    fn a_snap_settles_everything_at_once() {
+        let layout = GridLayout::default();
+        let start = Instant::now();
+        let mut motion = GridMotion::default();
+        motion.snap_to(&places(&["a", "b", "c"], 3, layout));
+        let fewer = places(&["c", "a"], 3, layout);
+        motion.spring_to(&fewer, start);
+        motion.anchor = Some(("a".into(), 10.0));
+        let stale = motion.generation();
+        motion.snap_to(&fewer);
+        assert!(!motion.active());
+        assert!(motion.leaving().is_empty());
+        assert_eq!(motion.hold(), None);
+        assert_eq!(motion.anchor, None);
+        assert_eq!(motion.offset("c"), Vector::ZERO);
+        motion.tick(stale, start + Duration::from_millis(50));
+        assert!(!motion.active());
+        assert_eq!(frames(&motion), 0);
+    }
+
+    #[test]
+    fn overshoot_past_either_end_stays_within_a_few_pixels() {
+        assert_eq!(bounded(-100.0, -300.0), -100.0);
+        let past = bounded(50.0, -300.0);
+        assert!(past > 0.0 && past <= MAX_OVERSHOOT);
+        let behind = bounded(-400.0, -300.0);
+        assert!((-300.0 - MAX_OVERSHOOT..-300.0).contains(&behind));
+        assert!(bounded(30.0, 0.0) <= MAX_OVERSHOOT);
+        // The same limits the dock's progress spring had.
+        let (from, to) = (0.0, 3000.0);
+        for progress in [-0.2, 0.3, 1.0, 1.1] {
+            let offset = (from - to) * (1.0 - progress);
+            assert!(
+                (to + bounded(offset, from - to) - bounded_axis(from, to, progress)).abs() < 0.01,
+                "{progress}"
+            );
+        }
     }
 }

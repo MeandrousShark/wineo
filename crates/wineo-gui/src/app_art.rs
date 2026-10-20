@@ -63,10 +63,21 @@ impl App {
             .evict(|key| visible.contains(key) || panel.contains(key));
     }
 
-    /// Loads the art the grid draws, in the order it's needed: cards drawn
-    /// in view, then moving cards headed into view or crossing it on the
-    /// way, then leaving cards still in view as they fade.
     pub(crate) fn load_visible_art(&mut self) -> Task<Message> {
+        let keys = self.grid_art();
+        for (key, _) in &keys {
+            self.images.touch(key);
+        }
+        self.visible_art = keys.iter().map(|(key, _)| key.clone()).collect();
+        self.evict_art();
+        self.load_images(keys)
+    }
+
+    /// The art the grid draws, in the order it's needed: cards drawn in
+    /// view, then moving cards headed into view or crossing it on the way,
+    /// then leaving cards still in view as they fade. Each key comes once,
+    /// with whether it's drawn dimmed.
+    pub(crate) fn grid_art(&self) -> Vec<(ArtKey, bool)> {
         let places = self.grid_places();
         let shown = self.grid_motion.shown(&places);
         // Two rows either side start decoding before a card scrolls in.
@@ -108,12 +119,7 @@ impl App {
                 }
             }
         }
-        for (key, _) in &keys {
-            self.images.touch(key);
-        }
-        self.visible_art = seen;
-        self.evict_art();
-        self.load_images(keys)
+        keys
     }
     pub(crate) fn load_images(&mut self, keys: Vec<(ArtKey, bool)>) -> Task<Message> {
         let mut tasks = Vec::new();
