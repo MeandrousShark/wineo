@@ -1216,8 +1216,7 @@ impl App {
         }
         // Whatever covers the grid takes the pointer, so a drag ends here.
         let task = if self.panel_hidden() {
-            self.zooming.finish();
-            task.chain(self.end_zoom_drag())
+            task.chain(self.stop_zoom())
         } else {
             task
         };

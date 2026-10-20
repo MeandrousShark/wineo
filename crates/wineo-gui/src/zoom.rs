@@ -142,6 +142,12 @@ impl Zoom {
         self.revision = self.revision.wrapping_add(1);
     }
 
+    /// A tween or a drag is changing the grid, so a card's place isn't
+    /// final yet.
+    pub(crate) fn moving(&self) -> bool {
+        self.tween.is_some() || self.drag.is_some()
+    }
+
     pub(crate) fn dragging(&self) -> bool {
         self.drag.is_some()
     }
@@ -189,13 +195,12 @@ impl Zoom {
         steps as i32
     }
 
-    /// Settles a tween at its target, as when the Library is left.
-    pub(crate) fn finish(&mut self) {
+    /// Settles a tween at its target.
+    fn finish(&mut self) {
         if self.tween.take().is_some() {
             self.generation = self.generation.wrapping_add(1);
             self.moved();
         }
-        self.gesture = None;
     }
 }
 
@@ -276,19 +281,45 @@ impl App {
         )
     }
 
-    /// Ends the gesture, bringing an off-screen selection into view like
-    /// an arrow key would.
+    /// Where every way a zoom stops moving ends: a tween's last frame, a
+    /// drag's release, closing, or leaving the Library. It brings the
+    /// selection into view, once, if the gesture found it off screen or a
+    /// key moved it while the zoom was moving. The dock's motion keeps a
+    /// scroll it is still waiting for.
     fn end_gesture(&mut self) -> Task<Message> {
         let reveal = self
             .zooming
             .gesture
             .take()
             .is_some_and(|gesture| gesture.reveal);
+        let deferred = if self.grid_motion.active() {
+            None
+        } else {
+            self.grid_scroll_after_settle.take()
+        };
+        let moved = deferred.is_some_and(|name| self.selected.as_deref() == Some(&name));
+        if self.panel_hidden() {
+            return Task::none();
+        }
         let art = self.load_visible_art();
-        if reveal && self.selected_shown() {
+        if (reveal || moved) && self.selected_shown() {
             Task::batch([art, self.scroll_selection()])
         } else {
             art
+        }
+    }
+
+    /// Stops the zoom where it's heading, as when the Library is covered
+    /// or left.
+    pub(crate) fn stop_zoom(&mut self) -> Task<Message> {
+        if !self.zooming.moving() {
+            return Task::none();
+        }
+        self.zooming.finish();
+        if self.zooming.dragging() {
+            self.end_zoom_drag()
+        } else {
+            self.end_gesture()
         }
     }
 
@@ -333,19 +364,7 @@ impl App {
         }
         let hold = self.hold_anchor();
         if done {
-            // A selection that moved during the tween waited for it.
-            let moved = match self.grid_scroll_after_settle.take() {
-                Some(name)
-                    if !self.grid_motion.active() && self.selected.as_deref() == Some(&name) =>
-                {
-                    self.scroll_selection()
-                }
-                other => {
-                    self.grid_scroll_after_settle = other;
-                    Task::none()
-                }
-            };
-            Task::batch([hold, self.end_gesture(), moved])
+            Task::batch([hold, self.end_gesture()])
         } else {
             hold
         }

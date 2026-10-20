@@ -286,7 +286,7 @@ impl App {
             return Task::none();
         };
         let name = name.to_owned();
-        if self.grid_motion.active() || self.zooming.active() {
+        if self.grid_motion.active() || self.zooming.moving() {
             self.grid_scroll_after_settle = Some(name.clone());
         }
         let generation = self.grid_revision();

@@ -1177,3 +1177,60 @@ fn an_arrow_during_a_tween_scrolls_its_selection_once_the_tween_ends() {
     let task = settle(&mut app);
     assert!(located(&app, task, &name));
 }
+
+fn arrow_right(app: &mut App) {
+    let _ = app.update(Message::KeyWithFocus(
+        keyboard::Key::Named(Named::ArrowRight),
+        Modifiers::empty(),
+        iced::event::Status::Ignored,
+        false,
+    ));
+}
+
+#[test]
+fn an_arrow_before_a_drag_cuts_the_tween_short_scrolls_once_at_the_release() {
+    let (_root, mut app) = library(120);
+    let _ = zoom(&mut app, Event::Key(Key::In));
+    let _ = frame(&mut app, 40);
+    app.selected = Some(app.filtered()[99].name.clone());
+    arrow_right(&mut app);
+    let name = app.selected.clone().unwrap();
+    assert_eq!(app.grid_scroll_after_settle.as_deref(), Some(name.as_str()));
+    // The drag removes the tween but keeps the scroll waiting.
+    let _ = zoom(&mut app, Event::Drag(150.0));
+    assert!(!app.zooming.active());
+    assert_eq!(app.grid_scroll_after_settle.as_deref(), Some(name.as_str()));
+    let release = zoom(&mut app, Event::DragEnded);
+    assert!(app.grid_scroll_after_settle.is_none());
+    assert_eq!(
+        crate::sort_control::tests::answers(&app, release)
+            .iter()
+            .filter(
+                |message| matches!(message, Message::GridCardLocated(found, ..) if *found == name)
+            )
+            .count(),
+        1
+    );
+    // Nothing is left for a later panel close to scroll back to.
+    app.scroll_offset = 0.0;
+    let _ = app.update(Message::Select(name.clone()));
+    let _ = app.update(Message::ClosePanel);
+    assert!(app.grid_scroll_after_settle.is_none());
+}
+
+#[test]
+fn leaving_the_library_mid_tween_drops_an_arrows_waiting_scroll() {
+    let (_root, mut app) = library(120);
+    let _ = zoom(&mut app, Event::Key(Key::In));
+    let _ = frame(&mut app, 40);
+    app.selected = Some(app.filtered()[99].name.clone());
+    arrow_right(&mut app);
+    assert!(app.grid_scroll_after_settle.is_some());
+    let task = app.update(Message::Section(crate::sidebar::Section::Trash));
+    assert!(!app.zooming.moving());
+    assert!(app.grid_scroll_after_settle.is_none());
+    let name = app.selected.clone().unwrap();
+    assert!(!located(&app, task, &name));
+    let _ = app.update(Message::Section(crate::sidebar::Section::Library));
+    assert!(app.grid_scroll_after_settle.is_none());
+}
