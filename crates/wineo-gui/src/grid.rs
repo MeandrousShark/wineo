@@ -28,6 +28,9 @@ const CARD_SPACING: f32 = 4.0;
 const CARD_CONTEXT_SIZE: f32 = 12.0;
 const CARD_DOT: f32 = 8.0;
 const CARD_META_SPACING: f32 = 8.0;
+/// The search box's width, which a narrow window shrinks down to the minimum.
+pub(crate) const SEARCH_WIDTH: f32 = 320.0;
+pub(crate) const SEARCH_MIN_WIDTH: f32 = 160.0;
 
 /// The identifier shows as muted context only when a title replaces it.
 fn shows_identifier(card: &Card) -> bool {
@@ -910,7 +913,7 @@ impl App {
         let input = text_input("Search library...", &self.search)
             .id(iced::widget::Id::new(SEARCH_ID))
             .on_input(Message::SearchChanged)
-            .width(320)
+            .width(Fill)
             .padding(iced::Padding::from([6, 10]).right(30))
             .style(move |_, status| text_input::Style {
                 background: palette.surface.into(),
@@ -936,7 +939,7 @@ impl App {
                 .color(palette.muted),
             )
             .padding([6, 10])
-            .width(320)
+            .width(Fill)
             .style(move |_| {
                 container::Style::default()
                     .background(palette.surface)
@@ -960,15 +963,19 @@ impl App {
                 .style(|_, _| button::Style::default())
                 .into()
         };
-        let search = stack![
-            input,
-            container(clear)
-                .width(Fill)
-                .height(Fill)
-                .align_right(Fill)
-                .center_y(Fill)
-                .padding([0, 6])
-        ];
+        let search = crate::fit_width::fit_width(
+            stack![
+                input,
+                container(clear)
+                    .width(Fill)
+                    .height(Fill)
+                    .align_right(Fill)
+                    .center_y(Fill)
+                    .padding([0, 6])
+            ],
+            SEARCH_MIN_WIDTH,
+            SEARCH_WIDTH,
+        );
         container(
             row![
                 text("wineo")
@@ -978,19 +985,19 @@ impl App {
                         ..Font::DEFAULT
                     })
                     .color(palette.foreground),
-                row![
-                    search,
-                    crate::sort_control::toolbar(self),
-                    crate::filter_control::toolbar(self)
-                ]
-                .spacing(8)
-                .align_y(Center),
                 crate::ui::accent_control(
                     "Add",
                     palette.primary,
                     !self.management_busy() && self.operation.is_none(),
                     Message::Add,
                 ),
+                row![
+                    search,
+                    crate::sort_control::toolbar(self),
+                    crate::filter_control::toolbar(self),
+                ]
+                .spacing(8)
+                .align_y(Center),
             ]
             .spacing(16)
             .align_y(Center),

@@ -21,6 +21,7 @@ mod downloads_work;
 mod ends;
 mod filter_control;
 mod filter_tab;
+mod fit_width;
 mod flow;
 mod focus_button;
 mod fonts;
