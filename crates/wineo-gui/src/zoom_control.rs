@@ -33,6 +33,7 @@ pub(crate) fn toolbar(app: &App) -> Element<'_, Message> {
     let slider = with_tooltip(
         Element::new(Slider {
             value: zoom,
+            dragging: app.zooming.dragging(),
             palette,
         }),
         "Zoom",
@@ -113,6 +114,9 @@ fn with_tooltip<'a>(
 
 struct Slider {
     value: f32,
+    /// The app still follows a drag. A dialog that opens mid-drag takes
+    /// the release, and the app ends the drag without it.
+    dragging: bool,
     palette: Palette,
 }
 
@@ -166,6 +170,14 @@ impl Widget<Message, Theme, Renderer> for Slider {
 
     fn state(&self) -> tree::State {
         tree::State::new(State::default())
+    }
+
+    fn diff(&self, tree: &mut tree::Tree) {
+        // A rebuild comes after the press's own message, so a drag the app
+        // has let go of is over here too.
+        if !self.dragging {
+            tree.state.downcast_mut::<State>().dragging = false;
+        }
     }
 
     fn size(&self) -> Size<Length> {

@@ -5,14 +5,16 @@ use super::*;
 use crate::layout_probe::lay_out;
 use crate::theme::Palette;
 
+fn element(value: f32, dragging: bool) -> Element<'static, Message> {
+    Element::new(Slider {
+        value,
+        dragging,
+        palette: Palette::DARK,
+    })
+}
+
 fn slider(value: f32) -> crate::layout_probe::Laid<'static, Message> {
-    lay_out(
-        Element::new(Slider {
-            value,
-            palette: Palette::DARK,
-        }),
-        Size::new(400.0, 100.0),
-    )
+    lay_out(element(value, false), Size::new(400.0, 100.0))
 }
 
 fn mouse(event: mouse::Event) -> Event {
@@ -112,4 +114,38 @@ fn only_ctrl_wheel_over_the_slider_zooms() {
 fn the_toggle_names_what_a_press_does() {
     assert_eq!(toggle_label(false), "Hide titles");
     assert_eq!(toggle_label(true), "Show titles");
+}
+
+#[test]
+fn a_drag_the_app_ended_without_a_release_stays_ended() {
+    let mut laid = slider(100.0);
+    let center = laid.node.bounds().center();
+    let _ = laid.event_at(
+        &mouse(mouse::Event::ButtonPressed(mouse::Button::Left)),
+        Cursor::Available(center),
+    );
+    let moved = mouse(mouse::Event::CursorMoved {
+        position: Point::new(300.0, 16.0),
+    });
+    // While the app follows the drag, a rebuild keeps it going.
+    let mut laid = crate::layout_probe::relay_out(
+        element(100.0, true),
+        laid.into_tree(),
+        Size::new(400.0, 100.0),
+    );
+    assert!(matches!(
+        laid.event_at(&moved, Cursor::Available(Point::new(300.0, 16.0)))
+            .as_slice(),
+        [Message::Zoom(ZoomEvent::Drag(_))]
+    ));
+    // A dialog took the release and the app ended the drag.
+    let mut laid = crate::layout_probe::relay_out(
+        element(100.0, false),
+        laid.into_tree(),
+        Size::new(400.0, 100.0),
+    );
+    assert!(
+        laid.event_at(&moved, Cursor::Available(Point::new(300.0, 16.0)))
+            .is_empty()
+    );
 }
