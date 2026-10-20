@@ -13,9 +13,14 @@ and oversized preview posters are not implementation requirements.
 - Keep the Library at the top of the sidebar and management destinations at
   the bottom. Use a restrained tinted selection, readable text, and small
   status badges.
-- Library posters are 160 x 240 px with a 2:3 aspect ratio and 16 px gaps.
-  Titles and compact state/playtime metadata sit beneath the art. Artwork
-  should support browsing without dominating the window.
+- Library posters are 160 x 240 px at 100% zoom with a 2:3 aspect ratio and
+  16 px gaps. The zoom runs from 60% to 200% and scales the posters, never
+  the gaps or the text (plan
+  [0055](plans/0055-grid-zoom-and-poster-only.md)). Titles and compact
+  state/playtime metadata sit beneath the art by default; below 90% only
+  the title does, and in poster-only the title moves over the art (see
+  Poster corners and overlay). Artwork should support browsing without
+  dominating the window.
 - Use the named default target's desktop title when available, with the
   environment identifier as the fallback. Keep the identifier visible as
   muted context when the title differs. Search matches both, and tags;
@@ -91,10 +96,20 @@ grows to 600 px before it scrolls; the window bounds it below that.
 
 Plan [0054](plans/0054-library-sorting-and-favorites.md) added these.
 
-- The toolbar reads search, **Sort: <key>** with a chevron, a 32 px square
-  direction button, **Filters** (or **Filters (N)** with N chosen stores,
-  platforms, and tags), then the accent **Add**. All are 32 px high. Its
-  bottom padding is 15 px, room for the filter tab.
+- The toolbar reads the wordmark, the accent **Add**, search, **Sort:
+  <key>** with a chevron, a 32 px square direction button, **Filters** (or
+  **Filters (N)** with N chosen stores, platforms, and tags), the zoom
+  slider, and the poster-only toggle. All are 32 px high, and Tab follows
+  that order, with the filter tab's chips right after **Filters**. Its
+  bottom padding is 15 px, room for the filter tab. Search is 320 px wide
+  and shrinks first as the window narrows, down to 160 px; then the right
+  end clips.
+- The zoom slider is 96 px with no label or readout, a small muted tick at
+  100%, and the usual focus ring; its tooltip says "Zoom". It snaps to 100%
+  within 5 points and lets go past 7. The poster-only toggle is a 32 px
+  square icon button, an outline poster over a short title line, with the
+  tag chips' selected look while on (15% primary tint, primary border and
+  icon); its tooltip says "Hide titles" or "Show titles".
 - Icons that Noto Sans lacks (arrows, chevron, check, star, crossed-out
   eye, search) are inline SVGs tinted with palette tokens, never glyphs.
 - A tooltip is 13 px text padded 4 by 8 on the surface color, with a 1 px
@@ -145,6 +160,36 @@ Plan [0054](plans/0054-library-sorting-and-favorites.md) added these.
   (through `ends`): filled in the primary color for a favorite, an outline
   in the foreground color otherwise, with a tooltip naming the action.
 
+## Poster corners and overlay
+
+Plan [0055](plans/0055-grid-zoom-and-poster-only.md) added these. Marks,
+chips, and badges keep their sizes at every zoom.
+
+- Poster-only shows each card as its poster alone. Hovering or selecting a
+  card shows its title over the poster's bottom: a black gradient fading in
+  over 24 px to 75% behind the text and 85% at the edge, then 14 px
+  semibold white text, two lines at most with an ellipsis, 8 px from the
+  left and bottom. It's dark in both themes, sits under the selection
+  border and the corner layers, isn't a pointer target, and leaves 32 px
+  on the right when the Steam mark shows. A hidden or not-installed card's
+  overlay title is white at 60%, which measures at least 4.5:1 over bright
+  and dark art in both themes. Cards with no art keep the title on their
+  tile and get no overlay; art that's loading or failed follows the art
+  cards.
+- In poster-only, and below 90% with titles shown, a card that isn't idle
+  gets a status chip at the art's top-left, 8 px in: a 24 px circle on the
+  marks' backing with a 10 px dot in the state row's dot color. Idle means
+  inactive, exited, stopped, or not installed; Steam's install and update
+  states aren't idle.
+- The GOG pill sits 4 px right of the chip, or in the corner without one.
+  The corner keeps 36 px clear on the right while a mark shows. When the
+  pill's longest word can't fit on one line in that room, it becomes a
+  24 px badge instead: a circle in the pill's color with a 14 px down arrow
+  in its ink color. The panel keeps the words. At 60 to 62% with a chip,
+  a badge, and a mark, the badge sits flush against the mark.
+- Every poster layer fades with its card, including the marks, the pill
+  or badge, and the install bar's track.
+
 ## Panel motion
 
 Opening and closing use a restrained slide from the right with a fade over
@@ -167,6 +212,30 @@ Keep scroll position, bottom rows, keyboard columns, and visible art loading
 correct through a transition.
 Clicking unused Library space closes the panel. Card clicks, scrollbars,
 menus, and the panel itself keep their own input handling.
+
+## Grid motion
+
+One owner moves the Library's cards, matching each card by name, so its
+hover and state follow it. Every layout change springs each card from where
+it's drawn now, with the panel's spring, so a re-sort during the dock or a
+column change halfway through a zoom never jumps.
+
+- A re-sort, a filter, search, or Show hidden change, and a favorite that
+  moves a card spring the cards that stay. New cards fade in where they
+  land and leaving ones fade out where they were, over about 150 ms,
+  taking no input. The grid keeps its height until the fades end, and the
+  empty message waits for the last one.
+- A zoom step tweens over about 160 ms; a slider drag follows directly.
+  Within one column count a zoom only scales; a column change, the
+  poster-only toggle, and crossing 90% spring.
+- A window resize and the background rescan snap. A rescan that lands
+  mid-transition settles it first.
+- A zoom or the toggle keeps the place: the selected card if any of it is
+  visible, otherwise the first visible card, holds its top where it was.
+  A manual scroll, arrow key, or click ends that.
+- After a new order, the selection scrolls once, straight to where it
+  lands. A scroll waiting on motion runs once when the last motion ends,
+  or is dropped.
 
 ## Reviews and management pages
 

@@ -400,6 +400,15 @@ The maintainer approved the plan on 2026-10-19.
   starts while the panel's animation still moves cards anchors to the
   dock's target layout, not the drawn one, so the place can drift. Step 4
   fixes it: the anchor reads GridMotion's displayed positions and height.
+- **A new order scrolls once** (2026-10-19, step 4). After a sort, filter,
+  or favorite move, the selection scrolls straight to the slot it's
+  springing to instead of to where it's drawn and again at the end.
+- **Badge against the marks** (2026-10-19, step 5). At 60 to 62% a chip, a
+  badge, and a mark need more than the art's width with their gaps, so the
+  badge gives up its 4 px gap and sits flush against the mark, never over
+  it.
+- **Steam activity isn't idle** (2026-10-19, step 5 review). Steam's
+  install, queue, update, and uninstall states get the status chip.
 
 ## Results
 
