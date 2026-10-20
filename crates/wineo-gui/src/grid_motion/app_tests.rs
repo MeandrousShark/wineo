@@ -419,17 +419,104 @@ fn ticks_follow_a_dock_until_it_settles() {
     assert_eq!(app.grid_motion.offset("game-07"), Vector::ZERO);
 }
 
+/// Each shown card's top as the grid draws it now, less the scroll.
+fn tops_in_view(app: &App) -> Vec<f32> {
+    let node = grid_node(app);
+    (0..app.filtered().len())
+        .map(|index| bounds_at(&node, &[index]).y - app.scroll_offset)
+        .collect()
+}
+
 #[test]
-fn the_poster_only_toggle_moves_cards_only_when_their_rows_change() {
-    let (_root, mut app) = fixture(&named("game", 12));
-    let generation = app.grid_motion.generation();
+fn the_poster_only_toggle_springs_the_cards_to_their_new_rows_holding_the_place() {
+    let (_root, mut app) = fixture(&named("game", 60));
+    let places = app.grid_places();
+    let full = places.slots[0].height;
+    // The selection, a little below the viewport's top.
+    app.scroll_offset = places.slots[22].y - 100.0;
+    app.selected = Some("game-22".into());
+    for poster_only in [true, false] {
+        let generation = app.grid_motion.generation();
+        let start = Instant::now();
+        let _ = app.update(Message::Zoom(crate::zoom::Event::TogglePosterOnly));
+        assert_eq!(app.poster_only, poster_only);
+        assert_ne!(app.grid_motion.generation(), generation);
+        assert!(app.grid_motion.active());
+        assert_eq!(frames(&app), 1);
+        assert_eq!(app.grid_motion.anchor, Some(("game-22".to_owned(), 100.0)));
+        let height = app.grid_places().slots[0].height;
+        assert_eq!(height, if poster_only { 240.0 } else { full });
+        // Every frame keeps the selection's top where it was.
+        for ms in [0, 40, 120, 250, 1000] {
+            let _ = app.update(Message::GridTick(
+                app.grid_motion.generation(),
+                start + Duration::from_millis(ms),
+            ));
+            let top = tops_in_view(&app)[22];
+            assert!((top - 100.0).abs() < 0.01, "{ms} ms: {top}");
+        }
+        assert!(!app.grid_motion.active());
+        assert!(app.grid_motion.anchor.is_none());
+        assert_eq!(frames(&app), 0);
+    }
+}
+
+#[test]
+fn leaving_cards_keep_the_text_they_left_with_through_the_toggle() {
+    let mut names = named("drop", 9);
+    names.push("keep-00".into());
+    let (_root, mut app) = fixture(&names);
+    let _ = search(&mut app, "keep");
+    let left = app.grid_motion.leaving()[0].clone();
+    assert_eq!(left.layout.text(), crate::grid_motion::CardText::Full);
     let _ = app.update(Message::Zoom(crate::zoom::Event::TogglePosterOnly));
-    assert!(app.poster_only);
-    // It gives the cards their slots again, which don't change yet.
-    assert_ne!(app.grid_motion.generation(), generation);
-    assert!(!app.grid_motion.active());
-    assert!(app.grid_motion.anchor.is_none());
-    assert_eq!(frames(&app), 0);
+    let left_now = app
+        .grid_motion
+        .leaving()
+        .iter()
+        .find(|card| card.name == left.name)
+        .expect("still fading")
+        .clone();
+    assert_eq!(left_now.layout, left.layout);
+    let node = grid_node(&app);
+    // The kept card has only its poster; the leaving one keeps its title
+    // and state rows under its poster.
+    assert_eq!(bounds_at(&node, &[0]).height, 240.0);
+    let leaving = app.grid_motion.leaving().len();
+    let at = 1 + leaving - 1;
+    assert_eq!(bounds_at(&node, &[at]).height, left.bounds.height);
+    assert!(left.bounds.height > 240.0);
+    assert_eq!(
+        iced::advanced::Layout::new(&node)
+            .children()
+            .nth(at)
+            .unwrap()
+            .children()
+            .count(),
+        3
+    );
+}
+
+#[test]
+fn up_and_down_move_by_columns_in_poster_only() {
+    let (_root, mut app) = fixture(&named("game", 30));
+    let _ = app.update(Message::Zoom(crate::zoom::Event::TogglePosterOnly));
+    let _ = settle_grid(&mut app);
+    let columns = app.grid_places().columns;
+    assert!(columns > 1);
+    app.selected = Some("game-02".into());
+    let key = |app: &mut App, named| {
+        let _ = app.update(Message::KeyWithFocus(
+            iced::keyboard::Key::Named(named),
+            iced::keyboard::Modifiers::empty(),
+            iced::event::Status::Ignored,
+            false,
+        ));
+    };
+    key(&mut app, iced::keyboard::key::Named::ArrowDown);
+    assert_eq!(app.selected, Some(format!("game-{:02}", 2 + columns)));
+    key(&mut app, iced::keyboard::key::Named::ArrowUp);
+    assert_eq!(app.selected.as_deref(), Some("game-02"));
 }
 
 #[test]

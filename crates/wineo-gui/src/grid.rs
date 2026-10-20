@@ -7,7 +7,7 @@ use iced::{
     Center, Color, ContentFit, Element, Fill, FillPortion, Font, Size, border, font, mouse,
 };
 
-use crate::grid_motion::GridLayout;
+use crate::grid_motion::{CardText, GridLayout};
 use crate::library::Card;
 use crate::library_actions::{Event, Flag};
 use crate::theme::Palette;
@@ -28,6 +28,18 @@ const CARD_SPACING: f32 = 4.0;
 const CARD_CONTEXT_SIZE: f32 = 12.0;
 const CARD_DOT: f32 = 8.0;
 const CARD_META_SPACING: f32 = 8.0;
+const GOG_PILL_SIZE: f32 = 11.0;
+const GOG_PILL_PADDING: f32 = 2.0;
+/// The poster-only title's margin from the art's edges.
+const OVERLAY_PADDING: f32 = 8.0;
+/// How far the overlay's gradient fades in above the title.
+const OVERLAY_FADE: f32 = 24.0;
+/// The gradient's darkness where the title starts and at the bottom edge.
+const OVERLAY_SHADE: f32 = 0.75;
+const OVERLAY_SHADE_BOTTOM: f32 = 0.85;
+/// Room the title leaves on the right for the Steam mark: the mark and its
+/// margin, and a small gap.
+const STEAM_MARK_ROOM: f32 = 8.0 + 20.0 + 4.0;
 pub(crate) const ADD_ID: &str = "library-add";
 /// The search box's width, which a narrow window shrinks down to the minimum.
 pub(crate) const SEARCH_WIDTH: f32 = 320.0;
@@ -44,9 +56,16 @@ pub(crate) fn card_height(card: &Card, layout: GridLayout) -> f32 {
     let line = iced::widget::text::LineHeight::default()
         .to_absolute(CARD_CONTEXT_SIZE.into())
         .0;
+    let text = layout.text();
+    if text == CardText::PosterOnly {
+        return layout.poster_height();
+    }
     // Summed in the column's order, so the float rounding matches too.
     let mut height =
         layout.poster_height() + CARD_SPACING + crate::tile_title::two_line_height(CARD_TITLE_SIZE);
+    if text == CardText::Title {
+        return height;
+    }
     if shows_identifier(card) {
         height += CARD_SPACING;
         height += line;
@@ -177,6 +196,13 @@ impl App {
         // A hidden card fades without the grayscale, which stays the sign of
         // a game that isn't installed.
         let faded = dimmed || card.hidden;
+        let text_mode = layout.text();
+        // In poster-only, art that's still loading or failed to decode
+        // leaves its tile blank and shows the title over it like the art
+        // will, so the title doesn't vanish when the art arrives.
+        let tile_title = text_mode != CardText::PosterOnly || card.art.is_none();
+        let overlay =
+            text_mode == CardText::PosterOnly && card.art.is_some() && (hovered || selected);
         let poster: Element<'_, Message> = match art {
             Some(handle) => image(handle.clone())
                 .width(Fill)
@@ -194,12 +220,16 @@ impl App {
                         },
                 )
                 .into(),
-            None => container(
-                text(&card.display_title)
-                    .size(layout.tile_title_size())
-                    .color(palette.muted)
-                    .center(),
-            )
+            None => container(if tile_title {
+                Element::from(
+                    text(&card.display_title)
+                        .size(layout.tile_title_size())
+                        .color(palette.muted)
+                        .center(),
+                )
+            } else {
+                Space::new().into()
+            })
             .width(Fill)
             .height(Fill)
             .padding(12)
@@ -215,8 +245,27 @@ impl App {
             })
             .into(),
         };
+        let title_font = Font {
+            weight: font::Weight::Semibold,
+            ..Font::DEFAULT
+        };
+        let steam_mark = card.kind == Some(crate::library::CardKind::Proxied);
         let mut layers = stack![poster];
-        if card.kind == Some(crate::library::CardKind::Proxied) {
+        if overlay {
+            layers = layers.push(title_overlay(
+                &card.display_title,
+                layout,
+                steam_mark,
+                // The muted title a faded card has under its poster.
+                if faded {
+                    palette.muted
+                } else {
+                    Color::WHITE.scale_alpha(alpha)
+                },
+                alpha,
+            ));
+        }
+        if steam_mark {
             let mark = svg(svg::Handle::from_memory(include_bytes!(
                 "../assets/steam.svg"
             )))
@@ -239,24 +288,48 @@ impl App {
                     .padding(8),
             );
         }
-        if let Some(badge) =
-            crate::gog_library::badge(card.gog.as_ref(), self.gog_updates.status(&card.name))
-        {
-            let color = match badge {
-                crate::gog_library::Badge::UpdateAvailable => palette.primary,
-                crate::gog_library::Badge::FinishUpdate
-                | crate::gog_library::Badge::FinishInstall => palette.warning,
-            };
-            let ink = ui::accent_ink(color).scale_alpha(alpha);
-            let pill = container(text(badge.label()).size(11).color(ink))
-                .padding([2, 8])
-                .style(move |_| {
-                    container::Style::default()
-                        .background(color)
-                        .border(border::rounded(8))
+        let pill =
+            crate::gog_library::badge(card.gog.as_ref(), self.gog_updates.status(&card.name)).map(
+                |badge| {
+                    let color = match badge {
+                        crate::gog_library::Badge::UpdateAvailable => palette.primary,
+                        crate::gog_library::Badge::FinishUpdate
+                        | crate::gog_library::Badge::FinishInstall => palette.warning,
+                    };
+                    let ink = ui::accent_ink(color).scale_alpha(alpha);
+                    container(text(badge.label()).size(GOG_PILL_SIZE).color(ink))
+                        .padding([GOG_PILL_PADDING, 8.0])
+                        .style(move |_| {
+                            container::Style::default()
+                                .background(color)
+                                .border(border::rounded(8))
+                        })
+                },
+            );
+        let chip = (text_mode.chip() && !card.idle())
+            .then(|| crate::library_actions::status_chip(card.dot(palette), alpha));
+        let corner: Option<Element<'_, Message>> = match (chip, pill) {
+            (Some(chip), Some(pill)) => {
+                // The chip keeps the corner, mirroring the marks, and a
+                // one-line pill centers on it. On a small poster the pill
+                // wraps, growing down instead of pushing the chip.
+                let line = iced::widget::text::LineHeight::default()
+                    .to_absolute(GOG_PILL_SIZE.into())
+                    .0
+                    + 2.0 * GOG_PILL_PADDING;
+                let pill = container(pill).padding(iced::Padding {
+                    top: ((crate::library_actions::MARK_SIZE - line) / 2.0).max(0.0),
+                    ..iced::Padding::ZERO
                 });
+                Some(row![chip, pill].spacing(4).into())
+            }
+            (Some(chip), None) => Some(chip),
+            (None, Some(pill)) => Some(pill.into()),
+            (None, None) => None,
+        };
+        if let Some(corner) = corner {
             layers = layers.push(
-                container(pill)
+                container(corner)
                     .width(Fill)
                     .height(Fill)
                     .align_left(Fill)
@@ -286,10 +359,9 @@ impl App {
                     Color::TRANSPARENT
                 }))
             });
-        let title_font = Font {
-            weight: font::Weight::Semibold,
-            ..Font::DEFAULT
-        };
+        if text_mode == CardText::PosterOnly {
+            return card_area(column![framed].width(layout.card_width()), card);
+        }
         let label = crate::tile_title::lines(
             &card.display_title,
             layout.card_width(),
@@ -332,6 +404,9 @@ impl App {
         ]
         .spacing(CARD_SPACING)
         .width(layout.card_width());
+        if text_mode == CardText::Title {
+            return card_area(content, card);
+        }
         if shows_identifier(card) {
             content = content.push(
                 text(truncate_name(&card.name, layout.card_width()))
@@ -341,14 +416,7 @@ impl App {
             );
         }
         content = content.push(meta);
-        mouse_area(content)
-            .on_press(Message::Select(card.name.clone()))
-            .on_double_click(Message::DoubleClick(card.name.clone()))
-            .on_right_press(Message::Context(card.name.clone()))
-            .on_enter(Message::Hover(Some(card.name.clone())))
-            .on_exit(Message::Hover(None))
-            .interaction(mouse::Interaction::Pointer)
-            .into()
+        card_area(content, card)
     }
     /// How wide the Add, import, and clone dialog is in the current window.
     pub(crate) fn flow_width(&self) -> f32 {
@@ -1092,6 +1160,78 @@ impl App {
 
 /// A thin bar along the poster's bottom edge while Steam installs. It only
 /// moves when the library reloads, so nothing animates while idle.
+/// A card's content as one pointer target.
+fn card_area<'a>(content: impl Into<Element<'a, Message>>, card: &Card) -> Element<'a, Message> {
+    mouse_area(content)
+        .on_press(Message::Select(card.name.clone()))
+        .on_double_click(Message::DoubleClick(card.name.clone()))
+        .on_right_press(Message::Context(card.name.clone()))
+        .on_enter(Message::Hover(Some(card.name.clone())))
+        .on_exit(Message::Hover(None))
+        .interaction(mouse::Interaction::Pointer)
+        .into()
+}
+
+/// The poster-only title over the bottom of the art, on a gradient that's
+/// dark in both themes so white text reads on any art. It ends above the
+/// install bar's edge and clear of the Steam mark.
+fn title_overlay(
+    title: &str,
+    layout: GridLayout,
+    steam_mark: bool,
+    ink: Color,
+    alpha: f32,
+) -> Element<'static, Message> {
+    let font = Font {
+        weight: font::Weight::Semibold,
+        ..Font::DEFAULT
+    };
+    let right = if steam_mark {
+        STEAM_MARK_ROOM
+    } else {
+        OVERLAY_PADDING
+    };
+    let width = (layout.art_frame().width - OVERLAY_PADDING - right).max(0.0);
+    let lines = crate::tile_title::lines(title, width, CARD_TITLE_SIZE, font);
+    let line = iced::widget::text::LineHeight::default()
+        .to_absolute(CARD_TITLE_SIZE.into())
+        .0;
+    let height = OVERLAY_FADE + lines.len() as f32 * line + OVERLAY_PADDING;
+    let shade = iced::gradient::Linear::new(iced::Radians::PI)
+        .add_stop(0.0, Color::BLACK.scale_alpha(0.0))
+        .add_stop(
+            OVERLAY_FADE / height,
+            Color::BLACK.scale_alpha(OVERLAY_SHADE),
+        )
+        .add_stop(1.0, Color::BLACK.scale_alpha(OVERLAY_SHADE_BOTTOM));
+    let shade = iced::Background::Gradient(iced::Gradient::Linear(shade).scale_alpha(alpha));
+    let label = container(
+        text(lines.join("\n"))
+            .size(CARD_TITLE_SIZE)
+            .font(font)
+            .color(ink)
+            .wrapping(iced::widget::text::Wrapping::None),
+    )
+    .width(Fill)
+    .height(height)
+    .padding(iced::Padding {
+        top: OVERLAY_FADE,
+        right,
+        bottom: OVERLAY_PADDING,
+        left: OVERLAY_PADDING,
+    })
+    .style(move |_| {
+        container::Style::default()
+            .background(shade)
+            .border(border::rounded(border::bottom(4)))
+    });
+    container(label)
+        .width(Fill)
+        .height(Fill)
+        .align_bottom(Fill)
+        .into()
+}
+
 fn install_bar(percent: u8, palette: Palette, alpha: f32) -> Element<'static, Message> {
     let done = u16::from(percent.min(100));
     let mut bar = row![].width(Fill).height(INSTALL_BAR_HEIGHT);
@@ -1256,6 +1396,9 @@ fn truncate_name(name: &str, max_width: f32) -> String {
         .to_owned()
         + "..."
 }
+
+#[cfg(test)]
+mod poster_tests;
 
 #[cfg(test)]
 mod tests {

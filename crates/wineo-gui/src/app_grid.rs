@@ -59,7 +59,7 @@ impl App {
     /// Where the shown cards belong at the shown zoom and dock. It's
     /// measured again only when the order or its cards (a rebuilt or kept
     /// order, or new cards), the zoom frame, the column count, or the
-    /// poster-only view changed, so frames that only read it allocate
+    /// cards' text changed, so frames that only read it allocate
     /// nothing.
     pub(crate) fn grid_places(&self) -> Rc<grid_motion::Places> {
         let layout = self.grid_layout();
@@ -70,7 +70,6 @@ impl App {
                 order,
                 layout,
                 columns: self.columns(),
-                poster_only: self.poster_only,
             });
         if let Some(key) = &key
             && let Some((cached, places)) = &*self.places.borrow()

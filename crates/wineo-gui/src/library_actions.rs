@@ -24,9 +24,10 @@ const EYE_OFF: &[u8] = br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0
 
 /// The poster marks' size and their backdrop, which keeps them readable on
 /// light and dark art alike.
-const MARK_SIZE: f32 = 24.0;
+pub(crate) const MARK_SIZE: f32 = 24.0;
 const MARK_ICON: f32 = 14.0;
 const MARK_BACKDROP: f32 = 0.55;
+const CHIP_DOT: f32 = 10.0;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) enum Flag {
@@ -432,6 +433,29 @@ pub(crate) fn poster_marks(card: &Card, alpha: f32) -> Option<Element<'static, M
             .padding(8)
             .into(),
     )
+}
+
+/// The state dot on a mark's backing, for the poster's top-left corner.
+/// `color` carries the card's fade already.
+pub(crate) fn status_chip(color: Color, alpha: f32) -> Element<'static, Message> {
+    let dot = container(iced::widget::Space::new())
+        .width(CHIP_DOT)
+        .height(CHIP_DOT)
+        .style(move |_| {
+            container::Style::default()
+                .background(color)
+                .border(border::rounded(CHIP_DOT / 2.0))
+        });
+    container(dot)
+        .width(MARK_SIZE)
+        .height(MARK_SIZE)
+        .center(MARK_SIZE)
+        .style(move |_| {
+            container::Style::default()
+                .background(Color::BLACK.scale_alpha(MARK_BACKDROP * alpha))
+                .border(border::rounded(MARK_SIZE / 2.0))
+        })
+        .into()
 }
 
 fn mark(bytes: &'static [u8], alpha: f32) -> Element<'static, Message> {

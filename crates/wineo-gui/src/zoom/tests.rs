@@ -1488,3 +1488,82 @@ fn a_resort_during_a_zoom_scrolls_an_off_screen_selection_once_at_the_end() {
         1
     );
 }
+
+#[test]
+fn the_compact_text_follows_the_zoom_the_grid_is_heading_to() {
+    use crate::grid_motion::CardText;
+    let (_root, mut app) = library(30);
+    let _ = zoom(&mut app, Event::Key(Key::Out));
+    let _ = settle(&mut app);
+    assert_eq!(app.zoom, 90);
+    assert_eq!(app.grid_layout().text(), CardText::Full);
+    // A step to 80% switches as it sets out, while the frame still shows
+    // 90%, and keeps it for the whole tween.
+    let _ = zoom(&mut app, Event::Key(Key::Out));
+    assert_eq!(app.zooming.shown(), Some(90.0));
+    assert_eq!(app.grid_layout().text(), CardText::Title);
+    let _ = frame(&mut app, 40);
+    assert!(app.zooming.shown().unwrap() > 80.0);
+    assert_eq!(app.grid_layout().text(), CardText::Title);
+    // Back up to 90% switches back at once, from a frame below 90%.
+    let _ = zoom(&mut app, Event::Key(Key::In));
+    assert!(app.zooming.shown().unwrap() < 90.0);
+    assert_eq!(app.grid_layout().text(), CardText::Full);
+    let _ = settle(&mut app);
+    // A drag follows the dragged value.
+    let _ = zoom(&mut app, Event::Drag(89.4));
+    assert_eq!(app.zoom, 89);
+    assert_eq!(app.grid_layout().text(), CardText::Title);
+    let _ = zoom(&mut app, Event::Drag(90.0));
+    assert_eq!(app.grid_layout().text(), CardText::Full);
+    let _ = zoom(&mut app, Event::DragEnded);
+    // Poster-only wins at every zoom.
+    let _ = zoom(&mut app, Event::TogglePosterOnly);
+    assert_eq!(app.grid_layout().text(), CardText::PosterOnly);
+}
+
+#[test]
+fn a_zoom_crossing_90_percent_springs_the_rows_holding_the_place() {
+    use crate::grid_motion::CardText;
+    let (_root, mut app) = library(120);
+    let _ = zoom(&mut app, Event::Key(Key::Out));
+    let _ = settle(&mut app);
+    let _ = crate::tests::settle_grid(&mut app);
+    assert_eq!(app.zoom, 90);
+    assert!(!app.grid_motion.active());
+    let (tops, _) = drawn_tops(&app);
+    app.scroll_offset = tops[25] - 150.0;
+    app.selected = Some(app.filtered()[25].name.clone());
+    let held = |app: &App| {
+        let (tops, _) = drawn_tops(app);
+        tops[25] - app.scroll_offset
+    };
+    // Out of the full text and back into it: each crossing springs the
+    // cards as the step sets out, and the place holds through the tween
+    // and the springs that outlast it.
+    for (key, text) in [(Key::Out, CardText::Title), (Key::In, CardText::Full)] {
+        let _ = zoom(&mut app, Event::Key(key));
+        assert_eq!(app.grid_layout().text(), text);
+        assert!(app.grid_motion.active(), "{key:?}");
+        assert!((held(&app) - 150.0).abs() < 0.01);
+        for ms in [40, 80, 120, 160] {
+            let _ = frame(&mut app, ms);
+            let top = held(&app);
+            assert!((top - 150.0).abs() < 0.01, "{key:?} at {ms} ms: {top}");
+        }
+        assert!(app.grid_motion.active());
+        let generation = app.grid_motion.generation();
+        let _ = app.update(Message::GridTick(
+            generation,
+            Instant::now() + Duration::from_millis(100),
+        ));
+        assert!((held(&app) - 150.0).abs() < 0.01);
+        let _ = crate::tests::settle_grid(&mut app);
+        assert!(!app.grid_motion.active());
+        assert!((held(&app) - 150.0).abs() < 0.01);
+    }
+    // A step that stays on one side of 90% only scales, as before.
+    let _ = zoom(&mut app, Event::Key(Key::In));
+    assert_eq!(app.zoom, 100);
+    assert!(!app.grid_motion.active());
+}

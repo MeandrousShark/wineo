@@ -1370,6 +1370,8 @@ impl App {
             Some(zoom) => grid_motion::GridLayout::at(zoom),
             None => grid_motion::GridLayout::new(self.zoom),
         }
+        // From the zoom the grid is heading to, not the frame shown.
+        .with_text(grid_motion::CardText::of(self.poster_only, self.zoom))
     }
     /// Changes whenever the cards' drawn places may have: the dock's motion
     /// or the zoom. Both counters only grow, so their sum does too, and a

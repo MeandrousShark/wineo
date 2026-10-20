@@ -346,6 +346,7 @@ impl App {
         }
         self.begin_gesture();
         let from = self.zooming.shown().unwrap_or_else(|| f32::from(self.zoom));
+        let text = self.grid_layout().text();
         self.zoom = target;
         self.zooming.tween = Some(Tween {
             from,
@@ -354,7 +355,16 @@ impl App {
             shown: from,
         });
         self.zooming.generation = self.zooming.generation.wrapping_add(1);
-        self.save_field(Field::Zoom(target))
+        let save = self.save_field(Field::Zoom(target));
+        // Crossing 90% changes the cards' text, and so their rows, as the
+        // tween sets out: they spring there now, like the poster-only
+        // toggle, rather than snap before the first frame.
+        if self.grid_layout().text() != text {
+            self.zooming.moved();
+            self.zoom_grid(now);
+            return Task::batch([save, self.hold_anchor()]);
+        }
+        save
     }
 
     fn zoom_frame(&mut self, generation: u64, now: Instant) -> Task<Message> {
@@ -402,16 +412,18 @@ impl App {
         Task::batch([self.hold_anchor(), self.load_visible_art()])
     }
 
-    /// Moves the cards to the rows the toggle gives them, keeping the
-    /// place the way a zoom does, and saves it.
-    fn toggled_poster_only(&mut self) -> Task<Message> {
-        let save = self.save_field(Field::PosterOnly(self.poster_only));
-        // A zoom in progress keeps its own anchor.
+    /// Flips poster-only and moves the cards to the rows it gives them,
+    /// keeping the place the way a zoom does, and saves it.
+    fn toggle_poster_only(&mut self) -> Task<Message> {
+        // Found in the rows shown before the flip. A zoom in progress keeps
+        // its own anchor.
         let anchor = if self.zooming.gesture.is_some() {
             None
         } else {
             self.find_anchor().0
         };
+        self.poster_only = !self.poster_only;
+        let save = self.save_field(Field::PosterOnly(self.poster_only));
         let waited = self.move_grid();
         if !self.grid_motion.active() {
             return Task::batch([save, waited]);
@@ -456,10 +468,7 @@ pub(crate) fn update(app: &mut App, event: Event) -> Task<Message> {
         }
         Event::Drag(raw) => app.zoom_drag(raw),
         Event::DragEnded => app.end_zoom_drag(),
-        Event::TogglePosterOnly => {
-            app.poster_only = !app.poster_only;
-            app.toggled_poster_only()
-        }
+        Event::TogglePosterOnly => app.toggle_poster_only(),
         Event::Interrupted => {
             app.interrupt_zoom();
             Task::none()

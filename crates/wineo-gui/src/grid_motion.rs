@@ -38,6 +38,42 @@ const FRAME_INSET: f32 = 4.0;
 const TILE_TITLE_SIZE: f32 = 14.0;
 const TILE_TITLE_MIN: f32 = 12.0;
 const TILE_TITLE_MAX: f32 = 18.0;
+/// Below this zoom, cards with titles shown keep only the title under the
+/// poster.
+pub(crate) const COMPACT_BELOW: u16 = 90;
+
+/// What a card shows besides its poster, which sets its height.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) enum CardText {
+    /// The title, the identifier when it differs, and the state row.
+    #[default]
+    Full,
+    /// The title alone, with the state on the poster.
+    Title,
+    /// Nothing under the poster: the title shows over it on hover or
+    /// selection.
+    PosterOnly,
+}
+
+impl CardText {
+    /// The text for a grid heading to `zoom`. A tween's frames don't
+    /// change it, so cards switch once, as the zoom sets out.
+    pub(crate) fn of(poster_only: bool, zoom: u16) -> Self {
+        if poster_only {
+            Self::PosterOnly
+        } else if zoom < COMPACT_BELOW {
+            Self::Title
+        } else {
+            Self::Full
+        }
+    }
+
+    /// The state shows as a chip on the poster rather than in a row
+    /// under it.
+    pub(crate) fn chip(self) -> bool {
+        self != Self::Full
+    }
+}
 
 /// The library grid's card geometry at one zoom. The gap between cards and
 /// the grid's padding (`GAP`, `PADDING`) stay fixed at every zoom.
@@ -46,6 +82,7 @@ pub(crate) struct GridLayout {
     zoom: f32,
     card_width: f32,
     poster_height: f32,
+    text: CardText,
 }
 
 impl Default for GridLayout {
@@ -73,7 +110,16 @@ impl GridLayout {
             zoom,
             card_width,
             poster_height,
+            text: CardText::Full,
         }
+    }
+
+    pub(crate) fn with_text(self, text: CardText) -> Self {
+        Self { text, ..self }
+    }
+
+    pub(crate) fn text(self) -> CardText {
+        self.text
     }
 
     pub(crate) fn card_width(self) -> f32 {
@@ -259,9 +305,10 @@ pub(crate) struct Places {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) struct PlacesKey {
     pub(crate) order: u64,
+    /// With the card text, so the poster-only view and the compact text
+    /// below 90% are measured again too.
     pub(crate) layout: GridLayout,
     pub(crate) columns: usize,
-    pub(crate) poster_only: bool,
 }
 
 impl Places {
@@ -342,7 +389,8 @@ fn bounded(offset: f32, from: f32) -> f32 {
 pub(crate) struct Leaving {
     pub(crate) name: String,
     pub(crate) bounds: Rectangle,
-    /// The geometry it left with, which a zoom during the fade keeps.
+    /// The geometry and text it left with, which a zoom or the poster-only
+    /// toggle during the fade keeps.
     pub(crate) layout: GridLayout,
     pub(crate) opacity: f32,
 }
@@ -472,10 +520,11 @@ impl GridMotion {
         self.layout = places.layout;
     }
 
-    /// Moves to `places` the way a zoom does: springs when the column count
-    /// or the cards changed, and only scales otherwise.
+    /// Moves to `places` the way a zoom does: springs when the column count,
+    /// the cards, or their text changed, and only scales otherwise.
     pub(crate) fn zoom_to(&mut self, places: &Places, now: Instant) {
         let same = places.columns == self.columns
+            && places.layout.text == self.layout.text
             && places.names.len() == self.bodies.len()
             && places
                 .names

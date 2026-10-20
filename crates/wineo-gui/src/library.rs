@@ -211,17 +211,24 @@ impl Card {
         }
     }
     pub(super) fn dot(&self, palette: Palette) -> Color {
-        if self.error.is_some()
-            || self.busy
-            || self.state == State::Failed
-            || self.install_warning().is_some()
-        {
+        if self.warns() {
             palette.warning
         } else if self.active() {
             palette.success
         } else {
             palette.muted
         }
+    }
+    fn warns(&self) -> bool {
+        self.error.is_some()
+            || self.busy
+            || self.state == State::Failed
+            || self.install_warning().is_some()
+    }
+    /// Nothing to tell at a glance: the state dot would be muted. The
+    /// poster's status chip shows for anything else.
+    pub(super) fn idle(&self) -> bool {
+        !self.warns() && !self.active()
     }
     pub(super) fn playtime(&self) -> &str {
         &self.playtime
