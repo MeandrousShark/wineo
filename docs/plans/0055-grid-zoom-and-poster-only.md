@@ -425,5 +425,25 @@ in Xvfb, not what a GPU feels.
 
 The runs park the mouse at fixed points: card 1 at (236, 190), the
 direction button at (697, 24), and an empty header spot at (900, 24) for
-zoom. Step 3 moves **Add** to the left and adds the slider, which shifts
-the toolbar, so step 3 updates those coordinates before step 6 compares.
+zoom. Step 3 moved **Add** to the left and added the slider, so step 3
+moved them to the direction button at (770, 24) and an empty header spot
+at (1100, 24) (da510c13).
+
+### Step 4 check (2026-10-19)
+
+A first look before step 6, on 0f4bfc28's `release` build, 3 launches.
+Idle first read 2.35% against the baseline's 1.80%, but 0.36.0 run again
+back to back read 2.35% too, against 2.25% for step 4, so the gap was the
+machine, not the change; step 6 runs both builds in one sitting. RSS
+matches at 92 MiB, and only a `release` build compares: `release-fast`
+read 101 MiB. Medians:
+
+| Run | CPU, % | Frames/s | Gap p90 / max, ms | Active, ms |
+|---|---:|---:|---:|---:|
+| Scroll | 61.5 | 9.8 | 150 / 150 | |
+| Dock | 40.4 | 17.8 | 83 / 100 | 552 |
+| Resort | 44.3 | 10.8 | 133 / 183 | 540 |
+| Zoom | 48.7 | 14.4 | 117 / 200 | 246 |
+
+A re-sort now springs (about 540 ms) instead of snapping, at about 11
+frames/s on the CPU renderer.
