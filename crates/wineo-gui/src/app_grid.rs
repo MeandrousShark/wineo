@@ -56,9 +56,11 @@ impl App {
     /// A selection scroll waits only while the grid moves: the dock's
     /// motion or the zoom. When the last of them ends, by whatever path,
     /// it scrolls once if `scroll` and its card is still the shown
-    /// selection, and is dropped otherwise.
+    /// selection, and is dropped otherwise. Without `scroll` it's dropped
+    /// at once, even while something still moves, since the caller has
+    /// put the grid somewhere new.
     pub(crate) fn motion_ended(&mut self, scroll: bool) -> Task<Message> {
-        if self.grid_motion.active() || self.zooming.moving() {
+        if scroll && (self.grid_motion.active() || self.zooming.moving()) {
             return Task::none();
         }
         let Some(name) = self.grid_scroll_after_settle.take() else {

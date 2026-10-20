@@ -1281,3 +1281,61 @@ fn a_resize_during_the_dock_resolves_an_arrows_waiting_scroll_once() {
     assert!(app.grid_scroll_after_settle.is_none());
     assert!(!located(&app, Task::batch([close_open, tick]), &name));
 }
+
+fn arrow_during_a_zoom(change: fn(&mut App)) -> (tempfile::TempDir, App, String) {
+    let (root, mut app) = library(120);
+    for card in &mut app.cards {
+        card.tags = vec!["game".into()];
+    }
+    let _ = zoom(&mut app, Event::Key(Key::In));
+    let _ = frame(&mut app, 40);
+    app.selected = Some(app.filtered()[98].name.clone());
+    arrow_right(&mut app);
+    let name = app.selected.clone().unwrap();
+    assert!(app.grid_scroll_after_settle.is_some());
+    change(&mut app);
+    // The selection is still shown, and the zoom is still moving.
+    assert!(app.selected_shown() && app.zooming.moving());
+    (root, app, name)
+}
+
+#[test]
+fn a_search_during_a_zoom_drops_an_arrows_waiting_scroll() {
+    let (_root, mut app, name) = arrow_during_a_zoom(|app| {
+        let _ = app.update(Message::SearchChanged("game".into()));
+    });
+    assert!(app.grid_scroll_after_settle.is_none());
+    let task = settle(&mut app);
+    assert!(!located(&app, task, &name));
+}
+
+#[test]
+fn a_sort_or_filter_during_a_zoom_replaces_the_arrows_scroll_with_its_own() {
+    let changes: [fn(&mut App); 2] = [
+        |app| {
+            let _ = app.update(Message::Sort(crate::sort_control::Event::FlipDirection));
+        },
+        |app| {
+            let _ = app.update(Message::Filter(crate::filter_control::Event::ToggleTag(
+                "game".into(),
+            )));
+        },
+    ];
+    for change in changes {
+        // A new order keeps the shown selection in view, which waits for
+        // the zoom like any scroll, and happens once.
+        let (_root, mut app, name) = arrow_during_a_zoom(change);
+        assert_eq!(app.grid_scroll_after_settle.as_deref(), Some(name.as_str()));
+        let task = settle(&mut app);
+        assert!(app.grid_scroll_after_settle.is_none());
+        assert_eq!(
+            crate::sort_control::tests::answers(&app, task)
+                .iter()
+                .filter(
+                    |message| matches!(message, Message::GridCardLocated(found, ..) if *found == name)
+                )
+                .count(),
+            1
+        );
+    }
+}
