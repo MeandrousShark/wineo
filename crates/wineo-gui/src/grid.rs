@@ -94,12 +94,30 @@ impl App {
                 (card.name.clone(), self.card_drawn(card, opacity))
             })
             .collect();
+        // Only the leaving cards near the view are worth building every
+        // frame; the held height already covers the rest.
+        let (top, bottom) = (
+            self.scroll_offset - self.viewport_height,
+            self.scroll_offset + 2.0 * self.viewport_height,
+        );
+        let by_name: std::collections::HashMap<&str, &Card> =
+            if self.grid_motion.leaving().is_empty() {
+                Default::default()
+            } else {
+                self.cards
+                    .iter()
+                    .map(|card| (card.name.as_str(), card))
+                    .collect()
+            };
         let leaving = self
             .grid_motion
             .leaving()
             .iter()
+            .filter(|leaving| {
+                leaving.bounds.y <= bottom && leaving.bounds.y + leaving.bounds.height >= top
+            })
             .filter_map(|leaving| {
-                let card = self.cards.iter().find(|card| card.name == leaving.name)?;
+                let card = by_name.get(leaving.name.as_str())?;
                 Some(crate::grid_motion::Outgoing {
                     name: leaving.name.clone(),
                     at: leaving.bounds.position(),

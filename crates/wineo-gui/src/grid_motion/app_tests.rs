@@ -418,3 +418,16 @@ fn ticks_follow_a_dock_until_it_settles() {
     assert!(!app.grid_motion.active());
     assert_eq!(app.grid_motion.offset("game-07"), Vector::ZERO);
 }
+
+#[test]
+fn the_poster_only_toggle_moves_cards_only_when_their_rows_change() {
+    let (_root, mut app) = fixture(&named("game", 12));
+    let generation = app.grid_motion.generation();
+    let _ = app.update(Message::Zoom(crate::zoom::Event::TogglePosterOnly));
+    assert!(app.poster_only);
+    // It gives the cards their slots again, which don't change yet.
+    assert_ne!(app.grid_motion.generation(), generation);
+    assert!(!app.grid_motion.active());
+    assert!(app.grid_motion.anchor.is_none());
+    assert_eq!(frames(&app), 0);
+}
