@@ -461,15 +461,20 @@ fn removing_a_chip_from_the_keyboard_falls_to_more_when_the_next_is_folded() {
     // Room for GOG and +7, but not for Steam and +6 once GOG is gone.
     let room = chip_width("GOG") + SPACING + more_width(7) + SPACING;
     assert!(chip_width("Steam") + SPACING + more_width(6) + SPACING > room);
-    let button = app.filter_button.unwrap();
-    app.window_size.width = button.x
-        + 2.0 * TAB_BORDER
-        + TAB_PADDING_LEFT
-        + TAB_PADDING_RIGHT
-        + CLEAR_SIZE
-        + room
-        + MARGIN;
-    placed(&mut app);
+    // The tab's room is the window's width past the Filters button, which
+    // moves left as the search box shrinks, so the width is found against
+    // where the button lands at it. Below the search's minimum width they
+    // part again and this settles.
+    let tab = 2.0 * TAB_BORDER + TAB_PADDING_LEFT + TAB_PADDING_RIGHT + CLEAR_SIZE + room + MARGIN;
+    for _ in 0..20 {
+        let width = app.filter_button.unwrap().x + tab;
+        if width == app.window_size.width {
+            break;
+        }
+        app.window_size.width = width;
+        placed(&mut app);
+    }
+    assert_eq!(app.window_size.width, app.filter_button.unwrap().x + tab);
     assert_eq!(app.filter_tab().unwrap().visible, 1);
     assert_eq!(
         remove_from_keyboard(&mut app, Chip::Store("GOG")),

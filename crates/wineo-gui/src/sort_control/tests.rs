@@ -866,7 +866,7 @@ pub(crate) fn answers(app: &App, task: Task<Message>) -> Vec<Message> {
     let Some(mut stream) = iced_runtime::task::into_stream(task) else {
         return Vec::new();
     };
-    let mut laid = crate::layout_probe::lay_out(app.view(), iced::Size::new(1200.0, 800.0));
+    let mut laid = crate::layout_probe::lay_out(app.view(), app.window_size);
     let mut messages = Vec::new();
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
