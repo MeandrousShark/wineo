@@ -508,8 +508,8 @@ to its last frame.
 - The dense views hold more art: 60% poster-only reaches 129 MiB warm and
   165 MiB cold against 92 and 129 at 100%, about four times the posters
   on screen. That is art in use going over the cache's 96 MiB soft
-  budget, which the cache allows; it stays bounded and RSS returns with
-  the zoom.
+  budget, which the cache allows. Whether RSS comes back down after
+  zooming back in wasn't measured.
 - The dock run at 60% with titles failed in all three launches: after the
   scroll run, its fixed click at (236, 190) falls in the gap between two
   rows, so nothing opens. A click there in a screenshot opens the panel
