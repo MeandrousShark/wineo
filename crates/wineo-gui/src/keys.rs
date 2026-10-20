@@ -177,6 +177,7 @@ impl App {
             }
             Action::ClearSearch => self.update(Message::SearchChanged(String::new())),
             Action::GridFromSearch => {
+                self.interrupt_zoom();
                 // With nothing shown there's nowhere to go, so the kept
                 // selection and the search's focus both stay.
                 if self.filtered().is_empty() {
@@ -202,6 +203,7 @@ impl App {
                 )
             }
             Action::Move(direction) => {
+                self.interrupt_zoom();
                 let old = self.selected.clone();
                 let filtered = self.filtered();
                 // A selection the filters hide stays put when there's

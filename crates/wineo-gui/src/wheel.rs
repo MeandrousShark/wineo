@@ -148,6 +148,195 @@ where
     }
 }
 
+/// What a wheel over the grid does besides scrolling it.
+pub(crate) struct Zoom<Message> {
+    /// Sent for a wheel turn with Ctrl held, which then never scrolls, even
+    /// at either end of the range. `None` while something else has the
+    /// input, so Ctrl+wheel scrolls like the plain wheel.
+    pub(crate) on_zoom: Option<fn(mouse::ScrollDelta) -> Message>,
+    /// Sent for a plain wheel turn or a press, which move the grid by hand.
+    pub(crate) on_input: Option<Message>,
+}
+
+/// Hands Ctrl+wheel over `content` to `zoom` instead of scrolling it. It
+/// keeps its own state, since a wheel event doesn't say which keys are held.
+pub(crate) fn zoom<'a, Message, Theme, Renderer>(
+    content: impl Into<Element<'a, Message, Theme, Renderer>>,
+    zoom: Zoom<Message>,
+) -> Element<'a, Message, Theme, Renderer>
+where
+    Message: Clone + 'a,
+    Theme: 'a,
+    Renderer: AdvancedRenderer + 'a,
+{
+    Element::new(ZoomWheel {
+        content: content.into(),
+        zoom,
+    })
+}
+
+struct ZoomWheel<'a, Message, Theme, Renderer> {
+    content: Element<'a, Message, Theme, Renderer>,
+    zoom: Zoom<Message>,
+}
+
+impl<Message, Theme, Renderer> Widget<Message, Theme, Renderer>
+    for ZoomWheel<'_, Message, Theme, Renderer>
+where
+    Message: Clone,
+    Renderer: AdvancedRenderer,
+{
+    fn tag(&self) -> tree::Tag {
+        tree::Tag::of::<iced::keyboard::Modifiers>()
+    }
+
+    fn state(&self) -> tree::State {
+        tree::State::new(iced::keyboard::Modifiers::default())
+    }
+
+    fn children(&self) -> Vec<tree::Tree> {
+        vec![tree::Tree::new(&self.content)]
+    }
+
+    fn diff(&self, tree: &mut tree::Tree) {
+        tree.diff_children(std::slice::from_ref(&self.content));
+    }
+
+    fn size(&self) -> Size<Length> {
+        self.content.as_widget().size()
+    }
+
+    fn size_hint(&self) -> Size<Length> {
+        self.content.as_widget().size_hint()
+    }
+
+    fn layout(
+        &mut self,
+        tree: &mut tree::Tree,
+        renderer: &Renderer,
+        limits: &layout::Limits,
+    ) -> layout::Node {
+        self.content
+            .as_widget_mut()
+            .layout(&mut tree.children[0], renderer, limits)
+    }
+
+    fn operate(
+        &mut self,
+        tree: &mut tree::Tree,
+        layout: Layout<'_>,
+        renderer: &Renderer,
+        operation: &mut dyn iced::advanced::widget::Operation,
+    ) {
+        self.content
+            .as_widget_mut()
+            .operate(&mut tree.children[0], layout, renderer, operation);
+    }
+
+    fn update(
+        &mut self,
+        tree: &mut tree::Tree,
+        event: &Event,
+        layout: Layout<'_>,
+        cursor: mouse::Cursor,
+        renderer: &Renderer,
+        clipboard: &mut dyn Clipboard,
+        shell: &mut Shell<'_, Message>,
+        viewport: &Rectangle,
+    ) {
+        let modifiers = tree.state.downcast_mut::<iced::keyboard::Modifiers>();
+        let over = cursor.is_over(layout.bounds());
+        match event {
+            Event::Keyboard(iced::keyboard::Event::ModifiersChanged(held)) => {
+                *modifiers = *held;
+            }
+            Event::Mouse(mouse::Event::WheelScrolled { delta }) if over => {
+                if modifiers.control()
+                    && let Some(on_zoom) = self.zoom.on_zoom
+                {
+                    shell.publish(on_zoom(*delta));
+                    shell.capture_event();
+                    return;
+                }
+                if let Some(message) = &self.zoom.on_input {
+                    shell.publish(message.clone());
+                }
+            }
+            Event::Mouse(mouse::Event::ButtonPressed(_)) if over => {
+                if let Some(message) = &self.zoom.on_input {
+                    shell.publish(message.clone());
+                }
+            }
+            _ => {}
+        }
+        self.content.as_widget_mut().update(
+            &mut tree.children[0],
+            event,
+            layout,
+            cursor,
+            renderer,
+            clipboard,
+            shell,
+            viewport,
+        );
+    }
+
+    fn draw(
+        &self,
+        tree: &tree::Tree,
+        renderer: &mut Renderer,
+        theme: &Theme,
+        style: &renderer::Style,
+        layout: Layout<'_>,
+        cursor: mouse::Cursor,
+        viewport: &Rectangle,
+    ) {
+        self.content.as_widget().draw(
+            &tree.children[0],
+            renderer,
+            theme,
+            style,
+            layout,
+            cursor,
+            viewport,
+        );
+    }
+
+    fn mouse_interaction(
+        &self,
+        tree: &tree::Tree,
+        layout: Layout<'_>,
+        cursor: mouse::Cursor,
+        viewport: &Rectangle,
+        renderer: &Renderer,
+    ) -> mouse::Interaction {
+        self.content.as_widget().mouse_interaction(
+            &tree.children[0],
+            layout,
+            cursor,
+            viewport,
+            renderer,
+        )
+    }
+
+    fn overlay<'a>(
+        &'a mut self,
+        tree: &'a mut tree::Tree,
+        layout: Layout<'a>,
+        renderer: &Renderer,
+        viewport: &Rectangle,
+        translation: Vector,
+    ) -> Option<overlay::Element<'a, Message, Theme, Renderer>> {
+        self.content.as_widget_mut().overlay(
+            &mut tree.children[0],
+            layout,
+            renderer,
+            viewport,
+            translation,
+        )
+    }
+}
+
 pub(crate) fn scale_delta(delta: mouse::ScrollDelta, factor: f32) -> mouse::ScrollDelta {
     match delta {
         mouse::ScrollDelta::Lines { x, y } => mouse::ScrollDelta::Lines {

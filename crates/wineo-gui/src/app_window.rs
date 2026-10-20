@@ -12,6 +12,13 @@ pub(crate) const SORT_SAVE_WAIT: Duration = Duration::from_secs(6);
 
 impl App {
     pub(crate) fn close_requested(&mut self) -> Task<Message> {
+        // A drag the close interrupts saves where it was, and the wait
+        // below covers that write.
+        let drag = self.end_zoom_drag();
+        Task::batch([drag, self.close_decision()])
+    }
+
+    fn close_decision(&mut self) -> Task<Message> {
         if self.close_by.is_some() {
             // Asked again while waiting on library writes.
             self.exit_now()

@@ -4,13 +4,15 @@ use iced::advanced::{
 };
 use iced::{Element, Event, Length, Rectangle, Size, Vector};
 
-/// Handles Ctrl+1/2/3/4/5, Ctrl+Comma, and the active Undo shortcut before any child sees them.
+/// Handles Ctrl+1/2/3/4/5, Ctrl+Comma, the active Undo shortcut, and the
+/// zoom keys while they apply, before any child sees them.
 /// A focused text_input inserts the digit and captures the key regardless of
 /// Ctrl, and the app's key subscription skips captured events.
 pub(crate) fn capture_with_undo<'a, Message, Theme, Renderer>(
     content: impl Into<Element<'a, Message, Theme, Renderer>>,
     on_section: impl Fn(crate::sidebar::Section) -> Message + 'a,
     on_undo: Option<Message>,
+    on_zoom: Option<fn(crate::zoom::Key) -> Message>,
 ) -> Element<'a, Message, Theme, Renderer>
 where
     Message: Clone + 'a,
@@ -21,6 +23,7 @@ where
         content: content.into(),
         on_section: Box::new(on_section),
         on_undo,
+        on_zoom,
     })
 }
 
@@ -28,6 +31,7 @@ struct SidebarShortcuts<'a, Message, Theme, Renderer> {
     content: Element<'a, Message, Theme, Renderer>,
     on_section: Box<dyn Fn(crate::sidebar::Section) -> Message + 'a>,
     on_undo: Option<Message>,
+    on_zoom: Option<fn(crate::zoom::Key) -> Message>,
 }
 
 impl<Message, Theme, Renderer> Widget<Message, Theme, Renderer>
@@ -109,6 +113,15 @@ where
             shell.capture_event();
             return;
         }
+
+        if let Event::Keyboard(iced::keyboard::Event::KeyPressed { key, modifiers, .. }) = event
+            && let Some(on_zoom) = self.on_zoom
+            && let Some(zoom) = crate::zoom::key(key, *modifiers)
+        {
+            shell.publish(on_zoom(zoom));
+            shell.capture_event();
+            return;
+        }
         self.content.as_widget_mut().update(
             tree, event, layout, cursor, renderer, clipboard, shell, viewport,
         );
@@ -180,7 +193,8 @@ pub(crate) mod tests {
     ) -> (Vec<Message>, Status) {
         let input = text_input::TextInput::<Message, iced::Theme, ()>::new("Search", value)
             .on_input(Message::SearchChanged);
-        let mut widget = capture_with_undo(input, Message::Section, undo.then_some(Message::Undo));
+        let mut widget =
+            capture_with_undo(input, Message::Section, undo.then_some(Message::Undo), None);
         let mut tree = tree::Tree::new(widget.as_widget());
         let bounds = Size::new(400.0, 40.0);
         let node =

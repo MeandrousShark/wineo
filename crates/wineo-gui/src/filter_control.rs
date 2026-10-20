@@ -237,7 +237,10 @@ pub(crate) fn update(app: &mut App, event: Event) -> Task<Message> {
         Event::RemoveFromKeyboard(chip) => crate::filter_tab::remove(app, &chip, true),
         Event::ClearChips => crate::filter_tab::clear(app, false),
         Event::ClearChipsFromKeyboard => crate::filter_tab::clear(app, true),
-        Event::Wheel(delta) => crate::filter_tab::wheel(delta, app.modifiers.shift()),
+        Event::Wheel(delta) => {
+            app.interrupt_zoom();
+            crate::filter_tab::wheel(delta, app.modifiers.shift())
+        }
     }
 }
 

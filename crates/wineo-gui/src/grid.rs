@@ -316,6 +316,8 @@ impl App {
                 && self.art_page.is_none()
                 && !self.close_prompt)
                 .then_some(Message::Undo),
+            self.zoom_allowed()
+                .then_some(|key| Message::Zoom(crate::zoom::Event::Key(key))),
         );
         crate::menu_anchor::track(content, Message::MenuAnchor)
     }
@@ -847,7 +849,19 @@ impl App {
             ))
             .on_scroll(Message::Scrolled)
             .style(move |theme, status| crate::ui::scroll_style(theme, status, palette, visible));
-        let library = mouse_area(wheel::scale(scroll, WHEEL_STEP_SCALE));
+        let library = mouse_area(wheel::zoom(
+            wheel::scale(scroll, WHEEL_STEP_SCALE),
+            wheel::Zoom {
+                on_zoom: self
+                    .zoom_allowed()
+                    .then_some(|delta| Message::Zoom(crate::zoom::Event::Wheel(delta))),
+                on_input: self
+                    .zooming
+                    .anchoring()
+                    .then_some(Message::Zoom(crate::zoom::Event::Interrupted)),
+            },
+        ))
+        .on_exit(Message::Zoom(crate::zoom::Event::PointerLeft));
         let library = if self.panel_open {
             library.on_press(Message::ClosePanel)
         } else if self.collapse.faded() {
@@ -995,6 +1009,7 @@ impl App {
                     search,
                     crate::sort_control::toolbar(self),
                     crate::filter_control::toolbar(self),
+                    crate::zoom_control::toolbar(self),
                 ]
                 .spacing(8)
                 .align_y(Center),

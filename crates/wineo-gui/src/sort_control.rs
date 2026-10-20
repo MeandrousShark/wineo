@@ -60,6 +60,9 @@ pub(crate) enum Field {
     Sort(SortKey, bool),
     Descending(bool),
     FavoritesFirst(bool),
+    /// The whole percent the grid's zoom is heading to.
+    Zoom(u16),
+    PosterOnly(bool),
 }
 
 /// The value each field's write in flight is writing. One write per field
@@ -69,6 +72,8 @@ pub(crate) struct Writes {
     pub(crate) sort: Option<(SortKey, bool)>,
     pub(crate) descending: Option<bool>,
     pub(crate) favorites_first: Option<bool>,
+    pub(crate) zoom: Option<u16>,
+    pub(crate) poster_only: Option<bool>,
 }
 
 impl Writes {
@@ -77,6 +82,8 @@ impl Writes {
             Field::Sort(..) => self.sort.is_some(),
             Field::Descending(_) => self.descending.is_some(),
             Field::FavoritesFirst(_) => self.favorites_first.is_some(),
+            Field::Zoom(_) => self.zoom.is_some(),
+            Field::PosterOnly(_) => self.poster_only.is_some(),
         }
     }
 
@@ -85,12 +92,18 @@ impl Writes {
             Field::Sort(sort, descending) => self.sort = Some((sort, descending)),
             Field::Descending(value) => self.descending = Some(value),
             Field::FavoritesFirst(value) => self.favorites_first = Some(value),
+            Field::Zoom(value) => self.zoom = Some(value),
+            Field::PosterOnly(value) => self.poster_only = Some(value),
         }
     }
 
     /// A write is in flight, which closing the window waits for.
     pub(crate) fn pending(&self) -> bool {
-        self.sort.is_some() || self.descending.is_some() || self.favorites_first.is_some()
+        self.sort.is_some()
+            || self.descending.is_some()
+            || self.favorites_first.is_some()
+            || self.zoom.is_some()
+            || self.poster_only.is_some()
     }
 
     fn finish(&mut self, field: Field) {
@@ -98,6 +111,8 @@ impl Writes {
             Field::Sort(..) => self.sort = None,
             Field::Descending(_) => self.descending = None,
             Field::FavoritesFirst(_) => self.favorites_first = None,
+            Field::Zoom(_) => self.zoom = None,
+            Field::PosterOnly(_) => self.poster_only = None,
         }
     }
 }
@@ -149,6 +164,8 @@ pub(crate) fn save(paths: &Paths, watch: &rescan::Watch, field: Field) -> Result
         Field::Sort(sort, descending) => library::set_order(paths, sort, descending),
         Field::Descending(descending) => library::set_descending(paths, descending),
         Field::FavoritesFirst(first) => library::set_favorites_first(paths, first),
+        Field::Zoom(zoom) => library::set_zoom(paths, zoom),
+        Field::PosterOnly(poster_only) => library::set_poster_only(paths, poster_only),
     };
     watch.refresh_library(paths);
     result
@@ -181,12 +198,14 @@ impl App {
             Field::Sort(..) => Field::Sort(self.query.sort, self.query.descending),
             Field::Descending(_) => Field::Descending(self.query.descending),
             Field::FavoritesFirst(_) => Field::FavoritesFirst(self.query.favorites_first),
+            Field::Zoom(_) => Field::Zoom(self.zoom),
+            Field::PosterOnly(_) => Field::PosterOnly(self.poster_only),
         }
     }
 
     /// Writes the window's value of `field` unless a write of it is in
     /// flight, which writes again when it finishes if the value moved on.
-    fn save_field(&mut self, field: Field) -> Task<Message> {
+    pub(crate) fn save_field(&mut self, field: Field) -> Task<Message> {
         if self.view_writes.busy(field) {
             return Task::none();
         }
@@ -271,8 +290,12 @@ pub(crate) fn update(app: &mut App, event: Event) -> Task<Message> {
             }
             if let Err(error) = result {
                 // The window keeps the view it chose.
+                let what = match written {
+                    Field::Zoom(_) | Field::PosterOnly(_) => "view",
+                    _ => "sort",
+                };
                 app.feature_notice = Some((
-                    format!("Couldn't save the sort: {error}"),
+                    format!("Couldn't save the {what}: {error}"),
                     std::time::Instant::now() + NOTICE_TIME,
                 ));
             }

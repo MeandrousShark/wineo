@@ -79,6 +79,8 @@ mod version_picker;
 mod wake;
 mod wheel;
 mod worker;
+mod zoom;
+mod zoom_control;
 
 use std::collections::{HashMap, HashSet};
 use std::ops::ControlFlow;
@@ -123,8 +125,12 @@ pub(crate) struct App {
     /// How the library is sorted. The open window keeps its own, whatever
     /// another window or process saves.
     query: order::Query,
-    /// The library grid's zoom in whole percent, from the saved view.
+    /// The library grid's zoom in whole percent, from the saved view. While
+    /// a tween runs this is where it's heading, which steps count from.
     zoom: u16,
+    zooming: zoom::Zoom,
+    /// Titles hide until a poster is pointed at or selected.
+    poster_only: bool,
     /// Store, platform, and tag filters and Show hidden, which reset each launch.
     filters: order::Filters,
     /// The held modifier keys, for a wheel turn the filter tab hands to the grid.
@@ -428,6 +434,7 @@ pub(crate) enum Message {
     Filter(filter_control::Event),
     /// Favoriting and hiding a card.
     Mark(library_actions::Event),
+    Zoom(zoom::Event),
     /// The wait for `library.toml` writes on close is over, tagged with its
     /// wakeup.
     CloseWaitOver(u64),
@@ -443,6 +450,8 @@ impl App {
             cards: Vec::new(),
             query: order::Query::default(),
             zoom: wineo_core::library::ZOOM_DEFAULT,
+            zooming: zoom::Zoom::default(),
+            poster_only: false,
             filters: order::Filters::default(),
             modifiers: keyboard::Modifiers::empty(),
             order: order::Order::default(),
@@ -558,6 +567,7 @@ impl App {
         // order. A read takes no lock and never writes.
         let saved = wineo_core::library::load(&app.paths);
         app.zoom = saved.view.zoom;
+        app.poster_only = saved.view.poster_only;
         app.query = saved.view.into();
         // The banner shows from the first frame, before the cards arrive.
         app.problem_read(saved.problem);
@@ -653,6 +663,11 @@ impl App {
         } else {
             Subscription::none()
         };
+        let zoom = if self.panel_hidden() {
+            Subscription::none()
+        } else {
+            self.zooming.subscription()
+        };
         let collapse = if !self.panel_hidden() && self.collapse.animating() {
             window::frames()
                 .with(self.collapse.generation())
@@ -689,6 +704,7 @@ impl App {
             iced::event::listen_with(|event, status, _| event_message(event, status)),
             panel_motion,
             grid_motion,
+            zoom,
             collapse,
             // Only a toast has focus to recheck.
             if self.toast.is_some() {
@@ -806,7 +822,8 @@ impl App {
             ) || matches!(message, Message::Version(event) if event.is_input())
                 || matches!(message, Message::Sort(event) if event.is_input())
                 || matches!(message, Message::Filter(event) if event.is_input())
-                || matches!(message, Message::Mark(event) if event.is_input()))
+                || matches!(message, Message::Mark(event) if event.is_input())
+                || matches!(message, Message::Zoom(event) if event.is_input()))
         {
             return true;
         }
@@ -848,6 +865,7 @@ impl App {
             Message::Sort(event) => sort_control::update(self, event),
             Message::Filter(event) => filter_control::update(self, event),
             Message::Mark(event) => library_actions::update(self, event),
+            Message::Zoom(event) => zoom::update(self, event),
             message @ (Message::Remove(_)
             | Message::RemovePrefix(_)
             | Message::RemoveSize(..)
@@ -1044,6 +1062,7 @@ impl App {
             Message::GridTick(generation, now) => self.grid_tick(generation, now)?,
             Message::Modifiers(modifiers) => {
                 self.modifiers = modifiers;
+                self.zooming.modifiers_changed(modifiers);
                 Task::none()
             }
             Message::Key(key, _, _) if self.close_prompt => {
@@ -1191,6 +1210,13 @@ impl App {
                 .snap(self.panel_open, self.filtered().len());
             self.grid_scroll_after_settle = None;
         }
+        // Whatever covers the grid takes the pointer, so a drag ends here.
+        let task = if self.panel_hidden() {
+            self.zooming.finish();
+            task.chain(self.end_zoom_drag())
+        } else {
+            task
+        };
         // Leaving the Library, an overlay, or the panel opening by any path
         // puts the cards back at once.
         if !self.collapse.idle() && (self.panel_hidden() || self.panel_open) {
@@ -1342,7 +1368,10 @@ impl App {
         grid_motion::columns_for_viewport(self.viewport_width, self.panel_open, self.grid_layout())
     }
     pub(crate) fn grid_layout(&self) -> grid_motion::GridLayout {
-        grid_motion::GridLayout::new(self.zoom)
+        match self.zooming.shown() {
+            Some(zoom) => grid_motion::GridLayout::at(zoom),
+            None => grid_motion::GridLayout::new(self.zoom),
+        }
     }
     fn panel_reserved(&self) -> bool {
         self.section == sidebar::Section::Library && self.panel_motion.reserved()

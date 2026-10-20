@@ -40,7 +40,7 @@ const TILE_TITLE_MAX: f32 = 18.0;
 /// the grid's padding (`GAP`, `PADDING`) stay fixed at every zoom.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) struct GridLayout {
-    zoom: u16,
+    zoom: f32,
     card_width: f32,
     poster_height: f32,
 }
@@ -57,8 +57,14 @@ impl GridLayout {
     /// that rounded width, rounded, so every zoom keeps whole-pixel cards
     /// and the same width always gets the same poster.
     pub(crate) fn new(zoom: u16) -> Self {
-        let zoom = zoom.clamp(ZOOM_MIN, ZOOM_MAX);
-        let card_width = (CARD_WIDTH * f32::from(zoom) / 100.0).round();
+        Self::at(f32::from(zoom))
+    }
+
+    /// The geometry at a zoom between whole percents, for a tween's frames.
+    /// A whole `zoom` gives exactly what `new` does.
+    pub(crate) fn at(zoom: f32) -> Self {
+        let zoom = zoom.clamp(f32::from(ZOOM_MIN), f32::from(ZOOM_MAX));
+        let card_width = (CARD_WIDTH * zoom / 100.0).round();
         let poster_height = (card_width * BASE_POSTER_HEIGHT / CARD_WIDTH).round();
         Self {
             zoom,
@@ -87,7 +93,7 @@ impl GridLayout {
     /// The title on an art-less card's tile follows the poster's size, but
     /// stays readable when small and modest when large.
     pub(crate) fn tile_title_size(self) -> f32 {
-        (TILE_TITLE_SIZE * f32::from(self.zoom) / 100.0).clamp(TILE_TITLE_MIN, TILE_TITLE_MAX)
+        (TILE_TITLE_SIZE * self.zoom / 100.0).clamp(TILE_TITLE_MIN, TILE_TITLE_MAX)
     }
 }
 
@@ -251,6 +257,23 @@ pub(crate) fn cards_between(
         y += height + GAP;
     }
     first.map_or(0..0, |first| first..last)
+}
+
+/// Each card's top in the grid and the grid's height, with rows stacked the
+/// way `slots` stacks them.
+pub(crate) fn card_tops(heights: &[f32], columns: usize) -> (Vec<f32>, f32) {
+    let mut tops = Vec::with_capacity(heights.len());
+    let mut y = PADDING;
+    for row in heights.chunks(columns.max(1)) {
+        tops.extend(std::iter::repeat_n(y, row.len()));
+        y += row.iter().copied().fold(0.0, f32::max) + GAP;
+    }
+    let height = if heights.is_empty() {
+        2.0 * PADDING
+    } else {
+        y - GAP + PADDING
+    };
+    (tops, height)
 }
 
 fn slots(sizes: &[Size], columns: usize, layout: GridLayout) -> (Vec<Point>, f32) {
@@ -919,6 +942,31 @@ mod tests {
         };
         assert!(hit(look, card, corner, GridLayout::new(200)));
         assert!(!hit(look, card, corner, GridLayout::new(60)));
+    }
+
+    #[test]
+    fn fractional_zooms_round_like_whole_ones() {
+        for zoom in ZOOM_MIN..=ZOOM_MAX {
+            assert_eq!(GridLayout::at(f32::from(zoom)), GridLayout::new(zoom));
+        }
+        let between = GridLayout::at(100.4);
+        assert_eq!(between.card_width(), 161.0);
+        assert_eq!(between.poster_height(), 242.0);
+        assert_eq!(GridLayout::at(10.0), GridLayout::new(ZOOM_MIN));
+    }
+
+    #[test]
+    fn card_tops_match_the_slots() {
+        let heights = [280.0, 315.0, 270.0, 300.0, 290.0];
+        let sizes: Vec<Size> = heights
+            .iter()
+            .map(|height| Size::new(160.0, *height))
+            .collect();
+        let (points, height) = slots(&sizes, 2, GridLayout::default());
+        let (tops, total) = card_tops(&heights, 2);
+        assert_eq!(tops, points.iter().map(|point| point.y).collect::<Vec<_>>());
+        assert_eq!(total, height);
+        assert_eq!(card_tops(&[], 3), (Vec::new(), 2.0 * PADDING));
     }
 
     #[test]
