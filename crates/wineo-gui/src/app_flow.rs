@@ -137,6 +137,8 @@ impl App {
         };
         self.search.clear();
         self.reorder();
+        // The flow covered the grid, so its cards go straight to their slots.
+        self.snap_grid();
         if self.selected.as_deref() != Some(&name) {
             self.close_checkup();
         }
