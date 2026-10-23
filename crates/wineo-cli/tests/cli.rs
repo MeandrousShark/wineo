@@ -3081,6 +3081,117 @@ fn set_refuses_invalid_hooks_without_rewriting_the_file() {
 }
 
 #[test]
+fn set_title_round_trips_for_wine_and_native() {
+    for base in [MINIMAL_ENVIRONMENT, "kind = 'native'\n"] {
+        let root = tempfile::tempdir().unwrap();
+        let path = write_environment(root.path(), "game", &format!("# hand written\n{base}"));
+        let set =
+            output(wineo(root.path()).args(["set", "game", "title=  Dusk: Ascent \u{1f3ae} "]));
+        assert!(set.status.success(), "{}", stderr(&set));
+        let text = fs::read_to_string(&path).unwrap();
+        assert_eq!(
+            text,
+            format!(
+                "# hand written\n{base}title = \"Dusk: Ascent \u{1f3ae}\"\nschema_version = 1\n"
+            )
+        );
+
+        // Commands and JSON keep the environment name.
+        let listed = output(wineo(root.path()).args(["list"]));
+        assert!(stdout(&listed).contains("game"), "{}", stdout(&listed));
+        assert!(!stdout(&listed).contains("Dusk"), "{}", stdout(&listed));
+        for args in [vec!["status", "game", "--json"], vec!["list", "--json"]] {
+            let out = output(wineo(root.path()).args(args));
+            assert!(out.status.success(), "{}", stderr(&out));
+            assert!(!stdout(&out).contains("Dusk"), "{}", stdout(&out));
+        }
+
+        let unset = output(wineo(root.path()).args(["set", "game", "--unset", "title"]));
+        assert!(unset.status.success(), "{}", stderr(&unset));
+        assert_eq!(
+            fs::read_to_string(&path).unwrap(),
+            format!("# hand written\n{base}schema_version = 1\n")
+        );
+        let again = output(wineo(root.path()).args(["set", "game", "--unset", "title"]));
+        assert!(again.status.success(), "{}", stderr(&again));
+        assert_eq!(stderr(&again), "`title` was not set\n");
+    }
+}
+
+#[test]
+fn set_refuses_a_bad_title_without_rewriting_the_file() {
+    let root = tempfile::tempdir().unwrap();
+    let text = "kind = 'native'\ntitle = 'Dusk' # mine\n";
+    let path = write_environment(root.path(), "game", text);
+    let long = format!("title={}", "\u{e9}".repeat(121));
+    for (assignment, message) in [
+        ("title=", "can't be empty"),
+        ("title=   ", "can't be empty"),
+        ("title=Dusk\tAscent", "can't contain control characters"),
+        (long.as_str(), "can't be longer than 120 characters"),
+    ] {
+        let out = output(wineo(root.path()).args(["set", "game", assignment]));
+        assert!(!out.status.success(), "{assignment}");
+        assert_eq!(stderr(&out), format!("error: Invalid title: {message}.\n"));
+        assert_eq!(fs::read_to_string(&path).unwrap(), text);
+    }
+    let fits = format!("title={}", "\u{e9}".repeat(120));
+    let out = output(wineo(root.path()).args(["set", "game", &fits]));
+    assert!(out.status.success(), "{}", stderr(&out));
+}
+
+#[test]
+fn title_reads_and_no_op_edits_do_not_rewrite_legacy_files() {
+    let root = tempfile::tempdir().unwrap();
+    for text in [
+        "# legacy\nkind = 'native'\n",
+        "# legacy\nkind = 'native'\ntitle  =  'Dusk' # mine\n",
+    ] {
+        let path = write_environment(root.path(), "game", text);
+        let modified = fs::metadata(&path).unwrap().modified().unwrap();
+        let mut runs = vec![
+            vec!["status", "game"],
+            vec!["list"],
+            vec!["validate", "game"],
+        ];
+        if text.contains("title") {
+            runs.push(vec!["set", "game", "title=Dusk"]);
+            runs.push(vec!["set", "game", "title= Dusk "]);
+        } else {
+            runs.push(vec!["set", "game", "--unset", "title"]);
+        }
+        for args in runs {
+            let out = output(wineo(root.path()).args(&args));
+            assert!(out.status.success(), "{args:?}: {}", stderr(&out));
+            assert_eq!(fs::read_to_string(&path).unwrap(), text, "{args:?}");
+            assert_eq!(fs::metadata(&path).unwrap().modified().unwrap(), modified);
+        }
+    }
+}
+
+#[test]
+fn validate_warns_about_a_bad_title_and_leaves_it() {
+    let root = tempfile::tempdir().unwrap();
+    let text = "kind = 'native'\ntitle = '  Dusk  '\n";
+    let path = write_environment(root.path(), "game", text);
+    let out = output(wineo(root.path()).args(["validate", "game", "--json"]));
+    assert!(out.status.success(), "{}", stderr(&out));
+    let problems = parsed_json(&out)["problems"].clone();
+    assert_eq!(
+        problems,
+        serde_json::json!([{
+            "environment": "game",
+            "area": "environment_config",
+            "level": "warning",
+            "code": "title_invalid",
+            "message": "Invalid title: can't start or end with whitespace.",
+            "fix": null,
+        }])
+    );
+    assert_eq!(fs::read_to_string(&path).unwrap(), text);
+}
+
+#[test]
 fn status_hooks_shows_phases_and_resolves_the_last_targets_override() {
     for base in [MINIMAL_ENVIRONMENT, "kind = 'native'\n"] {
         let root = tempfile::tempdir().unwrap();

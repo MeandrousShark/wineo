@@ -325,7 +325,7 @@ fn proxied_only_keys_are_refused_on_wine_and_native() {
     f.environment("notepad", "");
     for name in ["dusk", "notepad"] {
         let before = f.config_text(name);
-        for (setting, key) in [("title=Dusk", "title"), ("desktop=true", "desktop")] {
+        for (setting, key) in [("desktop=true", "desktop")] {
             let refused = f.run(&["set", name, setting]);
             assert!(!refused.status.success(), "{name} {setting}");
             assert!(
