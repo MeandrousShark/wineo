@@ -26,6 +26,9 @@ pub enum EditError {
     Managed(String),
     #[error("{0}")]
     InvalidList(String),
+    /// A refused value, with the whole refusal as its message.
+    #[error("{0}")]
+    Refused(String),
 }
 
 /// Splits `key=value` at the first `=`.
@@ -74,7 +77,18 @@ fn set_environment(root: &mut Table, key: &str, raw: &str) -> Result<(), EditErr
             store_value(root, "prefix", value);
             Ok(())
         }
-        "runner" | "gameid" | "store" | "dxvk" | "vkd3d" | "title" => {
+        "title" => {
+            // A Steam game's title is the import's fallback, and `set` has
+            // always written it as given.
+            let value = if root.get("kind").and_then(Item::as_str) == Some("proxied") {
+                parse_string_value(key, raw)?
+            } else {
+                Value::from(crate::config::normalize_title(raw).map_err(EditError::Refused)?)
+            };
+            store_value(root, key, value);
+            Ok(())
+        }
+        "runner" | "gameid" | "store" | "dxvk" | "vkd3d" => {
             let value = parse_string_value(key, raw)?;
             store_value(root, key, value);
             Ok(())

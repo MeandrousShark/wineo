@@ -264,6 +264,11 @@ pub struct EnvironmentConfig {
     /// The GOG product id of the game this environment owns. Its install
     /// state lives in the game folder's state file, not here.
     pub gog_id: Option<String>,
+    /// The `title` key as written, for every kind. On a Wine or native
+    /// environment it is the person's own title for the card; on a proxied
+    /// one it is the import's fallback, the same as `ProxiedConfig::title`.
+    /// Loading takes any string, so a bad one is left for `validate`.
+    pub title: Option<String>,
     pub tags: Vec<String>,
     pub winetricks: Vec<String>,
     pub env: BTreeMap<String, String>,
@@ -460,6 +465,7 @@ impl RawEnvironmentConfig {
             hooks: self.hooks,
             heroic_id: self.heroic_id,
             gog_id: self.gog_id,
+            title: self.title,
             tags: self.tags,
             winetricks: self.winetricks.unwrap_or_default(),
             env: self.env.unwrap_or_default(),
@@ -489,7 +495,6 @@ impl RawEnvironmentConfig {
             "targets" => self.targets.is_some(),
             "launcher" => self.launcher.is_some(),
             "app_id" => self.app_id.is_some(),
-            "title" => self.title.is_some(),
             "desktop" => self.desktop.is_some(),
             _ => unreachable!("not a kind-specific key: {key}"),
         }
@@ -526,11 +531,11 @@ pub fn validate_gog_id(gog_id: &str) -> Result<(), String> {
 }
 
 /// Keys only a proxied environment can have.
-pub const PROXIED_ONLY_KEYS: [&str; 4] = ["launcher", "app_id", "title", "desktop"];
+pub const PROXIED_ONLY_KEYS: [&str; 3] = ["launcher", "app_id", "desktop"];
 
 /// Keys a proxied environment can't have, since its launcher owns the prefix
 /// and the launch. Everything but `schema_version`, `kind`, `tags`, `hooks`,
-/// and the proxied-only keys.
+/// `title`, and the proxied-only keys.
 pub const PROXIED_REFUSED_KEYS: [&str; 16] = [
     "prefix",
     "runner",
@@ -963,6 +968,35 @@ pub fn validate_tags(tags: &[String]) -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+/// The longest title the card takes, in characters.
+pub const TITLE_MAX_CHARS: usize = 120;
+
+/// Why a title as stored breaks the rules, if it does. Trimming is the
+/// caller's job when it takes what a person typed; see `normalize_title`.
+pub fn title_problem(title: &str) -> Option<String> {
+    let reason = if title.trim().is_empty() {
+        "can't be empty".to_owned()
+    } else if title.chars().any(char::is_control) {
+        "can't contain control characters".to_owned()
+    } else if title.trim() != title {
+        "can't start or end with whitespace".to_owned()
+    } else if title.chars().count() > TITLE_MAX_CHARS {
+        format!("can't be longer than {TITLE_MAX_CHARS} characters")
+    } else {
+        return None;
+    };
+    Some(format!("Invalid title: {reason}."))
+}
+
+/// What a person typed as a title, trimmed and checked.
+pub fn normalize_title(raw: &str) -> Result<String, String> {
+    let title = raw.trim();
+    match title_problem(title) {
+        Some(problem) => Err(problem),
+        None => Ok(title.to_owned()),
+    }
 }
 
 pub fn validate_winetricks(verbs: &[String]) -> Result<(), String> {

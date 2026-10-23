@@ -253,6 +253,123 @@ fn a_no_op_edit_leaves_a_versioned_wine_file_byte_identical() {
 }
 
 #[test]
+fn a_title_is_set_trimmed_and_unset_on_wine_and_native() {
+    let (_root, paths) = setup();
+    let native = "# hand written\nkind = \"native\" # mine\n";
+    for original in [NOTEPAD, native] {
+        write_env(&paths, original);
+        let path = paths.environment_config("notepad");
+        update(
+            &paths,
+            ConfigFile::Environment("notepad"),
+            &[("title", "  Notepad: Classic \u{1f4dd}  ")],
+            &[],
+        )
+        .unwrap();
+        let text = fs::read_to_string(&path).unwrap();
+        assert_eq!(
+            text,
+            format!("{original}title = \"Notepad: Classic \u{1f4dd}\"\nschema_version = 1\n")
+        );
+        let config = EnvironmentConfig::parse(&path, &text).unwrap();
+        assert_eq!(config.title.as_deref(), Some("Notepad: Classic \u{1f4dd}"));
+
+        let missing = update(&paths, ConfigFile::Environment("notepad"), &[], &["title"]).unwrap();
+        assert!(missing.is_empty());
+        let text = fs::read_to_string(&path).unwrap();
+        assert_eq!(text, format!("{original}schema_version = 1\n"));
+        assert_eq!(EnvironmentConfig::parse(&path, &text).unwrap().title, None);
+    }
+}
+
+#[test]
+fn a_bad_title_is_refused_without_writing() {
+    let (_root, paths) = setup();
+    let native = "kind = \"native\"\ntitle = \"Old\" # mine\n";
+    for original in [NOTEPAD, native] {
+        write_env(&paths, original);
+        let long = "\u{e9}".repeat(121);
+        for (raw, message) in [
+            ("", "Invalid title: can't be empty."),
+            ("   ", "Invalid title: can't be empty."),
+            ("a\nb", "Invalid title: can't contain control characters."),
+            (
+                long.as_str(),
+                "Invalid title: can't be longer than 120 characters.",
+            ),
+        ] {
+            let err = update(
+                &paths,
+                ConfigFile::Environment("notepad"),
+                &[("title", raw)],
+                &[],
+            )
+            .unwrap_err();
+            assert_eq!(err.to_string(), message, "{raw:?}");
+            assert_eq!(
+                fs::read_to_string(paths.environment_config("notepad")).unwrap(),
+                original
+            );
+        }
+    }
+}
+
+#[test]
+fn a_legacy_file_without_a_title_is_left_alone() {
+    let (_root, paths) = setup();
+    write_env(&paths, NOTEPAD);
+    let path = paths.environment_config("notepad");
+    let before = modified(&path);
+    std::thread::sleep(std::time::Duration::from_millis(20));
+    let environment = crate::environment::Environment::load(&paths, "notepad").unwrap();
+    assert_eq!(environment.config.title, None);
+    let missing = update(&paths, ConfigFile::Environment("notepad"), &[], &["title"]).unwrap();
+    assert_eq!(missing, ["title"]);
+    assert_eq!(fs::read_to_string(&path).unwrap(), NOTEPAD);
+    assert_eq!(modified(&path), before);
+}
+
+#[test]
+fn the_same_title_again_writes_nothing() {
+    let (_root, paths) = setup();
+    let text = format!("{NOTEPAD}title  =  'Notepad' # mine\n");
+    write_env(&paths, &text);
+    update(
+        &paths,
+        ConfigFile::Environment("notepad"),
+        &[("title", " Notepad ")],
+        &[],
+    )
+    .unwrap();
+    assert_eq!(
+        fs::read_to_string(paths.environment_config("notepad")).unwrap(),
+        text
+    );
+}
+
+#[test]
+fn a_steam_title_is_still_set_as_given() {
+    let (_root, paths) = setup();
+    let original =
+        "kind = \"proxied\"\nlauncher = \"steam\"\napp_id = \"1086940\"\ntitle = \"Old\"\n";
+    write_env(&paths, original);
+    let path = paths.environment_config("notepad");
+    update(
+        &paths,
+        ConfigFile::Environment("notepad"),
+        &[("title", "  New  ")],
+        &[],
+    )
+    .unwrap();
+    let text = fs::read_to_string(&path).unwrap();
+    let config = EnvironmentConfig::parse(&path, &text).unwrap();
+    assert_eq!(config.proxied().unwrap().title.as_deref(), Some("  New  "));
+    update(&paths, ConfigFile::Environment("notepad"), &[], &["title"]).unwrap();
+    let text = fs::read_to_string(&path).unwrap();
+    assert_eq!(EnvironmentConfig::parse(&path, &text).unwrap().title, None);
+}
+
+#[test]
 fn an_edit_never_adds_kind_to_a_wine_file() {
     let (_root, paths) = setup();
     write_env(&paths, NOTEPAD);

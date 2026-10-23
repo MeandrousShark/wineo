@@ -152,6 +152,15 @@ fn per_environment_keys_are_refused_by_name() {
 }
 
 #[test]
+fn a_template_refuses_a_title() {
+    let root = tempfile::tempdir().unwrap();
+    write(root.path(), "titled", "title = \"Dusk\"\n");
+    let err = templates(root.path()).resolve("titled").unwrap_err();
+    assert!(matches!(err, Error::ConfigUnknownKey { .. }), "{err}");
+    assert!(err.to_string().contains("title"), "{err}");
+}
+
+#[test]
 fn a_template_may_carry_the_schema_version() {
     let root = tempfile::tempdir().unwrap();
     write(root.path(), "v1", "schema_version = 1\ngamemode = true\n");

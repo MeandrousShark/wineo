@@ -965,7 +965,6 @@ fn proxied_only_keys_are_refused_for_wine_and_native() {
         for (key, line) in [
             ("launcher", "launcher = \"steam\""),
             ("app_id", "app_id = \"1\""),
-            ("title", "title = \"Dusk\""),
             ("desktop", "desktop = false"),
         ] {
             let err = named("dusk", &format!("{kind}{line}\n")).unwrap_err();
@@ -978,6 +977,75 @@ fn proxied_only_keys_are_refused_for_wine_and_native() {
             );
         }
     }
+}
+
+#[test]
+fn every_kind_can_have_a_title() {
+    let wine = "prefix = \"/p\"\nrunner = \"wine\"\narch = \"win64\"\n";
+    for kind in [wine, "kind = \"native\"\n", PROXIED] {
+        let config = named("dusk", &format!("{kind}title = \"Dusk: Ascent\"\n")).unwrap();
+        assert_eq!(config.title.as_deref(), Some("Dusk: Ascent"), "{kind}");
+        let config = named("dusk", kind).unwrap();
+        assert_eq!(config.title, None, "{kind}");
+    }
+    let proxied = named("bg3", &format!("{PROXIED}title = \"Fallback\"\n")).unwrap();
+    assert_eq!(
+        proxied.proxied().unwrap().title.as_deref(),
+        Some("Fallback")
+    );
+}
+
+#[test]
+fn a_title_that_breaks_the_rules_still_loads() {
+    let long = "x".repeat(200);
+    for title in ["  Dusk  ", "", "Dusk\\tAscent", long.as_str()] {
+        let config = named("dusk", &format!("kind = \"native\"\ntitle = \"{title}\"\n")).unwrap();
+        assert!(config.title.is_some(), "{title}");
+    }
+}
+
+#[test]
+fn title_rules() {
+    assert_eq!(normalize_title("  Dusk  ").unwrap(), "Dusk");
+    assert_eq!(normalize_title("Dusk: Ascent").unwrap(), "Dusk: Ascent");
+    for unicode in [
+        "\u{30c0}\u{30b9}\u{30af}",
+        "Caf\u{e9} \u{1f3ae}",
+        "a\u{a0}b",
+    ] {
+        assert_eq!(normalize_title(unicode).unwrap(), unicode);
+    }
+    let empty = "Invalid title: can't be empty.";
+    assert_eq!(normalize_title("").unwrap_err(), empty);
+    assert_eq!(normalize_title(" \t\n ").unwrap_err(), empty);
+    for control in [
+        "Dusk\nAscent",
+        "Dusk\tAscent",
+        "a\u{0}b",
+        "a\u{7f}b",
+        "a\u{85}b",
+    ] {
+        assert_eq!(
+            normalize_title(control).unwrap_err(),
+            "Invalid title: can't contain control characters.",
+            "{control:?}"
+        );
+    }
+    // Characters, not bytes: each of these is three bytes in UTF-8.
+    let wide = "\u{30c0}".repeat(TITLE_MAX_CHARS);
+    assert_eq!(normalize_title(&wide).unwrap(), wide);
+    assert_eq!(
+        normalize_title(&format!("{wide}\u{30c0}")).unwrap_err(),
+        "Invalid title: can't be longer than 120 characters."
+    );
+    // Trimmed before it is counted.
+    assert!(normalize_title(&format!("  {wide}  ")).is_ok());
+
+    assert_eq!(title_problem("Dusk"), None);
+    assert_eq!(
+        title_problem(" Dusk").as_deref(),
+        Some("Invalid title: can't start or end with whitespace.")
+    );
 }
 
 #[test]
