@@ -16,7 +16,11 @@ and oversized preview posters are not implementation requirements.
 - Library posters are 160 x 240 px at 100% zoom with a 2:3 aspect ratio and
   16 px gaps. The zoom runs from 60% to 200% and scales the posters, never
   the gaps or the text (plan
-  [0055](plans/0055-grid-zoom-and-poster-only.md)). Titles and compact
+  [0055](plans/0055-grid-zoom-and-poster-only.md)). The columns are
+  centered in the width beside the panel: whatever doesn't fit another
+  column splits evenly between the left and right margins, rounded down to
+  a whole pixel, so a full row is laid out exactly as before (plan
+  [0056](plans/0056-gui-polish.md)). Titles and compact
   state/playtime metadata sit beneath the art by default; below 90% only
   the title does, and in poster-only the title moves over the art (see
   Poster corners and overlay). Artwork should support browsing without
@@ -226,8 +230,10 @@ column change halfway through a zoom never jumps.
   taking no input. The grid keeps its height until the fades end, and the
   empty message waits for the last one.
 - A zoom step tweens over about 160 ms; a slider drag follows directly.
-  Within one column count a zoom only scales; a column change, the
-  poster-only toggle, and crossing 90% spring.
+  Within one column count a zoom only scales and re-centers; a column
+  change, the poster-only toggle, and crossing 90% spring. A panel dock or
+  undock springs the cards even when the column count stays the same,
+  since the centering shift changes with the width beside the panel.
 - A window resize and the background rescan snap. A rescan that lands
   mid-transition settles it first.
 - A zoom or the toggle keeps the place: the selected card if any of it is
