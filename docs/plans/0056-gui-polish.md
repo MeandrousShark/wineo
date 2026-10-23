@@ -26,7 +26,7 @@ This is queue item 1 in [features.md](../features.md), after
 - The slider's 100% snap is hard to hit; widening it is a trivial patch
   (0055 answer 15, 2026-10-22).
 
-Answers to the first five questions (2026-10-22), numbered as asked:
+Answers to the questions (2026-10-22), numbered as asked:
 
 1. **A favorite's star toggles.** A favorite's filled star is always
    shown, and clicking it unfavorites, exactly as the hover star favorites.
@@ -44,7 +44,6 @@ Answers to the first five questions (2026-10-22), numbered as asked:
 5. **Widen the snap to 8 points in and 11 out** in this plan.
 6. **Center the grid** (A), so the leftover width splits evenly left and
    right and the cards keep their exact zoom sizes.
-
 7. **A `title` key on the environment.** The maintainer expects it to be
    replaced or filled later by IGDB or another metadata integration, so
    the key stays the person's own word: anything a source fills in later
@@ -54,6 +53,10 @@ Answers to the first five questions (2026-10-22), numbered as asked:
    ties falling back to the environment name.
 9. **Up and Down move focus between rows on the choice lists**, Enter
    chooses, and Tab still walks the rows.
+10. **A Steam game keeps its live name.** The `title` key stays a fallback
+    there, as today: Steam's own name wins, and Settings shows the key
+    read-only for a Steam game. The key means the card's title for every
+    other kind.
 
 Added to the plan by the maintainer (2026-10-22), from the polish
 candidates:
@@ -99,11 +102,10 @@ Mapped on 2026-10-22; line numbers are in `crates/wineo-gui/src`.
   so `zoom_to` springs the cards instead of scaling them
   (`grid_motion.rs:525-538`). The title, identifier, and meta row already
   fade with `caption_alpha` (`grid.rs:195-196`, `411-453`), but no per-card
-  scalar for size or height exists. Position springs, fade opacity, and
-  the collapse easter egg's sweep are the only per-card motion.
+  scalar for size or height exists. Position springs and fade opacity are
+  the only per-card motion.
 - **Snap.** `SNAP_IN` 5 and `SNAP_OUT` 7 (`zoom.rs:18-21`), tested in
   `zoom/tests.rs:256-293` and quoted in `gui-style.md:108-109`.
-
 - **Slots.** Cards are placed left to right from the 16 px padding.
   `columns` (`grid_motion.rs:656-660`) floors the columns that fit, and
   `slots` places them from the padding, so the leftover width always sits
@@ -126,33 +128,9 @@ Mapped on 2026-10-22; line numbers are in `crates/wineo-gui/src`.
   `focus_button.rs` has the focusable control, its focus ring, and the
   arrow-key cycling the Sort and Filters menus use.
 
-## Open questions
-
-10. **A Steam environment already has a `title`.** It's one of the
-    proxied-only keys, written at import from the game's Steam name
-    (`steam_import.rs:310`). The card ignores it while Steam knows the
-    game and shows Steam's live name (`library.rs:424-433`); it's only a
-    fallback for when Steam forgets. Widening the key to every kind means
-    it has to mean one thing.
-    ```
-    a Steam game, key written at import: title = "Overwatch 2"
-    you set title = "OW2" in Settings:
-    A. the card keeps showing Steam's live name; the key is only a fallback,
-       and Settings shows it read-only for Steam games
-    B. the card shows "OW2"; the key is what the card shows everywhere,
-       and Steam's live name only fills in when it's unset
-    ```
-    - A. **Steam keeps today's behavior (recommended).** The key means "the
-      card's title" for every kind except Steam, where Steam's own name
-      still wins and the key stays a fallback. Nothing existing changes.
-    - B. One meaning everywhere. A Steam game's card would follow the key
-      written at import, so a game Steam renames later keeps its old title
-      until you edit it; the live name is only used when the key is unset.
-
 ## Proposed design
 
-The shape, with the answers above. Question 10 is open and settles the
-Steam part of the card titles.
+The shape, with the answers above. No questions are open.
 
 ### Poster star
 
@@ -171,9 +149,10 @@ Steam part of the card titles.
 ### Hover fades
 
 - The hover star and the poster-only overlay fade in and out over the
-  grid's 150 ms `FADE` instead of switching at once. One per-card hover
-  progress, driven by `hovered` and `selected`, feeds both. A selected card
-  keeps its overlay.
+  grid's 150 ms `FADE` instead of switching at once. The star follows
+  `hovered`, and the overlay follows `hovered` or `selected`, so a selected
+  card keeps its overlay. One per-card progress value for each, retargeted
+  from where it is, so a quick pass across cards never jumps.
 
 ### Details motion
 
@@ -202,7 +181,8 @@ Steam part of the card titles.
   warning only, as 0053's rules say. For a Wine or native environment the
   card, the panel, and the poster-only overlay show it when it's set,
   then the default target's desktop name as now, then the environment
-  name. A Steam environment follows question 10.
+  name. A Steam environment keeps its live name (answer 10), and Settings
+  shows its key read-only.
 - It's editable on the environment's Settings page and with
   `wineo set title=...`, and it is cleared the same ways. `wineo validate`
   reports an empty or overlong title. GOG imports and migrations fill it
