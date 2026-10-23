@@ -80,6 +80,15 @@ draft, with each point checked against the code.
     the ends instead of wrapping. No row is focused when a list is empty.
 15. **The review findings are folded in** (this revision).
 
+From step 3 (2026-10-22):
+
+16. **Keep the star's room on every card, as built.** Measured: a GOG card
+    with an update pill and a status chip shows the round badge at 80%
+    where it showed a wrapped pill, and in poster-only at 100% the "Finish
+    update" pill wraps where it fit on one line. Every GOG pill has up to
+    28 px less width in its row. The maintainer accepted it, since nothing
+    shifts on hover.
+
 Added to the plan by the maintainer (2026-10-22), from the polish
 candidates:
 
