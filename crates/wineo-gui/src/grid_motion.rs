@@ -309,6 +309,9 @@ pub(crate) struct PlacesKey {
     /// below 90% are measured again too.
     pub(crate) layout: GridLayout,
     pub(crate) columns: usize,
+    /// A width change that keeps the column count still moves every slot
+    /// when it changes the shift.
+    pub(crate) shift: f32,
 }
 
 impl Places {
@@ -316,6 +319,7 @@ impl Places {
         names: Vec<String>,
         heights: &[f32],
         columns: usize,
+        shift: f32,
         layout: GridLayout,
     ) -> Self {
         let columns = columns.max(1);
@@ -323,7 +327,7 @@ impl Places {
             .iter()
             .map(|height| Size::new(layout.card_width, *height))
             .collect();
-        let (points, height) = slots(&sizes, columns, layout);
+        let (points, height) = slots(&sizes, columns, shift, layout);
         Self {
             indices: names
                 .iter()
@@ -659,8 +663,28 @@ fn columns(width: f32, layout: GridLayout) -> usize {
         .max(1.0) as usize
 }
 
+/// How far right every slot moves so the width the columns leave over is
+/// split evenly between the two sides. Whole pixels keep the cards sharp,
+/// and a single column wider than `width` gets no shift rather than a
+/// negative one.
+fn shift(width: f32, layout: GridLayout) -> f32 {
+    let columns = columns(width, layout) as f32;
+    let used = 2.0 * PADDING + columns * layout.card_width + (columns - 1.0) * GAP;
+    ((width - used) / 2.0).floor().max(0.0)
+}
+
+/// The width beside the docked panel, which both the columns and the shift
+/// are measured in.
+fn available(width: f32, open: bool) -> f32 {
+    width - if open { DOCK_WIDTH } else { 0.0 }
+}
+
 pub(crate) fn columns_for_viewport(width: f32, open: bool, layout: GridLayout) -> usize {
-    columns(width - if open { DOCK_WIDTH } else { 0.0 }, layout)
+    columns(available(width, open), layout)
+}
+
+pub(crate) fn shift_for_viewport(width: f32, open: bool, layout: GridLayout) -> f32 {
+    shift(available(width, open), layout)
 }
 
 /// The cards whose rows overlap `top..bottom`, with rows stacked the way
@@ -706,13 +730,13 @@ pub(crate) fn card_tops(heights: &[f32], columns: usize) -> (Vec<f32>, f32) {
     (tops, height)
 }
 
-fn slots(sizes: &[Size], columns: usize, layout: GridLayout) -> (Vec<Point>, f32) {
+fn slots(sizes: &[Size], columns: usize, shift: f32, layout: GridLayout) -> (Vec<Point>, f32) {
     let mut result = Vec::with_capacity(sizes.len());
     let mut y = PADDING;
     for row in sizes.chunks(columns) {
         for (column, _) in row.iter().enumerate() {
             result.push(Point::new(
-                PADDING + column as f32 * (layout.card_width + GAP),
+                PADDING + shift + column as f32 * (layout.card_width + GAP),
                 y,
             ));
         }
@@ -944,8 +968,9 @@ impl<Message: Clone> Widget<Message, Theme, Renderer> for Grid<'_, Message> {
             state.open = self.open;
             state.layout = grid;
             state.sizes = sizes.clone();
-            let columns = columns(width - if self.open { DOCK_WIDTH } else { 0.0 }, grid);
-            state.slots = slots(&sizes, columns, grid).0;
+            let columns = columns_for_viewport(width, self.open, grid);
+            let shift = shift_for_viewport(width, self.open, grid);
+            state.slots = slots(&sizes, columns, shift, grid).0;
         }
         let mut height = (2.0 * PADDING).max(self.hold);
         let collapse = self.scene.as_ref().map(|scene| scene.collapse);
@@ -1429,7 +1454,7 @@ mod tests {
         for (zoom, step) in [(60, 96.0 + GAP), (200, 320.0 + GAP)] {
             let layout = GridLayout::new(zoom);
             let card = Size::new(layout.card_width(), layout.poster_height() + 60.0);
-            let (points, height) = slots(&[card; 5], 2, layout);
+            let (points, height) = slots(&[card; 5], 2, 0.0, layout);
             let xs: Vec<f32> = points.iter().map(|point| point.x).collect();
             assert_eq!(
                 xs,
@@ -1480,7 +1505,7 @@ mod tests {
             .iter()
             .map(|height| Size::new(160.0, *height))
             .collect();
-        let (points, height) = slots(&sizes, 2, GridLayout::default());
+        let (points, height) = slots(&sizes, 2, 0.0, GridLayout::default());
         let (tops, total) = card_tops(&heights, 2);
         assert_eq!(tops, points.iter().map(|point| point.y).collect::<Vec<_>>());
         assert_eq!(total, height);
@@ -1494,7 +1519,7 @@ mod tests {
             Size::new(160.0, 315.0),
             Size::new(160.0, 270.0),
         ];
-        let (points, height) = slots(&sizes, 2, GridLayout::default());
+        let (points, height) = slots(&sizes, 2, 0.0, GridLayout::default());
         assert_eq!(points[2].y, PADDING + 315.0 + GAP);
         assert_eq!(height, PADDING + 315.0 + GAP + 270.0 + PADDING);
     }
@@ -1505,6 +1530,7 @@ mod tests {
             names.iter().map(|name| (*name).to_owned()).collect(),
             &heights,
             columns,
+            0.0,
             layout,
         )
     }

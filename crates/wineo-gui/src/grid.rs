@@ -1601,11 +1601,12 @@ mod tests {
         use crate::layout_probe::{bounds_at, layout};
         let mut app = crate::tests::app();
         app.merge(cards(6));
-        // At 100% the cards keep 0.36.0's places and sizes, and at 150%
-        // they scale with the gap and padding unchanged.
+        // At 100% the cards keep 0.36.0's sizes and spacing, and at 150%
+        // they scale with the gap and padding unchanged. Both rows are
+        // centered: 164 px left over at 100% and 20 px at 150%.
         for (zoom, columns, xs, width, poster) in [
-            (100, 5, vec![16.0, 192.0, 368.0, 544.0, 720.0], 160.0, 240.0),
-            (150, 4, vec![16.0, 272.0, 528.0, 784.0], 240.0, 360.0),
+            (100, 5, vec![98.0, 274.0, 450.0, 626.0, 802.0], 160.0, 240.0),
+            (150, 4, vec![26.0, 282.0, 538.0, 794.0], 240.0, 360.0),
         ] {
             app.zoom = zoom;
             let grid = app.grid_layout();

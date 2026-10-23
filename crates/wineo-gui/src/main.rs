@@ -1365,6 +1365,9 @@ impl App {
     fn columns(&self) -> usize {
         grid_motion::columns_for_viewport(self.viewport_width, self.panel_open, self.grid_layout())
     }
+    fn grid_shift(&self) -> f32 {
+        grid_motion::shift_for_viewport(self.viewport_width, self.panel_open, self.grid_layout())
+    }
     pub(crate) fn grid_layout(&self) -> grid_motion::GridLayout {
         match self.zooming.shown() {
             Some(zoom) => grid_motion::GridLayout::at(zoom),
