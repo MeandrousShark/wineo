@@ -154,9 +154,17 @@ Plan [0054](plans/0054-library-sorting-and-favorites.md) added these.
   rounded strip under the toolbar with the message and at most one neutral
   action (**Open Checkup**). It clears itself when the problem does.
 - Poster marks sit in the poster's top-right corner: a 24 px round chip in
-  black at 55% opacity with a 14 px white icon, a star for a favorite and a
-  crossed-out eye for a hidden game, stacked when both apply. They aren't
-  clickable, and they don't change the card's size.
+  black at 55% opacity with a 14 px white icon, in two slots stacked 4 px
+  apart. The star has the top slot and the crossed-out eye the second, so a
+  hidden card's eye never moves when the star appears. A favorite's filled
+  star is always shown; a plain card shows an outline star there while it's
+  hovered. The star is a button with a 28 px target centered on the chip: a
+  left press toggles the favorite without selecting the card or opening the
+  panel, and a right press still opens the context menu (plan
+  [0056](plans/0056-gui-polish.md)). It has no tooltip, no hover or press
+  styling of its own, and no keyboard focus, since F, the panel star, and
+  the menu are the keyboard paths. The eye isn't clickable, and marks don't
+  change the card's size.
 - A hidden card shown with Show hidden on keeps its color art at 45%
   opacity with a muted title; its marks stay at full strength. Grayscale
   stays the not-installed signal.
@@ -186,7 +194,8 @@ chips, and badges keep their sizes at every zoom.
   inactive, exited, stopped, or not installed; Steam's install and update
   states aren't idle.
 - The GOG pill sits 4 px right of the chip, or in the corner without one.
-  The corner keeps 36 px clear on the right while a mark shows. When the
+  The corner keeps 36 px clear on the right on every card, so nothing shifts
+  when the hover star appears. When the
   pill's longest word can't fit on one line in that room, it becomes a
   24 px badge instead: a circle in the pill's color with a 14 px down arrow
   in its ink color. The panel keeps the words. At 60 to 62% with a chip,
