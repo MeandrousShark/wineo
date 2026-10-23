@@ -9,6 +9,11 @@ schema_version = 1
 # runner, arch, gameid, store, dxvk, vkd3d, wayland, and winetricks are refused.
 kind = "native"
 
+# The name the desktop app's card shows. Trimmed, at most 120 characters,
+# no control characters. Default: the desktop entry's name, then the
+# environment name.
+# title = "RimWorld"
+
 # Tags for filtering with `wineo list --tag`. Default: none.
 # tags = ["game", "co-op"]
 

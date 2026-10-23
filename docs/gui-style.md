@@ -75,7 +75,13 @@ Discard stay neutral. A disabled main action keeps its accent and dims. A
 dialog that confirms Remove uses danger, like the context menu row. Back
 buttons say **Back**, with no arrow. Lists of choices, like **Add**'s or a
 program list, use quiet full-width rows in one grouped surface, not
-buttons.
+buttons. The rows take keyboard focus with the usual outline, on Add, New's
+program list, Heroic's and GOG's lists, and the version picker (plan
+[0056](plans/0056-gui-polish.md)): the first row has focus when a list
+appears, Up and Down move between rows and stop at the ends, Enter or Space
+chooses, and Ctrl+Enter still submits the dialog without choosing the row.
+When a list changes, focus stays on the same row if it is still there and
+moves to the nearest otherwise.
 
 Scrollbars use a thin rail: 6 px wide with a 4 px thumb in the border color
 and no visible track. Outside the Library the thumb is always shown, so a

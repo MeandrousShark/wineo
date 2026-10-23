@@ -18,8 +18,10 @@ launcher = "steam"
 # Required. The game's id in its launcher, as a string.
 app_id = "1086940"
 
-# The game's title, shown when the launcher no longer knows the game.
-# Default: unset.
+# The game's title, shown when the launcher no longer knows the game. The
+# card uses the launcher's own name while it knows the game. The same rules
+# as other kinds apply: trimmed, at most 120 characters, no control
+# characters (`wineo validate` warns otherwise). Default: unset.
 # title = "Baldur's Gate 3"
 
 # Tags for filtering with `wineo list --tag`. Default: none.

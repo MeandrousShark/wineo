@@ -100,7 +100,7 @@ hold. See [Native Linux games](native.md).
 `kind = "proxied"` makes an environment a game another launcher installs,
 launches, and owns. `launcher` names the launcher, only `steam` for now, and
 `app_id` is the game's id there, as a string. A proxied config can also hold
-`title`, `tags`, `[hooks]`, and a top-level `desktop` switch, which defaults
+`title` (see [Title](#title)), `tags`, `[hooks]`, and a top-level `desktop` switch, which defaults
 to `false`. Every Wine and native key is refused, as is `[targets]`:
 
 ```
@@ -177,6 +177,39 @@ wineo set hades --unset tags
 Several `--tag` flags list only environments with all of them. When nothing
 matches, `list` prints `No environments are tagged game` and exits 0.
 `status NAME` shows a `tags` line, and `--tag` completes the tags in use.
+
+## Title
+
+`title` is the name a game's card shows in the desktop app. It works on every
+kind of environment and needed no schema bump. A Wine or native environment
+has none until you set one; a Steam environment gets one at import, as the
+fallback for when Steam no longer knows the game.
+
+The card, the details panel, and the poster-only overlay show, in order, your
+`title`, a Steam game's name from Steam, the default target's desktop entry
+name, and then the environment name. The desktop entry keeps its own name, so
+a card's title can differ from it. Search matches the title and the
+environment name, and sorting by name uses the shown title. The CLI keeps
+using the environment name, which is what commands take.
+
+Wineo never writes a title for you, except the Steam import's fallback. A
+title is trimmed, can't be empty, can't hold control characters, and is at
+most 120 characters (counted as characters, not bytes). Any other Unicode is
+fine. `wineo set` and the Settings page enforce those rules. A title written
+by hand that breaks them still loads, and `wineo validate` warns about it
+(`title_invalid`) without changing the file.
+
+```sh
+wineo set rimworld title=RimWorld
+wineo set rimworld --unset title
+```
+
+On a Steam game, Settings shows the key read-only, and the card keeps using
+Steam's own name. A released wineo from before this key only knew `title` as a
+Steam-only key and refuses it on a Wine or native config, so going back to an
+older release means removing the key first (see
+[Unknown keys](#unknown-keys)). Templates don't take a `title`, since one
+template serves many games.
 
 ## Winetricks dependencies
 
@@ -322,7 +355,8 @@ works, but going the other way isn't promised.
 
 Settings that only change how the desktop app shows your library, like
 favorites or the sort order, stay out of these files, so that going back to
-an older release only loses those preferences. They live in `library.toml`
+an older release only loses those preferences. The one exception is
+[`title`](#title), which is the game's own name and lives in its config. They live in `library.toml`
 (see [Library state](#library-state)), which ignores keys it doesn't know.
 
 ## Library state

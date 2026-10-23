@@ -35,8 +35,9 @@ Each environment gets a card with its grid art, or its name when it has
 none. Posters are 160 x 240 px at the usual size (see
 [Zoom and poster-only](#zoom-and-poster-only)), with the title and compact
 metadata below.
-The title comes from the default target's explicit desktop entry name when
-that entry is enabled. Otherwise it uses the environment name. The environment
+The title is the one you set in Settings, then a Steam game's name from
+Steam, then the default target's explicit desktop entry name when that entry
+is enabled, and otherwise the environment name. The environment
 name remains visible as muted context when different, and choosing another
 launch target does not rename the card.
 Art comes from `wineo art`, using the default target's art when it
@@ -66,7 +67,7 @@ the one Steam has, and its playtime is Steam's total, with `-` for sessions.
 The library refreshes every 2 seconds, so a game started or stopped from
 the CLI shows up without doing anything.
 
-Type in the search field to filter by desktop title, environment name, or
+Type in the search field to filter by card title, environment name, or
 tag, so `rpg` finds games tagged `rpg`.
 
 ### Sorting
@@ -708,6 +709,11 @@ button, and the page reloads once the file is fixed.
 
 ### Environment settings
 
+- **Card:** the **Title** the library card, the panel, and the poster-only
+  overlay show. Leave it empty to use the desktop entry's name or the
+  environment name, which the field shows as its placeholder. It is trimmed,
+  at most 120 characters, with no control characters; Save stays off until
+  it fits.
 - **Runner:** the runner, from the installed ones, the system wine, and
   aliases like `GE-Proton-Latest`. Switching between Wine and Proton is
   refused, since their prefixes aren't compatible. Arch is shown but can't
@@ -740,7 +746,9 @@ button, and the page reloads once the file is fixed.
 
 Native environments only show what they can use. A Steam game's page has
 only **Tags**, **Title**, and **Desktop entry**, since Steam owns
-everything else. Paths typed on the page
+everything else. Its **Title** is read-only: it shows the saved fallback, or
+**Not set**, and says it's used when Steam doesn't know the game. The card
+keeps Steam's own name. Paths typed on the page
 have to be absolute or start with `~/`, except inside a portable folder.
 
 Long runner names shorten in the middle to keep dropdowns on one row.
@@ -823,6 +831,19 @@ In the Sort menu and the Filters popup, which take every key while open:
 | Arrow keys, Tab, Shift+Tab | Move between rows |
 | Enter, Space | Pick a sort, or toggle a check box or tag |
 | Esc | Close the menu and go back to its button |
+
+In the choice lists on **Add**, New's program list, the Heroic and GOG
+lists, and the version picker:
+
+| Key | Does |
+|---|---|
+| Up, Down | Move between rows, stopping at the first and last |
+| Enter, Space | Choose the row |
+| Tab, Shift+Tab | Walk through the rows with the dialog's other controls |
+| Ctrl+Enter | Submit the dialog, without choosing the row |
+
+The first row has focus when a list appears, and **Add**'s 1 to 5 keys still
+work with a row focused.
 
 In the SteamGridDB picker:
 

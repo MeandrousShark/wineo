@@ -18,6 +18,11 @@ runner = "GE-Proton-Latest"
 # Required. `win64` or `win32`. Proton is always win64.
 arch = "win64"
 
+# The name the desktop app's card shows. Trimmed, at most 120 characters,
+# no control characters. Default: the desktop entry's name, then the
+# environment name.
+# title = "My Game"
+
 # Tags for filtering with `wineo list --tag`. Default: none.
 # tags = ["game", "co-op"]
 

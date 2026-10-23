@@ -340,7 +340,7 @@ The codes are stable:
 | `config` | `deprecated_key` |
 | `global_config` | `global_config_invalid` |
 | `template` | `template_invalid`, `template_unresolved` |
-| `environment_config` | `environment_config_invalid` |
+| `environment_config` | `environment_config_invalid`, `title_invalid` |
 | `wine` | `runner_missing`, `build_missing`, `prefix_missing`, `prefix_refused`, `winetricks_missing`, `winetricks_unavailable` |
 | `target` | `exe_missing`, `cwd_missing`, `gamemode_missing`, `gamescope_missing`, `mangohud_missing`, `wayland_unsupported` |
 | `native_target` | `native_exe_invalid` |
