@@ -190,6 +190,22 @@ fn editor_view<'a>(
         return proxied_editor_view(editor, proxied, locked, palette);
     }
     let mut sections = column![].spacing(24).width(Fill);
+    sections = sections.push(section(
+        "Card",
+        setting_row(
+            "Title",
+            text_field(
+                &shown_title(name, draft),
+                draft.title.as_deref().unwrap_or_default(),
+                locked,
+                |title| send(Event::Title(title)),
+                palette,
+            ),
+            None,
+            palette,
+        ),
+        palette,
+    ));
     if !info.native {
         let runner = super::runner_picker::picker(
             &info.runners,
@@ -309,23 +325,37 @@ fn editor_view<'a>(
     sections.into()
 }
 
+/// What the card shows without a title of its own: the default target's
+/// desktop-entry name, or the environment name.
+fn shown_title(name: &str, draft: &form::Values) -> String {
+    draft
+        .default_target
+        .as_ref()
+        .and_then(|target| draft.targets.get(target))
+        .filter(|target| target.desktop && !target.name.is_empty())
+        .map_or(name, |target| target.name.as_str())
+        .to_owned()
+}
+
 fn proxied_editor_view<'a>(
     editor: &'a Editor,
     proxied: &'a form::ProxiedValues,
     locked: bool,
     palette: Palette,
 ) -> Element<'a, Message> {
+    // The card shows Steam's own name, so the key is only the import's
+    // fallback and isn't edited here.
+    let title = editor.form.draft.title.as_deref().unwrap_or("Not set");
     let game = column![
         setting_row(
             "Title",
-            text_field(
-                "Steam game title",
-                proxied.title.as_deref().unwrap_or_default(),
-                locked,
-                |title| send(Event::ProxiedTitle(title)),
-                palette,
+            locked_choice(title, palette),
+            Some(
+                text("used when Steam doesn't know the game")
+                    .size(13)
+                    .color(palette.muted)
+                    .into()
             ),
-            None,
             palette,
         ),
         switch_row(

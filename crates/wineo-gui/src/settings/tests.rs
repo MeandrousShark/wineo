@@ -1307,26 +1307,24 @@ fn a_proxied_environment_gets_the_reduced_form() {
 
     let draft = &editor(&page).form.draft;
     assert_eq!(draft.tags, ["rpg"]);
+    assert_eq!(draft.title.as_deref(), Some("Old title"));
     let proxied = draft.proxied.as_ref().expect("proxied settings");
-    assert_eq!(proxied.title.as_deref(), Some("Old title"));
     assert!(!proxied.desktop);
 
     for event in [
-        Event::ProxiedTitle("New title".to_owned()),
         Event::ListInput(List::Tags, "coop".to_owned()),
         Event::ListAdd(List::Tags),
         Event::ProxiedDesktop(true),
     ] {
         let _ = page.update(&paths, event);
     }
-    assert_eq!(page.changes(), 3);
+    assert_eq!(page.changes(), 2);
     assert!(page.can_save());
     let edits = editor(&page).form.edits();
     assert_eq!(
         edits.pairs,
         [
             ("tags".to_owned(), "[\"rpg\", \"coop\"]".to_owned()),
-            ("title".to_owned(), "New title".to_owned()),
             ("desktop".to_owned(), "true".to_owned()),
         ]
     );
@@ -1345,37 +1343,160 @@ fn a_proxied_environment_gets_the_reduced_form() {
             .unwrap();
     assert_eq!(config.tags, ["rpg", "coop"]);
     let proxied = config.proxied().unwrap();
-    assert_eq!(proxied.title.as_deref(), Some("New title"));
+    assert_eq!(proxied.title.as_deref(), Some("Old title"));
     assert!(proxied.desktop);
 }
 
 #[test]
-fn clearing_a_proxied_title_unsets_the_config_key() {
+fn a_steam_title_is_read_only_in_settings() {
     let (_root, paths) = setup();
-    write(
-        &paths,
-        "kind = 'proxied'\nlauncher = 'steam'\napp_id = '1086940'\ntitle = 'Old title'\n",
-    );
+    let text = "kind = 'proxied'\nlauncher = 'steam'\napp_id = '1086940'\ntitle = 'Old title'\n";
+    write(&paths, text);
     let mut page = page(&paths);
-    let _ = page.update(&paths, Event::ProxiedTitle(String::new()));
-    assert_eq!(page.changes(), 1);
-    assert!(page.can_save());
+    for typed in ["", "New title"] {
+        let _ = page.update(&paths, Event::Title(typed.to_owned()));
+        assert_eq!(page.changes(), 0, "{typed}");
+        assert!(!page.can_save());
+        assert_eq!(editor(&page).form.draft.title.as_deref(), Some("Old title"));
+        assert_eq!(editor(&page).form.edits(), form::Edits::default());
+    }
     assert_eq!(
-        editor(&page).form.draft.proxied.as_ref().unwrap().title,
-        None
+        fs::read_to_string(paths.environment_config("game")).unwrap(),
+        text
     );
-    let edits = editor(&page).form.edits();
-    assert!(edits.pairs.is_empty());
-    assert_eq!(edits.unset, ["title"]);
-    let report = load::save(&paths, "game", &edits).unwrap();
-    assert_eq!(report.failed, None);
+}
 
-    let saved = fs::read_to_string(paths.environment_config("game")).unwrap();
-    let config =
-        wineo_core::config::EnvironmentConfig::parse(&paths.environment_config("game"), &saved)
-            .unwrap();
-    assert_eq!(config.proxied().unwrap().title, None);
-    assert!(!saved.contains("title ="));
+const NATIVE_GAME: &str = "# my game\nkind = 'native' # mine\n";
+
+fn saved_title(paths: &Paths) -> (String, Option<String>) {
+    let path = paths.environment_config("game");
+    let text = fs::read_to_string(&path).unwrap();
+    let title = wineo_core::config::EnvironmentConfig::parse(&path, &text)
+        .unwrap()
+        .title;
+    (text, title)
+}
+
+#[test]
+fn a_title_is_tracked_saved_and_cleared_on_wine_and_native() {
+    for original in [GAME, NATIVE_GAME] {
+        let (_root, paths) = setup();
+        write(&paths, original);
+        let mut new = page(&paths);
+        assert_eq!(editor(&new).form.draft.title, None);
+
+        let _ = new.update(&paths, Event::Title("  Dusk: Ascent \u{1f3ae} ".to_owned()));
+        assert_eq!(new.changes(), 1);
+        assert!(new.can_save());
+        let edits = editor(&new).form.edits();
+        assert_eq!(
+            edits.pairs,
+            [("title".to_owned(), "Dusk: Ascent \u{1f3ae}".to_owned())]
+        );
+        assert!(edits.unset.is_empty());
+        assert_eq!(load::save(&paths, "game", &edits).unwrap().failed, None);
+        let (text, title) = saved_title(&paths);
+        assert_eq!(title.as_deref(), Some("Dusk: Ascent \u{1f3ae}"));
+        assert!(text.starts_with("# my game\n"), "{text}");
+
+        let mut page = page(&paths);
+        assert_eq!(
+            editor(&page).form.draft.title.as_deref(),
+            Some("Dusk: Ascent \u{1f3ae}")
+        );
+        // Only spaces trimming drops is no change.
+        let _ = page.update(&paths, Event::Title(" Dusk: Ascent \u{1f3ae}".to_owned()));
+        assert_eq!(page.changes(), 0);
+        let _ = page.update(&paths, Event::Title("   ".to_owned()));
+        assert_eq!(page.changes(), 1);
+        let _ = page.update(&paths, Event::Title(String::new()));
+        assert_eq!(page.changes(), 1);
+        let edits = editor(&page).form.edits();
+        assert!(edits.pairs.is_empty());
+        assert_eq!(edits.unset, ["title"]);
+        assert_eq!(load::save(&paths, "game", &edits).unwrap().failed, None);
+        let (text, title) = saved_title(&paths);
+        assert_eq!(title, None);
+        assert!(!text.contains("title"), "{text}");
+        assert!(text.starts_with("# my game\n"), "{text}");
+    }
+}
+
+#[test]
+fn a_title_that_breaks_the_rules_turns_save_off() {
+    let (_root, paths) = setup();
+    write(&paths, NATIVE_GAME);
+    let mut page = page(&paths);
+    let fits = "\u{e9}".repeat(120);
+    let _ = page.update(&paths, Event::Title(fits.clone()));
+    assert!(page.can_save());
+    assert_eq!(page.problem(), None);
+    for (typed, problem) in [
+        (
+            format!("{fits}\u{e9}"),
+            "Invalid title: can't be longer than 120 characters.",
+        ),
+        (
+            "Dusk\tAscent".to_owned(),
+            "Invalid title: can't contain control characters.",
+        ),
+    ] {
+        let _ = page.update(&paths, Event::Title(typed));
+        assert_eq!(page.changes(), 1);
+        assert!(!page.can_save());
+        assert_eq!(page.problem().as_deref(), Some(problem));
+    }
+}
+
+#[test]
+fn a_hand_written_title_is_left_alone_until_edited() {
+    let (_root, paths) = setup();
+    let text = "# legacy\nkind = 'native'\ntitle = '  Padded  ' # mine\n";
+    write(&paths, text);
+    let mut page = page(&paths);
+    assert_eq!(page.changes(), 0);
+    assert_eq!(page.problem(), None);
+    load::save(&paths, "game", &editor(&page).form.edits()).unwrap();
+    assert_eq!(
+        fs::read_to_string(paths.environment_config("game")).unwrap(),
+        text
+    );
+    // An unrelated edit doesn't touch it either.
+    let _ = page.update(&paths, Event::Switch(Switch::Mangohud, true));
+    let edits = editor(&page).form.edits();
+    assert_eq!(edits.pairs, [("mangohud".to_owned(), "true".to_owned())]);
+    // Typing it trimmed is a change, and saves the trimmed title.
+    let _ = page.update(&paths, Event::Title("Padded".to_owned()));
+    assert_eq!(page.changes(), 2);
+    let edits = editor(&page).form.edits();
+    assert_eq!(edits.pairs[1], ("title".to_owned(), "Padded".to_owned()));
+    load::save(&paths, "game", &edits).unwrap();
+    let (saved, title) = saved_title(&paths);
+    assert_eq!(title.as_deref(), Some("Padded"));
+    assert!(saved.contains("title = \"Padded\" # mine"), "{saved}");
+}
+
+#[test]
+fn a_typed_title_survives_a_change_on_disk() {
+    let (_root, paths) = setup();
+    write(&paths, NATIVE_GAME);
+    let mut page = page(&paths);
+    let _ = page.update(&paths, Event::Title("Mine".to_owned()));
+    write(&paths, &format!("{NATIVE_GAME}title = 'Theirs'\n"));
+    check(&mut page, &paths);
+    assert!(page.changed_on_disk && !page.can_save());
+    assert_eq!(editor(&page).form.draft.title.as_deref(), Some("Mine"));
+    let _ = page.update(&paths, Event::Reload);
+    land(&mut page, &paths);
+    assert!(!page.changed_on_disk && !page.is_dirty());
+    assert_eq!(editor(&page).form.draft.title.as_deref(), Some("Theirs"));
+
+    // Without edits, a title changed on disk just reloads.
+    write(&paths, &format!("{NATIVE_GAME}title = 'Third'\n"));
+    check(&mut page, &paths);
+    land(&mut page, &paths);
+    assert!(!page.changed_on_disk);
+    assert_eq!(editor(&page).form.draft.title.as_deref(), Some("Third"));
 }
 
 #[test]

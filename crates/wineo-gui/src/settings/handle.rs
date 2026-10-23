@@ -101,7 +101,7 @@ impl Page {
                 }
                 Step::none()
             }
-            Event::ProxiedTitle(title) => self.proxied_title(title),
+            Event::Title(title) => self.title(title),
             Event::ProxiedDesktop(desktop) => self.proxied_desktop(desktop),
             Event::ListAdd(list) => self.list_add(list),
             Event::ListRemove(list, index) => {

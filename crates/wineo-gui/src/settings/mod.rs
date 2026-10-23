@@ -47,7 +47,7 @@ pub(crate) enum Event {
     ListInput(List, String),
     ListAdd(List),
     ListRemove(List, usize),
-    ProxiedTitle(String),
+    Title(String),
     ProxiedDesktop(bool),
     EnvKey(usize, String),
     EnvValue(usize, String),
@@ -231,7 +231,7 @@ impl Event {
                 | Event::ListInput(..)
                 | Event::ListAdd(_)
                 | Event::ListRemove(..)
-                | Event::ProxiedTitle(_)
+                | Event::Title(_)
                 | Event::ProxiedDesktop(_)
                 | Event::EnvKey(..)
                 | Event::EnvValue(..)

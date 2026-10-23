@@ -1,4 +1,4 @@
-//! Edits to the environment's runner, builds, lists and proxied entry.
+//! Edits to the environment's runner, builds, lists, title, and proxied entry.
 
 use wineo_core::components::Component;
 
@@ -49,11 +49,13 @@ impl Page {
         }
         Step::none()
     }
-    pub(super) fn proxied_title(&mut self, title: String) -> Step {
-        if let Some(proxied) = self.draft().and_then(|draft| draft.proxied.as_mut()) {
+    /// A Steam game's title is read-only here, so only Wine and native
+    /// environments take one.
+    pub(super) fn title(&mut self, title: String) -> Step {
+        if let Some(draft) = self.draft().filter(|draft| draft.proxied.is_none()) {
             let title = (!title.is_empty()).then_some(title);
-            if proxied.title != title {
-                proxied.title = title;
+            if draft.title != title {
+                draft.title = title;
                 self.edited();
             }
         }

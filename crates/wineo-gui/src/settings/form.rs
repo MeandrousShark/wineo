@@ -357,13 +357,15 @@ pub(crate) struct Values {
     pub(crate) targets: BTreeMap<String, TargetValues>,
     /// The target marked `default`. Core allows only one.
     pub(crate) default_target: Option<String>,
+    /// The card's title as written, or as typed in the draft. An empty field
+    /// is None. A Steam game's is the import's fallback, shown read-only.
+    pub(crate) title: Option<String>,
     /// Settings that exist only on a proxied environment.
     pub(crate) proxied: Option<ProxiedValues>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ProxiedValues {
-    pub(crate) title: Option<String>,
     pub(crate) desktop: bool,
 }
 
@@ -376,7 +378,6 @@ impl Values {
         let wine = config.wine();
         let proxied = match &config.kind {
             Kind::Proxied(proxied) => Some(ProxiedValues {
-                title: proxied.title.clone(),
                 desktop: proxied.desktop,
             }),
             Kind::Wine(_) | Kind::Native => None,
@@ -414,6 +415,7 @@ impl Values {
                 .iter()
                 .find(|(_, target)| target.default)
                 .map(|(name, _)| name.clone()),
+            title: config.title.clone(),
             proxied,
         }
     }
@@ -768,8 +770,8 @@ impl Form {
         .into_iter()
         .filter(|changed| *changed)
         .count();
+        count += usize::from(self.title_edit().is_some());
         if let (Some(before), Some(after)) = (&loaded.proxied, &draft.proxied) {
-            count += usize::from(before.title != after.title);
             count += usize::from(before.desktop != after.desktop);
         }
         let (before, after) = (loaded.env_map(), draft.env_map());
@@ -823,7 +825,27 @@ impl Form {
         if runner_known && draft.vkd3d.is_some() && draft.dxvk.is_none() {
             return Some(VKD3D_NEEDS_DXVK.to_owned());
         }
+        if let Some(Some(title)) = self.title_edit() {
+            return wineo_core::config::normalize_title(&title).err();
+        }
         None
+    }
+    /// What saving writes to `title`: Some(None) to clear it, Some(Some) to
+    /// set it trimmed, or None for no change. Untouched, a hand-written title
+    /// that breaks the rules is left alone, and a typed one that only differs
+    /// in the spaces trimming drops is no change. A Steam game's is never
+    /// edited here.
+    pub(crate) fn title_edit(&self) -> Option<Option<String>> {
+        let (loaded, draft) = (&self.loaded, &self.draft);
+        if draft.proxied.is_some() || draft.title == loaded.title {
+            return None;
+        }
+        let typed = draft
+            .title
+            .as_deref()
+            .map(str::trim)
+            .filter(|title| !title.is_empty());
+        (typed != loaded.title.as_deref()).then(|| typed.map(str::to_owned))
     }
     pub(crate) fn protonfixes_problem(&self) -> Option<&'static str> {
         let (loaded, draft) = (&self.loaded, &self.draft);
@@ -1141,16 +1163,16 @@ impl Form {
                 );
             }
         }
-        if let (Some(before), Some(after)) = (&loaded.proxied, &draft.proxied) {
-            if before.title != after.title {
-                edits.write("title".to_owned(), after.title.clone());
-            }
-            if before.desktop != after.desktop {
-                edits.write(
-                    "desktop".to_owned(),
-                    after.desktop.then(|| "true".to_owned()),
-                );
-            }
+        if let Some(title) = self.title_edit() {
+            edits.write("title".to_owned(), title);
+        }
+        if let (Some(before), Some(after)) = (&loaded.proxied, &draft.proxied)
+            && before.desktop != after.desktop
+        {
+            edits.write(
+                "desktop".to_owned(),
+                after.desktop.then(|| "true".to_owned()),
+            );
         }
         // Values are taken as written, so nothing here needs quoting. A
         // rename is the old name unset and the new one set.
