@@ -1477,6 +1477,9 @@ fn truncate_name(name: &str, max_width: f32) -> String {
 mod poster_tests;
 
 #[cfg(test)]
+mod star_tests;
+
+#[cfg(test)]
 mod tests {
 
     #[test]
