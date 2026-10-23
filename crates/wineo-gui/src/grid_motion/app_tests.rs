@@ -591,3 +591,171 @@ fn places_are_measured_again_only_when_their_inputs_change() {
         assert!(std::rc::Rc::ptr_eq(&after, &app.grid_places()), "{change}");
     }
 }
+
+/// Resizes the window so the library's viewport is `width` wide.
+fn resize(app: &mut App, width: f32) -> Task<Message> {
+    app.update(Message::Window(iced::window::Event::Resized(Size::new(
+        width + crate::sidebar::WIDTH,
+        800.0,
+    ))))
+}
+
+/// Each shown card's place as the widget lays it out now.
+fn laid_places(app: &App) -> Vec<Rectangle> {
+    let node = grid_node(app);
+    (0..app.filtered().len())
+        .map(|index| bounds_at(&node, &[index]))
+        .collect()
+}
+
+#[test]
+fn the_widget_and_the_places_center_the_cards_alike_at_every_width() {
+    let (_root, mut app) = fixture(&named("game", 12));
+    for open in [false, true] {
+        if open {
+            let _ = app.update(Message::Select("game-00".into()));
+            let _ = settle_grid(&mut app);
+            assert!(app.panel_open);
+        }
+        let mut shifts = std::collections::HashSet::new();
+        for zoom in [60, 100, 200] {
+            app.zoom = zoom;
+            for width in (900..=2400).step_by(53) {
+                let width = width as f32;
+                let _ = resize(&mut app, width);
+                assert_eq!(app.viewport_width, width);
+                let places = app.grid_places();
+                let shift = app.grid_shift();
+                shifts.insert(shift as u32);
+                let layout = places.layout;
+                let step = layout.card_width() + super::GAP;
+                for (index, slot) in places.slots.iter().enumerate() {
+                    let column = (index % places.columns) as f32;
+                    assert_eq!(slot.x, super::PADDING + shift + column * step);
+                }
+                assert_eq!(
+                    laid_places(&app),
+                    places.slots,
+                    "{zoom}% at {width}, open {open}"
+                );
+                // A full row's margins match, give or take the odd pixel.
+                let available = width - if open { super::DOCK_WIDTH } else { 0.0 };
+                let left = places.slots[0].x;
+                let row = places.columns as f32 * step - super::GAP;
+                let right = available - (left + row);
+                assert!(
+                    (0.0..2.0).contains(&(right - left)),
+                    "{zoom}% at {width}, open {open}: {left} and {right}"
+                );
+            }
+        }
+        assert!(shifts.len() > 10, "{shifts:?}");
+    }
+}
+
+#[test]
+fn a_resize_that_keeps_the_columns_moves_the_places_with_the_shift() {
+    let (_root, mut app) = fixture(&named("game", 12));
+    let _ = resize(&mut app, 1000.0);
+    assert_eq!((app.columns(), app.grid_shift()), (5, 52.0));
+    let before = app.grid_places();
+    // Mid-motion, the resize snaps as always, to places measured again.
+    let _ = flip(&mut app);
+    assert!(app.grid_motion.active());
+    let flipped = app.grid_places();
+    let _ = resize(&mut app, 1040.0);
+    assert!(!app.grid_motion.active());
+    assert_eq!((app.columns(), app.grid_shift()), (5, 72.0));
+    let after = app.grid_places();
+    assert!(!std::rc::Rc::ptr_eq(&flipped, &after));
+    for (old, new) in flipped.slots.iter().zip(&after.slots) {
+        assert_eq!(new.x - old.x, 20.0);
+        assert_eq!(new.y, old.y);
+    }
+    assert_eq!(before.slots[0].x, 68.0);
+    assert_eq!(after.slots[0].x, 88.0);
+    assert_eq!(app.grid_motion.shown(&after), after.slots);
+    assert_eq!(laid_places(&app), after.slots);
+}
+
+#[test]
+fn a_dock_without_a_column_change_springs_to_the_centered_slots() {
+    let (_root, mut app) = fixture(&named("game", 6));
+    // At 200% a 600 px viewport holds one column either way, centered
+    // with the panel closed and at the padding beside it.
+    app.zoom = 200;
+    let _ = resize(&mut app, 600.0);
+    assert_eq!((app.columns(), app.grid_shift()), (1, 124.0));
+    let closed = app.grid_places();
+    assert_eq!(closed.slots[0].x, 140.0);
+    for (open, message, from, to) in [
+        (true, Message::Select("game-00".into()), 140.0, 16.0),
+        (false, Message::ClosePanel, 16.0, 140.0),
+    ] {
+        let _ = app.update(message);
+        assert_eq!(app.panel_open, open);
+        assert_eq!(app.columns(), 1);
+        let places = app.grid_places();
+        assert_eq!(places.slots[0].x, to);
+        assert!(app.grid_motion.active(), "open {open}");
+        assert_eq!(frames(&app), 1);
+        // Every card sets out from where it was drawn.
+        let x = |app: &App| app.grid_motion.shown(&app.grid_places())[3].x;
+        assert_eq!(x(&app), from);
+        assert_eq!(laid_places(&app)[3].x, from);
+        let generation = app.grid_motion.generation();
+        let _ = app.update(Message::GridTick(
+            generation,
+            Instant::now() + Duration::from_millis(60),
+        ));
+        assert!(app.grid_motion.active());
+        let mid = x(&app);
+        assert!(mid > 16.0 && mid < 140.0, "{mid}");
+        let _ = settle_grid(&mut app);
+        assert!(!app.grid_motion.active());
+        assert_eq!(frames(&app), 0);
+        assert_eq!(app.grid_motion.shown(&places), places.slots);
+        assert_eq!(laid_places(&app), places.slots);
+    }
+}
+
+#[test]
+fn a_zoom_keeps_the_selection_in_place_while_the_shift_changes() {
+    let (_root, mut app) = fixture(&named("game", 60));
+    let _ = resize(&mut app, 1060.0);
+    let places = app.grid_places();
+    app.scroll_offset = places.slots[22].y - 100.0;
+    app.selected = Some("game-22".into());
+    let mut shifts = Vec::new();
+    for raw in [120.0, 125.0, 135.0, 150.0, 170.0, 200.0, 150.0, 120.0] {
+        let _ = app.update(Message::Zoom(crate::zoom::Event::Drag(raw)));
+        shifts.push(app.grid_shift());
+        for settle in [false, true] {
+            if settle {
+                let _ = settle_grid(&mut app);
+            }
+            let top = tops_in_view(&app)[22];
+            assert!((top - 100.0).abs() < 0.01, "{raw}%: {top}");
+            let places = app.grid_places();
+            let drawn = app.grid_motion.shown(&places);
+            assert_eq!(laid_places(&app), drawn, "{raw}%");
+        }
+        let places = app.grid_places();
+        assert_eq!(places.slots[0].x, super::PADDING + app.grid_shift());
+    }
+    let _ = app.update(Message::Zoom(crate::zoom::Event::DragEnded));
+    shifts.dedup();
+    assert!(shifts.len() > 4, "{shifts:?}");
+}
+
+#[test]
+fn an_exactly_full_row_keeps_the_old_places() {
+    let (_root, mut app) = fixture(&named("game", 7));
+    // Five 160 px cards and their gaps fill 896 px with nothing over.
+    let _ = resize(&mut app, 896.0);
+    assert_eq!(app.grid_shift(), 0.0);
+    let xs: Vec<f32> = app.grid_places().slots.iter().map(|slot| slot.x).collect();
+    assert_eq!(xs, [16.0, 192.0, 368.0, 544.0, 720.0, 16.0, 192.0]);
+    let laid: Vec<f32> = laid_places(&app).iter().map(|slot| slot.x).collect();
+    assert_eq!(laid, xs);
+}

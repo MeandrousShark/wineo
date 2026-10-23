@@ -1793,6 +1793,52 @@ mod tests {
     }
 
     #[test]
+    fn the_window_draws_the_centered_cards_where_the_app_places_them() {
+        let mut app = crate::tests::app();
+        // Enough rows that the scrollbar shows, so a width it took from the
+        // grid would put the cards off the app's places.
+        app.merge(cards(120));
+        let check = |app: &App, label: &str| {
+            let mut laid = crate::layout_probe::lay_out(app.view(), app.window_size);
+            let found = std::sync::Arc::default();
+            laid.run(Box::new(Placed {
+                ids: app
+                    .filtered()
+                    .iter()
+                    .map(|card| iced::widget::Id::from(format!("library-card:{}", card.name)))
+                    .collect(),
+                found: std::sync::Arc::clone(&found),
+            }));
+            let (viewport, cards) = std::mem::take(&mut *found.lock().unwrap());
+            let viewport = viewport.expect("the library scrollable");
+            assert_eq!(viewport.width, app.viewport_width, "{label}");
+            let places = app.grid_places();
+            assert!(app.grid_shift() > 0.0, "{label}");
+            assert_eq!(cards.len(), places.slots.len(), "{label}");
+            for (card, slot) in cards.iter().zip(&places.slots) {
+                assert_eq!(card.x - viewport.x, slot.x, "{label}");
+            }
+        };
+        for zoom in [60, 100, 150, 200] {
+            app.zoom = zoom;
+            for width in [1100.0, 1237.0, 1510.0] {
+                let _ = app.window_resized(Size::new(width, 800.0));
+                check(&app, &format!("{zoom}% at {width}"));
+            }
+        }
+        let _ = app.update(Message::Select(app.cards[0].name.clone()));
+        let _ = crate::tests::settle_grid(&mut app);
+        assert!(app.panel_open && !app.grid_motion.active());
+        for zoom in [60, 100, 150, 200] {
+            app.zoom = zoom;
+            for width in [1500.0, 1637.0, 1900.0] {
+                let _ = app.window_resized(Size::new(width, 800.0));
+                check(&app, &format!("{zoom}% docked at {width}"));
+            }
+        }
+    }
+
+    #[test]
     fn context_menu_follows_pointer_and_stays_inside_window() {
         let height = action_menu_height(800.0, 400.0);
         assert_eq!(

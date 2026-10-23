@@ -1449,6 +1449,117 @@ mod tests {
         }
     }
 
+    /// The margins left and right of a full row of `columns` cards placed
+    /// with `shift` in `available`.
+    fn margins(available: f32, columns: usize, shift: f32, layout: GridLayout) -> (f32, f32) {
+        let sizes = vec![Size::new(layout.card_width(), 100.0); columns];
+        let (points, _) = slots(&sizes, columns, shift, layout);
+        let left = points[0].x;
+        let right = available - (points[columns - 1].x + layout.card_width());
+        (left, right)
+    }
+
+    #[test]
+    fn the_leftover_width_splits_evenly_on_both_sides() {
+        // 1000 px leaves 104 at 100% (five columns), 88 at 60% (eight),
+        // and 312 at 200% (two); docked, the panel's width comes off first.
+        for (zoom, width, open, columns, shift) in [
+            (100, 1000.0, false, 5, 52.0),
+            (60, 1000.0, false, 8, 44.0),
+            (200, 1000.0, false, 2, 156.0),
+            (100, 1500.0, true, 5, 87.0),
+            (60, 1500.0, true, 9, 23.0),
+            (200, 1300.0, true, 2, 91.0),
+        ] {
+            let layout = GridLayout::new(zoom);
+            assert_eq!(columns_for_viewport(width, open, layout), columns);
+            assert_eq!(
+                shift_for_viewport(width, open, layout),
+                shift,
+                "{zoom}% at {width}, open {open}"
+            );
+        }
+        for zoom in [60, 100, 200] {
+            let layout = GridLayout::new(zoom);
+            for open in [false, true] {
+                for width in (600..=2400).step_by(7).map(|width| width as f32 + 0.5) {
+                    let available = width - if open { DOCK_WIDTH } else { 0.0 };
+                    let columns = columns_for_viewport(width, open, layout);
+                    let shift = shift_for_viewport(width, open, layout);
+                    if available < 2.0 * PADDING + layout.card_width() {
+                        assert_eq!(shift, 0.0, "{zoom}% at {width}, open {open}");
+                        continue;
+                    }
+                    let (left, right) = margins(available, columns, shift, layout);
+                    assert_eq!(shift.fract(), 0.0, "{zoom}% at {width}, open {open}");
+                    assert!(left >= PADDING && right >= PADDING);
+                    // Rounding down leaves the odd pixel, and any fraction,
+                    // on the right.
+                    assert!(
+                        (0.0..2.0).contains(&(right - left)),
+                        "{zoom}% at {width}, open {open}: {left} and {right}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_full_row_keeps_the_old_places() {
+        // 896 px fits five 160 px cards exactly; 897 leaves one spare
+        // pixel, which isn't worth moving the cards for.
+        let layout = GridLayout::default();
+        for width in [896.0, 897.0] {
+            assert_eq!(shift_for_viewport(width, false, layout), 0.0, "{width}");
+            assert_eq!(
+                shift_for_viewport(width + DOCK_WIDTH, true, layout),
+                0.0,
+                "{width}"
+            );
+        }
+        assert_eq!(shift_for_viewport(898.0, false, layout), 1.0);
+        let full = Places::new(
+            (0..7).map(|index| index.to_string()).collect(),
+            &[300.0; 7],
+            columns_for_viewport(896.0, false, layout),
+            shift_for_viewport(896.0, false, layout),
+            layout,
+        );
+        let xs: Vec<f32> = full.slots.iter().map(|slot| slot.x).collect();
+        assert_eq!(xs, [16.0, 192.0, 368.0, 544.0, 720.0, 16.0, 192.0]);
+        // Every zoom with a whole number of columns filling the width.
+        for zoom in [60, 100, 200] {
+            let layout = GridLayout::new(zoom);
+            for columns in 1..=6 {
+                let count = columns as f32;
+                let width = 2.0 * PADDING + count * layout.card_width() + (count - 1.0) * GAP;
+                assert_eq!(columns_for_viewport(width, false, layout), columns);
+                assert_eq!(shift_for_viewport(width, false, layout), 0.0, "{zoom}%");
+            }
+        }
+    }
+
+    #[test]
+    fn a_narrow_or_empty_grid_never_shifts_left() {
+        for zoom in [60, 100, 200] {
+            let layout = GridLayout::new(zoom);
+            for width in [0.0, 1.0, 50.0, 100.0, layout.card_width()] {
+                for open in [false, true] {
+                    assert_eq!(columns_for_viewport(width, open, layout), 1);
+                    assert_eq!(shift_for_viewport(width, open, layout), 0.0);
+                }
+            }
+        }
+        let empty = Places::new(Vec::new(), &[], 1, 0.0, GridLayout::default());
+        assert!(empty.slots.is_empty());
+        assert_eq!(empty.height, 2.0 * PADDING);
+        // A lone column with room to spare sits in the middle.
+        let layout = GridLayout::new(200);
+        assert_eq!(columns_for_viewport(600.0, false, layout), 1);
+        assert_eq!(shift_for_viewport(600.0, false, layout), 124.0);
+        assert_eq!(margins(600.0, 1, 124.0, layout), (140.0, 140.0));
+    }
+
     #[test]
     fn slots_and_poster_bounds_follow_the_zoom() {
         for (zoom, step) in [(60, 96.0 + GAP), (200, 320.0 + GAP)] {
