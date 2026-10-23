@@ -404,3 +404,77 @@ The shape, with the answers above. No questions are open.
 - No JSON field or template support for `title` in this plan.
 - Lists other than the five named, and dropdowns like `pick_list`, keep
   their current keyboard behavior.
+
+## Review notes
+
+Findings from `qa-gpt` reviews and what is left to do about them. Updated
+2026-10-22.
+
+### Step 4, hover fades (branch `0056-step4`, not merged)
+
+Commits `7ad98c5b` and `88b03e90`, rebased on main. Fmt and clippy are clean
+and `cargo test -p wineo-gui` passes (1279). The review verdict was FAIL on
+one point, so the branch waits for the fix.
+
+- **Medium - hover frames keep running while the window is unfocused.**
+  `main.rs:711` installs the `HoverTick` subscription whenever an entry
+  exists, and `hover_fade.rs:141` checks nothing else. The app's rule is no
+  ticking while unfocused or minimized (plan 0051, `wake.rs`). Fix: gate the
+  subscription like the grid's other frames (or settle the fades when the
+  window loses focus, then resume), and test focus loss and resumption
+  mid-fade.
+- **Low - `fade_tests.rs:427`** says a fading-out star's press becomes the
+  card's, but only asserts that no favorite toggles. Assert `Select` too.
+- **To verify at runtime:** a minimized window still gets redraws until the
+  fade completes. No GUI test was run.
+- **Docs to update when it lands:** `docs/gui-style.md` ~166 (the outline
+  star's fade-out), ~175 ("marks stay at full strength" needs a
+  qualification), ~186 (the overlay now fades).
+- **Deviation accepted in review:** the fades have their own `HoverTick`
+  message and subscription instead of `GridTick`, because the grid's frames
+  stop while a flow or dialog is open and its motion snaps then. The review
+  found this reasonable.
+- **Possible polish:** the poster's 0.85 dim on hover still switches
+  instantly while the star now fades.
+
+### Step 2, centered grid (merged)
+
+- **Flaky test:** `grid_motion::app_tests::a_dock_without_a_column_change_springs_to_the_centered_slots`
+  reads the wall clock between a spring's start and its tick, so it fails in
+  about half of full runs when the machine is busy. A fix with synthetic time
+  was handed to the step 2 coder on 2026-10-22; check that it landed.
+- **Coverage gaps (low):** `app_tests.rs:723` covers slider-driven zooms but
+  not intermediate tween frames; `:682` settles each dock before reversing it,
+  so a same-column dock reversal mid-spring isn't covered. Both go into
+  acceptance.
+
+### Step 3, poster star (merged)
+
+- **Low:** `star_tests.rs:420-421` sends `Hover(None)` by hand after a
+  re-sort, so it wouldn't catch hover sticking when a card moves from under a
+  stationary pointer. Drive redraws with a stationary cursor instead.
+- **Low:** the modal test (`star_tests.rs:251-255`) covers Add, close, and
+  hook-stop but not removal, trash, or downloads confirmations; the shared
+  guard covers them.
+- **Low:** `poster_tests.rs:57-62` builds `mark_chip` instead of reading the
+  child's bounds.
+
+### Step 6, card titles (merged)
+
+- No findings beyond docs, which are written. Acceptance should check long
+  Unicode titles on normal cards, art-less cards, the overlay, and the panel,
+  then Settings save and clear and the read-only Steam row.
+
+### Step 7, choice lists (merged, with the scroll follow-up)
+
+- **Low:** Ctrl+Enter is tested on Add only; New, GOG, and Heroic lack an
+  integration test that it "submits once without choosing" (their paths look
+  right).
+- **Low:** `flow/gog_install/focus_tests.rs:35` focuses the first row itself,
+  so it doesn't prove the app's landing task does.
+- **Low (scroll follow-up):** in the smallest dialog the list area is shorter
+  than the first row plus its 4 px padding, so going back to the top stops at
+  offset 4. There is no picker-specific scroll test, since three builds don't
+  overflow the panel at test sizes.
+- **Acceptance:** short-window scrolling, light and dark focus rings,
+  mouse-opened dropdowns and menus, and Ctrl+Enter on New and GOG target rows.
