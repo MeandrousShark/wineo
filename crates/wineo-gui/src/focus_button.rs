@@ -9,7 +9,7 @@ mod rows;
 
 #[cfg(test)]
 pub(crate) use rows::tests::{focusables, landed, press, press_key, run_task, walk_rows};
-pub(crate) use rows::{ListRows, land, rows};
+pub(crate) use rows::{ListRows, land, reveal, rows};
 
 pub(crate) const UNDO_ID: &str = "trash-undo";
 

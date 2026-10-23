@@ -311,6 +311,14 @@ pub(crate) fn listing_value(listing: &Listing) -> Option<String> {
 }
 
 impl App {
+    /// Shows the picker's focused build, if one has focus.
+    pub(crate) fn version_reveal(&self) -> Task<Message> {
+        match self.version.as_ref().filter(|_| self.version_visible()) {
+            Some(picker) => crate::focus_button::reveal(picker.list_rows().ids),
+            None => Task::none(),
+        }
+    }
+
     pub(crate) fn version_visible(&self) -> bool {
         self.panel_open
             && self

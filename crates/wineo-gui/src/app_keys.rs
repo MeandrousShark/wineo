@@ -49,10 +49,18 @@ impl App {
                         .map(move |event| Message::Flow(generation, event));
                     task.chain(self.flow_update(generation, flow::Event::AfterSubmit))
                 }
-                Key::Named(Named::Tab) if modifiers.shift() => {
-                    iced::widget::operation::focus_previous()
+                // The page's rows took the arrow and moved focus.
+                Key::Named(Named::ArrowUp | Named::ArrowDown)
+                    if status == iced::event::Status::Captured =>
+                {
+                    self.flow_rows_reveal()
                 }
-                Key::Named(Named::Tab) => iced::widget::operation::focus_next(),
+                Key::Named(Named::Tab) if modifiers.shift() => {
+                    iced::widget::operation::focus_previous().chain(self.flow_rows_reveal())
+                }
+                Key::Named(Named::Tab) => {
+                    iced::widget::operation::focus_next().chain(self.flow_rows_reveal())
+                }
                 Key::Named(Named::Escape)
                     if status != iced::event::Status::Captured && !self.close_prompt =>
                 {
@@ -61,6 +69,14 @@ impl App {
                 _ => Task::none(),
             }
         })
+    }
+
+    /// Shows the open page's focused row, if one of its rows has focus.
+    fn flow_rows_reveal(&self) -> Task<Message> {
+        self.flow
+            .as_ref()
+            .and_then(flow::Page::rows)
+            .map_or_else(Task::none, |rows| crate::focus_button::reveal(rows.ids))
     }
 
     pub(crate) fn page_key(

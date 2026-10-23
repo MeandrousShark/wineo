@@ -44,21 +44,157 @@ pub(crate) fn rows<'a, M: 'a>(
 /// Focus for a list that `before` an update looked one way and `after` it
 /// another. A list that opens focuses its first row. One that fills in late
 /// focuses it only when nothing else has focus, so it doesn't take the keys
-/// from a field being typed in.
+/// from a field being typed in. Either way, and when the list changed under
+/// a focused row, the focused row is scrolled into view.
 pub(crate) fn land<M: Send + 'static>(
     before: Option<&ListRows>,
     after: Option<&ListRows>,
 ) -> Option<Task<M>> {
+    let ids = after.map(|after| after.ids.clone()).unwrap_or_default();
     match landing(before, after) {
-        Landing::Stay => None,
-        Landing::Focus(id) => Some(iced::widget::operation::focus(Id::from(id))),
+        Landing::Stay => {
+            let changed = before.zip(after).is_some_and(|(before, after)| {
+                before.list == after.list && before.ids != after.ids
+            });
+            (changed && !ids.is_empty()).then(|| reveal(ids))
+        }
+        Landing::Focus(id) => Some(iced::widget::operation::focus(Id::from(id)).chain(reveal(ids))),
         Landing::FocusIfIdle(id) => Some(
             iced::advanced::widget::operate(FocusIfIdle {
                 id: Id::from(id),
                 busy: false,
             })
-            .discard(),
+            .discard()
+            .chain(reveal(ids)),
         ),
+    }
+}
+
+/// Scrolls the scrollable holding the focused one of the rows `ids` just
+/// enough to show it, and the first row back to the top. Nothing happens
+/// when no row has focus or it already shows.
+pub(crate) fn reveal<M: Send + 'static>(ids: Vec<String>) -> Task<M> {
+    iced::advanced::widget::operate(Reveal {
+        first: ids.first().map(|id| Id::from(id.clone())),
+        ids: ids.into_iter().map(Id::from).collect(),
+        seen: 0,
+        entering: None,
+        open: Vec::new(),
+        target: None,
+    })
+    .discard()
+}
+
+/// A scrollable as an operation sees it: its place in the walk, its
+/// viewport, its content, and how far it's scrolled.
+#[derive(Clone, Copy)]
+struct Scroller {
+    index: usize,
+    viewport: Rectangle,
+    content: Rectangle,
+    offset: f32,
+}
+
+struct Reveal {
+    ids: Vec<Id>,
+    first: Option<Id>,
+    /// Scrollables walked so far.
+    seen: usize,
+    /// A scrollable whose content the next traversal enters.
+    entering: Option<Scroller>,
+    /// The scrollables the walk is inside, innermost last.
+    open: Vec<Scroller>,
+    /// The innermost scrollable around the focused row, and where to scroll it.
+    target: Option<(usize, f32)>,
+}
+
+impl Operation for Reveal {
+    fn traverse(&mut self, operate: &mut dyn FnMut(&mut dyn Operation)) {
+        let entered = self.entering.take();
+        if let Some(scroller) = entered {
+            self.open.push(scroller);
+        }
+        operate(self);
+        if entered.is_some() {
+            self.open.pop();
+        }
+    }
+
+    fn scrollable(
+        &mut self,
+        _id: Option<&Id>,
+        bounds: Rectangle,
+        content_bounds: Rectangle,
+        translation: Vector,
+        _state: &mut dyn iced::advanced::widget::operation::Scrollable,
+    ) {
+        self.entering = Some(Scroller {
+            index: self.seen,
+            viewport: bounds,
+            content: content_bounds,
+            offset: translation.y,
+        });
+        self.seen += 1;
+    }
+
+    fn focusable(&mut self, id: Option<&Id>, bounds: Rectangle, state: &mut dyn Focusable) {
+        let Some(id) = id.filter(|id| state.is_focused() && self.ids.contains(id)) else {
+            return;
+        };
+        let Some(scroller) = self.open.last() else {
+            return;
+        };
+        let target = crate::library_menu::reveal_offset(
+            bounds.y - scroller.content.y,
+            bounds.height,
+            scroller.viewport.height,
+            scroller.offset,
+            self.first.as_ref() == Some(id),
+        )
+        .filter(|target| (target - scroller.offset).abs() > 0.25);
+        self.target = target.map(|target| (scroller.index, target));
+    }
+
+    fn finish(&self) -> Outcome<()> {
+        match self.target {
+            Some((index, offset)) => Outcome::Chain(Box::new(ScrollTo {
+                index,
+                offset,
+                seen: 0,
+            })),
+            None => Outcome::None,
+        }
+    }
+}
+
+/// Scrolls the `index`th scrollable of the walk to `offset`. Most of the
+/// app's scrollables have no id to find them by.
+struct ScrollTo {
+    index: usize,
+    offset: f32,
+    seen: usize,
+}
+
+impl Operation for ScrollTo {
+    fn traverse(&mut self, operate: &mut dyn FnMut(&mut dyn Operation)) {
+        operate(self);
+    }
+
+    fn scrollable(
+        &mut self,
+        _id: Option<&Id>,
+        _bounds: Rectangle,
+        _content_bounds: Rectangle,
+        _translation: Vector,
+        state: &mut dyn iced::advanced::widget::operation::Scrollable,
+    ) {
+        if self.seen == self.index {
+            state.scroll_to(iced::widget::scrollable::AbsoluteOffset {
+                x: None,
+                y: Some(self.offset),
+            });
+        }
+        self.seen += 1;
     }
 }
 

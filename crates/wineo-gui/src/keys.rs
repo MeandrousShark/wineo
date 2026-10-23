@@ -132,11 +132,12 @@ impl App {
             if self.filter_tab().is_some() {
                 return crate::filter_tab::step(self, modifiers.shift());
             }
-            return if modifiers.shift() {
+            let walk = if modifiers.shift() {
                 iced::widget::operation::focus_previous()
             } else {
                 iced::widget::operation::focus_next()
             };
+            return walk.chain(self.version_reveal());
         }
         if captured
             && !search_focused
@@ -151,7 +152,12 @@ impl App {
                 )
             )
         {
-            return Task::none();
+            // The picker's builds take Up and Down to move their focus.
+            return if matches!(key, Key::Named(Named::ArrowUp | Named::ArrowDown)) {
+                self.version_reveal()
+            } else {
+                Task::none()
+            };
         }
         match action(
             &key,

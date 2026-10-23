@@ -187,3 +187,38 @@ fn going_back_to_add_lands_on_its_first_choice_again() {
     let mut laid = landed(&app, task);
     assert_eq!(laid.focused(), [Id::new(CHOICE_IDS[0])]);
 }
+
+#[test]
+fn the_arrows_scroll_adds_list_in_a_short_dialog() {
+    let (mut app, _) = add();
+    let page = Page::choose(app.paths.clone());
+    let ids = CHOICE_IDS.map(str::to_owned).to_vec();
+    let mut laid = crate::layout_probe::lay_out(
+        page.view(crate::theme::Palette::DARK, 280.0, false),
+        iced::Size::new(280.0, 240.0),
+    );
+    laid.run(Box::new(
+        iced::advanced::widget::operation::focusable::focus::<()>(Id::new(CHOICE_IDS[0])),
+    ));
+    let mut deepest = 0.0_f32;
+    let mut walk = |laid: &mut Laid<'_, super::Event>, key: Named| {
+        let (_, status) = press(laid, key, Modifiers::empty());
+        let task = app.update(Message::Key(Key::Named(key), Modifiers::empty(), status));
+        run_task(laid, task);
+        let offset = laid.offsets()[0];
+        // Shown already: a second reveal moves nothing.
+        run_task(laid, crate::focus_button::reveal::<()>(ids.clone()));
+        assert_eq!(laid.offsets()[0], offset);
+        offset
+    };
+    for _ in 1..CHOICE_IDS.len() {
+        deepest = deepest.max(walk(&mut laid, Named::ArrowDown));
+    }
+    assert!(deepest > 0.0, "the dialog is short enough to scroll");
+    for _ in 1..CHOICE_IDS.len() {
+        walk(&mut laid, Named::ArrowUp);
+    }
+    // The viewport is shorter than the first row and the list's 4 px
+    // padding, so the row's own top is what shows.
+    assert!(laid.offsets()[0] <= 4.0, "{:?}", laid.offsets());
+}

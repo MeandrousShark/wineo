@@ -305,3 +305,175 @@ fn a_late_list_takes_focus_only_when_nothing_has_it() {
     }));
     assert_eq!(laid.focused(), [Id::new("field")]);
 }
+
+const VIEWPORT: f32 = 150.0;
+const SCROLL_ID: &str = "test-scroll";
+
+/// `names` as one list under a short heading, in a scrollable `height` tall.
+fn scrolled<'a>(names: &[String], height: f32) -> Element<'a, String> {
+    let rows: Vec<_> = names
+        .iter()
+        .map(|id| {
+            ListRow::new(
+                id.clone(),
+                list_row(list_row_text(id.clone()), Palette::DARK),
+                id.clone(),
+            )
+        })
+        .collect();
+    iced::widget::scrollable(column![
+        iced::widget::text("Heading").size(20),
+        list_group(LIST, rows, Palette::DARK)
+    ])
+    .id(Id::new(SCROLL_ID))
+    .height(height)
+    .into()
+}
+
+fn names(prefix: &str, count: usize) -> Vec<String> {
+    (0..count).map(|index| format!("{prefix}{index}")).collect()
+}
+
+/// The row's top and bottom in the scrolled content.
+fn span<M>(laid: &mut Laid<'_, M>, id: &str) -> (f32, f32) {
+    use std::sync::{Arc, Mutex};
+    let found = Arc::new(Mutex::new(None));
+    let sink = found.clone();
+    let id: &'static str = Box::leak(id.to_owned().into_boxed_str());
+    laid.run(Box::new(iced::advanced::widget::operation::map(
+        crate::library_menu::bounds_of(id),
+        move |bounds| *sink.lock().unwrap() = bounds,
+    )));
+    let bounds = found.lock().unwrap().expect("the row");
+    (bounds.y, bounds.y + bounds.height)
+}
+
+fn shows<M>(laid: &mut Laid<'_, M>, id: &str) -> bool {
+    let offset = laid.offsets()[0];
+    let (top, bottom) = span(laid, id);
+    top >= offset - 0.5 && bottom <= offset + VIEWPORT + 0.5
+}
+
+/// Presses `key` and runs the reveal the app runs after it.
+fn step_and_reveal(laid: &mut Laid<'_, String>, key: Named, ids: &[String]) {
+    press(laid, key, Modifiers::empty());
+    run_task(laid, reveal::<String>(ids.to_vec()));
+}
+
+#[test]
+fn moving_past_the_visible_rows_scrolls_just_enough_and_the_top_scrolls_back() {
+    let ids = names("row", 12);
+    let mut laid = lay_out(scrolled(&ids, VIEWPORT), Size::new(400.0, VIEWPORT));
+    focus(&mut laid, &ids[0]);
+    // The second row already shows, so nothing scrolls.
+    step_and_reveal(&mut laid, Named::ArrowDown, &ids);
+    assert_eq!(laid.offsets(), [0.0]);
+    let mut last = 0.0;
+    for id in &ids[2..] {
+        step_and_reveal(&mut laid, Named::ArrowDown, &ids);
+        assert_eq!(laid.focused(), [Id::from(id.clone())]);
+        assert!(shows(&mut laid, id), "{id}");
+        // Just enough: the row sits at the bottom edge once it scrolled.
+        let offset = laid.offsets()[0];
+        if offset > last {
+            let (_, bottom) = span(&mut laid, id);
+            assert!((bottom - (offset + VIEWPORT)).abs() < 0.5, "{id}");
+        }
+        last = offset;
+    }
+    assert!(last > 0.0);
+    for id in ids.iter().rev().skip(1) {
+        step_and_reveal(&mut laid, Named::ArrowUp, &ids);
+        assert!(shows(&mut laid, id), "{id}");
+    }
+    // The first row brings the heading above it back too.
+    assert_eq!(laid.offsets(), [0.0]);
+}
+
+#[test]
+fn a_short_list_never_scrolls() {
+    let ids = names("row", 3);
+    let mut laid = lay_out(scrolled(&ids, 600.0), Size::new(400.0, 600.0));
+    focus(&mut laid, &ids[0]);
+    for key in [
+        Named::ArrowDown,
+        Named::ArrowDown,
+        Named::ArrowDown,
+        Named::ArrowUp,
+        Named::ArrowUp,
+    ] {
+        step_and_reveal(&mut laid, key, &ids);
+        assert_eq!(laid.offsets(), [0.0]);
+    }
+}
+
+#[test]
+fn reveal_does_nothing_without_a_focused_row() {
+    let ids = names("row", 12);
+    let mut laid = lay_out(scrolled(&ids, VIEWPORT), Size::new(400.0, VIEWPORT));
+    laid.run(Box::new(
+        iced::advanced::widget::operation::scrollable::snap_to::<()>(
+            Id::new(SCROLL_ID),
+            iced::widget::scrollable::RelativeOffset {
+                x: None,
+                y: Some(1.0),
+            },
+        ),
+    ));
+    let bottom = laid.offsets()[0];
+    assert!(bottom > 0.0);
+    run_task(&mut laid, reveal::<String>(ids));
+    assert_eq!(laid.offsets(), [bottom]);
+}
+
+#[test]
+fn a_list_that_opens_scrolled_away_shows_its_first_row() {
+    let ids = names("row", 12);
+    let mut laid = lay_out(scrolled(&ids, VIEWPORT), Size::new(400.0, VIEWPORT));
+    laid.run(Box::new(
+        iced::advanced::widget::operation::scrollable::snap_to::<()>(
+            Id::new(SCROLL_ID),
+            iced::widget::scrollable::RelativeOffset {
+                x: None,
+                y: Some(1.0),
+            },
+        ),
+    ));
+    assert!(laid.offsets()[0] > 0.0);
+    let rows = ListRows {
+        list: LIST,
+        ids: ids.clone(),
+    };
+    run_task(&mut laid, land::<String>(None, Some(&rows)).unwrap());
+    assert_eq!(laid.focused(), [Id::from(ids[0].clone())]);
+    assert_eq!(laid.offsets(), [0.0]);
+}
+
+#[test]
+fn a_row_the_list_moved_out_of_view_is_shown_again() {
+    let before = names("row", 12);
+    let mut laid = lay_out(scrolled(&before, VIEWPORT), Size::new(400.0, VIEWPORT));
+    focus(&mut laid, &before[0]);
+    // Rows join above it, so the focused row is pushed below the viewport.
+    let after: Vec<String> = names("new", 8).into_iter().chain(before.clone()).collect();
+    let mut laid = relay_out(
+        scrolled(&after, VIEWPORT),
+        laid.into_tree(),
+        Size::new(400.0, VIEWPORT),
+    );
+    assert_eq!(laid.focused(), [Id::from(before[0].clone())]);
+    assert!(!shows(&mut laid, &before[0]));
+    let task = land::<String>(
+        Some(&ListRows {
+            list: LIST,
+            ids: before.clone(),
+        }),
+        Some(&ListRows {
+            list: LIST,
+            ids: after,
+        }),
+    )
+    .expect("a reveal");
+    run_task(&mut laid, task);
+    assert!(shows(&mut laid, &before[0]));
+}

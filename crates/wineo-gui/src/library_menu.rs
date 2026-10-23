@@ -254,7 +254,13 @@ impl iced::advanced::widget::Operation for Reveal {
 /// tall shows in a viewport `viewport` tall now scrolled to `offset`. The
 /// first row goes back to the top, header and all, when it fits there. A
 /// row taller than the viewport shows its top, so repeated reveals agree.
-fn reveal_offset(start: f32, height: f32, viewport: f32, offset: f32, first: bool) -> Option<f32> {
+pub(crate) fn reveal_offset(
+    start: f32,
+    height: f32,
+    viewport: f32,
+    offset: f32,
+    first: bool,
+) -> Option<f32> {
     let end = start + height;
     if first && end <= viewport {
         return Some(0.0);
