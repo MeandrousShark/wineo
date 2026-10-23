@@ -764,13 +764,15 @@ fn a_first_write_creates_no_view() {
 fn posters_mark_favorites_and_hidden_cards() {
     let (_root, mut app) = loaded();
     let plain = card("plain", State::Inactive, 0);
-    assert!(poster_marks(&plain, 1.0).is_none());
+    assert!(poster_marks(&plain, 1.0, false).is_none());
+    // Hovered, it gets the star to click.
+    assert!(poster_marks(&plain, 1.0, true).is_some());
     let mut starred = plain.clone();
     starred.favorite = true;
-    assert!(poster_marks(&starred, 1.0).is_some());
+    assert!(poster_marks(&starred, 1.0, false).is_some());
     let mut both = starred.clone();
     both.hidden = true;
-    assert!(poster_marks(&both, 1.0).is_some());
+    assert!(poster_marks(&both, 1.0, false).is_some());
 
     // A marked card lays out at the same height as a plain one.
     use crate::layout_probe::layout;

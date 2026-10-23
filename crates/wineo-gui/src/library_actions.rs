@@ -4,7 +4,7 @@
 use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
 
-use iced::widget::{button, column, container, tooltip};
+use iced::widget::{Space, button, column, container, tooltip};
 use iced::{Color, Element, Fill, Task, border};
 use jiff::Timestamp;
 use wineo_core::library;
@@ -27,6 +27,11 @@ const EYE_OFF: &[u8] = br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0
 pub(crate) const MARK_SIZE: f32 = 24.0;
 const MARK_ICON: f32 = 14.0;
 const MARK_BACKDROP: f32 = 0.55;
+/// The marks' distance from the art's edges.
+const MARK_MARGIN: f32 = 8.0;
+/// The poster star's click target, centered on its chip.
+pub(crate) const STAR_TARGET: f32 = 28.0;
+const MARK_INSET: f32 = (STAR_TARGET - MARK_SIZE) / 2.0;
 const CHIP_DOT: f32 = 10.0;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -81,7 +86,8 @@ impl Flag {
 
 #[derive(Debug, Clone)]
 pub(crate) enum Event {
-    /// The context menu row or the panel star for this card.
+    /// The context menu row, the panel star, or the poster star for this
+    /// card.
     Toggle(String, Flag),
     /// A write finished.
     Saved(Saved),
@@ -410,19 +416,38 @@ impl App {
     }
 }
 
-/// The marks in a poster's top right corner: a star on a favorite and a
-/// crossed eye on a hidden card. They stack, so a long GOG badge in the
-/// other corner never runs into them.
-pub(crate) fn poster_marks(card: &Card, alpha: f32) -> Option<Element<'static, Message>> {
-    if !card.favorite && !card.hidden {
+/// The marks in a poster's top right corner: a star on a favorite, or an
+/// outline star while the card is hovered, and a crossed eye on a hidden
+/// card below it. The star's slot stays empty without it, so the eye never
+/// moves when the star comes and goes.
+pub(crate) fn poster_marks(
+    card: &Card,
+    alpha: f32,
+    hovered: bool,
+) -> Option<Element<'static, Message>> {
+    if !card.favorite && !card.hidden && !hovered {
         return None;
     }
-    let mut marks = column![].spacing(4);
-    if card.favorite {
-        marks = marks.push(mark(STAR, alpha));
-    }
+    // Each mark sits centered in a cell as big as the star's target, so
+    // cells touching put the chips their usual gap apart.
+    let star: Element<'static, Message> = if card.favorite || hovered {
+        let bytes = if card.favorite { STAR } else { STAR_OUTLINE };
+        button(mark(bytes, alpha))
+            .width(STAR_TARGET)
+            .height(STAR_TARGET)
+            .padding(MARK_INSET)
+            .on_press(Message::Mark(Event::Toggle(
+                card.name.clone(),
+                Flag::Favorite,
+            )))
+            .style(|_, _| button::Style::default())
+            .into()
+    } else {
+        Space::new().width(STAR_TARGET).height(STAR_TARGET).into()
+    };
+    let mut marks = column![star];
     if card.hidden {
-        marks = marks.push(mark(EYE_OFF, alpha));
+        marks = marks.push(container(mark(EYE_OFF, alpha)).padding(MARK_INSET));
     }
     Some(
         container(marks)
@@ -430,7 +455,7 @@ pub(crate) fn poster_marks(card: &Card, alpha: f32) -> Option<Element<'static, M
             .height(Fill)
             .align_right(Fill)
             .align_top(Fill)
-            .padding(8)
+            .padding(MARK_MARGIN - MARK_INSET)
             .into(),
     )
 }

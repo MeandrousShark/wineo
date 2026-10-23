@@ -10,14 +10,14 @@ use wineo_core::runtime::State;
 use super::*;
 use crate::layout_probe::{bounds_at, layout, render};
 
-fn art_card(name: &str, state: State) -> Card {
+pub(super) fn art_card(name: &str, state: State) -> Card {
     let mut card = crate::tests::card(name, state, 60);
     card.art = Some(crate::tests::art_file(&format!("/tmp/{name}.png"), 1));
     card
 }
 
 /// Gives `card` decoded art in one solid color.
-fn decoded(app: &mut App, card: &Card, rgb: [u8; 3]) {
+pub(super) fn decoded(app: &mut App, card: &Card, rgb: [u8; 3]) {
     let key = (card.art.clone().expect("art"), crate::artwork::Kind::Grid);
     let pixel = [rgb[0], rgb[1], rgb[2], 255];
     app.images.insert(
@@ -27,12 +27,12 @@ fn decoded(app: &mut App, card: &Card, rgb: [u8; 3]) {
     );
 }
 
-fn card_node(app: &App, card: &Card) -> Node {
+pub(super) fn card_node(app: &App, card: &Card) -> Node {
     layout(&mut app.card(card), Size::new(400.0, 900.0))
 }
 
 /// The poster's layers, bottom first.
-fn layers(node: &Node) -> Vec<Rectangle> {
+pub(super) fn layers(node: &Node) -> Vec<Rectangle> {
     let mut layout = Layout::new(node);
     for index in [0, 0, 0] {
         layout = layout.children().nth(index).unwrap();
@@ -40,7 +40,29 @@ fn layers(node: &Node) -> Vec<Rectangle> {
     layout.children().map(|layer| layer.bounds()).collect()
 }
 
-fn gog(card: &mut Card) {
+/// Whether the poster-only title overlay is drawn: a layer as wide as the
+/// art along its bottom, taller than the install bar.
+pub(super) fn overlay_shown(node: &Node) -> bool {
+    let art = bounds_at(node, &[0, 0]);
+    (1..layers(node).len()).any(|index| {
+        let child = bounds_at(node, &[0, 0, 0, index, 0]);
+        child.width == art.width
+            && child.y + child.height == art.y + art.height
+            && child.height > INSTALL_BAR_HEIGHT
+    })
+}
+
+/// The chip in the marks' `slot`, top first, centered in its 28 px cell.
+/// The marks are the top layer while no install bar shows.
+pub(super) fn mark_chip(node: &Node, slot: usize) -> Rectangle {
+    let cell = bounds_at(node, &[0, 0, 0, layers(node).len() - 1, 0, slot]);
+    Rectangle::new(
+        cell.position() + Vector::new(2.0, 2.0),
+        Size::new(24.0, 24.0),
+    )
+}
+
+pub(super) fn gog(card: &mut Card) {
     card.gog = Some(crate::gog_library::GogCard {
         gog_id: Some("1".into()),
         unfinished: true,
@@ -63,7 +85,7 @@ fn the_overlay_shows_on_hover_and_selection_only() {
             {
                 app.hovered = hovered.then(|| card.name.clone());
                 app.selected = selected.then(|| card.name.clone());
-                let shown = layers(&card_node(&app, &card)).len() == 2;
+                let shown = overlay_shown(&card_node(&app, &card));
                 assert_eq!(
                     shown,
                     poster_only && (hovered || selected),
@@ -138,18 +160,19 @@ fn art_less_cards_keep_their_tile_title_and_loading_art_gets_the_overlay() {
         if card.art.is_none() {
             // The title on the tile, and nothing over it.
             assert!(tile.width > 0.0);
-            assert_eq!(layers(&node).len(), 1);
+            assert!(!overlay_shown(&node));
         } else {
             // A blank tile, and the title over it like the art will have.
             assert_eq!(tile.size(), Size::ZERO);
-            assert_eq!(layers(&node).len(), 2);
+            assert!(overlay_shown(&node));
         }
     }
     // Failed art is the same as loading: no image is there.
     app.failed_images
         .insert((loading.art.clone().unwrap(), crate::artwork::Kind::Grid));
-    assert_eq!(layers(&card_node(&app, &loading)).len(), 2);
+    assert!(overlay_shown(&card_node(&app, &loading)));
     app.hovered = None;
+    assert!(!overlay_shown(&card_node(&app, &loading)));
     assert_eq!(layers(&card_node(&app, &loading)).len(), 1);
 }
 
@@ -211,7 +234,10 @@ fn the_chip_and_the_gog_pill_share_one_row_four_pixels_apart() {
     let art = bounds_at(&node, &[0, 0]);
     let alone = bounds_at(&node, &[0, 0, 0, 1, 0]);
     assert_eq!(alone.position(), art.position() + Vector::new(8.0, 8.0));
-    for (poster_only, zoom) in [(true, 100), (false, 80)] {
+    // The corner keeps the marks' room on every card, so beside the chip
+    // "Finish update" fits on one line at 150%, wraps at 100%, and turns
+    // into the badge at 80%.
+    for (poster_only, zoom) in [(true, 150), (true, 100), (false, 80)] {
         app.poster_only = poster_only;
         app.zoom = zoom;
         // With no chip, the pill stays where it was.
@@ -222,13 +248,19 @@ fn the_chip_and_the_gog_pill_share_one_row_four_pixels_apart() {
         let node = card_node(&app, &running);
         let art = bounds_at(&node, &[0, 0]);
         let chip = bounds_at(&node, &[0, 0, 0, 1, 0, 0]);
-        let pill = bounds_at(&node, &[0, 0, 0, 1, 0, 1, 0]);
+        let (gog, badge) = gog_at(&node, true);
         assert_eq!(chip.position(), art.position() + Vector::new(8.0, 8.0));
-        assert_eq!(pill.x, chip.x + chip.width + 4.0);
-        // A one-line pill centers on the chip; one that wraps on a small
-        // poster grows down from there, and the chip keeps its corner.
+        assert_eq!(gog.x, chip.x + chip.width + 4.0, "{zoom}%");
+        assert_eq!(badge, zoom == 80, "{zoom}%");
+        if badge {
+            assert_eq!(gog.y, chip.y);
+            continue;
+        }
+        // A one-line pill centers on the chip; one that wraps grows down
+        // from there, and the chip keeps its corner.
+        let pill = bounds_at(&node, &[0, 0, 0, 1, 0, 1, 0]);
         assert!((pill.y - (chip.center_y() - alone.height / 2.0)).abs() < 0.01);
-        if zoom == 100 {
+        if zoom == 150 {
             assert_eq!(pill.size(), alone.size());
         } else {
             assert!(pill.height > alone.height);
@@ -552,7 +584,7 @@ fn every_state_the_row_shows_as_activity_or_a_warning_gets_the_chip_in_its_dot_c
 
 /// The GOG pill's or badge's bounds in the corner, and whether it's the
 /// badge.
-fn gog_at(node: &Node, chip: bool) -> (Rectangle, bool) {
+pub(super) fn gog_at(node: &Node, chip: bool) -> (Rectangle, bool) {
     let bounds = if chip {
         bounds_at(node, &[0, 0, 0, 1, 0, 1])
     } else {
@@ -577,7 +609,8 @@ fn the_corner_keeps_clear_of_the_marks() {
                     "favorite {favorite}, hidden {hidden}, poster-only {poster_only} at {zoom}%, {state:?}"
                 );
                 let node = card_node(&app, &card);
-                let marks = bounds_at(&node, &[0, 0, 0, 2, 0]);
+                // The marks' chips, not their wider cells.
+                let marks = mark_chip(&node, 0);
                 let chip = state == State::Running && app.grid_layout().text().chip();
                 let (gog, badge) = gog_at(&node, chip);
                 assert!(gog.width > 0.0, "{what}");
@@ -622,7 +655,7 @@ fn a_pill_too_small_for_its_words_becomes_a_round_badge() {
     assert!(is_badge);
     assert_eq!(badge.position(), chip.position() + Vector::new(28.0, 0.0));
     assert_eq!(chip.position(), art.position() + Vector::new(8.0, 8.0));
-    assert!(badge.x + badge.width <= bounds_at(&node, &[0, 0, 0, 2, 0]).x);
+    assert!(badge.x + badge.width <= mark_chip(&node, 0).x);
     // The pill's color, with a down arrow in its ink at the center.
     let size = Size::new(96.0, 144.0);
     let pixels = render(&mut app.card(&card), size);

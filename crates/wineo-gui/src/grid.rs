@@ -297,13 +297,12 @@ impl App {
         let chip = (text_mode.chip() && !card.idle())
             .then(|| crate::library_actions::status_chip(card.dot(palette), alpha));
         // The marks draw above the corner, so it keeps clear of their
-        // column. A pill squeezed by them or the chip wraps between words
-        // and clips rather than spill under a mark.
-        let marks = card.favorite || card.hidden;
-        let squeezed = marks || chip.is_some();
+        // column on every card, even with no mark showing, and nothing
+        // shifts when the hover star appears. A pill squeezed by them wraps
+        // between words and clips rather than spill under a mark.
         let room = layout.art_frame().width
             - CORNER_PADDING
-            - if marks { MARKS_ROOM } else { CORNER_PADDING }
+            - MARKS_ROOM
             - if chip.is_some() {
                 crate::library_actions::MARK_SIZE + 4.0
             } else {
@@ -327,7 +326,7 @@ impl App {
                             .color(ink.scale_alpha(alpha)),
                     )
                     .padding([GOG_PILL_PADDING, GOG_PILL_SIDE])
-                    .clip(squeezed)
+                    .clip(true)
                     .style(move |_| {
                         container::Style::default()
                             .background(color)
@@ -339,7 +338,6 @@ impl App {
         // Below about 63% three 24 px circles and their margins outgrow the
         // art, so a badge may give up its gap to the marks, never more.
         let right = match &gog {
-            _ if !marks => CORNER_PADDING,
             Some(Gog::Badge(_)) => CORNER_PADDING + crate::library_actions::MARK_SIZE,
             _ => MARKS_ROOM,
         };
@@ -376,7 +374,7 @@ impl App {
                     }),
             );
         }
-        if let Some(marks) = crate::library_actions::poster_marks(card, alpha) {
+        if let Some(marks) = crate::library_actions::poster_marks(card, alpha, hovered) {
             layers = layers.push(marks);
         }
         if let Some(percent) = card.install_progress() {
