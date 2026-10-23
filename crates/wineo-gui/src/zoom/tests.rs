@@ -268,27 +268,93 @@ fn steps_go_to_the_next_multiple_of_ten_and_clamp() {
 }
 
 #[test]
-fn a_drag_snaps_at_five_points_and_lets_go_past_seven() {
+fn a_drag_snaps_at_eight_points_and_lets_go_past_ten() {
     assert_eq!(snap(95.0, false), (100, true));
     assert_eq!(snap(105.0, false), (100, true));
-    assert_eq!(snap(94.9, false), (95, false));
-    assert_eq!(snap(106.0, false), (106, false));
+    assert_eq!(snap(91.9, false), (92, false));
+    assert_eq!(snap(108.1, false), (108, false));
     assert_eq!(snap(107.0, true), (100, true));
     assert_eq!(snap(93.0, true), (100, true));
-    assert_eq!(snap(107.1, true), (107, false));
-    assert_eq!(snap(92.9, true), (93, false));
+    assert_eq!(snap(110.1, true), (110, false));
+    assert_eq!(snap(89.9, true), (90, false));
     assert_eq!(snap(10.0, false), (60, false));
     assert_eq!(snap(400.0, false), (200, false));
 
     let (_root, mut app) = library(4);
     let mut shown = Vec::new();
-    for raw in [120.0, 106.0, 104.0, 106.5, 107.0, 107.5, 106.5, 105.0] {
+    for raw in [120.0, 108.0, 104.0, 110.0, 110.4, 109.0, 107.0, 105.0] {
         let _ = zoom(&mut app, Event::Drag(raw));
         shown.push(app.zoom);
     }
-    assert_eq!(shown, [120, 106, 100, 100, 100, 108, 107, 100]);
+    assert_eq!(shown, [120, 100, 100, 100, 110, 109, 100, 100]);
     // The grid follows a drag directly, with no tween.
     assert!(!app.zooming.active());
+}
+
+#[test]
+fn a_drag_enters_the_zone_at_eight_points_and_not_past_it() {
+    assert_eq!(snap(92.0, false), (100, true));
+    assert_eq!(snap(108.0, false), (100, true));
+    assert_eq!(snap(91.99, false), (92, false));
+    assert_eq!(snap(108.01, false), (108, false));
+}
+
+#[test]
+fn a_held_drag_lets_go_just_past_ten_points() {
+    assert_eq!(snap(110.0, true), (100, true));
+    assert_eq!(snap(90.0, true), (100, true));
+    assert_eq!(snap(110.01, true), (110, false));
+    assert_eq!(snap(89.99, true), (90, false));
+}
+
+#[test]
+fn a_drag_from_one_hundred_shows_ninety_or_one_ten_past_the_zone() {
+    for (raws, expected) in [
+        ([100.0, 95.0, 91.0, 89.6], [100, 100, 100, 90]),
+        ([100.0, 105.0, 109.0, 110.4], [100, 100, 100, 110]),
+    ] {
+        let (_root, mut app) = library(4);
+        let mut shown = Vec::new();
+        for raw in raws {
+            let _ = zoom(&mut app, Event::Drag(raw));
+            shown.push(app.zoom);
+        }
+        assert_eq!(shown, expected);
+    }
+}
+
+#[test]
+fn a_rapid_back_and_forth_drag_across_the_zone_never_sticks() {
+    let (_root, mut app) = library(4);
+    let mut shown = Vec::new();
+    for raw in [99.0, 91.0, 101.0, 109.0, 99.0, 89.6, 91.0, 100.0, 110.4] {
+        let _ = zoom(&mut app, Event::Drag(raw));
+        shown.push(app.zoom);
+    }
+    // Once 89.6 lets go, 91 is 9 away, outside the entry zone, so it shows 91.
+    assert_eq!(shown, [100, 100, 100, 100, 100, 90, 91, 100, 110]);
+}
+
+#[test]
+fn a_drag_from_far_off_snaps_in_at_eight_and_lets_go_past_ten() {
+    for (raws, expected) in [
+        (
+            [120.0, 108.0, 104.0, 110.0, 110.4, 115.0],
+            [120, 100, 100, 100, 110, 115],
+        ),
+        (
+            [80.0, 92.0, 95.0, 90.0, 89.6, 85.0],
+            [80, 100, 100, 100, 90, 85],
+        ),
+    ] {
+        let (_root, mut app) = library(4);
+        let mut shown = Vec::new();
+        for raw in raws {
+            let _ = zoom(&mut app, Event::Drag(raw));
+            shown.push(app.zoom);
+        }
+        assert_eq!(shown, expected);
+    }
 }
 
 #[test]

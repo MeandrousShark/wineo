@@ -16,9 +16,10 @@ use crate::{App, Message, SCROLL_ID};
 const STEP: u16 = 10;
 const TWEEN: Duration = Duration::from_millis(160);
 /// A drag snaps to 100% within this many points of it...
-const SNAP_IN: f32 = 5.0;
+const SNAP_IN: f32 = 8.0;
 /// ...and lets go only past this many, so it doesn't flicker at the edge.
-const SNAP_OUT: f32 = 7.0;
+/// At 11 or more, a drag would hold through 90% and 110% without showing them.
+const SNAP_OUT: f32 = 10.0;
 /// Trackpad pixels that make one step: what iced scrolls for a wheel line.
 const PIXELS_PER_STEP: f32 = 60.0;
 
