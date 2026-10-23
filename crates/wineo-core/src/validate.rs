@@ -18,7 +18,7 @@ use serde::{Serialize, Serializer};
 
 use crate::art::{self, Kind as ArtKind};
 use crate::components::{Builds, Component, LATEST};
-use crate::config::{EnvironmentConfig, GlobalConfig, Kind};
+use crate::config::{EnvironmentConfig, GlobalConfig, Kind, title_problem};
 use crate::deprecated;
 use crate::desktop::{self, Entry, Pending};
 use crate::environment::{self, Environment};
@@ -159,6 +159,7 @@ codes! {
     TemplateInvalid => "template_invalid", Level::Error, Area::Template;
     TemplateUnresolved => "template_unresolved", Level::Warning, Area::Template;
     EnvironmentConfigInvalid => "environment_config_invalid", Level::Error, Area::EnvironmentConfig;
+    TitleInvalid => "title_invalid", Level::Warning, Area::EnvironmentConfig;
     RunnerMissing => "runner_missing", Level::Error, Area::Wine;
     BuildMissing => "build_missing", Level::Error, Area::Wine;
     WinetricksMissing => "winetricks_missing", Level::Warning, Area::Wine;
@@ -1093,6 +1094,11 @@ fn check_one(
         &config.deprecated,
         report,
     );
+    // Loading takes any title, so a hand edit that breaks the rules shows
+    // up here. A Steam game's fallback is checked the same way.
+    if let Some(problem) = config.title.as_deref().and_then(title_problem) {
+        report.push(Problem::new(Code::TitleInvalid, Some(name), problem, None));
+    }
     let environment = Environment {
         name: name.to_owned(),
         path,

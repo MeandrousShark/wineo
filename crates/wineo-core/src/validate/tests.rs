@@ -797,6 +797,49 @@ fn several_targets_without_a_default_is_a_warning() {
 }
 
 #[test]
+fn a_title_that_breaks_the_rules_is_a_warning_for_every_kind() {
+    let f = Fixture::new();
+    let long = "\u{e9}".repeat(121);
+    for (title, reason) in [
+        ("  Dusk ", "can't start or end with whitespace"),
+        ("", "can't be empty"),
+        ("Dusk\\nAscent", "can't contain control characters"),
+        (long.as_str(), "can't be longer than 120 characters"),
+    ] {
+        let line = format!("title = \"{title}\"\n");
+        for kind in ["wine", "native", "steam"] {
+            match kind {
+                "wine" => f.wine("game", &line),
+                "native" => f.native("game", &line),
+                _ => f.write_config(
+                    "game",
+                    &format!("kind = 'proxied'\nlauncher = 'steam'\napp_id = '77'\n{line}"),
+                ),
+            }
+            let path = f.paths.environment_config("game");
+            let before = fs::read(&path).unwrap();
+            let problem = f.only(Code::TitleInvalid);
+            assert_eq!(problem.level, Level::Warning);
+            assert_eq!(problem.area, Area::EnvironmentConfig);
+            assert_eq!(problem.environment.as_deref(), Some("game"));
+            assert_eq!(
+                problem.message,
+                format!("Invalid title: {reason}."),
+                "{kind}"
+            );
+            assert_eq!(problem.fix, None);
+            // Reported, never rewritten.
+            assert_eq!(fs::read(&path).unwrap(), before);
+        }
+    }
+
+    f.wine("game", "title = 'Dusk: Ascent \u{1f3ae}'\n");
+    assert_eq!(f.codes(), []);
+    f.native("game", &format!("title = '{}'\n", "\u{e9}".repeat(120)));
+    assert_eq!(f.codes(), []);
+}
+
+#[test]
 fn proxied_validate_reports_steam_not_found_and_a_missing_selected_install() {
     let f = Fixture::new();
     f.proxied("game", "77", false);
@@ -1359,11 +1402,12 @@ fn check_environment_checks_only_that_environment() {
 
 // The JSON output depends on these values, so changing one is a contract change.
 #[rustfmt::skip]
-    const RECORDED_CODES: [(Code, &str, &str, &str); 48] = [
+    const RECORDED_CODES: [(Code, &str, &str, &str); 49] = [
         (Code::GlobalConfigInvalid, "global_config_invalid", "error", "global_config"),
         (Code::TemplateInvalid, "template_invalid", "error", "template"),
         (Code::TemplateUnresolved, "template_unresolved", "warning", "template"),
         (Code::EnvironmentConfigInvalid, "environment_config_invalid", "error", "environment_config"),
+        (Code::TitleInvalid, "title_invalid", "warning", "environment_config"),
         (Code::RunnerMissing, "runner_missing", "error", "wine"),
         (Code::BuildMissing, "build_missing", "error", "wine"),
         (Code::WinetricksMissing, "winetricks_missing", "warning", "wine"),
