@@ -89,6 +89,17 @@ From step 3 (2026-10-22):
     28 px less width in its row. The maintainer accepted it, since nothing
     shifts on hover.
 
+From steps 6 and 7 (2026-10-22):
+
+17. **`wineo clone` keeps copying the title,** like its other keys. The
+    clone's card shows the same title until it is changed in Settings.
+18. **Ctrl+Enter on other focused controls stays as it is.** Only the new
+    list rows ignore Enter while Ctrl is held. Other focusable controls in
+    flows, like the runner offer card, still press and also submit the flow.
+    That was true before this plan and is parked in the backlog.
+19. **Up and Down scroll the focused row into view,** just enough to show
+    it, like the Sort menu does.
+
 Added to the plan by the maintainer (2026-10-22), from the polish
 candidates:
 
