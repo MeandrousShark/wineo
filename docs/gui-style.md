@@ -106,7 +106,7 @@ Plan [0054](plans/0054-library-sorting-and-favorites.md) added these.
   end clips.
 - The zoom slider is 96 px with no label or readout, a small muted tick at
   100%, and the usual focus ring; its tooltip says "Zoom". It snaps to 100%
-  within 5 points and lets go past 7. The poster-only toggle is a 32 px
+  within 8 points and lets go past 10. The poster-only toggle is a 32 px
   square icon button, an outline poster over a short title line, with the
   tag chips' selected look while on (15% primary tint, primary border and
   icon); its tooltip says "Hide titles" or "Show titles".
