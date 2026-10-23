@@ -1481,6 +1481,9 @@ mod poster_tests;
 mod star_tests;
 
 #[cfg(test)]
+mod fade_tests;
+
+#[cfg(test)]
 mod tests {
 
     #[test]
