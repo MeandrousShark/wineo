@@ -45,6 +45,16 @@ Answers to the first five questions (2026-10-22), numbered as asked:
 6. **Center the grid** (A), so the leftover width splits evenly left and
    right and the cards keep their exact zoom sizes.
 
+7. **A `title` key on the environment.** The maintainer expects it to be
+   replaced or filled later by IGDB or another metadata integration, so
+   the key stays the person's own word: anything a source fills in later
+   must not overwrite a title that is already set.
+8. **Search and sort use the title.** Search matches the title and the
+   environment name, and Sort by name sorts by what the card shows, with
+   ties falling back to the environment name.
+9. **Up and Down move focus between rows on the choice lists**, Enter
+   chooses, and Tab still walks the rows.
+
 Added to the plan by the maintainer (2026-10-22), from the polish
 candidates:
 
@@ -118,39 +128,31 @@ Mapped on 2026-10-22; line numbers are in `crates/wineo-gui/src`.
 
 ## Open questions
 
-7. **Where does a card's title come from?** Examples, one card each:
-   ```
-   today                       rimworld     palworld    Disco Elysium - The Final Cut
-   A. a `title` key            RimWorld     Palworld    (desktop name, as now)
-   B. derive from what we know RimWorld     Palworld    ...
-   ```
-   - A. **A `title` key on the environment (recommended).** Optional and
-     lenient like `tags`, shown on the card, the panel, and the overlay
-     when set, and otherwise the desktop name, then the environment name,
-     as now. It's editable in the environment's Settings page and with
-     `wineo set title=...`, and filled in when a flow already knows the
-     name: GOG and Steam imports, and art lookups, which return the
-     game's name. It's a new config key, so it follows 0053's rules:
-     additive, and an older wineo reports it as unknown, a warning only.
-   - B. Derive it at display time, with no new key: the GOG product title,
-     the Steam title, the art lookup's match, else the environment name.
-     Nothing to edit by hand, so a wrong match can't be fixed, and
-     environments with none of those (like `rimworld`) stay as they are.
-8. **Do search and sort use the title?**
-   - A. **Yes (recommended).** Search matches the title and the
-     environment name, and Sort by name sorts by what the card shows, so
-     the grid reads A to Z. Ties fall back to the environment name.
-   - B. They keep using the environment name, so a grid sorted by name can
-     look out of order next to the titles.
-9. **How do arrow keys work on the choice lists?**
-   - A. **Up and Down move focus between rows, Enter chooses (recommended),**
-     like the Sort and Filters menus, and Tab still walks the rows.
-   - B. Tab and Shift+Tab only. Simpler, but a long list is a lot of Tabs.
+10. **A Steam environment already has a `title`.** It's one of the
+    proxied-only keys, written at import from the game's Steam name
+    (`steam_import.rs:310`). The card ignores it while Steam knows the
+    game and shows Steam's live name (`library.rs:424-433`); it's only a
+    fallback for when Steam forgets. Widening the key to every kind means
+    it has to mean one thing.
+    ```
+    a Steam game, key written at import: title = "Overwatch 2"
+    you set title = "OW2" in Settings:
+    A. the card keeps showing Steam's live name; the key is only a fallback,
+       and Settings shows it read-only for Steam games
+    B. the card shows "OW2"; the key is what the card shows everywhere,
+       and Steam's live name only fills in when it's unset
+    ```
+    - A. **Steam keeps today's behavior (recommended).** The key means "the
+      card's title" for every kind except Steam, where Steam's own name
+      still wins and the key stays a fallback. Nothing existing changes.
+    - B. One meaning everywhere. A Steam game's card would follow the key
+      written at import, so a game Steam renames later keeps its old title
+      until you edit it; the live name is only used when the key is unset.
 
 ## Proposed design
 
-The shape, with the answers above. Questions 7 to 9 are open and will fill
-in their sections.
+The shape, with the answers above. Question 10 is open and settles the
+Steam part of the card titles.
 
 ### Poster star
 
@@ -193,6 +195,35 @@ in their sections.
   cards to their new places even when the column count stays the same,
   through the existing path.
 
+### Card titles
+
+- `title` joins the environment config for every kind, optional and
+  lenient like `tags`: an older wineo reports it as an unknown key, a
+  warning only, as 0053's rules say. For a Wine or native environment the
+  card, the panel, and the poster-only overlay show it when it's set,
+  then the default target's desktop name as now, then the environment
+  name. A Steam environment follows question 10.
+- It's editable on the environment's Settings page and with
+  `wineo set title=...`, and it is cleared the same ways. `wineo validate`
+  reports an empty or overlong title. GOG imports and migrations fill it
+  from the product title they already fetch. Whether the art lookup keeps
+  the matched game's name to fill it too is checked in the step; if it
+  doesn't, that part waits.
+- Nothing fills an already-set title (answer 7), so a later metadata
+  source can write it only when it's empty.
+- Search matches the title and the environment name, and Sort by name
+  uses the shown title with the environment name as the tie-break
+  (answer 8). `wineo list` and the other CLI output keep the environment
+  name, which is what commands take.
+
+### Choice lists
+
+- The rows in Add, New's program list, and Heroic's source list become
+  `focus_button` controls with the usual primary focus ring. Up and Down
+  move focus between rows, Enter chooses, and Tab still walks them
+  (answer 9). Focus lands on the first row when a page opens, which
+  changes the focus order on those pages.
+
 ### Slider snap
 
 - `SNAP_IN` 8 and `SNAP_OUT` 11, with the tests and the style guide.
@@ -220,9 +251,9 @@ in their sections.
    progress value, the alpha and offset, and motion tests that drive the
    frame clock through a crossing in both directions, mid-flight reversal,
    and a crossing during a sort.
-6. **Card titles.** Depends on questions 7 and 8: the key or derivation in
-   core, Settings and `wineo set`, the card, panel, overlay, search, and
-   sort reading it, `validate`, and `config-files.md`.
+6. **Card titles.** The `title` key in core for every kind, Settings and
+   `wineo set`, the card, panel, overlay, search, and sort reading it,
+   GOG filling it, `validate`, and `config-files.md`.
 7. **Choice lists.** `focus_button` rows in Add, New's program list, and
    Heroic's source list, the arrow keys, the focus ring, the changed focus
    order on those pages, and key tests.
