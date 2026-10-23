@@ -197,6 +197,7 @@ impl App {
         let palette = self.palette.faded(alpha);
         let hovered = self.hovered.as_ref() == Some(&card.name);
         let selected = self.selected.as_ref() == Some(&card.name);
+        let (star, shade) = self.hover_fades.progress(&card.name, hovered, selected);
         let dimmed = card.not_installed();
         let art = card.art.as_ref().and_then(|art| {
             self.images
@@ -210,8 +211,7 @@ impl App {
         // leaves its tile blank and shows the title over it like the art
         // will, so the title doesn't vanish when the art arrives.
         let tile_title = text_mode != CardText::PosterOnly || card.art.is_none();
-        let overlay =
-            text_mode == CardText::PosterOnly && card.art.is_some() && (hovered || selected);
+        let overlay = text_mode == CardText::PosterOnly && card.art.is_some() && shade > 0.0;
         let poster: Element<'_, Message> = match art {
             Some(handle) => image(handle.clone())
                 .width(Fill)
@@ -267,8 +267,8 @@ impl App {
                 steam_mark,
                 // Muted when faded, like the title under the poster, but in
                 // white so it reads on the dark gradient in both themes.
-                Color::WHITE.scale_alpha(alpha * if faded { OVERLAY_MUTED } else { 1.0 }),
-                alpha,
+                Color::WHITE.scale_alpha(alpha * shade * if faded { OVERLAY_MUTED } else { 1.0 }),
+                alpha * shade,
             ));
         }
         if steam_mark {
@@ -374,7 +374,8 @@ impl App {
                     }),
             );
         }
-        if let Some(marks) = crate::library_actions::poster_marks(card, alpha, hovered) {
+        if let Some(marks) = crate::library_actions::poster_marks_faded(card, alpha, hovered, star)
+        {
             layers = layers.push(marks);
         }
         if let Some(percent) = card.install_progress() {

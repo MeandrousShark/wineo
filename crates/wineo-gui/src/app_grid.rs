@@ -56,6 +56,27 @@ impl App {
         ControlFlow::Continue(Task::none())
     }
 
+    /// Retargets the hover fades to the hover and selection the update left,
+    /// and drops those of cards no longer shown.
+    pub(crate) fn sync_hover_fades(&mut self) {
+        self.hover_fades
+            .sync(self.hovered.as_deref(), self.selected.as_deref());
+        if !self.hover_fades.active() {
+            return;
+        }
+        if let Some(name) = &self.hovered
+            && self.hover_fades.fading(name)
+            && self
+                .cards
+                .iter()
+                .any(|card| &card.name == name && card.favorite)
+        {
+            self.hover_fades.fill_star(name);
+        }
+        let places = self.grid_places();
+        self.hover_fades.retain(|name| places.index(name).is_some());
+    }
+
     /// Where the shown cards belong at the shown zoom and dock. It's
     /// measured again only when the order or its cards (a rebuilt or kept
     /// order, or new cards), the zoom frame, the column count, the

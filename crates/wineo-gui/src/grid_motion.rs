@@ -20,7 +20,7 @@ use wineo_core::library::{ZOOM_DEFAULT, ZOOM_MAX, ZOOM_MIN};
 
 const DURATION: Duration = Duration::from_millis(300);
 /// Cards that arrive or leave fade over this long.
-const FADE: Duration = Duration::from_millis(150);
+pub(crate) const FADE: Duration = Duration::from_millis(150);
 const FREQUENCY: f32 = 28.0;
 const DAMPING: f32 = 0.62;
 const SETTLE: Duration = Duration::from_millis(70);

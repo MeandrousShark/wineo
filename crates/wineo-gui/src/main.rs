@@ -33,6 +33,7 @@ mod gog_fake;
 mod gog_library;
 mod grid;
 mod grid_motion;
+mod hover_fade;
 mod keys;
 #[cfg(test)]
 mod layout_probe;
@@ -157,6 +158,7 @@ pub(crate) struct App {
     panel_open: bool,
     panel_motion: panel_motion::PanelMotion,
     grid_motion: grid_motion::GridMotion,
+    hover_fades: hover_fade::HoverFades,
     /// `grid_places` for the inputs it was measured from.
     places: std::cell::RefCell<Option<(grid_motion::PlacesKey, std::rc::Rc<grid_motion::Places>)>>,
     collapse: collapse::Collapse,
@@ -357,6 +359,7 @@ pub(crate) enum Message {
     ThemeChanged(iced::theme::Mode),
     PanelTick(u64, Instant),
     GridTick(u64, Instant),
+    HoverTick(u64, Instant),
     Key(keyboard::Key, keyboard::Modifiers, iced::event::Status),
     Modifiers(keyboard::Modifiers),
     KeyWithFocus(
@@ -471,6 +474,7 @@ impl App {
             panel_open: false,
             panel_motion: panel_motion::PanelMotion::default(),
             grid_motion: grid_motion::GridMotion::default(),
+            hover_fades: hover_fade::HoverFades::default(),
             places: Default::default(),
             collapse: collapse::Collapse::default(),
             reduced_motion: false,
@@ -704,6 +708,7 @@ impl App {
             iced::event::listen_with(|event, status, _| event_message(event, status)),
             panel_motion,
             grid_motion,
+            self.hover_fades.subscription(),
             zoom,
             collapse,
             // Only a toast has focus to recheck.
@@ -718,6 +723,8 @@ impl App {
         let poll_focus = self.toast_focus_may_have_changed(&message);
         let screen = self.screen_key();
         let task = self.update_message(message);
+        // One place for every path that changes the hover or selection.
+        self.sync_hover_fades();
         // One rule for every way a screen opens: see `prefix_facts`.
         if self.screen_key() != screen {
             self.refresh_facts();
@@ -1064,6 +1071,10 @@ impl App {
                 Task::none()
             }
             Message::GridTick(generation, now) => self.grid_tick(generation, now)?,
+            Message::HoverTick(generation, now) => {
+                self.hover_fades.tick(generation, now);
+                Task::none()
+            }
             Message::Modifiers(modifiers) => {
                 self.modifiers = modifiers;
                 self.zooming.modifiers_changed(modifiers);

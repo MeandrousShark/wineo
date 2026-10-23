@@ -420,26 +420,44 @@ impl App {
 /// outline star while the card is hovered, and a crossed eye on a hidden
 /// card below it. The star's slot stays empty without it, so the eye never
 /// moves when the star comes and goes.
+#[cfg(test)]
 pub(crate) fn poster_marks(
     card: &Card,
     alpha: f32,
     hovered: bool,
 ) -> Option<Element<'static, Message>> {
-    if !card.favorite && !card.hidden && !hovered {
+    poster_marks_faded(card, alpha, hovered, if hovered { 1.0 } else { 0.0 })
+}
+
+/// `poster_marks` with the outline star at `star` of its strength as it
+/// fades with the hover. A favorite's filled star ignores it.
+pub(crate) fn poster_marks_faded(
+    card: &Card,
+    alpha: f32,
+    hovered: bool,
+    star: f32,
+) -> Option<Element<'static, Message>> {
+    let outline = !card.favorite && (hovered || star > 0.0);
+    if !card.favorite && !card.hidden && !outline {
         return None;
     }
     // Each mark sits centered in a cell as big as the star's target, so
     // cells touching put the chips their usual gap apart.
-    let star: Element<'static, Message> = if card.favorite || hovered {
-        let bytes = if card.favorite { STAR } else { STAR_OUTLINE };
-        button(mark(bytes, alpha))
+    let star: Element<'static, Message> = if card.favorite || outline {
+        let (bytes, strength) = if card.favorite {
+            (STAR, 1.0)
+        } else {
+            (STAR_OUTLINE, star)
+        };
+        // A star fading out with the hover takes no presses.
+        button(mark(bytes, alpha * strength))
             .width(STAR_TARGET)
             .height(STAR_TARGET)
             .padding(MARK_INSET)
-            .on_press(Message::Mark(Event::Toggle(
-                card.name.clone(),
-                Flag::Favorite,
-            )))
+            .on_press_maybe(
+                (card.favorite || hovered)
+                    .then(|| Message::Mark(Event::Toggle(card.name.clone(), Flag::Favorite))),
+            )
             .style(|_, _| button::Style::default())
             .into()
     } else {
