@@ -14,12 +14,12 @@ use crate::flow::import_grid::{Tile, import_label};
 use crate::runner_label::{self, Choice};
 use crate::theme::Palette;
 use crate::ui::{
-    PickListStyle, accent_base, list_group, list_row, list_row_text, secondary_button,
+    ListRow, PickListStyle, accent_base, list_group, list_row, list_row_text, secondary_button,
 };
 
 use super::{
-    BODY_ID, Draft, Event, Page, Review, SCOPE_NUMBER_LABELS, Step, hook_paths, quote_args,
-    review_warnings,
+    BODY_ID, Draft, Event, Page, Review, SCOPE_NUMBER_LABELS, SOURCE_LIST, Step, hook_paths,
+    quote_args, review_warnings, source_id,
 };
 
 impl Page {
@@ -88,16 +88,20 @@ impl Page {
                 }
                 if !self.sources.is_empty() {
                     body = body.push(list_group(
+                        SOURCE_LIST,
                         self.sources.iter().enumerate().map(|(index, source)| {
-                            list_row(
-                                list_row_text(format!(
-                                    "{}: {}",
-                                    origin_label(source.origin()),
-                                    source.config_dir().display()
-                                )),
-                                palette,
+                            ListRow::new(
+                                source_id(source),
+                                list_row(
+                                    list_row_text(format!(
+                                        "{}: {}",
+                                        origin_label(source.origin()),
+                                        source.config_dir().display()
+                                    )),
+                                    palette,
+                                ),
+                                Event::Source(index),
                             )
-                            .on_press(Event::Source(index))
                         }),
                         palette,
                     ));

@@ -187,6 +187,15 @@ impl<M> Laid<'_, M> {
     /// Hands `event` to the tree with the cursor at `cursor`, and returns
     /// what it published.
     pub(crate) fn event_at(&mut self, event: &iced::Event, cursor: iced::mouse::Cursor) -> Vec<M> {
+        self.event_with_status(event, cursor).0
+    }
+
+    /// Like `event_at`, with whether a widget captured the event.
+    pub(crate) fn event_with_status(
+        &mut self,
+        event: &iced::Event,
+        cursor: iced::mouse::Cursor,
+    ) -> (Vec<M>, iced::event::Status) {
         let mut messages = Vec::new();
         let mut shell = iced::advanced::Shell::new(&mut messages);
         self.element.as_widget_mut().update(
@@ -199,7 +208,8 @@ impl<M> Laid<'_, M> {
             &mut shell,
             &Rectangle::with_size(self.size),
         );
-        messages
+        let status = shell.event_status();
+        (messages, status)
     }
 
     /// The scroll offsets of every scrollable, top first.

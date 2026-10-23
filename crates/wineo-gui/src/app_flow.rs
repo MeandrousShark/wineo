@@ -54,6 +54,16 @@ impl App {
     }
 
     pub(crate) fn flow_update(&mut self, generation: u64, event: flow::Event) -> Task<Message> {
+        let before = self.flow.as_ref().and_then(flow::Page::rows);
+        let task = self.flow_event(generation, event);
+        let after = self.flow.as_ref().and_then(flow::Page::rows);
+        match crate::focus_button::land(before.as_ref(), after.as_ref()) {
+            Some(focus) => Task::batch([task, focus]),
+            None => task,
+        }
+    }
+
+    fn flow_event(&mut self, generation: u64, event: flow::Event) -> Task<Message> {
         if generation != self.flow_generation {
             return Task::none();
         }
@@ -188,9 +198,14 @@ impl App {
         self.action_menu = None;
         self.flow_generation = self.flow_generation.wrapping_add(1);
         self.flow = Some(flow::Page::choose(self.paths.clone()));
-        ControlFlow::Continue(iced::advanced::widget::operate(
-            iced::advanced::widget::operation::focusable::unfocus(),
-        ))
+        let rows = self.flow.as_ref().and_then(flow::Page::rows);
+        ControlFlow::Continue(
+            crate::focus_button::land(None, rows.as_ref()).unwrap_or_else(|| {
+                iced::advanced::widget::operate(
+                    iced::advanced::widget::operation::focusable::unfocus(),
+                )
+            }),
+        )
     }
 
     pub(crate) fn gog_update_requested(&mut self, name: String) -> Early {

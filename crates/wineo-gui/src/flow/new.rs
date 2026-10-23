@@ -31,6 +31,7 @@ use wineo_core::targets::{self, Batch, Spec, Written};
 use wineo_core::templates::{Template, Templates};
 
 use super::{Action, artwork};
+use crate::focus_button::ListRows;
 use crate::logview::{self, LogView};
 use crate::picker;
 use crate::runner_label::{self, Choice};
@@ -39,6 +40,13 @@ use crate::theme::Palette;
 use crate::ui::{self, PickListStyle, ScrollStyle};
 
 const LOG_ID: &str = "install-log";
+
+const PROGRAM_LIST: &str = "new-programs";
+
+/// A program row's id on the target step.
+fn program_id(exe: &str) -> String {
+    format!("new-program:{exe}")
+}
 const LOG_CAP: usize = 128 * 1024;
 const LOG_KEEP: usize = 64 * 1024;
 
@@ -390,6 +398,19 @@ impl Page {
 
     pub(crate) fn take_action(&mut self) -> Option<Action> {
         self.action.take()
+    }
+
+    /// The target step's program list.
+    pub(crate) fn rows(&self) -> Option<ListRows> {
+        (self.stage == Stage::Target).then(|| ListRows {
+            list: PROGRAM_LIST,
+            ids: self
+                .report
+                .iter()
+                .flat_map(|report| &report.programs)
+                .map(|(_, exe)| program_id(exe))
+                .collect(),
+        })
     }
 
     pub(crate) fn back(&mut self) -> Task<Event> {
@@ -1548,9 +1569,16 @@ impl Page {
                     && !report.programs.is_empty()
                 {
                     body = body.push(ui::list_group(
+                        PROGRAM_LIST,
                         report.programs.iter().map(|(label, exe)| {
-                            ui::list_row(ui::list_row_text(format!("{label} - {exe}")), palette)
-                                .on_press(Event::Program(exe.clone()))
+                            ui::ListRow::new(
+                                program_id(exe),
+                                ui::list_row(
+                                    ui::list_row_text(format!("{label} - {exe}")),
+                                    palette,
+                                ),
+                                Event::Program(exe.clone()),
+                            )
                         }),
                         palette,
                     ));

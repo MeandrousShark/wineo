@@ -217,22 +217,67 @@ pub(crate) fn list_row_style(palette: Palette, status: button::Status) -> button
     }
 }
 
-/// Rows in one grouped surface with a separator between each pair.
+/// A `list_row` for `list_group`, chosen by `on_press` from the mouse or,
+/// once focused, from Enter or Space. `id` names the row's choice, like a
+/// path or a build id, so focus can follow it when the list changes.
+pub(crate) struct ListRow<'a, M> {
+    id: String,
+    row: Button<'a, M>,
+    on_press: M,
+    enabled: bool,
+}
+
+impl<'a, M: Clone + 'a> ListRow<'a, M> {
+    pub(crate) fn new(id: impl Into<String>, row: Button<'a, M>, on_press: M) -> Self {
+        Self {
+            id: id.into(),
+            row,
+            on_press,
+            enabled: true,
+        }
+    }
+
+    /// A row that can't be chosen right now takes no press and no focus. No
+    /// list disables a row yet.
+    #[cfg(test)]
+    pub(crate) fn enabled(mut self, enabled: bool) -> Self {
+        self.enabled = enabled;
+        self
+    }
+}
+
+/// Rows in one grouped surface with a separator between each pair. The rows
+/// take keyboard focus, and Up and Down move it between them. `list` names
+/// the list, as the page's `ListRows` does.
 pub(crate) fn list_group<'a, M: Clone + 'a>(
-    rows: impl IntoIterator<Item = Button<'a, M>>,
+    list: &'static str,
+    rows: impl IntoIterator<Item = ListRow<'a, M>>,
     palette: Palette,
-) -> Container<'a, M> {
-    let mut list = Column::new().width(Fill);
+) -> Element<'a, M> {
+    let mut column = Column::new().width(Fill);
+    let mut ids = Vec::new();
     for (index, row) in rows.into_iter().enumerate() {
         if index > 0 {
-            list = list.push(separator(palette));
+            column = column.push(separator(palette));
         }
-        list = list.push(row);
+        let press = row.enabled.then(|| row.on_press.clone());
+        column = column.push(crate::focus_button::row(
+            row.row.on_press_maybe(press).into(),
+            row.enabled,
+            row.id.clone(),
+            row.on_press,
+        ));
+        ids.push((row.id, row.enabled));
     }
-    container(list)
-        .width(Fill)
-        .padding(4)
-        .style(move |_| section_style(palette))
+    crate::focus_button::rows(
+        list,
+        container(column)
+            .width(Fill)
+            .padding(4)
+            .style(move |_| section_style(palette))
+            .into(),
+        ids,
+    )
 }
 
 pub(crate) fn secondary_style(palette: Palette, status: button::Status) -> button::Style {

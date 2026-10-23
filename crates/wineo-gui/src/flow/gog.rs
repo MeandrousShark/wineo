@@ -37,6 +37,7 @@ use super::gog_install::{self, Install, Leave, Offer};
 use super::gog_posters::{self, Job, Network, Source as PosterSource};
 use super::heroic::{self, Prerequisite};
 use super::import_grid::{ImportGrid, Tile};
+use crate::focus_button::ListRows;
 use crate::runner_label::Choice;
 use crate::task;
 use crate::theme::Palette;
@@ -283,6 +284,14 @@ impl Page {
 
     pub(crate) fn busy(&self) -> bool {
         self.token.is_some() || self.install.as_ref().is_some_and(|install| install.busy())
+    }
+
+    /// The install's program list, while the install step shows.
+    pub(crate) fn rows(&self) -> Option<ListRows> {
+        match (self.step, &self.install) {
+            (Step::Install, Some(install)) => install.rows(),
+            _ => None,
+        }
     }
 
     /// A listing, preparation, migration, or install is running.

@@ -44,15 +44,23 @@ use super::gog_update::{
     LOGGED_OUT, PROGRESS_INTERVAL, setup_window_buttons, setup_window_question,
 };
 use super::heroic::{self, Prerequisite};
+use crate::focus_button::ListRows;
 use crate::runner_label::Choice;
 use crate::size::format_bytes;
 use crate::task;
 use crate::theme::Palette;
 use crate::ui::{
-    PickListStyle, accent_base, list_group, list_row, list_row_text, secondary_button,
+    ListRow, PickListStyle, accent_base, list_group, list_row, list_row_text, secondary_button,
 };
 
 const CANCELED: &str = "Install canceled.";
+
+const PROGRAM_LIST: &str = "gog-programs";
+
+/// A program row's id on the target step.
+fn program_id(exe: &str) -> String {
+    format!("gog-program:{exe}")
+}
 const LABEL_WIDTH: f32 = 120.0;
 
 /// A game from the owned list, as the import grid knows it.
@@ -393,6 +401,19 @@ impl Install {
 
     pub(crate) fn finished(&self) -> bool {
         self.stage == Stage::Finished
+    }
+
+    /// The target step's program list.
+    pub(crate) fn rows(&self) -> Option<ListRows> {
+        (self.stage == Stage::Target).then(|| ListRows {
+            list: PROGRAM_LIST,
+            ids: self
+                .done
+                .iter()
+                .flat_map(|done| done.programs.iter().flatten())
+                .map(|(_, exe)| program_id(exe))
+                .collect(),
+        })
     }
 
     pub(crate) fn take_leave(&mut self) -> Option<Leave> {
@@ -1217,6 +1238,7 @@ impl Install {
             body = body.push(text("Nothing installed was found.").color(palette.muted));
         } else {
             body = body.push(list_group(
+                PROGRAM_LIST,
                 programs.iter().map(|(label, exe)| {
                     let chosen = *exe == self.target_path;
                     let mut line = column![list_row_text(label.as_str())].spacing(2);
@@ -1225,7 +1247,11 @@ impl Install {
                     } else {
                         palette.muted
                     }));
-                    list_row(line, palette).on_press(Event::Program(exe.clone()))
+                    ListRow::new(
+                        program_id(exe),
+                        list_row(line, palette),
+                        Event::Program(exe.clone()),
+                    )
                 }),
                 palette,
             ));
@@ -2441,5 +2467,7 @@ pub(super) mod tests {
     }
 }
 
+#[cfg(test)]
+mod focus_tests;
 #[cfg(test)]
 mod galaxy_tests;

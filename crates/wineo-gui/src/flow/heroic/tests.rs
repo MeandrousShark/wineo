@@ -1702,3 +1702,52 @@ fn the_review_names_the_launcher_of_a_build_used_in_place() {
         "Runner: GE-Proton11-3 (Steam)"
     );
 }
+
+/// The app on the Heroic page before discovery answers, and the page's
+/// generation for its reply.
+fn discovering(root: &std::path::Path) -> (crate::App, u64) {
+    let mut app = crate::tests::app();
+    let (page, _) = Page::new(paths(root));
+    let generation = page.generation;
+    app.flow = Some(crate::flow::Page::Heroic(Box::new(page)));
+    (app, generation)
+}
+
+fn found(root: &std::path::Path) -> Vec<HeroicSource> {
+    ["heroic", "flatpak-heroic"]
+        .iter()
+        .map(|dir| HeroicSource::from_config_dir_with_home(root.join(dir), root.to_owned()))
+        .collect()
+}
+
+fn sources_loaded(
+    app: &mut crate::App,
+    generation: u64,
+    sources: Vec<HeroicSource>,
+) -> iced::Task<crate::Message> {
+    app.update(crate::Message::Flow(
+        app.flow_generation,
+        crate::flow::Event::HeroicMessage(Box::new(Event::SourcesLoaded(generation, Ok(sources)))),
+    ))
+}
+
+#[test]
+fn sources_that_arrive_with_nothing_focused_take_focus_and_the_arrows_walk_them() {
+    let root = tempdir().unwrap();
+    let (mut app, generation) = discovering(root.path());
+    let sources = found(root.path());
+    let ids: Vec<String> = sources.iter().map(source_id).collect();
+    let task = sources_loaded(&mut app, generation, sources);
+    let mut laid = crate::focus_button::landed(&app, task);
+    assert_eq!(laid.focused(), [iced::widget::Id::from(ids[0].clone())]);
+    crate::focus_button::walk_rows(&mut laid, &ids);
+}
+
+#[test]
+fn no_sources_focus_no_row() {
+    let root = tempdir().unwrap();
+    let (mut app, generation) = discovering(root.path());
+    let task = sources_loaded(&mut app, generation, Vec::new());
+    let mut laid = crate::focus_button::landed(&app, task);
+    assert!(laid.focused().is_empty());
+}

@@ -27,6 +27,7 @@ use wineo_core::paths::Paths;
 
 use super::import_grid::{GridKey, ImportGrid};
 use super::{Action, artwork, posters};
+use crate::focus_button::ListRows;
 use crate::runner_label::{self, Choice};
 use crate::task;
 use crate::theme::Palette;
@@ -37,6 +38,13 @@ use work::{
 pub(super) use work::{
     Prerequisite, install_prerequisite, playtime_note, review_warnings, runner_choices, suggest,
 };
+
+const SOURCE_LIST: &str = "heroic-sources";
+
+/// A source row's id, by its config folder.
+fn source_id(source: &HeroicSource) -> String {
+    format!("heroic-source:{}", source.config_dir().display())
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Step {
@@ -379,6 +387,14 @@ impl Page {
 
     pub(crate) fn busy(&self) -> bool {
         self.token.is_some()
+    }
+
+    /// The first step's source list, which fills in once discovery answers.
+    pub(crate) fn rows(&self) -> Option<ListRows> {
+        (self.step == Step::Sources).then(|| ListRows {
+            list: SOURCE_LIST,
+            ids: self.sources.iter().map(source_id).collect(),
+        })
     }
 
     /// Background work is running: an import, or a listing, inspection, or

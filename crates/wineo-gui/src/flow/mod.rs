@@ -19,22 +19,40 @@ use iced::widget::{column, container, scrollable, text};
 use iced::{Element, Fill, Task, keyboard};
 use wineo_core::paths::Paths;
 
+use crate::focus_button::ListRows;
 use crate::theme::Palette;
-use crate::ui::{ScrollStyle, list_group, list_row, list_row_text, secondary_button};
+use crate::ui::{ListRow, ScrollStyle, list_group, list_row, list_row_text, secondary_button};
+
+const CHOICE_LIST: &str = "add";
+
+/// The Add choices' row ids, in order.
+const CHOICE_IDS: [&str; 5] = [
+    "add-new",
+    "add-prefix",
+    "add-heroic",
+    "add-steam",
+    "add-gog",
+];
 
 /// One Add choice: its name, with what it does underneath.
 fn choice<'a>(
+    id: &'static str,
     title: &'static str,
     detail: &'static str,
+    event: Event,
     palette: Palette,
-) -> iced::widget::Button<'a, Event> {
-    list_row(
-        column![
-            list_row_text(title),
-            text(detail).size(12).color(palette.muted)
-        ]
-        .spacing(2),
-        palette,
+) -> ListRow<'a, Event> {
+    ListRow::new(
+        id,
+        list_row(
+            column![
+                list_row_text(title),
+                text(detail).size(12).color(palette.muted)
+            ]
+            .spacing(2),
+            palette,
+        ),
+        event,
     )
 }
 
@@ -271,40 +289,46 @@ impl Page {
                     secondary_button("Back", palette).on_press(Event::Back),
                     text("Add to your library").size(28),
                     scrollable(list_group(
+                        CHOICE_LIST,
                         [
                             choice(
+                                CHOICE_IDS[0],
                                 "1 - New environment",
                                 "An installer, an existing executable, or an empty environment",
+                                Event::New,
                                 palette,
-                            )
-                            .on_press(Event::New),
+                            ),
                             choice(
+                                CHOICE_IDS[1],
                                 "2 - Import prefix",
                                 "Copy or register an existing Wine prefix or Proton compatdata",
+                                Event::Prefix,
                                 palette,
-                            )
-                            .on_press(Event::Prefix),
+                            ),
                             choice(
+                                CHOICE_IDS[2],
                                 "3 - Import from Heroic",
                                 "Manually added Windows and native Linux games",
+                                Event::Heroic,
                                 palette,
-                            )
-                            .on_press(Event::Heroic),
+                            ),
                             choice(
+                                CHOICE_IDS[3],
                                 "4 - Import from Steam",
                                 "Installed and owned Steam games",
+                                Event::Steam,
                                 palette,
-                            )
-                            .on_press(Event::Steam),
+                            ),
                             choice(
+                                CHOICE_IDS[4],
                                 "5 - Import from GOG",
                                 "Install the games you own, or move Heroic's",
+                                Event::Gog,
                                 palette,
-                            )
-                            .on_press(Event::Gog),
+                            ),
                         ],
                         palette,
-                    ),)
+                    ))
                     .wineo_style(palette),
                 ]
                 .spacing(16),
@@ -332,6 +356,20 @@ impl Page {
         }
     }
 
+    /// The choice list the page shows, if any, for where focus lands.
+    pub(crate) fn rows(&self) -> Option<ListRows> {
+        match self {
+            Self::Choose(_) => Some(ListRows {
+                list: CHOICE_LIST,
+                ids: CHOICE_IDS.map(str::to_owned).to_vec(),
+            }),
+            Self::New(page) => page.rows(),
+            Self::Heroic(page) => page.rows(),
+            Self::Gog(page) => page.rows(),
+            _ => None,
+        }
+    }
+
     pub(crate) fn busy(&self) -> bool {
         on_page!(self, page => page.busy(), Choose => false)
     }
@@ -352,6 +390,9 @@ impl Page {
         on_page!(self, page => page.take_action(), Choose => None)
     }
 }
+
+#[cfg(test)]
+mod focus_tests;
 
 #[cfg(test)]
 mod tests {

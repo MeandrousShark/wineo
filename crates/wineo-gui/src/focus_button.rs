@@ -5,6 +5,12 @@ use iced::advanced::{
 };
 use iced::{Element, Event, Length, Rectangle, Size, Vector};
 
+mod rows;
+
+#[cfg(test)]
+pub(crate) use rows::tests::{focusables, landed, press, press_key, run_task, walk_rows};
+pub(crate) use rows::{ListRows, land, rows};
+
 pub(crate) const UNDO_ID: &str = "trash-undo";
 
 pub(crate) fn undo<'a>(
@@ -26,6 +32,25 @@ pub(crate) fn control<'a, M: Clone + 'a>(
         id: id.into(),
         on_press,
         mouse_focus: true,
+        row: false,
+    })
+}
+
+/// A row of a choice list, for `rows`. It leaves Ctrl+Enter alone, so the
+/// flow's submit never also chooses the focused row.
+pub(crate) fn row<'a, M: Clone + 'a>(
+    content: Element<'a, M>,
+    enabled: bool,
+    id: impl Into<iced::widget::Id>,
+    on_press: M,
+) -> Element<'a, M> {
+    Element::new(FocusControl {
+        content,
+        enabled,
+        id: id.into(),
+        on_press,
+        mouse_focus: true,
+        row: true,
     })
 }
 
@@ -44,6 +69,7 @@ pub(crate) fn keyboard_control<'a, M: Clone + 'a>(
         id: id.into(),
         on_press,
         mouse_focus: false,
+        row: false,
     })
 }
 
@@ -157,6 +183,7 @@ struct FocusControl<'a, M, R: AdvancedRenderer = iced::Renderer> {
     id: iced::widget::Id,
     on_press: M,
     mouse_focus: bool,
+    row: bool,
 }
 
 #[derive(Default)]
@@ -266,12 +293,18 @@ where
             }
             Event::Keyboard(iced::keyboard::Event::KeyPressed {
                 key:
-                    iced::keyboard::Key::Named(
+                    key @ iced::keyboard::Key::Named(
                         iced::keyboard::key::Named::Enter | iced::keyboard::key::Named::Space,
                     ),
+                modifiers,
                 repeat: false,
                 ..
-            }) if self.enabled && state.focused => {
+            }) if self.enabled
+                && state.focused
+                && !(self.row
+                    && modifiers.control()
+                    && *key == iced::keyboard::Key::Named(iced::keyboard::key::Named::Enter)) =>
+            {
                 shell.publish(self.on_press.clone());
                 shell.capture_event();
                 return;
@@ -376,6 +409,7 @@ mod tests {
             id: UNDO_ID.into(),
             on_press: crate::Message::Undo,
             mouse_focus: true,
+            row: false,
         });
         let mut tree = tree::Tree::new(widget.as_widget());
         let bounds = Size::new(100.0, 32.0);
@@ -416,6 +450,7 @@ mod tests {
             id: UNDO_ID.into(),
             on_press: crate::Message::Undo,
             mouse_focus: true,
+            row: false,
         });
         let mut tree = tree::Tree::new(widget.as_widget());
         let bounds = Size::new(100.0, 32.0);
@@ -460,6 +495,7 @@ mod tests {
             id: UNDO_ID.into(),
             on_press: crate::Message::Undo,
             mouse_focus: true,
+            row: false,
         });
         let mut tree = tree::Tree::new(widget.as_widget());
         let bounds = Size::new(100.0, 32.0);
@@ -606,6 +642,7 @@ mod tests {
                         id: id.into(),
                         on_press: on_press.clone(),
                         mouse_focus: true,
+                        row: false,
                     });
                 let mut tree = tree::Tree::new(widget.as_widget());
                 tree.state.downcast_mut::<State>().focus();

@@ -19,11 +19,12 @@ use wineo_core::gog::update::{Options, Status, UpdateError};
 use wineo_core::key_store::Keyring;
 use wineo_core::paths::Paths;
 
+use crate::focus_button::ListRows;
 use crate::library::{Card, CardKind};
 use crate::prefix_facts::Facts;
 use crate::progress::Delayed;
 use crate::ui::{
-    PickListStyle, accent_base, list_group, list_row, list_row_text, secondary_button,
+    ListRow, PickListStyle, accent_base, list_group, list_row, list_row_text, secondary_button,
 };
 use crate::{App, Message};
 
@@ -104,6 +105,13 @@ pub(crate) struct Picker {
     private_error: Option<String>,
 }
 
+const BUILD_LIST: &str = "version-builds";
+
+/// A build row's id.
+fn build_id(build: &str) -> String {
+    format!("version-build:{build}")
+}
+
 fn send(event: Event) -> Message {
     Message::Version(event)
 }
@@ -150,6 +158,14 @@ impl Picker {
                     .collect()
             })
             .unwrap_or_default()
+    }
+
+    /// The build list, empty until GOG answers.
+    fn list_rows(&self) -> ListRows {
+        ListRows {
+            list: BUILD_LIST,
+            ids: self.rows().iter().map(|row| build_id(&row.build)).collect(),
+        }
     }
 
     fn picked_row(&self) -> Option<&Listed> {
@@ -388,6 +404,16 @@ impl App {
 }
 
 pub(crate) fn update(app: &mut App, event: Event) -> Task<Message> {
+    let before = app.version.as_ref().map(Picker::list_rows);
+    let task = handle(app, event);
+    let after = app.version.as_ref().map(Picker::list_rows);
+    match crate::focus_button::land(before.as_ref(), after.as_ref()) {
+        Some(focus) => Task::batch([task, focus]),
+        None => task,
+    }
+}
+
+fn handle(app: &mut App, event: Event) -> Task<Message> {
     match event {
         Event::Open(name) => {
             if app.flow.is_some()
@@ -721,6 +747,7 @@ impl App {
                 .align_y(Center),
             );
             body = body.push(list_group(
+                BUILD_LIST,
                 picker.rows().into_iter().map(|build| {
                     let chosen = picker.picked.as_deref() == Some(build.build.as_str());
                     let mut details: Vec<&str> = Vec::new();
@@ -742,7 +769,11 @@ impl App {
                     if !details.is_empty() {
                         line = line.push(text(details.join(", ")).size(12).color(palette.muted));
                     }
-                    list_row(line, palette).on_press(send(Event::Pick(build.build.clone())))
+                    ListRow::new(
+                        build_id(&build.build),
+                        list_row(line, palette),
+                        send(Event::Pick(build.build.clone())),
+                    )
                 }),
                 palette,
             ));

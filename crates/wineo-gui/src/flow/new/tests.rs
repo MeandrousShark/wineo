@@ -690,3 +690,53 @@ fn the_review_runner_row_names_another_launchers_build() {
     let review = prepare(&paths, &draft).unwrap();
     assert_eq!(review.runner_row.as_deref(), Some("GE-Proton11-3 (Steam)"));
 }
+
+/// The app on the New page's working step, and the generation its reply
+/// needs.
+fn working() -> (crate::App, u64) {
+    let mut app = crate::tests::app();
+    let mut page = page();
+    page.stage = Stage::Working;
+    let generation = page.generation;
+    app.flow = Some(crate::flow::Page::New(Box::new(page)));
+    (app, generation)
+}
+
+fn done(app: &mut crate::App, generation: u64, programs: &[&str]) -> iced::Task<crate::Message> {
+    let mut report = Report::new();
+    report.registered = true;
+    report.offer_programs = true;
+    report.programs = programs
+        .iter()
+        .map(|exe| ((*exe).to_owned(), format!("C:\\Game\\{exe}")))
+        .collect();
+    app.update(crate::Message::Flow(
+        app.flow_generation,
+        crate::flow::Event::Create(Box::new(Event::Done(generation, report))),
+    ))
+}
+
+#[test]
+fn the_target_step_opens_on_its_first_program_and_the_arrows_walk_the_list() {
+    let (mut app, generation) = working();
+    let task = done(
+        &mut app,
+        generation,
+        &["game.exe", "editor.exe", "server.exe"],
+    );
+    let ids: Vec<String> = ["game.exe", "editor.exe", "server.exe"]
+        .iter()
+        .map(|exe| program_id(&format!("C:\\Game\\{exe}")))
+        .collect();
+    let mut laid = crate::focus_button::landed(&app, task);
+    assert_eq!(laid.focused(), [iced::widget::Id::from(ids[0].clone())]);
+    crate::focus_button::walk_rows(&mut laid, &ids);
+}
+
+#[test]
+fn a_target_step_with_no_programs_focuses_no_row() {
+    let (mut app, generation) = working();
+    let task = done(&mut app, generation, &[]);
+    let mut laid = crate::focus_button::landed(&app, task);
+    assert!(laid.focused().is_empty());
+}

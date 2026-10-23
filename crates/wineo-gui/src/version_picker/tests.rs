@@ -888,3 +888,167 @@ fn unchanged_or_first_seen_cards_ask_gog_nothing() {
     plain.playtime = "2 hours".to_owned();
     assert!(crate::gog_library::local_changes(&app.cards, &[recorded("1.2.76"), plain]).is_empty());
 }
+
+fn build(branch: Option<&str>, id: &str, latest: bool) -> Listed {
+    Listed {
+        branch: branch.map(str::to_owned),
+        build: id.to_owned(),
+        version: Some(format!("1.{id}")),
+        published: None,
+        installed: id == "100",
+        latest,
+        pinned: false,
+        followed: false,
+        private: false,
+    }
+}
+
+/// The default branch lists 300, 200, and 100, and beta lists 250 and 200.
+fn branched() -> Loaded {
+    Loaded::Galaxy(Box::new(Listing {
+        environment: NAME.to_owned(),
+        gog_id: GAME,
+        title: "Papers, Please".to_owned(),
+        follow: Follow::default(),
+        installed: Some("100".to_owned()),
+        private_branches: false,
+        builds: vec![
+            build(None, "300", true),
+            build(None, "200", false),
+            build(None, "100", false),
+            build(Some("beta"), "250", true),
+            build(Some("beta"), "200", false),
+        ],
+        warnings: Vec::new(),
+    }))
+}
+
+fn build_ids(builds: &[&str]) -> Vec<String> {
+    builds.iter().map(|id| build_id(id)).collect()
+}
+
+fn beta() -> Branch {
+    Branch {
+        name: Some("beta".to_owned()),
+        private: false,
+    }
+}
+
+/// The panel, where the picker shows, laid out over `tree` when given.
+fn relaid(
+    app: &App,
+    tree: Option<iced::advanced::widget::Tree>,
+) -> crate::layout_probe::Laid<'_, Message> {
+    let panel = app.panel(&app.cards[0]);
+    let size = iced::Size::new(420.0, 1600.0);
+    match tree {
+        Some(tree) => crate::layout_probe::relay_out(panel, tree, size),
+        None => crate::layout_probe::lay_out(panel, size),
+    }
+}
+
+/// The picker open on the game with its builds listed, and what landing
+/// the listing did to focus.
+fn listed_with_focus() -> (App, iced::advanced::widget::Tree) {
+    let mut app = opened(false);
+    let tree = relaid(&app, None).into_tree();
+    let generation = app.version_generation;
+    let task = app.update(Message::Version(Event::Loaded(
+        generation,
+        None,
+        Ok(branched()),
+    )));
+    let mut laid = relaid(&app, Some(tree));
+    crate::focus_button::run_task(&mut laid, task);
+    let tree = laid.into_tree();
+    (app, tree)
+}
+
+#[test]
+fn the_builds_take_focus_when_they_arrive_and_the_arrows_walk_them() {
+    let (app, tree) = listed_with_focus();
+    let mut laid = relaid(&app, Some(tree));
+    let ids = build_ids(&["300", "200", "100"]);
+    assert_eq!(laid.focused(), [iced::widget::Id::from(ids[0].clone())]);
+    crate::focus_button::walk_rows(&mut laid, &ids);
+}
+
+#[test]
+fn up_and_down_on_a_build_leave_the_grid_selection_alone() {
+    let (mut app, tree) = listed_with_focus();
+    let mut other = game_card(false);
+    other.name = "other".to_owned();
+    app.cards.push(other);
+    let mut tree = tree;
+    for key in [Named::ArrowDown, Named::ArrowUp, Named::ArrowUp] {
+        let mut laid = relaid(&app, Some(tree));
+        let (messages, status) = crate::focus_button::press(&mut laid, key, Modifiers::empty());
+        tree = laid.into_tree();
+        assert!(messages.is_empty());
+        assert_eq!(status, iced::event::Status::Captured);
+        // What the library's keys get once the search box says it's not
+        // focused.
+        let _ = app.handle_key(Key::Named(key), Modifiers::empty(), false, true);
+        assert_eq!(app.selected.as_deref(), Some(NAME));
+        assert!(app.version_visible());
+    }
+}
+
+#[test]
+fn a_build_on_both_branches_keeps_focus_when_the_branch_changes() {
+    let (mut app, tree) = listed_with_focus();
+    let mut laid = relaid(&app, Some(tree));
+    crate::focus_button::press(&mut laid, Named::ArrowDown, Modifiers::empty());
+    assert_eq!(laid.focused(), [iced::widget::Id::from(build_id("200"))]);
+    let tree = laid.into_tree();
+    let _ = app.update(Message::Version(Event::Branch(beta())));
+    let mut laid = relaid(&app, Some(tree));
+    // 200 is beta's second row too, after 250.
+    assert_eq!(laid.focused(), [iced::widget::Id::from(build_id("200"))]);
+}
+
+#[test]
+fn a_build_the_new_branch_lacks_moves_focus_to_the_nearest_row() {
+    let (mut app, tree) = listed_with_focus();
+    let mut laid = relaid(&app, Some(tree));
+    crate::focus_button::press(&mut laid, Named::ArrowDown, Modifiers::empty());
+    crate::focus_button::press(&mut laid, Named::ArrowDown, Modifiers::empty());
+    assert_eq!(laid.focused(), [iced::widget::Id::from(build_id("100"))]);
+    let tree = laid.into_tree();
+    let _ = app.update(Message::Version(Event::Branch(beta())));
+    let mut laid = relaid(&app, Some(tree));
+    // 100 was third; beta has two rows, so its last.
+    assert_eq!(laid.focused(), [iced::widget::Id::from(build_id("200"))]);
+    // And from the top row, the top row.
+    crate::focus_button::press(&mut laid, Named::ArrowUp, Modifiers::empty());
+    let tree = laid.into_tree();
+    let _ = app.update(Message::Version(Event::Branch(Branch {
+        name: None,
+        private: false,
+    })));
+    let mut laid = relaid(&app, Some(tree));
+    assert_eq!(laid.focused(), [iced::widget::Id::from(build_id("300"))]);
+}
+
+#[test]
+fn builds_that_arrive_while_something_else_has_focus_leave_it() {
+    let mut app = opened(false);
+    let size = iced::Size::new(1200.0, 800.0);
+    let mut laid = crate::layout_probe::lay_out(app.view(), size);
+    laid.run(Box::new(
+        iced::advanced::widget::operation::focusable::focus::<()>(iced::widget::Id::new(
+            crate::SEARCH_ID,
+        )),
+    ));
+    assert_eq!(laid.focused(), [iced::widget::Id::new(crate::SEARCH_ID)]);
+    let tree = laid.into_tree();
+    let generation = app.version_generation;
+    let task = app.update(Message::Version(Event::Loaded(
+        generation,
+        None,
+        Ok(branched()),
+    )));
+    let mut laid = crate::layout_probe::relay_out(app.view(), tree, size);
+    crate::focus_button::run_task(&mut laid, task);
+    assert_eq!(laid.focused(), [iced::widget::Id::new(crate::SEARCH_ID)]);
+}
