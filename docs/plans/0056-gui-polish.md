@@ -24,6 +24,23 @@ This is queue item 1 in [features.md](../features.md), after
 - The slider's 100% snap is hard to hit; widening it is a trivial patch
   (0055 answer 15, 2026-10-22).
 
+Answers to the first five questions (2026-10-22), numbered as asked:
+
+1. **A favorite's star toggles.** A favorite's filled star is always
+   shown, and clicking it unfavorites, exactly as the hover star favorites.
+2. **Reserve the star's room on every card.** The corner keeps the 36 px
+   the marks ask for whether or not a mark shows, so nothing shifts on
+   hover. A narrow unmarked card's GOG pill turns into the round badge a
+   little earlier than today.
+3. **No tooltip on the star.** The maintainer thinks it's obvious. It
+   wouldn't help a screen reader, since iced exposes no accessibility
+   tree; the "GUI accessibility settings" row is where that belongs.
+4. **Fade and slide.** The details fade as they do now and drift up about
+   8 px into place (down and out when they leave) on the zoom's 160 ms
+   tween. Heights keep springing as today, and a throwaway spike checks
+   the text clips cleanly while they do.
+5. **Widen the snap to 8 points in and 11 out** in this plan.
+
 ## Existing foundation
 
 Mapped on 2026-10-22; line numbers are in `crates/wineo-gui/src`.
@@ -64,57 +81,33 @@ Mapped on 2026-10-22; line numbers are in `crates/wineo-gui/src`.
 
 ## Open questions
 
-Each has a recommendation. The star is drawn as a 24 px chip like the
-other marks.
-
-1. **A favorite's star: does clicking it unfavorite?**
-   - A. **Yes (recommended).** A favorite's filled star is always visible
-     and clickable; clicking it toggles it off, exactly like the hover
-     star toggles on. One rule: the star toggles.
-   - B. No. Only non-favorites get a clickable hover star; to unfavorite,
-     use the panel, the menu, or F.
-2. **Corner room: what happens to a GOG pill or badge when the star shows
-   on hover?**
-   - A. **Reserve the star's room on every card (recommended).** The
-     corner keeps the 36 px the marks already ask for whether or not a
-     mark shows, so nothing shifts on hover. Cost: on a narrow poster, the
-     GOG pill of an unmarked card becomes the round badge a little
-     earlier than today.
-   - B. The star floats over the pill. Nothing changes for unmarked
-     cards at rest, but on a small poster the hovered star can cover part
-     of the pill or badge.
-3. **Does the star have a tooltip?**
-   - A. **Yes (recommended).** "Add to favorites" or "Remove from
-     favorites", like the panel star's tooltip, in the usual 13 px
-     tooltip.
-   - B. No. The star is self-evident, and a tooltip on a 24 px target
-     appears over the art.
-4. **How do the details move?**
-   - A. **Fade and slide (recommended).** The identifier and meta row fade
-     as they do now, and also drift up about 8 px into place when they
-     appear (down and out when they leave), on the zoom's 160 ms tween.
-     The cards' heights keep springing as they do today. A throwaway spike
-     checks that the text clips cleanly inside the card while its height
-     is still changing.
-   - B. Fade only. The cheapest: tie `caption_alpha` to the crossing and
-     leave position alone.
-   - C. Full reveal. The card's height grows continuously with the
-     details, so the rows below are pushed smoothly instead of springing
-     as a block. This needs a per-card height scalar through `GridLayout`,
-     `card_height`, and `PlacesKey`, and a new rule for when `zoom_to`
-     springs. Biggest change, and it touches the code that 0055's motion
-     tests pin.
-5. **Do we widen the slider's snap in this plan?**
-   - A. **Yes (recommended).** 8 points in and 11 out: about a 9 px catch
-     zone on the 96 px slider instead of 6, and 90% and 110% stay
-     reachable when you drag toward them from outside. A two-constant
-     change plus the snap test and the style guide's numbers.
-   - B. Leave it for a later patch.
+6. **Dead space on the right when the width doesn't fit another column.**
+   Cards sit at a fixed width for the zoom, left-aligned from the 16 px
+   padding, so the leftover is always on the right: up to about one card
+   wide. At 200% in a 1000 px area, 2 columns use 688 px and leave 312 px
+   empty on the right, against 16 px on the left.
+   ```
+   today (200%):   |[card][card]                  |
+   A. center:      |      [card][card]      |       (156 px each side)
+   B. stretch:     |[ card    ][ card    ]|         (cards grow to fill)
+   C. leave it
+   ```
+   - A. **Center the grid (recommended).** The leftover splits evenly, so
+     the margins match. Cards keep their exact zoom sizes. Cost: cards
+     slide sideways while the window resizes and when the panel docks,
+     even when the column count stays the same; the motion owner already
+     springs a dock, and a resize snaps. Tests that pin slot x positions
+     change.
+   - B. Stretch the cards a little so each row fills. The slider sets a
+     minimum card width, so 100% would no longer mean exactly 160 px, and
+     poster sizes would change as the window resizes. This breaks the
+     "identical at 100%" rule that 0055's tests pin.
+   - C. Leave it as it is.
 
 ## Proposed design
 
-Filled in after the questions are settled. The shape, assuming the
-recommendations:
+The shape, with the answers above. Question 6 is still open and will add
+a section.
 
 ### Poster star
 
@@ -141,14 +134,14 @@ recommendations:
 
 ### Slider snap
 
-- `SNAP_IN` and `SNAP_OUT` change, with the tests and the style guide.
+- `SNAP_IN` 8 and `SNAP_OUT` 11, with the tests and the style guide.
 
 ## Implementation sequence
 
-1. **Snap.** The constants, `zoom/tests.rs`, `gui-style.md`, and `gui.md`
+1. **Snap.** The constants (8 and 11), `zoom/tests.rs`, `gui-style.md`, and `gui.md`
    if it quotes them.
 2. **Poster star.** The hover-aware marks layer, the button and its click
-   rules, the corner room, the tooltip, the style amendment, and tests:
+   rules, the corner room, the style amendment, and tests:
    a star click toggles and doesn't select or launch, a right click still
    opens the menu, hover is ignored during a flow, the star fades with its
    card, and the GOG pill's room is the same at rest and on hover.
