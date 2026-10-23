@@ -1052,3 +1052,40 @@ fn builds_that_arrive_while_something_else_has_focus_leave_it() {
     crate::focus_button::run_task(&mut laid, task);
     assert_eq!(laid.focused(), [iced::widget::Id::new(crate::SEARCH_ID)]);
 }
+
+#[test]
+fn opening_the_picker_from_its_panel_row_by_keyboard_lands_on_the_first_build() {
+    let mut app = app();
+    app.cards = vec![game_card(false)];
+    app.selected = Some(NAME.to_owned());
+    app.panel_open = true;
+    let mut laid = relaid(&app, None);
+    laid.run(Box::new(
+        iced::advanced::widget::operation::focusable::focus::<()>(iced::widget::Id::new(
+            crate::panel::PANEL_VERSION_ID,
+        )),
+    ));
+    assert_eq!(
+        laid.focused(),
+        [iced::widget::Id::new(crate::panel::PANEL_VERSION_ID)]
+    );
+    let (messages, _) = crate::focus_button::press(&mut laid, Named::Enter, Modifiers::empty());
+    let tree = laid.into_tree();
+    assert!(matches!(
+        messages.as_slice(),
+        [Message::Version(Event::Open(_))]
+    ));
+    for message in messages {
+        let _ = app.update(message);
+    }
+    let tree = relaid(&app, Some(tree)).into_tree();
+    let generation = app.version_generation;
+    let task = app.update(Message::Version(Event::Loaded(
+        generation,
+        None,
+        Ok(branched()),
+    )));
+    let mut laid = relaid(&app, Some(tree));
+    crate::focus_button::run_task(&mut laid, task);
+    assert_eq!(laid.focused(), [iced::widget::Id::from(build_id("300"))]);
+}
