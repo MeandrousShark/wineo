@@ -19,7 +19,9 @@ Done from this queue: GOG Galaxy builds
 ([0052](plans/0052-galaxy-builds.md), 0.33.0 and 0.34.0), the 1.0 config
 contract ([0053](plans/0053-config-contract.md), 0.35.0), after the JSON
 gaps closed in 0.30.1, and library views part 1, sorting, filters, and
-favorites ([0054](plans/0054-library-sorting-and-favorites.md), 0.36.0).
+favorites ([0054](plans/0054-library-sorting-and-favorites.md), 0.36.0), and
+library views part 2, grid zoom and poster-only
+([0055](plans/0055-grid-zoom-and-poster-only.md), 0.37.0).
 
 The previous queue (2026-10-06) is done: `--dry-run` (0044), tags in
 `stats` (0045), hooks (0046), Steam installed and owned games (0047,
@@ -128,7 +130,7 @@ around the next milestone, 1.0:
 | Feature | Category | Priority | Depends on | Why | Notes |
 |---|---|---:|---|---|---|
 | GUI themes and customization | UX | **1** | 0036 | Let people make the app their own | From the maintainer's 0036 testing (2026-09-28): custom themes with a few presets, added with a GUI settings page. Longer term, a deeply customizable GUI. The palette tokens from 0036 are the starting point. Moved up to 1 by the maintainer (2026-10-14), to land before 1.0. |
-| GUI library views | UX | **1** | 0036 | Browse the library the way that fits the moment | Split by the maintainer into five plans (2026-10-17): 1) sorting, filters, favorites, and hidden games, [0054](plans/0054-library-sorting-and-favorites.md), released in 0.36.0; 2) grid zoom and the poster-only toggle, [0055](plans/0055-grid-zoom-and-poster-only.md); 3) list view; 4) saved presets and grouping; 5) coverflow with controller navigation. 0054's Series section keeps the ideas for each. Parts 1 and 2 land before 1.0; parts 3 to 5 can land in 1.x (maintainer, 2026-10-17). |
+| GUI library views | UX | **1** | 0036 | Browse the library the way that fits the moment | Split by the maintainer into five plans (2026-10-17): 1) sorting, filters, favorites, and hidden games, [0054](plans/0054-library-sorting-and-favorites.md), released in 0.36.0; 2) grid zoom and the poster-only toggle, [0055](plans/0055-grid-zoom-and-poster-only.md), released in 0.37.0; 3) list view; 4) saved presets and grouping; 5) coverflow with controller navigation. 0054's Series section keeps the ideas for each. Parts 1 and 2 land before 1.0; parts 3 to 5 can land in 1.x (maintainer, 2026-10-17). |
 | GUI polish | UX | **1** | 0055 | Small touches that make the desktop app nicer to use, too small for a plan each | Queued by the maintainer after 0055 (2026-10-19), to collect small UI touches into one plan. First item: star a game from its poster on hover, with a clickable star in the top-right marks slot, outlined on hover and filled for a favorite, toggling without opening the panel (maintainer, 2026-10-18). That amends `gui-style.md`'s rule that poster marks aren't clickable; F, the panel star, and the menu stay for keyboards, touch, and controllers. Also: slide the details (environment name, status, playtime) in and out when the zoom crosses the 90% threshold, instead of popping in while the card height springs (maintainer, 2026-10-22, 0055 acceptance). |
 | GitHub mirror and CI | Distribution | **1** | | Publish wineo at 1.0 while the maintainer keeps working in Gitea | Gitea stays primary and push-mirrors to GitHub at 1.0, with Actions on outside PRs and tags. Details in the [sketch](sketches/github-mirror.md). |
 | Edit hooks in GUI Settings | UX | **2** | 0046 | Set a game's hooks without editing TOML or using `wineo set` | Left out of [0046](plans/0046-launch-hooks.md) by the maintainer (2026-10-06). The GUI already runs hooks. |

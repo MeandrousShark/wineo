@@ -1,4 +1,4 @@
-Status: approved
+Status: done
 
 # 0055: Grid zoom and poster-only view
 

@@ -4,6 +4,37 @@ A finished plan bumps the minor version and fixes between plans bump the
 patch version. A plan released in parts bumps the minor version for each
 part. See `AGENTS.md` for the rule.
 
+## 0.37.0 - 2026-10-22
+
+Grid zoom and a poster-only view in the desktop app's library, part 2 of
+the library views work, from
+[0055](docs/plans/0055-grid-zoom-and-poster-only.md).
+
+- Behavior changes:
+  - **Add** moved to the toolbar's far left, before search, and now takes
+    focus first, so Tab walks the toolbar in the order it's drawn. Search
+    shrinks to about half its width before it clips.
+  - A re-sort, filter, search, or Show hidden change used to snap the
+    cards to their new places. They now spring there, new cards fade in,
+    and leaving ones fade out. A window resize and the background rescan
+    still snap.
+  - `library.toml` gains `zoom` and `poster_only` under `[view]`.
+    `wineo validate` and Checkup know both. An older wineo reports them as
+    unknown keys, a warning only. A library that never changes them writes
+    no file.
+- Zoom the grid from 60% to 200% with the new slider, `Ctrl+=`, `Ctrl+-`,
+  or Ctrl with the mouse wheel; `Ctrl+0` goes back to 100%. Keys and
+  wheel notches step by 10 and the slider snaps to 100% near it. The app
+  never shows a percentage, and remembers the zoom.
+- Zooming keeps your place: the selected card, or the first visible one,
+  stays where it was on screen.
+- The poster-only toggle beside the slider hides the titles under the
+  posters. Hover or selection shows the title over the art. Games that are
+  running, installing, or broken show a status dot in the poster's corner.
+- A GOG update pill turns into a round badge when its words don't fit a
+  small poster.
+- Cards only load art while they are in view.
+
 ## 0.36.0 - 2026-10-19
 
 Sorting, filters, and favorites in the desktop app's library, part 1 of the
