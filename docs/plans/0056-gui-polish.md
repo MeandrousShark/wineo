@@ -439,10 +439,14 @@ one point, so the branch waits for the fix.
 
 ### Step 2, centered grid (merged)
 
-- **Flaky test:** `grid_motion::app_tests::a_dock_without_a_column_change_springs_to_the_centered_slots`
-  reads the wall clock between a spring's start and its tick, so it fails in
-  about half of full runs when the machine is busy. A fix with synthetic time
-  was handed to the step 2 coder on 2026-10-22; check that it landed.
+- **Flaky tests (fixed, `a2ce1aac`):** `a_dock_without_a_column_change_springs_to_the_centered_slots`
+  and two older motion tests read the wall clock between a spring's start
+  and its tick, so they failed in about half of full runs on a busy machine.
+  Their ticks are now exact offsets from the motion's own start. Passed 20 of
+  20 runs of the file, with and without 16 CPU hogs, and the full suite
+  three times in a row on main. `settle_grid` and one scrollbar test tick at
+  now plus 1 s against a 300 ms spring and would only fail if 700 ms passed
+  between two calls; they were left alone.
 - **Coverage gaps (low):** `app_tests.rs:723` covers slider-driven zooms but
   not intermediate tween frames; `:682` settles each dock before reversing it,
   so a same-column dock reversal mid-spring isn't covered. Both go into
