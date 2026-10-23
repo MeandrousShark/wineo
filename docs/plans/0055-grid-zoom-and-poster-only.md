@@ -171,6 +171,10 @@ From step 5, the same day:
     20 px.
 14. **Toggle icon, after seeing it work: keep it** (answer 10's
     follow-up).
+15. **Slider snap, found in acceptance: leave it for now.** The 100% snap
+    is hard to hit (5 points in, 7 out, about 6 px of the 96 px slider).
+    Widening it to 8 and 11 is a trivial patch whenever it bugs the
+    maintainer (2026-10-22).
 
 The maintainer approved the plan on 2026-10-19.
 
