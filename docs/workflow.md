@@ -144,7 +144,9 @@ only adds what it doesn't say. If the two disagree, `AGENTS.md` wins.
 - `README.md`: install, usage, and an index of the docs below.
 - `CHANGELOG.md`: one section per released version.
 - `docs/plans/`: numbered plans and their decisions.
-- `docs/features.md`: backlog, completed-plan links, and GUI entry criteria.
+- `docs/features.md`: the queue, the open backlog, and the 1.0 criteria.
+  What has shipped lives in `CHANGELOG.md`, so finished items leave the
+  backlog.
 - `docs/sketches/`: research and design notes for backlog rows too long to
   keep in the table.
 - `docs/gui.md`: the desktop app. `docs/core-api.md`: core API for frontends.

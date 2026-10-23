@@ -1,7 +1,8 @@
 # Features
 
 Feature backlog and queued work. When a feature gets picked up, it gets its
-own numbered plan in `docs/plans/`.
+own numbered plan in `docs/plans/`. What has shipped is in
+[`CHANGELOG.md`](../CHANGELOG.md).
 
 ## Queue
 
@@ -15,92 +16,7 @@ its own plan when it comes up, and the rows below have the details.
 4. 1.0, once the [1.0 criteria](#10-criteria) are met.
 5. Release packages (deb, rpm, AppImage), shortly after 1.0.
 
-Done from this queue: GOG Galaxy builds
-([0052](plans/0052-galaxy-builds.md), 0.33.0 and 0.34.0), the 1.0 config
-contract ([0053](plans/0053-config-contract.md), 0.35.0), after the JSON
-gaps closed in 0.30.1, and library views part 1, sorting, filters, and
-favorites ([0054](plans/0054-library-sorting-and-favorites.md), 0.36.0), and
-library views part 2, grid zoom and poster-only
-([0055](plans/0055-grid-zoom-and-poster-only.md), 0.37.0).
-
-The previous queue (2026-10-06) is done: `--dry-run` (0044), tags in
-`stats` (0045), hooks (0046), Steam installed and owned games (0047,
-0048), GOG account, migration, and updates (0049), GOG installs (0050),
-and the lean-and-simple pass (0051).
-
 ## Backlog
-
-Completed: [0007: Guided game setup](plans/0007-guided-game-setup.md) and
-[0008: Downloads and prefix imports](plans/0008-downloads-and-imports.md),
-including launch settings for manually added Heroic games.
-See [Downloads and imports](downloads-and-imports.md) for usage.
-Completed: [0010: JSON output for status and list](plans/0010-json-output.md).
-See [JSON output](json-output.md) for the command schema and examples.
-
-Completed: [0014: Dynamic environment and target completion](plans/0014-dynamic-shell-completion.md).
-See [Shell completion](shell-completion.md) for setup and supported values.
-Completed: [0015: Arch package for Wineo and shell completions](plans/0015-arch-package.md).
-Completed: [0016: Clone an environment](plans/0016-clone-environment.md).
-See [Clone an environment](clone.md) for command behavior and limits.
-Completed: [0017: Prefix snapshots](plans/0017-prefix-snapshots.md).
-See [Prefix snapshots](snapshots.md) for command behavior and limits.
-Completed: [0018: Config schema versioning](plans/0018-config-schema-versioning.md).
-See [Config file versioning](config-files.md) for the key and compatibility rules.
-Completed: [0019: Portable layout](plans/0019-portable-layout.md).
-See [Portable layout](portable.md) for selecting a folder, its layout, and moving it.
-Completed: [0021: Artwork framework](plans/0021-artwork-framework.md).
-See [Artwork](art.md) for the art store, key, and `wineo art` commands.
-Completed: [0023: Create a prefix from a hand-written config](plans/0023-config-first-creation.md).
-See [Creating an environment by hand](config-files.md#creating-an-environment-by-hand) for the behavior and safety rules.
-Completed: [0024: Desktop entry icons from art](plans/0024-desktop-entry-icons.md).
-See [Desktop entries](art.md#desktop-entries) for the behavior.
-Completed: [0025: Fetch art during new and Heroic import](plans/0025-art-in-new-and-import.md).
-See [Fetching during new and import](art.md#fetching-during-new-and-import) for the flows and flags.
-Completed: [0026: Native Linux games](plans/0026-native-linux-games.md).
-See [Native Linux games](native.md) for creating, launching, and importing them.
-Completed: [0028: `wineo validate`](plans/0028-validate.md).
-See [Validate](validate.md) for the checks, fixes, and exit status.
-Completed: [0029: Playtime statistics](plans/0029-playtime-stats.md).
-See [Playtime](stats.md) for what counts and where it's kept.
-Completed: [0030: Recoverable removal and prune](plans/0030-trash-and-prune.md).
-See [Trash and removal](trash.md) for restoring and pruning.
-Completed: [0031: Wine Wayland, gamescope, and MangoHud](plans/0031-wayland-gamescope-mangohud.md).
-See [Launch options](launch-options.md) for the settings and how they combine.
-Completed: [0032: Declarative winetricks dependencies](plans/0032-declarative-winetricks.md).
-See [Winetricks dependencies](config-files.md#winetricks-dependencies) for the key and when verbs install.
-Completed: [0033: Tags and `wineo list --tag`](plans/0033-tags.md).
-See [Tags](config-files.md#tags) for the key and filtering.
-Completed: [0034: GUI-facing core API review](plans/0034-core-api-review.md).
-See [Core API for frontends](core-api.md) for the operations a GUI calls.
-Completed: [0035: Heroic import in core](plans/0035-heroic-import-in-core.md).
-See [Heroic import](core-api.md#heroic-import) for the plan-then-apply API.
-Completed: [0036: GUI library launcher](plans/0036-gui-library-launcher.md).
-See [Desktop app](gui.md) for using it.
-Completed: [0037: GUI settings](plans/0037-gui-settings.md).
-See [Settings](gui.md#settings) for the pages.
-Completed: [0038: GUI new, import, and clone](plans/0038-gui-new-import-clone.md).
-See [Add, import, and clone](gui.md#add-import-and-clone) for the current flows.
-Completed: [0039: GUI removal, trash, and validate](plans/0039-gui-trash-and-validate.md).
-See [Trash](gui.md#trash) and [Checkup](gui.md#checkup) for the pages.
-Completed: [0040: GUI art and downloads](plans/0040-gui-art-and-downloads.md),
-[0041: GUI snapshots, portable copies, exec, and winetricks](plans/0041-gui-snapshots-portable-exec-winetricks.md),
-and [0042: GUI visual polish](plans/0042-gui-visual-polish.md), which with
-0036 to 0039 make up wineo-gui, its context menu, its posters, and library
-names from desktop entries.
-Completed: [0043: Runners from Steam, Heroic, and Lutris](plans/0043-external-runners.md),
-[0044: `--dry-run`](plans/0044-dry-run.md),
-[0045: Tags in `wineo stats`](plans/0045-stats-by-tag.md), and
-[0046: Launch hooks](plans/0046-launch-hooks.md).
-Completed: store libraries in [0047](plans/0047-steam-library.md),
-[0048](plans/0048-steam-owned-games.md), [0049](plans/0049-gog-games.md),
-[0050](plans/0050-gog-installs.md), and
-[0052](plans/0052-galaxy-builds.md),
-[0053: Config contract](plans/0053-config-contract.md), and
-[0051: Lean and simple](plans/0051-lean-and-simple.md), which also made the
-supervisor wait on events instead of polling.
-Completed without a plan: manpages (`wineo manpages`, 2026-10-05), the
-mouse back button in the app (2026-10-05), quiet Wine core dumps on cancel
-(0.23.1), and the lifecycle timing failures under load (2026-10-13).
 
 **Category**
 
@@ -125,7 +41,7 @@ around the next milestone, 1.0:
 - 3 = later: wanted, but bigger, or nothing is asking for it yet
 - 4 = someday: parked until a real need shows up
 
-**Depends on** lists what has to be built first. `0001 phase 2` is the second half of the foundation plan, which has landed, so the rows naming it are unblocked.
+**Depends on** lists what has to be built first.
 
 | Feature | Category | Priority | Depends on | Why | Notes |
 |---|---|---:|---|---|---|
@@ -137,7 +53,7 @@ around the next milestone, 1.0:
 | Bulk tagging | UX | **2** | 0033 | Add or remove a tag on many environments at once instead of one `wineo set` per environment | Suggested by the maintainer during 0045 acceptance (2026-10-07), mostly for the GUI. Today `tags=[...]` replaces the whole list, and GUI tags are edited one environment at a time in Settings. Likely shape: `wineo tag add TAG NAME...` and `wineo tag remove TAG NAME...`, plus multi-select in the Library with an add/remove tag action. The GUI part needs a design pass on how multi-select works with the grid and keyboard. |
 | Exclude filters | UX | **2** | 0054 | Show everything except a tag, store, or platform, like "no co-op" | From the maintainer during 0054 acceptance (2026-10-19): right-clicking a Filters popup row would exclude it instead of including it. Needs a design pass: an excluded row's and chip's look ("not co-op"), a keyboard way to exclude since right-click alone isn't reachable from the keyboard (or a click cycling off, include, exclude), how excludes combine with includes in the same group, and whether the Filters (N) count includes them. Fits beside 0054's part 4 (saved presets and grouping), which reworks the same popup. |
 | Release packages (deb, rpm, AppImage) | Distribution | **2** | | Install wineo on Debian, Ubuntu, Fedora, and other distros without building it, shortly after 1.0 | deb and rpm first, then an AppImage; Flatpak is out. Needs a plan. Details in the [sketch](sketches/release-packages.md). |
-| GUI accessibility settings | UX | **2** | 0036 | Make the desktop app comfortable for people who need larger text, other fonts, or less motion | From the maintainer (2026-10-09), after finding that semibold text falls back to a monospace font on their machine. The patch fix after 0048 bundles a default sans font; this row lets people pick their own font and text size on top of it, and fits with reduced motion and high-contrast palettes. Text measurement for balanced titles already uses the rendered font, so a font change keeps wrapping correct, but fixed tile and card heights would need to follow the text size. Pairs with GUI themes (queue item 7). Needs a plan. |
+| GUI accessibility settings | UX | **2** | 0036 | Make the desktop app comfortable for people who need larger text, other fonts, or less motion | From the maintainer (2026-10-09), after finding that semibold text falls back to a monospace font on their machine. The patch fix after 0048 bundles a default sans font; this row lets people pick their own font and text size on top of it, and fits with reduced motion and high-contrast palettes. Text measurement for balanced titles already uses the rendered font, so a font change keeps wrapping correct, but fixed tile and card heights would need to follow the text size. Pairs with GUI themes (queue item 3). Needs a plan. |
 | Keyboard focus for list rows | UX | **2** | 0036 | Reach choice lists from the keyboard | From 0048 acceptance (2026-10-10). The quiet list rows (`ui::list_row`) in **Add**, New's program list, and Heroic's source list take hover and press but never keyboard focus, like the stock buttons they replaced. **Add** has its 1 to 4 keys, but the program and source lists need the mouse. Wrap the rows in `focus_button` controls with arrow keys and the usual primary focus ring, which changes focus order on those pages. Fits with GUI accessibility settings. |
 | Embedded GOG login window | UX | **2** | 0049 | Log in to GOG without copying the success address back | From 0049 acceptance (2026-10-12). GOG's login only redirects to `embed.gog.com/on_login_success`, so today you copy that address from the browser and paste it into wineo. Heroic and Minigalaxy open the login page in their own browser window and catch the redirect there. iced can't show web pages, so this needs a WebKitGTK webview (for example `wry`) in a small helper window: a large GTK dependency for a one-time login, and more to bring to a macOS port. Watching the clipboard for the address was turned down for privacy. Needs a plan. |
 | One shape for confirm prompts | UX | **2** | | Ask every review's final yes or no the same way | From 0049 acceptance (2026-10-12). The GOG migrate and update confirms now print one keys line, then `Migrate it? [Y/n]:`. Others still differ: the Steam import's game step prints `Press Enter to import it, Esc to go back, Ctrl+C to cancel.` before `Import it? [Y/n]:`, and an empty `review` (`wineo new`) asks `Create it?` with no `[Y/n]`. Survey every confirm and settle on one. |
@@ -252,22 +168,3 @@ maintainer calls it stable, which these criteria are meant to inform.
    (2026-10-16).
 9. A stretch of daily use, across at least two releases, where upgrading a
    real library needs no manual fixes.
-
-## GUI entry criteria
-
-These change the config schema or core entry points the GUI builds on, so
-they land first.
-
-The GUI toolkit is iced, picked on 2026-09-28 after hands-on spikes of iced,
-gpui, Slint, Godot, and Flutter.
-
-All eight criteria were met on 2026-09-28.
-
-1. Add native Linux games, so the features after it know some environments have no prefix.
-2. Add `wineo validate`.
-3. Add playtime statistics.
-4. Make prefix deletion recoverable with trash and `prune`.
-5. Add Wine Wayland and Gamescope/MangoHud support, including supported Heroic import settings.
-6. Add declarative winetricks dependencies.
-7. Add tags and `wineo list --tag`.
-8. Complete the GUI-facing core API review, including a simplification pass that moves CLI logic into core, and resolve any blockers it finds.

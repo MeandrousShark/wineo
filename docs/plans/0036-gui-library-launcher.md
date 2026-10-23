@@ -9,8 +9,11 @@ every environment with its art, what's running, and how long it's been
 played, plus Play and Stop. Creating, importing, and editing environments
 stay in the CLI for now and come in later plans.
 
-All eight [GUI entry criteria](../features.md#gui-entry-criteria) are met,
-and the toolkit is iced, picked after hands-on spikes. This plan turns the
+All eight GUI entry criteria were met on 2026-09-28 (native games,
+`validate`, playtime stats, trash and `prune`, Wayland and
+Gamescope/MangoHud, declarative winetricks, tags, and the core API
+review), and the toolkit is iced, picked after hands-on spikes of iced,
+gpui, Slint, Godot, and Flutter. This plan turns the
 spike's library screen into a real app on top of `wineo-core`.
 
 ## Settled by the maintainer
