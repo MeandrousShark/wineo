@@ -4,10 +4,12 @@ Status: draft
 
 ## Goal
 
-Three small touches to the desktop app's library that were too small for a
-plan each: star a game from its poster on hover, slide a card's details in
-and out when the zoom crosses 90%, and make the zoom slider's 100% snap
-easier to hit. More touches can join before approval.
+Small touches to the desktop app that were too small for a plan each: star
+a game from its poster on hover, slide a card's details in and out when the
+zoom crosses 90%, make the zoom slider's 100% snap easier to hit, center
+the grid so the leftover width isn't all on the right, fade the hover
+effects, show a game's real title on its card, and reach the choice lists
+from the keyboard. More touches can join before approval.
 
 This is queue item 1 in [features.md](../features.md), after
 [0055](0055-grid-zoom-and-poster-only.md).
@@ -40,6 +42,19 @@ Answers to the first five questions (2026-10-22), numbered as asked:
    tween. Heights keep springing as today, and a throwaway spike checks
    the text clips cleanly while they do.
 5. **Widen the snap to 8 points in and 11 out** in this plan.
+6. **Center the grid** (A), so the leftover width splits evenly left and
+   right and the cards keep their exact zoom sizes.
+
+Added to the plan by the maintainer (2026-10-22), from the polish
+candidates:
+
+- Fade the hover effects: the poster star and the poster-only title
+  overlay.
+- Show a game's real title on its card, from the "Display titles for every
+  card" backlog row.
+- Keyboard focus for the choice lists, from the "Keyboard focus for list
+  rows" backlog row.
+- The zoom slider stays where it is in the toolbar.
 
 ## Existing foundation
 
@@ -79,35 +94,63 @@ Mapped on 2026-10-22; line numbers are in `crates/wineo-gui/src`.
 - **Snap.** `SNAP_IN` 5 and `SNAP_OUT` 7 (`zoom.rs:18-21`), tested in
   `zoom/tests.rs:256-293` and quoted in `gui-style.md:108-109`.
 
+- **Slots.** Cards are placed left to right from the 16 px padding.
+  `columns` (`grid_motion.rs:656-660`) floors the columns that fit, and
+  `slots` places them from the padding, so the leftover width always sits
+  on the right: up to about one card wide, 312 px at 200% in a 1000 px
+  area. The widget's layout (`grid_motion.rs:935-975`) and the places the
+  motion owner springs to (`grid_places`, `app_grid.rs:64-96`) both derive
+  from the same sizes and column count.
+- **Hover fades.** The poster-only overlay is a plain boolean,
+  `PosterOnly && art && (hovered || selected)` (`grid.rs:213-214`), so it
+  appears and disappears at once. `GridMotion` already has a 150 ms `FADE`
+  for cards entering and leaving (`grid_motion.rs:22-23`).
+- **Titles.** A card's title is the default target's desktop-entry name
+  when the entry is on and the name is set, otherwise the environment name
+  (`display_title`, `library.rs:249-261`). A Steam environment's config
+  also keeps a `title` (`config.rs:302`) for when the launcher forgets the
+  game. A native environment named `rimworld` with no desktop entry shows
+  `rimworld`.
+- **List rows.** The quiet rows (`ui::list_row`) in Add, New's program list
+  and Heroic's source list take hover and press but never keyboard focus.
+  `focus_button.rs` has the focusable control, its focus ring, and the
+  arrow-key cycling the Sort and Filters menus use.
+
 ## Open questions
 
-6. **Dead space on the right when the width doesn't fit another column.**
-   Cards sit at a fixed width for the zoom, left-aligned from the 16 px
-   padding, so the leftover is always on the right: up to about one card
-   wide. At 200% in a 1000 px area, 2 columns use 688 px and leave 312 px
-   empty on the right, against 16 px on the left.
+7. **Where does a card's title come from?** Examples, one card each:
    ```
-   today (200%):   |[card][card]                  |
-   A. center:      |      [card][card]      |       (156 px each side)
-   B. stretch:     |[ card    ][ card    ]|         (cards grow to fill)
-   C. leave it
+   today                       rimworld     palworld    Disco Elysium - The Final Cut
+   A. a `title` key            RimWorld     Palworld    (desktop name, as now)
+   B. derive from what we know RimWorld     Palworld    ...
    ```
-   - A. **Center the grid (recommended).** The leftover splits evenly, so
-     the margins match. Cards keep their exact zoom sizes. Cost: cards
-     slide sideways while the window resizes and when the panel docks,
-     even when the column count stays the same; the motion owner already
-     springs a dock, and a resize snaps. Tests that pin slot x positions
-     change.
-   - B. Stretch the cards a little so each row fills. The slider sets a
-     minimum card width, so 100% would no longer mean exactly 160 px, and
-     poster sizes would change as the window resizes. This breaks the
-     "identical at 100%" rule that 0055's tests pin.
-   - C. Leave it as it is.
+   - A. **A `title` key on the environment (recommended).** Optional and
+     lenient like `tags`, shown on the card, the panel, and the overlay
+     when set, and otherwise the desktop name, then the environment name,
+     as now. It's editable in the environment's Settings page and with
+     `wineo set title=...`, and filled in when a flow already knows the
+     name: GOG and Steam imports, and art lookups, which return the
+     game's name. It's a new config key, so it follows 0053's rules:
+     additive, and an older wineo reports it as unknown, a warning only.
+   - B. Derive it at display time, with no new key: the GOG product title,
+     the Steam title, the art lookup's match, else the environment name.
+     Nothing to edit by hand, so a wrong match can't be fixed, and
+     environments with none of those (like `rimworld`) stay as they are.
+8. **Do search and sort use the title?**
+   - A. **Yes (recommended).** Search matches the title and the
+     environment name, and Sort by name sorts by what the card shows, so
+     the grid reads A to Z. Ties fall back to the environment name.
+   - B. They keep using the environment name, so a grid sorted by name can
+     look out of order next to the titles.
+9. **How do arrow keys work on the choice lists?**
+   - A. **Up and Down move focus between rows, Enter chooses (recommended),**
+     like the Sort and Filters menus, and Tab still walks the rows.
+   - B. Tab and Shift+Tab only. Simpler, but a long list is a lot of Tabs.
 
 ## Proposed design
 
-The shape, with the answers above. Question 6 is still open and will add
-a section.
+The shape, with the answers above. Questions 7 to 9 are open and will fill
+in their sections.
 
 ### Poster star
 
@@ -123,6 +166,13 @@ a section.
 - `gui-style.md` is amended: marks are no longer all non-interactive, and
   the star is.
 
+### Hover fades
+
+- The hover star and the poster-only overlay fade in and out over the
+  grid's 150 ms `FADE` instead of switching at once. One per-card hover
+  progress, driven by `hovered` and `selected`, feeds both. A selected card
+  keeps its overlay.
+
 ### Details motion
 
 - A single details progress for the grid, tweened between 0 and 1 when the
@@ -132,31 +182,59 @@ a section.
 - The details are clipped to their card, so they never draw over the next
   row while the heights spring.
 
+### Centered grid
+
+- The leftover width is split evenly: every slot shifts right by half of
+  `available - used`, where `available` is the viewport beside the docked
+  panel. One function computes the shift, and the widget's layout, the
+  places the motion owner springs to, the zoom anchor, and the visible-row
+  test for art loading all read it, so they can't disagree.
+- A window resize snaps as it does today. A dock or an undock springs the
+  cards to their new places even when the column count stays the same,
+  through the existing path.
+
 ### Slider snap
 
 - `SNAP_IN` 8 and `SNAP_OUT` 11, with the tests and the style guide.
 
 ## Implementation sequence
 
-1. **Snap.** The constants (8 and 11), `zoom/tests.rs`, `gui-style.md`, and `gui.md`
-   if it quotes them.
-2. **Poster star.** The hover-aware marks layer, the button and its click
-   rules, the corner room, the style amendment, and tests:
-   a star click toggles and doesn't select or launch, a right click still
-   opens the menu, hover is ignored during a flow, the star fades with its
-   card, and the GOG pill's room is the same at rest and on hover.
-3. **Details motion.** A spike first: a throwaway worktree with Xvfb
-   shots of 80% to 90% and back, checking clipping and overlap. Then the
+1. **Snap.** The constants (8 and 11), `zoom/tests.rs`, `gui-style.md`, and
+   `gui.md` if it quotes them.
+2. **Centered grid.** The shared shift, the layout, places, anchor, and art
+   visibility reading it, and tests: leftover split evenly at several
+   widths and zooms, the same positions in the widget and the places, the
+   anchor staying put through a zoom with the shift changing, and a dock
+   springing without a column change. Re-pin the slot x positions that
+   move.
+3. **Poster star.** The hover-aware marks layer, the button and its click
+   rules, the corner room, the style amendment, and tests: a star click
+   toggles and doesn't select or launch, a right click still opens the
+   menu, hover is ignored during a flow, the star fades with its card, and
+   the GOG pill's room is the same at rest and on hover.
+4. **Hover fades.** The per-card hover progress, the star and overlay
+   reading it, and motion tests: fade in, reverse mid-fade, and a selected
+   card keeping its overlay.
+5. **Details motion.** A spike first: a throwaway worktree with Xvfb shots
+   of 80% to 90% and back, checking clipping and overlap. Then the
    progress value, the alpha and offset, and motion tests that drive the
    frame clock through a crossing in both directions, mid-flight reversal,
    and a crossing during a sort.
-4. **Docs.** `gui.md`, `gui-style.md`, and `features.md`.
+6. **Card titles.** Depends on questions 7 and 8: the key or derivation in
+   core, Settings and `wineo set`, the card, panel, overlay, search, and
+   sort reading it, `validate`, and `config-files.md`.
+7. **Choice lists.** `focus_button` rows in Add, New's program list, and
+   Heroic's source list, the arrow keys, the focus ring, the changed focus
+   order on those pages, and key tests.
+8. **Docs.** `gui.md`, `gui-style.md`, `features.md` (the two backlog rows
+   leave it), and the changelog at release.
 
 ## Testing and acceptance
 
 - Unit and layout tests as listed in the steps. Motion tests drive the
   frame clock like 0055's.
-- A benchmark is not needed: no new frame subscriptions outside a crossing.
+- A benchmark is not needed: no new frame subscriptions outside a crossing,
+  a hover fade, or a dock.
 - The acceptance checklist is added after implementation, as the
   workflow says.
 
@@ -166,5 +244,10 @@ a section.
 - The poster-only toggle and the dock keep their springs; only the 90%
   crossing gets the new motion.
 - No other marks become clickable. The hidden eye stays a plain mark.
-- No new poster hover effects beyond the star.
-- No percentage or label for the slider.
+- No new poster hover effects beyond the star and the overlay's fade.
+- No percentage or label for the slider, and the slider stays in the
+  toolbar where it is.
+- No metadata from the stores beyond a title: descriptions, genres, and
+  the rest stay in the "Game metadata from the stores" row.
+- Lists other than Add, New's program list, and Heroic's source list keep
+  their current keyboard behavior.
