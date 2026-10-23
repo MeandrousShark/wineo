@@ -50,6 +50,56 @@ fn display_title_falls_back_for_missing_disabled_or_unnamed_targets() {
 }
 
 #[test]
+fn card_titles_put_the_persons_title_first() {
+    let root = tempfile::tempdir().unwrap();
+    let paths =
+        Paths::from_lookup(|key| (key == "HOME").then(|| root.path().as_os_str().to_owned()))
+            .unwrap();
+    fs::create_dir_all(paths.environments_dir()).unwrap();
+    let wine = "prefix = '/tmp/p'\nrunner = 'wine'\narch = 'win64'\n";
+    let entry = "[targets.app]\nexe = 'app'\ndefault = true\ndesktop = true\nname = 'Entry Name'\n";
+    for (name, text) in [
+        ("titled-wine", format!("{wine}title = 'My Title'\n{entry}")),
+        (
+            "titled-native",
+            "kind = 'native'\ntitle = 'Native Title'\n".to_owned(),
+        ),
+        ("entry-only", format!("{wine}{entry}")),
+        ("rimworld", "kind = 'native'\n".to_owned()),
+        // Loading takes these, and the card shows what's left of them.
+        (
+            "padded",
+            "kind = 'native'\ntitle = '  Padded  '\n".to_owned(),
+        ),
+        ("blank", format!("kind = 'native'\ntitle = '   '\n{entry}")),
+        (
+            "bg3",
+            "kind = 'proxied'\nlauncher = 'steam'\napp_id = '1086940'\ntitle = 'Fallback'\n"
+                .to_owned(),
+        ),
+    ] {
+        fs::write(paths.environment_config(name), text).unwrap();
+    }
+    let cards = load_library(&paths).unwrap();
+    let title = |name: &str| {
+        cards
+            .iter()
+            .find(|card| card.name == name)
+            .unwrap()
+            .display_title
+            .clone()
+    };
+    assert_eq!(title("titled-wine"), "My Title");
+    assert_eq!(title("titled-native"), "Native Title");
+    assert_eq!(title("entry-only"), "Entry Name");
+    assert_eq!(title("rimworld"), "rimworld");
+    assert_eq!(title("padded"), "Padded");
+    assert_eq!(title("blank"), "Entry Name");
+    // No Steam here, so the import's fallback stands in for Steam's name.
+    assert_eq!(title("bg3"), "Fallback");
+}
+
+#[test]
 fn missing_stats_use_the_kind_specific_fallback() {
     let never = ("never played".into(), "0".into(), "never".into());
     assert_eq!(fallback_stats(Some(CardKind::Wine)), never);

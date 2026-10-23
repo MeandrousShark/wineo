@@ -6,7 +6,7 @@ use std::time::SystemTime;
 use iced::Color;
 use jiff::Timestamp;
 use wineo_core::art::{self, ArtConfig};
-use wineo_core::config::{Kind, Target};
+use wineo_core::config::{EnvironmentConfig, Kind, Target};
 use wineo_core::environment::Environment;
 use wineo_core::launch;
 use wineo_core::paths::Paths;
@@ -246,6 +246,31 @@ impl Card {
     }
 }
 
+/// What the card, the panel, and the poster-only overlay call an
+/// environment: the person's `title`, then a Steam game's name, then the
+/// default target's desktop-entry name, then the environment name.
+/// `steam_name` is set for a Steam game: Steam's own name, or the import's
+/// fallback when Steam doesn't know the game. A Steam game's `title` key is
+/// that fallback, so it never comes ahead of Steam's name.
+fn card_title(
+    name: &str,
+    config: &EnvironmentConfig,
+    steam_name: Option<Option<&str>>,
+    default_target: Option<&str>,
+) -> String {
+    if let Some(steam_name) = steam_name {
+        return steam_name
+            .filter(|title| !title.is_empty())
+            .unwrap_or(name)
+            .to_owned();
+    }
+    // Loading takes any title, so one that would show blank is passed over.
+    match config.title.as_deref().map(str::trim) {
+        Some(title) if !title.is_empty() => title.to_owned(),
+        _ => display_title(name, &config.targets, default_target),
+    }
+}
+
 fn display_title(
     name: &str,
     targets: &BTreeMap<String, Target>,
@@ -420,17 +445,19 @@ pub(super) fn load_library_with(
                 prefix = env.prefix(paths).ok();
                 targets = env.config.targets.keys().cloned().collect();
                 default_target = launch::default_target(&env).ok().map(str::to_owned);
-                title = display_title(&item.name, &env.config.targets, default_target.as_deref());
-                if let Some(report::KindReport::Proxied {
-                    title: live_title, ..
-                }) = &item.kind
-                {
-                    title = live_title
-                        .clone()
-                        .filter(|title| !title.is_empty())
-                        .unwrap_or_else(|| item.name.clone());
-                    targets = vec!["steam".to_owned()];
-                }
+                let steam_name = match &item.kind {
+                    Some(report::KindReport::Proxied { title, .. }) => {
+                        targets = vec!["steam".to_owned()];
+                        Some(title.as_deref())
+                    }
+                    _ => None,
+                };
+                title = card_title(
+                    &item.name,
+                    &env.config,
+                    steam_name,
+                    default_target.as_deref(),
+                );
                 let dir = paths.art_dir(&item.name);
                 let resolved = (|| {
                     let config = ArtConfig::load(&dir)?;

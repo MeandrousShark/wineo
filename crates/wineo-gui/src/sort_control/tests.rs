@@ -236,6 +236,44 @@ fn every_key_and_direction_orders_the_grid() {
 }
 
 #[test]
+fn a_title_reaches_search_and_the_name_sort() {
+    let (root, mut app) = fixture();
+    let paths = paths(&root);
+    fs::create_dir_all(paths.environments_dir()).unwrap();
+    let wine = "prefix = '/tmp/p'\nrunner = 'wine'\narch = 'win64'\n";
+    for (name, text) in [
+        (
+            "zeta",
+            "kind = 'native'\ntitle = 'Alpha Quest'\n".to_owned(),
+        ),
+        ("alpha", "kind = 'native'\n".to_owned()),
+        // Shows the same title as alpha, so the name breaks the tie.
+        ("beta", format!("{wine}title = 'Alpha'\n")),
+        ("mid", "kind = 'native'\ntitle = 'Middle'\n".to_owned()),
+    ] {
+        fs::write(paths.environment_config(name), text).unwrap();
+    }
+    let cards = crate::library::load_library(&paths).unwrap();
+    let _ = app.update(Message::Loaded(Ok(cards)));
+
+    sort(&mut app, SortKey::Name, false);
+    assert_eq!(shown(&app), ["alpha", "beta", "zeta", "mid"]);
+    sort(&mut app, SortKey::Name, true);
+    assert_eq!(shown(&app), ["mid", "zeta", "alpha", "beta"]);
+
+    for (search, expected) in [
+        ("quest", vec!["zeta"]),
+        ("ZETA", vec!["zeta"]),
+        ("middle", vec!["mid"]),
+        ("mid", vec!["mid"]),
+        ("beta", vec!["beta"]),
+    ] {
+        app.search = search.to_owned();
+        assert_eq!(shown(&app), expected, "{search}");
+    }
+}
+
+#[test]
 fn unknown_steam_playtime_is_last_both_ways() {
     let (_root, mut app) = loaded();
     for key in [SortKey::Playtime, SortKey::LastPlayed] {
