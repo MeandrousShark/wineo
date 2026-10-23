@@ -325,17 +325,15 @@ fn proxied_only_keys_are_refused_on_wine_and_native() {
     f.environment("notepad", "");
     for name in ["dusk", "notepad"] {
         let before = f.config_text(name);
-        for (setting, key) in [("desktop=true", "desktop")] {
-            let refused = f.run(&["set", name, setting]);
-            assert!(!refused.status.success(), "{name} {setting}");
-            assert!(
-                stderr(&refused).contains(&format!(
-                    "{name} isn't a Steam game, so it can't set {key}."
-                )),
-                "{}",
-                stderr(&refused)
-            );
-        }
+        let refused = f.run(&["set", name, "desktop=true"]);
+        assert!(!refused.status.success(), "{name}");
+        assert!(
+            stderr(&refused).contains(&format!(
+                "{name} isn't a Steam game, so it can't set desktop."
+            )),
+            "{}",
+            stderr(&refused)
+        );
         assert_eq!(f.config_text(name), before);
     }
 }
