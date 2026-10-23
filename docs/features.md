@@ -9,12 +9,15 @@ own numbered plan in `docs/plans/`. What has shipped is in
 The order the maintainer picked on 2026-10-14, after 0051. Each item gets
 its own plan when it comes up, and the rows below have the details.
 
-1. GUI library views, designed against a library that includes store games.
-2. GUI polish, small touches gathered along the way, after library views
-   part 2 (maintainer, 2026-10-19).
-3. GUI themes, after library views, so they cover every palette role.
-4. 1.0, once the [1.0 criteria](#10-criteria) are met.
-5. Release packages (deb, rpm, AppImage), shortly after 1.0.
+1. GUI polish, small touches gathered along the way (maintainer,
+   2026-10-19).
+2. GUI themes, so they cover every palette role.
+3. 1.0, once the [1.0 criteria](#10-criteria) are met.
+4. Release packages (deb, rpm, AppImage), shortly after 1.0.
+
+Library views parts 3 to 5 (list view, saved presets and grouping,
+coverflow) aren't in the order; they can land in 1.x (maintainer,
+2026-10-17).
 
 ## Backlog
 
@@ -53,7 +56,7 @@ around the next milestone, 1.0:
 | Bulk tagging | UX | **2** | 0033 | Add or remove a tag on many environments at once instead of one `wineo set` per environment | Suggested by the maintainer during 0045 acceptance (2026-10-07), mostly for the GUI. Today `tags=[...]` replaces the whole list, and GUI tags are edited one environment at a time in Settings. Likely shape: `wineo tag add TAG NAME...` and `wineo tag remove TAG NAME...`, plus multi-select in the Library with an add/remove tag action. The GUI part needs a design pass on how multi-select works with the grid and keyboard. |
 | Exclude filters | UX | **2** | 0054 | Show everything except a tag, store, or platform, like "no co-op" | From the maintainer during 0054 acceptance (2026-10-19): right-clicking a Filters popup row would exclude it instead of including it. Needs a design pass: an excluded row's and chip's look ("not co-op"), a keyboard way to exclude since right-click alone isn't reachable from the keyboard (or a click cycling off, include, exclude), how excludes combine with includes in the same group, and whether the Filters (N) count includes them. Fits beside 0054's part 4 (saved presets and grouping), which reworks the same popup. |
 | Release packages (deb, rpm, AppImage) | Distribution | **2** | | Install wineo on Debian, Ubuntu, Fedora, and other distros without building it, shortly after 1.0 | deb and rpm first, then an AppImage; Flatpak is out. Needs a plan. Details in the [sketch](sketches/release-packages.md). |
-| GUI accessibility settings | UX | **2** | 0036 | Make the desktop app comfortable for people who need larger text, other fonts, or less motion | From the maintainer (2026-10-09), after finding that semibold text falls back to a monospace font on their machine. The patch fix after 0048 bundles a default sans font; this row lets people pick their own font and text size on top of it, and fits with reduced motion and high-contrast palettes. Text measurement for balanced titles already uses the rendered font, so a font change keeps wrapping correct, but fixed tile and card heights would need to follow the text size. Pairs with GUI themes (queue item 3). Needs a plan. |
+| GUI accessibility settings | UX | **2** | 0036 | Make the desktop app comfortable for people who need larger text, other fonts, or less motion | From the maintainer (2026-10-09), after finding that semibold text falls back to a monospace font on their machine. The patch fix after 0048 bundles a default sans font; this row lets people pick their own font and text size on top of it, and fits with reduced motion and high-contrast palettes. Text measurement for balanced titles already uses the rendered font, so a font change keeps wrapping correct, but fixed tile and card heights would need to follow the text size. Pairs with GUI themes (queue item 2). Needs a plan. |
 | Keyboard focus for list rows | UX | **2** | 0036 | Reach choice lists from the keyboard | From 0048 acceptance (2026-10-10). The quiet list rows (`ui::list_row`) in **Add**, New's program list, and Heroic's source list take hover and press but never keyboard focus, like the stock buttons they replaced. **Add** has its 1 to 4 keys, but the program and source lists need the mouse. Wrap the rows in `focus_button` controls with arrow keys and the usual primary focus ring, which changes focus order on those pages. Fits with GUI accessibility settings. |
 | Embedded GOG login window | UX | **2** | 0049 | Log in to GOG without copying the success address back | From 0049 acceptance (2026-10-12). GOG's login only redirects to `embed.gog.com/on_login_success`, so today you copy that address from the browser and paste it into wineo. Heroic and Minigalaxy open the login page in their own browser window and catch the redirect there. iced can't show web pages, so this needs a WebKitGTK webview (for example `wry`) in a small helper window: a large GTK dependency for a one-time login, and more to bring to a macOS port. Watching the clipboard for the address was turned down for privacy. Needs a plan. |
 | One shape for confirm prompts | UX | **2** | | Ask every review's final yes or no the same way | From 0049 acceptance (2026-10-12). The GOG migrate and update confirms now print one keys line, then `Migrate it? [Y/n]:`. Others still differ: the Steam import's game step prints `Press Enter to import it, Esc to go back, Ctrl+C to cancel.` before `Import it? [Y/n]:`, and an empty `review` (`wineo new`) asks `Create it?` with no `[Y/n]`. Survey every confirm and settle on one. |
