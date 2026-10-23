@@ -57,6 +57,12 @@ fn frames(app: &App) -> usize {
     into_recipes(app.grid_motion.subscription()).len()
 }
 
+/// When the motion in flight set out, so later ticks are exact offsets
+/// from it however long the test takes to get there.
+fn set_out(app: &App) -> Instant {
+    app.grid_motion.last_tick.expect("a motion in flight")
+}
+
 fn grid_size(app: &App) -> Size {
     Size::new(app.viewport_width, f32::INFINITY)
 }
@@ -404,7 +410,7 @@ fn ticks_follow_a_dock_until_it_settles() {
     let (_root, mut app) = fixture(&named("game", 12));
     let _ = app.update(Message::Select("game-07".into()));
     let generation = app.grid_motion.generation();
-    let start = Instant::now();
+    let start = set_out(&app);
     let _ = app.update(Message::GridTick(
         generation,
         start + Duration::from_millis(120),
@@ -437,8 +443,8 @@ fn the_poster_only_toggle_springs_the_cards_to_their_new_rows_holding_the_place(
     app.selected = Some("game-22".into());
     for poster_only in [true, false] {
         let generation = app.grid_motion.generation();
-        let start = Instant::now();
         let _ = app.update(Message::Zoom(crate::zoom::Event::TogglePosterOnly));
+        let start = set_out(&app);
         assert_eq!(app.poster_only, poster_only);
         assert_ne!(app.grid_motion.generation(), generation);
         assert!(app.grid_motion.active());
@@ -706,7 +712,7 @@ fn a_dock_without_a_column_change_springs_to_the_centered_slots() {
         let generation = app.grid_motion.generation();
         let _ = app.update(Message::GridTick(
             generation,
-            Instant::now() + Duration::from_millis(60),
+            set_out(&app) + Duration::from_millis(60),
         ));
         assert!(app.grid_motion.active());
         let mid = x(&app);
