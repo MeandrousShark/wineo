@@ -100,6 +100,18 @@ From steps 6 and 7 (2026-10-22):
 19. **Up and Down scroll the focused row into view,** just enough to show
     it, like the Sort menu does.
 
+From the step 5 spike (2026-10-23):
+
+20. **The details draw in a band, both ways.** They are their own grid
+    child, drawn after their card and clipped to its x and width, from its
+    top down to the drawn top of the card below. They never draw over
+    another card, which also fixes today's overlap on the way in. The
+    rising poster slicing the meta line on the way out reads as a wipe and
+    is accepted.
+21. **The details row never wraps while it fades.** It clips at the card's
+    edge like the title's ellipsis, so "587 h 17 m" no longer breaks onto
+    two lines between 80% and 84%.
+
 Added to the plan by the maintainer (2026-10-22), from the polish
 candidates:
 
@@ -252,7 +264,8 @@ The shape, with the answers above. No questions are open.
   cleanly: in a clipped band under the card, in the grid's overlay layer,
   or by delaying the height change until the fade ends. If none looks
   clean, the fallback is a fade without the slide, and the maintainer is
-  told before the step goes on.
+  told before the step goes on. The spike chose the clipped band, and the
+  details row stops wrapping (settled 20 and 21).
 
 ### Centered grid
 
