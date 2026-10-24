@@ -428,6 +428,12 @@ fn the_star_takes_presses_fading_in_and_none_fading_out() {
     assert_eq!(mark_chip(&card_node(&app, &card), 0).center(), at);
     let messages = left_click(&app, &card, at);
     assert_eq!(toggles(&messages, "game"), 0, "{messages:?}");
+    assert!(
+        messages
+            .iter()
+            .any(|message| matches!(message, Message::Select(name) if name == "game")),
+        "{messages:?}"
+    );
 }
 
 #[test]
