@@ -106,7 +106,9 @@ fn meta_height(card: &Card, layout: GridLayout) -> f32 {
 /// Where a card's identifier and state row are built.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Details {
-    /// In the card's own column.
+    /// In the card's own column, for tests that look at a card whole. The
+    /// grid draws every card's details apart.
+    #[cfg(test)]
     Inline,
     /// Apart, for the grid to draw in a band under the card's title. The
     /// card keeps their room.
@@ -217,7 +219,8 @@ impl App {
                 Some(crate::grid_motion::Outgoing {
                     name: leaving.name.clone(),
                     bounds: leaving.bounds,
-                    card: self.card_drawn(card, leaving.opacity, leaving.layout, Details::Inline),
+                    card: self.card_drawn(card, leaving.opacity, leaving.layout, Details::Apart),
+                    details: self.details_apart(card, leaving.opacity, leaving.layout, progress),
                 })
             })
             .collect();
@@ -228,13 +231,7 @@ impl App {
             self.panel_open,
             scene,
             self.grid_layout(),
-            crate::grid_motion::DetailsBand {
-                top: layout.poster_height()
-                    + CARD_SPACING
-                    + crate::tile_title::two_line_height(CARD_TITLE_SIZE)
-                    + CARD_SPACING,
-                drift: crate::details_fade::DetailsFade::drift(progress),
-            },
+            crate::details_fade::DetailsFade::drift(progress),
         )
     }
     /// The details the grid draws under `card`'s title at the details
@@ -245,7 +242,7 @@ impl App {
         opacity: f32,
         layout: GridLayout,
         progress: f32,
-    ) -> Option<Element<'a, Message>> {
+    ) -> Option<crate::grid_motion::CardDetails<'a, Message>> {
         match layout.text() {
             CardText::Full => {}
             CardText::Title if progress > 0.0 => {}
@@ -259,12 +256,16 @@ impl App {
         // card's edge. The card's spacer keeps the wrapped height.
         let wrap = !self.details_fade.active();
         let details = card_details(card, layout, self.palette.faded(alpha), caption, wrap);
-        Some(
-            iced::widget::Column::with_children(details)
+        Some(crate::grid_motion::CardDetails {
+            element: iced::widget::Column::with_children(details)
                 .spacing(CARD_SPACING)
                 .width(layout.card_width())
                 .into(),
-        )
+            top: layout.poster_height()
+                + CARD_SPACING
+                + crate::tile_title::two_line_height(CARD_TITLE_SIZE)
+                + CARD_SPACING,
+        })
     }
     /// The poster a collapsed card shows on its own, or a plain surface
     /// when it has no art.
@@ -533,6 +534,7 @@ impl App {
             return card_area(content, card);
         }
         match details {
+            #[cfg(test)]
             Details::Inline => {
                 for child in card_details(card, layout, palette, caption, true) {
                     content = content.push(child);

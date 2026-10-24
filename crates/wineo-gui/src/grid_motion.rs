@@ -779,6 +779,7 @@ pub(crate) struct Outgoing<'a, Message> {
     pub(crate) name: String,
     pub(crate) bounds: Rectangle,
     pub(crate) card: Element<'a, Message>,
+    pub(crate) details: Option<CardDetails<'a, Message>>,
 }
 
 /// A shown card: its name, its element, and the details the grid draws
@@ -786,19 +787,19 @@ pub(crate) struct Outgoing<'a, Message> {
 pub(crate) struct GridCard<'a, Message> {
     pub(crate) name: String,
     pub(crate) card: Element<'a, Message>,
-    pub(crate) details: Option<Element<'a, Message>>,
+    pub(crate) details: Option<CardDetails<'a, Message>>,
 }
 
-/// Where the cards' details draw: their top inside the card, and how far
-/// below it they've drifted.
-#[derive(Debug, Clone, Copy, Default)]
-pub(crate) struct DetailsBand {
+/// A card's details, drawn apart from it in a band, and their top inside
+/// the card.
+pub(crate) struct CardDetails<'a, Message> {
+    pub(crate) element: Element<'a, Message>,
     pub(crate) top: f32,
-    pub(crate) drift: f32,
 }
 
-/// The grid of `cards` in shown order, then `leaving` drawn beneath them.
-/// `open` picks the docked panel's column count.
+/// The grid of `cards` in shown order, then `leaving` drawn beneath them,
+/// with every card's details `drift` below their place. `open` picks the
+/// docked panel's column count.
 pub(crate) fn grid<'a, Message: Clone + 'a>(
     cards: Vec<GridCard<'a, Message>>,
     leaving: Vec<Outgoing<'a, Message>>,
@@ -806,7 +807,7 @@ pub(crate) fn grid<'a, Message: Clone + 'a>(
     open: bool,
     scene: Option<Scene<'a, Message>>,
     layout: GridLayout,
-    band: DetailsBand,
+    drift: f32,
 ) -> Element<'a, Message> {
     let shown = cards.len();
     let offsets = cards.iter().map(|card| motion.offset(&card.name)).collect();
@@ -822,15 +823,18 @@ pub(crate) fn grid<'a, Message: Clone + 'a>(
     }
     let mut outgoing = Vec::with_capacity(leaving.len());
     for card in leaving {
+        if let Some(element) = card.details {
+            details.push((names.len(), format!("details:{}", card.name), element));
+        }
         names.push(card.name);
         outgoing.push(card.bounds);
         elements.push(card.card);
     }
-    let mut details_of = vec![None; shown];
-    for (index, name, element) in details {
-        details_of[index] = Some(elements.len());
+    let mut details_of = vec![None; elements.len()];
+    for (index, name, details) in details {
+        details_of[index] = Some((elements.len(), details.top));
         names.push(name);
-        elements.push(element);
+        elements.push(details.element);
     }
     Element::new(Grid {
         cards: elements,
@@ -843,25 +847,25 @@ pub(crate) fn grid<'a, Message: Clone + 'a>(
         open,
         layout,
         scene,
-        band,
+        drift,
     })
 }
 
 struct Grid<'a, Message> {
-    /// The shown cards, then the leaving ones, then the shown cards'
-    /// details.
+    /// The shown cards, then the leaving ones, then the cards' details.
     cards: Vec<Element<'a, Message>>,
     names: Vec<String>,
     shown: usize,
-    /// Each shown card's details child, if it has one.
-    details_of: Vec<Option<usize>>,
+    /// Each shown or leaving card's details child, if it has one, and
+    /// their top inside the card.
+    details_of: Vec<Option<(usize, f32)>>,
     offsets: Vec<Vector>,
     outgoing: Vec<Rectangle>,
     hold: f32,
     open: bool,
     layout: GridLayout,
     scene: Option<Scene<'a, Message>>,
-    band: DetailsBand,
+    drift: f32,
 }
 
 /// The card drawn below the one at `index`: the next row's, in the same
@@ -895,7 +899,8 @@ struct GridState {
     /// The details' nodes, kept out of the grid's own so its children
     /// stay one per card.
     details: Vec<layout::Node>,
-    /// Each shown card's details clip, from the last layout, in the grid's
+    /// Each shown or leaving card's details clip, from the last layout, in
+    /// the grid's
     /// own coordinates like the nodes.
     bands: Vec<Option<Rectangle>>,
 }
@@ -1067,15 +1072,20 @@ impl<Message: Clone> Widget<Message, Theme, Renderer> for Grid<'_, Message> {
             .collect();
         state.details = children.split_off(first_details.min(children.len()));
         let columns = columns_for_viewport(width, self.open, grid);
-        state.bands = vec![None; self.shown];
+        state.bands = vec![None; self.details_of.len()];
         for (index, details) in self.details_of.iter().enumerate() {
-            let Some(details) = details.map(|details| details - first_details) else {
+            let Some((details, top)) = details.map(|(child, top)| (child - first_details, top))
+            else {
                 continue;
             };
             let card = children[index].bounds();
             let node = std::mem::take(&mut state.details[details]);
-            state.details[details] =
-                node.move_to(card.position() + Vector::new(0.0, self.band.top));
+            state.details[details] = node.move_to(card.position() + Vector::new(0.0, top));
+            // A leaving card has no card below it by index.
+            if index >= self.shown {
+                state.bands[index] = band_clip(card, state.details[details].bounds(), None);
+                continue;
+            }
             // The collapse scene's loose and hidden cards draw no details.
             if !matches!(state.look(index), Look::Normal(_)) {
                 continue;
@@ -1186,12 +1196,45 @@ impl<Message: Clone> Widget<Message, Theme, Renderer> for Grid<'_, Message> {
         let (shown, leaving) = children.split_at(self.shown.min(children.len()));
         let first_details = self.shown + self.outgoing.len();
         let origin = layout.position() - Point::ORIGIN;
-        let drift = Vector::new(0.0, self.band.drift);
-        for ((card, state), layout) in leaving {
+        let drift = Vector::new(0.0, self.drift);
+        let draw_details = |renderer: &mut Renderer, index: usize| {
+            let Some((details, _)) = self.details_of.get(index).copied().flatten() else {
+                return;
+            };
+            let Some(clip) = grid
+                .bands
+                .get(index)
+                .copied()
+                .flatten()
+                .and_then(|band| (band + origin).intersection(viewport))
+            else {
+                return;
+            };
+            let Some(node) = grid.details.get(details - first_details) else {
+                return;
+            };
+            let element = &self.cards[details];
+            let state = &tree.children[details];
+            renderer.with_layer(clip, |renderer| {
+                renderer.with_translation(drift, |renderer| {
+                    element.as_widget().draw(
+                        state,
+                        renderer,
+                        theme,
+                        style,
+                        Layout::with_offset(origin, node),
+                        cursor,
+                        &(clip - drift),
+                    );
+                });
+            });
+        };
+        for (index, ((card, state), layout)) in leaving.iter().enumerate() {
             if layout.bounds().intersects(viewport) {
                 card.as_widget()
                     .draw(state, renderer, theme, style, *layout, cursor, viewport);
             }
+            draw_details(renderer, self.shown + index);
         }
         for (index, ((card, state), layout)) in shown.iter().enumerate() {
             let layout = *layout;
@@ -1202,36 +1245,7 @@ impl<Message: Clone> Widget<Message, Theme, Renderer> for Grid<'_, Message> {
                         card.as_widget()
                             .draw(state, renderer, theme, style, layout, cursor, viewport);
                     }
-                    let Some(details) = self.details_of.get(index).copied().flatten() else {
-                        continue;
-                    };
-                    let Some(clip) = grid
-                        .bands
-                        .get(index)
-                        .copied()
-                        .flatten()
-                        .and_then(|band| (band + origin).intersection(viewport))
-                    else {
-                        continue;
-                    };
-                    let Some(node) = grid.details.get(details - first_details) else {
-                        continue;
-                    };
-                    let element = &self.cards[details];
-                    let state = &tree.children[details];
-                    renderer.with_layer(clip, |renderer| {
-                        renderer.with_translation(drift, |renderer| {
-                            element.as_widget().draw(
-                                state,
-                                renderer,
-                                theme,
-                                style,
-                                Layout::with_offset(origin, node),
-                                cursor,
-                                &(clip - drift),
-                            );
-                        });
-                    });
+                    draw_details(renderer, index);
                 }
                 Look::Loose { rotation, .. } => {
                     let Some(scene) = &self.scene else { continue };

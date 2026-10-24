@@ -133,6 +133,36 @@ fn dot_ink(app: &App) -> u64 {
     ink(&render(&mut app.grid(), size), size.width, dot)
 }
 
+/// `name`'s state dot, shown or leaving, where it's drawn at the details'
+/// drift, and how far below the card's top its details are placed. None
+/// when the card draws no details.
+fn card_dot(app: &App, name: &str) -> Option<(u64, f32)> {
+    let (node, state) = laid_state(app);
+    let shown = app.filtered();
+    let index = match shown.iter().position(|card| card.name == name) {
+        Some(index) => index,
+        None => {
+            let leaving = app.grid_motion.leaving();
+            shown.len() + leaving.iter().position(|card| card.name == name)?
+        }
+    };
+    let card = node.children()[index].bounds();
+    let details = state
+        .details
+        .iter()
+        .map(|details| details.bounds())
+        .filter(|details| details.x == card.x && details.y >= card.y)
+        .min_by(|a, b| a.y.total_cmp(&b.y))?;
+    let drift = crate::details_fade::DetailsFade::drift(progress(app));
+    let dot = iced::Rectangle::new(
+        iced::Point::new(details.x, details.y + drift + (details.height - 8.0) / 2.0),
+        Size::new(8.0, 8.0),
+    );
+    let size = grid_size(app);
+    let ink = ink(&render(&mut app.grid(), size), size.width, dot);
+    Some((ink, details.y - card.y))
+}
+
 /// The first card's poster and title, down to where its details start.
 fn card_ink(app: &App) -> u64 {
     let (node, state) = laid_state(app);
@@ -232,11 +262,20 @@ fn a_card_entering_mid_crossing_joins_at_the_same_progress() {
     clock.tick(&mut app, 50);
     let at = progress(&app);
     assert!(at > 0.0 && at < 1.0);
-    // A filter brings the others back, and they draw at the shared value.
+    // A filter brings the others back, and they draw at the shared value:
+    // once their own fade in is done, as strong and as far below their
+    // place as the card that stayed.
     let _ = app.update(Message::SearchChanged(String::new()));
     assert_eq!(progress(&app), at);
     let (_, state) = laid_state(&app);
     assert_eq!(state.details.len(), 4);
+    let _ = settle_grid(&mut app);
+    assert_eq!(progress(&app), at);
+    let stayed = card_dot(&app, "game-01").unwrap();
+    assert!(stayed.0 > 0);
+    for name in ["game-00", "game-02", "game-03"] {
+        assert_eq!(card_dot(&app, name), Some(stayed), "{name}");
+    }
     // A sort reorders them mid-crossing without restarting it.
     let _ = app.update(Message::Sort(crate::sort_control::Event::FlipDirection));
     assert_eq!(progress(&app), at);
@@ -456,4 +495,46 @@ fn a_wrapping_state_row_stays_one_line_only_while_the_details_fade() {
     let (details, card, height) = measure(&app);
     assert_eq!(details, Some(wrapped));
     assert_eq!(card, height);
+}
+
+#[test]
+fn a_card_leaving_mid_crossing_keeps_fading_its_details_with_the_rest() {
+    for (from, key) in [(90, Key::Out), (80, Key::In)] {
+        let (_root, mut app) = fixture(from, 3);
+        let full = {
+            let (_root, app) = fixture(90, 3);
+            card_dot(&app, "game-00").unwrap().0
+        };
+        zoom(&mut app, Event::Key(key));
+        let mut clock = Clock::start(&mut app);
+        clock.tick(&mut app, 40);
+        // The grid's own frames aren't sent, so the leaving cards keep
+        // their full strength and only the details progress moves.
+        let _ = app.update(Message::SearchChanged("game-00".into()));
+        assert!(
+            app.grid_motion
+                .leaving()
+                .iter()
+                .any(|card| card.name == "game-01" && card.opacity == 1.0)
+        );
+        let mut last = None;
+        for _ in 0..2 {
+            let stayed = card_dot(&app, "game-00").unwrap();
+            let leaving = card_dot(&app, "game-01").expect("leaving details");
+            assert_eq!(leaving, stayed, "{from}");
+            assert!(
+                leaving.0 > 0 && leaving.0 < full,
+                "{from} {} {full}",
+                leaving.0
+            );
+            if let Some(last) = last {
+                match key {
+                    Key::Out => assert!(leaving.0 < last, "{from}"),
+                    _ => assert!(leaving.0 > last, "{from}"),
+                }
+            }
+            last = Some(leaving.0);
+            clock.tick(&mut app, 40);
+        }
+    }
 }
