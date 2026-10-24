@@ -19,6 +19,13 @@ use crate::{App, Message};
 /// An app on its own throwaway HOME at `zoom`, as if saved there, with
 /// `count` running cards, so each one's state dot shows bright.
 fn fixture(zoom: u16, count: usize) -> (tempfile::TempDir, App) {
+    let cards = (0..count)
+        .map(|index| card(&format!("game-{index:02}"), State::Running, 60))
+        .collect();
+    fixture_with(zoom, cards)
+}
+
+fn fixture_with(zoom: u16, cards: Vec<Card>) -> (tempfile::TempDir, App) {
     let root = tempfile::tempdir().unwrap();
     let home = root.path().to_owned();
     let paths = wineo_core::paths::Paths::from_lookup(move |key| {
@@ -27,9 +34,6 @@ fn fixture(zoom: u16, count: usize) -> (tempfile::TempDir, App) {
     .unwrap();
     let mut app = App::boot(paths).0;
     app.zoom = zoom;
-    let cards: Vec<Card> = (0..count)
-        .map(|index| card(&format!("game-{index:02}"), State::Running, 60))
-        .collect();
     let _ = app.update(Message::Loaded(Ok(cards)));
     let _ = settle_grid(&mut app);
     assert!(settled(&app));
@@ -405,4 +409,51 @@ fn a_saved_zoom_below_90_shows_no_crossing_at_launch() {
     let (_root, app) = fixture(80, 3);
     assert_eq!(progress(&app), 0.0);
     assert!(settled(&app));
+}
+
+#[test]
+fn a_wrapping_state_row_stays_one_line_only_while_the_details_fade() {
+    let mut steam = card("game-00", State::SteamRunning, 60);
+    steam.playtime = "587 h 17 m".into();
+    let (_root, mut app) = fixture_with(90, vec![steam.clone()]);
+    let line = crate::grid::context_line();
+    // (details height, card height, and the card's height from `card_height`)
+    let measure = |app: &App| {
+        let (node, state) = laid_state(app);
+        let details = state.details.first().map(|details| details.bounds().height);
+        let card = node.children()[0].bounds().height;
+        (
+            details,
+            card,
+            crate::grid::card_height(&steam, app.grid_layout()),
+        )
+    };
+    let (wrapped, card, height) = measure(&app);
+    let wrapped = wrapped.unwrap();
+    assert!(wrapped > line + 1.0, "{wrapped}");
+    assert_eq!(card, height);
+
+    zoom(&mut app, Event::Key(Key::Out));
+    let mut clock = Clock::start(&mut app);
+    clock.tick(&mut app, 40);
+    let (details, card, height) = measure(&app);
+    assert_eq!(details, Some(line));
+    assert_eq!(card, height);
+    clock.tick(&mut app, 120);
+    assert!(settled(&app));
+    let (details, card, height) = measure(&app);
+    assert_eq!(details, None);
+    assert_eq!(card, height);
+
+    zoom(&mut app, Event::Key(Key::In));
+    let mut clock = Clock::start(&mut app);
+    clock.tick(&mut app, 40);
+    let (details, card, height) = measure(&app);
+    assert_eq!(details, Some(line));
+    assert_eq!(card, height);
+    clock.tick(&mut app, 120);
+    assert!(settled(&app));
+    let (details, card, height) = measure(&app);
+    assert_eq!(details, Some(wrapped));
+    assert_eq!(card, height);
 }

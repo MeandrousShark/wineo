@@ -82,7 +82,7 @@ pub(crate) fn card_height(card: &Card, layout: GridLayout) -> f32 {
 }
 
 /// The identifier line's height.
-fn context_line() -> f32 {
+pub(crate) fn context_line() -> f32 {
     iced::widget::text::LineHeight::default()
         .to_absolute(CARD_CONTEXT_SIZE.into())
         .0
@@ -114,13 +114,19 @@ pub(crate) enum Details {
 }
 
 /// The identifier, when shown, and the state and playtime row, at the
-/// card's width.
+/// card's width. The row wraps unless `wrap` is off.
 fn card_details<'a>(
     card: &'a Card,
     layout: GridLayout,
     palette: Palette,
     caption: f32,
+    wrap: bool,
 ) -> Vec<Element<'a, Message>> {
+    let wrapping = if wrap {
+        iced::widget::text::Wrapping::default()
+    } else {
+        iced::widget::text::Wrapping::None
+    };
     let dot_color = card.dot(palette).scale_alpha(caption);
     let meta = row![
         container(Space::new())
@@ -131,10 +137,12 @@ fn card_details<'a>(
                 .border(border::rounded(4))),
         text(card.state_word())
             .size(CARD_CONTEXT_SIZE)
-            .color(palette.muted.scale_alpha(caption)),
+            .color(palette.muted.scale_alpha(caption))
+            .wrapping(wrapping),
         text(card.playtime())
             .size(CARD_CONTEXT_SIZE)
-            .color(palette.muted.scale_alpha(caption)),
+            .color(palette.muted.scale_alpha(caption))
+            .wrapping(wrapping),
     ]
     .spacing(CARD_META_SPACING)
     .align_y(Center);
@@ -246,7 +254,11 @@ impl App {
         let alpha = self.collapse.alpha() * opacity;
         // Apart from the title, which keeps the card's own strength.
         let caption = self.collapse.caption_alpha() * opacity * progress;
-        let details = card_details(card, layout, self.palette.faded(alpha), caption);
+        // One line while fading, since the row is built at each frame's
+        // zoom and would rewrap mid-crossing; the band clips it at the
+        // card's edge. The card's spacer keeps the wrapped height.
+        let wrap = !self.details_fade.active();
+        let details = card_details(card, layout, self.palette.faded(alpha), caption, wrap);
         Some(
             iced::widget::Column::with_children(details)
                 .spacing(CARD_SPACING)
@@ -522,7 +534,7 @@ impl App {
         }
         match details {
             Details::Inline => {
-                for child in card_details(card, layout, palette, caption) {
+                for child in card_details(card, layout, palette, caption, true) {
                     content = content.push(child);
                 }
             }
