@@ -410,11 +410,12 @@ The shape, with the answers above. No questions are open.
 Findings from `qa-gpt` reviews and what is left to do about them. Updated
 2026-10-22.
 
-### Step 4, hover fades (branch `0056-step4`, not merged)
+### Step 4, hover fades (merged)
 
 Commits `6428af0b` and `28608170`, rebased on main again 2026-10-23, plus
 `a49f2f69` for the Low below. The first review verdict was FAIL on the
-Medium, which was then dismissed.
+Medium, which was then dismissed. The second round (2026-10-23) passed with
+no findings.
 
 - **Medium - hover frames keep running while the window is unfocused.
   Dismissed (maintainer, 2026-10-23: do what the grid does).** The grid,
