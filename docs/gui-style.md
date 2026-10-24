@@ -164,7 +164,9 @@ Plan [0054](plans/0054-library-sorting-and-favorites.md) added these.
   apart. The star has the top slot and the crossed-out eye the second, so a
   hidden card's eye never moves when the star appears. A favorite's filled
   star is always shown; a plain card shows an outline star there while it's
-  hovered. The star is a button with a 28 px target centered on the chip: a
+  hovered, fading in and out over about 150 ms. Unfavoriting under the
+  pointer shows the outline star at full strength at once. The star is a
+  button with a 28 px target centered on the chip: a
   left press toggles the favorite without selecting the card or opening the
   panel, and a right press still opens the context menu (plan
   [0056](plans/0056-gui-polish.md)). It has no tooltip, no hover or press
@@ -172,7 +174,8 @@ Plan [0054](plans/0054-library-sorting-and-favorites.md) added these.
   the menu are the keyboard paths. The eye isn't clickable, and marks don't
   change the card's size.
 - A hidden card shown with Show hidden on keeps its color art at 45%
-  opacity with a muted title; its marks stay at full strength. Grayscale
+  opacity with a muted title; its marks stay at full strength, apart from
+  the hover star's fade. Grayscale
   stays the not-installed signal.
 - The panel's star is a 32 px neutral button at the right of the title
   (through `ends`): filled in the primary color for a favorite, an outline
@@ -184,7 +187,8 @@ Plan [0055](plans/0055-grid-zoom-and-poster-only.md) added these. Marks,
 chips, and badges keep their sizes at every zoom.
 
 - Poster-only shows each card as its poster alone. Hovering or selecting a
-  card shows its title over the poster's bottom: a black gradient fading in
+  card fades its title in over the poster's bottom in about 150 ms, and out
+  the same way when neither holds: a black gradient fading in
   over 24 px to 75% behind the text and 85% at the edge, then 14 px
   semibold white text, two lines at most with an ellipsis, 8 px from the
   left and bottom. It's dark in both themes, sits under the selection
@@ -251,6 +255,10 @@ column change halfway through a zoom never jumps.
   since the centering shift changes with the width beside the panel.
 - A window resize and the background rescan snap. A rescan that lands
   mid-transition settles it first.
+- The hover star and the poster-only title fade over the same 150 ms,
+  each from where it's drawn, so a quick pass across cards never jumps.
+  They keep their own frames, so a fade that a flow or dialog opens over
+  still finishes instead of snapping.
 - A zoom or the toggle keeps the place: the selected card if any of it is
   visible, otherwise the first visible card, holds its top where it was.
   A manual scroll, arrow key, or click ends that.

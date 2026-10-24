@@ -412,24 +412,28 @@ Findings from `qa-gpt` reviews and what is left to do about them. Updated
 
 ### Step 4, hover fades (branch `0056-step4`, not merged)
 
-Commits `7ad98c5b` and `88b03e90`, rebased on main. Fmt and clippy are clean
-and `cargo test -p wineo-gui` passes (1279). The review verdict was FAIL on
-one point, so the branch waits for the fix.
+Commits `6428af0b` and `28608170`, rebased on main again 2026-10-23, plus
+`a49f2f69` for the Low below. The first review verdict was FAIL on the
+Medium, which was then dismissed.
 
-- **Medium - hover frames keep running while the window is unfocused.**
-  `main.rs:711` installs the `HoverTick` subscription whenever an entry
-  exists, and `hover_fade.rs:141` checks nothing else. The app's rule is no
-  ticking while unfocused or minimized (plan 0051, `wake.rs`). Fix: gate the
-  subscription like the grid's other frames (or settle the fades when the
-  window loses focus, then resume), and test focus loss and resumption
-  mid-fade.
-- **Low - `fade_tests.rs:427`** says a fading-out star's press becomes the
-  card's, but only asserts that no favorite toggles. Assert `Select` too.
-- **To verify at runtime:** a minimized window still gets redraws until the
-  fade completes. No GUI test was run.
-- **Docs to update when it lands:** `docs/gui-style.md` ~166 (the outline
-  star's fade-out), ~175 ("marks stay at full strength" needs a
-  qualification), ~186 (the overlay now fades).
+- **Medium - hover frames keep running while the window is unfocused.
+  Dismissed (maintainer, 2026-10-23: do what the grid does).** The grid,
+  panel, collapse, and zoom frames have no focus gate either: each runs
+  `window::frames()` while its motion is active and stops when it settles.
+  Plan 0051's pause-while-unfocused rule covers the library rescan and the
+  settings timer only. The hover fades match the grid: a fixed 150 ms
+  (`FADE`), clamped onto their targets, and settled cards are dropped, so
+  the subscription ends on its own. After a long frame gap the next tick
+  finishes the fade.
+- **Low - `fade_tests.rs:427`** said a fading-out star's press becomes the
+  card's, but only asserted that no favorite toggles. Fixed: it asserts
+  `Select` too.
+- **Runtime check not needed:** a minimized window's redraws until a fade
+  completes are the same exposure the grid's motion has, and
+  `window::frames()` only fires when the compositor delivers frames.
+- **Docs:** `docs/gui-style.md` (the outline star's fade, the hidden
+  card's marks, the overlay's fade, and a Grid motion line) and
+  `docs/gui.md`'s motion paragraph, updated with the merge.
 - **Deviation accepted in review:** the fades have their own `HoverTick`
   message and subscription instead of `GridTick`, because the grid's frames
   stop while a flow or dialog is open and its motion snaps then. The review

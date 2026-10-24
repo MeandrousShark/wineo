@@ -183,7 +183,8 @@ Play/Launch and Stop occupy the first action row, with Log, Settings, Art,
 and Actions on a quieter row below. They share compact rounded controls.
 The panel slides and fades over about 160 ms. Library cards glide to their
 new slots with a lightly staggered spring and a small jiggle, settling in
-about 300 ms. Closing takes effect immediately, including stopping log follows.
+about 300 ms. A poster's hover star and its poster-only title fade in and
+out. Closing takes effect immediately, including stopping log follows.
 Switching cards while open changes the details without replaying the entrance.
 
 - **Play** or **Launch** starts the environment's default target. The label
