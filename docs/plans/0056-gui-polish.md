@@ -110,7 +110,17 @@ From the step 5 spike (2026-10-23):
     is accepted.
 21. **The details row never wraps while it fades.** It clips at the card's
     edge like the title's ellipsis, so "587 h 17 m" no longer breaks onto
-    two lines between 80% and 84%.
+    two lines between 80% and 84%. Narrowed by 22.
+
+From step 5 (2026-10-23):
+
+22. **The no-wrap rule holds only while the fade runs.** At rest the row
+    wraps as it does today. Long Steam states wrap at normal zooms
+    ("running (started from Steam)" from 90% to 163%), and never wrapping
+    would clip their playtime off the card and shrink the card by up to
+    46.8 px. A long state reflows onto its second line once, as a fade-in
+    finishes. The poster-only toggle snaps the details, per the scope
+    limits.
 
 Added to the plan by the maintainer (2026-10-22), from the polish
 candidates:
