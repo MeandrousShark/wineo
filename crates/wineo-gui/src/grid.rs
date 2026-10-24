@@ -62,9 +62,7 @@ fn shows_identifier(card: &Card) -> bool {
 /// A card's laid out height, from the same sizes `App::card` builds it with,
 /// so lazy art loading can follow the grid's real row geometry.
 pub(crate) fn card_height(card: &Card, layout: GridLayout) -> f32 {
-    let line = iced::widget::text::LineHeight::default()
-        .to_absolute(CARD_CONTEXT_SIZE.into())
-        .0;
+    let line = context_line();
     let text = layout.text();
     if text == CardText::PosterOnly {
         return layout.poster_height();
@@ -83,6 +81,13 @@ pub(crate) fn card_height(card: &Card, layout: GridLayout) -> f32 {
     height + meta_height(card, layout)
 }
 
+/// The identifier line's height.
+fn context_line() -> f32 {
+    iced::widget::text::LineHeight::default()
+        .to_absolute(CARD_CONTEXT_SIZE.into())
+        .0
+}
+
 /// The state and playtime row's height. Its labels wrap when they outgrow
 /// the card, and a row hands each child whatever width the ones before it
 /// left, so this measures them in that order.
@@ -98,9 +103,59 @@ fn meta_height(card: &Card, layout: GridLayout) -> f32 {
     height
 }
 
+/// Where a card's identifier and state row are built.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Details {
+    /// In the card's own column.
+    Inline,
+    /// Apart, for the grid to draw in a band under the card's title. The
+    /// card keeps their room.
+    Apart,
+}
+
+/// The identifier, when shown, and the state and playtime row, at the
+/// card's width.
+fn card_details<'a>(
+    card: &'a Card,
+    layout: GridLayout,
+    palette: Palette,
+    caption: f32,
+) -> Vec<Element<'a, Message>> {
+    let dot_color = card.dot(palette).scale_alpha(caption);
+    let meta = row![
+        container(Space::new())
+            .width(CARD_DOT)
+            .height(CARD_DOT)
+            .style(move |_| container::Style::default()
+                .background(dot_color)
+                .border(border::rounded(4))),
+        text(card.state_word())
+            .size(CARD_CONTEXT_SIZE)
+            .color(palette.muted.scale_alpha(caption)),
+        text(card.playtime())
+            .size(CARD_CONTEXT_SIZE)
+            .color(palette.muted.scale_alpha(caption)),
+    ]
+    .spacing(CARD_META_SPACING)
+    .align_y(Center);
+    let mut details = Vec::with_capacity(2);
+    if shows_identifier(card) {
+        details.push(
+            text(truncate_name(&card.name, layout.card_width()))
+                .size(CARD_CONTEXT_SIZE)
+                .color(palette.muted.scale_alpha(caption))
+                .wrapping(iced::widget::text::Wrapping::None)
+                .into(),
+        );
+    }
+    details.push(meta.into());
+    details
+}
+
 impl App {
     pub(crate) fn grid(&self) -> Element<'_, Message> {
         let layout = self.grid_layout();
+        let progress = self.details_progress();
         let filtered = self.filtered();
         let scene = (!self.collapse.idle()).then(|| crate::grid_motion::Scene {
             collapse: &self.collapse,
@@ -120,7 +175,11 @@ impl App {
             .into_iter()
             .map(|card| {
                 let opacity = self.grid_motion.opacity(&card.name);
-                (card.name.clone(), self.card_drawn(card, opacity, layout))
+                crate::grid_motion::GridCard {
+                    name: card.name.clone(),
+                    card: self.card_drawn(card, opacity, layout, Details::Apart),
+                    details: self.details_apart(card, opacity, layout, progress),
+                }
             })
             .collect();
         // Only the leaving cards near the view are worth building every
@@ -150,7 +209,7 @@ impl App {
                 Some(crate::grid_motion::Outgoing {
                     name: leaving.name.clone(),
                     bounds: leaving.bounds,
-                    card: self.card_drawn(card, leaving.opacity, leaving.layout),
+                    card: self.card_drawn(card, leaving.opacity, leaving.layout, Details::Inline),
                 })
             })
             .collect();
@@ -161,6 +220,38 @@ impl App {
             self.panel_open,
             scene,
             self.grid_layout(),
+            crate::grid_motion::DetailsBand {
+                top: layout.poster_height()
+                    + CARD_SPACING
+                    + crate::tile_title::two_line_height(CARD_TITLE_SIZE)
+                    + CARD_SPACING,
+                drift: crate::details_fade::DetailsFade::drift(progress),
+            },
+        )
+    }
+    /// The details the grid draws under `card`'s title at the details
+    /// `progress`: with full text, and on the way out until they've faded.
+    fn details_apart<'a>(
+        &'a self,
+        card: &'a Card,
+        opacity: f32,
+        layout: GridLayout,
+        progress: f32,
+    ) -> Option<Element<'a, Message>> {
+        match layout.text() {
+            CardText::Full => {}
+            CardText::Title if progress > 0.0 => {}
+            _ => return None,
+        }
+        let alpha = self.collapse.alpha() * opacity;
+        // Apart from the title, which keeps the card's own strength.
+        let caption = self.collapse.caption_alpha() * opacity * progress;
+        let details = card_details(card, layout, self.palette.faded(alpha), caption);
+        Some(
+            iced::widget::Column::with_children(details)
+                .spacing(CARD_SPACING)
+                .width(layout.card_width())
+                .into(),
         )
     }
     /// The poster a collapsed card shows on its own, or a plain surface
@@ -181,16 +272,17 @@ impl App {
     }
     #[cfg(test)]
     pub(crate) fn card<'a>(&'a self, card: &'a Card) -> Element<'a, Message> {
-        self.card_drawn(card, 1.0, self.grid_layout())
+        self.card_drawn(card, 1.0, self.grid_layout(), Details::Inline)
     }
 
     /// A card drawn at `opacity` and `layout`, as it fades in or out of the
     /// grid.
-    fn card_drawn<'a>(
+    pub(crate) fn card_drawn<'a>(
         &'a self,
         card: &'a Card,
         opacity: f32,
         layout: GridLayout,
+        details: Details,
     ) -> Element<'a, Message> {
         let alpha = self.collapse.alpha() * opacity;
         let caption = self.collapse.caption_alpha() * opacity;
@@ -407,23 +499,6 @@ impl App {
             title_font,
         )
         .join("\n");
-        let dot_color = card.dot(palette).scale_alpha(caption);
-        let meta = row![
-            container(Space::new())
-                .width(CARD_DOT)
-                .height(CARD_DOT)
-                .style(move |_| container::Style::default()
-                    .background(dot_color)
-                    .border(border::rounded(4))),
-            text(card.state_word())
-                .size(CARD_CONTEXT_SIZE)
-                .color(palette.muted.scale_alpha(caption)),
-            text(card.playtime())
-                .size(CARD_CONTEXT_SIZE)
-                .color(palette.muted.scale_alpha(caption)),
-        ]
-        .spacing(CARD_META_SPACING)
-        .align_y(Center);
         let mut content = column![
             framed,
             text(label)
@@ -445,15 +520,20 @@ impl App {
         if text_mode == CardText::Title {
             return card_area(content, card);
         }
-        if shows_identifier(card) {
-            content = content.push(
-                text(truncate_name(&card.name, layout.card_width()))
-                    .size(CARD_CONTEXT_SIZE)
-                    .color(palette.muted.scale_alpha(caption))
-                    .wrapping(iced::widget::text::Wrapping::None),
-            );
+        match details {
+            Details::Inline => {
+                for child in card_details(card, layout, palette, caption) {
+                    content = content.push(child);
+                }
+            }
+            // A spacer for each row, summed in `card_height`'s order.
+            Details::Apart => {
+                if shows_identifier(card) {
+                    content = content.push(Space::new().height(context_line()));
+                }
+                content = content.push(Space::new().height(meta_height(card, layout)));
+            }
         }
-        content = content.push(meta);
         card_area(content, card)
     }
     /// How wide the Add, import, and clone dialog is in the current window.
@@ -1512,9 +1592,15 @@ mod tests {
         assert!(card.install_progress().is_some());
         let size = Size::new(200.0, 400.0);
         let layout = GridLayout::default();
-        let shown = crate::layout_probe::render(&mut app.card_drawn(&card, 1.0, layout), size);
+        let shown = crate::layout_probe::render(
+            &mut app.card_drawn(&card, 1.0, layout, Details::Inline),
+            size,
+        );
         assert!(shown.chunks(4).any(|pixel| pixel[3] > 0));
-        let gone = crate::layout_probe::render(&mut app.card_drawn(&card, 0.0, layout), size);
+        let gone = crate::layout_probe::render(
+            &mut app.card_drawn(&card, 0.0, layout, Details::Inline),
+            size,
+        );
         assert!(gone.chunks(4).all(|pixel| pixel[3] == 0));
     }
     use super::*;

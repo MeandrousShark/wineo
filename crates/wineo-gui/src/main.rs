@@ -15,6 +15,7 @@ mod checkup;
 mod checkup_work;
 mod chips;
 mod collapse;
+mod details_fade;
 mod download_progress;
 mod downloads_page;
 mod downloads_work;
@@ -159,6 +160,7 @@ pub(crate) struct App {
     panel_motion: panel_motion::PanelMotion,
     grid_motion: grid_motion::GridMotion,
     hover_fades: hover_fade::HoverFades,
+    details_fade: details_fade::DetailsFade,
     /// `grid_places` for the inputs it was measured from.
     places: std::cell::RefCell<Option<(grid_motion::PlacesKey, std::rc::Rc<grid_motion::Places>)>>,
     collapse: collapse::Collapse,
@@ -360,6 +362,7 @@ pub(crate) enum Message {
     PanelTick(u64, Instant),
     GridTick(u64, Instant),
     HoverTick(u64, Instant),
+    DetailsTick(u64, Instant),
     Key(keyboard::Key, keyboard::Modifiers, iced::event::Status),
     Modifiers(keyboard::Modifiers),
     KeyWithFocus(
@@ -475,6 +478,7 @@ impl App {
             panel_motion: panel_motion::PanelMotion::default(),
             grid_motion: grid_motion::GridMotion::default(),
             hover_fades: hover_fade::HoverFades::default(),
+            details_fade: details_fade::DetailsFade::default(),
             places: Default::default(),
             collapse: collapse::Collapse::default(),
             reduced_motion: false,
@@ -709,6 +713,7 @@ impl App {
             panel_motion,
             grid_motion,
             self.hover_fades.subscription(),
+            self.details_fade.subscription(),
             zoom,
             collapse,
             // Only a toast has focus to recheck.
@@ -725,6 +730,7 @@ impl App {
         let task = self.update_message(message);
         // One place for every path that changes the hover or selection.
         self.sync_hover_fades();
+        self.details_fade.sync(self.details_full());
         // One rule for every way a screen opens: see `prefix_facts`.
         if self.screen_key() != screen {
             self.refresh_facts();
@@ -1073,6 +1079,10 @@ impl App {
             Message::GridTick(generation, now) => self.grid_tick(generation, now)?,
             Message::HoverTick(generation, now) => {
                 self.hover_fades.tick(generation, now);
+                Task::none()
+            }
+            Message::DetailsTick(generation, now) => {
+                self.details_fade.tick(generation, now);
                 Task::none()
             }
             Message::Modifiers(modifiers) => {

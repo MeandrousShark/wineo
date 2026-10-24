@@ -283,11 +283,20 @@ fn the_star_fades_with_its_card_and_a_leaving_card_takes_no_presses() {
         pixels[(y * 200 + x) * 4..][..4].to_vec()
     };
     app.hovered = None;
-    let plain = render(&mut app.card_drawn(&card, 1.0, layout), size);
+    let plain = render(
+        &mut app.card_drawn(&card, 1.0, layout, Details::Inline),
+        size,
+    );
     app.hovered = Some(card.name.clone());
-    let shown = render(&mut app.card_drawn(&card, 1.0, layout), size);
+    let shown = render(
+        &mut app.card_drawn(&card, 1.0, layout, Details::Inline),
+        size,
+    );
     assert_ne!(star(&shown), star(&plain));
-    let gone = render(&mut app.card_drawn(&card, 0.0, layout), size);
+    let gone = render(
+        &mut app.card_drawn(&card, 0.0, layout, Details::Inline),
+        size,
+    );
     assert!(gone.chunks(4).all(|pixel| pixel[3] == 0));
 
     let (_root, mut app) = fixture(&["drop-00", "keep-00"], &["drop-00"], &[]);

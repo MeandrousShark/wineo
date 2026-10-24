@@ -56,6 +56,16 @@ impl App {
         ControlFlow::Continue(Task::none())
     }
 
+    /// Whether the cards show their details, from the zoom the grid is
+    /// heading to, as the cards' text is.
+    pub(crate) fn details_full(&self) -> bool {
+        grid_motion::CardText::of(self.poster_only, self.zoom) == grid_motion::CardText::Full
+    }
+
+    pub(crate) fn details_progress(&self) -> f32 {
+        self.details_fade.progress(self.details_full())
+    }
+
     /// Retargets the hover fades to the hover and selection the update left,
     /// and drops those of cards no longer shown.
     pub(crate) fn sync_hover_fades(&mut self) {

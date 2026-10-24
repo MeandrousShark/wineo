@@ -14,7 +14,8 @@ use crate::{App, Message, SCROLL_ID};
 
 /// Keys and wheel notches move to the next multiple of this.
 const STEP: u16 = 10;
-const TWEEN: Duration = Duration::from_millis(160);
+/// The details fade shares it, so they land with the zoom.
+pub(crate) const TWEEN: Duration = Duration::from_millis(160);
 /// A drag snaps to 100% within this many points of it...
 const SNAP_IN: f32 = 8.0;
 /// ...and lets go only past this many, so it doesn't flicker at the edge.
@@ -205,7 +206,7 @@ impl Zoom {
     }
 }
 
-fn ease_out(t: f32) -> f32 {
+pub(crate) fn ease_out(t: f32) -> f32 {
     1.0 - (1.0 - t).powi(3)
 }
 

@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
+use iced::advanced::Renderer as _;
 use iced::advanced::image::Renderer as _;
 use iced::advanced::layout;
 use iced::advanced::mouse;
@@ -780,23 +781,44 @@ pub(crate) struct Outgoing<'a, Message> {
     pub(crate) card: Element<'a, Message>,
 }
 
-/// The grid of `cards`, each with its name, in shown order, then `leaving`
-/// drawn beneath them. `open` picks the docked panel's column count.
+/// A shown card: its name, its element, and the details the grid draws
+/// apart from it.
+pub(crate) struct GridCard<'a, Message> {
+    pub(crate) name: String,
+    pub(crate) card: Element<'a, Message>,
+    pub(crate) details: Option<Element<'a, Message>>,
+}
+
+/// Where the cards' details draw: their top inside the card, and how far
+/// below it they've drifted.
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct DetailsBand {
+    pub(crate) top: f32,
+    pub(crate) drift: f32,
+}
+
+/// The grid of `cards` in shown order, then `leaving` drawn beneath them.
+/// `open` picks the docked panel's column count.
 pub(crate) fn grid<'a, Message: Clone + 'a>(
-    cards: Vec<(String, Element<'a, Message>)>,
+    cards: Vec<GridCard<'a, Message>>,
     leaving: Vec<Outgoing<'a, Message>>,
     motion: &GridMotion,
     open: bool,
     scene: Option<Scene<'a, Message>>,
     layout: GridLayout,
+    band: DetailsBand,
 ) -> Element<'a, Message> {
     let shown = cards.len();
-    let offsets = cards.iter().map(|(name, _)| motion.offset(name)).collect();
+    let offsets = cards.iter().map(|card| motion.offset(&card.name)).collect();
     let mut names = Vec::with_capacity(shown + leaving.len());
     let mut elements = Vec::with_capacity(shown + leaving.len());
-    for (name, card) in cards {
-        names.push(name);
-        elements.push(card);
+    let mut details = Vec::new();
+    for card in cards {
+        if let Some(element) = card.details {
+            details.push((names.len(), format!("details:{}", card.name), element));
+        }
+        names.push(card.name);
+        elements.push(card.card);
     }
     let mut outgoing = Vec::with_capacity(leaving.len());
     for card in leaving {
@@ -804,30 +826,60 @@ pub(crate) fn grid<'a, Message: Clone + 'a>(
         outgoing.push(card.bounds);
         elements.push(card.card);
     }
+    let mut details_of = vec![None; shown];
+    for (index, name, element) in details {
+        details_of[index] = Some(elements.len());
+        names.push(name);
+        elements.push(element);
+    }
     Element::new(Grid {
         cards: elements,
         names,
         shown,
+        details_of,
         offsets,
         outgoing,
         hold: motion.hold().unwrap_or(0.0),
         open,
         layout,
         scene,
+        band,
     })
 }
 
 struct Grid<'a, Message> {
-    /// The shown cards, then the leaving ones.
+    /// The shown cards, then the leaving ones, then the shown cards'
+    /// details.
     cards: Vec<Element<'a, Message>>,
     names: Vec<String>,
     shown: usize,
+    /// Each shown card's details child, if it has one.
+    details_of: Vec<Option<usize>>,
     offsets: Vec<Vector>,
     outgoing: Vec<Rectangle>,
     hold: f32,
     open: bool,
     layout: GridLayout,
     scene: Option<Scene<'a, Message>>,
+    band: DetailsBand,
+}
+
+/// The card drawn below the one at `index`: the next row's, in the same
+/// column.
+fn below(index: usize, columns: usize, shown: usize) -> Option<usize> {
+    let below = index + columns.max(1);
+    (below < shown).then_some(below)
+}
+
+/// Where a card's details may draw: across the card, from its top down to
+/// the drawn top of the card below, and never past the details' own room
+/// and the gap under it. They then never draw over another card while the
+/// rows spring.
+fn band_clip(card: Rectangle, details: Rectangle, below: Option<Rectangle>) -> Option<Rectangle> {
+    let own = details.y + details.height + GAP;
+    let bottom = below.map_or(own, |below| below.y.min(own));
+    (bottom > card.y)
+        .then(|| Rectangle::new(card.position(), Size::new(card.width, bottom - card.y)))
 }
 
 #[derive(Default)]
@@ -840,6 +892,12 @@ struct GridState {
     sizes: Vec<Size>,
     slots: Vec<Point>,
     looks: Vec<Look>,
+    /// The details' nodes, kept out of the grid's own so its children
+    /// stay one per card.
+    details: Vec<layout::Node>,
+    /// Each shown card's details clip, from the last layout, in the grid's
+    /// own coordinates like the nodes.
+    bands: Vec<Option<Rectangle>>,
 }
 
 impl GridState {
@@ -950,8 +1008,10 @@ impl<Message: Clone> Widget<Message, Theme, Renderer> for Grid<'_, Message> {
             .map(|(index, (card, state))| {
                 // A leaving card keeps the size it left with.
                 let limits = match index.checked_sub(self.shown) {
-                    Some(leaving) => layout::Limits::new(Size::ZERO, self.outgoing[leaving].size()),
-                    None => card_limits,
+                    Some(leaving) if leaving < self.outgoing.len() => {
+                        layout::Limits::new(Size::ZERO, self.outgoing[leaving].size())
+                    }
+                    _ => card_limits,
                 };
                 card.as_widget_mut().layout(state, renderer, &limits)
             })
@@ -975,10 +1035,15 @@ impl<Message: Clone> Widget<Message, Theme, Renderer> for Grid<'_, Message> {
         let mut height = (2.0 * PADDING).max(self.hold);
         let collapse = self.scene.as_ref().map(|scene| scene.collapse);
         state.looks.clear();
-        let children = nodes
+        let first_details = self.shown + self.outgoing.len();
+        let mut children: Vec<layout::Node> = nodes
             .into_iter()
             .enumerate()
             .map(|(index, node)| {
+                // Details go under their cards once those are placed.
+                if index >= first_details {
+                    return node;
+                }
                 let Some(slot) = state.slots.get(index) else {
                     let bounds = self.outgoing[index - self.shown];
                     height = height.max(bounds.y + bounds.height + PADDING);
@@ -1000,6 +1065,26 @@ impl<Message: Clone> Widget<Message, Theme, Renderer> for Grid<'_, Message> {
                 })
             })
             .collect();
+        state.details = children.split_off(first_details.min(children.len()));
+        let columns = columns_for_viewport(width, self.open, grid);
+        state.bands = vec![None; self.shown];
+        for (index, details) in self.details_of.iter().enumerate() {
+            let Some(details) = details.map(|details| details - first_details) else {
+                continue;
+            };
+            let card = children[index].bounds();
+            let node = std::mem::take(&mut state.details[details]);
+            state.details[details] =
+                node.move_to(card.position() + Vector::new(0.0, self.band.top));
+            // The collapse scene's loose and hidden cards draw no details.
+            if !matches!(state.look(index), Look::Normal(_)) {
+                continue;
+            }
+            let below = below(index, columns, self.shown)
+                .filter(|below| matches!(state.look(*below), Look::Normal(_)))
+                .map(|below| children[below].bounds());
+            state.bands[index] = band_clip(card, state.details[details].bounds(), below);
+        }
         layout::Node::with_children(Size::new(width, height), children)
     }
 
@@ -1099,6 +1184,9 @@ impl<Message: Clone> Widget<Message, Theme, Renderer> for Grid<'_, Message> {
             .zip(layout.children())
             .collect();
         let (shown, leaving) = children.split_at(self.shown.min(children.len()));
+        let first_details = self.shown + self.outgoing.len();
+        let origin = layout.position() - Point::ORIGIN;
+        let drift = Vector::new(0.0, self.band.drift);
         for ((card, state), layout) in leaving {
             if layout.bounds().intersects(viewport) {
                 card.as_widget()
@@ -1114,6 +1202,36 @@ impl<Message: Clone> Widget<Message, Theme, Renderer> for Grid<'_, Message> {
                         card.as_widget()
                             .draw(state, renderer, theme, style, layout, cursor, viewport);
                     }
+                    let Some(details) = self.details_of.get(index).copied().flatten() else {
+                        continue;
+                    };
+                    let Some(clip) = grid
+                        .bands
+                        .get(index)
+                        .copied()
+                        .flatten()
+                        .and_then(|band| (band + origin).intersection(viewport))
+                    else {
+                        continue;
+                    };
+                    let Some(node) = grid.details.get(details - first_details) else {
+                        continue;
+                    };
+                    let element = &self.cards[details];
+                    let state = &tree.children[details];
+                    renderer.with_layer(clip, |renderer| {
+                        renderer.with_translation(drift, |renderer| {
+                            element.as_widget().draw(
+                                state,
+                                renderer,
+                                theme,
+                                style,
+                                Layout::with_offset(origin, node),
+                                cursor,
+                                &(clip - drift),
+                            );
+                        });
+                    });
                 }
                 Look::Loose { rotation, .. } => {
                     let Some(scene) = &self.scene else { continue };
@@ -1270,8 +1388,42 @@ pub(crate) fn locate(card_id: Id, scroll_id: Id) -> Task<CardBounds> {
 mod app_tests;
 
 #[cfg(test)]
+mod details_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_card_below_is_the_next_rows_in_the_same_column() {
+        assert_eq!(below(0, 5, 8), Some(5));
+        assert_eq!(below(2, 5, 8), Some(7));
+        assert_eq!(below(3, 5, 8), None);
+        assert_eq!(below(7, 5, 8), None);
+        assert_eq!(below(0, 0, 2), Some(1));
+    }
+
+    #[test]
+    fn a_band_runs_from_the_card_to_the_card_below_or_its_own_room() {
+        let card = Rectangle::new(Point::new(16.0, 16.0), Size::new(160.0, 280.0));
+        let details = Rectangle::new(Point::new(16.0, 300.0), Size::new(160.0, 16.0));
+        let own = Rectangle::new(card.position(), Size::new(160.0, 300.0 + 16.0 + GAP - 16.0));
+        assert_eq!(band_clip(card, details, None), Some(own));
+        // A card below springing up cuts it short, one further down doesn't.
+        let rising = Rectangle::new(Point::new(30.0, 305.0), Size::new(160.0, 280.0));
+        assert_eq!(
+            band_clip(card, details, Some(rising)),
+            Some(Rectangle::new(
+                card.position(),
+                Size::new(160.0, 305.0 - 16.0)
+            ))
+        );
+        let lower = Rectangle::new(Point::new(16.0, 900.0), Size::new(160.0, 280.0));
+        assert_eq!(band_clip(card, details, Some(lower)), Some(own));
+        // One drawn above the card's top leaves no band at all.
+        let above = Rectangle::new(Point::new(16.0, 10.0), Size::new(160.0, 280.0));
+        assert_eq!(band_clip(card, details, Some(above)), None);
+    }
 
     #[test]
     fn spring_reverses_continuously_and_settles() {

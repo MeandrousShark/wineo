@@ -445,9 +445,15 @@ fn every_poster_only_layer_fades_with_its_card() {
     app.selected = Some(card.name.clone());
     let size = Size::new(200.0, 300.0);
     let layout = app.grid_layout();
-    let shown = render(&mut app.card_drawn(&card, 1.0, layout), size);
+    let shown = render(
+        &mut app.card_drawn(&card, 1.0, layout, Details::Inline),
+        size,
+    );
     assert!(shown.chunks(4).any(|pixel| pixel[3] > 0));
-    let gone = render(&mut app.card_drawn(&card, 0.0, layout), size);
+    let gone = render(
+        &mut app.card_drawn(&card, 0.0, layout, Details::Inline),
+        size,
+    );
     assert!(gone.chunks(4).all(|pixel| pixel[3] == 0));
 }
 
@@ -689,7 +695,10 @@ fn a_pill_too_small_for_its_words_becomes_a_round_badge() {
     assert_eq!(badge.position(), art.position() + Vector::new(8.0, 8.0));
     // It fades with the card.
     let layout = app.grid_layout();
-    let gone = render(&mut app.card_drawn(&card, 0.0, layout), size);
+    let gone = render(
+        &mut app.card_drawn(&card, 0.0, layout, Details::Inline),
+        size,
+    );
     assert!(gone.chunks(4).all(|pixel| pixel[3] == 0));
 }
 
