@@ -433,6 +433,27 @@ The shape, with the answers above. No questions are open.
 Findings from `qa-gpt` reviews and the step 5 spike, and what is left to do
 about them. Updated 2026-10-23.
 
+### Step 5, details motion (merged)
+
+Commits `ac967815` to `bf88b3f5`, built on the spike's band mode with the
+answers to 20 to 22. The first `qa-gpt` round failed on a Medium; the
+second (2026-10-23) passed with no findings.
+
+- **Medium - a card leaving mid-crossing built its details inline,** so
+  they vanished at once going out and showed at full strength going in.
+  Fixed: leaving cards get the same fading details, with their own top and
+  a band down to their own details room plus the gap.
+- **Low - the entering-card test** checked only the shared progress.
+  Fixed: it compares the entering card's strength and drift to a shown
+  card's.
+- **Poster-only toggle:** the first build faded the details on the
+  toggle, from a wrong brief. It now snaps, per the scope limits.
+- **For acceptance:** scrolling, the collapse scene, and a column change
+  during a live crossing have no dedicated tests; review found them correct
+  by inspection.
+- **Docs:** `docs/gui-style.md` (a Grid motion line) and `docs/gui.md`'s
+  zoom paragraph, updated with the merge.
+
 ### Step 5, details motion spike (2026-10-23)
 
 A throwaway branch, `0056-step5-spike`, draws the details five ways behind

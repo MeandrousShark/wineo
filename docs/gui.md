@@ -137,7 +137,8 @@ the first one in view, stays where it was on screen.
 Below 90%, only the title shows under each poster. A game that's running,
 busy, installing, or has a problem gets a status dot in its poster's
 top-left corner instead, and a GOG badge that doesn't fit beside it becomes
-a small arrow; the panel has the details.
+a small arrow; the panel has the details. Zooming across 90% fades the
+extra lines out or in, rather than cutting them.
 
 The button beside the slider hides the titles. Each card is then just its
 poster, and hovering or selecting one shows its title over the bottom. The

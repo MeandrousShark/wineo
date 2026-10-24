@@ -259,6 +259,14 @@ column change halfway through a zoom never jumps.
   each from where it's drawn, so a quick pass across cards never jumps.
   They keep their own frames, so a fade that a flow or dialog opens over
   still finishes instead of snapping.
+- Crossing 90% fades the identifier and state/playtime row over the zoom's
+  160 ms, drifting 8 px up into place on the way in and down on the way
+  out, while the title stays at full strength. They draw in a band clipped
+  to their card's column, down to the top of the card below, so they never
+  cover another card mid-spring. The row stays on one line while it fades
+  and wraps again at rest. The fade keeps its own frames, so a stopped
+  zoom, a drag, or a flow opening still finishes it; the poster-only
+  toggle snaps it.
 - A zoom or the toggle keeps the place: the selected card if any of it is
   visible, otherwise the first visible card, holds its top where it was.
   A manual scroll, arrow key, or click ends that.
