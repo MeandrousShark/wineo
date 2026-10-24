@@ -22,6 +22,9 @@
 #   RESORT     0 skips the sort direction measurement
 #   ZOOM       0 skips the zoom key measurement; a build without zoom (before
 #              plan 0055) has to run with ZOOM=0
+#   CARD_X     where the dock run clicks the first card (default 320, for
+#              the centered grid); a build before plan 0056 packs the grid
+#              left and needs CARD_X=236
 #   ICED_BACKEND  the renderer (default tiny-skia, iced's CPU renderer).
 #              Without it iced's wgpu may drive the real GPU through Vulkan
 #              even under Xvfb, which is not software rendering.
@@ -76,6 +79,7 @@ scroll=${SCROLL:-1}
 dock=${DOCK:-1}
 resort=${RESORT:-1}
 zoom=${ZOOM:-1}
+card_x=${CARD_X:-320}
 [[ -f $root/.bench-library ]] || {
     echo "$root was not made by generate-bench-library.sh" >&2
     exit 1
@@ -408,9 +412,9 @@ for ((run = 1; run <= runs; run++)); do
         xdotool windowfocus "$win"
     fi
     if [[ $dock != 0 ]]; then
-        # The first card, so the panel opening reflows the grid but never
-        # moves the card under the pointer.
-        xdotool mousemove 236 190
+        # The first card, so the panel opening reflows the grid but keeps
+        # the card under the pointer, docked or not.
+        xdotool mousemove "$card_x" 190
         nap 1
         capture dock 8 dock_action || fail "opening and closing the panel changed no frames on screen"
         line+=" dock_cpu=${cpu}% dock_frames=${frames}/s dock_gap_p90=${p90}ms dock_gap_max=${max}ms dock_active_ms=${active}ms"
