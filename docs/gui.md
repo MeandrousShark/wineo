@@ -34,7 +34,8 @@ yet.
 Each environment gets a card with its grid art, or its name when it has
 none. Posters are 160 x 240 px at the usual size (see
 [Zoom and poster-only](#zoom-and-poster-only)), with the title and compact
-metadata below.
+metadata below. The grid is centered, so the space left over beside the
+last column splits evenly between the two sides.
 The title is the one you set in Settings, then a Steam game's name from
 Steam, then the default target's explicit desktop entry name when that entry
 is enabled, and otherwise the environment name. The environment
@@ -119,8 +120,10 @@ dimmed, with a crossed-out eye on its poster, so you can unhide it.
 ### Favorites
 
 Star a game with the star beside its title in the panel, **Add to
-favorites** in its right-click menu, or `F` on the selected card. Favorites
-show a star on the poster. Hide a game with **Hide** in the same menu; there's
+favorites** in its right-click menu, `F` on the selected card, or the
+outlined star that fades in at a poster's top-right corner when you point
+at it. Favorites show a filled star there, and clicking it removes the
+favorite without opening the panel. Hide a game with **Hide** in the same menu; there's
 no key for it, since the game disappears. Both save to `library.toml` right
 away. If a save fails, the card goes back to what's saved and a notice says
 why, like `Couldn't hide Hades: ...`.

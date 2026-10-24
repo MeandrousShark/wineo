@@ -448,7 +448,7 @@ second (2026-10-23) passed with no findings.
   card's.
 - **Poster-only toggle:** the first build faded the details on the
   toggle, from a wrong brief. It now snaps, per the scope limits.
-- **For acceptance:** scrolling, the collapse scene, and a column change
+- **For acceptance:** scrolling and a column change
   during a live crossing have no dedicated tests; review found them correct
   by inspection.
 - **Docs:** `docs/gui-style.md` (a Grid motion line) and `docs/gui.md`'s
@@ -565,3 +565,62 @@ no findings.
   overflow the panel at test sizes.
 - **Acceptance:** short-window scrolling, light and dark focus rings,
   mouse-opened dropdowns and menus, and Ctrl+Enter on New and GOG target rows.
+
+## Acceptance checklist
+
+Setup, from the repo: `scripts/generate-bench-library.sh ~/wineo-accept 300`,
+then `cargo build --release -p wineo-gui`, and run the app on it with
+`bash -c '. ~/wineo-accept/env.sh && exec target/release/wineo-gui'`.
+Items 6 and 7 need a Steam game that's running and a GOG game, so check
+those on your own library; the zoom, the titles setting, and any title you
+set save there, and Ctrl+0, the toggle, and clearing the title put them
+back. Delete `~/wineo-accept` when done.
+
+1. **Snap.** Drag the slider toward the usual size from either side: it
+   pulls in about 8 points away. Drag away from it: it holds until about
+   10 points out, so 95% and 105% are never reachable by dragging. Keys
+   still step by 10.
+2. **Centered grid.** Widen and narrow the window slowly: the leftover
+   space splits evenly on both sides, and a full row sits as before.
+   Open and close the panel at a width where the column count doesn't
+   change: the cards spring sideways to their new centered places.
+3. **Poster star.** Point at a card that isn't a favorite: an outline star
+   fades in at the top-right. Click it: the game becomes a favorite, and
+   the card isn't selected and the panel doesn't open. Click a filled star
+   to remove it. With Favorites first on, the card springs away from under
+   the pointer. Right-click the star: the context menu opens. A hidden
+   card's eye sits in the second slot and doesn't move when the star
+   appears. Repeat in poster-only, where the star sits above the title.
+4. **Hover fades.** Sweep the pointer quickly across a row: each star
+   fades in and out from where it was, with no flicker. In poster-only,
+   titles fade the same way, and a selected card keeps its title. Open
+   **Add** while a star is fading: it finishes instead of freezing.
+5. **Details fade.** At 90%, press Ctrl+- and then Ctrl+=: the identifier
+   and the state and playtime row fade and drift out, then back up into
+   place, while the title stays solid. At no point do they draw over the
+   posters of the row below. Press Ctrl+- and Ctrl+= quickly so it turns
+   back mid-way: it carries on from where it was. Drag the slider across
+   90% and stop: the fade still finishes. Toggle poster-only at 100%: the
+   details come and go at once, with no fade. Try one crossing while
+   scrolling and one at a width where crossing 90% changes the column
+   count.
+6. **Long states.** With a Steam game running, at 100%: its row reads
+   "running (started from Steam)" on two lines with the playtime, as
+   before. Cross 90% and back: mid-fade it's one line, clipped at the
+   card's edge, and it wraps again when it settles.
+7. **Titles.** In a Wine environment's Settings, set a long title with
+   accents or CJK: the card, the panel, and the poster-only title show it,
+   ellipsized where they did before, and the environment name shows as
+   muted context. Search finds it by the title and by the name, and Sort
+   by name places it by the title. Clear it: the old title comes back. A
+   Steam game's Settings shows its title read-only. Check an art-less card
+   too.
+8. **Choice lists.** Open **Add**: the first row has focus. Up and Down
+   move and stop at the ends, Enter chooses, and 1 to 5 still work. Do
+   the same on New's program list, Heroic's and GOG's lists, and the
+   version picker. In a short window the focused row scrolls into view.
+   Ctrl+Enter on a focused New or GOG row submits once without choosing
+   the row. Check the focus ring in light and dark.
+9. **All at once.** Sweep the pointer across cards, press Ctrl+-, flip the
+   sort, and open the panel, in quick succession: nothing jumps, and
+   everything settles.
