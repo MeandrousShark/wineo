@@ -50,6 +50,14 @@ impl DetailsFade {
         });
     }
 
+    /// Puts the details at `full` at once, ending any crossing, for the
+    /// poster-only toggle, which keeps its spring and nothing more.
+    pub(crate) fn snap(&mut self, full: bool) {
+        self.full = Some(full);
+        self.value = target(full);
+        self.crossing = None;
+    }
+
     pub(crate) fn tick(&mut self, generation: u64, now: Instant) {
         if generation != self.generation {
             return;

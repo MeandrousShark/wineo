@@ -425,6 +425,7 @@ impl App {
             self.find_anchor().0
         };
         self.poster_only = !self.poster_only;
+        self.details_fade.snap(self.details_full());
         let save = self.save_field(Field::PosterOnly(self.poster_only));
         let waited = self.move_grid();
         if !self.grid_motion.active() {

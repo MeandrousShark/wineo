@@ -352,20 +352,40 @@ fn a_drag_across_90_sets_out_and_turns_back() {
 }
 
 #[test]
-fn the_poster_only_toggle_retargets_the_details() {
+fn the_poster_only_toggle_snaps_the_details() {
     let (_root, mut app) = fixture(100, 3);
     zoom(&mut app, Event::TogglePosterOnly);
-    assert!(app.details_fade.active());
-    // Poster-only cards build no details, whatever the value.
+    assert_eq!(progress(&app), 0.0);
+    assert!(settled(&app));
+    // Poster-only cards build no details.
     let (_, state) = laid_state(&app);
     assert!(state.details.is_empty());
-    let mut clock = Clock::start(&mut app);
-    clock.tick(&mut app, 80);
-    let at = progress(&app);
     zoom(&mut app, Event::TogglePosterOnly);
-    assert_eq!(progress(&app), at);
+    assert_eq!(progress(&app), 1.0);
+    assert!(settled(&app));
+    let (_, state) = laid_state(&app);
+    assert_eq!(state.details.len(), 3);
+
+    // A toggle mid-crossing ends the crossing at the new target.
+    let (_root, mut app) = fixture(90, 3);
+    zoom(&mut app, Event::Key(Key::Out));
     let mut clock = Clock::start(&mut app);
-    clock.tick(&mut app, 160);
+    clock.tick(&mut app, 40);
+    assert!(progress(&app) > 0.0 && progress(&app) < 1.0);
+    zoom(&mut app, Event::TogglePosterOnly);
+    assert_eq!(progress(&app), 0.0);
+    assert!(settled(&app));
+    let (_root, mut app) = fixture(90, 3);
+    zoom(&mut app, Event::Key(Key::Out));
+    let mut clock = Clock::start(&mut app);
+    clock.tick(&mut app, 40);
+    zoom(&mut app, Event::Key(Key::In));
+    let mut clock = Clock::start(&mut app);
+    clock.tick(&mut app, 40);
+    let _ = app.update(Message::Zoom(Event::TogglePosterOnly));
+    assert_eq!(progress(&app), 0.0);
+    assert!(settled(&app));
+    zoom(&mut app, Event::TogglePosterOnly);
     assert_eq!(progress(&app), 1.0);
     assert!(settled(&app));
 }
