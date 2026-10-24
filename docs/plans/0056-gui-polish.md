@@ -566,10 +566,45 @@ no findings.
 - **Acceptance:** short-window scrolling, light and dark focus rings,
   mouse-opened dropdowns and menus, and Ctrl+Enter on New and GOG target rows.
 
+## Results
+
+### Idle check (2026-10-24)
+
+`v0.37.0` and main at `e526f715`, both `release` builds, alternating one
+launch at a time (three each) on a generated 300-environment library, in
+Xvfb with tiny-skia, 1200 x 800, 100% with titles, each launch from the
+same `library.toml`. Ryzen 7 5800X, otherwise idle. Medians:
+
+| Measurement | 0.37.0 | main |
+|---|---:|---:|
+| Idle CPU, % of one core | 1.85 | 1.80 |
+| Main-thread wakeups while idle, /s | 0.0 | 0.0 |
+| RSS, MiB | 92 | 94 |
+| Scroll CPU, % | 62.2 | 60.2 |
+| Scroll frames/s, gap p90 | 9.9, 133 ms | 14.1, 100 ms |
+| Dock frames/s, active | 17.6, 550 ms | 20.9, 503 ms |
+| Resort frames/s, active | 11.3, 568 ms | 28.5, 443 ms |
+| Zoom frames/s, active | 14.4, 242 ms | 24.9, 218 ms |
+
+- Idle is unchanged: no wakeups and the same CPU, so the hover and
+  details fades stop their frames once settled. RSS read 94 MiB in two of
+  three launches, 2 MiB over 0.37.0.
+- Every motion run draws more frames for less CPU on main. The cause
+  wasn't looked into; the change most likely to matter is that each
+  card's details now draw in their own clipped layer. The zoom run never
+  crosses 90%, so it doesn't measure the details fade itself.
+- The bench's dock click moved for the centered grid (`CARD_X`, 320 for
+  main and 236 for 0.37.0). On main the pointer rests on card 1, so its
+  dock run may include a hover star fade that 0.37.0 has no equivalent of.
+- One 0.37.0 scroll read 97% CPU against 60 to 62% in the others, an
+  outlier the median leaves out. Xvfb measures the CPU renderer;
+  acceptance checks the feel on the maintainer's GPU.
+
 ## Acceptance checklist
 
 Setup, from the repo: `scripts/generate-bench-library.sh ~/wineo-accept 300`,
-then `cargo build --release -p wineo-gui`, and run the app on it with
+then `cargo build --release -p wineo-gui` (main's build from the idle
+check is already in `target/release`), and run the app on it with
 `bash -c '. ~/wineo-accept/env.sh && exec target/release/wineo-gui'`.
 Items 6 and 7 need a Steam game that's running and a GOG game, so check
 those on your own library; the zoom, the titles setting, and any title you
