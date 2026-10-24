@@ -407,8 +407,42 @@ The shape, with the answers above. No questions are open.
 
 ## Review notes
 
-Findings from `qa-gpt` reviews and what is left to do about them. Updated
-2026-10-22.
+Findings from `qa-gpt` reviews and the step 5 spike, and what is left to do
+about them. Updated 2026-10-23.
+
+### Step 5, details motion spike (2026-10-23)
+
+A throwaway branch, `0056-step5-spike`, draws the details five ways behind
+an env switch and stretches every motion's clock, so a debug build under
+Xvfb (tiny-skia, 1140 px wide, 90% and 80% both six columns) can be shot
+mid-flight. Each frame carries the app's own label: slowed time since the
+key press, the zoom shown, and the details progress.
+
+- **`cut`, today's code, already overlaps on the way in.** At 31 ms after
+  Ctrl+= from 80%, the upper row's identifier and meta row draw at full
+  strength across the lower row's posters as they spring down, since text
+  draws after images within a layer. The way in is the worse direction.
+- **`band`:** the details are their own grid child, drawn after their card
+  and clipped to the card's x and width, from its top down to the drawn top
+  of the nearest card below it. They never draw over another card in
+  either direction. On the way out the rising poster slices the meta line
+  for roughly 40 to 100 ms; on the way in it reads as a wipe.
+- **`overlay`:** unclipped above the cards. Faint text sits on posters both
+  ways. Rejected.
+- **`delay`:** the card keeps its full height until the fade ends, then the
+  rows spring. Clean on the way out, but it settles about 160 ms later and
+  shows an empty band where the details were. The way in is no better than
+  today.
+- **`fade`:** `delay` without the drift. Same result.
+- **The meta row wraps mid-tween,** today too: cards are built at the zoom
+  shown, so at 80 to 84% "587 h 17 m" breaks onto two lines. Keeping the
+  details through the tween shows this more.
+- **At 1200 px** a column change mid-tween dominates; cards fly diagonally
+  and the details are nearly gone by then.
+- **For the real step:** the progress needs its own frame clock, since a
+  stopped zoom, a drag, the poster-only toggle, or leaving the Library
+  mid-crossing never advances it on the zoom's frames. The card below each
+  card should be found by index, not by a scan.
 
 ### Step 4, hover fades (merged)
 
