@@ -688,6 +688,13 @@ the star's glow and pop (answers 23 to 25), and a look at the Add screens
 raised Back's place on them (answer 26). Both are being fixed; check them
 with the items below once they land.
 
+`qa-gpt` found that the Back fix's first draft put New's discard prompt
+ahead of Back and the form, so iced rebuilt the form, losing its scroll
+and focus, when the prompt showed and again on Keep editing. Heroic's
+page has had the same shape all along. The maintainer chose to patch both
+in this pass (2026-10-25): the prompt keeps a slot of its own that is
+always there, so the form never moves in the widget tree.
+
 10. **Star glow and pop.** Point at a card, then at its star: the star
     turns the primary color and its chip darkens, fading in, and fades back
     when the pointer moves off the star but stays on the card. A favorite's
@@ -701,4 +708,7 @@ with the items below once they land.
     Back is at the top-left, and Next, Review, Create, Import, or Clone sits
     alone in the pinned strip at the bottom, like the Heroic, Steam, and GOG
     pages. In a short window the strip stays visible while the form
-    scrolls, and Esc and the mouse Back button still go back.
+    scrolls, and Esc and the mouse Back button still go back. On New and
+    on Import from Heroic, edit something, scroll down, and press the
+    mouse Back button: the discard prompt shows above Back, and Keep
+    editing returns to the same scroll position and field.
