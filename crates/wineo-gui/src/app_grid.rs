@@ -86,6 +86,11 @@ impl App {
         {
             self.star_hovered = None;
         }
+        // Whatever covers the grid takes the pointer, and the star's exit
+        // under it is never heard, so only a fresh enter lights it again.
+        if self.input_covered() || !self.collapse.idle() {
+            self.star_hovered = None;
+        }
         let glowing = self.glowing_star().map(str::to_owned);
         self.hover_fades.sync(
             self.hovered.as_deref(),

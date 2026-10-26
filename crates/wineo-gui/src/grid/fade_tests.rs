@@ -460,8 +460,9 @@ fn the_fading_overlay_is_no_pointer_target() {
     );
 }
 
-fn star_hover(app: &mut App, name: Option<&str>) {
-    let _ = app.update(Message::StarHover(name.map(Into::into)));
+/// The pointer onto `name`'s star, or off it.
+fn star_hover(app: &mut App, name: &str, on: bool) {
+    let _ = app.update(Message::StarHover(name.into(), on));
 }
 
 fn glow(app: &App, name: &str) -> f32 {
@@ -488,7 +489,7 @@ fn the_star_glows_with_the_pointer_on_it_and_fades_back_after() {
     // The pointer on the card alone doesn't light it.
     assert_eq!(glow(&app, "game"), 0.0);
 
-    star_hover(&mut app, Some("game"));
+    star_hover(&mut app, "game", true);
     let mut clock = Clock::start(&mut app);
     assert!(near(glow(&app, "game"), 0.0));
     assert!(frames(&app) > 0);
@@ -503,7 +504,7 @@ fn the_star_glows_with_the_pointer_on_it_and_fades_back_after() {
     // The outline star keeps its strength throughout.
     assert_eq!(star(&app, "game"), 1.0);
 
-    star_hover(&mut app, None);
+    star_hover(&mut app, "game", false);
     let mut clock = Clock::start(&mut app);
     clock.tick(&mut app, 75);
     assert!(near(glow(&app, "game"), 0.5), "{}", glow(&app, "game"));
@@ -519,7 +520,7 @@ fn a_favorites_filled_star_tints_to_the_primary_color() {
     let rest = star_icon(&app, &card);
     assert!(rest[0] > 200 && rest[1] > 200 && rest[2] > 200, "{rest:?}");
     hover(&mut app, Some("fav"));
-    star_hover(&mut app, Some("fav"));
+    star_hover(&mut app, "fav", true);
     let mut clock = Clock::start(&mut app);
     clock.tick(&mut app, 75);
     let half = star_icon(&app, &card);
@@ -551,7 +552,7 @@ fn a_favorites_filled_star_tints_to_the_primary_color() {
 fn a_star_that_takes_no_presses_never_glows() {
     let (_root, mut app) = fixture(&["game", "other"], &[]);
     // The star's enter can arrive just before its card's.
-    star_hover(&mut app, Some("game"));
+    star_hover(&mut app, "game", true);
     assert_eq!(glow(&app, "game"), 0.0);
     hover(&mut app, Some("game"));
     assert_eq!(app.glowing_star(), Some("game"));
@@ -569,7 +570,7 @@ fn a_star_that_takes_no_presses_never_glows() {
 
     // A hover the app moves away isn't the pointer coming back to the star.
     hover(&mut app, Some("game"));
-    star_hover(&mut app, Some("game"));
+    star_hover(&mut app, "game", true);
     let _ = app.update(Message::SearchChanged("other".into()));
     assert_eq!(app.hovered, None);
     let _ = app.update(Message::SearchChanged(String::new()));
@@ -587,12 +588,12 @@ fn a_star_that_takes_no_presses_never_glows() {
         |app| app.hook_stop_confirm = Some("game".into()),
     ];
     for open in opened {
-        star_hover(&mut app, Some("game"));
+        star_hover(&mut app, "game", true);
         let mut clock = Clock::start(&mut app);
         clock.tick(&mut app, 200);
         assert_eq!(glow(&app, "game"), 1.0);
         open(&mut app);
-        star_hover(&mut app, None);
+        star_hover(&mut app, "game", false);
         assert_eq!(app.glowing_star(), None);
         let mut clock = Clock::start(&mut app);
         clock.tick(&mut app, 200);
@@ -601,9 +602,10 @@ fn a_star_that_takes_no_presses_never_glows() {
         app.flow = None;
         app.close_prompt = false;
         app.hook_stop_confirm = None;
-        star_hover(&mut app, None);
-        let mut clock = Clock::start(&mut app);
-        clock.tick(&mut app, 200);
+        // Uncovered with the card still hovered, it stays dark until the
+        // pointer enters the star again.
+        hover(&mut app, Some("game"));
+        assert_eq!(app.glowing_star(), None);
         assert!(settled(&app));
     }
 }

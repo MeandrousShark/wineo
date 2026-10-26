@@ -179,7 +179,7 @@ fn a_star_click_toggles_the_favorite_and_never_selects_opens_or_launches() {
     assert!(
         matches!(
             messages.as_slice(),
-            [Message::StarHover(Some(name))] if name == "game-01"
+            [Message::StarHover(name, true)] if name == "game-01"
         ),
         "{messages:?}"
     );
@@ -233,7 +233,7 @@ fn a_right_click_on_the_star_still_opens_the_context_menu() {
         matches!(
             messages.as_slice(),
             [
-                Message::StarHover(Some(star)),
+                Message::StarHover(star, true),
                 Message::Hover(Some(hovered)),
                 Message::Context(name),
             ] if star == "game" && hovered == "game" && name == "game"
@@ -669,7 +669,7 @@ fn reduced_motion_skips_the_pop_but_not_the_glow() {
     let (_root, mut app) = fixture(&["game"], &[], &[]);
     app.reduced_motion = true;
     let _ = app.update(Message::Hover(Some("game".into())));
-    let _ = app.update(Message::StarHover(Some("game".into())));
+    let _ = app.update(Message::StarHover("game".into(), true));
     assert_eq!(app.glowing_star(), Some("game"));
     assert!(app.hover_fades.fading("game"));
     star_click(&mut app, "game");
@@ -719,7 +719,7 @@ fn a_pop_follows_its_card_through_a_favorites_first_resort() {
     }
     assert!(!app.collapse.idle());
     assert!(!app.star_pops.active());
-    let _ = app.update(Message::StarHover(Some("game-00".into())));
+    let _ = app.update(Message::StarHover("game-00".into(), true));
     assert_eq!(app.glowing_star(), None);
 }
 
@@ -782,4 +782,51 @@ fn the_pops_ring_stays_in_the_stars_corner() {
             }
         }
     }
+}
+
+/// The pointer over the whole window, keeping the widgets' state between
+/// moves as a running window does, and applying everything they publish.
+#[derive(Default)]
+struct Pointer(Option<iced::advanced::widget::Tree>);
+
+impl Pointer {
+    fn to(&mut self, app: &mut App, at: Point) -> Vec<Message> {
+        let mut laid = match self.0.take() {
+            Some(tree) => relay_out(app.view(), tree, app.window_size),
+            None => lay_out(app.view(), app.window_size),
+        };
+        let messages = laid.event_at(&moved(at), Cursor::Available(at));
+        self.0 = Some(laid.into_tree());
+        for message in messages.clone() {
+            let _ = app.update(message);
+        }
+        messages
+    }
+}
+
+#[test]
+fn a_star_left_under_a_flow_stays_dark_once_it_closes() {
+    let (_root, mut app) = fixture(&["game", "other"], &["game"], &[]);
+    let [card] = cards_in_view(&app, &["game"])[..] else {
+        unreachable!()
+    };
+    let star = star_on(&app, card);
+    let mut pointer = Pointer::default();
+    pointer.to(&mut app, card.center());
+    pointer.to(&mut app, star);
+    assert_eq!(app.glowing_star(), Some("game"));
+    let _ = app.update(Message::Add);
+    assert!(app.flow.is_some());
+    assert_eq!(app.glowing_star(), None);
+    // Off the star onto the card, unheard under the flow.
+    pointer.to(&mut app, card.center());
+    let generation = app.flow_generation;
+    let _ = app.update(Message::Flow(generation, crate::flow::Event::Back));
+    assert!(app.flow.is_none());
+    pointer.to(&mut app, Point::new(card.center().x, card.center().y + 1.0));
+    assert_eq!(app.hovered.as_deref(), Some("game"));
+    assert_eq!(app.glowing_star(), None);
+    // A fresh enter lights it again.
+    pointer.to(&mut app, star);
+    assert_eq!(app.glowing_star(), Some("game"));
 }

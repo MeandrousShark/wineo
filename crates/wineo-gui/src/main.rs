@@ -333,8 +333,8 @@ pub(crate) enum Message {
     LogFollow,
     CopyLog,
     Hover(Option<String>),
-    /// The pointer moved onto a poster star, or off it.
-    StarHover(Option<String>),
+    /// The pointer moved onto this card's poster star, or off it.
+    StarHover(String, bool),
     Refresh,
     /// The parts of a periodic rescan that differ from what is shown.
     Rescanned(Box<rescan::Scan>),
@@ -826,7 +826,7 @@ impl App {
                     | Message::KeyWithFocus(..)
                     | Message::Scrolled(_)
                     | Message::Hover(_)
-                    | Message::StarHover(_)
+                    | Message::StarHover(..)
                     | Message::Add
                     | Message::CloneEnvironment(_)
                     | Message::GogUpdate(_)
@@ -973,8 +973,17 @@ impl App {
                 self.hovered = name;
                 Task::none()
             }
-            Message::StarHover(name) => {
-                self.star_hovered = name;
+            Message::StarHover(name, true) => {
+                self.star_hovered = Some(name);
+                Task::none()
+            }
+            // Cards hear a pointer move last to first, so a quick sweep
+            // from one star onto a later one can leave the first after
+            // entering the second.
+            Message::StarHover(name, false) => {
+                if self.star_hovered.as_ref() == Some(&name) {
+                    self.star_hovered = None;
+                }
                 Task::none()
             }
             Message::Refresh => self.refresh(),

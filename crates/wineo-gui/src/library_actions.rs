@@ -517,8 +517,8 @@ pub(crate) fn poster_marks_faded(
         // A left press is the button's, so only the pointer's coming and
         // going reach here.
         mouse_area(star)
-            .on_enter(Message::StarHover(Some(card.name.clone())))
-            .on_exit(Message::StarHover(None))
+            .on_enter(Message::StarHover(card.name.clone(), true))
+            .on_exit(Message::StarHover(card.name.clone(), false))
             .into()
     } else {
         Space::new().width(STAR_TARGET).height(STAR_TARGET).into()
