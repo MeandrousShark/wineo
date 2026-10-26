@@ -1355,7 +1355,7 @@ fn card_area<'a>(content: impl Into<Element<'a, Message>>, card: &Card) -> Eleme
         .on_double_click(Message::DoubleClick(card.name.clone()))
         .on_right_press(Message::Context(card.name.clone()))
         .on_enter(Message::Hover(Some(card.name.clone())))
-        .on_exit(Message::Hover(None))
+        .on_exit(Message::Unhover(card.name.clone()))
         .interaction(mouse::Interaction::Pointer)
         .into()
 }

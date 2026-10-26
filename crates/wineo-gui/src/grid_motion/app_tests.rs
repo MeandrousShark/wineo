@@ -163,7 +163,7 @@ fn hover_follows_a_card_to_its_new_place() {
     assert!(
         messages
             .iter()
-            .any(|message| matches!(message, Message::Hover(None))),
+            .any(|message| matches!(message, Message::Unhover(name) if *name == first)),
         "{messages:?}"
     );
 }

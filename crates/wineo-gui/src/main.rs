@@ -333,6 +333,8 @@ pub(crate) enum Message {
     LogFollow,
     CopyLog,
     Hover(Option<String>),
+    /// The pointer left this card.
+    Unhover(String),
     /// The pointer moved onto this card's poster star, or off it.
     StarHover(String, bool),
     Refresh,
@@ -826,6 +828,7 @@ impl App {
                     | Message::KeyWithFocus(..)
                     | Message::Scrolled(_)
                     | Message::Hover(_)
+                    | Message::Unhover(_)
                     | Message::StarHover(..)
                     | Message::Add
                     | Message::CloneEnvironment(_)
@@ -971,6 +974,15 @@ impl App {
             Message::CopyLog => iced::clipboard::write(self.log_buffer.copy()),
             Message::Hover(name) => {
                 self.hovered = name;
+                Task::none()
+            }
+            // Cards hear a pointer move last to first, so a jump from one
+            // card straight onto a later one can leave the first after
+            // entering the second.
+            Message::Unhover(name) => {
+                if self.hovered.as_ref() == Some(&name) {
+                    self.hovered = None;
+                }
                 Task::none()
             }
             Message::StarHover(name, true) => {

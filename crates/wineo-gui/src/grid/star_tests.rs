@@ -216,7 +216,7 @@ fn a_star_click_toggles_the_favorite_and_never_selects_opens_or_launches() {
     assert!(
         messages
             .iter()
-            .any(|message| matches!(message, Message::Hover(None))),
+            .any(|message| matches!(message, Message::Unhover(name) if name == "game-01")),
         "{messages:?}"
     );
 }
@@ -829,4 +829,60 @@ fn a_star_left_under_a_flow_stays_dark_once_it_closes() {
     // A fresh enter lights it again.
     pointer.to(&mut app, star);
     assert_eq!(app.glowing_star(), Some("game"));
+}
+
+#[test]
+fn a_sweep_straight_from_star_to_star_lights_the_one_it_lands_on() {
+    let names = ["game-00", "game-01"];
+    let (_root, mut app) = fixture(&names, &names, &[]);
+    let cards = cards_in_view(&app, &names);
+    let stars = [star_on(&app, cards[0]), star_on(&app, cards[1])];
+    let mut pointer = Pointer::default();
+    for (from, to) in [(0, 1), (1, 0)] {
+        pointer.to(&mut app, cards[from].center());
+        pointer.to(&mut app, stars[from]);
+        assert_eq!(app.glowing_star(), Some(names[from]));
+        let messages = pointer.to(&mut app, stars[to]);
+        assert!(
+            messages.iter().any(|message| matches!(
+                message,
+                Message::StarHover(name, false) if name == names[from]
+            )),
+            "{messages:?}"
+        );
+        assert_eq!(
+            app.star_hovered.as_deref(),
+            Some(names[to]),
+            "{from} to {to}: {messages:?}"
+        );
+    }
+}
+
+#[test]
+fn a_jump_straight_from_card_to_card_hovers_the_one_it_lands_on() {
+    let names = ["game-00", "game-01"];
+    let (_root, mut app) = fixture(&names, &[], &[]);
+    let cards = cards_in_view(&app, &names);
+    let mut pointer = Pointer::default();
+    for (from, to) in [(0, 1), (1, 0)] {
+        pointer.to(&mut app, cards[from].center());
+        assert_eq!(app.hovered.as_deref(), Some(names[from]));
+        let messages = pointer.to(&mut app, cards[to].center());
+        assert!(
+            messages.iter().any(|message| matches!(
+                message,
+                Message::Unhover(name) if name == names[from]
+            )),
+            "{messages:?}"
+        );
+        assert_eq!(
+            app.hovered.as_deref(),
+            Some(names[to]),
+            "{from} to {to}: {messages:?}"
+        );
+    }
+    // Off every card, the hover goes.
+    let away = Point::new(1.0, app.window_size.height - 1.0);
+    pointer.to(&mut app, away);
+    assert_eq!(app.hovered, None);
 }
