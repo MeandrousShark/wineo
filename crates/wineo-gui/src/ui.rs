@@ -85,15 +85,9 @@ fn pick_menu_style(palette: Palette) -> iced::overlay::menu::Style {
 pub(crate) const SCROLLBAR_WIDTH: f32 = 6.0;
 pub(crate) const SCROLLER_WIDTH: f32 = 4.0;
 
-/// Keeps a rail that runs along a dialog's edge clear of its rounded corners.
-pub(crate) const EDGE_SCROLL_MARGIN: f32 = 6.0;
-
 pub(crate) trait ScrollStyle {
     /// Vertical scrolling with the shared thin scrollbar, thumb always shown.
     fn wineo_style(self, palette: Palette) -> Self;
-
-    /// The same, for a scrollable flush with a dialog's right edge.
-    fn wineo_edge_style(self, palette: Palette) -> Self;
 }
 
 fn thin_scrollbar() -> scrollable::Scrollbar {
@@ -106,13 +100,6 @@ impl<'a, M: 'a> ScrollStyle for scrollable::Scrollable<'a, M> {
     fn wineo_style(self, palette: Palette) -> Self {
         self.direction(scrollable::Direction::Vertical(thin_scrollbar()))
             .style(move |theme, status| scroll_style(theme, status, palette, true))
-    }
-
-    fn wineo_edge_style(self, palette: Palette) -> Self {
-        self.direction(scrollable::Direction::Vertical(
-            thin_scrollbar().margin(EDGE_SCROLL_MARGIN),
-        ))
-        .style(move |theme, status| scroll_style(theme, status, palette, true))
     }
 }
 

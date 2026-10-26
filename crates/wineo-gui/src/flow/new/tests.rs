@@ -740,3 +740,74 @@ fn a_target_step_with_no_programs_focuses_no_row() {
     let mut laid = crate::focus_button::landed(&app, task);
     assert!(laid.focused().is_empty());
 }
+
+fn reviewed(prerequisite: Option<Prerequisite>) -> Page {
+    let mut page = page();
+    page.draft.title = "Test game".to_owned();
+    page.draft.path = format!("/games/{}/test.exe", "a-long-folder/".repeat(12));
+    page.stage = Stage::Review;
+    page.review = Some(Review {
+        runner: None,
+        runner_row: Some("fake".to_owned()),
+        template: None,
+        arch: Arch::Win64,
+        prefix: Some(PathBuf::from("/prefixes/test-game")),
+        adopted: false,
+        omitted_components: false,
+        prerequisite,
+    });
+    page
+}
+
+/// Back sits alone at the top, the content scrolls under it, and the forward
+/// action is alone in the pinned strip at the bottom, even in a short dialog.
+#[test]
+fn back_is_at_the_top_and_the_forward_action_is_pinned_at_the_bottom() {
+    use crate::layout_probe::{bounds_at, probe, within};
+    let pages = [
+        ("details", page()),
+        ("review", reviewed(None)),
+        (
+            "review with a missing runner",
+            reviewed(Some(Prerequisite::Runner("GE-Proton-Latest".to_owned()))),
+        ),
+    ];
+    for (label, page) in &pages {
+        for (width, height) in [(280.0, 240.0), (900.0, 240.0), (900.0, 720.0)] {
+            let inset = iced::Rectangle::new(
+                iced::Point::new(24.0, 24.0),
+                iced::Size::new(width - 48.0, height - 48.0),
+            );
+            let mut view = page.view_with_key_availability(Palette::DARK, true);
+            let probe = probe(&mut view, iced::Size::new(width, height));
+            let case = format!("{label} at {width}x{height}");
+            assert_eq!(probe.scrollables.len(), 1, "{case}: one scrolling region");
+            let (viewport, _) = probe.scrollables[0];
+            let back = bounds_at(&probe.node, &[0, 0, 0]);
+            let strip = bounds_at(&probe.node, &[0, 2]);
+            let forward = bounds_at(&probe.node, &[0, 2, 0]);
+            assert!(within(back, inset), "{case}: {back:?}");
+            assert!(
+                (back.y - inset.y).abs() < 0.01 && (back.x - strip.x).abs() < 0.01,
+                "{case}: Back should be at the top left, got {back:?}"
+            );
+            assert!(
+                viewport.y >= back.y + back.height - 0.01,
+                "{case}: {viewport:?} should start under {back:?}"
+            );
+            assert!(
+                strip.y >= viewport.y + viewport.height - 0.01,
+                "{case}: {strip:?} should sit under {viewport:?}"
+            );
+            assert!(
+                (strip.y + strip.height - (inset.y + inset.height)).abs() < 0.01,
+                "{case}: {strip:?} should end at the bottom of {inset:?}"
+            );
+            assert!(within(forward, strip), "{case}: {forward:?} in {strip:?}");
+            assert!(
+                forward.x - strip.x < 13.0,
+                "{case}: {forward:?} should sit at the left of {strip:?}"
+            );
+        }
+    }
+}

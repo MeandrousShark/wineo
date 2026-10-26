@@ -6,8 +6,7 @@ use std::time::Duration;
 
 use iced::futures::channel::mpsc::unbounded;
 use iced::widget::{
-    Space, button, checkbox, column, container, pick_list, radio, responsive, row, scrollable,
-    text, text_input,
+    button, checkbox, column, container, pick_list, radio, responsive, row, text, text_input,
 };
 use iced::{Center, Element, Fill, Shrink, Task};
 use wineo_core::cancel::Token;
@@ -30,14 +29,14 @@ use wineo_core::supervisor::{Notice, Watched};
 use wineo_core::targets::{self, Batch, Spec, Written};
 use wineo_core::templates::{Template, Templates};
 
-use super::{Action, artwork};
+use super::{Action, artwork, frame};
 use crate::focus_button::ListRows;
 use crate::logview::{self, LogView};
 use crate::picker;
 use crate::runner_label::{self, Choice};
 use crate::task;
 use crate::theme::Palette;
-use crate::ui::{self, PickListStyle, ScrollStyle};
+use crate::ui::{self, PickListStyle};
 
 const LOG_ID: &str = "install-log";
 
@@ -1369,7 +1368,7 @@ impl Page {
         palette: Palette,
         key_available: bool,
     ) -> Element<'_, Event> {
-        let mut review_footer: Option<Element<'_, Event>> = None;
+        let mut footer: Option<Element<'_, Event>> = None;
         let heading = ui::page_title(
             match self.stage {
                 Stage::Details => "New environment",
@@ -1393,21 +1392,12 @@ impl Page {
                         let poster = self.art.poster(palette).map(Event::Art);
                         let icon = self.art.icon(palette).map(Event::Art);
                         let controls = self.art.controls(palette, key_available).map(Event::Art);
-                        let navigation = row![
-                            ui::secondary_button("Back", palette).on_press(Event::Back),
-                            ui::accent_base("Next", palette.primary).on_press(Event::Next)
-                        ]
-                        .spacing(8);
                         if size.width >= SIDE_POSTER {
                             // Keeps everything below the fields aligned with them.
                             row![
                                 poster,
-                                column![
-                                    self.details_form(Some(icon), palette),
-                                    controls,
-                                    navigation
-                                ]
-                                .spacing(10)
+                                column![self.details_form(Some(icon), palette), controls]
+                                    .spacing(10)
                             ]
                             .spacing(16)
                             .width(Fill)
@@ -1416,14 +1406,18 @@ impl Page {
                             column![
                                 self.details_form(None, palette),
                                 row![poster, icon].spacing(12),
-                                controls,
-                                navigation
+                                controls
                             ]
                             .spacing(16)
                             .into()
                         }
                     })
                     .height(Shrink),
+                );
+                footer = Some(
+                    ui::accent_base("Next", palette.primary)
+                        .on_press(Event::Next)
+                        .into(),
                 );
             }
             Stage::Review => {
@@ -1525,15 +1519,12 @@ impl Page {
                     .review
                     .as_ref()
                     .is_some_and(|review| review.prerequisite.is_none());
-                review_footer = Some(
-                    row![
-                        Space::new().width(Fill),
-                        ui::secondary_button("Back", palette).on_press(Event::Back),
-                        ui::accent_button("Create", palette.primary, can_create, Event::Create),
-                    ]
-                    .spacing(8)
-                    .into(),
-                );
+                footer = Some(ui::accent_button(
+                    "Create",
+                    palette.primary,
+                    can_create,
+                    Event::Create,
+                ));
             }
             Stage::Working => {
                 body = body.push(text(&self.status));
@@ -1673,8 +1664,16 @@ impl Page {
         if let Some(error) = &self.error {
             body = body.push(text(error).color(palette.danger));
         }
+        let max_width = if self.stage == Stage::Details {
+            900.0
+        } else {
+            frame::PAGE_MAX_WIDTH
+        };
+        let mut page = column![].spacing(12).max_width(max_width).height(Fill);
+        // The prompt sits above Back, outside the scroll, so it is never below
+        // the fold of a long form.
         if self.leave_prompt {
-            body = body.push(
+            page = page.push(
                 column![
                     text("Discard this new environment draft?"),
                     row![
@@ -1686,34 +1685,16 @@ impl Page {
                 .spacing(8),
             );
         }
-        let max_width = if self.stage == Stage::Details {
-            900
-        } else {
-            760
-        };
-        let scroll = scrollable(container(body).max_width(max_width).width(Fill).padding(24))
-            .wineo_edge_style(palette)
-            .height(Fill);
-        let content: Element<'_, Event> = if let Some(footer) = review_footer {
-            column![
-                scroll,
-                container(footer)
-                    .max_width(max_width)
-                    .width(Fill)
-                    .padding([8, 24])
-            ]
-            .spacing(0)
-            .width(Fill)
-            .height(Fill)
-            .into()
-        } else {
-            scroll.into()
-        };
-        container(content)
-            .width(Fill)
-            .height(Fill)
-            .align_x(Center)
-            .into()
+        if matches!(self.stage, Stage::Details | Stage::Review) {
+            page = page.push(row![
+                ui::secondary_button("Back", palette).on_press(Event::Back)
+            ]);
+        }
+        page = page.push(frame::scroll_body(body, None, palette));
+        if let Some(footer) = footer {
+            page = page.push(frame::pinned(footer, palette));
+        }
+        frame::page_frame(page)
     }
 }
 
