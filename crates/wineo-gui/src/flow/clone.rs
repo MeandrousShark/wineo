@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use iced::widget::{column, container, row, scrollable, text, text_input};
+use iced::widget::{column, container, row, text, text_input};
 use iced::{Element, Fill, Task, border};
 use wineo_core::cancel::Token;
 use wineo_core::clone::{self, CloneInspection, NativeCloneInspection};
@@ -10,10 +10,11 @@ use wineo_core::import::{self, ImportProgress};
 use wineo_core::paths::Paths;
 use wineo_core::runners::Runners;
 
+use super::frame;
 use crate::chips::input_style;
 use crate::task;
 use crate::theme::Palette;
-use crate::ui::{ScrollStyle, accent_base, secondary_button};
+use crate::ui::{accent_base, secondary_button};
 
 #[derive(Debug, Clone)]
 pub(crate) enum Event {
@@ -271,20 +272,42 @@ impl Page {
             text("Clone environment").size(22).color(palette.foreground),
             body
         ]
-        .spacing(18)
-        .max_width(760);
+        .spacing(18);
         if let Some(error) = &self.error {
             content = content.push(text(error.as_str()).size(13).color(palette.danger));
         }
         if let Some(warning) = &self.warning {
             content = content.push(text(warning.as_str()).size(13).color(palette.warning));
         }
-        let base: Element<'_, Event> =
-            container(scrollable(content).wineo_style(palette).height(Fill))
-                .padding(24)
-                .width(Fill)
-                .height(Fill)
-                .into();
+        // Back goes with the forward action, so neither shows while a review is
+        // still being prepared.
+        let footer: Option<Element<'_, Event>> = match self.step {
+            Step::Details => Some(
+                accent_base("Review", palette.primary)
+                    .on_press(Event::Review)
+                    .into(),
+            ),
+            Step::Review if self.review.is_some() => Some(
+                accent_base("Clone", palette.primary)
+                    .on_press(Event::Clone)
+                    .into(),
+            ),
+            _ => None,
+        };
+        let mut page = column![]
+            .spacing(12)
+            .max_width(frame::PAGE_MAX_WIDTH)
+            .height(Fill);
+        if footer.is_some() {
+            page = page.push(row![
+                secondary_button("Back", palette).on_press(Event::Back)
+            ]);
+        }
+        page = page.push(frame::scroll_body(content, None, palette));
+        if let Some(footer) = footer {
+            page = page.push(frame::pinned(footer, palette));
+        }
+        let base = frame::page_frame(page);
         if self.discard_prompt {
             iced::widget::stack![base, discard_prompt(palette)].into()
         } else {
@@ -385,13 +408,6 @@ impl Page {
                     .spacing(8),
                 );
         }
-        fields = fields.push(
-            row![
-                secondary_button("Back", palette).on_press(Event::Back),
-                accent_base("Review", palette.primary).on_press(Event::Review),
-            ]
-            .spacing(8),
-        );
         fields.into()
     }
 
@@ -459,13 +475,6 @@ impl Page {
             }
             None => return text("Preparing review...").into(),
         }
-        content = content.push(
-            row![
-                secondary_button("Back", palette).on_press(Event::Back),
-                accent_base("Clone", palette.primary).on_press(Event::Clone),
-            ]
-            .spacing(8),
-        );
         content.into()
     }
 
@@ -914,5 +923,48 @@ mod tests {
                 launch: false
             }) if name == "copy"
         ));
+    }
+
+    #[test]
+    fn back_is_at_the_top_and_the_forward_action_is_pinned_at_the_bottom() {
+        use crate::layout_probe::{assert_back_on_top_and_forward_pinned, probe};
+
+        let root = tempfile::tempdir().unwrap();
+        let paths = paths(root.path());
+        fake_runner(&paths);
+        wine_source(&paths, root.path());
+        let wine = inspect_clone(&paths, "origin", "copy", "", &Token::new()).unwrap();
+        Environment::create_native(
+            &paths,
+            &GlobalConfig::default(),
+            "native",
+            None,
+            false,
+            |_| {},
+        )
+        .unwrap();
+        let native = inspect_clone(&paths, "native", "copy", "", &Token::new()).unwrap();
+        let mut page = Page::new(paths, "origin".to_owned()).0;
+        page.name = "copy".to_owned();
+        for (label, step, review) in [
+            ("details", Step::Details, None),
+            ("wine review", Step::Review, Some(wine)),
+            ("native review", Step::Review, Some(native)),
+        ] {
+            page.step = step;
+            page.review = review;
+            for (width, height) in [(280.0, 240.0), (900.0, 240.0), (900.0, 720.0)] {
+                let inset = iced::Rectangle::new(
+                    iced::Point::new(24.0, 24.0),
+                    iced::Size::new(width - 48.0, height - 48.0),
+                );
+                let mut view = page.view(Palette::DARK);
+                let probe = probe(&mut view, iced::Size::new(width, height));
+                let case = format!("{label} at {width}x{height}");
+                assert_back_on_top_and_forward_pinned(&probe, inset, &case);
+                let spilled = probe.outside(inset);
+                assert!(spilled.is_empty(), "{case}: {spilled:?}");
+            }
+        }
     }
 }
