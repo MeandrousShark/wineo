@@ -169,9 +169,15 @@ Plan [0054](plans/0054-library-sorting-and-favorites.md) added these.
   button with a 28 px target centered on the chip: a
   left press toggles the favorite without selecting the card or opening the
   panel, and a right press still opens the context menu (plan
-  [0056](plans/0056-gui-polish.md)). It has no tooltip, no hover or press
-  styling of its own, and no keyboard focus, since F, the panel star, and
-  the menu are the keyboard paths. The eye isn't clickable, and marks don't
+  [0056](plans/0056-gui-polish.md)). With the pointer on the star itself,
+  its icon tints to the primary color and its chip darkens to about 80%
+  black, fading over the same 150 ms. A click that favorites the card also
+  pops it: the chip springs up toward the target and settles over about
+  320 ms while a thin primary ring ripples out once, clipped to the star's
+  corner so it never reaches the eye, the top-left corner, or a neighbor.
+  Unfavoriting, F, the panel star, and the menu don't pop it, and reduced
+  motion skips the pop. It has no tooltip and no keyboard focus, since F,
+  the panel star, and the menu are the keyboard paths. The eye isn't clickable, and marks don't
   change the card's size.
 - A hidden card shown with Show hidden on keeps its color art at 45%
   opacity with a muted title; its marks stay at full strength, apart from
