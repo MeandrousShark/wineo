@@ -142,6 +142,10 @@ From acceptance (2026-10-25):
     the Heroic, Steam, and GOG pages, and their forward action (Next,
     Review, Create, Import, Clone) moves alone into the pinned strip at
     the bottom, through `flow/frame.rs`.
+27. **The pop peaks at 28 px.** At its peak the chip grows 2 px past its
+    resting edge on each side, so at 60 to 62%, where a GOG badge sits
+    flush against the star, it overlaps the badge by up to 2 px for about
+    96 ms. That's accepted. The ring never overlaps it.
 
 Added to the plan by the maintainer (2026-10-22), from the polish
 candidates:
