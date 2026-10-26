@@ -4,6 +4,44 @@ A finished plan bumps the minor version and fixes between plans bump the
 patch version. A plan released in parts bumps the minor version for each
 part. See `AGENTS.md` for the rule.
 
+## 0.38.0 - 2026-10-26
+
+Small touches to the desktop app, from
+[0056](docs/plans/0056-gui-polish.md).
+
+- Behavior changes:
+  - A Wine or native environment can have a `title`, the name its card
+    shows. `wineo set` and the Settings page take it, `wineo clone` copies
+    it, and `wineo validate` warns about one that breaks the rules
+    (`title_invalid`). wineo 0.37.0 and older refuse to load a Wine or
+    native environment with a `title`.
+  - The grid is centered, so leftover width splits evenly on both sides.
+  - A hidden card's eye now always sits in the second mark slot, below
+    the star's.
+  - Every poster keeps room for the star in its corner, so a GOG update
+    pill turns into the round badge a little sooner on narrow cards.
+  - New environment, Import prefix, and Clone put Back at the top and
+    their Next, Review, Create, Import, or Clone in a strip pinned at the
+    bottom, like the Heroic, Steam, and GOG pages.
+- Star a game from its poster: an outline star shows on hover, and a
+  favorite's filled star is always shown. Clicking it toggles the favorite
+  without opening the panel. The star lights up under the pointer and pops
+  when it favorites a game.
+- The hover star and the poster-only title fade in and out.
+- A card's details fade and drift in and out when the zoom crosses 90%,
+  instead of popping in.
+- Card titles: the card, the panel, and the poster-only overlay show your
+  title, then a Steam game's name, then the desktop entry's name, then the
+  environment name. Search matches the title and the name, and Sort by
+  name uses the title.
+- The choice lists on Add, New's program list, Heroic's and GOG's lists,
+  and the version picker take keyboard focus: Up and Down move, Enter
+  chooses, and the focused row scrolls into view.
+- The zoom slider's 100% snap is easier to hit.
+- Fixed: the discard prompt on New and Import from Heroic no longer resets
+  the form's scroll position and focus, and a card stays hovered when the
+  pointer jumps straight onto it.
+
 ## 0.37.0 - 2026-10-22
 
 Grid zoom and a poster-only view in the desktop app's library, part 2 of

@@ -1,4 +1,4 @@
-Status: approved
+Status: done
 
 # 0056: GUI polish
 
@@ -692,8 +692,9 @@ back. Delete `~/wineo-accept` when done.
 
 The maintainer ran items 1 to 9 on their GPU, and all pass. Item 3 raised
 the star's glow and pop (answers 23 to 25), and a look at the Add screens
-raised Back's place on them (answer 26). Both are being fixed; check them
-with the items below once they land.
+raised Back's place on them (answer 26). Both fixes landed, and items 10
+and 11 below passed too (2026-10-26), after the pop was shortened to
+240 ms (answer 28). Released in 0.38.0.
 
 `qa-gpt` found that the Back fix's first draft put New's discard prompt
 ahead of Back and the form, so iced rebuilt the form, losing its scroll
