@@ -358,6 +358,35 @@ pub(crate) fn within(inner: Rectangle, outer: Rectangle) -> bool {
         && inner.y + inner.height <= outer.y + outer.height + 0.01
 }
 
+/// What pressing the centre of `element`'s widget at `path` publishes, as
+/// debug text. A disabled button publishes nothing.
+pub(crate) fn click_at<M: std::fmt::Debug>(
+    element: Element<'_, M>,
+    size: Size,
+    path: &[usize],
+) -> Vec<String> {
+    let mut laid = lay_out(element, size);
+    let bounds = bounds_at(&laid.node, path);
+    let at = iced::Point::new(
+        bounds.x + bounds.width / 2.0,
+        bounds.y + bounds.height / 2.0,
+    );
+    let cursor = iced::mouse::Cursor::Available(at);
+    let left = iced::mouse::Button::Left;
+    let mut messages = laid.event_at(
+        &iced::Event::Mouse(iced::mouse::Event::ButtonPressed(left)),
+        cursor,
+    );
+    messages.extend(laid.event_at(
+        &iced::Event::Mouse(iced::mouse::Event::ButtonReleased(left)),
+        cursor,
+    ));
+    messages
+        .iter()
+        .map(|message| format!("{message:?}"))
+        .collect()
+}
+
 /// Asserts a `page_frame` page of Back, a scrolling body, and a pinned strip
 /// (the root's first child, in that order) is laid out inside `inset`: Back
 /// alone at the top left, the body under it, and the forward action at the

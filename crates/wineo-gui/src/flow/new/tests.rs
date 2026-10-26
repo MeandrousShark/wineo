@@ -763,16 +763,19 @@ fn reviewed(prerequisite: Option<Prerequisite>) -> Page {
 /// action is alone in the pinned strip at the bottom, even in a short dialog.
 #[test]
 fn back_is_at_the_top_and_the_forward_action_is_pinned_at_the_bottom() {
-    use crate::layout_probe::{assert_back_on_top_and_forward_pinned, probe};
+    use crate::layout_probe::{assert_back_on_top_and_forward_pinned, click_at, probe};
+    // What the pinned button publishes; Create is disabled until the runner
+    // it needs is downloaded.
     let pages = [
-        ("details", page()),
-        ("review", reviewed(None)),
+        ("details", page(), Some("Next")),
+        ("review", reviewed(None), Some("Create")),
         (
             "review with a missing runner",
             reviewed(Some(Prerequisite::Runner("GE-Proton-Latest".to_owned()))),
+            None,
         ),
     ];
-    for (label, page) in &pages {
+    for (label, page, forward) in &pages {
         for (width, height) in [(280.0, 240.0), (900.0, 240.0), (900.0, 720.0)] {
             let inset = iced::Rectangle::new(
                 iced::Point::new(24.0, 24.0),
@@ -783,5 +786,72 @@ fn back_is_at_the_top_and_the_forward_action_is_pinned_at_the_bottom() {
             let case = format!("{label} at {width}x{height}");
             assert_back_on_top_and_forward_pinned(&probe, inset, &case);
         }
+        let size = iced::Size::new(900.0, 720.0);
+        let view = || page.view_with_key_availability(Palette::DARK, true);
+        assert_eq!(click_at(view(), size, &[0, 0, 0]), ["Back"], "{label}");
+        let expected: Vec<&str> = forward.iter().copied().collect();
+        assert_eq!(click_at(view(), size, &[0, 2, 0]), expected, "{label}");
+    }
+}
+
+/// The discard prompt shares Back's slot ahead of the scroll body, so showing
+/// and dismissing it keeps the body's scroll offset.
+#[test]
+fn the_discard_prompt_keeps_the_scroll_offset_and_stays_in_view() {
+    use crate::layout_probe::{bounds_at, lay_out, probe, relay_out, within};
+    let mut page = page();
+    page.draft.title = "draft".to_owned();
+    let size = iced::Size::new(900.0, 300.0);
+    let mut laid = lay_out(page.view_with_key_availability(Palette::DARK, true), size);
+    let over_body = iced::mouse::Cursor::Available(iced::Point::new(450.0, 150.0));
+    let wheel = iced::Event::Mouse(iced::mouse::Event::WheelScrolled {
+        delta: iced::mouse::ScrollDelta::Lines { x: 0.0, y: -3.0 },
+    });
+    let _ = laid.event_at(&wheel, over_body);
+    let scrolled = laid.offsets()[0];
+    assert!(scrolled > 0.0, "the form should scroll in {size:?}");
+    for prompt in [true, false] {
+        let tree = laid.into_tree();
+        page.leave_prompt = prompt;
+        laid = relay_out(
+            page.view_with_key_availability(Palette::DARK, true),
+            tree,
+            size,
+        );
+        assert_eq!(
+            laid.offsets(),
+            [scrolled],
+            "the offset should survive the prompt being {}",
+            if prompt { "shown" } else { "dismissed" }
+        );
+    }
+
+    drop(laid);
+    page.leave_prompt = true;
+    for (width, height) in [(280.0, 240.0), (900.0, 240.0), (900.0, 720.0)] {
+        let inset = iced::Rectangle::new(
+            iced::Point::new(24.0, 24.0),
+            iced::Size::new(width - 48.0, height - 48.0),
+        );
+        let mut view = page.view_with_key_availability(Palette::DARK, true);
+        let probe = probe(&mut view, iced::Size::new(width, height));
+        let case = format!("{width}x{height}");
+        let prompt = bounds_at(&probe.node, &[0, 0, 0]);
+        let back = bounds_at(&probe.node, &[0, 0, 1]);
+        assert!(within(prompt, inset), "{case}: {prompt:?}");
+        assert!(within(back, inset), "{case}: {back:?}");
+        assert!(
+            prompt.y + prompt.height <= back.y + 0.01,
+            "{case}: {prompt:?} should be above {back:?}"
+        );
+        for button in 0..2 {
+            let bounds = bounds_at(&probe.node, &[0, 0, 0, 1, button]);
+            assert!(within(bounds, inset), "{case}: {bounds:?}");
+        }
+        let (viewport, _) = probe.scrollables[0];
+        assert!(
+            viewport.y >= back.y + back.height - 0.01,
+            "{case}: {viewport:?} should stay under {back:?}"
+        );
     }
 }

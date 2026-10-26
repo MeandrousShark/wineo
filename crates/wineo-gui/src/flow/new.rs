@@ -1670,25 +1670,31 @@ impl Page {
             frame::PAGE_MAX_WIDTH
         };
         let mut page = column![].spacing(12).max_width(max_width).height(Fill);
-        // The prompt sits above Back, outside the scroll, so it is never below
-        // the fold of a long form.
-        if self.leave_prompt {
-            page = page.push(
-                column![
-                    text("Discard this new environment draft?"),
-                    row![
-                        ui::secondary_button("Keep editing", palette).on_press(Event::KeepEditing),
-                        ui::secondary_button("Discard", palette).on_press(Event::Discard)
-                    ]
-                    .spacing(8)
-                ]
-                .spacing(8),
-            );
-        }
+        // Back and the discard prompt share one slot ahead of the scroll body,
+        // so showing the prompt never shifts the body's place in the widget tree
+        // (iced matches a column's children by position) and its scroll offset
+        // and focus survive. The prompt sits above Back, outside the scroll, so
+        // it is never below the fold of a long form.
         if matches!(self.stage, Stage::Details | Stage::Review) {
-            page = page.push(row![
+            let mut top = column![].spacing(12);
+            if self.leave_prompt {
+                top = top.push(
+                    column![
+                        text("Discard this new environment draft?"),
+                        row![
+                            ui::secondary_button("Keep editing", palette)
+                                .on_press(Event::KeepEditing),
+                            ui::secondary_button("Discard", palette).on_press(Event::Discard)
+                        ]
+                        .spacing(8)
+                    ]
+                    .spacing(8),
+                );
+            }
+            top = top.push(row![
                 ui::secondary_button("Back", palette).on_press(Event::Back)
             ]);
+            page = page.push(top);
         }
         page = page.push(frame::scroll_body(body, None, palette));
         if let Some(footer) = footer {
