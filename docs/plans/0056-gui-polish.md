@@ -684,9 +684,9 @@ back. Delete `~/wineo-accept` when done.
 ### Acceptance results (2026-10-25)
 
 The maintainer ran items 1 to 9 on their GPU, and all pass. Item 3 raised
-the star's glow and pop (answers 23 to 25), and item 8 raised Back's place
-on the Add screens (answer 26). Both are being fixed; check them with the
-items below once they land.
+the star's glow and pop (answers 23 to 25), and a look at the Add screens
+raised Back's place on them (answer 26). Both are being fixed; check them
+with the items below once they land.
 
 10. **Star glow and pop.** Point at a card, then at its star: the star
     turns the primary color and its chip darkens, fading in, and fades back
