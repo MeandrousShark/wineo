@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
-use iced::widget::{column, container, pick_list, row, scrollable, text, text_input};
-use iced::{Element, Fill, Task, border};
+use iced::widget::{column, container, pick_list, row, text, text_input};
+use iced::{Center, Element, Fill, Task, border};
 use wineo_core::cancel::Token;
 use wineo_core::config::{Arch, GlobalConfig};
 use wineo_core::external_runners::Source;
@@ -10,11 +10,12 @@ use wineo_core::paths::Paths;
 use wineo_core::runner::Runner;
 use wineo_core::runners::Runners;
 
+use super::frame;
 use crate::chips::input_style;
 use crate::runner_label;
 use crate::task;
 use crate::theme::Palette;
-use crate::ui::{PickListStyle, ScrollStyle, accent_base, secondary_button};
+use crate::ui::{PickListStyle, accent_base, secondary_button};
 
 #[derive(Debug, Clone)]
 pub(crate) enum Event {
@@ -470,20 +471,52 @@ impl Page {
             text("Import prefix").size(22).color(palette.foreground),
             body
         ]
-        .spacing(18)
-        .max_width(760);
+        .spacing(18);
         if let Some(error) = &self.error {
             content = content.push(text(error.as_str()).size(13).color(palette.danger));
         }
         if let Some(warning) = &self.warning {
             content = content.push(text(warning.as_str()).size(13).color(palette.warning));
         }
-        let base: Element<'_, Event> =
-            container(scrollable(content).wineo_style(palette).height(Fill))
-                .padding(24)
-                .width(Fill)
-                .height(Fill)
-                .into();
+        // Back goes with the forward action, so neither shows while a review is
+        // still being prepared.
+        let footer: Option<Element<'_, Event>> = match self.step {
+            Step::Details => Some(
+                accent_base("Review", palette.primary)
+                    .on_press(Event::Next)
+                    .into(),
+            ),
+            // The retained copy is the likely next move after a failed import, so
+            // it stays in view beside Import instead of scrolling away.
+            Step::Review if self.review.is_some() => {
+                let mut actions =
+                    row![accent_base("Import", palette.primary).on_press(Event::Import)]
+                        .spacing(12)
+                        .align_y(Center);
+                if self.recovery_path.is_some() {
+                    actions = actions.push(
+                        secondary_button("Use retained copy in place", palette)
+                            .on_press(Event::UseRetained),
+                    );
+                }
+                Some(actions.wrap().vertical_spacing(8).into())
+            }
+            _ => None,
+        };
+        let mut page = column![]
+            .spacing(12)
+            .max_width(frame::PAGE_MAX_WIDTH)
+            .height(Fill);
+        if footer.is_some() {
+            page = page.push(row![
+                secondary_button("Back", palette).on_press(Event::Back)
+            ]);
+        }
+        page = page.push(frame::scroll_body(content, None, palette));
+        if let Some(footer) = footer {
+            page = page.push(frame::pinned(footer, palette));
+        }
+        let base = frame::page_frame(page);
         if self.discard_prompt {
             iced::widget::stack![base, discard_prompt(palette)].into()
         } else {
@@ -631,13 +664,6 @@ impl Page {
                 );
         }
         fields = fields.push(self.art.view(palette, key_available).map(Event::Art));
-        fields = fields.push(
-            row![
-                secondary_button("Back", palette).on_press(Event::Back),
-                accent_base("Review", palette.primary).on_press(Event::Next),
-            ]
-            .spacing(8),
-        );
         fields.into()
     }
 
@@ -699,19 +725,6 @@ impl Page {
         content = content.push(self.art.view(palette, key_available).map(Event::Art));
         if self.recovery_path.is_some() {
             content = content.push(text("A complete copy was retained. Review it with Use in place to register that folder.").size(13).color(palette.warning));
-        }
-        content = content.push(
-            row![
-                secondary_button("Back", palette).on_press(Event::Back),
-                accent_base("Import", palette.primary).on_press(Event::Import)
-            ]
-            .spacing(8),
-        );
-        if self.recovery_path.is_some() {
-            content = content.push(
-                secondary_button("Use retained copy in place", palette)
-                    .on_press(Event::UseRetained),
-            );
         }
         content.into()
     }
@@ -1171,5 +1184,50 @@ mod tests {
         let _task = page.submit();
         assert!(page.action.is_none());
         assert_eq!(page.status, status);
+    }
+
+    #[test]
+    fn back_is_at_the_top_and_the_forward_action_is_pinned_at_the_bottom() {
+        use crate::layout_probe::{assert_back_on_top_and_forward_pinned, probe};
+
+        let root = tempfile::tempdir().unwrap();
+        let paths = paths(root.path());
+        fake_runner(&paths);
+        let source = prefix(root.path(), Some(Arch::Win64));
+        let mut page = Page::new(paths).0;
+        page.source = source.display().to_string();
+        page.name = "imported".to_owned();
+        page.runner = "fake-wine".to_owned();
+        let review = inspect_review(
+            &page.paths,
+            &page.source,
+            &page.name,
+            &page.runner,
+            false,
+            "",
+            None,
+        )
+        .unwrap();
+        for (label, step, retained) in [
+            ("details", Step::Details, false),
+            ("review", Step::Review, false),
+            ("review with a retained copy", Step::Review, true),
+        ] {
+            page.step = step;
+            page.review = Some(review.clone());
+            page.recovery_path = retained.then(|| root.path().join("retained"));
+            for (width, height) in [(280.0, 240.0), (900.0, 240.0), (900.0, 720.0)] {
+                let inset = iced::Rectangle::new(
+                    iced::Point::new(24.0, 24.0),
+                    iced::Size::new(width - 48.0, height - 48.0),
+                );
+                let mut view = page.view_with_key_availability(Palette::DARK, false);
+                let probe = probe(&mut view, iced::Size::new(width, height));
+                let case = format!("{label} at {width}x{height}");
+                assert_back_on_top_and_forward_pinned(&probe, inset, &case);
+                let spilled = probe.outside(inset);
+                assert!(spilled.is_empty(), "{case}: {spilled:?}");
+            }
+        }
     }
 }

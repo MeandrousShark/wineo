@@ -763,7 +763,7 @@ fn reviewed(prerequisite: Option<Prerequisite>) -> Page {
 /// action is alone in the pinned strip at the bottom, even in a short dialog.
 #[test]
 fn back_is_at_the_top_and_the_forward_action_is_pinned_at_the_bottom() {
-    use crate::layout_probe::{bounds_at, probe, within};
+    use crate::layout_probe::{assert_back_on_top_and_forward_pinned, probe};
     let pages = [
         ("details", page()),
         ("review", reviewed(None)),
@@ -781,33 +781,7 @@ fn back_is_at_the_top_and_the_forward_action_is_pinned_at_the_bottom() {
             let mut view = page.view_with_key_availability(Palette::DARK, true);
             let probe = probe(&mut view, iced::Size::new(width, height));
             let case = format!("{label} at {width}x{height}");
-            assert_eq!(probe.scrollables.len(), 1, "{case}: one scrolling region");
-            let (viewport, _) = probe.scrollables[0];
-            let back = bounds_at(&probe.node, &[0, 0, 0]);
-            let strip = bounds_at(&probe.node, &[0, 2]);
-            let forward = bounds_at(&probe.node, &[0, 2, 0]);
-            assert!(within(back, inset), "{case}: {back:?}");
-            assert!(
-                (back.y - inset.y).abs() < 0.01 && (back.x - strip.x).abs() < 0.01,
-                "{case}: Back should be at the top left, got {back:?}"
-            );
-            assert!(
-                viewport.y >= back.y + back.height - 0.01,
-                "{case}: {viewport:?} should start under {back:?}"
-            );
-            assert!(
-                strip.y >= viewport.y + viewport.height - 0.01,
-                "{case}: {strip:?} should sit under {viewport:?}"
-            );
-            assert!(
-                (strip.y + strip.height - (inset.y + inset.height)).abs() < 0.01,
-                "{case}: {strip:?} should end at the bottom of {inset:?}"
-            );
-            assert!(within(forward, strip), "{case}: {forward:?} in {strip:?}");
-            assert!(
-                forward.x - strip.x < 13.0,
-                "{case}: {forward:?} should sit at the left of {strip:?}"
-            );
+            assert_back_on_top_and_forward_pinned(&probe, inset, &case);
         }
     }
 }

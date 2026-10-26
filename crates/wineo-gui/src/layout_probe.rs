@@ -358,6 +358,40 @@ pub(crate) fn within(inner: Rectangle, outer: Rectangle) -> bool {
         && inner.y + inner.height <= outer.y + outer.height + 0.01
 }
 
+/// Asserts a `page_frame` page of Back, a scrolling body, and a pinned strip
+/// (the root's first child, in that order) is laid out inside `inset`: Back
+/// alone at the top left, the body under it, and the forward action at the
+/// left of a strip that ends at the bottom.
+pub(crate) fn assert_back_on_top_and_forward_pinned(probe: &Probe, inset: Rectangle, case: &str) {
+    assert_eq!(probe.scrollables.len(), 1, "{case}: one scrolling region");
+    let (viewport, _) = probe.scrollables[0];
+    let back = bounds_at(&probe.node, &[0, 0, 0]);
+    let strip = bounds_at(&probe.node, &[0, 2]);
+    let forward = bounds_at(&probe.node, &[0, 2, 0]);
+    assert!(within(back, inset), "{case}: {back:?}");
+    assert!(
+        (back.y - inset.y).abs() < 0.01 && (back.x - strip.x).abs() < 0.01,
+        "{case}: Back should be at the top left, got {back:?}"
+    );
+    assert!(
+        viewport.y >= back.y + back.height - 0.01,
+        "{case}: {viewport:?} should start under {back:?}"
+    );
+    assert!(
+        strip.y >= viewport.y + viewport.height - 0.01,
+        "{case}: {strip:?} should sit under {viewport:?}"
+    );
+    assert!(
+        (strip.y + strip.height - (inset.y + inset.height)).abs() < 0.01,
+        "{case}: {strip:?} should end at the bottom of {inset:?}"
+    );
+    assert!(within(forward, strip), "{case}: {forward:?} in {strip:?}");
+    assert!(
+        forward.x - strip.x < 13.0,
+        "{case}: {forward:?} should sit at the left of {strip:?}"
+    );
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
