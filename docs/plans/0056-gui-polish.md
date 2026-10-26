@@ -699,6 +699,14 @@ page has had the same shape all along. The maintainer chose to patch both
 in this pass (2026-10-25): the prompt keeps a slot of its own that is
 always there, so the form never moves in the widget tree.
 
+`qa-gpt` also found that the star fix's first draft could leave a star
+glowing after a dialog closed, and that a pointer moving straight from one
+star onto another could lose the new star's hover, because the old one's
+exit cleared whichever star was hovered. Card hover has had that same
+unnamed exit all along. The maintainer chose to patch both in this pass
+(2026-10-25): an exit clears the hover only if it still names its own card
+or star, and star hover doesn't survive a dialog.
+
 10. **Star glow and pop.** Point at a card, then at its star: the star
     turns the primary color and its chip darkens, fading in, and fades back
     when the pointer moves off the star but stays on the card. A favorite's
