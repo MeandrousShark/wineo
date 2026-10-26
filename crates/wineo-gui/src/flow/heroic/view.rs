@@ -655,17 +655,28 @@ impl Page {
                 .into(),
             None => scrolling,
         };
-        let mut page = column![].spacing(12).max_width(PAGE_MAX_WIDTH).height(Fill);
+        // The prompt shares Back's slot ahead of the content, so showing it never
+        // shifts the content's place in the widget tree (iced matches a column's
+        // children by position) and its scroll offset and focus survive.
+        let mut top = column![].spacing(12);
         if self.leave_prompt {
-            page = page.push(text("Discard this Heroic import draft?")).push(
-                row![
-                    secondary_button("Keep editing", palette).on_press(Event::KeepEditing),
-                    secondary_button("Discard", palette).on_press(Event::Discard)
+            top = top.push(
+                column![
+                    text("Discard this Heroic import draft?"),
+                    row![
+                        secondary_button("Keep editing", palette).on_press(Event::KeepEditing),
+                        secondary_button("Discard", palette).on_press(Event::Discard)
+                    ]
+                    .spacing(12),
                 ]
                 .spacing(12),
             );
         }
-        page_frame(page.push(row![back].align_y(Center)).push(content))
+        let page = column![top.push(row![back].align_y(Center)), content]
+            .spacing(12)
+            .max_width(PAGE_MAX_WIDTH)
+            .height(Fill);
+        page_frame(page)
     }
 }
 

@@ -474,10 +474,78 @@ fn every_step_sits_inside_the_dialog_padding() {
                     spilled.is_empty(),
                     "{label} at {width}x{height}, prompt {leave_prompt}: {spilled:?}"
                 );
-                let back = bounds_at(node, &[0, if leave_prompt { 2 } else { 0 }, 0]);
+                let back = bounds_at(node, &[0, 0, if leave_prompt { 1 } else { 0 }, 0]);
                 assert!(within(back, inset), "{label}: {back:?}");
             }
         }
+    }
+}
+
+/// The discard prompt shares Back's slot ahead of the content, so showing and
+/// dismissing it keeps the scroll offset, and it stays above Back in view.
+#[test]
+fn the_discard_prompt_keeps_the_scroll_offset_and_stays_in_view() {
+    use crate::layout_probe::{bounds_at, lay_out, probe, relay_out, within};
+    let root = tempdir().unwrap();
+    let (_, mut page) = staged_pages(root.path())
+        .into_iter()
+        .find(|(label, _)| *label == "sources")
+        .unwrap();
+    let size = iced::Size::new(900.0, 200.0);
+    let mut laid = lay_out(
+        page.view_with_key_availability(Palette::DARK, size.width, false),
+        size,
+    );
+    let over_body = iced::mouse::Cursor::Available(iced::Point::new(450.0, 100.0));
+    let wheel = iced::Event::Mouse(iced::mouse::Event::WheelScrolled {
+        delta: iced::mouse::ScrollDelta::Lines { x: 0.0, y: -3.0 },
+    });
+    let _ = laid.event_at(&wheel, over_body);
+    let scrolled = laid.offsets()[0];
+    assert!(scrolled > 0.0, "the sources should scroll in {size:?}");
+    for prompt in [true, false] {
+        let tree = laid.into_tree();
+        page.leave_prompt = prompt;
+        laid = relay_out(
+            page.view_with_key_availability(Palette::DARK, size.width, false),
+            tree,
+            size,
+        );
+        assert_eq!(
+            laid.offsets(),
+            [scrolled],
+            "the offset should survive the prompt being {}",
+            if prompt { "shown" } else { "dismissed" }
+        );
+    }
+    drop(laid);
+
+    page.leave_prompt = true;
+    for (width, height) in [(280.0, 240.0), (900.0, 240.0), (900.0, 720.0)] {
+        let inset = iced::Rectangle::new(
+            iced::Point::new(24.0, 24.0),
+            iced::Size::new(width - 48.0, height - 48.0),
+        );
+        let mut view = page.view_with_key_availability(Palette::DARK, width, false);
+        let probe = probe(&mut view, iced::Size::new(width, height));
+        let case = format!("{width}x{height}");
+        let prompt = bounds_at(&probe.node, &[0, 0, 0]);
+        let back = bounds_at(&probe.node, &[0, 0, 1]);
+        assert!(within(prompt, inset), "{case}: {prompt:?}");
+        assert!(within(back, inset), "{case}: {back:?}");
+        assert!(
+            prompt.y + prompt.height <= back.y + 0.01,
+            "{case}: {prompt:?} should be above {back:?}"
+        );
+        for button in 0..2 {
+            let bounds = bounds_at(&probe.node, &[0, 0, 0, 1, button]);
+            assert!(within(bounds, inset), "{case}: {bounds:?}");
+        }
+        let (viewport, _) = probe.scrollables[0];
+        assert!(
+            viewport.y >= back.y + back.height - 0.01,
+            "{case}: {viewport:?} should stay under {back:?}"
+        );
     }
 }
 
