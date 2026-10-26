@@ -132,6 +132,11 @@ From acceptance (2026-10-25):
     the chip springs up and settles, and a ring ripples out once and
     fades. This amends `gui-style.md`'s "no hover or press styling of
     its own".
+24. **Only favoriting pops.** The ring ripples out in the primary color.
+    Unfavoriting just swaps back to the outline star.
+25. **Only a click on the poster star pops.** F, the panel's star, and the
+    context menu toggle without it. Reduced motion skips the pop, and
+    the ring stays within the poster's corner.
 
 Added to the plan by the maintainer (2026-10-22), from the polish
 candidates:
