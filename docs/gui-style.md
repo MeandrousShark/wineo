@@ -279,17 +279,20 @@ column change halfway through a zoom never jumps.
 New-environment reviews use one grouped summary with Application, Source,
 and Runtime sections as applicable. Render the frozen reviewed data directly.
 Warnings and missing prerequisites stay prominent below the summary. Long
-paths stay complete and wrap or scroll. Every Add, import, and clone page has
-the same shape: Back alone in a row at the top, the content scrolling (on grid
-pages the title and notes scroll with the posters), and each step's forward
-action alone in a strip pinned at the bottom. Off the grid pages the action
-sits at the left of the strip, and a recovery alternative like **Use retained
-copy in place** wraps in beside it. A discard prompt that isn't an overlay sits
-above Back, outside the scroll. On grid pages the main action sits at the right
-of that row (`ends`), and posters still decoding half a second after the page
-opens show a progress bar on the left. The art picker matches: Back and Filters stay at
-the top, the title, filters, and images scroll, and only progress and **Use**
-are pinned.
+paths stay complete and wrap or scroll. Each step of an Add, import, or
+clone page that can go back has the same shape: Back alone in a row at the
+top, the content scrolling (on grid pages the title and notes scroll with
+the posters), and the step's forward action pinned in a strip at the
+bottom. Off the grid pages the action sits at the left of the strip, and a
+recovery alternative like **Use retained copy in place** wraps in beside
+it. Steps that can't go back, like working and finished, keep their
+controls in the content. A discard prompt that isn't an overlay sits above
+Back, outside the scroll, in a slot that is always there so the content
+keeps its state. On grid pages the main action sits at the right of the
+strip (`ends`), and posters still decoding half a second after the page
+opens show a progress bar on the left. The art picker matches: Back and
+Filters stay at the top, the title, filters, and images scroll, and only
+progress and **Use** are pinned.
 
 Determinate progress uses `progress::bar` (in `progress.rs`): a thin bar with
 its state in words beside it, which changes only when its counts do. Work that
