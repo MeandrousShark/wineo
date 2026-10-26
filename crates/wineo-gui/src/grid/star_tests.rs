@@ -170,11 +170,17 @@ fn a_star_click_toggles_the_favorite_and_never_selects_opens_or_launches() {
         let _ = app.update(message);
     }
     // The pointer moves onto the star that hovering showed: the card stays
-    // hovered, with no exit and enter in between.
+    // hovered, with no exit and enter in between, and only the star hears.
     let mut laid = relay_out(app.grid(), tree, size);
     let star = star_on(&app, card);
     let messages = laid.event_at(&moved(star), Cursor::Available(star));
-    assert!(messages.is_empty(), "{messages:?}");
+    assert!(
+        matches!(
+            messages.as_slice(),
+            [Message::StarHover(Some(name))] if name == "game-01"
+        ),
+        "{messages:?}"
+    );
     assert_eq!(app.hovered.as_deref(), Some("game-01"));
     let messages = click(&mut laid, star);
     assert_eq!(toggles(&messages, "game-01"), 1, "{messages:?}");
@@ -220,12 +226,15 @@ fn a_right_click_on_the_star_still_opens_the_context_menu() {
     let star = star_on(&app, bounds_at(&laid.node, &[0]));
     let mut messages = laid.event_at(&pressed(mouse::Button::Right), Cursor::Available(star));
     messages.extend(laid.event_at(&released(mouse::Button::Right), Cursor::Available(star)));
-    // The first event over the card is also its enter.
+    // The first event over the card is also its enter, and its star's.
     assert!(
         matches!(
             messages.as_slice(),
-            [Message::Hover(Some(hovered)), Message::Context(name)]
-                if hovered == "game" && name == "game"
+            [
+                Message::StarHover(Some(star)),
+                Message::Hover(Some(hovered)),
+                Message::Context(name),
+            ] if star == "game" && hovered == "game" && name == "game"
         ),
         "{messages:?}"
     );
@@ -519,4 +528,40 @@ fn the_star_is_no_tab_stop() {
     )));
     assert!(favorite(&app, "game-01"));
     assert_eq!(order(&app), rest);
+}
+
+#[test]
+fn the_pointer_on_the_star_lights_it_and_on_the_card_alone_doesnt() {
+    let (_root, mut app) = fixture(&["game-00", "game-01"], &["game-00"], &[]);
+    let size = grid_size(&app);
+    for name in ["game-00", "game-01"] {
+        let mut laid = lay_out(app.grid(), size);
+        let card = bounds_at(&laid.node, &[index(&app, name)]);
+        let messages = laid.event_at(&moved(card.center()), Cursor::Available(card.center()));
+        let tree = laid.into_tree();
+        for message in messages {
+            let _ = app.update(message);
+        }
+        assert_eq!(app.hovered.as_deref(), Some(name));
+        assert_eq!(app.glowing_star(), None, "{name}");
+        // Onto the star, then off it again onto the card.
+        let mut laid = relay_out(app.grid(), tree, size);
+        let star = star_on(&app, card);
+        let messages = laid.event_at(&moved(star), Cursor::Available(star));
+        let tree = laid.into_tree();
+        for message in messages {
+            let _ = app.update(message);
+        }
+        assert_eq!(app.glowing_star(), Some(name));
+        assert!(app.hover_fades.fading(name));
+        let mut laid = relay_out(app.grid(), tree, size);
+        let messages = laid.event_at(&moved(card.center()), Cursor::Available(card.center()));
+        drop(laid);
+        for message in messages {
+            let _ = app.update(message);
+        }
+        assert_eq!(app.hovered.as_deref(), Some(name));
+        assert_eq!(app.glowing_star(), None, "{name}");
+        let _ = app.update(Message::Hover(None));
+    }
 }

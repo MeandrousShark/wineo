@@ -4,7 +4,7 @@
 use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
 
-use iced::widget::{Space, button, column, container, tooltip};
+use iced::widget::{Space, button, column, container, mouse_area, tooltip};
 use iced::{Color, Element, Fill, Task, border};
 use jiff::Timestamp;
 use wineo_core::library;
@@ -27,6 +27,8 @@ const EYE_OFF: &[u8] = br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0
 pub(crate) const MARK_SIZE: f32 = 24.0;
 const MARK_ICON: f32 = 14.0;
 const MARK_BACKDROP: f32 = 0.55;
+/// The poster star's backdrop with the pointer on it.
+const GLOW_BACKDROP: f32 = 0.8;
 /// The marks' distance from the art's edges.
 const MARK_MARGIN: f32 = 8.0;
 /// The poster star's click target, centered on its chip.
@@ -426,18 +428,34 @@ pub(crate) fn poster_marks(
     alpha: f32,
     hovered: bool,
 ) -> Option<Element<'static, Message>> {
-    poster_marks_faded(card, alpha, hovered, if hovered { 1.0 } else { 0.0 })
+    let star = StarLook {
+        fade: if hovered { 1.0 } else { 0.0 },
+        glow: 0.0,
+        primary: Color::WHITE,
+    };
+    poster_marks_faded(card, alpha, hovered, star)
 }
 
-/// `poster_marks` with the outline star at `star` of its strength as it
-/// fades with the hover. A favorite's filled star ignores it.
+/// How the poster star draws beyond its card's fade.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct StarLook {
+    /// The outline star's strength as it fades with the hover. A favorite's
+    /// filled star ignores it.
+    pub(crate) fade: f32,
+    /// How lit up it is with the pointer on it, 0 to 1.
+    pub(crate) glow: f32,
+    /// What the icon tints to as it lights up, at full opacity.
+    pub(crate) primary: Color,
+}
+
+/// `poster_marks` with the star drawn as `look` says.
 pub(crate) fn poster_marks_faded(
     card: &Card,
     alpha: f32,
     hovered: bool,
-    star: f32,
+    look: StarLook,
 ) -> Option<Element<'static, Message>> {
-    let outline = !card.favorite && (hovered || star > 0.0);
+    let outline = !card.favorite && (hovered || look.fade > 0.0);
     if !card.favorite && !card.hidden && !outline {
         return None;
     }
@@ -447,10 +465,16 @@ pub(crate) fn poster_marks_faded(
         let (bytes, strength) = if card.favorite {
             (STAR, 1.0)
         } else {
-            (STAR_OUTLINE, star)
+            (STAR_OUTLINE, look.fade)
         };
+        let chip = mark_lit(
+            bytes,
+            alpha * strength,
+            ui::blend(Color::WHITE, look.primary, look.glow),
+            MARK_BACKDROP + (GLOW_BACKDROP - MARK_BACKDROP) * look.glow,
+        );
         // A star fading out with the hover takes no presses.
-        button(mark(bytes, alpha * strength))
+        let star = button(chip)
             .width(STAR_TARGET)
             .height(STAR_TARGET)
             .padding(MARK_INSET)
@@ -458,7 +482,12 @@ pub(crate) fn poster_marks_faded(
                 (card.favorite || hovered)
                     .then(|| Message::Mark(Event::Toggle(card.name.clone(), Flag::Favorite))),
             )
-            .style(|_, _| button::Style::default())
+            .style(|_, _| button::Style::default());
+        // A left press is the button's, so only the pointer's coming and
+        // going reach here.
+        mouse_area(star)
+            .on_enter(Message::StarHover(Some(card.name.clone())))
+            .on_exit(Message::StarHover(None))
             .into()
     } else {
         Space::new().width(STAR_TARGET).height(STAR_TARGET).into()
@@ -502,14 +531,24 @@ pub(crate) fn status_chip(color: Color, alpha: f32) -> Element<'static, Message>
 }
 
 fn mark(bytes: &'static [u8], alpha: f32) -> Element<'static, Message> {
+    mark_lit(bytes, alpha, Color::WHITE, MARK_BACKDROP)
+}
+
+/// A mark with its icon in `tint` on a `backdrop` black backing.
+fn mark_lit(
+    bytes: &'static [u8],
+    alpha: f32,
+    tint: Color,
+    backdrop: f32,
+) -> Element<'static, Message> {
     // The renderer's tint ignores its alpha, so the icon fades by opacity.
-    container(icon(bytes, Color::WHITE, MARK_ICON).opacity(alpha))
+    container(icon(bytes, tint, MARK_ICON).opacity(alpha))
         .width(MARK_SIZE)
         .height(MARK_SIZE)
         .center(MARK_SIZE)
         .style(move |_| {
             container::Style::default()
-                .background(Color::BLACK.scale_alpha(MARK_BACKDROP * alpha))
+                .background(Color::BLACK.scale_alpha(backdrop * alpha))
                 .border(border::rounded(MARK_SIZE / 2.0))
         })
         .into()

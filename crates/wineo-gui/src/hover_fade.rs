@@ -1,7 +1,8 @@
 //! The poster star's and the poster-only overlay's fades. Each card's star
-//! follows its hover and its overlay follows its hover or selection, over
-//! the grid's card fade. Only cards that are still fading are stored: a
-//! settled card's values are what its hover and selection say.
+//! follows its hover, its glow follows the pointer on the star itself, and
+//! its overlay follows its hover or selection, over the grid's card fade.
+//! Only cards that are still fading are stored: a settled card's values are
+//! what its hover and selection say.
 
 use std::collections::HashMap;
 use std::time::Instant;
@@ -12,15 +13,22 @@ use crate::grid_motion::FADE;
 struct Fade {
     star: f32,
     overlay: f32,
+    glow: f32,
 }
 
 impl Fade {
-    fn of(name: &str, hovered: Option<&str>, selected: Option<&str>) -> Self {
+    fn of(
+        name: &str,
+        hovered: Option<&str>,
+        selected: Option<&str>,
+        glowing: Option<&str>,
+    ) -> Self {
         let hovered = hovered == Some(name);
         let selected = selected == Some(name);
         Self {
             star: if hovered { 1.0 } else { 0.0 },
             overlay: if hovered || selected { 1.0 } else { 0.0 },
+            glow: if glowing == Some(name) { 1.0 } else { 0.0 },
         }
     }
 }
@@ -33,34 +41,53 @@ pub(crate) struct HoverFades {
     /// after they change, and so a change by any path retargets.
     hovered: Option<String>,
     selected: Option<String>,
+    /// The card whose star has the pointer and takes presses.
+    glowing: Option<String>,
     last_tick: Option<Instant>,
     generation: u64,
 }
 
 impl HoverFades {
-    /// Retargets the cards whose hover or selection changed since the last
-    /// call, each from where it's drawn now.
-    pub(crate) fn sync(&mut self, hovered: Option<&str>, selected: Option<&str>) {
-        if hovered == self.hovered.as_deref() && selected == self.selected.as_deref() {
+    /// Retargets the cards whose hover, selection, or glow changed since the
+    /// last call, each from where it's drawn now.
+    pub(crate) fn sync(
+        &mut self,
+        hovered: Option<&str>,
+        selected: Option<&str>,
+        glowing: Option<&str>,
+    ) {
+        if hovered == self.hovered.as_deref()
+            && selected == self.selected.as_deref()
+            && glowing == self.glowing.as_deref()
+        {
             return;
         }
         let was_active = self.active();
         let old_hovered = self.hovered.take();
         let old_selected = self.selected.take();
+        let old_glowing = self.glowing.take();
         let names = [
             old_hovered.as_deref(),
             old_selected.as_deref(),
+            old_glowing.as_deref(),
             hovered,
             selected,
+            glowing,
         ];
         for name in names.into_iter().flatten() {
-            let before = Fade::of(name, old_hovered.as_deref(), old_selected.as_deref());
-            if before != Fade::of(name, hovered, selected) {
+            let before = Fade::of(
+                name,
+                old_hovered.as_deref(),
+                old_selected.as_deref(),
+                old_glowing.as_deref(),
+            );
+            if before != Fade::of(name, hovered, selected, glowing) {
                 self.fades.entry(name.to_owned()).or_insert(before);
             }
         }
         self.hovered = hovered.map(str::to_owned);
         self.selected = selected.map(str::to_owned);
+        self.glowing = glowing.map(str::to_owned);
         // The first frame starts the clock, so a fade sets out from what's
         // on screen.
         if !was_active && self.active() {
@@ -77,6 +104,11 @@ impl HoverFades {
             fade.star = 1.0;
         }
         self.drop_settled();
+    }
+
+    /// The hover the fades last headed for.
+    pub(crate) fn hovered(&self) -> Option<&str> {
+        self.hovered.as_deref()
     }
 
     pub(crate) fn fading(&self, name: &str) -> bool {
@@ -99,17 +131,27 @@ impl HoverFades {
         self.last_tick = Some(now.max(previous));
         let step = now.saturating_duration_since(previous).as_secs_f32() / FADE.as_secs_f32();
         for (name, fade) in &mut self.fades {
-            let target = Fade::of(name, self.hovered.as_deref(), self.selected.as_deref());
+            let target = Fade::of(
+                name,
+                self.hovered.as_deref(),
+                self.selected.as_deref(),
+                self.glowing.as_deref(),
+            );
             fade.star = toward(fade.star, target.star, step);
             fade.overlay = toward(fade.overlay, target.overlay, step);
+            fade.glow = toward(fade.glow, target.glow, step);
         }
         self.drop_settled();
     }
 
     fn drop_settled(&mut self) {
-        let (hovered, selected) = (self.hovered.as_deref(), self.selected.as_deref());
+        let (hovered, selected, glowing) = (
+            self.hovered.as_deref(),
+            self.selected.as_deref(),
+            self.glowing.as_deref(),
+        );
         self.fades
-            .retain(|name, fade| *fade != Fade::of(name, hovered, selected));
+            .retain(|name, fade| *fade != Fade::of(name, hovered, selected, glowing));
         if !self.active() {
             self.last_tick = None;
         }
@@ -124,6 +166,13 @@ impl HoverFades {
             ),
             |fade| (fade.star, fade.overlay),
         )
+    }
+
+    /// The star's glow on `name`, 0 to 1.
+    pub(crate) fn glow(&self, name: &str, glowing: bool) -> f32 {
+        self.fades
+            .get(name)
+            .map_or(if glowing { 1.0 } else { 0.0 }, |fade| fade.glow)
     }
 
     pub(crate) fn active(&self) -> bool {

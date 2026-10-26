@@ -170,6 +170,8 @@ pub(crate) struct App {
     pub(crate) target: Option<String>,
     card_click_target: Option<(String, Option<String>)>,
     pub(crate) hovered: Option<String>,
+    /// The card whose poster star has the pointer, which lights it up.
+    pub(crate) star_hovered: Option<String>,
     pub(crate) images: art_cache::ArtCache<ArtKey>,
     /// Art decoding, by key and whether it is decoded dimmed.
     loading: HashSet<(ArtKey, bool)>,
@@ -329,6 +331,8 @@ pub(crate) enum Message {
     LogFollow,
     CopyLog,
     Hover(Option<String>),
+    /// The pointer moved onto a poster star, or off it.
+    StarHover(Option<String>),
     Refresh,
     /// The parts of a periodic rescan that differ from what is shown.
     Rescanned(Box<rescan::Scan>),
@@ -486,6 +490,7 @@ impl App {
             target: None,
             card_click_target: None,
             hovered: None,
+            star_hovered: None,
             images: art_cache::ArtCache::default(),
             loading: HashSet::new(),
             visible_art: HashSet::new(),
@@ -791,15 +796,7 @@ impl App {
 
     /// Messages ignored while an overlay or the card collapse owns the input.
     fn message_blocked(&self, message: &Message) -> bool {
-        if (self.flow.is_some()
-            || self.close_prompt
-            || self.removal.is_some()
-            || self.trash_confirm_open()
-            || self.downloads_confirm_open()
-            || self.hook_stop_confirm.is_some()
-            || self.art_page.is_some()
-            || self.tool_page.is_some()
-            || self.portable_page.is_some())
+        if self.input_covered()
             && (matches!(
                 message,
                 Message::SearchChanged(_)
@@ -823,6 +820,7 @@ impl App {
                     | Message::KeyWithFocus(..)
                     | Message::Scrolled(_)
                     | Message::Hover(_)
+                    | Message::StarHover(_)
                     | Message::Add
                     | Message::CloneEnvironment(_)
                     | Message::GogUpdate(_)
@@ -859,6 +857,19 @@ impl App {
             return true;
         }
         false
+    }
+
+    /// A flow, dialog, or page is over the window and takes its input.
+    pub(crate) fn input_covered(&self) -> bool {
+        self.flow.is_some()
+            || self.close_prompt
+            || self.removal.is_some()
+            || self.trash_confirm_open()
+            || self.downloads_confirm_open()
+            || self.hook_stop_confirm.is_some()
+            || self.art_page.is_some()
+            || self.tool_page.is_some()
+            || self.portable_page.is_some()
     }
 
     /// Routes one message to its handler. `Break` skips the bookkeeping
@@ -954,6 +965,10 @@ impl App {
             Message::CopyLog => iced::clipboard::write(self.log_buffer.copy()),
             Message::Hover(name) => {
                 self.hovered = name;
+                Task::none()
+            }
+            Message::StarHover(name) => {
+                self.star_hovered = name;
                 Task::none()
             }
             Message::Refresh => self.refresh(),
@@ -1314,6 +1329,7 @@ impl App {
         let _ = self.motion_ended(false);
         self.action_menu = None;
         self.hovered = None;
+        self.star_hovered = None;
         if self.reduced_motion {
             self.collapse.fade(now);
         } else {

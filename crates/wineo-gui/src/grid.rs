@@ -303,6 +303,9 @@ impl App {
         let hovered = self.hovered.as_ref() == Some(&card.name);
         let selected = self.selected.as_ref() == Some(&card.name);
         let (star, shade) = self.hover_fades.progress(&card.name, hovered, selected);
+        let glow = self
+            .hover_fades
+            .glow(&card.name, self.glowing_star() == Some(card.name.as_str()));
         let dimmed = card.not_installed();
         let art = card.art.as_ref().and_then(|art| {
             self.images
@@ -479,7 +482,12 @@ impl App {
                     }),
             );
         }
-        if let Some(marks) = crate::library_actions::poster_marks_faded(card, alpha, hovered, star)
+        let look = crate::library_actions::StarLook {
+            fade: star,
+            glow,
+            primary: self.palette.primary,
+        };
+        if let Some(marks) = crate::library_actions::poster_marks_faded(card, alpha, hovered, look)
         {
             layers = layers.push(marks);
         }

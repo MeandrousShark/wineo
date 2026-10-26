@@ -66,11 +66,32 @@ impl App {
         self.details_fade.progress(self.details_full())
     }
 
+    /// The card whose poster star lights up: the pointer is on it, its card
+    /// is hovered, so it takes presses, and nothing covers the grid.
+    pub(crate) fn glowing_star(&self) -> Option<&str> {
+        self.star_hovered
+            .as_deref()
+            .filter(|name| self.hovered.as_deref() == Some(name))
+            .filter(|_| !self.input_covered() && self.collapse.idle())
+    }
+
     /// Retargets the hover fades to the hover and selection the update left,
     /// and drops those of cards no longer shown.
     pub(crate) fn sync_hover_fades(&mut self) {
-        self.hover_fades
-            .sync(self.hovered.as_deref(), self.selected.as_deref());
+        // A hover that moved off the star's card by any path, not just the
+        // pointer, leaves the star too. The star's own enter can come just
+        // before its card's, so it's kept while the hover holds still.
+        if self.hovered.as_deref() != self.hover_fades.hovered()
+            && self.star_hovered != self.hovered
+        {
+            self.star_hovered = None;
+        }
+        let glowing = self.glowing_star().map(str::to_owned);
+        self.hover_fades.sync(
+            self.hovered.as_deref(),
+            self.selected.as_deref(),
+            glowing.as_deref(),
+        );
         if !self.hover_fades.active() {
             return;
         }
