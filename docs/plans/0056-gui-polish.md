@@ -122,6 +122,17 @@ From step 5 (2026-10-23):
     finishes. The poster-only toggle snaps the details, per the scope
     limits.
 
+From acceptance (2026-10-25):
+
+23. **The poster star lights up under the pointer and pops on a click.**
+    With the pointer on the star itself, its icon tints to the primary
+    color, like the panel's filled star, and its chip darkens from 55% to
+    about 80% black, fading in and out over the grid's 150 ms. The
+    card's fade still applies on top. A click also plays a short pop:
+    the chip springs up and settles, and a ring ripples out once and
+    fades. This amends `gui-style.md`'s "no hover or press styling of
+    its own".
+
 Added to the plan by the maintainer (2026-10-22), from the polish
 candidates:
 
