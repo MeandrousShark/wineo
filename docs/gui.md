@@ -553,7 +553,10 @@ Completed verbs stay installed; removing a declaration doesn't uninstall it.
 
 The new-environment review groups Application, Source, and Runtime details
 as applicable, with warnings and missing prerequisites below. Long paths
-remain complete, and Back/Create stay outside the scrolling summary.
+remain complete. Every Add, import, and clone page has Back alone at the top
+and its forward action (Next, Review, Import, Create, Clone) alone in a strip
+pinned at the bottom, so both stay reachable in a short window while the
+content scrolls between them.
 
 **Add** opens a compact overlay for **New environment**, **Import prefix**,
 **Import from Heroic**, **Import from Steam**, or **Import from GOG**, keeping the library visible behind it. The same
