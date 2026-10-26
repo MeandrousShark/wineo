@@ -927,7 +927,7 @@ mod tests {
 
     #[test]
     fn back_is_at_the_top_and_the_forward_action_is_pinned_at_the_bottom() {
-        use crate::layout_probe::{assert_back_on_top_and_forward_pinned, probe};
+        use crate::layout_probe::{assert_back_on_top_and_forward_pinned, click_at, probe};
 
         let root = tempfile::tempdir().unwrap();
         let paths = paths(root.path());
@@ -965,6 +965,22 @@ mod tests {
                 let spilled = probe.outside(inset);
                 assert!(spilled.is_empty(), "{case}: {spilled:?}");
             }
+            let size = iced::Size::new(900.0, 720.0);
+            let forward = if step == Step::Details {
+                "Review"
+            } else {
+                "Clone"
+            };
+            assert_eq!(
+                click_at(page.view(Palette::DARK), size, &[0, 0, 0]),
+                ["Back"],
+                "{label}"
+            );
+            assert_eq!(
+                click_at(page.view(Palette::DARK), size, &[0, 2, 0]),
+                [forward],
+                "{label}"
+            );
         }
     }
 }

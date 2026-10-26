@@ -1188,7 +1188,9 @@ mod tests {
 
     #[test]
     fn back_is_at_the_top_and_the_forward_action_is_pinned_at_the_bottom() {
-        use crate::layout_probe::{assert_back_on_top_and_forward_pinned, probe};
+        use crate::layout_probe::{
+            assert_back_on_top_and_forward_pinned, bounds_at, click_at, probe,
+        };
 
         let root = tempfile::tempdir().unwrap();
         let paths = paths(root.path());
@@ -1227,6 +1229,48 @@ mod tests {
                 assert_back_on_top_and_forward_pinned(&probe, inset, &case);
                 let spilled = probe.outside(inset);
                 assert!(spilled.is_empty(), "{case}: {spilled:?}");
+            }
+            let size = iced::Size::new(900.0, 720.0);
+            let view = || page.view_with_key_availability(Palette::DARK, false);
+            let forward = if step == Step::Details {
+                "Next"
+            } else {
+                "Import"
+            };
+            assert_eq!(click_at(view(), size, &[0, 0, 0]), ["Back"], "{label}");
+            if !retained {
+                assert_eq!(click_at(view(), size, &[0, 2, 0]), [forward], "{label}");
+            }
+            if retained {
+                // Beside Import at a normal width, wrapped under it when narrow.
+                for (width, wrapped) in [(900.0, false), (280.0, true)] {
+                    let mut strip = view();
+                    let size = iced::Size::new(width, 720.0);
+                    let probe = probe(&mut strip, size);
+                    let import = bounds_at(&probe.node, &[0, 2, 0, 0]);
+                    let kept = bounds_at(&probe.node, &[0, 2, 0, 1]);
+                    if wrapped {
+                        assert!(
+                            kept.y >= import.y + import.height - 0.01,
+                            "{import:?} {kept:?}"
+                        );
+                    } else {
+                        assert!(
+                            kept.x >= import.x + import.width - 0.01,
+                            "{import:?} {kept:?}"
+                        );
+                    }
+                    assert_eq!(
+                        click_at(view(), size, &[0, 2, 0, 0]),
+                        ["Import"],
+                        "{label} at {width}"
+                    );
+                    assert_eq!(
+                        click_at(view(), size, &[0, 2, 0, 1]),
+                        ["UseRetained"],
+                        "{label} at {width}"
+                    );
+                }
             }
         }
     }
