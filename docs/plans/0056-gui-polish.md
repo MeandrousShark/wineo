@@ -680,3 +680,25 @@ back. Delete `~/wineo-accept` when done.
 9. **All at once.** Sweep the pointer across cards, press Ctrl+-, flip the
    sort, and open the panel, in quick succession: nothing jumps, and
    everything settles.
+
+### Acceptance results (2026-10-25)
+
+The maintainer ran items 1 to 9 on their GPU, and all pass. Item 3 raised
+the star's glow and pop (answers 23 to 25), and item 8 raised Back's place
+on the Add screens (answer 26). Both are being fixed; check them with the
+items below once they land.
+
+10. **Star glow and pop.** Point at a card, then at its star: the star
+    turns the primary color and its chip darkens, fading in, and fades back
+    when the pointer moves off the star but stays on the card. A favorite's
+    filled star does the same. Click an outline star: the chip pops and a
+    ring ripples out once, staying clear of the eye and the next card. With
+    Favorites first on, the pop rides along as the card springs away.
+    Unfavoriting, F, the panel's star, and the context menu toggle with no
+    pop. Repeat in poster-only.
+11. **Back at the top.** Open each of New environment (details and review),
+    Import prefix (details and review), and Clone (details and review):
+    Back is at the top-left, and Next, Review, Create, Import, or Clone sits
+    alone in the pinned strip at the bottom, like the Heroic, Steam, and GOG
+    pages. In a short window the strip stays visible while the form
+    scrolls, and Esc and the mouse Back button still go back.
