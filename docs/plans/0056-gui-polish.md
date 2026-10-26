@@ -137,6 +137,11 @@ From acceptance (2026-10-25):
 25. **Only a click on the poster star pops.** F, the panel's star, and the
     context menu toggle without it. Reduced motion skips the pop, and
     the ring stays within the poster's corner.
+26. **Back is always at the top.** New environment (details and review),
+    Import prefix, and Clone move Back to the top, like Add's choices and
+    the Heroic, Steam, and GOG pages, and their forward action (Next,
+    Review, Create, Import, Clone) moves alone into the pinned strip at
+    the bottom, through `flow/frame.rs`.
 
 Added to the plan by the maintainer (2026-10-22), from the polish
 candidates:
