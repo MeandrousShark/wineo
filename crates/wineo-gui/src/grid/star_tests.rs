@@ -614,7 +614,7 @@ fn only_a_star_click_that_favorites_pops() {
     assert!(subscriptions(&app) > idle);
     // It runs to its end even with the pointer gone.
     let _ = app.update(Message::Hover(None));
-    pop_for(&mut app, 150);
+    pop_for(&mut app, crate::star_pop::POP.as_millis() as u64 * 45 / 100);
     let t = app.star_pops.progress("game").unwrap();
     assert!(t > 0.4 && t < 0.5, "{t}");
     pop_for(&mut app, crate::star_pop::POP.as_millis() as u64);
@@ -737,7 +737,8 @@ fn the_pops_ring_stays_in_the_stars_corner() {
         let what = format!("poster-only {poster_only} at {zoom}%");
         app.star_pops.clear();
         let plain = render(&mut app.card(&card), Size::new(400.0, 900.0));
-        for millis in [40, 100, 200, 280] {
+        let pop = crate::star_pop::POP.as_millis() as u64;
+        for millis in [12, 31, 62, 87].map(|percent| pop * percent / 100) {
             app.star_pops.start("game");
             let now = Instant::now();
             let generation = app.star_pops.generation();

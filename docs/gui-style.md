@@ -173,7 +173,7 @@ Plan [0054](plans/0054-library-sorting-and-favorites.md) added these.
   its icon tints to the primary color and its chip darkens to about 80%
   black, fading over the same 150 ms. A click that favorites the card also
   pops it: the chip springs up to the 28 px target and settles over about
-  320 ms while a thin primary ring ripples out once, clipped to the star's
+  240 ms while a thin primary ring ripples out once, clipped to the star's
   corner so it never reaches the eye, the top-left corner, or a neighbor.
   Unfavoriting, F, the panel star, and the menu don't pop it, and reduced
   motion skips the pop. It has no tooltip and no keyboard focus, since F,

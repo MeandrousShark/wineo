@@ -14,7 +14,7 @@ use iced::{Color, Element, Length, Point, Rectangle, Renderer, Size, Theme, bord
 
 use crate::zoom::ease_out;
 
-pub(crate) const POP: Duration = Duration::from_millis(320);
+pub(crate) const POP: Duration = Duration::from_millis(240);
 /// The share of the pop the chip takes to spring up; it settles over the
 /// rest.
 const RISE: f32 = 0.3;

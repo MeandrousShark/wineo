@@ -145,7 +145,10 @@ From acceptance (2026-10-25):
 27. **The pop peaks at 28 px.** At its peak the chip grows 2 px past its
     resting edge on each side, so at 60 to 62%, where a GOG badge sits
     flush against the star, it overlaps the badge by up to 2 px for about
-    96 ms. That's accepted. The ring never overlaps it.
+    70 ms. That's accepted. The ring never overlaps it.
+28. **The pop runs 240 ms.** It first ran 320 ms, and on the maintainer's
+    GPU it wanted to be a little snappier (2026-10-26). The curve is the
+    same, so the chip still peaks in the first 30%.
 
 Added to the plan by the maintainer (2026-10-22), from the polish
 candidates:
