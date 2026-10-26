@@ -714,7 +714,10 @@ or star, and star hover doesn't survive a dialog.
     ring ripples out once, staying clear of the eye and the next card. With
     Favorites first on, the pop rides along as the card springs away.
     Unfavoriting, F, the panel's star, and the context menu toggle with no
-    pop. Repeat in poster-only.
+    pop. Sweep the pointer fast along a row of favorites: the star it stops
+    on glows, and the card it stops on stays hovered. Point at a star, open
+    **Add** with the keyboard, move off the star, and close it: no star is
+    left glowing. Repeat in poster-only.
 11. **Back at the top.** Open each of New environment (details and review),
     Import prefix (details and review), and Clone (details and review):
     Back is at the top-left, and Next, Review, Create, Import, or Clone sits
