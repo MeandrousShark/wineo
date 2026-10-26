@@ -108,6 +108,19 @@ impl App {
         self.hover_fades.retain(|name| places.index(name).is_some());
     }
 
+    /// Drops the pops of cards no longer shown or no longer favorites.
+    pub(crate) fn sync_star_pops(&mut self) {
+        if !self.star_pops.active() {
+            return;
+        }
+        let places = self.grid_places();
+        let cards = &self.cards;
+        self.star_pops.retain(|name| {
+            places.index(name).is_some()
+                && cards.iter().any(|card| card.name == name && card.favorite)
+        });
+    }
+
     /// Where the shown cards belong at the shown zoom and dock. It's
     /// measured again only when the order or its cards (a rebuilt or kept
     /// order, or new cards), the zoom frame, the column count, the

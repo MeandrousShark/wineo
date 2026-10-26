@@ -76,13 +76,15 @@ fn click<M>(laid: &mut Laid<'_, M>, at: Point) -> Vec<M> {
     messages
 }
 
+/// The favorite toggles for `name`, from the poster star or anywhere else.
 fn toggles(messages: &[Message], name: &str) -> usize {
     messages
         .iter()
         .filter(|message| {
             matches!(
                 message,
-                Message::Mark(Event::Toggle(found, Flag::Favorite)) if found == name
+                Message::Mark(Event::Toggle(found, Flag::Favorite) | Event::PosterStar(found))
+                    if found == name
             )
         })
         .count()
@@ -563,5 +565,221 @@ fn the_pointer_on_the_star_lights_it_and_on_the_card_alone_doesnt() {
         assert_eq!(app.hovered.as_deref(), Some(name));
         assert_eq!(app.glowing_star(), None, "{name}");
         let _ = app.update(Message::Hover(None));
+    }
+}
+
+/// Hovers `name` and left-clicks its poster star, applying what that
+/// published.
+fn star_click(app: &mut App, name: &str) {
+    let _ = app.update(Message::Hover(Some(name.into())));
+    let mut laid = lay_out(app.grid(), grid_size(app));
+    let star = star_on(app, bounds_at(&laid.node, &[index(app, name)]));
+    let messages = click(&mut laid, star);
+    drop(laid);
+    assert_eq!(toggles(&messages, name), 1, "{messages:?}");
+    for message in messages {
+        let _ = app.update(message);
+    }
+}
+
+fn popping(app: &App, name: &str) -> bool {
+    app.star_pops.progress(name).is_some()
+}
+
+/// Runs the pops `millis` past their first frame.
+fn pop_for(app: &mut App, millis: u64) {
+    let now = Instant::now();
+    let generation = app.star_pops.generation();
+    let _ = app.update(Message::PopTick(generation, now));
+    let _ = app.update(Message::PopTick(
+        generation,
+        now + Duration::from_millis(millis),
+    ));
+}
+
+fn subscriptions(app: &App) -> usize {
+    iced::advanced::subscription::into_recipes(app.subscription()).len()
+}
+
+#[test]
+fn only_a_star_click_that_favorites_pops() {
+    let (_root, mut app) = fixture(&["game", "other"], &[], &[]);
+    let _ = crate::tests::settle_grid(&mut app);
+    let idle = subscriptions(&app);
+    assert!(!app.star_pops.active());
+    star_click(&mut app, "game");
+    assert!(favorite(&app, "game"));
+    assert_eq!(app.star_pops.progress("game"), Some(0.0));
+    assert!(!popping(&app, "other"));
+    assert!(subscriptions(&app) > idle);
+    // It runs to its end even with the pointer gone.
+    let _ = app.update(Message::Hover(None));
+    pop_for(&mut app, 150);
+    let t = app.star_pops.progress("game").unwrap();
+    assert!(t > 0.4 && t < 0.5, "{t}");
+    pop_for(&mut app, crate::star_pop::POP.as_millis() as u64);
+    assert!(!app.star_pops.active());
+    assert_eq!(
+        iced::advanced::subscription::into_recipes(app.star_pops.subscription()).len(),
+        0
+    );
+
+    // Unfavoriting by the star swaps back to the outline star without one.
+    star_click(&mut app, "game");
+    assert!(!favorite(&app, "game"));
+    assert!(!app.star_pops.active());
+
+    // F, the context menu row, and the panel star toggle without it.
+    let _ = app.update(Message::Select("game".into()));
+    let _ = app.update(Message::KeyWithFocus(
+        iced::keyboard::Key::Character("f".into()),
+        iced::keyboard::Modifiers::empty(),
+        iced::event::Status::Ignored,
+        false,
+    ));
+    assert!(favorite(&app, "game"));
+    assert!(!app.star_pops.active());
+    let _ = app.update(Message::Context("other".into()));
+    let _ = app.update(Message::Mark(Event::Toggle("other".into(), Flag::Favorite)));
+    assert!(favorite(&app, "other"));
+    assert!(!app.star_pops.active());
+    let _ = app.update(Message::Mark(Event::Toggle("game".into(), Flag::Favorite)));
+    let _ = app.update(Message::Mark(Event::Toggle("game".into(), Flag::Favorite)));
+    assert!(favorite(&app, "game"));
+    assert!(!app.star_pops.active());
+
+    // Once the glow and the grid settle, nothing asks for frames.
+    let _ = app.update(Message::ClosePanel);
+    let now = Instant::now() + Duration::from_secs(1);
+    let _ = app.update(Message::HoverTick(app.hover_fades.generation(), now));
+    let _ = app.update(Message::HoverTick(
+        app.hover_fades.generation(),
+        now + Duration::from_secs(1),
+    ));
+    let _ = crate::tests::settle_grid(&mut app);
+    let _ = app.update(Message::PanelTick(
+        app.panel_motion.generation(),
+        now + Duration::from_secs(2),
+    ));
+    assert_eq!(subscriptions(&app), idle);
+}
+
+#[test]
+fn reduced_motion_skips_the_pop_but_not_the_glow() {
+    let (_root, mut app) = fixture(&["game"], &[], &[]);
+    app.reduced_motion = true;
+    let _ = app.update(Message::Hover(Some("game".into())));
+    let _ = app.update(Message::StarHover(Some("game".into())));
+    assert_eq!(app.glowing_star(), Some("game"));
+    assert!(app.hover_fades.fading("game"));
+    star_click(&mut app, "game");
+    assert!(favorite(&app, "game"));
+    assert!(!app.star_pops.active());
+    assert!(app.hover_fades.fading("game"));
+}
+
+#[test]
+fn a_pop_follows_its_card_through_a_favorites_first_resort() {
+    let names = ["game-00", "game-01", "game-02", "game-03"];
+    let (_root, mut app) = fixture(&names, &[], &[]);
+    let _ = app.update(Message::Sort(
+        crate::sort_control::Event::ToggleFavoritesFirst,
+    ));
+    let _ = crate::tests::settle_grid(&mut app);
+    assert_ne!(index(&app, "game-03"), 0);
+    star_click(&mut app, "game-03");
+    assert_eq!(index(&app, "game-03"), 0);
+    assert!(app.grid_motion.active());
+    assert!(popping(&app, "game-03"));
+    assert!(!popping(&app, "game-00"));
+    pop_for(&mut app, 100);
+    let _ = crate::tests::settle_grid(&mut app);
+    assert!(popping(&app, "game-03"));
+    // Drawn on the card where it landed: the poster, the ring, then the
+    // marks.
+    let node = card_node(&app, &card_of(&app, "game-03"));
+    assert_eq!(layers(&node).len(), 3);
+    assert_eq!(
+        bounds_at(&node, &[0, 0, 0, 1, 0]).size(),
+        crate::library_actions::RING_BOX
+    );
+
+    // A card leaving the grid drops its pop.
+    star_click(&mut app, "game-02");
+    assert!(popping(&app, "game-02"));
+    let _ = app.update(Message::SearchChanged("game-03".into()));
+    assert!(!popping(&app, "game-02"));
+    assert!(popping(&app, "game-03"));
+    // Cards displaced from their slots drop their pops too.
+    let _ = app.update(Message::SearchChanged(String::new()));
+    let _ = crate::tests::settle_grid(&mut app);
+    assert!(popping(&app, "game-03"));
+    for _ in 0..10 {
+        let _ = app.update(Message::SectionClicked(crate::sidebar::Section::Library));
+    }
+    assert!(!app.collapse.idle());
+    assert!(!app.star_pops.active());
+    let _ = app.update(Message::StarHover(Some("game-00".into())));
+    assert_eq!(app.glowing_star(), None);
+}
+
+#[test]
+fn the_pops_ring_stays_in_the_stars_corner() {
+    let mut app = crate::tests::app();
+    let mut card = crate::tests::card("game", State::Running, 60);
+    card.favorite = true;
+    card.hidden = true;
+    gog(&mut card);
+    app.cards = vec![card.clone()];
+    for (poster_only, zoom) in [(true, 60), (false, 60), (false, 100), (false, 200)] {
+        app.poster_only = poster_only;
+        app.zoom = zoom;
+        let what = format!("poster-only {poster_only} at {zoom}%");
+        app.star_pops.clear();
+        let plain = render(&mut app.card(&card), Size::new(400.0, 900.0));
+        for millis in [40, 100, 200, 280] {
+            app.star_pops.start("game");
+            let now = Instant::now();
+            let generation = app.star_pops.generation();
+            app.star_pops.tick(generation, now);
+            app.star_pops
+                .tick(generation, now + Duration::from_millis(millis));
+            let node = card_node(&app, &card);
+            let layers = layers(&node);
+            let art = bounds_at(&node, &[0, 0]);
+            let ring = bounds_at(&node, &[0, 0, 0, layers.len() - 2, 0]);
+            let eye = mark_chip(&node, 1);
+            let chip = app.grid_layout().text().chip();
+            let (corner, _) = gog_at(&node, chip);
+            assert_eq!(ring.size(), crate::library_actions::RING_BOX, "{what}");
+            // Inside the art, clear of the eye and the top-left corner.
+            assert!(art.contains(ring.position()), "{what}");
+            assert!(ring.x + ring.width <= art.x + art.width + 0.01, "{what}");
+            assert!(ring.y + ring.height <= eye.y, "{what} {ring:?} {eye:?}");
+            assert!(
+                corner.x + corner.width <= ring.x + 0.01,
+                "{what} {corner:?}"
+            );
+            // Nothing else on the card changes as it draws.
+            let popped = render(&mut app.card(&card), Size::new(400.0, 900.0));
+            let star = Rectangle::new(
+                eye.position() - Vector::new(2.0, 30.0),
+                Size::new(STAR_TARGET, STAR_TARGET),
+            );
+            let mut rippled = false;
+            for (index, (plain, popped)) in plain.chunks(4).zip(popped.chunks(4)).enumerate() {
+                let at = Point::new((index % 400) as f32 + 0.5, (index / 400) as f32 + 0.5);
+                if !ring.contains(at) && !star.contains(at) {
+                    assert_eq!(plain, popped, "{what} at {at:?} after {millis} ms");
+                } else if !star.contains(at) && plain != popped {
+                    rippled = true;
+                }
+            }
+            // Once it's spread past the star's own cell, and before it's
+            // all but faded, the ring shows.
+            if (100..=200).contains(&millis) {
+                assert!(rippled, "{what} after {millis} ms");
+            }
+        }
     }
 }

@@ -126,13 +126,15 @@ fn left_click(app: &App, card: &Card, at: Point) -> Vec<Message> {
     messages
 }
 
+/// The favorite toggles for `name`, from the poster star or anywhere else.
 fn toggles(messages: &[Message], name: &str) -> usize {
     messages
         .iter()
         .filter(|message| {
             matches!(
                 message,
-                Message::Mark(Event::Toggle(found, Flag::Favorite)) if found == name
+                Message::Mark(Event::Toggle(found, Flag::Favorite) | Event::PosterStar(found))
+                    if found == name
             )
         })
         .count()

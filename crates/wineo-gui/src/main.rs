@@ -62,6 +62,7 @@ mod size;
 mod snapshots_page;
 mod sort_control;
 mod spinner;
+mod star_pop;
 mod task;
 #[cfg(test)]
 #[allow(dead_code)]
@@ -160,6 +161,7 @@ pub(crate) struct App {
     panel_motion: panel_motion::PanelMotion,
     grid_motion: grid_motion::GridMotion,
     hover_fades: hover_fade::HoverFades,
+    pub(crate) star_pops: star_pop::StarPops,
     details_fade: details_fade::DetailsFade,
     /// `grid_places` for the inputs it was measured from.
     places: std::cell::RefCell<Option<(grid_motion::PlacesKey, std::rc::Rc<grid_motion::Places>)>>,
@@ -366,6 +368,7 @@ pub(crate) enum Message {
     PanelTick(u64, Instant),
     GridTick(u64, Instant),
     HoverTick(u64, Instant),
+    PopTick(u64, Instant),
     DetailsTick(u64, Instant),
     Key(keyboard::Key, keyboard::Modifiers, iced::event::Status),
     Modifiers(keyboard::Modifiers),
@@ -482,6 +485,7 @@ impl App {
             panel_motion: panel_motion::PanelMotion::default(),
             grid_motion: grid_motion::GridMotion::default(),
             hover_fades: hover_fade::HoverFades::default(),
+            star_pops: star_pop::StarPops::default(),
             details_fade: details_fade::DetailsFade::default(),
             places: Default::default(),
             collapse: collapse::Collapse::default(),
@@ -718,6 +722,7 @@ impl App {
             panel_motion,
             grid_motion,
             self.hover_fades.subscription(),
+            self.star_pops.subscription(),
             self.details_fade.subscription(),
             zoom,
             collapse,
@@ -735,6 +740,7 @@ impl App {
         let task = self.update_message(message);
         // One place for every path that changes the hover or selection.
         self.sync_hover_fades();
+        self.sync_star_pops();
         self.details_fade.sync(self.details_full());
         // One rule for every way a screen opens: see `prefix_facts`.
         if self.screen_key() != screen {
@@ -1096,6 +1102,10 @@ impl App {
                 self.hover_fades.tick(generation, now);
                 Task::none()
             }
+            Message::PopTick(generation, now) => {
+                self.star_pops.tick(generation, now);
+                Task::none()
+            }
             Message::DetailsTick(generation, now) => {
                 self.details_fade.tick(generation, now);
                 Task::none()
@@ -1330,6 +1340,7 @@ impl App {
         self.action_menu = None;
         self.hovered = None;
         self.star_hovered = None;
+        self.star_pops.clear();
         if self.reduced_motion {
             self.collapse.fade(now);
         } else {

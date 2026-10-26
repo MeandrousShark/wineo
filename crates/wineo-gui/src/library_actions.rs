@@ -34,6 +34,16 @@ const MARK_MARGIN: f32 = 8.0;
 /// The poster star's click target, centered on its chip.
 pub(crate) const STAR_TARGET: f32 = 28.0;
 const MARK_INSET: f32 = (STAR_TARGET - MARK_SIZE) / 2.0;
+/// The pop's ring: from the chip's edge out to short of the art's edges,
+/// drawn in a corner box that ends at the chip's left, where a GOG badge
+/// can touch it, and at the top of the eye's slot.
+const RING_FROM: f32 = MARK_SIZE / 2.0;
+const RING_TO: f32 = 18.0;
+const RING_WIDTH: f32 = 1.5;
+pub(crate) const RING_BOX: iced::Size = iced::Size::new(
+    MARK_MARGIN + MARK_SIZE,
+    MARK_MARGIN - MARK_INSET + STAR_TARGET,
+);
 const CHIP_DOT: f32 = 10.0;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -88,9 +98,11 @@ impl Flag {
 
 #[derive(Debug, Clone)]
 pub(crate) enum Event {
-    /// The context menu row, the panel star, or the poster star for this
-    /// card.
+    /// The context menu row or the panel star for this card.
     Toggle(String, Flag),
+    /// A left click on this card's poster star, which pops it when it
+    /// favorites the card.
+    PosterStar(String),
     /// A write finished.
     Saved(Saved),
 }
@@ -98,7 +110,7 @@ pub(crate) enum Event {
 impl Event {
     /// Input from the controls, which an overlay or dialog blocks.
     pub(crate) fn is_input(&self) -> bool {
-        matches!(self, Self::Toggle(..))
+        matches!(self, Self::Toggle(..) | Self::PosterStar(_))
     }
 }
 
@@ -202,6 +214,20 @@ pub(crate) fn update(app: &mut App, event: Event) -> Task<Message> {
         Event::Toggle(name, flag) => {
             app.action_menu = None;
             app.toggle_flag(&name, flag)
+        }
+        Event::PosterStar(name) => {
+            app.action_menu = None;
+            let favorite = |app: &App| {
+                app.cards
+                    .iter()
+                    .any(|card| card.name == name && card.favorite)
+            };
+            let was = favorite(app);
+            let task = app.toggle_flag(&name, Flag::Favorite);
+            if !was && favorite(app) && !app.reduced_motion && app.collapse.idle() {
+                app.star_pops.start(&name);
+            }
+            task
         }
         Event::Saved(saved) => app.flag_saved(saved),
     }
@@ -432,6 +458,7 @@ pub(crate) fn poster_marks(
         fade: if hovered { 1.0 } else { 0.0 },
         glow: 0.0,
         primary: Color::WHITE,
+        lift: 0.0,
     };
     poster_marks_faded(card, alpha, hovered, star)
 }
@@ -446,6 +473,8 @@ pub(crate) struct StarLook {
     pub(crate) glow: f32,
     /// What the icon tints to as it lights up, at full opacity.
     pub(crate) primary: Color,
+    /// How far the chip has grown toward the target in a pop, 0 to 1.
+    pub(crate) lift: f32,
 }
 
 /// `poster_marks` with the star drawn as `look` says.
@@ -467,20 +496,22 @@ pub(crate) fn poster_marks_faded(
         } else {
             (STAR_OUTLINE, look.fade)
         };
+        let size = MARK_SIZE + (STAR_TARGET - MARK_SIZE) * look.lift;
         let chip = mark_lit(
             bytes,
             alpha * strength,
             ui::blend(Color::WHITE, look.primary, look.glow),
             MARK_BACKDROP + (GLOW_BACKDROP - MARK_BACKDROP) * look.glow,
+            size,
         );
         // A star fading out with the hover takes no presses.
         let star = button(chip)
             .width(STAR_TARGET)
             .height(STAR_TARGET)
-            .padding(MARK_INSET)
+            .padding((STAR_TARGET - size) / 2.0)
             .on_press_maybe(
                 (card.favorite || hovered)
-                    .then(|| Message::Mark(Event::Toggle(card.name.clone(), Flag::Favorite))),
+                    .then(|| Message::Mark(Event::PosterStar(card.name.clone()))),
             )
             .style(|_, _| button::Style::default());
         // A left press is the button's, so only the pointer's coming and
@@ -531,27 +562,51 @@ pub(crate) fn status_chip(color: Color, alpha: f32) -> Element<'static, Message>
 }
 
 fn mark(bytes: &'static [u8], alpha: f32) -> Element<'static, Message> {
-    mark_lit(bytes, alpha, Color::WHITE, MARK_BACKDROP)
+    mark_lit(bytes, alpha, Color::WHITE, MARK_BACKDROP, MARK_SIZE)
 }
 
-/// A mark with its icon in `tint` on a `backdrop` black backing.
+/// A mark `size` across with its icon in `tint` on a `backdrop` black
+/// backing.
 fn mark_lit(
     bytes: &'static [u8],
     alpha: f32,
     tint: Color,
     backdrop: f32,
+    size: f32,
 ) -> Element<'static, Message> {
     // The renderer's tint ignores its alpha, so the icon fades by opacity.
-    container(icon(bytes, tint, MARK_ICON).opacity(alpha))
-        .width(MARK_SIZE)
-        .height(MARK_SIZE)
-        .center(MARK_SIZE)
+    container(icon(bytes, tint, MARK_ICON * size / MARK_SIZE).opacity(alpha))
+        .width(size)
+        .height(size)
+        .center(size)
         .style(move |_| {
             container::Style::default()
                 .background(Color::BLACK.scale_alpha(backdrop * alpha))
-                .border(border::rounded(MARK_SIZE / 2.0))
+                .border(border::rounded(size / 2.0))
         })
         .into()
+}
+
+/// The pop's ring around the poster star at `t` of the pop, in `primary`
+/// at the card's `alpha`. It's clipped to the star's corner, so it never
+/// draws over the eye, the top-left corner, or past the art.
+pub(crate) fn star_ring(t: f32, primary: Color, alpha: f32) -> Element<'static, Message> {
+    let (growth, strength) = crate::star_pop::ring(t);
+    let radius = RING_FROM + (RING_TO - RING_FROM) * growth;
+    // The chip's center within the box.
+    let center = iced::Point::new(MARK_SIZE / 2.0, MARK_MARGIN + MARK_SIZE / 2.0);
+    container(crate::star_pop::clipped_ring(
+        RING_BOX,
+        center,
+        radius,
+        RING_WIDTH,
+        primary.scale_alpha(strength * alpha),
+    ))
+    .width(Fill)
+    .height(Fill)
+    .align_right(Fill)
+    .align_top(Fill)
+    .into()
 }
 
 impl App {

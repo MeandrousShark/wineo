@@ -482,10 +482,19 @@ impl App {
                     }),
             );
         }
+        let pop = self.star_pops.progress(&card.name);
+        if let Some(t) = pop {
+            layers = layers.push(crate::library_actions::star_ring(
+                t,
+                self.palette.primary,
+                alpha,
+            ));
+        }
         let look = crate::library_actions::StarLook {
             fade: star,
             glow,
             primary: self.palette.primary,
+            lift: pop.map_or(0.0, crate::star_pop::lift),
         };
         if let Some(marks) = crate::library_actions::poster_marks_faded(card, alpha, hovered, look)
         {
