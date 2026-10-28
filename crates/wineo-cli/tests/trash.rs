@@ -232,3 +232,81 @@ fn canceling_interactive_prune_keeps_the_entry() {
     }
     assert!(stdout(&f.run(&["trash", "list"])).contains(&id));
 }
+
+fn manifest_path(f: &Fixture, id: &str) -> std::path::PathBuf {
+    f.root
+        .path()
+        .join(format!("data/wineo/trash/{id}/manifest.toml"))
+}
+
+fn unsupported(f: &Fixture, name: &str) -> String {
+    let id = remove(f, name);
+    let path = manifest_path(f, &id);
+    let text = fs::read_to_string(&path).unwrap();
+    fs::write(&path, text.replacen("version = 1", "version = 2", 1)).unwrap();
+    id
+}
+
+#[test]
+fn an_unreadable_entry_lists_as_a_row_and_blocks_only_its_environment() {
+    let f = Fixture::new();
+    let good = remove(&f, "good");
+    let bad = unsupported(&f, "game");
+    native(&f, "game");
+    native(&f, "other");
+
+    let listed = f.run(&["trash"]);
+    assert_success(&listed);
+    let listing = stdout(&listed);
+    assert!(listing.contains(&good), "{listing}");
+    let row = listing.lines().find(|line| line.contains(&bad)).unwrap();
+    assert!(row.contains("unreadable"), "{row}");
+    assert!(row.contains("unsupported manifest version 2"), "{row}");
+
+    assert_success(&f.run(&["config", "other"]));
+    let blocked = f.run(&["config", "game"]);
+    assert!(!blocked.status.success());
+    let message = stderr(&blocked);
+    assert!(message.contains(&bad), "{message}");
+    assert!(message.contains("blocks game"), "{message}");
+}
+
+#[test]
+fn an_unparseable_entry_blocks_every_environment_but_still_lists() {
+    let f = Fixture::new();
+    let good = remove(&f, "good");
+    let bad = remove(&f, "game");
+    fs::write(manifest_path(&f, &bad), "not a manifest").unwrap();
+    native(&f, "other");
+
+    let listing = stdout(&f.run(&["trash"]));
+    assert!(listing.contains(&good), "{listing}");
+    assert!(listing.contains(&bad), "{listing}");
+    let blocked = f.run(&["config", "other"]);
+    assert!(!blocked.status.success());
+    assert!(stderr(&blocked).contains("blocks every environment"));
+    let refused = f.run(&["prune", &bad, "--yes"]);
+    assert!(!refused.status.success());
+    assert!(stderr(&refused).contains("remove it by hand"));
+    assert!(manifest_path(&f, &bad).exists());
+}
+
+#[test]
+fn prune_deletes_an_unreadable_entry_by_id_and_validate_fix_does_not() {
+    let f = Fixture::new();
+    let bad = unsupported(&f, "game");
+
+    let validated = f.run(&["validate", "--fix"]);
+    assert!(!validated.status.success());
+    assert!(stdout(&validated).contains(&format!("wineo prune {bad}")));
+    assert!(manifest_path(&f, &bad).exists());
+
+    let refused = f.run(&["prune", &bad]);
+    assert!(!refused.status.success());
+    assert!(manifest_path(&f, &bad).exists());
+    let pruned = f.run(&["prune", &bad, "--yes"]);
+    assert_success(&pruned);
+    assert!(stdout(&pruned).contains("unreadable: unsupported manifest version 2"));
+    assert!(!manifest_path(&f, &bad).exists());
+    assert_success(&f.run(&["validate"]));
+}

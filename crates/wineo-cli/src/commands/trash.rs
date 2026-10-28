@@ -20,7 +20,9 @@ pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
     match args.action {
         None | Some(Action::List) => {
             let now = jiff::Timestamp::now();
-            let rows: Vec<_> = trash::list(paths)?
+            let survey = trash::survey(paths)?;
+            let mut rows: Vec<_> = survey
+                .entries
                 .into_iter()
                 .map(|entry| {
                     // A damaged manifest should still list, so show its raw time
@@ -49,6 +51,14 @@ pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
                     ]
                 })
                 .collect();
+            rows.extend(survey.unreadable.into_iter().map(|entry| {
+                [
+                    entry.id,
+                    entry.blocks.clone().unwrap_or_else(|| "-".to_owned()),
+                    "unreadable".to_owned(),
+                    format!("{}; see `wineo validate`", entry.reason),
+                ]
+            }));
             if rows.is_empty() {
                 eprintln!("Trash is empty");
             }

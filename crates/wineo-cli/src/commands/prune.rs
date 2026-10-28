@@ -53,7 +53,7 @@ pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
     for (id, error) in &review.errors {
         eprintln!("Could not review trash entry {id}: {error}");
     }
-    if review.entries.is_empty() {
+    if review.entries.is_empty() && review.unreadable.is_empty() {
         println!("No trash entries selected.");
         return Ok(if review.errors.is_empty() {
             ExitCode::SUCCESS
@@ -73,6 +73,14 @@ pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
             } else {
                 "not included"
             }
+        );
+    }
+    for entry in &review.unreadable {
+        println!(
+            "  {}  {}  unreadable: {}",
+            entry.id,
+            entry.scope(),
+            entry.reason
         );
     }
     if !args.yes {

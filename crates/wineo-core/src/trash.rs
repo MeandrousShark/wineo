@@ -31,6 +31,7 @@ mod payload;
 mod rebind;
 mod remove;
 mod restore;
+mod unreadable;
 
 pub(crate) use identity::foreign_mount;
 #[cfg(test)]
@@ -38,6 +39,7 @@ pub(crate) use identity::set_fake_mounts;
 use identity::{
     delete_owned, identity, parent, preflight_tree, require, require_same_mount_as_parent, sync,
 };
+pub use manifest::Unverifiable;
 #[cfg(any(test, feature = "test-support"))]
 pub use manifest::take_manifest_reads;
 use manifest::{read_manifest, write_manifest};
@@ -52,6 +54,7 @@ pub use rebind::rebind_identities;
 pub use remove::{RemoveEvent, remove, remove_with, remove_with_force};
 pub use restore::restore;
 use restore::{complete_entry, restore_locked};
+pub use unreadable::{Survey, Unreadable, survey};
 
 const VERSION: u32 = 1;
 const MANIFEST: &str = "manifest.toml";
@@ -273,8 +276,13 @@ fn raw_entries(paths: &Paths) -> Result<Vec<String>> {
         if id.starts_with(".wineo-manifest-") && entry.file_type()?.is_file() {
             continue;
         }
-        if !id_valid(&id) || !entry.file_type()?.is_dir() || entry.file_type()?.is_symlink() {
+        if !id_valid(&id) {
             bail!("unexpected trash entry at {}", entry.path().display());
+        }
+        // Reading it reports one unreadable entry rather than failing the scan.
+        if !entry.file_type()?.is_dir() {
+            ids.push(id);
+            continue;
         }
         // A crash before the first manifest publication, or after its final
         // unlink, can leave an empty ID directory but no owned payload.
@@ -415,6 +423,15 @@ impl PendingScan {
         }
     }
 
+    /// The unreadable trash entry that stops `name` loading, if that is what
+    /// stops it.
+    pub fn blocking_unreadable(&self, paths: &Paths, name: &str) -> Option<&Unverifiable> {
+        match self.find(paths, name, &[]) {
+            Err(Blocked::Stored(slot @ Slot::Manifest(_))) => self.stored(slot).downcast_ref(),
+            _ => None,
+        }
+    }
+
     fn stored(&self, slot: Slot) -> &anyhow::Error {
         let manifests = self.manifests.get();
         match (slot, manifests) {
@@ -453,9 +470,17 @@ impl PendingScan {
             .as_ref()
             .map_err(|_| Blocked::Stored(Slot::Manifests))?;
         for (index, manifest) in manifests.iter().enumerate() {
-            let manifest = manifest
-                .as_ref()
-                .map_err(|_| Blocked::Stored(Slot::Manifest(index)))?;
+            let manifest = match manifest {
+                Ok(manifest) => manifest,
+                Err(err)
+                    if err
+                        .downcast_ref::<Unverifiable>()
+                        .is_some_and(|found| !found.applies(paths, name, affected)) =>
+                {
+                    continue;
+                }
+                Err(_) => return Err(Blocked::Stored(Slot::Manifest(index))),
+            };
             Self::check_manifest(paths, manifest, name, affected).map_err(Blocked::Found)?;
         }
         Ok(())
@@ -641,9 +666,13 @@ fn locked(
 #[derive(Debug, Clone)]
 pub struct PruneReview {
     pub entries: Vec<Entry>,
+    /// An unreadable entry selected by ID that is safe to delete. Pruned
+    /// after `entries`.
+    pub unreadable: Vec<Unreadable>,
     pub cutoff: Option<jiff::Timestamp>,
     pub errors: Vec<(String, String)>,
     fingerprints: Vec<String>,
+    unreadable_fingerprints: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -676,6 +705,25 @@ fn review_prune_at(
     let mut selected = Vec::new();
     let mut fingerprints = Vec::new();
     let mut errors = Vec::new();
+    if let Selector::Id(id) = selector
+        && let Some(found) = unreadable::unreadable(paths, id)?
+    {
+        if let Err(why) = &found.deletable {
+            bail!(
+                "trash entry {id} is unreadable ({}) and can't be deleted safely ({why}); inspect {} and remove it by hand",
+                found.reason,
+                found.dir.display()
+            );
+        }
+        return Ok(PruneReview {
+            entries: Vec::new(),
+            unreadable_fingerprints: vec![unreadable::fingerprint(&found.dir)?],
+            unreadable: vec![found],
+            cutoff,
+            errors,
+            fingerprints,
+        });
+    }
     for id in ids {
         let entry = match inspect(paths, &id) {
             Ok(entry) => entry,
@@ -700,9 +748,11 @@ fn review_prune_at(
     }
     Ok(PruneReview {
         entries: selected,
+        unreadable: Vec::new(),
         cutoff,
         errors,
         fingerprints,
+        unreadable_fingerprints: Vec::new(),
     })
 }
 
@@ -770,7 +820,31 @@ pub fn prune_reviewed(paths: &Paths, review: &PruneReview) -> Vec<(String, Resul
             });
             (entry.id.clone(), result)
         })
+        .chain(
+            review
+                .unreadable
+                .iter()
+                .zip(&review.unreadable_fingerprints)
+                .map(|(entry, fingerprint)| {
+                    (
+                        entry.id.clone(),
+                        unreadable::delete(paths, &entry.id, fingerprint),
+                    )
+                }),
+        )
         .collect()
+}
+
+/// Reviews and deletes one unreadable entry, when that is safe.
+pub fn delete_unreadable(paths: &Paths, id: &str) -> Result<()> {
+    let review = review_prune(paths, Selector::Id(id))?;
+    if review.unreadable.is_empty() {
+        bail!("trash entry {id} can be read now; check again");
+    }
+    for (_, result) in prune_reviewed(paths, &review) {
+        result?;
+    }
+    Ok(())
 }
 
 pub fn recover(paths: &Paths, id: &str) -> Result<Vec<String>> {

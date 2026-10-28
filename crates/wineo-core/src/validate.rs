@@ -260,6 +260,11 @@ pub enum Fix {
     RecoverTrash {
         id: String,
     },
+    /// Deletes an unreadable trash entry, only through `apply_single`, since
+    /// it permanently deletes what the entry kept.
+    DeleteTrashEntry {
+        id: String,
+    },
     /// Rolls back an interrupted restore only through `apply_single`.
     RecoverSnapshot {
         environment: String,
@@ -285,7 +290,10 @@ pub enum Fix {
 impl Fix {
     /// Whether this fix can be included in a batch.
     pub fn is_batch_safe(&self) -> bool {
-        !matches!(self, Self::RecoverSnapshot { .. })
+        !matches!(
+            self,
+            Self::RecoverSnapshot { .. } | Self::DeleteTrashEntry { .. }
+        )
     }
 
     /// What the fix does, in a few words.
@@ -333,6 +341,7 @@ impl Fix {
                 format!("Remove {environment}'s leftover play stats")
             }
             Fix::RecoverTrash { id } => format!("Recover interrupted trash entry {id}"),
+            Fix::DeleteTrashEntry { id } => format!("Delete unreadable trash entry {id}"),
             Fix::RecoverSnapshot { environment } => {
                 format!("Roll back {environment}'s interrupted snapshot restore")
             }
@@ -875,8 +884,45 @@ fn check_trash(
             None,
         )),
     }
-    match trash::list(paths) {
-        Ok(entries) => {
+    match trash::survey(paths) {
+        Ok(trash::Survey {
+            entries,
+            unreadable,
+        }) => {
+            for entry in unreadable {
+                if let Some(name) = &entry.blocks {
+                    pending.insert(name.clone());
+                }
+                if selected.is_some_and(|name| entry.blocks.as_ref().is_some_and(|b| b != name)) {
+                    continue;
+                }
+                let (advice, fix) = match &entry.deletable {
+                    Ok(()) => (
+                        format!("delete it with `wineo prune {}`", entry.id),
+                        Some(Fix::DeleteTrashEntry {
+                            id: entry.id.clone(),
+                        }),
+                    ),
+                    Err(why) => (
+                        format!(
+                            "{why}, so inspect {} and remove it by hand",
+                            entry.dir.display()
+                        ),
+                        None,
+                    ),
+                };
+                report.push(Problem::new(
+                    Code::TrashInvalid,
+                    entry.blocks.as_deref(),
+                    format!(
+                        "trash entry {} is unreadable ({}) and blocks {}; {advice}",
+                        entry.id,
+                        entry.reason,
+                        entry.scope()
+                    ),
+                    fix,
+                ));
+            }
             for entry in entries {
                 if entry.phase == Phase::Trashed || marked.contains(&entry.id) {
                     continue;
@@ -1744,9 +1790,16 @@ pub fn apply_single(
     winetricks_events: impl FnMut(winetricks::WinetricksEvent),
     download: impl FnOnce(Component, Option<&str>) -> anyhow::Result<()>,
 ) -> anyhow::Result<Vec<Note>> {
-    if let Fix::RecoverSnapshot { environment } = fix {
-        snapshot::recover(paths, environment)?;
-        return Ok(Vec::new());
+    match fix {
+        Fix::RecoverSnapshot { environment } => {
+            snapshot::recover(paths, environment)?;
+            return Ok(Vec::new());
+        }
+        Fix::DeleteTrashEntry { id } => {
+            trash::delete_unreadable(paths, id)?;
+            return Ok(Vec::new());
+        }
+        _ => {}
     }
     apply(
         paths,
@@ -1824,6 +1877,9 @@ pub fn apply(
         }
         Fix::RecoverSnapshot { .. } => {
             anyhow::bail!("snapshot recovery must be applied by itself with apply_single");
+        }
+        Fix::DeleteTrashEntry { .. } => {
+            anyhow::bail!("deleting a trash entry must be applied by itself with apply_single");
         }
         Fix::ForgetGogFolder { folder } => {
             let cancel = || token.is_canceled();
