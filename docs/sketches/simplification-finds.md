@@ -1,9 +1,9 @@
 # Simplification finds
 
 Places where wineo does avoidable work or repeats itself, found in a code
-review and looked over by the maintainer (2026-10-27). Parked as a sketch
-for now, with no backlog row yet; a row in [features.md](../features.md)
-can link here once it's picked up. Line numbers are as of 0.38.1.
+review and looked over by the maintainer (2026-10-27). Backlog row in
+[features.md](../features.md): Perf, priority 3. The row keeps its priority
+and status; this page keeps the detail. Line numbers are as of 0.38.1.
 
 None of these changes behavior, so each should land with tests showing
 the output is the same, and the reading ones with a check that the file
