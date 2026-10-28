@@ -1043,3 +1043,36 @@ fn a_pending_delete_of_a_theme_already_gone_is_dropped() {
     assert!(form.themes.iter().any(|theme| theme.id == "custom:other"));
     assert_eq!(form.changes(), 2, "the copy and the slot");
 }
+
+#[test]
+fn a_rebase_takes_appearance_fields_the_draft_did_not_change() {
+    // Every partial failure before library.toml is a theme file's, which is
+    // an edit of its own, so this drives the rebase the save's reload does.
+    let mut form = appearance::Form::new(crate::theme::Appearance::default(), Vec::new());
+    form.apply(Edit::Theme(Slot::Dark, "cellar".into()), Mode::Dark);
+    let on_disk = crate::theme::Appearance {
+        light: "catppuccin-latte".into(),
+        ..Default::default()
+    };
+    form.rebase(on_disk, Vec::new());
+    assert_eq!(form.draft.dark, "cellar", "the draft's edit stays");
+    assert_eq!(
+        form.draft.light, "catppuccin-latte",
+        "the outside change shows"
+    );
+    assert_eq!(form.changes(), 1);
+    let save = form.edits().unwrap().appearance.unwrap();
+    assert_eq!(save.light, "catppuccin-latte", "Save doesn't put it back");
+    // A slot the theme merge repoints counts as the draft's change.
+    let mut form = appearance::Form::new(
+        following("custom:night"),
+        vec![custom("night", "Night", None, false)],
+    );
+    form.apply(
+        Edit::Color("custom:night".into(), 5, "#222222".into()),
+        Mode::Dark,
+    );
+    form.rebase(following("custom:night"), Vec::new());
+    assert!(appearance::is_new(&form.draft.dark));
+    assert_eq!(form.changes(), 2, "the moved theme and its slot");
+}

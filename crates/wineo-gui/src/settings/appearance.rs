@@ -408,6 +408,7 @@ impl Form {
     /// files, so a hand edit shows.
     pub(crate) fn rebase(&mut self, appearance: Appearance, themes: Vec<Custom>) {
         if self.is_dirty() {
+            self.merge_settings(&appearance);
             self.merge_themes(&themes);
         } else {
             self.draft = appearance.clone();
@@ -416,6 +417,31 @@ impl Form {
         }
         self.loaded = appearance;
         self.loaded_themes = themes;
+    }
+    /// Each `[appearance]` field the draft didn't change takes the new
+    /// base's value, so an outside change to it isn't counted or overwritten.
+    /// Runs before the theme merge, whose repointed slots then count as the
+    /// draft's.
+    fn merge_settings(&mut self, new: &Appearance) {
+        fn pick<T: PartialEq + Clone>(old: &T, draft: &mut T, new: &T) {
+            if draft == old {
+                draft.clone_from(new);
+            }
+        }
+        let (old, draft) = (&self.loaded, &mut self.draft);
+        pick(
+            &old.follow_system,
+            &mut draft.follow_system,
+            &new.follow_system,
+        );
+        pick(&old.dark, &mut draft.dark, &new.dark);
+        pick(&old.light, &mut draft.light, &new.light);
+        pick(&old.theme, &mut draft.theme, &new.theme);
+        pick(
+            &old.improve_readability,
+            &mut draft.improve_readability,
+            &new.improve_readability,
+        );
     }
     /// A three-way merge of each theme against the old base, the new one,
     /// and the draft, so a change on disk shows unless the draft changed the
