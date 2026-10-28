@@ -188,6 +188,7 @@ impl App {
             || self.panel_hidden()
             || self.change.is_some()
             || self.library_problem.is_some()
+            || self.trash_blocks_all()
             || self.error.is_some()
         {
             return None;

@@ -15,6 +15,7 @@ use crate::{App, Message, focus_button};
 pub(crate) const SHOW_HIDDEN_ID: &str = "library-empty-show-hidden";
 pub(crate) const CLEAR_ID: &str = "library-empty-clear";
 pub(crate) const CHECKUP_ID: &str = "library-banner-checkup";
+pub(crate) const TRASH_CHECKUP_ID: &str = "trash-banner-checkup";
 
 const SEARCH_ICON: &[u8] = br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><circle cx="10.5" cy="10.5" r="6.5" fill="none" stroke="#000" stroke-width="1.8"/><path d="M15.5 15.5L20 20" fill="none" stroke="#000" stroke-width="1.8" stroke-linecap="round"/></svg>"##;
 const EYE_ICON: &[u8] = br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12z" fill="none" stroke="#000" stroke-width="1.8" stroke-linejoin="round"/><circle cx="12" cy="12" r="3" fill="none" stroke="#000" stroke-width="1.8"/><path d="M4 20L20 4" fill="none" stroke="#000" stroke-width="1.8" stroke-linecap="round"/></svg>"##;
@@ -147,43 +148,59 @@ impl App {
     /// The banner for a `library.toml` that can't be used, if it can't.
     pub(crate) fn library_banner(&self) -> Option<Element<'_, Message>> {
         let problem = self.library_problem.as_ref()?;
+        // A newer wineo's file has no repair to offer.
+        let id = (!problem.newer_version).then_some(CHECKUP_ID);
+        Some(self.banner(banner_text(problem), id))
+    }
+
+    /// Whether an unreadable trash entry blocks every environment.
+    pub(crate) fn trash_blocks_all(&self) -> bool {
+        self.cards.iter().any(|card| card.trash_blocks_all)
+    }
+
+    /// The banner for an unreadable trash entry that blocks every environment.
+    pub(crate) fn trash_banner(&self) -> Option<Element<'_, Message>> {
+        self.trash_blocks_all().then(|| {
+            self.banner(
+                "An unreadable trash entry blocks every environment.".into(),
+                Some(TRASH_CHECKUP_ID),
+            )
+        })
+    }
+
+    /// A warning strip under the toolbar, with Open Checkup when `checkup`
+    /// names its focus ID.
+    fn banner(&self, words: String, checkup: Option<&'static str>) -> Element<'_, Message> {
         let palette = self.palette;
-        let message = text(banner_text(problem))
-            .size(13)
-            .color(palette.foreground)
-            .width(Fill);
-        let content: Element<'_, Message> = if problem.newer_version {
-            // A newer wineo's file has no repair to offer.
-            message.into()
-        } else {
-            crate::ends::ends(
+        let message = text(words).size(13).color(palette.foreground).width(Fill);
+        let content: Element<'_, Message> = match checkup {
+            None => message.into(),
+            Some(id) => crate::ends::ends(
                 message,
                 focus_button::control(
                     ui::secondary_button("Open Checkup", palette)
                         .on_press(Message::Section(crate::sidebar::Section::Checkup))
                         .into(),
                     true,
-                    CHECKUP_ID,
+                    id,
                     Message::Section(crate::sidebar::Section::Checkup),
                 ),
                 12.0,
                 crate::ends::MIN_LEFT,
-            )
+            ),
         };
-        Some(
+        container(
             container(
-                container(
-                    row![warning_mark(palette), content]
-                        .spacing(10)
-                        .align_y(Center),
-                )
-                .padding([8, 12])
-                .width(Fill)
-                .style(move |_| banner_style(palette)),
+                row![warning_mark(palette), content]
+                    .spacing(10)
+                    .align_y(Center),
             )
-            .padding([8, 16])
-            .into(),
+            .padding([8, 12])
+            .width(Fill)
+            .style(move |_| banner_style(palette)),
         )
+        .padding([8, 16])
+        .into()
     }
 }
 

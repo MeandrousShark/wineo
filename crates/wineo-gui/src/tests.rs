@@ -27,6 +27,7 @@ pub(crate) fn card(name: &str, state: State, seconds: i64) -> Card {
         busy_holder: None,
         unresolved: false,
         error: None,
+        trash_blocks_all: false,
         playtime: playtime_label(seconds),
         sessions: "0".to_owned(),
         last_played: "never".into(),

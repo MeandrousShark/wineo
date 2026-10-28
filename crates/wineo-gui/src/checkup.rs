@@ -393,7 +393,10 @@ pub(crate) fn update(app: &mut App, event: Event) -> Task<Message> {
         Event::ReviewRecovery(scope, fix) => {
             if app.management_busy()
                 || app.close_prompt
-                || !matches!(fix, Fix::RecoverSnapshot { .. })
+                || !matches!(
+                    fix,
+                    Fix::RecoverSnapshot { .. } | Fix::DeleteTrashEntry { .. }
+                )
             {
                 return Task::none();
             }
@@ -431,6 +434,7 @@ pub(crate) fn update(app: &mut App, event: Event) -> Task<Message> {
                 .and_then(|results| results.recovery_confirm.as_ref())
                 .is_some_and(|fix| match fix {
                     Fix::RecoverSnapshot { environment } => app.tool_prefix_busy(environment),
+                    Fix::DeleteTrashEntry { .. } => false,
                     _ => true,
                 })
             {
@@ -439,7 +443,9 @@ pub(crate) fn update(app: &mut App, event: Event) -> Task<Message> {
             let Some(results) = app.checkups.get_mut(&scope) else {
                 return Task::none();
             };
-            let Some(fix @ Fix::RecoverSnapshot { .. }) = results.recovery_confirm.take() else {
+            let Some(fix @ (Fix::RecoverSnapshot { .. } | Fix::DeleteTrashEntry { .. })) =
+                results.recovery_confirm.take()
+            else {
                 return Task::none();
             };
             if results.checking
@@ -460,13 +466,17 @@ pub(crate) fn update(app: &mut App, event: Event) -> Task<Message> {
             app.change = Some(RunningChange::Checkup(Change {
                 scope,
                 token,
-                status: "Rolling back restore...".into(),
+                status: match fix {
+                    Fix::DeleteTrashEntry { .. } => "Deleting trash entry...",
+                    _ => "Rolling back restore...",
+                }
+                .into(),
                 install: None,
                 problem_fixes: vec![fix.clone()],
                 affects_downloads: false,
                 noncancellable: true,
             }));
-            checkup_work::recover_snapshot(app.change_generation, app.paths.clone(), fix)
+            checkup_work::apply_confirmed(app.change_generation, app.paths.clone(), fix)
         }
         Event::Back(scope) => {
             app.close_log();
@@ -933,6 +943,16 @@ impl App {
                             }
                             continue;
                         }
+                        if let Fix::DeleteTrashEntry { .. } = fix {
+                            issue_rows = issue_rows.push(control(
+                                DELETE_ENTRY.into(),
+                                scope.id(&format!("fix-{index}")),
+                                !running && !self.management_busy(),
+                                Event::ReviewRecovery(scope.clone(), fix.clone()),
+                                palette,
+                            ));
+                            continue;
+                        }
                         let checked = results.checked.contains(fix);
                         let event = Event::Toggle(scope.clone(), fix.clone(), !checked);
                         let toggle_scope = scope.clone();
@@ -968,6 +988,35 @@ impl App {
                     control("Roll back restore".into(), scope.id("recover-confirm"), !self.management_busy() && !self.tool_prefix_busy_with(&self.facts, environment), Event::ConfirmRecovery(scope.clone()), palette),
                 ].spacing(8)
             ].spacing(8), palette));
+        }
+        if let Some(Fix::DeleteTrashEntry { id }) = &results.recovery_confirm {
+            body = body.push(section(
+                column![
+                    section_heading("Delete unreadable trash entry", palette),
+                    text(format!("Permanently delete trash entry {id}?")),
+                    text("Everything it kept is deleted. This can't be undone.")
+                        .color(palette.danger),
+                    row![
+                        control(
+                            "Cancel".into(),
+                            scope.id("recover-cancel"),
+                            true,
+                            Event::DismissRecovery(scope.clone()),
+                            palette
+                        ),
+                        control(
+                            DELETE_ENTRY.into(),
+                            scope.id("recover-confirm"),
+                            !self.management_busy(),
+                            Event::ConfirmRecovery(scope.clone()),
+                            palette
+                        ),
+                    ]
+                    .spacing(8)
+                ]
+                .spacing(8),
+                palette,
+            ));
         }
         let mut controls = row![
             control(
@@ -1054,6 +1103,8 @@ impl App {
     }
 }
 
+const DELETE_ENTRY: &str = "Delete this entry";
+
 fn control(
     label: String,
     id: String,
@@ -1066,6 +1117,8 @@ fn control(
         Some(palette.primary)
     } else if label == "Roll back restore" {
         Some(palette.warning)
+    } else if label == DELETE_ENTRY {
+        Some(palette.danger)
     } else {
         None
     };

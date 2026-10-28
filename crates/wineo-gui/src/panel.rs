@@ -1290,6 +1290,7 @@ mod tests {
             busy_holder: None,
             unresolved: false,
             error: None,
+            trash_blocks_all: false,
             playtime: "never played".into(),
             sessions: "0".to_owned(),
             last_played: "never".into(),

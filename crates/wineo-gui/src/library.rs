@@ -88,6 +88,9 @@ pub(super) struct Card {
     pub(super) busy_holder: Option<wineo_core::operation::Operation>,
     pub(super) unresolved: bool,
     pub(super) error: Option<String>,
+    /// An unreadable trash entry that can't say whose it is blocks this
+    /// card, and so every other one.
+    pub(super) trash_blocks_all: bool,
     pub(super) playtime: String,
     pub(super) sessions: String,
     pub(super) last_played: String,
@@ -332,6 +335,18 @@ fn fallback_played(kind: Option<CardKind>) -> Played {
     }
 }
 
+pub(crate) const TRASH_BLOCKED: &str =
+    "Blocked by an unreadable trash entry. Open Checkup to fix it.";
+
+/// What a card says when `name` can't load, and whether an unreadable trash
+/// entry blocks every environment.
+fn load_error(paths: &Paths, pending: &PendingScan, name: &str, error: String) -> (String, bool) {
+    match pending.blocking_unreadable(paths, name) {
+        Some(found) => (TRASH_BLOCKED.to_owned(), found.blocks.is_none()),
+        None => (error, false),
+    }
+}
+
 pub(super) fn load_library(paths: &Paths) -> anyhow::Result<Vec<Card>> {
     load_library_and_problem(paths).0
 }
@@ -430,6 +445,7 @@ pub(super) fn load_library_with(
         let mut title = item.name.clone();
         let mut panel_art = HashMap::new();
         let mut gog_card = None;
+        let mut trash_blocks_all = false;
         // The overview's kind, for when the config can't be loaded here.
         let mut source = Source::new(Facts {
             steam: matches!(item.kind, Some(report::KindReport::Proxied { .. })),
@@ -482,7 +498,11 @@ pub(super) fn load_library_with(
                     Err(error) => (Some(error.to_string()), None),
                 }
             }
-            Err(error) => (Some(error.to_string()), None),
+            Err(error) => {
+                let (error, all) = load_error(paths, &pending, &item.name, error.to_string());
+                trash_blocks_all = all;
+                (Some(error), None)
+            }
         };
         let played = played
             .get(&item.name)
@@ -512,6 +532,7 @@ pub(super) fn load_library_with(
             busy_holder: item.busy,
             unresolved: item.unresolved,
             error,
+            trash_blocks_all,
             art,
             targets,
             default_target,
@@ -529,6 +550,7 @@ pub(super) fn load_library_with(
             .unwrap_or_else(|| fallback_played(None));
         let entry = saved.environments.get(&error.name);
         let title = error.name.clone();
+        let (message, trash_blocks_all) = load_error(paths, &pending, &error.name, error.message);
         cards.push(Card {
             playtime: played.playtime,
             sessions: played.sessions,
@@ -551,7 +573,8 @@ pub(super) fn load_library_with(
             busy: false,
             busy_holder: None,
             unresolved: false,
-            error: Some(error.message),
+            error: Some(message),
+            trash_blocks_all,
             art: None,
             targets: Vec::new(),
             default_target: None,

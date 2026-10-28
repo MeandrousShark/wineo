@@ -42,13 +42,19 @@ pub(crate) struct TrashBadge {
 
 impl TrashBadge {
     pub(crate) fn read(paths: &Paths) -> Self {
-        let entries = trash::list(paths);
+        let survey = trash::survey(paths);
         let pending = trash::pending_entries(paths);
-        Self::from_entries(entries.as_deref().ok(), pending.as_deref().ok())
+        let survey = survey.as_ref().ok();
+        Self::from_entries(
+            survey.map(|survey| survey.entries.as_slice()),
+            survey.is_some_and(|survey| !survey.unreadable.is_empty()),
+            pending.as_deref().ok(),
+        )
     }
 
     pub(crate) fn from_entries(
         entries: Option<&[Entry]>,
+        unreadable: bool,
         pending: Option<&[PendingEntry]>,
     ) -> Self {
         Self {
@@ -58,8 +64,10 @@ impl TrashBadge {
                     .filter(|entry| entry.phase == Phase::Trashed)
                     .count()
             }),
-            warning: entries
-                .is_none_or(|entries| entries.iter().any(|entry| entry.phase != Phase::Trashed))
+            warning: unreadable
+                || entries.is_none_or(|entries| {
+                    entries.iter().any(|entry| entry.phase != Phase::Trashed)
+                })
                 || pending.is_none_or(|entries| !entries.is_empty()),
         }
     }

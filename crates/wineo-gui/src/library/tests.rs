@@ -125,6 +125,7 @@ fn launch_button_label_uses_the_exact_game_tag() {
         busy_holder: None,
         unresolved: false,
         error: None,
+        trash_blocks_all: false,
         playtime: "never played".into(),
         sessions: "0".to_owned(),
         last_played: "never".into(),
@@ -660,4 +661,51 @@ fn a_bad_library_field_falls_back_alone() {
     let card = load_library(&paths).unwrap().remove(0);
     assert!(!card.favorite);
     assert!(card.hidden);
+}
+
+fn trash_fixture() -> (tempfile::TempDir, Paths, std::path::PathBuf) {
+    let root = tempfile::tempdir().unwrap();
+    let home = root.path().to_owned();
+    let paths = Paths::from_lookup(move |key| (key == "HOME").then(|| home.as_os_str().to_owned()))
+        .unwrap();
+    fs::create_dir_all(paths.environments_dir()).unwrap();
+    for name in ["game", "other"] {
+        fs::write(paths.environment_config(name), "kind = 'native'\n").unwrap();
+    }
+    let entry = wineo_core::trash::remove(&paths, "game", false).unwrap();
+    fs::write(paths.environment_config("game"), "kind = 'native'\n").unwrap();
+    let manifest = paths.trash_dir().join(entry.id).join("manifest.toml");
+    (root, paths, manifest)
+}
+
+#[test]
+fn an_unreadable_trash_entry_blocks_only_the_card_it_names() {
+    let (_root, paths, manifest) = trash_fixture();
+    let text = fs::read_to_string(&manifest).unwrap();
+    fs::write(&manifest, text.replacen("version = 1", "version = 2", 1)).unwrap();
+
+    let cards = load_library(&paths).unwrap();
+    let card = |name: &str| cards.iter().find(|card| card.name == name).unwrap();
+    assert_eq!(card("game").error.as_deref(), Some(TRASH_BLOCKED));
+    assert!(!card("game").trash_blocks_all);
+    assert_eq!(card("other").error, None);
+    assert_eq!(card("other").kind, Some(CardKind::Native));
+}
+
+#[test]
+fn an_unparseable_trash_entry_blocks_every_card_and_shows_the_banner() {
+    let (_root, paths, manifest) = trash_fixture();
+    fs::write(&manifest, "not a manifest").unwrap();
+
+    let cards = load_library(&paths).unwrap();
+    assert_eq!(cards.len(), 2);
+    for card in &cards {
+        assert_eq!(card.error.as_deref(), Some(TRASH_BLOCKED), "{}", card.name);
+        assert!(card.trash_blocks_all);
+    }
+    let mut app = crate::App::boot(paths).0;
+    assert!(!app.trash_blocks_all());
+    app.cards = cards;
+    assert!(app.trash_blocks_all());
+    assert!(app.trash_banner().is_some());
 }

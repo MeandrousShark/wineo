@@ -4,7 +4,7 @@ use iced::keyboard::{Key, Modifiers, key::Named};
 use iced::widget::{Space, column, container, row, scrollable, text, text_input, tooltip};
 use iced::{Center, Element, Fill, Task, border};
 use wineo_core::paths::Paths;
-use wineo_core::trash::{Entry, PendingEntry, Phase, PruneReview};
+use wineo_core::trash::{Entry, PendingEntry, Phase, PruneReview, Unreadable};
 
 use crate::ui::{
     ScrollStyle, accent_button, page_title, secondary_button, section, section_heading,
@@ -17,6 +17,7 @@ const CONFIRM_ID: &str = "trash-confirm";
 #[derive(Debug, Clone)]
 pub(crate) struct Snapshot {
     pub(crate) entries: Vec<Entry>,
+    pub(crate) unreadable: Vec<Unreadable>,
     pub(crate) pending: Vec<PendingEntry>,
 }
 
@@ -108,10 +109,10 @@ impl Page {
         }
         feedback.extend(self.notes.iter().map(|note| (note.clone(), false)));
         for (id, error) in &self.row_errors {
-            if self
-                .snapshot()
-                .is_none_or(|snapshot| !snapshot.entries.iter().any(|entry| &entry.id == id))
-            {
+            if self.snapshot().is_none_or(|snapshot| {
+                !snapshot.entries.iter().any(|entry| &entry.id == id)
+                    && !snapshot.unreadable.iter().any(|entry| &entry.id == id)
+            }) {
                 feedback.push((format!("{id}: {error}"), true));
             }
         }
@@ -137,6 +138,17 @@ impl Page {
                 .entries
                 .iter()
                 .any(|entry| entry.id == id && entry.phase == Phase::Trashed)
+                && !snapshot.pending.iter().any(|entry| entry.id == id)
+        })
+    }
+
+    /// Whether the unreadable entry `id` offers its guarded delete.
+    pub(crate) fn unreadable_enabled(&self, id: &str) -> bool {
+        self.snapshot().is_some_and(|snapshot| {
+            snapshot
+                .unreadable
+                .iter()
+                .any(|entry| entry.id == id && entry.deletable.is_ok())
                 && !snapshot.pending.iter().any(|entry| entry.id == id)
         })
     }
@@ -206,9 +218,10 @@ pub(crate) fn update(app: &mut App, event: Event) -> Task<Message> {
             app.trash_badge = match &result {
                 Ok(snapshot) => sidebar::TrashBadge::from_entries(
                     Some(&snapshot.entries),
+                    !snapshot.unreadable.is_empty(),
                     Some(&snapshot.pending),
                 ),
-                Err(_) => sidebar::TrashBadge::from_entries(None, None),
+                Err(_) => sidebar::TrashBadge::from_entries(None, false, None),
             };
             if result.is_err() {
                 app.trash_page.cancel_review();
@@ -312,6 +325,7 @@ pub(crate) fn update(app: &mut App, event: Event) -> Task<Message> {
         Event::Review(selection) if app.trash_action_allowed() => {
             if let Selection::Id(id) = &selection
                 && !app.trash_page.row_enabled(id)
+                && !app.trash_page.unreadable_enabled(id)
             {
                 return Task::none();
             }
@@ -339,7 +353,7 @@ pub(crate) fn update(app: &mut App, event: Event) -> Task<Message> {
         {
             app.trash_page.reviewing = false;
             match result {
-                Ok(review) if review.entries.is_empty() => {
+                Ok(review) if review.entries.is_empty() && review.unreadable.is_empty() => {
                     app.trash_page.notice = Some("No trash entries selected.".into());
                     app.trash_page.error = review_errors(&review);
                 }
@@ -360,6 +374,7 @@ pub(crate) fn update(app: &mut App, event: Event) -> Task<Message> {
                 .entries
                 .iter()
                 .map(|entry| entry.id.clone())
+                .chain(review.unreadable.iter().map(|entry| entry.id.clone()))
                 .collect();
             app.trash_page.error = review_errors(&review);
             app.begin_trash_change(Change::Prune { ids });
@@ -431,6 +446,22 @@ fn hover_label(paths: &Paths, entry: &Entry) -> String {
         ));
     }
     paths.contract_text(&label)
+}
+
+pub(crate) fn unreadable_label(entry: &Unreadable) -> String {
+    format!("{}   blocks {}", entry.id, entry.scope())
+}
+
+/// Why the entry can't be read, and how to fix it when wineo can't.
+pub(crate) fn unreadable_note(paths: &Paths, entry: &Unreadable) -> String {
+    match &entry.deletable {
+        Ok(()) => format!("Can't be read: {}.", entry.reason),
+        Err(why) => paths.contract_text(&format!(
+            "Can't be read: {}. Inspect {} and remove it by hand, since {why}.",
+            entry.reason,
+            entry.dir.display()
+        )),
+    }
 }
 
 pub(crate) fn prefix_note(paths: &Paths, entry: &Entry) -> Option<String> {
@@ -605,6 +636,9 @@ impl App {
             entries = entries.push(entry_view);
         }
         content = content.push(section(entries, palette));
+        if !snapshot.unreadable.is_empty() {
+            content = content.push(section(self.unreadable_view(snapshot, enabled), palette));
+        }
         let days = text_input("30", &page.days)
             .width(80)
             .on_input_maybe(enabled.then_some(|days| message(Event::Days(days))));
@@ -643,6 +677,52 @@ impl App {
             .wineo_style(palette)
             .height(Fill)
             .into()
+    }
+
+    fn unreadable_view<'a>(
+        &'a self,
+        snapshot: &'a Snapshot,
+        enabled: bool,
+    ) -> iced::widget::Column<'a, Message> {
+        let palette = self.palette;
+        let page = &self.trash_page;
+        let change = match &self.change {
+            Some(removal::Change::Trash(change)) => Some(change),
+            _ => None,
+        };
+        let mut rows = column![section_heading("Unreadable entries", palette)].spacing(8);
+        for (index, entry) in snapshot.unreadable.iter().enumerate() {
+            if index > 0 {
+                rows = rows.push(crate::ui::separator(palette));
+            }
+            let mut label = row![text(unreadable_label(entry)).width(Fill)]
+                .spacing(8)
+                .align_y(Center);
+            if change.is_some_and(|change| change.affects(&entry.id)) {
+                label = label.push(spinner::spinner(palette, 16.0));
+            }
+            let mut view = column![
+                label,
+                text(unreadable_note(&self.paths, entry))
+                    .size(13)
+                    .color(palette.muted)
+                    .wrapping(iced::widget::text::Wrapping::WordOrGlyph),
+            ]
+            .spacing(8);
+            if entry.deletable.is_ok() {
+                view = view.push(accent_button(
+                    "Delete this entry",
+                    palette.danger,
+                    enabled && page.unreadable_enabled(&entry.id),
+                    message(Event::Review(Selection::Id(entry.id.clone()))),
+                ));
+            }
+            if let Some(error) = page.row_errors.get(&entry.id) {
+                view = view.push(text(error).color(palette.danger));
+            }
+            rows = rows.push(view);
+        }
+        rows
     }
 
     fn trash_feedback<'a>(
@@ -686,6 +766,15 @@ impl App {
                         .wrapping(iced::widget::text::Wrapping::WordOrGlyph),
                 );
             }
+        }
+        for entry in &review.unreadable {
+            selection = selection.push(text(unreadable_label(entry)));
+            selection = selection.push(
+                text(format!("Can't be read: {}.", entry.reason))
+                    .size(13)
+                    .color(palette.muted)
+                    .wrapping(iced::widget::text::Wrapping::WordOrGlyph),
+            );
         }
         if let Some(errors) = review_errors(review) {
             selection = selection.push(text(errors).color(palette.danger));

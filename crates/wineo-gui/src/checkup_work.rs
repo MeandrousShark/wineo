@@ -56,7 +56,9 @@ pub(crate) fn apply(generation: u64, paths: Paths, fixes: Vec<Fix>, token: Token
     Task::batch([Task::run(receiver, Message::Checkup), work])
 }
 
-pub(crate) fn recover_snapshot(generation: u64, paths: Paths, fix: Fix) -> Task<Message> {
+/// A fix the user confirmed on its own: a snapshot rollback or deleting an
+/// unreadable trash entry.
+pub(crate) fn apply_confirmed(generation: u64, paths: Paths, fix: Fix) -> Task<Message> {
     task::blocking(
         move || {
             let result = validate::apply_single(
@@ -65,7 +67,7 @@ pub(crate) fn recover_snapshot(generation: u64, paths: Paths, fix: Fix) -> Task<
                 &Token::new(),
                 EnsureOutput::Stderr,
                 |_| {},
-                |_, _| unreachable!("snapshot recovery does not download builds"),
+                |_, _| unreachable!("confirmed fixes do not download builds"),
             );
             let outcome = match result {
                 Ok(notes) => {

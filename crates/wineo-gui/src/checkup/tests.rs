@@ -140,6 +140,49 @@ fn snapshot_recovery_requires_separate_confirmation_and_cannot_be_canceled() {
 }
 
 #[test]
+fn deleting_an_unreadable_trash_entry_needs_its_own_confirmation() {
+    let (_root, mut app) = fixture();
+    let entry = wineo_core::trash::remove(&app.paths, "game", false).unwrap();
+    let file = app.paths.trash_dir().join(&entry.id).join("manifest.toml");
+    let text = std::fs::read_to_string(&file).unwrap();
+    std::fs::write(&file, text.replacen("version = 1", "version = 2", 1)).unwrap();
+    std::fs::write(app.paths.environment_config("game"), "kind = 'native'\n").unwrap();
+    open(&mut app);
+    let report = checkup_work::check_report(&app.paths, &scope()).unwrap();
+    let fix = Fix::DeleteTrashEntry {
+        id: entry.id.clone(),
+    };
+    assert!(report.problems.iter().any(|p| p.fix.as_ref() == Some(&fix)));
+    loaded(&mut app, report);
+    assert!(app.checkups[&scope()].selected().is_empty());
+    send(&mut app, Event::Fix(scope()));
+    assert!(app.change.is_none());
+
+    send(&mut app, Event::ReviewRecovery(scope(), fix.clone()));
+    assert!(app.checkup_recovery_open());
+    send(&mut app, Event::DismissRecovery(scope()));
+    assert!(!app.checkup_recovery_open());
+    assert!(file.exists());
+
+    send(&mut app, Event::ReviewRecovery(scope(), fix.clone()));
+    send(&mut app, Event::ConfirmRecovery(scope()));
+    let change = app.checkup_change().unwrap();
+    assert!(change.noncancellable);
+    assert_eq!(change.status, "Deleting trash entry...");
+    assert_eq!(change.problem_fixes, std::slice::from_ref(&fix));
+    wineo_core::validate::apply_single(
+        &app.paths,
+        &fix,
+        &Token::new(),
+        wineo_core::winetricks::EnsureOutput::Stderr,
+        |_| {},
+        |_, _| unreachable!(),
+    )
+    .unwrap();
+    assert!(!file.exists());
+}
+
+#[test]
 fn cancellation_text_omits_zero_and_pluralizes_skipped_fixes() {
     for (skipped, expected) in [
         (0, "Canceled."),

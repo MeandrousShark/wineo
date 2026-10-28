@@ -1031,3 +1031,88 @@ fn recovery_shows_a_copy_it_kept_in_the_trash() {
     assert!(snapshot.entries.iter().any(|entry| entry.id == id));
     assert!(fs::read_to_string(config).unwrap().contains("# edited"));
 }
+
+fn unsupported(app: &App, name: &str) -> trash::Entry {
+    native(&app.paths, name);
+    let entry = remove(app, name);
+    let file = app.paths.trash_dir().join(&entry.id).join("manifest.toml");
+    let text = fs::read_to_string(&file).unwrap();
+    fs::write(&file, text.replacen("version = 1", "version = 2", 1)).unwrap();
+    entry
+}
+
+#[test]
+fn an_unreadable_entry_shows_as_its_own_row_beside_readable_ones() {
+    let (_root, mut app) = fixture();
+    native(&app.paths, "good");
+    let good = remove(&app, "good");
+    let bad = unsupported(&app, "bad");
+    open_trash(&mut app);
+
+    let snapshot = app.trash_page.snapshot().unwrap();
+    assert_eq!(snapshot.entries.len(), 1);
+    assert_eq!(snapshot.entries[0].id, good.id);
+    assert_eq!(snapshot.unreadable.len(), 1);
+    let entry = &snapshot.unreadable[0];
+    assert_eq!(entry.id, bad.id);
+    assert_eq!(unreadable_label(entry), format!("{}   blocks bad", bad.id));
+    assert_eq!(
+        unreadable_note(&app.paths, entry),
+        "Can't be read: unsupported manifest version 2."
+    );
+    assert!(app.trash_page.unreadable_enabled(&bad.id));
+    assert!(!app.trash_page.row_enabled(&bad.id));
+    assert!(app.trash_badge.warning);
+    assert_eq!(app.trash_badge.count, Some(1));
+
+    let review = review(&mut app, Selection::Id(bad.id.clone()));
+    assert!(review.entries.is_empty());
+    assert_eq!(review.unreadable.len(), 1);
+    assert!(app.trash_confirm_open());
+    send(&mut app, Event::Confirm);
+    let Some(removal::Change::Trash(Change::Prune { ids })) = &app.change else {
+        panic!("prune should start");
+    };
+    assert_eq!(ids, std::slice::from_ref(&bad.id));
+    let outcomes = trash_work::prune_selection(&app.paths, &review);
+    assert_eq!(outcomes.len(), 1);
+    assert_eq!(outcomes[0].name, "bad");
+    assert!(outcomes[0].result.is_ok(), "{:?}", outcomes[0].result);
+    load_current(&mut app);
+    let snapshot = app.trash_page.snapshot().unwrap();
+    assert!(snapshot.unreadable.is_empty());
+    assert_eq!(snapshot.entries.len(), 1);
+}
+
+#[test]
+fn an_unparseable_entry_offers_no_delete() {
+    let (_root, mut app) = fixture();
+    native(&app.paths, "good");
+    remove(&app, "good");
+    native(&app.paths, "bad");
+    let bad = remove(&app, "bad");
+    let dir = app.paths.trash_dir().join(&bad.id);
+    fs::write(dir.join("manifest.toml"), "not a manifest").unwrap();
+    open_trash(&mut app);
+
+    let snapshot = app.trash_page.snapshot().unwrap();
+    assert_eq!(snapshot.entries.len(), 1);
+    let entry = &snapshot.unreadable[0];
+    assert_eq!(
+        unreadable_label(entry),
+        format!("{}   blocks every environment", bad.id)
+    );
+    let note = unreadable_note(&app.paths, entry);
+    assert!(
+        note.starts_with("Can't be read: manifest.toml can't be parsed"),
+        "{note}"
+    );
+    assert!(
+        note.contains("and remove it by hand, since its manifest can't be parsed."),
+        "{note}"
+    );
+    assert!(!app.trash_page.unreadable_enabled(&bad.id));
+    send(&mut app, Event::Review(Selection::Id(bad.id.clone())));
+    assert!(!app.trash_page.reviewing);
+    assert!(dir.join("manifest.toml").exists());
+}

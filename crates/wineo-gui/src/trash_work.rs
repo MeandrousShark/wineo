@@ -9,8 +9,10 @@ use crate::task;
 use crate::trash_page::{Event, Outcome, Selection, Snapshot};
 
 pub(crate) fn read(paths: &Paths) -> Result<Snapshot, String> {
-    let mut entries =
-        trash::list(paths).map_err(|error| paths.contract_text(&format!("{error:#}")))?;
+    let trash::Survey {
+        mut entries,
+        unreadable,
+    } = trash::survey(paths).map_err(|error| paths.contract_text(&format!("{error:#}")))?;
     let mut pending = trash::pending_entries(paths)
         .map_err(|error| paths.contract_text(&format!("{error:#}")))?;
     entries.sort_by(|a, b| {
@@ -30,7 +32,11 @@ pub(crate) fn read(paths: &Paths) -> Result<Snapshot, String> {
             });
         }
     }
-    Ok(Snapshot { entries, pending })
+    Ok(Snapshot {
+        entries,
+        unreadable,
+        pending,
+    })
 }
 
 pub(crate) fn load(generation: u64, paths: Paths) -> Task<Message> {
@@ -104,9 +110,15 @@ pub(crate) fn prune(generation: u64, paths: Paths, review: PruneReview) -> Task<
 pub(crate) fn prune_selection(paths: &Paths, review: &PruneReview) -> Vec<Outcome> {
     trash::prune_reviewed(paths, review)
         .into_iter()
-        .zip(&review.entries)
-        .map(|((id, result), entry)| Outcome {
-            name: entry.name.clone(),
+        .zip(
+            review
+                .entries
+                .iter()
+                .map(|entry| entry.name.as_str())
+                .chain(review.unreadable.iter().map(|entry| entry.scope())),
+        )
+        .map(|((id, result), name)| Outcome {
+            name: name.to_owned(),
             id,
             result: result.map_err(|error| paths.contract_text(&format!("{error:#}"))),
         })
