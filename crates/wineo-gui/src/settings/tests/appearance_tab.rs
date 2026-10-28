@@ -339,10 +339,11 @@ fn discard_on_leaving_restores_the_saved_palette() {
     assert!(!library_text(&paths).contains("dracula"));
 }
 
-#[test]
-fn a_refused_library_write_keeps_generals_save_and_the_previewed_edits() {
-    let (_root, paths) = setup();
-    write_library(&paths, "schema_version = 99\n");
+/// Saves a General edit and an Appearance edit against a library.toml of
+/// `text`, which refuses the write, and checks what landed and what stayed.
+fn refused_save(text: &str) -> (tempfile::TempDir, Paths, App) {
+    let (root, paths) = setup();
+    write_library(&paths, text);
     let mut app = open_global_app(&paths);
     let _ = app.update(Message::Settings(Event::GlobalSwitch(
         Switch::Gamemode,
@@ -351,13 +352,12 @@ fn a_refused_library_write_keeps_generals_save_and_the_previewed_edits() {
     pick(&mut app, Slot::Dark, "dracula");
     let report = save(&mut app, &paths);
     assert!(report.failed.is_some());
-    assert!(report.checkup);
     let config = fs::read_to_string(paths.global_config()).unwrap();
     assert!(
         config.contains("gamemode = true"),
         "General landed: {config}"
     );
-    assert_eq!(library_text(&paths), "schema_version = 99\n");
+    assert_eq!(library_text(&paths), text);
     let page = page_of(&app);
     assert_eq!(page.changes(), 1, "only the Appearance edit is left");
     assert_eq!(
@@ -370,14 +370,34 @@ fn a_refused_library_write_keeps_generals_save_and_the_previewed_edits() {
         "the edit stays"
     );
     assert!(page.error.is_some());
-    assert!(page.error_checkup);
     assert_eq!(app.palette, palette("dracula"), "the preview stays");
-    // The bar's error offers Open Checkup.
-    let ids = focusable_ids(&app, &paths);
-    assert!(ids.contains(&id(view::CHECKUP_ID)), "{ids:?}");
-    // Any edit clears the report and its action.
-    pick(&mut app, Slot::Dark, "cellar");
-    assert!(!page_of(&app).error_checkup);
+    (root, paths, app)
+}
+
+#[test]
+fn a_library_toml_checkup_can_repair_offers_open_checkup() {
+    for text in ["schema_version = [\n", "schema_version = 0\n"] {
+        let (_root, paths, mut app) = refused_save(text);
+        assert!(page_of(&app).error_checkup, "{text:?}");
+        let ids = focusable_ids(&app, &paths);
+        assert!(ids.contains(&id(view::CHECKUP_ID)), "{text:?} {ids:?}");
+        // Any edit clears the report and its action.
+        pick(&mut app, Slot::Dark, "cellar");
+        assert!(!page_of(&app).error_checkup);
+        assert!(!focusable_ids(&app, &paths).contains(&id(view::CHECKUP_ID)));
+    }
+}
+
+#[test]
+fn a_library_toml_from_a_newer_wineo_says_to_update_without_open_checkup() {
+    let (_root, paths, app) = refused_save("schema_version = 99\n");
+    let page = page_of(&app);
+    assert!(!page.error_checkup);
+    assert!(
+        page.error.as_deref().unwrap().contains("update wineo"),
+        "{:?}",
+        page.error
+    );
     assert!(!focusable_ids(&app, &paths).contains(&id(view::CHECKUP_ID)));
 }
 

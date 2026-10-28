@@ -346,8 +346,8 @@ pub(crate) struct Page {
     /// What the last save did.
     pub(crate) notes: Vec<String>,
     pub(crate) error: Option<String>,
-    /// The error is `library.toml` refusing the write, so the bar offers
-    /// Open Checkup beside it.
+    /// The error is `library.toml` refusing a write that Checkup can
+    /// repair, so the bar offers Open Checkup beside it.
     pub(crate) error_checkup: bool,
     /// Bumped by every typed exe check, so only the latest one lands.
     resolve_sequence: u64,

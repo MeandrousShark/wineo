@@ -455,7 +455,7 @@ pub(crate) const KIND_MISMATCH: &str =
 pub(crate) struct Report {
     pub(crate) lines: Vec<String>,
     pub(crate) failed: Option<String>,
-    /// `failed` is `library.toml` refusing the write, which Checkup handles.
+    /// `failed` is `library.toml` refusing a write that Checkup can repair.
     pub(crate) checkup: bool,
 }
 
@@ -568,7 +568,15 @@ pub(crate) fn save_global_page(
         && let Err(error) = library::set_appearance(paths, appearance)
     {
         report.failed = Some(crate::sort_control::error_text(paths, &error));
-        report.checkup = matches!(error, Error::LibraryUnreadable { .. });
+        // Like the library's banner: a newer wineo's file has nothing for
+        // Checkup to repair, and the error already says to update.
+        report.checkup = matches!(
+            error,
+            Error::LibraryUnreadable {
+                newer_version: false,
+                ..
+            }
+        );
     }
     Ok(report)
 }
