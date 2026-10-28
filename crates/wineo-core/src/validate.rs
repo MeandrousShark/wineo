@@ -39,6 +39,7 @@ use crate::runtime::Runtime;
 use crate::snapshot;
 use crate::steam::{self, AppState};
 use crate::templates::{Template, Templates};
+use crate::themes;
 use crate::trash::{self, Phase};
 use crate::winetricks;
 use crate::winpath;
@@ -204,6 +205,7 @@ codes! {
     LibraryFieldInvalid => "library_field_invalid", Level::Warning, Area::Library;
     LibraryKeyUnknown => "library_key_unknown", Level::Warning, Area::Library;
     LibraryEntryStray => "library_entry_stray", Level::Warning, Area::Library;
+    ThemeInvalid => "theme_invalid", Level::Warning, Area::Library;
 }
 
 impl fmt::Display for Code {
@@ -550,6 +552,7 @@ pub fn check_all(paths: &Paths) -> Result<Report> {
         .iter()
         .any(|problem| problem.code == Code::TrashInvalid);
     check_library(paths, None, &names, &pending, trash_readable, &mut report);
+    check_themes(paths, &mut report);
     let mut protected = names.clone();
     protected.extend(pending);
     if trash_readable {
@@ -658,6 +661,23 @@ fn check_library(
                 Some(Fix::RemoveStrayLibraryEntries),
             ));
         }
+    }
+}
+
+/// Custom theme files that don't parse. The app skips them, so there's
+/// nothing to fix; deleting or correcting the file is the user's call.
+fn check_themes(paths: &Paths, report: &mut Report) {
+    for theme in themes::list(paths).invalid {
+        report.push(Problem::new(
+            Code::ThemeInvalid,
+            None,
+            format!(
+                "{} can't be read as a theme ({})",
+                theme.path.display(),
+                theme.error
+            ),
+            None,
+        ));
     }
 }
 

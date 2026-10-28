@@ -10,6 +10,7 @@ use super::{
     ReadFailure, SCHEMA_VERSION, SortKey, ZOOM_MAX, ZOOM_MIN, edit, read_document, read_zoom,
 };
 use crate::paths::Paths;
+use crate::themes::{self, CUSTOM_PREFIX, ThemeKind, Themes};
 
 /// The file as a whole can't be used.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -59,10 +60,13 @@ pub(crate) fn inspect(paths: &Paths) -> Inspection {
         }
     };
     let mut inspection = Inspection::default();
+    // Read lazily: most files never name a theme worth looking up.
+    let mut themes = None;
     for (key, item) in document.iter() {
         match key {
             "schema_version" => {}
             "view" => inspect_view(item, &mut inspection),
+            "appearance" => inspect_appearance(paths, &mut themes, item, &mut inspection),
             "environments" => inspect_environments(item, &mut inspection),
             other => inspection
                 .findings
@@ -116,6 +120,88 @@ fn inspect_view(item: &Item, inspection: &mut Inspection) {
         inspection
             .findings
             .push(invalid(None, &path, &expected, value));
+    }
+}
+
+/// `dark` and `light` must name a theme of that kind. `theme` takes either,
+/// since it serves both modes. The ids' meaning is checked here, not in
+/// repair, which keeps any string.
+fn inspect_appearance(
+    paths: &Paths,
+    themes: &mut Option<Themes>,
+    item: &Item,
+    inspection: &mut Inspection,
+) {
+    let Some(table) = item.as_table_like() else {
+        inspection
+            .findings
+            .push(invalid(None, &display_path(&["appearance"]), TABLE, item));
+        return;
+    };
+    for (key, value) in table.iter() {
+        let path = display_path(&["appearance", key]);
+        let expected = match key {
+            "follow_system" | "improve_readability" if value.as_bool().is_some() => continue,
+            "follow_system" | "improve_readability" => BOOL.to_owned(),
+            "dark" | "light" | "theme" => {
+                let wanted = match key {
+                    "dark" => Some(ThemeKind::Dark),
+                    "light" => Some(ThemeKind::Light),
+                    _ => None,
+                };
+                let Some(id) = value.as_str() else {
+                    inspection
+                        .findings
+                        .push(invalid(None, &path, "expected a theme id", value));
+                    continue;
+                };
+                let themes = themes.get_or_insert_with(|| themes::list(paths));
+                match theme_problem(themes, id, wanted) {
+                    Some(expected) => expected,
+                    None => continue,
+                }
+            }
+            _ => {
+                inspection.findings.push(unknown(None, &path));
+                continue;
+            }
+        };
+        inspection
+            .findings
+            .push(invalid(None, &path, &expected, value));
+    }
+}
+
+/// What's wrong with a theme id in a slot, as the "expected" half of a
+/// finding. None when the app can use it.
+fn theme_problem(themes: &Themes, id: &str, wanted: Option<ThemeKind>) -> Option<String> {
+    let kind = match id.strip_prefix(CUSTOM_PREFIX) {
+        Some(custom) => {
+            if let Some(theme) = themes.themes.iter().find(|theme| theme.id == custom) {
+                // A file with no usable kind reads as dark, as in the app.
+                theme.kind.unwrap_or(ThemeKind::Dark)
+            } else if themes.invalid.iter().any(|theme| theme.id == custom) {
+                return Some(format!(
+                    "expected a theme file that can be read ({custom}.toml in themes/ can't)"
+                ));
+            } else {
+                return Some(format!(
+                    "expected a theme file in themes/ ({custom}.toml is missing)"
+                ));
+            }
+        }
+        None => match themes::builtin_kind(id) {
+            Some(kind) => kind,
+            None => {
+                return Some(format!(
+                    "expected a built-in theme or {CUSTOM_PREFIX}<id> of a theme in themes/"
+                ));
+            }
+        },
+    };
+    match wanted {
+        Some(wanted) if wanted != kind => Some(format!("expected a {} theme", wanted.as_str())),
+        _ => None,
     }
 }
 

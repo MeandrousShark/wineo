@@ -207,3 +207,94 @@ poster_only = "yes"
         );
     }
 }
+
+fn inspect_with_themes(text: &str, themes: &[(&str, &str)]) -> Inspection {
+    let root = tempfile::tempdir().unwrap();
+    let paths = paths(&root);
+    fs::create_dir_all(paths.library_file().parent().unwrap()).unwrap();
+    fs::write(paths.library_file(), text).unwrap();
+    fs::create_dir_all(paths.themes_dir()).unwrap();
+    for (name, text) in themes {
+        fs::write(paths.themes_dir().join(name), text).unwrap();
+    }
+    inspect(&paths)
+}
+
+#[test]
+fn a_clean_appearance_has_no_findings() {
+    let inspection = inspect_with_themes(
+        "[appearance]\nfollow_system = false\ndark = \"dracula\"\nlight = \"custom:soft\"\ntheme = \"custom:night\"\nimprove_readability = true\n",
+        &[
+            ("soft.toml", "name = \"Soft\"\nkind = \"light\"\n"),
+            ("night.toml", "name = \"Night\"\n"),
+        ],
+    );
+    assert_eq!(inspection.findings, []);
+}
+
+#[test]
+fn bad_appearance_types_are_field_findings_and_unknown_keys_are_ignored() {
+    let inspection = inspect_text(
+        "[appearance]\nfollow_system = \"yes\"\ndark = 3\nimprove_readability = 1\nextra = true\n",
+    );
+    assert_eq!(
+        messages(&inspection, FindingKind::FieldInvalid),
+        [
+            "library.toml: appearance.follow_system: expected true or false, found \"yes\"",
+            "library.toml: appearance.dark: expected a theme id, found 3",
+            "library.toml: appearance.improve_readability: expected true or false, found 1",
+        ]
+    );
+    assert_eq!(
+        messages(&inspection, FindingKind::KeyUnknown),
+        ["library.toml: appearance.extra: unknown key, ignored"]
+    );
+    let inspection = inspect_text("appearance = 4\n");
+    assert_eq!(
+        messages(&inspection, FindingKind::FieldInvalid),
+        ["library.toml: appearance: expected a table, found 4"]
+    );
+}
+
+#[test]
+fn theme_ids_that_cannot_be_used_are_field_findings() {
+    let inspection = inspect_with_themes(
+        "[appearance]\ndark = \"nope\"\nlight = \"custom:gone\"\ntheme = \"custom:broken\"\n",
+        &[("broken.toml", "name = \n")],
+    );
+    assert_eq!(
+        messages(&inspection, FindingKind::FieldInvalid),
+        [
+            "library.toml: appearance.dark: expected a built-in theme or custom:<id> of a theme in themes/, found \"nope\"",
+            "library.toml: appearance.light: expected a theme file in themes/ (gone.toml is missing), found \"custom:gone\"",
+            "library.toml: appearance.theme: expected a theme file that can be read (broken.toml in themes/ can't), found \"custom:broken\"",
+        ]
+    );
+}
+
+#[test]
+fn a_theme_of_the_wrong_kind_in_dark_or_light_is_a_finding() {
+    let inspection = inspect_with_themes(
+        "[appearance]\ndark = \"daylight\"\nlight = \"custom:night\"\ntheme = \"daylight\"\n",
+        &[("night.toml", "kind = \"dark\"\n")],
+    );
+    assert_eq!(
+        messages(&inspection, FindingKind::FieldInvalid),
+        [
+            "library.toml: appearance.dark: expected a dark theme, found \"daylight\"",
+            "library.toml: appearance.light: expected a light theme, found \"custom:night\"",
+        ]
+    );
+}
+
+#[test]
+fn a_custom_theme_without_a_usable_kind_counts_as_dark() {
+    let inspection = inspect_with_themes(
+        "[appearance]\ndark = \"custom:odd\"\nlight = \"custom:odd\"\n",
+        &[("odd.toml", "kind = \"sepia\"\n")],
+    );
+    assert_eq!(
+        messages(&inspection, FindingKind::FieldInvalid),
+        ["library.toml: appearance.light: expected a light theme, found \"custom:odd\""]
+    );
+}

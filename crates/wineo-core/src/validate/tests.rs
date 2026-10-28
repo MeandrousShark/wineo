@@ -1402,7 +1402,7 @@ fn check_environment_checks_only_that_environment() {
 
 // The JSON output depends on these values, so changing one is a contract change.
 #[rustfmt::skip]
-    const RECORDED_CODES: [(Code, &str, &str, &str); 49] = [
+    const RECORDED_CODES: [(Code, &str, &str, &str); 50] = [
         (Code::GlobalConfigInvalid, "global_config_invalid", "error", "global_config"),
         (Code::TemplateInvalid, "template_invalid", "error", "template"),
         (Code::TemplateUnresolved, "template_unresolved", "warning", "template"),
@@ -1452,6 +1452,7 @@ fn check_environment_checks_only_that_environment() {
         (Code::LibraryFieldInvalid, "library_field_invalid", "warning", "library"),
         (Code::LibraryKeyUnknown, "library_key_unknown", "warning", "library"),
         (Code::LibraryEntryStray, "library_entry_stray", "warning", "library"),
+        (Code::ThemeInvalid, "theme_invalid", "warning", "library"),
     ];
 
 #[test]
@@ -2363,4 +2364,95 @@ fn removing_stray_entries_never_writes_an_unreadable_file() {
     write_library(&f, broken);
     assert!(apply(&f.paths, &Fix::RemoveStrayLibraryEntries, no_download).is_err());
     assert_eq!(fs::read_to_string(f.paths.library_file()).unwrap(), broken);
+}
+
+fn write_theme(f: &Fixture, id: &str, text: &str) {
+    fs::create_dir_all(f.paths.themes_dir()).unwrap();
+    fs::write(f.paths.themes_dir().join(format!("{id}.toml")), text).unwrap();
+}
+
+#[test]
+fn a_good_appearance_reports_nothing() {
+    let f = Fixture::new();
+    write_theme(&f, "soft", "name = \"Soft\"\nkind = \"light\"\n");
+    write_library(
+        &f,
+        "schema_version = 1\n[appearance]\nfollow_system = true\ndark = \"dracula\"\nlight = \"custom:soft\"\ntheme = \"catppuccin-latte\"\nimprove_readability = true\n",
+    );
+    assert_eq!(library_problems(&f.check()), []);
+    assert!(!f.codes().contains(&Code::ThemeInvalid));
+}
+
+#[test]
+fn an_unusable_theme_id_warns_with_no_fix() {
+    let f = Fixture::new();
+    write_theme(&f, "broken", "name = \n");
+    write_theme(&f, "night", "kind = \"dark\"\n");
+    write_library(
+        &f,
+        "schema_version = 1\n[appearance]\ndark = \"daylight\"\nlight = \"custom:night\"\ntheme = \"custom:gone\"\n",
+    );
+    let report = f.check();
+    let problems: Vec<_> = report
+        .problems
+        .iter()
+        .filter(|problem| problem.area == Area::Library)
+        .collect();
+    let codes: Vec<_> = problems.iter().map(|problem| problem.code).collect();
+    assert_eq!(
+        codes,
+        [
+            Code::LibraryFieldInvalid,
+            Code::LibraryFieldInvalid,
+            Code::LibraryFieldInvalid,
+            Code::ThemeInvalid,
+        ]
+    );
+    assert!(problems.iter().all(|problem| problem.fix.is_none()));
+    assert!(
+        problems[0]
+            .message
+            .contains("appearance.dark: expected a dark theme")
+    );
+    assert!(
+        problems[1]
+            .message
+            .contains("appearance.light: expected a light theme")
+    );
+    assert!(problems[2].message.contains("gone.toml is missing"));
+
+    write_library(&f, "schema_version = 1\n[appearance]\ntheme = \"nope\"\n");
+    let problem = f.only(Code::LibraryFieldInvalid);
+    assert!(
+        problem
+            .message
+            .contains("appearance.theme: expected a built-in theme")
+    );
+    assert_eq!(problem.fix, None);
+}
+
+#[test]
+fn a_theme_file_that_does_not_parse_warns_without_a_fix() {
+    let f = Fixture::new();
+    f.wine("hades", HEALTHY);
+    write_theme(&f, "good", "name = \"Good\"\n");
+    write_theme(&f, "bad", "name = \n");
+    write_theme(&f, "newer", "schema_version = 2\n");
+    let problem = f.only(Code::ThemeInvalid);
+    assert_eq!(problem.level, Level::Warning);
+    assert_eq!(problem.area, Area::Library);
+    assert_eq!(problem.fix, None);
+    assert_eq!(problem.environment, None);
+    assert!(
+        problem
+            .message
+            .contains("bad.toml can't be read as a theme (line 1"),
+        "{}",
+        problem.message
+    );
+    assert!(!problem.message.contains("good"));
+
+    // A themes folder is global, so one environment's report leaves it out.
+    let report = check_environment(&f.paths, "hades").unwrap();
+    assert!(!codes(&report).contains(&Code::ThemeInvalid));
 }

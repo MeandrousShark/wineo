@@ -101,6 +101,7 @@ fn backs_up_the_original_and_recovers_every_recognized_entry() {
             full: 2,
             partly: 0,
             view: ViewRecovery::Recovered,
+            appearance: ViewRecovery::Absent,
             dropped_text: false,
             backup: fixture.backup(STAMP),
         }
@@ -158,6 +159,7 @@ fn counts_partly_and_unrecovered_entries_and_skips_invalid_values() {
             full: 1,
             partly: 1,
             view: ViewRecovery::Partly,
+            appearance: ViewRecovery::Absent,
             dropped_text: true,
             backup: fixture.backup(STAMP),
         }
@@ -472,6 +474,7 @@ fn wording_for_no_entries_and_lost_view() {
         full: 0,
         partly: 0,
         view: ViewRecovery::Lost,
+        appearance: ViewRecovery::Absent,
         dropped_text: false,
         backup: PathBuf::from("/x/library.toml.broken-1"),
     };
@@ -484,6 +487,7 @@ fn wording_for_no_entries_and_lost_view() {
         full: 0,
         partly: 0,
         view: ViewRecovery::Absent,
+        appearance: ViewRecovery::Absent,
         dropped_text: false,
         backup: PathBuf::from("/x/library.toml.broken-1"),
     };
@@ -845,4 +849,85 @@ fn repair_keeps_a_valid_zoom_and_poster_only_and_drops_invalid_ones() {
             (100, false, true)
         );
     }
+}
+
+#[test]
+fn repair_keeps_the_readable_appearance_lines() {
+    let fixture = Fixture::new();
+    // The duplicate header makes the file unparseable; the parsed part and
+    // the scanned tail both hold appearance lines.
+    fixture.write(
+        r#"schema_version = 1
+
+[appearance]
+follow_system = false
+dark = "dracula"
+theme = 5
+
+[view]
+sort = "playtime"
+
+[appearance]
+light = "custom:soft"
+improve_readability = true
+future = "kept"
+"#,
+    );
+
+    let report = repair_at(&fixture.paths, STAMP, sync_dir).unwrap().unwrap();
+
+    assert_eq!(report.appearance, ViewRecovery::Partly);
+    assert!(!report.complete());
+    assert!(
+        report
+            .to_string()
+            .contains("Appearance settings partly recovered."),
+        "{report}"
+    );
+    let library = load(&fixture.paths);
+    assert_eq!(library.problem, None);
+    assert_eq!(library.view.sort, SortKey::Playtime);
+    assert!(!library.appearance.follow_system);
+    assert_eq!(library.appearance.dark, "dracula");
+    assert_eq!(library.appearance.light, "custom:soft");
+    assert_eq!(library.appearance.theme, "midnight");
+    assert!(library.appearance.improve_readability);
+    assert!(fixture.read().contains("future = \"kept\""));
+}
+
+#[test]
+fn a_fully_recovered_appearance_is_reported() {
+    let fixture = Fixture::new();
+    fixture.write(
+        "schema_version = 1\n[appearance]\ntheme = \"cellar\"\n[appearance]\ndark = \"dracula\"\n",
+    );
+    let report = repair_at(&fixture.paths, STAMP, sync_dir).unwrap().unwrap();
+    assert_eq!(report.appearance, ViewRecovery::Recovered);
+    assert!(report.complete());
+    assert!(
+        report
+            .to_string()
+            .contains("Appearance settings recovered.")
+    );
+    let library = load(&fixture.paths);
+    assert_eq!(library.appearance.theme, "cellar");
+    assert_eq!(library.appearance.dark, "dracula");
+}
+
+#[test]
+fn appearance_wording_for_a_lost_table() {
+    let report = RepairReport {
+        entries: 1,
+        full: 1,
+        partly: 0,
+        view: ViewRecovery::Absent,
+        appearance: ViewRecovery::Lost,
+        dropped_text: false,
+        backup: PathBuf::from("/x/library.toml.broken-1"),
+    };
+    assert!(
+        report
+            .to_string()
+            .contains("Appearance settings could not be recovered."),
+    );
 }

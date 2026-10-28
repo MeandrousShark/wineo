@@ -16,10 +16,10 @@ use crate::error::{Error, IoContext, Result};
 use crate::operation::Locks;
 use crate::paths::Paths;
 
-/// How much of `[view]` came back.
+/// How much of `[view]` or `[appearance]` came back.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ViewRecovery {
-    /// The file had no `[view]` the repair could find.
+    /// The file had no such table the repair could find.
     Absent,
     Recovered,
     Partly,
@@ -36,6 +36,7 @@ pub struct RepairReport {
     /// Entries with some, but not all, recognized fields kept.
     pub partly: usize,
     pub view: ViewRecovery,
+    pub appearance: ViewRecovery,
     /// Text that couldn't be attributed to a recognized entry or field was dropped.
     pub dropped_text: bool,
     pub backup: PathBuf,
@@ -52,6 +53,10 @@ impl RepairReport {
         self.full == self.entries
             && !self.dropped_text
             && matches!(self.view, ViewRecovery::Absent | ViewRecovery::Recovered)
+            && matches!(
+                self.appearance,
+                ViewRecovery::Absent | ViewRecovery::Recovered
+            )
     }
 }
 
@@ -84,6 +89,12 @@ impl fmt::Display for RepairReport {
             ViewRecovery::Recovered => f.write_str(" Sort settings recovered.")?,
             ViewRecovery::Partly => f.write_str(" Sort settings partly recovered.")?,
             ViewRecovery::Lost => f.write_str(" Sort settings could not be recovered.")?,
+        }
+        match self.appearance {
+            ViewRecovery::Absent => {}
+            ViewRecovery::Recovered => f.write_str(" Appearance settings recovered.")?,
+            ViewRecovery::Partly => f.write_str(" Appearance settings partly recovered.")?,
+            ViewRecovery::Lost => f.write_str(" Appearance settings could not be recovered.")?,
         }
         let backup = self.backup.file_name().map_or_else(
             || self.backup.to_string_lossy(),
@@ -249,7 +260,8 @@ impl<'a> Lines<'a> {
 
 /// A header line, or one `key = value` with every line its value spans.
 enum Unit {
-    /// None for a header that isn't `[view]` or `[environments.<name>]`.
+    /// None for a header that isn't `[view]`, `[appearance]`, or
+    /// `[environments.<name>]`.
     Header {
         start: usize,
         header: Option<Header>,
@@ -272,6 +284,7 @@ impl Unit {
 
 enum Header {
     View,
+    Appearance,
     Entry(String),
 }
 
@@ -417,6 +430,7 @@ impl Scan {
 #[derive(Debug, Default)]
 struct Salvaged {
     view: Option<Section>,
+    appearance: Option<Section>,
     entries: Vec<(String, Section)>,
     dropped_text: bool,
     newer_version: Option<i64>,
@@ -501,6 +515,7 @@ fn merge(table: &mut Table, key: &Key, item: Item) -> bool {
 enum Current {
     Top,
     View,
+    Appearance,
     Entry(usize),
     Unattributed,
 }
@@ -521,6 +536,10 @@ fn salvage(bytes: &[u8]) -> Salvaged {
                     Some(Header::View) => {
                         salvaged.view.get_or_insert_with(Section::default);
                         Current::View
+                    }
+                    Some(Header::Appearance) => {
+                        salvaged.appearance.get_or_insert_with(Section::default);
+                        Current::Appearance
                     }
                     Some(Header::Entry(name)) => Current::Entry(salvaged.entry(name)),
                     None => {
@@ -561,6 +580,11 @@ fn salvage(bytes: &[u8]) -> Salvaged {
                 .as_mut()
                 .expect("view section was recorded")
                 .offer(text, valid_view_field),
+            Current::Appearance => salvaged
+                .appearance
+                .as_mut()
+                .expect("appearance section was recorded")
+                .offer(text, valid_appearance_field),
             Current::Entry(index) => salvaged.entries[index].1.offer(text, valid_entry_field),
         }
     }
@@ -629,6 +653,13 @@ impl Salvaged {
                         view.read(&key, field, valid_view_field);
                     }
                 }
+                ("appearance", Some(table)) => {
+                    let appearance = self.appearance.get_or_insert_with(Section::default);
+                    for (name, field) in table.iter() {
+                        let key = table.key(name).cloned().unwrap_or_else(|| Key::new(name));
+                        appearance.read(&key, field, valid_appearance_field);
+                    }
+                }
                 ("environments", Some(environments)) => {
                     for (name, entry) in environments.iter() {
                         let Some(entry) = entry.as_table_like() else {
@@ -650,6 +681,9 @@ impl Salvaged {
             None => Current::Top,
             Some(path) => match path.as_slice() {
                 [view] if view == "view" && self.view.is_some() => Current::View,
+                [appearance] if appearance == "appearance" && self.appearance.is_some() => {
+                    Current::Appearance
+                }
                 [environments, name] if environments == "environments" => {
                     match self.entries.iter().position(|(seen, _)| seen == name) {
                         Some(index) => Current::Entry(index),
@@ -699,7 +733,8 @@ fn last_header(
     last.as_ref().map(|(_, path)| path.clone())
 }
 
-/// A header line on its own: exactly `[view]` or `[environments.<name>]`.
+/// A header line on its own: exactly `[view]`, `[appearance]`, or
+/// `[environments.<name>]`.
 fn header(line: &str) -> Option<Header> {
     let document = line.parse::<DocumentMut>().ok()?;
     let mut keys = document.iter();
@@ -710,6 +745,7 @@ fn header(line: &str) -> Option<Header> {
     let table = item.as_table()?;
     match key {
         "view" => table.is_empty().then_some(Header::View),
+        "appearance" => table.is_empty().then_some(Header::Appearance),
         "environments" => {
             let mut children = table.iter();
             let (name, child) = children.next()?;
@@ -743,12 +779,25 @@ fn valid_view_field(key: &str, item: &Item) -> bool {
     }
 }
 
+/// Only the types: whether an id names a theme is `validate`'s business, and
+/// a newer wineo's theme id is no reason to drop the line.
+fn valid_appearance_field(key: &str, item: &Item) -> bool {
+    match key {
+        "follow_system" | "improve_readability" => item.as_bool().is_some(),
+        "dark" | "light" | "theme" => item.as_str().is_some(),
+        _ => true,
+    }
+}
+
 impl Salvaged {
     fn render(&self) -> String {
         let mut document = DocumentMut::new();
         document.insert("schema_version", Item::Value(SCHEMA_VERSION.into()));
         if let Some(view) = self.view.as_ref().filter(|view| view.kept > 0) {
             document.insert("view", Item::Table(fresh_table(&view.table)));
+        }
+        if let Some(appearance) = self.appearance.as_ref().filter(|table| table.kept > 0) {
+            document.insert("appearance", Item::Table(fresh_table(&appearance.table)));
         }
         if !self.entries.is_empty() {
             let mut environments = Table::new();
@@ -781,6 +830,10 @@ impl Salvaged {
             partly,
             view: self
                 .view
+                .as_ref()
+                .map_or(ViewRecovery::Absent, Section::recovery),
+            appearance: self
+                .appearance
                 .as_ref()
                 .map_or(ViewRecovery::Absent, Section::recovery),
             dropped_text: self.dropped_text,
