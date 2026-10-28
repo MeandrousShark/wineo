@@ -105,7 +105,7 @@ use wineo_core::runtime::State;
 use crate::library::playtime_label;
 use crate::library::{ArtFile, ArtIdentity, Card};
 use crate::panel::{LOG_ID, LogBuffer, PanelError};
-use crate::theme::Palette;
+use crate::theme::{Appearance, Palette};
 
 pub(crate) const CARD_WIDTH: f32 = 160.0;
 pub(crate) const GAP: f32 = 16.0;
@@ -122,6 +122,7 @@ pub(crate) type Early = ControlFlow<Task<Message>, Task<Message>>;
 pub(crate) struct App {
     paths: Paths,
     pub(crate) palette: Palette,
+    appearance: Appearance,
     search: String,
     search_focused: bool,
     cards: Vec<Card>,
@@ -462,6 +463,7 @@ impl App {
         let mut app = Self {
             paths,
             palette: Palette::DARK,
+            appearance: Appearance::default(),
             search: String::new(),
             search_focused: false,
             cards: Vec::new(),
@@ -1109,7 +1111,7 @@ impl App {
             }
             Message::Window(_) => Task::none(),
             Message::ThemeChanged(mode) => {
-                self.palette = Palette::from_mode(mode);
+                self.palette = theme::resolve(&self.appearance, mode);
                 Task::none()
             }
             Message::PanelTick(generation, now) => {

@@ -326,6 +326,13 @@ fn luminance(color: Color) -> f32 {
     0.2126 * linear(color.r) + 0.7152 * linear(color.g) + 0.0722 * linear(color.b)
 }
 
+/// The WCAG contrast ratio between two opaque colors.
+#[cfg(test)]
+pub(crate) fn contrast(a: Color, b: Color) -> f32 {
+    let (a, b) = (luminance(a), luminance(b));
+    (a.max(b) + 0.05) / (a.min(b) + 0.05)
+}
+
 pub(crate) fn accent_ink(background: Color) -> Color {
     if luminance(background) > 0.179 {
         Color::BLACK
@@ -391,29 +398,81 @@ pub(crate) fn separator<'a, M: 'a>(palette: Palette) -> Container<'a, M> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::theme::PRESETS;
 
     #[test]
-    fn accent_labels_remain_readable_in_both_palettes() {
-        for mode in [iced::theme::Mode::Dark, iced::theme::Mode::Light] {
-            let palette = Palette::from_mode(mode);
+    fn accent_labels_remain_readable_in_every_preset() {
+        for preset in PRESETS {
+            let palette = preset.palette;
             for color in [palette.primary, palette.danger, palette.success] {
-                for status in [
-                    button::Status::Active,
-                    button::Status::Hovered,
-                    button::Status::Pressed,
-                    button::Status::Disabled,
-                ] {
+                for status in ALL_STATUSES {
                     let style = accent_style(color, palette.foreground, status);
                     let Some(iced::Background::Color(background)) = style.background else {
                         panic!("expected solid accent fill");
                     };
                     let background = composite(background, palette.surface);
                     let foreground = composite(style.text_color, background);
-                    let a = luminance(background);
-                    let b = luminance(foreground);
-                    let contrast = (a.max(b) + 0.05) / (a.min(b) + 0.05);
-                    assert!(contrast >= 4.5, "accent label contrast: {contrast}");
+                    let contrast = contrast(background, foreground);
+                    // Inactive controls are exempt from the 4.5:1 text rule.
+                    let bar = if status == button::Status::Disabled {
+                        3.0
+                    } else {
+                        4.5
+                    };
+                    assert!(
+                        contrast >= bar,
+                        "{} {status:?} accent label contrast: {contrast}",
+                        preset.id
+                    );
                 }
+            }
+        }
+    }
+
+    #[test]
+    fn control_backgrounds_stay_distinct_in_every_preset() {
+        let solid = |style: button::Style| {
+            let Some(iced::Background::Color(background)) = style.background else {
+                panic!("expected solid fill");
+            };
+            background
+        };
+        for preset in PRESETS {
+            let palette = preset.palette;
+            for color in [palette.primary, palette.danger, palette.success] {
+                let backgrounds = ALL_STATUSES
+                    .map(|status| solid(accent_style(color, palette.foreground, status)));
+                assert_pairwise_distinct(preset.id, "accent", &backgrounds);
+            }
+            // A disabled secondary button keeps its fill and dims its label
+            // instead, so it is told apart by text.
+            let backgrounds = [
+                button::Status::Active,
+                button::Status::Hovered,
+                button::Status::Pressed,
+            ]
+            .map(|status| solid(secondary_style(palette, status)));
+            assert_pairwise_distinct(preset.id, "secondary", &backgrounds);
+            assert_ne!(
+                secondary_style(palette, button::Status::Disabled).text_color,
+                secondary_style(palette, button::Status::Active).text_color,
+                "{} disabled secondary label",
+                preset.id
+            );
+        }
+    }
+
+    const ALL_STATUSES: [button::Status; 4] = [
+        button::Status::Active,
+        button::Status::Hovered,
+        button::Status::Pressed,
+        button::Status::Disabled,
+    ];
+
+    fn assert_pairwise_distinct(preset: &str, what: &str, colors: &[Color]) {
+        for (i, a) in colors.iter().enumerate() {
+            for b in &colors[i + 1..] {
+                assert_ne!(a, b, "{preset}: {what} states share {a:?}");
             }
         }
     }

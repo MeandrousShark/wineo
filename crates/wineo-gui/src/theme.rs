@@ -1,10 +1,20 @@
 use iced::{Color, Theme};
 
+mod appearance;
+mod presets;
+#[cfg(test)]
+mod tests;
+
+pub(crate) use appearance::{Appearance, resolve};
+#[cfg(test)]
+pub(crate) use presets::PRESETS;
+pub(crate) use presets::{Preset, PresetKind};
+
 const fn rgb(hex: u32) -> Color {
     Color::from_rgb8((hex >> 16) as u8, (hex >> 8) as u8, hex as u8)
 }
 
-#[derive(Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub(super) struct Palette {
     pub(super) background: Color,
     pub(super) surface: Color,
@@ -18,34 +28,25 @@ pub(super) struct Palette {
 }
 
 impl Palette {
-    pub(super) const DARK: Self = Self {
-        background: rgb(0x16171b),
-        surface: rgb(0x1f2126),
-        border: rgb(0x2c2f36),
-        foreground: rgb(0xe6e6e9),
-        muted: rgb(0x8b8f98),
-        primary: rgb(0x6d8cff),
-        success: rgb(0x3ecf6e),
-        warning: rgb(0xe5a34a),
-        danger: rgb(0xe5534b),
-    };
-    const LIGHT: Self = Self {
-        background: rgb(0xf6f7f9),
-        surface: rgb(0xffffff),
-        border: rgb(0xd9dde4),
-        foreground: rgb(0x20242b),
-        muted: rgb(0x59616d),
-        primary: rgb(0x3158ca),
-        success: rgb(0x198044),
-        warning: rgb(0xa65d12),
-        danger: rgb(0xb93431),
-    };
-    pub(super) fn from_mode(mode: iced::theme::Mode) -> Self {
-        if mode == iced::theme::Mode::Light {
-            Self::LIGHT
-        } else {
-            Self::DARK
+    /// The colors in role order: background, surface, border, foreground,
+    /// muted, primary, success, warning, danger.
+    const fn from_hex(hex: [u32; 9]) -> Self {
+        Self {
+            background: rgb(hex[0]),
+            surface: rgb(hex[1]),
+            border: rgb(hex[2]),
+            foreground: rgb(hex[3]),
+            muted: rgb(hex[4]),
+            primary: rgb(hex[5]),
+            success: rgb(hex[6]),
+            warning: rgb(hex[7]),
+            danger: rgb(hex[8]),
         }
+    }
+    pub(super) const DARK: Self = presets::MIDNIGHT;
+    #[cfg(test)]
+    pub(super) fn from_mode(mode: iced::theme::Mode) -> Self {
+        resolve(&Appearance::default(), mode)
     }
     /// Every color at `alpha` times its opacity.
     pub(super) fn faded(self, alpha: f32) -> Self {
