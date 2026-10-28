@@ -726,7 +726,7 @@ fn recovery_restores_original_after_interrupted_exchange() {
 fn rollback_finds_the_original_after_a_reboot_renumbers_its_device() {
     let (_root, paths, prefix, config) = fixture(false);
     let original = directory_identity(&prefix).unwrap();
-    if original.birth.is_none() {
+    if original.birth.is_none() || original.fsid.is_none() {
         return;
     }
     let stage = tempfile::Builder::new()
@@ -766,17 +766,41 @@ fn directory_identity_without_birth_still_needs_the_device() {
         device: 5,
         inode: 9,
         birth: None,
+        fsid: None,
     };
     assert!(saved.matches(saved));
     assert!(!saved.matches(DirectoryIdentity { device: 6, ..saved }));
+    // A marker from before birth times were recorded keeps its old check.
+    assert!(saved.matches(DirectoryIdentity {
+        birth: Some((1, 0)),
+        fsid: Some(3),
+        ..saved
+    }));
     let born = DirectoryIdentity {
         birth: Some((1, 0)),
+        fsid: Some(3),
         ..saved
     };
+    // A reboot renumbers the device; a snapshot has its own statfs ID.
     assert!(born.matches(DirectoryIdentity { device: 6, ..born }));
+    assert!(!born.matches(DirectoryIdentity {
+        fsid: Some(4),
+        ..born
+    }));
     assert!(!born.matches(DirectoryIdentity { inode: 10, ..born }));
     assert!(!born.matches(DirectoryIdentity {
         birth: Some((2, 0)),
+        ..born
+    }));
+    // A saved birth time the filesystem no longer reports isn't trusted.
+    assert!(!born.matches(DirectoryIdentity {
+        birth: None,
+        ..born
+    }));
+    // Without statfs IDs on both sides, the device decides.
+    assert!(!born.matches(DirectoryIdentity {
+        device: 6,
+        fsid: None,
         ..born
     }));
 }

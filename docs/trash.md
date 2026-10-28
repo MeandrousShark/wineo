@@ -85,11 +85,14 @@ An interruption before metadata-copy staging ownership is recorded can leave
 an empty `.wineo-stage-*` directory. Recovery leaves unowned staging directories
 alone rather than risk deleting unrelated data.
 
-Trash records verify saved files and directories by inode and creation time.
-Device numbers and Linux mount IDs can change across reboots (btrfs gives each
-subvolume an anonymous device number when it mounts), so a change in either
-doesn't invalidate an entry while those two still match. If creation time is
-unavailable, the device and mount ID must match too.
+Trash records verify saved files and directories by inode, creation time, and
+the filesystem's statfs ID. Device numbers and Linux mount IDs can change
+across reboots (btrfs gives each subvolume an anonymous device number when it
+mounts), so a change in either doesn't invalidate an entry while those three
+still match. The statfs ID also tells a btrfs snapshot from its source, which
+shares its inodes and creation times. Where creation time or the statfs ID is
+unavailable, including entries written before wineo recorded the statfs ID,
+the device must match, and without creation time the mount ID too.
 Listing trash does not rewrite its manifests. Restore, prune, and recovery keep
 their identity, content, and current mount-boundary checks.
 

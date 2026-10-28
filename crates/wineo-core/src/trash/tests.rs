@@ -53,7 +53,7 @@ impl Fixture {
 }
 
 fn drift_identity(saved: &mut Identity) -> bool {
-    let (Some(mount), Some(_)) = (saved.mount, saved.birth) else {
+    let (Some(mount), Some(_), Some(_)) = (saved.mount, saved.birth, saved.fsid) else {
         return false;
     };
     saved.mount = Some(mount + 10_000);
@@ -133,6 +133,7 @@ fn mount_id_drift_without_birth_time_fails_closed() {
         inode: 9,
         mount: Some(1),
         birth: None,
+        fsid: Some(3),
     };
     assert!(!saved.matches(Identity {
         mount: Some(2),
@@ -141,16 +142,16 @@ fn mount_id_drift_without_birth_time_fails_closed() {
     assert!(!saved.matches(Identity { device: 6, ..saved }));
     let with_birth = Identity {
         birth: Some((1, 0)),
+        fsid: None,
         ..saved
     };
     assert!(with_birth.matches(Identity {
         mount: Some(2),
         ..with_birth
     }));
-    // A btrfs subvolume's device number can change across a reboot.
-    assert!(with_birth.matches(Identity {
+    // Without statfs IDs on both sides, the device still has to match.
+    assert!(!with_birth.matches(Identity {
         device: 6,
-        mount: Some(2),
         ..with_birth
     }));
     assert!(!with_birth.matches(Identity {
@@ -163,6 +164,56 @@ fn mount_id_drift_without_birth_time_fails_closed() {
         mount: Some(2),
         ..with_birth
     }));
+}
+
+#[test]
+fn statfs_id_survives_a_reboot_but_tells_a_snapshot_apart() {
+    let saved = Identity {
+        device: 5,
+        inode: 256,
+        mount: Some(1),
+        birth: Some((1, 0)),
+        fsid: Some(3),
+    };
+    // A reboot renumbers a btrfs subvolume's device and mount ID.
+    assert!(saved.matches(Identity {
+        device: 6,
+        mount: Some(2),
+        ..saved
+    }));
+    // A snapshot keeps the inode and birth time but has its own statfs ID.
+    assert!(!saved.matches(Identity {
+        fsid: Some(4),
+        ..saved
+    }));
+    assert!(!saved.matches(Identity {
+        device: 6,
+        fsid: Some(4),
+        ..saved
+    }));
+    // A filesystem that reports no statfs ID falls back to the device.
+    assert!(saved.matches(Identity {
+        fsid: None,
+        ..saved
+    }));
+    assert!(!saved.matches(Identity {
+        device: 6,
+        fsid: None,
+        ..saved
+    }));
+}
+
+#[test]
+fn a_statfs_id_with_the_top_bit_set_round_trips_through_toml() {
+    let identity = Identity {
+        device: 5,
+        inode: 9,
+        mount: None,
+        birth: Some((1, 0)),
+        fsid: Some(0xee8e_889d_5c0c_1cac),
+    };
+    let text = toml::to_string(&identity).unwrap();
+    assert_eq!(toml::from_str::<Identity>(&text).unwrap(), identity);
 }
 
 #[test]

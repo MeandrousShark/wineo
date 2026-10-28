@@ -38,6 +38,8 @@ pub(super) fn identity(path: &Path) -> Result<Option<Identity>> {
                 inode: meta.ino(),
                 mount,
                 birth,
+                fsid: crate::files::filesystem_id(path)
+                    .with_context(|| format!("inspecting {}", path.display()))?,
             }))
         }
         Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(None),

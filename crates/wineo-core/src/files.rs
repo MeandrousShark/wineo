@@ -6,6 +6,30 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::error::{IoContext, Result};
 
+/// The statfs filesystem ID, or None when the filesystem reports none. btrfs
+/// derives it from the filesystem UUID and subvolume, so unlike `st_dev` it
+/// survives reboots and differs between a subvolume and its snapshots.
+pub(crate) fn filesystem_id(path: &Path) -> io::Result<Option<u64>> {
+    let id = rustix::fs::statvfs(path)?.f_fsid;
+    Ok((id != 0).then_some(id))
+}
+
+/// Serde for a stored filesystem ID. TOML integers are signed and most IDs
+/// use the top bit, so the ID is kept as the i64 with the same bits.
+pub(crate) mod fsid_bits {
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+    pub(crate) fn serialize<S: Serializer>(id: &Option<u64>, out: S) -> Result<S::Ok, S::Error> {
+        id.map(|id| id as i64).serialize(out)
+    }
+
+    pub(crate) fn deserialize<'de, D: Deserializer<'de>>(
+        input: D,
+    ) -> Result<Option<u64>, D::Error> {
+        Ok(Option::<i64>::deserialize(input)?.map(|id| id as u64))
+    }
+}
+
 /// Writes through a temp file and a rename, so readers never see a half-written file.
 pub(crate) fn write_atomic(path: &Path, contents: impl AsRef<[u8]>) -> Result<()> {
     // Created here, not left to write_unique, so a blocked parent keeps its own error.

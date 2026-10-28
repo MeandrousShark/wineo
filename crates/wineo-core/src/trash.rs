@@ -117,17 +117,31 @@ struct Identity {
     mount: Option<u64>,
     #[serde(default)]
     birth: Option<(i64, u32)>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        with = "crate::files::fsid_bits"
+    )]
+    fsid: Option<u64>,
 }
 
 impl Identity {
     fn matches(self, current: Self) -> bool {
         self.inode == current.inode
             && self.birth == current.birth
-            // Device numbers and mount IDs can change across reboots (btrfs
-            // gives each subvolume an anonymous device at mount time), so
-            // they only guard against inode reuse when there's no birth time.
-            && (self.birth.is_some()
-                || self.device == current.device && self.mount == current.mount)
+            && match (self.birth, self.fsid, current.fsid) {
+                // Inode and birth time pick the file and the statfs ID picks
+                // the filesystem. Unlike device numbers and mount IDs it
+                // survives reboots (btrfs renumbers subvolume devices at
+                // mount time), and it differs for a btrfs snapshot, which
+                // shares inodes and birth times with its source.
+                (Some(_), Some(saved), Some(now)) => saved == now,
+                // Without birth time, a changed mount ID could hide inode reuse.
+                _ => {
+                    self.device == current.device
+                        && (self.birth.is_some() || self.mount == current.mount)
+                }
+            }
     }
 }
 

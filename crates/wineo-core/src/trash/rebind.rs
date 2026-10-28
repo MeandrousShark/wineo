@@ -112,6 +112,12 @@ fn set(item: &mut Item, path: &Path) -> Result<()> {
     {
         put(table.get_mut("mount"), mount as i64)?;
     }
+    if let Some(fsid) = now.fsid
+        && table.contains_key("fsid")
+    {
+        // A u64 ID can exceed TOML's i64, so it is stored as its bit pattern.
+        put(table.get_mut("fsid"), fsid as i64)?;
+    }
     let Some((secs, nanos)) = now.birth else {
         bail!("{} has no birth time on this filesystem", path.display());
     };

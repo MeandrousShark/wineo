@@ -57,17 +57,31 @@ struct DirectoryIdentity {
     inode: u64,
     #[serde(default)]
     birth: Option<(i64, u32)>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        with = "crate::files::fsid_bits"
+    )]
+    fsid: Option<u64>,
 }
 
 impl DirectoryIdentity {
     /// Recovery often runs after a crash and reboot, which can renumber a
-    /// btrfs subvolume's device, so the device only counts without birth
-    /// times to compare.
+    /// btrfs subvolume's device, so with a birth time the statfs ID stands in
+    /// for the device. It also tells a btrfs snapshot, which shares inodes
+    /// and birth times with its source, from the original.
     fn matches(self, live: Self) -> bool {
         self.inode == live.inode
-            && match (self.birth, live.birth) {
-                (Some(saved), Some(now)) => saved == now,
-                _ => self.device == live.device,
+            && match self.birth {
+                // Written before birth times were recorded.
+                None => self.device == live.device,
+                Some(_) => {
+                    self.birth == live.birth
+                        && match (self.fsid, live.fsid) {
+                            (Some(saved), Some(now)) => saved == now,
+                            _ => self.device == live.device,
+                        }
+                }
             }
     }
 }
@@ -946,6 +960,7 @@ fn directory_identity(path: &Path) -> Result<DirectoryIdentity> {
         device: metadata.dev(),
         inode: metadata.ino(),
         birth,
+        fsid: crate::files::filesystem_id(path)?,
     })
 }
 
