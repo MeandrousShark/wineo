@@ -543,6 +543,11 @@ when done.
     there, come back, **Save** again.
 11. **Locked while saving.** Start a slow General save (installing DXVK)
     and look at Appearance: the rows look disabled until it finishes.
+12. **Steam starts quietly.** Not part of this plan, but it rides along in
+    the same release (577531c5). Quit Steam, then start a Steam game from
+    wineo on your own library: Steam comes up in the tray, its library
+    window stays closed, and the game launches. With Steam already open,
+    nothing about its window changes.
 
 ## Scope limits
 
