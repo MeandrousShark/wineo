@@ -362,8 +362,8 @@ an older release only loses those preferences. The one exception is
 ## Library state
 
 `~/.config/wineo/library.toml` holds how the desktop app shows each
-environment: favorites, hidden games, when it was added, and the saved sort
-and grid view.
+environment: favorites, hidden games, when it was added, the saved sort
+and grid view, and the app's theme.
 It's written for you, one field at a time, and never stops anything from
 launching. A bad value, like `favorite = "yes"`, counts as unset for that
 field only and stays in the file until you fix it or change that setting.
@@ -378,6 +378,13 @@ favorites_first = true
 zoom = 125                # grid size in percent, 60 to 200
 poster_only = true
 
+[appearance]
+follow_system = true
+dark = "cellar"
+light = "daylight"
+theme = "midnight"        # used when follow_system is false
+improve_readability = false
+
 [environments.hades]
 favorite = true
 added = 2026-10-18T19:30:00Z
@@ -390,7 +397,23 @@ hidden = true
 `name`, and `descending` and `favorites_first` to `false`. `zoom` is the
 grid's size in whole percent, any integer from 60 to 200, and defaults to
 100. `poster_only` hides titles under the posters and defaults to `false`.
-Filters and Show hidden aren't saved. Each `[environments.<name>]` entry is keyed by the
+Filters and Show hidden aren't saved.
+
+`[appearance]` is the desktop app's theme (plan
+[0057](plans/0057-gui-themes.md)). With `follow_system` on, the default,
+the app shows `dark` or `light` as the desktop's mode changes; with it off,
+it shows `theme` either way. Each names a built-in theme (`midnight`,
+`daylight`, `cellar`, `cellar-light`, `high-contrast`, `dracula`,
+`catppuccin-macchiato`, `catppuccin-latte`) or a custom one as
+`custom:<id>` (see [Custom themes](#custom-themes)). The defaults are
+`midnight` for `dark` and `theme`, and `daylight` for `light`. An unknown
+theme, a custom one whose file is gone or doesn't parse, or a light theme in
+`dark` (or a dark one in `light`) shows the default instead, and `validate`
+warns about it; picking a theme for that slot in Settings writes a good value.
+`improve_readability` raises the contrast of text colors that need it and
+defaults to `false`.
+
+Each `[environments.<name>]` entry is keyed by the
 environment's name. `favorite` and `hidden` default to `false`. `added` is
 when wineo created or imported it, a TOML datetime in UTC; environments
 made before wineo recorded it have none and sort last by date added. A
@@ -403,7 +426,7 @@ so the file stays exactly as it is. `wineo validate --fix` or Checkup can
 repair it: the original is copied to `library.toml.broken-<time>` (with
 `-2`, `-3` if that name is taken), and that copy is synced to disk before
 the new file replaces it. The repair keeps each setting whose line still
-reads correctly on its own, under an entry or `[view]` it can recognize, and
+reads correctly on its own, under an entry, `[view]`, or `[appearance]`, and
 reports what it couldn't keep. A file from a newer wineo is never repaired;
 update wineo instead. The fix that removes entries for environments that no
 longer exist adds `schema_version = 1` if the file had none.
@@ -414,6 +437,47 @@ filesystem that keeps coarse times, like FAT on a portable drive (2 s), two
 same-size edits made in place within one tick can look like one, so the
 second shows up with the next change or a restart. wineo's own writes
 replace the file or grow the log, so this only affects hand edits.
+
+### Custom themes
+
+Each custom theme is a file in `~/.config/wineo/themes/`, which the
+portable folder overrides like the rest of the config. Settings makes and
+edits them, but they're plain TOML you can copy between machines or write
+by hand:
+
+```toml
+schema_version = 1
+name = "My Cellar"
+kind = "dark"             # dark or light
+based_on = "cellar"       # a built-in theme
+
+[colors]
+background = "#191513"
+surface = "#231d1a"
+border = "#3a302a"
+foreground = "#eee6df"
+muted = "#a8988c"
+primary = "#e08060"
+success = "#5fcb8c"
+warning = "#e9c25a"
+danger = "#f26d6d"
+```
+
+The file name is the theme's id, so `my-cellar.toml` is
+`custom:my-cellar` in `library.toml`. Settings picks the id once, when it
+creates the theme, from the name it starts with, adding `-2`, `-3` if that
+file exists. Renaming a theme only changes `name`, so the id and every
+reference to it stay put. Two custom themes can't share a name, ignoring
+case.
+
+A theme file is read leniently, like `library.toml`, so it never stops the
+app. An unknown key is ignored. A missing or unknown `kind` counts as dark.
+`based_on` must name a built-in theme; otherwise the default for the kind
+(Midnight or Daylight) stands in. A missing color, or one that isn't
+`#rrggbb`, comes from `based_on`. A file that doesn't parse is left out of
+the theme lists, anything pointing at it shows the default, and `validate`
+warns about it. Settings adds `schema_version = 1` when it edits a file
+that had none, and won't edit one from a newer wineo.
 
 ## A global config wineo can't use
 

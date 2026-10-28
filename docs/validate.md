@@ -116,7 +116,8 @@ A file a newer wineo wrote is never repaired, even when it's also damaged,
 since that would throw away what the newer release saved.
 
 Problems with `library.toml` as a whole are listed under its own heading,
-right after `config.toml`. One environment's entry is listed with that
+right after `config.toml`, and so are [custom theme files](config-files.md#custom-themes)
+that don't parse. One environment's entry is listed with that
 environment.
 
 ## What it checks
@@ -169,6 +170,8 @@ environment.
 | Library | `library.toml` from a newer wineo | error | hint: update wineo |
 | Library | A bad value, like `favorite = "yes"` or an unknown sort | warning | |
 | Library | A key it doesn't know | warning | |
+| Library | `[appearance]` names a theme that doesn't exist or can't be read, or a light theme as the dark one (or the reverse) | warning | |
+| Library | A file in `themes/` doesn't parse | warning | |
 | Library | An entry for an environment that no longer exists | warning | remove it |
 
 Some things are left out on purpose:

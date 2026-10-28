@@ -45,20 +45,55 @@ and oversized preview posters are not implementation requirements.
 
 ## Colors and controls
 
-`crates/wineo-gui/src/theme.rs` owns the semantic palette. Reuse its tokens;
-do not copy literal preview colors into page implementations.
+`crates/wineo-gui/src/theme/` owns the semantic palette and the built-in
+themes (plan [0057](plans/0057-gui-themes.md)). Reuse its roles; do not copy
+literal preview colors into page implementations.
 
-| Token | Dark | Light | Role |
-|---|---|---|---|
-| background | `#16171b` | `#f6f7f9` | Window and page backdrop |
-| surface | `#1f2126` | `#ffffff` | Grouped sections and panel |
-| border | `#2c2f36` | `#d9dde4` | Quiet separation |
-| foreground | `#e6e6e9` | `#20242b` | Main text |
-| muted | `#8b8f98` | `#59616d` | Supporting text |
-| primary | `#6d8cff` | `#3158ca` | Main action and focus |
-| success | `#3ecf6e` | `#198044` | Healthy and completed states |
-| warning | `#e5a34a` | `#a65d12` | Attention and recovery |
-| danger | `#e5534b` | `#b93431` | Stop, destructive actions, errors |
+| Role | Use |
+|---|---|
+| background | Window and page backdrop |
+| surface | Grouped sections and panel |
+| border | Quiet separation |
+| foreground | Main text |
+| muted | Supporting text |
+| primary | Main action and focus |
+| success | Healthy and completed states |
+| warning | Attention and recovery |
+| danger | Stop, destructive actions, errors |
+
+Each built-in theme sets all nine, in this order:
+
+| Theme | Kind | background, surface, border, foreground, muted, primary, success, warning, danger |
+|---|---|---|
+| Midnight | dark | `#16171b` `#1f2126` `#2c2f36` `#e6e6e9` `#8b8f98` `#6d8cff` `#3ecf6e` `#e5a34a` `#ec625a` |
+| Daylight | light | `#f6f7f9` `#ffffff` `#d9dde4` `#20242b` `#59616d` `#3158ca` `#198044` `#a65d12` `#b93431` |
+| Cellar | dark | `#191513` `#231d1a` `#3a302a` `#eee6df` `#a8988c` `#e08060` `#5fcb8c` `#e9c25a` `#f26d6d` |
+| Cellar Light | light | `#f3ede6` `#fbf8f4` `#ddd2c6` `#2a211b` `#6b5b4f` `#b44a2f` `#2f7a45` `#8f6400` `#b0233f` |
+| High contrast | dark | `#000000` `#0e0f11` `#7a7f8a` `#ffffff` `#c9ccd3` `#94b4ff` `#62e48f` `#ffc46a` `#ff8277` |
+| Dracula | dark | `#21222c` `#282a36` `#44475a` `#f8f8f2` `#6272a4` `#bd93f9` `#50fa7b` `#ffb86c` `#ff5555` |
+| Catppuccin Macchiato | dark | `#1e2030` `#24273a` `#363a4f` `#cad3f5` `#a5adcb` `#c6a0f6` `#a6da95` `#eed49f` `#ed8796` |
+| Catppuccin Latte | light | `#e6e9ef` `#eff1f5` `#ccd0da` `#4c4f69` `#6c6f85` `#8839ef` `#40a02b` `#df8e1d` `#d20f39` |
+
+Midnight and Daylight are the defaults for dark and light. Every text role
+(foreground, muted, primary, success, warning, danger) in a wineo theme
+reaches 4.5:1 against both background and surface, and a new wineo theme
+must too. Dracula and Catppuccin Latte ship their published colors and miss
+it in places; Improve readability raises them. Accent labels need 4.5:1
+active, hovered, and pressed, and 3:1 disabled, in every theme.
+
+A few colors stay fixed in every theme, because they sit over artwork whose
+colors no theme controls, or read as depth on any ground:
+
+- the poster marks' black backings and white icons, the star on the poster,
+  and white text over art;
+- the poster-only title gradient, the panel hero's gradient and close
+  button, and the art flow's gradient;
+- scrims, dialog and Settings, in black;
+- shadows, black at 16 to 20%;
+- accent hover and press, which blend toward white and black, with the
+  label picked again for the result.
+
+Anything else takes its color from a role.
 
 Buttons are compact rounded rectangles, 32 px high with 8 px corners and
 consistent horizontal padding. Play, Stop, and Log share an 82 px width.
@@ -316,7 +351,14 @@ stacks the right group underneath in a narrow window instead of squeezing
 its buttons. Rows of buttons that can run out of room wrap.
 
 Settings uses grouped sections and a fixed Save/Revert footer with the edit
-count. Snapshots uses compact rows and bounded, complete reviews. Downloads
+count. The global page has General and Appearance tabs in its header,
+between the title and the divider: text buttons 32 px high, 14 px regular
+labels (foreground when selected, muted otherwise), hover and press from
+`list_row_style`, and a 2 px primary underline on the selected tab that sits
+on the divider. The underline is always laid out, transparent when
+unselected, so switching never shifts anything. The tabs are the first Tab
+stops on the page, Left and Right move between them and select, and each tab
+keeps its own scroll position while the page is open. Snapshots uses compact rows and bounded, complete reviews. Downloads
 groups builds by component and keeps uses and progress visible. Checkup groups
 issues and fix choices, with concise healthy and result states. Trash keeps
 prefix inclusion, retained paths, recovery notices, and confirmations readable.
