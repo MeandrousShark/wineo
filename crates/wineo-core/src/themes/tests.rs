@@ -239,7 +239,8 @@ fn list_sorts_by_name_then_id_and_keeps_unparseable_files_apart() {
     let fixture = Fixture::new();
     fixture.write("z", "name = \"Alpha\"\n");
     fixture.write("b", "name = \"beta\"\n");
-    fixture.write("a", "name = \"Alpha\"\n");
+    fixture.write("a", "name = \"alpha\"\n");
+    fixture.write("c", "name = \"Alpha\"\n");
     fixture.write("broken", "name = \n");
     fixture.write("old", "schema_version = 0\n");
     fixture.write("typed", "schema_version = \"1\"\n");
@@ -248,7 +249,7 @@ fn list_sorts_by_name_then_id_and_keeps_unparseable_files_apart() {
 
     let found = list(&fixture.paths);
     let ids: Vec<&str> = found.themes.iter().map(|theme| theme.id.as_str()).collect();
-    assert_eq!(ids, ["a", "z", "b"]);
+    assert_eq!(ids, ["a", "c", "z", "b"]);
     let invalid: Vec<(&str, &str)> = found
         .invalid
         .iter()
@@ -448,4 +449,51 @@ fn normalizing_colors() {
     ] {
         assert_eq!(normalize_color(bad), None, "{bad}");
     }
+}
+
+#[test]
+fn a_file_name_that_is_not_a_usable_id_is_listed_as_invalid() {
+    let fixture = Fixture::new();
+    fixture.write("good", "name = \"Good\"\n");
+    // `...toml` has the stem `..`, which update, rename, and delete refuse.
+    fixture.write("..", "name = \"Dots\"\n");
+    let found = list(&fixture.paths);
+    let ids: Vec<&str> = found.themes.iter().map(|theme| theme.id.as_str()).collect();
+    assert_eq!(ids, ["good"]);
+    assert_eq!(found.invalid.len(), 1);
+    assert_eq!(found.invalid[0].id, "..");
+    assert_eq!(found.invalid[0].path, fixture.file(".."));
+}
+
+#[test]
+fn editing_a_file_without_schema_version_adds_it_and_a_no_op_does_not() {
+    let fixture = Fixture::new();
+    let text = "name = \"Hand\"\nkind = \"dark\"\n";
+    fixture.write("hand", text);
+    let path = fixture.file("hand");
+    let inode = fs::metadata(&path).unwrap().ino();
+
+    assert!(
+        !update(
+            &fixture.paths,
+            "hand",
+            ThemeKind::Dark,
+            None,
+            &Colors::default()
+        )
+        .unwrap()
+    );
+    assert!(!rename(&fixture.paths, "hand", "Hand").unwrap());
+    assert_eq!(fixture.read("hand"), text);
+    assert_eq!(fs::metadata(&path).unwrap().ino(), inode);
+
+    assert!(rename(&fixture.paths, "hand", "Other").unwrap());
+    assert!(fixture.read("hand").contains("schema_version = 1"));
+    assert_eq!(fixture.theme("hand").name, "Other");
+
+    fixture.write("second", text);
+    assert!(update(&fixture.paths, "second", ThemeKind::Light, None, &colors()).unwrap());
+    let written = fixture.read("second");
+    assert!(written.contains("schema_version = 1"), "{written}");
+    assert!(written.contains("name = \"Hand\""), "{written}");
 }

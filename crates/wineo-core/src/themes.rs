@@ -190,23 +190,33 @@ pub fn list(paths: &Paths) -> Themes {
             continue;
         };
         let id = id.to_owned();
-        let read = fs::read_to_string(&path)
-            .map_err(|error| error.to_string())
-            .and_then(|text| parse(&id, &text));
+        // An id the writers refuse (a file named `...toml`) couldn't be
+        // renamed or deleted, so it's reported rather than offered.
+        let read = if valid_id(&id) {
+            fs::read_to_string(&path)
+                .map_err(|error| error.to_string())
+                .and_then(|text| parse(&id, &text))
+        } else {
+            Err("the file name isn't a usable theme id".to_owned())
+        };
         match read {
             Ok(theme) => themes.themes.push(theme),
             Err(error) => themes.invalid.push(InvalidTheme { id, path, error }),
         }
     }
-    themes.themes.sort_by(|a, b| {
-        (a.name.to_lowercase(), &a.name, &a.id).cmp(&(b.name.to_lowercase(), &b.name, &b.id))
-    });
+    themes
+        .themes
+        .sort_by_cached_key(|theme| (theme.name.to_lowercase(), theme.id.clone()));
     themes.invalid.sort_by(|a, b| a.path.cmp(&b.path));
     themes
 }
 
+fn valid_id(id: &str) -> bool {
+    !(id.is_empty() || id == "." || id == ".." || id.contains(['/', '\0']))
+}
+
 fn theme_path(paths: &Paths, id: &str) -> Result<PathBuf> {
-    if id.is_empty() || id == "." || id == ".." || id.contains(['/', '\0']) {
+    if !valid_id(id) {
         return Err(Error::InvalidThemeId(id.to_owned()));
     }
     Ok(paths.themes_dir().join(format!("{id}.toml")))
@@ -370,7 +380,7 @@ pub fn update(
     if !changed {
         return Ok(false);
     }
-    crate::files::write_atomic(&path, document.to_string())?;
+    write(&path, document)?;
     Ok(true)
 }
 
@@ -393,7 +403,7 @@ pub fn rename(paths: &Paths, id: &str, new_name: &str) -> Result<bool> {
         return Ok(false);
     }
     store_value(document.as_table_mut(), "name", Value::from(new_name));
-    crate::files::write_atomic(&path, document.to_string())?;
+    write(&path, document)?;
     Ok(true)
 }
 
@@ -404,6 +414,15 @@ pub fn delete(paths: &Paths, id: &str) -> Result<bool> {
     let _guard = lock(paths)?;
     crate::files::remove_if_present(&path)
         .context(|| format!("failed to remove {}", path.display()))
+}
+
+/// Writes an edited document, stamping `schema_version` on a hand-made file
+/// that lacked it. Only real edits get here, so a no-op never adds it.
+fn write(path: &Path, mut document: DocumentMut) -> Result<()> {
+    if document.get("schema_version").is_none() {
+        document["schema_version"] = Item::Value(Value::from(SCHEMA_VERSION));
+    }
+    crate::files::write_atomic(path, document.to_string())
 }
 
 /// The file's document, refusing one that doesn't parse or that a newer
