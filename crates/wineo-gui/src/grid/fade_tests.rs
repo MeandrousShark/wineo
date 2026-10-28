@@ -418,7 +418,7 @@ fn the_star_takes_presses_fading_in_and_none_fading_out() {
     hover(&mut app, Some("game"));
     let mut clock = Clock::start(&mut app);
     clock.tick(&mut app, 30);
-    let at = mark_chip(&card_node(&app, &card), 0).center();
+    let at = mark_chip(&card_node(&app, &card)).center();
     let messages = left_click(&app, &card, at);
     assert_eq!(toggles(&messages, "game"), 1, "{messages:?}");
     clock.tick(&mut app, 200);
@@ -427,7 +427,7 @@ fn the_star_takes_presses_fading_in_and_none_fading_out() {
     clock.tick(&mut app, 30);
     assert!(star(&app, "game") > 0.0);
     // Still drawn, in the same place, but the press is the card's.
-    assert_eq!(mark_chip(&card_node(&app, &card), 0).center(), at);
+    assert_eq!(mark_chip(&card_node(&app, &card)).center(), at);
     let messages = left_click(&app, &card, at);
     assert_eq!(toggles(&messages, "game"), 0, "{messages:?}");
     assert!(

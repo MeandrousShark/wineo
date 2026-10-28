@@ -4,7 +4,7 @@
 use iced::advanced::Layout;
 use iced::advanced::layout::Node;
 use iced::widget::image;
-use iced::{Rectangle, Size, Vector};
+use iced::{Point, Rectangle, Size, Vector};
 use wineo_core::runtime::State;
 
 use super::*;
@@ -52,14 +52,36 @@ pub(super) fn overlay_shown(node: &Node) -> bool {
     })
 }
 
-/// The chip in the marks' `slot`, top first, centered in its 28 px cell.
-/// The marks are the top layer while no install bar shows.
-pub(super) fn mark_chip(node: &Node, slot: usize) -> Rectangle {
-    let cell = bounds_at(node, &[0, 0, 0, layers(node).len() - 1, 0, slot]);
+/// The star's chip, centered in its 28 px cell. The star is the top layer
+/// while no install bar shows.
+pub(super) fn mark_chip(node: &Node) -> Rectangle {
+    let cell = bounds_at(node, &[0, 0, 0, layers(node).len() - 1, 0]);
     Rectangle::new(
         cell.position() + Vector::new(2.0, 2.0),
         Size::new(24.0, 24.0),
     )
+}
+
+/// Where the star's chip sits in the art's top right corner, shown or not.
+pub(super) fn star_slot(node: &Node) -> Rectangle {
+    let art = bounds_at(node, &[0, 0]);
+    Rectangle::new(
+        Point::new(art.x + art.width - 8.0 - 24.0, art.y + 8.0),
+        Size::new(24.0, 24.0),
+    )
+}
+
+/// A hidden card's eye: the 24 px layer child in the art's bottom left
+/// corner.
+pub(super) fn eye_chip(node: &Node) -> Option<Rectangle> {
+    let art = bounds_at(node, &[0, 0]);
+    (1..layers(node).len())
+        .map(|index| bounds_at(node, &[0, 0, 0, index, 0]))
+        .find(|child| {
+            child.size() == Size::new(24.0, 24.0)
+                && child.x == art.x + 8.0
+                && child.y + child.height == art.y + art.height - 8.0
+        })
 }
 
 pub(super) fn gog(card: &mut Card) {
@@ -145,6 +167,57 @@ fn the_overlay_sits_at_the_bottom_of_the_art_in_one_or_two_lines() {
     assert!(label.x + label.width <= art.x + art.width - STEAM_MARK_ROOM);
     assert_eq!(mark.x + mark.width, art.x + art.width - 8.0);
     assert!(label.x + label.width <= mark.x - 4.0);
+}
+
+#[test]
+fn the_overlay_title_leaves_room_for_a_hidden_cards_eye() {
+    let mut app = crate::tests::app();
+    app.poster_only = true;
+    let mut card = art_card("game", State::Inactive);
+    decoded(&mut app, &card, [128, 128, 128]);
+    app.hovered = Some(card.name.clone());
+    // Without the eye the title keeps its 8 px margin; with it, the eye's
+    // margin, its width, and a 4 px gap.
+    for (hidden, left) in [(false, 8.0), (true, 8.0 + 24.0 + 4.0)] {
+        card.hidden = hidden;
+        let node = card_node(&app, &card);
+        let art = bounds_at(&node, &[0, 0]);
+        let label = bounds_at(&node, &[0, 0, 0, 1, 0, 0]);
+        assert_eq!(label.x, art.x + left, "hidden {hidden}");
+        assert_eq!(
+            label.x,
+            art.x
+                + if hidden {
+                    EYE_MARK_ROOM
+                } else {
+                    OVERLAY_PADDING
+                }
+        );
+        match eye_chip(&node) {
+            Some(eye) => {
+                assert!(hidden);
+                assert!(eye.x + eye.width + 4.0 <= label.x + 0.01);
+                // The install bar's edge stays clear under it.
+                assert!(eye.y + eye.height <= art.y + art.height - INSTALL_BAR_HEIGHT);
+            }
+            None => assert!(!hidden),
+        }
+    }
+    // A long title wraps in what's left, ellipsized on its second line,
+    // and never reaches under the eye or the Steam mark.
+    card.display_title = "The Elder Scrolls V: Skyrim Special Edition Anniversary Upgrade".into();
+    card.kind = Some(crate::library::CardKind::Proxied);
+    let node = card_node(&app, &card);
+    let art = bounds_at(&node, &[0, 0]);
+    let label = bounds_at(&node, &[0, 0, 0, 1, 0, 0]);
+    let eye = eye_chip(&node).expect("eye");
+    assert!(label.x >= eye.x + eye.width + 4.0 - 0.01);
+    assert!(label.x + label.width <= art.x + art.width - STEAM_MARK_ROOM);
+    // Not hovered or selected, the overlay is gone and the eye stays.
+    app.hovered = None;
+    let node = card_node(&app, &card);
+    assert!(!overlay_shown(&node));
+    assert!(eye_chip(&node).is_some());
 }
 
 #[test]
@@ -357,6 +430,8 @@ fn the_overlay_is_dark_white_text_and_a_hidden_cards_title_is_muted() {
     // reads at 4.5:1 or better against the gradient over its 45% art on
     // the theme's background, measured in the rendered pixels.
     card.hidden = true;
+    // The title starts right of the eye, whose white icon shares its rows.
+    let title = 40..150;
     let mut seen = Vec::new();
     for mode in [Mode::Dark, Mode::Light] {
         app.palette = crate::theme::Palette::from_mode(mode);
@@ -615,8 +690,8 @@ fn the_corner_keeps_clear_of_the_marks() {
                     "favorite {favorite}, hidden {hidden}, poster-only {poster_only} at {zoom}%, {state:?}"
                 );
                 let node = card_node(&app, &card);
-                // The marks' chips, not their wider cells.
-                let marks = mark_chip(&node, 0);
+                // The star's chip, where it shows or not.
+                let marks = star_slot(&node);
                 let chip = state == State::Running && app.grid_layout().text().chip();
                 let (gog, badge) = gog_at(&node, chip);
                 assert!(gog.width > 0.0, "{what}");
@@ -661,7 +736,7 @@ fn a_pill_too_small_for_its_words_becomes_a_round_badge() {
     assert!(is_badge);
     assert_eq!(badge.position(), chip.position() + Vector::new(28.0, 0.0));
     assert_eq!(chip.position(), art.position() + Vector::new(8.0, 8.0));
-    assert!(badge.x + badge.width <= mark_chip(&node, 0).x);
+    assert!(badge.x + badge.width <= mark_chip(&node).x);
     // The pill's color, with a down arrow in its ink at the center.
     let size = Size::new(96.0, 144.0);
     let pixels = render(&mut app.card(&card), size);

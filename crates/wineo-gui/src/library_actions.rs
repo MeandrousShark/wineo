@@ -4,7 +4,7 @@
 use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
 
-use iced::widget::{Space, button, column, container, mouse_area, tooltip};
+use iced::widget::{button, container, mouse_area, tooltip};
 use iced::{Color, Element, Fill, Task, border};
 use jiff::Timestamp;
 use wineo_core::library;
@@ -36,7 +36,7 @@ pub(crate) const STAR_TARGET: f32 = 28.0;
 const MARK_INSET: f32 = (STAR_TARGET - MARK_SIZE) / 2.0;
 /// The pop's ring: from the chip's edge out to short of the art's edges,
 /// drawn in a corner box that ends at the chip's left, where a GOG badge
-/// can touch it, and at the top of the eye's slot.
+/// can touch it, and a little below the star's target.
 const RING_FROM: f32 = MARK_SIZE / 2.0;
 const RING_TO: f32 = 18.0;
 const RING_WIDTH: f32 = 1.5;
@@ -444,10 +444,8 @@ impl App {
     }
 }
 
-/// The marks in a poster's top right corner: a star on a favorite, or an
-/// outline star while the card is hovered, and a crossed eye on a hidden
-/// card below it. The star's slot stays empty without it, so the eye never
-/// moves when the star comes and goes.
+/// The star in a poster's top right corner: a filled one on a favorite, or
+/// an outline one while the card is hovered.
 #[cfg(test)]
 pub(crate) fn poster_marks(
     card: &Card,
@@ -485,50 +483,38 @@ pub(crate) fn poster_marks_faded(
     look: StarLook,
 ) -> Option<Element<'static, Message>> {
     let outline = !card.favorite && (hovered || look.fade > 0.0);
-    if !card.favorite && !card.hidden && !outline {
+    if !card.favorite && !outline {
         return None;
     }
-    // Each mark sits centered in a cell as big as the star's target, so
-    // cells touching put the chips their usual gap apart.
-    let star: Element<'static, Message> = if card.favorite || outline {
-        let (bytes, strength) = if card.favorite {
-            (STAR, 1.0)
-        } else {
-            (STAR_OUTLINE, look.fade)
-        };
-        let size = MARK_SIZE + (STAR_TARGET - MARK_SIZE) * look.lift;
-        let chip = mark_lit(
-            bytes,
-            alpha * strength,
-            ui::blend(Color::WHITE, look.primary, look.glow),
-            MARK_BACKDROP + (GLOW_BACKDROP - MARK_BACKDROP) * look.glow,
-            size,
-        );
-        // A star fading out with the hover takes no presses.
-        let star = button(chip)
-            .width(STAR_TARGET)
-            .height(STAR_TARGET)
-            .padding((STAR_TARGET - size) / 2.0)
-            .on_press_maybe(
-                (card.favorite || hovered)
-                    .then(|| Message::Mark(Event::PosterStar(card.name.clone()))),
-            )
-            .style(|_, _| button::Style::default());
-        // A left press is the button's, so only the pointer's coming and
-        // going reach here.
-        mouse_area(star)
-            .on_enter(Message::StarHover(card.name.clone(), true))
-            .on_exit(Message::StarHover(card.name.clone(), false))
-            .into()
+    let (bytes, strength) = if card.favorite {
+        (STAR, 1.0)
     } else {
-        Space::new().width(STAR_TARGET).height(STAR_TARGET).into()
+        (STAR_OUTLINE, look.fade)
     };
-    let mut marks = column![star];
-    if card.hidden {
-        marks = marks.push(container(mark(EYE_OFF, alpha)).padding(MARK_INSET));
-    }
+    let size = MARK_SIZE + (STAR_TARGET - MARK_SIZE) * look.lift;
+    let chip = mark_lit(
+        bytes,
+        alpha * strength,
+        ui::blend(Color::WHITE, look.primary, look.glow),
+        MARK_BACKDROP + (GLOW_BACKDROP - MARK_BACKDROP) * look.glow,
+        size,
+    );
+    // A star fading out with the hover takes no presses.
+    let target = button(chip)
+        .width(STAR_TARGET)
+        .height(STAR_TARGET)
+        .padding((STAR_TARGET - size) / 2.0)
+        .on_press_maybe(
+            (card.favorite || hovered).then(|| Message::Mark(Event::PosterStar(card.name.clone()))),
+        )
+        .style(|_, _| button::Style::default());
+    // A left press is the button's, so only the pointer's coming and
+    // going reach here.
+    let star = mouse_area(target)
+        .on_enter(Message::StarHover(card.name.clone(), true))
+        .on_exit(Message::StarHover(card.name.clone(), false));
     Some(
-        container(marks)
+        container(star)
             .width(Fill)
             .height(Fill)
             .align_right(Fill)
@@ -536,6 +522,20 @@ pub(crate) fn poster_marks_faded(
             .padding(MARK_MARGIN - MARK_INSET)
             .into(),
     )
+}
+
+/// A hidden card's crossed eye in the poster's bottom left corner, which
+/// takes no presses.
+pub(crate) fn poster_eye(card: &Card, alpha: f32) -> Option<Element<'static, Message>> {
+    card.hidden.then(|| {
+        container(mark(EYE_OFF, alpha))
+            .width(Fill)
+            .height(Fill)
+            .align_left(Fill)
+            .align_bottom(Fill)
+            .padding(MARK_MARGIN)
+            .into()
+    })
 }
 
 /// The state dot on a mark's backing, for the poster's top-left corner.
@@ -589,7 +589,7 @@ fn mark_lit(
 
 /// The pop's ring around the poster star at `t` of the pop, in `primary`
 /// at the card's `alpha`. It's clipped to the star's corner, so it never
-/// draws over the eye, the top-left corner, or past the art.
+/// draws over the top-left corner or past the art.
 pub(crate) fn star_ring(t: f32, primary: Color, alpha: f32) -> Element<'static, Message> {
     let (growth, strength) = crate::star_pop::ring(t);
     let radius = RING_FROM + (RING_TO - RING_FROM) * growth;

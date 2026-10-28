@@ -10,7 +10,7 @@ use iced::{Point, Rectangle, Size, Vector};
 use wineo_core::runtime::State;
 
 use super::poster_tests::{
-    art_card, card_node, decoded, gog, gog_at, layers, mark_chip, overlay_shown,
+    art_card, card_node, decoded, eye_chip, gog, gog_at, layers, mark_chip, overlay_shown,
 };
 use super::*;
 use crate::layout_probe::{Laid, bounds_at, lay_out, relay_out, render};
@@ -354,7 +354,7 @@ fn the_gog_corner_is_the_same_at_rest_and_on_hover() {
             let what = format!("poster-only {poster_only} at {zoom}%, {state:?}");
             assert_eq!(rest, hovered, "{what}");
             // And the hover star's chip keeps clear of it.
-            let star = mark_chip(&node, 0);
+            let star = mark_chip(&node);
             let gap = if hovered.1 { 0.0 } else { 4.0 };
             assert!(
                 hovered.0.x + hovered.0.width <= star.x - gap + 0.01,
@@ -365,40 +365,58 @@ fn the_gog_corner_is_the_same_at_rest_and_on_hover() {
 }
 
 #[test]
-fn a_hidden_cards_eye_keeps_the_second_slot() {
+fn a_hidden_cards_eye_sits_in_the_bottom_left_and_the_star_keeps_the_top_right() {
     let mut app = crate::tests::app();
     let mut card = crate::tests::card("game", State::Inactive, 60);
     card.hidden = true;
     let eye = |app: &App, card: &Card| {
         let node = card_node(app, card);
         let art = bounds_at(&node, &[0, 0]);
-        mark_chip(&node, 1).position() - art.position()
+        eye_chip(&node).expect("eye").position() - art.position()
     };
-    let width = app.grid_layout().art_frame().width;
-    let place = Vector::new(width - 8.0 - 24.0, 8.0 + 24.0 + 4.0);
-    // At rest, with nothing in the star's slot.
+    let layout = app.grid_layout();
+    let place = Vector::new(8.0, layout.poster_height() - 4.0 - 8.0 - 24.0);
+    // At rest, hovered with the outline star, and a favorite.
     assert_eq!(eye(&app, &card), place);
-    // Hovered, with the outline star above it.
     app.hovered = Some(card.name.clone());
     assert_eq!(eye(&app, &card), place);
-    // A favorite, hovered and at rest.
     card.favorite = true;
     assert_eq!(eye(&app, &card), place);
     app.hovered = None;
     assert_eq!(eye(&app, &card), place);
-    // The star sits in the top slot, the eye under it.
-    let node = card_node(&app, &card);
-    let art = bounds_at(&node, &[0, 0]);
+    // The eye is a 24 px chip like the star's, and a plain card has none.
     assert_eq!(
-        mark_chip(&node, 0).position() - art.position(),
-        Vector::new(width - 8.0 - 24.0, 8.0)
+        eye_chip(&card_node(&app, &card)).unwrap().size(),
+        Size::new(24.0, 24.0)
     );
-    let star = bounds_at(&node, &[0, 0, 0, layers(&node).len() - 1, 0, 0]);
-    assert_eq!(star.size(), Size::new(STAR_TARGET, STAR_TARGET));
-    assert_eq!(
-        bounds_at(&node, &[0, 0, 0, layers(&node).len() - 1, 0, 0, 0]),
-        mark_chip(&node, 0)
+    card.hidden = false;
+    assert!(eye_chip(&card_node(&app, &card)).is_none());
+    // It fades with its card, like every poster layer.
+    card.hidden = true;
+    let layout = app.grid_layout();
+    let size = Size::new(400.0, 900.0);
+    let gone = render(
+        &mut app.card_drawn(&card, 0.0, layout, Details::Inline),
+        size,
     );
+    assert!(gone.chunks(4).all(|pixel| pixel[3] == 0));
+    // The star keeps the top right alone: its chip and its 28 px target,
+    // with or without the eye.
+    for hidden in [false, true] {
+        card.hidden = hidden;
+        let node = card_node(&app, &card);
+        let art = bounds_at(&node, &[0, 0]);
+        assert_eq!(
+            mark_chip(&node).position() - art.position(),
+            Vector::new(art.width - 8.0 - 24.0, 8.0)
+        );
+        let star = bounds_at(&node, &[0, 0, 0, layers(&node).len() - 1, 0]);
+        assert_eq!(star.size(), Size::new(STAR_TARGET, STAR_TARGET));
+        assert_eq!(
+            bounds_at(&node, &[0, 0, 0, layers(&node).len() - 1, 0, 0]),
+            mark_chip(&node)
+        );
+    }
 }
 
 #[test]
@@ -419,7 +437,7 @@ fn a_star_click_that_resorts_moves_the_card_and_its_eye_stays_put() {
     let eye = |app: &App| {
         let node = card_node(app, &card_of(app, "game-03"));
         let art = bounds_at(&node, &[0, 0]);
-        mark_chip(&node, 1).position() - art.position()
+        eye_chip(&node).expect("eye").position() - art.position()
     };
     let rest = eye(&app);
     let _ = app.update(Message::Hover(Some(card.name.clone())));
@@ -464,12 +482,12 @@ fn the_star_shows_in_poster_only_above_the_overlay() {
     assert_eq!(layers(&node).len(), 3);
     let art = bounds_at(&node, &[0, 0]);
     assert_eq!(
-        mark_chip(&node, 0).position() - art.position(),
+        mark_chip(&node).position() - art.position(),
         Vector::new(art.width - 8.0 - 24.0, 8.0)
     );
     // A click on it reaches the star through the overlay.
     let mut laid = lay_out(app.card(&card), Size::new(400.0, 900.0));
-    let messages = click(&mut laid, mark_chip(&node, 0).center());
+    let messages = click(&mut laid, mark_chip(&node).center());
     assert_eq!(toggles(&messages, "game"), 1, "{messages:?}");
     assert_eq!(messages.len(), 1, "{messages:?}");
     drop(laid);
@@ -749,14 +767,13 @@ fn the_pops_ring_stays_in_the_stars_corner() {
             let layers = layers(&node);
             let art = bounds_at(&node, &[0, 0]);
             let ring = bounds_at(&node, &[0, 0, 0, layers.len() - 2, 0]);
-            let eye = mark_chip(&node, 1);
+            let star_chip = mark_chip(&node);
             let chip = app.grid_layout().text().chip();
             let (corner, _) = gog_at(&node, chip);
             assert_eq!(ring.size(), crate::library_actions::RING_BOX, "{what}");
-            // Inside the art, clear of the eye and the top-left corner.
+            // Inside the art, clear of the top-left corner.
             assert!(art.contains(ring.position()), "{what}");
             assert!(ring.x + ring.width <= art.x + art.width + 0.01, "{what}");
-            assert!(ring.y + ring.height <= eye.y, "{what} {ring:?} {eye:?}");
             assert!(
                 corner.x + corner.width <= ring.x + 0.01,
                 "{what} {corner:?}"
@@ -764,7 +781,7 @@ fn the_pops_ring_stays_in_the_stars_corner() {
             // Nothing else on the card changes as it draws.
             let popped = render(&mut app.card(&card), Size::new(400.0, 900.0));
             let star = Rectangle::new(
-                eye.position() - Vector::new(2.0, 30.0),
+                star_chip.position() - Vector::new(2.0, 2.0),
                 Size::new(STAR_TARGET, STAR_TARGET),
             );
             let mut rippled = false;

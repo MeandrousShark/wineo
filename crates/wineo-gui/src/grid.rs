@@ -49,6 +49,9 @@ const OVERLAY_MUTED: f32 = 0.6;
 /// Room the title leaves on the right for the Steam mark: the mark and its
 /// margin, and a small gap.
 const STEAM_MARK_ROOM: f32 = 8.0 + 20.0 + 4.0;
+/// Room the title leaves on the left for a hidden card's eye: its margin,
+/// the mark, and the same small gap.
+const EYE_MARK_ROOM: f32 = CORNER_PADDING + crate::library_actions::MARK_SIZE + 4.0;
 pub(crate) const ADD_ID: &str = "library-add";
 /// The search box's width, which a narrow window shrinks down to the minimum.
 pub(crate) const SEARCH_WIDTH: f32 = 320.0;
@@ -373,6 +376,7 @@ impl App {
                 &card.display_title,
                 layout,
                 steam_mark,
+                card.hidden,
                 // Muted when faded, like the title under the poster, but in
                 // white so it reads on the dark gradient in both themes.
                 Color::WHITE.scale_alpha(alpha * shade * if faded { OVERLAY_MUTED } else { 1.0 }),
@@ -481,6 +485,9 @@ impl App {
                         ..iced::Padding::new(CORNER_PADDING)
                     }),
             );
+        }
+        if let Some(eye) = crate::library_actions::poster_eye(card, alpha) {
+            layers = layers.push(eye);
         }
         let pop = self.star_pops.progress(&card.name);
         if let Some(t) = pop {
@@ -1362,11 +1369,12 @@ fn card_area<'a>(content: impl Into<Element<'a, Message>>, card: &Card) -> Eleme
 
 /// The poster-only title over the bottom of the art, on a gradient that's
 /// dark in both themes so white text reads on any art. It ends above the
-/// install bar's edge and clear of the Steam mark.
+/// install bar's edge and clear of the Steam mark and the hidden card's eye.
 fn title_overlay(
     title: &str,
     layout: GridLayout,
     steam_mark: bool,
+    eye: bool,
     ink: Color,
     alpha: f32,
 ) -> Element<'static, Message> {
@@ -1379,7 +1387,8 @@ fn title_overlay(
     } else {
         OVERLAY_PADDING
     };
-    let width = (layout.art_frame().width - OVERLAY_PADDING - right).max(0.0);
+    let left = if eye { EYE_MARK_ROOM } else { OVERLAY_PADDING };
+    let width = (layout.art_frame().width - left - right).max(0.0);
     let lines = crate::tile_title::lines(title, width, CARD_TITLE_SIZE, font);
     let line = iced::widget::text::LineHeight::default()
         .to_absolute(CARD_TITLE_SIZE.into())
@@ -1406,7 +1415,7 @@ fn title_overlay(
         top: OVERLAY_FADE,
         right,
         bottom: OVERLAY_PADDING,
-        left: OVERLAY_PADDING,
+        left,
     })
     .style(move |_| {
         container::Style::default()
