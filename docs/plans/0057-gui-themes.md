@@ -441,6 +441,19 @@ Steps 1 and 2 can run in parallel after step 0; 3 can start any time.
   starts both at the top. Switching tabs is refused while the leave prompt
   shows. Left and Right on the tabs come from a small widget in
   `settings/tabs.rs`, since `focus_button::rows` only handles Up and Down.
+- **Open Checkup only where Checkup helps.** A refused `library.toml` save
+  offers Open Checkup when the file doesn't parse or has an unsupported
+  schema, and only the error ("update wineo") for a file from a newer
+  wineo, matching the library banner.
+- **Each `[appearance]` field is one edit** in the count, hidden slots
+  included, matching what Save writes.
+- **The preview reaches the app** through the page: after each message the
+  app resolves from the page's draft while Settings is open and from the
+  saved appearance otherwise, re-resolving only when the appearance or the
+  system mode changes. The first frame uses the dark slot until the system
+  reports its mode, as before.
+- **Rows lock during a save** and look disabled: muted names, faded
+  descriptions.
 - **Preset descriptions** (approved by the maintainer, 2026-10-28):
 
   | Preset | Description |
