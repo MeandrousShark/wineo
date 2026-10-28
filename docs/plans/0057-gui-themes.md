@@ -420,6 +420,24 @@ Steps 1 and 2 can run in parallel after step 0; 3 can start any time.
 - An acceptance checklist for a real window is added when the
   implementation lands.
 
+## Decisions during implementation
+
+- **Steps 0 and 1 ran in parallel** (2026-10-28), since step 1 touches only
+  `wineo-core` and step 0 only `wineo-gui`. Step 2 started from step 0's
+  branch.
+- **Step 0 routed no colors.** Every literal outside `theme.rs` is over art,
+  a scrim, a black shadow, an accent blend, or a test fixture.
+- **Disabled secondary buttons keep their fill.** `secondary_style` paints
+  disabled and active alike and marks disabled with a muted label, so the
+  distinct-states test checks active, hovered, and pressed fills plus the
+  disabled label for secondary buttons. Changing the fill would change
+  Midnight and Daylight.
+- **The hero's close button stays literal,** white on black, though it sits
+  over a plain `surface` block when there's no hero image. Routing it would
+  change today's look.
+- **Preset descriptions are placeholders** until the maintainer reviews them
+  before step 4.
+
 ## Scope limits
 
 - No fonts, text size, or reduced-motion toggle; those stay in the "GUI
