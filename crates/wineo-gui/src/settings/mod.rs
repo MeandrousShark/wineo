@@ -9,6 +9,7 @@ mod load;
 mod runner_picker;
 pub(crate) mod steam_key;
 mod steamgriddb;
+mod tabs;
 mod view;
 
 use iced::Task;
@@ -22,10 +23,13 @@ pub(crate) use editor::{Editor, NewTarget};
 use form::{Build, Choice, Field, List, Switch, Values};
 pub(crate) use load::desktop_line;
 use load::{ProgramChoice, Report, RunnerChoice, Scan, Snapshot, Texts};
+use tabs::Tab;
 
 #[derive(Debug, Clone)]
 pub(crate) enum Event {
     Back,
+    /// Shows a tab of the global page, which only changes the view.
+    Tab(Tab),
     Discard,
     KeepEditing,
     Save,
@@ -311,6 +315,9 @@ struct Pending {
 pub(crate) struct Page {
     pub(crate) name: String,
     global: bool,
+    /// Which tab of the global page shows. The page is new each time it
+    /// opens, so it starts on General; a reload keeps it.
+    tab: Tab,
     /// Tells this page's worker results from those of a page closed earlier.
     generation: u64,
     pub(crate) view: View,
@@ -421,6 +428,7 @@ impl Page {
         Self {
             name,
             global: false,
+            tab: Tab::General,
             generation,
             view: View::Loading,
             disk: None,

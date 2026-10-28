@@ -12,7 +12,7 @@ use wineo_core::key_store::KeySource;
 use super::form::{self, Build, Choice, Field, GamescopeFields, List, Source, Switch};
 use super::global;
 use super::load::Scan;
-use super::{Editor, Event, Page, TargetEdit, View};
+use super::{Editor, Event, Page, TargetEdit, View, tabs};
 use crate::chips::{Chips, input_style};
 use crate::panel::{action_button, error_box};
 use crate::theme::Palette;
@@ -25,7 +25,7 @@ use wineo_core::paths::Paths;
 const LABEL_WIDTH: f32 = 180.0;
 const CONTROL_WIDTH: f32 = 260.0;
 const PAGE_WIDTH: f32 = 760.0;
-const SCROLL_ID: &str = "settings-scroll";
+pub(super) const SCROLL_ID: &str = "settings-scroll";
 const STEAM_KEY_ID: &str = "settings-steam-key";
 
 fn send(event: Event) -> Message {
@@ -54,18 +54,28 @@ impl Page {
             secondary_button("Back", palette)
                 .on_press_maybe((!self.saving).then(|| send(Event::Back)))
         });
-        let header = container(
-            row![
-                back,
-                text(format!("{} settings", self.name))
-                    .size(22)
-                    .font(semibold())
-                    .color(palette.foreground),
-            ]
-            .spacing(16)
-            .align_y(Center),
-        )
-        .padding([8, 16])
+        let title = row![
+            back,
+            text(format!("{} settings", self.name))
+                .size(22)
+                .font(semibold())
+                .color(palette.foreground),
+        ]
+        .spacing(16)
+        .align_y(Center);
+        // The tabs sit on the divider below, so the header leaves no room
+        // under them.
+        let header = if self.global && matches!(self.view, View::Global(_)) {
+            container(column![title, tabs::bar(self.tab, !self.leave_prompt, palette)].spacing(4))
+                .padding(iced::Padding {
+                    top: 8.0,
+                    right: 16.0,
+                    bottom: 0.0,
+                    left: 16.0,
+                })
+        } else {
+            container(title).padding([8, 16])
+        }
         .width(Fill);
         let body: Element<'_, Message> = match &self.view {
             View::Loading => text("Loading...").color(palette.muted).into(),
@@ -85,7 +95,11 @@ impl Page {
             View::Form(editor) => {
                 editor_view(&self.name, editor, self.locked(), self.resolving(), palette)
             }
-            View::Global(editor) => global_view(editor, self, paths, self.locked(), palette),
+            View::Global(editor) => match self.tab {
+                tabs::Tab::General => global_view(editor, self, paths, self.locked(), palette),
+                // Step 4 fills this in.
+                tabs::Tab::Appearance => column![].into(),
+            },
         };
         let scroll = scrollable(
             container(container(body).max_width(PAGE_WIDTH).width(Fill))

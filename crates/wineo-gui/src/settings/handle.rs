@@ -24,6 +24,7 @@ impl Page {
                 self.picked_path(paths, generation, sequence, target, cwd, previous, result)
             }
             Event::Back => self.go_back(),
+            Event::Tab(tab) => self.select_tab(tab),
             Event::Discard if self.saving => Step::none(),
             Event::Discard => Step::close(),
             Event::KeepEditing => {
