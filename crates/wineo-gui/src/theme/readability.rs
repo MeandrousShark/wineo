@@ -11,9 +11,10 @@ const STEP: f64 = 0.0025;
 /// A best-effort round must beat the one before by more than this, so the
 /// rounds end.
 const MIN_GAIN: f32 = 0.01;
-/// A guard; every round gains more than `MIN_GAIN` of a bounded ratio, so the
-/// repeats end well before this.
-const MAX_ROUNDS: usize = 32;
+/// Contrast runs from 1 to 21 and every round gains more than `MIN_GAIN`, so
+/// this many rounds always reach the fixed point; in practice it takes two or
+/// three.
+const MAX_ROUNDS: usize = 2001;
 
 /// `palette` with each text role that misses 4.5:1 on the background or the
 /// surface moved to the nearest lightness, in the same hue, that reaches it.
