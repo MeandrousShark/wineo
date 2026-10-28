@@ -8,9 +8,12 @@ const REQUIRED: f32 = 4.5;
 /// OKLCH lightness moves in steps this small, so the change stays close to
 /// the smallest one that passes.
 const STEP: f64 = 0.0025;
-/// A best-effort result must beat the start by more than this, so running the
-/// transform on its own output finds nothing worth changing.
+/// A best-effort round must beat the one before by more than this, so the
+/// rounds end.
 const MIN_GAIN: f32 = 0.01;
+/// A guard; every round gains more than `MIN_GAIN` of a bounded ratio, so the
+/// repeats end well before this.
+const MAX_ROUNDS: usize = 32;
 
 /// `palette` with each text role that misses 4.5:1 on the background or the
 /// surface moved to the nearest lightness, in the same hue, that reaches it.
@@ -34,9 +37,32 @@ fn lowest_contrast(color: Color, background: Color, surface: Color) -> f32 {
 }
 
 fn fix_role(color: Color, background: Color, surface: Color, kind: PresetKind) -> Color {
+    let mut current = color;
+    for _ in 0..MAX_ROUNDS {
+        match search(current, background, surface, kind) {
+            Search::Passed(found) => return found,
+            // The rounded, gamut-mapped result has its own lightness, chroma,
+            // and hue, so searching again from it can still gain. Repeating
+            // until nothing gains makes the result a fixed point.
+            Search::Improved(better) => current = better,
+            Search::Stuck => return current,
+        }
+    }
+    current
+}
+
+enum Search {
+    /// The color passes, as given or after moving it.
+    Passed(Color),
+    /// Nothing passes; this is the best color found, better than the start.
+    Improved(Color),
+    Stuck,
+}
+
+fn search(color: Color, background: Color, surface: Color, kind: PresetKind) -> Search {
     let start = lowest_contrast(color, background, surface);
     if start >= REQUIRED {
-        return color;
+        return Search::Passed(color);
     }
     let (lightness, chroma, hue) = to_oklch(color);
     let directions = match kind {
@@ -75,9 +101,9 @@ fn fix_role(color: Color, background: Color, surface: Color, kind: PresetKind) -
     }
 
     match nearest {
-        Some((_, found)) => found,
-        None if best.0 > start + MIN_GAIN => best.1,
-        None => color,
+        Some((_, found)) => Search::Passed(found),
+        None if best.0 > start + MIN_GAIN => Search::Improved(best.1),
+        None => Search::Stuck,
     }
 }
 

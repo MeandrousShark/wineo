@@ -167,41 +167,75 @@ fn sample() -> Vec<(Palette, PresetKind)> {
         };
         palettes.push((palette, kind));
     }
-    let (black, gray) = (rgb(0x000000), rgb(0x777777));
-    for kind in [PresetKind::Dark, PresetKind::Light] {
-        let palette = Palette {
-            background: black,
-            surface: gray,
-            ..preset("midnight").palette
-        };
-        palettes.push((palette, kind));
+    // Impossible, and borderline: no 8-bit gray passes against black and
+    // #fbfbfb, but #65796c does (about 4.505:1).
+    for (background, surface) in [(0x000000, 0x777777), (0x000000, 0xfbfbfb)] {
+        for kind in [PresetKind::Dark, PresetKind::Light] {
+            let palette = Palette {
+                background: rgb(background),
+                surface: rgb(surface),
+                ..preset("midnight").palette
+            };
+            palettes.push((palette, kind));
+        }
     }
     palettes
 }
 
-/// Whether some color can pass on both grounds. Contrast depends only on
-/// luminance, and every luminance has a gray, so a role has a passing color
-/// exactly when a gray does. The 8-bit gray ramp includes black and white.
-fn passing_is_possible(palette: Palette) -> bool {
-    (0..=255).any(|value| {
+/// What the grounds allow a text role to reach.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Passing {
+    /// Some 8-bit gray passes on both grounds, so a passing color exists.
+    Possible,
+    /// No luminance reaches 4.5:1 on both grounds.
+    Impossible,
+    /// A passing color may exist, but no 8-bit gray is one.
+    Borderline,
+}
+
+fn passing(palette: Palette) -> Passing {
+    let gray_passes = (0..=255).any(|value| {
         let gray = Color::from_rgb8(value, value, value);
         lowest(gray, palette) >= 4.5
-    })
+    });
+    if gray_passes {
+        return Passing::Possible;
+    }
+    // Contrast depends only on luminance. Against a ground of luminance `g`,
+    // 4.5:1 holds for luminances up to (g + 0.05) / 4.5 - 0.05 and from
+    // 4.5 (g + 0.05) - 0.05 up. Impossible means these ranges miss each other
+    // for the two grounds.
+    let ranges = |ground: Color| {
+        let g = f64::from(luminance(ground)) + 0.05;
+        [(0.0, g / 4.5 - 0.05), (4.5 * g - 0.05, 1.0)]
+    };
+    let overlap = ranges(palette.background)
+        .into_iter()
+        .any(|(low_a, high_a)| {
+            ranges(palette.surface)
+                .into_iter()
+                .any(|(low_b, high_b)| low_a.max(low_b) <= high_a.min(high_b))
+        });
+    if overlap {
+        Passing::Borderline
+    } else {
+        Passing::Impossible
+    }
 }
 
 #[test]
 fn the_sample_passes_where_possible_and_never_gets_worse() {
-    let (mut possible, mut impossible, mut changed) = (0, 0, 0);
+    let (mut possible, mut impossible, mut borderline, mut changed) = (0, 0, 0, 0);
     for (palette, kind) in sample() {
         let improved = improve(palette, kind);
         assert_eq!(improved.background, palette.background);
         assert_eq!(improved.surface, palette.surface);
         assert_eq!(improved.border, palette.border);
-        let can_pass = passing_is_possible(palette);
-        if can_pass {
-            possible += 1;
-        } else {
-            impossible += 1;
+        let outcome = passing(palette);
+        match outcome {
+            Passing::Possible => possible += 1,
+            Passing::Impossible => impossible += 1,
+            Passing::Borderline => borderline += 1,
         }
         for (role, (before, after)) in ROLES
             .into_iter()
@@ -211,17 +245,70 @@ fn the_sample_passes_where_possible_and_never_gets_worse() {
                 changed += 1;
             }
             let (before, after) = (lowest(before, palette), lowest(after, palette));
-            if can_pass {
+            if outcome == Passing::Possible {
                 assert!(after >= 4.5, "{role} ends at {after} in {palette:?}");
-            } else {
-                assert!(after >= before, "{role} fell from {before} to {after}");
             }
+            assert!(after >= before, "{role} fell from {before} to {after}");
         }
     }
     // The sample has to exercise both branches.
     assert!(possible > 300, "only {possible} palettes can pass");
     assert!(impossible > 10, "only {impossible} palettes cannot pass");
+    assert!(borderline >= 2, "only {borderline} borderline palettes");
     assert!(changed > 1000, "only {changed} roles changed");
+}
+
+#[test]
+fn a_best_effort_result_is_a_fixed_point() {
+    // A second search from the first result's own rounded OKLCH used to move
+    // #3964ff to #3a65ff.
+    let repro = Palette {
+        background: rgb(0x1b1118),
+        surface: rgb(0xfde6e1),
+        foreground: rgb(0x1819e4),
+        ..preset("midnight").palette
+    };
+    assert_eq!(passing(repro), Passing::Impossible);
+    let once = improve(repro, PresetKind::Light);
+    assert_eq!(improve(once, PresetKind::Light), once);
+    assert!(lowest(once.foreground, once) > lowest(repro.foreground, repro));
+
+    // Grounds on opposite sides leave a best effort near the middle.
+    let grounds = [
+        (0x1b1118, 0xfde6e1),
+        (0x202020, 0xd8d8d8),
+        (0x101820, 0xe0e8f0),
+        (0x000000, 0xfbfbfb),
+        (0x2a1010, 0xf0f8e8),
+        (0x0a0a30, 0xfff0d0),
+    ];
+    let roles = [
+        0x1819e4, 0xe41819, 0x18e419, 0x808080, 0x6d8cff, 0xe5a34a, 0xbd93f9,
+    ];
+    for (background, surface) in grounds {
+        for role in roles {
+            let palette = Palette {
+                background: rgb(background),
+                surface: rgb(surface),
+                foreground: rgb(role),
+                muted: rgb(role),
+                primary: rgb(role),
+                success: rgb(role),
+                warning: rgb(role),
+                danger: rgb(role),
+                border: rgb(0x777777),
+            };
+            for kind in [PresetKind::Dark, PresetKind::Light] {
+                let once = improve(palette, kind);
+                assert_eq!(
+                    improve(once, kind),
+                    once,
+                    "{background:06x} {surface:06x} {role:06x} {kind:?}"
+                );
+                assert!(lowest(once.foreground, once) >= lowest(palette.foreground, palette));
+            }
+        }
+    }
 }
 
 #[test]
@@ -231,7 +318,7 @@ fn black_and_a_mid_gray_leave_white_as_the_best_effort() {
         surface: rgb(0x777777),
         ..preset("midnight").palette
     };
-    assert!(!passing_is_possible(palette));
+    assert_eq!(passing(palette), Passing::Impossible);
     for kind in [PresetKind::Dark, PresetKind::Light] {
         let improved = improve(palette, kind);
         // White gives 4.48:1 on the gray, the most any color can.
