@@ -644,10 +644,11 @@ mod tests {
 
     #[test]
     fn the_focus_ring_is_primary_and_distinct_from_selection() {
-        for palette in [
-            Palette::from_mode(iced::theme::Mode::Dark),
-            Palette::from_mode(iced::theme::Mode::Light),
-        ] {
+        for palette in ["midnight", "daylight", "catppuccin-latte", "dracula"].map(|id| {
+            crate::theme::Preset::find(id)
+                .expect("built-in preset")
+                .palette
+        }) {
             let shown = focus_ring_style(palette, true).border;
             assert_eq!(shown.color, palette.primary);
             assert_eq!(shown.width, RING_WIDTH);

@@ -233,10 +233,11 @@ mod tests {
 
     #[test]
     fn the_bar_draws_for_both_palettes_with_its_words() {
-        for palette in [
-            Palette::from_mode(iced::theme::Mode::Dark),
-            Palette::from_mode(iced::theme::Mode::Light),
-        ] {
+        for palette in ["midnight", "daylight", "catppuccin-latte", "dracula"].map(|id| {
+            crate::theme::Preset::find(id)
+                .expect("built-in preset")
+                .palette
+        }) {
             let mut view: Element<'_, ()> = bar(34, 300, "Preparing art... 34 of 300", palette);
             let node = layout(&mut view, iced::Size::new(400.0, 100.0));
             assert!(node.bounds().height <= 20.0);

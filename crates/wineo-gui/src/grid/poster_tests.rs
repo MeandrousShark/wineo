@@ -401,7 +401,6 @@ fn brightest(
 
 #[test]
 fn the_overlay_is_dark_white_text_and_a_hidden_cards_title_is_muted() {
-    use iced::theme::Mode;
     let mut app = crate::tests::app();
     app.poster_only = true;
     let mut card = art_card("game", State::Inactive);
@@ -433,8 +432,11 @@ fn the_overlay_is_dark_white_text_and_a_hidden_cards_title_is_muted() {
     // The title starts right of the eye, whose white icon shares its rows.
     let title = 40..150;
     let mut seen = Vec::new();
-    for mode in [Mode::Dark, Mode::Light] {
-        app.palette = crate::theme::Palette::from_mode(mode);
+    // The two wineo palettes and a borrowed light and dark one.
+    for id in ["midnight", "daylight", "catppuccin-latte", "dracula"] {
+        app.palette = crate::theme::Preset::find(id)
+            .expect("built-in preset")
+            .palette;
         for art in [255, 128, 0] {
             decoded(&mut app, &card, [art; 3]);
             let background = app.palette.background;
@@ -446,7 +448,7 @@ fn the_overlay_is_dark_white_text_and_a_hidden_cards_title_is_muted() {
             // The lightest backdrop behind the title's rows, past its end.
             let backdrop = lightest(&pixels, width, text.clone(), 140..150);
             let ratio = contrast(ink, backdrop);
-            assert!(ratio >= 4.5, "{mode:?} on {art}: {ratio:.2}");
+            assert!(ratio >= 4.5, "{id} on {art}: {ratio:.2}");
             seen.push(ink);
         }
     }
