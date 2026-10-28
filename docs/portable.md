@@ -79,8 +79,9 @@ lives inside the folder, beside that prefix's snapshots under
 `DIR/prefixes/.wineo-snapshots/<name>/`, so it moves with the folder too.
 `wineo snapshot recover NAME` still finds it at the new location.
 
-Recovery identifies the original prefix by directory identity (device and
-inode), not by path. If the folder is moved to a different filesystem while
+Recovery identifies the original prefix by directory identity (inode and
+creation time, or device and inode where creation time is unavailable), not by
+path, so a reboot that renumbers a btrfs device doesn't stop it. If the folder is moved to a different filesystem while
 a restore still needs recovery, that identity does not survive the move, and
 recovery stops rather than guessing which copy is the original:
 

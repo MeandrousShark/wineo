@@ -55,6 +55,21 @@ struct RestoreMarker {
 struct DirectoryIdentity {
     device: u64,
     inode: u64,
+    #[serde(default)]
+    birth: Option<(i64, u32)>,
+}
+
+impl DirectoryIdentity {
+    /// Recovery often runs after a crash and reboot, which can renumber a
+    /// btrfs subvolume's device, so the device only counts without birth
+    /// times to compare.
+    fn matches(self, live: Self) -> bool {
+        self.inode == live.inode
+            && match (self.birth, live.birth) {
+                (Some(saved), Some(now)) => saved == now,
+                _ => self.device == live.device,
+            }
+    }
 }
 
 /// Frontend progress, including the boundary after which cancellation is ignored.
@@ -852,8 +867,11 @@ fn read_marker(paths: &Paths, path: &Path, name: &str) -> Result<RestoreMarker> 
 
 fn rollback_locked(paths: &Paths, marker_path: &Path, marker: &RestoreMarker) -> Result<()> {
     let live = directory_identity(&marker.prefix)?;
-    if live != marker.old_directory {
-        if directory_identity(&marker.staging)? != marker.old_directory {
+    if !marker.old_directory.matches(live) {
+        if !marker
+            .old_directory
+            .matches(directory_identity(&marker.staging)?)
+        {
             bail!(
                 "cannot identify original prefix at {} or {}",
                 marker.prefix.display(),
@@ -913,9 +931,21 @@ fn directory_identity(path: &Path) -> Result<DirectoryIdentity> {
 
     ensure_directory(path)?;
     let metadata = fs::symlink_metadata(path)?;
+    let birth = match rustix::fs::statx(
+        rustix::fs::CWD,
+        path,
+        rustix::fs::AtFlags::SYMLINK_NOFOLLOW,
+        rustix::fs::StatxFlags::BTIME,
+    ) {
+        Ok(stat) => (stat.stx_mask & rustix::fs::StatxFlags::BTIME.bits() != 0)
+            .then_some((stat.stx_btime.tv_sec, stat.stx_btime.tv_nsec)),
+        Err(rustix::io::Errno::NOSYS) => None,
+        Err(err) => return Err(err.into()),
+    };
     Ok(DirectoryIdentity {
         device: metadata.dev(),
         inode: metadata.ino(),
+        birth,
     })
 }
 

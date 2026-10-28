@@ -723,6 +723,65 @@ fn recovery_restores_original_after_interrupted_exchange() {
 }
 
 #[test]
+fn rollback_finds_the_original_after_a_reboot_renumbers_its_device() {
+    let (_root, paths, prefix, config) = fixture(false);
+    let original = directory_identity(&prefix).unwrap();
+    if original.birth.is_none() {
+        return;
+    }
+    let stage = tempfile::Builder::new()
+        .prefix(".wineo-restore-")
+        .tempdir_in(prefix.parent().unwrap())
+        .unwrap()
+        .keep();
+    let marker = RestoreMarker {
+        version: VERSION,
+        environment: "game".to_owned(),
+        prefix: prefix.clone(),
+        staging: stage.clone(),
+        old_directory: DirectoryIdentity {
+            device: original.device + 10_000,
+            ..original
+        },
+        old_fingerprint: import::fingerprint(&prefix).unwrap(),
+        old_config: config.clone(),
+    };
+    let marker_path = marker_path(&paths, "game");
+    write_marker(&marker_path, &marker).unwrap();
+    exchange(&prefix, &stage).unwrap();
+
+    recover(&paths, "game").unwrap();
+
+    assert_eq!(directory_identity(&prefix).unwrap(), original);
+    assert_eq!(
+        fs::read_to_string(prefix.join("drive_c/game.exe")).unwrap(),
+        "before"
+    );
+    assert!(!marker_path.exists());
+}
+
+#[test]
+fn directory_identity_without_birth_still_needs_the_device() {
+    let saved = DirectoryIdentity {
+        device: 5,
+        inode: 9,
+        birth: None,
+    };
+    assert!(saved.matches(saved));
+    assert!(!saved.matches(DirectoryIdentity { device: 6, ..saved }));
+    let born = DirectoryIdentity {
+        birth: Some((1, 0)),
+        ..saved
+    };
+    assert!(born.matches(DirectoryIdentity { device: 6, ..born }));
+    assert!(!born.matches(DirectoryIdentity { inode: 10, ..born }));
+    assert!(!born.matches(DirectoryIdentity {
+        birth: Some((2, 0)),
+        ..born
+    }));
+}
+
+#[test]
 fn rollback_with_malformed_global_config_restores_config_and_clears_marker() {
     let (_root, paths, prefix, config) = fixture(false);
     let old_config = config.replace("runner = 'wine'", "runner = 'build'");
