@@ -25,8 +25,8 @@ impl Page {
             }
             Event::Back => self.go_back(),
             Event::Tab(tab) => self.select_tab(tab),
-            Event::Scrolled(offset) => {
-                self.scrolled(offset);
+            Event::Scrolled(tab, offset) => {
+                self.scrolled(tab, offset);
                 Step::none()
             }
             Event::Discard if self.saving => Step::none(),

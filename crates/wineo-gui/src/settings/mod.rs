@@ -30,8 +30,8 @@ pub(crate) enum Event {
     Back,
     /// Shows a tab of the global page, which only changes the view.
     Tab(Tab),
-    /// The page's scroll offset after it moved, kept for the tab showing.
-    Scrolled(f32),
+    /// The page's scroll offset after it moved, and the tab it showed.
+    Scrolled(Tab, f32),
     Discard,
     KeepEditing,
     Save,

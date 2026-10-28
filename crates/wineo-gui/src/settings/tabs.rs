@@ -46,10 +46,12 @@ impl Tab {
 }
 
 impl Page {
-    /// Remembers where the shown tab is scrolled to.
-    pub(super) fn scrolled(&mut self, offset: f32) {
+    /// Remembers where `tab` is scrolled to. The view names the tab it was
+    /// built for, since a switch can be handled before a scroll queued
+    /// against the earlier view.
+    pub(super) fn scrolled(&mut self, tab: Tab, offset: f32) {
         if self.global {
-            self.scroll[self.tab.index()] = offset;
+            self.scroll[tab.index()] = offset;
         }
     }
 
