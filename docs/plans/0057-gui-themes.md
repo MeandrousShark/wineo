@@ -21,7 +21,7 @@ every preset, and an interactive Appearance tab. The canvas still calls
 Cellar "Ember" in its file names and preset ids (`ember`, `emberLight`); its
 labels say Cellar.
 
-Answers to the questions (2026-10-27), numbered as asked:
+Answers to the canvas questions (2026-10-27), numbered as asked:
 
 1. **Colors over art stay fixed; the rest come from the roles.** The poster
    marks' black backing, the poster-only and hero gradients, scrims, and
@@ -48,6 +48,19 @@ Answers to the questions (2026-10-27), numbered as asked:
    which collides with the [Ember](https://embertheme.com/) theme. Cellar
    keeps its own colors but borrows Ember's coral, `#e08060`, for its accent
    (MIT, see Notices).
+
+Answers to the plan's questions (2026-10-28):
+
+10. **Appearance settings live in `library.toml`,** in an `[appearance]`
+    table beside `[view]`. It ignores keys it doesn't know, so an older
+    wineo just loses the preference.
+11. **Custom themes are a file each** in the config root's `themes/`
+    folder, read leniently, with `based_on` filling any gaps.
+12. **Custom colors are a hex field beside a swatch.** A hue, saturation,
+    and lightness picker could come later on top of it.
+13. **The per-environment Settings page stays one page,** without tabs.
+14. **One Save for both tabs.** The footer counts edits on General and
+    Appearance and saves each file it touched.
 
 ## Existing foundation
 
@@ -212,7 +225,7 @@ The global Settings page gets a tab bar under its title: **General** and
 Tabs are a row of text buttons with a 2 px primary underline on the
 selected one, in the Tab order after the title; Left and Right move between
 them. The page opens on General. The per-environment Settings page keeps
-its single scrolling page (question 13).
+its single scrolling page (answer 13).
 
 ### Live preview and saving
 
@@ -220,7 +233,7 @@ Appearance edits join the page's edit count like any other, with one
 difference: the app repaints with them before Save.
 
 - **Save** writes General's edits to `config.toml` and Appearance's to
-  `library.toml`, each only if it has edits (question 14).
+  `library.toml`, each only if it has edits (answer 14).
 - **Revert**, and **Discard** in the leave prompt, restore the saved
   appearance and repaint.
 - A system light or dark change during a preview picks from the previewed
@@ -238,11 +251,11 @@ difference: the app repaints with them before Save.
   showing: named "<Name> copy" (then "copy 2" and so on), same kind, and
   selected in place of its source. Built-in rows are read-only and say so.
 - A custom theme's Colors section has a field per role: a swatch and a hex
-  entry (question 12). A bad value shows "Invalid color: use #rrggbb." and
+  entry (answer 12). A bad value shows "Invalid color: use #rrggbb." and
   isn't applied; the swatch keeps the last good one.
 - **Rename** and **Delete** sit beside the name. Delete asks first; deleting
   a theme in use falls back to the default for its kind.
-- Each custom theme is a file in the config root's `themes/` folder (question
+- Each custom theme is a file in the config root's `themes/` folder (answer
   11), written on Save:
 
 ```toml
@@ -266,7 +279,7 @@ surface = "#231d1a"
 
 ### Stored settings
 
-`library.toml` gains an `[appearance]` table (question 10), written field by
+`library.toml` gains an `[appearance]` table (answer 10), written field by
 field like `[view]`:
 
 ```toml
@@ -354,26 +367,3 @@ Steps 1 and 2 can run in parallel after step 0; 3 can start any time.
 - No importing other apps' theme files.
 - Colors over art stay fixed (answer 1); Improve readability doesn't touch
   borders.
-
-## Open questions
-
-Numbered after the canvas questions so they match the board.
-
-10. 🧐 **Where do the appearance settings live?** A: an `[appearance]`
-    table in `library.toml`, which already holds display-only settings and
-    ignores keys it doesn't know (recommended). B: a new `gui.toml`, with
-    its own repair and validate handling.
-11. 🧐 **How are custom themes stored?** A: a file per theme in
-    `themes/`, read leniently, with `based_on` filling gaps (recommended).
-    B: inline tables in `library.toml`, one file to carry but harder to
-    share a single theme.
-12. 🧐 **How do you enter a custom color?** A: a hex field beside a swatch
-    (recommended; iced has no color picker, and a hex field is what people
-    copy from theme sites). B: a picker with hue, saturation, and lightness
-    sliders, as a later addition on top of A.
-13. 🧐 **Does the per-environment Settings page get tabs too?** A: no, it
-    stays one page (recommended; it has fewer sections and no appearance
-    settings). B: yes, split the same way.
-14. 🧐 **One Save for both tabs?** A: one footer counting edits on both
-    tabs, saving each file it touched (recommended). B: each tab saves on
-    its own, so switching tabs with edits asks first.
