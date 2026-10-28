@@ -454,6 +454,13 @@ Steps 1 and 2 can run in parallel after step 0; 3 can start any time.
   reports its mode, as before.
 - **Rows lock during a save** and look disabled: muted names, faded
   descriptions.
+- **Three Appearance tab calls** (maintainer, 2026-10-28, all A):
+  turning Follow the system off starts the single Theme list on the theme
+  showing, so nothing changes on screen; swatches show the colors you'd
+  get, with Improve readability applied when it's on; and an outside
+  change under unsaved Appearance edits says "library.toml changed on
+  disk." (or "A theme file changed on disk." for a theme file) instead of
+  "The config file changed on disk."
 - **Preset descriptions** (approved by the maintainer, 2026-10-28):
 
   | Preset | Description |
