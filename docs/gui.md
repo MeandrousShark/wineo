@@ -779,6 +779,11 @@ Hover the selected runner to see its full name.
 
 ### Global settings
 
+The global page has two tabs under its title, **General** and
+**Appearance**, and opens on General. General holds everything below.
+Switching tabs keeps your edits, and one Save and Revert footer covers
+both. Each tab remembers how far it's scrolled while the page is open.
+
 - **Launch defaults:** gamemode, MangoHud, and Wayland for every
   environment that doesn't set its own.
 - **New environments:** the runner and arch `wineo new` uses, whether to
@@ -881,7 +886,8 @@ On a settings page:
 | Key | Does |
 |---|---|
 | Ctrl+S | Save |
-| Tab, Shift+Tab | Move between text fields |
+| Tab, Shift+Tab | Move between the tabs and fields |
+| Left, Right (on the tabs) | Switch between General and Appearance |
 | Esc | Leave the field, then an environment's page, asking first if there are edits |
 
 In an Add, import, or clone flow:
