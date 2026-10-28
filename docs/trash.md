@@ -93,6 +93,14 @@ still match. The statfs ID also tells a btrfs snapshot from its source, which
 shares its inodes and creation times. Where creation time or the statfs ID is
 unavailable, including entries written before wineo recorded the statfs ID,
 the device must match, and without creation time the mount ID too.
+
+These checks catch a replaced or moved folder, a reboot, and a btrfs snapshot.
+They don't try to tell apart a byte-for-byte clone of a whole filesystem, such
+as an ext4 disk image mounted where the original was: it keeps the
+filesystem's UUID, so its statfs ID, inodes, and creation times all match.
+Such a clone carries its own copy of the trash folder, so its entries describe
+its own files. Nor do they guard against another program deliberately
+swapping paths while wineo works.
 Listing trash does not rewrite its manifests. Restore, prune, and recovery keep
 their identity, content, and current mount-boundary checks.
 
