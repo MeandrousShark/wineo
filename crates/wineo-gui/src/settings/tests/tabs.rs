@@ -46,7 +46,26 @@ fn appearance_hides_general_and_general_brings_it_back() {
     let general = focusable_ids(&app, &paths);
     select(&mut app, Tab::Appearance);
     assert_eq!(page_of(&app).tab, Tab::Appearance);
-    assert_eq!(focusable_ids(&app, &paths), tab_ids());
+    let appearance = focusable_ids(&app, &paths);
+    assert_eq!(appearance[..2], tab_ids());
+    assert!(
+        general[2..].iter().all(|id| !appearance.contains(id)),
+        "{appearance:?}"
+    );
+    assert_eq!(
+        appearance[2..].first(),
+        Some(&Some(format!(
+            "{:?}",
+            Id::new(super::super::appearance::FOLLOW_ID)
+        )))
+    );
+    assert_eq!(
+        appearance.last(),
+        Some(&Some(format!(
+            "{:?}",
+            Id::new(super::super::appearance::READABILITY_ID)
+        )))
+    );
     select(&mut app, Tab::General);
     assert_eq!(focusable_ids(&app, &paths), general);
 }
@@ -281,7 +300,8 @@ fn switch(app: &mut App, tab: Tab) -> Task<Message> {
 fn each_tab_keeps_its_own_scroll_position() {
     let (_root, paths) = setup();
     let mut app = open_global_app(&paths);
-    // General is really scrolled, so Appearance's empty page clamps it.
+    // General is really scrolled, and Appearance, which starts at the top,
+    // doesn't take its offset.
     let scroll = |y| {
         iced::widget::operation::scroll_to(
             Id::new(super::super::view::SCROLL_ID),
