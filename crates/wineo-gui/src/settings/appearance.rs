@@ -248,7 +248,24 @@ impl Form {
             Shown::Preset(preset) => Some(preset.id.to_owned()),
             Shown::Custom(custom) => custom.based_on.clone(),
         };
-        let base = format!("{} copy", source.name());
+        let name = self.free_name(format!("{} copy", source.name()));
+        let theme = Custom {
+            id: String::new(),
+            name,
+            kind: source.kind(),
+            based_on,
+            colors: theme::colors_of(source.palette()),
+            read_only: false,
+        };
+        let id = self.new_id();
+        *slot.id_mut(&mut self.draft) = id.clone();
+        self.themes.push(Custom { id, ..theme });
+        self.renaming = None;
+        self.deleting = None;
+    }
+    /// `base`, or `base 2`, `base 3` and so on, the first no theme has,
+    /// ignoring case.
+    fn free_name(&self, base: String) -> String {
         let mut name = base.clone();
         let mut attempt = 1;
         while self.name_taken(&name, None)
@@ -259,20 +276,11 @@ impl Form {
             attempt += 1;
             name = format!("{base} {attempt}");
         }
-        let theme = Custom {
-            id: String::new(),
-            name,
-            kind: source.kind(),
-            based_on,
-            colors: theme::colors_of(source.palette()),
-            read_only: false,
-        };
+        name
+    }
+    fn new_id(&mut self) -> String {
         self.copies += 1;
-        let id = format!("{NEW_PREFIX}{}", self.copies);
-        *slot.id_mut(&mut self.draft) = id.clone();
-        self.themes.push(Custom { id, ..theme });
-        self.renaming = None;
-        self.deleting = None;
+        format!("{NEW_PREFIX}{}", self.copies)
     }
     fn set_color(&mut self, id: &str, role: usize, text: String) {
         if role >= ROLES.len() {
@@ -400,21 +408,7 @@ impl Form {
     /// files, so a hand edit shows.
     pub(crate) fn rebase(&mut self, appearance: Appearance, themes: Vec<Custom>) {
         if self.is_dirty() {
-            // A theme whose file went away has nothing left to edit, and
-            // one that appeared was never the draft's to delete.
-            let before = std::mem::take(&mut self.loaded_themes);
-            self.themes.retain(|theme| {
-                is_new(&theme.id)
-                    || themes.iter().any(|saved| saved.id == theme.id)
-                    || !before.iter().any(|saved| saved.id == theme.id)
-            });
-            for saved in &themes {
-                let known = before.iter().any(|theme| theme.id == saved.id)
-                    || self.themes.iter().any(|theme| theme.id == saved.id);
-                if !known {
-                    self.themes.push(saved.clone());
-                }
-            }
+            self.merge_themes(&themes);
         } else {
             self.draft = appearance.clone();
             self.themes = themes.clone();
@@ -422,6 +416,113 @@ impl Form {
         }
         self.loaded = appearance;
         self.loaded_themes = themes;
+    }
+    /// A three-way merge of each theme against the old base, the new one,
+    /// and the draft, so a change on disk shows unless the draft changed the
+    /// same thing, and no edit that didn't land is lost.
+    fn merge_themes(&mut self, new_base: &[Custom]) {
+        let old_base = std::mem::take(&mut self.loaded_themes);
+        let find = |list: &[Custom], id: &str| list.iter().find(|theme| theme.id == id).cloned();
+        let mut merged = Vec::new();
+        let mut moved = Vec::new();
+        for draft in std::mem::take(&mut self.themes) {
+            if is_new(&draft.id) {
+                merged.push(draft);
+                continue;
+            }
+            let old = find(&old_base, &draft.id);
+            // Not in the old base means a save just created it from the draft.
+            let edited = old.as_ref().is_some_and(|old| !same_theme(old, &draft));
+            match find(new_base, &draft.id) {
+                Some(new) if new.read_only && edited => {
+                    moved.push(draft);
+                    merged.push(new);
+                }
+                Some(new) => merged.push(match &old {
+                    Some(old) => merge_theme(old, &draft, &new),
+                    None => Custom {
+                        read_only: new.read_only,
+                        ..draft
+                    },
+                }),
+                None if edited => moved.push(draft),
+                // Gone with nothing pending; its slots fall back.
+                None => {}
+            }
+        }
+        for theme in new_base {
+            // A theme the draft deleted stays out, so the delete stays
+            // pending; one new on disk joins as it is.
+            let deleted = old_base.iter().any(|old| old.id == theme.id);
+            if !deleted && !merged.iter().any(|kept| kept.id == theme.id) {
+                merged.push(theme.clone());
+            }
+        }
+        self.themes = merged;
+        // Edits to a theme that went away or became read-only become a new
+        // theme, so Save creates it rather than losing them.
+        for draft in moved {
+            let id = self.new_id();
+            let name = if self.name_taken(&draft.name, None) {
+                self.free_name(format!("{} copy", draft.name))
+            } else {
+                draft.name.clone()
+            };
+            self.remap(&draft.id, &id);
+            self.themes.push(Custom {
+                id,
+                name,
+                read_only: false,
+                ..draft
+            });
+        }
+        // Typed text and open fields only belong to themes still editable.
+        let editable: Vec<String> = self
+            .themes
+            .iter()
+            .filter(|theme| !theme.read_only)
+            .map(|theme| theme.id.clone())
+            .collect();
+        self.inputs.retain(|(id, _), _| editable.contains(id));
+        if self
+            .renaming
+            .as_ref()
+            .is_some_and(|rename| !editable.contains(&rename.id))
+        {
+            self.renaming = None;
+        }
+        if self
+            .deleting
+            .as_ref()
+            .is_some_and(|id| !editable.contains(id))
+        {
+            self.deleting = None;
+        }
+    }
+    /// Points the slots and the Colors section's state at `to` instead of
+    /// `from`.
+    fn remap(&mut self, from: &str, to: &str) {
+        for slot in [Slot::Dark, Slot::Light, Slot::Theme] {
+            let id = slot.id_mut(&mut self.draft);
+            if id == from {
+                *id = to.to_owned();
+            }
+        }
+        self.inputs = std::mem::take(&mut self.inputs)
+            .into_iter()
+            .map(|((id, role), text)| {
+                let id = if id == from { to.to_owned() } else { id };
+                ((id, role), text)
+            })
+            .collect();
+        if let Some(rename) = &mut self.renaming
+            && rename.id == from
+        {
+            rename.id = to.to_owned();
+        }
+        if self.deleting.as_deref() == Some(from) {
+            self.deleting = Some(to.to_owned());
+        }
     }
     /// Gives each copy a save created its real id, wherever the draft uses
     /// the temporary one.
@@ -432,27 +533,7 @@ impl Form {
                     theme.id.clone_from(real);
                 }
             }
-            for slot in [Slot::Dark, Slot::Light, Slot::Theme] {
-                let id = slot.id_mut(&mut self.draft);
-                if id == temporary {
-                    id.clone_from(real);
-                }
-            }
-            self.inputs = std::mem::take(&mut self.inputs)
-                .into_iter()
-                .map(|((id, role), text)| {
-                    let id = if id == *temporary { real.clone() } else { id };
-                    ((id, role), text)
-                })
-                .collect();
-            if let Some(rename) = &mut self.renaming
-                && rename.id == *temporary
-            {
-                rename.id.clone_from(real);
-            }
-            if self.deleting.as_ref() == Some(temporary) {
-                self.deleting = Some(real.clone());
-            }
+            self.remap(temporary, real);
         }
     }
     /// What Save writes, when there is anything to write.
@@ -492,6 +573,43 @@ impl Form {
             }
         }
         Some(save)
+    }
+}
+
+/// Whether the draft left every field the user edits as `old` has it.
+fn same_theme(old: &Custom, draft: &Custom) -> bool {
+    old.name == draft.name
+        && old.kind == draft.kind
+        && old.based_on == draft.based_on
+        && old.colors == draft.colors
+}
+
+/// Each field from the draft when it changed it, otherwise from the new
+/// base. Whether it's read-only is always the file's.
+fn merge_theme(old: &Custom, draft: &Custom, new: &Custom) -> Custom {
+    fn pick<T: PartialEq + Clone>(old: &T, draft: &T, new: &T) -> T {
+        if draft == old {
+            new.clone()
+        } else {
+            draft.clone()
+        }
+    }
+    let mut colors = new.colors.clone();
+    let (mut old_colors, mut draft_colors) = (old.colors.clone(), draft.colors.clone());
+    for role in 0..ROLES.len() {
+        let old = theme::color_mut(&mut old_colors, role).clone();
+        let draft = theme::color_mut(&mut draft_colors, role).clone();
+        if draft != old {
+            *theme::color_mut(&mut colors, role) = draft;
+        }
+    }
+    Custom {
+        id: new.id.clone(),
+        name: pick(&old.name, &draft.name, &new.name),
+        kind: pick(&old.kind, &draft.kind, &new.kind),
+        based_on: pick(&old.based_on, &draft.based_on, &new.based_on),
+        colors,
+        read_only: new.read_only,
     }
 }
 

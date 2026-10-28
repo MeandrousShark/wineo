@@ -871,3 +871,175 @@ fn a_save_locks_the_colors_controls() {
     let theme = form(&app).themes.iter().find(|t| t.id == copy).unwrap();
     assert_ne!(theme.colors.background.as_deref(), Some("#000006"));
 }
+
+fn custom(id: &str, name: &str, primary: Option<&str>, read_only: bool) -> crate::theme::Custom {
+    crate::theme::Custom {
+        id: format!("custom:{id}"),
+        name: name.into(),
+        kind: crate::theme::PresetKind::Dark,
+        based_on: Some("dracula".into()),
+        colors: wineo_core::themes::Colors {
+            primary: primary.map(str::to_owned),
+            ..Default::default()
+        },
+        read_only,
+    }
+}
+
+fn following(dark: &str) -> crate::theme::Appearance {
+    crate::theme::Appearance {
+        dark: dark.into(),
+        ..Default::default()
+    }
+}
+
+#[test]
+fn a_rebase_takes_changes_on_disk_the_draft_did_not_make() {
+    let mut form = appearance::Form::new(
+        following("custom:night"),
+        vec![custom("night", "Night", Some("#111111"), false)],
+    );
+    form.apply(
+        Edit::Color("custom:night".into(), 3, "#222222".into()),
+        Mode::Dark,
+    );
+    // A hand edit changed the name and primary while the save failed.
+    let on_disk = custom("night", "Evening", Some("#333333"), false);
+    form.rebase(following("custom:night"), vec![on_disk]);
+    let theme = &form.themes[0];
+    assert_eq!(theme.name, "Evening");
+    assert_eq!(theme.colors.primary.as_deref(), Some("#333333"));
+    assert_eq!(theme.colors.foreground.as_deref(), Some("#222222"));
+    assert_eq!(form.changes(), 1, "only the draft's own edit");
+    let save = form.edits().unwrap();
+    assert!(save.renames.is_empty());
+    assert_eq!(save.updates[0].colors.primary.as_deref(), Some("#333333"));
+}
+
+#[test]
+fn a_field_edited_in_both_keeps_the_drafts_value_and_save_writes_it() {
+    let (_root, paths) = setup();
+    write_theme(
+        &paths,
+        "night",
+        "name = \"Night\"\nbased_on = \"dracula\"\n\n[colors]\nprimary = \"#111111\"\n",
+    );
+    let themes = crate::theme::customs(&wineo_core::themes::list(&paths));
+    let mut form = appearance::Form::new(following("custom:night"), themes);
+    form.apply(
+        Edit::Color("custom:night".into(), 5, "#222222".into()),
+        Mode::Dark,
+    );
+    write_theme(
+        &paths,
+        "night",
+        "name = \"Night\"\nbased_on = \"dracula\"\n\n[colors]\nprimary = \"#333333\"\nmuted = \"#444444\"\n",
+    );
+    let themes = crate::theme::customs(&wineo_core::themes::list(&paths));
+    form.rebase(following("custom:night"), themes);
+    assert_eq!(form.changes(), 1);
+    let theme = &form.themes[0];
+    assert_eq!(theme.colors.primary.as_deref(), Some("#222222"));
+    assert_eq!(theme.colors.muted.as_deref(), Some("#444444"));
+    let report =
+        load::save_global_page(&paths, &form::Edits::default(), form.edits().as_ref()).unwrap();
+    assert_eq!(report.failed, None);
+    let text = theme_text(&paths, "night");
+    assert!(text.contains("primary = \"#222222\""), "{text}");
+    assert!(
+        text.contains("muted = \"#444444\""),
+        "the outside change stays: {text}"
+    );
+}
+
+#[test]
+fn edits_to_a_theme_that_vanished_move_into_a_new_one() {
+    let mut form = appearance::Form::new(
+        following("custom:night"),
+        vec![
+            custom("night", "Night", Some("#111111"), false),
+            custom("idle", "Idle", None, false),
+        ],
+    );
+    form.apply(
+        Edit::Color("custom:night".into(), 5, "#222222".into()),
+        Mode::Dark,
+    );
+    form.apply(Edit::Theme(Slot::Light, "custom:idle".into()), Mode::Dark);
+    form.rebase(following("custom:night"), Vec::new());
+    assert_eq!(form.themes.len(), 1, "the unedited one just drops out");
+    let moved = &form.themes[0];
+    assert!(appearance::is_new(&moved.id));
+    assert_eq!(moved.name, "Night");
+    assert_eq!(moved.colors.primary.as_deref(), Some("#222222"));
+    assert_eq!(form.draft.dark, moved.id, "the slot follows the edits");
+    let save = form.edits().unwrap();
+    assert_eq!(save.creates.len(), 1);
+    assert!(save.updates.is_empty() && save.deletes.is_empty());
+    assert_eq!(form.changes(), 3, "the new theme and both slots");
+}
+
+#[test]
+fn a_theme_that_became_read_only_shows_read_only_and_its_edits_move() {
+    let mut form = appearance::Form::new(
+        following("custom:night"),
+        vec![
+            custom("night", "Night", Some("#111111"), false),
+            custom("idle", "Idle", None, false),
+        ],
+    );
+    form.apply(
+        Edit::Color("custom:night".into(), 5, "#222222".into()),
+        Mode::Dark,
+    );
+    // Something unrelated keeps the form dirty for the idle one.
+    form.apply(Edit::ImproveReadability(true), Mode::Dark);
+    form.rebase(
+        following("custom:night"),
+        vec![
+            custom("night", "Night", Some("#111111"), true),
+            custom("idle", "Idle", None, true),
+        ],
+    );
+    let find = |id: &str| form.themes.iter().find(|theme| theme.id == id).unwrap();
+    assert!(find("custom:night").read_only);
+    assert!(
+        find("custom:idle").read_only,
+        "no edits, so it just shows read-only"
+    );
+    let moved = form
+        .themes
+        .iter()
+        .find(|theme| appearance::is_new(&theme.id))
+        .unwrap();
+    assert!(!moved.read_only);
+    assert_eq!(moved.name, "Night copy", "the read-only one keeps its name");
+    assert_eq!(moved.colors.primary.as_deref(), Some("#222222"));
+    assert_eq!(form.draft.dark, moved.id);
+    let save = form.edits().unwrap();
+    assert!(
+        save.updates.is_empty(),
+        "nothing asks core to edit a newer file"
+    );
+    assert_eq!(save.creates.len(), 1);
+}
+
+#[test]
+fn a_pending_delete_of_a_theme_already_gone_is_dropped() {
+    let mut form = appearance::Form::new(
+        following("midnight"),
+        vec![custom("night", "Night", None, false)],
+    );
+    form.apply(Edit::AskDelete("custom:night".into()), Mode::Dark);
+    form.apply(Edit::Delete("custom:night".into()), Mode::Dark);
+    form.apply(Edit::Copy(Slot::Dark), Mode::Dark);
+    form.rebase(
+        following("midnight"),
+        vec![custom("other", "Other", None, false)],
+    );
+    let save = form.edits().unwrap();
+    assert!(save.deletes.is_empty());
+    assert_eq!(save.creates.len(), 1, "the pending copy stays");
+    assert!(form.themes.iter().any(|theme| theme.id == "custom:other"));
+    assert_eq!(form.changes(), 2, "the copy and the slot");
+}
