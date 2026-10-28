@@ -159,10 +159,10 @@ Plan [0054](plans/0054-library-sorting-and-favorites.md) added these.
 - A file problem that affects the whole library shows a warning-tinted,
   rounded strip under the toolbar with the message and at most one neutral
   action (**Open Checkup**). It clears itself when the problem does.
-- Poster marks sit in the poster's top-right corner: a 24 px round chip in
-  black at 55% opacity with a 14 px white icon, in two slots stacked 4 px
-  apart. The star has the top slot and the crossed-out eye the second, so a
-  hidden card's eye never moves when the star appears. A favorite's filled
+- Poster marks are a 24 px round chip in black at 55% opacity with a 14 px
+  white icon, 8 px in from their corner, each corner holding one so nothing
+  moves when another appears. The star has the top-right corner and a
+  hidden card's crossed-out eye the bottom-left. A favorite's filled
   star is always shown; a plain card shows an outline star there while it's
   hovered, fading in and out over about 150 ms. Unfavoriting under the
   pointer shows the outline star at full strength at once. The star is a
@@ -174,11 +174,12 @@ Plan [0054](plans/0054-library-sorting-and-favorites.md) added these.
   black, fading over the same 150 ms. A click that favorites the card also
   pops it: the chip springs up to the 28 px target and settles over about
   240 ms while a thin primary ring ripples out once, clipped to the star's
-  corner so it never reaches the eye, the top-left corner, or a neighbor.
+  corner so it never reaches the top-left corner or a neighbor.
   Unfavoriting, F, the panel star, and the menu don't pop it, and reduced
   motion skips the pop. It has no tooltip and no keyboard focus, since F,
   the panel star, and the menu are the keyboard paths. The eye isn't
-  clickable, and marks don't change the card's size.
+  clickable, sits above the install bar, and marks don't change the card's
+  size.
 - A hidden card shown with Show hidden on keeps its color art at 45%
   opacity with a muted title; its marks stay at full strength, apart from
   the hover star's fade. Grayscale
@@ -199,7 +200,8 @@ chips, and badges keep their sizes at every zoom.
   semibold white text, two lines at most with an ellipsis, 8 px from the
   left and bottom. It's dark in both themes, sits under the selection
   border and the corner layers, isn't a pointer target, and leaves 32 px
-  on the right when the Steam mark shows. A hidden or not-installed card's
+  on the right when the Steam mark shows and 36 px on the left when the
+  eye does. A hidden or not-installed card's
   overlay title is white at 60%, which measures at least 4.5:1 over bright
   and dark art in both themes. Cards with no art keep the title on their
   tile and get no overlay; art that's loading or failed follows the art
