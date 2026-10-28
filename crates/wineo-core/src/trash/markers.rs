@@ -26,7 +26,7 @@ pub(super) fn marker_dir(paths: &Paths) -> PathBuf {
     paths.prefix_locks_dir().join(PENDING_DIR)
 }
 
-fn marker_filename(marker: &PendingMarker) -> String {
+pub(super) fn marker_filename(marker: &PendingMarker) -> String {
     let mut hash = Sha256::new();
     hash.update(marker.root.as_os_str().as_encoded_bytes());
     if let Some(id) = marker.portable_identity {

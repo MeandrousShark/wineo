@@ -121,11 +121,13 @@ struct Identity {
 
 impl Identity {
     fn matches(self, current: Self) -> bool {
-        self.device == current.device
-            && self.inode == current.inode
+        self.inode == current.inode
             && self.birth == current.birth
-            // Without birth time, a changed mount ID could hide inode reuse.
-            && (self.birth.is_some() || self.mount == current.mount)
+            // Device numbers and mount IDs can change across reboots (btrfs
+            // gives each subvolume an anonymous device at mount time), so
+            // they only guard against inode reuse when there's no birth time.
+            && (self.birth.is_some()
+                || self.device == current.device && self.mount == current.mount)
     }
 }
 

@@ -5,7 +5,7 @@ use std::process::Command;
 
 use super::digest::{copy_verified, digest, digest_matches, digest_v1, same_tree};
 use super::identity::{create_storage, rename_owned, subvolume_property};
-use super::markers::{marker_dir, publish_marker};
+use super::markers::{marker_dir, marker_filename, publish_marker};
 use super::payload::{make_payload, reserve_copy, return_payload};
 use super::restore::{
     finish_entry, keep_changed, restore_locked_with, with_environment_build_locks,
@@ -57,6 +57,7 @@ fn drift_identity(saved: &mut Identity) -> bool {
         return false;
     };
     saved.mount = Some(mount + 10_000);
+    saved.device += 10_000;
     true
 }
 
@@ -137,11 +138,18 @@ fn mount_id_drift_without_birth_time_fails_closed() {
         mount: Some(2),
         ..saved
     }));
+    assert!(!saved.matches(Identity { device: 6, ..saved }));
     let with_birth = Identity {
         birth: Some((1, 0)),
         ..saved
     };
     assert!(with_birth.matches(Identity {
+        mount: Some(2),
+        ..with_birth
+    }));
+    // A btrfs subvolume's device number can change across a reboot.
+    assert!(with_birth.matches(Identity {
+        device: 6,
         mount: Some(2),
         ..with_birth
     }));
@@ -184,7 +192,9 @@ fn mount_id_drift_keeps_relocated_portable_marker_recoverable() {
     {
         return;
     }
-    publish_marker(&path, &marker).unwrap();
+    // A marker written before a reboot is named after the identity it stored.
+    fs::remove_file(&path).unwrap();
+    publish_marker(&marker_dir(&paths).join(marker_filename(&marker)), &marker).unwrap();
     fs::rename(&from, &to).unwrap();
     let home = root.path().to_owned();
     let moved = Paths::select(
