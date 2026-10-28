@@ -994,12 +994,12 @@ fn a_theme_that_became_read_only_shows_read_only_and_its_edits_move() {
     );
     // Something unrelated keeps the form dirty for the idle one.
     form.apply(Edit::ImproveReadability(true), Mode::Dark);
+    // The disk also changes a color the draft left alone.
+    let mut upgraded = custom("night", "Night", Some("#111111"), true);
+    upgraded.colors.success = Some("#555555".into());
     form.rebase(
         following("custom:night"),
-        vec![
-            custom("night", "Night", Some("#111111"), true),
-            custom("idle", "Idle", None, true),
-        ],
+        vec![upgraded, custom("idle", "Idle", None, true)],
     );
     let find = |id: &str| form.themes.iter().find(|theme| theme.id == id).unwrap();
     assert!(find("custom:night").read_only);
@@ -1015,6 +1015,11 @@ fn a_theme_that_became_read_only_shows_read_only_and_its_edits_move() {
     assert!(!moved.read_only);
     assert_eq!(moved.name, "Night copy", "the read-only one keeps its name");
     assert_eq!(moved.colors.primary.as_deref(), Some("#222222"));
+    assert_eq!(
+        moved.colors.success.as_deref(),
+        Some("#555555"),
+        "the outside change comes along"
+    );
     assert_eq!(form.draft.dark, moved.id);
     let save = form.edits().unwrap();
     assert!(
@@ -1075,4 +1080,26 @@ fn a_rebase_takes_appearance_fields_the_draft_did_not_change() {
     form.rebase(following("custom:night"), Vec::new());
     assert!(appearance::is_new(&form.draft.dark));
     assert_eq!(form.changes(), 2, "the moved theme and its slot");
+}
+
+#[test]
+fn a_theme_a_failed_save_created_merges_with_a_hand_edit() {
+    let mut form = appearance::Form::new(crate::theme::Appearance::default(), Vec::new());
+    form.apply(Edit::Copy(Slot::Dark), Mode::Dark);
+    let copy = form.themes[0].clone();
+    // The create landed and library.toml was refused, then someone edited
+    // the new file before the reload.
+    form.map_created(&[(copy.id.clone(), "custom:midnight-copy".into())]);
+    let mut on_disk = crate::theme::Custom {
+        id: "custom:midnight-copy".into(),
+        ..copy.clone()
+    };
+    on_disk.name = "Edited".into();
+    on_disk.colors.primary = Some("#666666".into());
+    form.rebase(crate::theme::Appearance::default(), vec![on_disk.clone()]);
+    assert_eq!(form.themes, [on_disk], "untouched fields take the file's");
+    assert_eq!(form.changes(), 1, "only the slot");
+    let save = form.edits().unwrap();
+    assert!(save.creates.is_empty() && save.updates.is_empty() && save.renames.is_empty());
+    assert_eq!(save.appearance.unwrap().dark, "custom:midnight-copy");
 }

@@ -456,21 +456,20 @@ impl Form {
                 merged.push(draft);
                 continue;
             }
-            let old = find(&old_base, &draft.id);
-            // Not in the old base means a save just created it from the draft.
-            let edited = old.as_ref().is_some_and(|old| !same_theme(old, &draft));
+            // Not in the old base means a save just created it, from the
+            // draft's values, so those are what the file started from.
+            let old = find(&old_base, &draft.id).unwrap_or_else(|| draft.clone());
+            let edited = !same_theme(&old, &draft);
             match find(new_base, &draft.id) {
-                Some(new) if new.read_only && edited => {
-                    moved.push(draft);
-                    merged.push(new);
+                Some(new) => {
+                    let theme = merge_theme(&old, &draft, &new);
+                    if new.read_only && edited {
+                        moved.push(theme);
+                        merged.push(new);
+                    } else {
+                        merged.push(theme);
+                    }
                 }
-                Some(new) => merged.push(match &old {
-                    Some(old) => merge_theme(old, &draft, &new),
-                    None => Custom {
-                        read_only: new.read_only,
-                        ..draft
-                    },
-                }),
                 None if edited => moved.push(draft),
                 // Gone with nothing pending; its slots fall back.
                 None => {}
