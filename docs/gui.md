@@ -175,6 +175,18 @@ and launches, without stars or hidden flags. A file written by a newer
 wineo gets the same banner without the button, since the fix is updating
 wineo. The banner clears on its own once the file reads again.
 
+### An unreadable trash entry
+
+If a trash entry can't be verified, a banner above the grid says what it
+blocks (one environment, some, or every environment) and offers
+**Open Checkup**. It shows even when no environments are left. A blocked
+card's panel says why and it can't be launched until the entry is dealt
+with; every other environment keeps working. The Trash page lists the entry
+under **Unreadable entries** with its reason. When everything it kept is
+inside the trash folder, **Delete this entry** deletes it after a
+confirmation, here or in Checkup; otherwise the page names the folder to
+inspect and remove by hand.
+
 ## The detail panel
 
 Click a card to open its panel, and click it again, click unused Library space,
@@ -367,8 +379,10 @@ restored.
 If a removal, restore, or prune was interrupted, the Trash page shows a
 banner with **Recover** for each one, the same recovery as
 `wineo validate --fix`, and the sidebar shows a warning dot. Those entries
-can't be restored or deleted until they're recovered. If the trash can't be
-read at all, the page shows the error and **Check again**.
+can't be restored or deleted until they're recovered. Entries wineo can't
+verify are listed under **Unreadable entries** (see
+[An unreadable trash entry](#an-unreadable-trash-entry)). If the trash can't
+be read at all, the page shows the error and **Check again**.
 
 ## Checkup
 
@@ -377,7 +391,8 @@ config, templates, every environment, and leftovers from environments that
 no longer exist. Problems are grouped like the CLI's report, and healthy
 environments aren't listed. Click an environment's heading to open it in
 the Library. Fixes, progress, and Cancel work as in the panel, and
-interrupted trash work can be recovered here too. The summary of the last
+interrupted trash work can be recovered here too. An unreadable trash entry
+can be deleted here with **Delete this entry** when that's safe. The summary of the last
 batch stays until you press **Check again** or fix more, even if the batch
 finished while you were on another page.
 

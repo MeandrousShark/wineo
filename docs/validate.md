@@ -92,10 +92,13 @@ Interrupted trash removal, restoration, or pruning is reported as an error.
 Recovery is explicit: review with `wineo validate`, then use
 `wineo validate --fix` to recover the reported operation. Do not use
 conflicting commands until recovery is complete. Invalid or unavailable trash
-storage is reported for attention rather than recovered by ordinary commands. An
-unreadable trash manifest stops every environment from loading, so it's
-reported once, as `trash_invalid`, instead of as a problem with each
-environment.
+storage is reported for attention rather than recovered by ordinary commands. A
+trash entry wineo can't verify is reported as `trash_invalid`, naming the
+entry, why, and what it blocks: only its own environment when its manifest
+still reads and its paths match its name, or every environment otherwise.
+When everything the entry kept is inside its folder, the issue says to delete
+it with `wineo prune ID`; otherwise it names the folder to inspect and remove
+by hand. `validate --fix` never deletes it.
 
 A broken [`library.toml`](config-files.md#library-state) is the one file a
 fix rewrites. The repair first copies it to

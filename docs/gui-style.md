@@ -156,9 +156,11 @@ Plan [0054](plans/0054-library-sorting-and-favorites.md) added these.
   semibold heading, one muted line, and one accent action. A secondary
   action, like **Show hidden** beside "2 matches are hidden", stays neutral.
   Copy stays neutral ("matches", not "games").
-- A file problem that affects the whole library shows a warning-tinted,
-  rounded strip under the toolbar with the message and at most one neutral
-  action (**Open Checkup**). It clears itself when the problem does.
+- A file problem that affects the library, like a broken `library.toml` or
+  an unreadable trash entry, shows a warning-tinted, rounded strip under the
+  toolbar with the message and at most one neutral action
+  (**Open Checkup**). Each problem gets its own strip, and it clears itself
+  when the problem does.
 - Poster marks are a 24 px round chip in black at 55% opacity with a 14 px
   white icon, 8 px in from their corner, each corner holding one so nothing
   moves when another appears. The star has the top-right corner and a

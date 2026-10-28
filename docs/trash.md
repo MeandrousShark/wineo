@@ -38,7 +38,10 @@ which pruning does not delete.
 
 `wineo trash` (or `wineo trash list`) shows each ID, name, how long ago it was
 removed, and whether the prefix was included. An empty trash prints `Trash is
-empty` on stderr, leaving stdout empty for scripts. Restore returns data to its original name and paths. It refuses
+empty` on stderr, leaving stdout empty for scripts. An entry wineo can't
+verify is listed as unreadable, with its reason and what it blocks: only its
+own environment when its manifest still reads and its paths match its name,
+or every environment otherwise. Everything else keeps working. Restore returns data to its original name and paths. It refuses
 collisions rather than overwriting existing data. Restoring a plain `rm` entry
 returns its config, art, and playtime while leaving the prefix and snapshots
 where they were; restoring a `--include-prefix` entry returns those too.
@@ -72,6 +75,12 @@ means 24 elapsed hours, and confirmation freezes the reviewed selection.
 Running `prune` without a selector shows help and deletes nothing. Independent
 failures do not stop other selected entries; any failure makes the command
 exit nonzero and retain the records needed for recovery.
+
+An unreadable entry can be pruned by its ID, after the same confirmation, when
+its manifest still reads, its paths match its name, and everything it kept is
+inside its own trash folder. Otherwise `prune` refuses and names the folder to
+inspect and remove by hand. `--older-than` and `--all` never include
+unreadable entries.
 
 If removal, restore, or prune is interrupted, run `wineo validate` to inspect
 the pending work and `wineo validate --fix` to recover it. Ordinary commands
