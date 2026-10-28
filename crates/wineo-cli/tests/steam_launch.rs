@@ -104,7 +104,7 @@ fn start_claims_reaper_and_stop_leaves_steam_client_alive() {
     assert!(
         fs::read_to_string(&s.dispatches)
             .unwrap()
-            .contains("-applaunch 289070 --windowed")
+            .contains("-silent -applaunch 289070 --windowed")
     );
     wait_for("Steam reaper claim", || {
         let state = s.f.state("civ");

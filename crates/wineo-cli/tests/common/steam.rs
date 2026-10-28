@@ -153,7 +153,7 @@ int main(int argc, char **argv) {
         append(urls, line);
         return 0;
     }
-    if (argc < 3 || strcmp(argv[1], "-applaunch")) return 2;
+    if (argc < 4 || strcmp(argv[1], "-silent") || strcmp(argv[2], "-applaunch")) return 2;
     char dispatches[PATH_MAX], mode_path[PATH_MAX], fifo[PATH_MAX];
     char linger[PATH_MAX], request_pids[PATH_MAX], path[PATH_MAX];
     snprintf(dispatches, sizeof(dispatches), "%s/steam-dispatches", root);
@@ -184,7 +184,7 @@ int main(int argc, char **argv) {
         int fd = open(fifo, O_WRONLY);
         if (fd < 0) return 5;
         char request[256];
-        int length = snprintf(request, sizeof(request), "AppId=%s %s\n", argv[2], mode);
+        int length = snprintf(request, sizeof(request), "AppId=%s %s\n", argv[3], mode);
         if (length <= 0 || (size_t)length >= sizeof(request) || write(fd, request, (size_t)length) != length) {
             close(fd);
             return 6;

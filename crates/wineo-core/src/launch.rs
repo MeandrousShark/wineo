@@ -650,7 +650,9 @@ impl Launch {
                     }
                 };
                 match request {
-                    SteamRequest::Launch => command.args(["-applaunch", app_id]),
+                    // `-silent` keeps the library window down when this starts Steam,
+                    // and has to come before `-applaunch`, whose tail is the game's.
+                    SteamRequest::Launch => command.args(["-silent", "-applaunch", app_id]),
                     SteamRequest::Install => command.arg(format!("steam://install/{app_id}")),
                     SteamRequest::Uninstall => command.arg(format!("steam://uninstall/{app_id}")),
                 };

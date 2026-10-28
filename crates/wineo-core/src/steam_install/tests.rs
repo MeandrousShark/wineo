@@ -340,7 +340,7 @@ fn a_request_survives_the_handoff_and_an_old_one_is_a_launch() {
     let read: Launch = toml::from_str(&old).unwrap();
     assert_eq!(
         read.command().get_args().collect::<Vec<_>>(),
-        ["-applaunch", "42"]
+        ["-silent", "-applaunch", "42"]
     );
 }
 
