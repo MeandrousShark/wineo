@@ -255,3 +255,74 @@ fn only_the_selected_tab_is_underlined_in_primary() {
         }
     }
 }
+
+const SHORT: iced::Size = iced::Size::new(900.0, 300.0);
+
+/// Lays out the page, runs the widget operations of `task` on it, and
+/// returns its page scroll offset.
+fn offset_after(app: &App, paths: &Paths, task: Task<Message>) -> f32 {
+    let mut laid = lay_out(page_of(app).view(paths, Palette::DARK), SHORT);
+    crate::focus_button::run_task(&mut laid, task);
+    laid.offsets()[0]
+}
+
+fn switch(app: &mut App, tab: Tab) -> Task<Message> {
+    app.update(Message::Settings(Event::Tab(tab)))
+}
+
+#[test]
+fn each_tab_keeps_its_own_scroll_position() {
+    let (_root, paths) = setup();
+    let mut app = open_global_app(&paths);
+    let _ = app.update(Message::Settings(Event::Scrolled(120.0)));
+    let task = switch(&mut app, Tab::Appearance);
+    assert_eq!(
+        offset_after(&app, &paths, task),
+        0.0,
+        "first visit is the top"
+    );
+    let task = switch(&mut app, Tab::General);
+    assert_eq!(offset_after(&app, &paths, task), 120.0);
+    // Appearance remembers its own too.
+    let _ = app.update(Message::Settings(Event::Scrolled(40.0)));
+    let _ = switch(&mut app, Tab::Appearance);
+    let _ = app.update(Message::Settings(Event::Scrolled(7.0)));
+    let task = switch(&mut app, Tab::General);
+    assert_eq!(offset_after(&app, &paths, task), 40.0);
+    assert_eq!(page_of(&app).scroll, [40.0, 7.0]);
+}
+
+#[test]
+fn a_reload_keeps_both_scroll_positions_and_a_new_page_starts_at_the_top() {
+    let (_root, paths) = setup();
+    let mut app = open_global_app(&paths);
+    let _ = app.update(Message::Settings(Event::Scrolled(120.0)));
+    let _ = switch(&mut app, Tab::Appearance);
+    let _ = app.update(Message::Settings(Event::Scrolled(7.0)));
+    let generation = page_of(&app).generation;
+    let _ = app.update(Message::Settings(Event::Loaded(
+        generation,
+        load::snapshot_global(&paths),
+    )));
+    assert_eq!(page_of(&app).scroll, [120.0, 7.0]);
+    let _ = app.update(Message::Section(crate::sidebar::Section::Library));
+    reopen_global(&mut app, &paths);
+    assert_eq!(page_of(&app).scroll, [0.0, 0.0]);
+}
+
+#[test]
+fn scrolling_the_page_reports_its_offset_for_the_shown_tab() {
+    let (_root, paths) = setup();
+    let app = open_global_app(&paths);
+    let mut laid = lay_out(page_of(&app).view(&paths, Palette::DARK), SHORT);
+    let messages = laid.event_at(
+        &iced::Event::Mouse(iced::mouse::Event::WheelScrolled {
+            delta: iced::mouse::ScrollDelta::Lines { x: 0.0, y: -3.0 },
+        }),
+        iced::mouse::Cursor::Available(iced::Point::new(450.0, 150.0)),
+    );
+    let reported = messages.iter().any(
+        |message| matches!(message, Message::Settings(Event::Scrolled(offset)) if *offset > 0.0),
+    );
+    assert!(reported, "{messages:?}");
+}

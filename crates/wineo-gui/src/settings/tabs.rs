@@ -23,6 +23,13 @@ pub(crate) enum Tab {
 impl Tab {
     pub(crate) const ALL: [Self; 2] = [Self::General, Self::Appearance];
 
+    fn index(self) -> usize {
+        match self {
+            Self::General => 0,
+            Self::Appearance => 1,
+        }
+    }
+
     pub(crate) fn label(self) -> &'static str {
         match self {
             Self::General => "General",
@@ -39,6 +46,13 @@ impl Tab {
 }
 
 impl Page {
+    /// Remembers where the shown tab is scrolled to.
+    pub(super) fn scrolled(&mut self, offset: f32) {
+        if self.global {
+            self.scroll[self.tab.index()] = offset;
+        }
+    }
+
     /// Switching only changes what shows, so the draft and its count stay.
     pub(super) fn select_tab(&mut self, tab: Tab) -> super::Step {
         if !self.global || self.leave_prompt || self.tab == tab {
@@ -48,10 +62,13 @@ impl Page {
         // The other tab's sections may be gone from under an open menu, so
         // its close never arrives.
         self.menu_open = false;
-        // The tabs share one scroll area, so each opens at its top.
+        // The tabs share one scroll area, so each gets back where it was left.
         super::Step::task(iced::widget::operation::scroll_to(
             Id::new(super::view::SCROLL_ID),
-            iced::widget::scrollable::AbsoluteOffset { x: 0.0, y: 0.0 },
+            iced::widget::scrollable::AbsoluteOffset {
+                x: 0.0,
+                y: self.scroll[tab.index()],
+            },
         ))
     }
 }

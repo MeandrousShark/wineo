@@ -30,6 +30,8 @@ pub(crate) enum Event {
     Back,
     /// Shows a tab of the global page, which only changes the view.
     Tab(Tab),
+    /// The page's scroll offset after it moved, kept for the tab showing.
+    Scrolled(f32),
     Discard,
     KeepEditing,
     Save,
@@ -318,6 +320,8 @@ pub(crate) struct Page {
     /// Which tab of the global page shows. The page is new each time it
     /// opens, so it starts on General; a reload keeps it.
     tab: Tab,
+    /// Where each tab is scrolled to, by `Tab::index`. A reload keeps them.
+    scroll: [f32; 2],
     /// Tells this page's worker results from those of a page closed earlier.
     generation: u64,
     pub(crate) view: View,
@@ -429,6 +433,7 @@ impl Page {
             name,
             global: false,
             tab: Tab::General,
+            scroll: [0.0; 2],
             generation,
             view: View::Loading,
             disk: None,

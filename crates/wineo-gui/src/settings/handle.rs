@@ -25,6 +25,10 @@ impl Page {
             }
             Event::Back => self.go_back(),
             Event::Tab(tab) => self.select_tab(tab),
+            Event::Scrolled(offset) => {
+                self.scrolled(offset);
+                Step::none()
+            }
             Event::Discard if self.saving => Step::none(),
             Event::Discard => Step::close(),
             Event::KeepEditing => {

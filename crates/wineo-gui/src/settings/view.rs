@@ -108,6 +108,7 @@ impl Page {
         )
         .wineo_style(palette)
         .id(iced::widget::Id::new(SCROLL_ID))
+        .on_scroll(|viewport| send(Event::Scrolled(viewport.absolute_offset().y)))
         .width(Fill)
         .height(Fill);
         let mut page = column![
