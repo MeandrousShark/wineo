@@ -218,10 +218,10 @@ pub(crate) fn update(app: &mut App, event: Event) -> Task<Message> {
             app.trash_badge = match &result {
                 Ok(snapshot) => sidebar::TrashBadge::from_entries(
                     Some(&snapshot.entries),
-                    !snapshot.unreadable.is_empty(),
+                    &snapshot.unreadable,
                     Some(&snapshot.pending),
                 ),
-                Err(_) => sidebar::TrashBadge::from_entries(None, false, None),
+                Err(_) => sidebar::TrashBadge::from_entries(None, &[], None),
             };
             if result.is_err() {
                 app.trash_page.cancel_review();
@@ -457,7 +457,7 @@ pub(crate) fn unreadable_note(paths: &Paths, entry: &Unreadable) -> String {
     match &entry.deletable {
         Ok(()) => format!("Can't be read: {}.", entry.reason),
         Err(why) => paths.contract_text(&format!(
-            "Can't be read: {}. Inspect {} and remove it by hand, since {why}.",
+            "Can't be read ({}); inspect {} and remove it by hand, since {why}.",
             entry.reason,
             entry.dir.display()
         )),

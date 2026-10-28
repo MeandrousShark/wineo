@@ -994,7 +994,7 @@ impl App {
                 column![
                     section_heading("Delete unreadable trash entry", palette),
                     text(format!("Permanently delete trash entry {id}?")),
-                    text("Everything it kept is deleted. This can't be undone.")
+                    text("This deletes everything it kept and can't be undone.")
                         .color(palette.danger),
                     row![
                         control(

@@ -2,7 +2,7 @@ use iced::keyboard::{Key, Modifiers};
 use iced::widget::{Space, button, column, container, row, text};
 use iced::{Center, Element, Fill, Task, border};
 use wineo_core::paths::Paths;
-use wineo_core::trash::{self, Entry, PendingEntry, Phase};
+use wineo_core::trash::{self, Entry, PendingEntry, Phase, Unreadable};
 
 use crate::{App, Message};
 
@@ -38,6 +38,8 @@ impl Section {
 pub(crate) struct TrashBadge {
     pub(crate) count: Option<usize>,
     pub(crate) warning: bool,
+    /// Whom each unreadable entry blocks, None for every environment.
+    pub(crate) unreadable: Vec<Option<String>>,
 }
 
 impl TrashBadge {
@@ -47,14 +49,14 @@ impl TrashBadge {
         let survey = survey.as_ref().ok();
         Self::from_entries(
             survey.map(|survey| survey.entries.as_slice()),
-            survey.is_some_and(|survey| !survey.unreadable.is_empty()),
+            survey.map_or(&[], |survey| survey.unreadable.as_slice()),
             pending.as_deref().ok(),
         )
     }
 
     pub(crate) fn from_entries(
         entries: Option<&[Entry]>,
-        unreadable: bool,
+        unreadable: &[Unreadable],
         pending: Option<&[PendingEntry]>,
     ) -> Self {
         Self {
@@ -64,7 +66,11 @@ impl TrashBadge {
                     .filter(|entry| entry.phase == Phase::Trashed)
                     .count()
             }),
-            warning: unreadable
+            unreadable: unreadable
+                .iter()
+                .map(|entry| entry.blocks.clone())
+                .collect(),
+            warning: !unreadable.is_empty()
                 || entries.is_none_or(|entries| {
                     entries.iter().any(|entry| entry.phase != Phase::Trashed)
                 })
@@ -100,6 +106,7 @@ impl App {
                     .unwrap_or(TrashBadge {
                         count: None,
                         warning: true,
+                        unreadable: Vec::new(),
                     })
             },
             done,
@@ -459,7 +466,8 @@ mod tests {
             app.trash_badge,
             TrashBadge {
                 count: Some(0),
-                warning: false
+                warning: false,
+                unreadable: Vec::new()
             }
         );
         remove_native(&app.paths, "kept");
@@ -470,7 +478,8 @@ mod tests {
             app.trash_badge,
             TrashBadge {
                 count: Some(3),
-                warning: false
+                warning: false,
+                unreadable: Vec::new()
             }
         );
         trash::restore(&app.paths, &removing.id).unwrap();
@@ -483,7 +492,8 @@ mod tests {
             app.trash_badge,
             TrashBadge {
                 count: Some(1),
-                warning: true
+                warning: true,
+                unreadable: Vec::new()
             }
         );
         assert!(!app.trash_refreshing);
@@ -503,7 +513,8 @@ mod tests {
             app.trash_badge,
             TrashBadge {
                 count: None,
-                warning: true
+                warning: true,
+                unreadable: Vec::new()
             }
         );
         fs::remove_file(dir).unwrap();
@@ -518,7 +529,8 @@ mod tests {
             app.trash_badge,
             TrashBadge {
                 count: Some(1),
-                warning: true
+                warning: true,
+                unreadable: Vec::new()
             }
         );
     }

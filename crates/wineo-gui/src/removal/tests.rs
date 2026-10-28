@@ -752,6 +752,7 @@ fn stale_reads_and_progress_cannot_replace_a_new_change() {
     let fresh_badge = sidebar::TrashBadge {
         count: Some(1),
         warning: false,
+        unreadable: Vec::new(),
     };
     let _ = app.update(Message::TrashReloaded(
         app.trash_generation,

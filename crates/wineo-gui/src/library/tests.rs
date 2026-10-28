@@ -125,7 +125,6 @@ fn launch_button_label_uses_the_exact_game_tag() {
         busy_holder: None,
         unresolved: false,
         error: None,
-        trash_blocks_all: false,
         playtime: "never played".into(),
         sessions: "0".to_owned(),
         last_played: "never".into(),
@@ -687,9 +686,15 @@ fn an_unreadable_trash_entry_blocks_only_the_card_it_names() {
     let cards = load_library(&paths).unwrap();
     let card = |name: &str| cards.iter().find(|card| card.name == name).unwrap();
     assert_eq!(card("game").error.as_deref(), Some(TRASH_BLOCKED));
-    assert!(!card("game").trash_blocks_all);
     assert_eq!(card("other").error, None);
     assert_eq!(card("other").kind, Some(CardKind::Native));
+
+    let mut app = crate::App::boot(paths.clone()).0;
+    app.trash_badge = crate::sidebar::TrashBadge::read(&paths);
+    assert_eq!(
+        app.trash_banner_text().as_deref(),
+        Some("An unreadable trash entry blocks game.")
+    );
 }
 
 #[test]
@@ -701,11 +706,52 @@ fn an_unparseable_trash_entry_blocks_every_card_and_shows_the_banner() {
     assert_eq!(cards.len(), 2);
     for card in &cards {
         assert_eq!(card.error.as_deref(), Some(TRASH_BLOCKED), "{}", card.name);
-        assert!(card.trash_blocks_all);
     }
-    let mut app = crate::App::boot(paths).0;
-    assert!(!app.trash_blocks_all());
-    app.cards = cards;
-    assert!(app.trash_blocks_all());
+    let mut app = crate::App::boot(paths.clone()).0;
+    assert_eq!(app.trash_banner_text(), None);
+    app.trash_badge = crate::sidebar::TrashBadge::read(&paths);
+    assert_eq!(
+        app.trash_banner_text().as_deref(),
+        Some("An unreadable trash entry blocks every environment.")
+    );
     assert!(app.trash_banner().is_some());
+}
+
+#[test]
+fn the_trash_strip_shows_with_no_environments_left() {
+    let root = tempfile::tempdir().unwrap();
+    let home = root.path().to_owned();
+    let paths = Paths::from_lookup(move |key| (key == "HOME").then(|| home.as_os_str().to_owned()))
+        .unwrap();
+    fs::create_dir_all(paths.environments_dir()).unwrap();
+    fs::write(paths.environment_config("last"), "kind = 'native'\n").unwrap();
+    let entry = wineo_core::trash::remove(&paths, "last", false).unwrap();
+    let manifest = paths.trash_dir().join(&entry.id).join("manifest.toml");
+    fs::write(&manifest, "not a manifest").unwrap();
+
+    let mut app = crate::App::boot(paths.clone()).0;
+    app.cards = load_library(&paths).unwrap();
+    assert!(app.cards.is_empty());
+    let badge = crate::sidebar::TrashBadge::read(&paths);
+    let _ = app.update(crate::Message::TrashBadgeLoaded(badge));
+    assert_eq!(
+        app.trash_banner_text().as_deref(),
+        Some("An unreadable trash entry blocks every environment.")
+    );
+
+    fs::write(paths.environment_config("a"), "kind = 'native'\n").unwrap();
+    fs::write(paths.environment_config("b"), "kind = 'native'\n").unwrap();
+    fs::remove_dir_all(manifest.parent().unwrap()).unwrap();
+    for name in ["a", "b"] {
+        let entry = wineo_core::trash::remove(&paths, name, false).unwrap();
+        let file = paths.trash_dir().join(&entry.id).join("manifest.toml");
+        let text = fs::read_to_string(&file).unwrap();
+        fs::write(&file, text.replacen("version = 1", "version = 2", 1)).unwrap();
+    }
+    let badge = crate::sidebar::TrashBadge::read(&paths);
+    let _ = app.update(crate::Message::TrashBadgeLoaded(badge));
+    assert_eq!(
+        app.trash_banner_text().as_deref(),
+        Some("Unreadable trash entries block some environments.")
+    );
 }

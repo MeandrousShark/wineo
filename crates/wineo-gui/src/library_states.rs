@@ -153,19 +153,22 @@ impl App {
         Some(self.banner(banner_text(problem), id))
     }
 
-    /// Whether an unreadable trash entry blocks every environment.
-    pub(crate) fn trash_blocks_all(&self) -> bool {
-        self.cards.iter().any(|card| card.trash_blocks_all)
+    /// What the strip says about unreadable trash entries, if there are any.
+    pub(crate) fn trash_banner_text(&self) -> Option<String> {
+        let scopes = &self.trash_badge.unreadable;
+        Some(match scopes.as_slice() {
+            [] => return None,
+            scopes if scopes.iter().any(Option::is_none) => {
+                "An unreadable trash entry blocks every environment.".into()
+            }
+            [Some(name)] => format!("An unreadable trash entry blocks {name}."),
+            _ => "Unreadable trash entries block some environments.".into(),
+        })
     }
 
-    /// The banner for an unreadable trash entry that blocks every environment.
     pub(crate) fn trash_banner(&self) -> Option<Element<'_, Message>> {
-        self.trash_blocks_all().then(|| {
-            self.banner(
-                "An unreadable trash entry blocks every environment.".into(),
-                Some(TRASH_CHECKUP_ID),
-            )
-        })
+        let words = self.trash_banner_text()?;
+        Some(self.banner(words, Some(TRASH_CHECKUP_ID)))
     }
 
     /// A warning strip under the toolbar, with Open Checkup when `checkup`

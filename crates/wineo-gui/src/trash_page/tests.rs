@@ -1104,11 +1104,12 @@ fn an_unparseable_entry_offers_no_delete() {
     );
     let note = unreadable_note(&app.paths, entry);
     assert!(
-        note.starts_with("Can't be read: manifest.toml can't be parsed"),
+        note.starts_with("Can't be read (manifest.toml can't be parsed"),
         "{note}"
     );
+    assert!(note.contains("); inspect "), "{note}");
     assert!(
-        note.contains("and remove it by hand, since its manifest can't be parsed."),
+        note.ends_with("and remove it by hand, since its manifest can't be parsed."),
         "{note}"
     );
     assert!(!app.trash_page.unreadable_enabled(&bad.id));
