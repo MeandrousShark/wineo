@@ -528,3 +528,37 @@ fn appearance_edits_are_dropped_while_saving_and_on_the_environment_page() {
     assert!(!page.is_dirty());
     assert!(page.appearance().is_none());
 }
+
+#[test]
+fn locked_rows_look_disabled() {
+    for palette in crate::theme::PRESETS.map(|preset| preset.palette) {
+        for chosen in [false, true] {
+            let enabled = appearance::RowColors::new(chosen, true, palette);
+            let locked = appearance::RowColors::new(chosen, false, palette);
+            assert_ne!(locked.name, enabled.name, "chosen {chosen}");
+            assert_ne!(locked.detail, enabled.detail, "chosen {chosen}");
+        }
+    }
+    // The check rows' labels take the row's own text color, which changes
+    // when the row is disabled.
+    let palette = Palette::DARK;
+    assert_ne!(
+        crate::ui::list_row_style(palette, iced::widget::button::Status::Disabled).text_color,
+        crate::ui::list_row_style(palette, iced::widget::button::Status::Active).text_color
+    );
+}
+
+#[test]
+fn a_save_locks_the_rows() {
+    let (_root, paths) = setup();
+    let mut app = open_global_app(&paths);
+    show_appearance(&mut app);
+    pick(&mut app, Slot::Dark, "cellar");
+    let _ = app.update(Message::Settings(Event::Save));
+    let ids = focusable_ids(&app, &paths);
+    assert!(!ids.contains(&id(FOLLOW_ID)), "{ids:?}");
+    assert!(
+        !ids.contains(&id(&Slot::Dark.row_id("midnight"))),
+        "{ids:?}"
+    );
+}

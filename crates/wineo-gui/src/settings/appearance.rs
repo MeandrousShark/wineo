@@ -266,31 +266,28 @@ fn theme_row(
     locked: bool,
     palette: Palette,
 ) -> ListRow<'static, Message> {
-    let mut head = row![list_row_text(choice.name.clone()).color(if chosen {
-        palette.primary
-    } else {
-        palette.foreground
-    })]
-    .spacing(8)
-    .align_y(Center);
+    let colors = RowColors::new(chosen, !locked, palette);
+    let mut head = row![list_row_text(choice.name.clone()).color(colors.name)]
+        .spacing(8)
+        .align_y(Center);
     if show_kind {
         let kind = match choice.kind {
             PresetKind::Dark => "Dark",
             PresetKind::Light => "Light",
         };
-        head = head.push(text(kind).size(12).color(palette.muted));
+        head = head.push(text(kind).size(12).color(colors.detail));
     }
     let words = column![
         head,
         text(choice.description.clone())
             .size(12)
-            .color(palette.muted)
+            .color(colors.detail)
     ]
     .spacing(2)
     .width(Fill);
     // A check as well as the color, so the choice doesn't rest on color alone.
     let mark: Element<'static, Message> = if chosen {
-        icon(CHECK, palette.primary, 16.0).into()
+        icon(CHECK, colors.name, 16.0).into()
     } else {
         Space::new().width(16).height(16).into()
     };
@@ -303,6 +300,36 @@ fn theme_row(
         send(Edit::Theme(slot, choice.id.clone())),
     )
     .enabled(!locked)
+}
+
+/// A theme row's text colors. The labels are colored here, so they'd skip
+/// `list_row_style`'s disabled text; a locked row takes it the same way, and
+/// its supporting text fades below that.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct RowColors {
+    /// The name and the chosen row's check.
+    pub(crate) name: iced::Color,
+    /// The description and the Dark or Light label.
+    pub(crate) detail: iced::Color,
+}
+
+impl RowColors {
+    pub(crate) fn new(chosen: bool, enabled: bool, palette: Palette) -> Self {
+        if !enabled {
+            return Self {
+                name: palette.muted,
+                detail: palette.muted.scale_alpha(0.6),
+            };
+        }
+        Self {
+            name: if chosen {
+                palette.primary
+            } else {
+                palette.foreground
+            },
+            detail: palette.muted,
+        }
+    }
 }
 
 /// A small sample of a theme: its ground, a panel in its surface color with
