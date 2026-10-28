@@ -435,8 +435,18 @@ Steps 1 and 2 can run in parallel after step 0; 3 can start any time.
 - **The hero's close button stays literal,** white on black, though it sits
   over a plain `surface` block when there's no hero image. Routing it would
   change today's look.
-- **Preset descriptions are placeholders** until the maintainer reviews them
-  before step 4.
+- **Preset descriptions** (approved by the maintainer, 2026-10-28):
+
+  | Preset | Description |
+  |---|---|
+  | Midnight | wineo's dark theme, with a blue accent. |
+  | Daylight | wineo's light theme, with a blue accent. |
+  | Cellar | Warm dark browns with a coral accent. |
+  | Cellar Light | Warm paper tones with a coral accent. |
+  | High contrast | Black ground, bright text, visible borders. |
+  | Dracula | The Dracula palette. |
+  | Catppuccin Macchiato | Catppuccin's Macchiato flavor. |
+  | Catppuccin Latte | Catppuccin's Latte flavor. |
 
 ## Scope limits
 
