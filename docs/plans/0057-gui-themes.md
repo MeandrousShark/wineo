@@ -62,6 +62,12 @@ Answers to the plan's questions (2026-10-28):
 14. **One Save for both tabs.** The footer counts edits on General and
     Appearance and saves each file it touched.
 
+A qa-gpt review of the plan (2026-10-28) found seven gaps. The maintainer
+took all seven recommended fixes, which are folded into the sections below:
+readability's best effort, the disabled label bar, fixed custom theme ids,
+save order, the `based_on` chain, warnings without a fix, and the
+immediate key and login actions.
+
 ## Existing foundation
 
 - `crates/wineo-gui/src/theme.rs` owns `Palette`: nine colors (`background`,
@@ -76,8 +82,10 @@ Answers to the plan's questions (2026-10-28):
 - `ui.rs` derives control states from the palette: `secondary_style` hovers
   toward `foreground` and presses toward `primary`; `accent_style` hovers 10%
   toward white, presses 18% toward black, and picks its text with
-  `accent_ink`, black or white by luminance at 0.179. The test near
-  `ui.rs:397` checks states are distinct, for the two modes only.
+  `accent_ink`, black or white by luminance at 0.179. The test at
+  `ui.rs:395` checks that accent labels reach 4.5:1 in every state,
+  disabled included, for the two modes only. Nothing tests that states
+  stay distinct.
 - Literal colors outside `theme.rs`, about a dozen files: poster marks and
   chips on black at 55 to 60% (`grid.rs`, `library_actions.rs`), the white
   star on the poster, the poster-only title gradient and white overlay text
@@ -99,8 +107,10 @@ Answers to the plan's questions (2026-10-28):
   portable folder overrides.
 - The global Settings page (`settings/view.rs`, `global_view`) is a list of
   grouped sections with a fixed Save and Revert footer and an edit count.
-  Edits collect on the page and only Save writes; leaving with unsaved edits
-  asks first ([gui.md](../gui.md), Settings).
+  Edits collect on the page and only Save writes them; leaving with unsaved
+  edits asks first ([gui.md](../gui.md), Settings). The key and login
+  actions are the exception: they apply right away, outside the Save bar,
+  and stay that way on the General tab.
 - `crates/wineo-gui/THIRD_PARTY.md` holds the font and icon notices, and the
   `PKGBUILD` installs it beside the license.
 
@@ -174,8 +184,13 @@ Fixed colors follow answer 1. Everything over art keeps its literal values
 their black alphas, which read as depth on every ground. The audit step
 routes anything else through a role, and `gui-style.md` gains the rule and
 the allowlist. Accent hover and press keep blending toward white and black,
-since `accent_ink` re-picks the text after the blend; the state test checks
-they stay distinct in every preset.
+since `accent_ink` re-picks the text after the blend; a new state test
+checks they stay distinct in every preset.
+
+Accent labels need 4.5:1 when active, hovered, or pressed, and 3:1 when
+disabled, since inactive controls are exempt from the 4.5:1 text rule.
+Today's test holds disabled labels to 4.5:1, which Catppuccin Latte misses
+(3.68 to 4.14:1), so step 0 lowers that bar before the test widens.
 
 ### Choosing a theme
 
@@ -202,11 +217,19 @@ The transform runs on a `Palette` and returns one:
 - **Roles:** foreground, muted, primary, success, warning, and danger. Each
   must reach 4.5:1 against background and against surface; the lower of the
   two decides.
-- **Direction:** darker in a light theme, lighter in a dark one, judged by
-  the preset's kind.
+- **Direction:** both ways are tried for each role, lighter and darker.
+  The one that reaches 4.5:1 wins, the smaller change if both do, and the
+  theme kind's way (darker in a light theme) breaks a tie. Judging by the
+  result rather than the kind keeps a custom theme with unusual grounds
+  from being pushed the wrong way.
 - **How:** lightness moves in small steps in OKLCH, holding hue and clamping
   chroma to what sRGB can show, until the role passes or reaches black or
   white.
+- **Best effort:** some grounds leave no passing color. With a black window
+  and a `#777777` panel, white is 4.48:1 on the panel and anything darker
+  fails on the window. Then the role keeps the step with the highest
+  contrast, which is never lower than where it started, and nothing in the
+  UI says so.
 - **Left alone:** background and surface, so the theme still looks like
   itself, and border, which is quiet by design; High contrast is the theme
   for visible borders.
@@ -238,10 +261,15 @@ difference: the app repaints with them before Save.
   appearance and repaint.
 - A system light or dark change during a preview picks from the previewed
   lists, not the saved ones.
-- When `library.toml` can't be written (it doesn't parse or is from a newer
-  wineo, so writes are refused), Save keeps the General edits, says the
-  appearance couldn't be saved with the usual Open Checkup action, and
-  repaints with the saved appearance.
+- Save writes in this order: `config.toml`, then theme files (new, edited,
+  and renamed), then `library.toml`, then theme deletes, so a file is never
+  deleted while `library.toml` still points at it.
+- A failure stops the rest and works like today's partial save: the page
+  reads the files back as the new base and keeps the edits that didn't
+  land, and the preview keeps showing them until Save succeeds or Revert.
+  When the failure is `library.toml` refusing writes (it doesn't parse or
+  is from a newer wineo), the error carries the usual Open Checkup
+  action.
 - A hand edit to `library.toml` while the tab has no edits reloads it, as
   the page already does for `config.toml`.
 
@@ -253,8 +281,11 @@ difference: the app repaints with them before Save.
 - A custom theme's Colors section has a field per role: a swatch and a hex
   entry (answer 12). A bad value shows "Invalid color: use #rrggbb." and
   isn't applied; the swatch keeps the last good one.
-- **Rename** and **Delete** sit beside the name. Delete asks first; deleting
-  a theme in use falls back to the default for its kind.
+- **Rename** and **Delete** sit beside the name. Rename changes only the
+  name, never the id, so `library.toml` keeps pointing at it; a name
+  another custom theme already uses, ignoring case, says "Name taken."
+  Delete asks first; deleting a theme in use falls back to the default for
+  its kind.
 - Each custom theme is a file in the config root's `themes/` folder (answer
   11), written on Save:
 
@@ -270,12 +301,35 @@ surface = "#231d1a"
 # ... one key per role
 ```
 
-  The file name is a slug of the name, which is also its id in
-  `library.toml` as `custom:<slug>`, so a custom theme can never shadow a
-  built-in. Like `library.toml`, it's read leniently: an unknown key is
-  ignored, and a missing or bad color falls back to `based_on`'s, so a theme
-  file never stops the app. `Paths::themes_dir()` resolves it, so a portable
-  folder carries its themes.
+  The id is set once, when the theme is created: a slug of its first name
+  (lowercase ASCII letters and digits, anything else becoming a single
+  `-`), with `-2`, `-3`, and so on added when that file exists. A copy's
+  first name always ends in "copy", so the slug is never empty. The file
+  is `<id>.toml`, and a theme file added by hand uses its own file name as
+  its id. `library.toml` refers to it as `custom:<id>`, so a custom theme
+  can never shadow a built-in:
+
+```text
+copy Cellar                         -> "Cellar copy", custom:cellar-copy
+rename it "Mine"                    -> "Mine", still custom:cellar-copy
+copy Cellar again                   -> "Cellar copy", custom:cellar-copy-2
+```
+
+  Like `library.toml`, it's read leniently, so a theme file never stops
+  the app:
+
+  - An unknown key is ignored.
+  - `based_on` must be a built-in id. A copy of a custom theme keeps that
+    theme's `based_on`. A missing or unknown one means the default for the
+    kind, Midnight or Daylight.
+  - A missing or unknown `kind` means dark.
+  - A missing or bad color falls back to `based_on`'s.
+  - A file that doesn't parse is left out of the lists, and anything
+    pointing at it falls back as if it were gone. `validate` warns about
+    it.
+
+  `Paths::themes_dir()` resolves the folder, so a portable folder carries
+  its themes.
 
 ### Stored settings
 
@@ -293,8 +347,10 @@ improve_readability = false
 
 A missing table means the defaults. An unknown id, or a custom theme whose
 file is gone, falls back to the default for that slot; `validate` reports
-it as a warning, and the fix resets it. A wrong kind in a slot (a light
-theme in `dark`) is treated the same way. `check.rs` inspects the table and
+it as a warning. Like a bad `[view]` value, the warning has no fix: the
+app falls back on its own, and the next Appearance save writes a good
+value. A wrong kind in a slot (a light theme in `dark`) is treated the
+same way. `check.rs` inspects the table and
 `repair.rs` keeps its readable lines, as for `[view]`.
 
 ### Notices
@@ -314,11 +370,13 @@ The `PKGBUILD` already installs the file.
 0. **Palette groundwork.** `Preset`, the built-in table, and the resolve
    step, with Midnight and Daylight as the only reachable presets so the
    app looks the same apart from Midnight's danger fix. Audit the literal
-   colors against the allowlist, route stragglers through roles, and widen
-   the palette-iterating tests to every preset.
+   colors against the allowlist, route stragglers through roles, lower the
+   disabled accent label bar to 3:1, and widen the palette-iterating tests
+   to every preset.
 1. **Core storage.** `[appearance]` in `library.toml`: reading, the field
    setters, `check.rs`, and `repair.rs`. `Paths::themes_dir()` and custom
-   theme files: list, read, write, rename, delete. Tests for older files
+   theme files: id assignment, list, read, write, rename, delete, and the
+   `validate` warning for a file that doesn't parse. Tests for older files
    without the table, unknown keys, bad values, and repair.
 2. **Improve readability.** The transform and its tests, including the
    pinned output for Dracula and Catppuccin Latte.
@@ -338,21 +396,27 @@ Steps 1 and 2 can run in parallel after step 0; 3 can start any time.
 ## Testing and acceptance
 
 - Every wineo preset and Macchiato pass 4.5:1 for each text role on both
-  grounds; with Improve readability on, every preset does, custom ones
-  included in a generated sample.
+  grounds; with Improve readability on, every preset does, and so does
+  every custom theme in a generated sample where passing is possible.
+  Where it isn't, no role ends lower than it started.
 - The transform leaves a passing palette unchanged and is idempotent; its
   output for Dracula and Latte is pinned.
 - Hover, press, disabled, and focus stay distinct in every preset, with and
-  without readability.
+  without readability. Accent labels reach 4.5:1 active, hovered, and
+  pressed, and 3:1 disabled, in every preset.
 - Layout and poster tests that switch modes run in at least one light and
   one dark borrowed preset.
 - Core: a `library.toml` without `[appearance]` reads as the defaults;
   unknown keys and ids are tolerated; a broken file refuses writes and the
-  GUI reports it; repair keeps `[appearance]`; theme files round-trip, and
-  a broken one falls back to `based_on`.
+  GUI reports it; repair keeps `[appearance]`; a bad slot warns without a
+  fix. Theme files round-trip; ids get `-2` on a clash; rename keeps the
+  id; a bad color, `based_on`, or `kind` falls back
+  as described; a file that doesn't parse is skipped with a warning.
 - Settings: preview, Save, Revert, and Discard restore the right palette; a
-  `ThemeChanged` mid-preview uses the previewed lists; a refused
-  `library.toml` write keeps General's edits.
+  `ThemeChanged` mid-preview uses the previewed lists; Save writes in the
+  stated order, and a failure at each point (a theme file, a refused
+  `library.toml`, a delete) keeps what landed, keeps the rest as edits, and
+  never leaves `library.toml` pointing at a deleted file.
 - An acceptance checklist for a real window is added when the
   implementation lands.
 
