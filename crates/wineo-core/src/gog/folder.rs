@@ -55,6 +55,14 @@ pub struct FolderState {
     /// unknown, which keeps `validate --fix` from ever removing the file.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub device: Option<u64>,
+    /// The folder's statfs filesystem ID at the last commit, which unlike
+    /// `device` survives a reboot that renumbers a btrfs subvolume.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        with = "crate::files::fsid_bits"
+    )]
+    pub fsid: Option<u64>,
     /// Absent until a first install finishes.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub committed: Option<Committed>,
@@ -244,6 +252,13 @@ pub struct Attempted {
 }
 
 impl FolderState {
+    /// Records the filesystem `folder` is on now.
+    pub(crate) fn stamp_filesystem(&mut self, folder: &Path) -> io::Result<()> {
+        self.device = Some(fs::metadata(folder)?.dev());
+        self.fsid = crate::files::filesystem_id(folder)?;
+        Ok(())
+    }
+
     /// A state for a folder with nothing committed yet.
     pub fn new(folder: PathBuf, owner: Option<String>) -> Self {
         Self {
@@ -251,6 +266,7 @@ impl FolderState {
             owner,
             folder,
             device: None,
+            fsid: None,
             committed: None,
             journal: None,
         }
@@ -674,7 +690,7 @@ impl FolderLock {
             ..committed
         });
         state.journal = None;
-        state.device = Some(fs::metadata(&self.folder)?.dev());
+        state.stamp_filesystem(&self.folder)?;
         self.write(&state)?;
         Ok(state)
     }
@@ -1143,14 +1159,25 @@ fn configless_install(paths: &Paths, state: &FolderState) -> bool {
             .is_some_and(|owner| !paths.environment_config(owner).exists())
 }
 
-/// The device of `path`, None when it doesn't exist, or an error when that
-/// can't be told, like a permission problem.
-pub type DeviceOf<'a> = &'a dyn Fn(&Path) -> io::Result<Option<u64>>;
+/// Which filesystem a path is on: its device, and its statfs ID when the
+/// filesystem reports one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Filesystem {
+    pub device: u64,
+    pub fsid: Option<u64>,
+}
 
-/// The real device lookup.
-pub fn device_of(path: &Path) -> io::Result<Option<u64>> {
+/// The filesystem of `path`, None when it doesn't exist, or an error when
+/// that can't be told, like a permission problem.
+pub type DeviceOf<'a> = &'a dyn Fn(&Path) -> io::Result<Option<Filesystem>>;
+
+/// The real filesystem lookup.
+pub fn device_of(path: &Path) -> io::Result<Option<Filesystem>> {
     match fs::symlink_metadata(path) {
-        Ok(meta) => Ok(Some(meta.dev())),
+        Ok(meta) => Ok(Some(Filesystem {
+            device: meta.dev(),
+            fsid: crate::files::filesystem_id(path)?,
+        })),
         Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
         Err(error) => Err(error),
     }
@@ -1170,7 +1197,12 @@ pub fn surely_deleted(state: &FolderState, device_of: DeviceOf<'_>) -> bool {
     let mut current = state.folder.parent();
     while let Some(dir) = current {
         match device_of(dir) {
-            Ok(Some(device)) => return device == recorded,
+            Ok(Some(found)) => {
+                return match (state.fsid, found.fsid) {
+                    (Some(saved), Some(now)) => saved == now,
+                    _ => found.device == recorded,
+                };
+            }
             Ok(None) => current = dir.parent(),
             Err(_) => return false,
         }

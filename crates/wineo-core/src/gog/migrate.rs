@@ -13,7 +13,6 @@
 use std::collections::HashMap;
 use std::fs;
 use std::io;
-use std::os::unix::fs::MetadataExt;
 use std::path::{Component, Path, PathBuf};
 
 use anyhow::{Context, Result};
@@ -615,11 +614,9 @@ impl Migration {
     /// The state a first adoption writes.
     fn adopted(&self, owner: &str) -> Result<FolderState> {
         let mut state = FolderState::new(self.folder.clone(), Some(owner.to_owned()));
-        state.device = Some(
-            fs::metadata(&self.folder)
-                .with_context(|| format!("failed to inspect {}", self.folder.display()))?
-                .dev(),
-        );
+        state
+            .stamp_filesystem(&self.folder)
+            .with_context(|| format!("failed to inspect {}", self.folder.display()))?;
         state.committed = Some(self.committed.clone());
         Ok(state)
     }

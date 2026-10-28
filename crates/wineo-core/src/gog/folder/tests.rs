@@ -13,6 +13,7 @@ fn full_state(folder: &Path) -> FolderState {
         owner: Some("rimworld".to_owned()),
         folder: folder.to_owned(),
         device: Some(42),
+        fsid: None,
         committed: Some(Committed {
             source: None,
             gog_id: 1094900565,
@@ -602,12 +603,45 @@ fn forget_keeps_refusing_an_install_whose_config_exists() {
 }
 
 /// A fake filesystem: each listed path exists on its device.
-fn devices(map: &[(&Path, u64)]) -> impl Fn(&Path) -> io::Result<Option<u64>> + use<> {
-    let map: HashMap<PathBuf, u64> = map
+fn devices(map: &[(&Path, u64)]) -> impl Fn(&Path) -> io::Result<Option<Filesystem>> + use<> {
+    filesystems(
+        &map.iter()
+            .map(|&(path, device)| (path, device, None))
+            .collect::<Vec<_>>(),
+    )
+}
+
+/// `devices` with a statfs ID per path.
+fn filesystems(
+    map: &[(&Path, u64, Option<u64>)],
+) -> impl Fn(&Path) -> io::Result<Option<Filesystem>> + use<> {
+    let map: HashMap<PathBuf, Filesystem> = map
         .iter()
-        .map(|(path, device)| (path.to_path_buf(), *device))
+        .map(|&(path, device, fsid)| (path.to_path_buf(), Filesystem { device, fsid }))
         .collect();
     move |path| Ok(map.get(path).copied())
+}
+
+#[test]
+fn a_reboot_that_renumbers_the_device_still_counts_as_the_same_drive() {
+    let folder = Path::new("/mnt/games/rimworld");
+    let mut state = game(folder, None, 1);
+    state.device = Some(7);
+    state.fsid = Some(70);
+    let renumbered = filesystems(&[
+        (Path::new("/"), 1, Some(10)),
+        (Path::new("/mnt/games"), 9, Some(70)),
+    ]);
+    assert!(surely_deleted(&state, &renumbered));
+    // Another filesystem, such as a snapshot, on the same device number.
+    let other = filesystems(&[
+        (Path::new("/"), 1, Some(10)),
+        (Path::new("/mnt/games"), 7, Some(71)),
+    ]);
+    assert!(!surely_deleted(&state, &other));
+    // A record from before statfs IDs were kept still needs the device.
+    state.fsid = None;
+    assert!(!surely_deleted(&state, &renumbered));
 }
 
 #[test]
@@ -826,7 +860,10 @@ fn a_folder_that_cant_be_looked_at_is_never_surely_deleted() {
         if path == Path::new("/mnt/games") {
             Err(io::Error::from(io::ErrorKind::PermissionDenied))
         } else if path == Path::new("/") {
-            Ok(Some(7))
+            Ok(Some(Filesystem {
+                device: 7,
+                fsid: None,
+            }))
         } else {
             Ok(None)
         }

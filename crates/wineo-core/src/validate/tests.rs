@@ -1608,7 +1608,11 @@ mod gog {
             .iter()
             .map(|(path, device)| (path.to_path_buf(), *device))
             .collect();
-        let device_of = move |path: &Path| Ok(map.get(path).copied());
+        let device_of = move |path: &Path| {
+            Ok(map
+                .get(path)
+                .map(|&device| crate::gog::folder::Filesystem { device, fsid: None }))
+        };
         let names = environment::names(&f.paths).unwrap();
         let mut report = Report::default();
         check_gog(

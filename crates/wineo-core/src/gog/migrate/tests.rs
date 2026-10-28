@@ -1,6 +1,7 @@
 use crate::test_script::write_script;
 use std::collections::BTreeMap;
 use std::ffi::OsString;
+use std::os::unix::fs::MetadataExt;
 use std::sync::{Arc, Barrier};
 
 use tempfile::TempDir;
@@ -398,6 +399,7 @@ fn native_rimworld_attaches_to_the_environment_running_start_sh() {
     assert_eq!(state.owner.as_deref(), Some("rimworld"));
     assert_eq!(state.folder, folder::canonical(&folder).unwrap());
     assert_eq!(state.device, Some(fs::metadata(&folder).unwrap().dev()));
+    assert_eq!(state.fsid, crate::files::filesystem_id(&folder).unwrap());
     assert!(state.journal.is_none());
     let committed = state.committed.unwrap();
     assert_eq!(committed.gog_id, 1094900565);

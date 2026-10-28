@@ -1188,11 +1188,9 @@ fn run(
         None => {
             folder::create_dir_durable(folder)?;
             let mut state = FolderState::new(folder.to_owned(), Some(name.to_owned()));
-            state.device = Some(
-                std::fs::metadata(folder)
-                    .with_context(|| format!("failed to inspect {}", folder.display()))?
-                    .dev(),
-            );
+            state
+                .stamp_filesystem(folder)
+                .with_context(|| format!("failed to inspect {}", folder.display()))?;
             state.journal = Some(Journal {
                 operation: operation_id(),
                 kind: JournalKind::Install,

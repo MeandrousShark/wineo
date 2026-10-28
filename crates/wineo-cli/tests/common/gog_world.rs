@@ -390,6 +390,7 @@ done
         .collect();
         let state = FolderState {
             device: Some(fs::metadata(folder).unwrap().dev()),
+            fsid: None,
             committed: Some(Committed {
                 source: None,
                 gog_id,
