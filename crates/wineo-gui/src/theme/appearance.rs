@@ -29,15 +29,15 @@ impl Default for Appearance {
 
 /// The palette for `appearance` under the system `mode`.
 pub(crate) fn resolve(appearance: &Appearance, mode: iced::theme::Mode) -> Palette {
-    // Improve readability applies to this palette.
-    if !appearance.follow_system {
-        return pick(&appearance.theme, None, DEFAULT_DARK);
-    }
-    if mode == iced::theme::Mode::Light {
+    let palette = if !appearance.follow_system {
+        pick(&appearance.theme, None, DEFAULT_DARK)
+    } else if mode == iced::theme::Mode::Light {
         pick(&appearance.light, Some(PresetKind::Light), DEFAULT_LIGHT)
     } else {
         pick(&appearance.dark, Some(PresetKind::Dark), DEFAULT_DARK)
-    }
+    };
+    // Improve readability applies to `palette` here.
+    palette
 }
 
 /// The preset `id` names, or `fallback` when it is unknown or not of `kind`.
