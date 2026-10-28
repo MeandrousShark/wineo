@@ -128,6 +128,44 @@ fn a_parseable_but_invalid_manifest_blocks_the_paths_it_records() {
 }
 
 #[test]
+fn a_name_its_paths_contradict_blocks_every_environment() {
+    let f = Fixture::new();
+    f.native("game");
+    f.native("other");
+    let entry = remove(&f.paths, "game", false).unwrap();
+    let file = f.dir(&entry).join(MANIFEST);
+    let text = fs::read_to_string(&file).unwrap();
+    let renamed: String = text
+        .lines()
+        .map(|line| {
+            if line.starts_with("name = ") {
+                "name = \"other\"\n".to_owned()
+            } else {
+                format!("{line}\n")
+            }
+        })
+        .collect();
+    assert_ne!(renamed, text);
+    fs::write(&file, renamed).unwrap();
+    f.native("game");
+
+    for name in ["game", "other"] {
+        let err = check_pending(&f.paths, name, &[]).unwrap_err().to_string();
+        assert!(
+            err.contains("its paths don't match its name `other`"),
+            "{err}"
+        );
+        assert!(err.contains("blocks every environment"), "{err}");
+    }
+    let found = &survey(&f.paths).unwrap().unreadable[0];
+    assert_eq!(found.blocks, None);
+    assert_eq!(
+        found.deletable,
+        Err("wineo can't tell which environment it belongs to".to_owned())
+    );
+}
+
+#[test]
 fn every_check_failure_has_its_own_reason() {
     let f = Fixture::new();
     f.native("game");

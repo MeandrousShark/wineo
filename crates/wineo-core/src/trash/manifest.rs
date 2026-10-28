@@ -122,6 +122,10 @@ pub(super) fn read_manifest(paths: &Paths, id: &str) -> Result<Manifest> {
         let reason = format!("invalid environment name `{}`", manifest.name);
         return Err(unverifiable(None, reason, Some(Box::new(manifest))).into());
     }
+    if !name_consistent(paths, &manifest) {
+        let reason = format!("its paths don't match its name `{}`", manifest.name);
+        return Err(unverifiable(None, reason, Some(Box::new(manifest))).into());
+    }
     match verify_manifest(paths, id, &dir, &manifest) {
         Ok(()) => Ok(manifest),
         Err(err) => Err(unverifiable(
@@ -149,6 +153,34 @@ fn parse_manifest(meta: &fs::Metadata, dir: &Path) -> Result<Manifest, String> {
     let text =
         fs::read_to_string(&file).map_err(|err| format!("{MANIFEST} can't be read: {err}"))?;
     toml::from_str(&text).map_err(|err| format!("{MANIFEST} can't be parsed: {}", err.message()))
+}
+
+/// Whether every payload starts out where its kind lives for the manifest's
+/// name. Only then is the name trusted to say whom a damaged entry blocks.
+fn name_consistent(paths: &Paths, manifest: &Manifest) -> bool {
+    let name = &manifest.name;
+    let prefix = manifest
+        .prefix_reference
+        .as_deref()
+        .and_then(|reference| resolved(paths, reference).ok());
+    manifest
+        .payloads
+        .iter()
+        .any(|payload| payload.kind == Kind::Config)
+        && manifest.payloads.iter().all(|payload| {
+            let expected = match payload.kind {
+                Kind::Config => Some(paths.environment_config(name)),
+                Kind::Art => Some(paths.art_dir(name)),
+                Kind::Stats => Some(paths.stats_log(name)),
+                Kind::Prefix => prefix.clone(),
+                Kind::Snapshots => prefix
+                    .as_ref()
+                    .map(|prefix| paths.snapshot_root(prefix, name)),
+            };
+            expected.is_some_and(|expected| {
+                resolved(paths, &payload.original).is_ok_and(|original| original == expected)
+            })
+        })
 }
 
 /// Everything a parsed manifest must satisfy. Errors are short reasons; the

@@ -82,7 +82,7 @@ fn deletable(paths: &Paths, found: &Unverifiable) -> Result<(), String> {
         return Err("its manifest can't be parsed".into());
     };
     if found.blocks.is_none() {
-        return Err("its environment name is invalid".into());
+        return Err("wineo can't tell which environment it belongs to".into());
     }
     match fs::symlink_metadata(&found.dir) {
         Ok(meta) if meta.file_type().is_dir() => {}

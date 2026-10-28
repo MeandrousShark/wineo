@@ -310,3 +310,41 @@ fn prune_deletes_an_unreadable_entry_by_id_and_validate_fix_does_not() {
     assert!(!manifest_path(&f, &bad).exists());
     assert_success(&f.run(&["validate"]));
 }
+
+#[test]
+fn a_renamed_manifest_blocks_every_environment() {
+    let f = Fixture::new();
+    let id = remove(&f, "game");
+    let path = manifest_path(&f, &id);
+    let text = fs::read_to_string(&path).unwrap();
+    let renamed: String = text
+        .lines()
+        .map(|line| {
+            if line.starts_with("name = ") {
+                "name = \"other\"\n".to_owned()
+            } else {
+                format!("{line}\n")
+            }
+        })
+        .collect();
+    fs::write(&path, renamed).unwrap();
+    native(&f, "game");
+    native(&f, "other");
+
+    for name in ["game", "other"] {
+        let blocked = f.run(&["config", name]);
+        assert!(!blocked.status.success(), "{name}");
+        let message = stderr(&blocked);
+        assert!(message.contains("blocks every environment"), "{message}");
+        assert!(
+            message.contains("don't match its name `other`"),
+            "{message}"
+        );
+    }
+    let row = stdout(&f.run(&["trash"]))
+        .lines()
+        .find(|line| line.contains(&id))
+        .unwrap()
+        .to_owned();
+    assert!(row.contains("every environment"), "{row}");
+}

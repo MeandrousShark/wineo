@@ -52,9 +52,10 @@ pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
                 })
                 .collect();
             rows.extend(survey.unreadable.into_iter().map(|entry| {
+                let scope = format!("blocks {}", entry.scope());
                 [
                     entry.id,
-                    entry.blocks.clone().unwrap_or_else(|| "-".to_owned()),
+                    scope,
                     "unreadable".to_owned(),
                     format!("{}; see `wineo validate`", entry.reason),
                 ]
