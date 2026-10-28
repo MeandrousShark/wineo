@@ -4,6 +4,33 @@ A finished plan bumps the minor version and fixes between plans bump the
 patch version. A plan released in parts bumps the minor version for each
 part. See `AGENTS.md` for the rule.
 
+## 0.38.1 - 2026-10-27
+
+Fixes for a reboot that made wineo distrust its own trash, and a small touch
+to hidden cards.
+
+- Behavior changes:
+  - A trash entry wineo can't verify no longer stops every environment from
+    loading. It blocks only its own environment when its manifest still
+    reads and its paths match its name, and every environment otherwise.
+    `wineo validate`, Checkup, the blocked card's panel, and a banner above
+    the grid say what it blocks and why.
+  - `wineo trash` lists unreadable entries instead of failing, and
+    `wineo prune ID` can delete one, after its confirmation, when everything
+    it kept is inside its trash folder. The app's Trash page and Checkup
+    offer the same **Delete this entry**. `validate --fix`, `--older-than`,
+    and `--all` never delete them.
+  - A hidden card's eye moved to the poster's bottom-left corner, so the
+    star has the top-right to itself. In poster-only, the title leaves room
+    for it.
+- Trash entries, snapshot restore recovery, and GOG folder records survive a
+  reboot that renumbers a btrfs subvolume's device. wineo now tells
+  filesystems apart by their statfs ID, which also keeps a btrfs snapshot
+  from passing for the original. Records written before this keep the old
+  checks.
+- Identity checks read every field through one file handle, so a path
+  swapped partway through a check can't mix two objects.
+
 ## 0.38.0 - 2026-10-26
 
 Small touches to the desktop app, from
