@@ -459,8 +459,27 @@ Steps 1 and 2 can run in parallel after step 0; 3 can start any time.
   showing, so nothing changes on screen; swatches show the colors you'd
   get, with Improve readability applied when it's on; and an outside
   change under unsaved Appearance edits says "library.toml changed on
-  disk." (or "A theme file changed on disk." for a theme file) instead of
-  "The config file changed on disk."
+  disk" (or "A theme file changed on disk" for a theme file) instead of
+  "The config file changed on disk"
+- **Unsaved edits survive a partial save by a three-way merge.** When a
+  save lands only partly, the page rebuilds its draft against what's now on
+  disk field by field: a theme's name, kind, `based_on`, and colors, and
+  the five `[appearance]` fields, keep the draft's value only where the
+  draft changed it, and otherwise take the file's. A theme with pending
+  edits that vanished or turned read-only meanwhile hands them to a new
+  pending theme, named as before when that's free and "copy" otherwise,
+  and the slots that used it follow. A pending delete of a theme already
+  gone is dropped.
+- **Limit: hand edits during a save.** Review kept finding narrower cases
+  of one class: a theme file hand-edited in the moment between a save that
+  failed partway and its reload. After two rounds the rule above covers
+  them, and further cases of that class are rated Low unless they lose an
+  edit or write a file the user didn't ask for.
+- **Status lines have no trailing period,** like the existing "The config
+  file changed on disk": "library.toml changed on disk" and "A theme file
+  changed on disk".
+- **Copy works on custom themes too,** keeping the source's `based_on`. A
+  theme a newer wineo made offers only Copy.
 - **Preset descriptions** (approved by the maintainer, 2026-10-28):
 
   | Preset | Description |
@@ -473,6 +492,57 @@ Steps 1 and 2 can run in parallel after step 0; 3 can start any time.
   | Dracula | The Dracula palette. |
   | Catppuccin Macchiato | Catppuccin's Macchiato flavor. |
   | Catppuccin Latte | Catppuccin's Latte flavor. |
+
+## Acceptance checklist
+
+Setup, from the repo: `scripts/generate-bench-library.sh ~/wineo-accept 40`,
+then `cargo build --release -p wineo-gui -p wineo-cli`, and run the app on it with
+`bash -c '. ~/wineo-accept/env.sh && exec target/release/wineo-gui'`. That
+keeps your own `library.toml` and themes untouched. Delete `~/wineo-accept`
+when done.
+
+1. **Nothing changes by default.** Open the app: it looks as it did, apart
+   from Midnight's danger red, a touch lighter (a Remove button, an error).
+   Switch the desktop between light and dark: the app follows, Midnight and
+   Daylight.
+2. **Tabs.** Open **Settings** in the sidebar: General and Appearance sit
+   under the title, General selected, everything on it as before. Tab
+   reaches the tabs first; Left and Right switch. Scroll General down,
+   visit Appearance, come back: General is where you left it. Make a
+   General edit, switch to Appearance: the bar still counts it.
+3. **Live preview.** On Appearance, click Cellar in the Dark theme list:
+   the whole app repaints at once, the bar counts an edit. Click a few
+   more. **Revert**: back to Midnight. Pick Dracula, leave Settings, and
+   choose **Discard**: back to Midnight.
+4. **Save.** Pick Cellar for dark and Cellar Light for light, plus a
+   General edit, and **Save**. Both stick after a restart. Flip the
+   desktop's mode: the app follows between the two Cellars.
+5. **Follow the system off.** Turn it off: the look doesn't change, and one
+   Theme list shows every theme marked Dark or Light. Flip the desktop's
+   mode: the app stays put. Turn it back on.
+6. **Improve readability.** Pick Catppuccin Latte, turn on Improve
+   readability: the green and yellow text darken, the swatch with them.
+   Pick Dracula: the muted text lightens. Pick Midnight: nothing changes.
+7. **Copy and edit.** With Cellar showing, **Copy to a custom theme**:
+   "Cellar copy" appears, selected, looking the same. Type a primary of
+   `#40a0ff`: the app repaints. Type `40a0ff`: "Invalid color: use
+   #rrggbb.", and the swatch keeps the last good one. **Rename** it to
+   "Mine", **Save**, restart: it's still selected, and
+   `~/wineo-accept/.config/wineo/themes/cellar-copy.toml` holds the colors and the
+   new name.
+8. **Rename clash and delete.** Copy Cellar again and rename it "mine":
+   "Name taken." Delete Mine with it in use, confirm, **Save**: the app
+   goes back to Midnight, and the file is gone.
+9. **A broken theme file.** Write junk into a theme file and point
+   `[appearance] dark` at it: the app shows Midnight, the list leaves the
+   file out, and `. ~/wineo-accept/env.sh && target/release/wineo validate`
+   warns about both.
+10. **A refused save.** Break `library.toml` (an unclosed `[`), pick a
+    theme and **Save**: General's edits save, the bar says the appearance
+    couldn't, and offers **Open Checkup**; the preview stays. Repair it
+    there, come back, **Save** again.
+11. **Locked while saving.** Start a slow General save (installing DXVK)
+    and look at Appearance: the rows look disabled until it finishes.
 
 ## Scope limits
 

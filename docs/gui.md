@@ -828,6 +828,45 @@ section works in a portable folder too. **Games folder** (with
 and in what language games install; they save with the Save bar, and a
 portable folder leaves them alone.
 
+### Appearance
+
+The **Appearance** tab picks the app's colors (plan
+[0057](plans/0057-gui-themes.md)). Picking a theme repaints the app right
+away, so you can try a few before you **Save**; **Revert**, or leaving and
+choosing **Discard**, puts back what was saved. Theme edits count in the
+same bar as General's, and one **Save** writes both.
+
+- **Follow the system**, on by default, switches with the desktop's light
+  or dark mode. It shows a **Dark theme** list and a **Light theme** list,
+  and the app uses whichever matches. Turned off, one **Theme** list holds
+  every theme, each marked Dark or Light, and the app keeps it whatever the
+  desktop does. Turning it off starts that list on the theme showing, so
+  nothing changes on screen.
+- The built-in themes are Midnight and Daylight (the defaults), Cellar and
+  Cellar Light, High contrast, Dracula, and Catppuccin Macchiato and Latte.
+  Each row shows a swatch, the name, and a line about it.
+- **Colors** shows the nine colors of the theme showing. Built-in themes
+  are read-only; **Copy to a custom theme** makes an editable copy, named
+  "<Name> copy", and picks it in place of the original. A custom theme has
+  a hex field per color ("Invalid color: use #rrggbb." for a bad one, which
+  isn't applied), and **Rename** and **Delete** beside its name. Deleting a
+  theme that's in use goes back to Midnight or Daylight. A theme a newer
+  wineo made is read-only, but you can still copy it.
+- **Improve readability**, off by default, raises the contrast of text
+  colors that need it, in any theme. Dracula's muted text and several of
+  Catppuccin Latte's colors change; the wineo themes and Macchiato already
+  pass. Swatches show the colors you'll get.
+
+Copies, renames, color edits, and deletes all wait for **Save**, which
+writes the theme files first, then `library.toml`, then removes deleted
+themes. Custom themes live in
+[`themes/`](config-files.md#custom-themes) as plain TOML files you can
+share. If a save can't write `library.toml` because it's damaged, the bar
+offers **Open Checkup**; one from a newer wineo says to update instead.
+The edits that didn't land stay, so you can save again after fixing it. If
+`library.toml` or a theme file changes on disk while you have Appearance
+edits, the bar says which, and **Reload** takes what's on disk.
+
 ## Keyboard
 
 | Key | Does |
