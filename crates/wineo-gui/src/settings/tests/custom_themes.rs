@@ -202,6 +202,21 @@ fn custom_themes_join_the_lists_after_the_built_ins_and_paint_at_startup() {
         "kinds stay apart"
     );
     assert!(!ids.iter().flatten().any(|found| found.contains("broken")));
+    // Up and Down walk onto the custom rows like the built-in ones.
+    let dark: Vec<String> = [
+        "midnight",
+        "cellar",
+        "high-contrast",
+        "dracula",
+        "catppuccin-macchiato",
+        "custom:night",
+    ]
+    .iter()
+    .map(|theme| Slot::Dark.row_id(theme))
+    .collect();
+    let mut laid = lay_out(page_of(&app).view(&paths, Palette::DARK), SIZE);
+    crate::focus_button::walk_rows(&mut laid, &dark);
+    drop(laid);
     let choices = appearance::choices(&form(&app).themes);
     let custom: Vec<_> = choices[PRESETS.len()..]
         .iter()
