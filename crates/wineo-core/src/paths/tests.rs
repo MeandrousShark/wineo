@@ -236,6 +236,10 @@ fn portable_layout_keeps_host_data_and_runtime_on_the_host() {
         Path::new("/mnt/usb/wineo/config/templates")
     );
     assert_eq!(
+        paths.themes_dir(),
+        Path::new("/mnt/usb/wineo/config/themes")
+    );
+    assert_eq!(
         paths.default_prefix_root(),
         Path::new("/mnt/usb/wineo/prefixes")
     );

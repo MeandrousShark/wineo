@@ -120,6 +120,11 @@ impl Paths {
         self.config.join("templates")
     }
 
+    /// Custom GUI themes, one file each, beside the other config.
+    pub fn themes_dir(&self) -> PathBuf {
+        self.config.join("themes")
+    }
+
     pub fn environment_config(&self, name: &str) -> PathBuf {
         self.environments_dir().join(format!("{name}.toml"))
     }

@@ -85,6 +85,32 @@ impl Default for View {
     }
 }
 
+/// How the desktop app is themed. Core only stores the ids; the app owns the
+/// palettes, and an id it can't use falls back there.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Appearance {
+    pub follow_system: bool,
+    /// Used while following the system and it's dark.
+    pub dark: String,
+    /// Used while following the system and it's light.
+    pub light: String,
+    /// Used when `follow_system` is off.
+    pub theme: String,
+    pub improve_readability: bool,
+}
+
+impl Default for Appearance {
+    fn default() -> Self {
+        Self {
+            follow_system: true,
+            dark: "midnight".to_owned(),
+            light: "daylight".to_owned(),
+            theme: "midnight".to_owned(),
+            improve_readability: false,
+        }
+    }
+}
+
 /// A saved zoom, or None for a value that isn't an integer in range.
 fn read_zoom(item: &Item) -> Option<u16> {
     item.as_integer()
@@ -130,6 +156,7 @@ pub(crate) fn unreadable_message(line: Option<usize>, reason: &str) -> String {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Library {
     pub view: View,
+    pub appearance: Appearance,
     pub environments: BTreeMap<String, Entry>,
     pub problem: Option<Problem>,
 }
@@ -319,6 +346,31 @@ pub fn set_poster_only(paths: &Paths, poster_only: bool) -> Result<bool> {
     })
 }
 
+/// Writes only the fields that differ from what the file reads as, so an
+/// unchanged `Appearance` never rewrites it.
+pub fn set_appearance(paths: &Paths, appearance: &Appearance) -> Result<bool> {
+    edit(paths, |document| {
+        let default = Appearance::default();
+        let mut changed = false;
+        changed |= set_appearance_bool(
+            document,
+            "follow_system",
+            appearance.follow_system,
+            default.follow_system,
+        );
+        changed |= set_appearance_text(document, "dark", &appearance.dark, &default.dark);
+        changed |= set_appearance_text(document, "light", &appearance.light, &default.light);
+        changed |= set_appearance_text(document, "theme", &appearance.theme, &default.theme);
+        changed |= set_appearance_bool(
+            document,
+            "improve_readability",
+            appearance.improve_readability,
+            default.improve_readability,
+        );
+        changed
+    })
+}
+
 pub fn stamp_added(paths: &Paths, name: &str) -> Result<bool> {
     set_added(paths, name, Timestamp::now())
 }
@@ -492,8 +544,31 @@ fn read_library(document: &DocumentMut) -> Library {
         .unwrap_or_default();
     Library {
         view,
+        appearance: read_appearance(document),
         environments,
         problem: None,
+    }
+}
+
+fn read_appearance(document: &DocumentMut) -> Appearance {
+    let default = Appearance::default();
+    let Some(table) = document.get("appearance").and_then(Item::as_table_like) else {
+        return default;
+    };
+    let text = |field: &str, default: String| {
+        table
+            .get(field)
+            .and_then(Item::as_str)
+            .map_or(default, str::to_owned)
+    };
+    let flag =
+        |field: &str, default: bool| table.get(field).and_then(Item::as_bool).unwrap_or(default);
+    Appearance {
+        follow_system: flag("follow_system", default.follow_system),
+        dark: text("dark", default.dark),
+        light: text("light", default.light),
+        theme: text("theme", default.theme),
+        improve_readability: flag("improve_readability", default.improve_readability),
     }
 }
 
@@ -598,6 +673,48 @@ fn set_view_zoom(document: &mut DocumentMut, zoom: u16) -> bool {
     true
 }
 
+fn set_appearance_bool(
+    document: &mut DocumentMut,
+    field: &str,
+    value: bool,
+    default: bool,
+) -> bool {
+    let current = document
+        .get("appearance")
+        .and_then(Item::as_table_like)
+        .and_then(|table| table.get(field));
+    let matches = match current {
+        None => value == default,
+        Some(item) => item.as_bool() == Some(value),
+    };
+    if matches {
+        return false;
+    }
+    store_value(appearance_table_mut(document), field, Value::from(value));
+    true
+}
+
+fn set_appearance_text(
+    document: &mut DocumentMut,
+    field: &str,
+    value: &str,
+    default: &str,
+) -> bool {
+    let current = document
+        .get("appearance")
+        .and_then(Item::as_table_like)
+        .and_then(|table| table.get(field));
+    let matches = match current {
+        None => value == default,
+        Some(item) => item.as_str() == Some(value),
+    };
+    if matches {
+        return false;
+    }
+    store_value(appearance_table_mut(document), field, Value::from(value));
+    true
+}
+
 fn set_added(paths: &Paths, name: &str, added: Timestamp) -> Result<bool> {
     edit(paths, |document| {
         let current = document
@@ -671,6 +788,10 @@ fn view_table_mut(document: &mut DocumentMut) -> &mut dyn TableLike {
     table_mut(document.as_table_mut(), "view")
 }
 
+fn appearance_table_mut(document: &mut DocumentMut) -> &mut dyn TableLike {
+    table_mut(document.as_table_mut(), "appearance")
+}
+
 fn environments_table_mut(document: &mut DocumentMut) -> &mut dyn TableLike {
     table_mut(document.as_table_mut(), "environments")
 }
@@ -689,7 +810,7 @@ fn environment_table_mut<'a>(document: &'a mut DocumentMut, name: &str) -> &'a m
         .expect("environment entry was just made a table")
 }
 
-fn table_mut<'a>(parent: &'a mut Table, name: &str) -> &'a mut dyn TableLike {
+pub(crate) fn table_mut<'a>(parent: &'a mut Table, name: &str) -> &'a mut dyn TableLike {
     // Implicit, so a parent that only holds sub-tables writes no header of its own.
     let implicit = || {
         let mut table = Table::new();
@@ -704,7 +825,7 @@ fn table_mut<'a>(parent: &'a mut Table, name: &str) -> &'a mut dyn TableLike {
         .expect("table item was just made a table")
 }
 
-fn store_value(table: &mut dyn TableLike, field: &str, mut value: Value) {
+pub(crate) fn store_value(table: &mut dyn TableLike, field: &str, mut value: Value) {
     // Replacing in place keeps the key, and with it a comment line above it.
     if let Some(old) = table.get_mut(field).and_then(Item::as_value_mut) {
         *value.decor_mut() = old.decor().clone();

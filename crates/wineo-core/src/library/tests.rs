@@ -779,3 +779,158 @@ fn zoom_and_poster_only_edits_are_refused_on_a_broken_file() {
     assert!(set_poster_only(&fixture.paths, true).is_err());
     assert_eq!(fixture.read(), original);
 }
+
+fn custom_appearance() -> Appearance {
+    Appearance {
+        follow_system: false,
+        dark: "dracula".to_owned(),
+        light: "custom:mine".to_owned(),
+        theme: "cellar".to_owned(),
+        improve_readability: true,
+    }
+}
+
+#[test]
+fn a_library_without_appearance_reads_as_the_defaults() {
+    let fixture = Fixture::new();
+    assert_eq!(load(&fixture.paths).appearance, Appearance::default());
+    fixture.write("schema_version = 1\n[view]\nsort = \"added\"\n");
+    assert_eq!(load(&fixture.paths).appearance, Appearance::default());
+    assert_eq!(
+        Appearance::default(),
+        Appearance {
+            follow_system: true,
+            dark: "midnight".to_owned(),
+            light: "daylight".to_owned(),
+            theme: "midnight".to_owned(),
+            improve_readability: false,
+        }
+    );
+}
+
+#[test]
+fn appearance_reads_every_field_and_tolerates_unknown_keys() {
+    let fixture = Fixture::new();
+    fixture.write(
+        r#"schema_version = 1
+
+[appearance]
+follow_system = false
+dark = "dracula"
+light = "custom:mine"
+theme = "cellar"
+improve_readability = true
+future_key = "ignored"
+"#,
+    );
+    let library = load(&fixture.paths);
+    assert_eq!(library.appearance, custom_appearance());
+    assert_eq!(library.problem, None);
+}
+
+#[test]
+fn bad_appearance_values_fall_back_per_field() {
+    let fixture = Fixture::new();
+    fixture.write(
+        "schema_version = 1\n[appearance]\nfollow_system = \"yes\"\ndark = 3\nlight = \"cellar-light\"\ntheme = [\"x\"]\nimprove_readability = true\n",
+    );
+    assert_eq!(
+        load(&fixture.paths).appearance,
+        Appearance {
+            light: "cellar-light".to_owned(),
+            improve_readability: true,
+            ..Appearance::default()
+        }
+    );
+
+    // A table that isn't one reads as the defaults.
+    fixture.write("schema_version = 1\nappearance = 4\n");
+    assert_eq!(load(&fixture.paths).appearance, Appearance::default());
+}
+
+#[test]
+fn set_appearance_round_trips_and_keeps_comments_and_other_keys() {
+    let fixture = Fixture::new();
+    fixture.write(
+        "# mine\nschema_version = 1\nfuture_top = 1\n\n[view]\nzoom = 120\n\n[appearance]\n# which theme\ntheme = \"midnight\" # trailing\nfuture = \"kept\"\n",
+    );
+
+    assert!(set_appearance(&fixture.paths, &custom_appearance()).unwrap());
+    assert_eq!(load(&fixture.paths).appearance, custom_appearance());
+    let text = fixture.read();
+    assert!(
+        text.starts_with("# mine\nschema_version = 1\nfuture_top = 1\n"),
+        "{text}"
+    );
+    assert!(text.contains("zoom = 120"), "{text}");
+    assert!(
+        text.contains("# which theme\ntheme = \"cellar\" # trailing"),
+        "{text}"
+    );
+    assert!(text.contains("future = \"kept\""), "{text}");
+
+    // Back to the defaults writes them over the saved values.
+    assert!(set_appearance(&fixture.paths, &Appearance::default()).unwrap());
+    assert_eq!(load(&fixture.paths).appearance, Appearance::default());
+}
+
+#[test]
+fn set_appearance_writes_only_the_fields_that_changed() {
+    let fixture = Fixture::new();
+    let appearance = Appearance {
+        improve_readability: true,
+        ..Appearance::default()
+    };
+    assert!(set_appearance(&fixture.paths, &appearance).unwrap());
+    assert_eq!(
+        fixture.read(),
+        "schema_version = 1\n\n[appearance]\nimprove_readability = true\n"
+    );
+}
+
+#[test]
+fn a_no_op_set_appearance_does_not_rewrite_the_file() {
+    let fixture = Fixture::new();
+    fixture.write(
+        "# keep\nschema_version = 1\n\n[appearance]\ntheme   =   \"cellar\"\nfollow_system = true\n",
+    );
+    let path = fixture.paths.library_file();
+    let before = fs::metadata(&path).unwrap().ino();
+    let bytes = fs::read(&path).unwrap();
+
+    // Defaults for the fields the file leaves out count as already set.
+    let same = Appearance {
+        theme: "cellar".to_owned(),
+        ..Appearance::default()
+    };
+    assert!(!set_appearance(&fixture.paths, &same).unwrap());
+    assert_eq!(fs::read(&path).unwrap(), bytes);
+    assert_eq!(fs::metadata(&path).unwrap().ino(), before);
+
+    let missing = Fixture::new();
+    assert!(!set_appearance(&missing.paths, &Appearance::default()).unwrap());
+    assert!(!missing.paths.library_file().exists());
+}
+
+#[test]
+fn set_appearance_replaces_a_bad_value_even_with_the_default() {
+    let fixture = Fixture::new();
+    fixture.write("schema_version = 1\n[appearance]\nfollow_system = \"yes\"\ndark = 3\n");
+    assert!(set_appearance(&fixture.paths, &Appearance::default()).unwrap());
+    let text = fixture.read();
+    assert!(text.contains("follow_system = true"), "{text}");
+    assert!(text.contains("dark = \"midnight\""), "{text}");
+}
+
+#[test]
+fn set_appearance_is_refused_on_a_broken_or_newer_file() {
+    let fixture = Fixture::new();
+    for original in [
+        "schema_version = 1\n[appearance]\nthis is broken\n",
+        "schema_version = 2\n[appearance]\ntheme = \"cellar\"\n",
+    ] {
+        fixture.write(original);
+        assert!(set_appearance(&fixture.paths, &custom_appearance()).is_err());
+        assert_eq!(fixture.read(), original);
+    }
+}

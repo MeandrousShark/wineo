@@ -59,6 +59,7 @@ pub mod supervisor;
 pub mod target_path;
 pub mod targets;
 pub mod templates;
+pub mod themes;
 // Shared with the other crates and the integration tests, which include the
 // same file.
 #[cfg(test)]

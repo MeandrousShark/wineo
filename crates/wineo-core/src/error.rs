@@ -106,6 +106,16 @@ pub enum Error {
     #[error("unsupported schema_version {found} in {}\n{NEWER_VERSION_HINT}", .path.display())]
     SchemaVersion { path: PathBuf, found: String },
 
+    /// Shown as is: the GUI puts it under the name field.
+    #[error("Name taken.")]
+    ThemeNameTaken,
+
+    #[error("There is no custom theme `{0}`.")]
+    UnknownTheme(String),
+
+    #[error("invalid theme id `{0}`")]
+    InvalidThemeId(String),
+
     /// A newer file has no repair to offer, so it gets its own refusal.
     #[error("{}", library_unreadable_message(*.newer_version))]
     LibraryUnreadable {
