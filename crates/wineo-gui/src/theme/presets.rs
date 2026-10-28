@@ -11,10 +11,8 @@ pub(crate) enum PresetKind {
 pub(crate) struct Preset {
     /// The spelling used in config.
     pub(crate) id: &'static str,
-    #[expect(dead_code, reason = "the Appearance tab lists it")]
     pub(crate) name: &'static str,
     pub(crate) kind: PresetKind,
-    #[expect(dead_code, reason = "the Appearance tab lists it")]
     pub(crate) description: &'static str,
     pub(crate) palette: Palette,
     /// Where the colors come from.

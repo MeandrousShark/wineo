@@ -8,10 +8,8 @@ mod readability_tests;
 #[cfg(test)]
 mod tests;
 
-pub(crate) use appearance::{Appearance, resolve};
-#[cfg(test)]
-pub(crate) use presets::PRESETS;
-pub(crate) use presets::{Preset, PresetKind};
+pub(crate) use appearance::{Appearance, resolve, shown};
+pub(crate) use presets::{PRESETS, Preset, PresetKind};
 
 const fn rgb(hex: u32) -> Color {
     Color::from_rgb8((hex >> 16) as u8, (hex >> 8) as u8, hex as u8)

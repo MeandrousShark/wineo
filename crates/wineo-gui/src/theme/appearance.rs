@@ -4,29 +4,9 @@ use super::{Palette, Preset, PresetKind};
 const DEFAULT_DARK: &str = "midnight";
 const DEFAULT_LIGHT: &str = "daylight";
 
-/// Which theme the app shows, as the user set it. Ids are strings so custom
-/// themes can join the built-in ones.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct Appearance {
-    pub(crate) follow_system: bool,
-    pub(crate) dark: String,
-    pub(crate) light: String,
-    /// Used when `follow_system` is off.
-    pub(crate) theme: String,
-    pub(crate) improve_readability: bool,
-}
-
-impl Default for Appearance {
-    fn default() -> Self {
-        Self {
-            follow_system: true,
-            dark: DEFAULT_DARK.into(),
-            light: DEFAULT_LIGHT.into(),
-            theme: DEFAULT_DARK.into(),
-            improve_readability: false,
-        }
-    }
-}
+/// Which theme the app shows, as the user set it. Core stores it in
+/// `library.toml`; ids are strings so custom themes can join the built-in ones.
+pub(crate) type Appearance = wineo_core::library::Appearance;
 
 /// The palette for `appearance` under the system `mode`.
 pub(crate) fn resolve(appearance: &Appearance, mode: iced::theme::Mode) -> Palette {
@@ -42,6 +22,17 @@ pub(crate) fn resolve(appearance: &Appearance, mode: iced::theme::Mode) -> Palet
     } else {
         preset.palette
     }
+}
+
+/// The built-in preset a slot shows for `id`, which is the default for the
+/// slot when `id` is unknown or not of `kind`, as `resolve` picks it.
+pub(crate) fn shown(id: &str, kind: Option<PresetKind>) -> &'static Preset {
+    let fallback = if kind == Some(PresetKind::Light) {
+        DEFAULT_LIGHT
+    } else {
+        DEFAULT_DARK
+    };
+    pick(id, kind, fallback)
 }
 
 /// The preset `id` names, or `fallback` when it is unknown or not of `kind`.

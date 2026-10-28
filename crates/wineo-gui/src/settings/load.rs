@@ -17,7 +17,7 @@ use wineo_core::install::Change;
 use wineo_core::paths::Paths;
 use wineo_core::runners::Runners;
 use wineo_core::settings::{self, Applied, CheckError, ConfigFile};
-use wineo_core::{art, prefix, programs, target_path, winpath};
+use wineo_core::{art, library, prefix, programs, target_path, winpath};
 
 use super::Event;
 use super::form::{Edits, Inherited, Values};
@@ -25,6 +25,7 @@ use super::global;
 use crate::Message;
 use crate::panel::PanelError;
 use crate::task;
+use crate::theme::Appearance;
 
 /// A runner the page offers. `proton` is `None` when it doesn't resolve, so
 /// the kind can't be checked until save.
@@ -81,6 +82,7 @@ pub(crate) enum Content {
 #[derive(Debug, Clone)]
 pub(crate) struct GlobalLoaded {
     pub(crate) values: global::Values,
+    pub(crate) appearance: Appearance,
     pub(crate) runners: Vec<RunnerChoice>,
 }
 
@@ -90,6 +92,10 @@ pub(crate) struct GlobalLoaded {
 pub(crate) struct Texts {
     pub(crate) environment: Option<String>,
     pub(crate) global: Option<String>,
+    /// `library.toml`'s `[appearance]` as read, on the global page. Only that
+    /// table counts, since favorites and the library's view write the file
+    /// too.
+    pub(crate) appearance: Option<Appearance>,
 }
 
 impl Texts {
@@ -97,12 +103,14 @@ impl Texts {
         Self {
             environment: read_text(&paths.environment_config(name)),
             global: read_text(&paths.global_config()),
+            appearance: None,
         }
     }
     pub(crate) fn read_global(paths: &Paths) -> Self {
         Self {
             environment: None,
             global: read_text(&paths.global_config()),
+            appearance: Some(library::load(paths).appearance),
         }
     }
 }
@@ -138,7 +146,11 @@ pub(crate) fn snapshot_global(paths: &Paths) -> Snapshot {
         Ok(config) => {
             let values = global::Values::from_config(&config, texts.global.as_deref());
             let (runners, _) = runner_choices(paths, &config, &config.defaults.runner);
-            Content::Global(Box::new(GlobalLoaded { values, runners }))
+            Content::Global(Box::new(GlobalLoaded {
+                values,
+                appearance: texts.appearance.clone().unwrap_or_default(),
+                runners,
+            }))
         }
         Err(error) => Content::Error(format!("{error:#}")),
     };
@@ -443,6 +455,8 @@ pub(crate) const KIND_MISMATCH: &str =
 pub(crate) struct Report {
     pub(crate) lines: Vec<String>,
     pub(crate) failed: Option<String>,
+    /// `failed` is `library.toml` refusing the write, which Checkup handles.
+    pub(crate) checkup: bool,
 }
 
 pub(crate) fn desktop_line(change: &wineo_core::desktop::Change) -> String {
@@ -499,6 +513,7 @@ pub(crate) fn report(name: &str, applied: Applied) -> Report {
         failed: applied
             .failed
             .map(|error| PanelError::from_error(&error).text),
+        checkup: false,
     }
 }
 
@@ -528,6 +543,34 @@ pub(crate) fn save_global(paths: &Paths, edits: &Edits) -> Result<Report, String
     settings::apply(paths, ConfigFile::Global, &pairs, &unset)
         .map(|applied| report("global settings", applied))
         .map_err(|error| PanelError::from_error(&error).text)
+}
+
+/// One Save on the global page: General's edits to `config.toml`, then the
+/// Appearance tab's to `library.toml`, each only when it has any. A failure
+/// stops the rest.
+pub(crate) fn save_global_page(
+    paths: &Paths,
+    edits: &Edits,
+    appearance: Option<&Appearance>,
+) -> Result<Report, String> {
+    let mut report = Report {
+        lines: Vec::new(),
+        failed: None,
+        checkup: false,
+    };
+    if !edits.is_empty() {
+        report = save_global(paths, edits)?;
+        if report.failed.is_some() {
+            return Ok(report);
+        }
+    }
+    if let Some(appearance) = appearance
+        && let Err(error) = library::set_appearance(paths, appearance)
+    {
+        report.failed = Some(crate::sort_control::error_text(paths, &error));
+        report.checkup = matches!(error, Error::LibraryUnreadable { .. });
+    }
+    Ok(report)
 }
 
 pub(crate) fn load_task(
@@ -586,12 +629,13 @@ pub(crate) fn save_task(
     name: String,
     global: bool,
     edits: Edits,
+    appearance: Option<Appearance>,
     generation: u64,
 ) -> Task<Message> {
     task::blocking_value(
         move || {
             if global {
-                save_global(&paths, &edits)
+                save_global_page(&paths, &edits, appearance.as_ref())
             } else {
                 save(&paths, &name, &edits)
             }

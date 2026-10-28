@@ -27,6 +27,7 @@ const CONTROL_WIDTH: f32 = 260.0;
 const PAGE_WIDTH: f32 = 760.0;
 pub(super) const SCROLL_ID: &str = "settings-scroll";
 const STEAM_KEY_ID: &str = "settings-steam-key";
+pub(super) const CHECKUP_ID: &str = "settings-open-checkup";
 
 fn send(event: Event) -> Message {
     Message::Settings(event)
@@ -97,8 +98,9 @@ impl Page {
             }
             View::Global(editor) => match self.tab {
                 tabs::Tab::General => global_view(editor, self, paths, self.locked(), palette),
-                // Step 4 fills this in.
-                tabs::Tab::Appearance => column![].into(),
+                tabs::Tab::Appearance => {
+                    super::appearance::tab(&editor.appearance, self.locked(), palette)
+                }
             },
         };
         let scroll = scrollable(
@@ -141,7 +143,25 @@ impl Page {
             bar = bar.push(text(note).size(13).color(palette.muted));
         }
         if let Some(error) = &self.error {
-            bar = bar.push(text(error).size(13).color(palette.danger));
+            let error = text(error).size(13).color(palette.danger);
+            bar = bar.push(if self.error_checkup {
+                let open = Message::Section(crate::sidebar::Section::Checkup);
+                crate::ends::ends(
+                    error.width(Fill),
+                    crate::focus_button::control(
+                        secondary_button("Open Checkup", palette)
+                            .on_press(open.clone())
+                            .into(),
+                        true,
+                        CHECKUP_ID,
+                        open,
+                    ),
+                    12.0,
+                    crate::ends::MIN_LEFT,
+                )
+            } else {
+                error.into()
+            });
         }
         if let Some(problem) = self.problem().filter(|_| self.is_dirty()) {
             bar = bar.push(text(problem).size(13).color(palette.danger));

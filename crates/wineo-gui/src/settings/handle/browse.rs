@@ -88,6 +88,7 @@ impl Page {
             Ok(None) => Step::none(),
             Err(error) => {
                 self.error = Some(error);
+                self.error_checkup = false;
                 Step::none()
             }
         }
@@ -133,6 +134,7 @@ impl Page {
             Ok(None) => Step::none(),
             Err(error) => {
                 self.error = Some(error);
+                self.error_checkup = false;
                 Step::none()
             }
         }

@@ -824,6 +824,7 @@ fn saved(page: &mut Page, paths: &Paths, lines: &[&str], failed: Option<&str>) {
     let report = Report {
         lines: lines.iter().map(|line| (*line).to_owned()).collect(),
         failed: failed.map(str::to_owned),
+        checkup: false,
     };
     let _ = page.update(paths, Event::Saved(1, Ok(report)));
 }
@@ -3656,3 +3657,5 @@ fn a_save_that_fell_back_to_default_settings_says_so() {
 }
 
 mod tabs;
+
+mod appearance_tab;

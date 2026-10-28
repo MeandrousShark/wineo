@@ -160,6 +160,13 @@ impl Page {
                 }
                 Step::none()
             }
+            Event::Appearance(edit) => {
+                self.edited();
+                if let View::Global(editor) = &mut self.view {
+                    editor.appearance.apply(edit);
+                }
+                Step::none()
+            }
             Event::BrowseGamesRoot => self.browse_games_root(paths),
             Event::PickedGamesRoot(generation, previous, result) => {
                 self.picked_games_root(paths, generation, previous, result)
@@ -317,6 +324,7 @@ impl Page {
             })),
             Event::Opened(result) => {
                 self.error = result.err();
+                self.error_checkup = false;
                 Step::none()
             }
             Event::Loaded(generation, snapshot) => self.loaded(paths, generation, snapshot),
@@ -350,6 +358,7 @@ impl Page {
                     | Event::GlobalArt(_)
                     | Event::GlobalArtKind(_, _)
                     | Event::GlobalExternalRunners(_)
+                    | Event::Appearance(_)
                     | Event::EnvKey(..)
                     | Event::EnvValue(..)
                     | Event::EnvRemove(_)
@@ -370,6 +379,7 @@ impl Page {
                     | Event::GlobalArt(_)
                     | Event::GlobalArtKind(_, _)
                     | Event::GlobalExternalRunners(_)
+                    | Event::Appearance(_)
             )
         {
             return true;
@@ -388,17 +398,32 @@ impl Page {
             View::Global(editor) => Some(&editor.form.draft),
             _ => None,
         };
+        let appearance_draft = self.appearance().map(|form| &form.draft);
         let edited_since = pending.mode == Mode::Replace
-            && (draft != pending.draft.as_ref() || global_draft != pending.global_draft.as_ref());
+            && (draft != pending.draft.as_ref()
+                || global_draft != pending.global_draft.as_ref()
+                || appearance_draft != pending.appearance_draft.as_ref());
         match (pending.mode, snapshot.content) {
             (Mode::Rebase, Content::Global(info)) if matches!(self.view, View::Global(_)) => {
+                // A rebase for `[appearance]` alone can find the global file
+                // changed too. That change is left for the next check, which
+                // still compares it with what General's edits are against.
+                let config_moved = !pending.after_save
+                    && self.disk.as_ref().map(|disk| &disk.global) != Some(&snapshot.texts.global);
                 let editor = match &mut self.view {
                     View::Global(editor) => editor,
                     _ => unreachable!("checked above"),
                 };
-                editor.form.rebase(info.values.clone());
-                editor.runners = info.runners;
-                self.disk = Some(snapshot.texts);
+                editor.appearance.rebase(info.appearance);
+                if config_moved {
+                    if let Some(disk) = &mut self.disk {
+                        disk.appearance = snapshot.texts.appearance;
+                    }
+                } else {
+                    editor.form.rebase(info.values.clone());
+                    editor.runners = info.runners;
+                    self.disk = Some(snapshot.texts);
+                }
             }
             (Mode::Rebase, Content::Form(info)) if self.editor().is_some() => {
                 let keep_base = self.changed_on_disk;
@@ -442,7 +467,8 @@ impl Page {
                         View::Form(Box::new(editor))
                     }
                     Content::Global(info) => {
-                        let mut editor = global::Editor::new(info.values, info.runners);
+                        let mut editor =
+                            global::Editor::new(info.values, info.appearance, info.runners);
                         if pending.mode == Mode::Replace
                             && let View::Global(previous) = &self.view
                         {

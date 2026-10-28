@@ -7,6 +7,7 @@ use wineo_core::config::{Arch, ArtFetch, GlobalConfig};
 use wineo_core::edit;
 use wineo_core::paths::Paths;
 
+use super::appearance;
 use super::form::{Edits, EnvRow, Switch, env_problem};
 use super::load::RunnerChoice;
 
@@ -354,14 +355,21 @@ impl Form {
 
 pub(crate) struct Editor {
     pub(crate) form: Form,
+    /// The Appearance tab, which saves to `library.toml` instead.
+    pub(crate) appearance: appearance::Form,
     pub(crate) runners: Vec<RunnerChoice>,
     pub(crate) new_env: EnvRow,
 }
 
 impl Editor {
-    pub(crate) fn new(values: Values, runners: Vec<RunnerChoice>) -> Self {
+    pub(crate) fn new(
+        values: Values,
+        appearance: crate::theme::Appearance,
+        runners: Vec<RunnerChoice>,
+    ) -> Self {
         Self {
             form: Form::new(values),
+            appearance: appearance::Form::new(appearance),
             runners,
             new_env: EnvRow::default(),
         }

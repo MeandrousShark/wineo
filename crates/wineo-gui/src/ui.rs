@@ -224,9 +224,7 @@ impl<'a, M: Clone + 'a> ListRow<'a, M> {
         }
     }
 
-    /// A row that can't be chosen right now takes no press and no focus. No
-    /// list disables a row yet.
-    #[cfg(test)]
+    /// A row that can't be chosen right now takes no press and no focus.
     pub(crate) fn enabled(mut self, enabled: bool) -> Self {
         self.enabled = enabled;
         self

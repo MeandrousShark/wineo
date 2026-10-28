@@ -122,7 +122,14 @@ pub(crate) type Early = ControlFlow<Task<Message>, Task<Message>>;
 pub(crate) struct App {
     paths: Paths,
     pub(crate) palette: Palette,
+    /// The saved appearance. The global Settings page's base replaces it
+    /// whenever that page reads `library.toml`.
     appearance: Appearance,
+    /// The last system light or dark mode the app saw.
+    system_mode: iced::theme::Mode,
+    /// What `palette` was resolved from, so it's resolved again only when
+    /// that changes.
+    palette_from: (Appearance, iced::theme::Mode),
     search: String,
     search_focused: bool,
     cards: Vec<Card>,
@@ -464,6 +471,8 @@ impl App {
             paths,
             palette: Palette::DARK,
             appearance: Appearance::default(),
+            system_mode: iced::theme::Mode::Dark,
+            palette_from: (Appearance::default(), iced::theme::Mode::Dark),
             search: String::new(),
             search_focused: false,
             cards: Vec::new(),
@@ -590,6 +599,10 @@ impl App {
         // Read once, here, so the first cards already show in the saved
         // order. A read takes no lock and never writes.
         let saved = wineo_core::library::load(&app.paths);
+        // Until the system mode arrives, the saved dark theme shows, as
+        // Midnight did before themes.
+        app.appearance = saved.appearance;
+        app.sync_palette();
         app.zoom = saved.view.zoom;
         app.poster_only = saved.view.poster_only;
         app.query = saved.view.into();
@@ -620,6 +633,26 @@ impl App {
     }
     fn theme(&self) -> Theme {
         self.palette.theme()
+    }
+
+    /// Resolves the palette from the Appearance tab's draft while the global
+    /// Settings page is open, which previews its edits, and from the saved
+    /// appearance otherwise.
+    fn sync_palette(&mut self) {
+        if let Some(form) = self.settings.as_ref().and_then(|page| page.appearance())
+            && self.appearance != form.loaded
+        {
+            self.appearance = form.loaded.clone();
+        }
+        let shown = self
+            .settings
+            .as_ref()
+            .and_then(|page| page.appearance())
+            .map_or(&self.appearance, |form| &form.draft);
+        if self.palette_from.0 != *shown || self.palette_from.1 != self.system_mode {
+            self.palette_from = (shown.clone(), self.system_mode);
+            self.palette = theme::resolve(shown, self.system_mode);
+        }
     }
 
     fn management_busy(&self) -> bool {
@@ -742,6 +775,9 @@ impl App {
         let poll_focus = self.toast_focus_may_have_changed(&message);
         let screen = self.screen_key();
         let task = self.update_message(message);
+        // One place for every path that changes the theme: an Appearance
+        // edit, a save, Revert, leaving Settings, or the system's mode.
+        self.sync_palette();
         // One place for every path that changes the hover or selection.
         self.sync_hover_fades();
         self.sync_star_pops();
@@ -1111,7 +1147,7 @@ impl App {
             }
             Message::Window(_) => Task::none(),
             Message::ThemeChanged(mode) => {
-                self.palette = theme::resolve(&self.appearance, mode);
+                self.system_mode = mode;
                 Task::none()
             }
             Message::PanelTick(generation, now) => {

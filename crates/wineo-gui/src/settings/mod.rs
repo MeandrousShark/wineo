@@ -1,5 +1,6 @@
 //! The settings page, which replaces the library while open.
 
+mod appearance;
 mod editor;
 mod form;
 mod global;
@@ -18,7 +19,7 @@ use wineo_core::components::Component;
 use wineo_core::config::{Arch, ArtFetch};
 use wineo_core::paths::Paths;
 
-use crate::{App, Message};
+use crate::{App, Message, theme};
 pub(crate) use editor::{Editor, NewTarget};
 use form::{Build, Choice, Field, List, Switch, Values};
 pub(crate) use load::desktop_line;
@@ -71,6 +72,8 @@ pub(crate) enum Event {
     GlobalArt(ArtFetch),
     GlobalArtKind(wineo_core::art::Kind, bool),
     GlobalExternalRunners(bool),
+    /// An edit on the Appearance tab, which the app previews at once.
+    Appearance(appearance::Edit),
     /// Opens a folder picker for the Games folder.
     BrowseGamesRoot,
     /// The page's generation, the field when the picker opened, and the pick.
@@ -255,6 +258,7 @@ impl Event {
                 | Event::GlobalArt(_)
                 | Event::GlobalArtKind(_, _)
                 | Event::GlobalExternalRunners(_)
+                | Event::Appearance(_)
                 | Event::Target(..)
                 | Event::ProgramPicked(_)
                 | Event::NewTargetName(_)
@@ -310,6 +314,7 @@ struct Pending {
     /// The draft when the load started, to tell edits made since.
     draft: Option<Values>,
     global_draft: Option<global::Values>,
+    appearance_draft: Option<theme::Appearance>,
     /// Follows a save, so the controls stay locked until it lands.
     after_save: bool,
 }
@@ -341,6 +346,9 @@ pub(crate) struct Page {
     /// What the last save did.
     pub(crate) notes: Vec<String>,
     pub(crate) error: Option<String>,
+    /// The error is `library.toml` refusing the write, so the bar offers
+    /// Open Checkup beside it.
+    pub(crate) error_checkup: bool,
     /// Bumped by every typed exe check, so only the latest one lands.
     resolve_sequence: u64,
     /// Bumped by every scan, so an earlier prefix's result cannot replace it.
@@ -447,6 +455,7 @@ impl Page {
             menu_open: false,
             notes: Vec::new(),
             error: None,
+            error_checkup: false,
             resolve_sequence: 0,
             scan_sequence: 0,
             steamgriddb_sequence: 0,
@@ -560,8 +569,15 @@ impl Page {
     pub(crate) fn is_dirty(&self) -> bool {
         match &self.view {
             View::Form(editor) => editor.form.is_dirty(),
-            View::Global(editor) => editor.form.is_dirty(),
+            View::Global(editor) => editor.form.is_dirty() || editor.appearance.is_dirty(),
             _ => false,
+        }
+    }
+    /// The Appearance tab's saved settings and draft, on a loaded global page.
+    pub(crate) fn appearance(&self) -> Option<&appearance::Form> {
+        match &self.view {
+            View::Global(editor) => Some(&editor.appearance),
+            _ => None,
         }
     }
     pub(crate) fn navigation_blocked(&self) -> bool {
@@ -570,7 +586,7 @@ impl Page {
     pub(crate) fn changes(&self) -> usize {
         match &self.view {
             View::Form(editor) => editor.form.changes(),
-            View::Global(editor) => editor.form.changes(),
+            View::Global(editor) => editor.form.changes() + editor.appearance.changes(),
             _ => 0,
         }
     }
@@ -637,6 +653,7 @@ impl Page {
                 View::Global(editor) => Some(editor.form.draft.clone()),
                 _ => None,
             },
+            appearance_draft: self.appearance().map(|form| form.draft.clone()),
             after_save,
         });
         load::load_task(
@@ -650,6 +667,7 @@ impl Page {
     fn edited(&mut self) {
         self.notes.clear();
         self.error = None;
+        self.error_checkup = false;
     }
     fn draft(&mut self) -> Option<&mut Values> {
         self.editor_mut().map(|editor| &mut editor.form.draft)

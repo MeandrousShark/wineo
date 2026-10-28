@@ -24,12 +24,12 @@ impl Page {
         if !self.can_save() {
             return Step::none();
         }
-        let edits = match &self.view {
-            View::Form(editor) => editor.form.edits(),
-            View::Global(editor) => editor.form.edits(),
+        let (edits, appearance) = match &self.view {
+            View::Form(editor) => (editor.form.edits(), None),
+            View::Global(editor) => (editor.form.edits(), editor.appearance.edits()),
             _ => return Step::none(),
         };
-        if edits.is_empty() {
+        if edits.is_empty() && appearance.is_none() {
             return Step::none();
         }
         self.saving = true;
@@ -41,6 +41,7 @@ impl Page {
             self.name.clone(),
             self.global,
             edits,
+            appearance,
             self.generation,
         ))
     }
@@ -70,6 +71,7 @@ impl Page {
         }
         if let View::Global(editor) = &mut self.view {
             editor.form.revert();
+            editor.appearance.revert();
             editor.new_env = EnvRow::default();
         }
         if self.changed_on_disk {
@@ -146,6 +148,15 @@ impl Page {
             self.changed_on_disk = false;
             return Step::none();
         }
+        // Only `[appearance]` changed. Like the global file under an
+        // environment page, it rebases, so General's edits stay; edits on
+        // the Appearance tab ask for Reload instead.
+        if self.global
+            && disk.global == texts.global
+            && !self.appearance().is_some_and(|form| form.is_dirty())
+        {
+            return Step::task(self.reload(paths, Mode::Rebase));
+        }
         if self.global || disk.environment != texts.environment {
             if self.is_dirty() {
                 self.changed_on_disk = true;
@@ -177,6 +188,7 @@ impl Page {
                     // keep the edits, which drops whatever did land.
                     Some(error) => {
                         self.error = Some(error);
+                        self.error_checkup = report.checkup;
                         Step::task(self.reload_after(paths, Mode::Rebase, true))
                     }
                     None => Step::task(self.reload_after(paths, Mode::AfterSave, true)),
@@ -184,6 +196,7 @@ impl Page {
             }
             Err(error) => {
                 self.error = Some(error);
+                self.error_checkup = false;
                 Step::none()
             }
         }
