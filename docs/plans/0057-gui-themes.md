@@ -435,6 +435,12 @@ Steps 1 and 2 can run in parallel after step 0; 3 can start any time.
 - **The hero's close button stays literal,** white on black, though it sits
   over a plain `surface` block when there's no hero image. Routing it would
   change today's look.
+- **Tabs sit in the page header,** between the title and the divider, so
+  they stay put while the tab's content scrolls. Each tab keeps its own
+  scroll position for as long as the page is open; reopening Settings
+  starts both at the top. Switching tabs is refused while the leave prompt
+  shows. Left and Right on the tabs come from a small widget in
+  `settings/tabs.rs`, since `focus_button::rows` only handles Up and Down.
 - **Preset descriptions** (approved by the maintainer, 2026-10-28):
 
   | Preset | Description |
