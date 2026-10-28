@@ -351,6 +351,7 @@ The codes are stable:
 | `trash` | `trash_interrupted`, `trash_invalid` |
 | `gog` | `gog_state_invalid`, `gog_state_missing`, `gog_folder_missing`, `gog_folder_taken`, `gog_mid_update`, `gog_owner_missing` |
 | `art` | `art_config_invalid`, `art_file_missing`, `art_target_unknown`, `art_duplicates`, `art_dir_stray` |
+| `library` | `library_invalid`, `library_field_invalid`, `library_key_unknown`, `library_entry_stray`, `theme_invalid` |
 
 A native target's working dir, gamemode, gamescope, and MangoHud problems use the `target` area.
 
