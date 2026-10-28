@@ -1,7 +1,6 @@
 use iced::theme::Mode;
 
 use super::*;
-use crate::ui::contrast;
 
 const WINEO_AND_MACCHIATO: [&str; 6] = [
     "midnight",

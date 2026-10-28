@@ -3,7 +3,7 @@ use std::borrow::Borrow;
 use iced::widget::{Button, Column, Container, Space, Text, button, container, scrollable, text};
 use iced::{Color, Element, Fill, Font, Theme, border, font};
 
-use crate::theme::Palette;
+use crate::theme::{Palette, luminance};
 
 pub(crate) const BUTTON_HEIGHT: f32 = 32.0;
 pub(crate) const CONTROL_RADIUS: f32 = 8.0;
@@ -315,24 +315,6 @@ pub(crate) fn accent_style(
     }
 }
 
-fn luminance(color: Color) -> f32 {
-    fn linear(value: f32) -> f32 {
-        if value <= 0.04045 {
-            value / 12.92
-        } else {
-            ((value + 0.055) / 1.055).powf(2.4)
-        }
-    }
-    0.2126 * linear(color.r) + 0.7152 * linear(color.g) + 0.0722 * linear(color.b)
-}
-
-/// The WCAG contrast ratio between two opaque colors.
-#[cfg(test)]
-pub(crate) fn contrast(a: Color, b: Color) -> f32 {
-    let (a, b) = (luminance(a), luminance(b));
-    (a.max(b) + 0.05) / (a.min(b) + 0.05)
-}
-
 pub(crate) fn accent_ink(background: Color) -> Color {
     if luminance(background) > 0.179 {
         Color::BLACK
@@ -398,12 +380,33 @@ pub(crate) fn separator<'a, M: 'a>(palette: Palette) -> Container<'a, M> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::theme::PRESETS;
+    use crate::theme::{Appearance, PRESETS, contrast, resolve};
+
+    /// Every preset as published and with Improve readability on, labeled.
+    fn every_palette() -> Vec<(String, Palette)> {
+        PRESETS
+            .iter()
+            .flat_map(|preset| {
+                let readable = resolve(
+                    &Appearance {
+                        follow_system: false,
+                        theme: preset.id.into(),
+                        improve_readability: true,
+                        ..Appearance::default()
+                    },
+                    iced::theme::Mode::Dark,
+                );
+                [
+                    (preset.id.to_owned(), preset.palette),
+                    (format!("{} (readable)", preset.id), readable),
+                ]
+            })
+            .collect()
+    }
 
     #[test]
     fn accent_labels_remain_readable_in_every_preset() {
-        for preset in PRESETS {
-            let palette = preset.palette;
+        for (id, palette) in every_palette() {
             for color in [palette.primary, palette.danger, palette.success] {
                 for status in ALL_STATUSES {
                     let style = accent_style(color, palette.foreground, status);
@@ -421,8 +424,7 @@ mod tests {
                     };
                     assert!(
                         contrast >= bar,
-                        "{} {status:?} accent label contrast: {contrast}",
-                        preset.id
+                        "{id} {status:?} accent label contrast: {contrast}"
                     );
                 }
             }
@@ -437,12 +439,11 @@ mod tests {
             };
             background
         };
-        for preset in PRESETS {
-            let palette = preset.palette;
+        for (id, palette) in every_palette() {
             for color in [palette.primary, palette.danger, palette.success] {
                 let backgrounds = ALL_STATUSES
                     .map(|status| solid(accent_style(color, palette.foreground, status)));
-                assert_pairwise_distinct(preset.id, "accent", &backgrounds);
+                assert_pairwise_distinct(&id, "accent", &backgrounds);
             }
             // A disabled secondary button keeps its fill and dims its label
             // instead, so it is told apart by text.
@@ -452,12 +453,11 @@ mod tests {
                 button::Status::Pressed,
             ]
             .map(|status| solid(secondary_style(palette, status)));
-            assert_pairwise_distinct(preset.id, "secondary", &backgrounds);
+            assert_pairwise_distinct(&id, "secondary", &backgrounds);
             assert_ne!(
                 secondary_style(palette, button::Status::Disabled).text_color,
                 secondary_style(palette, button::Status::Active).text_color,
-                "{} disabled secondary label",
-                preset.id
+                "{id} disabled secondary label"
             );
         }
     }

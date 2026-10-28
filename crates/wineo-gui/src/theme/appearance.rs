@@ -1,3 +1,4 @@
+use super::readability::improve;
 use super::{Palette, Preset, PresetKind};
 
 const DEFAULT_DARK: &str = "midnight";
@@ -29,22 +30,24 @@ impl Default for Appearance {
 
 /// The palette for `appearance` under the system `mode`.
 pub(crate) fn resolve(appearance: &Appearance, mode: iced::theme::Mode) -> Palette {
-    let palette = if !appearance.follow_system {
+    let preset = if !appearance.follow_system {
         pick(&appearance.theme, None, DEFAULT_DARK)
     } else if mode == iced::theme::Mode::Light {
         pick(&appearance.light, Some(PresetKind::Light), DEFAULT_LIGHT)
     } else {
         pick(&appearance.dark, Some(PresetKind::Dark), DEFAULT_DARK)
     };
-    // Improve readability applies to `palette` here.
-    palette
+    if appearance.improve_readability {
+        improve(preset.palette, preset.kind)
+    } else {
+        preset.palette
+    }
 }
 
 /// The preset `id` names, or `fallback` when it is unknown or not of `kind`.
-fn pick(id: &str, kind: Option<PresetKind>, fallback: &str) -> Palette {
-    let preset = Preset::find(id)
+fn pick(id: &str, kind: Option<PresetKind>, fallback: &str) -> &'static Preset {
+    Preset::find(id)
         .filter(|preset| kind.is_none_or(|kind| preset.kind == kind))
         .or_else(|| Preset::find(fallback))
-        .expect("the fallback ids are built-in presets");
-    preset.palette
+        .expect("the fallback ids are built-in presets")
 }

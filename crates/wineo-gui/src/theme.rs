@@ -2,6 +2,9 @@ use iced::{Color, Theme};
 
 mod appearance;
 mod presets;
+mod readability;
+#[cfg(test)]
+mod readability_tests;
 #[cfg(test)]
 mod tests;
 
@@ -12,6 +15,24 @@ pub(crate) use presets::{Preset, PresetKind};
 
 const fn rgb(hex: u32) -> Color {
     Color::from_rgb8((hex >> 16) as u8, (hex >> 8) as u8, hex as u8)
+}
+
+/// WCAG 2 relative luminance of an opaque color.
+pub(crate) fn luminance(color: Color) -> f32 {
+    fn linear(value: f32) -> f32 {
+        if value <= 0.04045 {
+            value / 12.92
+        } else {
+            ((value + 0.055) / 1.055).powf(2.4)
+        }
+    }
+    0.2126 * linear(color.r) + 0.7152 * linear(color.g) + 0.0722 * linear(color.b)
+}
+
+/// The WCAG contrast ratio between two opaque colors.
+pub(crate) fn contrast(a: Color, b: Color) -> f32 {
+    let (a, b) = (luminance(a), luminance(b));
+    (a.max(b) + 0.05) / (a.min(b) + 0.05)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
