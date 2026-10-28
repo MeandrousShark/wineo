@@ -254,8 +254,10 @@ pub struct Attempted {
 impl FolderState {
     /// Records the filesystem `folder` is on now.
     pub(crate) fn stamp_filesystem(&mut self, folder: &Path) -> io::Result<()> {
-        self.device = Some(fs::metadata(folder)?.dev());
-        self.fsid = crate::files::filesystem_id(folder)?;
+        let seen = crate::files::observe(folder)?
+            .ok_or_else(|| io::Error::from(io::ErrorKind::NotFound))?;
+        self.device = Some(seen.device);
+        self.fsid = seen.fsid;
         Ok(())
     }
 
@@ -1173,14 +1175,10 @@ pub type DeviceOf<'a> = &'a dyn Fn(&Path) -> io::Result<Option<Filesystem>>;
 
 /// The real filesystem lookup.
 pub fn device_of(path: &Path) -> io::Result<Option<Filesystem>> {
-    match fs::symlink_metadata(path) {
-        Ok(meta) => Ok(Some(Filesystem {
-            device: meta.dev(),
-            fsid: crate::files::filesystem_id(path)?,
-        })),
-        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
-        Err(error) => Err(error),
-    }
+    Ok(crate::files::observe(path)?.map(|seen| Filesystem {
+        device: seen.device,
+        fsid: seen.fsid,
+    }))
 }
 
 /// Whether a missing folder was really deleted: its nearest existing parent

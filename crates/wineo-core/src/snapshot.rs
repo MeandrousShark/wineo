@@ -941,26 +941,14 @@ fn with_config_build_locks<T>(
 }
 
 fn directory_identity(path: &Path) -> Result<DirectoryIdentity> {
-    use std::os::unix::fs::MetadataExt;
-
-    ensure_directory(path)?;
-    let metadata = fs::symlink_metadata(path)?;
-    let birth = match rustix::fs::statx(
-        rustix::fs::CWD,
-        path,
-        rustix::fs::AtFlags::SYMLINK_NOFOLLOW,
-        rustix::fs::StatxFlags::BTIME,
-    ) {
-        Ok(stat) => (stat.stx_mask & rustix::fs::StatxFlags::BTIME.bits() != 0)
-            .then_some((stat.stx_btime.tv_sec, stat.stx_btime.tv_nsec)),
-        Err(rustix::io::Errno::NOSYS) => None,
-        Err(err) => return Err(err.into()),
-    };
+    let seen = crate::files::observe(path)?
+        .filter(|seen| seen.kind == rustix::fs::FileType::Directory)
+        .ok_or_else(|| anyhow!("expected directory without symlink: {}", path.display()))?;
     Ok(DirectoryIdentity {
-        device: metadata.dev(),
-        inode: metadata.ino(),
-        birth,
-        fsid: crate::files::filesystem_id(path)?,
+        device: seen.device,
+        inode: seen.inode,
+        birth: seen.birth,
+        fsid: seen.fsid,
     })
 }
 

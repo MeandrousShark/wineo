@@ -1270,7 +1270,9 @@ fn btrfs_same_content_replacement_cannot_be_restored_or_pruned() {
     let Some(btrfs) = crate::runner::find_on_path("btrfs") else {
         return;
     };
-    for prune in [false, true] {
+    // A snapshot of the original shares its inodes and birth times, so only
+    // the filesystem ID tells it apart.
+    for (prune, snapshot) in [(false, false), (true, false), (false, true), (true, true)] {
         let root = tempfile::tempdir_in(env!("CARGO_MANIFEST_DIR")).unwrap();
         if rustix::fs::statfs(root.path()).unwrap().f_type as u32 != 0x9123_683e {
             return;
@@ -1352,20 +1354,39 @@ fn btrfs_same_content_replacement_cannot_be_restored_or_pruned() {
         let metadata = entry_dir(&paths, &entry.id).unwrap();
         let preserved = parent(&retained).unwrap().join("preserved-original");
         fs::rename(&retained, &preserved).unwrap();
-        assert!(
-            Command::new(&btrfs)
-                .args(["subvolume", "create"])
-                .arg(&retained)
-                .output()
-                .unwrap()
-                .status
-                .success()
-        );
-        fs::create_dir_all(retained.join("drive_c")).unwrap();
-        fs::write(retained.join("system.reg"), "WINE REGISTRY Version 2\n").unwrap();
-        fs::write(retained.join("drive_c/save"), "original").unwrap();
+        if snapshot {
+            assert!(
+                Command::new(&btrfs)
+                    .args(["subvolume", "snapshot"])
+                    .arg(&preserved)
+                    .arg(&retained)
+                    .output()
+                    .unwrap()
+                    .status
+                    .success()
+            );
+        } else {
+            assert!(
+                Command::new(&btrfs)
+                    .args(["subvolume", "create"])
+                    .arg(&retained)
+                    .output()
+                    .unwrap()
+                    .status
+                    .success()
+            );
+            fs::create_dir_all(retained.join("drive_c")).unwrap();
+            fs::write(retained.join("system.reg"), "WINE REGISTRY Version 2\n").unwrap();
+            fs::write(retained.join("drive_c/save"), "original").unwrap();
+        }
         let replacement = identity(&retained).unwrap().unwrap();
         assert_ne!(replacement, saved);
+        if snapshot {
+            assert_eq!(
+                (replacement.inode, replacement.birth),
+                (saved.inode, saved.birth)
+            );
+        }
         assert_eq!(digest(&retained).unwrap(), digest(&preserved).unwrap());
         if prune {
             let outcomes = prune_reviewed(&paths, &review);

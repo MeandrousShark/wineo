@@ -6,12 +6,66 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::error::{IoContext, Result};
 
-/// The statfs filesystem ID, or None when the filesystem reports none. btrfs
-/// derives it from the filesystem UUID and subvolume, so unlike `st_dev` it
-/// survives reboots and differs between a subvolume and its snapshots.
-pub(crate) fn filesystem_id(path: &Path) -> io::Result<Option<u64>> {
-    let id = rustix::fs::statvfs(path)?.f_fsid;
-    Ok((id != 0).then_some(id))
+/// What wineo recognizes a file or directory by, without following a final
+/// symlink.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Observed {
+    pub(crate) kind: rustix::fs::FileType,
+    pub(crate) device: u64,
+    pub(crate) inode: u64,
+    pub(crate) mount: Option<u64>,
+    pub(crate) birth: Option<(i64, u32)>,
+    /// The statfs filesystem ID, or None when the filesystem reports none.
+    /// btrfs derives it from the filesystem UUID and subvolume, so unlike
+    /// `device` it survives reboots and differs between a subvolume and its
+    /// snapshots.
+    pub(crate) fsid: Option<u64>,
+}
+
+/// Reads every field through one descriptor, so a path swapped between
+/// lookups can't mix two objects into one identity. None when nothing is
+/// there.
+pub(crate) fn observe(path: &Path) -> io::Result<Option<Observed>> {
+    use rustix::fs::{AtFlags, FileType, Mode, OFlags, StatxFlags};
+
+    let fd = match rustix::fs::open(
+        path,
+        OFlags::PATH | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+        Mode::empty(),
+    ) {
+        Ok(fd) => fd,
+        Err(rustix::io::Errno::NOENT) => return Ok(None),
+        Err(err) => return Err(err.into()),
+    };
+    let stat = rustix::fs::fstat(&fd)?;
+    let kind = FileType::from_raw_mode(stat.st_mode);
+    let (mount, birth) = match rustix::fs::statx(
+        &fd,
+        "",
+        AtFlags::EMPTY_PATH,
+        StatxFlags::MNT_ID | StatxFlags::BTIME,
+    ) {
+        Ok(found) => (
+            (found.stx_mask & StatxFlags::MNT_ID.bits() != 0).then_some(found.stx_mnt_id),
+            (found.stx_mask & StatxFlags::BTIME.bits() != 0)
+                .then_some((found.stx_btime.tv_sec, found.stx_btime.tv_nsec)),
+        ),
+        Err(rustix::io::Errno::NOSYS) => (None, None),
+        Err(err) => return Err(err.into()),
+    };
+    let fsid = if kind == FileType::Symlink {
+        None
+    } else {
+        Some(rustix::fs::fstatvfs(&fd)?.f_fsid).filter(|&id| id != 0)
+    };
+    Ok(Some(Observed {
+        kind,
+        device: stat.st_dev as u64,
+        inode: stat.st_ino as u64,
+        mount,
+        birth,
+        fsid,
+    }))
 }
 
 /// Serde for a stored filesystem ID. TOML integers are signed and most IDs

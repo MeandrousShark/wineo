@@ -1,7 +1,6 @@
 //! On-disk identity, mount checks, and the synced filesystem steps trash builds on.
 
 use std::fs::{self, File};
-use std::io;
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -12,39 +11,23 @@ use rustix::fs::{RenameFlags, renameat_with};
 use super::{Identity, matches_identity};
 
 pub(super) fn identity(path: &Path) -> Result<Option<Identity>> {
-    match fs::symlink_metadata(path) {
-        Ok(meta) => {
-            if meta.file_type().is_symlink() || (!meta.is_file() && !meta.is_dir()) {
-                bail!("refusing non-regular trash payload at {}", path.display());
-            }
-            let (mount, birth) = match rustix::fs::statx(
-                rustix::fs::CWD,
-                path,
-                rustix::fs::AtFlags::SYMLINK_NOFOLLOW,
-                rustix::fs::StatxFlags::MNT_ID | rustix::fs::StatxFlags::BTIME,
-            ) {
-                Ok(stat) => {
-                    let mount = (stat.stx_mask & rustix::fs::StatxFlags::MNT_ID.bits() != 0)
-                        .then_some(stat.stx_mnt_id);
-                    let birth = (stat.stx_mask & rustix::fs::StatxFlags::BTIME.bits() != 0)
-                        .then_some((stat.stx_btime.tv_sec, stat.stx_btime.tv_nsec));
-                    (mount, birth)
-                }
-                Err(rustix::io::Errno::NOSYS) => (None, None),
-                Err(err) => return Err(err.into()),
-            };
-            Ok(Some(Identity {
-                device: meta.dev(),
-                inode: meta.ino(),
-                mount,
-                birth,
-                fsid: crate::files::filesystem_id(path)
-                    .with_context(|| format!("inspecting {}", path.display()))?,
-            }))
-        }
-        Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(None),
-        Err(err) => Err(err).with_context(|| format!("inspecting {}", path.display())),
+    use rustix::fs::FileType;
+
+    let Some(seen) =
+        crate::files::observe(path).with_context(|| format!("inspecting {}", path.display()))?
+    else {
+        return Ok(None);
+    };
+    if !matches!(seen.kind, FileType::RegularFile | FileType::Directory) {
+        bail!("refusing non-regular trash payload at {}", path.display());
     }
+    Ok(Some(Identity {
+        device: seen.device,
+        inode: seen.inode,
+        mount: seen.mount,
+        birth: seen.birth,
+        fsid: seen.fsid,
+    }))
 }
 
 pub(super) fn require(path: &Path, expected: Identity) -> Result<()> {
