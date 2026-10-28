@@ -1,6 +1,9 @@
 use iced::{Color, Theme};
 
 mod appearance;
+mod custom;
+#[cfg(test)]
+mod custom_tests;
 mod presets;
 mod readability;
 #[cfg(test)]
@@ -8,8 +11,10 @@ mod readability_tests;
 #[cfg(test)]
 mod tests;
 
-pub(crate) use appearance::{Appearance, resolve, shown};
+pub(crate) use appearance::{Appearance, Shown, default_preset, resolve, shown};
+pub(crate) use custom::{Custom, color_mut, colors_of, customs, hex};
 pub(crate) use presets::{PRESETS, Preset, PresetKind};
+pub(crate) use readability::improve;
 
 const fn rgb(hex: u32) -> Color {
     Color::from_rgb8((hex >> 16) as u8, (hex >> 8) as u8, hex as u8)
@@ -65,7 +70,34 @@ impl Palette {
     pub(super) const DARK: Self = presets::MIDNIGHT;
     #[cfg(test)]
     pub(super) fn from_mode(mode: iced::theme::Mode) -> Self {
-        resolve(&Appearance::default(), mode)
+        resolve(&Appearance::default(), mode, &[])
+    }
+    /// The role `index` in role order.
+    pub(crate) fn role(self, index: usize) -> Color {
+        match index {
+            0 => self.background,
+            1 => self.surface,
+            2 => self.border,
+            3 => self.foreground,
+            4 => self.muted,
+            5 => self.primary,
+            6 => self.success,
+            7 => self.warning,
+            _ => self.danger,
+        }
+    }
+    fn role_mut(&mut self, index: usize) -> &mut Color {
+        match index {
+            0 => &mut self.background,
+            1 => &mut self.surface,
+            2 => &mut self.border,
+            3 => &mut self.foreground,
+            4 => &mut self.muted,
+            5 => &mut self.primary,
+            6 => &mut self.success,
+            7 => &mut self.warning,
+            _ => &mut self.danger,
+        }
     }
     /// Every color at `alpha` times its opacity.
     pub(super) fn faded(self, alpha: f32) -> Self {

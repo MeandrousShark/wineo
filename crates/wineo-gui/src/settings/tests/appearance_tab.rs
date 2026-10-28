@@ -6,6 +6,7 @@ use super::*;
 use crate::layout_probe::lay_out;
 use crate::theme::{Palette, Preset};
 use appearance::{Edit, FOLLOW_ID, READABILITY_ID, Slot};
+use theme_colors::COPY_ID;
 
 const SIZE: iced::Size = iced::Size::new(900.0, 2000.0);
 
@@ -124,6 +125,7 @@ fn following_the_system_lists_dark_then_light_themes() {
     expected.push(id(FOLLOW_ID));
     expected.extend(rows(Slot::Dark, &DARK).iter().map(|row| id(row)));
     expected.extend(rows(Slot::Light, &LIGHT).iter().map(|row| id(row)));
+    expected.push(id(COPY_ID));
     expected.push(id(READABILITY_ID));
     assert_eq!(focusable_ids(&app, &paths), expected);
 }
@@ -137,6 +139,7 @@ fn not_following_lists_every_theme_once() {
     let mut expected: Vec<_> = Tab::ALL.iter().map(|tab| id(tab.id())).collect();
     expected.push(id(FOLLOW_ID));
     expected.extend(rows(Slot::Theme, &ALL).iter().map(|row| id(row)));
+    expected.push(id(COPY_ID));
     expected.push(id(READABILITY_ID));
     assert_eq!(focusable_ids(&app, &paths), expected);
     assert_eq!(page_of(&app).changes(), 1);
@@ -144,7 +147,7 @@ fn not_following_lists_every_theme_once() {
 
 #[test]
 fn the_lists_offer_every_built_in_with_its_kind() {
-    let choices = appearance::choices();
+    let choices = appearance::choices(&[]);
     assert_eq!(
         choices
             .iter()
@@ -444,7 +447,7 @@ fn startup_applies_the_saved_appearance() {
         "[appearance]\nfollow_system = false\ntheme = \"catppuccin-latte\"\nimprove_readability = true\n",
     );
     let mut app = App::boot(paths.clone()).0;
-    let readable = crate::theme::resolve(&app.appearance, Mode::Dark);
+    let readable = crate::theme::resolve(&app.appearance, Mode::Dark, &[]);
     assert_ne!(readable, palette("catppuccin-latte"));
     assert_eq!(app.palette, readable);
     let _ = app.update(Message::ThemeChanged(Mode::Dark));

@@ -363,10 +363,10 @@ fn resolve_applies_the_transform_only_when_asked() {
             theme: preset.id.into(),
             ..Appearance::default()
         };
-        assert_eq!(resolve(&appearance, Mode::Dark), preset.palette);
+        assert_eq!(resolve(&appearance, Mode::Dark, &[]), preset.palette);
         appearance.improve_readability = true;
         assert_eq!(
-            resolve(&appearance, Mode::Dark),
+            resolve(&appearance, Mode::Dark, &[]),
             improve(preset.palette, preset.kind),
             "{}",
             preset.id
@@ -378,9 +378,9 @@ fn resolve_applies_the_transform_only_when_asked() {
         improve_readability: true,
         ..Appearance::default()
     };
-    assert_eq!(resolve(&following, Mode::Dark), readable("dracula"));
+    assert_eq!(resolve(&following, Mode::Dark, &[]), readable("dracula"));
     assert_eq!(
-        resolve(&following, Mode::Light),
+        resolve(&following, Mode::Light, &[]),
         readable("catppuccin-latte")
     );
 }

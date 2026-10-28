@@ -98,9 +98,12 @@ impl Page {
             }
             View::Global(editor) => match self.tab {
                 tabs::Tab::General => global_view(editor, self, paths, self.locked(), palette),
-                tabs::Tab::Appearance => {
-                    super::appearance::tab(&editor.appearance, self.locked(), palette)
-                }
+                tabs::Tab::Appearance => super::appearance::tab(
+                    &editor.appearance,
+                    self.locked(),
+                    palette,
+                    self.system_mode,
+                ),
             },
         };
         let scroll = scrollable(
@@ -168,7 +171,7 @@ impl Page {
         }
         let changes = self.changes();
         let status = if self.changed_on_disk {
-            "The config file changed on disk".to_owned()
+            changed_status(self.changed_file).to_owned()
         } else {
             match changes {
                 0 => "No changes".to_owned(),
@@ -212,6 +215,16 @@ impl Page {
                     .border(border::rounded(0).width(1).color(palette.border))
             })
             .into()
+    }
+}
+
+/// Pending with the maintainer: the status names `library.toml` or a theme
+/// file when one of those changed under the Appearance tab's edits.
+fn changed_status(file: super::ChangedFile) -> &'static str {
+    match file {
+        super::ChangedFile::Config => "The config file changed on disk",
+        super::ChangedFile::Library => "library.toml changed on disk",
+        super::ChangedFile::Theme => "A theme file changed on disk",
     }
 }
 

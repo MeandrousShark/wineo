@@ -19,7 +19,7 @@ const MAX_ROUNDS: usize = 2001;
 /// `palette` with each text role that misses 4.5:1 on the background or the
 /// surface moved to the nearest lightness, in the same hue, that reaches it.
 /// Background, surface, and border are never changed.
-pub(super) fn improve(palette: Palette, kind: PresetKind) -> Palette {
+pub(crate) fn improve(palette: Palette, kind: PresetKind) -> Palette {
     let fix = |role| fix_role(role, palette.background, palette.surface, kind);
     Palette {
         foreground: fix(palette.foreground),

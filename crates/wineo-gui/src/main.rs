@@ -125,11 +125,13 @@ pub(crate) struct App {
     /// The saved appearance. The global Settings page's base replaces it
     /// whenever that page reads `library.toml`.
     appearance: Appearance,
+    /// The saved custom themes, replaced like `appearance`.
+    themes: Vec<theme::Custom>,
     /// The last system light or dark mode the app saw.
     system_mode: iced::theme::Mode,
     /// What `palette` was resolved from, so it's resolved again only when
     /// that changes.
-    palette_from: (Appearance, iced::theme::Mode),
+    palette_from: (Appearance, Vec<theme::Custom>, iced::theme::Mode),
     search: String,
     search_focused: bool,
     cards: Vec<Card>,
@@ -471,8 +473,9 @@ impl App {
             paths,
             palette: Palette::DARK,
             appearance: Appearance::default(),
+            themes: Vec::new(),
             system_mode: iced::theme::Mode::Dark,
-            palette_from: (Appearance::default(), iced::theme::Mode::Dark),
+            palette_from: (Appearance::default(), Vec::new(), iced::theme::Mode::Dark),
             search: String::new(),
             search_focused: false,
             cards: Vec::new(),
@@ -602,6 +605,7 @@ impl App {
         // Until the system mode arrives, the saved dark theme shows, as
         // Midnight did before themes.
         app.appearance = saved.appearance;
+        app.themes = theme::customs(&wineo_core::themes::list(&app.paths));
         app.sync_palette();
         app.zoom = saved.view.zoom;
         app.poster_only = saved.view.poster_only;
@@ -639,19 +643,28 @@ impl App {
     /// Settings page is open, which previews its edits, and from the saved
     /// appearance otherwise.
     fn sync_palette(&mut self) {
-        if let Some(form) = self.settings.as_ref().and_then(|page| page.appearance())
-            && self.appearance != form.loaded
-        {
-            self.appearance = form.loaded.clone();
+        if let Some(page) = &mut self.settings {
+            page.system_mode = self.system_mode;
         }
-        let shown = self
+        if let Some(form) = self.settings.as_ref().and_then(|page| page.appearance()) {
+            if self.appearance != form.loaded {
+                self.appearance = form.loaded.clone();
+            }
+            if self.themes != form.loaded_themes {
+                self.themes = form.loaded_themes.clone();
+            }
+        }
+        let (shown, themes) = self
             .settings
             .as_ref()
             .and_then(|page| page.appearance())
-            .map_or(&self.appearance, |form| &form.draft);
-        if self.palette_from.0 != *shown || self.palette_from.1 != self.system_mode {
-            self.palette_from = (shown.clone(), self.system_mode);
-            self.palette = theme::resolve(shown, self.system_mode);
+            .map_or((&self.appearance, &self.themes), |form| {
+                (&form.draft, &form.themes)
+            });
+        let from = &self.palette_from;
+        if from.0 != *shown || from.1 != *themes || from.2 != self.system_mode {
+            self.palette = theme::resolve(shown, self.system_mode, themes);
+            self.palette_from = (shown.clone(), themes.clone(), self.system_mode);
         }
     }
 

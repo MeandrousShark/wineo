@@ -393,6 +393,7 @@ mod tests {
                         ..Appearance::default()
                     },
                     iced::theme::Mode::Dark,
+                    &[],
                 );
                 [
                     (preset.id.to_owned(), preset.palette),

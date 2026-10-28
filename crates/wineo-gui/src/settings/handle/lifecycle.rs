@@ -6,7 +6,7 @@ use wineo_core::paths::Paths;
 use crate::Message;
 use crate::settings::form::EnvRow;
 use crate::settings::load::{self, Report, Scan, Snapshot, Texts};
-use crate::settings::{Event, Mode, Page, Step, View, unfocus, view};
+use crate::settings::{ChangedFile, Event, Mode, Page, Step, View, unfocus, view};
 
 impl Page {
     pub(super) fn go_back(&mut self) -> Step {
@@ -151,6 +151,7 @@ impl Page {
         // Only `[appearance]` changed. Like the global file under an
         // environment page, it rebases, so General's edits stay; edits on
         // the Appearance tab ask for Reload instead.
+        // Theme files count with it, since they're the same tab's.
         if self.global
             && disk.global == texts.global
             && !self.appearance().is_some_and(|form| form.is_dirty())
@@ -160,6 +161,7 @@ impl Page {
         if self.global || disk.environment != texts.environment {
             if self.is_dirty() {
                 self.changed_on_disk = true;
+                self.changed_file = ChangedFile::between(disk, &texts);
                 Step::none()
             } else {
                 Step::task(self.reload(paths, Mode::Replace))
@@ -181,6 +183,9 @@ impl Page {
         self.saving = false;
         match result {
             Ok(report) => {
+                if let View::Global(editor) = &mut self.view {
+                    editor.appearance.map_created(&report.created);
+                }
                 self.notes = report.lines;
                 match report.failed {
                     // The file may or may not have been written before

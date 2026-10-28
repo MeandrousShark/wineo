@@ -11,7 +11,7 @@ use wineo_core::paths::Paths;
 
 use super::form::Form;
 use super::load::{Content, Current, RunnerChoice, Snapshot};
-use super::{Editor, Event, Mode, Page, Pending, Step, View, global, load, view};
+use super::{ChangedFile, Editor, Event, Mode, Page, Pending, Step, View, global, load, view};
 
 impl Page {
     pub(super) fn handle(&mut self, paths: &Paths, event: Event) -> Step {
@@ -162,8 +162,9 @@ impl Page {
             }
             Event::Appearance(edit) => {
                 self.edited();
+                let mode = self.system_mode;
                 if let View::Global(editor) = &mut self.view {
-                    editor.appearance.apply(edit);
+                    editor.appearance.apply(edit, mode);
                 }
                 Step::none()
             }
@@ -398,11 +399,11 @@ impl Page {
             View::Global(editor) => Some(&editor.form.draft),
             _ => None,
         };
-        let appearance_draft = self.appearance().map(|form| &form.draft);
+        let appearance_draft = self.appearance().map(super::appearance::Form::drafts);
         let edited_since = pending.mode == Mode::Replace
             && (draft != pending.draft.as_ref()
                 || global_draft != pending.global_draft.as_ref()
-                || appearance_draft != pending.appearance_draft.as_ref());
+                || appearance_draft != pending.appearance_draft);
         match (pending.mode, snapshot.content) {
             (Mode::Rebase, Content::Global(info)) if matches!(self.view, View::Global(_)) => {
                 // A rebase for `[appearance]` alone can find the global file
@@ -414,10 +415,11 @@ impl Page {
                     View::Global(editor) => editor,
                     _ => unreachable!("checked above"),
                 };
-                editor.appearance.rebase(info.appearance);
+                editor.appearance.rebase(info.appearance, info.themes);
                 if config_moved {
                     if let Some(disk) = &mut self.disk {
                         disk.appearance = snapshot.texts.appearance;
+                        disk.themes = snapshot.texts.themes;
                     }
                 } else {
                     editor.form.rebase(info.values.clone());
@@ -445,6 +447,9 @@ impl Page {
             // page says the file moved on under them.
             _ if edited_since || (pending.mode == Mode::Rebase && self.is_dirty()) => {
                 self.changed_on_disk = true;
+                self.changed_file = self.disk.as_ref().map_or(ChangedFile::Config, |disk| {
+                    ChangedFile::between(disk, &snapshot.texts)
+                });
             }
             (_, content) => {
                 self.disk = Some(snapshot.texts);
@@ -467,8 +472,12 @@ impl Page {
                         View::Form(Box::new(editor))
                     }
                     Content::Global(info) => {
-                        let mut editor =
-                            global::Editor::new(info.values, info.appearance, info.runners);
+                        let mut editor = global::Editor::new(
+                            info.values,
+                            info.appearance,
+                            info.themes,
+                            info.runners,
+                        );
                         if pending.mode == Mode::Replace
                             && let View::Global(previous) = &self.view
                         {

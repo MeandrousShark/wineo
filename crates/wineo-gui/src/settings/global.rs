@@ -365,11 +365,12 @@ impl Editor {
     pub(crate) fn new(
         values: Values,
         appearance: crate::theme::Appearance,
+        themes: Vec<crate::theme::Custom>,
         runners: Vec<RunnerChoice>,
     ) -> Self {
         Self {
             form: Form::new(values),
-            appearance: appearance::Form::new(appearance),
+            appearance: appearance::Form::new(appearance, themes),
             runners,
             new_env: EnvRow::default(),
         }

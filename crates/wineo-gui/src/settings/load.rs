@@ -17,15 +17,17 @@ use wineo_core::install::Change;
 use wineo_core::paths::Paths;
 use wineo_core::runners::Runners;
 use wineo_core::settings::{self, Applied, CheckError, ConfigFile};
+use wineo_core::themes::{self, ThemeKind, Themes};
 use wineo_core::{art, library, prefix, programs, target_path, winpath};
 
 use super::Event;
+use super::appearance::{ToSave, is_new};
 use super::form::{Edits, Inherited, Values};
 use super::global;
 use crate::Message;
 use crate::panel::PanelError;
 use crate::task;
-use crate::theme::Appearance;
+use crate::theme::{self, Appearance, Custom, PresetKind};
 
 /// A runner the page offers. `proton` is `None` when it doesn't resolve, so
 /// the kind can't be checked until save.
@@ -83,6 +85,7 @@ pub(crate) enum Content {
 pub(crate) struct GlobalLoaded {
     pub(crate) values: global::Values,
     pub(crate) appearance: Appearance,
+    pub(crate) themes: Vec<Custom>,
     pub(crate) runners: Vec<RunnerChoice>,
 }
 
@@ -96,6 +99,8 @@ pub(crate) struct Texts {
     /// table counts, since favorites and the library's view write the file
     /// too.
     pub(crate) appearance: Option<Appearance>,
+    /// The custom theme files as read, on the global page.
+    pub(crate) themes: Option<Themes>,
 }
 
 impl Texts {
@@ -104,6 +109,7 @@ impl Texts {
             environment: read_text(&paths.environment_config(name)),
             global: read_text(&paths.global_config()),
             appearance: None,
+            themes: None,
         }
     }
     pub(crate) fn read_global(paths: &Paths) -> Self {
@@ -111,6 +117,7 @@ impl Texts {
             environment: None,
             global: read_text(&paths.global_config()),
             appearance: Some(library::load(paths).appearance),
+            themes: Some(themes::list(paths)),
         }
     }
 }
@@ -149,6 +156,11 @@ pub(crate) fn snapshot_global(paths: &Paths) -> Snapshot {
             Content::Global(Box::new(GlobalLoaded {
                 values,
                 appearance: texts.appearance.clone().unwrap_or_default(),
+                themes: texts
+                    .themes
+                    .as_ref()
+                    .map(theme::customs)
+                    .unwrap_or_default(),
                 runners,
             }))
         }
@@ -457,6 +469,9 @@ pub(crate) struct Report {
     pub(crate) failed: Option<String>,
     /// `failed` is `library.toml` refusing a write that Checkup can repair.
     pub(crate) checkup: bool,
+    /// Each custom theme the save created, by its temporary id and its real
+    /// one, so the edits that didn't land can use the real id.
+    pub(crate) created: Vec<(String, String)>,
 }
 
 pub(crate) fn desktop_line(change: &wineo_core::desktop::Change) -> String {
@@ -514,6 +529,7 @@ pub(crate) fn report(name: &str, applied: Applied) -> Report {
             .failed
             .map(|error| PanelError::from_error(&error).text),
         checkup: false,
+        created: Vec::new(),
     }
 }
 
@@ -546,17 +562,20 @@ pub(crate) fn save_global(paths: &Paths, edits: &Edits) -> Result<Report, String
 }
 
 /// One Save on the global page: General's edits to `config.toml`, then the
-/// Appearance tab's to `library.toml`, each only when it has any. A failure
+/// Appearance tab's theme files (new, edited, renamed), its `[appearance]` in
+/// `library.toml`, and last the theme deletes, so `library.toml` never names
+/// a file that's gone. Each part runs only when it has edits, and a failure
 /// stops the rest.
 pub(crate) fn save_global_page(
     paths: &Paths,
     edits: &Edits,
-    appearance: Option<&Appearance>,
+    appearance: Option<&ToSave>,
 ) -> Result<Report, String> {
     let mut report = Report {
         lines: Vec::new(),
         failed: None,
         checkup: false,
+        created: Vec::new(),
     };
     if !edits.is_empty() {
         report = save_global(paths, edits)?;
@@ -564,21 +583,114 @@ pub(crate) fn save_global_page(
             return Ok(report);
         }
     }
-    if let Some(appearance) = appearance
-        && let Err(error) = library::set_appearance(paths, appearance)
-    {
-        report.failed = Some(crate::sort_control::error_text(paths, &error));
-        // Like the library's banner: a newer wineo's file has nothing for
-        // Checkup to repair, and the error already says to update.
-        report.checkup = matches!(
-            error,
-            Error::LibraryUnreadable {
-                newer_version: false,
-                ..
+    let Some(save) = appearance else {
+        return Ok(report);
+    };
+    if let Err(error) = save_themes(paths, save, &mut report.created) {
+        report.failed = Some(theme_error(error));
+        return Ok(report);
+    }
+    if let Some(appearance) = &save.appearance {
+        let mut appearance = appearance.clone();
+        for id in [
+            &mut appearance.dark,
+            &mut appearance.light,
+            &mut appearance.theme,
+        ] {
+            if let Some((_, real)) = report.created.iter().find(|(new, _)| new == id) {
+                id.clone_from(real);
             }
-        );
+        }
+        // Every create landed or the save stopped above, so this is only a
+        // guard against naming a file that doesn't exist.
+        if [&appearance.dark, &appearance.light, &appearance.theme]
+            .into_iter()
+            .any(|id| is_new(id))
+        {
+            report.failed = Some("A new theme wasn't saved.".to_owned());
+            return Ok(report);
+        }
+        if let Err(error) = library::set_appearance(paths, &appearance) {
+            report.failed = Some(crate::sort_control::error_text(paths, &error));
+            // Like the library's banner: a newer wineo's file has nothing for
+            // Checkup to repair, and the error already says to update.
+            report.checkup = matches!(
+                error,
+                Error::LibraryUnreadable {
+                    newer_version: false,
+                    ..
+                }
+            );
+            return Ok(report);
+        }
+    }
+    for id in &save.deletes {
+        if let Err(error) = themes::delete(paths, id) {
+            report.failed = Some(theme_error(error));
+            return Ok(report);
+        }
     }
     Ok(report)
+}
+
+fn kind_of(kind: PresetKind) -> ThemeKind {
+    match kind {
+        PresetKind::Dark => ThemeKind::Dark,
+        PresetKind::Light => ThemeKind::Light,
+    }
+}
+
+/// Creates, updates, then renames, recording each create as it lands.
+fn save_themes(
+    paths: &Paths,
+    save: &ToSave,
+    created: &mut Vec<(String, String)>,
+) -> Result<(), Error> {
+    for theme in &save.creates {
+        let id = themes::create(
+            paths,
+            &theme.name,
+            kind_of(theme.kind),
+            theme.based_on.as_deref(),
+            &theme.colors,
+        )?;
+        created.push((theme.id.clone(), format!("{}{id}", themes::CUSTOM_PREFIX)));
+    }
+    for theme in &save.updates {
+        themes::update(
+            paths,
+            theme.file_id(),
+            kind_of(theme.kind),
+            theme.based_on.as_deref(),
+            &theme.colors,
+        )?;
+    }
+    // A rename can take a name another rename gives up, so those wait for
+    // the rest and run again while any lands.
+    let mut renames: Vec<&(String, String)> = save.renames.iter().collect();
+    while !renames.is_empty() {
+        let mut waiting = Vec::new();
+        let mut refused = None;
+        for rename in &renames {
+            match themes::rename(paths, &rename.0, &rename.1) {
+                Ok(_) => {}
+                Err(Error::ThemeNameTaken) => {
+                    waiting.push(*rename);
+                    refused = Some(Error::ThemeNameTaken);
+                }
+                Err(error) => return Err(error),
+            }
+        }
+        if waiting.len() == renames.len() {
+            return Err(refused.unwrap_or(Error::ThemeNameTaken));
+        }
+        renames = waiting;
+    }
+    Ok(())
+}
+
+fn theme_error(error: Error) -> String {
+    PanelError::from_error(&error.into()).text
 }
 
 pub(crate) fn load_task(
@@ -637,7 +749,7 @@ pub(crate) fn save_task(
     name: String,
     global: bool,
     edits: Edits,
-    appearance: Option<Appearance>,
+    appearance: Option<ToSave>,
     generation: u64,
 ) -> Task<Message> {
     task::blocking_value(

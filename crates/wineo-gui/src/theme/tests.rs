@@ -103,9 +103,12 @@ fn appearance(follow_system: bool, dark: &str, light: &str, theme: &str) -> Appe
 #[test]
 fn following_the_system_picks_the_slot_for_the_mode() {
     let appearance = appearance(true, "dracula", "catppuccin-latte", "cellar");
-    assert_eq!(resolve(&appearance, Mode::Dark), preset("dracula").palette);
     assert_eq!(
-        resolve(&appearance, Mode::Light),
+        resolve(&appearance, Mode::Dark, &[]),
+        preset("dracula").palette
+    );
+    assert_eq!(
+        resolve(&appearance, Mode::Light, &[]),
         preset("catppuccin-latte").palette
     );
 }
@@ -114,7 +117,10 @@ fn following_the_system_picks_the_slot_for_the_mode() {
 fn a_fixed_theme_ignores_the_mode() {
     let appearance = appearance(false, "dracula", "catppuccin-latte", "cellar-light");
     for mode in [Mode::Dark, Mode::Light] {
-        assert_eq!(resolve(&appearance, mode), preset("cellar-light").palette);
+        assert_eq!(
+            resolve(&appearance, mode, &[]),
+            preset("cellar-light").palette
+        );
     }
 }
 
@@ -124,16 +130,24 @@ fn unknown_and_wrong_kind_ids_fall_back_per_slot() {
     let daylight = preset("daylight").palette;
     for bad in ["nonsense", "", "custom:mine"] {
         let appearance = appearance(true, bad, bad, bad);
-        assert_eq!(resolve(&appearance, Mode::Dark), midnight, "{bad:?} dark");
-        assert_eq!(resolve(&appearance, Mode::Light), daylight, "{bad:?} light");
+        assert_eq!(
+            resolve(&appearance, Mode::Dark, &[]),
+            midnight,
+            "{bad:?} dark"
+        );
+        assert_eq!(
+            resolve(&appearance, Mode::Light, &[]),
+            daylight,
+            "{bad:?} light"
+        );
         let fixed = self::appearance(false, bad, bad, bad);
-        assert_eq!(resolve(&fixed, Mode::Light), midnight, "{bad:?} theme");
+        assert_eq!(resolve(&fixed, Mode::Light, &[]), midnight, "{bad:?} theme");
     }
     // A light theme in the dark slot and the reverse.
     let swapped = appearance(true, "daylight", "midnight", "midnight");
-    assert_eq!(resolve(&swapped, Mode::Dark), midnight);
-    assert_eq!(resolve(&swapped, Mode::Light), daylight);
+    assert_eq!(resolve(&swapped, Mode::Dark, &[]), midnight);
+    assert_eq!(resolve(&swapped, Mode::Light, &[]), daylight);
     // The single theme takes either kind.
     let fixed = appearance(false, "midnight", "daylight", "daylight");
-    assert_eq!(resolve(&fixed, Mode::Dark), daylight);
+    assert_eq!(resolve(&fixed, Mode::Dark, &[]), daylight);
 }

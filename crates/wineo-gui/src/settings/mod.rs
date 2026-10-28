@@ -11,6 +11,7 @@ mod runner_picker;
 pub(crate) mod steam_key;
 mod steamgriddb;
 mod tabs;
+mod theme_colors;
 mod view;
 
 use iced::Task;
@@ -309,12 +310,36 @@ enum Mode {
     Rebase,
 }
 
+/// The file that changed under the page's edits.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ChangedFile {
+    Config,
+    Library,
+    Theme,
+}
+
+impl ChangedFile {
+    /// What changed between what the page read and `texts`, the config
+    /// files first.
+    fn between(disk: &Texts, texts: &Texts) -> Self {
+        if disk.environment != texts.environment || disk.global != texts.global {
+            Self::Config
+        } else if disk.appearance != texts.appearance {
+            Self::Library
+        } else if disk.themes != texts.themes {
+            Self::Theme
+        } else {
+            Self::Config
+        }
+    }
+}
+
 struct Pending {
     mode: Mode,
     /// The draft when the load started, to tell edits made since.
     draft: Option<Values>,
     global_draft: Option<global::Values>,
-    appearance_draft: Option<theme::Appearance>,
+    appearance_draft: Option<(theme::Appearance, Vec<theme::Custom>)>,
     /// Follows a save, so the controls stay locked until it lands.
     after_save: bool,
 }
@@ -340,6 +365,11 @@ pub(crate) struct Page {
     pub(crate) saving: bool,
     pub(crate) work_refusal: Option<String>,
     pub(crate) changed_on_disk: bool,
+    /// Which file `changed_on_disk` is about, for the status.
+    pub(crate) changed_file: ChangedFile,
+    /// The system's light or dark mode, which the app keeps current. The
+    /// Appearance tab needs it to tell which theme shows.
+    pub(crate) system_mode: iced::theme::Mode,
     pub(crate) leave_prompt: bool,
     /// A pick list's menu is open, so Escape belongs to it.
     menu_open: bool,
@@ -451,6 +481,8 @@ impl Page {
             saving: false,
             work_refusal: None,
             changed_on_disk: false,
+            changed_file: ChangedFile::Config,
+            system_mode: iced::theme::Mode::Dark,
             leave_prompt: false,
             menu_open: false,
             notes: Vec::new(),
@@ -653,7 +685,7 @@ impl Page {
                 View::Global(editor) => Some(editor.form.draft.clone()),
                 _ => None,
             },
-            appearance_draft: self.appearance().map(|form| form.draft.clone()),
+            appearance_draft: self.appearance().map(appearance::Form::drafts),
             after_save,
         });
         load::load_task(
