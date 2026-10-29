@@ -72,6 +72,31 @@ git config filter.pkgver.clean "sed 's/^pkgver=.*/pkgver=0/'"
 git config filter.pkgver.smudge cat
 ```
 
+### Prebuilt binaries
+
+From 1.0, each release on GitHub has a `wineo-X.Y.Z-x86_64-linux.tar.gz`
+with `wineo` and `wineo-gui`, built for Ubuntu 22.04 and newer (glibc 2.35).
+On Ubuntu or Debian, the desktop app needs these packages:
+
+<!-- ubuntu-runtime-packages:start -->
+```
+libx11-6
+libx11-xcb1
+libxcb1
+libxkbcommon0
+libxkbcommon-x11-0
+libxcursor1
+libxrandr2
+libxi6
+libwayland-client0
+libwayland-cursor0
+libwayland-egl1
+libegl1
+libgl1
+libvulkan1
+```
+<!-- ubuntu-runtime-packages:end -->
+
 ### From source
 
 You need a recent stable Rust toolchain (the workspace uses the 2024

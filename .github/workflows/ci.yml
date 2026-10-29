@@ -54,3 +54,18 @@ jobs:
         env:
           TERM: xterm-256color
         run: cargo test --workspace --locked
+
+  # The release guard only runs on tags, so its tests run here to keep it
+  # from breaking unnoticed between releases.
+  scripts:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Shellcheck
+        run: shellcheck scripts/*.sh
+
+      - name: Release guard tests
+        run: scripts/test-release-guard.sh
