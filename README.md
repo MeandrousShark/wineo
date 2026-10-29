@@ -86,13 +86,10 @@ libxcb1
 libxkbcommon0
 libxkbcommon-x11-0
 libxcursor1
-libxrandr2
 libxi6
 libwayland-client0
-libwayland-cursor0
 libwayland-egl1
 libegl1
-libgl1
 libvulkan1
 ```
 <!-- ubuntu-runtime-packages:end -->
