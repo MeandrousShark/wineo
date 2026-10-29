@@ -26,8 +26,7 @@ work, tokens, force-pushes) are marked **maintainer-present**.
   [sketch](../sketches/github-mirror.md).
 - **CI on GitHub Actions for outside PRs and tags only:** fmt, clippy, and
   the normal tests, with no secrets for forks. `--ignored` tests stay local.
-  A tag also builds release binaries for a GitHub Release (but see question
-  7).
+  A tag also builds release binaries for a GitHub Release.
 - **Full history goes public** (2026-10-10). Commit emails stay as they are
   and there's no rewrite for them. Old plans staying in public history is
   fine.
@@ -45,15 +44,36 @@ work, tokens, force-pushes) are marked **maintainer-present**.
   private docs.
 - **The published AUR PKGBUILD clones the GitHub mirror over HTTPS,**
   since the Gitea SSH source only works for the maintainer. A local
-  PKGBUILD can keep using Gitea.
+  PKGBUILD can keep using Gitea. Publishing it waits for the packages plan
+  (answer 9).
+
+Answers to the plan's questions (2026-10-28):
+
+1. **Criterion 9 is met.** The maintainer has used wineo as their only game
+   launcher since 0.30.
+2. **`library.toml` and `themes/` aren't promised.** They go under "Not
+   promised" in `stability.md` as files the desktop app owns, read
+   leniently.
+3. **Plan files get their hashes rewritten** from filter-repo's commit
+   map, so they keep pointing at real commits.
+4. **The private repo is `.private.git` at the repo root,** with the repo
+   root as its work tree, so the three paths stay where they are.
+5. **The private repo keeps the plans' history,** extracted with
+   filter-repo on a copy.
+6. **The GitHub repo is `MeandrousShark/wineo`.**
+7. **A tag builds release binaries:** an x86_64 tarball built on Ubuntu
+   22.04.
+8. **The sketches stay public,** with their plan links turned into text.
+9. **No AUR package at 1.0.** It comes with the packages plan, alongside
+   deb and rpm.
 
 ## Existing foundation
 
 - **1.0 criteria 1 to 8 are done or closed** (features.md). The contract
   is written down in `stability.md`, exit codes in `exit-codes.md`, JSON
   schemas in `json-output.md`, upgrade fixtures and tests from 0053, and the
-  deprecation path from 0053. Criterion 9, a stretch of daily use, is the
-  maintainer's call (question 1).
+  deprecation path from 0053. Criterion 9, a stretch of daily use, is met
+  (answer 1).
 - **`gitleaks git` over the full history found nothing** on 2026-10-10.
   About 1,400 commits have landed since.
 - **`crates/target` in history.** It was tracked from `ab93c8f2`
@@ -87,9 +107,9 @@ work, tokens, force-pushes) are marked **maintainer-present**.
 `stability.md` changes from future to present tense at release ("This is
 the promise wineo makes", with no "until then"). Two gaps get closed first:
 
-- `library.toml` and `themes/` aren't on either list. The proposal is
-  "Not promised": the desktop app owns them, they're read leniently, and an
-  older wineo ignores what it doesn't know (question 2).
+- `library.toml` and `themes/` aren't on either list. They go under "Not
+  promised" (answer 2): the desktop app owns them, they're read leniently,
+  and an older wineo ignores what it doesn't know.
 - The priority scale in `features.md` is defined around 1.0 ("1 = next: on
   the road to 1.0"). It gets a new anchor, the first 1.x releases, with
   priority 1 meaning "next" and the rest unchanged.
@@ -122,15 +142,18 @@ checkout:
 The `0054-step0` branch and the `../.worktrees/wineo/step6-bench` results
 folder are deleted beforehand, after the maintainer confirms.
 
-Hashes inside plan files go stale. Question 3 asks whether to rewrite them
-from the commit map.
+Hashes inside plan files would go stale, so they're rewritten (answer 3).
+A script reads `filter-repo/commit-map` from the rewritten clone, replaces
+each old hash it finds in `docs/plans/` with the new one at the same length,
+and leaves hashes from before `ab93c8f2` alone, since those don't change.
+The result is a commit in the private repo.
 
 ### Private docs
 
 `docs/plans/`, `docs/workflow.md`, and `docs/design/` are three sibling
 paths, and one `.git` folder can't sit under all three. A `.git` inside
 `docs/` would also make the public repo see `docs/` as an embedded repo.
-The proposal (question 4, A) is a second git directory at the repo root:
+It uses a second git directory at the repo root (answer 4):
 
 - `.private.git/` holds the private repo. It runs with the repo root as its
   work tree, through `git --git-dir=.private.git --work-tree=.` or a
@@ -139,6 +162,10 @@ The proposal (question 4, A) is a second git directory at the repo root:
 - The public `.gitignore` ignores `.private.git/` and the three paths.
 - The public repo drops them with `git rm --cached`, so the files stay on
   disk.
+- Its history comes from the public repo (answer 5). Run `git filter-repo
+  --path docs/plans --path docs/workflow.md --path docs/design` on a fresh
+  clone, then move that clone's `.git` to `.private.git` with
+  `core.worktree` set to the repo root.
 - **Maintainer-present:** create the private repo (`wineo-private`) in
   Gitea's web UI first, since push-to-create is off.
 
@@ -152,12 +179,14 @@ Public docs then lose their links into private files:
   Contributing section: open a PR on GitHub, the maintainer merges it
   locally, and `AGENTS.md` has the code rules.
 - `AGENTS.md` gets the settled note at the top.
-- What the sketches become is question 8.
+- The sketches stay public (answer 8), with their plan links turned into
+  text like everything else.
 
 ### GitHub mirror
 
-- **Maintainer-present:** create an empty public repo (question 6), with
-  no README or license so the first mirror push lands cleanly.
+- **Maintainer-present:** create an empty public repo,
+  `MeandrousShark/wineo` (answer 6), with no README or license so the
+  first mirror push lands cleanly.
 - **Maintainer-present:** create a fine-grained token limited to that repo,
   with contents and workflows write access (workflows, so the mirror can
   push `.github/workflows/`). Then add a push mirror in Gitea's repo
@@ -182,7 +211,7 @@ There are no secrets, so fork PRs run the same as anything else. Since
 Ubuntu isn't Arch, the first manual run may turn up test assumptions about
 the host. Those get fixed as patch fixes before the tag.
 
-If question 7 says yes, `release.yml` runs on `v*` tags. It builds
+`release.yml` runs on `v*` tags (answer 7). It builds
 `wineo` and `wineo-gui` in release mode on `ubuntu-22.04`, for a glibc
 2.35 floor, packs them with `LICENSE`, `THIRD_PARTY.md`, and the README
 into `wineo-X.Y.Z-x86_64-linux.tar.gz`, and attaches that to a GitHub
@@ -209,17 +238,16 @@ by rewriting Gitea.
    confirmed; rerun `gitleaks git`; sweep current public files for
    personal details (paths under `/home`, hostnames) beyond the
    `git.hannoncloud.com` URLs, which change in step 2.
-1. **CI workflows** (code): `ci.yml`, plus `release.yml` if question 7
-   says yes.
+1. **CI workflows** (code): `ci.yml` and `release.yml`.
 2. **Public docs cleanup** (docs): plan links to plain text across the
    files listed above, the README Contributing section and clone URL,
    `Cargo.toml`'s `repository`, the `AGENTS.md` note, `stability.md`'s
-   two gaps (question 2), and the priority anchor in `features.md`.
+   two gaps, and the priority anchor in `features.md`.
 3. **Private repo split** (**maintainer-present** for the Gitea repo):
-   set up `.private.git`, commit the three paths there and push, then the
-   public commit that untracks and ignores them.
+   extract the three paths' history into `.private.git` and push it, then
+   the public commit that untracks and ignores them.
 4. **History scrub** (**maintainer-present** for the force-push): as
-   above, including the plan-hash rewrite if question 3 says so.
+   above, including the plan-hash rewrite.
 5. **GitHub mirror** (**maintainer-present**): repo, token, push mirror,
    and a check that the hashes match.
 6. **First CI run** through `workflow_dispatch` on main, plus patch fixes
@@ -227,9 +255,12 @@ by rewriting Gitea.
 7. **Release 1.0.0**: changelog, `stability.md` tense, the `features.md`
    1.0 note and queue, the version, the tag, and the push. The mirror
    carries the tag to GitHub and Actions runs.
-8. **PKGBUILD and AUR**: switch the published PKGBUILD's `source` to the
-   GitHub HTTPS URL and its `url` to the GitHub repo, then question 9.
-9. **Upgrade fixture set** for `v1.0.0`.
+8. **Upgrade fixture set** for `v1.0.0`.
+
+The repo's `PKGBUILD` keeps its Gitea SSH `source` for the maintainer's
+own builds. Its `url` points at the GitHub repo from step 2, since that's
+the project's public home. The AUR copy, with the HTTPS source, comes with
+the packages plan.
 
 ## Testing and acceptance
 
@@ -239,70 +270,24 @@ by rewriting Gitea.
 - After the mirror: GitHub's branches and all tags match Gitea hash for
   hash, and a clone from GitHub has no `crates/target` in any commit and
   no private paths at `HEAD`.
-- CI: the manual run on main passes. The 1.0.0 tag's run passes, and if
-  question 7 says yes, the Release has the tarball, and its binaries run
-  `wineo --version` on a non-Arch system or container.
+- CI: the manual run on main passes. The 1.0.0 tag's run passes, the
+  Release has the tarball, and its binaries run `wineo --version` on a
+  non-Arch system or container.
 - Docs: `rg 'plans/|workflow\.md|docs/design'` over the public files finds
   nothing, and every relative link in `README.md` and `docs/` resolves.
 - Private: a fresh clone of `wineo-private` into a fresh public clone
   restores the three paths, and `git status` in the public repo stays
   clean.
-- makepkg from the published PKGBUILD builds 1.0.0 from GitHub.
+- makepkg from the repo's `PKGBUILD` still builds 1.0.0 from Gitea.
 
 ## Scope limits
 
 - No features, CLI changes, or config changes beyond `stability.md`'s
   wording and its two gaps.
-- deb, rpm, and AppImage packages are the next plan (queue item 2).
+- deb, rpm, and AppImage packages are the next plan (queue item 2), and
+  so is the AUR package (answer 9).
 - No CONTRIBUTING.md, issue templates, or code of conduct. The README's
   Contributing section and `AGENTS.md` cover it.
 - No email rewrite and no scrub beyond `crates/target`.
 - CI doesn't run on pushes to main, doesn't run `--ignored` tests, and
   holds no secrets.
-
-## Open questions
-
-1. 🧐 **Is criterion 9 met?** It asks for daily use across at least two
-   releases where upgrading a real library needs no manual fixes. The
-   clock started at 0.30, nine minor releases ago. The one near miss is
-   0.38.1's reboot fix, where wineo distrusted its own trash after a
-   reboot until the patch shipped. A: yes, it's met. B: give it one more
-   release, and 1.0 follows the next one that upgrades cleanly.
-2. 🧐 **Are `library.toml` and `themes/` part of the contract?** A: no,
-   add them to "Not promised" as files the desktop app owns, read leniently
-   (recommended; the GUI isn't promised, and an older wineo already ignores
-   what it doesn't know there). B: yes, add them to "Stable", which means
-   key renames there need the deprecation path.
-3. 🧐 **Rewrite commit hashes in plan files after the scrub?** A: yes,
-   map each hash in `docs/plans/` through filter-repo's commit map in the
-   private repo, so plans keep pointing at real commits (recommended; it's
-   one script and the map comes for free). B: leave them, since the plans
-   are private and old hashes stay findable in the backup bundle.
-4. 🧐 **How does the private repo sit in the tree?** A: `.private.git` at
-   the root with the repo root as its work tree, so the three paths stay
-   where they are (recommended; it's what was settled, and agents and links
-   keep working). B: move all three under one ignored `docs/private/`
-   folder with an ordinary `.git`, which is simpler git but changes every
-   path that points at a plan.
-5. 🧐 **Does the private repo keep the plans' history?** A: yes, extract
-   it with `git filter-repo --path docs/plans --path docs/workflow.md --path
-   docs/design` on a copy, so `git log` on a plan still works
-   (recommended). B: start fresh with today's files. The full history stays
-   in the public repo either way.
-6. 🧐 **Where does it live on GitHub?** A: `MeandrousShark/wineo`, the
-   account `gh` is logged in as (recommended). B: somewhere else, like an
-   organization.
-7. 🧐 **Does a tag build release binaries?** A: yes, an x86_64 tarball of
-   `wineo` and `wineo-gui` built on Ubuntu 22.04 (recommended; it's in the
-   settled design and gives non-Arch users something before the packages
-   plan). B: not yet, and the packages plan adds binaries with the
-   packages.
-8. 🧐 **Do the sketches stay public?** A: yes, as backlog detail that
-   features.md links to, with their plan links turned into text
-   (recommended; they read as design notes, not process). B: private,
-   with the private docs, and features.md rows keep only their summaries.
-9. 🧐 **Publish to the AUR at 1.0?** A: yes, the maintainer publishes a
-   `wineo-git` package from the GitHub-sourced PKGBUILD after the tag
-   (recommended; the settled design already points it at GitHub). B: not
-   yet, and the packages plan adds the AUR alongside deb and rpm, maybe as
-   a tagged `wineo` package.
