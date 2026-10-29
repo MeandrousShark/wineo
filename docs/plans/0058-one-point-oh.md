@@ -506,6 +506,36 @@ by rewriting Gitea.
   2 adds its fingerprint to a `.gitleaksignore` so the reruns in steps 4
   and 7 come back clean.
 
+- **Steps 1 and 2 done** (2026-10-28), reviewed by qa-gpt. Both of its
+  findings are fixed: the guard pages through every Release through
+  `gh api --paginate` and refuses if the list can't be read, and the
+  workflow-level concurrency group is gone.
+- **No concurrency group.** GitHub keeps only one pending run per group,
+  so a third tag push would cancel the release waiting in line. Instead,
+  the guard's second run is the last step before `gh release create`, which
+  shrinks the race between two tags to seconds, and the newest-Release
+  check still refuses the older one once the newer is published. Push one
+  version tag at a time.
+- **Two helper scripts beyond the plan:** `scripts/changelog-section.sh`
+  prints a version's changelog section for the guard and the release
+  notes, so the two can't disagree. `scripts/readme-runtime-packages.sh`
+  reads the README's marked package block for `verify` and the notes.
+  `ci.yml` also gained a `scripts` job that runs shellcheck and the guard's
+  32 tests, so the guard can't break unnoticed between releases.
+- **CI installs only `pkg-config`.** The windowing and graphics crates
+  load their libraries with `dlopen`, and `secret-service` uses its
+  pure-Rust crypto, so the build links no `-dev` library. The build
+  container leaves out `liblzma-dev` on purpose, so `lzma-sys` builds its
+  own copy and the binary has no `liblzma` runtime dependency.
+- **Limit: `verify` forces the software renderer** (`ICED_BACKEND=tiny-skia`),
+  since the container has no GPU. It proves the X11 and software path, not
+  the Vulkan and EGL libraries in the runtime list, which load with
+  `dlopen` and fail softly. The README's list is the coder's first guess
+  until step 6 settles it.
+- **Links to plans** in public docs (93 of them across 7 files) became
+  plain "plan NNNN" text, and `AGENTS.md` is the only public file left
+  that names the private paths.
+
 ## Scope limits
 
 - No features, CLI changes, or config changes beyond `stability.md`'s
