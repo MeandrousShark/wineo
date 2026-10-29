@@ -1,9 +1,11 @@
 # wineo
 
-A Wine environment manager for Linux, written in Rust. wineo keeps each
-Windows program or game in its own named environment: a prefix, a runner
-(Wine or Proton through umu), launch targets, and settings, all in plain TOML
-you can read and edit.
+A launcher and library for Linux, written in Rust, for Windows programs and
+games run with Wine or Proton, native Linux games, your Steam library, and
+the GOG games you own. Each one gets its own named environment. For Windows
+software that's a prefix, a runner (Wine or Proton through umu), launch
+targets, and settings, all in plain TOML you can read and edit. Use it from
+the command line or the desktop app.
 
 ```sh
 wineo new                  # guided setup: runner, template, installer or exe
@@ -12,6 +14,18 @@ wineo status               # what's running
 wineo stop hades
 ```
 
+## Why wineo
+
+Bottles, Lutris, and Heroic are all good at what they do. wineo is for
+people who want the terminal to be a first-class way in. Nearly everything
+the desktop app does is a `wineo` command too, with `--json` output and
+documented exit codes for scripts. Nothing lives in a hidden database: each
+environment is a TOML file you can read, edit by hand, or keep in git, and
+wineo's own edits keep your comments and formatting. The desktop app works
+on those same files and the same run state, so a game started from a script
+shows as running in the app, and a change made in either one shows up in
+the other.
+
 ## Features
 
 - **Guided setup.** `wineo new` walks through the runner, a template, an
@@ -19,8 +33,11 @@ wineo stop hades
   programs it finds as launch targets.
 - **Wine and Proton.** Use system Wine, downloaded Wine builds, or Proton
   through `umu-launcher`. `wineo download` fetches runners, DXVK, and
-  vkd3d-proton with checksum verification, or use the
-  [builds Steam, Heroic, and Lutris already installed](docs/downloads-and-imports.md#use-builds-from-steam-heroic-and-lutris).
+  vkd3d-proton with checksum verification, or use
+  [Wine and Proton builds already installed by Steam, Heroic, or Lutris](docs/downloads-and-imports.md#use-builds-from-steam-heroic-and-lutris).
+- **Native Linux games.** [Native games](docs/native.md) get the same
+  library, launch targets, launch options, art, and playtime as everything
+  else, with no prefix or runner.
 - **Targets.** Each environment can have several launch targets, one of them
   the default, with their own arguments, working directory, and desktop entry.
 - **Supervised runs.** `start` runs in the background, `stop` ends the whole
@@ -29,14 +46,12 @@ wineo stop hades
 - **Imports.** Adopt or copy an existing prefix, or import games from Heroic
   with their launch settings.
 - **Steam games.** Bring [Steam games](docs/steam.md) into the library,
-  installed or just owned, to tag, launch, stop, and count, while Steam keeps
-  owning them. Owned games can be installed through Steam from wineo.
-- **GOG games.** Log in to GOG and install the [GOG games](docs/gog.md)
-  you own, native or Windows, in your language, or move the ones Heroic
-  installed into wineo, then keep them up to date, DLC included. Windows
-  games install from GOG Galaxy's builds, so updates download only what
-  changed, damaged files can be repaired, and a game can follow a beta
-  branch or stay on an older build.
+  installed or just owned, to tag, launch, stop, and track playtime, while
+  Steam keeps managing them. Owned games can be installed through Steam
+  from wineo.
+- **GOG games.** Log in and install the [GOG games](docs/gog.md) you own,
+  native or Windows, or move the ones Heroic installed into wineo, then keep
+  them and their DLC up to date. No GOG Galaxy client needed.
 - **Clones, snapshots, and portable folders.** Copy an environment, snapshot
   and restore its prefix on a filesystem with reflinks (Btrfs, XFS), or keep
   everything in a folder you can move to another drive.
@@ -88,16 +103,17 @@ couple of seconds.
 - **Keyboard.** Arrow keys move between cards, Enter opens a card and then
   plays it, F stars it, and Ctrl+= and Ctrl+- zoom.
 
-Start it with `wineo-gui`. The Arch package also adds it to your desktop's
-app menu. Everything it does is covered in the
-[Desktop app guide](docs/gui.md).
+Start it with `wineo-gui`, or from your app menu once it has an entry (see
+[After installing](#after-installing)). Everything it does is covered in
+the [Desktop app guide](docs/gui.md).
 
 ## Install
 
 ### Arch Linux
 
 The repository has a `wineo-git` PKGBUILD that builds the latest `main` and
-installs the binary, shell completions, and man pages:
+installs both programs, the desktop app's menu entry, shell completions, and
+man pages:
 
 ```sh
 git clone https://github.com/MeandrousShark/wineo.git
@@ -117,9 +133,20 @@ git config filter.pkgver.smudge cat
 
 ### Prebuilt binaries
 
-From 1.0, each release on GitHub has a `wineo-X.Y.Z-x86_64-linux.tar.gz`
-with `wineo` and `wineo-gui`, built for Ubuntu 22.04 and newer (glibc 2.35).
-On Ubuntu or Debian, the desktop app needs these packages:
+Each [release](https://github.com/MeandrousShark/wineo/releases) has a
+`wineo-X.Y.Z-x86_64-linux.tar.gz` with `wineo` and `wineo-gui`, built for
+x86_64 Linux with glibc 2.35 or newer (Ubuntu 22.04, Debian 12, Fedora 36,
+and later). To install a release into `~/.local/bin`:
+
+```sh
+version=1.0.0
+curl -LO https://github.com/MeandrousShark/wineo/releases/download/v$version/wineo-$version-x86_64-linux.tar.gz
+tar -xzf wineo-$version-x86_64-linux.tar.gz
+install -Dm755 -t ~/.local/bin wineo-$version-x86_64-linux/wineo wineo-$version-x86_64-linux/wineo-gui
+```
+
+On Ubuntu or Debian, install these packages for the desktop app with
+`sudo apt install`:
 
 <!-- ubuntu-runtime-packages:start -->
 ```
@@ -140,15 +167,28 @@ libvulkan1
 ### From source
 
 You need a recent stable Rust toolchain (the workspace uses the 2024
-edition) and `pkg-config`.
+edition), a C compiler, and `pkg-config`. Build and install both programs:
 
 ```sh
-cargo build --release -p wineo-cli
-install -Dm755 target/release/wineo ~/.local/bin/wineo
+git clone https://github.com/MeandrousShark/wineo.git
+cd wineo
+cargo build --release -p wineo-cli -p wineo-gui
+install -Dm755 -t ~/.local/bin target/release/wineo target/release/wineo-gui
+```
+
+### After installing
+
+Make sure `~/.local/bin` is on your `PATH`. The prebuilt and source
+installs don't add the desktop app to your app menu. To add it, fetch its
+entry and icon:
+
+```sh
+base=https://raw.githubusercontent.com/MeandrousShark/wineo/main/crates/wineo-gui/assets
+curl -fLo ~/.local/share/applications/wineo-gui.desktop --create-dirs $base/wineo-gui.desktop
+curl -fLo ~/.local/share/icons/hicolor/scalable/apps/wineo-gui.svg --create-dirs $base/wineo-gui.svg
 ```
 
 See [Shell completion](docs/shell-completion.md) to set up completions.
-
 To install the man pages, write them into a folder your `man` searches:
 
 ```sh
