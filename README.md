@@ -7,105 +7,14 @@ software that's a prefix, a runner (Wine or Proton through umu), launch
 targets, and settings, all in plain TOML you can read and edit. Use it from
 the command line or the desktop app.
 
+![The wineo desktop app's library, a grid of game and app posters](docs/screenshots/library.webp)
+
 ```sh
 wineo new                  # guided setup: runner, template, installer or exe
 wineo start hades          # launch in the background
 wineo status               # what's running
 wineo stop hades
 ```
-
-## Why wineo
-
-Bottles, Lutris, and Heroic are all good at what they do. wineo is for
-people who want the terminal to be a first-class way in. Nearly everything
-the desktop app does is a `wineo` command too, with `--json` output and
-documented exit codes for scripts. Nothing lives in a hidden database: each
-environment is a TOML file you can read, edit by hand, or keep in git, and
-wineo's own edits keep your comments and formatting. The desktop app works
-on those same files and the same run state, so a game started from a script
-shows as running in the app, and a change made in either one shows up in
-the other.
-
-## Features
-
-- **Guided setup.** `wineo new` walks through the runner, a template, an
-  installer or existing executable, and SteamGridDB art, then offers the
-  programs it finds as launch targets.
-- **Wine and Proton.** Use system Wine, downloaded Wine builds, or Proton
-  through `umu-launcher`. `wineo download` fetches runners, DXVK, and
-  vkd3d-proton with checksum verification, or use
-  [Wine and Proton builds already installed by Steam, Heroic, or Lutris](docs/downloads-and-imports.md#use-builds-from-steam-heroic-and-lutris).
-- **Native Linux games.** [Native games](docs/native.md) get the same
-  library, launch targets, launch options, art, and playtime as everything
-  else, with no prefix or runner.
-- **Targets.** Each environment can have several launch targets, one of them
-  the default, with their own arguments, working directory, and desktop entry.
-- **Supervised runs.** `start` runs in the background, `stop` ends the whole
-  process tree, and `logs` shows the output. `run` stays attached to the
-  terminal.
-- **Imports.** Adopt or copy an existing prefix, or import games from Heroic
-  with their launch settings.
-- **Steam games.** Bring [Steam games](docs/steam.md) into the library,
-  installed or just owned, to tag, launch, stop, and track playtime, while
-  Steam keeps managing them. Owned games can be installed through Steam
-  from wineo.
-- **GOG games.** Log in and install the [GOG games](docs/gog.md) you own,
-  native or Windows, or move the ones Heroic installed into wineo, then keep
-  them and their DLC up to date. No GOG Galaxy client needed.
-- **Clones, snapshots, and portable folders.** Copy an environment, snapshot
-  and restore its prefix on a filesystem with reflinks (Btrfs, XFS), or keep
-  everything in a folder you can move to another drive.
-- **Artwork.** Store icons, posters, heroes, and logos per environment, from
-  your own files or SteamGridDB.
-- **Desktop app.** A poster library of everything you have, with guided
-  flows for the rest. See [Desktop app](#desktop-app) below.
-- **Scripting friendly.** `--json` output for `status` and `list`, and live
-  shell completion for environment and target names.
-
-## Desktop app
-
-`wineo-gui` is wineo's desktop app. It uses the same configs, prefixes, and
-run state as the CLI, so you can switch between the two whenever you like:
-a game started from the terminal shows as running in the app within a
-couple of seconds.
-
-<!-- Screenshots: the library grid, a game's panel, and the Appearance tab. -->
-
-- **Library.** Every environment is a poster card with its art, whether
-  it's running, and how long you've played it. Search by title, name, or
-  tag; sort by name, last played, playtime, or date added; and filter by
-  store (Steam, GOG, Epic, Amazon), platform, or tag. Star favorites, hide
-  what you don't want to see, zoom the grid from 60% to 200%, or switch to
-  posters only.
-- **A panel for each game.** Click a card for its hero art and logo, state,
-  playtime, sessions, and tags, with Play and Stop, the live log, settings,
-  art, and more actions. Double-click a card to launch it right away.
-- **Add and import.** Guided flows create an environment from an installer
-  or a program already on disk, import a prefix, or bring in games from
-  Heroic, Steam, and GOG. Clones work the same way. Each one ends in a
-  review before anything changes.
-- **Settings.** Each environment has a page for its title, runner, launch
-  options, targets, and environment variables. The global page holds the
-  defaults for new environments and launches, art fetching, API keys, and
-  your GOG login. Edits collect until you save them.
-- **Art.** Choose icons, posters, heroes, and logos from your own files or
-  from SteamGridDB.
-- **Upkeep.** Trash restores removed environments, Checkup runs
-  `wineo validate` over everything, Downloads shows which runners and
-  graphics builds are in use, and Snapshots saves and restores prefixes.
-  Wine environments can run a program or winetricks verbs, or be copied to
-  a portable folder.
-- **Themes.** The app follows your desktop's light or dark mode. Pick from
-  eight built-in themes (Midnight, Daylight, Cellar, Cellar Light, High
-  contrast, Dracula, and Catppuccin Macchiato and Latte), or make your own,
-  saved as plain TOML files you can share. An option raises text contrast
-  in any theme.
-- **Keyboard.** Arrow keys move between cards, Enter opens a card and then
-  plays it, F stars it, and Ctrl+= and Ctrl+- zoom.
-
-Start it with `wineo-gui`, or from your app menu once it has an entry (see
-[After installing](#after-installing)). Everything it does is covered in
-the [Desktop app guide](docs/gui.md).
 
 ## Install
 
@@ -204,6 +113,102 @@ wineo manpages ~/.local/share/man/man1
 - a Secret Service keyring (GNOME Keyring, KWallet) on the D-Bus session bus
   to store the SteamGridDB and Steam Web API keys; without one, wineo falls
   back to private files
+
+## Why wineo
+
+Bottles, Lutris, and Heroic are all good at what they do. wineo is for
+people who want the terminal to be a first-class way in. Nearly everything
+the desktop app does is a `wineo` command too, with `--json` output and
+documented exit codes for scripts. Nothing lives in a hidden database: each
+environment is a TOML file you can read, edit by hand, or keep in git, and
+wineo's own edits keep your comments and formatting. The desktop app works
+on those same files and the same run state, so a game started from a script
+shows as running in the app, and a change made in either one shows up in
+the other.
+
+## Features
+
+- **Guided setup.** `wineo new` walks through the runner, a template, an
+  installer or existing executable, and SteamGridDB art, then offers the
+  programs it finds as launch targets.
+- **Wine and Proton.** Use system Wine, downloaded Wine builds, or Proton
+  through `umu-launcher`. `wineo download` fetches runners, DXVK, and
+  vkd3d-proton with checksum verification, or use
+  [Wine and Proton builds already installed by Steam, Heroic, or Lutris](docs/downloads-and-imports.md#use-builds-from-steam-heroic-and-lutris).
+- **Native Linux games.** [Native games](docs/native.md) get the same
+  library, launch targets, launch options, art, and playtime as everything
+  else, with no prefix or runner.
+- **Targets.** Each environment can have several launch targets, one of them
+  the default, with their own arguments, working directory, and desktop entry.
+- **Supervised runs.** `start` runs in the background, `stop` ends the whole
+  process tree, and `logs` shows the output. `run` stays attached to the
+  terminal.
+- **Imports.** Adopt or copy an existing prefix, or import games from Heroic
+  with their launch settings.
+- **Steam games.** Bring [Steam games](docs/steam.md) into the library,
+  installed or just owned, to tag, launch, stop, and track playtime, while
+  Steam keeps managing them. Owned games can be installed through Steam
+  from wineo.
+- **GOG games.** Log in and install the [GOG games](docs/gog.md) you own,
+  native or Windows, or move the ones Heroic installed into wineo, then keep
+  them and their DLC up to date. No GOG Galaxy client needed.
+- **Clones, snapshots, and portable folders.** Copy an environment, snapshot
+  and restore its prefix on a filesystem with reflinks (Btrfs, XFS), or keep
+  everything in a folder you can move to another drive.
+- **Artwork.** Store icons, posters, heroes, and logos per environment, from
+  your own files or SteamGridDB.
+- **Desktop app.** A poster library of everything you have, with guided
+  flows for the rest. See [Desktop app](#desktop-app) below.
+- **Scripting friendly.** `--json` output for `status` and `list`, and live
+  shell completion for environment and target names.
+
+## Desktop app
+
+`wineo-gui` is wineo's desktop app. It uses the same configs, prefixes, and
+run state as the CLI, so you can switch between the two whenever you like:
+a game started from the terminal shows as running in the app within a
+couple of seconds.
+
+<p>
+  <img src="docs/screenshots/panel.webp" width="49%" alt="A game's panel with its hero art, playtime, tags, and Play button">
+  <img src="docs/screenshots/themes.webp" width="49%" alt="The Appearance settings with the list of built-in themes">
+</p>
+
+- **Library.** Every environment is a poster card with its art, whether
+  it's running, and how long you've played it. Search by title, name, or
+  tag; sort by name, last played, playtime, or date added; and filter by
+  store (Steam, GOG, Epic, Amazon), platform, or tag. Star favorites, hide
+  what you don't want to see, zoom the grid from 60% to 200%, or switch to
+  posters only.
+- **A panel for each game.** Click a card for its hero art and logo, state,
+  playtime, sessions, and tags, with Play and Stop, the live log, settings,
+  art, and more actions. Double-click a card to launch it right away.
+- **Add and import.** Guided flows create an environment from an installer
+  or a program already on disk, import a prefix, or bring in games from
+  Heroic, Steam, and GOG. Clones work the same way. Each one ends in a
+  review before anything changes.
+- **Settings.** Each environment has a page for its title, runner, launch
+  options, targets, and environment variables. The global page holds the
+  defaults for new environments and launches, art fetching, API keys, and
+  your GOG login. Edits collect until you save them.
+- **Art.** Choose icons, posters, heroes, and logos from your own files or
+  from SteamGridDB.
+- **Upkeep.** Trash restores removed environments, Checkup runs
+  `wineo validate` over everything, Downloads shows which runners and
+  graphics builds are in use, and Snapshots saves and restores prefixes.
+  Wine environments can run a program or winetricks verbs, or be copied to
+  a portable folder.
+- **Themes.** The app follows your desktop's light or dark mode. Pick from
+  eight built-in themes (Midnight, Daylight, Cellar, Cellar Light, High
+  contrast, Dracula, and Catppuccin Macchiato and Latte), or make your own,
+  saved as plain TOML files you can share. An option raises text contrast
+  in any theme.
+- **Keyboard.** Arrow keys move between cards, Enter opens a card and then
+  plays it, F stars it, and Ctrl+= and Ctrl+- zoom.
+
+Start it with `wineo-gui`, or from your app menu once it has an entry (see
+[After installing](#after-installing)). Everything it does is covered in
+the [Desktop app guide](docs/gui.md).
 
 ## Usage
 
