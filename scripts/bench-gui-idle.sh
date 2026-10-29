@@ -118,7 +118,7 @@ napper=
 reap() {
     local pid
     for pid in "$@"; do
-        [[ -n $pid ]] && kill "$pid" 2>/dev/null || true
+        if [[ -n $pid ]]; then kill "$pid" 2>/dev/null || true; fi
     done
     for _ in $(seq 20); do
         local alive=0
@@ -130,7 +130,9 @@ reap() {
     done
     # Only what is still alive: a pid that already exited may have been reused.
     for pid in "$@"; do
-        [[ -n $pid ]] && kill -0 "$pid" 2>/dev/null && kill -9 "$pid" 2>/dev/null || true
+        if [[ -n $pid ]] && kill -0 "$pid" 2>/dev/null; then
+            kill -9 "$pid" 2>/dev/null || true
+        fi
     done
 }
 cleanup() {
