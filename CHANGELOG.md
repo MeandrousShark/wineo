@@ -4,6 +4,18 @@ A finished plan bumps the minor version and fixes between plans bump the
 patch version. A plan released in parts bumps the minor version for each
 part. See `AGENTS.md` for the rule.
 
+## 0.39.1 - 2026-10-28
+
+A fix for Steam's library window opening on a cold launch.
+
+- Behavior changes:
+  - When Steam isn't running, launching a Steam game starts it with
+    `steam -silent` first and sends `-applaunch` once its client is up, up
+    to a minute later. Steam ignores `-silent` when `-applaunch` comes in
+    the same cold start, so 0.39.0's single command still opened the library
+    window. `wineo start` returns once the request is handed off. A launch
+    with Steam already running is sent right away, as before.
+
 ## 0.39.0 - 2026-10-28
 
 Color themes for the desktop app, from
