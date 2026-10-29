@@ -43,9 +43,9 @@ work, tokens, force-pushes) are marked **maintainer-present**.
 - **`features.md` stays public,** cleaned up so it doesn't point at the
   private docs.
 - **The published AUR PKGBUILD clones the GitHub mirror over HTTPS,**
-  since the Gitea SSH source only works for the maintainer. A local
-  PKGBUILD can keep using Gitea. Publishing it waits for the packages plan
-  (answer 9).
+  since the Gitea SSH source only works for the maintainer. Publishing it
+  waits for the packages plan (answer 9). The repo's own `PKGBUILD` moves
+  to that source too (answer 10).
 
 Answers to the plan's questions (2026-10-28):
 
@@ -67,6 +67,12 @@ Answers to the plan's questions (2026-10-28):
 9. **No AUR package at 1.0.** It comes with the packages plan, alongside
    deb and rpm.
 
+Answer to the plan review (2026-10-28):
+
+10. **The repo's `PKGBUILD` switches to the GitHub HTTPS source,** so the
+    README's makepkg steps work for anyone. Gitea mirrors on every push, so
+    the maintainer's builds see the same commits.
+
 ## Existing foundation
 
 - **1.0 criteria 1 to 8 are done or closed** (features.md). The contract
@@ -80,8 +86,9 @@ Answers to the plan's questions (2026-10-28):
   (2026-10-15) to `efcf688a` (2026-10-22): 2,854 files, about 2.4 GB
   uncompressed, against about 240 MB for everything else in history. The
   biggest other blobs are the two bundled Noto Sans fonts at about 620 KB
-  each. Rewriting from `ab93c8f2` changes 511 commits and 10 tags (v0.33.0
-  onward). Commits before it keep their hashes.
+  each. Rewriting from `ab93c8f2` changes every commit from there on (516
+  as of 0.39.1) and every tag from v0.33.0 on (11 as of 0.39.1). Commits
+  before it keep their hashes.
 - **Commit hashes in docs.** `CHANGELOG.md` has none. About 23 plan files
   cite hashes, and some of them are in the rewritten range. The one hash in
   the upgrade fixtures (`b73dcfc8`, in `fixtures/legacy/README.md`) is
@@ -130,23 +137,33 @@ checkout:
    (`git rev-list --objects --all | rg crates/target` is empty), every tag
    still points at a commit with the same tree apart from `crates/target`,
    and the pack is far smaller than today's (about 551 MiB).
-4. Run `gitleaks git` over the rewritten history.
+4. Run `gitleaks git` over the rewritten history, and
+   `git bundle verify` on the backup.
 5. **Maintainer-present:** check that Gitea's branch protection allows a
    force-push to main, then push branches and tags with `--force`. Not
    `--mirror`, which would also delete refs Gitea has that the clone
    doesn't.
-6. Re-sync every local clone: the main checkout resets to the new
-   `origin/main` with the maintainer present, and `./wineo/` (makepkg's
-   checkout) is deleted so the next makepkg clones fresh.
+6. Re-sync every local clone, tags included. Resetting a branch leaves its
+   old tags behind, and they still hold `crates/target`, so a later
+   `push --tags --force` from that clone would undo the scrub. The main
+   checkout is re-cloned with the maintainer present, after its untracked
+   work (the `.private.git` folder and the private paths) is moved across.
+   A clone that has to stay deletes its tags and fetches them again
+   (`git tag -l | xargs git tag -d && git fetch --tags`). Either way, it
+   passes the same `rg crates/target` check before anything is pushed from
+   it. `./wineo/` (makepkg's checkout) is deleted so the next makepkg clones
+   fresh.
 
 The `0054-step0` branch and the `../.worktrees/wineo/step6-bench` results
 folder are deleted beforehand, after the maintainer confirms.
 
 Hashes inside plan files would go stale, so they're rewritten (answer 3).
-A script reads `filter-repo/commit-map` from the rewritten clone, replaces
-each old hash it finds in `docs/plans/` with the new one at the same length,
-and leaves hashes from before `ab93c8f2` alone, since those don't change.
-The result is a commit in the private repo.
+A script reads `filter-repo/commit-map` from the rewritten clone, resolves
+each hash it finds in `docs/plans/` to its full old hash in the backup,
+replaces it with the new one at the same length, and leaves hashes from
+before `ab93c8f2` alone, since those don't change. It then checks that every
+rewritten hash resolves in the new history. The result is a commit in the
+private repo.
 
 ### Private docs
 
@@ -160,6 +177,14 @@ It uses a second git directory at the repo root (answer 4):
   `pgit` alias.
 - Its `info/exclude` ignores everything except those three paths.
 - The public `.gitignore` ignores `.private.git/` and the three paths.
+  Both repos share the work tree, and with it every `.gitignore`, which
+  outranks `info/exclude`. So the private repo doesn't see a new plan
+  until it's added with `pgit add -f`, and `pgit status` doesn't list
+  untracked private files. The rules stay in the committed `.gitignore`
+  anyway, so a fresh public clone can never pick up private files, with no
+  setup step to forget. `workflow.md` says to add new plans with
+  `pgit add -f`, and a `pgit-status` alias runs `status --ignored` over the
+  three paths.
 - The public repo drops them with `git rm --cached`, so the files stay on
   disk.
 - Its history comes from the public repo (answer 5). Run `git filter-repo
@@ -170,7 +195,7 @@ It uses a second git directory at the repo root (answer 4):
   Gitea's web UI first, since push-to-create is off.
 
 Agents keep finding everything at the same paths. `workflow.md` gains a
-line on committing plans with `pgit`.
+line on committing plans with `pgit`, and on adding new ones with `-f`.
 
 Public docs then lose their links into private files:
 
@@ -194,6 +219,9 @@ Public docs then lose their links into private files:
 - Check that every branch and tag hash on GitHub matches Gitea.
 - `Cargo.toml` gains `repository`, and `README.md`'s clone URL points at
   GitHub.
+- The repo's `PKGBUILD` takes the GitHub HTTPS `source` and the GitHub
+  `url` (answer 10), once the mirror is up, so makepkg never points at a
+  repo that doesn't exist yet.
 
 ### CI
 
@@ -237,7 +265,7 @@ by rewriting Gitea.
    delete the `0054-step0` branch and the step6-bench folder once
    confirmed; rerun `gitleaks git`; sweep current public files for
    personal details (paths under `/home`, hostnames) beyond the
-   `git.hannoncloud.com` URLs, which change in step 2.
+   `git.hannoncloud.com` URLs, which change in steps 2 and 5.
 1. **CI workflows** (code): `ci.yml` and `release.yml`.
 2. **Public docs cleanup** (docs): plan links to plain text across the
    files listed above, the README Contributing section and clone URL,
@@ -249,18 +277,13 @@ by rewriting Gitea.
 4. **History scrub** (**maintainer-present** for the force-push): as
    above, including the plan-hash rewrite.
 5. **GitHub mirror** (**maintainer-present**): repo, token, push mirror,
-   and a check that the hashes match.
+   a check that the hashes match, then the `PKGBUILD` source switch.
 6. **First CI run** through `workflow_dispatch` on main, plus patch fixes
    for anything Ubuntu turns up.
 7. **Release 1.0.0**: changelog, `stability.md` tense, the `features.md`
    1.0 note and queue, the version, the tag, and the push. The mirror
    carries the tag to GitHub and Actions runs.
 8. **Upgrade fixture set** for `v1.0.0`.
-
-The repo's `PKGBUILD` keeps its Gitea SSH `source` for the maintainer's
-own builds. Its `url` points at the GitHub repo from step 2, since that's
-the project's public home. The AUR copy, with the HTTPS source, comes with
-the packages plan.
 
 ## Testing and acceptance
 
@@ -273,12 +296,17 @@ the packages plan.
 - CI: the manual run on main passes. The 1.0.0 tag's run passes, the
   Release has the tarball, and its binaries run `wineo --version` on a
   non-Arch system or container.
-- Docs: `rg 'plans/|workflow\.md|docs/design'` over the public files finds
-  nothing, and every relative link in `README.md` and `docs/` resolves.
+- Docs: every relative link in `README.md` and `docs/` resolves, and
+  `rg 'plans/|workflow\.md|docs/design'` over the public files finds only
+  the `AGENTS.md` note and `.gitignore`.
 - Private: a fresh clone of `wineo-private` into a fresh public clone
   restores the three paths, and `git status` in the public repo stays
-  clean.
-- makepkg from the repo's `PKGBUILD` still builds 1.0.0 from Gitea.
+  clean. A new plan file is added with `pgit add -f`, committed, pushed,
+  and restored the same way, and never shows in the public repo's
+  `git status`.
+- Tags: in every clone kept after the scrub, no tag reaches a commit with
+  `crates/target`.
+- makepkg from the repo's `PKGBUILD` builds 1.0.0 from GitHub.
 
 ## Scope limits
 
