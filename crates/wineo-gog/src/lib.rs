@@ -45,3 +45,4 @@ pub use owned::{OwnedPage, OwnedProduct, Platforms, collect_pages};
 pub use product::{
     Build, Builds, Compatibility, Download, DownloadFile, Images, Product, ResolvedLink,
 };
+const _PR_TEST_BAD_FMT:u8=0;
