@@ -5,6 +5,6 @@ target/
 *.pkg.tar.*
 # The maintainer's private docs, kept in a second repo in .private.git
 .private.git/
-/docs/plans/
+/docs/plans/*
 /docs/workflow.md
-/docs/design/
+/docs/design/*
