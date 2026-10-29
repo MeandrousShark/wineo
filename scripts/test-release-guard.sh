@@ -2,7 +2,8 @@
 # Runs scripts/release-guard.sh against throwaway git repositories, one case
 # per refusal plus the cases that must pass, and checks the two helper
 # scripts too. Nothing here touches the real repository, the network, or
-# GitHub: the Release list comes from RELEASE_GUARD_RELEASES.
+# GitHub: the Release list comes from RELEASE_GUARD_RELEASES, except in the
+# last guard cases, which run the real `gh` code path against a fake `gh`.
 #
 # Usage: scripts/test-release-guard.sh
 # Exits non-zero if any case behaves wrongly.
@@ -78,6 +79,17 @@ run_guard() {
     GITHUB_EVENT_NAME=$event GITHUB_REF=refs/tags/$tag GITHUB_SHA=$sha \
         RELEASE_GUARD_REPO=$repo RELEASE_GUARD_MAIN_REF=main \
         RELEASE_GUARD_RELEASES=$releases \
+        "$guard" >"$tmp/out" 2>&1 && status=0 || status=$?
+}
+
+# run_guard_gh TAG SHA
+# Like run_guard, but without RELEASE_GUARD_RELEASES, so the guard calls
+# `gh` from the fake bin directory.
+run_guard_gh() {
+    env -u RELEASE_GUARD_RELEASES \
+        PATH="$tmp/bin:$PATH" GH_REPO=owner/repo \
+        GITHUB_EVENT_NAME=push GITHUB_REF=refs/tags/"$1" GITHUB_SHA="$2" \
+        RELEASE_GUARD_REPO="$repo" RELEASE_GUARD_MAIN_REF=main \
         "$guard" >"$tmp/out" 2>&1 && status=0 || status=$?
 }
 
@@ -222,6 +234,47 @@ new_repo 1.9.0 1.9.0
 annotate v1.9.0
 run_guard v1.9.0 "$tip" $'v1.10.0'
 expect_refusal "1.9.0 after 1.10.0" "not higher than the existing Release v1.10.0"
+
+# The real `gh` path, with a fake gh on PATH. The fake prints the tag names
+# in FAKE_GH_RELEASES (a file) the way `gh api --paginate --jq` would. It
+# fails when FAKE_GH_FAIL is set, and without --paginate it prints only the
+# first 100 lines, one page, so a guard that forgets to paginate misses
+# anything after that.
+mkdir "$tmp/bin"
+cat >"$tmp/bin/gh" <<'GH'
+#!/bin/bash
+[[ -z ${FAKE_GH_FAIL:-} ]] || { echo "gh: HTTP 502" >&2; exit 1; }
+[[ $1 == api && $2 == --paginate && $3 == "repos/owner/repo/releases"* ]] || {
+    echo "fake gh: unexpected arguments: $*" >&2
+    exit 1
+}
+cat "$FAKE_GH_RELEASES"
+GH
+chmod +x "$tmp/bin/gh"
+export FAKE_GH_RELEASES=$tmp/releases.txt
+
+new_repo 1.5.0 1.5.0
+annotate v1.5.0
+
+: >"$FAKE_GH_RELEASES"
+# gh's own error line stays visible above the guard's one-line reason.
+FAKE_GH_FAIL=1 run_guard_gh v1.5.0 "$tip"
+tail -n 1 "$tmp/out" >"$tmp/out.last"
+grep -qF "gh: HTTP 502" "$tmp/out" && mv "$tmp/out.last" "$tmp/out"
+expect_refusal "gh fails" "could not list GitHub Releases"
+
+# 250 Releases is more than two pages; the higher one is last.
+for i in $(seq 1 249); do echo "v1.0.$i"; done >"$FAKE_GH_RELEASES"
+run_guard_gh v1.5.0 "$tip"
+expect_ok "gh list of 249 lower Releases"
+
+echo v2.0.0 >>"$FAKE_GH_RELEASES"
+run_guard_gh v1.5.0 "$tip"
+expect_refusal "gh higher Release on a late page" "not higher than the existing Release v2.0.0"
+
+echo v1.5.0 >"$FAKE_GH_RELEASES"
+run_guard_gh v1.5.0 "$tip"
+expect_refusal "gh Release for the tag" "already exists"
 
 # changelog-section.sh.
 new_repo 1.0.0 1.0.0

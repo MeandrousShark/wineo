@@ -15,7 +15,7 @@
 #
 # Environment:
 #   GITHUB_EVENT_NAME, GITHUB_REF, GITHUB_SHA   set by GitHub Actions
-#   GH_TOKEN, GH_REPO                           for `gh release list`
+#   GH_TOKEN, GH_REPO                           for `gh api` (Release list)
 #   RELEASE_GUARD_REPO      the git repository (default: current directory)
 #   RELEASE_GUARD_MAIN_REF  the main branch ref (default: origin/main)
 #   RELEASE_GUARD_RELEASES  newline-separated Release tags, used instead of
@@ -112,7 +112,9 @@ changelog=$(git_ show "$sha:CHANGELOG.md" 2>/dev/null) ||
 if [[ -n ${RELEASE_GUARD_RELEASES+set} ]]; then
     releases=$RELEASE_GUARD_RELEASES
 else
-    releases=$(gh release list --limit 1000 --json tagName --jq '.[].tagName') ||
+    # Every page, so "higher than every Release" really means every one.
+    gh_repo=${GH_REPO:-'{owner}/{repo}'}
+    releases=$(gh api --paginate "repos/$gh_repo/releases?per_page=100" --jq '.[].tag_name') ||
         refuse "could not list GitHub Releases"
 fi
 
