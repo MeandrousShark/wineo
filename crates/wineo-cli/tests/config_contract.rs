@@ -279,7 +279,8 @@ fn commands_print_one_summary_line_for_deprecated_keys() {
         &["status", "hades"],
         &["config", "hades"],
         &["templates"],
-        &["set", "hades", "mangohud=true"],
+        // A title, not mangohud, so `start` doesn't need MangoHud installed.
+        &["set", "hades", "title=Hades"],
         &["start", "hades"],
         &["restart", "hades"],
         &["stop", "hades"],
