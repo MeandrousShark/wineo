@@ -130,8 +130,18 @@ saying when the criteria were met, with the details left to git history.
 ### History scrub
 
 Done on a fresh `git clone --mirror` of Gitea, never on the working
-checkout:
+checkout, while Gitea is frozen:
 
+0. **Maintainer-present: freeze Gitea.** The maintainer confirms that
+   nothing else will push to `mphannon/wineo` until the freeze ends: no
+   other Claude sessions or coding agents running, no pushes from other
+   machines, and every clone's work either pushed or saved outside git. A
+   commit pushed after the mirror clone would be lost to the force-push,
+   and one pushed from an unscrubbed clone afterward would bring the old
+   history back. Gitea can't enforce this, since every push comes from the
+   maintainer's account, so it's a checkpoint plus a check:
+   `git ls-remote origin > frozen-refs.txt` records every branch and tag
+   on Gitea at that moment.
 1. Keep a backup: `git bundle create wineo-pre-scrub.bundle --all`, on
    disk outside the repo, until 1.0 has been out for a while.
 2. `git filter-repo --path crates/target --invert-paths`. filter-repo also
@@ -143,9 +153,13 @@ checkout:
 4. Run `gitleaks git` over the rewritten history, and
    `git bundle verify` on the backup.
 5. **Maintainer-present:** check that Gitea's branch protection allows a
-   force-push to main, then push branches and tags with `--force`. Not
-   `--mirror`, which would also delete refs Gitea has that the clone
-   doesn't.
+   force-push to main, and that `git ls-remote origin` still matches
+   `frozen-refs.txt` exactly. Any difference means something was pushed
+   during the freeze, and the scrub starts over from a new mirror clone.
+   Then push branches with `--force-with-lease` against the frozen hashes,
+   so a push that slipped in after the check is refused rather than
+   overwritten, and push tags with `--force`. Not `--mirror`, which would
+   also delete refs Gitea has that the clone doesn't.
 6. Re-sync every local clone, tags included. Resetting a branch leaves its
    old tags behind, and they still hold `crates/target`, so a later
    `push --tags --force` from that clone would undo the scrub. The main
@@ -156,6 +170,9 @@ checkout:
    passes the same `rg crates/target` check before anything is pushed from
    it. `./wineo/` (makepkg's checkout) is deleted so the next makepkg clones
    fresh.
+7. **Maintainer-present: end the freeze** once every kept clone has passed
+   that check and the main checkout is the fresh clone. Pushing to Gitea
+   resumes from there.
 
 The `0054-step0` branch and the `../.worktrees/wineo/step6-bench` results
 folder are deleted beforehand, after the maintainer confirms.
@@ -295,8 +312,9 @@ by rewriting Gitea.
 3. **Private repo split** (**maintainer-present** for the Gitea repo):
    extract the three paths' history into `.private.git` and push it, then
    the public commit that untracks and ignores them.
-4. **History scrub** (**maintainer-present** for the force-push): as
-   above, including the plan-hash rewrite.
+4. **History scrub** (**maintainer-present** for the freeze and the
+   force-push): as above, including the plan-hash rewrite. Gitea stays
+   frozen from the mirror clone until every kept clone is re-synced.
 5. **GitHub mirror** (**maintainer-present**): repo, token, push mirror,
    a check that the hashes match, then the `PKGBUILD` source switch.
 6. **First CI run** through `workflow_dispatch` on main, plus patch fixes
@@ -310,7 +328,7 @@ by rewriting Gitea.
 
 - Before the force-push: the checks in the scrub section on the rewritten
   mirror clone, plus a fresh clone of it that builds and passes
-  `cargo test`.
+  `cargo test`, and Gitea's refs still matching `frozen-refs.txt`.
 - After the mirror: GitHub's branches and all tags match Gitea hash for
   hash, and a clone from GitHub has no `crates/target` in any commit and
   no private paths at `HEAD`.
