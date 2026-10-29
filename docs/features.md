@@ -9,8 +9,7 @@ own numbered plan. What has shipped is in
 The order the maintainer picked on 2026-10-14, after 0051. Each item gets
 its own plan when it comes up, and the rows below have the details.
 
-1. 1.0, once the [1.0 criteria](#10-criteria) are met.
-2. Release packages (deb, rpm, AppImage), shortly after 1.0.
+1. Release packages (deb, rpm, AppImage), shortly after 1.0.
 
 Library views parts 3 to 5 (list view, saved presets and grouping,
 coverflow) aren't in the order; they can land in 1.x (maintainer,
@@ -34,8 +33,7 @@ coverflow) aren't in the order; they can land in 1.x (maintainer,
 Redefined by the maintainer on 2026-10-14 around 1.0, and anchored on
 the first 1.x releases from 1.0 on:
 
-- 1 = next: what the public 1.0 needs, then what the first 1.x releases
-  should bring
+- 1 = next: what the first 1.x releases should bring
 - 2 = soon: polish people meet in daily use, small and high value
 - 3 = later: wanted, but bigger, or nothing is asking for it yet
 - 4 = someday: parked until a real need shows up
@@ -45,7 +43,6 @@ the first 1.x releases from 1.0 on:
 | Feature | Category | Priority | Depends on | Why | Notes |
 |---|---|---:|---|---|---|
 | GUI library views | UX | **1** | 0036 | Browse the library the way that fits the moment | Split by the maintainer into five plans (2026-10-17): 1) sorting, filters, favorites, and hidden games, plan 0054, released in 0.36.0; 2) grid zoom and the poster-only toggle, plan 0055, released in 0.37.0; 3) list view; 4) saved presets and grouping; 5) coverflow with controller navigation. 0054's Series section keeps the ideas for each. Parts 1 and 2 land before 1.0; parts 3 to 5 can land in 1.x (maintainer, 2026-10-17). |
-| GitHub mirror and CI | Distribution | **1** | | Publish wineo at 1.0 while the maintainer keeps working in Gitea | Gitea stays primary and push-mirrors to GitHub at 1.0, with Actions on outside PRs and tags. Details in the [sketch](sketches/github-mirror.md). |
 | Edit hooks in GUI Settings | UX | **2** | 0046 | Set a game's hooks without editing TOML or using `wineo set` | Left out of plan 0046 by the maintainer (2026-10-06). The GUI already runs hooks. |
 | Bulk tagging | UX | **2** | 0033 | Add or remove a tag on many environments at once instead of one `wineo set` per environment | Suggested by the maintainer during 0045 acceptance (2026-10-07), mostly for the GUI. Today `tags=[...]` replaces the whole list, and GUI tags are edited one environment at a time in Settings. Likely shape: `wineo tag add TAG NAME...` and `wineo tag remove TAG NAME...`, plus multi-select in the Library with an add/remove tag action. The GUI part needs a design pass on how multi-select works with the grid and keyboard. |
 | Exclude filters | UX | **2** | 0054 | Show everything except a tag, store, or platform, like "no co-op" | From the maintainer during 0054 acceptance (2026-10-19): right-clicking a Filters popup row would exclude it instead of including it. Needs a design pass: an excluded row's and chip's look ("not co-op"), a keyboard way to exclude since right-click alone isn't reachable from the keyboard (or a click cycling off, include, exclude), how excludes combine with includes in the same group, and whether the Filters (N) count includes them. Fits beside 0054's part 4 (saved presets and grouping), which reworks the same popup. |
@@ -96,73 +93,12 @@ the first 1.x releases from 1.0 on:
 | Random game picker | UX | **4** | 0036 | Pick something to play when you can't decide | A button that picks from the current filter. From the Playnite comparison (2026-10-14). |
 | Controller fullscreen mode | UX | **4** | GUI library views | A whole controller-first mode for the couch, like Playnite's Fullscreen or Steam's Big Picture | Beyond the library views row's coverflow picker: every page reachable from a gamepad. From the Playnite comparison (2026-10-14). |
 
-## 1.0 criteria
+## 1.0
 
-Approved by the maintainer on 2026-10-06. 1.0 is a promise, not a
-feature count: after it, anything that breaks the public contract waits for
-2.0, and features keep landing in 1.x. Wineo stays on 0.x until the
-maintainer calls it stable, which these criteria are meant to inform.
-
-1. Define the public contract in a doc page: config files, CLI commands and
-   flags, exit codes, `--json` output, and where wineo keeps its files
-   (including the portable layout). Human-readable output, the GUI, and
-   `wineo-core`'s Rust API are not part of it. Done (2026-10-10): see
-   [Stability](stability.md). The maintainer settled the borderline cases:
-   desktop entries and the snapshot and trash layouts are internal, keyring
-   item attributes and the settings merge order are stable, and the built-in
-   `gaming` template's settings and shell completion output aren't promised.
-2. Document exit codes for every command in one place. Today they're spread
-   across feature pages, and only [Validate](validate.md) has a section.
-   In progress (2026-10-06): an audit found 15 inconsistencies. The
-   maintainer settled them: declining a final confirmation or backing out
-   of the first guided question exits 130 like any cancel, `prune` with no
-   selector is a usage error (2), a canceled direct or bulk Heroic import
-   exits 130, and a closed pipe ends output quietly instead of panicking.
-   After review: a closed pipe exits 141, like a SIGPIPE death, so a
-   command cut short never looks successful, and Esc at the first question
-   of any guided flow cancels, with the hint `Esc or Ctrl+C to cancel.`
-   The rest are documented as they are. Done (2026-10-06): see
-   [Exit codes](exit-codes.md).
-3. Document a `--json` schema for every command that has `--json`, and say
-   which changes count as compatible (new fields yes, renamed or removed
-   fields no). [JSON output](json-output.md) covers most of this already.
-   In progress (2026-10-12): an audit of every `--json` command found the
-   page missing `hooks`, two validate codes, enum lists, and nullable
-   fields; those are documented now, with a compatible-changes section.
-   Three gaps were in the code, not the docs. The maintainer settled them
-   (2026-10-12): `update --check --json` and `import gog --list --json`
-   gained `unfinished`, this week's and this month's playtime became
-   text-only for every environment, and `validate --fix` leaving an
-   interrupted snapshot restore for `wineo snapshot recover` stays as
-   documented. Done (2026-10-12): the two code changes shipped in 0.30.1.
-4. Make `schema_version` a guarantee: a config written by any 1.x release
-   loads in every later 1.x, and an older one either loads or migrates
-   cleanly. Add upgrade tests that load fixture configs and state written
-   by earlier releases. Done (2026-10-16): plan 0053
-   in 0.35.0, with fixture sets written by seven real releases and upgrade
-   tests over every set.
-5. Add a deprecation path: a renamed or removed config key or flag keeps
-   working in 1.x with a warning, and `wineo validate` reports it as
-   deprecated. 2.0 is where those become errors. Done (2026-10-16):
-   plan 0053 in 0.35.0, with `deprecated_key` in
-   `validate`, warning aliases for renamed flags and commands, and four
-   renames made before the freeze.
-6. Close or explain the "Other lifecycle timing failures under load" row,
-   so a red test means a real regression.
-   Done (2026-10-13): two root causes fixed in 0.30.1 and every test
-   executable swept onto a child-process writer; see that row.
-7. No known data-loss bugs in trash, snapshots, imports, clone, or portable
-   copies.
-   Audited (2026-10-12) by two reviewers from different model families;
-   everything they found was fixed in 0.30.1, with a delete-by-delete
-   inventory of trash and snapshots. Remaining limits are external races
-   and the two rows under "Close the last nested-prefix gaps".
-8. Land, or decide against, the last big shape change in view: the proxied
-   environment kind from store library import (queue items 4 and 5).
-   Settled (2026-10-12): the proxied kind landed in 0047 and GOG went
-   direct. 0050 and 0052 ship as regular 0.x releases before 1.0, so their
-   new flags, JSON, and state get used before they're frozen; 1.0 itself
-   adds no features, only the promise. Closed: 0052 landed in 0.34.0
-   (2026-10-16).
-9. A stretch of daily use, across at least two releases, where upgrading a
-   real library needs no manual fixes.
+Wineo 1.0.0 shipped on 2026-10-29, once the nine criteria the maintainer
+approved on 2026-10-06 were met: a written public contract
+([Stability](stability.md)), exit codes and `--json` schemas documented for
+every command, configs from earlier releases tested to keep loading, a
+deprecation path for renames, reliable lifecycle tests, an audit for
+data-loss bugs, the last big shape change settled, and a stretch of daily
+use with no manual fixes on upgrade. The details are in git history.

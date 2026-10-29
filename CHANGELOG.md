@@ -4,6 +4,31 @@ A finished plan bumps the minor version and fixes between plans bump the
 patch version. A plan released in parts bumps the minor version for each
 part. See `AGENTS.md` for the rule.
 
+## 1.0.0 - 2026-10-29
+
+Wineo is now considered stable (plan 0058). See
+[Stability](docs/stability.md) for what's promised to stay stable until
+the next major release.
+
+New in this release:
+
+- Wineo's source is public at
+  [github.com/MeandrousShark/wineo](https://github.com/MeandrousShark/wineo),
+  and pull requests there run CI. See
+  [Contributing](README.md#contributing).
+- Each release from 1.0 has prebuilt `wineo` and `wineo-gui` binaries for
+  x86_64 Linux, built for Ubuntu 22.04 and newer (glibc 2.35) and checked
+  in a clean Ubuntu 22.04 before they're published. The README lists the
+  packages the desktop app needs on Ubuntu or Debian.
+- The `PKGBUILD` builds from the GitHub repository over HTTPS, so anyone
+  can run `makepkg` without access to the maintainer's server.
+- [Stability](docs/stability.md) now names the desktop app's own files,
+  `library.toml` and `themes/`, and `wineo-gog`'s Rust API as not
+  promised.
+- The test suite passes on Ubuntu and ext4 as well as Arch and btrfs. Tests
+  no longer lean on the host's display, `wine`, gamescope, MangoHud,
+  winetricks, fonts, or reflink support.
+
 ## 0.39.1 - 2026-10-28
 
 A fix for Steam's library window opening on a cold launch.

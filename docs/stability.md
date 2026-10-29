@@ -1,12 +1,9 @@
 # Stability
 
-This is the promise wineo makes from 1.0 on. Until then, a 0.x release can
-still break any of it, and [the changelog](../CHANGELOG.md) calls out each
-break as a behavior change.
-
-From 1.0, anything on the stable list keeps working through every 1.x
-release. A change that would break it waits for 2.0, and the old form keeps
-working until then with a warning, which `wineo validate` also reports. A
+This is the promise wineo makes. Anything on the stable list keeps working
+through every 1.x release. A change that would break it waits for 2.0, and
+the old form keeps working until then with a warning, which `wineo
+validate` also reports. A
 renamed config key is read under either name and `validate --fix` renames
 it ([Deprecated keys](config-files.md#deprecated-keys)). A renamed flag or
 command keeps its old spelling as a hidden alias that warns, a renamed
@@ -55,7 +52,7 @@ match the docs.
   it keeps for itself: `library.toml` and the custom theme files in
   `themes/`. They're read leniently, so a value wineo can't use falls back
   to its default, and an older release ignores what it doesn't know.
-- **`wineo-core`'s Rust API.**
+- **The Rust APIs of `wineo-core` and `wineo-gog`.**
 - **The built-in `gaming` template's settings.** Its name stays, but what it
   turns on can improve. To keep a fixed set, write your own
   `templates/gaming.toml`, which replaces the built-in one.

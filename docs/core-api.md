@@ -1,6 +1,6 @@
 # Core API for frontends
 
-`wineo-core` is what the CLI is built on, and what a GUI will call directly.
+`wineo-core` is what the CLI is built on, and what the desktop app calls directly.
 This page covers the conventions every long operation follows and the entry
 points a frontend needs. It was written for
 plan 0034, and

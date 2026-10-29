@@ -80,5 +80,5 @@ A few things to know:
 - The process wineo starts for a detached run never reports the game's exit
   code. It's recorded with the run instead: see `status NAME`.
 
-Exit codes are part of what wineo promises to keep stable; see the 1.0
-criteria in [Features](features.md#10-criteria).
+Exit codes are part of what wineo promises to keep stable; see
+[Stability](stability.md).
