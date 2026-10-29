@@ -4,7 +4,7 @@ pkgver=0
 pkgrel=1
 pkgdesc='Wine environment manager with live shell completions'
 arch=('x86_64')
-url='https://git.hannoncloud.com/mphannon/wineo'
+url='https://github.com/MeandrousShark/wineo'
 license=('GPL-3.0-or-later')
 depends=('glibc' 'libgcc' 'xz')
 makedepends=('cargo' 'git')
@@ -18,7 +18,7 @@ optdepends=(
 provides=('wineo')
 conflicts=('wineo')
 options=('!lto' '!debug')
-source=('wineo::git+ssh://gitea/mphannon/wineo.git#branch=main')
+source=('wineo::git+https://github.com/MeandrousShark/wineo.git#branch=main')
 sha256sums=('SKIP')
 
 pkgver() {
