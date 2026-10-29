@@ -1,7 +1,13 @@
 use super::*;
+use crate::launch::SteamRequest;
 use crate::steam;
 
 const REQUEST_COMMAND: &str = "__steam_request";
+
+/// How long a launch waits for a client it started to appear before sending
+/// the launch anyway. Steam may update itself on start.
+const CLIENT_START_WAIT: Duration = Duration::from_secs(60);
+const CLIENT_POLL: Duration = Duration::from_millis(250);
 
 pub(super) fn dispatch_request_entry() -> Option<Result<()>> {
     std::env::args_os()
@@ -20,24 +26,78 @@ pub(super) fn dispatch_request_entry() -> Option<Result<()>> {
             if !matches!(launch.host, Host::Proxied { .. }) {
                 return Err(Error::StartFailed("invalid Steam request".to_owned()));
             }
-            let report = match launch
-                .command()
-                .stdin(Stdio::null())
-                .stdout(Stdio::null())
-                .stderr(Stdio::null())
-                .spawn()
-            {
-                Ok(_) => "spawned\n".to_owned(),
+            let (first, cold) = match silent_start(&launch) {
+                Some(command) => (command, true),
+                None => (launch.command(), false),
+            };
+            let report = match spawn_quiet(first) {
+                Ok(()) => "spawned\n".to_owned(),
                 Err(err) => format!("failed {err}\n"),
             };
             io::stdout()
                 .write_all(report.as_bytes())
-                .context(|| "failed to report Steam request".to_owned())
+                .context(|| "failed to report Steam request".to_owned())?;
+            // The launch follows the report, so `start`'s own clock covers the
+            // client's boot as it did when both went out together. Nothing
+            // is left to report to if this spawn fails.
+            if cold
+                && report == "spawned\n"
+                && let Host::Proxied { install, .. } = &launch.host
+            {
+                wait_for_client(install);
+                let _ = spawn_quiet(launch.command());
+            }
+            Ok(())
         })
+}
+
+/// The silent start for a launch when no Steam client is running. Steam
+/// ignores `-silent` when `-applaunch` arrives in the same cold start and
+/// opens its library window, so the launch is sent once a client is up.
+/// None when a client is running or the check can't tell, and the launch is
+/// sent as it is.
+fn silent_start(launch: &Launch) -> Option<Command> {
+    let Host::Proxied {
+        install,
+        request: SteamRequest::Launch,
+        ..
+    } = &launch.host
+    else {
+        return None;
+    };
+    if !matches!(steam::client_running(install), Ok(false)) {
+        return None;
+    }
+    launch.silent_start_command()
+}
+
+/// Waits for the client a silent start began. Steam may update itself first,
+/// so this is long, and it ends early when the check fails, since the launch
+/// is better sent than lost.
+fn wait_for_client(install: &steam::Install) {
+    let deadline =
+        Instant::now() + test_timeout("WINEO_TEST_STEAM_CLIENT_WAIT_MS", CLIENT_START_WAIT);
+    loop {
+        if !matches!(steam::client_running(install), Ok(false)) || Instant::now() >= deadline {
+            return;
+        }
+        thread::sleep(CLIENT_POLL);
+    }
+}
+
+fn spawn_quiet(mut command: Command) -> io::Result<()> {
+    command
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .map(drop)
 }
 
 /// Hands a request to the Steam client from a process of its own, so Steam is
 /// never in wineo's process group. Returns once Steam's command was spawned.
+/// When that was a silent start of the client, the launch itself follows from
+/// the helper once the client is up.
 pub(crate) fn request(launch: &Launch) -> Result<()> {
     let exe = std::env::current_exe().context(|| "failed to locate wineo".to_owned())?;
     let mut child = Command::new(exe)
@@ -57,7 +117,8 @@ pub(crate) fn request(launch: &Launch) -> Result<()> {
     BufReader::new(child.stdout.take().expect("piped output"))
         .read_line(&mut line)
         .context(|| "failed to read Steam handoff".to_owned())?;
-    let _ = child.wait();
+    // The helper may outlive its report to send a launch, so it's reaped aside.
+    thread::spawn(move || child.wait());
     if line == "spawned\n" {
         Ok(())
     } else {

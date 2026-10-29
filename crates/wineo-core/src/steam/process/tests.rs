@@ -574,6 +574,38 @@ fn client_match_requires_install_exe_with_limited_argv_fallback() {
     assert!(matches_client(&install, &client));
 }
 
+#[test]
+fn only_a_live_client_of_this_install_counts_as_running() {
+    let temp = tempfile::tempdir().unwrap();
+    let install = Install {
+        kind: InstallKind::Native,
+        root: temp.path().join("mine"),
+    };
+    let other = temp.path().join("other");
+    let client = |root: &Path| root.join("ubuntu12_32/steam");
+    for root in [&install.root, &other] {
+        fs::create_dir_all(client(root).parent().unwrap()).unwrap();
+        fs::write(client(root), "").unwrap();
+    }
+    let reader = |pid: u32, state: char, root: &Path| {
+        let mut reader = FakeProc::new(&[ProcStat {
+            state,
+            ..stat(pid, 1, 10)
+        }]);
+        reader.exe_by_pid.insert(pid, client(root));
+        reader
+            .arguments_by_pid
+            .insert(pid, vec![client(root).as_os_str().as_bytes().to_vec()]);
+        reader
+    };
+    assert!(scan_client(&reader(7, 'S', &install.root), vec![7], &install).unwrap());
+    // Another install's client, an unrelated process, and a zombie.
+    assert!(!scan_client(&reader(7, 'S', &other), vec![7], &install).unwrap());
+    assert!(!scan_client(&reader(7, 'S', &install.root), vec![8], &install).unwrap());
+    assert!(!scan_client(&reader(7, 'Z', &install.root), vec![7], &install).unwrap());
+    assert!(!scan_client(&reader(7, 'S', &install.root), Vec::new(), &install).unwrap());
+}
+
 /// Kills a test process's group even when an assertion panics first.
 struct KillGroupOnDrop(std::process::Child);
 

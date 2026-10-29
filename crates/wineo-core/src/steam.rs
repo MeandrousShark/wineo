@@ -25,8 +25,8 @@ pub use account::{
     compat_tools, playtime, proton_platform,
 };
 pub use process::{
-    Baseline, Reaper, baseline, eligible_reapers, matching_reapers, open_reaper, reapers_by_app,
-    stop_tree, wait_pidfd_exit,
+    Baseline, Reaper, baseline, client_running, eligible_reapers, matching_reapers, open_reaper,
+    reapers_by_app, stop_tree, wait_pidfd_exit,
 };
 use vdf::{Object, Value};
 

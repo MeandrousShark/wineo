@@ -127,12 +127,14 @@ int main(int argc, char **argv) {
 
 const STEAM: &str = r#"
 #define _POSIX_C_SOURCE 200809L
+#include <errno.h>
 #include <fcntl.h>
 #include <limits.h>
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 #include <sys/types.h>
 #include <unistd.h>
 
@@ -141,6 +143,44 @@ static void append(const char *path, const char *text) {
     if (fd < 0) return;
     (void)write(fd, text, strlen(text));
     close(fd);
+}
+
+static int client_alive(const char *root) {
+    char path[PATH_MAX];
+    snprintf(path, sizeof(path), "%s/steam-client-pid", root);
+    FILE *file = fopen(path, "r");
+    if (!file) return 0;
+    long pid = 0;
+    int read = fscanf(file, "%ld", &pid);
+    fclose(file);
+    return read == 1 && pid > 0 && !kill((pid_t)pid, 0);
+}
+
+// Starts the fake client like a cold `steam -silent`, unless one is running.
+// The FIFO exists before this returns, so a launch right after can't miss it.
+static int start_client(const char *root, const char *fifo, const char *request_pids) {
+    char inert[PATH_MAX], client[PATH_MAX], reaper[PATH_MAX];
+    char child_pid[PATH_MAX], reaper_pids[PATH_MAX], pid_file[PATH_MAX];
+    snprintf(inert, sizeof(inert), "%s/steam-silent-inert", root);
+    if (!access(inert, F_OK) || client_alive(root)) return 0;
+    snprintf(client, sizeof(client), "%s/.local/share/Steam/ubuntu12_32/steam", root);
+    snprintf(reaper, sizeof(reaper), "%s/.local/share/Steam/ubuntu12_32/reaper", root);
+    snprintf(child_pid, sizeof(child_pid), "%s/steam-child-pid", root);
+    snprintf(reaper_pids, sizeof(reaper_pids), "%s/steam-reaper-pids", root);
+    snprintf(pid_file, sizeof(pid_file), "%s/steam-client-pid", root);
+    if (mkfifo(fifo, 0600) && errno != EEXIST) return 7;
+    pid_t child = fork();
+    if (child < 0) return 8;
+    if (child == 0) {
+        if (setsid() < 0) _exit(126);
+        setenv("WINEO_TEST_STEAM_PIDS", request_pids, 1);
+        execl(client, client, fifo, reaper, child_pid, reaper_pids, (char *)NULL);
+        _exit(127);
+    }
+    char line[64];
+    snprintf(line, sizeof(line), "%ld\n", (long)child);
+    append(pid_file, line);
+    return 0;
 }
 
 int main(int argc, char **argv) {
@@ -153,7 +193,8 @@ int main(int argc, char **argv) {
         append(urls, line);
         return 0;
     }
-    if (argc < 4 || strcmp(argv[1], "-silent") || strcmp(argv[2], "-applaunch")) return 2;
+    int silent = argc == 2 && !strcmp(argv[1], "-silent");
+    if (!silent && (argc < 3 || strcmp(argv[1], "-applaunch"))) return 2;
     char dispatches[PATH_MAX], mode_path[PATH_MAX], fifo[PATH_MAX];
     char linger[PATH_MAX], request_pids[PATH_MAX], path[PATH_MAX];
     snprintf(dispatches, sizeof(dispatches), "%s/steam-dispatches", root);
@@ -172,6 +213,7 @@ int main(int argc, char **argv) {
     }
     strncat(dispatch, "\n", sizeof(dispatch) - strlen(dispatch) - 1);
     append(dispatches, dispatch);
+    if (silent) return start_client(root, fifo, request_pids);
 
     FILE *mode_file = fopen(mode_path, "r");
     char mode[128] = "hold";
@@ -184,7 +226,7 @@ int main(int argc, char **argv) {
         int fd = open(fifo, O_WRONLY);
         if (fd < 0) return 5;
         char request[256];
-        int length = snprintf(request, sizeof(request), "AppId=%s %s\n", argv[3], mode);
+        int length = snprintf(request, sizeof(request), "AppId=%s %s\n", argv[2], mode);
         if (length <= 0 || (size_t)length >= sizeof(request) || write(fd, request, (size_t)length) != length) {
             close(fd);
             return 6;
@@ -205,13 +247,23 @@ pub struct SteamFixture {
     pub child_pid: PathBuf,
     pub reaper_pids: PathBuf,
     pub request_pids: PathBuf,
-    client: Child,
+    client: Option<Child>,
     other_client: Option<Child>,
     other_processes: Vec<Child>,
 }
 
 impl SteamFixture {
     pub fn new() -> Self {
+        Self::build(true)
+    }
+
+    /// No Steam client running yet. The fake `steam -silent` starts one, as a
+    /// cold start would.
+    pub fn cold() -> Self {
+        Self::build(false)
+    }
+
+    fn build(warm: bool) -> Self {
         let f = Fixture::new();
         let root = f.root.path().join(".local/share/Steam");
         let reaper_dir = root.join("ubuntu12_32");
@@ -232,16 +284,21 @@ impl SteamFixture {
         fs::write(&request_pids, "").unwrap();
         let steam = f.root.path().join("bin/steam");
         compile(&steam, STEAM);
-        let client = Command::new(client_binary)
-            .args([&fifo, &reaper, &child_pid, &reaper_pids])
-            .env("WINEO_TEST_STEAM_PIDS", &request_pids)
-            .process_group(0)
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()
-            .unwrap();
-        wait_for("fake Steam client FIFO", || fifo.exists());
+        let client_pid = f.root.path().join("steam-client-pid");
+        let client = warm.then(|| {
+            let client = Command::new(client_binary)
+                .args([&fifo, &reaper, &child_pid, &reaper_pids])
+                .env("WINEO_TEST_STEAM_PIDS", &request_pids)
+                .process_group(0)
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+                .unwrap();
+            fs::write(&client_pid, format!("{}\n", client.id())).unwrap();
+            wait_for("fake Steam client FIFO", || fifo.exists());
+            client
+        });
         let fixture = Self {
             f,
             root,
@@ -361,12 +418,31 @@ impl SteamFixture {
         writeln!(output, "AppId={app_id} hold").unwrap();
     }
 
+    /// The fake client's pid, waiting for a cold start to have made one.
     pub fn client_pid(&self) -> u32 {
-        self.client.id()
+        if let Some(client) = &self.client {
+            return client.id();
+        }
+        let mut pid = None;
+        wait_for("fake Steam client start", || {
+            pid = read_pid(&self.f.root.path().join("steam-client-pid"));
+            pid.is_some()
+        });
+        pid.unwrap()
+    }
+
+    /// Makes the fake `steam -silent` start nothing, as a Steam that never
+    /// comes up.
+    pub fn make_silent_start_inert(&self) {
+        fs::write(self.f.root.path().join("steam-silent-inert"), "").unwrap();
     }
 
     pub fn tracked_pids(&self) -> Vec<u32> {
-        let mut pids = vec![self.client.id()];
+        let mut pids = Vec::new();
+        if let Some(client) = &self.client {
+            pids.push(client.id());
+        }
+        pids.extend(read_pids(&self.f.root.path().join("steam-client-pid")));
         if let Some(client) = &self.other_client {
             pids.push(client.id());
         }
@@ -441,7 +517,9 @@ impl Drop for SteamFixture {
         if let Some(client) = &mut self.other_client {
             let _ = client.wait();
         }
-        let _ = self.client.wait();
+        if let Some(client) = &mut self.client {
+            let _ = client.wait();
+        }
         for child in &mut self.other_processes {
             let _ = child.wait();
         }

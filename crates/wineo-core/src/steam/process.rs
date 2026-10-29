@@ -125,6 +125,27 @@ fn scan_reapers<R: ProcessReader>(
     Ok(found)
 }
 
+/// Whether any live process is this install's Steam client, wherever it was
+/// started from. Unlike a reaper check this has no parent to anchor to.
+pub fn client_running(install: &Install) -> io::Result<bool> {
+    scan_client(&Proc, proc_pids()?, install)
+}
+
+fn scan_client<R: ProcessReader>(
+    reader: &R,
+    pids: Vec<u32>,
+    install: &Install,
+) -> io::Result<bool> {
+    for pid in pids {
+        if let Some(process) = client_candidate(reader, pid)?
+            && matches_client(install, &process)
+        {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
 /// The `AppId=<id>` arguments a scan accepts.
 trait WantedApps {
     fn wants(&self, argument: &[u8]) -> bool;

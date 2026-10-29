@@ -101,11 +101,8 @@ fn start_claims_reaper_and_stop_leaves_steam_client_alive() {
         stdout(&started)
     );
     wait_for("Steam dispatch", || s.dispatch_count() == 1);
-    assert!(
-        fs::read_to_string(&s.dispatches)
-            .unwrap()
-            .contains("-silent -applaunch 289070 --windowed")
-    );
+    // A client is already running, so there is nothing to start silently.
+    assert_eq!(dispatches(&s), ["-applaunch 289070 --windowed"]);
     wait_for("Steam reaper claim", || {
         let state = s.f.state("civ");
         state.contains("target = \"steam\"") && state.contains("running_at = ")
@@ -126,6 +123,50 @@ fn start_claims_reaper_and_stop_leaves_steam_client_alive() {
     s.f.wait_for_run_end("civ", "stopped");
     assert!(alive(s.client_pid()), "Stop signaled the fake Steam client");
     assert!(!s.f.stats_log("civ").exists());
+}
+
+fn dispatches(s: &SteamFixture) -> Vec<String> {
+    fs::read_to_string(&s.dispatches)
+        .unwrap()
+        .lines()
+        .map(str::to_owned)
+        .collect()
+}
+
+#[test]
+fn a_cold_start_runs_steam_silently_before_the_launch() {
+    let s = SteamFixture::cold();
+    s.config("");
+    let started = s.run(&["start", "civ", "--target", "steam", "--", "--windowed"]);
+    assert_success(&started);
+    wait_for("both Steam dispatches", || s.dispatch_count() == 2);
+    assert_eq!(dispatches(&s), ["-silent", "-applaunch 289070 --windowed"]);
+    wait_for("Steam reaper claim", || {
+        let state = s.f.state("civ");
+        state.contains("target = \"steam\"") && state.contains("running_at = ")
+    });
+    let reaper = claimed_pid(&s);
+    assert_eq!(process_group(reaper), process_group(s.client_pid()));
+    assert_success(&s.run(&["stop", "civ"]));
+    s.f.wait_for_run_end("civ", "stopped");
+    assert!(alive(s.client_pid()), "Stop signaled the fake Steam client");
+}
+
+#[test]
+fn the_launch_is_sent_even_when_the_client_never_appears() {
+    let s = SteamFixture::cold();
+    s.make_silent_start_inert();
+    s.set_mode("none");
+    s.config("");
+    let started = s
+        .wineo()
+        .env("WINEO_TEST_STEAM_CLIENT_WAIT_MS", "300")
+        .args(["start", "civ"])
+        .output()
+        .unwrap();
+    assert_success(&started);
+    wait_for("both Steam dispatches", || s.dispatch_count() == 2);
+    assert_eq!(dispatches(&s), ["-silent", "-applaunch 289070"]);
 }
 
 #[test]

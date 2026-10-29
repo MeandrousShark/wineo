@@ -217,11 +217,13 @@ see [Downloads and imports](downloads-and-imports.md#use-builds-from-steam-heroi
 
 ## Launching
 
-`wineo start bg3` asks Steam to launch the game with `steam -silent
--applaunch 1086940`, or through `flatpak run` for Flatpak Steam, and returns
-once Steam accepts. `-silent` keeps Steam's library window from opening when
-the launch has to start Steam; a Steam that's already open stays as it is,
-and Steam may still show its own launch progress:
+`wineo start bg3` asks Steam to launch the game with `steam -applaunch
+1086940`, or through `flatpak run` for Flatpak Steam, and returns once Steam
+accepts. When Steam isn't running, wineo starts it first with `steam -silent`
+and sends the launch once its client is up (up to a minute), because Steam
+ignores `-silent` when the launch comes in the same cold start. That keeps the
+library window closed. A Steam that's already open stays as it is, and Steam
+may still show its own launch progress:
 
 ```
 $ wineo start bg3

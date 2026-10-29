@@ -340,7 +340,25 @@ fn a_request_survives_the_handoff_and_an_old_one_is_a_launch() {
     let read: Launch = toml::from_str(&old).unwrap();
     assert_eq!(
         read.command().get_args().collect::<Vec<_>>(),
-        ["-silent", "-applaunch", "42"]
+        ["-applaunch", "42"]
+    );
+}
+
+#[test]
+fn the_silent_start_is_the_client_command_with_only_silent() {
+    let temp = tempfile::tempdir().unwrap();
+    let paths = paths(temp.path());
+    let root = steam_root(&paths);
+    write_manifest(&root, 4, 0, 0);
+    let install = steam::active_for(&paths, &GlobalConfig::default()).unwrap();
+    let mut launch = Launch::steam_request(&paths, install, "42", SteamRequest::Launch);
+    launch.args = vec!["--windowed".to_owned()];
+    let silent = launch.silent_start_command().unwrap();
+    assert_eq!(silent.get_program(), "steam");
+    assert_eq!(silent.get_args().collect::<Vec<_>>(), ["-silent"]);
+    assert_eq!(
+        launch.command().get_args().collect::<Vec<_>>(),
+        ["-applaunch", "42", "--windowed"]
     );
 }
 

@@ -628,6 +628,23 @@ impl Launch {
         named
     }
 
+    /// The command that starts Steam's client without opening its library
+    /// window, for a launch to find running. Steam ignores `-silent` when
+    /// `-applaunch` comes in the same cold start, so a launch is two steps:
+    /// this, then `command()` once the client is up. None for a launch that
+    /// isn't a Steam one.
+    pub fn silent_start_command(&self) -> Option<Command> {
+        let Host::Proxied { install, .. } = &self.host else {
+            return None;
+        };
+        let mut command = steam_client_command(install);
+        command
+            .arg("-silent")
+            .current_dir(&self.cwd)
+            .envs(&self.env);
+        Some(command)
+    }
+
     pub fn command(&self) -> Command {
         let wrappers = self.wrappers.command_line();
         let mut command = match &self.host {
@@ -641,18 +658,9 @@ impl Launch {
                 request,
                 ..
             } => {
-                let mut command = match install.kind() {
-                    crate::steam::InstallKind::Native => Command::new("steam"),
-                    crate::steam::InstallKind::Flatpak => {
-                        let mut command = Command::new("flatpak");
-                        command.args(["run", "com.valvesoftware.Steam"]);
-                        command
-                    }
-                };
+                let mut command = steam_client_command(install);
                 match request {
-                    // `-silent` keeps the library window down when this starts Steam,
-                    // and has to come before `-applaunch`, whose tail is the game's.
-                    SteamRequest::Launch => command.args(["-silent", "-applaunch", app_id]),
+                    SteamRequest::Launch => command.args(["-applaunch", app_id]),
                     SteamRequest::Install => command.arg(format!("steam://install/{app_id}")),
                     SteamRequest::Uninstall => command.arg(format!("steam://uninstall/{app_id}")),
                 };
@@ -676,6 +684,17 @@ impl Launch {
             command.env("STORE", store);
         }
         command
+    }
+}
+
+fn steam_client_command(install: &crate::steam::Install) -> Command {
+    match install.kind() {
+        crate::steam::InstallKind::Native => Command::new("steam"),
+        crate::steam::InstallKind::Flatpak => {
+            let mut command = Command::new("flatpak");
+            command.args(["run", "com.valvesoftware.Steam"]);
+            command
+        }
     }
 }
 
