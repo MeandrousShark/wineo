@@ -70,11 +70,16 @@ fn fixture(proton: bool) -> (tempfile::TempDir, Paths, PathBuf, String) {
     (root, paths, prefix, config)
 }
 
-fn reflinks_supported(prefix: &Path) -> bool {
-    let destination = prefix.join("reflink-probe");
-    let input = File::open(prefix.join("linked")).unwrap();
+/// Whether `dir`'s filesystem can reflink. Snapshots need it, so tests that
+/// take one return early without it, as on ext4 or tmpfs.
+fn reflinks_supported(dir: &Path) -> bool {
+    let source = dir.join("reflink-probe-source");
+    let destination = dir.join("reflink-probe");
+    fs::write(&source, "probe").unwrap();
+    let input = File::open(&source).unwrap();
     let output = File::create(&destination).unwrap();
     let supported = rustix::fs::ioctl_ficlone(&output, &input).is_ok();
+    fs::remove_file(source).unwrap();
     fs::remove_file(destination).unwrap();
     supported
 }
@@ -382,7 +387,10 @@ fn recovery_refuses_busy_changed_and_unidentified_originals() {
 
 #[test]
 fn restoring_a_legacy_config_keeps_it_unversioned_until_edited() {
-    let (_root, paths, _prefix, config) = fixture(false);
+    let (_root, paths, prefix, config) = fixture(false);
+    if !reflinks_supported(&prefix) {
+        return;
+    }
     let global = GlobalConfig::default();
     let review = inspect_create(&paths, &global, "game", "legacy").unwrap();
     create_reviewed(&paths, &global, &review, &Token::new(), |_| {}).unwrap();
@@ -427,7 +435,10 @@ fn restoring_a_legacy_config_keeps_it_unversioned_until_edited() {
 
 #[test]
 fn restore_refuses_a_snapshot_with_an_unsupported_version() {
-    let (_root, paths, _prefix, config) = fixture(false);
+    let (_root, paths, prefix, config) = fixture(false);
+    if !reflinks_supported(&prefix) {
+        return;
+    }
     let global = GlobalConfig::default();
     let review = inspect_create(&paths, &global, "game", "future").unwrap();
     let info = create_reviewed(&paths, &global, &review, &Token::new(), |_| {}).unwrap();
@@ -451,6 +462,9 @@ fn restore_refuses_a_snapshot_with_an_unsupported_version() {
 fn create_restore_and_delete_preserve_config_and_links() {
     for proton in [false, true] {
         let (_root, paths, prefix, config) = fixture(proton);
+        if !reflinks_supported(&prefix) {
+            return;
+        }
         let global = GlobalConfig::default();
         let review = inspect_create(&paths, &global, "game", "before").unwrap();
         assert_eq!(review.layout == ImportLayout::Proton, proton);
@@ -511,6 +525,9 @@ fn create_restore_and_delete_preserve_config_and_links() {
 #[test]
 fn collision_changed_source_and_shared_prefix_are_rejected() {
     let (_root, paths, prefix, config) = fixture(false);
+    if !reflinks_supported(&prefix) {
+        return;
+    }
     let global = GlobalConfig::default();
     let review = inspect_create(&paths, &global, "game", "one").unwrap();
     fs::write(prefix.join("drive_c/game.exe"), "changed").unwrap();
@@ -555,6 +572,9 @@ fn portable_fixture() -> (tempfile::TempDir, PathBuf, String) {
 #[test]
 fn portable_snapshots_survive_moving_the_folder() {
     let (root, usb, config) = portable_fixture();
+    if !reflinks_supported(&usb) {
+        return;
+    }
     let global = GlobalConfig::default();
     let paths = portable(root.path(), &usb);
     let review = inspect_create(&paths, &global, "game", "one").unwrap();
@@ -586,6 +606,9 @@ fn portable_snapshots_survive_moving_the_folder() {
 #[test]
 fn a_portable_manifest_for_another_prefix_is_refused() {
     let (root, usb, _) = portable_fixture();
+    if !reflinks_supported(&usb) {
+        return;
+    }
     let global = GlobalConfig::default();
     let paths = portable(root.path(), &usb);
     let review = inspect_create(&paths, &global, "game", "one").unwrap();
@@ -601,6 +624,9 @@ fn a_portable_manifest_for_another_prefix_is_refused() {
 #[test]
 fn a_portable_restore_interrupted_before_a_move_recovers_after_it() {
     let (root, usb, config) = portable_fixture();
+    if !reflinks_supported(&usb) {
+        return;
+    }
     let global = GlobalConfig::default();
     let paths = portable(root.path(), &usb);
     let prefix = usb.join("prefixes/game");
@@ -676,6 +702,9 @@ fn a_portable_prefix_outside_the_folder_is_refused() {
 #[test]
 fn recovery_restores_original_after_interrupted_exchange() {
     let (_root, paths, prefix, original_config) = fixture(false);
+    if !reflinks_supported(&prefix) {
+        return;
+    }
     let global = GlobalConfig::default();
     let review = inspect_create(&paths, &global, "game", "one").unwrap();
     create_reviewed(&paths, &global, &review, &Token::new(), |_| {}).unwrap();
@@ -885,6 +914,9 @@ fn recovery_before_exchange_blocks_broken_config_and_restores_it() {
 #[test]
 fn recovery_uses_directory_identity_when_contents_match() {
     let (_root, paths, prefix, config) = fixture(false);
+    if !reflinks_supported(&prefix) {
+        return;
+    }
     let original = directory_identity(&prefix).unwrap();
     let fingerprint = import::fingerprint(&prefix).unwrap();
     let stage = tempfile::Builder::new()
@@ -926,6 +958,9 @@ fn recovery_uses_directory_identity_when_contents_match() {
 #[test]
 fn restore_refuses_snapshot_config_changed_during_copy() {
     let (_root, paths, prefix, config) = fixture(false);
+    if !reflinks_supported(&prefix) {
+        return;
+    }
     let global = GlobalConfig::default();
     let create = inspect_create(&paths, &global, "game", "one").unwrap();
     create_reviewed(&paths, &global, &create, &Token::new(), |_| {}).unwrap();
