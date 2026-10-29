@@ -503,7 +503,14 @@ fn a_native_game_cant_be_repaired() {
 fn a_galaxy_game_with_no_galaxy_build_is_refused_by_name() {
     let (f, api, _) = world();
     f.galaxy_game_without_a_build(&api);
-    let out = f.gog(&api, &["update", "disco", "--yes"]);
+    // A Windows update needs a graphical session before it looks for a build.
+    let out = gog_api::checked(
+        f.gog_command(&api)
+            .args(["update", "disco", "--yes"])
+            .env("DISPLAY", ":0")
+            .output()
+            .unwrap(),
+    );
     assert_eq!(out.status.code(), Some(1));
     assert!(
         stderr(&out).contains(
