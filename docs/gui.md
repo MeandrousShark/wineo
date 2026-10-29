@@ -23,7 +23,8 @@ from the Library.
 ## Starting it
 
 Run `wineo-gui`, or open "wineo" from your desktop's app menu. The Arch
-package installs both binaries.
+package installs both binaries and the menu entry. The release tarball has
+the binaries only, so start it from a terminal or add your own entry.
 
 It uses the same configs, prefixes, and run state as the CLI, including a
 portable folder set with `WINEO_PORTABLE_DIR`. There's no `--portable` flag
@@ -953,6 +954,5 @@ the palette, spacing, control states, motion, and layout rules for future pages.
 ## Not yet
 
 - Gamepad navigation.
-- Grid zoom, a poster-only grid, a list view, saved filter presets, and
-  grouping (the later parts of the library views series in
-  plan 0054).
+- A list view, saved filter presets, and grouping (the later parts of the
+  library views series in plan 0054).

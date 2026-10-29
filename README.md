@@ -42,12 +42,55 @@ wineo stop hades
   everything in a folder you can move to another drive.
 - **Artwork.** Store icons, posters, heroes, and logos per environment, from
   your own files or SteamGridDB.
-- **Desktop app.** Browse, launch, create, import, and clone environments
-  with guided reviews, file pickers, and optional artwork selection. Manage
-  [snapshots](docs/gui.md#snapshots), [portable copies](docs/gui.md#copy-to-a-portable-folder),
-  and [program runs and winetricks](docs/gui.md#run-program-and-winetricks).
+- **Desktop app.** A poster library of everything you have, with guided
+  flows for the rest. See [Desktop app](#desktop-app) below.
 - **Scripting friendly.** `--json` output for `status` and `list`, and live
   shell completion for environment and target names.
+
+## Desktop app
+
+`wineo-gui` is wineo's desktop app. It uses the same configs, prefixes, and
+run state as the CLI, so you can switch between the two whenever you like:
+a game started from the terminal shows as running in the app within a
+couple of seconds.
+
+<!-- Screenshots: the library grid, a game's panel, and the Appearance tab. -->
+
+- **Library.** Every environment is a poster card with its art, whether
+  it's running, and how long you've played it. Search by title, name, or
+  tag; sort by name, last played, playtime, or date added; and filter by
+  store (Steam, GOG, Epic, Amazon), platform, or tag. Star favorites, hide
+  what you don't want to see, zoom the grid from 60% to 200%, or switch to
+  posters only.
+- **A panel for each game.** Click a card for its hero art and logo, state,
+  playtime, sessions, and tags, with Play and Stop, the live log, settings,
+  art, and more actions. Double-click a card to launch it right away.
+- **Add and import.** Guided flows create an environment from an installer
+  or a program already on disk, import a prefix, or bring in games from
+  Heroic, Steam, and GOG. Clones work the same way. Each one ends in a
+  review before anything changes.
+- **Settings.** Each environment has a page for its title, runner, launch
+  options, targets, and environment variables. The global page holds the
+  defaults for new environments and launches, art fetching, API keys, and
+  your GOG login. Edits collect until you save them.
+- **Art.** Choose icons, posters, heroes, and logos from your own files or
+  from SteamGridDB.
+- **Upkeep.** Trash restores removed environments, Checkup runs
+  `wineo validate` over everything, Downloads shows which runners and
+  graphics builds are in use, and Snapshots saves and restores prefixes.
+  Wine environments can run a program or winetricks verbs, or be copied to
+  a portable folder.
+- **Themes.** The app follows your desktop's light or dark mode. Pick from
+  eight built-in themes (Midnight, Daylight, Cellar, Cellar Light, High
+  contrast, Dracula, and Catppuccin Macchiato and Latte), or make your own,
+  saved as plain TOML files you can share. An option raises text contrast
+  in any theme.
+- **Keyboard.** Arrow keys move between cards, Enter opens a card and then
+  plays it, F stars it, and Ctrl+= and Ctrl+- zoom.
+
+Start it with `wineo-gui`. The Arch package also adds it to your desktop's
+app menu. Everything it does is covered in the
+[Desktop app guide](docs/gui.md).
 
 ## Install
 
