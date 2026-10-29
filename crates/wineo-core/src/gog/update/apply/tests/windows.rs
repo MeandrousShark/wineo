@@ -174,12 +174,15 @@ done
     /// The arguments the last run of `id`'s setup program got, its path
     /// first, then its locale.
     fn args(&self, id: u64) -> Vec<String> {
-        let found = fs::read_dir(self.runs())
-            .unwrap()
-            .map(|entry| entry.unwrap().file_name().into_string().unwrap())
-            .find(|name| name.starts_with(&format!("setup_{id}_")) && name.ends_with(".args"))
+        // Directory order varies by filesystem, so the run log says which
+        // setup program ran last.
+        let last = self
+            .ran()
+            .into_iter()
+            .rev()
+            .find(|name| name.starts_with(&format!("setup_{id}_")))
             .unwrap();
-        fs::read_to_string(self.runs().join(found))
+        fs::read_to_string(self.runs().join(format!("{last}.args")))
             .unwrap()
             .lines()
             .map(str::to_owned)
