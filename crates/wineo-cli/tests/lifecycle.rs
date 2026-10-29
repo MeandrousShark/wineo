@@ -2732,6 +2732,7 @@ fn new_reports_recovery_when_the_installer_cannot_spawn_after_registration() {
     fs::write(&installer, b"").unwrap();
     let output = f
         .new_with_installer("game", &[], installer.to_str().unwrap())
+        .env("PATH", f.path_with_spare_wine())
         .env("WINEO_TEST_REMOVE_WINE", f.root.path().join("bin/wine"))
         .output()
         .unwrap();

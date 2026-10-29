@@ -147,6 +147,19 @@ impl Fixture {
         command
     }
 
+    /// `path_var` with a second fake wine right after the fixture's own. A
+    /// test that removes the first mid-run still leaves a `wine` for lookups
+    /// by name, whether or not the host has one, while a runner already
+    /// resolved to the first can no longer start.
+    pub fn path_with_spare_wine(&self) -> OsString {
+        let spare = self.root.path().join("bin-spare");
+        fs::create_dir_all(&spare).unwrap();
+        write_script(&spare.join("wine"), FAKE_WINE);
+        let mut dirs: Vec<PathBuf> = std::env::split_paths(&self.path_var).collect();
+        dirs.insert(1, spare);
+        std::env::join_paths(dirs).unwrap()
+    }
+
     /// `wineo_at_home` talking to a fake GOG instead of the real one.
     pub fn gog_command(&self, api: &gog_api::GogApi) -> Command {
         let mut command = self.wineo_at_home();

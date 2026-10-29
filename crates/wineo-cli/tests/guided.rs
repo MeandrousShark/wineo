@@ -1399,6 +1399,7 @@ fn guided_new_reports_recovery_when_the_installer_cannot_spawn_after_creation() 
     command
         .args(["new", "--install-exe"])
         .arg(&installer)
+        .env("PATH", f.path_with_spare_wine())
         .env("WINEO_TEST_REMOVE_WINE", f.root.path().join("bin/wine"));
     let mut pty = Pty::spawn(command);
     plain_answers_prefilled(&mut pty, "game", "1");
