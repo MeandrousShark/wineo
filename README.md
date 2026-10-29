@@ -123,8 +123,9 @@ wineo manpages ~/.local/share/man/man1
 - `winetricks` for `wineo winetricks`
 - `gamemode`, `gamescope`, and `mangohud` for targets that turn them on
 - a Secret Service keyring (GNOME Keyring, KWallet) on the D-Bus session bus
-  to store the SteamGridDB and Steam Web API keys; without one, wineo falls
-  back to private files
+  to store your SteamGridDB and Steam Web API keys and your GOG login.
+  Without one, wineo keeps them in plain text files that only your user can
+  read, in `~/.local/share/wineo/`, and warns when it saves one.
 
 ## Features
 
