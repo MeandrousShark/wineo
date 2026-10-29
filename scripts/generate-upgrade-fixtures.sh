@@ -5,7 +5,8 @@
 # root, and copies the root's files into the fixtures directory.
 #
 # Usage: scripts/generate-upgrade-fixtures.sh [--keep-roots] [TAG...]
-#   TAG            one of v0.2.0 v0.7.0 v0.14.0 v0.24.0 v0.28.0 v0.31.0 v0.34.0;
+#   TAG            one of v0.2.0 v0.7.0 v0.14.0 v0.24.0 v0.28.0 v0.31.0 v0.34.0
+#                  v1.0.0;
 #                  none means all of them
 #   --keep-roots   leave the scratch roots under $WORK/roots for inspection
 #
@@ -26,7 +27,7 @@
 
 set -euo pipefail
 
-TAGS_ALL=(v0.2.0 v0.7.0 v0.14.0 v0.24.0 v0.28.0 v0.31.0 v0.34.0)
+TAGS_ALL=(v0.2.0 v0.7.0 v0.14.0 v0.24.0 v0.28.0 v0.31.0 v0.34.0 v1.0.0)
 
 repo=$(git -C "$(dirname "${BASH_SOURCE[0]}")" rev-parse --show-toplevel)
 common=$(git -C "$repo" rev-parse --path-format=absolute --git-common-dir)

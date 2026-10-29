@@ -1,0 +1,14 @@
+schema_version = 1
+runner = "wine"
+arch = "win64"
+gamemode = true
+tags = ["game", "co-op"]
+winetricks = ["corefonts"]
+mangohud = true
+
+[hooks]
+before = "true"
+after = "true"
+
+[env]
+WINEDEBUG = "-all"

@@ -1,0 +1,13 @@
+schema_version = 1
+
+[environments.plain]
+added = 2026-10-29T23:31:45.855707582Z
+
+[environments.templated]
+added = 2026-10-29T23:31:45.86675709Z
+
+[environments.lazy]
+added = 2026-10-29T23:31:45.879599749Z
+
+[environments.tool]
+added = 2026-10-29T23:31:45.920215928Z

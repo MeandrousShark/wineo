@@ -1,0 +1,10 @@
+schema_version = 1
+
+[environments.desktop]
+added = 2026-10-29T23:31:49.175880827Z
+
+[environments.external]
+added = 2026-10-29T23:31:49.202694326Z
+
+[environments.steam-game]
+added = 2026-10-29T23:31:49.217920607Z
