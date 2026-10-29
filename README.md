@@ -16,6 +16,18 @@ wineo status               # what's running
 wineo stop hades
 ```
 
+## Why wineo
+
+Bottles, Lutris, and Heroic are all good at what they do. wineo is for
+people who want the terminal to be a first-class way in. Nearly everything
+the desktop app does is a `wineo` command too, with `--json` output and
+documented exit codes for scripts. Nothing lives in a hidden database: each
+environment is a TOML file you can read, edit by hand, or keep in git, and
+wineo's own edits keep your comments and formatting. The desktop app works
+on those same files and the same run state, so a game started from a script
+shows as running in the app, and a change made in either one shows up in
+the other.
+
 ## Install
 
 ### Arch Linux
@@ -113,18 +125,6 @@ wineo manpages ~/.local/share/man/man1
 - a Secret Service keyring (GNOME Keyring, KWallet) on the D-Bus session bus
   to store the SteamGridDB and Steam Web API keys; without one, wineo falls
   back to private files
-
-## Why wineo
-
-Bottles, Lutris, and Heroic are all good at what they do. wineo is for
-people who want the terminal to be a first-class way in. Nearly everything
-the desktop app does is a `wineo` command too, with `--json` output and
-documented exit codes for scripts. Nothing lives in a hidden database: each
-environment is a TOML file you can read, edit by hand, or keep in git, and
-wineo's own edits keep your comments and formatting. The desktop app works
-on those same files and the same run state, so a game started from a script
-shows as running in the app, and a change made in either one shows up in
-the other.
 
 ## Features
 
