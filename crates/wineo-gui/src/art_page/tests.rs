@@ -1,4 +1,5 @@
 use super::*;
+use crate::test_script::write_script;
 use std::fs;
 
 fn fixture() -> (tempfile::TempDir, Paths, Page) {
@@ -15,6 +16,18 @@ fn fixture() -> (tempfile::TempDir, Paths, Page) {
     .unwrap();
     let identity = EnvironmentIdentity::read(&paths, "game").unwrap();
     (root, paths, Page::new("game".into(), 1, identity))
+}
+
+/// Gives the environment a native target with a desktop entry. Its program
+/// is one the test writes, since a desktop entry needs one that exists and
+/// the host may not have any given program on PATH.
+fn desktop_target(root: &tempfile::TempDir, paths: &Paths) {
+    write_script(root.path().join("notepad"), "#!/bin/sh\nexit 0\n");
+    fs::write(
+        paths.environment_config("game"),
+        "schema_version = 1\nkind = 'native'\n[targets.alt]\nexe = '~/notepad'\ndesktop = true\n",
+    )
+    .unwrap();
 }
 
 fn decodes() -> Arc<tokio::sync::Semaphore> {
@@ -415,11 +428,7 @@ fn late_lookup_and_preview_results_are_discarded_after_leaving() {
 #[test]
 fn changing_icon_art_reconciles_the_desktop_entry() {
     let (root, paths, _page) = fixture();
-    fs::write(
-        paths.environment_config("game"),
-        "schema_version = 1\nkind = 'native'\n[targets.alt]\nexe = 'notepad'\ndesktop = true\n",
-    )
-    .unwrap();
+    desktop_target(&root, &paths);
     let source = root.path().join("icon.png");
     ::image::RgbaImage::new(64, 64)
         .save_with_format(&source, ::image::ImageFormat::Png)
@@ -592,11 +601,7 @@ fn picker_cancel_keeps_prior_art_and_refused_format_keeps_cores_message() {
 #[test]
 fn picker_use_icon_reconciles_desktop_entries() {
     let (root, paths, page) = fixture();
-    fs::write(
-        paths.environment_config("game"),
-        "schema_version = 1\nkind = 'native'\n[targets.alt]\nexe = 'notepad'\ndesktop = true\n",
-    )
-    .unwrap();
+    desktop_target(&root, &paths);
     assert_eq!(
         EnvironmentIdentity::read(&paths, "game"),
         Some(page.identity)
