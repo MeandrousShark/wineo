@@ -1,0 +1,56 @@
+name: CI
+
+# Never on push: the Gitea mirror pushes every branch, and the release
+# workflow reuses this one through workflow_call.
+on:
+  pull_request:
+  workflow_dispatch:
+  workflow_call:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  ci:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # The graphics and windowing crates (wayland-sys, x11-dl, tiny-xlib,
+      # xkbcommon-dl, khronos-egl, ash, x11rb) load their libraries with
+      # dlopen, and secret-service uses its pure-Rust crypto, so the build
+      # links no -dev library. What it does need is a C compiler (ring,
+      # zstd-sys, and a vendored lzma-sys), which the runner already has,
+      # and pkg-config, which build scripts probe for liblzma and the X11
+      # library directories.
+      - name: Install system packages
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y pkg-config
+
+      - name: Install Rust
+        run: |
+          rustup toolchain install stable --profile minimal \
+            --component rustfmt --component clippy
+          rustup default stable
+
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+
+      - name: Format
+        run: cargo fmt --all --check
+
+      - name: Clippy
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: Clippy (release)
+        run: cargo clippy --release --workspace -- -D warnings
+
+      - name: Test
+        env:
+          TERM: xterm-256color
+        run: cargo test --workspace --locked
