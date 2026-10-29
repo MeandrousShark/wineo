@@ -9,6 +9,7 @@ use iced::advanced::widget::{Id, Operation, Tree};
 use iced::{Element, Font, Pixels, Rectangle, Size, Vector};
 
 fn renderer() -> iced::Renderer {
+    crate::fonts::install_once();
     iced::futures::executor::block_on(<iced::Renderer as Headless>::new(
         Font::DEFAULT,
         Pixels(14.0),

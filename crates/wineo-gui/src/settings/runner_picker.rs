@@ -105,6 +105,8 @@ pub(super) fn picker(
 }
 
 fn measured_width(value: &str) -> f32 {
+    #[cfg(test)]
+    crate::fonts::install_once();
     type Paragraph = <iced::Renderer as text::Renderer>::Paragraph;
     Paragraph::with_text(text::Text {
         content: value,

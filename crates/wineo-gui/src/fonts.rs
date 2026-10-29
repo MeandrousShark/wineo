@@ -29,6 +29,15 @@ pub(crate) fn install() {
     system.load_font(Cow::Borrowed(SEMIBOLD));
 }
 
+/// `install`, once per test process, before any test measures text. The
+/// app installs the bundle at startup, so tests measure with it too rather
+/// than with whatever fonts the machine has.
+#[cfg(test)]
+pub(crate) fn install_once() {
+    static INSTALLED: std::sync::Once = std::sync::Once::new();
+    INSTALLED.call_once(install);
+}
+
 /// Clears the way for the bundled faces and points sans-serif at them.
 ///
 /// Every installed "Noto Sans" face goes, whatever its weight or file kind,

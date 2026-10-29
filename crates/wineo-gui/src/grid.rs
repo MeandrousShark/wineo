@@ -1456,6 +1456,8 @@ fn install_bar(percent: u8, palette: Palette, alpha: f32) -> Element<'static, Me
 }
 
 fn text_width(content: &str) -> f32 {
+    #[cfg(test)]
+    crate::fonts::install_once();
     iced::advanced::graphics::text::Paragraph::with_text(iced::advanced::Text {
         content,
         bounds: Size::INFINITE,
@@ -1516,6 +1518,8 @@ fn action_menu_body_height(buttons: usize, dividers: usize, reason: Option<&str>
 }
 
 fn text_height(content: &str, width: f32) -> f32 {
+    #[cfg(test)]
+    crate::fonts::install_once();
     iced::advanced::graphics::text::Paragraph::with_text(iced::advanced::Text {
         content,
         bounds: Size::new(width, f32::INFINITY),

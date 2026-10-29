@@ -27,6 +27,8 @@ pub(crate) fn lines(title: &str, width: f32, size: f32, font: Font) -> Vec<Strin
 /// The size a text widget with default settings takes for `content` when
 /// it may wrap within `width`, for predicting the height of wrapped labels.
 pub(crate) fn wrapped_size(content: &str, width: f32, size: f32, font: Font) -> Size {
+    #[cfg(test)]
+    crate::fonts::install_once();
     thread_local! {
         static CACHE: RefCell<Cache<Size>> = RefCell::new(Cache::new(CACHE_LIMIT));
     }
@@ -103,6 +105,8 @@ pub(crate) fn two_line_height(size: f32) -> f32 {
 /// The rendered width of one unwrapped line, shaped as a text widget with
 /// default settings shapes it.
 fn measure(content: &str, size: f32, font: Font) -> f32 {
+    #[cfg(test)]
+    crate::fonts::install_once();
     <iced::Renderer as text::Renderer>::Paragraph::with_text(text::Text {
         content,
         bounds: Size::INFINITE,

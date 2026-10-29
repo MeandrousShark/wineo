@@ -252,6 +252,7 @@ fn toast_pluralizes_desktop_entries_and_mentions_retained_snapshots() {
 fn long_undo_errors_wrap_even_with_an_unbroken_path() {
     use iced::advanced::text::{self as advanced_text, Paragraph as _};
     type Paragraph = <iced::Renderer as advanced_text::Renderer>::Paragraph;
+    crate::fonts::install_once();
     let error = format!("Restore failed at /{}", "long-directory-name".repeat(32));
     let paragraph = Paragraph::with_text(advanced_text::Text {
         content: error.as_str(),
