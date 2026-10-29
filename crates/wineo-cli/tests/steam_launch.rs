@@ -134,12 +134,19 @@ fn dispatches(s: &SteamFixture) -> Vec<String> {
 }
 
 #[test]
-fn a_cold_start_runs_steam_silently_before_the_launch() {
+fn a_cold_start_runs_steam_silently_and_the_launch_waits_for_the_client() {
     let s = SteamFixture::cold();
+    s.hold_silent_start();
     s.config("");
     let started = s.run(&["start", "civ", "--target", "steam", "--", "--windowed"]);
     assert_success(&started);
-    wait_for("both Steam dispatches", || s.dispatch_count() == 2);
+    wait_for("the silent start", || s.dispatch_count() == 1);
+    // Many polls of the helper's 250 ms wait pass here, so a launch that
+    // didn't wait for the client would already be sent.
+    thread::sleep(Duration::from_millis(1000));
+    assert_eq!(dispatches(&s), ["-silent"]);
+    s.release_silent_start();
+    wait_for("the launch", || s.dispatch_count() == 2);
     assert_eq!(dispatches(&s), ["-silent", "-applaunch 289070 --windowed"]);
     wait_for("Steam reaper claim", || {
         let state = s.f.state("civ");
@@ -153,19 +160,22 @@ fn a_cold_start_runs_steam_silently_before_the_launch() {
 }
 
 #[test]
-fn the_launch_is_sent_even_when_the_client_never_appears() {
+fn the_launch_is_sent_when_the_wait_for_the_client_runs_out() {
     let s = SteamFixture::cold();
     s.make_silent_start_inert();
     s.set_mode("none");
     s.config("");
     let started = s
         .wineo()
-        .env("WINEO_TEST_STEAM_CLIENT_WAIT_MS", "300")
+        .env("WINEO_TEST_STEAM_CLIENT_WAIT_MS", "3000")
         .args(["start", "civ"])
         .output()
         .unwrap();
     assert_success(&started);
-    wait_for("both Steam dispatches", || s.dispatch_count() == 2);
+    wait_for("the silent start", || s.dispatch_count() == 1);
+    thread::sleep(Duration::from_millis(1000));
+    assert_eq!(dispatches(&s), ["-silent"]);
+    wait_for("the launch", || s.dispatch_count() == 2);
     assert_eq!(dispatches(&s), ["-silent", "-applaunch 289070"]);
 }
 

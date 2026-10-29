@@ -30,9 +30,9 @@ pub(super) fn dispatch_request_entry() -> Option<Result<()>> {
                 Some(command) => (command, true),
                 None => (launch.command(), false),
             };
-            let report = match spawn_quiet(first) {
-                Ok(()) => "spawned\n".to_owned(),
-                Err(err) => format!("failed {err}\n"),
+            let (started, report) = match spawn_quiet(first) {
+                Ok(child) => (Some(child), "spawned\n".to_owned()),
+                Err(err) => (None, format!("failed {err}\n")),
             };
             io::stdout()
                 .write_all(report.as_bytes())
@@ -41,10 +41,10 @@ pub(super) fn dispatch_request_entry() -> Option<Result<()>> {
             // client's boot as it did when both went out together. Nothing
             // is left to report to if this spawn fails.
             if cold
-                && report == "spawned\n"
+                && let Some(mut silent) = started
                 && let Host::Proxied { install, .. } = &launch.host
             {
-                wait_for_client(install);
+                wait_for_client(install, &mut silent);
                 let _ = spawn_quiet(launch.command());
             }
             Ok(())
@@ -73,25 +73,34 @@ fn silent_start(launch: &Launch) -> Option<Command> {
 
 /// Waits for the client a silent start began. Steam may update itself first,
 /// so this is long, and it ends early when the check fails, since the launch
-/// is better sent than lost.
-fn wait_for_client(install: &steam::Install) {
+/// is better sent than lost. The start command is reaped if it exits early,
+/// so it doesn't linger as a zombie for the wait.
+fn wait_for_client(install: &steam::Install, silent: &mut Child) {
     let deadline =
         Instant::now() + test_timeout("WINEO_TEST_STEAM_CLIENT_WAIT_MS", CLIENT_START_WAIT);
+    wait_until(deadline, CLIENT_POLL, || {
+        let _ = silent.try_wait();
+        steam::client_running(install)
+    });
+}
+
+/// Polls until `running` says yes, fails, or the deadline passes. A failed
+/// check ends the wait the same way a yes does.
+fn wait_until(deadline: Instant, poll: Duration, mut running: impl FnMut() -> io::Result<bool>) {
     loop {
-        if !matches!(steam::client_running(install), Ok(false)) || Instant::now() >= deadline {
+        if !matches!(running(), Ok(false)) || Instant::now() >= deadline {
             return;
         }
-        thread::sleep(CLIENT_POLL);
+        thread::sleep(poll);
     }
 }
 
-fn spawn_quiet(mut command: Command) -> io::Result<()> {
+fn spawn_quiet(mut command: Command) -> io::Result<Child> {
     command
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()
-        .map(drop)
 }
 
 /// Hands a request to the Steam client from a process of its own, so Steam is
@@ -479,6 +488,30 @@ fn test_timeout(_variable: &str, fallback: Duration) -> Duration {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_client_wait_ends_on_a_yes_an_error_or_the_deadline() {
+        let poll = Duration::from_millis(5);
+        let far = Instant::now() + Duration::from_secs(30);
+        let mut checks = 0;
+        wait_until(far, poll, || {
+            checks += 1;
+            Ok(checks == 3)
+        });
+        assert_eq!(checks, 3);
+
+        // A check that can't tell sends the launch rather than waiting.
+        let mut checks = 0;
+        wait_until(far, poll, || {
+            checks += 1;
+            Err(io::Error::other("no /proc"))
+        });
+        assert_eq!(checks, 1);
+
+        let started = Instant::now();
+        wait_until(started + Duration::from_millis(60), poll, || Ok(false));
+        assert!(started.elapsed() >= Duration::from_millis(60));
+    }
 
     #[test]
     fn a_stop_queued_behind_a_wakeup_is_not_missed() {

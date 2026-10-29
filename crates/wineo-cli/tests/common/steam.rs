@@ -136,6 +136,7 @@ const STEAM: &str = r#"
 #include <string.h>
 #include <sys/stat.h>
 #include <sys/types.h>
+#include <time.h>
 #include <unistd.h>
 
 static void append(const char *path, const char *text) {
@@ -163,6 +164,12 @@ static int start_client(const char *root, const char *fifo, const char *request_
     char child_pid[PATH_MAX], reaper_pids[PATH_MAX], pid_file[PATH_MAX];
     snprintf(inert, sizeof(inert), "%s/steam-silent-inert", root);
     if (!access(inert, F_OK) || client_alive(root)) return 0;
+    // A test holds the client back to prove a launch waits for it. The wait
+    // is bounded so a failed test can't leave this running.
+    char hold[PATH_MAX];
+    snprintf(hold, sizeof(hold), "%s/steam-silent-hold", root);
+    struct timespec tick = {.tv_sec = 0, .tv_nsec = 10000000};
+    for (int i = 0; i < 2000 && !access(hold, F_OK); i++) nanosleep(&tick, NULL);
     snprintf(client, sizeof(client), "%s/.local/share/Steam/ubuntu12_32/steam", root);
     snprintf(reaper, sizeof(reaper), "%s/.local/share/Steam/ubuntu12_32/reaper", root);
     snprintf(child_pid, sizeof(child_pid), "%s/steam-child-pid", root);
@@ -433,6 +440,15 @@ impl SteamFixture {
 
     /// Makes the fake `steam -silent` start nothing, as a Steam that never
     /// comes up.
+    pub fn hold_silent_start(&self) {
+        fs::write(self.f.root.path().join("steam-silent-hold"), "").unwrap();
+    }
+
+    /// Lets a held `steam -silent` start the client.
+    pub fn release_silent_start(&self) {
+        fs::remove_file(self.f.root.path().join("steam-silent-hold")).unwrap();
+    }
+
     pub fn make_silent_start_inert(&self) {
         fs::write(self.f.root.path().join("steam-silent-inert"), "").unwrap();
     }
