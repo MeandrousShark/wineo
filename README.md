@@ -1,5 +1,9 @@
 # wineo
 
+[![Release](https://img.shields.io/github/v/release/MeandrousShark/wineo)](https://github.com/MeandrousShark/wineo/releases)
+[![License](https://img.shields.io/github/license/MeandrousShark/wineo)](LICENSE)
+![Platform: Linux](https://img.shields.io/badge/platform-Linux-blue)
+
 A launcher and library for Linux, written in Rust, for Windows programs and
 games run with Wine or Proton, native Linux games, your Steam library, and
 the GOG games you own. Each one gets its own named environment. For Windows
