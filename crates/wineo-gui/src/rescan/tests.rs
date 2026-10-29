@@ -348,8 +348,12 @@ fn a_recreated_environment_closes_its_art_page() {
     let (_root, mut app) = art_app();
     let config = app.paths.environment_config("game");
     let text = fs::read(&config).unwrap();
+    // Written beside the old file before it goes, so the new one can't reuse
+    // its inode the way ext4 does for a file removed and created again.
+    let replacement = config.with_extension("new");
+    fs::write(&replacement, text).unwrap();
     fs::remove_file(&config).unwrap();
-    fs::write(&config, text).unwrap();
+    fs::rename(&replacement, &config).unwrap();
     let changed = app.shown.changes(rescan(&app, false), now()).unwrap();
     let _ = app.update(Message::Rescanned(Box::new(changed)));
     assert!(app.art_page.is_none());
