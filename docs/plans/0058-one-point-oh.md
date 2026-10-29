@@ -67,11 +67,14 @@ Answers to the plan's questions (2026-10-28):
 9. **No AUR package at 1.0.** It comes with the packages plan, alongside
    deb and rpm.
 
-Answer to the plan review (2026-10-28):
+Answers after the plan review (2026-10-28):
 
 10. **The repo's `PKGBUILD` switches to the GitHub HTTPS source,** so the
     README's makepkg steps work for anyone. Gitea mirrors on every push, so
     the maintainer's builds see the same commits.
+11. **A green tag publishes its release automatically.** Publishing waits
+    on the checks in the same workflow, so a red tag never gets a Release
+    or a tarball.
 
 ## Existing foundation
 
@@ -225,9 +228,10 @@ Public docs then lose their links into private files:
 
 ### CI
 
-`.github/workflows/ci.yml` runs on `pull_request`, on pushed `v*` tags, and
-on `workflow_dispatch`, so the maintainer can try it on main before the
-tag. It runs on `ubuntu-latest` with stable Rust:
+`.github/workflows/ci.yml` runs on `pull_request`, on `workflow_dispatch`,
+so the maintainer can try it on main before the tag, and on
+`workflow_call`, so the release workflow reuses it. It runs on
+`ubuntu-latest` with stable Rust:
 
 - the system packages the build needs (`pkg-config` and the libraries iced
   links against)
@@ -239,11 +243,27 @@ There are no secrets, so fork PRs run the same as anything else. Since
 Ubuntu isn't Arch, the first manual run may turn up test assumptions about
 the host. Those get fixed as patch fixes before the tag.
 
-`release.yml` runs on `v*` tags (answer 7). It builds
-`wineo` and `wineo-gui` in release mode on `ubuntu-22.04`, for a glibc
-2.35 floor, packs them with `LICENSE`, `THIRD_PARTY.md`, and the README
-into `wineo-X.Y.Z-x86_64-linux.tar.gz`, and attaches that to a GitHub
-Release whose notes are that version's `CHANGELOG.md` section.
+`release.yml` runs on pushed tags matching `v[0-9]+.[0-9]+.[0-9]+`, so a
+stray tag like `v-test` doesn't start it (answers 7 and 11). Separate
+workflows on the same trigger run in parallel with no ordering, so the
+checks and the release live in one workflow, chained with `needs:`:
+
+1. `check` calls `ci.yml`, so the release runs exactly the checks a PR
+   does, plus a check that the tag matches `[workspace.package] version`
+   in `Cargo.toml`.
+2. `build` needs `check`. It builds `wineo` and `wineo-gui` in release
+   mode on `ubuntu-22.04`, for a glibc 2.35 floor, and packs them with
+   `LICENSE`, `THIRD_PARTY.md`, and the README into
+   `wineo-X.Y.Z-x86_64-linux.tar.gz`.
+3. `publish` needs `build`, and it's the only job with `contents: write`.
+   It publishes a GitHub Release, not a draft, with that tarball and that
+   version's `CHANGELOG.md` section as its notes.
+
+A red `check` skips the other two, so nothing is published. The tag itself
+is public either way once it's on Gitea, and a red tag is fixed with a
+patch release. The mirror's first push sends every existing tag at once,
+and GitHub creates no events when more than three tags are pushed at once.
+Those tags also predate the workflow files, so they can't start a release.
 
 ### The release
 
@@ -266,7 +286,8 @@ by rewriting Gitea.
    confirmed; rerun `gitleaks git`; sweep current public files for
    personal details (paths under `/home`, hostnames) beyond the
    `git.hannoncloud.com` URLs, which change in steps 2 and 5.
-1. **CI workflows** (code): `ci.yml` and `release.yml`.
+1. **CI workflows** (code): `ci.yml`, and `release.yml` with its checks,
+   build, and publish chained by `needs:`.
 2. **Public docs cleanup** (docs): plan links to plain text across the
    files listed above, the README Contributing section and clone URL,
    `Cargo.toml`'s `repository`, the `AGENTS.md` note, `stability.md`'s
@@ -296,6 +317,11 @@ by rewriting Gitea.
 - CI: the manual run on main passes. The 1.0.0 tag's run passes, the
   Release has the tarball, and its binaries run `wineo --version` on a
   non-Arch system or container.
+- The release gate, checked in step 6 on a throwaway GitHub repo or with
+  `act`, so no test tag reaches the real one:
+  a tag whose checks fail leaves `build` and `publish` skipped and creates
+  no Release, a tag that doesn't match the version fails `check`, and a
+  non-version tag starts nothing.
 - Docs: every relative link in `README.md` and `docs/` resolves, and
   `rg 'plans/|workflow\.md|docs/design'` over the public files finds only
   the `AGENTS.md` note and `.gitignore`.
