@@ -6,6 +6,7 @@ members = ["crates/wineo-core", "crates/wineo-cli", "crates/wineo-gog", "crates/
 version = "0.39.1"
 edition = "2024"
 license = "GPL-3.0-or-later"
+repository = "https://github.com/MeandrousShark/wineo"
 
 [workspace.dependencies]
 wineo-core = { path = "crates/wineo-core" }
