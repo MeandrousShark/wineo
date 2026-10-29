@@ -288,14 +288,29 @@ from `readelf -d` on the built binaries plus whatever the GUI start in
 in `release.yml`'s `verify` job, so the two can't drift without `verify`
 going red.
 
-`release.yml` runs on pushed tags matching `v[0-9]+.[0-9]+.[0-9]+`, so a
-stray tag like `v-test` doesn't start it (answers 7 and 11). Separate
-workflows on the same trigger run in parallel with no ordering, so the
-checks and the release live in one workflow, chained with `needs:`:
+`release.yml` runs on pushed tags matching the glob `v*` (answers 7 and
+11). Workflow filters are globs, not regular expressions, so the filter
+only narrows things down. The real check is a guard script,
+`scripts/release-guard.sh`, which refuses the release unless every one of
+these holds:
 
-1. `check` calls `ci.yml`, so the release runs exactly the checks a PR
-   does, plus a check that the tag matches `[workspace.package] version`
-   in `Cargo.toml`.
+- The event is a tag push, and the ref matches
+  `^refs/tags/v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$`.
+- The version is at least `1.0.0`, the first release with this workflow.
+- `[workspace.package] version` in the tagged commit's `Cargo.toml` equals
+  the tag without its `v`.
+- The tag is annotated, it points at the commit this run is for, and that
+  commit is on main.
+- `CHANGELOG.md` at that commit has a `## X.Y.Z - ` section.
+- No GitHub Release exists for this tag yet, so nothing is ever
+  overwritten, and the version is higher than every existing Release's, so
+  an old tag can't publish even if its run starts again.
+
+Separate workflows on the same trigger run in parallel with no ordering,
+so the checks and the release live in one workflow, chained with `needs:`:
+
+1. `check` runs the guard, then calls `ci.yml`, so the release runs
+   exactly the checks a PR does.
 2. `build` needs `check`. It builds `wineo` and `wineo-gui` in release
    mode inside an `ubuntu:22.04` container, for a glibc 2.35 floor, so the
    floor doesn't depend on GitHub keeping its `ubuntu-22.04` runner label.
@@ -311,16 +326,27 @@ checks and the release live in one workflow, chained with `needs:`:
    at runtime with `dlopen`. The GUI start catches those, through X11 and
    the software renderer, since the container has no GPU.
 4. `publish` needs `verify`, and it's the only job with `contents: write`.
-   It publishes a GitHub Release, not a draft, with that tarball and that
-   version's `CHANGELOG.md` section as its notes, including the runtime
-   package list.
+   It runs the guard again as its first step, since a rerun can come long
+   after `check` passed and another release may have landed in between.
+   Then it publishes a GitHub Release, not a draft, with that tarball and
+   that version's `CHANGELOG.md` section as its notes, including the
+   runtime package list.
 
 A red `check`, `build`, or `verify` skips everything after it, so nothing
-is published. The tag itself
-is public either way once it's on Gitea, and a red tag is fixed with a
-patch release. The mirror's first push sends every existing tag at once,
-and GitHub creates no events when more than three tags are pushed at once.
-Those tags also predate the workflow files, so they can't start a release.
+is published. The tag itself is public either way once it's on Gitea, and
+a red tag is fixed with a patch release.
+
+Old tags can't publish, and the plan doesn't count on GitHub's event rules
+for that. Two things hold on their own:
+
+- **No existing tag contains the release workflow.** `.github/workflows/`
+  first lands in step 1, after v0.39.1, so every tag up to then has no
+  workflow to run. That's checked explicitly before the mirror goes up
+  (see Testing). Old tags are never moved or re-created, and `v1.0.0` is
+  the first tag on a commit that has the workflow.
+- **The guard refuses them anyway.** A version below `1.0.0`, or one not
+  higher than every published Release, fails the guard, whatever event
+  started the run.
 
 ### The release
 
@@ -378,8 +404,10 @@ by rewriting Gitea.
    confirmed; rerun `gitleaks git`; sweep current public files for
    personal details (paths under `/home`, hostnames) beyond the
    `git.hannoncloud.com` URLs, which change in steps 2 and 5.
-1. **CI workflows** (code): `ci.yml`, and `release.yml` with its checks,
-   build, and publish chained by `needs:`.
+1. **CI workflows** (code): `ci.yml`, `release.yml` with its checks,
+   build, verify, and publish chained by `needs:`, and
+   `scripts/release-guard.sh`, checked with shellcheck and run by `check`
+   and `publish`.
 2. **Public docs cleanup** (docs): plan links to plain text across the
    files listed above, the README Contributing section and clone URL,
    `Cargo.toml`'s `repository`, the `AGENTS.md` note, `stability.md`'s
@@ -391,14 +419,15 @@ by rewriting Gitea.
 4. **History scrub** (**maintainer-present** for the freeze and the
    force-push): as above, including the plan-hash rewrite. Gitea stays
    frozen from the mirror clone until every kept clone is re-synced.
-5. **GitHub mirror** (**maintainer-present**): the private repo, token,
-   push mirror, a check that the hashes match, then the `PKGBUILD` source
-   switch.
+5. **GitHub mirror** (**maintainer-present**): first the check that no
+   existing tag contains `.github/workflows/`, then the private repo,
+   token, push mirror, a check that the hashes match, and the `PKGBUILD`
+   source switch.
 6. **CI shakedown**, all while the GitHub repo is private:
    - a `workflow_dispatch` run on main, with patch fixes for anything
      Ubuntu turns up
    - the Ubuntu 22.04 runtime package list, then a `verify` run against it
-   - the release gate tests
+   - the release guard and gate tests
    - a real PR round trip, described under Testing
    CI doesn't count as working until all four pass.
 7. **Go public** (**maintainer-present**): rerun `gitleaks git` and the
@@ -425,7 +454,17 @@ by rewriting Gitea.
   a tag whose checks fail leaves `build`, `verify`, and `publish` skipped
   and creates no Release, a tag that doesn't match the version fails
   `check`, a `verify` with a runtime package left out fails and publishes
-  nothing, and a non-version tag starts nothing.
+  nothing, and a tag that passes the glob but not the guard (like `v-test`)
+  fails `check`.
+- The release guard, run locally against made-up inputs before the gate
+  tests: it refuses a non-version tag, a leading zero (`v01.2.3`), a
+  version below `1.0.0`, a lightweight tag, a tag that doesn't point at the
+  run's commit, a commit not on main, a `Cargo.toml` version that doesn't
+  match, a missing changelog section, a tag that already has a Release, and
+  a version that isn't higher than the newest Release. It passes a correct
+  `v1.0.0`.
+- Old tags, before the mirror goes up: `git ls-tree -r <tag> -- .github`
+  is empty for every existing tag.
 - A PR round trip, in step 6. First, a throwaway PR from a branch pushed to
   Gitea, with a commit that breaks `cargo fmt`: CI runs on it and goes red.
   It's closed unmerged, and its branch is deleted on Gitea, which the
