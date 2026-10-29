@@ -273,7 +273,8 @@ you pass `--portable DIR` or set it up for a portable folder.
 ## Development
 
 wineo is a Cargo workspace: `wineo-core` holds the environment, config, and
-process logic, `wineo-cli` is the `wineo` command, and `wineo-gui` is the
+process logic, `wineo-gog` is the GOG API client (login, owned games, and
+downloads), `wineo-cli` is the `wineo` command, and `wineo-gui` is the
 desktop app. The code rules and checks every change follows are in
 [`AGENTS.md`](AGENTS.md).
 
