@@ -75,6 +75,10 @@ Answers after the plan review (2026-10-28):
 11. **A green tag publishes its release automatically.** Publishing waits
     on the checks in the same workflow, so a red tag never gets a Release
     or a tarball.
+12. **The GitHub repo starts private.** It stays private through the CI
+    shakedown and goes public in step 7, after `gitleaks` and the
+    `crates/target` check pass on GitHub's own copy. Until then, deleting
+    it is a complete rollback.
 
 ## Existing foundation
 
@@ -241,7 +245,7 @@ Public docs then lose their links into private files:
 - **Maintainer-present:** create an empty repo, `MeandrousShark/wineo`
   (answer 6), with no README or license so the first mirror push lands
   cleanly. It starts **private** and only goes public once every check in
-  step 6 has passed (question 12). Until then, deleting it is a complete
+  step 6 has passed (answer 12). Until then, deleting it is a complete
   rollback.
 - **Maintainer-present:** create a fine-grained token limited to that repo,
   with contents and workflows write access (workflows, so the mirror can
@@ -458,12 +462,3 @@ by rewriting Gitea.
 - No email rewrite and no scrub beyond `crates/target`.
 - CI doesn't run on pushes to main, doesn't run `--ignored` tests, and
   holds no secrets.
-
-## Open questions
-
-12. 🧐 **Does the GitHub repo start private?** A: yes, private through the
-    CI shakedown, then flipped public in step 7 after `gitleaks` and the
-    `crates/target` check pass on GitHub's own copy (recommended; while
-    it's private, deleting it undoes everything, and nobody can have
-    cloned it yet). B: public from the start, as first drafted, so any
-    mistake found after the mirror's first push can only be fixed forward.
