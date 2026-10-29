@@ -217,6 +217,15 @@ It uses a second git directory at the repo root (answer 4):
 Agents keep finding everything at the same paths. `workflow.md` gains a
 line on committing plans with `pgit`, and on adding new ones with `-f`.
 
+`workflow.md` also gets a "Setting up a checkout" section with the exact
+first-use steps for a fresh machine: clone the public repo, clone
+`wineo-private` bare into `.private.git`, set `core.bare` off and
+`core.worktree` to the repo root, write its `info/exclude`, check out the
+three paths, and set up `pgit` and `pgit-status`. `workflow.md` is itself
+private, so the section is read on Gitea's web UI before the first
+checkout. The steps are tested from scratch before the freeze (see
+Testing).
+
 Public docs then lose their links into private files:
 
 - Links to plans become plain "plan NNNN" text.
@@ -229,14 +238,23 @@ Public docs then lose their links into private files:
 
 ### GitHub mirror
 
-- **Maintainer-present:** create an empty public repo,
-  `MeandrousShark/wineo` (answer 6), with no README or license so the
-  first mirror push lands cleanly.
+- **Maintainer-present:** create an empty repo, `MeandrousShark/wineo`
+  (answer 6), with no README or license so the first mirror push lands
+  cleanly. It starts **private** and only goes public once every check in
+  step 6 has passed (question 12). Until then, deleting it is a complete
+  rollback.
 - **Maintainer-present:** create a fine-grained token limited to that repo,
   with contents and workflows write access (workflows, so the mirror can
   push `.github/workflows/`). Then add a push mirror in Gitea's repo
   settings with "sync when commits are pushed" on.
 - Check that every branch and tag hash on GitHub matches Gitea.
+- Actions keeps GitHub's default of asking the maintainer to approve
+  workflow runs for first-time contributors, so a new contributor's PR
+  runs only after an "Approve and run". Forks get a read-only token and no
+  secrets either way.
+- The mirror prunes branches that aren't on Gitea, so the maintainer's own
+  PR branches are pushed to Gitea. Outside contributors' branches live in
+  their forks and aren't touched.
 - `Cargo.toml` gains `repository`, and `README.md`'s clone URL points at
   GitHub.
 - The repo's `PKGBUILD` takes the GitHub HTTPS `source` and the GitHub
@@ -260,6 +278,12 @@ There are no secrets, so fork PRs run the same as anything else. Since
 Ubuntu isn't Arch, the first manual run may turn up test assumptions about
 the host. Those get fixed as patch fixes before the tag.
 
+The runtime package list for Ubuntu 22.04 is worked out once, in step 6,
+from `readelf -d` on the built binaries plus whatever the GUI start in
+`verify` turns up missing. It's kept in the README's install section and
+in `release.yml`'s `verify` job, so the two can't drift without `verify`
+going red.
+
 `release.yml` runs on pushed tags matching `v[0-9]+.[0-9]+.[0-9]+`, so a
 stray tag like `v-test` doesn't start it (answers 7 and 11). Separate
 workflows on the same trigger run in parallel with no ordering, so the
@@ -269,14 +293,26 @@ checks and the release live in one workflow, chained with `needs:`:
    does, plus a check that the tag matches `[workspace.package] version`
    in `Cargo.toml`.
 2. `build` needs `check`. It builds `wineo` and `wineo-gui` in release
-   mode on `ubuntu-22.04`, for a glibc 2.35 floor, and packs them with
-   `LICENSE`, `THIRD_PARTY.md`, and the README into
+   mode inside an `ubuntu:22.04` container, for a glibc 2.35 floor, so the
+   floor doesn't depend on GitHub keeping its `ubuntu-22.04` runner label.
+   It packs them with `LICENSE`, `THIRD_PARTY.md`, and the README into
    `wineo-X.Y.Z-x86_64-linux.tar.gz`.
-3. `publish` needs `build`, and it's the only job with `contents: write`.
+3. `verify` needs `build`. In a fresh `ubuntu:22.04` container with only
+   the documented runtime packages installed, it unpacks the tarball and
+   checks that `ldd` finds every library both binaries link, that no
+   symbol needs a glibc newer than 2.35, that `wineo --version` runs, and
+   that `wineo-gui` starts under the container's own `xvfb-run` and stays
+   up for a few seconds without a panic. `ldd` alone isn't enough, since
+   iced and wgpu load the Wayland, X11, xkbcommon, and graphics libraries
+   at runtime with `dlopen`. The GUI start catches those, through X11 and
+   the software renderer, since the container has no GPU.
+4. `publish` needs `verify`, and it's the only job with `contents: write`.
    It publishes a GitHub Release, not a draft, with that tarball and that
-   version's `CHANGELOG.md` section as its notes.
+   version's `CHANGELOG.md` section as its notes, including the runtime
+   package list.
 
-A red `check` skips the other two, so nothing is published. The tag itself
+A red `check`, `build`, or `verify` skips everything after it, so nothing
+is published. The tag itself
 is public either way once it's on Gitea, and a red tag is fixed with a
 patch release. The mirror's first push sends every existing tag at once,
 and GitHub creates no events when more than three tags are pushed at once.
@@ -291,6 +327,41 @@ Those tags also predate the workflow files, so they can't start a release.
   contract`.
 - After the tag: the upgrade fixture set for `v1.0.0`, per
   `workflow.md`'s Releasing section.
+
+### Rollback
+
+Each stage has its own way back. The maintainer makes every rollback call.
+The backup bundle and `frozen-refs.txt` are kept until 1.0 has been out
+for a while.
+
+- **Before the force-push** (scrub steps 0 to 4): Gitea hasn't changed.
+  Delete the mirror clone and end the freeze.
+- **The private split** (step 3): revert the public commit that untracked
+  the three paths (the files are still on disk) and remove `.private.git`.
+  The `wineo-private` repo on Gitea can stay or go. Before the scrub this is
+  an ordinary revert.
+- **After the force-push, before GitHub** (scrub steps 5 to 7): Gitea is
+  still frozen. Make a mirror clone of the backup bundle, then push its
+  branches with `--force-with-lease` against the scrubbed hashes and its
+  tags with `--force`. Gitea's `git ls-remote` must then match
+  `frozen-refs.txt` exactly. Clones that were already re-synced get
+  re-synced back the same way, tags included, and the private repo's
+  hash-rewrite commit is reverted.
+- **While GitHub is private** (steps 5 and 6): turn off the push mirror in
+  Gitea, revoke its token, and delete the GitHub repo. Then fix forward, or
+  roll Gitea back as above. The `PKGBUILD` source switch is reverted to
+  the Gitea SSH source. Nothing has been public yet.
+- **After going public** (step 7 on): published history can't be recalled,
+  since clones, forks, and caches may already have it. That's why
+  `gitleaks` and the `crates/target` checks run on GitHub's own copy before
+  the flip. From here on, rollback means fixing forward: revert a bad
+  commit, and rotate anything that leaked.
+- **A bad release:** a red check already blocks publishing. A Release that
+  published but turns out broken is deleted or marked as broken on
+  GitHub, and the fix ships as a patch release. The tag stays.
+- **Mirror trouble later:** if the mirror stops syncing, makepkg builds a
+  stale commit. The `PKGBUILD` source goes back to Gitea SSH until the
+  mirror is fixed.
 
 ## Implementation sequence
 
@@ -311,18 +382,28 @@ by rewriting Gitea.
    two gaps, and the priority anchor in `features.md`.
 3. **Private repo split** (**maintainer-present** for the Gitea repo):
    extract the three paths' history into `.private.git` and push it, then
-   the public commit that untracks and ignores them.
+   the public commit that untracks and ignores them. Then test the
+   first-use steps from `workflow.md` on a fresh clone, before the freeze.
 4. **History scrub** (**maintainer-present** for the freeze and the
    force-push): as above, including the plan-hash rewrite. Gitea stays
    frozen from the mirror clone until every kept clone is re-synced.
-5. **GitHub mirror** (**maintainer-present**): repo, token, push mirror,
-   a check that the hashes match, then the `PKGBUILD` source switch.
-6. **First CI run** through `workflow_dispatch` on main, plus patch fixes
-   for anything Ubuntu turns up.
-7. **Release 1.0.0**: changelog, `stability.md` tense, the `features.md`
+5. **GitHub mirror** (**maintainer-present**): the private repo, token,
+   push mirror, a check that the hashes match, then the `PKGBUILD` source
+   switch.
+6. **CI shakedown**, all while the GitHub repo is private:
+   - a `workflow_dispatch` run on main, with patch fixes for anything
+     Ubuntu turns up
+   - the Ubuntu 22.04 runtime package list, then a `verify` run against it
+   - the release gate tests
+   - a real PR round trip, described under Testing
+   CI doesn't count as working until all four pass.
+7. **Go public** (**maintainer-present**): rerun `gitleaks git` and the
+   `crates/target` check on a fresh clone from GitHub, then flip the repo
+   to public.
+8. **Release 1.0.0**: changelog, `stability.md` tense, the `features.md`
    1.0 note and queue, the version, the tag, and the push. The mirror
    carries the tag to GitHub and Actions runs.
-8. **Upgrade fixture set** for `v1.0.0`.
+9. **Upgrade fixture set** for `v1.0.0`.
 
 ## Testing and acceptance
 
@@ -336,18 +417,32 @@ by rewriting Gitea.
   Release has the tarball, and its binaries run `wineo --version` on a
   non-Arch system or container.
 - The release gate, checked in step 6 on a throwaway GitHub repo or with
-  `act`, so no test tag reaches the real one:
-  a tag whose checks fail leaves `build` and `publish` skipped and creates
-  no Release, a tag that doesn't match the version fails `check`, and a
-  non-version tag starts nothing.
+  `act`, so no test tag reaches the real one, even while it's private:
+  a tag whose checks fail leaves `build`, `verify`, and `publish` skipped
+  and creates no Release, a tag that doesn't match the version fails
+  `check`, a `verify` with a runtime package left out fails and publishes
+  nothing, and a non-version tag starts nothing.
+- A PR round trip, in step 6. First, a throwaway PR from a branch pushed to
+  Gitea, with a commit that breaks `cargo fmt`: CI runs on it and goes red.
+  It's closed unmerged, and its branch is deleted on Gitea, which the
+  mirror prunes from GitHub. Then a PR with a real small change: CI goes
+  green, the maintainer fast-forwards it into main locally and pushes to
+  Gitea, and GitHub marks the PR merged once the mirror syncs.
+- Ubuntu 22.04: `verify` passes on the 1.0.0 tag, and the README's runtime
+  package list matches the one `verify` installs.
 - Docs: every relative link in `README.md` and `docs/` resolves, and
   `rg 'plans/|workflow\.md|docs/design'` over the public files finds only
   the `AGENTS.md` note and `.gitignore`.
-- Private: a fresh clone of `wineo-private` into a fresh public clone
-  restores the three paths, and `git status` in the public repo stays
-  clean. A new plan file is added with `pgit add -f`, committed, pushed,
-  and restored the same way, and never shows in the public repo's
-  `git status`.
+- Private first use, in step 3 before the freeze: follow
+  `workflow.md`'s "Setting up a checkout" steps word for word in a fresh
+  folder on disk, from a fresh public clone. The three paths come back,
+  and `git status` in the public repo and `pgit status` are both clean. A
+  new plan file added with `pgit add -f` shows in `pgit-status` and never
+  in the public repo's `git status`. It's committed and pushed to a
+  throwaway branch of `wineo-private`, comes back in a second fresh
+  setup, and then the branch is deleted. Any step that needed something
+  the section doesn't say gets added to the section, and the test starts
+  over.
 - Tags: in every clone kept after the scrub, no tag reaches a commit with
   `crates/target`.
 - makepkg from the repo's `PKGBUILD` builds 1.0.0 from GitHub.
@@ -363,3 +458,12 @@ by rewriting Gitea.
 - No email rewrite and no scrub beyond `crates/target`.
 - CI doesn't run on pushes to main, doesn't run `--ignored` tests, and
   holds no secrets.
+
+## Open questions
+
+12. 🧐 **Does the GitHub repo start private?** A: yes, private through the
+    CI shakedown, then flipped public in step 7 after `gitleaks` and the
+    `crates/target` check pass on GitHub's own copy (recommended; while
+    it's private, deleting it undoes everything, and nobody can have
+    cloned it yet). B: public from the start, as first drafted, so any
+    mistake found after the mirror's first push can only be fixed forward.
