@@ -2178,14 +2178,10 @@ fn canceling_winetricks_cleans_up_before_letting_go() {
     );
     wait_for("winetricks to start", || marker.exists());
 
-    let group = format!("-{}", child.id());
-    assert!(
-        Command::new("kill")
-            .args(["-INT", &group])
-            .status()
-            .unwrap()
-            .success()
-    );
+    // Not `kill -INT -PID`: procps' kill reads a negative PID after a signal
+    // as an option and interrupts every process the user owns.
+    let group = rustix::process::Pid::from_raw(i32::try_from(child.id()).unwrap()).unwrap();
+    rustix::process::kill_process_group(group, rustix::process::Signal::INT).unwrap();
 
     let out = child.wait_with_output().unwrap();
     assert_eq!(out.status.code(), Some(130), "{}", stderr(&out));

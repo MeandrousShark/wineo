@@ -624,11 +624,10 @@ fn a_terminal_ctrl_c_stops_the_wait_in_order() {
     wait_for("the waiting line", || {
         fs::read_to_string(&log).is_ok_and(|text| text.contains(WAITING))
     });
-    let sent = std::process::Command::new("kill")
-        .args(["-INT", &format!("-{}", running.id())])
-        .status()
-        .unwrap();
-    assert!(sent.success());
+    // Not `kill -INT -PID`: procps' kill reads a negative PID after a signal
+    // as an option and interrupts every process the user owns.
+    let group = rustix::process::Pid::from_raw(i32::try_from(running.id()).unwrap()).unwrap();
+    rustix::process::kill_process_group(group, rustix::process::Signal::INT).unwrap();
     // What the handoff left behind still runs for a moment after it's asked
     // to close, and the folder stays held until it's gone.
     std::thread::sleep(std::time::Duration::from_millis(300));
