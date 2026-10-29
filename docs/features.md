@@ -9,9 +9,8 @@ own numbered plan in `docs/plans/`. What has shipped is in
 The order the maintainer picked on 2026-10-14, after 0051. Each item gets
 its own plan when it comes up, and the rows below have the details.
 
-1. GUI themes, so they cover every palette role.
-2. 1.0, once the [1.0 criteria](#10-criteria) are met.
-3. Release packages (deb, rpm, AppImage), shortly after 1.0.
+1. 1.0, once the [1.0 criteria](#10-criteria) are met.
+2. Release packages (deb, rpm, AppImage), shortly after 1.0.
 
 Library views parts 3 to 5 (list view, saved presets and grouping,
 coverflow) aren't in the order; they can land in 1.x (maintainer,
@@ -46,7 +45,6 @@ around the next milestone, 1.0:
 
 | Feature | Category | Priority | Depends on | Why | Notes |
 |---|---|---:|---|---|---|
-| GUI themes and customization | UX | **1** | 0036 | Let people make the app their own | From the maintainer's 0036 testing (2026-09-28): custom themes with a few presets, added with a GUI settings page. Longer term, a deeply customizable GUI. The palette tokens from 0036 are the starting point. Moved up to 1 by the maintainer (2026-10-14), to land before 1.0. |
 | GUI library views | UX | **1** | 0036 | Browse the library the way that fits the moment | Split by the maintainer into five plans (2026-10-17): 1) sorting, filters, favorites, and hidden games, [0054](plans/0054-library-sorting-and-favorites.md), released in 0.36.0; 2) grid zoom and the poster-only toggle, [0055](plans/0055-grid-zoom-and-poster-only.md), released in 0.37.0; 3) list view; 4) saved presets and grouping; 5) coverflow with controller navigation. 0054's Series section keeps the ideas for each. Parts 1 and 2 land before 1.0; parts 3 to 5 can land in 1.x (maintainer, 2026-10-17). |
 | GitHub mirror and CI | Distribution | **1** | | Publish wineo at 1.0 while the maintainer keeps working in Gitea | Gitea stays primary and push-mirrors to GitHub at 1.0, with Actions on outside PRs and tags. Details in the [sketch](sketches/github-mirror.md). |
 | Edit hooks in GUI Settings | UX | **2** | 0046 | Set a game's hooks without editing TOML or using `wineo set` | Left out of [0046](plans/0046-launch-hooks.md) by the maintainer (2026-10-06). The GUI already runs hooks. |

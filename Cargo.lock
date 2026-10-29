@@ -5456,7 +5456,7 @@ checksum = "589f6da84c646204747d1270a2a5661ea66ed1cced2631d546fdfb155959f9ec"
 
 [[package]]
 name = "wineo-cli"
-version = "0.38.1"
+version = "0.39.0"
 dependencies = [
  "anstream",
  "anstyle",
@@ -5480,7 +5480,7 @@ dependencies = [
 
 [[package]]
 name = "wineo-core"
-version = "0.38.1"
+version = "0.39.0"
 dependencies = [
  "anyhow",
  "filetime",
@@ -5510,7 +5510,7 @@ dependencies = [
 
 [[package]]
 name = "wineo-gog"
-version = "0.38.1"
+version = "0.39.0"
 dependencies = [
  "flate2",
  "md-5",
@@ -5526,7 +5526,7 @@ dependencies = [
 
 [[package]]
 name = "wineo-gui"
-version = "0.38.1"
+version = "0.39.0"
 dependencies = [
  "anyhow",
  "ashpd",

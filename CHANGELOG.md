@@ -4,6 +4,41 @@ A finished plan bumps the minor version and fixes between plans bump the
 patch version. A plan released in parts bumps the minor version for each
 part. See `AGENTS.md` for the rule.
 
+## 0.39.0 - 2026-10-28
+
+Color themes for the desktop app, from
+[0057](docs/plans/0057-gui-themes.md).
+
+- Behavior changes:
+  - Global Settings has two tabs, General and Appearance. Everything that
+    was there before is on General, unchanged.
+  - Midnight's danger red is a touch lighter (`#ec625a`), so error text
+    passes 4.5:1 on panels.
+  - `wineo validate` warns about an `[appearance]` table that names a
+    missing, unreadable, or wrong-kind theme, and about a theme file in
+    `themes/` that doesn't parse (`theme_invalid`).
+  - Launching a Steam game starts Steam with `-silent`, so a launch that
+    has to start Steam no longer opens its library window. A Steam that's
+    already open stays as it is.
+- Eight built-in themes: Midnight and Daylight (the old dark and light),
+  Cellar and Cellar Light, High contrast, Dracula, Catppuccin Macchiato, and
+  Catppuccin Latte. Following the system's light or dark mode stays on by
+  default, with a dark and a light theme picked separately; turning it off
+  picks one theme for both.
+- Picking a theme previews it right away. Save keeps it, Revert or Discard
+  puts back what was saved, and one Save covers both tabs.
+- Improve readability, off by default, nudges any color that misses its
+  contrast target until it passes, keeping its hue. It works on custom
+  themes too.
+- Custom themes: copy any theme, then change its colors with a hex field
+  per role, rename it, or delete it. Each is a file in the config root's
+  `themes/` folder, and a theme that's missing a color takes it from the
+  theme it was copied from.
+- Appearance settings live in an `[appearance]` table in `library.toml`.
+  Older wineo versions ignore it.
+- `crates/wineo-gui/THIRD_PARTY.md` credits the Dracula, Catppuccin, and
+  Ember colors.
+
 ## 0.38.1 - 2026-10-27
 
 Fixes for a reboot that made wineo distrust its own trash, and a small touch
