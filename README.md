@@ -18,10 +18,11 @@ wineo stop hades
 
 ## Why wineo
 
-Bottles, Lutris, and Heroic are all good at what they do. wineo is for
-people who want the terminal to be a first-class way in. Nearly everything
-the desktop app does is a `wineo` command too, with `--json` output and
-documented exit codes for scripts. Nothing lives in a hidden database: each
+Bottles, Lutris, and Heroic are all good at what they do. wineo gives you
+two first-class ways in: a desktop app for browsing and playing your
+library, and a `wineo` command for the terminal. Nearly everything the app
+does is a command too, and the command adds `--json` output and documented
+exit codes for scripts. Nothing lives in a hidden database: each
 environment is a TOML file you can read, edit by hand, or keep in git, and
 wineo's own edits keep your comments and formatting. The desktop app works
 on those same files and the same run state, so a game started from a script
