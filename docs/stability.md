@@ -51,7 +51,10 @@ match the docs.
 
 - **Human-readable output.** Wording, layout, colors, prompts, and key
   hints. Scripts should use `--json` and exit codes instead.
-- **The desktop app.** Its layout, behavior, and shortcuts.
+- **The desktop app.** Its layout, behavior, and shortcuts, and the files
+  it keeps for itself: `library.toml` and the custom theme files in
+  `themes/`. They're read leniently, so a value wineo can't use falls back
+  to its default, and an older release ignores what it doesn't know.
 - **`wineo-core`'s Rust API.**
 - **The built-in `gaming` template's settings.** Its name stays, but what it
   turns on can improve. To keep a fixed set, write your own

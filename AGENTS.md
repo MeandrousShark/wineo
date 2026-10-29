@@ -1,5 +1,10 @@
 # Agent Guidelines
 
+`docs/workflow.md` and `docs/plans/` are the maintainer's private files and
+aren't in this repository. If you're contributing, use your own workflow:
+the code boundaries, build and verification checks, and rules below still
+apply to every change.
+
 The primary session reads `docs/workflow.md` at the start of each session.
 
 ## Code boundaries

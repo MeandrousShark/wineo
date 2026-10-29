@@ -1,7 +1,7 @@
 # GUI style guide
 
 This is Wineo's approved visual direction from
-[plan 0042](plans/0042-gui-visual-polish.md). Use it when extending the desktop
+plan 0042. Use it when extending the desktop
 app so new pages feel like part of the same application. The maintainer approved
 the Grouped HTML preview on 2026-10-03, with smaller posters for implementation.
 The [original HTML preview](design/0042-ui-polish-preview.html) is saved unchanged
@@ -16,11 +16,11 @@ and oversized preview posters are not implementation requirements.
 - Library posters are 160 x 240 px at 100% zoom with a 2:3 aspect ratio and
   16 px gaps. The zoom runs from 60% to 200% and scales the posters, never
   the gaps or the text (plan
-  [0055](plans/0055-grid-zoom-and-poster-only.md)). The columns are
+  0055). The columns are
   centered in the width beside the panel: whatever doesn't fit another
   column splits evenly between the left and right margins, rounded down to
   a whole pixel, so a full row is laid out exactly as before (plan
-  [0056](plans/0056-gui-polish.md)). Titles and compact
+  0056). Titles and compact
   state/playtime metadata sit beneath the art by default; below 90% only
   the title does, and in poster-only the title moves over the art (see
   Poster corners and overlay). Artwork should support browsing without
@@ -46,7 +46,7 @@ and oversized preview posters are not implementation requirements.
 ## Colors and controls
 
 `crates/wineo-gui/src/theme/` owns the semantic palette and the built-in
-themes (plan [0057](plans/0057-gui-themes.md)). Reuse its roles; do not copy
+themes (plan 0057). Reuse its roles; do not copy
 literal preview colors into page implementations.
 
 | Role | Use |
@@ -112,7 +112,7 @@ buttons say **Back**, with no arrow. Lists of choices, like **Add**'s or a
 program list, use quiet full-width rows in one grouped surface, not
 buttons. The rows take keyboard focus with the usual outline, on Add, New's
 program list, Heroic's and GOG's lists, and the version picker (plan
-[0056](plans/0056-gui-polish.md)): the first row has focus when a list
+0056): the first row has focus when a list
 appears, Up and Down move between rows and stop at the ends, Enter or Space
 chooses, and Ctrl+Enter still submits the dialog without choosing the row.
 When a list changes, focus stays on the same row if it is still there and
@@ -139,7 +139,7 @@ grows to 600 px before it scrolls; the window bounds it below that.
 
 ## Library toolbar and marks
 
-Plan [0054](plans/0054-library-sorting-and-favorites.md) added these.
+Plan 0054 added these.
 
 - The toolbar reads the wordmark, the accent **Add**, search, **Sort:
   <key>** with a chevron, a 32 px square direction button, **Filters** (or
@@ -206,7 +206,7 @@ Plan [0054](plans/0054-library-sorting-and-favorites.md) added these.
   button with a 28 px target centered on the chip: a left press toggles
   the favorite without selecting the card or opening the panel, and a
   right press still opens the context menu (plan
-  [0056](plans/0056-gui-polish.md)). With the pointer on the star itself,
+  0056). With the pointer on the star itself,
   its icon tints to the primary color and its chip darkens to about 80%
   black, fading over the same 150 ms. A click that favorites the card also
   pops it: the chip springs up to the 28 px target and settles over about
@@ -227,7 +227,7 @@ Plan [0054](plans/0054-library-sorting-and-favorites.md) added these.
 
 ## Poster corners and overlay
 
-Plan [0055](plans/0055-grid-zoom-and-poster-only.md) added these. Marks,
+Plan 0055 added these. Marks,
 chips, and badges keep their sizes at every zoom.
 
 - Poster-only shows each card as its poster alone. Hovering or selecting a

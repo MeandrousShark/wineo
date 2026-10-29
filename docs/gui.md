@@ -3,15 +3,15 @@
 `wineo-gui` is wineo's desktop app. It shows every environment as a library
 of cards with its art, whether it's running, and how long it's been played,
 and it starts and stops applications and games. It was added in
-[plan 0036](plans/0036-gui-library-launcher.md).
+plan 0036.
 
-[Plan 0037](plans/0037-gui-settings.md) added settings pages for each
+Plan 0037 added settings pages for each
 environment and for the global config, covering what `wineo set` and the
 target half of `wineo setup` do. The GUI also has guided flows for creating,
 importing, and cloning environments.
-[Plan 0039](plans/0039-gui-trash-and-validate.md) added removal, the trash,
+Plan 0039 added removal, the trash,
 and checking for problems.
-[Plan 0042](plans/0042-gui-visual-polish.md) adds compact controls, panel
+Plan 0042 adds compact controls, panel
 motion, and grouped review and management layouts. Future GUI changes follow
 the [GUI style guide](gui-style.md), which includes the original visual preview.
 
@@ -831,7 +831,7 @@ portable folder leaves them alone.
 ### Appearance
 
 The **Appearance** tab picks the app's colors (plan
-[0057](plans/0057-gui-themes.md)). Picking a theme repaints the app right
+0057). Picking a theme repaints the app right
 away, so you can try a few before you **Save**; **Revert**, or leaving and
 choosing **Discard**, puts back what was saved. Theme edits count in the
 same bar as General's, and one **Save** writes both.
@@ -955,4 +955,4 @@ the palette, spacing, control states, motion, and layout rules for future pages.
 - Gamepad navigation.
 - Grid zoom, a poster-only grid, a list view, saved filter presets, and
   grouping (the later parts of the library views series in
-  [plan 0054](plans/0054-library-sorting-and-favorites.md#series)).
+  plan 0054).

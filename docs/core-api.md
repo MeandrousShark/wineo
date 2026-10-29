@@ -3,8 +3,8 @@
 `wineo-core` is what the CLI is built on, and what a GUI will call directly.
 This page covers the conventions every long operation follows and the entry
 points a frontend needs. It was written for
-[plan 0034](plans/0034-core-api-review.md), and
-[plan 0035](plans/0035-heroic-import-in-core.md) added Heroic import.
+plan 0034, and
+plan 0035 added Heroic import.
 
 ## Conventions
 
@@ -605,7 +605,7 @@ is running from rimworld's game folder. Stop it first.`
 
 `library` owns `library.toml` (`Paths::library_file()`), the lenient file
 for how the library is shown: favorites, hidden games, added dates, and the
-saved sort. Plan [0054](plans/0054-library-sorting-and-favorites.md)
+saved sort. Plan 0054
 added it.
 
 - `library::load(paths) -> Library`: never fails. A missing file is an

@@ -57,7 +57,7 @@ The repository has a `wineo-git` PKGBUILD that builds the latest `main` and
 installs the binary, shell completions, and man pages:
 
 ```sh
-git clone https://git.hannoncloud.com/mphannon/wineo.git
+git clone https://github.com/MeandrousShark/wineo.git
 cd wineo
 makepkg -si
 ```
@@ -164,8 +164,7 @@ you pass `--portable DIR` or set it up for a portable folder.
 
 wineo is a Cargo workspace: `wineo-core` holds the environment, config, and
 process logic, `wineo-cli` is the `wineo` command, and `wineo-gui` is the
-desktop app.
-Work is planned in [`docs/plans/`](docs/plans/), and contributor rules are in
+desktop app. The code rules and checks every change follows are in
 [`AGENTS.md`](AGENTS.md).
 
 ```sh
@@ -174,6 +173,14 @@ cargo clippy --all-targets -- -D warnings
 cargo test
 cargo test -- --ignored   # needs wine; uses throwaway prefixes in temp dirs
 ```
+
+## Contributing
+
+Pull requests are welcome on GitHub. CI runs the formatting, clippy, and
+test checks above on each one; a first-time contributor's run starts once
+the maintainer approves it. The GitHub repository is a mirror of the one
+the maintainer works in, so an accepted PR is merged there, and GitHub
+marks it merged when the mirror syncs.
 
 ## License
 

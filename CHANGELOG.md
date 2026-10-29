@@ -19,7 +19,7 @@ A fix for Steam's library window opening on a cold launch.
 ## 0.39.0 - 2026-10-28
 
 Color themes for the desktop app, from
-[0057](docs/plans/0057-gui-themes.md).
+plan 0057.
 
 - Behavior changes:
   - Global Settings has two tabs, General and Appearance. Everything that
@@ -81,7 +81,7 @@ to hidden cards.
 ## 0.38.0 - 2026-10-26
 
 Small touches to the desktop app, from
-[0056](docs/plans/0056-gui-polish.md).
+plan 0056.
 
 - Behavior changes:
   - A Wine or native environment can have a `title`, the name its card
@@ -120,7 +120,7 @@ Small touches to the desktop app, from
 
 Grid zoom and a poster-only view in the desktop app's library, part 2 of
 the library views work, from
-[0055](docs/plans/0055-grid-zoom-and-poster-only.md).
+plan 0055.
 
 - Behavior changes:
   - **Add** moved to the toolbar's far left, before search, and now takes
@@ -151,7 +151,7 @@ the library views work, from
 
 Sorting, filters, and favorites in the desktop app's library, part 1 of the
 library views work, from
-[0054](docs/plans/0054-library-sorting-and-favorites.md). What the app
+plan 0054. What the app
 remembers about each environment lives in a new, lenient
 `~/.config/wineo/library.toml`.
 
@@ -192,7 +192,7 @@ remembers about each environment lives in a new, lenient
 
 ## 0.35.1 - 2026-10-17
 
-Loose ends from [0051](docs/plans/0051-lean-and-simple.md)'s possible bugs
+Loose ends from plan 0051's possible bugs
 and a flaky process scan.
 
 - Behavior changes:
@@ -218,7 +218,7 @@ and a flaky process scan.
 
 ## 0.35.0 - 2026-10-16
 
-The config contract, from [0053](docs/plans/0053-config-contract.md):
+The config contract, from plan 0053:
 configs and state from earlier releases are tested to keep loading, renamed
 keys and flags get a warning period, and wineo never quietly swaps a config
 it can't use for defaults. This closes 1.0 criteria 4 and 5.
@@ -274,7 +274,7 @@ Import logs no longer share a name with environments.
 ## 0.34.0 - 2026-10-16
 
 GOG Galaxy builds, part B, which finishes
-[0052](docs/plans/0052-galaxy-builds.md): Galaxy games can follow a beta
+plan 0052: Galaxy games can follow a beta
 or legacy branch, roll back to an older build and stay there, and use
 private branches.
 
@@ -310,7 +310,7 @@ private branches.
 
 ## 0.33.0 - 2026-10-15
 
-GOG Galaxy builds, part A ([0052](docs/plans/0052-galaxy-builds.md)):
+GOG Galaxy builds, part A (plan 0052):
 Windows GOG games install and update from GOG Galaxy's builds, file by
 file, so updates download only what changed.
 
@@ -351,7 +351,7 @@ Safer GOG installer updates.
 
 ## 0.32.0 - 2026-10-14
 
-Lean and simple ([0051](docs/plans/0051-lean-and-simple.md)): wineo does
+Lean and simple (plan 0051): wineo does
 less while nothing is happening, uses less memory, and its code is easier
 to read. Everything you see works as before, except where noted.
 
@@ -401,7 +401,7 @@ to read. Everything you see works as before, except where noted.
 
 ## 0.31.1 - 2026-10-13
 
-First fixes from [0051](docs/plans/0051-lean-and-simple.md), which trims
+First fixes from plan 0051, which trims
 what wineo does while nothing is happening.
 
 - A running game costs almost nothing to supervise. The background
@@ -419,7 +419,7 @@ what wineo does while nothing is happening.
 
 ## 0.31.0 - 2026-10-13
 
-- GOG installs ([0050](docs/plans/0050-gog-installs.md)). `wineo import gog
+- GOG installs (plan 0050). `wineo import gog
   --game ID` now installs a game you own that isn't in wineo yet, natively
   or from its Windows installer, with the DLC you own, into
   `defaults.games_root` (default `~/Games`). `--platform`, `--language`,
@@ -492,7 +492,7 @@ what wineo does while nothing is happening.
 ## 0.30.0 - 2026-10-12
 
 - GOG account, migration, and updates
-  ([0049](docs/plans/0049-gog-games.md)), without Heroic. `wineo import gog
+  (plan 0049), without Heroic. `wineo import gog
   --login` logs in through GOG's login page in your browser and keeps the
   login in the keyring; `--list` shows the games you own, `--game ID` and
   `--all` move games Heroic installed into wineo in place, and `--logout`
@@ -531,7 +531,7 @@ what wineo does while nothing is happening.
 
 ## 0.29.0 - 2026-10-10
 
-- Owned Steam games ([0048](docs/plans/0048-steam-owned-games.md)). With a
+- Owned Steam games (plan 0048). With a
   Steam Web API key (`wineo import steam --key`, kept in the keyring like the
   SteamGridDB key), `import steam --list` also shows games you own but
   haven't installed, and they import like installed ones. `--all --owned`
@@ -564,7 +564,7 @@ what wineo does while nothing is happening.
 
 ## 0.28.0 - 2026-10-09
 
-- Steam games ([0047](docs/plans/0047-steam-library.md)). `wineo import
+- Steam games (plan 0047). `wineo import
   steam` brings installed Steam games into the library as a new proxied
   environment kind: tagged, counted in `wineo stats` with Steam's own
   playtime, started and stopped from the CLI or the desktop app, with hooks
@@ -597,7 +597,7 @@ what wineo does while nothing is happening.
 
 ## 0.27.0 - 2026-10-07
 
-- Launch hooks ([0046](docs/plans/0046-launch-hooks.md)). `[hooks]` with
+- Launch hooks (plan 0046). `[hooks]` with
   `before` and `after` shell commands goes on an environment, a target, or
   a template, and runs around `start`, `run`, `restart`, desktop entries,
   and Play in the desktop app. `before` runs ahead of the exe check, so it
@@ -619,7 +619,7 @@ what wineo does while nothing is happening.
 
 ## 0.26.0 - 2026-10-07
 
-- Playtime by tag ([0045](docs/plans/0045-stats-by-tag.md)).
+- Playtime by tag (plan 0045).
   `wineo stats --tag game` limits the overview, its total, and the "never
   played" count to environments with that tag; give `--tag` more than once
   to require every tag. `--by-tag` shows one row per tag, most played
@@ -632,7 +632,7 @@ what wineo does while nothing is happening.
 ## 0.25.0 - 2026-10-07
 
 - `--dry-run` for `wineo new` and `wineo import`
-  ([0044](docs/plans/0044-dry-run.md)). It prints the same review a real
+  (plan 0044). It prints the same review a real
   run would, then stops without writing, downloading, starting Wine, or
   asking anything, so it works without a terminal. Errors match the real
   run's. A Windows path `--exe` shows `(checked once the prefix exists)`.
@@ -659,7 +659,7 @@ what wineo does while nothing is happening.
 ## 0.24.0 - 2026-10-06
 
 - Runners from Steam, Heroic, and Lutris
-  ([0043](docs/plans/0043-external-runners.md)). With
+  (plan 0043). With
   `external_runners = true` in global config, environments can use Proton
   and Wine builds those launchers already installed, read in place. When a
   name exists in several places, wineo's own runners root wins, then Steam,
@@ -697,7 +697,7 @@ what wineo does while nothing is happening.
 
 ## 0.23.0 - 2026-10-04
 
-- GUI visual polish ([0042](docs/plans/0042-gui-visual-polish.md)), following
+- GUI visual polish (plan 0042), following
   the new [GUI style guide](docs/gui-style.md).
 - Library posters are smaller, at 160 x 240 px. Opening, closing, and
   switching the detail panel moves cards between slots with a short spring.
@@ -727,7 +727,7 @@ what wineo does while nothing is happening.
 ## 0.22.0 - 2026-10-02
 
 - Snapshots, portable copies, exec, and winetricks in `wineo-gui`
-  ([0041](docs/plans/0041-gui-snapshots-portable-exec-winetricks.md)).
+  (plan 0041).
 - The [Snapshots](docs/gui.md#snapshots) page creates, restores, deletes,
   and recovers snapshots with frozen reviews and cancellable preparation.
   Reports scroll inside selectable text panels with Copy controls.
@@ -749,7 +749,7 @@ what wineo does while nothing is happening.
 ## 0.21.0 - 2026-10-02
 
 - Art and downloads in `wineo-gui`
-  ([0040](docs/plans/0040-gui-art-and-downloads.md)).
+  (plan 0040).
 - An environment's [Art](docs/gui.md#art) page sets each kind from a file,
   removes it, or picks from SteamGridDB's ranked results in a thumbnail
   picker, sized per art kind. Global settings manages the SteamGridDB key.
@@ -777,7 +777,7 @@ what wineo does while nothing is happening.
 ## 0.20.0 - 2026-10-01
 
 - Remove, trash, and validate from `wineo-gui`
-  ([0039](docs/plans/0039-gui-trash-and-validate.md)). A sidebar holds
+  (plan 0039). A sidebar holds
   Library, Trash, and Checkup.
 - Remove an environment from its panel, with or without its prefix, and
   Undo from the toast. See [Removing](docs/gui.md#removing).
@@ -801,7 +801,7 @@ what wineo does while nothing is happening.
 - Add, import, and clone from `wineo-gui`: new environments from an
   installer, an existing install, or an empty registration, plus prefix
   imports, Heroic imports, and Wine and native clones
-  ([0038](docs/plans/0038-gui-new-import-clone.md)). See
+  (plan 0038). See
   [Add, import, and clone](docs/gui.md#add-import-and-clone).
 - Heroic import picks one or many games from a poster grid built from
   Heroic's cached posters.
@@ -820,7 +820,7 @@ what wineo does while nothing is happening.
 
 - Environment and global settings pages in `wineo-gui`, including targets,
   launch options, components, winetricks, tags, and environment variables
-  ([0037](docs/plans/0037-gui-settings.md)).
+  (plan 0037).
 - Save and Revert, unsaved-change prompts, config reloads, and keyboard
   shortcuts. Settings writes share the CLI's core validation and preserve
   TOML comments.
@@ -832,7 +832,7 @@ what wineo does while nothing is happening.
 ## 0.17.0 - 2026-09-28
 
 - `wineo-gui`, wineo's first desktop app, built with iced
-  ([0036](docs/plans/0036-gui-library-launcher.md)). See
+  (plan 0036). See
   [Desktop app](docs/gui.md).
 - A library of every environment with its art, state, and playtime, with
   search and a live refresh that picks up changes made from the CLI.
@@ -848,7 +848,7 @@ what wineo does while nothing is happening.
 
 - Heroic import's decisions now live in `wineo-core`: planning a game,
   resolving its settings, planning a whole library for `--all`, and applying
-  a plan ([0035](docs/plans/0035-heroic-import-in-core.md)). See
+  a plan (plan 0035). See
   [Heroic import](docs/core-api.md#heroic-import). CLI output is unchanged.
 - Fixed: choosing "copy" in a guided Heroic import's final review and then
   going back left the new config's exe and working directory pointing into
@@ -869,7 +869,7 @@ what wineo does while nothing is happening.
 - Launch, stop, environment creation, winetricks, settings checks, status
   views, stats, and log tailing now live in `wineo-core` as operations a GUI
   can call, with progress events and a cancel token
-  ([0034](docs/plans/0034-core-api-review.md)). See
+  (plan 0034). See
   [Core API for frontends](docs/core-api.md).
 - Winetricks and wineboot run in their own process group. Ctrl+C goes to
   wineo, which stops them, and a second Ctrl+C forces it.
@@ -879,7 +879,7 @@ what wineo does while nothing is happening.
 ## 0.14.0 - 2026-09-28
 
 - `tags` groups environments, like `game` or `work`, on Wine and native
-  environments and in templates ([0033](docs/plans/0033-tags.md)). See
+  environments and in templates (plan 0033). See
   [Tags](docs/config-files.md#tags).
 - `wineo list --tag` filters by tag. Several `--tag` flags list only
   environments with all of them.
@@ -889,7 +889,7 @@ what wineo does while nothing is happening.
 
 - `winetricks` lists the verbs an environment needs, and `start`, `run`, and
   `restart` install the missing ones first in one unattended call
-  ([0032](docs/plans/0032-declarative-winetricks.md)). See
+  (plan 0032). See
   [Winetricks dependencies](docs/config-files.md#winetricks-dependencies).
 - What counts as installed is the prefix's own `winetricks.log`, so verbs
   installed by hand count too. A failed install fails the launch and the
@@ -902,7 +902,7 @@ what wineo does while nothing is happening.
 
 - `wayland`, `mangohud`, and a `[gamescope]` table are launch settings on the
   global config, environments, targets, and templates
-  ([0031](docs/plans/0031-wayland-gamescope-mangohud.md)). See
+  (plan 0031). See
   [Launch options](docs/launch-options.md).
 - Launches run under `gamescope [flags] -- mangohud gamemoderun`, in Heroic's
   order. Under gamescope, MangoHud becomes `--mangoapp`, and Wayland adds
@@ -925,7 +925,7 @@ what wineo does while nothing is happening.
 
 - `wineo rm` moves an environment to recoverable trash instead of deleting
   it, and `--delete-prefix` trashes the prefix and snapshots too
-  ([0030](docs/plans/0030-trash-and-prune.md)). See [Trash and removal](docs/trash.md).
+  (plan 0030). See [Trash and removal](docs/trash.md).
 - `wineo trash` lists entries, `wineo restore ID` brings one back under its
   original name and paths, and `wineo prune` permanently deletes by ID,
   `--older-than 30d`, or `--all`.
@@ -937,7 +937,7 @@ what wineo does while nothing is happening.
 
 - `wineo stats [NAME]` shows playtime, session counts, and per-target totals,
   including running sessions, with JSON output and optional session history
-  ([0029](docs/plans/0029-playtime-stats.md)). See [Playtime statistics](docs/stats.md).
+  (plan 0029). See [Playtime statistics](docs/stats.md).
 - `status` includes playtime, and lost runs count through their last heartbeat.
 - Heroic imports carry over playtime; `stats --import-heroic` updates existing
   environments from Heroic's totals.
@@ -948,7 +948,7 @@ what wineo does while nothing is happening.
 
 - `wineo validate [NAME]` finds config mistakes and leftover state before a
   launch trips over them, and offers the fixes that are safe
-  ([0028](docs/plans/0028-validate.md)). See [Validate](docs/validate.md).
+  (plan 0028). See [Validate](docs/validate.md).
 - At a terminal, one review lists every fix. Enter applies them all, and
   numbers like `1 3 4` skip some. `--fix` applies them without asking.
 - `--json` reports each problem with a stable `code`, plus `fixed` and
@@ -960,7 +960,7 @@ what wineo does while nothing is happening.
 - `wineo new --native` is now a plain flag that picks the kind, and
   `--exe PATH` adds a default target named after the environment, for Wine
   and native environments alike
-  ([0027](docs/plans/0027-new-exe-flag.md)).
+  (plan 0027).
 - The old `--native <EXE>` form is gone. Use `--native --exe <EXE>` instead.
 - `--native` without `--exe` makes an empty native environment and points at
   `wineo setup`.
@@ -981,7 +981,7 @@ what wineo does while nothing is happening.
 
 - Native Linux games: `kind = "native"` environments launch a Linux binary
   or script directly, with no prefix or runner
-  ([0026](docs/plans/0026-native-linux-games.md)). See
+  (plan 0026). See
   [Native Linux games](docs/native.md).
 - `wineo new --native <EXE>`, and guided `new` asks what kind of environment
   first.
@@ -1006,7 +1006,7 @@ what wineo does while nothing is happening.
 
 - `wineo new` and `wineo import heroic` offer to fetch SteamGridDB art for
   the environment they create, with `--art` for the unguided flows
-  ([0025](docs/plans/0025-art-in-new-and-import.md)).
+  (plan 0025).
 - `[art] fetch = "icon"` in the global config limits those flows to the icon.
 - Prompts spell out their keys, like `Press Enter to create it, Esc to go
   back, Ctrl+C to cancel.`, and a review with no rows asks `Create it?`
@@ -1016,7 +1016,7 @@ what wineo does while nothing is happening.
 ## 0.5.0 - 2026-09-25
 
 - Desktop entries use icon art, the target's first, then the environment's,
-  then the exe's ([0024](docs/plans/0024-desktop-entry-icons.md)).
+  then the exe's (plan 0024).
 - Art icons are converted to one PNG of up to 256x256, since some launchers
   never look in `512x512`. SVG is installed as is.
 - `art set`, `art rm`, and `art fetch` update the affected desktop entries
@@ -1026,7 +1026,7 @@ what wineo does while nothing is happening.
 
 - `start`, `run`, `exec`, `winetricks`, and `restart` build a missing prefix
   from a hand-written config, and `setup` offers to
-  ([0023](docs/plans/0023-config-first-creation.md)).
+  (plan 0023).
 - Launch checks that need no prefix run before the build, so a bad config
   fails fast.
 - An example environment config, installed to
@@ -1038,7 +1038,7 @@ what wineo does while nothing is happening.
 
 - Review menus say what Enter does in the keys line, above a plain
   `Choice: ` prompt, instead of listing the accept action as `1)`
-  ([0022](docs/plans/0022-review-menu-polish.md)).
+  (plan 0022).
 - Adding a target returns to the menu that opened the program list.
 - `setup`'s Finish and the installer path save without a second confirm.
 - A README, and docs for creating an environment from a template.
@@ -1047,7 +1047,7 @@ what wineo does while nothing is happening.
 
 - Artwork store and `wineo art key`, `set`, `list`, `rm`, and `fetch`, with
   SteamGridDB fetching and the key kept in the system keyring
-  ([0021](docs/plans/0021-artwork-framework.md), [docs](docs/art.md)).
+  (plan 0021, [docs](docs/art.md)).
 - `wineo art fetch --asset` skips the fetch filters for an image you pick.
 - The Arch package now depends on `dbus`.
 - `stop` no longer gives up on a lost Proton run when the killed group's

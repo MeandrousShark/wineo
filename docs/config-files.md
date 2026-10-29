@@ -400,7 +400,7 @@ grid's size in whole percent, any integer from 60 to 200, and defaults to
 Filters and Show hidden aren't saved.
 
 `[appearance]` is the desktop app's theme (plan
-[0057](plans/0057-gui-themes.md)). With `follow_system` on, the default,
+0057). With `follow_system` on, the default,
 the app shows `dark` or `light` as the desktop's mode changes; with it off,
 it shows `theme` either way. Each names a built-in theme (`midnight`,
 `daylight`, `cellar`, `cellar-light`, `high-contrast`, `dracula`,

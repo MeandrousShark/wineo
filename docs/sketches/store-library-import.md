@@ -10,7 +10,7 @@ From the maintainer (2026-10-02). Steam: installed games come from
 `~/.steam/steam` and Flatpak `~/.var/app/com.valvesoftware.Steam`). Owned
 but uninstalled games need the Steam Web API's `GetOwnedGames` with a key
 kept in the keyring (no keyless route works anymore, see
-[0048](../plans/0048-steam-owned-games.md)). Launch with
+plan 0048). Launch with
 `steam://rungameid/<appid>` (or `steam -applaunch <appid> <args>` to pass
 arguments), install with `steam://install/<appid>` (Steam's own dialog),
 and watch the manifest's state and downloaded bytes for install progress.
@@ -37,9 +37,9 @@ Settled: a new proxied environment kind, so wineo overrides can apply
 where the store allows (no snapshots, winetricks, exec, clone, or portable
 copies, since the store owns the prefix); installed games are scanned live
 and the owned list is cached and refreshed; uninstalled games show
-grayscaled and dimmed. [0047](../plans/0047-steam-library.md) covers Steam
+grayscaled and dimmed. Plan 0047 covers Steam
 installed games. Needs a plan. Steam is done in
-[0047](../plans/0047-steam-library.md) and
-[0048](../plans/0048-steam-owned-games.md), GOG in
-[0049](../plans/0049-gog-games.md), [0050](../plans/0050-gog-installs.md),
-and [0052](../plans/0052-galaxy-builds.md); Epic remains.
+plan 0047 and
+plan 0048, GOG in
+plan 0049, plan 0050,
+and plan 0052; Epic remains.
