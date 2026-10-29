@@ -124,10 +124,7 @@ impl Set {
         // The sets turn on tools validate looks for on PATH, so the fixture's
         // fakes stand in for them whatever the host has installed.
         for tool in ["gamescope", "mangohud", "mangoapp", "winetricks"] {
-            common::write_script(
-                &f.root.path().join("bin").join(tool),
-                "#!/bin/sh\nexit 0\n",
-            );
+            common::write_script(f.root.path().join("bin").join(tool), "#!/bin/sh\nexit 0\n");
         }
         let source = fixtures_dir().join(name);
         copy_tree(&source.join("portable"), &f.root.path().join("portable"));

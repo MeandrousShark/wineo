@@ -154,7 +154,7 @@ impl Fixture {
     pub fn path_with_spare_wine(&self) -> OsString {
         let spare = self.root.path().join("bin-spare");
         fs::create_dir_all(&spare).unwrap();
-        write_script(&spare.join("wine"), FAKE_WINE);
+        write_script(spare.join("wine"), FAKE_WINE);
         let mut dirs: Vec<PathBuf> = std::env::split_paths(&self.path_var).collect();
         dirs.insert(1, spare);
         std::env::join_paths(dirs).unwrap()
