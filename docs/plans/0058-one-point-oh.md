@@ -490,6 +490,22 @@ by rewriting Gitea.
   `crates/target`.
 - makepkg from the repo's `PKGBUILD` builds 1.0.0 from GitHub.
 
+## Decisions during implementation
+
+- **Step 0 done** (2026-10-28). `git-filter-repo` is installed. The
+  `0054-step0` branch, already merged into main, and the
+  `../.worktrees/wineo/step6-bench` results are deleted. The personal
+  details sweep of files that stay public found only the
+  `git.hannoncloud.com` URLs in `README.md` and `PKGBUILD`, which steps 2
+  and 5 change. Everything else is made-up test paths like `/home/me`.
+- **One gitleaks finding, a false positive.** `gitleaks git` over 2,271
+  commits flagged `generic-api-key` in `cb67d49e`, at
+  `crates/wineo-core/src/key_store.rs:325`: a test's temp file names
+  (`"key"`, `"key.123-0.tmp"`), whose content is the literal `"secret"`.
+  That commit predates `ab93c8f2`, so its hash survives the scrub, and step
+  2 adds its fingerprint to a `.gitleaksignore` so the reruns in steps 4
+  and 7 come back clean.
+
 ## Scope limits
 
 - No features, CLI changes, or config changes beyond `stability.md`'s
