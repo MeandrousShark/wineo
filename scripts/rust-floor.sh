@@ -10,6 +10,9 @@
 #
 # Usage: scripts/rust-floor.sh
 #
+# It reads crates offline, so a fresh checkout needs `cargo fetch --locked`
+# first.
+#
 # Exits 1 when no dependency declares a rust-version.
 set -euo pipefail
 
