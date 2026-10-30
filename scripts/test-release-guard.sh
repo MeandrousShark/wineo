@@ -337,5 +337,55 @@ else
     pass
 fi
 
+# The fedora list is read separately from the ubuntu one.
+cat >"$tmp/README.md" <<'MD'
+<!-- ubuntu-runtime-packages:start -->
+```
+libx11-6
+```
+<!-- ubuntu-runtime-packages:end -->
+
+<!-- fedora-runtime-packages:start -->
+```
+libX11
+  vulkan-loader
+```
+<!-- fedora-runtime-packages:end -->
+MD
+if [[ $("$packages" --list fedora "$tmp/README.md" | tr '\n' ' ') == "libX11 vulkan-loader " ]]; then
+    pass
+else
+    fail "readme-runtime-packages: wrong fedora list"
+fi
+if [[ $("$packages" --list ubuntu "$tmp/README.md" | tr '\n' ' ') == "libx11-6 " &&
+    $("$packages" "$tmp/README.md" | tr '\n' ' ') == "libx11-6 " ]]; then
+    pass
+else
+    fail "readme-runtime-packages: ubuntu list changed by a fedora block"
+fi
+sed -i '/fedora-runtime-packages/,$d' "$tmp/README.md"
+if "$packages" --list fedora "$tmp/README.md" >/dev/null 2>&1; then
+    fail "readme-runtime-packages: missing fedora block should fail"
+else
+    pass
+fi
+if [[ $("$packages" "$tmp/README.md" | tr '\n' ' ') == "libx11-6 " ]]; then
+    pass
+else
+    fail "readme-runtime-packages: ubuntu list lost without a fedora block"
+fi
+"$packages" --list arch "$tmp/README.md" >/dev/null 2>&1 && status=0 || status=$?
+if [[ $status -eq 2 ]]; then
+    pass
+else
+    fail "readme-runtime-packages: bad list name should exit 2, got $status"
+fi
+"$packages" --list >/dev/null 2>&1 && status=0 || status=$?
+if [[ $status -eq 2 ]]; then
+    pass
+else
+    fail "readme-runtime-packages: --list without a name should exit 2, got $status"
+fi
+
 echo "$((cases - failures)) of $cases cases behaved correctly"
 [[ $failures -eq 0 ]]

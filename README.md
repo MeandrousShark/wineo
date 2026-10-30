@@ -90,6 +90,24 @@ libvulkan1
 ```
 <!-- ubuntu-runtime-packages:end -->
 
+On Fedora, install these packages with `sudo dnf install`:
+
+<!-- fedora-runtime-packages:start -->
+```
+libX11
+libX11-xcb
+libxcb
+libxkbcommon
+libxkbcommon-x11
+libXcursor
+libXi
+libwayland-client
+libwayland-egl
+libglvnd-egl
+vulkan-loader
+```
+<!-- fedora-runtime-packages:end -->
+
 ### From source
 
 You need a recent stable Rust toolchain (the workspace uses the 2024
