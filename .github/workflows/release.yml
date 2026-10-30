@@ -207,7 +207,11 @@ jobs:
           version=${GITHUB_REF_NAME#v}
           out=$("dist/wineo-$version-x86_64-linux/usr/bin/wineo" --version)
           echo "$out"
-          grep -qF "$version" <<<"$out"
+          # The whole line, so 1.1.01 can't pass for 1.1.0.
+          if [[ $out != "wineo $version" ]]; then
+            echo "::error::expected 'wineo $version', got '$out'"
+            exit 1
+          fi
 
       # The script keeps the GUI in a throwaway HOME with no display but a
       # private Xvfb, and passes only if it is still running after ten
@@ -228,7 +232,11 @@ jobs:
           scripts/check-installed.sh "$prefix" "$prefix/share/licenses/wineo"
           out=$("$prefix/bin/wineo" --version)
           echo "$out"
-          grep -qF "$version" <<<"$out"
+          # The whole line, so 1.1.01 can't pass for 1.1.0.
+          if [[ $out != "wineo $version" ]]; then
+            echo "::error::expected 'wineo $version', got '$out'"
+            exit 1
+          fi
           exec_line=$(grep '^Exec=' "$prefix/share/applications/wineo-gui.desktop")
           echo "$exec_line"
           if [[ $exec_line != "Exec=$prefix/bin/wineo-gui" ]]; then
@@ -282,7 +290,11 @@ jobs:
           version=${GITHUB_REF_NAME#v}
           out=$(wineo --version)
           echo "$out"
-          grep -qF "$version" <<<"$out"
+          # The whole line, so 1.1.01 can't pass for 1.1.0.
+          if [[ $out != "wineo $version" ]]; then
+            echo "::error::expected 'wineo $version', got '$out'"
+            exit 1
+          fi
 
       - name: Install Xvfb
         run: |
@@ -347,7 +359,11 @@ jobs:
           version=${GITHUB_REF_NAME#v}
           out=$(wineo --version)
           echo "$out"
-          grep -qF "$version" <<<"$out"
+          # The whole line, so 1.1.01 can't pass for 1.1.0.
+          if [[ $out != "wineo $version" ]]; then
+            echo "::error::expected 'wineo $version', got '$out'"
+            exit 1
+          fi
 
       - name: Install Xvfb
         run: dnf install -y --setopt=install_weak_deps=False xorg-x11-server-Xvfb xauth
@@ -472,7 +488,8 @@ jobs:
         run: |
           version=${GITHUB_REF_NAME#v}
           cd dist
-          sha256sum -c SHA256SUMS
+          # --strict fails on a malformed line instead of skipping it.
+          sha256sum --strict -c SHA256SUMS
           listed=$(awk '{print $2}' SHA256SUMS | sort)
           expected=$(printf '%s\n' \
             "wineo-$version-x86_64-linux.tar.gz" \
