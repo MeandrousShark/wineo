@@ -2,8 +2,8 @@
 # Build the release packages with nfpm: wineo_VERSION_amd64.deb and
 # wineo-VERSION-1.x86_64.rpm. Both hold the install tree from
 # scripts/stage-install.sh; the deb keeps its licenses in
-# /usr/share/doc/wineo beside a DEP-5 copyright file and a changelog, with
-# gzipped man pages; the rpm keeps them in /usr/share/licenses/wineo.
+# /usr/share/doc/wineo beside a DEP-5 copyright file, with gzipped man
+# pages; the rpm keeps them in /usr/share/licenses/wineo.
 #
 # Usage: scripts/pack-packages.sh VERSION BINDIR OUTDIR
 #
@@ -124,11 +124,9 @@ License: GPL-3.0-or-later
  3 can be found in the file /usr/share/common-licenses/GPL-3.
 COPYRIGHT
 chmod 644 "$deb_stage/usr/share/doc/wineo/copyright"
-# Debian policy wants compressed man pages and a changelog.gz. -n keeps
-# names and times out of the gzip header so the same input packs the same.
+# Debian policy wants compressed man pages. -n keeps names and times out of
+# the gzip header so the same input packs the same.
 find "$deb_stage/usr/share/man" -type f -name '*.1' -exec gzip -9n {} +
-gzip -9n -c "$root/CHANGELOG.md" >"$deb_stage/usr/share/doc/wineo/changelog.gz"
-chmod 644 "$deb_stage/usr/share/doc/wineo/changelog.gz"
 
 rpm_stage=$tmp/rpm
 "$root/scripts/stage-install.sh" "$rpm_stage" "$bindir"

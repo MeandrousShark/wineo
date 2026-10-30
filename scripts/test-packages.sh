@@ -109,8 +109,7 @@ rpm=$out/wineo-$version-1.x86_64.rpm
 same "outputs" "$(printf '%s\n' "${deb##*/}" "${rpm##*/}" | LC_ALL=C sort)" "$(find "$out" -mindepth 1 -printf '%f\n' | LC_ALL=C sort)"
 
 # The trees the packages must match, from the same script the packager uses.
-# The deb also gets a copyright file and a changelog, and its man pages are
-# gzipped.
+# The deb also gets a copyright file, and its man pages are gzipped.
 stage_rpm=$tmp/stage-rpm
 stage_deb=$tmp/stage-deb
 "$root/scripts/stage-install.sh" "$stage_rpm" "$bins" >/dev/null
@@ -119,7 +118,6 @@ want_deb=$(
     {
         listing "$stage_deb/usr" | sed -E 's#^(share/man/man1/.*\.1) #\1.gz #'
         echo "share/doc/wineo/copyright 644"
-        echo "share/doc/wineo/changelog.gz 644"
     } | sort
 )
 
@@ -180,11 +178,6 @@ if command -v dpkg-deb >/dev/null; then
             fail "copyright does not mention $text"
         fi
     done
-    if zcat "$extracted/usr/share/doc/wineo/changelog.gz" | cmp -s - "$root/CHANGELOG.md"; then
-        pass
-    else
-        fail "deb: changelog.gz is not CHANGELOG.md"
-    fi
     if zcat "$extracted/usr/share/man/man1/wineo.1.gz" | grep -qx fake; then
         pass
     else
