@@ -110,8 +110,16 @@ nice -n 15 podman run --rm --cpus "$cpus" \
         echo "pkgcheck reported problems"
         exit 1
     fi
-    emerge --verbose "=app-emulation/wineo-$VERSION" 2>&1 | tee /tmp/emerge.txt
-    ! grep -q "QA Notice" /tmp/emerge.txt || echo "emerge printed QA notices (see above)"
+    mkdir /tmp/portage-logs
+    PORTAGE_LOGDIR=/tmp/portage-logs emerge --verbose "=app-emulation/wineo-$VERSION"
+    # wineo'"'"'s own log, since dependencies built here print notices of their
+    # own. The crate count is the only one allowed: the plan chose it.
+    log=$(echo /tmp/portage-logs/app-emulation:wineo-*)
+    [[ -s $log ]]
+    if grep "QA Notice" "$log" | grep -v "very large number of CRATES"; then
+        echo "emerge printed QA notices"
+        exit 1
+    fi
 '
 
 # Alone first, so the package's RDEPEND is what pulls the libraries; Xvfb
@@ -127,8 +135,10 @@ nice -n 15 podman run --rm --cpus "$cpus" \
     bash /setup.sh
     # Not --usepkgonly: that also forbids the binhost builds of other
     # packages whose USE flags differ here, which breaks dependency solving.
-    emerge --verbose "=app-emulation/wineo-$VERSION"
-    # Only a package installed from a binary package has this file.
+    # Stop now, not after a rebuild, if the first container'"'"'s package is unusable.
+    emerge --pretend --nodeps --usepkgonly "=app-emulation/wineo-$VERSION"
+    FEATURES=-buildpkg emerge --verbose "=app-emulation/wineo-$VERSION"
+    # With buildpkg off, only a package installed from a binary has this file.
     [[ -e /var/db/pkg/app-emulation/wineo-$VERSION/BINPKGMD5 ]]
     wineo --version
     # What wineo-gui dlopens, checked before Xvfb and its Mesa can supply any.
