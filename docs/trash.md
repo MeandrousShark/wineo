@@ -101,7 +101,10 @@ mounts), so a change in either doesn't invalidate an entry while those three
 still match. The statfs ID also tells a btrfs snapshot from its source, which
 shares its inodes and creation times. Where creation time or the statfs ID is
 unavailable, including entries written before wineo recorded the statfs ID,
-the device must match, and without creation time the mount ID too.
+the device must match, and without creation time the mount ID too. So on a
+filesystem with no creation times, such as some FUSE mounts, a reboot that
+changes the mount ID makes an entry fail its check, and a new prefix that
+reuses the old one's inode at the same path can pass as the original.
 
 These checks catch a replaced or moved folder, a reboot, and a btrfs snapshot.
 They don't try to tell apart a byte-for-byte clone of a whole filesystem, such
