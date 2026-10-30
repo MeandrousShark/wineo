@@ -2,7 +2,7 @@
 pkgname=wineo-git
 pkgver=0
 pkgrel=1
-pkgdesc='Wine environment manager with live shell completions'
+pkgdesc='Launcher for Wine and Proton programs, native games, Steam, and GOG'
 arch=('x86_64')
 url='https://github.com/MeandrousShark/wineo'
 license=('GPL-3.0-or-later')
