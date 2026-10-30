@@ -4,6 +4,26 @@ A finished plan bumps the minor version and fixes between plans bump the
 patch version. A plan released in parts bumps the minor version for each
 part. See `AGENTS.md` for the rule.
 
+## 1.0.1 - 2026-10-29
+
+Fixes for loose ends found while getting CI running on Ubuntu.
+
+- On ext4, removing an environment and creating one with the same name
+  could look like nothing changed to the desktop app, which then kept the
+  old one's art page open. wineo now tells a config file from a newer one
+  by its birth time as well, where the filesystem records one. The same
+  check guards the Heroic id that `import heroic` writes into a config.
+- Behavior changes:
+  - Installing or updating a Windows GOG game without a graphical session,
+    such as over SSH, now gives the real answer first when nothing would
+    run: no Galaxy build, no Windows installer, already up to date, or a
+    branch or password problem. Before, it asked you to run it from your
+    desktop, where you'd only then learn there was nothing to do. Anything
+    that runs an installer or setup still needs a desktop.
+  - `wineo update NAME` without a graphical session says "Updating a
+    Windows game needs a graphical session", like `wineo update --all`,
+    instead of "Installing".
+
 ## 1.0.0 - 2026-10-29
 
 Wineo is now considered stable (plan 0058). See
