@@ -89,3 +89,6 @@ jobs:
       # say so, if it is ever missing.
       - name: Vendored source and checksum tests
         run: scripts/test-vendored.sh
+
+      - name: Release check script tests
+        run: scripts/test-checks.sh
