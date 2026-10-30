@@ -17,7 +17,8 @@ root=$(cd "$script_dir/.." && pwd)
 # Modes below assume this, whatever the caller's umask is.
 umask 022
 
-tmp=$(mktemp -d)
+# Physical, so paths the tests expect match what install.sh resolves.
+tmp=$(cd -P "$(mktemp -d)" && pwd -P)
 trap 'rm -rf "$tmp"' EXIT
 
 failures=0
@@ -253,6 +254,16 @@ else
     fail "pack without binaries: status $status, left files in out-fail"
 fi
 
+# A failure after staging (tar can't write its tarball) removes the staging
+# directory too.
+mkdir -p "$tmp/out-tarfail/wineo-1.0.0-x86_64-linux.tar.gz"
+"$pack" 1.0.0 "$tmp/bin" "$tmp/out-tarfail" >"$tmp/stdout" 2>"$tmp/err" && status=0 || status=$?
+if [[ $status -ne 0 && ! -e $tmp/out-tarfail/wineo-1.0.0-x86_64-linux ]]; then
+    pass
+else
+    fail "pack with tar failing: status $status, staging dir left behind"
+fi
+
 # Usage errors.
 for args in "" "1.0.0 $tmp/bin" "1.0.0 $tmp/bin $tmp/out-usage extra" \
     "../evil $tmp/bin $tmp/out-usage" "a/b $tmp/bin $tmp/out-usage" "-x $tmp/bin $tmp/out-usage"; do
@@ -391,6 +402,85 @@ prefix="$tmp/my prefix"
 run_ok "uninstall from a prefix with a space" --uninstall "$prefix"
 expect_line "space prefix uninstall count" "Removed $usr_count files from $prefix."
 
+# A target that is a directory (or a symlink to one) is refused with nothing
+# written, and left as it was. The late-sorting target would otherwise let
+# earlier files be written first.
+prefix=$tmp/p5
+mkdir -p "$prefix/share/zsh/site-functions/_wineo" "$prefix/bin"
+"$installer" "$prefix" >"$tmp/stdout" 2>"$tmp/err" && status=0 || status=$?
+if [[ $status -eq 1 && $(wc -l <"$tmp/err") -eq 1 && -z $(listing "$prefix") &&
+    $(cat "$tmp/err") == *"$prefix/share/zsh/site-functions/_wineo"* && ! -s $tmp/stdout ]]; then
+    pass
+else
+    fail "install over a directory target: status $status, err '$(cat "$tmp/err")', files: $(listing "$prefix")"
+fi
+prefix=$tmp/p6
+mkdir -p "$prefix/bin" "$tmp/elsewhere-dir"
+ln -s "$tmp/elsewhere-dir" "$prefix/bin/wineo-gui"
+"$installer" "$prefix" >"$tmp/stdout" 2>"$tmp/err" && status=0 || status=$?
+if [[ $status -eq 1 && $(wc -l <"$tmp/err") -eq 1 && -z $(listing "$tmp/elsewhere-dir") &&
+    ! -e $prefix/bin/wineo && -L $prefix/bin/wineo-gui ]]; then
+    pass
+else
+    fail "install over a symlink to a directory: status $status, err '$(cat "$tmp/err")'"
+fi
+
+# Uninstall skips a directory at a shipped path, and removes a symlink there
+# without touching what it points at.
+prefix=$tmp/p7
+run_ok "install for skip test" "$prefix"
+rm "$prefix/bin/wineo-gui" "$prefix/share/doc/wineo/environment.toml.example"
+mkdir "$prefix/bin/wineo-gui"
+echo mine >"$prefix/bin/wineo-gui/keep"
+echo outside >"$tmp/outside-file"
+ln -s "$tmp/outside-file" "$prefix/share/doc/wineo/environment.toml.example"
+run_ok "uninstall with a directory at a shipped path" --uninstall "$prefix"
+expect_line "skip count" "Removed $((usr_count - 1)) files from $prefix."
+if [[ $(listing "$prefix") == "bin/wineo-gui/keep 644" && $(cat "$tmp/outside-file") == outside ]]; then
+    pass
+else
+    fail "uninstall skip test: $(listing "$prefix")"
+fi
+
+# Dots after a symlink are taken physically: logical/link -> physical/child,
+# so logical/link/.. is physical, not logical.
+mkdir -p "$tmp/logical/bin" "$tmp/physical/child"
+ln -s "$tmp/physical/child" "$tmp/logical/link"
+echo mine >"$tmp/logical/bin/wineo"
+run_ok "install through a symlink and .." "$tmp/logical/link/.."
+expect_line "symlink install" "Installed $usr_count files to $tmp/physical."
+check_exec "symlink install" "$tmp/physical" "Exec=$tmp/physical/bin/wineo-gui"
+run_ok "uninstall through a symlink and .." --uninstall "$tmp/logical/link/.."
+expect_line "symlink uninstall" "Removed $usr_count files from $tmp/physical."
+if [[ $(cat "$tmp/logical/bin/wineo") == mine && ! -e $tmp/physical/bin/wineo ]]; then
+    pass
+else
+    fail "uninstall through a symlink touched the wrong tree"
+fi
+
+# `/` can't be written to here, so check what the root prefix is built from:
+# no trailing slashes, and an empty base that still joins to absolute paths.
+# HOME is redirected so a broken source guard can't install into the real one.
+got=$(HOME=$tmp/source-home bash -c '
+    source "$1"
+    printf "[%s]" "$(base_of /)" "$(base_of //)" "$(base_of /a//)" "$(base_of /usr/local)"
+' _ "$installer" 2>&1) || true
+if [[ $got == '[][][/a][/usr/local]' ]]; then
+    pass
+else
+    fail "base_of gave $got"
+fi
+got=$(HOME=$tmp/source-home bash -c '
+    source "$1"
+    base=$(base_of /)
+    echo "$base/bin/wineo"
+' _ "$installer" 2>&1) || true
+if [[ $got == /bin/wineo ]]; then
+    pass
+else
+    fail "the root prefix joins to '$got', not /bin/wineo"
+fi
+
 # From another directory, with a relative PREFIX.
 mkdir "$tmp/cwd"
 (cd "$tmp/cwd" && "$installer" rel/prefix) >"$tmp/stdout" 2>"$tmp/err" && status=0 || status=$?
@@ -432,6 +522,9 @@ HOME=$tmp/home2 expect_usage_error "too many arguments" "$tmp/u2" "$tmp/u2" extr
 HOME=$tmp/home2 expect_usage_error "uninstall with too many arguments" "$tmp/u3" --uninstall "$tmp/u3" extra
 HOME=$tmp/home2 expect_usage_error "empty prefix" "$tmp/home2/.local" ""
 HOME=$tmp/home2 expect_usage_error "prefix with a newline" "$tmp/u4" "$tmp/u4"$'\n'x
+HOME=$tmp/home2 expect_usage_error "prefix with a tab" "$tmp/u6" "$tmp/u6"$'\t'x
+HOME=$tmp/home2 expect_usage_error "prefix with a carriage return" "$tmp/u7" "$tmp/u7"$'\r'x
+HOME=$tmp/home2 expect_usage_error "uninstall prefix with a tab" "$tmp/u8" --uninstall "$tmp/u8"$'\t'x
 saved_home=$HOME
 unset HOME
 expect_usage_error "no HOME and no prefix" "$tmp/u5"

@@ -28,49 +28,13 @@ fail() {
     exit 1
 }
 
-uninstall=0
-while [[ $# -gt 0 ]]; do
-    case $1 in
-        --uninstall)
-            uninstall=1
-            shift
-            ;;
-        -*) usage ;;
-        *) break ;;
-    esac
-done
-[[ $# -le 1 ]] || usage
-
-if [[ $# -eq 1 ]]; then
-    prefix=$1
-    [[ -n $prefix ]] || usage
-elif [[ -n ${HOME:-} ]]; then
-    prefix=$HOME/.local
-else
-    echo "$name: HOME is not set, so give a PREFIX" >&2
-    exit 2
-fi
-# A newline would split the desktop entry's Exec line.
-if [[ $prefix == *$'\n'* ]]; then
-    echo "$name: PREFIX may not contain a newline" >&2
-    exit 2
-fi
-[[ $prefix == /* ]] || prefix=$PWD/$prefix
-
-here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
-tree=$here/usr
-[[ -d $tree ]] || fail "no usr/ directory next to $name"
-mapfile -t files < <(cd "$tree" && find . -type f -printf '%P\n' | sort)
-
-# Normalized when PREFIX exists, so `.` and `..` don't end up in the desktop
-# entry. base is empty for `/` so "$base/bin" still reads right.
-if [[ -d $prefix ]] || ((!uninstall)); then
-    mkdir -p "$prefix"
-    prefix=$(cd "$prefix" && pwd)
-fi
-base=$prefix
-while [[ $base == */ ]]; do base=${base%/}; done
-shown=${base:-/}
+# PREFIX without trailing slashes. It is empty for `/`, so "$base/bin" still
+# reads right.
+base_of() {
+    local path=$1
+    while [[ $path == */ ]]; do path=${path%/}; done
+    printf '%s' "$path"
+}
 
 # The Exec value for the desktop entry, quoted by the Desktop Entry spec: a
 # path with a reserved character is wrapped in double quotes, with ", `, $
@@ -96,11 +60,62 @@ exec_value() {
     printf '%s"' "$out"
 }
 
+# Sourcing this file only defines the functions above, which the tests use.
+[[ ${BASH_SOURCE[0]} == "$0" ]] || return 0
+
+uninstall=0
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        --uninstall)
+            uninstall=1
+            shift
+            ;;
+        -*) usage ;;
+        *) break ;;
+    esac
+done
+[[ $# -le 1 ]] || usage
+
+if [[ $# -eq 1 ]]; then
+    prefix=$1
+    [[ -n $prefix ]] || usage
+elif [[ -n ${HOME:-} ]]; then
+    prefix=$HOME/.local
+else
+    echo "$name: HOME is not set, so give a PREFIX" >&2
+    exit 2
+fi
+# A control character, a newline above all, would make the desktop entry's
+# Exec line invalid.
+if [[ $prefix == *[[:cntrl:]]* ]]; then
+    echo "$name: PREFIX may not contain control characters" >&2
+    exit 2
+fi
+[[ $prefix == /* ]] || prefix=$PWD/$prefix
+
+here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+tree=$here/usr
+[[ -d $tree ]] || fail "no usr/ directory next to $name"
+mapfile -t files < <(cd "$tree" && find . -type f -printf '%P\n' | sort)
+
+# Resolved physically when PREFIX exists, so `.` and `..` are taken the way
+# the filesystem takes them, even after a symlink, and never end up in the
+# desktop entry. A PREFIX that doesn't exist yet can't clash with anything.
+if [[ ! -d $prefix ]] && ((!uninstall)); then
+    mkdir -p "$prefix"
+fi
+if [[ -d $prefix ]]; then
+    prefix=$(cd -P -- "$prefix" && pwd -P)
+fi
+base=$(base_of "$prefix")
+shown=${base:-/}
+
 if ((uninstall)); then
     removed=0
     for rel in "${files[@]}"; do
-        if [[ -e $base/$rel || -L $base/$rel ]]; then
-            rm -f "${base:?}/$rel"
+        # Only files and symlinks can be ours; a directory here is not.
+        if [[ -f $base/$rel || -L $base/$rel ]]; then
+            rm -f -- "$base/$rel"
             removed=$((removed + 1))
         fi
     done
@@ -108,6 +123,16 @@ if ((uninstall)); then
     echo "Removed $removed files from $shown."
     exit 0
 fi
+
+# Nothing is written unless every target is free or a file or symlink to
+# replace. install would put a file inside a directory sitting at the target
+# (or behind a symlink to one) and still report success.
+for rel in "${files[@]}"; do
+    target=$base/$rel
+    if [[ -d $target ]] || { [[ -e $target || -L $target ]] && [[ ! -f $target && ! -L $target ]]; }; then
+        fail "$target exists and is not a file, so nothing was installed"
+    fi
+done
 
 # Mode comes from the executable bit alone, so the umask the tarball was
 # extracted under can't change what gets installed.
