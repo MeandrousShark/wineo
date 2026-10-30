@@ -114,6 +114,8 @@ jobs:
 
   # Advisories appear against code that hasn't changed, so this runs weekly as
   # well. The release workflow reuses this one, so a failure stops a release.
+  # The license check keeps the vendored crates acceptable to the package
+  # repositories (see deny.toml).
   advisories:
     runs-on: ubuntu-latest
     steps:
@@ -121,7 +123,7 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Check dependency advisories
+      - name: Check dependency advisories and licenses
         run: |
           scripts/fetch-cargo-deny.sh "$RUNNER_TEMP/cargo-deny"
-          "$RUNNER_TEMP/cargo-deny/cargo-deny" --locked check advisories
+          "$RUNNER_TEMP/cargo-deny/cargo-deny" --locked check advisories licenses

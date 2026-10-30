@@ -1,7 +1,7 @@
 #!/bin/bash
 # Download the pinned cargo-deny release into DIR and check its SHA-256,
-# leaving the program at DIR/cargo-deny. CI uses it for the advisory check,
-# so the version, URL, and sum are written down only here.
+# leaving the program at DIR/cargo-deny. CI uses it for the advisory and
+# license checks, so the version, URL, and sum are written down only here.
 #
 # Usage: scripts/fetch-cargo-deny.sh DIR
 #
