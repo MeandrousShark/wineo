@@ -103,6 +103,12 @@ jobs:
       - name: AUR recipe tests
         run: scripts/test-aur.sh
 
+      # rust-floor.sh reads the locked crates offline.
+      - name: Gentoo ebuild tests
+        run: |
+          cargo fetch --locked
+          scripts/test-gentoo.sh
+
   # Advisories appear against code that hasn't changed, so this runs weekly as
   # well. The release workflow reuses this one, so a failure stops a release.
   advisories:
