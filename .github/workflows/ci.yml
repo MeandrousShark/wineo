@@ -109,6 +109,9 @@ jobs:
           cargo fetch --locked
           scripts/test-gentoo.sh
 
+      - name: Repository recipe tests
+        run: scripts/test-repo-recipes.sh
+
   # Advisories appear against code that hasn't changed, so this runs weekly as
   # well. The release workflow reuses this one, so a failure stops a release.
   advisories:

@@ -54,7 +54,7 @@ suse_name() {
         libXi) echo libXi6 ;;
         libwayland-client) echo libwayland-client0 ;;
         libwayland-egl) echo libwayland-egl1 ;;
-        libglvnd-egl) echo libEGL1 ;;
+        libglvnd-egl) echo libglvnd ;;
         vulkan-loader) echo libvulkan1 ;;
         *) return 1 ;;
     esac
@@ -206,9 +206,9 @@ check "the spec's openSUSE branch has entries beyond the README's list" \
     test "${#suse_requires[@]}" -eq "${#fedora[@]}"
 spec_all=$(grep -E '^Requires:|^Recommends:' "$spec" | awk '{ print $2 }')
 check "the spec lacks hicolor-icon-theme" has "$spec_all" hicolor-icon-theme
-rpm_recommends=$(awk '/^Recommends:/ { print $2 }' "$spec")
+rpm_recommends=$(awk '/^Recommends:/ { print $2 }' "$spec" | sort)
 check "the spec Recommends differ from nfpm.yaml's rpm list" \
-    test "$rpm_recommends" = "$(nfpm_list rpm recommends)"
+    test "$rpm_recommends" = "$(nfpm_list rpm recommends | sort)"
 
 # The Rust floor is written in both and must agree. rust-floor.sh holds the
 # truth and is run at release time (step 13); here they only have to match.

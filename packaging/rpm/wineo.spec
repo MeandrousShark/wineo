@@ -42,7 +42,7 @@ Requires:       libXcursor1
 Requires:       libXi6
 Requires:       libwayland-client0
 Requires:       libwayland-egl1
-Requires:       libEGL1
+Requires:       libglvnd
 Requires:       libvulkan1
 %else
 Requires:       libX11
@@ -59,7 +59,10 @@ Requires:       vulkan-loader
 %endif
 Recommends:     wine
 Recommends:     winetricks
+# openSUSE's repositories don't have umu-launcher.
+%if !0%{?suse_version}
 Recommends:     umu-launcher
+%endif
 
 %description
 A launcher and library for Linux, written in Rust, for Windows programs and
