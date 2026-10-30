@@ -228,7 +228,13 @@ fn plan(
             // Logging in comes first, and says so.
             return anyhow::anyhow!(LOGGED_OUT);
         }
-        let error = if args.repair
+        let error = if matches!(
+            error.downcast_ref::<SetupError>(),
+            Some(SetupError::NoGraphicalSession)
+        ) {
+            // Core's own wording is an install's.
+            anyhow::anyhow!(NEEDS_DESKTOP)
+        } else if args.repair
             && matches!(
                 error.downcast_ref::<UpdateError>(),
                 Some(UpdateError::NotGalaxy { .. })
@@ -727,6 +733,7 @@ fn setup_stopped(error: anyhow::Error, name: &str, recovery: bool) -> anyhow::Er
         );
     }
     match error.downcast_ref::<SetupError>() {
+        Some(SetupError::NoGraphicalSession) => anyhow::anyhow!(NEEDS_DESKTOP),
         Some(SetupError::Canceled { .. }) if recovery => interrupted(),
         Some(SetupError::NotStarted { label, code, .. }) => {
             if recovery {
@@ -829,6 +836,14 @@ mod tests {
         assert_eq!(
             setup_stopped(not_started(), "disco", true).to_string(),
             "Disco's installer never started (exit code 3). Finish the update with: wineo update disco"
+        );
+    }
+
+    #[test]
+    fn a_missing_session_is_worded_as_an_update() {
+        assert_eq!(
+            setup_stopped(SetupError::NoGraphicalSession.into(), "disco", false).to_string(),
+            NEEDS_DESKTOP
         );
     }
 

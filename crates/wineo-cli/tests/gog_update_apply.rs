@@ -956,7 +956,9 @@ fn a_windows_update_needs_a_graphical_session_before_it_downloads() {
     let out = headless(&f, &api, &["update", "disco", "--yes"]);
     assert_eq!(out.status.code(), Some(1), "{}", stderr(&out));
     assert!(
-        stderr(&out).contains("needs a graphical session. Run this from your desktop."),
+        stderr(&out).contains(
+            "error: Updating a Windows game needs a graphical session. Run this from your desktop."
+        ),
         "{}",
         stderr(&out)
     );

@@ -677,7 +677,9 @@ fn an_update_with_a_build_to_run_needs_a_graphical_session() {
     let out = headless(&f, &api, &["update", NAME, "--yes"]);
     assert_eq!(out.status.code(), Some(1), "{}", stderr(&out));
     assert!(
-        stderr(&out).contains("needs a graphical session. Run this from your desktop."),
+        stderr(&out).contains(
+            "error: Updating a Windows game needs a graphical session. Run this from your desktop."
+        ),
         "{}",
         stderr(&out)
     );
