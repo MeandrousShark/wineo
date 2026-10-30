@@ -56,32 +56,6 @@ check() {
 package() {
   cd "$srcdir/wineo" || return
 
-  install -Dm755 target/release/wineo "$pkgdir/usr/bin/wineo"
-  install -Dm755 target/release/wineo-gui "$pkgdir/usr/bin/wineo-gui"
-  install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
-  install -Dm644 crates/wineo-gui/assets/wineo-gui.desktop \
-    "$pkgdir/usr/share/applications/wineo-gui.desktop"
-  install -Dm644 crates/wineo-gui/assets/wineo-gui.svg \
-    "$pkgdir/usr/share/icons/hicolor/scalable/apps/wineo-gui.svg"
-  install -Dm644 crates/wineo-gui/THIRD_PARTY.md \
-    "$pkgdir/usr/share/licenses/$pkgname/THIRD_PARTY.md"
-  install -Dm644 docs/environment.toml.example \
-    "$pkgdir/usr/share/doc/wineo/environment.toml.example"
-  install -Dm644 docs/native-environment.toml.example \
-    "$pkgdir/usr/share/doc/wineo/native-environment.toml.example"
-  install -Dm644 docs/proxied-environment.toml.example \
-    "$pkgdir/usr/share/doc/wineo/proxied-environment.toml.example"
-
-  "$pkgdir/usr/bin/wineo" completions bash > "$srcdir/wineo.bash"
-  "$pkgdir/usr/bin/wineo" completions zsh > "$srcdir/wineo.zsh"
-  "$pkgdir/usr/bin/wineo" completions fish > "$srcdir/wineo.fish"
-
-  install -Dm644 "$srcdir/wineo.bash" \
-    "$pkgdir/usr/share/bash-completion/completions/wineo"
-  install -Dm644 "$srcdir/wineo.zsh" \
-    "$pkgdir/usr/share/zsh/site-functions/_wineo"
-  install -Dm644 "$srcdir/wineo.fish" \
-    "$pkgdir/usr/share/fish/vendor_completions.d/wineo.fish"
-
-  "$pkgdir/usr/bin/wineo" manpages "$pkgdir/usr/share/man/man1"
+  scripts/stage-install.sh --license-dir "/usr/share/licenses/$pkgname" \
+    "$pkgdir" target/release
 }
