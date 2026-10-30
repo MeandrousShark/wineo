@@ -10,6 +10,7 @@ arch=('x86_64')
 url='https://github.com/MeandrousShark/wineo'
 license=('GPL-3.0-or-later')
 # wineo-gui loads everything after xz with dlopen, so no tool can find them.
+# ca-certificates is the system certificate store that HTTPS requests read.
 depends=(
   'glibc'
   'libgcc'
@@ -24,6 +25,7 @@ depends=(
   'wayland'
   'libglvnd'
   'vulkan-icd-loader'
+  'ca-certificates'
 )
 makedepends=('cargo')
 optdepends=(

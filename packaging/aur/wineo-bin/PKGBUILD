@@ -11,6 +11,7 @@ url='https://github.com/MeandrousShark/wineo'
 license=('GPL-3.0-or-later')
 # wineo-gui loads everything after hicolor-icon-theme with dlopen, so no tool
 # can find them. Release binaries carry their own lzma, so xz isn't needed.
+# ca-certificates is the system certificate store that HTTPS requests read.
 depends=(
   'glibc'
   'libgcc'
@@ -24,6 +25,7 @@ depends=(
   'wayland'
   'libglvnd'
   'vulkan-icd-loader'
+  'ca-certificates'
 )
 optdepends=(
   'bash-completion: load Bash completions'

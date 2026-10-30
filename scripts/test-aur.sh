@@ -34,6 +34,7 @@ arch_name() {
         libwayland-client0 | libwayland-egl1) echo wayland ;;
         libegl1) echo libglvnd ;;
         libvulkan1) echo vulkan-icd-loader ;;
+        ca-certificates) echo ca-certificates ;;
         *) return 1 ;;
     esac
 }

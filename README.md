@@ -87,6 +87,7 @@ libwayland-client0
 libwayland-egl1
 libegl1
 libvulkan1
+ca-certificates
 ```
 <!-- ubuntu-runtime-packages:end -->
 
@@ -105,6 +106,7 @@ libwayland-client
 libwayland-egl
 libglvnd-egl
 vulkan-loader
+ca-certificates
 ```
 <!-- fedora-runtime-packages:end -->
 

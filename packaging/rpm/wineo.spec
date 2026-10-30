@@ -30,7 +30,9 @@ BuildRequires:  pkgconfig(liblzma)
 
 # wineo-gui loads everything after liblzma with dlopen, so rpm can't find
 # these libraries. The names are the README's Fedora list, and openSUSE's
-# library packages carry the soname in their names.
+# library packages carry the soname in their names. The last entry in each
+# branch is the system certificate store that HTTPS requests read; openSUSE
+# ships the roots in ca-certificates-mozilla.
 Requires:       hicolor-icon-theme
 %if 0%{?suse_version}
 Requires:       libX11-6
@@ -44,6 +46,7 @@ Requires:       libwayland-client0
 Requires:       libwayland-egl1
 Requires:       libglvnd
 Requires:       libvulkan1
+Requires:       ca-certificates-mozilla
 %else
 Requires:       libX11
 Requires:       libX11-xcb
@@ -56,6 +59,7 @@ Requires:       libwayland-client
 Requires:       libwayland-egl
 Requires:       libglvnd-egl
 Requires:       vulkan-loader
+Requires:       ca-certificates
 %endif
 Recommends:     wine
 Recommends:     winetricks

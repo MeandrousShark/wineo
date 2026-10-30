@@ -56,6 +56,7 @@ suse_name() {
         libwayland-egl) echo libwayland-egl1 ;;
         libglvnd-egl) echo libglvnd ;;
         vulkan-loader) echo libvulkan1 ;;
+        ca-certificates) echo ca-certificates-mozilla ;;
         *) return 1 ;;
     esac
 }

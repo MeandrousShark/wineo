@@ -24,6 +24,7 @@ Architecture: amd64
 # wineo-gui loads everything after liblzma with dlopen, so shlibs can't find
 # those libraries and the list below is written by hand. It is the README's
 # Ubuntu list, which scripts/test-repo-recipes.sh keeps in step.
+# ca-certificates is the system certificate store that HTTPS requests read.
 Depends:
  ${shlibs:Depends},
  ${misc:Depends},
@@ -38,6 +39,7 @@ Depends:
  libwayland-egl1,
  libegl1,
  libvulkan1,
+ ca-certificates,
 Recommends:
  wine,
  winetricks,

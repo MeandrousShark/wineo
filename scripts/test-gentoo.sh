@@ -43,6 +43,7 @@ gentoo_atom() {
         libwayland-client0 | libwayland-egl1) echo dev-libs/wayland ;;
         libegl1) echo media-libs/libglvnd ;;
         libvulkan1) echo 'media-libs/vulkan-loader[X,wayland]' ;;
+        ca-certificates) echo app-misc/ca-certificates ;;
         *) return 1 ;;
     esac
 }

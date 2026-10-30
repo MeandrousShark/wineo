@@ -20,9 +20,11 @@ SLOT="0"
 # tool can find them. libX11 includes libX11-xcb, dev-libs/wayland includes
 # libwayland-egl, and libxkbcommon[X] is libxkbcommon-x11. vulkan-loader's USE
 # flags turn on its X11 and Wayland surfaces, without which it can't draw.
+# ca-certificates is the system certificate store that HTTPS requests read.
 DEPEND="app-arch/xz-utils"
 RDEPEND="
 	app-arch/xz-utils
+	app-misc/ca-certificates
 	dev-libs/wayland
 	media-libs/libglvnd
 	media-libs/vulkan-loader[X,wayland]
