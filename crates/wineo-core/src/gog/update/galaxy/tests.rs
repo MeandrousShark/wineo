@@ -564,6 +564,39 @@ fn an_install_interrupted_at_each_step_is_finished_by_installing_again() {
 }
 
 #[test]
+fn finishing_an_install_without_its_record_asks_for_a_session_before_any_file_list() {
+    use crate::gog::update::windows::SetupError;
+    use crate::gog::update::windows::tests::set_graphical;
+
+    let fx = Fixture::new();
+    fx.content.add_build(Fixture::game("100"));
+    interrupted(&fx, "galaxy.journal.after", 0);
+    // With no record the finish fetches the build again.
+    fs::remove_file(folder::sidecar_file(&fx.paths, &fx.folder)).unwrap();
+    // The build's listing is a meta request the answer needs; the depots'
+    // file lists after it are what a refusal must spare.
+    let metas = || {
+        fx.server
+            .requests()
+            .iter()
+            .filter(|request| request.path().starts_with("/content-system/v2/meta/"))
+            .count()
+    };
+    let before = metas();
+    set_graphical(false);
+    let error = fx.plan_with(&fx.request()).unwrap_err();
+    set_graphical(true);
+    assert!(
+        matches!(
+            error.downcast_ref::<SetupError>(),
+            Some(SetupError::NoGraphicalSession)
+        ),
+        "{error:#}"
+    );
+    assert_eq!(metas(), before + 1, "only the build's listing");
+}
+
+#[test]
 fn finishing_an_install_keeps_the_files_already_in_place() {
     let fx = Fixture::new();
     fx.content.add_build(Fixture::game("100"));
