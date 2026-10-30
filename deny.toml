@@ -1,8 +1,10 @@
-# Read by `cargo deny check advisories`, which runs in CI and blocks a release
-# when a dependency has a known vulnerability.
+# Read by `cargo deny check advisories licenses`, which runs in CI and blocks
+# a release when a dependency has a known vulnerability or a license the
+# package repositories can't take.
 
 [graph]
-targets = ["x86_64-unknown-linux-gnu"]
+# No `targets`: the vendored source tarball carries every platform's crates,
+# so both checks look at all of them.
 all-features = true
 
 [advisories]
@@ -11,3 +13,26 @@ all-features = true
 unmaintained = "workspace"
 # Each accepted advisory goes here as { id = "...", reason = "..." }.
 ignore = []
+
+[licenses]
+# Only licenses that both Launchpad (OSI, FSF, or DFSG approved) and Fedora's
+# allowed list accept, plus wineo's own. cargo-deny reads "OR" in a crate's
+# license, so a crate that offers a choice only needs one of them here; that
+# is why 0BSD, Unlicense, and Apache-2.0 WITH LLVM-exception aren't listed.
+# Left out on purpose, and each fails the check for one crate until the
+# maintainer decides:
+#   CC0-1.0 (hexf-parse 0.2.1, via naga): Fedora allows it for content only.
+#   CDLA-Permissive-2.0 (webpki-roots 1.0.11, via reqwest): not OSI or FSF,
+#     and nothing confirms Launchpad's DFSG test for it.
+# A new entry here needs both policies checked first, not just the list.
+allow = [
+    "Apache-2.0",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "BSL-1.0",
+    "GPL-3.0-or-later",
+    "ISC",
+    "MIT",
+    "Unicode-3.0",
+    "Zlib",
+]
