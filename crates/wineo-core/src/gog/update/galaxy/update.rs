@@ -375,8 +375,6 @@ pub fn plan(
     host_only(paths)?;
     options.check()?;
     Environment::ensure_exists(paths, name)?;
-    // Setup runs programs in the prefix, as an install's does.
-    windows::check_graphical()?;
     let mut state = crate::gog::update::game_of(paths, name)?;
     if let Some(journal) = &state.journal {
         if journal.target.track != Track::Galaxy {
@@ -528,6 +526,9 @@ pub fn plan(
             },
             &mut warnings,
         )?;
+        // Setup runs programs in the prefix, as an install's does. Asked only
+        // now, so a repair GOG can't serve says so without a desktop.
+        windows::check_graphical()?;
         let store = install::complete_store(session, store)?;
         let products = planned_products(&target, &manifest, &title, |id| {
             details
@@ -721,6 +722,10 @@ pub fn plan(
         }));
     }
 
+    // Setup runs programs in the prefix, as an install's does. Asked only
+    // now, so a game with no build, or nothing to update, says so without a
+    // desktop.
+    windows::check_graphical()?;
     let built = install::manifests(
         session,
         &title,
@@ -1492,6 +1497,8 @@ fn resumed(
             )
         }
     };
+    // Finishing runs setup too, but a build that's gone says so first.
+    windows::check_graphical()?;
     let store = install::complete_store(session, store)?;
     let products = target
         .products

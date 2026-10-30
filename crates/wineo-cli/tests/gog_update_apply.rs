@@ -503,11 +503,12 @@ fn a_native_game_cant_be_repaired() {
 fn a_galaxy_game_with_no_galaxy_build_is_refused_by_name() {
     let (f, api, _) = world();
     f.galaxy_game_without_a_build(&api);
-    // A Windows update needs a graphical session before it looks for a build.
+    // With no desktop either, since there's nothing to run.
     let out = gog_api::checked(
         f.gog_command(&api)
             .args(["update", "disco", "--yes"])
-            .env("DISPLAY", ":0")
+            .env_remove("DISPLAY")
+            .env_remove("WAYLAND_DISPLAY")
             .output()
             .unwrap(),
     );

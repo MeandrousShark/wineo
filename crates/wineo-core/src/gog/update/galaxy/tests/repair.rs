@@ -1054,3 +1054,40 @@ fn installing_a_game_beside_an_unreadable_record_warns_and_removes_nothing() {
         assert!(dir.is_dir(), "{}", dir.display());
     }
 }
+
+#[test]
+fn a_repair_or_a_finish_needs_a_graphical_session_but_a_gone_build_doesnt() {
+    use crate::gog::update::windows::SetupError;
+    use crate::gog::update::windows::tests::set_graphical;
+
+    let refused = |error: anyhow::Error| {
+        matches!(
+            error.downcast_ref::<SetupError>(),
+            Some(SetupError::NoGraphicalSession)
+        )
+    };
+    let fx = Fixture::new();
+    fx.content.add_build(Fixture::game("100"));
+    fx.install();
+    set_graphical(false);
+    assert!(refused(fx.op(repair()).unwrap_err()));
+    assert!(fx.state().journal.is_none());
+
+    // Without the record, a repair GOG can't serve says so first.
+    fx.hide("100");
+    forget_record(&fx);
+    let error = fx.op(repair()).unwrap_err();
+    assert!(
+        matches!(error.downcast_ref(), Some(GalaxyError::BuildGone { .. })),
+        "{error:#}"
+    );
+    set_graphical(true);
+
+    let fx = Fixture::new();
+    fx.installed_then(game_200());
+    update_interrupted(&fx, "galaxy.update.file.after", 1);
+    set_graphical(false);
+    assert!(refused(fx.update_planned().unwrap_err()));
+    set_graphical(true);
+    assert!(fx.update_plan().is_recovery());
+}

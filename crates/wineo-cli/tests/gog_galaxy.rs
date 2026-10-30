@@ -644,6 +644,113 @@ fn all_skips_a_galaxy_game_without_a_graphical_session() {
     assert_eq!(read(&f, "Papers.exe"), "MZ 1.2.76");
 }
 
+/// `gog`, with no graphical session.
+fn headless(f: &Fixture, api: &GogApi, args: &[&str]) -> Output {
+    gog_api::checked(
+        f.gog_command(api)
+            .env_remove("DISPLAY")
+            .env_remove("WAYLAND_DISPLAY")
+            .args(args)
+            .output()
+            .unwrap(),
+    )
+}
+
+/// What a run may leave behind without changing anything: the login and
+/// GOG's product details cache.
+fn untouched(f: &Fixture) -> std::collections::BTreeMap<PathBuf, Vec<u8>> {
+    let generation = f.paths().gog_credentials_generation();
+    let product = f.paths().gog_product_cache(GAME);
+    let skip = [
+        "gog.key",
+        generation.file_name().unwrap().to_str().unwrap(),
+        product.file_name().unwrap().to_str().unwrap(),
+    ];
+    tree(f.root.path(), &skip)
+}
+
+#[test]
+fn an_update_with_a_build_to_run_needs_a_graphical_session() {
+    let (f, api) = installed();
+    newer(&api);
+    let before = untouched(&f);
+    let out = headless(&f, &api, &["update", NAME, "--yes"]);
+    assert_eq!(out.status.code(), Some(1), "{}", stderr(&out));
+    assert!(
+        stderr(&out).contains("needs a graphical session. Run this from your desktop."),
+        "{}",
+        stderr(&out)
+    );
+    assert_eq!(untouched(&f), before);
+    assert_eq!(read(&f, "Papers.exe"), "MZ 1.2.76");
+}
+
+#[test]
+fn an_up_to_date_galaxy_game_says_so_without_a_graphical_session() {
+    let (f, api) = installed();
+    let out = headless(&f, &api, &["update", NAME, "--yes"]);
+    assert_success(&out);
+    assert_eq!(stdout(&out), "Up to date.\n");
+}
+
+#[test]
+fn a_galaxy_install_with_no_build_says_so_without_a_graphical_session() {
+    let (f, api) = world();
+    api.hidden_builds.lock().unwrap().insert("100".to_owned());
+    let out = headless(
+        &f,
+        &api,
+        &[
+            "import",
+            "gog",
+            "--game",
+            "1207658924",
+            "--runner",
+            "galaxy",
+            "--track",
+            "galaxy",
+            "--yes",
+        ],
+    );
+    assert_eq!(out.status.code(), Some(1), "{}", stderr(&out));
+    assert!(
+        stderr(&out)
+            .contains("GOG lists no Galaxy build of Papers, Please that wineo can install."),
+        "{}",
+        stderr(&out)
+    );
+    assert!(!folder(&f).exists());
+}
+
+#[test]
+fn a_galaxy_install_needs_a_graphical_session_before_it_downloads() {
+    let (f, api) = world();
+    // Planning caches GOG's product details, so their folder may appear.
+    fs::create_dir_all(f.paths().gog_product_cache(GAME).parent().unwrap()).unwrap();
+    let before = untouched(&f);
+    let out = headless(
+        &f,
+        &api,
+        &[
+            "import",
+            "gog",
+            "--game",
+            "1207658924",
+            "--runner",
+            "galaxy",
+            "--yes",
+        ],
+    );
+    assert_eq!(out.status.code(), Some(1), "{}", stderr(&out));
+    assert!(
+        stderr(&out).contains("needs a graphical session. Run this from your desktop."),
+        "{}",
+        stderr(&out)
+    );
+    assert_eq!(untouched(&f), before);
+    assert!(!folder(&f).exists());
+}
+
 #[test]
 fn a_build_gone_from_gog_retargets_when_you_say_yes() {
     let (f, api) = installed();

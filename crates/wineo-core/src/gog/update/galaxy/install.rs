@@ -453,8 +453,6 @@ pub fn plan(
     if request.platform == Some(Platform::Linux) {
         return Err(GalaxyError::NotWindows.into());
     }
-    // Setup runs programs in the prefix, as a Windows installer does.
-    windows::check_graphical()?;
     let global = GlobalConfig::load(paths)?;
     let requested = request
         .language
@@ -661,6 +659,9 @@ pub fn plan(
         }
     }
 
+    // Setup runs programs in the prefix, as a Windows installer does. Asked
+    // only now, so a game with no build says so without a desktop.
+    windows::check_graphical()?;
     let built = manifests(
         session,
         &title,
@@ -944,6 +945,8 @@ fn resumed(
             (built.manifest, built.store)
         }
     };
+    // Finishing runs setup too, but a build that's gone says so first.
+    windows::check_graphical()?;
     let store = complete_store(session, store)?;
     let products = target
         .products
