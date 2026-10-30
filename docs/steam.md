@@ -222,8 +222,11 @@ see [Downloads and imports](downloads-and-imports.md#use-builds-from-steam-heroi
 request is handed off. When Steam isn't running, wineo starts it first with
 `steam -silent` and sends the launch once its client is up (up to a minute),
 because Steam ignores `-silent` when the launch comes in the same cold start.
-That keeps the library window closed. A Steam that's already open stays as it
-is, and Steam may still show its own launch progress:
+That keeps the library window closed, unless Steam has shaders to process
+before the launch: it shows that progress inside the library window, and
+wineo can't turn it off. Turning off Shader Pre-Caching in Steam's settings
+may avoid it. A Steam that's already open stays as it is, and Steam may still
+show its own launch progress:
 
 ```
 $ wineo start bg3
