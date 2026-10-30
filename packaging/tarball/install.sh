@@ -105,7 +105,15 @@ if [[ ! -d $prefix ]] && ((!uninstall)); then
     mkdir -p "$prefix"
 fi
 if [[ -d $prefix ]]; then
-    prefix=$(cd -P -- "$prefix" && pwd -P)
+    # The trailing x keeps $(...) from stripping newlines the real path ends
+    # in, which would name a different directory.
+    prefix=$(cd -P -- "$prefix" && pwd -P && echo x)
+    prefix=${prefix%$'\n'x}
+fi
+# Checked again, since a symlink in PREFIX can lead to a name with one.
+if [[ $prefix == *[[:cntrl:]]* ]]; then
+    echo "$name: PREFIX leads to a directory whose name has control characters" >&2
+    exit 2
 fi
 base=$(base_of "$prefix")
 shown=${base:-/}

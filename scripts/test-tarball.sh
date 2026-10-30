@@ -525,6 +525,23 @@ HOME=$tmp/home2 expect_usage_error "prefix with a newline" "$tmp/u4" "$tmp/u4"$'
 HOME=$tmp/home2 expect_usage_error "prefix with a tab" "$tmp/u6" "$tmp/u6"$'\t'x
 HOME=$tmp/home2 expect_usage_error "prefix with a carriage return" "$tmp/u7" "$tmp/u7"$'\r'x
 HOME=$tmp/home2 expect_usage_error "uninstall prefix with a tab" "$tmp/u8" --uninstall "$tmp/u8"$'\t'x
+
+# A plain-looking PREFIX that is a symlink to a name with a control
+# character is refused too, and a trailing newline in the real name can't
+# be stripped into a different directory.
+mkdir "$tmp/tab"$'\t'dir "$tmp/victim" "$tmp/victim"$'\n'
+ln -s "$tmp/tab"$'\t'dir "$tmp/tab-alias"
+ln -s "$tmp/victim"$'\n' "$tmp/nl-alias"
+HOME=$tmp/home2 expect_usage_error "symlink to a name with a tab" "$tmp/tab"$'\t'dir/bin "$tmp/tab-alias"
+install -Dm755 "$tmp/bin/wineo" "$tmp/victim/bin/wineo"
+HOME=$tmp/home2 expect_usage_error "uninstall through a symlink to a name ending in a newline" \
+    "$tmp/victim"$'\n'/bin --uninstall "$tmp/nl-alias"
+if [[ -f $tmp/victim/bin/wineo ]]; then
+    pass
+else
+    fail "uninstall through a newline name removed an unrelated file"
+fi
+
 saved_home=$HOME
 unset HOME
 expect_usage_error "no HOME and no prefix" "$tmp/u5"
