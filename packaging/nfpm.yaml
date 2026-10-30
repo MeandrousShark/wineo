@@ -1,0 +1,56 @@
+# Metadata for the .deb and .rpm, read by nfpm through scripts/pack-packages.sh.
+# The script fills in what varies per run:
+#   - NFPM_VERSION and NFPM_RELEASE are environment variables nfpm expands.
+#   - nfpm runs inside the staged install tree (stage-install.sh), because
+#     it doesn't expand variables in a content's src, so src is relative.
+#   - The two "@...@" lines under depends are replaced by the README's
+#     runtime package lists, one entry per package.
+name: wineo
+arch: amd64
+platform: linux
+version: ${NFPM_VERSION}
+release: ${NFPM_RELEASE}
+section: otherosfs
+priority: optional
+maintainer: Michael Hannon <mphannon@pm.me>
+homepage: https://github.com/MeandrousShark/wineo
+license: GPL-3.0-or-later
+# The first line is the summary. The paragraph after it is README.md's
+# opening paragraph, which scripts/test-packages.sh keeps in step. No blank
+# line between them: nfpm would turn it into an empty paragraph in the deb.
+description: |
+  Launcher for Wine and Proton programs, native games, Steam, and GOG
+  A launcher and library for Linux, written in Rust, for Windows programs and
+  games run with Wine or Proton, native Linux games, your Steam library, and
+  the GOG games you own. Each one gets its own named environment. For Windows
+  software that's a prefix, a runner (Wine or Proton through umu), launch
+  targets, and settings, all in plain TOML you can read and edit. Use it from
+  the command line or the desktop app.
+
+contents:
+  - src: ./usr
+    dst: /usr
+    type: tree
+
+overrides:
+  deb:
+    depends:
+      - libc6 (>= 2.35)
+      - libgcc-s1
+      - "@ubuntu-runtime-packages@"
+    recommends:
+      - wine
+      - winetricks
+    suggests:
+      - gamemode
+      - gamescope
+      - mangohud
+  rpm:
+    depends:
+      - glibc >= 2.35
+      - libgcc
+      - "@fedora-runtime-packages@"
+    recommends:
+      - wine
+      - winetricks
+      - umu-launcher
