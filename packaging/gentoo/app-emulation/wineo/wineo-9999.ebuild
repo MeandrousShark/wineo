@@ -18,13 +18,14 @@ SLOT="0"
 
 # wineo-gui loads X11, xkbcommon, wayland, EGL, and Vulkan with dlopen, so no
 # tool can find them. libX11 includes libX11-xcb, dev-libs/wayland includes
-# libwayland-egl, and libxkbcommon[X] is libxkbcommon-x11.
+# libwayland-egl, and libxkbcommon[X] is libxkbcommon-x11. vulkan-loader's USE
+# flags turn on its X11 and Wayland surfaces, without which it can't draw.
 DEPEND="app-arch/xz-utils"
 RDEPEND="
 	app-arch/xz-utils
 	dev-libs/wayland
 	media-libs/libglvnd
-	media-libs/vulkan-loader
+	media-libs/vulkan-loader[X,wayland]
 	x11-libs/libX11
 	x11-libs/libXcursor
 	x11-libs/libXi
@@ -33,6 +34,9 @@ RDEPEND="
 	x11-themes/hicolor-icon-theme
 "
 BDEPEND="virtual/pkgconfig"
+
+# CI runs the suite, which needs a terminal and one test thread.
+RESTRICT="test"
 
 # Rust binaries ignore the C toolchain flags.
 QA_FLAGS_IGNORED="usr/bin/wineo usr/bin/wineo-gui"

@@ -42,7 +42,7 @@ gentoo_atom() {
         libxi6) echo x11-libs/libXi ;;
         libwayland-client0 | libwayland-egl1) echo dev-libs/wayland ;;
         libegl1) echo media-libs/libglvnd ;;
-        libvulkan1) echo media-libs/vulkan-loader ;;
+        libvulkan1) echo 'media-libs/vulkan-loader[X,wayland]' ;;
         *) return 1 ;;
     esac
 }
@@ -114,7 +114,7 @@ for ebuild in "$package_dir/wineo-9999.ebuild" "$tmp/release/wineo-$version.ebui
     done
 
     for line in '# Packaging written with AI assistance and reviewed by the maintainer.' \
-        '# SPDX-License-Identifier: 0BSD' 'EAPI=8'; do
+        '# SPDX-License-Identifier: 0BSD' 'EAPI=8' 'RESTRICT="test"'; do
         if grep -qxF "$line" "$ebuild"; then
             pass
         else
