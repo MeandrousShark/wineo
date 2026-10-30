@@ -122,7 +122,9 @@ status "checksums refuse a missing directory" 1 "$checksums" "$tmp/no-such-dir"
 
 mkdir "$tmp/rel"
 echo asset >"$tmp/rel/wineo.rpm"
-(cd "$tmp" && status "checksums with a relative directory" 0 "$checksums" rel)
+pushd "$tmp" >/dev/null
+status "checksums with a relative directory" 0 "$checksums" rel
+popd >/dev/null
 same "relative directory result" "wineo.rpm" "$(sed 's/^[0-9a-f]\{64\}  //' "$tmp/rel/SHA256SUMS")"
 
 status "checksums with no arguments" 2 "$checksums"
@@ -209,6 +211,16 @@ git -C "$repo" add app/Cargo.toml Cargo.lock
 commit_at "$repo" 1000000200 "drop the dependency"
 git -C "$repo" tag nodeps
 git -C "$repo" checkout -q main
+# A branch that already tracks .cargo, which the script must not overwrite.
+git -C "$repo" checkout -q -b withcargo
+mkdir "$repo/.cargo"
+printf '[build]\njobs = 1\n' >"$repo/.cargo/config.toml"
+git -C "$repo" add .cargo/config.toml
+commit_at "$repo" 1000000300 "track a cargo config"
+git -C "$repo" tag withcargo
+git -C "$repo" checkout -q main
+# An annotated tag names the same commit as v1.
+git -C "$repo" -c user.name=test -c user.email=test@example.invalid tag -a v1a -m annotated v1
 
 echo two >"$repo/MARK"
 git -C "$repo" add MARK
@@ -231,7 +243,10 @@ mkdir "$work"
 pack_here() {
     local want=$1
     shift
-    (cd "$work" && status "pack $*" "$want" "$pack" "$@")
+    # pushd, not a subshell, so status's pass and fail counts survive.
+    pushd "$work" >/dev/null
+    status "pack $*" "$want" "$pack" "$@"
+    popd >/dev/null
 }
 
 # No tarball may be left in OUTDIR after a failed run.
@@ -363,6 +378,15 @@ pack_here 1 "$version" nolock "$out_bad"
 same "no tarball without a lock file" 0 "$(leftovers "$out_bad")"
 pack_here 1 "$version" nodeps "$out_bad"
 same "no tarball without dependencies" 0 "$(leftovers "$out_bad")"
+pack_here 1 "$version" withcargo "$out_bad"
+same "no tarball when the ref tracks .cargo" 0 "$(leftovers "$out_bad")"
+
+# An annotated tag packs its commit, like the lightweight one.
+out_ann=$tmp/out-ann
+pack_here 0 "$version" v1a "$out_ann"
+same "annotated tag packs the same files" \
+    "$(tar -tf "$tarball" | LC_ALL=C sort | cksum)" \
+    "$(tar -tf "$out_ann/$name-vendored.tar.xz" | LC_ALL=C sort | cksum)"
 
 # Bad usage.
 pack_here 2
