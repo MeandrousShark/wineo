@@ -10,7 +10,7 @@
 #
 # VERSION must be the workspace version, since the crate list comes from this
 # checkout's Cargo.lock. OUTPUT_DIR defaults to the overlay's package
-# directory (packaging/gentoo/app-emulation/wineo). --skip-crates leaves
+# directory (packaging/gentoo/games-util/wineo). --skip-crates leaves
 # CRATES and the crate licenses empty and needs no network; the tests use it.
 #
 # pycargoebuild comes from PATH if it is there (Gentoo, or the gentoo/stage3
@@ -43,7 +43,7 @@ version=$1
 [[ $version =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || usage
 
 root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
-package_dir=$root/packaging/gentoo/app-emulation/wineo
+package_dir=$root/packaging/gentoo/games-util/wineo
 outdir=${2:-$package_dir}
 [[ -d $outdir ]] || usage
 live=$package_dir/wineo-9999.ebuild

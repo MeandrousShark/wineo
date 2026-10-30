@@ -14,7 +14,7 @@ set -euo pipefail
 script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 root=$(cd "$script_dir/.." && pwd)
 overlay=$root/packaging/gentoo
-package_dir=$overlay/app-emulation/wineo
+package_dir=$overlay/games-util/wineo
 
 tmp=$(mktemp -d)
 trap 'rm -rf "${tmp:?}"' EXIT

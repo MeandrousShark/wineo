@@ -77,7 +77,7 @@ cp /usr/share/portage/config/repos.conf /etc/portage/repos.conf/gentoo.conf 2>/d
     { mkdir -p /etc/portage/repos.conf && cp /usr/share/portage/config/repos.conf /etc/portage/repos.conf/gentoo.conf; }
 printf "[wineo]\nlocation = /overlay\nauto-sync = no\n" >/etc/portage/repos.conf/wineo.conf
 # Release ebuilds are ~amd64 and the live one has no keywords.
-printf "app-emulation/wineo ~amd64\n=app-emulation/wineo-9999 **\n" >/etc/portage/package.accept_keywords/wineo
+printf "games-util/wineo ~amd64\n=games-util/wineo-9999 **\n" >/etc/portage/package.accept_keywords/wineo
 # Xvfb without the Xorg server and the drivers it would pull in.
 echo "x11-base/xorg-server xvfb -xorg -udev -elogind -suid" >/etc/portage/package.use/xvfb
 if [[ ! -e /var/db/repos/gentoo/profiles ]]; then
@@ -98,7 +98,7 @@ nice -n 15 podman run --rm --cpus "$cpus" \
     -v "$root:/src:ro" "$image" bash -euo pipefail -c '
     bash /setup.sh
     emerge -q dev-util/pkgcheck
-    package_dir=/overlay/app-emulation/wineo
+    package_dir=/overlay/games-util/wineo
     if [[ $MODE == release ]]; then
         # Run from outside the checkout, as a packager would.
         (cd /tmp && /src/scripts/gentoo-ebuild.sh "$VERSION" "$package_dir")
@@ -111,10 +111,10 @@ nice -n 15 podman run --rm --cpus "$cpus" \
         exit 1
     fi
     mkdir /tmp/portage-logs
-    PORTAGE_LOGDIR=/tmp/portage-logs emerge --verbose "=app-emulation/wineo-$VERSION"
+    PORTAGE_LOGDIR=/tmp/portage-logs emerge --verbose "=games-util/wineo-$VERSION"
     # wineo'"'"'s own log, since dependencies built here print notices of their
     # own. The crate count is the only one allowed: the plan chose it.
-    log=$(echo /tmp/portage-logs/app-emulation:wineo-*)
+    log=$(echo /tmp/portage-logs/games-util:wineo-*)
     [[ -s $log ]]
     if grep "QA Notice" "$log" | grep -v "very large number of CRATES"; then
         echo "emerge printed QA notices"
@@ -136,10 +136,10 @@ nice -n 15 podman run --rm --cpus "$cpus" \
     # Not --usepkgonly: that also forbids the binhost builds of other
     # packages whose USE flags differ here, which breaks dependency solving.
     # Stop now, not after a rebuild, if the first container'"'"'s package is unusable.
-    emerge --pretend --nodeps --usepkgonly "=app-emulation/wineo-$VERSION"
-    FEATURES=-buildpkg emerge --verbose "=app-emulation/wineo-$VERSION"
+    emerge --pretend --nodeps --usepkgonly "=games-util/wineo-$VERSION"
+    FEATURES=-buildpkg emerge --verbose "=games-util/wineo-$VERSION"
     # With buildpkg off, only a package installed from a binary has this file.
-    [[ -e /var/db/pkg/app-emulation/wineo-$VERSION/BINPKGMD5 ]]
+    [[ -e /var/db/pkg/games-util/wineo-$VERSION/BINPKGMD5 ]]
     wineo --version
     # What wineo-gui dlopens, checked before Xvfb and its Mesa can supply any.
     for lib in libX11-xcb.so.1 libxcb.so.1 libxkbcommon.so.0 libxkbcommon-x11.so.0 \
@@ -151,11 +151,11 @@ nice -n 15 podman run --rm --cpus "$cpus" \
     /scripts/check-gui-starts.sh /usr/bin/wineo-gui
     /scripts/check-installed.sh /usr "/usr/share/doc/wineo-$VERSION"
     # Portage records every installed file in CONTENTS.
-    contents=/var/db/pkg/app-emulation/wineo-$VERSION/CONTENTS
+    contents=/var/db/pkg/games-util/wineo-$VERSION/CONTENTS
     awk '"'"'$1 == "obj" || $1 == "sym" { print $2 }'"'"' "$contents" >/tmp/files.txt
     echo "$(wc -l </tmp/files.txt) installed files"
     [[ -s /tmp/files.txt ]]
-    emerge --unmerge --quiet "=app-emulation/wineo-$VERSION"
+    emerge --unmerge --quiet "=games-util/wineo-$VERSION"
     while read -r path; do
         if [[ -e $path || -L $path ]]; then
             echo "left behind: $path"
