@@ -113,14 +113,24 @@ fake_bins "$tmp/bin"
 expect_success "default run"
 check_listing "default license dir" "$tmp/dest1" /usr/share/licenses/wineo
 
-# Contents come from the right sources.
-if cmp -s "$root/LICENSE" "$tmp/dest1/usr/share/licenses/wineo/LICENSE" &&
-    cmp -s "$root/docs/environment.toml.example" \
-        "$tmp/dest1/usr/share/doc/wineo/environment.toml.example"; then
-    pass
-else
-    fail "installed files differ from the repository's"
-fi
+# Every copied file matches its own source, so two installs can't swap.
+while read -r src dst; do
+    if cmp -s "$src" "$tmp/dest1/$dst"; then
+        pass
+    else
+        fail "$dst differs from $src"
+    fi
+done <<EOF
+$tmp/bin/wineo usr/bin/wineo
+$tmp/bin/wineo-gui usr/bin/wineo-gui
+$root/LICENSE usr/share/licenses/wineo/LICENSE
+$root/crates/wineo-gui/THIRD_PARTY.md usr/share/licenses/wineo/THIRD_PARTY.md
+$root/crates/wineo-gui/assets/wineo-gui.desktop usr/share/applications/wineo-gui.desktop
+$root/crates/wineo-gui/assets/wineo-gui.svg usr/share/icons/hicolor/scalable/apps/wineo-gui.svg
+$root/docs/environment.toml.example usr/share/doc/wineo/environment.toml.example
+$root/docs/native-environment.toml.example usr/share/doc/wineo/native-environment.toml.example
+$root/docs/proxied-environment.toml.example usr/share/doc/wineo/proxied-environment.toml.example
+EOF
 if [[ $(cat "$tmp/dest1/usr/share/zsh/site-functions/_wineo") == "fake completions for zsh" &&
     $(cat "$tmp/dest1/usr/share/fish/vendor_completions.d/wineo.fish") == "fake completions for fish" &&
     $(cat "$tmp/dest1/usr/share/bash-completion/completions/wineo") == "fake completions for bash" ]]; then
@@ -178,6 +188,8 @@ expect_failure "no arguments" 2 "$tmp/none"
 expect_failure "unknown option" 2 "$tmp/dest-opt" --nope "$tmp/dest-opt" "$tmp/bin"
 expect_failure "license dir without a value" 2 "$tmp/none" --license-dir
 expect_failure "relative license dir" 2 "$tmp/dest-rel" --license-dir share/lic "$tmp/dest-rel" "$tmp/bin"
+expect_failure "license dir climbing out" 2 "$tmp/escaped" --license-dir /../escaped "$tmp/dest-esc" "$tmp/bin"
+expect_failure "license dir ending in .." 2 "$tmp/dest-up" --license-dir /usr/.. "$tmp/dest-up" "$tmp/bin"
 expect_failure "too many arguments" 2 "$tmp/dest-many" "$tmp/dest-many" "$tmp/bin" extra
 
 echo "$((cases - failures)) of $cases cases behaved correctly"

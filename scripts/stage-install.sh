@@ -37,6 +37,8 @@ while [[ $# -gt 0 ]]; do
 done
 [[ $# -ge 1 && $# -le 2 ]] || usage
 [[ $license_dir == /* ]] || usage
+# A ".." component would climb out of DESTDIR.
+[[ $license_dir/ != */../* ]] || usage
 
 # Absolute before any cd or install can change what they mean.
 destdir=$1
