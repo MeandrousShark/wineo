@@ -1,6 +1,9 @@
 [workspace]
 resolver = "3"
 members = ["crates/wineo-core", "crates/wineo-cli", "crates/wineo-gog", "crates/wineo-gui"]
+# A path patch under the root would otherwise join the workspace, and with it
+# the workspace lints and `cargo test --workspace`.
+exclude = ["third_party/hexf-parse"]
 
 [workspace.package]
 version = "1.0.1"
@@ -43,6 +46,12 @@ tokio = { version = "1", features = ["rt", "net", "time"] }
 unicode-width = "0.2"
 # Only for matching the errors secret-service passes through.
 zbus = { version = "5", default-features = false }
+
+# hexf-parse 0.2.1 on crates.io is CC0-1.0, which Fedora doesn't allow for
+# code. Upstream relicensed to 0BSD but hasn't published it; see
+# third_party/hexf-parse/README.md.
+[patch.crates-io]
+hexf-parse = { path = "third_party/hexf-parse" }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
