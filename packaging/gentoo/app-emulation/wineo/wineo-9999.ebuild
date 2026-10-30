@@ -34,9 +34,8 @@ RDEPEND="
 "
 BDEPEND="virtual/pkgconfig"
 
-# Rust binaries ignore the C toolchain flags, and cargo already strips them.
+# Rust binaries ignore the C toolchain flags.
 QA_FLAGS_IGNORED="usr/bin/wineo usr/bin/wineo-gui"
-QA_PRESTRIPPED="usr/bin/wineo usr/bin/wineo-gui"
 
 src_unpack() {
 	git-r3_src_unpack
@@ -51,4 +50,9 @@ src_install() {
 	# One script lays out every package format's files, so they can't drift.
 	scripts/stage-install.sh --license-dir "/usr/share/doc/${PF}" \
 		"${D}" "$(cargo_target_dir)" || die
+
+	# The script puts the example configs in /usr/share/doc/wineo, but Gentoo
+	# keeps a package's docs in a directory with its version.
+	mv "${ED}"/usr/share/doc/wineo/* "${ED}/usr/share/doc/${PF}/" || die
+	rmdir "${ED}/usr/share/doc/wineo" || die
 }
