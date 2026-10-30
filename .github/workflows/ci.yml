@@ -75,3 +75,12 @@ jobs:
 
       - name: Tarball tests
         run: scripts/test-tarball.sh
+
+      # dpkg-deb comes with the runner. The rpm checks need rpm, and the
+      # package build needs the pinned nfpm.
+      - name: Package tests
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y rpm
+          scripts/fetch-nfpm.sh "$RUNNER_TEMP/nfpm"
+          NFPM=$RUNNER_TEMP/nfpm/nfpm scripts/test-packages.sh
