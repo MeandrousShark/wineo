@@ -1,8 +1,8 @@
 #!/bin/bash
-# Checks the three AUR recipes without building them: the root PKGBUILD
-# (wineo-git), packaging/aur/wineo, and packaging/aur/wineo-bin. wineo-gui
-# loads its libraries with dlopen, so nothing else notices when these lists
-# drift from the README's runtime list.
+# Checks the metadata of the three AUR recipes: the root PKGBUILD (wineo-git),
+# packaging/aur/wineo, and packaging/aur/wineo-bin. check-aur-build.sh is what
+# proves they build and run. wineo-gui loads its libraries with dlopen, so
+# nothing else notices when these lists drift from the README's runtime list.
 #
 # Usage: scripts/test-aur.sh
 # Exits non-zero if any case behaves wrongly.
@@ -64,11 +64,13 @@ for recipe in "${recipes[@]}"; do
         fi
     done
 
-    if has "$depends" hicolor-icon-theme; then
-        pass
-    else
-        fail "$recipe does not depend on hicolor-icon-theme"
-    fi
+    for name in glibc libgcc hicolor-icon-theme; do
+        if has "$depends" "$name"; then
+            pass
+        else
+            fail "$recipe does not depend on $name"
+        fi
+    done
 
     for line in '# Maintainer: Michael Hannon <mphannon@pm.me>' \
         '# Packaging written with AI assistance and reviewed by the maintainer.' \
