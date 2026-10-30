@@ -30,6 +30,8 @@ License: 0BSD
 Files: debian/* packaging/*
 Copyright: 2026 Michael Hannon
 License: 0BSD
+
+License: 0BSD
  Permission to use, copy, modify, and/or distribute this software for any
  purpose with or without fee is hereby granted.
  .
