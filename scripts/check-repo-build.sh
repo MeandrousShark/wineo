@@ -221,7 +221,9 @@ case $kind in
     suse)
         license_dir=/usr/share/licenses/wineo
         install_cmd='
-            sed -i "/^rpm.install.excludedocs/d" /etc/zypp/zypp.conf
+            # Tumbleweed keeps its defaults in /usr/etc, so use a config of our own.
+            export ZYPP_CONF=/tmp/zypp.conf
+            printf "[main]\nrpm.install.excludedocs = no\n" >"$ZYPP_CONF"
             zypper --non-interactive --gpg-auto-import-keys refresh
             zypper --non-interactive install --no-recommends --allow-unsigned-rpm /out/wineo-[0-9]*.x86_64.rpm
             rpm -qi wineo | grep -E "^(Version|Release|License) *:"
