@@ -24,6 +24,11 @@ JOBS := $(patsubst parallel=%,%,$(filter parallel=%,$(DEB_BUILD_OPTIONS)))
 override_dh_auto_clean:
 	rm -rf target debian/cargo-home
 
+# dh_clean would delete the vendored crates' Cargo.toml.orig files, which
+# cargo checks against .cargo-checksum.json, and fail the build.
+override_dh_clean:
+	dh_clean -Xvendor
+
 override_dh_auto_build:
 	cargo build --release --frozen $(if $(JOBS),--jobs $(JOBS)) \
 		--package wineo-cli --package wineo-gui
