@@ -209,37 +209,13 @@ jobs:
           echo "$out"
           grep -qF "$version" <<<"$out"
 
-      # Exit 124 from timeout means the app was still running when the time
-      # ran out. Any other exit, or a panic in the output, is a failure.
-      # Everything lives in a throwaway HOME and XDG tree, with no display
-      # but the private Xvfb. iced loads X11, xkbcommon, and graphics
-      # libraries at runtime, which ldd can't see; the software renderer is
-      # forced because the container has no GPU.
+      # The script keeps the GUI in a throwaway HOME with no display but a
+      # private Xvfb, and passes only if it is still running after ten
+      # seconds.
       - name: wineo-gui starts under Xvfb
         run: |
           version=${GITHUB_REF_NAME#v}
-          gui=$PWD/dist/wineo-$version-x86_64-linux/usr/bin/wineo-gui
-          home=$(mktemp -d)
-          mkdir -p "$home"/{config,data,state,cache,run}
-          chmod 700 "$home/run"
-          log=$home/gui.log
-          unset DISPLAY WAYLAND_DISPLAY XAUTHORITY DBUS_SESSION_BUS_ADDRESS
-          export HOME=$home XDG_CONFIG_HOME=$home/config XDG_DATA_HOME=$home/data \
-            XDG_STATE_HOME=$home/state XDG_CACHE_HOME=$home/cache \
-            XDG_RUNTIME_DIR=$home/run ICED_BACKEND=tiny-skia
-          set +e
-          xvfb-run -a -s '-screen 0 1280x800x24' timeout 10 "$gui" >"$log" 2>&1
-          status=$?
-          set -e
-          cat "$log"
-          if [[ $status -ne 124 ]]; then
-            echo "::error::wineo-gui exited with status $status instead of staying up"
-            exit 1
-          fi
-          if grep -qi 'panic' "$log"; then
-            echo "::error::wineo-gui panicked"
-            exit 1
-          fi
+          scripts/check-gui-starts.sh "$PWD/dist/wineo-$version-x86_64-linux/usr/bin/wineo-gui"
 
       # Installs the way a user would, into a prefix that isn't on any PATH,
       # then removes it again. Uninstall must leave no file behind.
@@ -249,6 +225,7 @@ jobs:
           dir=$PWD/dist/wineo-$version-x86_64-linux
           prefix=$(mktemp -d)/prefix
           "$dir/install.sh" "$prefix"
+          scripts/check-installed.sh "$prefix" "$prefix/share/licenses/wineo"
           out=$("$prefix/bin/wineo" --version)
           echo "$out"
           grep -qF "$version" <<<"$out"
@@ -266,8 +243,210 @@ jobs:
             exit 1
           fi
 
+  # The deb in fresh Ubuntu and Debian images. The package goes in alone
+  # first, with no recommends, so its Depends are what pulls the libraries;
+  # Xvfb comes after so it can't hide a missing one from the version check.
+  verify-deb:
+    needs: build
+    runs-on: ubuntu-latest
+    container: ${{ matrix.image }}
+    strategy:
+      fail-fast: false
+      matrix:
+        image: ['ubuntu:22.04', 'debian:12']
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: release-packages
+          path: dist
+
+      # Ubuntu's minimal images tell dpkg to skip /usr/share/man and
+      # /usr/share/doc, which would hide missing man pages and copyright.
+      - name: Install the deb
+        run: |
+          version=${GITHUB_REF_NAME#v}
+          rm -f /etc/dpkg/dpkg.cfg.d/excludes
+          apt-get update
+          DEBIAN_FRONTEND=noninteractive apt-get install --no-install-recommends -y \
+            "./dist/wineo_${version}_amd64.deb"
+
+      - name: wineo --version runs
+        run: |
+          version=${GITHUB_REF_NAME#v}
+          out=$(wineo --version)
+          echo "$out"
+          grep -qF "$version" <<<"$out"
+
+      - name: Install Xvfb
+        run: |
+          DEBIAN_FRONTEND=noninteractive apt-get install --no-install-recommends -y \
+            xvfb xauth
+
+      - name: wineo-gui starts under Xvfb
+        run: scripts/check-gui-starts.sh /usr/bin/wineo-gui
+
+      - name: Files are at their installed paths
+        run: |
+          scripts/check-installed.sh /usr /usr/share/doc/wineo
+          test -f /usr/share/doc/wineo/copyright
+
+      - name: Removal leaves no files behind
+        run: |
+          dpkg -L wineo | while read -r path; do
+            if [[ -f $path || -L $path ]]; then echo "$path"; fi
+          done > files.txt
+          echo "$(wc -l < files.txt) installed files"
+          if [[ ! -s files.txt ]]; then
+            echo "::error::dpkg lists no files for wineo"
+            exit 1
+          fi
+          apt-get remove -y wineo
+          left=$(while read -r path; do
+            if [[ -e $path || -L $path ]]; then echo "$path"; fi
+          done < files.txt)
+          if [[ -n $left ]]; then
+            echo "::error::removal left files behind:"
+            echo "$left"
+            exit 1
+          fi
+
+  # The rpm in a fresh Fedora image, the same way: weak dependencies off and
+  # the package alone first, Xvfb after.
+  verify-rpm:
+    needs: build
+    runs-on: ubuntu-latest
+    container: fedora:latest
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: release-packages
+          path: dist
+
+      - name: Install the rpm
+        run: |
+          version=${GITHUB_REF_NAME#v}
+          dnf install -y --setopt=install_weak_deps=False \
+            "./dist/wineo-${version}-1.x86_64.rpm"
+
+      - name: wineo --version runs
+        run: |
+          version=${GITHUB_REF_NAME#v}
+          out=$(wineo --version)
+          echo "$out"
+          grep -qF "$version" <<<"$out"
+
+      - name: Install Xvfb
+        run: dnf install -y --setopt=install_weak_deps=False xorg-x11-server-Xvfb xauth
+
+      - name: wineo-gui starts under Xvfb
+        run: scripts/check-gui-starts.sh /usr/bin/wineo-gui
+
+      - name: Files are at their installed paths
+        run: scripts/check-installed.sh /usr /usr/share/licenses/wineo
+
+      - name: Removal leaves no files behind
+        run: |
+          rpm -ql wineo | while read -r path; do
+            if [[ -f $path || -L $path ]]; then echo "$path"; fi
+          done > files.txt
+          echo "$(wc -l < files.txt) installed files"
+          if [[ ! -s files.txt ]]; then
+            echo "::error::rpm lists no files for wineo"
+            exit 1
+          fi
+          dnf remove -y wineo
+          left=$(while read -r path; do
+            if [[ -e $path || -L $path ]]; then echo "$path"; fi
+          done < files.txt)
+          if [[ -n $left ]]; then
+            echo "::error::removal left files behind:"
+            echo "$left"
+            exit 1
+          fi
+
+  # Systems older than glibc 2.35 must refuse the packages. Each check wants
+  # the refusal to name the glibc requirement, so a missing graphics library
+  # can't make it pass for the wrong reason. focal (glibc 2.31) is past
+  # standard support but its archive still resolves.
+  verify-deb-refusal:
+    needs: build
+    runs-on: ubuntu-latest
+    container: ubuntu:20.04
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: release-packages
+          path: dist
+
+      - name: apt refuses the deb over glibc
+        run: |
+          version=${GITHUB_REF_NAME#v}
+          apt-get update
+          if out=$(DEBIAN_FRONTEND=noninteractive apt-get install --no-install-recommends -y \
+            "./dist/wineo_${version}_amd64.deb" 2>&1); then
+            echo "$out"
+            echo "::error::apt installed the deb on a system with glibc 2.31"
+            exit 1
+          fi
+          echo "$out"
+          if ! grep -qF 'libc6 (>= 2.35)' <<<"$out"; then
+            echo "::error::apt refused the deb, but not over libc6 (>= 2.35)"
+            exit 1
+          fi
+
+  # Rocky Linux 9 ships glibc 2.34. rockylinux/rockylinux is the image Rocky
+  # publishes itself; the Docker official rockylinux image has gone stale.
+  verify-rpm-refusal:
+    needs: build
+    runs-on: ubuntu-latest
+    container: rockylinux/rockylinux:9
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: release-packages
+          path: dist
+
+      - name: rpm refuses the rpm over glibc
+        run: |
+          version=${GITHUB_REF_NAME#v}
+          if out=$(rpm -i --test "./dist/wineo-${version}-1.x86_64.rpm" 2>&1); then
+            echo "$out"
+            echo "::error::rpm accepted the package on a system with glibc 2.34"
+            exit 1
+          fi
+          echo "$out"
+          if ! grep -qF 'glibc >= 2.35' <<<"$out"; then
+            echo "::error::rpm refused the package, but not over glibc >= 2.35"
+            exit 1
+          fi
+
   publish:
-    needs: verify
+    needs:
+      - verify
+      - verify-deb
+      - verify-rpm
+      - verify-deb-refusal
+      - verify-rpm-refusal
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -280,16 +459,37 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: release-*
+          merge-multiple: true
+          path: dist
+
+      # First, so no Release is built from files that changed after the
+      # build wrote their checksums. The listing must also name all four
+      # assets, or one of them would go out unchecked.
+      - name: Check the checksums
+        run: |
+          version=${GITHUB_REF_NAME#v}
+          cd dist
+          sha256sum -c SHA256SUMS
+          listed=$(awk '{print $2}' SHA256SUMS | sort)
+          expected=$(printf '%s\n' \
+            "wineo-$version-x86_64-linux.tar.gz" \
+            "wineo_${version}_amd64.deb" \
+            "wineo-${version}-1.x86_64.rpm" \
+            "wineo-$version-vendored.tar.xz" | sort)
+          if [[ $listed != "$expected" ]]; then
+            echo "::error::SHA256SUMS does not list exactly the four assets:"
+            echo "$listed"
+            exit 1
+          fi
+
       - name: Fetch the tag object
         run: |
           git fetch --force \
             "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" \
             "+${GITHUB_REF}:${GITHUB_REF}"
-
-      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
-        with:
-          name: release-tarball
-          path: dist
 
       - name: Write the release notes
         run: |
@@ -299,6 +499,9 @@ jobs:
             echo "::error::the CHANGELOG.md section for $version is empty"
             exit 1
           fi
+          # Assigned first so a failing script stops the step.
+          ubuntu=$(scripts/readme-runtime-packages.sh | tr '\n' ' ')
+          fedora=$(scripts/readme-runtime-packages.sh --list fedora | tr '\n' ' ')
           {
             echo
             echo '## Runtime packages'
@@ -306,8 +509,16 @@ jobs:
             echo 'On Ubuntu 22.04 or newer, install:'
             echo
             echo '```'
-            echo "sudo apt install $(scripts/readme-runtime-packages.sh | tr '\n' ' ')"
+            echo "sudo apt install $ubuntu"
             echo '```'
+            echo
+            echo 'On Fedora, install:'
+            echo
+            echo '```'
+            echo "sudo dnf install $fedora"
+            echo '```'
+            echo
+            echo 'The deb and rpm install these automatically.'
           } >> notes.md
 
       # Last on purpose: a rerun can come long after the checks passed, and
@@ -323,4 +534,8 @@ jobs:
             --verify-tag \
             --title "Wineo $version" \
             --notes-file notes.md \
-            "dist/wineo-$version-x86_64-linux.tar.gz"
+            "dist/wineo-$version-x86_64-linux.tar.gz" \
+            "dist/wineo_${version}_amd64.deb" \
+            "dist/wineo-${version}-1.x86_64.rpm" \
+            "dist/wineo-$version-vendored.tar.xz" \
+            dist/SHA256SUMS
