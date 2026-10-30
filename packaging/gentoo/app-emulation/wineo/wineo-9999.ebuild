@@ -6,7 +6,7 @@ EAPI=8
 # Keep in step with scripts/rust-floor.sh.
 RUST_MIN_VER="1.90.0"
 
-inherit cargo desktop git-r3 xdg
+inherit cargo git-r3 xdg
 
 DESCRIPTION="Launcher for Wine and Proton programs, native games, Steam, and GOG"
 HOMEPAGE="https://github.com/MeandrousShark/wineo"

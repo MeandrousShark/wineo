@@ -71,9 +71,9 @@ trap cleanup EXIT
 # so that editing the live ebuild can't silently break this.
 # shellcheck disable=SC2016
 awk '
-    /^inherit cargo desktop git-r3 xdg$/ {
+    /^inherit cargo git-r3 xdg$/ {
         print "CRATES=\"\"\n"
-        print "inherit cargo desktop xdg"
+        print "inherit cargo xdg"
         found["inherit"] = 1
         next
     }
@@ -139,12 +139,15 @@ if [[ $skip_crates -eq 0 ]]; then
     fi
     mkdir -p "$distdir"
 
-    # Without -M it would call pkgdev, which only exists on Gentoo. Run from
-    # the temp dir so nothing is read from or written to the current one.
+    # It refuses a workspace root, so it gets the two members that are
+    # built; they share the root's Cargo.lock. Without -M it would call
+    # pkgdev, which only exists on Gentoo. Run from the temp dir so nothing
+    # is read from or written to the current one.
     (
         cd "$tmp"
-        "$pycargoebuild" --no-config -M -i wineo.ebuild \
-            -d "$distdir" -l "$tmp/license-mapping.conf" "$root"
+        "$pycargoebuild" --no-config -C -M -i wineo.ebuild \
+            -d "$distdir" -l "$tmp/license-mapping.conf" \
+            "$root/crates/wineo-cli" "$root/crates/wineo-gui"
     )
 fi
 

@@ -145,7 +145,7 @@ done
 
 live=$package_dir/wineo-9999.ebuild
 release=$tmp/release/wineo-$version.ebuild
-if [[ -f $live ]] && grep -qx 'inherit cargo desktop git-r3 xdg' "$live" &&
+if [[ -f $live ]] && grep -qx 'inherit cargo git-r3 xdg' "$live" &&
     grep -qx 'EGIT_REPO_URI="https://github.com/MeandrousShark/wineo.git"' "$live" &&
     grep -q 'cargo_live_src_unpack' "$live"; then
     pass
@@ -154,7 +154,7 @@ else
 fi
 
 # shellcheck disable=SC2016
-if [[ -f $release ]] && grep -qx 'inherit cargo desktop xdg' "$release" &&
+if [[ -f $release ]] && grep -qx 'inherit cargo xdg' "$release" &&
     grep -qF 'wineo/archive/refs/tags/v${PV}.tar.gz' "$release" &&
     grep -qx 'KEYWORDS="~amd64"' "$release" &&
     ! grep -q 'git-r3\|EGIT_' "$release"; then
