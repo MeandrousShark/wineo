@@ -84,3 +84,8 @@ jobs:
           sudo apt-get install --no-install-recommends -y rpm
           scripts/fetch-nfpm.sh "$RUNNER_TEMP/nfpm"
           NFPM=$RUNNER_TEMP/nfpm/nfpm scripts/test-packages.sh
+
+      # cargo comes with the runner. The vendoring tests skip themselves, and
+      # say so, if it is ever missing.
+      - name: Vendored source and checksum tests
+        run: scripts/test-vendored.sh
