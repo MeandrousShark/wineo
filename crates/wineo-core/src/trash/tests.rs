@@ -135,6 +135,12 @@ fn mount_id_drift_without_birth_time_fails_closed() {
         birth: None,
         fsid: Some(3),
     };
+    assert!(saved.matches(saved));
+    assert!(!saved.matches(Identity { inode: 10, ..saved }));
+    assert!(!saved.matches(Identity {
+        birth: Some((1, 0)),
+        ..saved
+    }));
     assert!(!saved.matches(Identity {
         mount: Some(2),
         ..saved

@@ -183,12 +183,6 @@ fn restore_locked_noting(
             let expected = manifest
                 .prefix_identity
                 .ok_or_else(|| anyhow!("missing prefix identity"))?;
-            if expected.birth.is_none() {
-                bail!(
-                    "retained prefix identity cannot be established at {}",
-                    original.display()
-                );
-            }
             require(&original, expected)?;
         }
         for payload in &manifest.payloads {
@@ -212,12 +206,6 @@ fn restore_locked_noting(
     if !rollback && manifest.prefix_present == Some(true) && !manifest.include_prefix {
         let prefix = resolved(paths, manifest.prefix_reference.as_deref().unwrap())?;
         let expected = manifest.prefix_identity.unwrap();
-        if expected.birth.is_none() {
-            bail!(
-                "retained prefix identity cannot be established at {}",
-                prefix.display()
-            );
-        }
         require(&prefix, expected)?;
     }
     // Recovery must finish even when build discovery is unavailable. The
