@@ -211,7 +211,7 @@ case $kind in
         install_cmd='
             sed -i "/^tsflags/d" /etc/dnf/dnf.conf
             dnf -y install --setopt=install_weak_deps=False /out/wineo-[0-9]*.x86_64.rpm
-            rpm -qi wineo | grep -E "^(Version|Release|License):"
+            rpm -qi wineo | grep -E "^(Version|Release|License) *:"
             rpm -qR wineo | sort
         '
         xvfb_cmd='dnf -y install --setopt=install_weak_deps=False xorg-x11-server-Xvfb xauth'
@@ -224,7 +224,7 @@ case $kind in
             sed -i "/^rpm.install.excludedocs/d" /etc/zypp/zypp.conf
             zypper --non-interactive --gpg-auto-import-keys refresh
             zypper --non-interactive install --no-recommends --allow-unsigned-rpm /out/wineo-[0-9]*.x86_64.rpm
-            rpm -qi wineo | grep -E "^(Version|Release|License):"
+            rpm -qi wineo | grep -E "^(Version|Release|License) *:"
             rpm -qR wineo | sort
         '
         xvfb_cmd='zypper --non-interactive install --no-recommends xorg-x11-server-Xvfb xvfb-run xauth'
