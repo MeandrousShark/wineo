@@ -125,8 +125,18 @@ nice -n 15 podman run --rm --cpus "$cpus" \
     -v "$workdir/tree:/var/db/repos/gentoo" \
     -v "$root/scripts:/scripts:ro" "$image" bash -euo pipefail -c '
     bash /setup.sh
-    emerge --verbose --usepkgonly "=app-emulation/wineo-$VERSION"
+    # Not --usepkgonly: that also forbids the binhost builds of other
+    # packages whose USE flags differ here, which breaks dependency solving.
+    emerge --verbose "=app-emulation/wineo-$VERSION"
+    # Only a package installed from a binary package has this file.
+    [[ -e /var/db/pkg/app-emulation/wineo-$VERSION/BINPKGMD5 ]]
     wineo --version
+    # What wineo-gui dlopens, checked before Xvfb and its Mesa can supply any.
+    for lib in libX11-xcb.so.1 libxcb.so.1 libxkbcommon.so.0 libxkbcommon-x11.so.0 \
+        libXcursor.so.1 libXi.so.6 libwayland-client.so.0 libwayland-egl.so.1 \
+        libEGL.so.1 libvulkan.so.1; do
+        ldconfig -p | grep -qF "$lib (" || { echo "missing library: $lib"; exit 1; }
+    done
     emerge --quiet x11-misc/xvfb-run x11-apps/xauth
     /scripts/check-gui-starts.sh /usr/bin/wineo-gui
     /scripts/check-installed.sh /usr "/usr/share/doc/wineo-$VERSION"
