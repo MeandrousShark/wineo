@@ -114,22 +114,23 @@ expect_success "default run"
 check_listing "default license dir" "$tmp/dest1" /usr/share/licenses/wineo
 
 # Every copied file matches its own source, so two installs can't swap.
-while read -r src dst; do
+# Fields split on | so paths with spaces stay whole.
+while IFS='|' read -r src dst; do
     if cmp -s "$src" "$tmp/dest1/$dst"; then
         pass
     else
         fail "$dst differs from $src"
     fi
 done <<EOF
-$tmp/bin/wineo usr/bin/wineo
-$tmp/bin/wineo-gui usr/bin/wineo-gui
-$root/LICENSE usr/share/licenses/wineo/LICENSE
-$root/crates/wineo-gui/THIRD_PARTY.md usr/share/licenses/wineo/THIRD_PARTY.md
-$root/crates/wineo-gui/assets/wineo-gui.desktop usr/share/applications/wineo-gui.desktop
-$root/crates/wineo-gui/assets/wineo-gui.svg usr/share/icons/hicolor/scalable/apps/wineo-gui.svg
-$root/docs/environment.toml.example usr/share/doc/wineo/environment.toml.example
-$root/docs/native-environment.toml.example usr/share/doc/wineo/native-environment.toml.example
-$root/docs/proxied-environment.toml.example usr/share/doc/wineo/proxied-environment.toml.example
+$tmp/bin/wineo|usr/bin/wineo
+$tmp/bin/wineo-gui|usr/bin/wineo-gui
+$root/LICENSE|usr/share/licenses/wineo/LICENSE
+$root/crates/wineo-gui/THIRD_PARTY.md|usr/share/licenses/wineo/THIRD_PARTY.md
+$root/crates/wineo-gui/assets/wineo-gui.desktop|usr/share/applications/wineo-gui.desktop
+$root/crates/wineo-gui/assets/wineo-gui.svg|usr/share/icons/hicolor/scalable/apps/wineo-gui.svg
+$root/docs/environment.toml.example|usr/share/doc/wineo/environment.toml.example
+$root/docs/native-environment.toml.example|usr/share/doc/wineo/native-environment.toml.example
+$root/docs/proxied-environment.toml.example|usr/share/doc/wineo/proxied-environment.toml.example
 EOF
 if [[ $(cat "$tmp/dest1/usr/share/zsh/site-functions/_wineo") == "fake completions for zsh" &&
     $(cat "$tmp/dest1/usr/share/fish/vendor_completions.d/wineo.fish") == "fake completions for fish" &&
