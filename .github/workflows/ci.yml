@@ -65,10 +65,13 @@ jobs:
           persist-credentials: false
 
       - name: Shellcheck
-        run: shellcheck scripts/*.sh
+        run: shellcheck scripts/*.sh packaging/tarball/*.sh
 
       - name: Release guard tests
         run: scripts/test-release-guard.sh
 
       - name: Stage install tests
         run: scripts/test-stage-install.sh
+
+      - name: Tarball tests
+        run: scripts/test-tarball.sh

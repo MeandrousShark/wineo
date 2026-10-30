@@ -78,12 +78,7 @@ jobs:
       - name: Pack
         run: |
           version=${GITHUB_REF_NAME#v}
-          name=wineo-$version-x86_64-linux
-          mkdir -p "dist/$name"
-          cp target/release/wineo target/release/wineo-gui "dist/$name/"
-          cp LICENSE README.md crates/wineo-gui/THIRD_PARTY.md "dist/$name/"
-          tar -C dist --sort=name --owner=0 --group=0 --numeric-owner \
-            -czf "dist/$name.tar.gz" "$name"
+          scripts/pack-tarball.sh "$version" target/release dist
 
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
@@ -132,7 +127,7 @@ jobs:
         run: |
           version=${GITHUB_REF_NAME#v}
           for bin in wineo wineo-gui; do
-            out=$(ldd "dist/wineo-$version-x86_64-linux/$bin")
+            out=$(ldd "dist/wineo-$version-x86_64-linux/usr/bin/$bin")
             echo "$out"
             if grep -q 'not found' <<<"$out"; then
               echo "::error::$bin links a library that is not installed"
@@ -145,7 +140,7 @@ jobs:
           version=${GITHUB_REF_NAME#v}
           highest=$(
             for bin in wineo wineo-gui; do
-              objdump -T "dist/wineo-$version-x86_64-linux/$bin"
+              objdump -T "dist/wineo-$version-x86_64-linux/usr/bin/$bin"
             done | grep -o 'GLIBC_[0-9][0-9.]*' | sed 's/^GLIBC_//' | sort -Vu | tail -n 1
           )
           echo "highest glibc symbol version: ${highest:-none}"
@@ -157,7 +152,7 @@ jobs:
       - name: wineo --version runs
         run: |
           version=${GITHUB_REF_NAME#v}
-          out=$("dist/wineo-$version-x86_64-linux/wineo" --version)
+          out=$("dist/wineo-$version-x86_64-linux/usr/bin/wineo" --version)
           echo "$out"
           grep -qF "$version" <<<"$out"
 
@@ -170,7 +165,7 @@ jobs:
       - name: wineo-gui starts under Xvfb
         run: |
           version=${GITHUB_REF_NAME#v}
-          gui=$PWD/dist/wineo-$version-x86_64-linux/wineo-gui
+          gui=$PWD/dist/wineo-$version-x86_64-linux/usr/bin/wineo-gui
           home=$(mktemp -d)
           mkdir -p "$home"/{config,data,state,cache,run}
           chmod 700 "$home/run"
@@ -190,6 +185,31 @@ jobs:
           fi
           if grep -qi 'panic' "$log"; then
             echo "::error::wineo-gui panicked"
+            exit 1
+          fi
+
+      # Installs the way a user would, into a prefix that isn't on any PATH,
+      # then removes it again. Uninstall must leave no file behind.
+      - name: install.sh installs and uninstalls
+        run: |
+          version=${GITHUB_REF_NAME#v}
+          dir=$PWD/dist/wineo-$version-x86_64-linux
+          prefix=$(mktemp -d)/prefix
+          "$dir/install.sh" "$prefix"
+          out=$("$prefix/bin/wineo" --version)
+          echo "$out"
+          grep -qF "$version" <<<"$out"
+          exec_line=$(grep '^Exec=' "$prefix/share/applications/wineo-gui.desktop")
+          echo "$exec_line"
+          if [[ $exec_line != "Exec=$prefix/bin/wineo-gui" ]]; then
+            echo "::error::the desktop entry's Exec is not the absolute path"
+            exit 1
+          fi
+          "$dir/install.sh" --uninstall "$prefix"
+          left=$(find "$prefix" -type f)
+          if [[ -n $left ]]; then
+            echo "::error::uninstall left files behind:"
+            echo "$left"
             exit 1
           fi
 
