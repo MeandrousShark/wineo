@@ -3,10 +3,14 @@ name: Release
 # Tag filters are globs, so v* only narrows things down. The real check is
 # scripts/release-guard.sh, which runs in the guard job and again right
 # before publish creates the Release.
+#
+# A manual run is a dry run: check, build, and every verify job on the chosen
+# ref, with the Cargo.toml version, and never publish.
 on:
   push:
     tags:
       - 'v*'
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -30,12 +34,16 @@ jobs:
       # that points at the same commit, which would fail the guard's
       # annotated check on every run. Fetch the real tag object again.
       - name: Fetch the tag object
+        if: github.event_name == 'push'
         run: |
           git fetch --force \
             "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" \
             "+${GITHUB_REF}:${GITHUB_REF}"
 
+      # Only the steps are skipped on a dry run: a skipped job would skip
+      # everything that needs it, however far down the chain.
       - name: Release guard
+        if: github.event_name == 'push'
         run: scripts/release-guard.sh
 
   check:
@@ -48,6 +56,8 @@ jobs:
     # Built on Ubuntu 22.04 (glibc 2.35) so the binaries run there and on
     # anything newer, whatever label GitHub's runners carry later.
     container: ubuntu:22.04
+    outputs:
+      version: ${{ steps.version.outputs.version }}
     defaults:
       run:
         shell: bash
@@ -67,6 +77,26 @@ jobs:
         with:
           persist-credentials: false
 
+      # A dry run has no tag, so it uses the version the binaries will report.
+      - name: Set the version
+        id: version
+        run: |
+          if [[ $GITHUB_EVENT_NAME == push ]]; then
+            version=${GITHUB_REF_NAME#v}
+          else
+            version=$(awk -F '"' '
+              /^\[workspace\.package\]$/ { in_workspace = 1; next }
+              /^\[/ { in_workspace = 0 }
+              in_workspace && /^version = / { print $2; exit }
+            ' Cargo.toml)
+          fi
+          if [[ -z $version ]]; then
+            echo "::error::no version found"
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "VERSION=$version" >> "$GITHUB_ENV"
+
       - name: Install Rust
         run: |
           curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs |
@@ -78,8 +108,7 @@ jobs:
 
       - name: Pack
         run: |
-          version=${GITHUB_REF_NAME#v}
-          scripts/pack-tarball.sh "$version" target/release dist
+          scripts/pack-tarball.sh "$VERSION" target/release dist
 
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
@@ -90,9 +119,8 @@ jobs:
       # nfpm is pinned and checked against its SHA-256 in fetch-nfpm.sh.
       - name: Pack the deb and rpm
         run: |
-          version=${GITHUB_REF_NAME#v}
           scripts/fetch-nfpm.sh "$RUNNER_TEMP/nfpm"
-          NFPM=$RUNNER_TEMP/nfpm/nfpm scripts/pack-packages.sh "$version" target/release dist
+          NFPM=$RUNNER_TEMP/nfpm/nfpm scripts/pack-packages.sh "$VERSION" target/release dist
 
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
@@ -107,19 +135,17 @@ jobs:
       # default shallow checkout already has the commit being built.
       - name: Pack the vendored source
         run: |
-          version=${GITHUB_REF_NAME#v}
           git config --global --add safe.directory "$GITHUB_WORKSPACE"
-          scripts/pack-vendored.sh "$version" "$GITHUB_SHA" dist
+          scripts/pack-vendored.sh "$VERSION" "$GITHUB_SHA" dist
 
       # An empty CARGO_HOME, so the metadata can only resolve from the
       # vendored sources.
       - name: Check the vendored source is complete
         run: |
-          version=${GITHUB_REF_NAME#v}
           check=$(mktemp -d)
           mkdir "$check/cargo-home"
-          tar -xJf "dist/wineo-$version-vendored.tar.xz" -C "$check"
-          cd "$check/wineo-$version"
+          tar -xJf "dist/wineo-$VERSION-vendored.tar.xz" -C "$check"
+          cd "$check/wineo-$VERSION"
           CARGO_HOME=$check/cargo-home cargo metadata --format-version 1 --frozen >/dev/null
           cd "$GITHUB_WORKSPACE"
           rm -rf "${check:?}"
@@ -145,6 +171,8 @@ jobs:
     # A fresh image with only the documented runtime packages, so a library
     # the build machine had but a user won't is caught here.
     container: ubuntu:22.04
+    env:
+      VERSION: ${{ needs.build.outputs.version }}
     defaults:
       run:
         shell: bash
@@ -173,14 +201,12 @@ jobs:
 
       - name: Unpack
         run: |
-          version=${GITHUB_REF_NAME#v}
-          tar -xzf "dist/wineo-$version-x86_64-linux.tar.gz" -C dist
+          tar -xzf "dist/wineo-$VERSION-x86_64-linux.tar.gz" -C dist
 
       - name: Linked libraries are all found
         run: |
-          version=${GITHUB_REF_NAME#v}
           for bin in wineo wineo-gui; do
-            out=$(ldd "dist/wineo-$version-x86_64-linux/usr/bin/$bin")
+            out=$(ldd "dist/wineo-$VERSION-x86_64-linux/usr/bin/$bin")
             echo "$out"
             if grep -q 'not found' <<<"$out"; then
               echo "::error::$bin links a library that is not installed"
@@ -190,10 +216,9 @@ jobs:
 
       - name: No glibc newer than 2.35
         run: |
-          version=${GITHUB_REF_NAME#v}
           highest=$(
             for bin in wineo wineo-gui; do
-              objdump -T "dist/wineo-$version-x86_64-linux/usr/bin/$bin"
+              objdump -T "dist/wineo-$VERSION-x86_64-linux/usr/bin/$bin"
             done | grep -o 'GLIBC_[0-9][0-9.]*' | sed 's/^GLIBC_//' | sort -Vu | tail -n 1
           )
           echo "highest glibc symbol version: ${highest:-none}"
@@ -204,12 +229,11 @@ jobs:
 
       - name: wineo --version runs
         run: |
-          version=${GITHUB_REF_NAME#v}
-          out=$("dist/wineo-$version-x86_64-linux/usr/bin/wineo" --version)
+          out=$("dist/wineo-$VERSION-x86_64-linux/usr/bin/wineo" --version)
           echo "$out"
           # The whole line, so 1.1.01 can't pass for 1.1.0.
-          if [[ $out != "wineo $version" ]]; then
-            echo "::error::expected 'wineo $version', got '$out'"
+          if [[ $out != "wineo $VERSION" ]]; then
+            echo "::error::expected 'wineo $VERSION', got '$out'"
             exit 1
           fi
 
@@ -218,23 +242,21 @@ jobs:
       # seconds.
       - name: wineo-gui starts under Xvfb
         run: |
-          version=${GITHUB_REF_NAME#v}
-          scripts/check-gui-starts.sh "$PWD/dist/wineo-$version-x86_64-linux/usr/bin/wineo-gui"
+          scripts/check-gui-starts.sh "$PWD/dist/wineo-$VERSION-x86_64-linux/usr/bin/wineo-gui"
 
       # Installs the way a user would, into a prefix that isn't on any PATH,
       # then removes it again. Uninstall must leave no file behind.
       - name: install.sh installs and uninstalls
         run: |
-          version=${GITHUB_REF_NAME#v}
-          dir=$PWD/dist/wineo-$version-x86_64-linux
+          dir=$PWD/dist/wineo-$VERSION-x86_64-linux
           prefix=$(mktemp -d)/prefix
           "$dir/install.sh" "$prefix"
           scripts/check-installed.sh "$prefix" "$prefix/share/licenses/wineo"
           out=$("$prefix/bin/wineo" --version)
           echo "$out"
           # The whole line, so 1.1.01 can't pass for 1.1.0.
-          if [[ $out != "wineo $version" ]]; then
-            echo "::error::expected 'wineo $version', got '$out'"
+          if [[ $out != "wineo $VERSION" ]]; then
+            echo "::error::expected 'wineo $VERSION', got '$out'"
             exit 1
           fi
           exec_line=$(grep '^Exec=' "$prefix/share/applications/wineo-gui.desktop")
@@ -258,6 +280,8 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     container: ${{ matrix.image }}
+    env:
+      VERSION: ${{ needs.build.outputs.version }}
     strategy:
       fail-fast: false
       matrix:
@@ -279,20 +303,18 @@ jobs:
       # /usr/share/doc, which would hide missing man pages and copyright.
       - name: Install the deb
         run: |
-          version=${GITHUB_REF_NAME#v}
           rm -f /etc/dpkg/dpkg.cfg.d/excludes
           apt-get update
           DEBIAN_FRONTEND=noninteractive apt-get install --no-install-recommends -y \
-            "./dist/wineo_${version}_amd64.deb"
+            "./dist/wineo_${VERSION}_amd64.deb"
 
       - name: wineo --version runs
         run: |
-          version=${GITHUB_REF_NAME#v}
           out=$(wineo --version)
           echo "$out"
           # The whole line, so 1.1.01 can't pass for 1.1.0.
-          if [[ $out != "wineo $version" ]]; then
-            echo "::error::expected 'wineo $version', got '$out'"
+          if [[ $out != "wineo $VERSION" ]]; then
+            echo "::error::expected 'wineo $VERSION', got '$out'"
             exit 1
           fi
 
@@ -335,6 +357,8 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     container: fedora:latest
+    env:
+      VERSION: ${{ needs.build.outputs.version }}
     defaults:
       run:
         shell: bash
@@ -350,18 +374,16 @@ jobs:
 
       - name: Install the rpm
         run: |
-          version=${GITHUB_REF_NAME#v}
           dnf install -y --setopt=install_weak_deps=False \
-            "./dist/wineo-${version}-1.x86_64.rpm"
+            "./dist/wineo-${VERSION}-1.x86_64.rpm"
 
       - name: wineo --version runs
         run: |
-          version=${GITHUB_REF_NAME#v}
           out=$(wineo --version)
           echo "$out"
           # The whole line, so 1.1.01 can't pass for 1.1.0.
-          if [[ $out != "wineo $version" ]]; then
-            echo "::error::expected 'wineo $version', got '$out'"
+          if [[ $out != "wineo $VERSION" ]]; then
+            echo "::error::expected 'wineo $VERSION', got '$out'"
             exit 1
           fi
 
@@ -402,6 +424,8 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     container: ubuntu:20.04
+    env:
+      VERSION: ${{ needs.build.outputs.version }}
     defaults:
       run:
         shell: bash
@@ -413,10 +437,9 @@ jobs:
 
       - name: apt refuses the deb over glibc
         run: |
-          version=${GITHUB_REF_NAME#v}
           apt-get update
           if out=$(DEBIAN_FRONTEND=noninteractive apt-get install --no-install-recommends -y \
-            "./dist/wineo_${version}_amd64.deb" 2>&1); then
+            "./dist/wineo_${VERSION}_amd64.deb" 2>&1); then
             echo "$out"
             echo "::error::apt installed the deb on a system with glibc 2.31"
             exit 1
@@ -433,6 +456,8 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     container: rockylinux/rockylinux:9
+    env:
+      VERSION: ${{ needs.build.outputs.version }}
     defaults:
       run:
         shell: bash
@@ -444,8 +469,7 @@ jobs:
 
       - name: rpm refuses the rpm over glibc
         run: |
-          version=${GITHUB_REF_NAME#v}
-          if out=$(rpm -i --test "./dist/wineo-${version}-1.x86_64.rpm" 2>&1); then
+          if out=$(rpm -i --test "./dist/wineo-${VERSION}-1.x86_64.rpm" 2>&1); then
             echo "$out"
             echo "::error::rpm accepted the package on a system with glibc 2.34"
             exit 1
@@ -457,6 +481,7 @@ jobs:
           fi
 
   publish:
+    if: github.event_name == 'push'
     needs:
       - verify
       - verify-deb
