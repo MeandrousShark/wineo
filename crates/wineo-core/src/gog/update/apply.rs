@@ -532,9 +532,6 @@ pub fn plan(
             Platform::Linux => super::galaxy::GalaxyError::NotWindows.into(),
         });
     }
-    if committed.platform == Platform::Windows {
-        windows::check_graphical()?;
-    }
     let session = session.ok_or(AccountError::LoggedOut)?;
     // A moving game is judged as the installer track would find it, so
     // newly owned DLC is installed and failed or unavailable DLC retried
@@ -628,6 +625,9 @@ pub fn plan(
                 warnings: resolved.warnings,
             });
         }
+        // Its installers run in the prefix. Asked only now, so an answer
+        // that runs nothing comes without a desktop.
+        windows::check_graphical()?;
     }
     let kind = if options.reinstall {
         JournalKind::Reinstall

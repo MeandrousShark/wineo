@@ -537,9 +537,6 @@ pub fn plan(
         } else {
             Platform::Linux
         });
-    if platform == Platform::Windows {
-        windows::check_graphical()?;
-    }
     let shown = os_name(platform);
     let mut products = Vec::new();
     let mut files = Vec::new();
@@ -620,6 +617,12 @@ pub fn plan(
         }
     }
 
+    let creation = creation(paths, request, platform, exists)?;
+    // Its installers run in the prefix. Asked only now, so an answer that
+    // runs nothing, like no installer, comes without a desktop.
+    if platform == Platform::Windows {
+        windows::check_graphical()?;
+    }
     Ok(Plan {
         environment: name.to_owned(),
         gog_id: request.gog_id,
@@ -637,7 +640,7 @@ pub fn plan(
         seen,
         warnings,
         platform,
-        creation: creation(paths, request, platform, exists)?,
+        creation,
         wizard: request.wizard && platform == Platform::Windows,
         language_name,
     })

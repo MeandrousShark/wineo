@@ -912,6 +912,57 @@ fn all_skips_windows_games_without_a_graphical_session() {
     assert_eq!(read(&folder, "Data/core.txt"), format!("core {V2}"));
 }
 
+/// `wineo update` with `args`, with no graphical session.
+fn headless(f: &Fixture, api: &GogApi, args: &[&str]) -> std::process::Output {
+    gog_api::checked(
+        f.gog_command(api)
+            .args(args)
+            .env_remove("DISPLAY")
+            .env_remove("WAYLAND_DISPLAY")
+            .output()
+            .unwrap(),
+    )
+}
+
+#[test]
+fn an_up_to_date_windows_game_says_so_without_a_graphical_session() {
+    let (f, api, _) = world();
+    f.windows_game_with_update(&api);
+    api.with(|config| {
+        config.products.insert(
+            common::gog_world::DISCO,
+            product(
+                common::gog_world::DISCO,
+                "Disco Elysium",
+                &[gog_api::installer("windows", "en-US", "1")],
+                &[],
+            ),
+        );
+    });
+    let out = headless(&f, &api, &["update", "disco", "--yes"]);
+    assert_success(&out);
+    assert_eq!(stdout(&out), "Up to date.\n");
+}
+
+#[test]
+fn a_windows_update_needs_a_graphical_session_before_it_downloads() {
+    let (f, api, _) = world();
+    f.windows_game_with_update(&api);
+    // Planning caches GOG's product details, so their folder may appear.
+    let product = f.paths().gog_product_cache(common::gog_world::DISCO);
+    fs::create_dir_all(product.parent().unwrap()).unwrap();
+    let skip = ["gog.key", product.file_name().unwrap().to_str().unwrap()];
+    let before = tree(f.root.path(), &skip);
+    let out = headless(&f, &api, &["update", "disco", "--yes"]);
+    assert_eq!(out.status.code(), Some(1), "{}", stderr(&out));
+    assert!(
+        stderr(&out).contains("needs a graphical session. Run this from your desktop."),
+        "{}",
+        stderr(&out)
+    );
+    assert_same_tree(&before, &tree(f.root.path(), &skip));
+}
+
 #[test]
 fn all_finishes_an_unfinished_windows_update_like_a_native_one() {
     use wineo_core::gog::folder::{FolderLock, Journal, JournalKind};

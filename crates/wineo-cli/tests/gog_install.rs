@@ -496,6 +496,58 @@ fn the_language_comes_from_the_setting_and_the_platform_can_be_picked() {
     );
 }
 
+/// `wineo import gog` with `args`, with no graphical session.
+fn headless(f: &Fixture, api: &GogApi, args: &[&str]) -> std::process::Output {
+    let mut all = vec!["import", "gog"];
+    all.extend(args);
+    gog_api::checked(
+        f.gog_command(api)
+            .args(&all)
+            .env_remove("DISPLAY")
+            .env_remove("WAYLAND_DISPLAY")
+            .output()
+            .unwrap(),
+    )
+}
+
+#[test]
+fn a_game_with_no_windows_installer_says_so_without_a_graphical_session() {
+    let (f, api) = world();
+    let out = headless(
+        &f,
+        &api,
+        &["--game", &rimworld_id(), "--platform", "windows", "--yes"],
+    );
+    assert_eq!(out.status.code(), Some(1));
+    assert!(
+        stderr(&out).contains("RimWorld can't be installed"),
+        "{}",
+        stderr(&out)
+    );
+    assert!(!games(&f).join("RimWorld").exists());
+}
+
+#[test]
+fn a_windows_install_needs_a_graphical_session_before_it_downloads() {
+    let (f, api) = world();
+    let out = headless(
+        &f,
+        &api,
+        &["--game", &disco_id(), "--runner", "inno", "--yes"],
+    );
+    assert_eq!(out.status.code(), Some(1));
+    assert!(
+        stderr(&out).contains(
+            "Installing a Windows game needs a graphical session. Run this from your desktop."
+        ),
+        "{}",
+        stderr(&out)
+    );
+    assert!(!games(&f).join("Disco Elysium").exists());
+    assert!(!f.paths().gog_download_cache().exists());
+    assert!(!f.paths().environment_config("disco-elysium").exists());
+}
+
 #[test]
 fn an_interrupted_install_is_finished_by_update_or_by_installing_again() {
     for finish in ["update", "import"] {
