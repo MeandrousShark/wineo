@@ -18,14 +18,12 @@ ignore = []
 # Only licenses that both Launchpad (OSI, FSF, or DFSG approved) and Fedora's
 # allowed list accept, plus wineo's own. cargo-deny reads "OR" in a crate's
 # license, so a crate that offers a choice only needs one of them here; that
-# is why 0BSD, Unlicense, and Apache-2.0 WITH LLVM-exception aren't listed.
-# Left out on purpose, and each fails the check for one crate until the
-# maintainer decides:
-#   CC0-1.0 (hexf-parse 0.2.1, via naga): Fedora allows it for content only.
-#   CDLA-Permissive-2.0 (webpki-roots 1.0.11, via reqwest): not OSI or FSF,
-#     and nothing confirms Launchpad's DFSG test for it.
-# A new entry here needs both policies checked first, not just the list.
+# is why Unlicense and Apache-2.0 WITH LLVM-exception aren't listed. 0BSD is
+# here for the patched copy of hexf-parse in third_party/, which has no
+# choice to offer. A new entry needs both policies checked first, not just
+# the list.
 allow = [
+    "0BSD",
     "Apache-2.0",
     "BSD-2-Clause",
     "BSD-3-Clause",

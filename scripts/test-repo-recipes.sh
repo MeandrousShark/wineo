@@ -237,19 +237,15 @@ check "the spec does not install with stage-install.sh" \
     grep -q 'scripts/stage-install.sh --license-dir %{_datadir}/licenses/%{name}' "$spec"
 check "the spec keeps debuginfo on" grep -q '^%global debug_package %{nil}' "$spec"
 
-# The spec's License names only what deny.toml allows (plus the two it
-# leaves out until the maintainer decides), so the audit and the package
-# cannot disagree.
+# The spec's License names only what deny.toml allows, so the audit and the
+# package cannot disagree.
 mapfile -t allowed < <(sed -n '/^allow = \[/,/^\]/ { s/^[[:space:]]*"\([^"]*\)",$/\1/p }' "$root/deny.toml")
 check "deny.toml has no allow list" test "${#allowed[@]}" -gt 0
 allowed_text=$(printf '%s\n' "${allowed[@]}")
 read -r -a license_words <<<"$(spec_field License)"
 for word in "${license_words[@]}"; do
     [[ $word == AND ]] && continue
-    case $word in
-        CC0-1.0 | CDLA-Permissive-2.0) pass ;;
-        *) check "the spec License names $word, which deny.toml does not allow" has "$allowed_text" "$word" ;;
-    esac
+    check "the spec License names $word, which deny.toml does not allow" has "$allowed_text" "$word"
 done
 check "the spec License lacks GPL-3.0-or-later" \
     grep -qw GPL-3.0-or-later <<<"${license_words[*]}"

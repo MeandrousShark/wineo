@@ -3,8 +3,9 @@ Upstream-Name: wineo
 Source: https://github.com/MeandrousShark/wineo
 Comment: The licenses of the bundled fonts are in THIRD_PARTY.md beside this
  file. The source tarball also carries every crate wineo builds with under
- vendor/, each with its own license files. Their licenses are checked
- against a fixed list (deny.toml) before every release.
+ vendor/, each with its own license files, apart from the patched copy of
+ hexf-parse in third_party/. Their licenses are checked against a fixed list
+ (deny.toml) before every release.
 
 Files: *
 Copyright: 2026 Michael Hannon
@@ -21,6 +22,10 @@ License: GPL-3.0-or-later
  .
  On Debian systems, the full text of the GNU General Public License version
  3 can be found in the file /usr/share/common-licenses/GPL-3.
+
+Files: third_party/hexf-parse/*
+Copyright: Kang Seonghoon
+License: 0BSD
 
 Files: debian/* packaging/*
 Copyright: 2026 Michael Hannon
