@@ -68,6 +68,49 @@ pub(crate) fn observe(path: &Path) -> io::Result<Option<Observed>> {
     }))
 }
 
+/// Device, inode, and birth time of the object behind an open descriptor.
+/// All three come from that one descriptor, so a path swapped between
+/// lookups can't mix two files.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) struct FileStamp {
+    pub(crate) device: u64,
+    pub(crate) inode: u64,
+    /// None when the filesystem or kernel reports no birth time.
+    pub(crate) birth: Option<(i64, u32)>,
+}
+
+/// Stamps an open descriptor. The birth time is what tells a file apart from
+/// a later one that reused its inode, which ext4 does right away.
+pub(crate) fn stamp(fd: impl std::os::fd::AsFd) -> io::Result<FileStamp> {
+    use rustix::fs::{AtFlags, StatxFlags};
+
+    let stat = rustix::fs::fstat(&fd)?;
+    let birth = match rustix::fs::statx(&fd, "", AtFlags::EMPTY_PATH, StatxFlags::BTIME) {
+        Ok(found) => (found.stx_mask & StatxFlags::BTIME.bits() != 0)
+            .then_some((found.stx_btime.tv_sec, found.stx_btime.tv_nsec)),
+        Err(rustix::io::Errno::NOSYS) => None,
+        Err(err) => return Err(err.into()),
+    };
+    Ok(FileStamp {
+        device: stat.st_dev as u64,
+        inode: stat.st_ino as u64,
+        birth,
+    })
+}
+
+/// `stamp` for a path, following a final symlink so a config kept in a
+/// dotfile repo is recognized by the file it points at. None when nothing is
+/// there. Opened O_PATH so a file that can't be read still has an identity.
+pub(crate) fn stamp_following(path: &Path) -> io::Result<Option<FileStamp>> {
+    use rustix::fs::{Mode, OFlags};
+
+    match rustix::fs::open(path, OFlags::PATH | OFlags::CLOEXEC, Mode::empty()) {
+        Ok(fd) => stamp(fd).map(Some),
+        Err(rustix::io::Errno::NOENT) => Ok(None),
+        Err(err) => Err(err.into()),
+    }
+}
+
 /// Serde for a stored filesystem ID. TOML integers are signed and most IDs
 /// use the top bit, so the ID is kept as the i64 with the same bits.
 pub(crate) mod fsid_bits {

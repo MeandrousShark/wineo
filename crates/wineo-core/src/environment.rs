@@ -2,7 +2,6 @@ use std::collections::BTreeSet;
 use std::ffi::OsStr;
 use std::fs::{self, OpenOptions};
 use std::io::{self, Read, Write};
-use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 
 use toml_edit::{DocumentMut, Value, value};
@@ -36,14 +35,20 @@ pub struct Environment {
 pub struct EnvironmentIdentity {
     device: u64,
     inode: u64,
+    /// Tells a config from a later one that reused its inode. None when the
+    /// filesystem reports no birth time, which leaves device and inode.
+    birth: Option<(i64, u32)>,
 }
 
 impl EnvironmentIdentity {
     pub fn read(paths: &Paths, name: &str) -> Option<Self> {
-        let metadata = fs::metadata(paths.environment_config(name)).ok()?;
+        let stamp = files::stamp_following(&paths.environment_config(name))
+            .ok()
+            .flatten()?;
         Some(Self {
-            device: metadata.dev(),
-            inode: metadata.ino(),
+            device: stamp.device,
+            inode: stamp.inode,
+            birth: stamp.birth,
         })
     }
 }
@@ -53,6 +58,8 @@ pub struct HeroicIdSnapshot {
     text: String,
     device: u64,
     inode: u64,
+    /// See `EnvironmentIdentity`.
+    birth: Option<(i64, u32)>,
 }
 
 /// What `Environment::record_gog_id` did.
@@ -113,14 +120,14 @@ impl Environment {
         let mut text = String::new();
         file.read_to_string(&mut text)
             .context(|| format!("failed to read {}", path.display()))?;
-        let metadata = file
-            .metadata()
-            .context(|| format!("failed to inspect {}", path.display()))?;
+        let stamp =
+            files::stamp(&file).context(|| format!("failed to inspect {}", path.display()))?;
         let config = EnvironmentConfig::parse(&path, &text)?;
         let snapshot = HeroicIdSnapshot {
             text,
-            device: metadata.dev(),
-            inode: metadata.ino(),
+            device: stamp.device,
+            inode: stamp.inode,
+            birth: stamp.birth,
         };
         Ok((
             Self {
@@ -495,9 +502,8 @@ impl Environment {
         let mut text = String::new();
         file.read_to_string(&mut text)
             .context(|| format!("failed to read {}", path.display()))?;
-        let metadata = file
-            .metadata()
-            .context(|| format!("failed to inspect {}", path.display()))?;
+        let stamp =
+            files::stamp(&file).context(|| format!("failed to inspect {}", path.display()))?;
         let config = EnvironmentConfig::parse(&path, &text)?;
         if config.heroic_id.as_deref() == Some(heroic_id) {
             return Ok(());
@@ -509,8 +515,9 @@ impl Environment {
             });
         }
         if text != expected.text
-            || metadata.dev() != expected.device
-            || metadata.ino() != expected.inode
+            || stamp.device != expected.device
+            || stamp.inode != expected.inode
+            || stamp.birth != expected.birth
         {
             return Err(Error::ConfigInvalid {
                 path,

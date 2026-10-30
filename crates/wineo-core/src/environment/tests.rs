@@ -242,6 +242,7 @@ fn record_heroic_id_on_unknown_environment_is_an_error() {
         text: String::new(),
         device: 0,
         inode: 0,
+        birth: None,
     };
     assert!(matches!(
         Environment::record_heroic_id(&paths, "nope", "abc123", &snapshot),
@@ -788,4 +789,75 @@ fn failed_creation_removes_the_new_dir() {
     assert!(matches!(err, Error::PrefixCreation { .. }), "{err}");
     assert!(!prefix.exists());
     assert!(!paths.environment_config("win32").exists());
+}
+
+#[test]
+fn identities_with_a_reused_inode_differ_by_birth_time() {
+    let same = |birth| EnvironmentIdentity {
+        device: 7,
+        inode: 42,
+        birth,
+    };
+    assert_ne!(same(Some((100, 5))), same(Some((100, 6))));
+    assert_ne!(same(Some((100, 5))), same(Some((101, 5))));
+    assert_eq!(same(Some((100, 5))), same(Some((100, 5))));
+    // No birth time on either side leaves device and inode to decide.
+    assert_eq!(same(None), same(None));
+    assert_ne!(
+        same(None),
+        EnvironmentIdentity {
+            inode: 43,
+            ..same(None)
+        }
+    );
+}
+
+#[test]
+fn a_reused_inode_with_a_new_birth_time_is_a_replaced_heroic_config() {
+    let root = tempfile::tempdir().unwrap();
+    let paths = test_paths(root.path());
+    let path = paths.environment_config("game");
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    let original = "prefix = \"/games/one\"\nrunner = \"wine\"\narch = \"win64\"\n";
+    fs::write(&path, original).unwrap();
+    let (_, mut snapshot) = Environment::load_for_heroic_match(&paths, "game").unwrap();
+    let Some(birth) = snapshot.birth else {
+        // The filesystem reports no birth time, so there is nothing to compare.
+        return;
+    };
+
+    snapshot.birth = Some((birth.0 - 1, birth.1));
+    assert!(matches!(
+        Environment::record_heroic_id(&paths, "game", "abc123", &snapshot),
+        Err(Error::ConfigInvalid { .. })
+    ));
+    snapshot.birth = Some(birth);
+    Environment::record_heroic_id(&paths, "game", "abc123", &snapshot).unwrap();
+}
+
+#[test]
+fn a_symlinked_config_is_identified_by_its_target() {
+    let root = tempfile::tempdir().unwrap();
+    let paths = test_paths(root.path());
+    let path = paths.environment_config("game");
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    let target = root.path().join("dotfiles/game.toml");
+    fs::create_dir_all(target.parent().unwrap()).unwrap();
+    fs::write(&target, "prefix = \"/games/one\"\n").unwrap();
+    std::os::unix::fs::symlink(&target, &path).unwrap();
+
+    let identity = EnvironmentIdentity::read(&paths, "game").unwrap();
+    let stamp = files::stamp_following(&target).unwrap().unwrap();
+    assert_eq!(
+        (identity.device, identity.inode, identity.birth),
+        (stamp.device, stamp.inode, stamp.birth)
+    );
+    assert_ne!(
+        identity.inode,
+        files::observe(&path).unwrap().unwrap().inode,
+        "the link itself has its own inode"
+    );
+
+    fs::remove_file(&path).unwrap();
+    assert_eq!(EnvironmentIdentity::read(&paths, "game"), None);
 }
