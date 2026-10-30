@@ -1,0 +1,47 @@
+# Maintainer: Michael Hannon <mphannon@pm.me>
+# Packaging written with AI assistance and reviewed by the maintainer.
+# SPDX-License-Identifier: 0BSD
+# shellcheck disable=SC2034,SC2154
+pkgname=wineo-bin
+pkgver=1.1.0
+pkgrel=1
+pkgdesc='Launcher for Wine and Proton programs, native games, Steam, and GOG'
+arch=('x86_64')
+url='https://github.com/MeandrousShark/wineo'
+license=('GPL-3.0-or-later')
+# wineo-gui loads everything after hicolor-icon-theme with dlopen, so no tool
+# can find them. Release binaries carry their own lzma, so xz isn't needed.
+depends=(
+  'glibc'
+  'libgcc'
+  'hicolor-icon-theme'
+  'libx11'
+  'libxcb'
+  'libxkbcommon'
+  'libxkbcommon-x11'
+  'libxcursor'
+  'libxi'
+  'wayland'
+  'libglvnd'
+  'vulkan-icd-loader'
+)
+optdepends=(
+  'bash-completion: load Bash completions'
+  'gamemode: enable GameMode for configured targets'
+  'umu-launcher: run Proton environments'
+  'wine: run Windows programs using Wine'
+  'winetricks: install Windows components'
+)
+provides=("wineo=$pkgver")
+conflicts=('wineo')
+options=('!debug' '!strip')
+source=("$url/releases/download/v$pkgver/wineo-$pkgver-x86_64-linux.tar.gz")
+# Pinned from the Release's SHA256SUMS when it is published.
+sha256sums=('SKIP')
+
+package() {
+  cd "$srcdir/wineo-$pkgver-x86_64-linux" || return
+
+  cp -dr --no-preserve=ownership usr "$pkgdir/"
+  mv "$pkgdir/usr/share/licenses/wineo" "$pkgdir/usr/share/licenses/$pkgname"
+}

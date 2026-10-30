@@ -70,7 +70,9 @@ jobs:
           persist-credentials: false
 
       - name: Shellcheck
-        run: shellcheck scripts/*.sh packaging/tarball/*.sh
+        run: |
+          shellcheck scripts/*.sh packaging/tarball/*.sh
+          shellcheck --shell=bash PKGBUILD packaging/aur/*/PKGBUILD
 
       - name: Release guard tests
         run: scripts/test-release-guard.sh
@@ -97,6 +99,9 @@ jobs:
 
       - name: Release check script tests
         run: scripts/test-checks.sh
+
+      - name: AUR recipe tests
+        run: scripts/test-aur.sh
 
   # Advisories appear against code that hasn't changed, so this runs weekly as
   # well. The release workflow reuses this one, so a failure stops a release.

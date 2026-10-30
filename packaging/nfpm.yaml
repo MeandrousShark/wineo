@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: 0BSD
 # Metadata for the .deb and .rpm, read by nfpm through scripts/pack-packages.sh.
 # The script fills in what varies per run:
 #   - NFPM_VERSION and NFPM_RELEASE are environment variables nfpm expands.

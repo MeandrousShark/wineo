@@ -1,4 +1,5 @@
 #!/bin/bash
+# SPDX-License-Identifier: 0BSD
 # Install or remove the wineo files this tarball ships. Everything under the
 # tarball's usr/ goes to the same path under PREFIX, so usr/bin/wineo becomes
 # PREFIX/bin/wineo. No root is needed for a PREFIX you own.
