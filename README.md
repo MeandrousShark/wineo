@@ -35,6 +35,71 @@ the other.
 
 ## Install
 
+The packages below install both programs, the desktop app's menu entry,
+shell completions, and man pages, and pull in what the desktop app needs.
+Add `wine`, `umu-launcher`, or anything else from
+[Runtime dependencies](#runtime-dependencies) that your package manager
+didn't bring along.
+
+### Ubuntu
+
+For Ubuntu 22.04, 24.04, 26.04, and 26.10:
+
+```sh
+sudo add-apt-repository ppa:meandrous-shark/wineo
+sudo apt update
+sudo apt install wineo
+```
+
+### Debian
+
+For Debian 12 and later, install the `.deb` from the latest
+[release](https://github.com/MeandrousShark/wineo/releases). There's no
+repository yet, so repeat this to update:
+
+```sh
+version=1.1.0
+curl -LO https://github.com/MeandrousShark/wineo/releases/download/v$version/wineo_${version}_amd64.deb
+sudo apt install ./wineo_${version}_amd64.deb
+```
+
+### Fedora
+
+```sh
+sudo dnf copr enable meandrousshark/wineo
+sudo dnf install wineo
+```
+
+### openSUSE
+
+For Tumbleweed:
+
+```sh
+sudo zypper addrepo https://download.opensuse.org/repositories/home:/meandrousshark/openSUSE_Tumbleweed/home:meandrousshark.repo
+sudo zypper refresh
+sudo zypper install wineo
+```
+
+For Leap, use `16.0` or `15.6` in place of `openSUSE_Tumbleweed`. openSUSE's
+repositories don't have `umu-launcher`, so Proton environments need it
+from elsewhere.
+
+### Gentoo
+
+wineo has its own overlay, which needs `app-eselect/eselect-repository`:
+
+```sh
+sudo eselect repository add wineo git https://github.com/MeandrousShark/wineo-overlay.git
+sudo emaint sync -r wineo
+echo 'games-util/wineo ~amd64' | sudo tee /etc/portage/package.accept_keywords/wineo
+sudo emerge --ask games-util/wineo
+```
+
+The desktop app needs `vulkan-loader` built with `X` and `wayland`, and
+`libxkbcommon` with `X`. If your profile doesn't set those, `emerge` stops and
+prints the lines to add to `package.use`. `games-util/wineo-9999` builds
+the latest `main`.
+
 ### Arch Linux
 
 The repository has a `wineo-git` PKGBUILD that builds the latest `main` and
@@ -60,16 +125,20 @@ git config filter.pkgver.smudge cat
 ### Prebuilt binaries
 
 Each [release](https://github.com/MeandrousShark/wineo/releases) has a
-`wineo-X.Y.Z-x86_64-linux.tar.gz` with `wineo` and `wineo-gui`, built for
-x86_64 Linux with glibc 2.35 or newer (Ubuntu 22.04, Debian 12, Fedora 36,
-and later). To install a release into `~/.local/bin`:
+`.deb`, an `.rpm`, and a `wineo-X.Y.Z-x86_64-linux.tar.gz`, built for x86_64
+Linux with glibc 2.35 or newer (Ubuntu 22.04, Debian 12, Fedora 36, and
+later). The tarball needs no root. Its `install.sh` puts everything under
+`~/.local`, including the menu entry, completions, and man pages:
 
 ```sh
-version=1.0.0
+version=1.1.0
 curl -LO https://github.com/MeandrousShark/wineo/releases/download/v$version/wineo-$version-x86_64-linux.tar.gz
 tar -xzf wineo-$version-x86_64-linux.tar.gz
-install -Dm755 -t ~/.local/bin wineo-$version-x86_64-linux/wineo wineo-$version-x86_64-linux/wineo-gui
+wineo-$version-x86_64-linux/install.sh
 ```
+
+To remove it, run `install.sh --uninstall`. Give `install.sh` a folder to
+install somewhere else.
 
 On Ubuntu or Debian, install these packages with `sudo apt install`. The
 desktop app uses all of them, and the terminal program needs
@@ -125,9 +194,9 @@ install -Dm755 -t ~/.local/bin target/release/wineo target/release/wineo-gui
 
 ### After installing
 
-Make sure `~/.local/bin` is on your `PATH`. The prebuilt and source
-installs don't add the desktop app to your app menu. To add it, fetch its
-entry and icon:
+The tarball and source installs put `wineo` in `~/.local/bin`, so make
+sure that's on your `PATH`. The source install doesn't add the desktop app
+to your app menu. To add it, fetch its entry and icon:
 
 ```sh
 base=https://raw.githubusercontent.com/MeandrousShark/wineo/main/crates/wineo-gui/assets
