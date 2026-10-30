@@ -1,0 +1,40 @@
+#!/usr/bin/make -f
+# SPDX-License-Identifier: 0BSD
+# Packaging written with AI assistance and reviewed by the maintainer.
+
+# Builds need no network: the source tarball carries every crate under
+# vendor/, and its .cargo/config.toml points cargo there. CARGO_HOME stays
+# inside the tree so nothing touches the build user's home.
+export CARGO_HOME = $(CURDIR)/debian/cargo-home
+export CARGO_TARGET_DIR = $(CURDIR)/target
+
+# The versioned rustc-1.NN packages (jammy and noble) install cargo and rustc
+# only under /usr/lib/rust-1.NN/bin, not on PATH. Putting that directory first
+# also finds the same programs on a series whose plain rustc is new enough.
+RUST_BIN := $(firstword $(wildcard /usr/lib/rust-1.*/bin))
+ifneq ($(RUST_BIN),)
+export PATH := $(RUST_BIN):$(PATH)
+endif
+
+JOBS := $(patsubst parallel=%,%,$(filter parallel=%,$(DEB_BUILD_OPTIONS)))
+
+%:
+	dh $@
+
+override_dh_auto_clean:
+	rm -rf target debian/cargo-home
+
+override_dh_auto_build:
+	cargo build --release --frozen $(if $(JOBS),--jobs $(JOBS)) \
+		--package wineo-cli --package wineo-gui
+
+# Package builds don't run the test suite; a tagged release has passed CI.
+override_dh_auto_test:
+
+override_dh_auto_install:
+	scripts/stage-install.sh --license-dir /usr/share/doc/wineo \
+		debian/wineo target/release
+
+# check-installed.sh and the other formats expect these files uncompressed.
+override_dh_compress:
+	dh_compress -X LICENSE -X THIRD_PARTY.md -X .toml.example

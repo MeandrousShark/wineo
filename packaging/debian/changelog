@@ -1,0 +1,5 @@
+wineo (1.1.0-1ppa1) UNRELEASED; urgency=medium
+
+  * Package the 1.1.0 release for the PPA from the vendored source tarball.
+
+ -- Michael Hannon <mphannon@pm.me>  Fri, 30 Oct 2026 12:00:00 +0000

@@ -1,0 +1,54 @@
+# SPDX-License-Identifier: 0BSD
+# Packaging written with AI assistance and reviewed by the maintainer.
+#
+# The "@RUST@" marker in Build-Depends is the one thing that differs between
+# Ubuntu series, and scripts/prepare-debian-tree.sh fills it in: "-1.91" where
+# the series' own rustc is too old (jammy, noble), nothing where it is new
+# enough.
+Source: wineo
+Section: otherosfs
+Priority: optional
+Maintainer: Michael Hannon <mphannon@pm.me>
+Rules-Requires-Root: no
+Standards-Version: 4.7.0
+Homepage: https://github.com/MeandrousShark/wineo
+Build-Depends:
+ debhelper-compat (= 13),
+ rustc@RUST@ (>= 1.90),
+ cargo@RUST@ (>= 1.90),
+ pkg-config,
+ liblzma-dev,
+
+Package: wineo
+Architecture: amd64
+# wineo-gui loads everything after liblzma with dlopen, so shlibs can't find
+# those libraries and the list below is written by hand. It is the README's
+# Ubuntu list, which scripts/test-repo-recipes.sh keeps in step.
+Depends:
+ ${shlibs:Depends},
+ ${misc:Depends},
+ libx11-6,
+ libx11-xcb1,
+ libxcb1,
+ libxkbcommon0,
+ libxkbcommon-x11-0,
+ libxcursor1,
+ libxi6,
+ libwayland-client0,
+ libwayland-egl1,
+ libegl1,
+ libvulkan1,
+Recommends:
+ wine,
+ winetricks,
+Suggests:
+ gamemode,
+ gamescope,
+ mangohud,
+Description: Launcher for Wine and Proton programs, native games, Steam, and GOG
+ A launcher and library for Linux, written in Rust, for Windows programs and
+ games run with Wine or Proton, native Linux games, your Steam library, and
+ the GOG games you own. Each one gets its own named environment. For Windows
+ software that's a prefix, a runner (Wine or Proton through umu), launch
+ targets, and settings, all in plain TOML you can read and edit. Use it from
+ the command line or the desktop app.
