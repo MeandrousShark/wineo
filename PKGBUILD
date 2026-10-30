@@ -1,3 +1,6 @@
+# Maintainer: Michael Hannon <mphannon@pm.me>
+# Packaging written with AI assistance and reviewed by the maintainer.
+# SPDX-License-Identifier: 0BSD
 # shellcheck disable=SC2034,SC2154
 pkgname=wineo-git
 pkgver=0
@@ -6,7 +9,22 @@ pkgdesc='Launcher for Wine and Proton programs, native games, Steam, and GOG'
 arch=('x86_64')
 url='https://github.com/MeandrousShark/wineo'
 license=('GPL-3.0-or-later')
-depends=('glibc' 'libgcc' 'xz')
+# wineo-gui loads everything after xz with dlopen, so no tool can find them.
+depends=(
+  'glibc'
+  'libgcc'
+  'hicolor-icon-theme'
+  'xz'
+  'libx11'
+  'libxcb'
+  'libxkbcommon'
+  'libxkbcommon-x11'
+  'libxcursor'
+  'libxi'
+  'wayland'
+  'libglvnd'
+  'vulkan-icd-loader'
+)
 makedepends=('cargo' 'git')
 optdepends=(
   'bash-completion: load Bash completions'
@@ -15,7 +33,7 @@ optdepends=(
   'wine: run Windows programs using Wine'
   'winetricks: install Windows components'
 )
-provides=('wineo')
+provides=("wineo=$pkgver")
 conflicts=('wineo')
 options=('!lto' '!debug')
 source=('wineo::git+https://github.com/MeandrousShark/wineo.git#branch=main')
@@ -40,16 +58,21 @@ pkgver() {
 
 prepare() {
   cd "$srcdir/wineo" || return
-  cargo fetch --locked
+  export RUSTUP_TOOLCHAIN=stable
+  cargo fetch --locked --target "$(rustc --print host-tuple)"
 }
 
 build() {
   cd "$srcdir/wineo" || return
+  export RUSTUP_TOOLCHAIN=stable
+  export CARGO_TARGET_DIR=target
   cargo build --package wineo-cli --package wineo-gui --release --frozen
 }
 
 check() {
   cd "$srcdir/wineo" || return
+  export RUSTUP_TOOLCHAIN=stable
+  export CARGO_TARGET_DIR=target
   TERM=xterm-256color cargo test --workspace --frozen -- --test-threads=1
 }
 
