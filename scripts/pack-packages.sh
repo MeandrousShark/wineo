@@ -47,11 +47,15 @@ root=$(cd "$(dirname "$0")/.." && pwd)
 deb=$outdir/wineo_${version}_amd64.deb
 rpm=$outdir/wineo-$version-1.x86_64.rpm
 
-nfpm=${NFPM:-nfpm}
-command -v "$nfpm" >/dev/null || die "nfpm not found (set NFPM or put it on PATH)"
+nfpm=$(command -v "${NFPM:-nfpm}") || die "nfpm not found (set NFPM or put it on PATH)"
+# nfpm runs from inside the staged trees, so a relative path would break.
+[[ $nfpm == /* ]] || nfpm=$PWD/$nfpm
 
+# -L too: nfpm would write through a dangling symlink to wherever it points.
 for out in "$deb" "$rpm"; do
-    [[ ! -e $out ]] || die "$out already exists"
+    if [[ -e $out || -L $out ]]; then
+        die "$out already exists"
+    fi
 done
 
 # Assigned first so a failing script stops here. Names go into YAML, so

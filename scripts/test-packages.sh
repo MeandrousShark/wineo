@@ -262,6 +262,26 @@ rm "$rpm"
 run "existing deb only" 1 "$version" "$bins" "$out"
 same "existing deb only: nothing added" "${deb##*/}" "$(ls -A "$out")"
 
+# A dangling symlink at an output path is refused, not written through.
+mkdir "$tmp/out-link"
+ln -s "$tmp/elsewhere.deb" "$tmp/out-link/wineo_${version}_amd64.deb"
+run "dangling symlink at an output" 1 "$version" "$bins" "$tmp/out-link"
+if [[ ! -e $tmp/elsewhere.deb && -L $tmp/out-link/wineo_${version}_amd64.deb ]]; then
+    pass
+else
+    fail "dangling symlink at an output was written through"
+fi
+
+# A relative NFPM still works once the script is inside the staged trees.
+mkdir -p "$tmp/nfpm-cwd/tools"
+ln -s "$NFPM" "$tmp/nfpm-cwd/tools/nfpm"
+(cd "$tmp/nfpm-cwd" && NFPM=./tools/nfpm "$pack" "$version" ../bins rel-nfpm >/dev/null 2>"$tmp/err") && status=0 || status=$?
+if [[ $status -eq 0 && -f $tmp/nfpm-cwd/rel-nfpm/wineo-$version-1.x86_64.rpm ]]; then
+    pass
+else
+    fail "relative NFPM: exit $status ($(cat "$tmp/err"))"
+fi
+
 # Different versions can share a directory.
 run "second version in the same directory" 0 1.2.4 "$bins" "$out"
 same "second version outputs" 3 "$(find "$out" -type f | wc -l)"
