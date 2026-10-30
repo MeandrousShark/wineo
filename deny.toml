@@ -1,0 +1,13 @@
+# Read by `cargo deny check advisories`, which runs in CI and blocks a release
+# when a dependency has a known vulnerability.
+
+[graph]
+targets = ["x86_64-unknown-linux-gnu"]
+all-features = true
+
+[advisories]
+# Only direct dependencies fail. The unmaintained crates today arrive through
+# iced and zbus, so there's nothing here to replace.
+unmaintained = "workspace"
+# Each accepted advisory goes here as { id = "...", reason = "..." }.
+ignore = []

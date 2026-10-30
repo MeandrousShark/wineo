@@ -1,11 +1,14 @@
 name: CI
 
 # Never on push: the Gitea mirror pushes every branch, and the release
-# workflow reuses this one through workflow_call.
+# workflow reuses this one through workflow_call. The schedule runs only the
+# advisory check.
 on:
   pull_request:
   workflow_dispatch:
   workflow_call:
+  schedule:
+    - cron: '17 6 * * 1'
 
 permissions:
   contents: read
@@ -15,6 +18,7 @@ env:
 
 jobs:
   ci:
+    if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -58,6 +62,7 @@ jobs:
   # The release guard only runs on tags, so its tests run here to keep it
   # from breaking unnoticed between releases.
   scripts:
+    if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -92,3 +97,17 @@ jobs:
 
       - name: Release check script tests
         run: scripts/test-checks.sh
+
+  # Advisories appear against code that hasn't changed, so this runs weekly as
+  # well. The release workflow reuses this one, so a failure stops a release.
+  advisories:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Check dependency advisories
+        run: |
+          scripts/fetch-cargo-deny.sh "$RUNNER_TEMP/cargo-deny"
+          "$RUNNER_TEMP/cargo-deny/cargo-deny" --locked check advisories
