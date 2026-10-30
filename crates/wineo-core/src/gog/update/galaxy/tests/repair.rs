@@ -1091,3 +1091,50 @@ fn a_repair_or_a_finish_needs_a_graphical_session_but_a_gone_build_doesnt() {
     set_graphical(true);
     assert!(fx.update_plan().is_recovery());
 }
+
+#[test]
+fn without_a_record_a_repair_or_a_finish_asks_for_a_session_before_any_file_list() {
+    use crate::gog::update::windows::SetupError;
+    use crate::gog::update::windows::tests::set_graphical;
+
+    // The build's own listing is a meta request too, and the answer needs
+    // it; the depots' file lists after it are what a refusal must spare.
+    let metas = |fx: &Fixture| {
+        fx.server
+            .requests()
+            .iter()
+            .filter(|request| request.path().starts_with("/content-system/v2/meta/"))
+            .count()
+    };
+    let refused = |error: anyhow::Error| {
+        assert!(
+            matches!(
+                error.downcast_ref::<SetupError>(),
+                Some(SetupError::NoGraphicalSession)
+            ),
+            "{error:#}"
+        );
+    };
+
+    let fx = Fixture::new();
+    fx.content.add_build(Fixture::game("100"));
+    fx.install();
+    forget_record(&fx);
+    let before = metas(&fx);
+    set_graphical(false);
+    let error = fx.op(repair()).unwrap_err();
+    set_graphical(true);
+    refused(error);
+    assert_eq!(metas(&fx), before + 1, "only the build's listing");
+
+    let fx = Fixture::new();
+    fx.installed_then(game_200());
+    update_interrupted(&fx, "galaxy.update.file.after", 1);
+    forget_record(&fx);
+    let before = metas(&fx);
+    set_graphical(false);
+    let error = fx.update_planned().unwrap_err();
+    set_graphical(true);
+    refused(error);
+    assert_eq!(metas(&fx), before + 1, "only the build's listing");
+}

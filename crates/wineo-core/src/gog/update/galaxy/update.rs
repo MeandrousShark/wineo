@@ -987,6 +987,8 @@ fn repair_manifest(
         };
         chosen.push((product.id, language.code));
     }
+    // Downloading the file lists is only worth it when setup can run.
+    windows::check_graphical()?;
     let built = install::manifests(
         session,
         title,
@@ -1456,6 +1458,8 @@ fn resumed(
                 product.build = Some(repository.build_id.clone());
                 chosen_products.push((product.id, language));
             }
+            // Downloading the file lists is only worth it when setup can run.
+            windows::check_graphical()?;
             let built = install::manifests(
                 session,
                 &title,

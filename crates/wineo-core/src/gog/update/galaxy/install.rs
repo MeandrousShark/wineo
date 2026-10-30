@@ -933,6 +933,8 @@ fn resumed(
                 product.build = Some(repository.build_id.clone());
                 chosen_products.push((product.id, language));
             }
+            // Downloading the file lists is only worth it when setup can run.
+            windows::check_graphical()?;
             let built = manifests(
                 session,
                 &title,
