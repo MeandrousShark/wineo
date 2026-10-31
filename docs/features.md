@@ -6,14 +6,24 @@ own numbered plan. What has shipped is in
 
 ## Queue
 
-The order the maintainer picked on 2026-10-14, after 0051. Each item gets
-its own plan when it comes up, and the rows below have the details.
+Harder Better Faster Stronger, the order the maintainer picked on
+2026-10-30, played backwards. The first three are small batches, each its
+own patch release with no plan. The rest get a plan when they come up, and
+the rows below have the details.
 
-1. Exact Steam platforms (maintainer, 2026-10-30).
+1. Stronger: Supervisor force-stop deadline, Winetricks settle under
+   Proton, Write through symlinked configs, Close the last nested-prefix
+   gaps, Exit with background work stuck.
+2. Faster: Simplification finds, Cheaper Steam refresh.
+3. Better: Ctrl+Enter on focused controls in flows, Fix notes in
+   `validate --json --fix`, One shape for confirm prompts.
+4. Harder: Exact Steam platforms and New Steam installs in the library, as
+   one plan.
+5. Library views parts 3 and 4 (list view, saved presets and grouping), with
+   Exclude filters, Bulk tagging, and Random game picker.
+6. GUI accessibility settings and Tray icon and hide on launch.
 
-Library views parts 3 to 5 (list view, saved presets and grouping,
-coverflow) aren't in the order; they can land in 1.x (maintainer,
-2026-10-17).
+Coverflow with controller navigation and store imports come after that.
 
 ## Backlog
 
@@ -70,18 +80,14 @@ the first 1.x releases from 1.0 on:
 | Playtime tracking by folder or process name | Core | **3** | | Keep counting playtime when a launcher hands off to a game process it doesn't wait for | Playnite tracks the launched process, any process running from the install folder, or a process by name. wineo follows the process group, plus its handoff check for native launchers. Matters most for future store launchers like Epic's. From the Playnite comparison (2026-10-14). |
 | Game metadata from the stores | UX | **3** | | Show a description, genres, developer, publisher, release date, and links in the panel | GOG's and Steam's APIs, which wineo already calls, have most of it; IGDB would cover the rest. From the Playnite comparison (2026-10-14). |
 | Simplification finds | Perf | **3** | | Do less repeated work and share duplicated code, without changing what wineo does | Eight finds from a code review, looked over by the maintainer (2026-10-27): reading GOG folder states once per listing, one fewer TOML parse per config load, the batch trash scan in `environment::tags`, reusing a loaded config in stats, a few needless allocations, and three spots of duplicated editing, parsing, and GUI settings code. Each lands with tests showing the same output. Details in the [sketch](sketches/simplification-finds.md). |
-| `--dry-run --json` | Automation | **4** | 0044 | Let a script read a dry run's plan instead of grepping review lines | Left out of plan 0044 by the maintainer (2026-10-06). Add it if a script ever needs it. |
 | Ctrl+Enter on focused controls in flows | UX | **4** | 0056 | Stop Ctrl+Enter from pressing a focused control and also submitting the flow | Found in the review of plan 0056 step 7 (2026-10-22), parked by the maintainer. List rows ignore Enter while Ctrl is held, but other focusable controls in flows, like the runner offer card, take it, so Ctrl+Enter on one presses it and submits the dialog. Widening the rule to every `focus_button` control is small, but changes what Ctrl+Enter does on those controls. |
 | Menu shadows in the software renderer | UX | **4** | wineo-gui | Keep popup menus white when the GUI falls back to software rendering | Found in plan 0054 step 4's review (2026-10-18). iced_tiny_skia 0.14.1 draws a quad's shadow without the clip mask its fill uses, so a partial redraw (a hover or focus change) greys a menu everywhere but the changed row, darker with each redraw. The Sort, Filters, and right-click menus all show it; wgpu doesn't. Fixed upstream in iced 055355982 (2026-02-11), not in any release yet, so recheck when wineo moves to the iced release that carries it, rather than carrying a patched crate. |
 | Fix notes in `validate --json --fix` | Automation | **4** | 0054 | Let a script see what a fix reported, like how much a `library.toml` repair recovered | Left out of plan 0054 by the maintainer (2026-10-18): `--json` output has no field for a fix's notes, so a scripted repair only learns that it ran. Adding one is a compatible change; design it with the rest of the JSON contract. |
-| Global hooks | Core | **4** | 0046 | Run the same hook around every game, like turning notifications off while anything plays | Left out of plan 0046 by the maintainer (2026-10-06): they'd surprise people using wineo for regular software, and templates carry hooks for new games. |
 | Epic Games Launcher setup | Compatibility | **4** | | Install the official Epic Games Launcher into its own environment in a few steps, and let Epic games live there | From the maintainer (2026-10-09). The launcher manages its own games inside that environment, and wineo doesn't list them one by one. Epic integration is Heroic's original purpose, so wineo leaves that space to Heroic. Needs a plan. |
 | Edit Steam launch options | UX | **4** | 0047 | Set environment variables and wrappers like MangoHud for a Steam game from wineo | Left out of plan 0047 by the maintainer (2026-10-07): only arguments reach a Steam game through `steam -applaunch`. Env vars and wrappers live in Steam's launch options (`VAR=1 %command%` in `localconfig.vdf`), which can only be edited while Steam is closed, and wineo stays read-only toward Steam's files. |
 | Cheaper Steam refresh in the desktop app | Perf | **4** | 0047 | Keep the library's 2-second refresh light for people with many Steam games | Found in 0047's review (2026-10-09). Each refresh already reads Steam's manifests and `config.vdf` once, but still parses Steam's playtime files and scans `/proc` for a reaper once per Steam card. Share one playtime read and one `/proc` scan per refresh, or refresh Steam data less often than run state. plan 0051 took most of the cost away: no rescans while the app is unfocused, and one cheaper `/proc` sweep per read. |
-| Integrity checking | Portability/Data | **4** | | Detect damaged or tampered files | Scope still open: prefix or game files, snapshots, or re-verifying downloads (already sha256-checked on install). |
 | Race-free process group waits | Core | **4** | | Stop installer runs, hooks, and Proton run settling from calling a process group empty while a member is still running | The `/proc` group scan can miss a member that forks and exits mid-scan; a real fix likely needs cgroups or pidfds. Parked by the maintainer. Details in the [sketch](sketches/race-free-group-waits.md). |
 | Winetricks settle under Proton | Core | **3** | | Wait for whatever a winetricks verb leaves running in a Proton prefix before letting go of the environment | Found while fixing Proton run settling (2026-10-17). Winetricks' own `settle` (`winetricks.rs`) waits on wineserver, which Proton runs don't have, so it returns at once and anything a verb started in umu's group can still be running when the winetricks lock is released. Runs no longer have this gap: they wait for umu's process group to empty. The same group wait would fit here. Priority set by the primary session; the maintainer may move it. |
-| Full backup and restore | Portability/Data | **4** | 0018 | Great eventually, but this could become a whole subsystem | Covers filesystems without snapshot support. |
 | macOS port | Compatibility | **4** | | Run wineo and wineo-gui on Apple Silicon Macs with Wine, CrossOver-style Wine builds, and Game Porting Toolkit | Parked by the maintainer (2026-10-17) until there is a route to an ARM64 Wine that is free to use and runs signed. Spike findings, engines, signing, and CrossOver notes are in the [sketch](sketches/macos-port.md). |
 | Copy GOG game folders with snapshots, clones, and portable copies | Portability/Data | **4** | 0049 | Take a GOG game's files along when its environment is snapshotted, cloned, or copied to a portable folder | Left out of plan 0049 (question 13). Today those copy the environment and prefix, and the GOG game folder stays where it is, shared by the copies and protected by its owner's folder state. Copying it needs a second folder state, its own owner, and rules for updates of the copy. Needs a plan. |
 | GOG games in portable roots | Portability/Data | **4** | 0049 | Migrate and update GOG games inside a `WINEO_PORTABLE_DIR` folder | Left out of plan 0049 (question 17): GOG game folders and their state live in the host root, and `--portable` refuses migrating and updating. Logging in and listing already work there. Needs folder states that travel with the portable folder. Needs a plan. |
