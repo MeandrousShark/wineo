@@ -1105,12 +1105,17 @@ ppa_files() {
 # gets the agent's socket and the public key.
 ppa_upload() {
     local series=$1 mode=${2:-} dir=$work/ppa/$1 identity image socket key=$work/ppa/signing-key.asc
-    local dput_args=("$ppa_name")
+    local dput_args=("$ppa_name") tty_name
     identity=$(identity_of ppa "$series")
     if [[ $mode == simulate ]]; then dput_args=(--simulate "$ppa_name"); fi
     gpg --export --armor "$ppa_key" >"$key"
     [[ -s $key ]] || dest_fail "gpg exported nothing for $ppa_key"
     gpgconf --launch gpg-agent
+    # The container has no terminal for pinentry, so the passphrase is asked
+    # for here, and the agent holds it for the signing in there.
+    if tty_name=$(tty 2>/dev/null); then export GPG_TTY=$tty_name; fi
+    gpg --local-user "$ppa_key" --clear-sign </dev/null >/dev/null ||
+        dest_fail "gpg could not unlock $ppa_key; see the output above"
     socket=$(gpgconf --list-dirs agent-socket)
     image=$(tool_image ubuntu)
     nice -n 15 podman run --rm -e STEP=deb-sign -e KEY="$ppa_key" \

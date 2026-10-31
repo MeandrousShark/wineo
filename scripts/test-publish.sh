@@ -320,6 +320,10 @@ cat >"$stubs/gpg" <<'EOF'
 case $1 in
     --list-keys) [[ ! -f $STUB/no-key ]] ;;
     --export) echo "fake public key" ;;
+    --local-user)
+        echo "$*" >>"$STUB/gpg-unlock.log"
+        [[ ! -f $STUB/no-unlock ]]
+        ;;
     *) exit 1 ;;
 esac
 EOF
@@ -1361,6 +1365,17 @@ check "dput ran before debsign" \
     test "$(grep -E '^(debsign|dput)$' "$STUB/tools.log" | sed -n 1,2p | tr '\n' ' ')" = "debsign dput "
 check "the public key was not imported" called gpg --batch --quiet --import /signing-key.asc
 check "the agent socket isn't mounted" grep -qF "$STUB/S.gpg-agent:/root/.gnupg/S.gpg-agent" "$STUB/podman.log"
+check "the key was not unlocked on the host" \
+    grep -qxF -- '--local-user 6D463D92CDF5CDEABD40D6301C369B098EE69509 --clear-sign' "$STUB/gpg-unlock.log"
+
+# The container can't ask for the passphrase, so it must not be reached.
+new_scenario
+touch "$STUB/no-unlock"
+BUILD_LIMIT=0 publish_real --only ppa
+check "a locked key: exit $rc, not 1" test "$rc" -eq 1
+check "a locked key: it does not say so" said "gpg could not unlock 6D463D92CDF5CDEABD40D6301C369B098EE69509"
+check "a locked key: the container tried to sign" test "$(grep -c 'STEP=deb-sign' "$STUB/podman.log" || true)" -eq 0
+rm "$STUB/no-unlock"
 
 # Real URLs, through insteadOf, into local repositories.
 new_scenario
