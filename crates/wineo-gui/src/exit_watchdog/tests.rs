@@ -148,7 +148,7 @@ fn a_stuck_library_write_is_named_when_the_wait_runs_out() {
 #[test]
 fn a_stuck_hook_is_named_and_force_stop_closes_the_window() {
     let (_root, mut app) = fixture();
-    app.operation = Some(running(OperationKind::Stop, true));
+    app.operation = Some(running(OperationKind::Start, true));
     assert!(!exits(app.update(close())));
     assert!(app.close_prompt);
 
