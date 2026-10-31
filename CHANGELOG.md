@@ -4,6 +4,45 @@ A finished plan bumps the minor version and fixes between plans bump the
 patch version. A plan released in parts bumps the minor version for each
 part. See `AGENTS.md` for the rule.
 
+## 1.1.0 - 2026-10-30
+
+Wineo now installs through your distro's package manager (plan 0059). See
+[Install](README.md#install) for each distro's steps.
+
+New in this release:
+
+- Package repositories: a Launchpad PPA for Ubuntu 22.04, 24.04, 26.04, and
+  26.10, COPR for Fedora 43, 44, and 45, OBS for openSUSE Tumbleweed, Leap
+  16.0, and Leap 15.6, and a Gentoo overlay. Each builds from source with
+  that distro's own Rust.
+- Each release also has a `.deb`, an `.rpm`, a source tarball with every
+  dependency vendored, and `SHA256SUMS`. The `.deb` and `.rpm` need glibc
+  2.35 or newer and refuse to install on anything older.
+- The release tarball has an `install.sh` that puts everything under
+  `~/.local` without root, including the menu entry, completions, and man
+  pages. `install.sh --uninstall` removes it.
+- The AUR packages are ready, but they wait for AUR registration to reopen.
+
+Security:
+
+- 1.0.0 and 1.0.1 shipped with 12 known vulnerability or unsoundness
+  advisories in their dependencies. All 12 are fixed here, so please update.
+  CI now checks for advisories every week, and a known one blocks a release.
+
+Behavior changes:
+
+- The release tarball's layout changed. `wineo` and `wineo-gui` moved from
+  the top level to `usr/bin/`, and `THIRD_PARTY.md` moved to
+  `usr/share/licenses/wineo/`. Anything that unpacks the tarball needs the
+  new paths.
+- HTTPS now trusts the system's certificates instead of a built-in list, so
+  `ca-certificates` is a runtime dependency. The packages pull it in, and
+  tarball and source installs need it installed.
+- Restoring a retained prefix no longer refuses on filesystems that don't
+  record birth times. On those, a new directory that reuses the old one's
+  inode at the same path can pass as the original. See
+  [Trash](docs/trash.md).
+
 ## 1.0.1 - 2026-10-29
 
 Fixes for loose ends found while getting CI running on Ubuntu.
