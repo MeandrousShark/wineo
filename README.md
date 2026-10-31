@@ -71,8 +71,9 @@ tar -xzf wineo-$version-x86_64-linux.tar.gz
 install -Dm755 -t ~/.local/bin wineo-$version-x86_64-linux/wineo wineo-$version-x86_64-linux/wineo-gui
 ```
 
-On Ubuntu or Debian, install these packages for the desktop app with
-`sudo apt install`:
+On Ubuntu or Debian, install these packages with `sudo apt install`. The
+desktop app uses all of them, and the terminal program needs
+`ca-certificates` for downloads:
 
 <!-- ubuntu-runtime-packages:start -->
 ```
