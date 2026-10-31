@@ -1349,8 +1349,20 @@ impl App {
         } else {
             task
         };
+        // The exit waits behind `task`, so the watchdog starts when the exit
+        // runs: a slow task ahead of it would otherwise spend the bound with
+        // the window still open. Nothing is named here either way, since
+        // reaching this branch means nothing that `abandoned_work` names is
+        // left.
         if self.closing && !self.exit_waits() {
-            task.chain(self.close_window())
+            let watchdog = self.watchdog.clone();
+            let work = self.abandoned_work();
+            let exit = Task::future(async move {
+                watchdog.start(&work);
+            })
+            .discard()
+            .chain(iced::exit());
+            task.chain(exit)
         } else {
             task
         }

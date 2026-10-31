@@ -59,10 +59,7 @@ fn running(kind: OperationKind, after_hook: bool) -> Operation {
 }
 
 fn said(app: &App) -> String {
-    app.watchdog
-        .started()
-        .expect("the watchdog started")
-        .to_owned()
+    app.watchdog.started().expect("the watchdog started")
 }
 
 #[test]
@@ -100,7 +97,7 @@ fn the_line_names_what_was_abandoned() {
 #[test]
 fn the_watchdog_expires_once_after_the_bound() {
     let (sent, received) = mpsc::channel();
-    let mut watchdog = Watchdog::new(Duration::from_millis(50), move |line| {
+    let watchdog = Watchdog::new(Duration::from_millis(50), move |line| {
         sent.send(line.to_owned()).unwrap();
     });
     assert!(watchdog.start(&["a library write".to_owned()]));
@@ -108,14 +105,14 @@ fn the_watchdog_expires_once_after_the_bound() {
     assert!(!watchdog.start(&["a tool".to_owned()]));
     let line = received.recv_timeout(Duration::from_secs(10)).unwrap();
     assert!(line.contains("a library write") && !line.contains("a tool"));
-    assert_eq!(watchdog.started(), Some(line.as_str()));
+    assert_eq!(watchdog.started().as_deref(), Some(line.as_str()));
     assert!(received.recv_timeout(Duration::from_millis(300)).is_err());
 }
 
 #[test]
 fn the_watchdog_stays_quiet_inside_the_bound() {
     let (sent, received) = mpsc::channel();
-    let mut watchdog = Watchdog::new(Duration::from_secs(30), move |line| {
+    let watchdog = Watchdog::new(Duration::from_secs(30), move |line| {
         sent.send(line.to_owned()).unwrap();
     });
     assert!(watchdog.start(&[]));
@@ -240,13 +237,62 @@ fn any_update_while_closing_with_nothing_left_exits_through_the_watchdog() {
     assert!(app.watchdog.started().is_some());
 }
 
+#[test]
+fn the_watchdog_starts_when_the_chained_exit_runs_not_when_it_is_queued() {
+    use iced::futures::StreamExt;
+    let (_root, mut app) = fixture();
+    app.closing = true;
+    // A reload still running ahead of the exit, like the one a finished
+    // start queues.
+    let slow = Task::perform(
+        async { tokio::time::sleep(Duration::from_millis(150)).await },
+        |()| Message::ScrollIdle(0),
+    );
+    let task = app.settle_panel(false, slow);
+    assert!(app.watchdog.started().is_none(), "queued, not run");
+
+    let mut stream = iced_runtime::task::into_stream(task).unwrap();
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let mut seen = Vec::new();
+    runtime.block_on(async {
+        while let Ok(Some(action)) =
+            tokio::time::timeout(Duration::from_millis(1000), stream.next()).await
+        {
+            match action {
+                iced_runtime::Action::Output(_) => seen.push(("slow task", app.watchdog.started())),
+                iced_runtime::Action::Exit => seen.push(("exit", app.watchdog.started())),
+                _ => {}
+            }
+        }
+    });
+    assert_eq!(seen.len(), 2, "{seen:?}");
+    assert_eq!(seen[0], ("slow task", None));
+    assert_eq!(seen[1].0, "exit");
+    assert!(seen[1].1.is_some(), "started by the time the window exits");
+}
+
 /// Child modes for the process tests below: the test binary re-runs itself
 /// with this set, so a real `process::exit` ends a child and not the suite.
 const CHILD: &str = "WINEO_EXIT_WATCHDOG_CHILD";
 
 /// Mimics iced: blocking work outlives the window, and dropping the runtime
 /// waits for it. Without a watchdog the child ends with status 3 instead.
-fn child(stuck: bool) {
+fn child(stuck: bool, blocked_stderr: bool) {
+    if blocked_stderr {
+        // Fills the stderr pipe and then sits in the write holding Rust's
+        // stderr lock, like a reader that stopped draining it.
+        std::thread::spawn(|| {
+            use std::io::Write;
+            let chunk = [b'x'; 4096];
+            loop {
+                let _ = std::io::stderr().write_all(&chunk);
+            }
+        });
+        std::thread::sleep(Duration::from_millis(300));
+    }
     let runtime = tokio::runtime::Builder::new_current_thread()
         .build()
         .unwrap();
@@ -256,7 +302,7 @@ fn child(stuck: bool) {
         }
     });
     let bound = Duration::from_millis(if stuck { 300 } else { 5_000 });
-    let mut watchdog = Watchdog::new(bound, exit_process);
+    let watchdog = Watchdog::new(bound, exit_process);
     watchdog.start(&["a library write".to_owned()]);
     if !stuck {
         // The work finishes in time, so dropping the runtime returns.
@@ -269,8 +315,9 @@ fn child(stuck: bool) {
 #[test]
 fn child_process_scenario() {
     match std::env::var(CHILD).as_deref() {
-        Ok("stuck") => child(true),
-        Ok("fast") => child(false),
+        Ok("stuck") => child(true, false),
+        Ok("fast") => child(false, false),
+        Ok("blocked") => child(true, true),
         _ => {}
     }
 }
@@ -320,4 +367,12 @@ fn a_fast_exit_prints_nothing() {
     assert_eq!(output.status.code(), Some(3), "{output:?}");
     assert!(took < Duration::from_secs(5), "{took:?}");
     assert!(!String::from_utf8_lossy(&output.stderr).contains("wineo-gui:"));
+}
+
+#[test]
+fn a_full_stderr_pipe_does_not_keep_the_process_from_ending() {
+    let (output, took) = run_child("blocked");
+    assert_eq!(output.status.code(), Some(0), "{:?}", output.status);
+    // The bound on the watchdog plus the bound on the write.
+    assert!(took < Duration::from_secs(6), "{took:?}");
 }

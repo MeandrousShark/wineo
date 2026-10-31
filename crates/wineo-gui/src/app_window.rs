@@ -59,7 +59,7 @@ impl App {
 
     /// What closing would leave unfinished, named for the line the watchdog
     /// prints. Read here because the watchdog thread can't see the app.
-    fn abandoned_work(&self) -> Vec<String> {
+    pub(crate) fn abandoned_work(&self) -> Vec<String> {
         let mut work = Vec::new();
         if self.library_writes_pending() {
             work.push("a library write".to_owned());
