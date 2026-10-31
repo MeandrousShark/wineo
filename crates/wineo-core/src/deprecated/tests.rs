@@ -285,3 +285,21 @@ fn the_summary_counts_configs_not_keys() {
         "4 configs use deprecated keys; see wineo validate"
     );
 }
+
+#[test]
+fn rename_in_place_writes_through_a_symlinked_config() {
+    use crate::files::link_check::{Dangling, Writer};
+    let (_root, paths) = setup();
+    let config = Config::Environment("hades".into());
+    let rename = || rename_in_place(&paths, &config).map(|_| ());
+    Writer {
+        link: &paths.environment_config("hades"),
+        seed: "prefix = '/p'\ntest_old_gamemode = true\nrunner = 'wine'\narch = 'win64'\n",
+        write: &mut { rename },
+        no_op: Some(("prefix = '/p'\nrunner = 'wine'\narch = 'win64'\n", &mut {
+            rename
+        })),
+        dangling: Dangling::Stops,
+    }
+    .check();
+}

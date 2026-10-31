@@ -934,3 +934,22 @@ fn set_appearance_is_refused_on_a_broken_or_newer_file() {
         assert_eq!(fixture.read(), original);
     }
 }
+
+#[test]
+fn edits_write_through_a_symlinked_library_file() {
+    use crate::files::link_check::{Dangling, Writer};
+    let root = tempfile::tempdir().unwrap();
+    let paths =
+        Paths::from_lookup(|key| (key == "HOME").then(|| OsString::from(root.path()))).unwrap();
+    let seed = "schema_version = 1\n";
+    Writer {
+        link: &paths.library_file(),
+        seed,
+        write: &mut || set_poster_only(&paths, true).map(|_| ()),
+        no_op: Some((seed, &mut || {
+            set_favorite(&paths, "hades", false).map(|_| ())
+        })),
+        dangling: Dangling::Refused,
+    }
+    .check();
+}

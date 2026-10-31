@@ -1176,3 +1176,63 @@ fn rewrite_keeping_mtime(path: &Path, text: &str) {
         .set_modified(modified)
         .unwrap();
 }
+
+#[test]
+fn the_config_writer_goes_through_a_symlinked_config() {
+    use crate::files::link_check::{Dangling, Writer};
+    let root = tempfile::tempdir().unwrap();
+    let paths =
+        Paths::from_lookup(|key| (key == "HOME").then(|| OsString::from(root.path()))).unwrap();
+    let link = paths.environment_config("game");
+    Writer {
+        link: &link,
+        seed: "old",
+        write: &mut || -> crate::Result<()> {
+            let guard = Locks::new(&paths).config(&link)?;
+            files::persist_config_synced(&link, guard.config_target(), b"new")
+        },
+        no_op: None,
+        dangling: Dangling::Refused,
+    }
+    .check();
+}
+
+#[test]
+fn rollback_writes_through_a_symlinked_config() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let (root, paths, prefix, config) = fixture(false);
+    let old_config = config.replace("runner = 'wine'", "runner = 'build'");
+    let config_path = paths.environment_config("game");
+    let target = root.path().join("dotfiles/game.toml");
+    fs::create_dir_all(target.parent().unwrap()).unwrap();
+    fs::rename(&config_path, &target).unwrap();
+    fs::set_permissions(&target, fs::Permissions::from_mode(0o640)).unwrap();
+    symlink(&target, &config_path).unwrap();
+    let original = directory_identity(&prefix).unwrap();
+    let stage = tempfile::Builder::new()
+        .prefix(".wineo-restore-")
+        .tempdir_in(prefix.parent().unwrap())
+        .unwrap()
+        .keep();
+    let marker = RestoreMarker {
+        version: VERSION,
+        environment: "game".to_owned(),
+        prefix: prefix.clone(),
+        staging: stage.clone(),
+        old_directory: original,
+        old_fingerprint: import::fingerprint(&prefix).unwrap(),
+        old_config: old_config.clone(),
+    };
+    write_marker(&marker_path(&paths, "game"), &marker).unwrap();
+    exchange(&prefix, &stage).unwrap();
+
+    recover(&paths, "game").unwrap();
+
+    assert_eq!(fs::read_link(&config_path).unwrap(), target);
+    assert_eq!(fs::read_to_string(&target).unwrap(), old_config);
+    assert_eq!(
+        fs::metadata(&target).unwrap().permissions().mode() & 0o7777,
+        0o640
+    );
+}

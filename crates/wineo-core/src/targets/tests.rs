@@ -414,3 +414,25 @@ fn an_invalid_art_toml_stops_a_batch_that_removes_a_target() {
     assert_eq!(f.text(), before);
     assert!(art.join("old/icon.png").exists());
 }
+
+#[test]
+fn a_batch_writes_through_a_symlinked_config() {
+    use crate::files::link_check::{Dangling, Writer};
+    let seed = "prefix = '/p'\nrunner = 'wine'\narch = 'win64'\n";
+    let f = Fixture::new(seed);
+    let batch = |changes: bool| {
+        let mut batch = Batch::new(BTreeMap::new());
+        if changes {
+            batch.add("hades", spec("/game/hades.exe")).unwrap();
+        }
+        write(&f.paths, "hades", &batch).map(|_| ())
+    };
+    Writer {
+        link: &f.paths.environment_config("hades"),
+        seed,
+        write: &mut || batch(true),
+        no_op: Some((seed, &mut || batch(false))),
+        dangling: Dangling::Stops,
+    }
+    .check();
+}

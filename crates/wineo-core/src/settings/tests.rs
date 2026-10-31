@@ -1525,3 +1525,30 @@ fn an_edit_never_makes_both_spellings() {
         "stop_timeout = 3\ntest_old_stop_timeout = 3\n"
     );
 }
+
+#[test]
+fn settings_write_through_a_symlinked_config() {
+    use crate::files::link_check::{Dangling, Writer};
+    let (_root, paths) = setup();
+    let env = ConfigFile::Environment("notepad");
+    Writer {
+        link: &paths.environment_config("notepad"),
+        seed: NOTEPAD,
+        write: &mut || update(&paths, env, &[("gamemode", "true")], &[]).map(|_| ()),
+        no_op: Some((NOTEPAD, &mut || {
+            update(&paths, env, &[], &["gamemode"]).map(|_| ())
+        })),
+        dangling: Dangling::Stops,
+    }
+    .check();
+
+    let steam = |value| update(&paths, ConfigFile::Global, &[("steam", value)], &[]).map(|_| ());
+    Writer {
+        link: &paths.global_config(),
+        seed: "steam = 'flatpak'\n",
+        write: &mut || steam("native"),
+        no_op: Some(("steam = 'flatpak'\n", &mut || steam("flatpak"))),
+        dangling: Dangling::Refused,
+    }
+    .check();
+}

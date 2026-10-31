@@ -931,3 +931,18 @@ fn appearance_wording_for_a_lost_table() {
             .contains("Appearance settings could not be recovered."),
     );
 }
+
+#[test]
+fn a_repair_writes_through_a_symlinked_library_file() {
+    use crate::files::link_check::{Dangling, Writer};
+    let fixture = Fixture::new();
+    let repair = || repair_at(&fixture.paths, STAMP, sync_dir).map(|_| ());
+    Writer {
+        link: &fixture.paths.library_file(),
+        seed: "this is not toml\n\n[environments.hades]\nfavorite = true\n",
+        write: &mut { repair },
+        no_op: Some(("schema_version = 1\n", &mut { repair })),
+        dangling: Dangling::Stops,
+    }
+    .check();
+}

@@ -922,3 +922,30 @@ fn a_file_without_deprecated_keys_errors_exactly_as_before() {
         assert!(new.contains("line "), "{new}");
     }
 }
+
+#[test]
+fn saving_writes_through_a_symlinked_art_file() {
+    use crate::files::link_check::{Dangling, Writer};
+    let root = tempfile::tempdir().unwrap();
+    let paths = crate::paths::Paths::from_lookup(|key| {
+        (key == "HOME").then(|| root.path().as_os_str().to_owned())
+    })
+    .unwrap();
+    let art_dir = paths.art_dir("game");
+    let link = art_dir.join(ART_FILE);
+    let save = |game| {
+        let guard = Locks::new(&paths).config(&link)?;
+        let mut file = ArtFile::open_locked(&art_dir, &guard)?;
+        file.set_game(Some(game))?;
+        file.save().map(|_| ())
+    };
+    let seed = "schema_version = 1\ngame = 7\n";
+    Writer {
+        link: &link,
+        seed,
+        write: &mut || save(8),
+        no_op: Some((seed, &mut || save(7))),
+        dangling: Dangling::Refused,
+    }
+    .check();
+}

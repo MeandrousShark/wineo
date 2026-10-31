@@ -497,3 +497,30 @@ fn editing_a_file_without_schema_version_adds_it_and_a_no_op_does_not() {
     assert!(written.contains("schema_version = 1"), "{written}");
     assert!(written.contains("name = \"Hand\""), "{written}");
 }
+
+#[test]
+fn edits_write_through_a_symlinked_theme() {
+    use crate::files::link_check::{Dangling, Writer};
+    let fixture = Fixture::new();
+    let paths = &fixture.paths;
+    let seed = "schema_version = 1\nname = 'Mine'\nkind = 'dark'\n";
+    let kind = |kind| update(paths, "mine", kind, None, &Colors::default()).map(|_| ());
+    Writer {
+        link: &fixture.file("mine"),
+        seed,
+        write: &mut || kind(ThemeKind::Light),
+        no_op: Some((seed, &mut || kind(ThemeKind::Dark))),
+        dangling: Dangling::Stops,
+    }
+    .check();
+
+    let name = |name| rename(paths, "mine", name).map(|_| ());
+    Writer {
+        link: &fixture.file("mine"),
+        seed,
+        write: &mut || name("Yours"),
+        no_op: Some((seed, &mut || name("Mine"))),
+        dangling: Dangling::Stops,
+    }
+    .check();
+}

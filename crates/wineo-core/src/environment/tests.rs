@@ -861,3 +861,35 @@ fn a_symlinked_config_is_identified_by_its_target() {
     fs::remove_file(&path).unwrap();
     assert_eq!(EnvironmentIdentity::read(&paths, "game"), None);
 }
+
+#[test]
+fn recorded_ids_write_through_a_symlinked_config() {
+    use crate::files::link_check::{Dangling, Writer};
+    let root = tempfile::tempdir().unwrap();
+    let paths = test_paths(root.path());
+    let path = paths.environment_config("game");
+    let seed = "prefix = \"/games/one\"\nrunner = \"wine\"\narch = \"win64\"\n";
+
+    let heroic = || {
+        let (_, snapshot) = Environment::load_for_heroic_match(&paths, "game")?;
+        Environment::record_heroic_id(&paths, "game", "abc123", &snapshot)
+    };
+    Writer {
+        link: &path,
+        seed,
+        write: &mut { heroic },
+        no_op: Some((&format!("heroic_id = \"abc123\"\n{seed}"), &mut { heroic })),
+        dangling: Dangling::Stops,
+    }
+    .check();
+
+    let gog = || Environment::record_gog_id(&paths, "game", "1207", &|_| true).map(|_| ());
+    Writer {
+        link: &path,
+        seed,
+        write: &mut { gog },
+        no_op: Some((&format!("gog_id = \"1207\"\n{seed}"), &mut { gog })),
+        dangling: Dangling::Stops,
+    }
+    .check();
+}

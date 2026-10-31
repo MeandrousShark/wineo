@@ -709,3 +709,19 @@ fn the_same_path_always_hashes_the_same() {
     assert_eq!(label("Photoshop-2026"), "Photoshop-2026");
     assert_eq!(label("weird name!"), "weirdname");
 }
+
+#[test]
+fn a_config_lock_keeps_the_target_it_was_keyed_on() {
+    let root = tempfile::tempdir().unwrap();
+    let target = root.path().join("dotfiles/game.toml");
+    fs::create_dir_all(target.parent().unwrap()).unwrap();
+    fs::write(&target, "").unwrap();
+    let link = root.path().join("game.toml");
+    std::os::unix::fs::symlink(&target, &link).unwrap();
+    let locks = locks(root.path());
+    let guard = locks.config(&link).unwrap();
+    assert_eq!(guard.config_target(), paths::resolve(&target));
+    fs::remove_file(&link).unwrap();
+    std::os::unix::fs::symlink(root.path().join("elsewhere"), &link).unwrap();
+    assert_eq!(guard.config_target(), paths::resolve(&target));
+}
