@@ -344,7 +344,8 @@ impl Supervisor {
         let mut escalation = Escalation::new(stop_timeout, Some(KILL_RETRY));
         // Tells when the request to close is done, since it runs wine too.
         let mut ending_session: Option<Receiver<()>> = None;
-        let kills = KillGuard(TrackedChild::default());
+        let asks = CloseGuard(TrackedChild::default());
+        let kills = CloseGuard(TrackedChild::default());
         let mut kill_out = false;
         let mut rekill_waiting = false;
         let lost = || Err(Error::Unsettled("lost track of the program".to_owned()));
@@ -421,8 +422,9 @@ impl Supervisor {
                     let (host, identity) = (host.clone(), identity.clone());
                     let (done, ended) = mpsc::channel();
                     ending_session = Some(ended);
+                    let tracked = asks.0.clone();
                     thread::spawn(move || {
-                        let _ = host.end_session_live(identity.as_ref());
+                        let _ = host.end_session_live(identity.as_ref(), &tracked);
                         let _ = done.send(());
                     });
                 }
@@ -462,6 +464,11 @@ impl Supervisor {
         // goes idle, so it gets a moment to finish before this counts as over.
         if let Some(ended) = ending_session {
             let _ = ended.recv_timeout(stop_timeout.max(KILL_RETRY));
+        }
+        if !asks.0.close() {
+            watched(Watched::Notice(Notice::Warning(Error::Unsettled(
+                "wineboot --end-session could not be confirmed stopped".to_owned(),
+            ))));
         }
         if observed_exit {
             let _ = reap.send(());
@@ -503,11 +510,12 @@ fn wait_status(status: rustix::process::WaitIdStatus) -> ExitStatus {
     ExitStatus::from_raw(raw)
 }
 
-/// Ends a kill still out when a watch ends, however it ends: the locks go
-/// next, and a late `wineserver -k` would hit the next run in the prefix.
-struct KillGuard(TrackedChild);
+/// Ends work still out when a watch ends, however it ends: the locks go next,
+/// and a late `wineserver -k` or `wineboot --end-session` would hit the next
+/// run in the prefix.
+struct CloseGuard(TrackedChild);
 
-impl Drop for KillGuard {
+impl Drop for CloseGuard {
     fn drop(&mut self) {
         self.0.close();
     }
@@ -1003,6 +1011,25 @@ case "$1" in
 esac
 "#;
 
+    /// Records itself and a descendant in `asks` and `forest-pids`. The
+    /// descendant holds until ask-release, for 20 s at most, then counts as
+    /// landed.
+    const HANGING_WINE: &str = r#"#!/bin/sh
+echo "$$" >>"$WINEPREFIX/forest-pids"
+echo "$$" >>"$WINEPREFIX/asks"
+if [ "$1" = wineboot ]; then
+    "$0" descendant &
+    wait
+    exit
+fi
+i=0
+while [ ! -e "$WINEPREFIX/ask-release" ] && [ "$i" -lt 400 ]; do
+    sleep 0.05
+    i=$((i + 1))
+done
+: >"$WINEPREFIX/ask-landed"
+"#;
+
     struct HungKill {
         root: tempfile::TempDir,
         prefix: PathBuf,
@@ -1025,12 +1052,27 @@ esac
 
     impl HungKill {
         fn new() -> Self {
+            Self::with_wine(None)
+        }
+
+        fn with_hanging_wineboot() -> Self {
+            Self::with_wine(Some(HANGING_WINE))
+        }
+
+        fn with_wine(script: Option<&str>) -> Self {
             let root = tempfile::tempdir().unwrap();
             let wineserver = root.path().join("wineserver");
             write_script(&wineserver, HANGING_WINESERVER);
             let prefix = root.path().join("prefix");
             std::fs::create_dir(&prefix).unwrap();
-            let wine = crate::runner::find_on_path("true").unwrap();
+            let wine = script.map_or_else(
+                || crate::runner::find_on_path("true").unwrap(),
+                |script| {
+                    let wine = root.path().join("wine");
+                    write_script(&wine, script);
+                    wine
+                },
+            );
             let host = Host::Wine {
                 runner: Runner::wine_build("hung".to_owned(), wine, wineserver),
                 prefix: prefix.clone(),
@@ -1043,25 +1085,37 @@ esac
             token: &Token,
             give_up: Option<Duration>,
         ) -> (JoinHandle<Ending>, Receiver<Watched>, Sender<Event>) {
+            let (sender, notices) = mpsc::channel();
+            let (watching, events) =
+                self.watch_with(token, give_up, Duration::ZERO, move |watched| {
+                    let _ = sender.send(watched);
+                });
+            (watching, notices, events)
+        }
+
+        fn watch_with(
+            &self,
+            token: &Token,
+            give_up: Option<Duration>,
+            stop_timeout: Duration,
+            on_watched: impl FnMut(Watched) + Send + 'static,
+        ) -> (JoinHandle<Ending>, Sender<Event>) {
             let supervisor = Supervisor::with_token(token);
             let events = supervisor.sender.clone();
             let host = self.host.clone();
-            let (sender, notices) = mpsc::channel();
             let (child, identity) = gone_program();
             let watching = thread::spawn(move || {
                 supervisor.watch(
                     &host,
                     identity,
                     child,
-                    Duration::ZERO,
+                    stop_timeout,
                     Settle::Idle,
                     give_up,
-                    |watched| {
-                        let _ = sender.send(watched);
-                    },
+                    on_watched,
                 )
             });
-            (watching, notices, events)
+            (watching, events)
         }
 
         fn kills(&self) -> Vec<String> {
@@ -1077,6 +1131,34 @@ esac
             }
         }
 
+        fn asks(&self) -> Vec<String> {
+            recorded_asks(&self.prefix)
+        }
+
+        fn wait_for_wineboot(&self) {
+            wait_for_wineboot(&self.prefix);
+        }
+
+        /// wineboot and its descendant were ended, and can't land late on a
+        /// run that takes over the prefix.
+        fn assert_asks_ended(&self) {
+            let leader = self.asks().remove(0);
+            assert!(
+                !Path::new("/proc").join(&leader).exists(),
+                "{leader} survived"
+            );
+            let deadline = Instant::now() + Duration::from_secs(5);
+            for pid in self.asks() {
+                while running(&pid) {
+                    assert!(Instant::now() < deadline, "{pid} survived");
+                    thread::sleep(Duration::from_millis(10));
+                }
+            }
+            self.release("ask-release");
+            thread::sleep(Duration::from_millis(300));
+            assert!(!self.prefix.join("ask-landed").exists());
+        }
+
         fn release(&self, name: &str) {
             std::fs::write(self.prefix.join(name), "").unwrap();
         }
@@ -1087,6 +1169,140 @@ esac
                 assert!(!Path::new("/proc").join(&pid).exists(), "{pid} survived");
             }
             assert!(!self.prefix.join("kill-landed").exists());
+        }
+    }
+
+    fn recorded_asks(prefix: &Path) -> Vec<String> {
+        let text = std::fs::read_to_string(prefix.join("asks")).unwrap_or_default();
+        text.lines().map(str::to_owned).collect()
+    }
+
+    /// Both wineboot and the descendant it leaves.
+    fn wait_for_wineboot(prefix: &Path) {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while recorded_asks(prefix).len() < 2 {
+            assert!(Instant::now() < deadline, "timed out");
+            thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    /// An orphan can stay a zombie for a moment, which can't ask anything.
+    fn running(pid: &str) -> bool {
+        std::fs::read_to_string(format!("/proc/{pid}/stat")).is_ok_and(|stat| {
+            let state = stat.rsplit_once(") ").map(|(_, rest)| rest);
+            !state.is_some_and(|state| state.starts_with('Z'))
+        })
+    }
+
+    #[test]
+    fn a_hung_wineboot_is_gone_when_a_watch_ends_on_idle() {
+        let f = HungKill::with_hanging_wineboot();
+        let token = Token::new();
+        let (watching, _notices, _events) = f.watch(&token, None);
+        token.cancel();
+        f.wait_for_wineboot();
+        f.release("idle-release");
+        let ending = watching.join().unwrap();
+        assert!(ending.settled.is_ok(), "{:?}", ending.settled);
+        f.assert_asks_ended();
+    }
+
+    #[test]
+    fn a_hung_wineboot_is_gone_when_a_watch_gives_up() {
+        let f = HungKill::with_hanging_wineboot();
+        let token = Token::new();
+        let (watching, _notices, _events) = f.watch(&token, Some(Duration::from_millis(300)));
+        token.cancel();
+        f.wait_for_wineboot();
+        let ending = watching.join().unwrap();
+        assert!(matches!(ending.settled, Err(Error::StillRunning(_))));
+        f.assert_asks_ended();
+    }
+
+    #[test]
+    fn a_hung_wineboot_is_gone_when_a_watch_panics() {
+        let f = HungKill::with_hanging_wineboot();
+        let token = Token::new();
+        let prefix = f.prefix.clone();
+        let (watching, _events) = f.watch_with(&token, None, Duration::ZERO, move |watched| {
+            if matches!(watched, Watched::Notice(Notice::Killing)) {
+                wait_for_wineboot(&prefix);
+                panic!("the watch failed");
+            }
+        });
+        token.cancel();
+        assert!(watching.join().is_err());
+        f.assert_asks_ended();
+    }
+
+    #[test]
+    fn a_wineboot_that_finishes_in_its_grace_period_is_left_to_finish() {
+        let f = HungKill::with_hanging_wineboot();
+        let token = Token::new();
+        let (sender, notices) = mpsc::channel();
+        let (watching, _events) =
+            f.watch_with(&token, None, Duration::from_secs(30), move |watched| {
+                let _ = sender.send(watched);
+            });
+        token.cancel();
+        f.wait_for_wineboot();
+        f.release("idle-release");
+        // Lets the loop end first, so this lands during the wait after it.
+        thread::sleep(Duration::from_millis(200));
+        f.release("ask-release");
+        let ending = watching.join().unwrap();
+        assert!(ending.settled.is_ok(), "{:?}", ending.settled);
+        assert!(f.prefix.join("ask-landed").exists());
+        let warned = notices
+            .try_iter()
+            .any(|watched| matches!(watched, Watched::Notice(Notice::Warning(_))));
+        assert!(!warned);
+    }
+
+    #[test]
+    fn a_closed_request_to_close_never_starts_wineboot() {
+        let f = HungKill::with_hanging_wineboot();
+        f.release("ask-release");
+        let (mut child, identity) = gone_program();
+        let open = TrackedChild::default();
+        f.host.end_session_live(identity.as_ref(), &open).unwrap();
+        assert_eq!(f.asks().len(), 2);
+
+        let closed = TrackedChild::default();
+        assert!(closed.close());
+        f.host.end_session_live(identity.as_ref(), &closed).unwrap();
+        child.wait().unwrap();
+        assert_eq!(f.asks().len(), 2);
+    }
+
+    #[test]
+    fn signal_only_requests_to_close_go_through_the_same_gate() {
+        for host in [
+            Host::Native {
+                exe: PathBuf::from("/bin/true"),
+            },
+            Host::Wine {
+                runner: Runner::fake_proton("proton"),
+                prefix: PathBuf::from("/nonexistent"),
+            },
+        ] {
+            let mut target = KillOnDrop::group(
+                Command::new("sleep")
+                    .arg("20")
+                    .process_group(0)
+                    .spawn()
+                    .unwrap(),
+            );
+            let identity = Identity::of(target.id());
+            let closed = TrackedChild::default();
+            assert!(closed.close());
+            host.end_session_live(identity.as_ref(), &closed).unwrap();
+            thread::sleep(Duration::from_millis(50));
+            assert!(target.try_wait().unwrap().is_none());
+
+            let open = TrackedChild::default();
+            host.end_session_live(identity.as_ref(), &open).unwrap();
+            assert!(!target.wait().unwrap().success());
         }
     }
 

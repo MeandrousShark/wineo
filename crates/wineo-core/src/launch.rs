@@ -196,17 +196,19 @@ impl Host {
     }
 
     /// Asks programs to close. A native run gets SIGTERM to its group.
+    /// Closing `tracked` ends a request still running and calls off one to come.
     pub(crate) fn end_session_live(
         &self,
         identity: Option<&crate::process::Identity>,
+        tracked: &crate::process::TrackedChild,
     ) -> Result<GroupOwnership> {
         match self {
-            Host::Wine { runner, prefix } => runner.end_session_live(prefix, identity),
+            Host::Wine { runner, prefix } => runner.end_session_live(prefix, identity, tracked),
             Host::Proxied { .. } => Err(Error::Unsettled(
                 "Steam runs require a tree stop".to_owned(),
             )),
             Host::Native { .. } => {
-                runner::signal_live_group(identity, rustix::process::Signal::TERM)
+                runner::signal_tracked_group(identity, rustix::process::Signal::TERM, tracked)
             }
         }
     }
@@ -223,7 +225,9 @@ impl Host {
             Host::Proxied { .. } => Err(Error::Unsettled(
                 "Steam runs require a tree stop".to_owned(),
             )),
-            Host::Native { .. } => runner::kill_live_group(identity, tracked),
+            Host::Native { .. } => {
+                runner::signal_tracked_group(identity, rustix::process::Signal::KILL, tracked)
+            }
         }
     }
 }

@@ -454,24 +454,27 @@ impl Runner {
     }
 
     /// Ends a session while the caller still owns the operation and prefix.
-    pub fn end_session_live(
+    /// `wineboot --end-session` can outlast that ownership, so it runs in
+    /// `tracked`, which lets the caller end it, or stop it from starting, first.
+    pub(crate) fn end_session_live(
         &self,
         prefix: &Path,
         identity: Option<&Identity>,
+        tracked: &TrackedChild,
     ) -> Result<GroupOwnership> {
         if self.is_proton() {
-            return signal_live_group(identity, Signal::TERM);
+            return signal_tracked_group(identity, Signal::TERM, tracked);
         }
         let ownership = crate::process::group_ownership(identity);
         if ownership != GroupOwnership::Owned {
             return Ok(ownership);
         }
-        on_its_own(
-            self.command(prefix, &[])?
-                .args(["wineboot", "--end-session"]),
-        )
-        .status()
-        .context(|| "failed to run wineboot --end-session".to_owned())?;
+        tracked
+            .run(on_its_own(
+                self.command(prefix, &[])?
+                    .args(["wineboot", "--end-session"]),
+            ))
+            .context(|| "failed to run wineboot --end-session".to_owned())?;
         Ok(GroupOwnership::Owned)
     }
 
@@ -550,7 +553,7 @@ impl Runner {
         tracked: &TrackedChild,
     ) -> Result<GroupOwnership> {
         if self.is_proton() {
-            return kill_live_group(identity, tracked);
+            return signal_tracked_group(identity, Signal::KILL, tracked);
         }
         let Some(identity) = identity else {
             return Ok(GroupOwnership::Unknown);
@@ -623,13 +626,14 @@ pub(crate) fn signal_live_group(
         .context(|| "failed to signal tracked process group".to_owned())
 }
 
-/// SIGKILLs a group a live owner established, unless `tracked` has closed.
-pub(crate) fn kill_live_group(
+/// Signals a group a live owner established, unless `tracked` has closed.
+pub(crate) fn signal_tracked_group(
     identity: Option<&Identity>,
+    signal: Signal,
     tracked: &TrackedChild,
 ) -> Result<GroupOwnership> {
     tracked
-        .unless_closed(|| signal_live_group(identity, Signal::KILL))
+        .unless_closed(|| signal_live_group(identity, signal))
         .unwrap_or(Ok(GroupOwnership::Gone))
 }
 
