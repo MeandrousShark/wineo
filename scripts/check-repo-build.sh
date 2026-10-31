@@ -102,8 +102,9 @@ trap cleanup EXIT
 
 case $kind in
     deb)
-        # The same steps the publish script applies: the version, then the
-        # series. The orig tarball is the vendored one under its Debian name.
+        # The version is rewritten for this test only; the series step is the
+        # publish script's. The orig tarball is the vendored one under its
+        # Debian name.
         # packaging/debian stays as the tarball has it, since dpkg-source
         # refuses a tree that differs from the orig tarball outside debian/.
         "$script_dir/prepare-debian-tree.sh" "$tree" "$target"

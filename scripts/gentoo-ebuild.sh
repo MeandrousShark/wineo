@@ -15,7 +15,8 @@
 #
 # pycargoebuild comes from PATH if it is there (Gentoo, or the gentoo/stage3
 # container with app-portage/pycargoebuild emerged). Otherwise it is
-# installed into a throwaway venv from PyPI, pinned below. Either way it reads
+# installed into a throwaway venv from PyPI, pinned below. It needs wget or
+# aria2 to fetch the crates. Either way it reads
 # Gentoo's license-mapping.conf, downloaded from the gentoo/gentoo mirror
 # into the same throwaway directory. Crate tarballs go to
 # WINEO_GENTOO_DISTDIR if set (they run to hundreds of MB, so point it at a
