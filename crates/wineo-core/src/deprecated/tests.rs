@@ -299,7 +299,7 @@ fn rename_in_place_writes_through_a_symlinked_config() {
         no_op: Some(("prefix = '/p'\nrunner = 'wine'\narch = 'win64'\n", &mut {
             rename
         })),
-        dangling: Dangling::Stops,
+        dangling: Dangling::NothingToDo,
     }
     .check();
 }

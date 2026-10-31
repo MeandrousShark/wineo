@@ -879,7 +879,7 @@ fn recorded_ids_write_through_a_symlinked_config() {
         seed,
         write: &mut { heroic },
         no_op: Some((&format!("heroic_id = \"abc123\"\n{seed}"), &mut { heroic })),
-        dangling: Dangling::Stops,
+        dangling: Dangling::Missing("game"),
     }
     .check();
 
@@ -889,7 +889,7 @@ fn recorded_ids_write_through_a_symlinked_config() {
         seed,
         write: &mut { gog },
         no_op: Some((&format!("gog_id = \"1207\"\n{seed}"), &mut { gog })),
-        dangling: Dangling::Stops,
+        dangling: Dangling::Missing("game"),
     }
     .check();
 }

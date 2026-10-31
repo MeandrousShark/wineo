@@ -942,7 +942,7 @@ fn a_repair_writes_through_a_symlinked_library_file() {
         seed: "this is not toml\n\n[environments.hades]\nfavorite = true\n",
         write: &mut { repair },
         no_op: Some(("schema_version = 1\n", &mut { repair })),
-        dangling: Dangling::Stops,
+        dangling: Dangling::NothingToDo,
     }
     .check();
 }

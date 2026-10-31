@@ -510,7 +510,7 @@ fn edits_write_through_a_symlinked_theme() {
         seed,
         write: &mut || kind(ThemeKind::Light),
         no_op: Some((seed, &mut || kind(ThemeKind::Dark))),
-        dangling: Dangling::Stops,
+        dangling: Dangling::Missing("mine"),
     }
     .check();
 
@@ -520,7 +520,7 @@ fn edits_write_through_a_symlinked_theme() {
         seed,
         write: &mut || name("Yours"),
         no_op: Some((seed, &mut || name("Mine"))),
-        dangling: Dangling::Stops,
+        dangling: Dangling::Missing("mine"),
     }
     .check();
 }

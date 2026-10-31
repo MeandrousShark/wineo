@@ -9,12 +9,14 @@ use std::path::{Path, PathBuf};
 use super::config_write_hooks;
 
 /// What a writer does with a link that leads nowhere.
-#[derive(Clone, Copy, PartialEq)]
-pub(crate) enum Dangling {
+#[derive(Clone, Copy)]
+pub(crate) enum Dangling<'a> {
     /// It gets to the write, which must refuse and name the link.
     Refused,
-    /// It reads as a missing file and stops before the write.
-    Stops,
+    /// It reads as a missing file, which this writer takes as nothing to do.
+    NothingToDo,
+    /// It reads as a missing file, and the error says this.
+    Missing(&'a str),
 }
 
 type Run<'a, E> = &'a mut dyn FnMut() -> Result<(), E>;
@@ -27,7 +29,7 @@ pub(crate) struct Writer<'a, E> {
     pub(crate) seed: &'a str,
     pub(crate) write: Run<'a, E>,
     pub(crate) no_op: Option<(&'a str, Run<'a, E>)>,
-    pub(crate) dangling: Dangling,
+    pub(crate) dangling: Dangling<'a>,
 }
 
 impl<E: Display> Writer<'_, E> {
@@ -75,6 +77,10 @@ impl<E: Display> Writer<'_, E> {
         );
         let text = fs::read_to_string(target).unwrap();
         assert_ne!(text, self.seed, "{shape}: the target wasn't written");
+        self.no_temp_files(target, shape);
+    }
+
+    fn no_temp_files(&self, target: &Path, shape: &str) {
         for dir in [self.link.parent().unwrap(), target.parent().unwrap()] {
             let leftovers: Vec<_> = fs::read_dir(dir)
                 .unwrap()
@@ -126,17 +132,18 @@ impl<E: Display> Writer<'_, E> {
         let target = self.seeded();
         fs::remove_file(&target).unwrap();
         symlink(&target, self.link).unwrap();
-        let result = (self.write)();
-        if self.dangling == Dangling::Refused {
-            let error = match result {
-                Ok(()) => panic!("a dangling link was written through"),
-                Err(error) => format!("{error:#}"),
-            };
-            let named = self.link.display().to_string();
-            assert!(error.contains(&named), "{error}");
+        let result = (self.write)().map_err(|error| format!("{error:#}"));
+        let named = self.link.display().to_string();
+        match (self.dangling, result) {
+            (Dangling::NothingToDo, Ok(())) => {}
+            (Dangling::Refused, Err(error)) => assert!(error.contains(&named), "{error}"),
+            (Dangling::Missing(says), Err(error)) => assert!(error.contains(says), "{error}"),
+            (_, Ok(())) => panic!("a dangling link was reported as a success"),
+            (_, Err(error)) => panic!("a dangling link wasn't handled: {error}"),
         }
         assert_eq!(fs::read_link(self.link).unwrap(), target);
         assert!(!target.exists(), "the link's target was created");
+        self.no_temp_files(&target, "dangling link");
     }
 
     fn refuses_a_link_repointed_mid_write(&mut self) {
@@ -158,6 +165,8 @@ impl<E: Display> Writer<'_, E> {
         assert_eq!(fs::read_to_string(&locked).unwrap(), self.seed);
         assert_eq!(fs::read_to_string(&other).unwrap(), "other");
         assert_eq!(fs::read_link(self.link).unwrap(), other);
+        self.no_temp_files(&locked, "repointed link");
+        self.no_temp_files(&other, "repointed link");
     }
 
     fn leaves_the_file_alone_on_a_no_op(&mut self) {

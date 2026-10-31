@@ -1538,7 +1538,7 @@ fn settings_write_through_a_symlinked_config() {
         no_op: Some((NOTEPAD, &mut || {
             update(&paths, env, &[], &["gamemode"]).map(|_| ())
         })),
-        dangling: Dangling::Stops,
+        dangling: Dangling::Missing("notepad"),
     }
     .check();
 

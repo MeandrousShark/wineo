@@ -432,7 +432,7 @@ fn a_batch_writes_through_a_symlinked_config() {
         seed,
         write: &mut || batch(true),
         no_op: Some((seed, &mut || batch(false))),
-        dangling: Dangling::Stops,
+        dangling: Dangling::Missing("hades"),
     }
     .check();
 }
