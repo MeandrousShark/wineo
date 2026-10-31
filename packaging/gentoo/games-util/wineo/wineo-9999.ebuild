@@ -3,6 +3,11 @@
 
 EAPI=8
 
+# The revision of the release ebuild derived from this file. Bump it for a
+# packaging fix under the same wineo version, and publish-packages.sh writes
+# wineo-VERSION-rN.ebuild. Back to 0 for a new version.
+# Release revision: 0
+
 # Keep in step with scripts/rust-floor.sh.
 RUST_MIN_VER="1.90.0"
 
