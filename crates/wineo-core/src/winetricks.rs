@@ -632,6 +632,10 @@ fn run_with_output(
     }
 
     let mut child = command.spawn().context("failed to run winetricks")?;
+    let identity = runner
+        .is_proton()
+        .then(|| process::Identity::of(child.id()))
+        .flatten();
     process::quiet_core_dumps(&child);
     if tail.is_some() {
         events(WinetricksEvent::LogStarted);
@@ -688,7 +692,15 @@ fn run_with_output(
     if let Some(tail) = &mut tail {
         tail.pump(&mut events);
     }
-    settle(runner, prefix, &child, token, &mut escalation, &mut events)?;
+    settle(
+        runner,
+        prefix,
+        &child,
+        identity,
+        token,
+        &mut escalation,
+        &mut events,
+    )?;
     let status = child.wait().context("failed to wait for winetricks")?;
     events(WinetricksEvent::Done(status));
     if token.is_canceled() {
@@ -770,22 +782,28 @@ fn install_unattended_with_output(
 }
 
 /// Waits for wine to go idle once winetricks is gone, with the leader still
-/// unreaped so its group can be killed by number.
+/// unreaped so its group can be signaled by number. Proton has no wineserver
+/// to ask, so there it waits for `identity`'s group, for as long as anything
+/// in it lives. Without an identity there's nothing to wait for.
 fn settle(
     runner: &Runner,
     prefix: &Path,
     leader: &Child,
+    identity: Option<process::Identity>,
     token: &Token,
     escalation: &mut Escalation,
     events: &mut impl FnMut(WinetricksEvent),
 ) -> anyhow::Result<()> {
-    if runner.is_proton() {
-        return Ok(());
-    }
+    let group = leader.id();
     let (sender, idle) = mpsc::channel();
     let (waiting_runner, waiting_prefix) = (runner.clone(), prefix.to_owned());
     thread::spawn(move || {
-        let _ = sender.send(waiting_runner.wait_idle(&waiting_prefix));
+        let result = match (waiting_runner.is_proton(), &identity) {
+            (true, Some(_)) => runner::wait_for_live_group(identity.as_ref(), true),
+            (true, None) => Ok(()),
+            (false, _) => waiting_runner.wait_idle(&waiting_prefix),
+        };
+        let _ = sender.send(result);
     });
     let mut ending = None;
     let mut ending_started = false;
@@ -815,7 +833,7 @@ fn settle(
             let (sender, receiver) = mpsc::channel();
             let (ending_runner, ending_prefix) = (runner.clone(), prefix.to_owned());
             thread::spawn(move || {
-                let _ = sender.send(ending_runner.end_session(&ending_prefix, None));
+                let _ = sender.send(ending_runner.end_session(&ending_prefix, Some(group)));
             });
             ending = Some(receiver);
         }

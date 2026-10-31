@@ -1,6 +1,6 @@
 use std::fs;
 
-use crate::test_script::write_script;
+use crate::test_script::{kill_fake_programs, write_script};
 
 use super::*;
 
@@ -134,10 +134,15 @@ fn progress_matches_whole_verb_names_only() {
 
 /// Runs `child` in a subprocess whose PATH starts with a fake winetricks.
 fn with_fake_winetricks(script_body: &str, child: &str) {
+    with_fake_program("winetricks", script_body, child);
+}
+
+/// Runs `child` in a subprocess whose PATH starts with a fake `program`.
+fn with_fake_program(program: &str, script_body: &str, child: &str) {
     let root = tempfile::tempdir().unwrap();
     let bin = root.path().join("bin");
     fs::create_dir(&bin).unwrap();
-    let script = bin.join("winetricks");
+    let script = bin.join(program);
     write_script(&script, script_body);
     let path = std::env::join_paths(std::iter::once(bin.clone()).chain(std::env::split_paths(
         &std::env::var_os("PATH").unwrap_or_default(),
@@ -149,6 +154,7 @@ fn with_fake_winetricks(script_body: &str, child: &str) {
         .env("PATH", path)
         .output()
         .unwrap();
+    kill_fake_programs(root.path());
     assert!(
         output.status.success(),
         "{}",
@@ -406,4 +412,153 @@ fn token_cancel_child() {
             .iter()
             .any(|event| matches!(event, WinetricksEvent::Done(_)))
     );
+}
+
+/// A umu whose winetricks exits at once and leaves a child in its group, until
+/// the test creates `release`, a SIGTERM ends it, or 10 s pass.
+const LINGERING_UMU: &str = r#"#!/bin/sh
+(
+    trap 'touch "$WINEPREFIX/termed"; exit 0' TERM
+    i=0
+    while [ ! -e "$WINEPREFIX/release" ] && [ "$i" -lt 200 ]; do
+        sleep 0.05
+        i=$((i + 1))
+    done
+    touch "$WINEPREFIX/lingerer-done"
+) &
+echo "$!" >"$WINEPREFIX/fake-pids"
+echo "$$" >"$WINEPREFIX/leader-pid"
+exit 0
+"#;
+
+fn lingering_prefix() -> Option<std::path::PathBuf> {
+    let root = std::env::var_os("WINEO_WINETRICKS_PROGRESS_ROOT")?;
+    let prefix = std::path::PathBuf::from(root).join("prefix");
+    fs::create_dir(&prefix).unwrap();
+    Some(prefix)
+}
+
+fn wait_until(mut ready: impl FnMut() -> bool) {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !ready() {
+        assert!(Instant::now() < deadline, "timed out");
+        thread::sleep(Duration::from_millis(10));
+    }
+}
+
+/// Waits until umu has exited and left its child behind, so `settle` has
+/// taken over from `stop_group`.
+fn wait_for_settle(prefix: &Path) {
+    let pid = prefix.join("leader-pid");
+    wait_until(|| fs::read_to_string(&pid).is_ok_and(|text| text.ends_with('\n')));
+    let pid = fs::read_to_string(&pid).unwrap();
+    let stat = format!("/proc/{}/stat", pid.trim());
+    wait_until(|| fs::read_to_string(&stat).is_ok_and(|text| text.contains(") Z ")));
+    thread::sleep(Duration::from_millis(200));
+}
+
+#[test]
+fn winetricks_waits_for_what_a_verb_left_under_proton() {
+    with_fake_program(
+        "umu-run",
+        LINGERING_UMU,
+        "winetricks::tests::proton_settle_child",
+    );
+}
+
+#[test]
+fn proton_settle_child() {
+    let Some(prefix) = lingering_prefix() else {
+        return;
+    };
+    let waiter = {
+        let prefix = prefix.clone();
+        thread::spawn(move || {
+            wait_for_settle(&prefix);
+            fs::write(prefix.join("release"), "").unwrap();
+        })
+    };
+    run(
+        &Runner::fake_proton("test"),
+        &prefix,
+        &BTreeMap::new(),
+        &verbs(&["-q", "corefonts"]),
+        30,
+        &Token::new(),
+        Output::Log(&prefix.join("output.log")),
+        |_| {},
+    )
+    .unwrap();
+    let done = prefix.join("lingerer-done").exists();
+    waiter.join().unwrap();
+    assert!(done, "winetricks returned with a child still running");
+}
+
+#[test]
+fn ctrl_c_during_settle_signals_the_group_under_proton() {
+    with_fake_program(
+        "umu-run",
+        LINGERING_UMU,
+        "winetricks::tests::proton_settle_cancel_child",
+    );
+}
+
+#[test]
+fn proton_settle_cancel_child() {
+    let Some(prefix) = lingering_prefix() else {
+        return;
+    };
+    let token = Token::new();
+    let waiter = {
+        let (prefix, token) = (prefix.clone(), token.clone());
+        thread::spawn(move || {
+            wait_for_settle(&prefix);
+            token.cancel();
+        })
+    };
+    let mut events = Vec::new();
+    let result = run(
+        &Runner::fake_proton("test"),
+        &prefix,
+        &BTreeMap::new(),
+        &verbs(&["-q", "corefonts"]),
+        30,
+        &token,
+        Output::Log(&prefix.join("output.log")),
+        |event| events.push(event),
+    );
+    waiter.join().unwrap();
+    assert!(
+        result
+            .unwrap_err()
+            .downcast_ref::<Error>()
+            .is_some_and(|err| matches!(err, Error::Canceled("winetricks")))
+    );
+    assert!(prefix.join("termed").exists(), "one Ctrl+C reached no one");
+    assert!(
+        events
+            .iter()
+            .any(|event| matches!(event, WinetricksEvent::Stopping))
+    );
+    assert!(
+        !events
+            .iter()
+            .any(|event| matches!(event, WinetricksEvent::Killing))
+    );
+}
+
+#[test]
+fn proton_settle_without_an_identity_has_nothing_to_wait_for() {
+    let mut leader = Command::new("true").spawn().unwrap();
+    settle(
+        &Runner::fake_proton("test"),
+        Path::new("/nonexistent"),
+        &leader,
+        None,
+        &Token::new(),
+        &mut Escalation::new(Duration::from_secs(1), None),
+        &mut |_: WinetricksEvent| {},
+    )
+    .unwrap();
+    leader.wait().unwrap();
 }
