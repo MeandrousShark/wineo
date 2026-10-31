@@ -36,9 +36,12 @@ edit environment configs.
 
 A config can be a symlink, say into a dotfiles repo, and stays one. wineo
 follows the whole chain of links, writes a temp file beside the real file,
-and replaces that, keeping the file's permissions. This covers `config.toml`,
-environment configs, `library.toml`, `art.toml`, and themes. State, cache, and
-trash files aren't configs, so they're replaced as before.
+and replaces that. This covers `config.toml`, environment configs,
+`library.toml`, `art.toml`, and themes. State, cache, and trash files aren't
+configs, so they're replaced as before.
+
+Any config that already exists keeps its permissions when wineo rewrites it,
+link or not.
 
 A link whose target is missing is refused with an error that names it, and
 nothing gets created. A link repointed during a write is refused too, so
