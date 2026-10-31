@@ -937,7 +937,7 @@ fn set_appearance_is_refused_on_a_broken_or_newer_file() {
 
 #[test]
 fn edits_write_through_a_symlinked_library_file() {
-    use crate::files::link_check::{Dangling, Writer};
+    use crate::files::link_check::{Dangling, NewFile, Writer};
     let root = tempfile::tempdir().unwrap();
     let paths =
         Paths::from_lookup(|key| (key == "HOME").then(|| OsString::from(root.path()))).unwrap();
@@ -950,6 +950,7 @@ fn edits_write_through_a_symlinked_library_file() {
             set_favorite(&paths, "hades", false).map(|_| ())
         })),
         dangling: Dangling::Refused,
+        new_file: NewFile::Default,
     }
     .check();
 }

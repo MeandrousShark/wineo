@@ -1187,7 +1187,7 @@ fn rewrite_keeping_mtime(path: &Path, text: &str) {
 
 #[test]
 fn the_config_writer_goes_through_a_symlinked_config() {
-    use crate::files::link_check::{Dangling, Writer};
+    use crate::files::link_check::{Dangling, NewFile, Writer};
     let root = tempfile::tempdir().unwrap();
     let paths =
         Paths::from_lookup(|key| (key == "HOME").then(|| OsString::from(root.path()))).unwrap();
@@ -1201,6 +1201,7 @@ fn the_config_writer_goes_through_a_symlinked_config() {
         },
         no_op: None,
         dangling: Dangling::Refused,
+        new_file: NewFile::Private,
     }
     .check();
 }
@@ -1242,6 +1243,42 @@ fn rollback_writes_through_a_symlinked_config() {
     assert_eq!(fs::read_to_string(&target).unwrap(), old_config);
     assert_eq!(
         fs::metadata(&target).unwrap().permissions().mode() & 0o7777,
+        0o640
+    );
+}
+
+#[test]
+fn recover_keeps_a_regular_configs_mode() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let (_root, paths, prefix, config) = fixture(false);
+    let old_config = config.replace("runner = 'wine'", "runner = 'build'");
+    let config_path = paths.environment_config("game");
+    fs::set_permissions(&config_path, fs::Permissions::from_mode(0o640)).unwrap();
+    let original = directory_identity(&prefix).unwrap();
+    let stage = tempfile::Builder::new()
+        .prefix(".wineo-restore-")
+        .tempdir_in(prefix.parent().unwrap())
+        .unwrap()
+        .keep();
+    let marker = RestoreMarker {
+        version: VERSION,
+        environment: "game".to_owned(),
+        prefix: prefix.clone(),
+        staging: stage.clone(),
+        old_directory: original,
+        old_fingerprint: import::fingerprint(&prefix).unwrap(),
+        old_config: old_config.clone(),
+        config_target: None,
+    };
+    write_marker(&marker_path(&paths, "game"), &marker).unwrap();
+    exchange(&prefix, &stage).unwrap();
+
+    recover(&paths, "game").unwrap();
+
+    assert_eq!(fs::read_to_string(&config_path).unwrap(), old_config);
+    assert_eq!(
+        fs::metadata(&config_path).unwrap().permissions().mode() & 0o7777,
         0o640
     );
 }

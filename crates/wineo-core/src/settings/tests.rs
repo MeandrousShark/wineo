@@ -1528,7 +1528,7 @@ fn an_edit_never_makes_both_spellings() {
 
 #[test]
 fn settings_write_through_a_symlinked_config() {
-    use crate::files::link_check::{Dangling, Writer};
+    use crate::files::link_check::{Dangling, NewFile, Writer};
     let (_root, paths) = setup();
     let env = ConfigFile::Environment("notepad");
     Writer {
@@ -1539,6 +1539,7 @@ fn settings_write_through_a_symlinked_config() {
             update(&paths, env, &[], &["gamemode"]).map(|_| ())
         })),
         dangling: Dangling::Missing("notepad"),
+        new_file: NewFile::NotCreated,
     }
     .check();
 
@@ -1549,6 +1550,7 @@ fn settings_write_through_a_symlinked_config() {
         write: &mut || steam("native"),
         no_op: Some(("steam = 'flatpak'\n", &mut || steam("flatpak"))),
         dangling: Dangling::Refused,
+        new_file: NewFile::Default,
     }
     .check();
 }

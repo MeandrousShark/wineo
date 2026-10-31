@@ -864,7 +864,7 @@ fn a_symlinked_config_is_identified_by_its_target() {
 
 #[test]
 fn recorded_ids_write_through_a_symlinked_config() {
-    use crate::files::link_check::{Dangling, Writer};
+    use crate::files::link_check::{Dangling, NewFile, Writer};
     let root = tempfile::tempdir().unwrap();
     let paths = test_paths(root.path());
     let path = paths.environment_config("game");
@@ -880,6 +880,7 @@ fn recorded_ids_write_through_a_symlinked_config() {
         write: &mut { heroic },
         no_op: Some((&format!("heroic_id = \"abc123\"\n{seed}"), &mut { heroic })),
         dangling: Dangling::Missing("game"),
+        new_file: NewFile::NotCreated,
     }
     .check();
 
@@ -890,6 +891,7 @@ fn recorded_ids_write_through_a_symlinked_config() {
         write: &mut { gog },
         no_op: Some((&format!("gog_id = \"1207\"\n{seed}"), &mut { gog })),
         dangling: Dangling::Missing("game"),
+        new_file: NewFile::NotCreated,
     }
     .check();
 }

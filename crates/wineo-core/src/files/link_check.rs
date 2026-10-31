@@ -1,10 +1,12 @@
 //! The one check every config writer goes through: a symlinked config stays a
-//! symlink, in every shape a link takes.
+//! symlink, in every shape a link takes, and an existing file keeps its mode.
 
+use std::cell::Cell;
 use std::fmt::Display;
 use std::fs;
 use std::os::unix::fs::{MetadataExt, PermissionsExt, symlink};
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
 
 use super::config_write_hooks;
 
@@ -19,6 +21,17 @@ pub(crate) enum Dangling<'a> {
     Missing(&'a str),
 }
 
+/// What a writer does when there's no config yet.
+#[derive(Clone, Copy)]
+pub(crate) enum NewFile {
+    /// Creates it with the default mode, the way `write_atomic` does.
+    Default,
+    /// Creates it `0600`.
+    Private,
+    /// Creates nothing: it only edits a config that's there.
+    NotCreated,
+}
+
 type Run<'a, E> = &'a mut dyn FnMut() -> Result<(), E>;
 
 /// A writer under test. `write` makes a real change to the config at `link`,
@@ -30,6 +43,7 @@ pub(crate) struct Writer<'a, E> {
     pub(crate) write: Run<'a, E>,
     pub(crate) no_op: Option<(&'a str, Run<'a, E>)>,
     pub(crate) dangling: Dangling<'a>,
+    pub(crate) new_file: NewFile,
 }
 
 impl<E: Display> Writer<'_, E> {
@@ -40,6 +54,9 @@ impl<E: Display> Writer<'_, E> {
         self.through_a_chain();
         self.keeps_the_targets_mode(0o600);
         self.keeps_the_targets_mode(0o664);
+        self.keeps_a_regular_files_mode(0o600);
+        self.keeps_a_regular_files_mode(0o664);
+        self.gives_a_new_file_its_usual_mode();
         self.refuses_a_dangling_link();
         self.refuses_a_link_repointed_mid_write();
         self.leaves_the_file_alone_on_a_no_op();
@@ -126,6 +143,62 @@ impl<E: Display> Writer<'_, E> {
             mode,
             "the target's mode changed"
         );
+    }
+
+    fn keeps_a_regular_files_mode(&mut self, mode: u32) {
+        let _ = fs::remove_file(self.link);
+        fs::create_dir_all(self.link.parent().unwrap()).unwrap();
+        fs::write(self.link, self.seed).unwrap();
+        fs::set_permissions(self.link, fs::Permissions::from_mode(mode)).unwrap();
+        // Set by the time the temp file is complete, not after the rename.
+        let seen = Rc::new(Cell::new(false));
+        let (dir, temp_seen) = (self.link.parent().unwrap().to_owned(), seen.clone());
+        config_write_hooks::before_rename(move || {
+            for entry in fs::read_dir(&dir).unwrap() {
+                let entry = entry.unwrap();
+                if entry.file_name().to_string_lossy().contains(".tmp") {
+                    assert_eq!(entry.metadata().unwrap().mode() & 0o7777, mode);
+                    temp_seen.set(true);
+                }
+            }
+        });
+        if let Err(error) = (self.write)() {
+            panic!("regular file: the write failed: {error:#}");
+        }
+        assert!(seen.get(), "regular file: no temp file was renamed");
+        let found = fs::symlink_metadata(self.link).unwrap();
+        assert!(found.is_file(), "regular file: it's no longer one");
+        assert_eq!(
+            found.mode() & 0o7777,
+            mode,
+            "the regular file's mode changed"
+        );
+        let text = fs::read_to_string(self.link).unwrap();
+        assert_ne!(text, self.seed, "regular file: it wasn't written");
+        self.no_temp_files(self.link, "regular file");
+    }
+
+    fn gives_a_new_file_its_usual_mode(&mut self) {
+        let target = self.seeded();
+        fs::remove_file(&target).unwrap();
+        let result = (self.write)().map_err(|error| format!("{error:#}"));
+        let usual = match self.new_file {
+            NewFile::NotCreated => {
+                assert!(!self.link.exists(), "a new file was created");
+                return;
+            }
+            NewFile::Private => 0o600,
+            NewFile::Default => {
+                super::write_atomic(&target, "").unwrap();
+                fs::metadata(&target).unwrap().mode() & 0o7777
+            }
+        };
+        if let Err(error) = result {
+            panic!("new file: the write failed: {error}");
+        }
+        let found = fs::metadata(self.link).unwrap().mode() & 0o7777;
+        assert_eq!(found, usual, "the new file's mode");
+        self.no_temp_files(self.link, "new file");
     }
 
     fn refuses_a_dangling_link(&mut self) {

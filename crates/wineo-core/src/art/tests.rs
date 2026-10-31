@@ -925,7 +925,7 @@ fn a_file_without_deprecated_keys_errors_exactly_as_before() {
 
 #[test]
 fn saving_writes_through_a_symlinked_art_file() {
-    use crate::files::link_check::{Dangling, Writer};
+    use crate::files::link_check::{Dangling, NewFile, Writer};
     let root = tempfile::tempdir().unwrap();
     let paths = crate::paths::Paths::from_lookup(|key| {
         (key == "HOME").then(|| root.path().as_os_str().to_owned())
@@ -946,6 +946,7 @@ fn saving_writes_through_a_symlinked_art_file() {
         write: &mut || save(8),
         no_op: Some((seed, &mut || save(7))),
         dangling: Dangling::Refused,
+        new_file: NewFile::Default,
     }
     .check();
 }

@@ -417,7 +417,7 @@ fn an_invalid_art_toml_stops_a_batch_that_removes_a_target() {
 
 #[test]
 fn a_batch_writes_through_a_symlinked_config() {
-    use crate::files::link_check::{Dangling, Writer};
+    use crate::files::link_check::{Dangling, NewFile, Writer};
     let seed = "prefix = '/p'\nrunner = 'wine'\narch = 'win64'\n";
     let f = Fixture::new(seed);
     let batch = |changes: bool| {
@@ -433,6 +433,7 @@ fn a_batch_writes_through_a_symlinked_config() {
         write: &mut || batch(true),
         no_op: Some((seed, &mut || batch(false))),
         dangling: Dangling::Missing("hades"),
+        new_file: NewFile::NotCreated,
     }
     .check();
 }

@@ -500,7 +500,7 @@ fn editing_a_file_without_schema_version_adds_it_and_a_no_op_does_not() {
 
 #[test]
 fn edits_write_through_a_symlinked_theme() {
-    use crate::files::link_check::{Dangling, Writer};
+    use crate::files::link_check::{Dangling, NewFile, Writer};
     let fixture = Fixture::new();
     let paths = &fixture.paths;
     let seed = "schema_version = 1\nname = 'Mine'\nkind = 'dark'\n";
@@ -511,6 +511,7 @@ fn edits_write_through_a_symlinked_theme() {
         write: &mut || kind(ThemeKind::Light),
         no_op: Some((seed, &mut || kind(ThemeKind::Dark))),
         dangling: Dangling::Missing("mine"),
+        new_file: NewFile::NotCreated,
     }
     .check();
 
@@ -521,6 +522,7 @@ fn edits_write_through_a_symlinked_theme() {
         write: &mut || name("Yours"),
         no_op: Some((seed, &mut || name("Mine"))),
         dangling: Dangling::Missing("mine"),
+        new_file: NewFile::NotCreated,
     }
     .check();
 }

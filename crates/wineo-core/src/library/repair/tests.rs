@@ -934,7 +934,7 @@ fn appearance_wording_for_a_lost_table() {
 
 #[test]
 fn a_repair_writes_through_a_symlinked_library_file() {
-    use crate::files::link_check::{Dangling, Writer};
+    use crate::files::link_check::{Dangling, NewFile, Writer};
     let fixture = Fixture::new();
     let repair = || repair_at(&fixture.paths, STAMP, sync_dir).map(|_| ());
     Writer {
@@ -943,6 +943,7 @@ fn a_repair_writes_through_a_symlinked_library_file() {
         write: &mut { repair },
         no_op: Some(("schema_version = 1\n", &mut { repair })),
         dangling: Dangling::NothingToDo,
+        new_file: NewFile::NotCreated,
     }
     .check();
 }

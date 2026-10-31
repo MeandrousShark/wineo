@@ -153,7 +153,8 @@ pub(crate) fn write_atomic_synced(path: &Path, contents: impl AsRef<[u8]>) -> Re
 /// `write_atomic` for a config the user may keep elsewhere: a symlink at `path`
 /// stays, and the write lands on the file it leads to. `target` is what the
 /// config's lock was keyed on, and the write is refused if `path` no longer
-/// resolves to it. Anything but a symlink is written like `write_atomic`.
+/// resolves to it. An existing file keeps its exact mode, and a new one is
+/// created like `write_atomic`'s.
 pub(crate) fn write_config(path: &Path, target: &Path, contents: impl AsRef<[u8]>) -> Result<()> {
     let destination = Destination::find(path, target)?;
     if let Some(dir) = destination.file.parent() {
@@ -292,8 +293,8 @@ pub(crate) fn sync_dir(dir: &Path) -> io::Result<()> {
     File::open(dir)?.sync_all()
 }
 
-/// `write_config_synced` through a private temp file, so a replaced regular
-/// file comes out `0600`. The parent directory must already exist.
+/// `write_config_synced` through a private temp file, so a new file comes out
+/// `0600`. The parent directory must already exist.
 pub(crate) fn persist_config_synced(path: &Path, target: &Path, contents: &[u8]) -> Result<()> {
     let destination = Destination::find(path, target)?;
     let dir = destination.file.parent().unwrap_or(Path::new("."));
@@ -363,11 +364,28 @@ fn is_symlink(path: &Path) -> bool {
     fs::symlink_metadata(path).is_ok_and(|found| found.is_symlink())
 }
 
+/// The exact mode of a regular file at `path`, or None if nothing to keep is
+/// there. A parent that isn't a directory is left for the write to report.
+fn regular_mode(path: &Path) -> io::Result<Option<u32>> {
+    match fs::symlink_metadata(path) {
+        Ok(found) => Ok(found.is_file().then(|| found.mode() & 0o7777)),
+        Err(error)
+            if matches!(
+                error.kind(),
+                io::ErrorKind::NotFound | io::ErrorKind::NotADirectory
+            ) =>
+        {
+            Ok(None)
+        }
+        Err(error) => Err(error),
+    }
+}
+
 /// Where a config write lands.
 struct Destination<'a> {
     pin: Pin<'a>,
     file: &'a Path,
-    /// The target's mode, when writing through a symlink.
+    /// The mode of the file being replaced, if there is one.
     mode: Option<u32>,
 }
 
@@ -386,7 +404,7 @@ impl<'a> Destination<'a> {
             return Ok(Self {
                 pin,
                 file: path,
-                mode: None,
+                mode: regular_mode(path).map_err(refused)?,
             });
         }
         match fs::metadata(path) {
@@ -935,30 +953,43 @@ mod tests {
         let synced = root.path().join("synced.toml");
         write_config_synced(&synced, &resolve(&synced), "text").unwrap();
         assert_eq!(mode(&synced), mode(&plain));
+
+        let persisted = root.path().join("persisted.toml");
+        persist_config_synced(&persisted, &resolve(&persisted), b"text").unwrap();
+        assert_eq!(mode(&persisted), 0o600, "as tempfile creates it");
     }
 
     #[test]
-    fn a_config_write_replaces_a_regular_file_like_write_atomic() {
-        // A rename gives a regular file the new file's mode, even a tighter
-        // one's, and that stays as it was before links were followed.
-        let root = tempfile::tempdir().unwrap();
-        let path = root.path().join("config.toml");
-        for write in [CONFIG_WRITES[0], CONFIG_WRITES[1]] {
-            fs::write(&path, "old").unwrap();
-            fs::set_permissions(&path, fs::Permissions::from_mode(0o640)).unwrap();
-            let before = fs::metadata(&path).unwrap().ino();
-            write(&path, &resolve(&path), b"new").unwrap();
-            assert_eq!(fs::read_to_string(&path).unwrap(), "new");
-            assert!(!fs::symlink_metadata(&path).unwrap().is_symlink());
-            assert_ne!(fs::metadata(&path).unwrap().ino(), before);
-            let fresh = root.path().join("fresh");
-            write_atomic(&fresh, "x").unwrap();
-            assert_eq!(mode(&path), mode(&fresh));
-            fs::remove_file(&fresh).unwrap();
+    fn a_config_write_replaces_a_regular_file_and_keeps_its_mode() {
+        for write in CONFIG_WRITES {
+            for kept in [0o640, 0o644] {
+                let root = tempfile::tempdir().unwrap();
+                let path = root.path().join("config.toml");
+                fs::write(&path, "old").unwrap();
+                fs::set_permissions(&path, fs::Permissions::from_mode(kept)).unwrap();
+                let before = fs::metadata(&path).unwrap().ino();
+                write(&path, &resolve(&path), b"new").unwrap();
+                assert_eq!(fs::read_to_string(&path).unwrap(), "new");
+                assert!(!fs::symlink_metadata(&path).unwrap().is_symlink());
+                assert_ne!(fs::metadata(&path).unwrap().ino(), before);
+                assert_eq!(mode(&path), kept);
+            }
         }
-        fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).unwrap();
-        persist_config_synced(&path, &resolve(&path), b"new").unwrap();
-        assert_eq!(mode(&path), 0o600, "as tempfile creates it");
+    }
+
+    #[test]
+    fn a_config_write_under_a_file_still_fails_the_way_it_did() {
+        let root = tempfile::tempdir().unwrap();
+        let blocker = root.path().join("dir");
+        fs::write(&blocker, "not a directory").unwrap();
+        let path = blocker.join("config.toml");
+        let error = write_config(&path, &resolve(&path), "x").unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .starts_with(&format!("failed to create {}", blocker.display())),
+            "{error}"
+        );
     }
 
     #[test]

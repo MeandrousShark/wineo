@@ -288,7 +288,7 @@ fn the_summary_counts_configs_not_keys() {
 
 #[test]
 fn rename_in_place_writes_through_a_symlinked_config() {
-    use crate::files::link_check::{Dangling, Writer};
+    use crate::files::link_check::{Dangling, NewFile, Writer};
     let (_root, paths) = setup();
     let config = Config::Environment("hades".into());
     let rename = || rename_in_place(&paths, &config).map(|_| ());
@@ -300,6 +300,7 @@ fn rename_in_place_writes_through_a_symlinked_config() {
             rename
         })),
         dangling: Dangling::NothingToDo,
+        new_file: NewFile::NotCreated,
     }
     .check();
 }
