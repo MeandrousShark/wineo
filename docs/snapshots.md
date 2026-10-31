@@ -64,6 +64,10 @@ until recovery. Roll back the interrupted restore with:
 wineo snapshot recover Zomboid
 ```
 
+If the environment's config is a symlink that moved after the restore began,
+recovery refuses and changes nothing, because the saved config belongs to the
+old target. Point the link back and run it again.
+
 The desktop Snapshots page and Checkup also offer a separately confirmed
 **Roll back restore** action. Neither Checkup's batch action nor
 `wineo validate --fix` rolls back an interrupted snapshot restore. Malformed

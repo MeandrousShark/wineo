@@ -32,6 +32,19 @@ one of them first.` A hand edit can still nest two prefixes, and so can two
 exist, filed under the inner environment; it has no fix, since fixes don't
 edit environment configs.
 
+## Symlinked configs
+
+A config can be a symlink, say into a dotfiles repo, and stays one. wineo
+follows the whole chain of links, writes a temp file beside the real file,
+and replaces that, keeping the file's permissions. This covers `config.toml`,
+environment configs, `library.toml`, `art.toml`, and themes. State, cache, and
+trash files aren't configs, so they're replaced as before.
+
+A link whose target is missing is refused with an error that names it, and
+nothing gets created. A link repointed during a write is refused too, so
+nothing is written; try again. A link into a read-only place, such as a Nix
+store, fails with a write error.
+
 ## Creating an environment by hand
 
 Write `environments/<name>.toml` yourself, or restore one from a dotfiles
@@ -572,6 +585,6 @@ manual = "server.svg"
 Unknown keys are refused, like other configs, and a bad value invalidates
 the whole file. While art.toml can't be read, desktop entries keep the icon
 they already have and wineo says why, instead of treating the environment
-as having no art. wineo edits art.toml in place, so hand-added comments
-survive. See [Artwork](art.md) for the commands that read and
-write it.
+as having no art. wineo keeps the rest of art.toml as it was when it writes
+the file, so hand-added comments survive. See [Artwork](art.md) for the
+commands that read and write it.
