@@ -330,10 +330,13 @@ pub fn create(
     let base = slug(name);
     let mut id = base.clone();
     let mut attempt = 1;
-    let path = loop {
+    let (path, target) = loop {
         let path = theme_path(paths, &id)?;
+        // Before the check: a link that lands after it must not become the
+        // file this write accepts.
+        let target = resolve(&path);
         if fs::symlink_metadata(&path).is_err() {
-            break path;
+            break (path, target);
         }
         attempt += 1;
         id = format!("{base}-{attempt}");
@@ -346,8 +349,7 @@ pub fn create(
         document["based_on"] = Item::Value(Value::from(based_on));
     }
     set_colors(&path, &mut document, colors)?;
-    // Nothing is at `path`, as checked above, so this resolves to a new file.
-    crate::files::write_config(&path, &resolve(&path), document.to_string())?;
+    crate::files::write_config(&path, &target, document.to_string())?;
     Ok(id)
 }
 

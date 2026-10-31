@@ -524,3 +524,46 @@ fn edits_write_through_a_symlinked_theme() {
     }
     .check();
 }
+
+#[test]
+fn creating_refuses_a_link_that_appears_at_the_new_path() {
+    use crate::files::config_write_hooks;
+    type Plant = fn(Box<dyn FnOnce()>);
+    let moments: [Plant; 2] = [
+        |hook| config_write_hooks::before_find(hook),
+        |hook| config_write_hooks::before_rename(hook),
+    ];
+    for plant in moments {
+        for dangling in [false, true] {
+            let fixture = Fixture::new();
+            fs::create_dir_all(fixture.paths.themes_dir()).unwrap();
+            let other = fixture.paths.themes_dir().join("../precious.toml");
+            if !dangling {
+                fs::write(&other, "precious").unwrap();
+            }
+            let link = fixture.file("mine");
+            let (planted_link, planted_other) = (link.clone(), other.clone());
+            plant(Box::new(move || {
+                std::os::unix::fs::symlink(&planted_other, &planted_link).unwrap();
+            }));
+            let result = create(
+                &fixture.paths,
+                "Mine",
+                ThemeKind::Dark,
+                None,
+                &Colors::default(),
+            );
+            let error = result.unwrap_err();
+            assert!(
+                error.to_string().contains(&*link.to_string_lossy()),
+                "{error}"
+            );
+            assert_eq!(fs::read_link(&link).unwrap(), other);
+            if dangling {
+                assert!(!other.exists());
+            } else {
+                assert_eq!(fs::read_to_string(&other).unwrap(), "precious");
+            }
+        }
+    }
+}
