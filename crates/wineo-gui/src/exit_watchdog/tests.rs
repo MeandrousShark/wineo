@@ -278,20 +278,61 @@ fn the_watchdog_starts_when_the_chained_exit_runs_not_when_it_is_queued() {
 /// with this set, so a real `process::exit` ends a child and not the suite.
 const CHILD: &str = "WINEO_EXIT_WATCHDOG_CHILD";
 
+#[derive(Clone, Copy, PartialEq)]
+enum Scenario {
+    Stuck,
+    Fast,
+    /// Stderr is a full pipe, and a thread holds Rust's stderr lock in a write.
+    BlockedStderr,
+    /// Stdout is a full pipe with unflushed output, which blocks the flush
+    /// `process::exit` does.
+    FullStdout,
+}
+
+/// Fills the pipe behind `fd` until a write would block, then makes the
+/// descriptor blocking again, so the next write waits for a reader.
+fn fill_pipe(fd: std::os::fd::BorrowedFd<'_>) {
+    use rustix::fs::{OFlags, fcntl_getfl, fcntl_setfl};
+    use rustix::io::{Errno, write};
+    let flags = fcntl_getfl(fd).unwrap();
+    fcntl_setfl(fd, flags | OFlags::NONBLOCK).unwrap();
+    for chunk in [&[0x78; 4096][..], &[0x78]] {
+        loop {
+            match write(fd, chunk) {
+                Ok(_) => {}
+                Err(Errno::AGAIN) => break,
+                Err(error) => panic!("filling the pipe: {error}"),
+            }
+        }
+    }
+    fcntl_setfl(fd, flags).unwrap();
+}
+
 /// Mimics iced: blocking work outlives the window, and dropping the runtime
 /// waits for it. Without a watchdog the child ends with status 3 instead.
-fn child(stuck: bool, blocked_stderr: bool) {
-    if blocked_stderr {
-        // Fills the stderr pipe and then sits in the write holding Rust's
-        // stderr lock, like a reader that stopped draining it.
-        std::thread::spawn(|| {
-            use std::io::Write;
-            let chunk = [b'x'; 4096];
-            loop {
-                let _ = std::io::stderr().write_all(&chunk);
-            }
-        });
-        std::thread::sleep(Duration::from_millis(300));
+fn child(scenario: Scenario) {
+    let stuck = scenario != Scenario::Fast;
+    match scenario {
+        Scenario::BlockedStderr => {
+            fill_pipe(rustix::stdio::stderr());
+            let (locked, holding) = mpsc::channel();
+            std::thread::spawn(move || {
+                use std::io::Write;
+                let mut stderr = std::io::stderr().lock();
+                locked.send(()).unwrap();
+                // The pipe is full, so this never returns.
+                loop {
+                    let _ = stderr.write_all(b"x");
+                }
+            });
+            holding.recv().unwrap();
+        }
+        Scenario::FullStdout => {
+            fill_pipe(rustix::stdio::stdout());
+            // No newline, so it stays in std's buffer until the exit flush.
+            print!("unflushed");
+        }
+        Scenario::Stuck | Scenario::Fast => {}
     }
     let runtime = tokio::runtime::Builder::new_current_thread()
         .build()
@@ -315,9 +356,10 @@ fn child(stuck: bool, blocked_stderr: bool) {
 #[test]
 fn child_process_scenario() {
     match std::env::var(CHILD).as_deref() {
-        Ok("stuck") => child(true, false),
-        Ok("fast") => child(false, false),
-        Ok("blocked") => child(true, true),
+        Ok("stuck") => child(Scenario::Stuck),
+        Ok("fast") => child(Scenario::Fast),
+        Ok("blocked") => child(Scenario::BlockedStderr),
+        Ok("full-stdout") => child(Scenario::FullStdout),
         _ => {}
     }
 }
@@ -375,4 +417,26 @@ fn a_full_stderr_pipe_does_not_keep_the_process_from_ending() {
     assert_eq!(output.status.code(), Some(0), "{:?}", output.status);
     // The bound on the watchdog plus the bound on the write.
     assert!(took < Duration::from_secs(6), "{took:?}");
+}
+
+#[test]
+fn blocked_exit_handlers_get_the_kill() {
+    use std::os::unix::process::ExitStatusExt;
+    let (output, took) = run_child("full-stdout");
+    assert_eq!(output.status.signal(), Some(9), "{:?}", output.status);
+    // The watchdog bound, the write bound, and the kill bound.
+    assert!(took < Duration::from_secs(6), "{took:?}");
+    // The line went out before the exit hung.
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("wineo-gui: gave up after 0 s"), "{stderr}");
+}
+
+#[test]
+fn the_backstop_kills_after_its_bound_and_not_before() {
+    let (sent, received) = mpsc::channel();
+    let started = Instant::now();
+    backstop(Duration::from_millis(100), move || sent.send(()).unwrap());
+    assert!(received.recv_timeout(Duration::from_millis(30)).is_err());
+    received.recv_timeout(Duration::from_secs(10)).unwrap();
+    assert!(started.elapsed() >= Duration::from_millis(100));
 }

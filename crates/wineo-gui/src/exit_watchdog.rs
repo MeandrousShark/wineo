@@ -5,7 +5,7 @@
 //! blocking tasks with no limit, so a `process::exit` after `run()` is never
 //! reached. The watchdog is a plain thread, since the runtime is what hangs.
 
-use std::sync::{Arc, Mutex, mpsc};
+use std::sync::{Arc, Mutex, PoisonError, mpsc};
 use std::thread;
 use std::time::Duration;
 
@@ -35,16 +35,17 @@ impl Watchdog {
 
     #[cfg(test)]
     pub(crate) fn started(&self) -> Option<String> {
-        self.line.lock().ok()?.clone()
+        self.line
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
     }
 
     /// Starts counting down to a stderr line naming `work`. Only the first
     /// start counts, so the line names what was stuck when the exit began. A
     /// start that couldn't get a thread leaves the watchdog free to try again.
     pub(crate) fn start(&self, work: &[String]) -> bool {
-        let Ok(mut started) = self.line.lock() else {
-            return false;
-        };
+        let mut started = self.line.lock().unwrap_or_else(PoisonError::into_inner);
         if started.is_some() {
             return false;
         }
@@ -85,7 +86,30 @@ const SAY_BOUND: Duration = Duration::from_secs(1);
 /// already closed, and a stuck write or hook is a limit, not a failure.
 pub(crate) fn exit_process(line: &str) {
     say(line, SAY_BOUND);
+    // `exit` runs Rust's cleanup and libc's exit handlers, and flushing
+    // buffered output into a full pipe blocks there. Forbidding unsafe code
+    // rules out `_exit`, so a hang gets the kill instead.
+    backstop(KILL_BOUND, kill_self);
     std::process::exit(0);
+}
+
+/// How long exit handlers get before the process is killed.
+const KILL_BOUND: Duration = Duration::from_secs(1);
+
+/// Runs `kill` after `bound`, unless the process has ended by then. A failed
+/// spawn is ignored: the exit goes ahead without a backstop.
+fn backstop(bound: Duration, kill: impl FnOnce() + Send + 'static) {
+    let _ = thread::Builder::new()
+        .name("exit-watchdog-kill".to_owned())
+        .spawn(move || {
+            thread::sleep(bound);
+            kill();
+        });
+}
+
+fn kill_self() {
+    use rustix::process::{Signal, getpid, kill_process};
+    let _ = kill_process(getpid(), Signal::KILL);
 }
 
 /// Writes `line` to stderr, but gives up after `bound`. A reader that stopped
