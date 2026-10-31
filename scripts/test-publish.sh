@@ -374,6 +374,8 @@ mkdir -p "$base/scripts" "$base/.github/workflows" "$base/crates/fixture/src" "$
 touch "$base/crates/wineo-cli/.keep"
 cp "$root"/scripts/{publish-packages,prepare-debian-tree,gentoo-ebuild,rust-floor}.sh "$base/scripts/"
 cp -r "$root/packaging" "$base/packaging"
+# The scenarios expect revision 1, whatever the real spec is on.
+sed -i -E 's/^Release:( +)[0-9]+%/Release:\11%/' "$base/packaging/rpm/wineo.spec"
 cp "$root/PKGBUILD" "$base/PKGBUILD"
 cp "$root/.github/workflows/release.yml" "$base/.github/workflows/"
 cat >"$base/Cargo.toml" <<EOF

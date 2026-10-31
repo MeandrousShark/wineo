@@ -10,7 +10,7 @@
 
 Name:           wineo
 Version:        1.1.0
-Release:        1%{?dist}
+Release:        2%{?dist}
 Summary:        Launcher for Wine and Proton programs, native games, Steam, and GOG
 # The crates compiled into the binaries, from `cargo deny list`, with each
 # "OR" resolved to a choice. 0BSD is the patched hexf-parse in third_party/,
@@ -82,6 +82,9 @@ the command line or the desktop app.
 %build
 # Inside the tree so nothing touches the build user's home.
 export CARGO_HOME="$PWD/.cargo-home"
+# Fat LTO with one codegen unit ran past COPR's 5 hour limit on every target.
+export CARGO_PROFILE_RELEASE_LTO=thin
+export CARGO_PROFILE_RELEASE_CODEGEN_UNITS=16
 cargo build --release --frozen %{?_smp_mflags} \
     --package wineo-cli --package wineo-gui
 
@@ -105,5 +108,8 @@ scripts/stage-install.sh --license-dir %{_datadir}/licenses/%{name} \
 %{_datadir}/doc/%{name}/
 
 %changelog
+* Sat Oct 31 2026 Michael Hannon <mphannon@pm.me> - 1.1.0-2
+- Build with thin LTO so COPR finishes inside its time limit.
+
 * Fri Oct 30 2026 Michael Hannon <mphannon@pm.me> - 1.1.0-1
 - Package the 1.1.0 release from the vendored source tarball.

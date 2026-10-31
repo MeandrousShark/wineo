@@ -151,10 +151,14 @@ check "the changelog is not 'wineo (X.Y.Z-1ppaN) UNRELEASED;': $deb_version" \
     grep -qE '^wineo \([0-9]+\.[0-9]+\.[0-9]+-[0-9]+ppa[0-9]+\) UNRELEASED; ' "$changelog"
 check "the changelog and spec versions differ: $deb_version, $spec_version" \
     test "${deb_version%%-*}" = "$spec_version"
-check "the spec Release is not N%{?dist}: $spec_release" test "$spec_release" = '1%{?dist}'
+check "the spec Release is not N%{?dist}: $spec_release" \
+    grep -qE '^[1-9][0-9]*%\{\?dist\}$' <<<"$spec_release"
 spec_changelog=$(sed -n '/^%changelog/ { n; p; q; }' "$spec")
 changelog_ok() { [[ $spec_changelog == "* "*" $maintainer - $spec_version-${spec_release%%\%*}" ]]; }
-check "the spec changelog does not end in $spec_version-1: $spec_changelog" changelog_ok
+check "the spec changelog does not end in $spec_version-${spec_release%%\%*}: $spec_changelog" changelog_ok
+check "the spec does not build with thin LTO" has_line "$spec" 'export CARGO_PROFILE_RELEASE_LTO=thin'
+check "the spec does not build with 16 codegen units" \
+    has_line "$spec" 'export CARGO_PROFILE_RELEASE_CODEGEN_UNITS=16'
 check "the spec source is not the vendored release tarball" \
     test "$(spec_field Source0)" = '%{url}/releases/download/v%{version}/%{name}-%{version}-vendored.tar.xz'
 check "the spec does not unpack wineo-VERSION" has_line "$spec" '%autosetup -n %{name}-%{version}'
