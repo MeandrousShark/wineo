@@ -166,9 +166,13 @@ case $step in
         head -n 1 "$tree/debian/changelog" >"$dir/wineo_${id}_source.changes"
         cmp "$tree/packaging/debian/changelog" "$STUB/orig-changelog" >>"$dir/wineo_${id}_source.changes" 2>&1 &&
             echo "packaging/debian untouched" >>"$dir/wineo_${id}_source.changes"
-        touch "$dir/wineo_$id.debian.tar.xz"
+        touch "$dir/wineo_$id.debian.tar.xz" "$dir/wineo_${id}_source.buildinfo"
         ;;
     gentoo-manifest)
+        ebuild_out=$(mktemp -d)
+        "${mount[/tag]}/scripts/gentoo-ebuild.sh" "$VERSION_UNDER_TEST" "$ebuild_out" >/dev/null || exit 1
+        cp "$ebuild_out/wineo-$VERSION_UNDER_TEST.ebuild" "${mount[/overlay]}/games-util/wineo/wineo-$identity.ebuild"
+        rm -rf "$ebuild_out"
         dist=${mount[/var/cache/distfiles]}/wineo-$VERSION_UNDER_TEST.gh.tar.gz
         echo "DIST ${dist##*/} $(stat -c %s "$dist") BLAKE2B stub" >>"${mount[/overlay]}/games-util/wineo/Manifest"
         ;;
@@ -407,6 +411,8 @@ check "stonking's control names rustc-1.91" test "$(grep -c 'rustc-1.91' "$dest/
 check "the license check did not run on the tag's tree" \
     grep -qE "/wineo-$version --locked check licenses$" "$STUB/deny.log"
 check "the source package isn't -S -sa unsigned" grep -q "dpkg-buildpackage -S -sa -d -us -uc" "$STUB/podman.log"
+check "the tag's tree isn't mounted read-only" \
+    grep -q ":/tag:ro" "$STUB/podman.log"
 check "the SRPM has a dist tag" grep -q 'define "dist %{nil}"' "$STUB/podman.log"
 check "gh was asked to change something: $(grep UNEXPECTED "$STUB/gh.log" || true)" \
     test "$(grep -c UNEXPECTED "$STUB/gh.log")" -eq 0
@@ -666,9 +672,9 @@ env PATH="$stubs:$PATH" CARGO_DENY="$stubs/cargo-deny" VERSION_UNDER_TEST="$vers
     WINEO_PUBLISH_WORK="$scenario/work" "$repo/scripts/publish-packages.sh" "$version" \
     --only copr --dest-dir "$dest" >"$out" 2>&1 || rc=$?
 check "the default pace: exit $rc, not 0" test "$rc" -eq 0
-check "the default pace is not five minutes: $(sort -u "$STUB/sleep.log" | tr '\n' ' ')" \
-    test "$(sort -u "$STUB/sleep.log")" = 300
-statuses=$(grep -c '' "$STUB/sleep.log")
+check "the default pace is not five minutes: $(sort -u "$STUB/sleep.log" 2>/dev/null | tr '\n' ' ')" \
+    test "$(sort -u "$STUB/sleep.log" 2>/dev/null)" = 300
+statuses=$(grep -c '' "$STUB/sleep.log" 2>/dev/null || true)
 check "a poll came without a full interval before it ($statuses sleeps)" test "$statuses" -ge 2
 
 # A revision bump goes out under the same tag.
@@ -757,7 +763,7 @@ export PODMAN_FAIL_STEP=gentoo-manifest PODMAN_FAIL_TEXT='pkgcheck: an error'
 new_scenario
 publish --only overlay
 check "a pkgcheck error: exit $rc, not 1" test "$rc" -eq 1
-check "a pkgcheck error: the reason is missing" said "ebuild manifest or pkgcheck failed"
+check "a pkgcheck error: the reason is missing" said "ebuild manifest, or pkgcheck failed"
 check "a pkgcheck error: it pushed anyway" test -z "$(git -C "$dest/remote/overlay.git" for-each-ref)"
 unset PODMAN_FAIL_STEP PODMAN_FAIL_TEXT
 

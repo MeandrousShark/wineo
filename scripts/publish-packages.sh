@@ -543,7 +543,7 @@ overlay_prepare() {
     local package_dir name=wineo-$version.gh.tar.gz tarball size
     identity=$(identity_of overlay overlay)
     package_dir=$clone/games-util/wineo
-    mkdir -p "$tree" "$distfiles" "$work/overlay/tmp" "$work/overlay/gentoo-tree"
+    mkdir -p "$tree" "$distfiles" "$work/overlay/tmp" "$work/overlay/gentoo-tree" "$package_dir"
     git -C "$root" archive "$tag" | tar -x -C "$tree"
     rm -rf "$tree/packaging/gentoo"
     cp -r "$recipes/packaging/gentoo" "$tree/packaging/gentoo"
@@ -551,20 +551,18 @@ overlay_prepare() {
 
     # All of it, since the first run starts from an empty repository.
     cp -r "$recipes/packaging/gentoo/." "$clone/"
-    # Not straight into package_dir: under a new revision that would overwrite
-    # the ebuild already published.
-    mkdir -p "$work/overlay/ebuild"
-    WINEO_GENTOO_DISTDIR=$distfiles "$tree/scripts/gentoo-ebuild.sh" "$version" "$work/overlay/ebuild" ||
-        dest_fail "gentoo-ebuild.sh failed"
-    mv "$work/overlay/ebuild/wineo-$version.ebuild" "$package_dir/wineo-$identity.ebuild"
-
     tarball=$(tag_tarball)
     cp "$tarball" "$distfiles/$name"
 
+    # gentoo-ebuild.sh runs in there too, since pycargoebuild needs wget or
+    # aria2, which stage3 has. It doesn't write straight into the overlay,
+    # because under a new revision that would overwrite the published ebuild.
     # assume-digests keeps the DIST lines of older ebuilds, whose distfiles
     # aren't here. See check-gentoo-build.sh for the settings rootless podman
     # needs.
     nice -n 15 podman run --rm -e STEP=gentoo-manifest -e IDENTITY="$identity" \
+        -e VERSION="$version" -e WINEO_GENTOO_DISTDIR=/var/cache/distfiles \
+        -v "$tree:/tag:ro" \
         --tmpfs /tmp:rw,exec,nosuid,nodev,mode=1777 \
         -v "$clone:/overlay" -v "$distfiles:/var/cache/distfiles" \
         -v "$work/overlay/tmp:/var/tmp/portage" \
@@ -583,10 +581,13 @@ MAKECONF
         fi
         getuto
         emerge -q dev-util/pkgcheck
+        mkdir /tmp/ebuild
+        (cd /tmp && /tag/scripts/gentoo-ebuild.sh "$VERSION" /tmp/ebuild)
+        cp "/tmp/ebuild/wineo-$VERSION.ebuild" "/overlay/games-util/wineo/wineo-$IDENTITY.ebuild"
         (cd /overlay/games-util/wineo && ebuild "wineo-$IDENTITY.ebuild" manifest)
         cd /overlay
         pkgcheck scan --repo wineo --exit error
-    ' || dest_fail "ebuild manifest or pkgcheck failed; see the output above"
+    ' || dest_fail "gentoo-ebuild.sh, ebuild manifest, or pkgcheck failed; see the output above"
 
     size=$(stat -c %s "$tarball")
     grep -q "^DIST $name $size " "$package_dir/Manifest" ||
@@ -890,6 +891,7 @@ ppa_files() {
     echo "$dir/wineo_$identity.dsc"
     echo "$dir/wineo_${identity}_source.changes"
     echo "$dir/wineo_$identity.debian.tar.xz"
+    echo "$dir/wineo_${identity}_source.buildinfo"
 }
 
 # The private key and the passphrase prompt stay on the host: the container
