@@ -7,9 +7,9 @@ own numbered plan. What has shipped is in
 ## Queue
 
 Harder Better Faster Stronger, the order the maintainer picked on
-2026-10-30, played backwards. The first three are small batches, each its
-own patch release with no plan. The rest get a plan when they come up, and
-the rows below have the details.
+2026-10-30, played backwards. Plan 0060 covers the first three, each its own
+patch release, and plan 0061 covers the fourth. The rest get a plan when they
+come up, and the rows below have the details.
 
 1. Stronger: Supervisor force-stop deadline, Winetricks settle under
    Proton, Write through symlinked configs, Close the last nested-prefix
