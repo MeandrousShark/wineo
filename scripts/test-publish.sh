@@ -169,6 +169,8 @@ case $step in
         touch "$dir/wineo_$id.debian.tar.xz" "$dir/wineo_${id}_source.buildinfo"
         ;;
     gentoo-manifest)
+        mkdir -p "${mount[/overlay]}/metadata/md5-cache"
+        touch "${mount[/overlay]}/metadata/md5-cache/stale"
         ebuild_out=$(mktemp -d)
         "${mount[/tag]}/scripts/gentoo-ebuild.sh" "$VERSION_UNDER_TEST" "$ebuild_out" >/dev/null || exit 1
         cp "$ebuild_out/wineo-$VERSION_UNDER_TEST.ebuild" "${mount[/overlay]}/games-util/wineo/wineo-$identity.ebuild"
@@ -371,6 +373,8 @@ check "the first run did not lay down all of packaging/gentoo" \
     -n "$(show "$overlay_bare" LICENSE)" -a \
     -n "$(show "$overlay_bare" games-util/wineo/metadata.xml)" -a \
     -n "$(show "$overlay_bare" games-util/wineo/wineo-9999.ebuild)"
+check "Portage's cache went into the overlay" \
+    test "$(git -C "$overlay_bare" ls-tree -r --name-only HEAD | grep -c md5-cache || true)" -eq 0
 check "the Manifest does not hold the tag tarball" \
     grep -q "^DIST wineo-$version.gh.tar.gz $(stat -c %s "$STUB/tag.tar.gz") " \
     <(show "$overlay_bare" games-util/wineo/Manifest)

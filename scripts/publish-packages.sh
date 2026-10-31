@@ -597,6 +597,8 @@ MAKECONF
 overlay_upload() {
     local identity clone=$work/overlay/repo
     identity=$(identity_of overlay overlay)
+    # Portage's cache of the ebuilds, written while they were scanned.
+    rm -rf "$clone/metadata/md5-cache"
     git -C "$clone" checkout -q -B main
     git -C "$clone" add -- .
     git -C "$clone" commit -q -m "games-util/wineo: add $identity"
