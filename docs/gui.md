@@ -494,8 +494,15 @@ Program runs and winetricks use per-environment workers. They block changes
 to their own environment and other registrations sharing its prefix, while
 unrelated environments stay usable. Switching pages keeps their workers,
 output, and results. Closing cancels every active worker and waits for cleanup.
+While it waits, **Force stop** kills what can be killed and closes the window.
 Once a snapshot swap or portable publication starts, the app says
 **Finishing changes...** and waits; those changes have no Force stop.
+
+The process ends 10 seconds after the window closes, even if something is
+stuck. It prints `wineo-gui: gave up after 10 s on` and what it left, and exits
+0. Work ended this way doesn't clean up: a write leaves the old file and a
+stray `.tmp`, an import leaves its staging folder beside the destination, and
+a hook's program keeps running.
 
 ## Snapshots
 
