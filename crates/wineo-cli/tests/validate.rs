@@ -155,6 +155,28 @@ fn nested_prefixes_have_a_stable_error_code() {
         "inner's prefix is inside outer's prefix. Move one of them first."
     );
 
+    // Asking about the outer environment still files the pair under the inner.
+    let output = f.run(&["validate", "outer", "--json"]);
+    assert_eq!(output.status.code(), Some(1));
+    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let found: Vec<&serde_json::Value> = json["problems"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|p| p["code"] == "prefix_nested")
+        .collect();
+    assert_eq!(found.len(), 1, "{json}");
+    assert_eq!(found[0]["environment"], "inner");
+
+    let output = f.run(&["validate", "outer"]);
+    assert_eq!(output.status.code(), Some(1));
+    let text = stdout(&output);
+    assert_eq!(text.lines().next(), Some("inner"), "{text}");
+    assert!(
+        text.contains("inner's prefix is inside outer's prefix. Move one of them first."),
+        "{text}"
+    );
+
     // Report-only, so --fix leaves the configs alone.
     f.run(&["validate", "--fix"]);
     assert_eq!(user_configs(&f), before);

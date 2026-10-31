@@ -616,10 +616,12 @@ pub fn check_environment(paths: &Paths, name: &str) -> Result<Report> {
 /// can't be resolved is left to its own checks. There is no fix, since fixes
 /// don't edit environment configs.
 fn check_nesting(paths: &Paths, selected: Option<&str>, names: &[String], report: &mut Report) {
+    // One trash read for every load, since this only reads.
+    let pending = crate::trash::PendingScan::new(paths);
     let prefixes: Vec<(String, PathBuf)> = names
         .iter()
         .filter_map(|name| {
-            let environment = Environment::load(paths, name).ok()?;
+            let environment = Environment::load_with_pending(paths, name, &pending).ok()?;
             environment.config.wine()?;
             let prefix = environment.prefix(paths).ok()?;
             Some((name.clone(), crate::paths::resolve(&prefix)))

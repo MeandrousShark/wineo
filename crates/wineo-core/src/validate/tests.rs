@@ -1537,6 +1537,55 @@ fn relative_prefixes_in_a_portable_folder_are_compared_by_where_they_land() {
 }
 
 #[test]
+fn proton_prefixes_are_compared_like_wine_ones() {
+    let f = Fixture::new();
+    let runner = f.paths.default_runner_root().join("GE-Proton9-1");
+    fs::create_dir_all(runner.join("files/bin")).unwrap();
+    executable(&runner.join("proton"), "#!/bin/sh\nexit 0\n");
+    fs::write(runner.join("version"), "1717451631 GE-Proton9-1\n").unwrap();
+    for program in ["wine", "wineserver"] {
+        executable(
+            &runner.join("files/bin").join(program),
+            "#!/bin/sh\nexit 0\n",
+        );
+    }
+    // The configured prefix is the compatdata directory, with pfx inside it.
+    let compat = f.root.join("compat/outer");
+    fs::create_dir_all(compat.join("pfx")).unwrap();
+    for (name, prefix) in [
+        ("outer", compat.clone()),
+        ("inner", compat.join("pfx/drive_c/inner")),
+    ] {
+        f.write_config(
+            name,
+            &format!(
+                "prefix = '{}'\nrunner = 'GE-Proton9-1'\narch = 'win64'\n",
+                prefix.display()
+            ),
+        );
+    }
+    // A Wine environment inside the Proton one counts too.
+    f.wine_at("plain", &compat.join("plain"), "");
+    let report = f.check();
+    assert!(
+        report
+            .problems
+            .iter()
+            .all(|p| p.code != Code::RunnerMissing),
+        "{:#?}",
+        report.problems
+    );
+    let messages: Vec<String> = nested(&report).into_iter().map(|(_, m)| m).collect();
+    assert_eq!(
+        messages,
+        [
+            "inner's prefix is inside outer's prefix. Move one of them first.",
+            "plain's prefix is inside outer's prefix. Move one of them first.",
+        ]
+    );
+}
+
+#[test]
 fn check_environment_reports_only_pairs_that_include_it() {
     let f = nested_fixture(&[
         ("outer", "pfx/outer"),
