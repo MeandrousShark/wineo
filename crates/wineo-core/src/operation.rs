@@ -299,6 +299,17 @@ impl Drop for Guard {
 #[derive(Debug)]
 pub struct ConfigGuard {
     file: File,
+    /// The resolved file a config lock was keyed on. Other locks have none.
+    target: Option<PathBuf>,
+}
+
+impl ConfigGuard {
+    /// The file this lock covers, for `files::write_config` and its kin.
+    pub(crate) fn config_target(&self) -> &Path {
+        self.target
+            .as_deref()
+            .expect("only `Locks::config` guards are used for config writes")
+    }
 }
 
 impl Drop for ConfigGuard {
@@ -347,7 +358,7 @@ impl Locks {
         }
         record(&file, &path, Operation::Launch)?;
         Ok(LaunchReservation {
-            _guard: ConfigGuard { file },
+            _guard: ConfigGuard { file, target: None },
             locks: self.clone(),
             name: name.to_owned(),
         })
@@ -521,7 +532,7 @@ impl Locks {
                     holder_label: holder.describe(),
                 });
             }
-            Some(ConfigGuard { file })
+            Some(ConfigGuard { file, target: None })
         } else {
             None
         };
@@ -617,11 +628,16 @@ impl Locks {
     }
 
     fn config_lock(&self, path: &Path, attempts: u32) -> Result<ConfigGuard> {
-        self.write_lock(
-            &self.config_path(path),
+        // Resolved once: the writer gets this same answer, so a link repointed
+        // later can't leave the lock on one file and the write on another.
+        let target = paths::resolve(path);
+        let mut guard = self.write_lock(
+            &self.config_path(&target),
             format!("config {}", path.display()),
             attempts,
-        )
+        )?;
+        guard.target = Some(target);
+        Ok(guard)
     }
 
     /// Serializes registering, installing, and uninstalling one Steam app
@@ -645,7 +661,7 @@ impl Locks {
                 holder_label: "another wineo command is changing it",
             });
         }
-        Ok(ConfigGuard { file })
+        Ok(ConfigGuard { file, target: None })
     }
 
     /// The operation holding `name` exclusively, for `status` and `list`. A
@@ -722,16 +738,15 @@ impl Locks {
     }
 
     fn prefix_path(&self, prefix: &Path) -> PathBuf {
-        keyed_path(&self.prefix_dir, "prefix", prefix)
+        keyed_path(&self.prefix_dir, "prefix", &paths::resolve(prefix))
     }
 
-    fn config_path(&self, config: &Path) -> PathBuf {
-        keyed_path(&self.dir, "config", config)
+    fn config_path(&self, resolved: &Path) -> PathBuf {
+        keyed_path(&self.dir, "config", resolved)
     }
 }
 
-fn keyed_path(dir: &Path, kind: &str, path: &Path) -> PathBuf {
-    let resolved = paths::resolve(path);
+fn keyed_path(dir: &Path, kind: &str, resolved: &Path) -> PathBuf {
     let label = resolved
         .file_name()
         .and_then(|name| name.to_str())

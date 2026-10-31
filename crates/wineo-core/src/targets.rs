@@ -15,7 +15,7 @@ use crate::art::TargetCleanup;
 use crate::config::{self, EnvironmentConfig, Target};
 use crate::edit::{ensure_table, existing_table, store_value};
 use crate::error::{Error, IoContext, Result};
-use crate::files::{self, write_atomic};
+use crate::files;
 use crate::name;
 use crate::operation::Locks;
 use crate::paths::Paths;
@@ -391,7 +391,7 @@ pub fn write(paths: &Paths, environment: &str, batch: &Batch) -> Result<Written>
         return Err(Error::InvalidName(environment.to_owned()));
     }
     let path = paths.environment_config(environment);
-    let _guard = Locks::new(paths).config(&path)?;
+    let guard = Locks::new(paths).config(&path)?;
     let Some(text) = files::read_to_string_optional(&path)
         .context(|| format!("failed to read {}", path.display()))?
     else {
@@ -427,7 +427,7 @@ pub fn write(paths: &Paths, environment: &str, batch: &Batch) -> Result<Written>
         Some(TargetCleanup::prepare(paths, environment, removed)?)
     };
     if updated != text {
-        write_atomic(&path, &updated)?;
+        files::write_config(&path, guard.config_target(), &updated)?;
     }
     if let Some(cleanup) = cleanup {
         cleanup.finish()?;

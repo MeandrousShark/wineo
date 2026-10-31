@@ -15,7 +15,9 @@ use crate::desktop;
 use crate::edit::{self, Scope};
 use crate::environment::Environment;
 use crate::error::{Error, IoContext, Result};
-use crate::files::{self, write_atomic};
+use crate::files;
+#[cfg(test)]
+use crate::files::write_atomic;
 use crate::gog;
 use crate::install::{self, Change, Wanted};
 use crate::launch;
@@ -556,8 +558,8 @@ pub fn update(
     set: &[(&str, &str)],
     unset: &[&str],
 ) -> Result<Vec<String>> {
-    update_with_writer(paths, file, set, unset, |path, contents| {
-        write_atomic(path, contents)
+    update_with_target(paths, file, set, unset, |path, target, contents| {
+        files::write_config(path, target, contents)
     })
 }
 
@@ -574,6 +576,7 @@ pub fn set_external_runners(paths: &Paths, on: bool) -> Result<()> {
     .map(|_| ())
 }
 
+#[cfg(test)]
 fn update_with_writer(
     paths: &Paths,
     file: ConfigFile,
@@ -581,10 +584,24 @@ fn update_with_writer(
     unset: &[&str],
     write: impl FnOnce(&std::path::Path, &str) -> Result<()>,
 ) -> Result<Vec<String>> {
+    update_with_target(paths, file, set, unset, |path, _, contents| {
+        write(path, contents)
+    })
+}
+
+/// `write` gets the config's path, the target its lock was keyed on, and the
+/// new contents.
+fn update_with_target(
+    paths: &Paths,
+    file: ConfigFile,
+    set: &[(&str, &str)],
+    unset: &[&str],
+    write: impl FnOnce(&std::path::Path, &std::path::Path, &str) -> Result<()>,
+) -> Result<Vec<String>> {
     let (scope, path) = config_path(paths, file)?;
     // Read under the lock, so a change or a removal that lands in the meantime
     // is built on or refused rather than overwritten.
-    let _guard = Locks::new(paths).config(&path)?;
+    let guard = Locks::new(paths).config(&path)?;
     let text = files::read_to_string_optional(&path)
         .context(|| format!("failed to read {}", path.display()))?;
     if text.is_none()
@@ -721,10 +738,10 @@ fn update_with_writer(
                 }
             };
             write_with_build_locks(paths, global, runner, dxvk, vkd3d, || {
-                write(&path, &updated)
+                write(&path, guard.config_target(), &updated)
             })?;
         } else {
-            write(&path, &updated)?;
+            write(&path, guard.config_target(), &updated)?;
         }
     }
     if let Some(cleanup) = cleanup {

@@ -119,7 +119,7 @@ pub(super) fn repair_at(
     sync_dir: impl FnOnce(&Path) -> io::Result<()>,
 ) -> Result<Option<RepairReport>> {
     let path = paths.library_file();
-    let _guard = Locks::new(paths).config(&path)?;
+    let guard = Locks::new(paths).config(&path)?;
     let bytes = match fs::read(&path) {
         Ok(bytes) => bytes,
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
@@ -161,7 +161,7 @@ pub(super) fn repair_at(
             source: Box::new(error),
         });
     }
-    crate::files::write_atomic_synced(&path, contents)?;
+    crate::files::write_config_synced(&path, guard.config_target(), contents)?;
     Ok(Some(salvaged.report(backup)))
 }
 

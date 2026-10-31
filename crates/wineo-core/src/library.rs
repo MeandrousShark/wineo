@@ -412,7 +412,7 @@ pub fn put(paths: &Paths, name: &str, entry: Option<&Entry>) -> Result<bool> {
 /// whether it altered the document.
 fn edit(paths: &Paths, change: impl FnOnce(&mut DocumentMut) -> bool) -> Result<bool> {
     let path = paths.library_file();
-    let _guard = Locks::new(paths).config(&path)?;
+    let guard = Locks::new(paths).config(&path)?;
     let (mut document, missing) = match read_document(&path) {
         Ok(Some(document)) => (document, false),
         Ok(None) => (DocumentMut::new(), true),
@@ -432,7 +432,7 @@ fn edit(paths: &Paths, change: impl FnOnce(&mut DocumentMut) -> bool) -> Result<
     if add_schema_version {
         document["schema_version"] = Item::Value(Value::from(SCHEMA_VERSION));
     }
-    crate::files::write_atomic(&path, document.to_string())?;
+    crate::files::write_config(&path, guard.config_target(), document.to_string())?;
     Ok(true)
 }
 

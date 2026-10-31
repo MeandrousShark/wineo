@@ -11,7 +11,7 @@ use crate::cancel::Token;
 use crate::config::{self, Arch, EnvironmentConfig, GlobalConfig, WineConfig};
 use crate::edit;
 use crate::error::{Error, IoContext, Result};
-use crate::files::{self, write_atomic, write_atomic_synced};
+use crate::files;
 use crate::installer::Output;
 use crate::name;
 use crate::operation::{LaunchReservation, Locks, Operation};
@@ -491,7 +491,7 @@ impl Environment {
         check_name(name)?;
         crate::snapshot::check_recovery_marker(paths, name)?;
         let path = paths.environment_config(name);
-        let _guard = Locks::new(paths).config(&path)?;
+        let guard = Locks::new(paths).config(&path)?;
         let mut file = match fs::File::open(&path) {
             Ok(file) => file,
             Err(err) if err.kind() == io::ErrorKind::NotFound => {
@@ -537,7 +537,7 @@ impl Environment {
         let updated = doc.to_string();
         EnvironmentConfig::parse(&path, &updated)?;
         if updated != text {
-            write_atomic(&path, &updated)?;
+            files::write_config(&path, guard.config_target(), &updated)?;
         }
         Ok(())
     }
@@ -558,7 +558,7 @@ impl Environment {
         check_name(name)?;
         crate::snapshot::check_recovery_marker(paths, name)?;
         let path = paths.environment_config(name);
-        let _guard = Locks::new(paths).config(&path)?;
+        let guard = Locks::new(paths).config(&path)?;
         let Some(text) = files::read_to_string_optional(&path)
             .context(|| format!("failed to read {}", path.display()))?
         else {
@@ -590,7 +590,7 @@ impl Environment {
         config::stamp_schema(&mut doc);
         let updated = doc.to_string();
         EnvironmentConfig::parse(&path, &updated)?;
-        write_atomic_synced(&path, &updated)?;
+        files::write_config_synced(&path, guard.config_target(), &updated)?;
         Ok(GogIdRecord::Written)
     }
 }

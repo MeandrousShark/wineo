@@ -14,7 +14,7 @@ use toml_edit::{DocumentMut, Item, Value};
 use crate::error::{Error, IoContext, Result};
 use crate::library::{store_value, table_mut};
 use crate::operation::Locks;
-use crate::paths::Paths;
+use crate::paths::{Paths, resolve};
 
 const SCHEMA_VERSION: i64 = 1;
 
@@ -312,6 +312,7 @@ fn slug(name: &str) -> String {
 
 /// Every write holds one lock on the folder, since a new id and a name
 /// another theme uses are both facts about the whole folder, not one file.
+/// The lock has no one file to pin, so an edit resolves its file once under it.
 fn lock(paths: &Paths) -> Result<crate::operation::ConfigGuard> {
     Locks::new(paths).config(&paths.themes_dir())
 }
@@ -345,7 +346,8 @@ pub fn create(
         document["based_on"] = Item::Value(Value::from(based_on));
     }
     set_colors(&path, &mut document, colors)?;
-    crate::files::write_atomic(&path, document.to_string())?;
+    // Nothing is at `path`, as checked above, so this resolves to a new file.
+    crate::files::write_config(&path, &resolve(&path), document.to_string())?;
     Ok(id)
 }
 
@@ -361,6 +363,7 @@ pub fn update(
 ) -> Result<bool> {
     let path = theme_path(paths, id)?;
     let _guard = lock(paths)?;
+    let target = resolve(&path);
     let mut document = editable(&path, id)?;
     let mut changed = false;
     if document.get("kind").and_then(Item::as_str) != Some(kind.as_str()) {
@@ -380,7 +383,7 @@ pub fn update(
     if !changed {
         return Ok(false);
     }
-    write(&path, document)?;
+    write(&path, &target, document)?;
     Ok(true)
 }
 
@@ -390,6 +393,7 @@ pub fn update(
 pub fn rename(paths: &Paths, id: &str, new_name: &str) -> Result<bool> {
     let path = theme_path(paths, id)?;
     let _guard = lock(paths)?;
+    let target = resolve(&path);
     let mut document = editable(&path, id)?;
     let new_name = new_name.trim();
     let taken = list(paths)
@@ -403,7 +407,7 @@ pub fn rename(paths: &Paths, id: &str, new_name: &str) -> Result<bool> {
         return Ok(false);
     }
     store_value(document.as_table_mut(), "name", Value::from(new_name));
-    write(&path, document)?;
+    write(&path, &target, document)?;
     Ok(true)
 }
 
@@ -418,11 +422,11 @@ pub fn delete(paths: &Paths, id: &str) -> Result<bool> {
 
 /// Writes an edited document, stamping `schema_version` on a hand-made file
 /// that lacked it. Only real edits get here, so a no-op never adds it.
-fn write(path: &Path, mut document: DocumentMut) -> Result<()> {
+fn write(path: &Path, target: &Path, mut document: DocumentMut) -> Result<()> {
     if document.get("schema_version").is_none() {
         document["schema_version"] = Item::Value(Value::from(SCHEMA_VERSION));
     }
-    crate::files::write_atomic(path, document.to_string())
+    crate::files::write_config(path, target, document.to_string())
 }
 
 /// The file's document, refusing one that doesn't parse or that a newer

@@ -17,7 +17,7 @@ use crate::files;
 use crate::gog;
 use crate::import::{self, ExternalDependency, ImportLayout, ImportProgress, SourceFingerprint};
 use crate::name;
-use crate::operation::{Locks, Operation};
+use crate::operation::{ConfigGuard, Locks, Operation};
 use crate::paths::{self, Paths};
 use crate::runners::Runners;
 use crate::runtime::Runtime;
@@ -423,7 +423,7 @@ pub fn restore_reviewed_with(
     // locking would only repeat that check.
     let locks = Locks::new(paths);
     let _operation = locks.acquire(Operation::Snapshot, &reviewed.name, &[&reviewed.prefix])?;
-    let _config_lock = locks.config(&paths.environment_config(&reviewed.name))?;
+    let config_lock = locks.config(&paths.environment_config(&reviewed.name))?;
     let current = inspect_restore_with(
         paths,
         global,
@@ -509,12 +509,19 @@ pub fn restore_reviewed_with(
             global,
             &paths.environment_config(&reviewed.name),
             &saved_config,
-            || write_config_atomic(&paths.environment_config(&reviewed.name), &saved_config),
+            || {
+                files::persist_config_synced(
+                    &paths.environment_config(&reviewed.name),
+                    config_lock.config_target(),
+                    saved_config.as_bytes(),
+                )
+                .map_err(Into::into)
+            },
         )?;
         Ok(())
     })();
     if let Err(err) = result {
-        if let Err(rollback) = rollback_locked(paths, &marker_path, &marker) {
+        if let Err(rollback) = rollback_locked(paths, &marker_path, &marker, &config_lock) {
             bail!(
                 "restore failed: {err}; rollback failed: {rollback}; original copy at {}; recovery marker at {}; run `wineo snapshot recover {}`",
                 staging_path.display(),
@@ -525,7 +532,7 @@ pub fn restore_reviewed_with(
         return Err(err);
     }
     if let Err(err) = fs::remove_file(&marker_path) {
-        if let Err(rollback) = rollback_locked(paths, &marker_path, &marker) {
+        if let Err(rollback) = rollback_locked(paths, &marker_path, &marker, &config_lock) {
             bail!(
                 "restore could not clear marker: {err}; rollback failed: {rollback}; original copy at {}; recovery marker at {}; run `wineo snapshot recover {}`",
                 staging_path.display(),
@@ -637,7 +644,7 @@ pub fn recover(paths: &Paths, name: &str) -> Result<()> {
     validate_marker_config(paths, name, &marker)?;
     let locks = Locks::new(paths);
     let _operation = locks.acquire(Operation::Snapshot, name, &[&prefix])?;
-    let _config_lock = locks.config(&paths.environment_config(name))?;
+    let config_lock = locks.config(&paths.environment_config(name))?;
     Runtime::new(paths, name).check_quiet(name)?;
     let marker = read_marker(paths, &path, name)?;
     validate_marker_config(paths, name, &marker)?;
@@ -653,7 +660,7 @@ pub fn recover(paths: &Paths, name: &str) -> Result<()> {
         ),
         err => err.into(),
     })?;
-    rollback_locked(paths, &path, &marker)
+    rollback_locked(paths, &path, &marker, &config_lock)
 }
 
 fn validate_marker_config(paths: &Paths, name: &str, marker: &RestoreMarker) -> Result<()> {
@@ -879,7 +886,12 @@ fn read_marker(paths: &Paths, path: &Path, name: &str) -> Result<RestoreMarker> 
     Ok(marker)
 }
 
-fn rollback_locked(paths: &Paths, marker_path: &Path, marker: &RestoreMarker) -> Result<()> {
+fn rollback_locked(
+    paths: &Paths,
+    marker_path: &Path,
+    marker: &RestoreMarker,
+    config_lock: &ConfigGuard,
+) -> Result<()> {
     let live = directory_identity(&marker.prefix)?;
     if !marker.old_directory.matches(live) {
         if !marker
@@ -913,7 +925,11 @@ fn rollback_locked(paths: &Paths, marker_path: &Path, marker: &RestoreMarker) ->
             build_lock::wine(paths, &global, wine).ok()
         })
         .unwrap_or_default();
-    write_config_atomic(&config_path, &marker.old_config)?;
+    files::persist_config_synced(
+        &config_path,
+        config_lock.config_target(),
+        marker.old_config.as_bytes(),
+    )?;
     fs::remove_file(marker_path)?;
     sync_dir(marker_path.parent().unwrap())?;
     remove_tree(&marker.staging).with_context(|| {
@@ -976,12 +992,10 @@ fn write_synced(path: &Path, content: &[u8]) -> Result<()> {
     Ok(())
 }
 
+#[cfg(test)]
 fn write_config_atomic(path: &Path, content: &str) -> Result<()> {
-    let parent = path
-        .parent()
-        .ok_or_else(|| anyhow!("config has no parent"))?;
-    files::persist_synced(parent, path, content.as_bytes())?;
-    sync_dir(parent)
+    files::persist_config_synced(path, &paths::resolve(path), content.as_bytes())?;
+    Ok(())
 }
 
 fn sync_dir(path: &Path) -> Result<()> {

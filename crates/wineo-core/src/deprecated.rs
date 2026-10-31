@@ -445,7 +445,7 @@ pub fn rename_in_place(paths: &Paths, config: &Config) -> Result<bool> {
         return Err(Error::InvalidName(name.clone()));
     }
     let path = config.path(paths);
-    let _guard = Locks::new(paths).config(&path)?;
+    let guard = Locks::new(paths).config(&path)?;
     let Some(text) = files::read_to_string_optional(&path)
         .context(|| format!("failed to read {}", path.display()))?
     else {
@@ -462,7 +462,7 @@ pub fn rename_in_place(paths: &Paths, config: &Config) -> Result<bool> {
     crate::config::stamp_schema(&mut doc);
     let updated = doc.to_string();
     config.check(&path, &updated)?;
-    files::write_atomic(&path, &updated)?;
+    files::write_config(&path, guard.config_target(), &updated)?;
     Ok(true)
 }
 

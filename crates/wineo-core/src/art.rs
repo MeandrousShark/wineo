@@ -19,7 +19,7 @@ use crate::cancel::Token;
 use crate::config;
 use crate::environment::{Environment, EnvironmentIdentity};
 use crate::error::{Error, IoContext, Result};
-use crate::files::{self, write_atomic};
+use crate::files;
 use crate::name;
 use crate::operation::{ConfigGuard, Locks};
 use crate::paths::Paths;
@@ -417,11 +417,11 @@ fn store_manual(
         })?;
 
     let art_dir = paths.art_dir(env);
-    let _guard = Locks::new(paths).config(&art_dir.join(ART_FILE))?;
+    let guard = Locks::new(paths).config(&art_dir.join(ART_FILE))?;
     check_environment_identity(paths, env, expected_identity)?;
     // Checked again under the lock, so art never outlives a concurrent `rm`.
     Environment::ensure_exists(paths, env)?;
-    let mut art = ArtFile::open(&art_dir)?;
+    let mut art = ArtFile::open_locked(&art_dir, &guard)?;
     let dir = spot_dir(&art_dir, target);
     fs::create_dir_all(&dir).context(|| format!("failed to create {}", dir.display()))?;
     let path = dir.join(kind.file_name(format));
@@ -533,13 +533,13 @@ pub(crate) fn publish_source(
     let art_dir = paths.art_dir(env);
     #[cfg(test)]
     test_hook("art.lock");
-    let _guard = Locks::new(paths).config(&art_dir.join(ART_FILE))?;
+    let guard = Locks::new(paths).config(&art_dir.join(ART_FILE))?;
     if cancel.is_some_and(Token::is_canceled) {
         return Err(Error::Canceled("download"));
     }
     check_environment_identity(paths, env, expected_identity)?;
     check_spot(paths, env, target)?;
-    let mut art = ArtFile::open(&art_dir)?;
+    let mut art = ArtFile::open_locked(&art_dir, &guard)?;
     let dir = spot_dir(&art_dir, target);
     let current = find(
         &dir,
@@ -616,13 +616,13 @@ pub(crate) fn save_game_for(
     cancel: Option<&Token>,
 ) -> Result<()> {
     let art_dir = paths.art_dir(env);
-    let _guard = Locks::new(paths).config(&art_dir.join(ART_FILE))?;
+    let guard = Locks::new(paths).config(&art_dir.join(ART_FILE))?;
     if cancel.is_some_and(Token::is_canceled) {
         return Err(Error::Canceled("SteamGridDB game"));
     }
     Environment::ensure_exists(paths, env)?;
     check_environment_identity(paths, env, expected_identity)?;
-    let mut art = ArtFile::open(&art_dir)?;
+    let mut art = ArtFile::open_locked(&art_dir, &guard)?;
     #[cfg(test)]
     test_hook("art.save_game");
     if cancel.is_some_and(Token::is_canceled) {
@@ -681,9 +681,9 @@ pub fn remove(paths: &Paths, env: &str, target: Option<&str>, kind: Kind) -> Res
     }
     Environment::ensure_exists(paths, env)?;
     let art_dir = paths.art_dir(env);
-    let _guard = Locks::new(paths).config(&art_dir.join(ART_FILE))?;
+    let guard = Locks::new(paths).config(&art_dir.join(ART_FILE))?;
     Environment::ensure_exists(paths, env)?;
-    let mut art = ArtFile::open(&art_dir)?;
+    let mut art = ArtFile::open_locked(&art_dir, &guard)?;
     let dir = spot_dir(&art_dir, target);
     let mut files = Vec::new();
     if let Some(found) = find(&dir, kind, None)? {
@@ -719,9 +719,9 @@ pub fn drop_missing_record(
     kind: Kind,
 ) -> Result<bool> {
     let art_dir = paths.art_dir(env);
-    let _guard = Locks::new(paths).config(&art_dir.join(ART_FILE))?;
+    let guard = Locks::new(paths).config(&art_dir.join(ART_FILE))?;
     Environment::ensure_exists(paths, env)?;
-    let mut art = ArtFile::open(&art_dir)?;
+    let mut art = ArtFile::open_locked(&art_dir, &guard)?;
     let Some(record) = art.config().record(target, kind) else {
         return Ok(false);
     };
@@ -737,12 +737,12 @@ pub fn drop_missing_record(
 /// stay. Returns whether it dropped any.
 pub fn drop_unknown_target(paths: &Paths, env: &str, target: &str) -> Result<bool> {
     let art_dir = paths.art_dir(env);
-    let _guard = Locks::new(paths).config(&art_dir.join(ART_FILE))?;
+    let guard = Locks::new(paths).config(&art_dir.join(ART_FILE))?;
     let environment = Environment::load(paths, env)?;
     if has_target(&environment, target) {
         return Ok(false);
     }
-    let mut art = ArtFile::open(&art_dir)?;
+    let mut art = ArtFile::open_locked(&art_dir, &guard)?;
     art.remove_target(target);
     art.save()
 }
@@ -790,7 +790,7 @@ impl TargetCleanup {
         }
         let art_dir = paths.art_dir(env);
         let guard = Locks::new(paths).config(&art_dir.join(ART_FILE))?;
-        let art = ArtFile::open(&art_dir)?;
+        let art = ArtFile::open_locked(&art_dir, &guard)?;
         Ok(Self {
             art_dir,
             art,
@@ -1277,6 +1277,8 @@ impl ArtConfig {
 #[derive(Debug)]
 pub struct ArtFile {
     path: PathBuf,
+    /// What the file's config lock was keyed on.
+    target: PathBuf,
     doc: DocumentMut,
     /// The text as read, or a new document's for a missing file.
     original: String,
@@ -1286,7 +1288,17 @@ pub struct ArtFile {
 }
 
 impl ArtFile {
+    #[cfg(test)]
     pub fn open(art_dir: &Path) -> Result<Self> {
+        Self::open_at(art_dir, crate::paths::resolve(&art_dir.join(ART_FILE)))
+    }
+
+    /// Opens the file `guard` locks, so `save` writes to that same file.
+    pub(crate) fn open_locked(art_dir: &Path, guard: &ConfigGuard) -> Result<Self> {
+        Self::open_at(art_dir, guard.config_target().to_owned())
+    }
+
+    fn open_at(art_dir: &Path, target: PathBuf) -> Result<Self> {
         let path = art_dir.join(ART_FILE);
         let (doc, config) = match fs::read_to_string(&path) {
             Ok(text) => {
@@ -1310,6 +1322,7 @@ impl ArtFile {
         Ok(Self {
             original,
             path,
+            target,
             doc,
             renamed,
             config,
@@ -1435,7 +1448,7 @@ impl ArtFile {
         config::stamp_schema(&mut written);
         let text = written.to_string();
         self.config = ArtConfig::parse(&self.path, &text)?;
-        write_atomic(&self.path, &text)?;
+        files::write_config(&self.path, &self.target, &text)?;
         self.original = text;
         Ok(true)
     }
