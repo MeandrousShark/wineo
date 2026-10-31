@@ -212,18 +212,18 @@ impl Host {
     }
 
     /// Kills whatever is left. A native run gets SIGKILL to its group.
+    /// Closing `tracked` ends a kill still running and calls off one to come.
     pub(crate) fn kill_live(
         &self,
         identity: Option<&crate::process::Identity>,
+        tracked: &crate::process::TrackedChild,
     ) -> Result<GroupOwnership> {
         match self {
-            Host::Wine { runner, prefix } => runner.kill_live(prefix, identity),
+            Host::Wine { runner, prefix } => runner.kill_live(prefix, identity, tracked),
             Host::Proxied { .. } => Err(Error::Unsettled(
                 "Steam runs require a tree stop".to_owned(),
             )),
-            Host::Native { .. } => {
-                runner::signal_live_group(identity, rustix::process::Signal::KILL)
-            }
+            Host::Native { .. } => runner::kill_live_group(identity, tracked),
         }
     }
 }

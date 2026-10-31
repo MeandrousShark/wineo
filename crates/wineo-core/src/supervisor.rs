@@ -25,7 +25,7 @@ use crate::launch::{Host, Launch, Overrides};
 use crate::log::{Cap, Log};
 use crate::operation::{Locks, Operation};
 use crate::prefix;
-use crate::process::{Escalation, Step};
+use crate::process::{Escalation, GroupOwnership, Step, TrackedChild};
 use crate::runtime::{RunMode, RunState, RunStatus, Runtime, exit_code};
 
 mod steam;
@@ -63,6 +63,8 @@ enum Event {
     Pulse,
     /// The Steam process being watched exited.
     ReaperExited,
+    /// A kill finished.
+    Killed(Result<GroupOwnership>),
 }
 
 /// How long the run waits between events before it counts as a heartbeat.
@@ -277,7 +279,8 @@ impl Supervisor {
     /// to close on the first stop request and killing them on the next one or
     /// once `stop_timeout` passes. Kills repeat until the prefix is idle, or
     /// until `give_up` has passed since the first one, when a caller has to
-    /// report rather than wait on for good.
+    /// report rather than wait on for good. A kill runs on a thread, since
+    /// `wineserver -k` can hang, and only one runs at a time.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn watch(
         &self,
@@ -341,6 +344,9 @@ impl Supervisor {
         let mut escalation = Escalation::new(stop_timeout, Some(KILL_RETRY));
         // Tells when the request to close is done, since it runs wine too.
         let mut ending_session: Option<Receiver<()>> = None;
+        let kills = KillGuard(TrackedChild::default());
+        let mut kill_out = false;
+        let mut rekill_waiting = false;
         let lost = || Err(Error::Unsettled("lost track of the program".to_owned()));
         let settled = loop {
             let followed =
@@ -394,6 +400,19 @@ impl Supervisor {
                     Event::Stop => escalation.request(false, Instant::now()),
                     Event::Force => escalation.request(true, Instant::now()),
                     Event::StopTimeout => escalation.poll(Instant::now()),
+                    Event::Killed(result) => {
+                        kill_out = false;
+                        match result {
+                            Ok(GroupOwnership::Owned | GroupOwnership::Gone) => {}
+                            Ok(GroupOwnership::Unknown) => {
+                                watched(Watched::Notice(Notice::Warning(Error::Unsettled(
+                                    "process-group ownership could not be confirmed".to_owned(),
+                                ))))
+                            }
+                            Err(err) => watched(Watched::Notice(Notice::Warning(err))),
+                        }
+                        std::mem::take(&mut rekill_waiting).then_some(Step::Rekill)
+                    }
                 }
             };
             match step {
@@ -418,22 +437,27 @@ impl Supervisor {
                     {
                         break Err(Error::StillRunning((stop_timeout + limit).as_secs().max(1)));
                     }
-                    match host.kill_live(identity.as_ref()) {
-                        Ok(
-                            crate::process::GroupOwnership::Owned
-                            | crate::process::GroupOwnership::Gone,
-                        ) => {}
-                        Ok(crate::process::GroupOwnership::Unknown) => {
-                            watched(Watched::Notice(Notice::Warning(Error::Unsettled(
-                                "process-group ownership could not be confirmed".to_owned(),
-                            ))))
-                        }
-                        Err(err) => watched(Watched::Notice(Notice::Warning(err))),
+                    if kill_out {
+                        rekill_waiting = true;
+                        continue;
                     }
+                    kill_out = true;
+                    let sender = self.sender.clone();
+                    let (host, identity) = (host.clone(), identity.clone());
+                    let tracked = kills.0.clone();
+                    thread::spawn(move || {
+                        let result = host.kill_live(identity.as_ref(), &tracked);
+                        let _ = sender.send(Event::Killed(result));
+                    });
                 }
                 None => {}
             }
         };
+        if !kills.0.close() {
+            watched(Watched::Notice(Notice::Warning(Error::Unsettled(
+                "wineserver -k could not be confirmed stopped".to_owned(),
+            ))));
+        }
         // The request to close can still be starting wine when the prefix
         // goes idle, so it gets a moment to finish before this counts as over.
         if let Some(ended) = ending_session {
@@ -477,6 +501,16 @@ fn wait_status(status: rustix::process::WaitIdStatus) -> ExitStatus {
         0
     };
     ExitStatus::from_raw(raw)
+}
+
+/// Ends a kill still out when a watch ends, however it ends: the locks go
+/// next, and a late `wineserver -k` would hit the next run in the prefix.
+struct KillGuard(TrackedChild);
+
+impl Drop for KillGuard {
+    fn drop(&mut self) {
+        self.0.close();
+    }
 }
 
 impl Drop for Supervisor {
@@ -943,7 +977,217 @@ mod tests {
     use std::collections::BTreeMap;
 
     use super::*;
+    use crate::process::Identity;
     use crate::runner::Runner;
+    use crate::test_script::{KillOnDrop, kill_fake_programs, write_script};
+
+    /// Records itself in `forest-pids` so the fixture can end it. `-w` holds
+    /// until idle-release, and `-k` until kill-release, then counts as landed.
+    /// Both give up after 20 s.
+    const HANGING_WINESERVER: &str = r#"#!/bin/sh
+hold() {
+    i=0
+    while [ ! -e "$WINEPREFIX/$1" ] && [ "$i" -lt 400 ]; do
+        sleep 0.05
+        i=$((i + 1))
+    done
+}
+echo "$$" >>"$WINEPREFIX/forest-pids"
+case "$1" in
+-w) hold idle-release ;;
+-k)
+    echo "$$" >>"$WINEPREFIX/kills"
+    hold kill-release
+    : >"$WINEPREFIX/kill-landed"
+    ;;
+esac
+"#;
+
+    struct HungKill {
+        root: tempfile::TempDir,
+        prefix: PathBuf,
+        host: Host,
+    }
+
+    impl Drop for HungKill {
+        fn drop(&mut self) {
+            kill_fake_programs(self.root.path());
+        }
+    }
+
+    /// A program that has already gone, with a prefix that stays busy.
+    fn gone_program() -> (Child, Option<Identity>) {
+        let child = Command::new("true").process_group(0).spawn().unwrap();
+        let identity = Identity::of(child.id());
+        assert!(identity.is_some());
+        (child, identity)
+    }
+
+    impl HungKill {
+        fn new() -> Self {
+            let root = tempfile::tempdir().unwrap();
+            let wineserver = root.path().join("wineserver");
+            write_script(&wineserver, HANGING_WINESERVER);
+            let prefix = root.path().join("prefix");
+            std::fs::create_dir(&prefix).unwrap();
+            let wine = crate::runner::find_on_path("true").unwrap();
+            let host = Host::Wine {
+                runner: Runner::wine_build("hung".to_owned(), wine, wineserver),
+                prefix: prefix.clone(),
+            };
+            Self { root, prefix, host }
+        }
+
+        fn watch(
+            &self,
+            token: &Token,
+            give_up: Option<Duration>,
+        ) -> (JoinHandle<Ending>, Receiver<Watched>, Sender<Event>) {
+            let supervisor = Supervisor::with_token(token);
+            let events = supervisor.sender.clone();
+            let host = self.host.clone();
+            let (sender, notices) = mpsc::channel();
+            let (child, identity) = gone_program();
+            let watching = thread::spawn(move || {
+                supervisor.watch(
+                    &host,
+                    identity,
+                    child,
+                    Duration::ZERO,
+                    Settle::Idle,
+                    give_up,
+                    |watched| {
+                        let _ = sender.send(watched);
+                    },
+                )
+            });
+            (watching, notices, events)
+        }
+
+        fn kills(&self) -> Vec<String> {
+            let text = std::fs::read_to_string(self.prefix.join("kills")).unwrap_or_default();
+            text.lines().map(str::to_owned).collect()
+        }
+
+        fn wait_for_kills(&self, count: usize) {
+            let deadline = Instant::now() + Duration::from_secs(10);
+            while self.kills().len() < count {
+                assert!(Instant::now() < deadline, "timed out");
+                thread::sleep(Duration::from_millis(10));
+            }
+        }
+
+        fn release(&self, name: &str) {
+            std::fs::write(self.prefix.join(name), "").unwrap();
+        }
+
+        /// The kill was ended, not left to land later.
+        fn assert_kills_ended(&self) {
+            for pid in self.kills() {
+                assert!(!Path::new("/proc").join(&pid).exists(), "{pid} survived");
+            }
+            assert!(!self.prefix.join("kill-landed").exists());
+        }
+    }
+
+    #[test]
+    fn a_hung_kill_cant_hold_off_giving_up_and_doesnt_outlast_it() {
+        let f = HungKill::new();
+        let token = Token::new();
+        let (watching, _notices, _events) = f.watch(&token, Some(Duration::from_millis(300)));
+        token.force();
+        f.wait_for_kills(1);
+        let ending = watching.join().unwrap();
+        assert!(matches!(ending.settled, Err(Error::StillRunning(_))));
+        assert!(ending.stopped);
+        f.assert_kills_ended();
+    }
+
+    #[test]
+    fn the_loop_stays_responsive_during_a_hung_kill_and_idle_ends_it() {
+        let f = HungKill::new();
+        let token = Token::new();
+        let (watching, notices, events) = f.watch(&token, None);
+        token.force();
+        f.wait_for_kills(1);
+        events.send(Event::Heartbeat).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            let left = deadline.saturating_duration_since(Instant::now());
+            match notices.recv_timeout(left) {
+                Ok(Watched::Notice(Notice::Heartbeat)) => break,
+                Ok(_) => {}
+                Err(err) => panic!("no heartbeat during the kill: {err}"),
+            }
+        }
+        // A later stop request is taken in too, without a second kill.
+        events.send(Event::Stop).unwrap();
+        events.send(Event::Force).unwrap();
+        thread::sleep(KILL_RETRY + Duration::from_millis(200));
+        assert_eq!(f.kills().len(), 1);
+        assert!(!watching.is_finished());
+        f.release("idle-release");
+        let ending = watching.join().unwrap();
+        assert!(ending.settled.is_ok(), "{:?}", ending.settled);
+        f.assert_kills_ended();
+    }
+
+    #[test]
+    fn a_rekill_due_during_a_kill_waits_for_it() {
+        let f = HungKill::new();
+        let token = Token::new();
+        let (watching, _notices, _events) = f.watch(&token, None);
+        token.force();
+        f.wait_for_kills(1);
+        thread::sleep(KILL_RETRY + Duration::from_millis(200));
+        assert_eq!(f.kills().len(), 1);
+        f.release("kill-release");
+        f.wait_for_kills(2);
+        f.release("idle-release");
+        assert!(watching.join().unwrap().settled.is_ok());
+    }
+
+    #[test]
+    fn a_closed_kill_never_starts_wineserver() {
+        let f = HungKill::new();
+        let (mut child, identity) = gone_program();
+        let tracked = TrackedChild::default();
+        assert!(tracked.close());
+        f.host.kill_live(identity.as_ref(), &tracked).unwrap();
+        child.wait().unwrap();
+        assert!(f.kills().is_empty());
+    }
+
+    #[test]
+    fn signal_only_kills_go_through_the_same_gate() {
+        for host in [
+            Host::Native {
+                exe: PathBuf::from("/bin/true"),
+            },
+            Host::Wine {
+                runner: Runner::fake_proton("proton"),
+                prefix: PathBuf::from("/nonexistent"),
+            },
+        ] {
+            let mut target = KillOnDrop::group(
+                Command::new("sleep")
+                    .arg("20")
+                    .process_group(0)
+                    .spawn()
+                    .unwrap(),
+            );
+            let identity = Identity::of(target.id());
+            let closed = TrackedChild::default();
+            assert!(closed.close());
+            host.kill_live(identity.as_ref(), &closed).unwrap();
+            thread::sleep(Duration::from_millis(50));
+            assert!(target.try_wait().unwrap().is_none());
+
+            let open = TrackedChild::default();
+            host.kill_live(identity.as_ref(), &open).unwrap();
+            assert!(!target.wait().unwrap().success());
+        }
+    }
 
     #[test]
     fn heartbeats_continue_while_a_stop_deadline_is_pending() {

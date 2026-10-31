@@ -856,3 +856,55 @@ fn stale_group_classification_requires_a_complete_matching_identity() {
         GroupOwnership::Owned
     );
 }
+
+#[test]
+fn a_tracked_child_reports_how_it_ended() {
+    let tracked = TrackedChild::default();
+    let status = tracked
+        .run(Command::new("sh").args(["-c", "exit 3"]).process_group(0))
+        .unwrap();
+    assert_eq!(status.unwrap().code(), Some(3));
+    assert!(tracked.close());
+}
+
+#[test]
+fn nothing_starts_in_a_closed_tracked_child() {
+    let root = tempfile::tempdir().unwrap();
+    let marker = root.path().join("ran");
+    let tracked = TrackedChild::default();
+    assert!(tracked.close());
+    let ran = tracked
+        .run(Command::new("touch").arg(&marker).process_group(0))
+        .unwrap();
+    assert!(ran.is_none());
+    assert_eq!(tracked.unless_closed(|| 1), None);
+    thread::sleep(Duration::from_millis(50));
+    assert!(!marker.exists());
+}
+
+#[test]
+fn closing_ends_a_running_tracked_child_and_its_group() {
+    let root = tempfile::tempdir().unwrap();
+    let marker = root.path().join("up");
+    let tracked = TrackedChild::default();
+    let running = {
+        let (tracked, marker) = (tracked.clone(), marker.clone());
+        thread::spawn(move || {
+            tracked.run(
+                Command::new("sh")
+                    .args(["-c", "sleep 20 & touch \"$1\"; wait", "sh"])
+                    .arg(&marker)
+                    .process_group(0),
+            )
+        })
+    };
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !marker.exists() {
+        assert!(Instant::now() < deadline, "never started");
+        thread::sleep(Duration::from_millis(10));
+    }
+    let closing = Instant::now();
+    assert!(tracked.close());
+    assert!(running.join().unwrap().unwrap().is_none());
+    assert!(closing.elapsed() < Duration::from_secs(10));
+}

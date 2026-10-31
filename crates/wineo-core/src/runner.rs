@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::{Error, IoContext, Result};
 use crate::external_runners::Source;
-use crate::process::{GroupOwnership, Identity};
+use crate::process::{GroupOwnership, Identity, TrackedChild};
 
 /// umu-launcher, which runs Proton the way Steam does.
 const UMU: &str = "umu-run";
@@ -541,9 +541,16 @@ impl Runner {
     }
 
     /// Kills tracked work while the caller still owns its active operation.
-    pub fn kill_live(&self, prefix: &Path, identity: Option<&Identity>) -> Result<GroupOwnership> {
+    /// `wineserver -k` can hang, so it runs in `tracked`, which lets the caller
+    /// end it, or stop it from starting, before giving up that ownership.
+    pub(crate) fn kill_live(
+        &self,
+        prefix: &Path,
+        identity: Option<&Identity>,
+        tracked: &TrackedChild,
+    ) -> Result<GroupOwnership> {
         if self.is_proton() {
-            return signal_live_group(identity, Signal::KILL);
+            return kill_live_group(identity, tracked);
         }
         let Some(identity) = identity else {
             return Ok(GroupOwnership::Unknown);
@@ -552,7 +559,11 @@ impl Runner {
         if ownership != GroupOwnership::Owned {
             return Ok(ownership);
         }
-        self.kill(prefix, Some(identity.group))?;
+        if let Some(mut command) = self.wineserver(prefix) {
+            tracked
+                .run(on_its_own(command.arg("-k")))
+                .context(|| "failed to run wineserver -k".to_owned())?;
+        }
         Ok(GroupOwnership::Owned)
     }
 
@@ -610,6 +621,16 @@ pub(crate) fn signal_live_group(
     identity
         .signal_if_live(signal)
         .context(|| "failed to signal tracked process group".to_owned())
+}
+
+/// SIGKILLs a group a live owner established, unless `tracked` has closed.
+pub(crate) fn kill_live_group(
+    identity: Option<&Identity>,
+    tracked: &TrackedChild,
+) -> Result<GroupOwnership> {
+    tracked
+        .unless_closed(|| signal_live_group(identity, Signal::KILL))
+        .unwrap_or(Ok(GroupOwnership::Gone))
 }
 
 /// Waits for a recorded group to be gone, for cleaning up after a run whose

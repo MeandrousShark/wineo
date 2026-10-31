@@ -3,8 +3,8 @@
 use std::collections::BTreeMap;
 use std::fs;
 use std::io;
-use std::process::Child;
-use std::sync::Arc;
+use std::process::{Child, Command, ExitStatus};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
 use rustix::event::{EventfdFlags, PollFd, PollFlags, Timespec, eventfd, poll};
@@ -579,6 +579,76 @@ pub fn kill_and_reap(leader: &mut Child) -> bool {
     reap_within(leader, CLEANUP_BOUND, |leader| {
         leader.try_wait().map(|status| status.is_some())
     })
+}
+
+/// A child run on one thread that another can end at any moment, for work
+/// that must not outlive whoever asked for it. Clones share the child.
+#[derive(Clone, Default)]
+pub(crate) struct TrackedChild(Arc<Mutex<Tracked>>);
+
+#[derive(Default)]
+struct Tracked {
+    closed: bool,
+    child: Option<Child>,
+}
+
+impl TrackedChild {
+    fn lock(&self) -> MutexGuard<'_, Tracked> {
+        self.0.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Runs `act` unless this is closed. `close` waits for it to finish.
+    pub(crate) fn unless_closed<T>(&self, act: impl FnOnce() -> T) -> Option<T> {
+        let tracked = self.lock();
+        (!tracked.closed).then(act)
+    }
+
+    /// Spawns `command`, which must lead its own group, and waits for it.
+    /// None when `close` got there first, before the spawn or during the wait.
+    pub(crate) fn run(&self, command: &mut Command) -> io::Result<Option<ExitStatus>> {
+        let pid = {
+            // Spawning under the lock leaves `close` no gap: it either stops
+            // this spawn or finds the child.
+            let mut tracked = self.lock();
+            if tracked.closed {
+                return Ok(None);
+            }
+            let child = command.spawn()?;
+            let pid = Pid::from_raw(child.id() as i32).ok_or(Errno::INVAL)?;
+            tracked.child = Some(child);
+            pid
+        };
+        // NOWAIT keeps it a zombie, so `close` can't signal a reused number.
+        let options = WaitIdOptions::EXITED | WaitIdOptions::NOWAIT;
+        let waited = loop {
+            match waitid(WaitId::Pid(pid), options) {
+                Err(Errno::INTR) => {}
+                other => break other,
+            }
+        };
+        let mut tracked = self.lock();
+        let Some(mut child) = tracked.child.take() else {
+            return Ok(None);
+        };
+        match waited {
+            Ok(_) => child.wait().map(Some),
+            Err(err) => {
+                kill_and_reap(&mut child);
+                Err(err.into())
+            }
+        }
+    }
+
+    /// Ends and reaps a running child, and refuses anything later. False if
+    /// the child couldn't be reaped within `CLEANUP_BOUND`.
+    pub(crate) fn close(&self) -> bool {
+        let child = {
+            let mut tracked = self.lock();
+            tracked.closed = true;
+            tracked.child.take()
+        };
+        child.is_none_or(|mut child| kill_and_reap(&mut child))
+    }
 }
 
 /// A failed stop's error, saying `unconfirmed` too unless its group was seen

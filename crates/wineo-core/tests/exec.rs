@@ -49,6 +49,17 @@ corelimit)
     grep 'Max core file size' /proc/self/limits
     exit 0
     ;;
+held)
+    # Runs until the test lets it go, or for a minute at most.
+    echo "$$ $$" >"$WINEPREFIX/fake-pids"
+    i=0
+    while [ ! -e "$WINEPREFIX/held-release" ] && [ "$i" -lt 600 ]; do
+        sleep 0.1
+        i=$((i + 1))
+    done
+    rm -f "$WINEPREFIX/fake-pids"
+    exit 0
+    ;;
 forest)
     sleep 60 &
     printf '%s %s\n' "$$" "$!" >"$WINEPREFIX/forest-pids"
@@ -896,6 +907,61 @@ fn a_gog_wait_shows_what_failed_while_stopping() {
         warnings.iter().any(|line| line.contains("wineserver -k")),
         "{warnings:?}"
     );
+}
+
+#[test]
+fn a_late_kill_cant_reach_the_next_run_in_the_prefix() {
+    let f = Fixture::built();
+    // Holds the kill until the test lets it go, then does it as usual.
+    let hanging = r#"-k)
+    echo "$$" >>"$WINEPREFIX/forest-pids"
+    : >"$WINEPREFIX/kill-started"
+    i=0
+    while [ ! -e "$WINEPREFIX/kill-release" ] && [ "$i" -lt 600 ]; do
+        sleep 0.05
+        i=$((i + 1))
+    done
+    : >"$WINEPREFIX/kill-landed"
+"#;
+    script(
+        &f.paths.default_runner_root().join("fake/bin/wineserver"),
+        &runners::FAKE_WINESERVER.replacen("-k)\n", hanging, 1),
+    );
+    // Only a program from a GOG folder is watched by the supervisor.
+    let folder = [gog_game(&f, "rimworld", false).display().to_string()];
+    let exec = |program: &str, token: &Token| {
+        launch::exec(
+            &f.paths,
+            "app",
+            program,
+            &folder,
+            &BTreeMap::new(),
+            token,
+            |_| {},
+        )
+    };
+    let (first_token, second_token) = (Token::new(), Token::new());
+    thread::scope(|scope| {
+        let first = scope.spawn(|| exec("held", &first_token));
+        wait_for(|| f.prefix.join("fake-pids").exists());
+        first_token.force();
+        wait_for(|| f.prefix.join("kill-started").exists());
+        // The run ends by itself with its kill still out.
+        fs::write(f.prefix.join("held-release"), "").unwrap();
+        first.join().unwrap().unwrap();
+
+        let second = scope.spawn(|| exec("next", &second_token));
+        wait_for(|| f.prefix.join("fake-pids").exists());
+        fs::write(f.prefix.join("kill-release"), "").unwrap();
+        thread::sleep(Duration::from_millis(500));
+        let landed = f.prefix.join("kill-landed").exists();
+        let alive = f.prefix.join("fake-pids").exists();
+        second_token.cancel();
+        let status = second.join().unwrap();
+        assert!(!landed, "the kill ran after its run had ended");
+        assert!(alive, "the next run was killed");
+        assert!(status.is_ok(), "{status:?}");
+    });
 }
 
 #[test]
