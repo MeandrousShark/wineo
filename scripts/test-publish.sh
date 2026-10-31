@@ -1553,6 +1553,31 @@ touch "$tmp/obs/missing"
 check "obs_states misses an absent package" \
     test "$(pure obs_states "$tmp/obs" 1.2.3-1 | head -n 1)" = "openSUSE_Tumbleweed absent"
 
+# A repository's state: absent only for an empty one or another identity.
+aur_repo=$tmp/aur-state
+git init -q "$aur_repo"
+aur_case() { # WANT WHY SRCINFO
+    printf '%b' "$3" >"$aur_repo/.SRCINFO"
+    git -C "$aur_repo" add .SRCINFO
+    git -C "$aur_repo" commit -qm state --allow-empty
+    local got
+    got=$(pure aur_state "$aur_repo" wineo 1.2.3-1 2>/dev/null) || got=stopped
+    check "aur_state $2 is $got, not $1" test "$got" = "$1"
+}
+aur_case built "the same identity" 'pkgbase = wineo\n\tpkgver = 1.2.3\n\tpkgrel = 1\n'
+aur_case absent "another revision" 'pkgbase = wineo\n\tpkgver = 1.2.3\n\tpkgrel = 2\n'
+aur_case unknown "another package" 'pkgbase = other\n\tpkgver = 1.2.3\n\tpkgrel = 2\n'
+aur_case unknown "no pkgrel" 'pkgbase = wineo\n\tpkgver = 1.2.3\n'
+aur_case unknown "two pkgvers" 'pkgbase = wineo\n\tpkgver = 1.2.3\n\tpkgver = 1.2.4\n\tpkgrel = 2\n'
+empty_repo=$tmp/empty-state
+git init -q "$empty_repo"
+check "aur_state takes an empty repository for anything but absent" \
+    test "$(pure aur_state "$empty_repo" wineo 1.2.3-1)" = absent
+check "overlay_state takes an empty repository for anything but absent" \
+    test "$(pure overlay_state "$empty_repo" 1.2.3)" = absent
+check "overlay_state takes another repository for this one" \
+    test "$(pure overlay_state "$aur_repo" 1.2.3)" = unknown
+
 # The real clients' words, from a local server standing in for the service.
 printf "Error: Operation requires API authentication. See the 'AUTHENTICATION' section in man copr-cli(1).\n" >"$tmp/said"
 check "copr_auth_failed misses copr-cli's refusal" pure copr_auth_failed "$tmp/said"
