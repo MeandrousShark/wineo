@@ -341,6 +341,8 @@ pub fn create(
         attempt += 1;
         id = format!("{base}-{attempt}");
     };
+    #[cfg(test)]
+    crate::files::config_write_hooks::run_before_find();
     let mut document = DocumentMut::new();
     document["schema_version"] = Item::Value(Value::from(SCHEMA_VERSION));
     document["name"] = Item::Value(Value::from(name.trim()));

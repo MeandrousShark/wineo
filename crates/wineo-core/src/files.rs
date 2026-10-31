@@ -469,7 +469,7 @@ pub(crate) mod config_write_hooks {
         }
     }
 
-    pub(super) fn run_before_find() {
+    pub(crate) fn run_before_find() {
         run(&BEFORE_FIND);
     }
 
