@@ -159,6 +159,15 @@ check "the spec changelog does not end in $spec_version-${spec_release%%\%*}: $s
 check "the spec does not build with thin LTO" has_line "$spec" 'export CARGO_PROFILE_RELEASE_LTO=thin'
 check "the spec does not build with 16 codegen units" \
     has_line "$spec" 'export CARGO_PROFILE_RELEASE_CODEGEN_UNITS=16'
+
+# OBS fails a build on any directory no package owns.
+check "the spec does not own the license directory" has_line "$spec" '%dir %{_datadir}/licenses/%{name}'
+check "the spec has no icon theme at build time on openSUSE" \
+    awk '/^%if 0%\{\?suse_version\}$/ { f = 1; next } /^%endif$/ { f = 0 } f && /^BuildRequires: +hicolor-icon-theme$/ { ok = 1 } END { exit !ok }' "$spec"
+for dir in fish fish/vendor_completions.d zsh zsh/site-functions; do
+    check "the spec does not own $dir on openSUSE" \
+        awk -v line="%dir %{_datadir}/$dir" '/^%if 0%\{\?suse_version\}$/ { f = 1; next } /^%endif$/ { f = 0 } f && $0 == line { ok = 1 } END { exit !ok }' "$spec"
+done
 check "the spec source is not the vendored release tarball" \
     test "$(spec_field Source0)" = '%{url}/releases/download/v%{version}/%{name}-%{version}-vendored.tar.xz'
 check "the spec does not unpack wineo-VERSION" has_line "$spec" '%autosetup -n %{name}-%{version}'

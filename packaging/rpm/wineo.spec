@@ -10,7 +10,7 @@
 
 Name:           wineo
 Version:        1.1.0
-Release:        2%{?dist}
+Release:        3%{?dist}
 Summary:        Launcher for Wine and Proton programs, native games, Steam, and GOG
 # The crates compiled into the binaries, from `cargo deny list`, with each
 # "OR" resolved to a choice. 0BSD is the patched hexf-parse in third_party/,
@@ -27,6 +27,10 @@ BuildRequires:  rust >= 1.90
 BuildRequires:  gcc
 BuildRequires:  pkgconfig
 BuildRequires:  pkgconfig(liblzma)
+# OBS fails a package with directories nothing owns, and this owns the icons'.
+%if 0%{?suse_version}
+BuildRequires:  hicolor-icon-theme
+%endif
 
 # wineo-gui loads everything after liblzma with dlopen, so rpm can't find
 # these libraries. The names are the README's Fedora list, and openSUSE's
@@ -95,6 +99,7 @@ scripts/stage-install.sh --license-dir %{_datadir}/licenses/%{name} \
     %{buildroot} target/release
 
 %files
+%dir %{_datadir}/licenses/%{name}
 %license %{_datadir}/licenses/%{name}/LICENSE
 %license %{_datadir}/licenses/%{name}/THIRD_PARTY.md
 %{_bindir}/wineo
@@ -106,8 +111,18 @@ scripts/stage-install.sh --license-dir %{_datadir}/licenses/%{name} \
 %{_datadir}/zsh/site-functions/_wineo
 %{_datadir}/fish/vendor_completions.d/wineo.fish
 %{_datadir}/doc/%{name}/
+# Fedora's filesystem package owns these; openSUSE's build root has no owner.
+%if 0%{?suse_version}
+%dir %{_datadir}/fish
+%dir %{_datadir}/fish/vendor_completions.d
+%dir %{_datadir}/zsh
+%dir %{_datadir}/zsh/site-functions
+%endif
 
 %changelog
+* Sat Oct 31 2026 Michael Hannon <mphannon@pm.me> - 1.1.0-3
+- Own the directories that OBS's file list check flagged.
+
 * Sat Oct 31 2026 Michael Hannon <mphannon@pm.me> - 1.1.0-2
 - Build with thin LTO so COPR finishes inside its time limit.
 
