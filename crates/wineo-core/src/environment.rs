@@ -693,6 +693,46 @@ pub fn check_destination(paths: &Paths, name: &str, prefix: &Path) -> Result<()>
     check_overlap(paths, name, prefix, false)
 }
 
+/// How one resolved prefix sits against another.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Relation {
+    Equal,
+    /// The first is inside the second.
+    Inside,
+    /// The first contains the second.
+    Contains,
+    Apart,
+}
+
+fn relate(first: &Path, second: &Path) -> Relation {
+    if first == second {
+        Relation::Equal
+    } else if first.starts_with(second) {
+        Relation::Inside
+    } else if second.starts_with(first) {
+        Relation::Contains
+    } else {
+        Relation::Apart
+    }
+}
+
+/// Every pair of resolved prefixes where one is inside the other, as
+/// `(inner, outer)` names in the order of `prefixes`. Unlike `check_overlap`
+/// it doesn't stop at the first hit. Equal prefixes are sharing, not nesting.
+pub fn nested_prefixes(prefixes: &[(String, PathBuf)]) -> Vec<(String, String)> {
+    let mut nested = Vec::new();
+    for (index, (first, first_prefix)) in prefixes.iter().enumerate() {
+        for (second, second_prefix) in &prefixes[index + 1..] {
+            match relate(first_prefix, second_prefix) {
+                Relation::Inside => nested.push((first.clone(), second.clone())),
+                Relation::Contains => nested.push((second.clone(), first.clone())),
+                Relation::Equal | Relation::Apart => {}
+            }
+        }
+    }
+    nested
+}
+
 fn check_overlap(paths: &Paths, name: &str, prefix: &Path, allow_equal: bool) -> Result<()> {
     let wanted = crate::paths::resolve(prefix);
     let mut unreadable = Vec::new();
@@ -705,30 +745,28 @@ fn check_overlap(paths: &Paths, name: &str, prefix: &Path, allow_equal: bool) ->
             continue;
         }
         match loaded.and_then(|env| env.prefix(paths)) {
-            Ok(other_prefix) => {
-                let other_prefix = crate::paths::resolve(&other_prefix);
-                if other_prefix == wanted {
-                    if allow_equal {
-                        continue;
-                    }
+            Ok(other_prefix) => match relate(&wanted, &crate::paths::resolve(&other_prefix)) {
+                Relation::Equal if allow_equal => {}
+                Relation::Equal => {
                     return Err(Error::PrefixTaken {
                         path: wanted,
                         owner: other,
                     });
                 }
-                if wanted.starts_with(&other_prefix) {
+                Relation::Inside => {
                     return Err(Error::NestedPrefix {
                         inner: name.to_owned(),
                         outer: other,
                     });
                 }
-                if other_prefix.starts_with(&wanted) {
+                Relation::Contains => {
                     return Err(Error::NestedPrefix {
                         inner: other,
                         outer: name.to_owned(),
                     });
                 }
-            }
+                Relation::Apart => {}
+            },
             Err(_) => unreadable.push(other),
         }
     }

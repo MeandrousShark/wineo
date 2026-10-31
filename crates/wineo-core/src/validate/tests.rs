@@ -1400,9 +1400,174 @@ fn check_environment_checks_only_that_environment() {
     ));
 }
 
+/// Prefix directories for the nesting tests, made in the fixture's root.
+fn nested_fixture(layout: &[(&str, &str)]) -> Fixture {
+    let f = Fixture::new();
+    for (name, dir) in layout {
+        let prefix = f.root.join(dir);
+        f.wine_at(name, &prefix, "");
+    }
+    f
+}
+
+fn nested(report: &Report) -> Vec<(Option<String>, String)> {
+    report
+        .problems
+        .iter()
+        .filter(|problem| problem.code == Code::PrefixNested)
+        .map(|problem| (problem.environment.clone(), problem.message.clone()))
+        .collect()
+}
+
+#[test]
+fn a_nested_pair_is_reported_once_on_the_inner_environment() {
+    let f = nested_fixture(&[("a", "pfx/a"), ("b", "pfx/a/drive_c/b")]);
+    let report = f.check();
+    assert_eq!(
+        nested(&report),
+        [(
+            Some("b".to_owned()),
+            "b's prefix is inside a's prefix. Move one of them first.".to_owned()
+        )]
+    );
+    let problem = report
+        .problems
+        .iter()
+        .find(|problem| problem.code == Code::PrefixNested)
+        .unwrap();
+    assert_eq!(problem.level, Level::Error);
+    assert_eq!(problem.area, Area::Wine);
+    assert!(problem.fix.is_none());
+}
+
+#[test]
+fn every_nested_pair_is_reported_not_just_the_first() {
+    let f = nested_fixture(&[
+        ("a", "pfx/a"),
+        ("b", "pfx/a/b"),
+        ("c", "pfx/a/b/c"),
+        ("d", "pfx/d"),
+    ]);
+    let messages: Vec<String> = nested(&f.check()).into_iter().map(|(_, m)| m).collect();
+    assert_eq!(
+        messages,
+        [
+            "b's prefix is inside a's prefix. Move one of them first.",
+            "c's prefix is inside a's prefix. Move one of them first.",
+            "c's prefix is inside b's prefix. Move one of them first.",
+        ]
+    );
+}
+
+#[test]
+fn two_environments_on_the_same_prefix_are_not_nested() {
+    let f = nested_fixture(&[("a", "pfx/shared"), ("b", "pfx/shared")]);
+    assert_eq!(nested(&f.check()), []);
+}
+
+#[test]
+fn a_prefix_that_only_shares_a_name_prefix_is_not_nested() {
+    let f = nested_fixture(&[("a", "pfx/game"), ("b", "pfx/game2")]);
+    assert_eq!(nested(&f.check()), []);
+}
+
+#[test]
+fn environments_without_a_prefix_are_ignored_by_the_nesting_check() {
+    let f = nested_fixture(&[("a", "pfx/a")]);
+    f.native("tool", "");
+    f.proxied("steamed", "220", false);
+    assert_eq!(nested(&f.check()), []);
+}
+
+#[test]
+fn an_unreadable_environment_is_left_to_its_own_check() {
+    let f = nested_fixture(&[("a", "pfx/a"), ("b", "pfx/a/b")]);
+    f.write_config("broken", "prefix = [\n");
+    let report = f.check();
+    assert_eq!(nested(&report).len(), 1);
+    assert!(codes(&report).contains(&Code::EnvironmentConfigInvalid));
+}
+
+#[test]
+fn nesting_is_compared_after_resolving_symlinks_and_dots() {
+    let f = Fixture::new();
+    let real = f.root.join("real");
+    fs::create_dir_all(&real).unwrap();
+    fs::create_dir_all(f.root.join("elsewhere")).unwrap();
+    symlink(&real, f.root.join("link")).unwrap();
+    f.wine_at("a", &real, "");
+    f.wine_at("b", &f.root.join("link/b"), "");
+    f.wine_at("c", &f.root.join("elsewhere/../link/c"), "");
+    f.wine_at("d", &f.root.join("link"), "");
+    let found: Vec<String> = nested(&f.check()).into_iter().map(|(_, m)| m).collect();
+    assert_eq!(
+        found,
+        [
+            "b's prefix is inside a's prefix. Move one of them first.",
+            "c's prefix is inside a's prefix. Move one of them first.",
+            // d is the same directory as a, so only sharing, and it holds b and c.
+            "b's prefix is inside d's prefix. Move one of them first.",
+            "c's prefix is inside d's prefix. Move one of them first.",
+        ]
+    );
+}
+
+#[test]
+fn relative_prefixes_in_a_portable_folder_are_compared_by_where_they_land() {
+    let f = Fixture::new();
+    let usb = f.root.join("usb");
+    let paths = Fixture::xdg(&f.root, Some(&usb));
+    let dir = paths.environments_dir();
+    fs::create_dir_all(&dir).unwrap();
+    for (name, prefix) in [("a", "prefixes/a"), ("b", "prefixes/a/inner")] {
+        fs::write(
+            paths.environment_config(name),
+            format!("prefix = '{prefix}'\nrunner = 'fake'\narch = 'win64'\n"),
+        )
+        .unwrap();
+    }
+    let report = check_all(&paths).unwrap();
+    assert_eq!(
+        nested(&report),
+        [(
+            Some("b".to_owned()),
+            "b's prefix is inside a's prefix. Move one of them first.".to_owned()
+        )]
+    );
+}
+
+#[test]
+fn check_environment_reports_only_pairs_that_include_it() {
+    let f = nested_fixture(&[
+        ("outer", "pfx/outer"),
+        ("inner", "pfx/outer/inner"),
+        ("apart", "pfx/apart"),
+        ("deep", "pfx/outer/inner/deep"),
+    ]);
+    let message = |inner: &str, outer: &str| {
+        format!("{inner}'s prefix is inside {outer}'s prefix. Move one of them first.")
+    };
+    let report_for = |name: &str| {
+        let report = check_environment(&f.paths, name).unwrap();
+        nested(&report)
+            .into_iter()
+            .map(|(_, message)| message)
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        report_for("inner"),
+        [message("deep", "inner"), message("inner", "outer")]
+    );
+    assert_eq!(
+        report_for("outer"),
+        [message("deep", "outer"), message("inner", "outer")]
+    );
+    assert_eq!(report_for("apart"), Vec::<String>::new());
+}
+
 // The JSON output depends on these values, so changing one is a contract change.
 #[rustfmt::skip]
-    const RECORDED_CODES: [(Code, &str, &str, &str); 50] = [
+    const RECORDED_CODES: [(Code, &str, &str, &str); 51] = [
         (Code::GlobalConfigInvalid, "global_config_invalid", "error", "global_config"),
         (Code::TemplateInvalid, "template_invalid", "error", "template"),
         (Code::TemplateUnresolved, "template_unresolved", "warning", "template"),
@@ -1414,6 +1579,7 @@ fn check_environment_checks_only_that_environment() {
         (Code::WinetricksUnavailable, "winetricks_unavailable", "error", "wine"),
         (Code::PrefixMissing, "prefix_missing", "warning", "wine"),
         (Code::PrefixRefused, "prefix_refused", "error", "wine"),
+        (Code::PrefixNested, "prefix_nested", "error", "wine"),
         (Code::ExeMissing, "exe_missing", "error", "target"),
         (Code::CwdMissing, "cwd_missing", "error", "target"),
         (Code::GamemodeMissing, "gamemode_missing", "error", "target"),

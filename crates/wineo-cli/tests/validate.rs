@@ -121,6 +121,46 @@ fn missing_launch_tools_and_unsupported_wayland_have_stable_error_codes() {
 }
 
 #[test]
+fn nested_prefixes_have_a_stable_error_code() {
+    let f = Fixture::new();
+    f.environment("outer", "");
+    f.environment("inner", "");
+    let outer = f.root.path().join("prefixes/outer");
+    let config = f.config_dir().join("environments/inner.toml");
+    fs::write(
+        config,
+        format!(
+            "prefix = \"{}\"\nrunner = \"wine\"\narch = \"win64\"\n",
+            outer.join("drive_c/inner").display()
+        ),
+    )
+    .unwrap();
+    let before = user_configs(&f);
+    let output = f.run(&["validate", "--json"]);
+    assert_eq!(output.status.code(), Some(1));
+    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let found: Vec<&serde_json::Value> = json["problems"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|p| p["code"] == "prefix_nested")
+        .collect();
+    assert_eq!(found.len(), 1, "{json}");
+    assert_eq!(found[0]["level"], "error");
+    assert_eq!(found[0]["area"], "wine");
+    assert_eq!(found[0]["environment"], "inner");
+    assert_eq!(found[0]["fix"], serde_json::Value::Null);
+    assert_eq!(
+        found[0]["message"],
+        "inner's prefix is inside outer's prefix. Move one of them first."
+    );
+
+    // Report-only, so --fix leaves the configs alone.
+    f.run(&["validate", "--fix"]);
+    assert_eq!(user_configs(&f), before);
+}
+
+#[test]
 fn verbose_lists_what_was_checked() {
     let f = Fixture::new();
     f.environment("hades", "");

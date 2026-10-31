@@ -167,6 +167,7 @@ codes! {
     WinetricksUnavailable => "winetricks_unavailable", Level::Error, Area::Wine;
     PrefixMissing => "prefix_missing", Level::Warning, Area::Wine;
     PrefixRefused => "prefix_refused", Level::Error, Area::Wine;
+    PrefixNested => "prefix_nested", Level::Error, Area::Wine;
     ExeMissing => "exe_missing", Level::Error, Area::Target;
     CwdMissing => "cwd_missing", Level::Error, Area::Target;
     GamemodeMissing => "gamemode_missing", Level::Error, Area::Target;
@@ -539,6 +540,7 @@ pub fn check_all(paths: &Paths) -> Result<Report> {
             check_one(paths, &global, name, &entries, &mut report)?;
         }
     }
+    check_nesting(paths, None, &names, &mut report);
     check_gog(
         paths,
         None,
@@ -593,6 +595,7 @@ pub fn check_environment(paths: &Paths, name: &str) -> Result<Report> {
     let entries = listed_entries(paths)?;
     check_one(paths, &global, name, &entries, &mut report)?;
     let names = environment::names(paths)?;
+    check_nesting(paths, Some(name), &names, &mut report);
     check_gog(
         paths,
         Some(name),
@@ -604,6 +607,39 @@ pub fn check_environment(paths: &Paths, name: &str) -> Result<Report> {
     check_library(paths, Some(name), &names, &pending, false, &mut report);
     contract(paths, &mut report);
     Ok(report)
+}
+
+/// Prefixes that sit inside each other, one problem per pair on the inner
+/// environment. `check_nesting` at creation sees only one pair, and a hand
+/// edit skips it, so this compares them all. With `selected`, only pairs that
+/// include it. An environment whose config can't be loaded or whose prefix
+/// can't be resolved is left to its own checks. There is no fix, since fixes
+/// don't edit environment configs.
+fn check_nesting(paths: &Paths, selected: Option<&str>, names: &[String], report: &mut Report) {
+    let prefixes: Vec<(String, PathBuf)> = names
+        .iter()
+        .filter_map(|name| {
+            let environment = Environment::load(paths, name).ok()?;
+            environment.config.wine()?;
+            let prefix = environment.prefix(paths).ok()?;
+            Some((name.clone(), crate::paths::resolve(&prefix)))
+        })
+        .collect();
+    for (inner, outer) in environment::nested_prefixes(&prefixes) {
+        if selected.is_some_and(|selected| selected != inner && selected != outer) {
+            continue;
+        }
+        report.push(Problem::new(
+            Code::PrefixNested,
+            Some(&inner),
+            Error::NestedPrefix {
+                inner: inner.clone(),
+                outer,
+            }
+            .to_string(),
+            None,
+        ));
+    }
 }
 
 /// `library.toml` as a whole, and its entries. With `selected`, only that
