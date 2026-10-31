@@ -1057,6 +1057,13 @@ publish_real --only ppa
 check "no signing key: exit $rc, not 1" test "$rc" -eq 1
 check "no signing key: it does not say so" said "gpg has no key 8EE69509"
 check "no signing key: the status needed a login" test "$(grep -c 'api.launchpad.net' "$STUB/curl.log")" -eq 4
+# The stub answers any query, so the query itself is compared here: a wrong
+# identity would read as absent and upload again.
+for series in jammy noble resolute stonking; do
+    check "the Launchpad query for $series is not the exact one" grep -qxF -- \
+        "-fsS -G --max-time 60 https://api.launchpad.net/1.0/~meandrous-shark/+archive/ubuntu/wineo --data-urlencode ws.op=getPublishedSources --data-urlencode source_name=wineo --data-urlencode exact_match=true --data-urlencode version=$version-1ppa1~${series}1 --data-urlencode distro_series=https://api.launchpad.net/1.0/ubuntu/$series" \
+        "$STUB/curl.log"
+done
 
 # OBS through its real branch, with the stub answering only the exact endpoints.
 mkdir -p "$XDG_CONFIG_HOME/osc"
@@ -1299,6 +1306,9 @@ check "a build on page two: exit $rc, not 0: $(tail -n 3 "$out")" test "$rc" -eq
 check "a build on page two was not found" said "^  copr +already published"
 check "a build on page two: it read a third page" \
     test "$(grep -c 'build/list' "$STUB/curl.log")" -eq 2
+check "the COPR query is not the exact one" grep -qF \
+    'https://copr.fedorainfracloud.org/api_3/build/list?ownername=meandrousshark&projectname=wineo&limit=100&offset=0&order=id&order_type=DESC' \
+    "$STUB/curl.log"
 check "a build on page two: it uploaded" test "$(grep -c '^copr-cli$' "$STUB/tools.log" || true)" -eq 0
 
 for broken in failed garbled short; do
