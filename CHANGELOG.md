@@ -4,6 +4,46 @@ A finished plan bumps the minor version and fixes between plans bump the
 patch version. A plan released in parts bumps the minor version for each
 part. See `AGENTS.md` for the rule.
 
+## 1.1.1 - 2026-10-31
+
+The first of three small batches, this one about things that hang, get
+replaced, or quietly go wrong (plan 0060).
+
+New in this release:
+
+- `wineo validate` and Checkup report nested prefixes as `prefix_nested`, one
+  error per pair, filed under the inner environment. This catches hand edits
+  and any nesting a library already has. It has no fix.
+- Configs that are symlinks stay symlinks. wineo follows the whole chain and
+  rewrites the real file, so a config kept in a dotfiles repo stays live.
+
+Fixes:
+
+- zsh completions now load on Debian and Ubuntu. Every `.deb` installed them to
+  a directory Debian's zsh doesn't read.
+- A hung `wineserver -k` no longer freezes a run: heartbeats and later stop
+  requests keep working, and it can't outlive the run and hit the next one in
+  that prefix. A slow `wineboot --end-session` can't outlive it either.
+- `winetricks` under Proton now waits for what a verb left running, and the
+  first Ctrl+C during that wait works.
+- `wineo-gui` no longer stays running forever after closing with work stuck.
+
+Behavior changes:
+
+- Force stop in the close prompt now closes the app right away instead of
+  waiting for cleanup.
+- `wineo-gui` ends within about 10 seconds of closing, even if work is stuck.
+  It prints `wineo-gui: gave up after 10 s on` and what it left, and exits 0. Work
+  ended this way doesn't clean up. While something is stuck the window stays
+  on screen, frozen, until then.
+- Rewriting a config keeps the permissions it already had. A `0600` config used
+  to widen, and a read-only one now stays read-only.
+- A config symlink with a missing target is refused, and nothing gets created.
+  So is one repointed during a write. A link into a read-only place, such as a
+  Nix store, now fails with a write error instead of being replaced.
+- `wineo snapshot recover` refuses when the config's link moved after the
+  restore began, and changes nothing until it's pointed back.
+
 ## 1.1.0 - 2026-10-30
 
 Wineo now installs through your distro's package manager (plan 0059). See

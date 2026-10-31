@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: 0BSD
 # shellcheck disable=SC2034,SC2154
 pkgname=wineo-bin
-pkgver=1.1.0
+pkgver=1.1.1
 pkgrel=1
 pkgdesc='Launcher for Wine and Proton programs, native games, Steam, and GOG'
 arch=('x86_64')
