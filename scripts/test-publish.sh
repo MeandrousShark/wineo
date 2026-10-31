@@ -144,7 +144,8 @@ case $1 in
     image) [[ -e $STUB/image-${3##*/} ]]; exit ;;
     commit)
         [[ ! -f $STUB/fail-commit ]] || exit 1
-        touch "$STUB/image-${3##*/}"
+        name=${*: -1}
+        touch "$STUB/image-${name##*/}"
         exit
         ;;
     rm) exit 0 ;;
@@ -1051,6 +1052,29 @@ check "a failed commit: the reason is missing" said "^  copr +failed: installing
 check "a failed commit: a half-built image is left" \
     test "$(find "$STUB" -name 'image-*' | grep -c . || true)" -eq 0
 check "a failed commit: the builder is left" grep -q '^rm -f wineo-publish-builder-fedora' "$STUB/podman.log"
+
+# osc crashes at startup without git, which no help output or stub would show.
+new_scenario
+publish --only copr
+check "the Fedora tools changed: $(grep '^dnf' "$STUB/tools.log")" \
+    test "$(grep '^dnf' "$STUB/tools.log")" = 'dnf -y install rpm-build copr-cli osc git-core'
+new_scenario
+publish --only ppa
+check "the Ubuntu tools changed: $(grep '^apt-get install' "$STUB/tools.log")" \
+    test "$(grep '^apt-get install' "$STUB/tools.log")" = \
+    'apt-get install -y --no-install-recommends ca-certificates debhelper devscripts dpkg-dev dput fakeroot gnupg xz-utils'
+
+check "the Ubuntu image was not reused across series" \
+    test "$(grep -c '^commit' "$STUB/podman.log")" -eq 1
+
+# A failure inside $(...) has to stop the function it's in, as tool_image and
+# tag_tarball rely on. Bash doesn't do that by default.
+rc=0
+reached=$(bash -c 'source "$1"
+    inner() { false; echo reached; }
+    got=$(inner)
+    echo "$got"' bash "$repo/scripts/publish-packages.sh" 2>&1) || rc=$?
+check "a failure in \$(...) did not stop it: $reached" test "$rc" -ne 0 -a -z "$reached"
 
 # COPR's list, past the first page.
 
