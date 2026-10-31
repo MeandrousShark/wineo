@@ -1,0 +1,23 @@
+name: Feature request
+description: Something wineo could do, or do better.
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: goal
+    attributes:
+      label: What are you trying to do?
+      description: The problem you're solving, more than a particular fix.
+    validations:
+      required: true
+  - type: textarea
+    id: today
+    attributes:
+      label: How do you do it today?
+      description: Your workaround, or what stops you from doing it at all.
+    validations:
+      required: true
+  - type: textarea
+    id: idea
+    attributes:
+      label: How could it work?
+      description: Optional. Any idea for a command, setting, or screen.

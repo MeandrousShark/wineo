@@ -383,6 +383,10 @@ cargo test -- --ignored   # needs wine; uses throwaway prefixes in temp dirs
 
 ## Contributing
 
+Report bugs and ask for features in
+[issues](https://github.com/MeandrousShark/wineo/issues/new/choose). For a
+security problem, see [Security](SECURITY.md).
+
 Pull requests are welcome on GitHub. CI runs the formatting, clippy, and
 test checks above on each one; a first-time contributor's run starts once
 the maintainer approves it. The GitHub repository is a mirror of the one
