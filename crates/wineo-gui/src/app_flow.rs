@@ -126,7 +126,7 @@ impl App {
             return if self.exit_waits() {
                 Task::none()
             } else {
-                iced::exit()
+                self.close_window()
             };
         }
         let checks = match result {

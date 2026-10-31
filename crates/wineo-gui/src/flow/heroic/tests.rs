@@ -1819,3 +1819,28 @@ fn no_sources_focus_no_row() {
     let mut laid = crate::focus_button::landed(&app, task);
     assert!(laid.focused().is_empty());
 }
+
+#[test]
+fn a_stuck_import_is_named_and_force_stop_closes_the_window() {
+    use crate::exit_watchdog::tests::exits;
+    let root = tempdir().unwrap();
+    let (mut app, _) = discovering(root.path());
+    let Some(crate::flow::Page::Heroic(page)) = &mut app.flow else {
+        unreachable!("discovering opens the Heroic page");
+    };
+    let token = Token::new();
+    page.token = Some(token.clone());
+    assert!(!exits(app.update(crate::Message::Window(
+        iced::window::Event::CloseRequested
+    ))));
+    assert!(app.close_prompt);
+    assert!(!exits(app.update(crate::Message::CancelAndClose)));
+    assert!(token.is_canceled() && !token.is_forced());
+    assert!(app.watchdog.started().is_none());
+
+    assert!(exits(app.update(crate::Message::ForceCloseWork)));
+    assert!(token.is_forced());
+    assert!(app.foreground_busy(), "the import is still stuck");
+    let line = app.watchdog.started().unwrap();
+    assert!(line.ends_with("on a Heroic import."), "{line}");
+}

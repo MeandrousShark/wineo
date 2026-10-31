@@ -20,6 +20,7 @@ mod download_progress;
 mod downloads_page;
 mod downloads_work;
 mod ends;
+mod exit_watchdog;
 mod filter_control;
 mod filter_tab;
 mod fit_width;
@@ -278,6 +279,8 @@ pub(crate) struct App {
     close_wake: wake::Wake,
     /// The window chose to exit, so late results only drop.
     exiting: bool,
+    /// Ends the process if work still holds it open after the window closes.
+    watchdog: exit_watchdog::Watchdog,
     feature_notice: Option<(String, Instant)>,
     change_generation: u64,
     library_generation: u64,
@@ -588,6 +591,7 @@ impl App {
             close_by: None,
             close_wake: wake::Wake::default(),
             exiting: false,
+            watchdog: exit_watchdog::Watchdog::default(),
             feature_notice: None,
             change_generation: 0,
             library_generation: 0,
@@ -1346,7 +1350,7 @@ impl App {
             task
         };
         if self.closing && !self.exit_waits() {
-            task.chain(iced::exit())
+            task.chain(self.close_window())
         } else {
             task
         }

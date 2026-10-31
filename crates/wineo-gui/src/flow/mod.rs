@@ -374,6 +374,20 @@ impl Page {
         on_page!(self, page => page.busy(), Choose => false)
     }
 
+    /// What the page does while busy, as the exit line names it when it gives up.
+    pub(crate) fn work(&self) -> &'static str {
+        match self {
+            Self::Choose(_) => "nothing",
+            Self::New(_) => "a new environment",
+            Self::Prefix(_) => "a prefix import",
+            Self::Clone(_) => "a clone",
+            Self::Heroic(_) => "a Heroic import",
+            Self::Steam(_) => "a Steam import",
+            Self::Gog(_) => "a GOG import",
+            Self::GogUpdate(_) => "a GOG update",
+        }
+    }
+
     pub(crate) fn cancel(&mut self, force: bool) {
         on_page!(self, page => page.cancel(force), Choose => {})
     }
