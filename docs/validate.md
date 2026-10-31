@@ -135,6 +135,7 @@ environment.
 | Wine environment | `winetricks` verbs listed, but a Wine runner can't find `winetricks` on `PATH` | error | |
 | Wine environment | Prefix missing, but `start` would build it | warning | |
 | Wine environment | Prefix `start` would refuse, or one with the other layout | error | |
+| Wine environment | Prefix inside another environment's prefix | error | |
 | Target | Exe missing (a Unix path, or a `C:\` path in an existing prefix) | error | |
 | Target | Unix working dir missing | error | |
 | Target | `gamemode` on, but gamemode isn't installed | error | |
