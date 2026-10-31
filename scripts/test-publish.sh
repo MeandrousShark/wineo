@@ -13,9 +13,15 @@
 # fails a test. Runs without --dest-dir go through the real upload branches;
 # git's insteadOf turns the overlay's and the AUR's URLs into local repositories.
 #
+# Each stub tool call is kept in $STUB/calls, one argument per line, and compared
+# whole, so a merged or split argument fails. tools.log is only their order.
+#
 # testdata/publish/ holds real public answers from Launchpad (mozillateam's
-# PPA) and COPR (@copr/copr), fetched 2026-10-30. The OBS XML here is written by
-# hand after osc's own parsing, since OBS has no anonymous read.
+# PPA) and COPR (@copr/copr), fetched 2026-10-30, with people's names replaced.
+# lp-sources.json and lp-sources-none.json answer the script's exact query;
+# lp-sources-partial.json and lp-binaries.json are real partial pages. The OBS
+# XML here is written by hand after osc's own parsing, since OBS has no anonymous
+# read.
 #
 # Usage: scripts/test-publish.sh
 # Exits non-zero if any case behaves wrongly. Needs cargo, jq, and python3.
@@ -128,11 +134,17 @@ case $url in
         if [[ -f $STUB/copr-page-$offset.json ]]; then
             cat "$STUB/copr-page-$offset.json"
         else
-            echo "{\"items\":[],\"meta\":{\"offset\":$offset}}"
+            echo "{\"items\":[],\"meta\":{\"offset\":$offset,\"limit\":100}}"
         fi
         ;;
     *copr*/build-chroot/list*) cat "$STUB/copr-chroots.json" ;;
-    *api.launchpad.net*) echo '{"total_size":0,"entries":[]}' ;;
+    *api.launchpad.net*)
+        if [[ -f $STUB/lp-sources.json ]]; then
+            cat "$STUB/lp-sources.json"
+        else
+            echo '{"start":0,"total_size":0,"entries":[]}'
+        fi
+        ;;
     *) exit 22 ;;
 esac
 EOF
@@ -219,17 +231,19 @@ mkdir "$stubs/in-container"
 cat >"$stubs/in-container/tool" <<'EOF'
 #!/bin/bash
 name=${0##*/}
-{
-    printf '%s' "$name"
-    for arg in "$@"; do printf ' %s' "${arg//$C/}"; done
-    echo
-} >>"$STUB/tools.log"
+args=()
+for arg in "$@"; do args+=("${arg//$C/}"); done
+mkdir -p "$STUB/calls"
+count=$(find "$STUB/calls" -type f | wc -l)
+printf '%s\n' "$name" "${args[@]}" >"$STUB/calls/$(printf %04d "$count")"
+echo "$name" >>"$STUB/tools.log"
 if [[ -f $STUB/fail-tool-$name ]]; then
     cat "$STUB/fail-tool-$name"
     exit 1
 fi
 case $name in
     rpmbuild)
+        [[ $# -eq 6 && $1 == -bs && $2 == --define && $3 == '_topdir '* && $4 == --define ]] || exit 64
         top=$3
         top=${top#_topdir }
         spec=$top/SPECS/wineo.spec
@@ -239,6 +253,7 @@ case $name in
         touch "$top/SRPMS/wineo-$id.src.rpm"
         ;;
     dpkg-buildpackage)
+        [[ $# -eq 5 && $1 == -S && $2 == -sa && $3 == -d && $4 == -us && $5 == -uc ]] || exit 64
         id=$(sed -nE '1 s/^wineo \(([^)]+)\).*/\1/p' debian/changelog)
         cp debian/control "../wineo_$id.dsc"
         head -n 1 debian/changelog >"../wineo_${id}_source.changes"
@@ -248,6 +263,7 @@ case $name in
         touch "../wineo_$id.debian.tar.xz" "../wineo_${id}_source.buildinfo"
         ;;
     ebuild)
+        [[ $# -eq 2 && $2 == manifest ]] || exit 64
         mkdir -p ../../metadata/md5-cache
         touch ../../metadata/md5-cache/stale
         dist=$C/var/cache/distfiles/wineo-$VERSION_UNDER_TEST.gh.tar.gz
@@ -258,14 +274,35 @@ case $name in
     osc)
         case $1 in
             api)
-                echo "Server returned an error: HTTP Error 404: Not Found" >&2
-                exit 1
+                # Only the exact endpoints have answers, as on the server.
+                project=/build/home:meandrousshark
+                case $2 in
+                    /source/home:meandrousshark/wineo) file=directory ;;
+                    /source/home:meandrousshark/wineo/wineo.spec) file=spec ;;
+                    "$project/_result?package=wineo&arch=x86_64") file=result ;;
+                    "$project/"*"/x86_64/_jobhistory?package=wineo&limit=5")
+                        file=${2#"$project"/}
+                        file=jobhistory-${file%%/*}
+                        ;;
+                    *) file=no-such-endpoint ;;
+                esac
+                if [[ ! -f $STUB/obs/$file ]]; then
+                    echo "Server returned an error: HTTP Error 404: Not Found" >&2
+                    exit 1
+                fi
+                cat "$STUB/obs/$file"
                 ;;
             checkout)
                 mkdir -p "$2/$3"
                 touch "$2/$3/wineo-0.9.0-vendored.tar.xz"
                 ;;
-            commit) echo "osc-tree $(ls | tr '\n' ' ')" >>"$STUB/tools.log" ;;
+            commit)
+                ls >"$STUB/osc-tree"
+                if [[ -d $STUB/obs-after-commit ]]; then
+                    rm -rf "$STUB/obs"
+                    cp -r "$STUB/obs-after-commit" "$STUB/obs"
+                fi
+                ;;
         esac
         ;;
 esac
@@ -443,6 +480,53 @@ expect_refused() {
     check "$name: a destination ran" test "$(grep -c '^== overlay$' "$out")" -eq 0
 }
 
+# called TOOL ARG...: some call had exactly these arguments.
+called() {
+    local want file
+    want=$(printf '%s\n' "$@")
+    for file in "$STUB"/calls/*; do
+        [[ -f $file ]] || continue
+        if [[ $(cat "$file") == "$want" ]]; then return 0; fi
+    done
+    return 1
+}
+
+# called_times N TOOL ARG...
+called_times() {
+    local times=$1 want file count=0
+    shift
+    want=$(printf '%s\n' "$@")
+    for file in "$STUB"/calls/*; do
+        [[ -f $file ]] || continue
+        if [[ $(cat "$file") == "$want" ]]; then count=$((count + 1)); fi
+    done
+    ((count == times))
+}
+
+tool_ran() { grep -qx "$1" "$STUB/tools.log"; }
+
+# What the OBS API answers, written by hand after osc's parsing.
+obs_dir() { # DIR SPEC_RELEASE DIRTY CODE JOB_SRCMD5 JOB_CODE [REPO_STATE] [SRCMD5]
+    local dir=$1 target repo_state=${7:-published} srcmd5=${8-abc} attribute=''
+    [[ -z $srcmd5 ]] || attribute=" srcmd5=\"$srcmd5\""
+    rm -rf "$dir"
+    mkdir -p "$dir"
+    printf 'Version: %s\nRelease: %s%%{?dist}\n' "${OBS_VERSION:-1.2.3}" "$2" >"$dir/spec"
+    echo "<directory name=\"wineo\" rev=\"3\"$attribute/>" >"$dir/directory"
+    {
+        echo '<resultlist state="x">'
+        for target in openSUSE_Tumbleweed 16.0 15.6; do
+            echo "<result repository=\"$target\" arch=\"x86_64\" code=\"$repo_state\" state=\"$repo_state\" dirty=\"$3\"><status package=\"wineo\" code=\"$4\"/></result>"
+        done
+        echo '</resultlist>'
+    } >"$dir/result"
+    for target in openSUSE_Tumbleweed 16.0 15.6; do
+        attribute=''
+        [[ -z $5 ]] || attribute=" srcmd5=\"$5\""
+        echo "<jobhistlist><jobhist package=\"wineo\" srcmd5=\"old\" code=\"failed\"/><jobhist package=\"wineo\"$attribute code=\"$6\"/></jobhistlist>" >"$dir/jobhistory-$target"
+    done
+}
+
 reviewed_commit() {
     git -C "$repo" add -- .
     git -C "$repo" commit -qm "$1"
@@ -533,15 +617,13 @@ check "stonking's control names rustc-1.91" test "$(grep -c 'rustc-1.91' "$dest/
 check "the license check did not run on the tag's tree" \
     grep -qE "/wineo-$version --locked check licenses$" "$STUB/deny.log"
 check "the source package isn't -S -sa unsigned" \
-    test "$(grep -c '^dpkg-buildpackage -S -sa -d -us -uc$' "$STUB/tools.log")" -eq 4
+    called_times 4 dpkg-buildpackage -S -sa -d -us -uc
 check "the tag's tree isn't mounted read-only" \
     grep -q ":/tag:ro" "$STUB/podman.log"
-check "rpmbuild ran differently: $(grep '^rpmbuild' "$STUB/tools.log")" \
-    test "$(grep '^rpmbuild' "$STUB/tools.log")" = \
-    'rpmbuild -bs --define _topdir /work/rpmbuild --define dist %{nil} /work/rpmbuild/SPECS/wineo.spec'
-check "ebuild manifest ran differently" \
-    grep -qx "ebuild wineo-$version.ebuild manifest" "$STUB/tools.log"
-check "pkgcheck ran differently" grep -qx 'pkgcheck scan --repo wineo --exit error' "$STUB/tools.log"
+check "rpmbuild ran differently" called rpmbuild -bs --define '_topdir /work/rpmbuild' \
+    --define 'dist %{nil}' /work/rpmbuild/SPECS/wineo.spec
+check "ebuild manifest ran differently" called ebuild "wineo-$version.ebuild" manifest
+check "pkgcheck ran differently" called pkgcheck scan --repo wineo --exit error
 check "gh was asked to change something: $(grep UNEXPECTED "$STUB/gh.log" || true)" \
     test "$(grep -c UNEXPECTED "$STUB/gh.log")" -eq 0
 check "gh ran without -R or against another repository" \
@@ -976,6 +1058,132 @@ check "no signing key: exit $rc, not 1" test "$rc" -eq 1
 check "no signing key: it does not say so" said "gpg has no key 8EE69509"
 check "no signing key: the status needed a login" test "$(grep -c 'api.launchpad.net' "$STUB/curl.log")" -eq 4
 
+# OBS through its real branch, with the stub answering only the exact endpoints.
+mkdir -p "$XDG_CONFIG_HOME/osc"
+echo secret >"$XDG_CONFIG_HOME/osc/oscrc"
+export OBS_VERSION=$version
+obs_upload_calls() { grep -cx 'osc' "$STUB/tools.log" || true; }
+committed() { called osc commit -m "Update to $version-1"; }
+
+new_scenario
+obs_dir "$STUB/obs" 1 false succeeded abc succeeded
+publish_real --only obs
+check "OBS published: exit $rc, not 0: $(tail -n 3 "$out")" test "$rc" -eq 0
+check "OBS published: not skipped" said "^  obs +already published \($version-1\)"
+check "OBS published: it read another endpoint" \
+    called osc api '/build/home:meandrousshark/_result?package=wineo&arch=x86_64'
+for target in openSUSE_Tumbleweed 16.0 15.6; do
+    check "OBS published: job history of $target wasn't read" \
+        called osc api "/build/home:meandrousshark/$target/x86_64/_jobhistory?package=wineo&limit=5"
+done
+if committed; then fail "OBS published: it committed again"; else pass; fi
+
+new_scenario
+obs_dir "$STUB/obs" 1 false succeeded abc succeeded publishing
+BUILD_LIMIT=0 publish_real --only obs
+check "OBS publishing: exit $rc, not 1" test "$rc" -eq 1
+check "OBS publishing: it did not wait" said "timed out after 0s waiting on openSUSE_Tumbleweed\(building\)"
+if committed; then fail "OBS publishing: it committed again"; else pass; fi
+
+new_scenario
+obs_dir "$STUB/obs" 1 false failed abc failed
+publish_real --only obs
+check "OBS failed: exit $rc, not 1" test "$rc" -eq 1
+check "OBS failed: the reason is missing" said "already failed to build on openSUSE_Tumbleweed 16.0 15.6"
+if committed; then fail "OBS failed: it committed again"; else pass; fi
+
+# An older revision on the server: upload, wait, and the new one builds.
+new_scenario
+obs_dir "$STUB/obs" 0 false succeeded abc succeeded
+obs_dir "$STUB/obs-after-commit" 1 false succeeded abc succeeded
+publish_real --only obs
+check "OBS old revision: exit $rc, not 0: $(tail -n 3 "$out")" test "$rc" -eq 0
+check "OBS old revision: no commit" committed
+check "OBS old revision: the summary is wrong" said "^  obs +published \($version-1\)"
+
+# The source answered, the rest didn't: unknown, and no upload.
+for gone in result jobhistory-16.0; do
+    new_scenario
+    obs_dir "$STUB/obs" 1 false succeeded abc succeeded
+    rm "$STUB/obs/$gone"
+    publish_real --only obs
+    check "OBS without $gone: exit $rc, not 1" test "$rc" -eq 1
+    check "OBS without $gone: the reason is missing" said "could not read the build state"
+    if committed; then fail "OBS without $gone: it uploaded"; else pass; fi
+done
+
+# A garbled listing or spec is unreadable. Only a 404 for them says absent.
+new_scenario
+obs_dir "$STUB/obs" 1 false succeeded abc succeeded
+echo '<not xml' >"$STUB/obs/directory"
+publish_real --only obs
+check "OBS with a garbled listing: exit $rc, not 1" test "$rc" -eq 1
+if committed; then fail "OBS with a garbled listing: it uploaded"; else pass; fi
+new_scenario
+obs_dir "$STUB/obs" 1 false succeeded abc succeeded
+: >"$STUB/obs/spec"
+publish_real --only obs
+check "OBS with an empty spec: exit $rc, not 1" test "$rc" -eq 1
+if committed; then fail "OBS with an empty spec: it uploaded"; else pass; fi
+new_scenario
+obs_dir "$STUB/obs" 1 false succeeded abc succeeded
+: >"$STUB/obs/spec"
+rm "$STUB/obs/result"
+publish_real --only obs
+check "OBS with an empty spec and no result: exit $rc, not 1" test "$rc" -eq 1
+if committed; then fail "OBS with an empty spec and no result: it uploaded"; else pass; fi
+unset OBS_VERSION
+rm -rf "$XDG_CONFIG_HOME/osc"
+
+# Launchpad through its real branch: anything but a clean empty answer stops it.
+for answer in '{}' '{"entries":[{}],"total_size":1,"start":0}' '{"entries":[]}' \
+    '{"total_size":0}' '{"entries":[],"total_size":1,"start":0}' '<html>'; do
+    new_scenario
+    echo "$answer" >"$STUB/lp-sources.json"
+    publish_real --only ppa
+    check "Launchpad answered '$answer': exit $rc, not 1" test "$rc" -eq 1
+    check "Launchpad answered '$answer': the reason is missing" said "could not read the build state"
+    check "Launchpad answered '$answer': it signed or uploaded" \
+        test "$(grep -c -e '^debsign$' -e '^dput$' "$STUB/tools.log" || true)" -eq 0
+done
+
+# COPR found the build, and its chroots can't be read.
+for answer in '{"items":[]}' '{}' ''; do
+    new_scenario
+    jq -n --arg version "$version-1" \
+        '{items: [{id: 5, state: "pending", source_package: {version: $version}}],
+          meta: {offset: 0, limit: 100}}' >"$STUB/copr-page-0.json"
+    echo "$answer" >"$STUB/copr-chroots.json"
+    mkdir -p "$XDG_CONFIG_HOME"
+    publish_real --only copr
+    check "chroots answered '$answer': exit $rc, not 1" test "$rc" -eq 1
+    check "chroots answered '$answer': the reason is missing" said "could not read the build state"
+    check "chroots answered '$answer': it uploaded" \
+        test "$(grep -c '^copr-cli$' "$STUB/tools.log" || true)" -eq 0
+done
+
+# Repositories that hold something, but not what they should.
+new_scenario
+publish --only overlay
+git -C "$dest/remote/overlay.git" symbolic-ref HEAD refs/heads/nowhere
+: >"$dest/uploads.log"
+publish --only overlay
+check "an overlay clone with no checkout: exit $rc, not 1" test "$rc" -eq 1
+check "an overlay clone with no checkout: it pushed: $(uploads)" test -z "$(uploads)"
+check "an overlay clone with no checkout: the reason is missing" said "could not read MeandrousShark/wineo-overlay"
+
+new_scenario
+publish --only aur
+aur_clone=$scenario/aur-clone
+git clone -q "$dest/remote/wineo-bin.git" "$aur_clone"
+git -C "$aur_clone" rm -q .SRCINFO
+git -C "$aur_clone" commit -qm "lose it"
+git -C "$aur_clone" push -q origin HEAD:master
+: >"$dest/uploads.log"
+publish --only aur
+check "an AUR repository with no .SRCINFO: exit $rc, not 1" test "$rc" -eq 1
+check "an AUR repository with no .SRCINFO: it pushed: $(uploads)" test -z "$(uploads)"
+
 # Pins: every value in the published copy has to be the file's own sum.
 
 wrong_sum=$(printf 'a%.0s' {1..64})
@@ -1041,7 +1249,7 @@ for row in "dnf copr" "apt-get ppa"; do
     check "a failed $tool: nothing went: $(uploads)" test -z "$(uploads)"
     check "a failed $tool: an image was kept" test "$(grep -c '^commit' "$STUB/podman.log" || true)" -eq 0
     check "a failed $tool: the next step ran" \
-        test "$(grep -c -e '^rpmbuild' -e '^dpkg-buildpackage' "$STUB/tools.log" || true)" -eq 0
+        test "$(grep -c -e '^rpmbuild$' -e '^dpkg-buildpackage$' "$STUB/tools.log" || true)" -eq 0
 done
 
 new_scenario
@@ -1056,13 +1264,11 @@ check "a failed commit: the builder is left" grep -q '^rm -f wineo-publish-build
 # osc crashes at startup without git, which no help output or stub would show.
 new_scenario
 publish --only copr
-check "the Fedora tools changed: $(grep '^dnf' "$STUB/tools.log")" \
-    test "$(grep '^dnf' "$STUB/tools.log")" = 'dnf -y install rpm-build copr-cli osc git-core'
+check "the Fedora tools changed" called dnf -y install rpm-build copr-cli osc git-core
 new_scenario
 publish --only ppa
-check "the Ubuntu tools changed: $(grep '^apt-get install' "$STUB/tools.log")" \
-    test "$(grep '^apt-get install' "$STUB/tools.log")" = \
-    'apt-get install -y --no-install-recommends ca-certificates debhelper devscripts dpkg-dev dput fakeroot gnupg xz-utils'
+check "the Ubuntu tools changed" called apt-get install -y --no-install-recommends \
+    ca-certificates debhelper devscripts dpkg-dev dput fakeroot gnupg xz-utils
 
 check "the Ubuntu image was not reused across series" \
     test "$(grep -c '^commit' "$STUB/podman.log")" -eq 1
@@ -1080,7 +1286,7 @@ check "a failure in \$(...) did not stop it: $reached" test "$rc" -ne 0 -a -z "$
 
 copr_pages() { # OFFSET VERSION: a full page of one version from OFFSET
     jq -n --argjson offset "$1" --arg version "$2" \
-        '{items: [range(100) | {id: (100000 - $offset - .), source_package: {version: $version}}],
+        '{items: [range(100) | {id: (100000 - $offset - .), state: "succeeded", source_package: {version: $version}}],
           meta: {offset: $offset, limit: 100}}'
 }
 new_scenario
@@ -1093,7 +1299,7 @@ check "a build on page two: exit $rc, not 0: $(tail -n 3 "$out")" test "$rc" -eq
 check "a build on page two was not found" said "^  copr +already published"
 check "a build on page two: it read a third page" \
     test "$(grep -c 'build/list' "$STUB/curl.log")" -eq 2
-check "a build on page two: it uploaded" test "$(grep -c '^copr-cli' "$STUB/tools.log" || true)" -eq 0
+check "a build on page two: it uploaded" test "$(grep -c '^copr-cli$' "$STUB/tools.log" || true)" -eq 0
 
 for broken in failed garbled short; do
     new_scenario
@@ -1101,36 +1307,33 @@ for broken in failed garbled short; do
     case $broken in
         failed) touch "$STUB/copr-down-100" ;;
         garbled) echo '<html>' >"$STUB/copr-page-100.json" ;;
-        short) echo '{"items":[],"meta":{"offset":0}}' >"$STUB/copr-page-100.json" ;;
+        short) echo '{"items":[],"meta":{"offset":0,"limit":100}}' >"$STUB/copr-page-100.json" ;;
     esac
     publish_real --only copr
     check "a $broken second page: exit $rc, not 1" test "$rc" -eq 1
     check "a $broken second page: the reason is missing" said "could not read the build state"
     check "a $broken second page read as absent" \
-        test "$(grep -c '^copr-cli' "$STUB/tools.log" || true)" -eq 0
+        test "$(grep -c '^copr-cli$' "$STUB/tools.log" || true)" -eq 0
 done
 
 # The real upload branches, with the exact commands each container ran.
 
 new_scenario
 BUILD_LIMIT=0 publish_real --only copr
-want="copr-cli build --nowait --chroot fedora-43-x86_64 --chroot fedora-44-x86_64 --chroot fedora-45-x86_64 meandrousshark/wineo /work/wineo-$version-1.src.rpm"
-check "copr-cli ran differently: $(grep '^copr-cli' "$STUB/tools.log")" \
-    test "$(grep '^copr-cli' "$STUB/tools.log")" = "$want"
+check "copr-cli ran differently" called copr-cli build --nowait --chroot fedora-43-x86_64 \
+    --chroot fedora-44-x86_64 --chroot fedora-45-x86_64 meandrousshark/wineo \
+    "/work/wineo-$version-1.src.rpm"
 
 mkdir -p "$XDG_CONFIG_HOME/osc"
 echo secret >"$XDG_CONFIG_HOME/osc/oscrc"
 new_scenario
 BUILD_LIMIT=0 publish_real --only obs
-want="osc checkout home:meandrousshark wineo
-osc addremove
-osc commit -m Update to $version-1"
-check "osc ran differently: $(grep -E '^osc (checkout|addremove|commit)' "$STUB/tools.log")" \
-    test "$(grep -E '^osc (checkout|addremove|commit)' "$STUB/tools.log")" = "$want"
-check "OBS did not get exactly the spec and the tarball: $(grep '^osc-tree' "$STUB/tools.log")" \
-    test "$(grep '^osc-tree' "$STUB/tools.log")" = "osc-tree wineo-$version-vendored.tar.xz wineo.spec "
-check "the OBS status read something else" \
-    grep -qx 'osc api /source/home:meandrousshark/wineo' "$STUB/tools.log"
+check "osc checkout ran differently" called osc checkout home:meandrousshark wineo
+check "osc addremove ran differently" called osc addremove
+check "osc commit ran differently" called osc commit -m "Update to $version-1"
+check "OBS did not get exactly the spec and the tarball: $(cat "$STUB/osc-tree" 2>/dev/null)" \
+    test "$(tr '\n' ' ' <"$STUB/osc-tree")" = "wineo-$version-vendored.tar.xz wineo.spec "
+check "the OBS status read something else" called osc api /source/home:meandrousshark/wineo
 check "the upload's oscrc isn't read-only" \
     test "$(grep -F 'STEP=obs-upload' "$STUB/podman.log" | grep -c 'oscrc:/root/.config/osc/oscrc:ro')" -eq 1
 rm -rf "$XDG_CONFIG_HOME/osc"
@@ -1139,14 +1342,12 @@ new_scenario
 BUILD_LIMIT=0 publish_real --only ppa
 for series in jammy noble resolute stonking; do
     changes=wineo_$version-1ppa1~${series}1_source.changes
-    check "debsign ran differently for $series" grep -qxF "debsign --no-conf -k8EE69509 $changes" "$STUB/tools.log"
-    check "dput ran differently for $series" grep -qxF "dput ppa:meandrous-shark/wineo $changes" "$STUB/tools.log"
+    check "debsign ran differently for $series" called debsign --no-conf -k8EE69509 "$changes"
+    check "dput ran differently for $series" called dput ppa:meandrous-shark/wineo "$changes"
 done
 check "dput ran before debsign" \
-    test "$(grep -E '^(debsign|dput)' "$STUB/tools.log" | head -n 2 | awk '{print $1}' | tr '\n' ' ')" = "debsign dput "
-check "the public key was not imported" \
-    grep -qx 'gpg --batch --quiet --import /signing-key.asc' "$STUB/tools.log"
-check "the real branch simulated" test "$(grep -c 'dput --simulate' "$STUB/tools.log" || true)" -eq 0
+    test "$(grep -E '^(debsign|dput)$' "$STUB/tools.log" | sed -n 1,2p | tr '\n' ' ')" = "debsign dput "
+check "the public key was not imported" called gpg --batch --quiet --import /signing-key.asc
 check "the agent socket isn't mounted" grep -qF "$STUB/S.gpg-agent:/root/.gnupg/S.gpg-agent" "$STUB/podman.log"
 
 # Real URLs, through insteadOf, into local repositories.
@@ -1245,16 +1446,23 @@ else
     pass
 fi
 if pure copr_page '' 0 3 x >/dev/null; then fail "copr_page takes nothing for a page"; else pass; fi
-check "copr_states takes a missing chroot for built" \
-    test "$(pure copr_states <<<'{"items":[]}' | head -n 1)" = "fedora-43 absent"
+check "copr_states takes a missing chroot for absent" \
+    test "$(pure copr_states <<<'{"items":[]}' | head -n 1)" = "fedora-43 unknown"
+check "copr_states takes a new state for an answer" \
+    test "$(pure copr_states <<<'{"items":[{"name":"fedora-43-x86_64","state":"unheard-of"}]}' | head -n 1)" = "fedora-43 unknown"
+if pure copr_page '{"items":[{"id":1}],"meta":{"offset":0,"limit":3}}' 0 3 x >/dev/null; then
+    fail "copr_page takes a malformed build for a page"
+else
+    pass
+fi
 check "copr_states takes garbage for an answer" \
     test "$(pure copr_states <<<'<html>' | head -n 1)" = "fedora-43 unknown"
 
-binary='{"entries":[{"status":"Published","distro_arch_series_link":"https://x/ubuntu/jammy/amd64"}]}'
-pending='{"entries":[{"status":"Pending","distro_arch_series_link":"https://x/ubuntu/jammy/amd64"}]}'
-wrong_arch='{"entries":[{"status":"Published","distro_arch_series_link":"https://x/ubuntu/jammy/amd64v3"}]}'
+binary='{"start":0,"total_size":1,"entries":[{"status":"Published","distro_arch_series_link":"https://x/ubuntu/jammy/amd64"}]}'
+pending='{"start":0,"total_size":1,"entries":[{"status":"Pending","distro_arch_series_link":"https://x/ubuntu/jammy/amd64"}]}'
+wrong_arch='{"start":0,"total_size":1,"entries":[{"status":"Published","distro_arch_series_link":"https://x/ubuntu/jammy/amd64v3"}]}'
 builds() { # one amd64 build in state $1, plus an armhf build that failed
-    jq -nc --arg state "$1" '{entries:[{arch_tag:"armhf",buildstate:"Failed to build"},
+    jq -nc --arg state "$1" '{start:0,total_size:2,entries:[{arch_tag:"armhf",buildstate:"Failed to build"},
         {arch_tag:"amd64",buildstate:$state}]}'
 }
 lp_case() { # WANT STATUS BUILDSTATE BINARIES
@@ -1266,50 +1474,52 @@ lp_case built Published 'Successfully built' "$binary"
 lp_case built Superseded 'Successfully built' "$binary"
 lp_case building Published 'Successfully built' "$pending"
 lp_case building Published 'Successfully built' "$wrong_arch"
-lp_case building Published 'Successfully built' ''
-lp_case building Pending 'Needs building' '{"entries":[]}'
-lp_case building Published 'Currently building' '{"entries":[]}'
-lp_case building Published 'Uploading build' '{"entries":[]}'
-lp_case failed Published 'Failed to build' '{"entries":[]}'
-lp_case failed Published 'Dependency wait' '{"entries":[]}'
-lp_case failed Published 'Chroot problem' '{"entries":[]}'
-lp_case failed Published 'Failed to upload' '{"entries":[]}'
-lp_case failed Published 'Cancelled build' '{"entries":[]}'
+lp_case unknown Published 'Successfully built' ''
+lp_case unknown Published 'A state nobody has seen' '{"entries":[],"total_size":0,"start":0}'
+lp_case unknown 'Some new status' 'Successfully built' "$binary"
+lp_case building Pending 'Needs building' '{"start":0,"total_size":0,"entries":[]}'
+lp_case building Published 'Currently building' '{"start":0,"total_size":0,"entries":[]}'
+lp_case building Published 'Uploading build' '{"start":0,"total_size":0,"entries":[]}'
+lp_case failed Published 'Failed to build' '{"start":0,"total_size":0,"entries":[]}'
+lp_case failed Published 'Dependency wait' '{"start":0,"total_size":0,"entries":[]}'
+lp_case failed Published 'Chroot problem' '{"start":0,"total_size":0,"entries":[]}'
+lp_case failed Published 'Failed to upload' '{"start":0,"total_size":0,"entries":[]}'
+lp_case failed Published 'Cancelled build' '{"start":0,"total_size":0,"entries":[]}'
 lp_case failed Deleted 'Successfully built' "$binary"
 # Real answers: firefox's amd64 built, while armhf, riscv64, and s390x failed.
+# lp-binaries.json is a real first page of 394, so as it stands it is partial.
+whole_binaries=$(jq -c '.total_size = (.entries | length)' "$testdata/lp-binaries.json")
 check "real Launchpad answers aren't built" test "$(pure lp_state \
     "$(jq -r '.entries[0].status' "$testdata/lp-sources.json")" \
-    "$(cat "$testdata/lp-builds.json")" "$(cat "$testdata/lp-binaries.json")")" = built
+    "$(cat "$testdata/lp-builds.json")" "$whole_binaries")" = built
+check "a real partial page of binaries counted" test "$(pure lp_state Published \
+    "$(cat "$testdata/lp-builds.json")" "$(cat "$testdata/lp-binaries.json")")" = unknown
+real_version=$(jq -r '.entries[0].source_package_version' "$testdata/lp-sources.json")
+lp_real() { pure lp_source "$(cat "$testdata/$1")" "$2" "$3" firefox; }
+check "lp_source misreads a real source" \
+    test "$(lp_real lp-sources.json "$real_version" stonking | cut -d' ' -f1)" = Published
+check "lp_source misreads a real empty answer" \
+    test "$(lp_real lp-sources-none.json 0.0-1 stonking)" = absent
+for row in "lp-sources-partial.json $real_version stonking" "lp-sources.json 0.0-1 stonking" \
+    "lp-sources.json $real_version jammy"; do
+    read -r file id series <<<"$row"
+    if lp_real "$file" "$id" "$series" >/dev/null; then
+        fail "lp_source took $file for $id on $series"
+    else
+        pass
+    fi
+done
 check "a real Launchpad answer lost its armhf failure" \
     grep -q 'Failed to build' "$testdata/lp-builds.json"
-real_stonking=$(jq -c '.entries |= map(select(.arch_tag == "amd64") | .buildstate = "Failed to build")' \
+real_stonking=$(jq -c '.entries |= map(select(.arch_tag == "amd64") | .buildstate = "Failed to build")
+    | .total_size = (.entries | length)' \
     "$testdata/lp-builds.json")
 check "a real Launchpad build that failed on amd64 isn't failed" \
-    test "$(pure lp_state Published "$real_stonking" "$(cat "$testdata/lp-binaries.json")")" = failed
+    test "$(pure lp_state Published "$real_stonking" "$whole_binaries")" = failed
 check "lp_state takes no answer for one" test "$(pure lp_state Published '' '')" = unknown
 check "lp_state counts another architecture" \
-    test "$(pure lp_state Published '{"entries":[{"arch_tag":"armhf","buildstate":"Successfully built"}]}' "$binary")" = building
+    test "$(pure lp_state Published '{"start":0,"total_size":1,"entries":[{"arch_tag":"armhf","buildstate":"Successfully built"}]}' "$binary")" = building
 
-obs_dir() { # DIR SPEC_RELEASE DIRTY CODE JOB_SRCMD5 JOB_CODE [REPO_STATE] [SRCMD5]
-    local dir=$1 target repo_state=${7:-published} srcmd5=${8-abc} attribute=''
-    [[ -z $srcmd5 ]] || attribute=" srcmd5=\"$srcmd5\""
-    rm -rf "$dir"
-    mkdir -p "$dir"
-    printf 'Version: 1.2.3\nRelease: %s%%{?dist}\n' "$2" >"$dir/spec"
-    echo "<directory name=\"wineo\" rev=\"3\"$attribute/>" >"$dir/directory"
-    {
-        echo '<resultlist state="x">'
-        for target in openSUSE_Tumbleweed 16.0 15.6; do
-            echo "<result repository=\"$target\" arch=\"x86_64\" code=\"$repo_state\" state=\"$repo_state\" dirty=\"$3\"><status package=\"wineo\" code=\"$4\"/></result>"
-        done
-        echo '</resultlist>'
-    } >"$dir/result"
-    for target in openSUSE_Tumbleweed 16.0 15.6; do
-        attribute=''
-        [[ -z $5 ]] || attribute=" srcmd5=\"$5\""
-        echo "<jobhistlist><jobhist package=\"wineo\" srcmd5=\"old\" code=\"failed\"/><jobhist package=\"wineo\"$attribute code=\"$6\"/></jobhistlist>" >"$dir/jobhistory-$target"
-    done
-}
 obs_case() { # WANT WHY RELEASE DIRTY CODE JOB_SRCMD5 JOB_CODE [REPO_STATE] [SRCMD5]
     local want=$1 why=$2 got
     shift 2
@@ -1326,6 +1536,7 @@ obs_case failed "a failed build" 1 false failed abc failed
 obs_case failed "unresolvable" 1 false unresolvable abc succeeded
 obs_case failed "excluded" 1 false excluded abc succeeded
 obs_case building "scheduled" 1 false scheduled abc succeeded
+obs_case unknown "a new package code" 1 false unheard-of abc succeeded
 obs_case building "a repository still publishing" 1 false succeeded abc succeeded publishing
 obs_case building "a repository still building" 1 false succeeded abc succeeded building
 obs_case building "an unpublished repository" 1 false succeeded abc succeeded unpublished

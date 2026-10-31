@@ -138,6 +138,11 @@ is_destination() {
 }
 
 # Pure helpers. The tests call these with canned input.
+#
+# The status parsers share one rule. absent is the only state that lets an
+# upload go, so it takes a well-formed answer showing the identity isn't there.
+# Anything missing, partial, or unexpected is unknown, which stops the
+# destination and uploads nothing.
 
 # version_at_least A B: A is B or newer.
 version_at_least() {
@@ -198,24 +203,46 @@ expected_assets() {
 # the workflow keeps its id.
 tag_run() { jq -c --arg sha "$1" 'map(select(.headSha == $sha)) | max_by(.databaseId) // empty'; }
 
-# COPR's chroot states on stdin, one "target state" line per target. forked is
-# a build copied from a fork, so it is a success too.
+# copr_states: the chroots of a known build on stdin, one "target state" line
+# per target. forked is a build copied from a fork, so it is a success too. The
+# build exists, so a chroot with no entry is an answer that can't be read.
 copr_states() {
     local json target name state
     json=$(cat)
     while read -r target; do
         name=$target-x86_64
         state=$(jq -er --arg name "$name" \
-            'first(.items[] | select(.name == $name) | .state) // "absent"' \
+            '[.items[] | select(.name == $name) | .state | strings] | first' \
             <<<"$json" 2>/dev/null) || state=unknown
         case $state in
             succeeded | forked) state=built ;;
             failed | canceled | skipped) state=failed ;;
-            unknown | absent) ;;
-            *) state=building ;;
+            waiting | pending | importing | starting | running) state=building ;;
+            *) state=unknown ;;
         esac
         echo "$target $state"
     done < <(targets_of copr)
+}
+
+# True for a Launchpad collection read in full. Results for one exact version
+# are small, so a partial one is refused rather than paged through.
+lp_complete() {
+    jq -e '(.entries | type) == "array" and .start == 0
+        and .total_size == (.entries | length)' <<<"$1" >/dev/null 2>&1
+}
+
+# lp_source JSON IDENTITY SERIES [PACKAGE] prints absent, or "STATUS LINK" for the source
+# of IDENTITY in SERIES. Fails on anything else.
+lp_source() {
+    lp_complete "$1" || return 1
+    jq -er --arg id "$2" --arg series "/$3" --arg package "${4:-wineo}" '
+        if .total_size == 0 then "absent"
+        elif all(.entries[];
+            .source_package_name == $package and .source_package_version == $id
+            and (.status | type) == "string" and (.self_link | type) == "string"
+            and (.distro_series_link | endswith($series)))
+        then "\(.entries[0].status) \(.entries[0].self_link)"
+        else error("not the source asked for") end' <<<"$1" 2>/dev/null
 }
 
 # lp_state SOURCE_STATUS BUILDS_JSON BINARIES_JSON prints a series' state.
@@ -225,13 +252,22 @@ copr_states() {
 # dependency wait by itself, but nothing here can fix it, so it stops the wait;
 # a rerun sees it if it clears.
 lp_state() {
-    local status=$1 builds=$2 binaries=$3 states
+    local status=$1 builds=$2 binaries=$3 states state
     case $status in
         Deleted | Obsolete)
             echo failed
             return
             ;;
+        Pending | Published | Superseded) ;;
+        *)
+            echo unknown
+            return
+            ;;
     esac
+    if ! lp_complete "$builds"; then
+        echo unknown
+        return
+    fi
     states=$(jq -er '[.entries[] | select(.arch_tag == "amd64") | .buildstate] | join("\n")' \
         <<<"$builds" 2>/dev/null) || {
         echo unknown
@@ -239,19 +275,36 @@ lp_state() {
     }
     if [[ -z $states ]]; then
         echo building
-    elif grep -qx 'Successfully built' <<<"$states"; then
-        if jq -e '[.entries[] | select(.status == "Published")
+        return
+    fi
+    if grep -qx 'Successfully built' <<<"$states"; then
+        if ! lp_complete "$binaries"; then
+            echo unknown
+        elif jq -e '[.entries[] | select(.status == "Published")
                 | select(.distro_arch_series_link | endswith("/amd64"))] | length > 0' \
             <<<"$binaries" >/dev/null 2>&1; then
             echo built
         else
             echo building
         fi
-    elif grep -qvxE 'Needs building|Currently building|Gathering build output|Uploading build|Cancelling build' <<<"$states"; then
-        echo failed
-    else
-        echo building
+        return
     fi
+    state=building
+    while read -r status; do
+        case $status in
+            'Needs building' | 'Currently building' | 'Gathering build output' | \
+                'Uploading build' | 'Cancelling build') ;;
+            'Failed to build' | 'Dependency wait' | 'Chroot problem' | 'Failed to upload' | \
+                'Cancelled build' | 'Build for superseded Source')
+                state=failed
+                ;;
+            *)
+                echo unknown
+                return
+                ;;
+        esac
+    done <<<"$states"
+    echo "$state"
 }
 
 # obs_states DIR IDENTITY: DIR holds what obs_status fetched, one "target
@@ -310,6 +363,9 @@ try:
             state = "building"
         elif code in ("unresolvable", "broken", "excluded", "disabled"):
             state = "failed"
+        elif code not in ("succeeded", "failed", "scheduled", "blocked", "building",
+                          "dispatching", "finished", "signing"):
+            state = "unknown"
         elif job is None or job.get("srcmd5") != srcmd5:
             state = "building"
         elif code == "succeeded" and job.get("code") in ("succeeded", "unchanged") and published:
@@ -565,16 +621,33 @@ overlay_url() {
     fi
 }
 
+# repo_is_empty CLONE: true for a repository with no refs at all, the one case
+# where nothing in the working tree means nothing has been published. A clone
+# whose remote HEAD names a missing branch also has an empty tree.
+repo_is_empty() { [[ -z $(git -C "$1" for-each-ref) ]]; }
+
+overlay_state() {
+    local clone=$1 identity=$2
+    if repo_is_empty "$clone"; then
+        echo absent
+    elif [[ $(cat "$clone/profiles/repo_name" 2>/dev/null) != wineo ]]; then
+        echo unknown
+    elif [[ -f $clone/games-util/wineo/wineo-$identity.ebuild ]]; then
+        echo built
+    else
+        echo absent
+    fi
+}
+
 overlay_status() {
-    local identity url
+    local identity url state
     identity=$(identity_of overlay overlay)
     url=$(overlay_url)
     if ! clone_repo "$url" "$work/overlay/repo"; then
         echo overlay unknown
-    elif [[ -f $work/overlay/repo/games-util/wineo/wineo-$identity.ebuild ]]; then
-        echo overlay built
     else
-        echo overlay absent
+        state=$(overlay_state "$work/overlay/repo" "$identity")
+        echo "overlay $state"
     fi
 }
 
@@ -659,8 +732,29 @@ aur_url() {
     fi
 }
 
+aur_state() {
+    local clone=$1 package=$2 identity=$3 srcinfo=$1/.SRCINFO pkgver pkgrel
+    if repo_is_empty "$clone"; then
+        echo absent
+        return
+    fi
+    if [[ ! -f $srcinfo ]] || [[ $(srcinfo_values pkgbase "$srcinfo") != "$package" ]]; then
+        echo unknown
+        return
+    fi
+    pkgver=$(srcinfo_values pkgver "$srcinfo")
+    pkgrel=$(srcinfo_values pkgrel "$srcinfo")
+    if [[ ! $pkgver =~ ^[0-9A-Za-z._+]+$ || ! $pkgrel =~ ^[0-9]+$ ]]; then
+        echo unknown
+    elif [[ $pkgver-$pkgrel == "$identity" ]]; then
+        echo built
+    else
+        echo absent
+    fi
+}
+
 aur_status() {
-    local package identity clone srcinfo url
+    local package identity clone url state
     for package in "${aur_packages[@]}"; do
         identity=$(identity_of aur "$package")
         clone=$work/aur/repos/$package
@@ -670,13 +764,8 @@ aur_status() {
             echo "$package unknown"
             continue
         fi
-        srcinfo=$clone/.SRCINFO
-        if [[ -f $srcinfo ]] &&
-            [[ "$(srcinfo_values pkgver "$srcinfo")-$(srcinfo_values pkgrel "$srcinfo")" == "$identity" ]]; then
-            echo "$package built"
-        else
-            echo "$package absent"
-        fi
+        state=$(aur_state "$clone" "$package" "$identity")
+        echo "$package $state"
     done
 }
 
@@ -766,9 +855,13 @@ aur_upload() {
 # and prints the newest build of IDENTITY, or nothing. Fails on anything that
 # isn't the page asked for.
 copr_page() {
+    [[ -n $1 ]] || return 1
     jq -er --argjson offset "$2" --argjson limit "$3" --arg id "$4" '
         if (.items | type) == "array" and .meta.offset == $offset
             and (.items | length) <= $limit
+            and .meta.limit == $limit
+            and all(.items[]; (.id | type) == "number"
+                and (.source_package | type) == "object" and has("state"))
         then [.items[] | select(.source_package.version == $id) | .id] | max // ""
         else error("not the page asked for") end' <<<"$1" 2>/dev/null
 }
@@ -885,15 +978,17 @@ obs_status() {
         -v "$config:/root/.config/osc/oscrc:ro" -v "$dir:/status" "$image" \
         bash -euo pipefail -c '
         source_path=/source/$PROJECT/$PACKAGE
-        osc api "$source_path" >/status/directory 2>/status/error
-        osc api "$source_path/wineo.spec" >/status/spec 2>/status/error
+        osc api "$source_path" >/status/directory 2>/status/source-error
+        osc api "$source_path/wineo.spec" >/status/spec 2>/status/source-error
         osc api "/build/$PROJECT/_result?package=$PACKAGE&arch=x86_64" >/status/result 2>/status/error
         for target in $TARGETS; do
             osc api "/build/$PROJECT/$target/x86_64/_jobhistory?package=$PACKAGE&limit=5" \
                 >"/status/jobhistory-$target" 2>/status/error
         done
     ' >/dev/null 2>&1; then
-        if [[ -f $dir/error ]] && osc_said_missing "$dir/error" && [[ ! -s $dir/spec ]]; then
+        # Only the source being gone says absent. A 404 further on doesn't, and
+        # the result file exists once the source was read.
+        if [[ ! -e $dir/result ]] && osc_said_missing "$dir/source-error"; then
             touch "$dir/missing"
         else
             targets_of obs | sed 's/$/ unknown/'
@@ -945,7 +1040,7 @@ ppa_ready() {
 }
 
 ppa_status() {
-    local series identity sources status link builds binaries state
+    local series identity sources source status link builds binaries state
     for series in $(targets_of ppa); do
         identity=$(identity_of ppa "$series")
         sources=$(curl -fsS -G --max-time 60 "$lp_archive" \
@@ -953,12 +1048,13 @@ ppa_status() {
             --data-urlencode source_name=wineo --data-urlencode exact_match=true \
             --data-urlencode "version=$identity" \
             --data-urlencode "distro_series=$lp_series/$series") || sources=
-        if ! status=$(jq -er '.entries[0].status // ""' <<<"$sources" 2>/dev/null); then
+        if ! source=$(lp_source "$sources" "$identity" "$series"); then
             echo "$series unknown"
-        elif [[ -z $status ]]; then
+        elif [[ $source == absent ]]; then
             echo "$series absent"
         else
-            link=$(jq -r '.entries[0].self_link' <<<"$sources")
+            status=${source%% *}
+            link=${source#* }
             builds=$(curl -fsS --max-time 60 "$link?ws.op=getBuilds") || builds=
             binaries=$(curl -fsS --max-time 60 "$link?ws.op=getPublishedBinaries") || binaries=
             state=$(lp_state "$status" "$builds" "$binaries")
