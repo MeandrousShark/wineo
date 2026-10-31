@@ -1,7 +1,7 @@
 #!/bin/bash
 # Runs scripts/stage-install.sh against fake `wineo` and `wineo-gui`
 # binaries, so it needs no build, and checks the exact file list and modes it
-# writes, the --license-dir option, relative paths, and the failure cases.
+# writes, the --license-dir and --zsh-dir options, relative paths, and the failure cases.
 # Nothing here writes outside a temporary directory.
 #
 # Usage: scripts/test-stage-install.sh
@@ -49,9 +49,10 @@ FAKE
 # listing DIR: every file under DIR with its mode, sorted.
 listing() { (cd "$1" && find . -mindepth 1 ! -type d -printf '%P %m\n' | sort); }
 
-# expected_listing LICENSE_DIR: the whole tree for that license dir.
+# expected_listing LICENSE_DIR [ZSH_DIR]: the whole tree for those dirs.
 expected_listing() {
-    local lic=${1#/}
+    local lic=${1#/} zsh=${2:-/usr/share/zsh/site-functions}
+    zsh=${zsh#/}
     sort <<LIST
 usr/bin/wineo 755
 usr/bin/wineo-gui 755
@@ -63,16 +64,16 @@ usr/share/doc/wineo/environment.toml.example 644
 usr/share/doc/wineo/native-environment.toml.example 644
 usr/share/doc/wineo/proxied-environment.toml.example 644
 usr/share/bash-completion/completions/wineo 644
-usr/share/zsh/site-functions/_wineo 644
+$zsh/_wineo 644
 usr/share/fish/vendor_completions.d/wineo.fish 644
 usr/share/man/man1/wineo.1 644
 usr/share/man/man1/wineo-start.1 644
 LIST
 }
 
-# check_listing NAME DIR LICENSE_DIR
+# check_listing NAME DIR LICENSE_DIR [ZSH_DIR]
 check_listing() {
-    if diff <(expected_listing "$3") <(listing "$2") >"$tmp/diff"; then
+    if diff <(expected_listing "$3" "${4:-}") <(listing "$2") >"$tmp/diff"; then
         pass
     else
         fail "$1: file list or modes differ: $(cat "$tmp/diff")"
@@ -160,6 +161,28 @@ else
     fail "--license-dir /opt/lic/wineo: license files not under DESTDIR/opt/lic/wineo"
 fi
 
+# --zsh-dir moves exactly the zsh completion and leaves no empty
+# site-functions directory behind.
+vendor=/usr/share/zsh/vendor-completions
+"$stage" --zsh-dir "$vendor" "$tmp/dest4" "$tmp/bin" 2>"$tmp/err" && status=0 || status=$?
+expect_success "--zsh-dir run"
+check_listing "--zsh-dir" "$tmp/dest4" /usr/share/licenses/wineo "$vendor"
+if [[ $(cat "$tmp/dest4$vendor/_wineo") == "fake completions for zsh" &&
+    ! -e $tmp/dest4/usr/share/zsh/site-functions ]]; then
+    pass
+else
+    fail "--zsh-dir: completion missing from vendor-completions or site-functions left behind"
+fi
+
+# Both options together, in either order.
+for args in "--license-dir /usr/share/doc/wineo --zsh-dir $vendor" "--zsh-dir $vendor --license-dir /usr/share/doc/wineo"; do
+    rm -rf "$tmp/dest5"
+    # shellcheck disable=SC2086
+    "$stage" $args "$tmp/dest5" "$tmp/bin" 2>"$tmp/err" && status=0 || status=$?
+    expect_success "both options: $args"
+    check_listing "both options: $args" "$tmp/dest5" /usr/share/doc/wineo "$vendor"
+done
+
 # Relative DESTDIR and BINDIR, from a directory that isn't the repository.
 mkdir "$tmp/elsewhere"
 fake_bins "$tmp/elsewhere/mybin"
@@ -191,6 +214,10 @@ expect_failure "license dir without a value" 2 "$tmp/none" --license-dir
 expect_failure "relative license dir" 2 "$tmp/dest-rel" --license-dir share/lic "$tmp/dest-rel" "$tmp/bin"
 expect_failure "license dir climbing out" 2 "$tmp/escaped" --license-dir /../escaped "$tmp/dest-esc" "$tmp/bin"
 expect_failure "license dir ending in .." 2 "$tmp/dest-up" --license-dir /usr/.. "$tmp/dest-up" "$tmp/bin"
+expect_failure "zsh dir without a value" 2 "$tmp/none" --zsh-dir
+expect_failure "relative zsh dir" 2 "$tmp/dest-zrel" --zsh-dir share/zsh "$tmp/dest-zrel" "$tmp/bin"
+expect_failure "zsh dir climbing out" 2 "$tmp/escaped" --zsh-dir /../escaped "$tmp/dest-zesc" "$tmp/bin"
+expect_failure "zsh dir ending in .." 2 "$tmp/dest-zup" --zsh-dir /usr/.. "$tmp/dest-zup" "$tmp/bin"
 expect_failure "too many arguments" 2 "$tmp/dest-many" "$tmp/dest-many" "$tmp/bin" extra
 
 echo "$((cases - failures)) of $cases cases behaved correctly"

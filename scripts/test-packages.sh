@@ -113,7 +113,8 @@ same "outputs" "$(printf '%s\n' "${deb##*/}" "${rpm##*/}" | LC_ALL=C sort)" "$(f
 stage_rpm=$tmp/stage-rpm
 stage_deb=$tmp/stage-deb
 "$root/scripts/stage-install.sh" "$stage_rpm" "$bins" >/dev/null
-"$root/scripts/stage-install.sh" --license-dir /usr/share/doc/wineo "$stage_deb" "$bins" >/dev/null
+"$root/scripts/stage-install.sh" --license-dir /usr/share/doc/wineo \
+    --zsh-dir /usr/share/zsh/vendor-completions "$stage_deb" "$bins" >/dev/null
 want_deb=$(
     {
         listing "$stage_deb/usr" | sed -E 's#^(share/man/man1/.*\.1) #\1.gz #'
@@ -160,6 +161,13 @@ if command -v dpkg-deb >/dev/null; then
             fail "deb: $file differs from the staged file"
         fi
     done
+    # Debian's zsh searches vendor-completions, not site-functions.
+    if [[ -f $extracted/usr/share/zsh/vendor-completions/_wineo &&
+        ! -e $extracted/usr/share/zsh/site-functions ]]; then
+        pass
+    else
+        fail "deb: the zsh completion is not alone in usr/share/zsh/vendor-completions"
+    fi
     copyright=$extracted/usr/share/doc/wineo/copyright
     same "copyright format" "Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/" \
         "$(head -n 1 "$copyright")"
@@ -224,6 +232,16 @@ $paragraph" "$(query '%{DESCRIPTION}')"
         pass
     else
         fail "rpm: file list, modes, or contents differ from the staged tree: $(cat "$tmp/diff")"
+    fi
+    if grep -q '^/usr/share/zsh/site-functions/_wineo ' <<<"$got_rpm"; then
+        pass
+    else
+        fail "rpm: the zsh completion is not in usr/share/zsh/site-functions"
+    fi
+    if ! grep -q 'vendor-completions' <<<"$got_rpm"; then
+        pass
+    else
+        fail "rpm: the zsh completion is in vendor-completions"
     fi
     # The directories only wineo uses belong to the package, so removing it
     # leaves none behind.

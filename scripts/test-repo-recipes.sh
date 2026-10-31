@@ -246,6 +246,10 @@ check "debian/rules has no empty override_dh_auto_test" \
 check "the spec has a %check" test "$(grep -c '^%check' "$spec")" -eq 0
 check "debian/rules does not install with stage-install.sh" \
     grep -q 'scripts/stage-install.sh --license-dir /usr/share/doc/wineo' "$rules"
+check "debian/rules does not put the zsh completion in vendor-completions" \
+    grep -q -- '--zsh-dir /usr/share/zsh/vendor-completions' "$rules"
+check "the spec does not keep the zsh completion in site-functions" \
+    bash -c '! grep -q -- "--zsh-dir" "$1"' _ "$spec"
 check "the spec does not install with stage-install.sh" \
     grep -q 'scripts/stage-install.sh --license-dir %{_datadir}/licenses/%{name}' "$spec"
 check "the spec keeps debuginfo on" grep -q '^%global debug_package %{nil}' "$spec"

@@ -3,7 +3,9 @@
 # executable in bin/, the desktop entry and icon, the wineo man page plus at
 # least one other, the bash, zsh, and fish completions, and LICENSE and
 # THIRD_PARTY.md in LICENSE_DIR. Man pages may be plain (.1) or gzipped
-# (.1.gz), since the deb gzips them and the rpm and tarball don't.
+# (.1.gz), since the deb gzips them and the rpm and tarball don't. The zsh
+# completion may be in zsh/site-functions or zsh/vendor-completions, since
+# Debian's zsh only searches the latter.
 #
 # Usage: scripts/check-installed.sh PREFIX LICENSE_DIR
 #
@@ -41,10 +43,14 @@ for file in \
     share/applications/wineo-gui.desktop \
     share/icons/hicolor/scalable/apps/wineo-gui.svg \
     share/bash-completion/completions/wineo \
-    share/zsh/site-functions/_wineo \
     share/fish/vendor_completions.d/wineo.fish; do
     [[ -f $prefix/$file ]] || miss "$prefix/$file"
 done
+
+zsh=$prefix/share/zsh
+if [[ ! -f $zsh/site-functions/_wineo && ! -f $zsh/vendor-completions/_wineo ]]; then
+    miss "$zsh/site-functions/_wineo or vendor-completions/_wineo"
+fi
 
 [[ -f $license_dir/LICENSE ]] || miss "$license_dir/LICENSE"
 [[ -f $license_dir/THIRD_PARTY.md ]] || miss "$license_dir/THIRD_PARTY.md"

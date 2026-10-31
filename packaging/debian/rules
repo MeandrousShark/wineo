@@ -36,8 +36,10 @@ override_dh_auto_build:
 # Package builds don't run the test suite; a tagged release has passed CI.
 override_dh_auto_test:
 
+# Debian's zsh has vendor-completions in fpath, not site-functions.
 override_dh_auto_install:
 	scripts/stage-install.sh --license-dir /usr/share/doc/wineo \
+		--zsh-dir /usr/share/zsh/vendor-completions \
 		debian/wineo target/release
 
 # check-installed.sh and the other formats expect these files uncompressed.

@@ -4,7 +4,8 @@
 # shell completions, and man pages. Every package format calls this one
 # script, so they all install the same tree.
 #
-# Usage: scripts/stage-install.sh [--license-dir DIR] DESTDIR [BINDIR]
+# Usage: scripts/stage-install.sh [--license-dir DIR] [--zsh-dir DIR] DESTDIR
+#                                 [BINDIR]
 #
 # BINDIR holds the built `wineo` and `wineo-gui` (default target/release).
 # DESTDIR and BINDIR are relative to the caller's working directory. Source
@@ -14,21 +15,31 @@
 # (default /usr/share/licenses/wineo). Distros disagree on where licenses
 # go, so the caller picks.
 #
+# --zsh-dir takes the same kind of path for the zsh completion (default
+# /usr/share/zsh/site-functions). Debian-family zsh leaves that directory out
+# of fpath but has /usr/share/zsh/vendor-completions, so the deb picks it.
+#
 # Exits 2 on bad usage and 1 when BINDIR lacks an executable binary, both
 # before anything is written.
 set -euo pipefail
 
 usage() {
-    echo "usage: ${0##*/} [--license-dir DIR] DESTDIR [BINDIR]" >&2
+    echo "usage: ${0##*/} [--license-dir DIR] [--zsh-dir DIR] DESTDIR [BINDIR]" >&2
     exit 2
 }
 
 license_dir=/usr/share/licenses/wineo
+zsh_dir=/usr/share/zsh/site-functions
 while [[ $# -gt 0 ]]; do
     case $1 in
         --license-dir)
             [[ $# -ge 2 ]] || usage
             license_dir=$2
+            shift 2
+            ;;
+        --zsh-dir)
+            [[ $# -ge 2 ]] || usage
+            zsh_dir=$2
             shift 2
             ;;
         -*) usage ;;
@@ -39,6 +50,8 @@ done
 [[ $license_dir == /* ]] || usage
 # A ".." component would climb out of DESTDIR.
 [[ $license_dir/ != */../* ]] || usage
+[[ $zsh_dir == /* ]] || usage
+[[ $zsh_dir/ != */../* ]] || usage
 
 # Absolute before any cd or install can change what they mean.
 destdir=$1
@@ -79,7 +92,7 @@ for shell in bash zsh fish; do
     "$bindir/wineo" completions "$shell" >"$tmp/$shell"
 done
 install -Dm644 "$tmp/bash" "$prefix/share/bash-completion/completions/wineo"
-install -Dm644 "$tmp/zsh" "$prefix/share/zsh/site-functions/_wineo"
+install -Dm644 "$tmp/zsh" "$destdir$zsh_dir/_wineo"
 install -Dm644 "$tmp/fish" "$prefix/share/fish/vendor_completions.d/wineo.fish"
 
 "$bindir/wineo" manpages "$prefix/share/man/man1"

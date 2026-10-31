@@ -27,11 +27,12 @@ fail() {
     echo "FAIL: $*" >&2
 }
 
-# make_tree PREFIX LICENSE_DIR [MAN_SUFFIX]
+# make_tree PREFIX LICENSE_DIR [MAN_SUFFIX [ZSH_DIR]]
 # A complete install; the man pages end in MAN_SUFFIX (default empty, so
-# wineo.1, or ".gz" for wineo.1.gz).
+# wineo.1, or ".gz" for wineo.1.gz). The zsh completion goes in
+# share/ZSH_DIR (default zsh/site-functions).
 make_tree() {
-    local prefix=$1 licenses=$2 gz=${3:-}
+    local prefix=$1 licenses=$2 gz=${3:-} zsh=${4:-zsh/site-functions}
     mkdir -p "$prefix/bin" "$licenses" "$prefix/share/man/man1"
     printf '#!/bin/bash\n' >"$prefix/bin/wineo"
     printf '#!/bin/bash\n' >"$prefix/bin/wineo-gui"
@@ -41,7 +42,7 @@ make_tree() {
         share/applications/wineo-gui.desktop \
         share/icons/hicolor/scalable/apps/wineo-gui.svg \
         share/bash-completion/completions/wineo \
-        share/zsh/site-functions/_wineo \
+        "share/$zsh/_wineo" \
         share/fish/vendor_completions.d/wineo.fish \
         "share/man/man1/wineo.1$gz" \
         "share/man/man1/wineo-start.1$gz"; do
@@ -93,6 +94,17 @@ expect_installed_ok "complete tree, gzipped man pages, license dir elsewhere" \
 
 # A trailing slash on either argument changes nothing.
 expect_installed_ok "trailing slashes" "$prefix/" "$tmp/b/doc/"
+
+prefix=$tmp/v/usr
+make_tree "$prefix" "$tmp/v/doc" .gz zsh/vendor-completions
+expect_installed_ok "complete tree, zsh completion in vendor-completions" "$prefix" "$tmp/v/doc"
+
+# Neither zsh location is named once, with both paths in the message.
+prefix=$tmp/z/usr
+make_tree "$prefix" "$tmp/z/doc" .gz zsh/vendor-completions
+rm "$prefix/share/zsh/vendor-completions/_wineo"
+expect_installed_missing "zsh completion in neither location" "$prefix" "$tmp/z/doc" \
+    "$prefix/share/zsh/site-functions/_wineo or vendor-completions/_wineo"
 
 # Each item, removed alone from a complete tree, is named and fails.
 removals=(

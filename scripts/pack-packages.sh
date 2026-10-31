@@ -101,9 +101,11 @@ fi
 mkdir -p "$outdir"
 
 # The deb gets its licenses in the doc directory, with a copyright file in
-# the machine-readable format Debian expects there.
+# the machine-readable format Debian expects there. Its zsh completion goes
+# in vendor-completions, since Debian's zsh doesn't search site-functions.
 deb_stage=$tmp/deb
-"$root/scripts/stage-install.sh" --license-dir /usr/share/doc/wineo "$deb_stage" "$bindir"
+"$root/scripts/stage-install.sh" --license-dir /usr/share/doc/wineo \
+    --zsh-dir /usr/share/zsh/vendor-completions "$deb_stage" "$bindir"
 cat >"$deb_stage/usr/share/doc/wineo/copyright" <<'COPYRIGHT'
 Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
 Upstream-Name: wineo
