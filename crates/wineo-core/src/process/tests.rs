@@ -892,6 +892,34 @@ impl Drop for ClosesOnDrop {
 }
 
 #[test]
+fn closing_leaves_the_group_of_a_child_that_already_exited() {
+    let mut leader = Command::new("true").process_group(0).spawn().unwrap();
+    let id = leader.id();
+    let pid = Pid::from_raw(id as i32).unwrap();
+    let exited = waitid(
+        WaitId::Pid(pid),
+        WaitIdOptions::EXITED | WaitIdOptions::NOWAIT,
+    );
+    if let Err(err) = exited {
+        let _ = leader.wait();
+        panic!("{err}");
+    }
+    // Joined only now, so it can't have ended with the leader on its own. The
+    // unreaped leader keeps the group there to join.
+    let survivor = Command::new("sleep")
+        .arg("20")
+        .process_group(id as i32)
+        .spawn();
+    let tracked = TrackedChild::default();
+    // Where `run` is once its wait returns but before it gets the lock back.
+    tracked.lock().child = Some(leader);
+    let mut survivor = crate::test_script::KillOnDrop::new(survivor.unwrap());
+    assert!(tracked.close());
+    thread::sleep(Duration::from_millis(50));
+    assert!(survivor.try_wait().unwrap().is_none());
+}
+
+#[test]
 fn closing_ends_a_running_tracked_child_and_its_group() {
     let root = tempfile::tempdir().unwrap();
     let marker = root.path().join("up");

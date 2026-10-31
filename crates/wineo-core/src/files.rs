@@ -153,7 +153,7 @@ pub(crate) fn write_atomic_synced(path: &Path, contents: impl AsRef<[u8]>) -> Re
 /// `write_atomic` for a config the user may keep elsewhere: a symlink at `path`
 /// stays, and the write lands on the file it leads to. `target` is what the
 /// config's lock was keyed on, and the write is refused if `path` no longer
-/// resolves to it. An existing file keeps its exact mode, and a new one is
+/// resolves to it. An existing file keeps its permissions, and a new one is
 /// created like `write_atomic`'s.
 pub(crate) fn write_config(path: &Path, target: &Path, contents: impl AsRef<[u8]>) -> Result<()> {
     let destination = Destination::find(path, target)?;
@@ -364,7 +364,7 @@ fn is_symlink(path: &Path) -> bool {
     fs::symlink_metadata(path).is_ok_and(|found| found.is_symlink())
 }
 
-/// The exact mode of a regular file at `path`, or None if nothing to keep is
+/// The permissions of a regular file at `path`, or None if nothing to keep is
 /// there. A parent that isn't a directory is left for the write to report.
 fn regular_mode(path: &Path) -> io::Result<Option<u32>> {
     match fs::symlink_metadata(path) {

@@ -640,14 +640,18 @@ impl TrackedChild {
     }
 
     /// Ends and reaps a running child, and refuses anything later. False if
-    /// the child couldn't be reaped within `CLEANUP_BOUND`.
+    /// the child couldn't be reaped within `CLEANUP_BOUND`. A child that already
+    /// exited finished its work, so what it left in its group stays, just as if
+    /// `run` had got to it first.
     pub(crate) fn close(&self) -> bool {
         let child = {
             let mut tracked = self.lock();
             tracked.closed = true;
             tracked.child.take()
         };
-        child.is_none_or(|mut child| kill_and_reap(&mut child))
+        child.is_none_or(|mut child| {
+            matches!(child.try_wait(), Ok(Some(_))) || kill_and_reap(&mut child)
+        })
     }
 }
 

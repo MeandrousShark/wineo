@@ -1131,6 +1131,14 @@ done
             }
         }
 
+        fn wait_until_gone(&self, pid: &str) {
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while running(pid) {
+                assert!(Instant::now() < deadline, "{pid} survived");
+                thread::sleep(Duration::from_millis(10));
+            }
+        }
+
         fn asks(&self) -> Vec<String> {
             recorded_asks(&self.prefix)
         }
@@ -1147,12 +1155,8 @@ done
                 !Path::new("/proc").join(&leader).exists(),
                 "{leader} survived"
             );
-            let deadline = Instant::now() + Duration::from_secs(5);
             for pid in self.asks() {
-                while running(&pid) {
-                    assert!(Instant::now() < deadline, "{pid} survived");
-                    thread::sleep(Duration::from_millis(10));
-                }
+                self.wait_until_gone(&pid);
             }
             self.release("ask-release");
             thread::sleep(Duration::from_millis(300));
@@ -1211,9 +1215,15 @@ done
     fn a_hung_wineboot_is_gone_when_a_watch_gives_up() {
         let f = HungKill::with_hanging_wineboot();
         let token = Token::new();
-        let (watching, _notices, _events) = f.watch(&token, Some(Duration::from_millis(300)));
+        let prefix = f.prefix.clone();
+        let give_up = Some(Duration::from_millis(300));
+        let (watching, _events) = f.watch_with(&token, give_up, Duration::ZERO, move |watched| {
+            // Holds the loop, or giving up could call off a wineboot still to start.
+            if matches!(watched, Watched::Notice(Notice::Killing)) {
+                wait_for_wineboot(&prefix);
+            }
+        });
         token.cancel();
-        f.wait_for_wineboot();
         let ending = watching.join().unwrap();
         assert!(matches!(ending.settled, Err(Error::StillRunning(_))));
         f.assert_asks_ended();
@@ -1246,9 +1256,12 @@ done
             });
         token.cancel();
         f.wait_for_wineboot();
+        token.force();
+        f.wait_for_kills(1);
         f.release("idle-release");
-        // Lets the loop end first, so this lands during the wait after it.
-        thread::sleep(Duration::from_millis(200));
+        // Only the end of the loop stops this kill, so seeing it stopped puts
+        // wineboot's finish inside the wait that follows.
+        f.wait_until_gone(&f.kills()[0]);
         f.release("ask-release");
         let ending = watching.join().unwrap();
         assert!(ending.settled.is_ok(), "{:?}", ending.settled);
