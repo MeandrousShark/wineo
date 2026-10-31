@@ -1,10 +1,21 @@
 #!/bin/bash
 # Tests publish-packages.sh against a small real git repository, with stubs on
-# PATH for gh, curl, podman, makepkg, pycargoebuild, and sleep, and --dest-dir
-# fakes for the destinations, so nothing touches a service and nothing sleeps.
-# git, tar, cargo, gentoo-ebuild.sh, and prepare-debian-tree.sh are the real
-# ones. Each failure case checks the reason as well as the exit status, and
-# that nothing was uploaded past the point where it should stop.
+# PATH for gh, curl, podman, makepkg, pycargoebuild, gpg, and sleep, and
+# --dest-dir fakes for the destinations, so nothing touches a service and
+# nothing sleeps. git, tar, cargo, gentoo-ebuild.sh, and prepare-debian-tree.sh
+# are the real ones. Each failure case checks the reason as well as the exit
+# status, and that nothing was uploaded past the point where it should stop.
+#
+# The podman stub runs every container's script for real, in a directory
+# standing in for the container's root, with stub tools (copr-cli, osc, dput,
+# debsign, rpmbuild, and so on) that record their arguments in container paths.
+# So a container script that stops calling its tool, or calls it differently,
+# fails a test. Runs without --dest-dir go through the real upload branches;
+# git's insteadOf turns the overlay's and the AUR's URLs into local repositories.
+#
+# testdata/publish/ holds real public answers from Launchpad (mozillateam's
+# PPA) and COPR (@copr/copr), fetched 2026-10-30. The OBS XML here is written by
+# hand after osc's own parsing, since OBS has no anonymous read.
 #
 # Usage: scripts/test-publish.sh
 # Exits non-zero if any case behaves wrongly. Needs cargo, jq, and python3.
@@ -110,7 +121,17 @@ done
 case $url in
     */archive/refs/tags/*) [[ -f $STUB/no-tag-tarball ]] && exit 22; cp "$STUB/tag.tar.gz" "$out" ;;
     */license-mapping.conf) : >"$out" ;;
-    *copr*/build/list*) [[ -f $STUB/copr-down ]] && exit 22; cat "$STUB/copr-builds.json" ;;
+    *copr*/build/list*)
+        offset=${url##*offset=}
+        offset=${offset%%&*}
+        [[ ! -f $STUB/copr-down-$offset ]] || exit 22
+        if [[ -f $STUB/copr-page-$offset.json ]]; then
+            cat "$STUB/copr-page-$offset.json"
+        else
+            echo "{\"items\":[],\"meta\":{\"offset\":$offset}}"
+        fi
+        ;;
+    *copr*/build-chroot/list*) cat "$STUB/copr-chroots.json" ;;
     *api.launchpad.net*) echo '{"total_size":0,"entries":[]}' ;;
     *) exit 22 ;;
 esac
@@ -121,75 +142,170 @@ cat >"$stubs/podman" <<'EOF'
 echo "$*" >>"$STUB/podman.log"
 case $1 in
     image) [[ -e $STUB/image-${3##*/} ]]; exit ;;
-    commit) touch "$STUB/image-${3##*/}"; exit ;;
-    rm | rmi) exit 0 ;;
-    unshare) shift; exec "$@" ;;
-    run) ;;
+    commit)
+        [[ ! -f $STUB/fail-commit ]] || exit 1
+        touch "$STUB/image-${3##*/}"
+        exit
+        ;;
+    rm) exit 0 ;;
+    rmi)
+        rm -f "$STUB/image-${3##*/}"
+        exit 0
+        ;;
+    unshare)
+        shift
+        exec "$@"
+        ;;
+    run) shift ;;
     *) exit 1 ;;
 esac
-step= identity= series=
-declare -A mount
+
+# C stands in for the container's root, with each mount a symlink in it.
+export C
+C=$(mktemp -d)
+trap 'rm -rf "${C:?}"' EXIT
+mkdir -p "$C/tmp" "$C/etc/portage" "$C/usr/share/portage/config"
+: >"$C/usr/share/portage/config/repos.conf"
+environment=()
+workdir=/tmp
 while (($# > 0)); do
     case $1 in
+        --rm) shift ;;
+        --name | --tmpfs) shift 2 ;;
         -e)
-            case $2 in
-                STEP=*) step=${2#STEP=} ;;
-                IDENTITY=*) identity=${2#IDENTITY=} ;;
-                SERIES=*) series=${2#SERIES=} ;;
-            esac
+            environment+=("$2")
+            shift 2
+            ;;
+        -w)
+            workdir=$2
             shift 2
             ;;
         -v)
             IFS=: read -r host inside _ <<<"$2"
-            mount[$inside]=$host
+            mkdir -p "$C$(dirname "$inside")"
+            ln -s "$host" "$C$inside"
             shift 2
             ;;
-        *) shift ;;
+        -*)
+            echo "podman stub: unknown option $1" >&2
+            exit 125
+            ;;
+        *) break ;;
     esac
 done
-if [[ $step == "${PODMAN_FAIL_STEP:-none}" ]]; then
-    echo "${PODMAN_FAIL_TEXT:-podman stub: $step failed}"
+shift # the image
+
+# Container paths in the script become paths under C.
+in_root() {
+    perl -pe 's{(?<![\w./-])(/work|/files|/status|/overlay|/tag|/root|/tmp|/etc/portage|/usr/share/portage|/var/cache/distfiles|/var/db/repos|/var/tmp/portage|/signing-key\.asc)(?![\w-])}{$ENV{C}$1}g' <<<"$1"
+}
+args=()
+for arg in "$@"; do
+    mapped=$(in_root "$arg")
+    args+=("$mapped")
+done
+mapped_env=()
+for item in "${environment[@]}"; do
+    mapped=$(in_root "$item")
+    mapped_env+=("$mapped")
+done
+workdir=$(in_root "$workdir")
+cd "$workdir" || exit 1
+env "${mapped_env[@]}" PATH="$STUB_TOOLS:$PATH" "${args[@]}"
+EOF
+
+mkdir "$stubs/in-container"
+cat >"$stubs/in-container/tool" <<'EOF'
+#!/bin/bash
+name=${0##*/}
+{
+    printf '%s' "$name"
+    for arg in "$@"; do printf ' %s' "${arg//$C/}"; done
+    echo
+} >>"$STUB/tools.log"
+if [[ -f $STUB/fail-tool-$name ]]; then
+    cat "$STUB/fail-tool-$name"
     exit 1
 fi
-case $step in
-    srpm)
-        top=${mount[/work/rpmbuild]}
-        name=$(awk '/^Version:/ { v = $2 } /^Release:/ { sub(/%.*/, "", $2); print v "-" $2; exit }' "$top/SPECS/wineo.spec")
-        cmp -s "$top/SOURCES/wineo-$VERSION_UNDER_TEST-vendored.tar.xz" "$STUB/assets/wineo-$VERSION_UNDER_TEST-vendored.tar.xz" || exit 1
-        touch "$top/SRPMS/wineo-$name.src.rpm"
+case $name in
+    rpmbuild)
+        top=$3
+        top=${top#_topdir }
+        spec=$top/SPECS/wineo.spec
+        id=$(awk '/^Version:/ { v = $2 } /^Release:/ { sub(/%.*/, "", $2); print v "-" $2; exit }' "$spec")
+        cmp -s "$top/SOURCES/wineo-$VERSION_UNDER_TEST-vendored.tar.xz" \
+            "$STUB/assets/wineo-$VERSION_UNDER_TEST-vendored.tar.xz" || exit 1
+        touch "$top/SRPMS/wineo-$id.src.rpm"
         ;;
-    deb-source)
-        dir=${mount[/work]}
-        tree=$dir/wineo-$VERSION_UNDER_TEST
-        id=$(sed -nE '1 s/^wineo \(([^)]+)\).*/\1/p' "$tree/debian/changelog")
-        cp "$tree/debian/control" "$dir/wineo_$id.dsc"
-        head -n 1 "$tree/debian/changelog" >"$dir/wineo_${id}_source.changes"
-        cmp "$tree/packaging/debian/changelog" "$STUB/orig-changelog" >>"$dir/wineo_${id}_source.changes" 2>&1 &&
-            echo "packaging/debian untouched" >>"$dir/wineo_${id}_source.changes"
-        touch "$dir/wineo_$id.debian.tar.xz" "$dir/wineo_${id}_source.buildinfo"
+    dpkg-buildpackage)
+        id=$(sed -nE '1 s/^wineo \(([^)]+)\).*/\1/p' debian/changelog)
+        cp debian/control "../wineo_$id.dsc"
+        head -n 1 debian/changelog >"../wineo_${id}_source.changes"
+        if cmp packaging/debian/changelog "$STUB/orig-changelog" >/dev/null 2>&1; then
+            echo "packaging/debian untouched" >>"../wineo_${id}_source.changes"
+        fi
+        touch "../wineo_$id.debian.tar.xz" "../wineo_${id}_source.buildinfo"
         ;;
-    gentoo-manifest)
-        mkdir -p "${mount[/overlay]}/metadata/md5-cache"
-        touch "${mount[/overlay]}/metadata/md5-cache/stale"
-        ebuild_out=$(mktemp -d)
-        "${mount[/tag]}/scripts/gentoo-ebuild.sh" "$VERSION_UNDER_TEST" "$ebuild_out" >/dev/null || exit 1
-        cp "$ebuild_out/wineo-$VERSION_UNDER_TEST.ebuild" "${mount[/overlay]}/games-util/wineo/wineo-$identity.ebuild"
-        rm -rf "$ebuild_out"
-        dist=${mount[/var/cache/distfiles]}/wineo-$VERSION_UNDER_TEST.gh.tar.gz
-        echo "DIST ${dist##*/} $(stat -c %s "$dist") BLAKE2B stub" >>"${mount[/overlay]}/games-util/wineo/Manifest"
+    ebuild)
+        mkdir -p ../../metadata/md5-cache
+        touch ../../metadata/md5-cache/stale
+        dist=$C/var/cache/distfiles/wineo-$VERSION_UNDER_TEST.gh.tar.gz
+        size=$(stat -c %s "$dist")
+        [[ ! -f $STUB/stale-manifest ]] || size=1
+        echo "DIST ${dist##*/} $size BLAKE2B stub" >>Manifest
+        ;;
+    osc)
+        case $1 in
+            api)
+                echo "Server returned an error: HTTP Error 404: Not Found" >&2
+                exit 1
+                ;;
+            checkout)
+                mkdir -p "$2/$3"
+                touch "$2/$3/wineo-0.9.0-vendored.tar.xz"
+                ;;
+            commit) echo "osc-tree $(ls | tr '\n' ' ')" >>"$STUB/tools.log" ;;
+        esac
         ;;
 esac
 EOF
+chmod +x "$stubs/in-container/tool"
+for tool in copr-cli osc dput debsign rpmbuild dpkg-buildpackage gpg dnf apt-get \
+    emerge-webrsync getuto emerge ebuild pkgcheck; do
+    ln -s tool "$stubs/in-container/$tool"
+done
+export STUB_TOOLS=$stubs/in-container
 
+# The host's side of signing. gpg never runs for real in these tests.
+cat >"$stubs/gpg" <<'EOF'
+#!/bin/bash
+case $1 in
+    --list-keys) [[ ! -f $STUB/no-key ]] ;;
+    --export) echo "fake public key" ;;
+    *) exit 1 ;;
+esac
+EOF
+cat >"$stubs/gpgconf" <<'EOF'
+#!/bin/bash
+case $1 in
+    --launch) ;;
+    --list-dirs) echo "$STUB/S.gpg-agent" ;;
+    *) exit 1 ;;
+esac
+EOF
+
+# Written the way makepkg writes it, from the recipe's real values.
 cat >"$stubs/makepkg" <<'EOF'
 #!/bin/bash
 [[ $1 == --printsrcinfo ]] || exit 1
-awk -F= '
-    /^pkgname=/ { print "pkgbase = " $2 }
-    /^pkgver=/ { print "\tpkgver = " $2 }
-    /^pkgrel=/ { print "\tpkgrel = " $2 }
-    /^sha256sums=/ { print "\tsha256sums = " $2 }
-' PKGBUILD
+source ./PKGBUILD
+echo "pkgbase = $pkgname"
+printf '\tpkgver = %s\n\tpkgrel = %s\n' "$pkgver" "$pkgrel"
+for value in "${source[@]}"; do printf '\tsource = %s\n' "$value"; done
+for value in "${sha256sums[@]}"; do printf '\tsha256sums = %s\n' "$value"; done
+if [[ -n ${b2sums+set} ]]; then
+    for value in "${b2sums[@]}"; do printf '\tb2sums = %s\n' "$value"; done
+fi
 EOF
 
 cat >"$stubs/sleep" <<'EOF'
@@ -253,7 +369,7 @@ new_scenario() {
     repo=$scenario/repo
     dest=$scenario/dest
     export STUB=$scenario/stub
-    mkdir -p "$STUB/assets" "$dest/control"
+    mkdir -p "$STUB/assets" "$dest/control" "$scenario/state"
     cp -a "$base" "$repo"
     make_assets
     cp "$repo/packaging/debian/changelog" "$STUB/orig-changelog"
@@ -262,8 +378,8 @@ new_scenario() {
     echo '{"status":"identical","ahead_by":0,"behind_by":0}' >"$STUB/compare.json"
     set_runs "$(run_json completed success)"
     make_release false
-    echo '{"items":[]}' >"$STUB/copr-builds.json"
     : >"$STUB/gh.log"
+    : >"$STUB/tools.log"
 }
 
 make_assets() {
@@ -305,6 +421,7 @@ publish_real() {
     out=$scenario/output
     rc=0
     env PATH="$stubs:$PATH" CARGO_DENY="$stubs/cargo-deny" VERSION_UNDER_TEST="$version" \
+        XDG_STATE_HOME="$scenario/state" \
         WINEO_PUBLISH_WORK="$scenario/work" WINEO_PUBLISH_INTERVAL=0 WINEO_PUBLISH_BUILD_INTERVAL=0 \
         WINEO_PUBLISH_MIRROR_LIMIT="${MIRROR_LIMIT:-30}" WINEO_PUBLISH_RUN_LIMIT="${RUN_LIMIT:-30}" \
         WINEO_PUBLISH_RELEASE_LIMIT="${RELEASE_LIMIT:-30}" WINEO_PUBLISH_COPR_LIMIT="${BUILD_LIMIT:-30}" \
@@ -414,10 +531,16 @@ check "jammy's control doesn't name rustc-1.91" grep -q 'rustc-1.91' "$dest/uplo
 check "stonking's control names rustc-1.91" test "$(grep -c 'rustc-1.91' "$dest/uploads/ppa/stonking/$version-1ppa1~stonking1/wineo_$version-1ppa1~stonking1.dsc")" -eq 0
 check "the license check did not run on the tag's tree" \
     grep -qE "/wineo-$version --locked check licenses$" "$STUB/deny.log"
-check "the source package isn't -S -sa unsigned" grep -q "dpkg-buildpackage -S -sa -d -us -uc" "$STUB/podman.log"
+check "the source package isn't -S -sa unsigned" \
+    test "$(grep -c '^dpkg-buildpackage -S -sa -d -us -uc$' "$STUB/tools.log")" -eq 4
 check "the tag's tree isn't mounted read-only" \
     grep -q ":/tag:ro" "$STUB/podman.log"
-check "the SRPM has a dist tag" grep -q 'define "dist %{nil}"' "$STUB/podman.log"
+check "rpmbuild ran differently: $(grep '^rpmbuild' "$STUB/tools.log")" \
+    test "$(grep '^rpmbuild' "$STUB/tools.log")" = \
+    'rpmbuild -bs --define _topdir /work/rpmbuild --define dist %{nil} /work/rpmbuild/SPECS/wineo.spec'
+check "ebuild manifest ran differently" \
+    grep -qx "ebuild wineo-$version.ebuild manifest" "$STUB/tools.log"
+check "pkgcheck ran differently" grep -qx 'pkgcheck scan --repo wineo --exit error' "$STUB/tools.log"
 check "gh was asked to change something: $(grep UNEXPECTED "$STUB/gh.log" || true)" \
     test "$(grep -c UNEXPECTED "$STUB/gh.log")" -eq 0
 check "gh ran without -R or against another repository" \
@@ -763,21 +886,18 @@ check "no tag tarball: exit $rc, not 1" test "$rc" -eq 1
 check "no tag tarball: the reason is missing" said "could not download GitHub's tarball"
 check "no tag tarball: it published anyway: $(uploads)" test "$(upload_count)" -eq 0
 
-export PODMAN_FAIL_STEP=gentoo-manifest PODMAN_FAIL_TEXT='pkgcheck: an error'
 new_scenario
+echo 'pkgcheck: an error' >"$STUB/fail-tool-pkgcheck"
 publish --only overlay
 check "a pkgcheck error: exit $rc, not 1" test "$rc" -eq 1
 check "a pkgcheck error: the reason is missing" said "ebuild manifest, or pkgcheck failed"
 check "a pkgcheck error: it pushed anyway" test -z "$(git -C "$dest/remote/overlay.git" for-each-ref)"
-unset PODMAN_FAIL_STEP PODMAN_FAIL_TEXT
+check "a pkgcheck error: the error is not shown" said 'pkgcheck: an error'
 
 # A manifest of something else isn't the tag's tarball.
 new_scenario
-cp "$stubs/podman" "$scenario/podman.saved"
-# shellcheck disable=SC2016
-sed -i 's/$(stat -c %s "$dist") BLAKE2B/1 BLAKE2B/' "$stubs/podman"
+touch "$STUB/stale-manifest"
 publish --only overlay
-cp "$scenario/podman.saved" "$stubs/podman"
 check "a stale Manifest: exit $rc, not 1" test "$rc" -eq 1
 check "a stale Manifest: the reason is missing" said "Manifest doesn't hold GitHub's tarball"
 check "a stale Manifest: it pushed anyway" test -z "$(git -C "$dest/remote/overlay.git" for-each-ref)"
@@ -802,14 +922,18 @@ check "a loose COPR token: it does not name the mode" said "has mode 644: run ch
 
 chmod 600 "$XDG_CONFIG_HOME/copr"
 new_scenario
-PODMAN_FAIL_STEP=copr-upload PODMAN_FAIL_TEXT='Error: Login invalid/expired. Please visit the API page' publish_real --only copr
+# copr-cli's own words, from a local server that refused its login.
+printf '%s\n' '' "Error: Operation requires API authentication. See the 'AUTHENTICATION' section in man copr-cli(1)." \
+    '' 'Error: Login invalid/expired. Please visit https://copr.example/api to get or renew your API token.' \
+    >"$STUB/fail-tool-copr-cli"
+publish_real --only copr
 check "an expired token: exit $rc, not 1" test "$rc" -eq 1
 check "an expired token: it does not say so" said "COPR tokens expire: get a new one from https://copr.fedorainfracloud.org/api/"
 check "the token isn't mounted read-only" grep -q "$XDG_CONFIG_HOME/copr:/root/.config/copr:ro" "$STUB/podman.log"
 
 # A state that can't be read must never count as absent.
 new_scenario
-touch "$STUB/copr-down"
+touch "$STUB/copr-down-0"
 publish_real --only copr
 check "COPR down: exit $rc, not 1" test "$rc" -eq 1
 check "COPR down: the reason is missing" said "could not read the build state"
@@ -835,7 +959,9 @@ check "an empty status: it published: $(uploads)" test -z "$(uploads)"
 mkdir -p "$XDG_CONFIG_HOME/osc"
 echo secret >"$XDG_CONFIG_HOME/osc/oscrc"
 new_scenario
-PODMAN_FAIL_STEP=obs-status publish_real --only obs
+# osc's own words when the connection fails, which isn't a 404.
+echo "Failed to establish a new connection: [Errno 111] Connection refused" >"$STUB/fail-tool-osc"
+publish_real --only obs
 check "OBS status: it isn't refused when unknown" said "could not read the build state"
 check "OBS status: it went on to upload" test "$(grep -c 'STEP=obs-upload' "$STUB/podman.log" || true)" -eq 0
 check "oscrc is mounted without :ro" test "$(grep -F oscrc "$STUB/podman.log" | grep -cv 'oscrc:/root/.config/osc/oscrc:ro')" -eq 0
@@ -843,13 +969,190 @@ check "oscrc reached a work directory" test "$(grep -rl secret "$scenario/work" 
 rm -rf "$XDG_CONFIG_HOME/osc"
 
 new_scenario
+touch "$STUB/no-key"
 publish_real --only ppa
 check "no signing key: exit $rc, not 1" test "$rc" -eq 1
 check "no signing key: it does not say so" said "gpg has no key 8EE69509"
 check "no signing key: the status needed a login" test "$(grep -c 'api.launchpad.net' "$STUB/curl.log")" -eq 4
 
+# Pins: every value in the published copy has to be the file's own sum.
+
+wrong_sum=$(printf 'a%.0s' {1..64})
+pin_refused() { # NAME REASON: the AUR went nowhere, and the rest went on
+    local name=$1 reason=$2
+    publish
+    check "$name: exit $rc, not 1" test "$rc" -eq 1
+    check "$name: no reason matching '$reason': $(grep -m1 '^  aur' "$out")" said "$reason"
+    check "$name: part of the AUR went: $(uploads)" test "$(upload_count ' aur ')" -eq 0
+    check "$name: nothing reached the AUR's repositories" \
+        test -z "$(git -C "$dest/remote/wineo-bin.git" for-each-ref 2>/dev/null)"
+    check "$name: the later ones stopped" test "$(upload_count ' ppa ')" -eq 4
+}
+for package in wineo wineo-bin; do
+    new_scenario
+    sed -i "s/^sha256sums=('SKIP')$/sha256sums=('$wrong_sum')/" "$repo/packaging/aur/$package/PKGBUILD"
+    reviewed_commit "a wrong pin"
+    pin_refused "a wrong committed pin in $package" "$package has a committed checksum that doesn't match"
+done
+
+new_scenario
+python3 - "$repo/packaging/aur/wineo-bin/PKGBUILD" "$wrong_sum" <<'EOF'
+import sys
+path, wrong = sys.argv[1:]
+text = open(path).read().replace("sha256sums=('SKIP')", f"sha256sums=(\n  '{wrong}'\n)")
+open(path, "w").write(text)
+EOF
+reviewed_commit "a wrong pin over several lines"
+pin_refused "a wrong pin over several lines" "wineo-bin has a committed checksum that doesn't match"
+
+new_scenario
+echo "b2sums=('$wrong_sum')" >>"$repo/packaging/aur/wineo-bin/PKGBUILD"
+reviewed_commit "a second kind of sum"
+pin_refused "an unchecked kind of sum" "wineo-bin has a committed checksum that doesn't match"
+
+new_scenario
+sed -i 's#^source=.*#source=("https://example.invalid/other.tar.gz")#' "$repo/packaging/aur/wineo-bin/PKGBUILD"
+reviewed_commit "another source"
+pin_refused "another source" "wineo-bin names the source"
+
+new_scenario
+sed -i "s/^sha256sums=('SKIP')$/sha256sums=('$wrong_sum')/" "$repo/PKGBUILD"
+reviewed_commit "a pin on a git source"
+pin_refused "a pin in wineo-git" "wineo-git must keep SKIP"
+
+# A correct committed pin is fine.
+new_scenario
+good_sum=$(sha256sum "$STUB/assets/wineo-$version-x86_64-linux.tar.gz" | awk '{print $1}')
+sed -i "s/^sha256sums=('SKIP')$/sha256sums=('$good_sum')/" "$repo/packaging/aur/wineo-bin/PKGBUILD"
+reviewed_commit "a right pin"
+publish --only aur
+check "a right committed pin: exit $rc, not 0: $(tail -n 3 "$out")" test "$rc" -eq 0
+
+# A tool image that can't be built stops the destination.
+
+for row in "dnf copr" "apt-get ppa"; do
+    read -r tool d <<<"$row"
+    new_scenario
+    echo "$tool: no such package" >"$STUB/fail-tool-$tool"
+    publish --only "$d"
+    check "a failed $tool: exit $rc, not 1" test "$rc" -eq 1
+    check "a failed $tool: the reason is missing" said "^  $d +failed: installing the tools into a .* image failed"
+    check "a failed $tool: nothing went: $(uploads)" test -z "$(uploads)"
+    check "a failed $tool: an image was kept" test "$(grep -c '^commit' "$STUB/podman.log" || true)" -eq 0
+    check "a failed $tool: the next step ran" \
+        test "$(grep -c -e '^rpmbuild' -e '^dpkg-buildpackage' "$STUB/tools.log" || true)" -eq 0
+done
+
+new_scenario
+touch "$STUB/fail-commit"
+publish --only copr
+check "a failed commit: exit $rc, not 1" test "$rc" -eq 1
+check "a failed commit: the reason is missing" said "^  copr +failed: installing the tools"
+check "a failed commit: a half-built image is left" \
+    test "$(find "$STUB" -name 'image-*' | grep -c . || true)" -eq 0
+check "a failed commit: the builder is left" grep -q '^rm -f wineo-publish-builder-fedora' "$STUB/podman.log"
+
+# COPR's list, past the first page.
+
+copr_pages() { # OFFSET VERSION: a full page of one version from OFFSET
+    jq -n --argjson offset "$1" --arg version "$2" \
+        '{items: [range(100) | {id: (100000 - $offset - .), source_package: {version: $version}}],
+          meta: {offset: $offset, limit: 100}}'
+}
+new_scenario
+mkdir -p "$XDG_CONFIG_HOME/osc"
+copr_pages 0 0.0.1-1 >"$STUB/copr-page-0.json"
+copr_pages 100 "$version-1" >"$STUB/copr-page-100.json"
+cp "$root/scripts/testdata/publish/copr-chroots.json" "$STUB/copr-chroots.json"
+publish_real --only copr
+check "a build on page two: exit $rc, not 0: $(tail -n 3 "$out")" test "$rc" -eq 0
+check "a build on page two was not found" said "^  copr +already published"
+check "a build on page two: it read a third page" \
+    test "$(grep -c 'build/list' "$STUB/curl.log")" -eq 2
+check "a build on page two: it uploaded" test "$(grep -c '^copr-cli' "$STUB/tools.log" || true)" -eq 0
+
+for broken in failed garbled short; do
+    new_scenario
+    copr_pages 0 0.0.1-1 >"$STUB/copr-page-0.json"
+    case $broken in
+        failed) touch "$STUB/copr-down-100" ;;
+        garbled) echo '<html>' >"$STUB/copr-page-100.json" ;;
+        short) echo '{"items":[],"meta":{"offset":0}}' >"$STUB/copr-page-100.json" ;;
+    esac
+    publish_real --only copr
+    check "a $broken second page: exit $rc, not 1" test "$rc" -eq 1
+    check "a $broken second page: the reason is missing" said "could not read the build state"
+    check "a $broken second page read as absent" \
+        test "$(grep -c '^copr-cli' "$STUB/tools.log" || true)" -eq 0
+done
+
+# The real upload branches, with the exact commands each container ran.
+
+new_scenario
+BUILD_LIMIT=0 publish_real --only copr
+want="copr-cli build --nowait --chroot fedora-43-x86_64 --chroot fedora-44-x86_64 --chroot fedora-45-x86_64 meandrousshark/wineo /work/wineo-$version-1.src.rpm"
+check "copr-cli ran differently: $(grep '^copr-cli' "$STUB/tools.log")" \
+    test "$(grep '^copr-cli' "$STUB/tools.log")" = "$want"
+
+mkdir -p "$XDG_CONFIG_HOME/osc"
+echo secret >"$XDG_CONFIG_HOME/osc/oscrc"
+new_scenario
+BUILD_LIMIT=0 publish_real --only obs
+want="osc checkout home:meandrousshark wineo
+osc addremove
+osc commit -m Update to $version-1"
+check "osc ran differently: $(grep -E '^osc (checkout|addremove|commit)' "$STUB/tools.log")" \
+    test "$(grep -E '^osc (checkout|addremove|commit)' "$STUB/tools.log")" = "$want"
+check "OBS did not get exactly the spec and the tarball: $(grep '^osc-tree' "$STUB/tools.log")" \
+    test "$(grep '^osc-tree' "$STUB/tools.log")" = "osc-tree wineo-$version-vendored.tar.xz wineo.spec "
+check "the OBS status read something else" \
+    grep -qx 'osc api /source/home:meandrousshark/wineo' "$STUB/tools.log"
+check "the upload's oscrc isn't read-only" \
+    test "$(grep -F 'STEP=obs-upload' "$STUB/podman.log" | grep -c 'oscrc:/root/.config/osc/oscrc:ro')" -eq 1
+rm -rf "$XDG_CONFIG_HOME/osc"
+
+new_scenario
+BUILD_LIMIT=0 publish_real --only ppa
+for series in jammy noble resolute stonking; do
+    changes=wineo_$version-1ppa1~${series}1_source.changes
+    check "debsign ran differently for $series" grep -qxF "debsign --no-conf -k8EE69509 $changes" "$STUB/tools.log"
+    check "dput ran differently for $series" grep -qxF "dput ppa:meandrous-shark/wineo $changes" "$STUB/tools.log"
+done
+check "dput ran before debsign" \
+    test "$(grep -E '^(debsign|dput)' "$STUB/tools.log" | head -n 2 | awk '{print $1}' | tr '\n' ' ')" = "debsign dput "
+check "the public key was not imported" \
+    grep -qx 'gpg --batch --quiet --import /signing-key.asc' "$STUB/tools.log"
+check "the real branch simulated" test "$(grep -c 'dput --simulate' "$STUB/tools.log" || true)" -eq 0
+check "the agent socket isn't mounted" grep -qF "$STUB/S.gpg-agent:/root/.gnupg/S.gpg-agent" "$STUB/podman.log"
+
+# Real URLs, through insteadOf, into local repositories.
+new_scenario
+remotes=$scenario/remotes
+mkdir -p "$remotes/github/MeandrousShark" "$remotes/aur"
+git init -q --bare --initial-branch=main "$remotes/github/MeandrousShark/wineo-overlay.git"
+for package in wineo wineo-bin wineo-git; do
+    git init -q --bare --initial-branch=master "$remotes/aur/$package.git"
+done
+git config --global "url.$remotes/github/.insteadOf" https://github.com/
+git config --global "url.$remotes/aur/.insteadOf" ssh://aur@aur.archlinux.org/
+publish_real --only overlay
+check "the real overlay: exit $rc, not 0: $(tail -n 3 "$out")" test "$rc" -eq 0
+check "the real overlay did not reach main" \
+    git -C "$remotes/github/MeandrousShark/wineo-overlay.git" rev-parse -q --verify refs/heads/main
+publish_real --only aur
+check "the real AUR: exit $rc, not 0: $(tail -n 3 "$out")" test "$rc" -eq 0
+for package in wineo wineo-bin wineo-git; do
+    check "the real $package did not reach master" \
+        git -C "$remotes/aur/$package.git" rev-parse -q --verify refs/heads/master
+done
+publish_real --only aur
+check "a real AUR rerun did not skip" said "^  aur +already published"
+git config --global --remove-section "url.$remotes/github/"
+git config --global --remove-section "url.$remotes/aur/"
+
 # The parsers, on canned answers. Run in the script's own functions.
 
+testdata=$root/scripts/testdata/publish
 script=$repo/scripts/publish-packages.sh
 pure() { (
     set +eu
@@ -895,6 +1198,29 @@ chroots='{"items":[
     {"name":"fedora-45-x86_64","state":"failed"}]}'
 check "copr_states reads it wrong" test "$(pure copr_states <<<"$chroots" | tr '\n' ' ')" = \
     "fedora-43 built fedora-44 building fedora-45 failed "
+check "copr_states misreads a real answer" \
+    test "$(pure copr_states <"$testdata/copr-chroots.json" | tr '\n' ' ')" = \
+    "fedora-43 built fedora-44 built fedora-45 built "
+check "copr_states takes nothing for an answer" \
+    test "$(pure copr_states </dev/null | head -n 1)" = "fedora-43 unknown"
+real_offset=$(jq .meta.offset "$testdata/copr-builds.json")
+real_id=$(jq -r '.items[1].id' "$testdata/copr-builds.json")
+real_version=$(jq -r '.items[1].source_package.version' "$testdata/copr-builds.json")
+check "copr_page misses a build in a real page" \
+    test "$(pure copr_page "$(cat "$testdata/copr-builds.json")" "$real_offset" 3 "$real_version")" -ge "$real_id"
+check "copr_page finds a version that isn't in a real page" \
+    test -z "$(pure copr_page "$(cat "$testdata/copr-builds.json")" "$real_offset" 3 0.0.0-9)"
+if pure copr_page "$(cat "$testdata/copr-builds.json")" 100 3 x >/dev/null; then
+    fail "copr_page takes the wrong page for the one asked for"
+else
+    pass
+fi
+if pure copr_page '{"error":"down"}' 0 3 x >/dev/null; then
+    fail "copr_page takes an error for an empty page"
+else
+    pass
+fi
+if pure copr_page '' 0 3 x >/dev/null; then fail "copr_page takes nothing for a page"; else pass; fi
 check "copr_states takes a missing chroot for built" \
     test "$(pure copr_states <<<'{"items":[]}' | head -n 1)" = "fedora-43 absent"
 check "copr_states takes garbage for an answer" \
@@ -926,30 +1252,44 @@ lp_case failed Published 'Chroot problem' '{"entries":[]}'
 lp_case failed Published 'Failed to upload' '{"entries":[]}'
 lp_case failed Published 'Cancelled build' '{"entries":[]}'
 lp_case failed Deleted 'Successfully built' "$binary"
+# Real answers: firefox's amd64 built, while armhf, riscv64, and s390x failed.
+check "real Launchpad answers aren't built" test "$(pure lp_state \
+    "$(jq -r '.entries[0].status' "$testdata/lp-sources.json")" \
+    "$(cat "$testdata/lp-builds.json")" "$(cat "$testdata/lp-binaries.json")")" = built
+check "a real Launchpad answer lost its armhf failure" \
+    grep -q 'Failed to build' "$testdata/lp-builds.json"
+real_stonking=$(jq -c '.entries |= map(select(.arch_tag == "amd64") | .buildstate = "Failed to build")' \
+    "$testdata/lp-builds.json")
+check "a real Launchpad build that failed on amd64 isn't failed" \
+    test "$(pure lp_state Published "$real_stonking" "$(cat "$testdata/lp-binaries.json")")" = failed
 check "lp_state takes no answer for one" test "$(pure lp_state Published '' '')" = unknown
 check "lp_state counts another architecture" \
     test "$(pure lp_state Published '{"entries":[{"arch_tag":"armhf","buildstate":"Successfully built"}]}' "$binary")" = building
 
-obs_dir() { # DIR SPEC_RELEASE DIRTY CODE JOB_SRCMD5 JOB_CODE
-    local dir=$1 target
+obs_dir() { # DIR SPEC_RELEASE DIRTY CODE JOB_SRCMD5 JOB_CODE [REPO_STATE] [SRCMD5]
+    local dir=$1 target repo_state=${7:-published} srcmd5=${8-abc} attribute=''
+    [[ -z $srcmd5 ]] || attribute=" srcmd5=\"$srcmd5\""
     rm -rf "$dir"
     mkdir -p "$dir"
     printf 'Version: 1.2.3\nRelease: %s%%{?dist}\n' "$2" >"$dir/spec"
-    echo '<directory name="wineo" rev="3" srcmd5="abc"/>' >"$dir/directory"
+    echo "<directory name=\"wineo\" rev=\"3\"$attribute/>" >"$dir/directory"
     {
         echo '<resultlist state="x">'
         for target in openSUSE_Tumbleweed 16.0 15.6; do
-            echo "<result repository=\"$target\" arch=\"x86_64\" code=\"published\" state=\"published\" dirty=\"$3\"><status package=\"wineo\" code=\"$4\"/></result>"
+            echo "<result repository=\"$target\" arch=\"x86_64\" code=\"$repo_state\" state=\"$repo_state\" dirty=\"$3\"><status package=\"wineo\" code=\"$4\"/></result>"
         done
         echo '</resultlist>'
     } >"$dir/result"
     for target in openSUSE_Tumbleweed 16.0 15.6; do
-        echo "<jobhistlist><jobhist package=\"wineo\" srcmd5=\"old\" code=\"failed\"/><jobhist package=\"wineo\" srcmd5=\"$5\" code=\"$6\"/></jobhistlist>" >"$dir/jobhistory-$target"
+        attribute=''
+        [[ -z $5 ]] || attribute=" srcmd5=\"$5\""
+        echo "<jobhistlist><jobhist package=\"wineo\" srcmd5=\"old\" code=\"failed\"/><jobhist package=\"wineo\"$attribute code=\"$6\"/></jobhistlist>" >"$dir/jobhistory-$target"
     done
 }
-obs_case() { # WANT WHY RELEASE DIRTY CODE JOB_SRCMD5 JOB_CODE
+obs_case() { # WANT WHY RELEASE DIRTY CODE JOB_SRCMD5 JOB_CODE [REPO_STATE] [SRCMD5]
     local want=$1 why=$2 got
-    obs_dir "$tmp/obs" "$3" "$4" "$5" "$6" "$7"
+    shift 2
+    obs_dir "$tmp/obs" "$@"
     got=$(pure obs_states "$tmp/obs" 1.2.3-1 | awk '{print $2}' | sort -u | tr '\n' ' ')
     check "obs_states $why is '$got', not $want" test "$got" = "$want "
 }
@@ -962,6 +1302,14 @@ obs_case failed "a failed build" 1 false failed abc failed
 obs_case failed "unresolvable" 1 false unresolvable abc succeeded
 obs_case failed "excluded" 1 false excluded abc succeeded
 obs_case building "scheduled" 1 false scheduled abc succeeded
+obs_case building "a repository still publishing" 1 false succeeded abc succeeded publishing
+obs_case building "a repository still building" 1 false succeeded abc succeeded building
+obs_case building "an unpublished repository" 1 false succeeded abc succeeded unpublished
+obs_case building "a dirty repository that also publishes" 1 true succeeded abc succeeded publishing
+obs_case building "a dirty attribute that isn't true" 1 1 succeeded abc succeeded
+obs_case unknown "no hash on either side" 1 false succeeded '' succeeded published ''
+obs_case unknown "no hash on the source" 1 false succeeded abc succeeded published ''
+obs_case unknown "no hash on the job" 1 false succeeded '' succeeded
 obs_dir "$tmp/obs" 1 false succeeded abc succeeded
 rm "$tmp/obs/result"
 check "obs_states takes a missing file for an answer" \
@@ -970,10 +1318,20 @@ touch "$tmp/obs/missing"
 check "obs_states misses an absent package" \
     test "$(pure obs_states "$tmp/obs" 1.2.3-1 | head -n 1)" = "openSUSE_Tumbleweed absent"
 
-printf 'Error: Login invalid/expired.\n' >"$tmp/said"
+# The real clients' words, from a local server standing in for the service.
+printf "Error: Operation requires API authentication. See the 'AUTHENTICATION' section in man copr-cli(1).\n" >"$tmp/said"
+check "copr_auth_failed misses copr-cli's refusal" pure copr_auth_failed "$tmp/said"
+printf 'Error: Login invalid/expired. Please visit https://copr.example/api to get or renew your API token.\n' >"$tmp/said"
 check "copr_auth_failed misses an expired login" pure copr_auth_failed "$tmp/said"
 printf 'Error: the build was refused\n' >"$tmp/said"
 if pure copr_auth_failed "$tmp/said"; then fail "copr_auth_failed fires on anything"; else pass; fi
+printf 'Server returned an error: HTTP Error 404: Not Found\nPackage not found: x\n' >"$tmp/said"
+check "osc_said_missing misses osc's 404" pure osc_said_missing "$tmp/said"
+for text in 'Server returned an error: HTTP Error 403: Forbidden' \
+    "HTTPConnection(host='127.0.0.1', port=8998): Failed to establish a new connection: [Errno 111] Connection refused"; do
+    echo "$text" >"$tmp/said"
+    if pure osc_said_missing "$tmp/said"; then fail "osc_said_missing fires on: $text"; else pass; fi
+done
 
 # shellcheck disable=SC2016
 check "the polling is not five minutes by default" \

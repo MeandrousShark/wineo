@@ -67,12 +67,15 @@
 # The container scripts are single-quoted so the host leaves them alone.
 # shellcheck disable=SC2016
 set -euo pipefail
+# Without this, a failure inside $(...) doesn't stop the function it's in.
+shopt -s inherit_errexit
 
 repo=MeandrousShark/wineo
 overlay_repo=MeandrousShark/wineo-overlay
 copr_project=meandrousshark/wineo
 copr_api=https://copr.fedorainfracloud.org/api_3
 copr_token_url=https://copr.fedorainfracloud.org/api/
+copr_page_size=100
 obs_project=home:meandrousshark
 obs_package=wineo
 ppa_name=ppa:meandrous-shark/wineo
@@ -252,9 +255,11 @@ lp_state() {
 }
 
 # obs_states DIR IDENTITY: DIR holds what obs_status fetched, one "target
-# state" line per target. A repository counts only if its newest job built the
-# source now on the server, since _result can still show the last revision's
-# result right after a commit.
+# state" line per target. A repository counts only once it has published, and
+# only if its newest job built the source now on the server, since _result can
+# still show the last revision's result right after a commit. A missing hash
+# means the answer can't be read, so two of them never compare equal. Like osc,
+# any value of dirty but "false" counts as dirty.
 obs_states() {
     local dir=$1 identity=$2 targets
     targets=$(targets_of obs | tr '\n' ' ')
@@ -287,6 +292,8 @@ try:
     if f"{version}-{release}" != identity:
         emit("absent")
     srcmd5 = ET.fromstring(read("directory")).get("srcmd5")
+    if not srcmd5:
+        emit("unknown")
     results = {r.get("repository"): r for r in ET.fromstring(read("result")).iter("result")}
     for target in targets:
         result = results.get(target)
@@ -294,13 +301,18 @@ try:
         code = "" if status is None else status.get("code")
         jobs = list(ET.fromstring(read(f"jobhistory-{target}")).iter("jobhist"))
         job = jobs[-1] if jobs else None
-        if result is None or status is None or result.get("dirty") == "true":
+        published = result is not None and all(
+            result.get(field) == "published" for field in ("state", "code")
+        )
+        if job is not None and not job.get("srcmd5"):
+            state = "unknown"
+        elif result is None or status is None or result.get("dirty") not in (None, "false"):
             state = "building"
         elif code in ("unresolvable", "broken", "excluded", "disabled"):
             state = "failed"
         elif job is None or job.get("srcmd5") != srcmd5:
             state = "building"
-        elif code == "succeeded" and job.get("code") in ("succeeded", "unchanged"):
+        elif code == "succeeded" and job.get("code") in ("succeeded", "unchanged") and published:
             state = "built"
         elif code == "failed":
             state = "failed"
@@ -314,9 +326,17 @@ EOF
 
 # osc says this for a package or file that isn't there, which is an answer.
 # Anything else means the state wasn't read.
-osc_said_missing() { grep -qE 'HTTP Error 404|404 Client Error|Not Found' "$1"; }
+osc_said_missing() { grep -q 'HTTP Error 404' "$1"; }
 
-copr_auth_failed() { grep -qiE 'login invalid|expired|unauthori[sz]ed|forbidden|token' "$1"; }
+# copr-cli's words, read from it against a local server that refused the login.
+copr_auth_failed() { grep -qiE 'login invalid|expired|requires API authentication' "$1"; }
+
+# The first target's identity. sed, not head: with pipefail and inherit_errexit
+# a writer that head cut off would stop the script.
+first_target() { targets_of "$1" | sed -n 1p; }
+
+# The value of FIELD in a .SRCINFO, one per line.
+srcinfo_values() { sed -nE "s/^\s*$1 = //p" "$2"; }
 
 # Everything below needs a run: version, root, work, and so on.
 
@@ -336,8 +356,9 @@ need_tool() {
 # to do pulls its image then, so a run that skips everything needs no podman.
 
 tool_image() {
-    local kind=$1 name base packages builder
+    local kind=$1 name base packages builder status
     name=localhost/wineo-publish-$kind-$$
+    # Only ever committed after the install below passed.
     if podman image exists "$name" 2>/dev/null; then
         echo "$name"
         return
@@ -346,21 +367,31 @@ tool_image() {
     case $kind in
         fedora)
             base=$fedora_image
-            packages='dnf -y install rpm-build copr-cli osc'
+            # osc crashes at startup with no git.
+            packages='dnf -y install rpm-build copr-cli osc git-core
+                command -v rpmbuild copr-cli osc git >/dev/null'
             ;;
         ubuntu)
             base=$ubuntu_image
             packages='export DEBIAN_FRONTEND=noninteractive
                 apt-get update
                 apt-get install -y --no-install-recommends ca-certificates debhelper \
-                    devscripts dpkg-dev dput fakeroot gnupg xz-utils'
+                    devscripts dpkg-dev dput fakeroot gnupg xz-utils
+                command -v dpkg-buildpackage debsign dput gpg >/dev/null'
             ;;
     esac
     say "$current: installing the tools into a $base image" >&2
+    status=0
     nice -n 15 podman run --name "$builder" -e STEP="tools-$kind" "$base" \
-        bash -euo pipefail -c "$packages" >&2
-    podman commit -q "$builder" "$name" >/dev/null
-    podman rm "$builder" >/dev/null
+        bash -euo pipefail -c "$packages" >&2 || status=$?
+    if ((status == 0)); then
+        podman commit -q "$builder" "$name" >/dev/null || status=$?
+    fi
+    podman rm -f "$builder" >/dev/null 2>&1 || true
+    if ((status != 0)); then
+        podman rmi -f "$name" >/dev/null 2>&1 || true
+        dest_fail "installing the tools into a $base image failed (exit $status); see the output above"
+    fi
     echo "$name"
 }
 
@@ -368,6 +399,7 @@ remove_tool_images() {
     local kind
     command -v podman >/dev/null || return 0
     for kind in fedora ubuntu; do
+        podman rm -f "wineo-publish-builder-$kind-$$" >/dev/null 2>&1 || true
         podman rmi -f "localhost/wineo-publish-$kind-$$" >/dev/null 2>&1 || true
     done
 }
@@ -409,9 +441,10 @@ fake_state() {
 }
 
 fake_status() {
-    local dest=$1 target state
+    local dest=$1 target state identity
     while read -r target; do
-        if [[ ! -e $dest_dir/remote/$dest/$target/$(identity_of "$dest" "$target") ]]; then
+        identity=$(identity_of "$dest" "$target")
+        if [[ ! -e $dest_dir/remote/$dest/$target/$identity ]]; then
             state=absent
         else
             state=$(fake_state "$dest" "$target")
@@ -431,7 +464,8 @@ fake_upload() {
         return 1
     fi
     if [[ $unit == all ]]; then
-        identity=$(identity_of "$dest" "$(targets_of "$dest" | head -n 1)")
+        target=$(first_target "$dest")
+        identity=$(identity_of "$dest" "$target")
     else
         identity=$(identity_of "$dest" "$unit")
     fi
@@ -442,35 +476,44 @@ fake_upload() {
     while read -r target; do
         [[ $unit == all || $unit == "$target" ]] || continue
         mkdir -p "$dest_dir/remote/$dest/$target"
-        touch "$dest_dir/remote/$dest/$target/$(identity_of "$dest" "$target")"
+        identity=$(identity_of "$dest" "$target")
+        touch "$dest_dir/remote/$dest/$target/$identity"
     done < <(targets_of "$dest")
 }
 
 # Each identity is the recipe's, so it comes from HEAD and not from the tag.
 
 identity_of() {
-    local dest=$1 target=$2 revision
+    local dest=$1 target=$2 revision recipe
     case $dest in
         overlay)
             revision=$(ebuild_revision "$recipes/packaging/gentoo/games-util/wineo/wineo-9999.ebuild")
             if [[ $revision == 0 ]]; then echo "$version"; else echo "$version-r$revision"; fi
             ;;
         aur)
-            echo "$version-$(pkgbuild_field pkgrel "$(aur_recipe "$target")")"
+            recipe=$(aur_recipe "$target")
+            revision=$(pkgbuild_field pkgrel "$recipe")
+            echo "$version-$revision"
             ;;
         copr | obs)
-            echo "$version-$(spec_release "$recipes/packaging/rpm/wineo.spec")"
+            revision=$(spec_release "$recipes/packaging/rpm/wineo.spec")
+            echo "$version-$revision"
             ;;
         ppa)
-            echo "$(changelog_version "$recipes/packaging/debian/changelog")~${target}1"
+            revision=$(changelog_version "$recipes/packaging/debian/changelog")
+            echo "$revision~${target}1"
             ;;
     esac
 }
 
 identity_label() {
+    local target
     case $1 in
         ppa) changelog_version "$recipes/packaging/debian/changelog" ;;
-        *) identity_of "$1" "$(targets_of "$1" | head -n 1)" ;;
+        *)
+            target=$(first_target "$1")
+            identity_of "$1" "$target"
+            ;;
     esac
 }
 
@@ -500,9 +543,9 @@ tag_tarball() {
 
 clone_repo() {
     local url=$1 into=$2
-    rm -rf "$into"
-    git -c credential.helper= -c 'credential.helper=!gh auth git-credential' \
-        clone -q "$url" "$into" 2>/dev/null
+    rm -rf "$into" &&
+        git -c credential.helper= -c 'credential.helper=!gh auth git-credential' \
+            clone -q "$url" "$into" 2>/dev/null
 }
 
 push_repo() {
@@ -523,9 +566,10 @@ overlay_url() {
 }
 
 overlay_status() {
-    local identity
+    local identity url
     identity=$(identity_of overlay overlay)
-    if ! clone_repo "$(overlay_url)" "$work/overlay/repo"; then
+    url=$(overlay_url)
+    if ! clone_repo "$url" "$work/overlay/repo"; then
         echo overlay unknown
     elif [[ -f $work/overlay/repo/games-util/wineo/wineo-$identity.ebuild ]]; then
         echo overlay built
@@ -616,18 +660,19 @@ aur_url() {
 }
 
 aur_status() {
-    local package identity clone srcinfo
+    local package identity clone srcinfo url
     for package in "${aur_packages[@]}"; do
         identity=$(identity_of aur "$package")
         clone=$work/aur/repos/$package
         mkdir -p "$work/aur/repos"
-        if ! clone_repo "$(aur_url "$package")" "$clone"; then
+        url=$(aur_url "$package")
+        if ! clone_repo "$url" "$clone"; then
             echo "$package unknown"
             continue
         fi
         srcinfo=$clone/.SRCINFO
         if [[ -f $srcinfo ]] &&
-            [[ "$(sed -nE 's/^\s*pkgver = //p' "$srcinfo" | head -n 1)-$(sed -nE 's/^\s*pkgrel = //p' "$srcinfo" | head -n 1)" == "$identity" ]]; then
+            [[ "$(srcinfo_values pkgver "$srcinfo")-$(srcinfo_values pkgrel "$srcinfo")" == "$identity" ]]; then
             echo "$package built"
         else
             echo "$package absent"
@@ -637,12 +682,38 @@ aur_status() {
 
 aur_ready() { need_tool makepkg "it writes .SRCINFO, and comes with Arch's pacman"; }
 
+# check_pins PACKAGE SRCINFO SOURCE SUM: the one source is the expected one, and
+# every checksum makepkg sees, whatever its form in the recipe, is SUM. Fails
+# with the reason on stdout, so a committed pin can't go out unchecked.
+check_pins() {
+    local package=$1 srcinfo=$2 source=$3 sum=$4 sources line
+    sources=$(srcinfo_values 'source(_[a-z0-9_]+)?' "$srcinfo")
+    if [[ $sources != "$source" ]]; then
+        echo "$package names the source '${sources//$'\n'/ }', not '$source'"
+        return 1
+    fi
+    line=$(sed -nE 's/^\s*([a-z0-9]+sums(_[a-z0-9_]+)?) = /\1 /p' "$srcinfo")
+    if [[ -z $line ]]; then
+        echo "$package has no checksum"
+        return 1
+    fi
+    if grep -q SKIP <<<"$line"; then
+        echo "$package still has a SKIP checksum after pinning; refusing to publish it"
+        return 1
+    fi
+    if [[ $line != "sha256sums $sum" ]]; then
+        echo "$package has a committed checksum that doesn't match its source: '${line//$'\n'/ }', and the file's sha256 is $sum"
+        return 1
+    fi
+}
+
 # Fills in a temporary copy, never the checkout. wineo-git's pkgver() runs on
 # the user's machine, but .SRCINFO has to name something better than the 0 the
-# repository keeps. Its SKIP is right for a git source.
+# repository keeps. Its SKIP is right for a git source, and is the only value
+# it can have.
 aur_prepare() {
-    local package=$1 recipe sum tarball name
-    local out=$work/aur/out/$package
+    local package=$1 recipe sum tarball name source why='' values
+    local out=$work/aur/out/$package url=https://github.com/$repo
     recipe=$(aur_recipe "$package")
     mkdir -p "$out"
     cp "$recipe" "$out/PKGBUILD"
@@ -650,10 +721,12 @@ aur_prepare() {
         wineo)
             tarball=$(tag_tarball)
             sum=$(sha256sum "$tarball" | awk '{print $1}')
+            source=wineo-$version.tar.gz::$url/archive/refs/tags/$tag.tar.gz
             ;;
         wineo-bin)
             name=wineo-$version-x86_64-linux.tar.gz
             sum=$(awk -v n="$name" '$2 == n { print $1 }' "$assets/SHA256SUMS")
+            source=$url/releases/download/$tag/$name
             ;;
         wineo-git)
             sed -i -E "s/^pkgver=.*/pkgver=$version/" "$out/PKGBUILD"
@@ -662,16 +735,18 @@ aur_prepare() {
     esac
     if [[ $package != wineo-git ]]; then
         cp "$(dirname "$recipe")/LICENSE" "$out/LICENSE"
-        if [[ $sum =~ ^[0-9a-f]{64}$ ]]; then
-            sed -i -E "s/^sha256sums=\('SKIP'\)$/sha256sums=('$sum')/" "$out/PKGBUILD"
-        fi
-        if grep -q SKIP "$out/PKGBUILD"; then
-            dest_fail "$package still has a SKIP checksum after pinning; refusing to publish it"
-        fi
+        [[ $sum =~ ^[0-9a-f]{64}$ ]] || dest_fail "no sha256 for $package's source"
+        sed -i -E "s/^sha256sums=\('SKIP'\)$/sha256sums=('$sum')/" "$out/PKGBUILD"
     fi
     (cd "$out" && makepkg --printsrcinfo >.SRCINFO) ||
         dest_fail "makepkg --printsrcinfo failed for $package"
     [[ -s $out/.SRCINFO ]] || dest_fail "makepkg wrote an empty .SRCINFO for $package"
+    if [[ $package == wineo-git ]]; then
+        values=$(srcinfo_values '[a-z0-9]+sums(_[a-z0-9_]+)?' "$out/.SRCINFO")
+        [[ $values == SKIP ]] || dest_fail "wineo-git must keep SKIP for its git source, not '$values'"
+    else
+        why=$(check_pins "$package" "$out/.SRCINFO" "$source" "$sum") || dest_fail "$why"
+    fi
 }
 
 aur_upload() {
@@ -687,22 +762,41 @@ aur_upload() {
 
 # copr
 
+# copr_page JSON OFFSET LIMIT IDENTITY checks one page of builds, newest first,
+# and prints the newest build of IDENTITY, or nothing. Fails on anything that
+# isn't the page asked for.
+copr_page() {
+    jq -er --argjson offset "$2" --argjson limit "$3" --arg id "$4" '
+        if (.items | type) == "array" and .meta.offset == $offset
+            and (.items | length) <= $limit
+        then [.items[] | select(.source_package.version == $id) | .id] | max // ""
+        else error("not the page asked for") end' <<<"$1" 2>/dev/null
+}
+
+# The newest build of the identity, so a resubmission by hand counts. It may be
+# past the first page, so a page that can't be read means the state can't be
+# known, never that the build isn't there.
 copr_status() {
-    local identity list build states
-    identity=$(identity_of copr "$(targets_of copr | head -n 1)")
-    list=$(curl -fsS --max-time 60 \
-        "$copr_api/build/list?ownername=${copr_project%/*}&projectname=${copr_project#*/}&limit=100&order=id&order_type=DESC") || list=
-    # The newest build of the identity, so a resubmission by hand counts.
-    if ! build=$(jq -er --arg id "$identity" \
-        '[.items[] | select(.source_package.version == $id) | .id] | max // ""' \
-        <<<"$list" 2>/dev/null); then
-        targets_of copr | sed 's/$/ unknown/'
-    elif [[ -z $build ]]; then
-        targets_of copr | sed 's/$/ absent/'
-    else
-        states=$(curl -fsS --max-time 60 "$copr_api/build-chroot/list?build_id=$build") || states=
-        copr_states <<<"$states"
-    fi
+    local identity list build='' states target offset=0 count
+    target=$(first_target copr)
+    identity=$(identity_of copr "$target")
+    while :; do
+        list=$(curl -fsS --max-time 60 \
+            "$copr_api/build/list?ownername=${copr_project%/*}&projectname=${copr_project#*/}&limit=$copr_page_size&offset=$offset&order=id&order_type=DESC") || list=
+        if ! build=$(copr_page "$list" "$offset" "$copr_page_size" "$identity"); then
+            targets_of copr | sed 's/$/ unknown/'
+            return 0
+        fi
+        [[ -z $build ]] || break
+        count=$(jq '.items | length' <<<"$list")
+        if ((count < copr_page_size)); then
+            targets_of copr | sed 's/$/ absent/'
+            return 0
+        fi
+        offset=$((offset + copr_page_size))
+    done
+    states=$(curl -fsS --max-time 60 "$copr_api/build-chroot/list?build_id=$build") || states=
+    copr_states <<<"$states"
 }
 
 copr_ready() {
@@ -716,8 +810,9 @@ copr_ready() {
 }
 
 copr_prepare() {
-    local top=$work/copr/rpmbuild identity image srpm
-    identity=$(identity_of copr "$(targets_of copr | head -n 1)")
+    local top=$work/copr/rpmbuild identity image srpm target
+    target=$(first_target copr)
+    identity=$(identity_of copr "$target")
     mkdir -p "$top/SOURCES" "$top/SPECS" "$top/SRPMS"
     cp "$assets/wineo-$version-vendored.tar.xz" "$top/SOURCES/"
     cp "$recipes/packaging/rpm/wineo.spec" "$top/SPECS/"
@@ -733,17 +828,23 @@ copr_prepare() {
     [[ -f $srpm ]] || dest_fail "rpmbuild didn't write $(basename "$srpm")"
 }
 
-copr_files() { echo "$work/copr/rpmbuild/SRPMS/wineo-$(identity_of copr "$(targets_of copr | head -n 1)").src.rpm"; }
+copr_files() {
+    local target identity
+    target=$(first_target copr)
+    identity=$(identity_of copr "$target")
+    echo "$work/copr/rpmbuild/SRPMS/wineo-$identity.src.rpm"
+}
 
 copr_upload() {
     local srpm config=${XDG_CONFIG_HOME:-$HOME/.config}/copr image output=$work/copr/upload.txt
-    local chroots=() target
+    local chroots=() target name
     srpm=$(copr_files)
+    name=$(basename "$srpm")
     image=$(tool_image fedora)
     while read -r target; do
         chroots+=(--chroot "$target-x86_64")
     done < <(targets_of copr)
-    if ! nice -n 15 podman run --rm -e STEP=copr-upload -e SRPM="/work/$(basename "$srpm")" \
+    if ! nice -n 15 podman run --rm -e STEP=copr-upload -e SRPM="/work/$name" \
         -e PROJECT="$copr_project" -v "$config:/root/.config/copr:ro" \
         -v "$(dirname "$srpm"):/work:ro" "$image" \
         bash -euo pipefail -c 'exec copr-cli build --nowait "$@" "$PROJECT" "$SRPM"' \
@@ -771,14 +872,17 @@ obs_ready() {
 }
 
 obs_status() {
-    local dir=$work/obs/status image identity
-    identity=$(identity_of obs "$(targets_of obs | head -n 1)")
+    local dir=$work/obs/status image identity target config targets
+    target=$(first_target obs)
+    identity=$(identity_of obs "$target")
     rm -rf "$dir"
     mkdir -p "$dir"
     image=$(tool_image fedora)
+    config=$(obs_config)
+    targets=$(targets_of obs | tr '\n' ' ')
     if ! nice -n 15 podman run --rm -e STEP=obs-status -e PROJECT="$obs_project" \
-        -e PACKAGE="$obs_package" -e TARGETS="$(targets_of obs | tr '\n' ' ')" \
-        -v "$(obs_config):/root/.config/osc/oscrc:ro" -v "$dir:/status" "$image" \
+        -e PACKAGE="$obs_package" -e TARGETS="$targets" \
+        -v "$config:/root/.config/osc/oscrc:ro" -v "$dir:/status" "$image" \
         bash -euo pipefail -c '
         source_path=/source/$PROJECT/$PACKAGE
         osc api "$source_path" >/status/directory 2>/status/error
@@ -810,12 +914,14 @@ obs_files() {
 }
 
 obs_upload() {
-    local image identity
-    identity=$(identity_of obs "$(targets_of obs | head -n 1)")
+    local image identity target config
+    target=$(first_target obs)
+    identity=$(identity_of obs "$target")
     image=$(tool_image fedora)
+    config=$(obs_config)
     nice -n 15 podman run --rm -e STEP=obs-upload -e PROJECT="$obs_project" \
         -e PACKAGE="$obs_package" -e MESSAGE="Update to $identity" \
-        -v "$(obs_config):/root/.config/osc/oscrc:ro" -v "$work/obs/files:/files:ro" \
+        -v "$config:/root/.config/osc/oscrc:ro" -v "$work/obs/files:/files:ro" \
         "$image" bash -euo pipefail -c '
         cd /tmp
         osc checkout "$PROJECT" "$PACKAGE"
@@ -839,7 +945,7 @@ ppa_ready() {
 }
 
 ppa_status() {
-    local series identity sources status link builds binaries
+    local series identity sources status link builds binaries state
     for series in $(targets_of ppa); do
         identity=$(identity_of ppa "$series")
         sources=$(curl -fsS -G --max-time 60 "$lp_archive" \
@@ -855,7 +961,8 @@ ppa_status() {
             link=$(jq -r '.entries[0].self_link' <<<"$sources")
             builds=$(curl -fsS --max-time 60 "$link?ws.op=getBuilds") || builds=
             binaries=$(curl -fsS --max-time 60 "$link?ws.op=getPublishedBinaries") || binaries=
-            echo "$series $(lp_state "$status" "$builds" "$binaries")"
+            state=$(lp_state "$status" "$builds" "$binaries")
+            echo "$series $state"
         fi
     done
 }
@@ -958,26 +1065,33 @@ prepare_of() {
 # The remote may not show an upload for a while, and Launchpad reports a
 # rejection only by mail, so what this machine sent is remembered. Without this
 # a rerun would see nothing there and upload again.
-marker() { echo "$state_dir/$1-$2-$(identity_of "$1" "$2")"; }
+marker() {
+    local identity
+    identity=$(identity_of "$1" "$2")
+    echo "$state_dir/$1-$2-$identity"
+}
 
 # Waits until every target is built. Failed builds and timeouts both end the
 # destination, and neither lets a rerun upload again.
 wait_for_builds() {
     local dest=$1 limit=$2 link=$3 start=$SECONDS line target state failed waiting last='' hint
-    local built total
+    local built total states
     total=$(targets_of "$dest" | wc -l)
     while :; do
         # First, since the caller has just read the status or uploaded. Every
         # poll stays a full interval from the one before.
         sleep "$build_interval"
         failed=() waiting=() built=0
+        # A variable, not < <(...): a failure in there would go unseen.
+        states=$(status_of "$dest")
         while read -r target state; do
+            [[ -n $target ]] || continue
             case $state in
                 built) built=$((built + 1)) ;;
                 failed) failed+=("$target") ;;
                 *) waiting+=("$target($state)") ;;
             esac
-        done < <(status_of "$dest")
+        done <<<"$states"
         if ((${#failed[@]} > 0)); then
             dest_fail "the build failed on ${failed[*]} ($link). Fix the recipe, bump its revision, and run --only $dest"
         fi
@@ -1001,12 +1115,14 @@ wait_for_builds() {
 
 publish_destination() {
     local dest=$1 target state label all_built=1 failed=() unknown=() absent=() pending=()
-    local limit link total=0 unit status
+    local limit link total=0 unit status states expected marked
     current=$dest
     label=$(identity_label "$dest")
     if [[ $dest == obs ]]; then obs_ready; fi
 
+    states=$(status_of "$dest")
     while read -r target state; do
+        [[ -n $target ]] || continue
         total=$((total + 1))
         [[ $state == built ]] || all_built=0
         case $state in
@@ -1014,7 +1130,7 @@ publish_destination() {
             unknown) unknown+=("$target") ;;
             absent) absent+=("$target") ;;
         esac
-    done < <(status_of "$dest")
+    done <<<"$states"
 
     if ((${#unknown[@]} > 0)); then
         # Never upload on a guess: an unknown state may hide a real build.
@@ -1025,7 +1141,8 @@ publish_destination() {
         esac
     fi
     # Too few lines mean a status that broke, which must not read as built.
-    if ((total != $(targets_of "$dest" | wc -l))); then
+    expected=$(targets_of "$dest" | wc -l)
+    if ((total != expected)); then
         dest_fail "could not read the build state; try again"
     fi
     if ((all_built)); then
@@ -1056,7 +1173,8 @@ publish_destination() {
     fi
 
     for target in ${absent[@]+"${absent[@]}"}; do
-        if ! has_remote_build "$dest" || [[ ! -e $(marker "$dest" "$target") ]]; then
+        marked=$(marker "$dest" "$target")
+        if ! has_remote_build "$dest" || [[ ! -e $marked ]]; then
             pending+=("$target")
         fi
     done
@@ -1091,7 +1209,8 @@ publish_destination() {
             if has_remote_build "$dest"; then
                 while read -r target; do
                     [[ $unit == all || $unit == "$target" ]] || continue
-                    : >"$(marker "$dest" "$target")"
+                    marked=$(marker "$dest" "$target")
+                    : >"$marked"
                 done < <(targets_of "$dest")
             fi
         done
@@ -1205,6 +1324,12 @@ check_recipes() {
         die "the newest packaging/debian/changelog entry is not UNRELEASED"
     [[ -n $(ebuild_revision "$recipes/packaging/gentoo/games-util/wineo/wineo-9999.ebuild") ]] ||
         die "wineo-9999.ebuild has no '# Release revision: N' line"
+    # Identities are built from these, so an empty one must stop here.
+    for package in "${aur_packages[@]}"; do
+        [[ $(pkgbuild_field pkgrel "$(aur_recipe "$package")") =~ ^[0-9]+$ ]] ||
+            die "the $package recipe at HEAD has no pkgrel"
+    done
+    [[ $(spec_release "$spec") =~ ^[0-9]+$ ]] || die "packaging/rpm/wineo.spec at HEAD has no Release"
 }
 
 check_assets() {
