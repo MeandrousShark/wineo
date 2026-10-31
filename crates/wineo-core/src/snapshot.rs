@@ -49,6 +49,11 @@ struct RestoreMarker {
     old_directory: DirectoryIdentity,
     old_fingerprint: SourceFingerprint,
     old_config: String,
+    /// The file restore's config lock was keyed on, so recovery can't put
+    /// `old_config` on another file a link has moved to. A marker from before
+    /// this field has none. Relative to a portable root when it's inside one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    config_target: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -479,6 +484,7 @@ pub fn restore_reviewed_with(
         old_directory: directory_identity(&reviewed.prefix)?,
         old_fingerprint: reviewed.current_fingerprint,
         old_config: reviewed.current_config.clone(),
+        config_target: Some(config_lock.config_target().to_owned()),
     };
     let stored = stored_marker(paths, &marker)?;
     import::check_cancelled(cancel)?;
@@ -648,6 +654,7 @@ pub fn recover(paths: &Paths, name: &str) -> Result<()> {
     Runtime::new(paths, name).check_quiet(name)?;
     let marker = read_marker(paths, &path, name)?;
     validate_marker_config(paths, name, &marker)?;
+    check_config_target(paths, name, &marker, &config_lock)?;
     // Rollback deletes whichever tree is not put back.
     environment::check_nesting(paths, name, &marker.prefix).map_err(|err| match err {
         crate::Error::UnreadableEnvironments(names) => anyhow!(
@@ -661,6 +668,29 @@ pub fn recover(paths: &Paths, name: &str) -> Result<()> {
         err => err.into(),
     })?;
     rollback_locked(paths, &path, &marker, &config_lock)
+}
+
+/// Refuses before anything changes: `old_config` belongs on the file restore
+/// locked, and the file the config leads to now may be something else.
+fn check_config_target(
+    paths: &Paths,
+    name: &str,
+    marker: &RestoreMarker,
+    config_lock: &ConfigGuard,
+) -> Result<()> {
+    let Some(restored) = &marker.config_target else {
+        return Ok(());
+    };
+    let now = config_lock.config_target();
+    if paths::resolve(restored) != now {
+        bail!(
+            "{} now leads to {}, but the restore was writing {}, so nothing was changed. Point it back and run `wineo snapshot recover {name}` again.",
+            paths.environment_config(name).display(),
+            now.display(),
+            restored.display()
+        );
+    }
+    Ok(())
 }
 
 fn validate_marker_config(paths: &Paths, name: &str, marker: &RestoreMarker) -> Result<()> {
@@ -711,6 +741,12 @@ fn stored_marker(paths: &Paths, marker: &RestoreMarker) -> Result<RestoreMarker>
     let mut stored = marker.clone();
     stored.prefix = prefix_identity(paths, &marker.prefix)?;
     stored.staging = prefix_identity(paths, &marker.staging)?;
+    // A link can lead out of the portable folder, so unlike the prefix this
+    // may stay absolute.
+    stored.config_target = marker
+        .config_target
+        .as_ref()
+        .map(|target| paths.portable_relative(target).unwrap_or(target.clone()));
     Ok(stored)
 }
 
@@ -871,10 +907,15 @@ fn read_marker(paths: &Paths, path: &Path, name: &str) -> Result<RestoreMarker> 
         }
         marker.prefix = root.join(&marker.prefix);
         marker.staging = root.join(&marker.staging);
+        marker.config_target = marker.config_target.map(|target| root.join(target));
     }
     if marker.version != VERSION
         || marker.environment != name
         || !marker.prefix.is_absolute()
+        || marker
+            .config_target
+            .as_ref()
+            .is_some_and(|target| !target.is_absolute())
         || marker.staging.parent() != marker.prefix.parent()
         || !marker
             .staging

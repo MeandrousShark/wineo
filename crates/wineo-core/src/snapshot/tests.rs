@@ -2,6 +2,7 @@ use std::ffi::OsString;
 use std::os::unix::fs::{MetadataExt, symlink};
 
 use super::*;
+use crate::files::config_write_hooks;
 
 #[test]
 fn restore_publishes_config_while_all_named_builds_are_locked() {
@@ -98,6 +99,7 @@ fn interrupted_marker(paths: &Paths, prefix: &Path, config: &str) -> RestoreMark
         old_directory: directory_identity(prefix).unwrap(),
         old_fingerprint: import::fingerprint(prefix).unwrap(),
         old_config: config.to_owned(),
+        config_target: None,
     };
     write_marker(&marker_path(paths, "game"), &marker).unwrap();
     marker
@@ -656,6 +658,7 @@ fn a_portable_restore_interrupted_before_a_move_recovers_after_it() {
         old_directory: directory_identity(&prefix).unwrap(),
         old_fingerprint,
         old_config: config.clone(),
+        config_target: None,
     };
     let marker_path = marker_path(&paths, "game");
     assert!(marker_path.starts_with(usb.join("prefixes/.wineo-snapshots/game")));
@@ -732,6 +735,7 @@ fn recovery_restores_original_after_interrupted_exchange() {
         old_directory: directory_identity(&prefix).unwrap(),
         old_fingerprint,
         old_config: original_config.clone(),
+        config_target: None,
     };
     let marker_path = marker_path(&paths, "game");
     write_marker(&marker_path, &marker).unwrap();
@@ -774,6 +778,7 @@ fn rollback_finds_the_original_after_a_reboot_renumbers_its_device() {
         },
         old_fingerprint: import::fingerprint(&prefix).unwrap(),
         old_config: config.clone(),
+        config_target: None,
     };
     let marker_path = marker_path(&paths, "game");
     write_marker(&marker_path, &marker).unwrap();
@@ -852,6 +857,7 @@ fn rollback_with_malformed_global_config_restores_config_and_clears_marker() {
         old_directory: original,
         old_fingerprint: import::fingerprint(&prefix).unwrap(),
         old_config: old_config.clone(),
+        config_target: None,
     };
     let marker_path = marker_path(&paths, "game");
     write_marker(&marker_path, &marker).unwrap();
@@ -896,6 +902,7 @@ fn recovery_before_exchange_blocks_broken_config_and_restores_it() {
         old_directory: directory_identity(&prefix).unwrap(),
         old_fingerprint: import::fingerprint(&prefix).unwrap(),
         old_config: original_config.clone(),
+        config_target: None,
     };
     let marker_path = marker_path(&paths, "game");
     write_marker(&marker_path, &marker).unwrap();
@@ -943,6 +950,7 @@ fn recovery_uses_directory_identity_when_contents_match() {
         old_directory: original,
         old_fingerprint: fingerprint,
         old_config: config,
+        config_target: None,
     };
     let marker_path = marker_path(&paths, "game");
     write_marker(&marker_path, &marker).unwrap();
@@ -1223,6 +1231,7 @@ fn rollback_writes_through_a_symlinked_config() {
         old_directory: original,
         old_fingerprint: import::fingerprint(&prefix).unwrap(),
         old_config: old_config.clone(),
+        config_target: None,
     };
     write_marker(&marker_path(&paths, "game"), &marker).unwrap();
     exchange(&prefix, &stage).unwrap();
@@ -1234,5 +1243,199 @@ fn rollback_writes_through_a_symlinked_config() {
     assert_eq!(
         fs::metadata(&target).unwrap().permissions().mode() & 0o7777,
         0o640
+    );
+}
+
+/// Moves the fixture's config to `dotfiles/a/game.toml` and links to it.
+fn linked_config(root: &Path, paths: &Paths) -> PathBuf {
+    let config = paths.environment_config("game");
+    let target = root.join("dotfiles/a/game.toml");
+    fs::create_dir_all(target.parent().unwrap()).unwrap();
+    fs::rename(&config, &target).unwrap();
+    symlink(&target, &config).unwrap();
+    target
+}
+
+fn repoint(link: &Path, target: &Path) {
+    fs::remove_file(link).unwrap();
+    symlink(target, link).unwrap();
+}
+
+#[test]
+fn restore_publishes_through_a_stable_link() {
+    let (root, paths, prefix, config) = fixture(false);
+    if !reflinks_supported(&prefix) {
+        return;
+    }
+    let global = GlobalConfig::default();
+    let target = linked_config(root.path(), &paths);
+    let review = inspect_create(&paths, &global, "game", "before").unwrap();
+    create_reviewed(&paths, &global, &review, &Token::new(), |_| {}).unwrap();
+    fs::write(prefix.join("drive_c/game.exe"), "after").unwrap();
+    fs::write(
+        &target,
+        config.replace("runner = 'wine'", "runner = 'other'"),
+    )
+    .unwrap();
+
+    let restore = inspect_restore(&paths, &global, "game", "before").unwrap();
+    restore_reviewed(&paths, &global, &restore, &Token::new(), |_| {}).unwrap();
+
+    assert_eq!(
+        fs::read_link(paths.environment_config("game")).unwrap(),
+        target
+    );
+    assert_eq!(fs::read_to_string(&target).unwrap(), config);
+    assert_eq!(
+        fs::read_to_string(prefix.join("drive_c/game.exe")).unwrap(),
+        "before"
+    );
+    assert!(!marker_path(&paths, "game").exists());
+}
+
+#[test]
+fn recovery_refuses_a_link_that_moved_until_it_is_pointed_back() {
+    let (root, paths, prefix, config) = fixture(false);
+    if !reflinks_supported(&prefix) {
+        return;
+    }
+    let global = GlobalConfig::default();
+    let target = linked_config(root.path(), &paths);
+    let link = paths.environment_config("game");
+    let other = root.path().join("dotfiles/b/game.toml");
+    fs::create_dir_all(other.parent().unwrap()).unwrap();
+    let other_text = format!("{config}# another environment's file\n");
+    fs::write(&other, &other_text).unwrap();
+    let review = inspect_create(&paths, &global, "game", "before").unwrap();
+    create_reviewed(&paths, &global, &review, &Token::new(), |_| {}).unwrap();
+    fs::write(prefix.join("drive_c/game.exe"), "after").unwrap();
+    let current = config.replace("runner = 'wine'", "runner = 'other'");
+    fs::write(&target, &current).unwrap();
+
+    let restore = inspect_restore(&paths, &global, "game", "before").unwrap();
+    let (moved_link, moved_other) = (link.clone(), other.clone());
+    config_write_hooks::before_rename(move || repoint(&moved_link, &moved_other));
+    let error = restore_reviewed(&paths, &global, &restore, &Token::new(), |_| {}).unwrap_err();
+    assert!(
+        format!("{error:#}").contains("rollback failed"),
+        "{error:#}"
+    );
+    let marker = marker_path(&paths, "game");
+    assert!(marker.exists());
+    assert_eq!(fs::read_to_string(&target).unwrap(), current);
+    assert_eq!(fs::read_to_string(&other).unwrap(), other_text);
+
+    let error = recover(&paths, "game").unwrap_err().to_string();
+    assert!(error.contains(&*other.to_string_lossy()), "{error}");
+    assert!(error.contains(&*target.to_string_lossy()), "{error}");
+    assert_eq!(fs::read_to_string(&other).unwrap(), other_text);
+    assert_eq!(fs::read_to_string(&target).unwrap(), current);
+    assert_eq!(fs::read_link(&link).unwrap(), other);
+    assert!(marker.exists());
+
+    repoint(&link, &target);
+    recover(&paths, "game").unwrap();
+    assert_eq!(fs::read_to_string(&target).unwrap(), current);
+    assert_eq!(fs::read_to_string(&other).unwrap(), other_text);
+    assert_eq!(fs::read_link(&link).unwrap(), target);
+    assert_eq!(
+        fs::read_to_string(prefix.join("drive_c/game.exe")).unwrap(),
+        "after"
+    );
+    assert!(!marker.exists());
+}
+
+#[test]
+fn a_marker_without_a_config_target_is_read_and_not_written_with_one() {
+    let (_root, paths, prefix, config) = fixture(false);
+    let marker = interrupted_marker(&paths, &prefix, &config);
+    let path = marker_path(&paths, "game");
+    let text = fs::read_to_string(&path).unwrap();
+    assert!(!text.contains("config_target"), "{text}");
+    assert_eq!(
+        read_marker(&paths, &path, "game").unwrap().config_target,
+        None
+    );
+
+    let mut recorded = marker;
+    recorded.config_target = Some(paths.environment_config("game"));
+    fs::remove_file(&path).unwrap();
+    write_marker(&path, &recorded).unwrap();
+    assert_eq!(
+        read_marker(&paths, &path, "game").unwrap().config_target,
+        recorded.config_target
+    );
+}
+
+#[test]
+fn a_relative_config_target_is_invalid_outside_a_portable_folder() {
+    let (_root, paths, prefix, config) = fixture(false);
+    let mut marker = interrupted_marker(&paths, &prefix, &config);
+    marker.config_target = Some(PathBuf::from("environments/game.toml"));
+    let path = marker_path(&paths, "game");
+    fs::remove_file(&path).unwrap();
+    write_marker(&path, &marker).unwrap();
+    let error = read_marker(&paths, &path, "game").unwrap_err();
+    assert!(
+        error.to_string().contains("invalid restore marker"),
+        "{error}"
+    );
+}
+
+#[test]
+fn a_portable_config_target_moves_with_the_folder() {
+    let (root, usb, config) = portable_fixture();
+    let paths = portable(root.path(), &usb);
+    let prefix = usb.join("prefixes/game");
+    let staging = tempfile::Builder::new()
+        .prefix(".wineo-restore-")
+        .tempdir_in(prefix.parent().unwrap())
+        .unwrap()
+        .keep();
+    let marker = RestoreMarker {
+        version: VERSION,
+        environment: "game".to_owned(),
+        prefix: prefix.clone(),
+        staging,
+        old_directory: directory_identity(&prefix).unwrap(),
+        old_fingerprint: import::fingerprint(&prefix).unwrap(),
+        old_config: config,
+        config_target: Some(paths::resolve(&paths.environment_config("game"))),
+    };
+    let path = marker_path(&paths, "game");
+    write_marker(&path, &stored_marker(&paths, &marker).unwrap()).unwrap();
+    let text = fs::read_to_string(&path).unwrap();
+    assert!(!text.contains(usb.to_str().unwrap()), "{text}");
+
+    let moved = root.path().join("moved");
+    fs::rename(&usb, &moved).unwrap();
+    let paths = portable(root.path(), &moved);
+    recover(&paths, "game").unwrap();
+    assert!(!paths.restore_marker("game").exists());
+}
+
+#[test]
+fn a_portable_config_target_outside_the_folder_stays_absolute() {
+    let (root, usb, config) = portable_fixture();
+    let paths = portable(root.path(), &usb);
+    let prefix = usb.join("prefixes/game");
+    let outside = paths::resolve(root.path()).join("dotfiles/game.toml");
+    let marker = RestoreMarker {
+        version: VERSION,
+        environment: "game".to_owned(),
+        prefix: prefix.clone(),
+        staging: prefix.with_file_name(".wineo-restore-x"),
+        old_directory: directory_identity(&prefix).unwrap(),
+        old_fingerprint: import::fingerprint(&prefix).unwrap(),
+        old_config: config,
+        config_target: Some(outside.clone()),
+    };
+    let stored = stored_marker(&paths, &marker).unwrap();
+    assert_eq!(stored.config_target.as_ref(), Some(&outside));
+    let path = marker_path(&paths, "game");
+    write_marker(&path, &stored).unwrap();
+    assert_eq!(
+        read_marker(&paths, &path, "game").unwrap().config_target,
+        Some(outside)
     );
 }
