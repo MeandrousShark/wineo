@@ -421,7 +421,7 @@ new_scenario() {
 }
 
 make_assets() {
-    git -C "$repo" archive --prefix="wineo-$version/" "${1:-$tag}" | xz -0 >"$STUB/assets/wineo-$version-vendored.tar.xz"
+    git -C "$repo" archive --prefix="wineo-$version/" "$tag" | xz -0 >"$STUB/assets/wineo-$version-vendored.tar.xz"
     echo tarball >"$STUB/assets/wineo-$version-x86_64-linux.tar.gz"
     echo deb >"$STUB/assets/wineo_${version}_amd64.deb"
     echo rpm >"$STUB/assets/wineo-$version-1.x86_64.rpm"
