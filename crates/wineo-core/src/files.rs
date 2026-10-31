@@ -324,28 +324,43 @@ struct Refused(String);
 struct Pin<'a> {
     path: &'a Path,
     target: &'a Path,
+    /// Whether `path` was a symlink when the write began.
+    linked: bool,
 }
 
 impl Pin<'_> {
     fn check(self) -> io::Result<()> {
         let now = crate::paths::resolve(self.path);
-        if now == self.target {
-            return Ok(());
+        if now != self.target {
+            return Err(io::Error::other(Refused(format!(
+                "it now leads to {} instead of the locked {}, so nothing was written; try again",
+                now.display(),
+                self.target.display()
+            ))));
         }
-        Err(io::Error::other(Refused(format!(
-            "it now leads to {} instead of the locked {}, so nothing was written; try again",
-            now.display(),
-            self.target.display()
-        ))))
+        // A dangling link resolves to its own path, so a matching answer
+        // doesn't rule out a link that appeared during the write.
+        if is_symlink(self.path) && !self.linked {
+            let leads_to = fs::read_link(self.path).unwrap_or_default();
+            return Err(io::Error::other(Refused(format!(
+                "it became a symlink to {} during the write, so nothing was written; try again",
+                leads_to.display()
+            ))));
+        }
+        Ok(())
     }
 
     /// The last look before the rename. The rename then lands on the locked
     /// file whatever happens to the link, so the lock always covers the write.
     fn recheck(self) -> io::Result<()> {
         #[cfg(test)]
-        before_config_rename::run();
+        config_write_hooks::run_before_rename();
         self.check()
     }
+}
+
+fn is_symlink(path: &Path) -> bool {
+    fs::symlink_metadata(path).is_ok_and(|found| found.is_symlink())
 }
 
 /// Where a config write lands.
@@ -358,9 +373,15 @@ struct Destination<'a> {
 
 impl<'a> Destination<'a> {
     fn find(path: &'a Path, target: &'a Path) -> Result<Self> {
-        let pin = Pin { path, target };
+        #[cfg(test)]
+        config_write_hooks::run_before_find();
         let refused = |error| Self::failure(path, error);
-        let linked = fs::symlink_metadata(path).is_ok_and(|found| found.is_symlink());
+        let linked = is_symlink(path);
+        let pin = Pin {
+            path,
+            target,
+            linked,
+        };
         if !linked {
             return Ok(Self {
                 pin,
@@ -418,26 +439,42 @@ impl<'a> Destination<'a> {
     }
 }
 
-/// Test-only: runs once just before a config writer's last look at its link,
-/// to repoint it at exactly the moment that matters.
+/// Test-only: each hook runs once, just before a config writer's first or
+/// last look at its path, to change the path at exactly the moment that
+/// matters.
 #[cfg(test)]
-pub(crate) mod before_config_rename {
+pub(crate) mod config_write_hooks {
     use std::cell::RefCell;
+    use std::thread::LocalKey;
 
     type Hook = Box<dyn FnOnce()>;
+    type Slot = RefCell<Option<Hook>>;
 
     thread_local! {
-        static HOOK: RefCell<Option<Hook>> = const { RefCell::new(None) };
+        static BEFORE_FIND: Slot = const { RefCell::new(None) };
+        static BEFORE_RENAME: Slot = const { RefCell::new(None) };
     }
 
-    pub(crate) fn set(hook: impl FnOnce() + 'static) {
-        HOOK.with(|slot| *slot.borrow_mut() = Some(Box::new(hook)));
+    pub(crate) fn before_find(hook: impl FnOnce() + 'static) {
+        BEFORE_FIND.with(|slot| *slot.borrow_mut() = Some(Box::new(hook)));
     }
 
-    pub(super) fn run() {
-        if let Some(hook) = HOOK.with(|slot| slot.borrow_mut().take()) {
+    pub(crate) fn before_rename(hook: impl FnOnce() + 'static) {
+        BEFORE_RENAME.with(|slot| *slot.borrow_mut() = Some(Box::new(hook)));
+    }
+
+    fn run(slot: &'static LocalKey<Slot>) {
+        if let Some(hook) = slot.with(|slot| slot.borrow_mut().take()) {
             hook();
         }
+    }
+
+    pub(super) fn run_before_find() {
+        run(&BEFORE_FIND);
+    }
+
+    pub(super) fn run_before_rename() {
+        run(&BEFORE_RENAME);
     }
 }
 
@@ -815,7 +852,7 @@ mod tests {
             std::os::unix::fs::symlink(&a, &link).unwrap();
             let locked = resolve(&link);
             let (swap_link, swap_b) = (link.clone(), b.clone());
-            before_config_rename::set(move || {
+            config_write_hooks::before_rename(move || {
                 fs::remove_file(&swap_link).unwrap();
                 std::os::unix::fs::symlink(&swap_b, &swap_link).unwrap();
             });
@@ -823,6 +860,37 @@ mod tests {
             assert_eq!(fs::read_to_string(&a).unwrap(), "from a");
             assert_eq!(fs::read_to_string(&b).unwrap(), "from b");
             assert_eq!(fs::read_dir(root.path()).unwrap().count(), 3);
+        }
+    }
+
+    #[test]
+    fn each_config_write_refuses_a_regular_file_that_became_a_dangling_link() {
+        for existing in [true, false] {
+            for write in CONFIG_WRITES {
+                let root = tempfile::tempdir().unwrap();
+                let (path, missing) = (root.path().join("config"), root.path().join("missing"));
+                if existing {
+                    fs::write(&path, "old").unwrap();
+                }
+                let locked = resolve(&path);
+                let (swap_path, swap_missing) = (path.clone(), missing.clone());
+                config_write_hooks::before_rename(move || {
+                    let _ = fs::remove_file(&swap_path);
+                    std::os::unix::fs::symlink(&swap_missing, &swap_path).unwrap();
+                });
+                let error = write(&path, &locked, b"new").unwrap_err();
+                assert!(
+                    error.to_string().contains(&*path.to_string_lossy()),
+                    "{error}"
+                );
+                assert!(
+                    error.to_string().contains(&*missing.to_string_lossy()),
+                    "{error}"
+                );
+                assert_eq!(fs::read_link(&path).unwrap(), missing);
+                assert!(!missing.exists());
+                assert_eq!(fs::read_dir(root.path()).unwrap().count(), 1);
+            }
         }
     }
 

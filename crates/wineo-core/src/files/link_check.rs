@@ -6,7 +6,7 @@ use std::fs;
 use std::os::unix::fs::{MetadataExt, PermissionsExt, symlink};
 use std::path::{Path, PathBuf};
 
-use super::before_config_rename;
+use super::config_write_hooks;
 
 /// What a writer does with a link that leads nowhere.
 #[derive(Clone, Copy, PartialEq)]
@@ -146,7 +146,7 @@ impl<E: Display> Writer<'_, E> {
         fs::write(&other, "other").unwrap();
         symlink(&locked, self.link).unwrap();
         let (link, repointed) = (self.link.to_owned(), other.clone());
-        before_config_rename::set(move || {
+        config_write_hooks::before_rename(move || {
             fs::remove_file(&link).unwrap();
             symlink(&repointed, &link).unwrap();
         });
