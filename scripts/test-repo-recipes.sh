@@ -237,16 +237,19 @@ check "the spec does not install with stage-install.sh" \
     grep -q 'scripts/stage-install.sh --license-dir %{_datadir}/licenses/%{name}' "$spec"
 check "the spec keeps debuginfo on" grep -q '^%global debug_package %{nil}' "$spec"
 
-# The spec's License names only what deny.toml allows, so the audit and the
-# package cannot disagree.
+# The spec's License is deny.toml's list, so the audit and the package cannot
+# disagree. The audit can't see the fonts embedded in wineo-gui, and deny.toml
+# has BSL-1.0 for Windows-only crates, which no package compiles.
 mapfile -t allowed < <(sed -n '/^allow = \[/,/^\]/ { s/^[[:space:]]*"\([^"]*\)",$/\1/p }' "$root/deny.toml")
 check "deny.toml has no allow list" test "${#allowed[@]}" -gt 0
-allowed_text=$(printf '%s\n' "${allowed[@]}")
 read -r -a license_words <<<"$(spec_field License)"
-for word in "${license_words[@]}"; do
-    [[ $word == AND ]] && continue
-    check "the spec License names $word, which deny.toml does not allow" has "$allowed_text" "$word"
-done
+expected_licenses=$({
+    printf '%s\n' "${allowed[@]}" | grep -vxF BSL-1.0
+    echo OFL-1.1
+} | sort)
+spec_licenses=$(printf '%s\n' "${license_words[@]}" | grep -vxF AND | sort)
+check "the spec License is not deny.toml's list with OFL-1.1 and without BSL-1.0" \
+    test "$spec_licenses" = "$expected_licenses"
 check "the spec License lacks GPL-3.0-or-later" \
     grep -qw GPL-3.0-or-later <<<"${license_words[*]}"
 

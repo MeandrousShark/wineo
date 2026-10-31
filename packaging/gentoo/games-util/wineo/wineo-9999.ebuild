@@ -14,9 +14,9 @@ EGIT_REPO_URI="https://github.com/MeandrousShark/wineo.git"
 EGIT_BRANCH="main"
 
 LICENSE="GPL-3+"
-# hexf-parse is built from third_party/, so pycargoebuild leaves its license
-# out of the crate licenses it adds to the release ebuild.
-LICENSE+=" 0BSD"
+# pycargoebuild adds only crates.io licenses to the release ebuild. hexf-parse
+# is built from third_party/, and wineo-gui embeds the Noto Sans fonts.
+LICENSE+=" 0BSD OFL-1.1"
 SLOT="0"
 
 # wineo-gui loads X11, xkbcommon, wayland, EGL, and Vulkan with dlopen, so no

@@ -13,8 +13,9 @@ Version:        1.1.0
 Release:        1%{?dist}
 Summary:        Launcher for Wine and Proton programs, native games, Steam, and GOG
 # The crates compiled into the binaries, from `cargo deny list`, with each
-# "OR" resolved to a choice. 0BSD is the patched hexf-parse in third_party/.
-License:        GPL-3.0-or-later AND 0BSD AND Apache-2.0 AND BSD-2-Clause AND BSD-3-Clause AND ISC AND MIT AND Unicode-3.0 AND Zlib
+# "OR" resolved to a choice. 0BSD is the patched hexf-parse in third_party/,
+# and OFL-1.1 is the Noto Sans fonts embedded in wineo-gui.
+License:        GPL-3.0-or-later AND 0BSD AND Apache-2.0 AND BSD-2-Clause AND BSD-3-Clause AND ISC AND MIT AND OFL-1.1 AND Unicode-3.0 AND Zlib
 URL:            https://github.com/MeandrousShark/wineo
 Source0:        %{url}/releases/download/v%{version}/%{name}-%{version}-vendored.tar.xz
 Packager:       Michael Hannon <mphannon@pm.me>
