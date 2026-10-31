@@ -767,7 +767,7 @@ obs_ready() {
     [[ -n $dest_dir ]] && return 0
     local config
     config=$(obs_config)
-    [[ -f $config ]] || dest_fail "$config is missing: create it with [general] apiurl=https://api.opensuse.org and a [https://api.opensuse.org] section holding user, pass, and credentials_mgr_class=osc.credentials.ObfuscatedConfigFileCredentialsManager, with mode 600. Keyrings can't work in the container."
+    [[ -f $config ]] || dest_fail "$config is missing: create it with [general] apiurl=https://api.opensuse.org and a [https://api.opensuse.org] section holding user, pass, and credentials_mgr_class=osc.credentials.PlaintextConfigFileCredentialsManager, with mode 600. Keyrings can't work in the container."
 }
 
 obs_status() {
