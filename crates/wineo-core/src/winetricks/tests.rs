@@ -1,6 +1,6 @@
 use std::fs;
 
-use crate::test_script::{kill_fake_programs, write_script};
+use crate::test_script::{KillOnDrop, kill_fake_programs, write_script};
 
 use super::*;
 
@@ -137,6 +137,15 @@ fn with_fake_winetricks(script_body: &str, child: &str) {
     with_fake_program("winetricks", script_body, child);
 }
 
+/// Ends what a subprocess's fake programs left, however the test goes.
+struct KillsFakePrograms<'a>(&'a Path);
+
+impl Drop for KillsFakePrograms<'_> {
+    fn drop(&mut self) {
+        kill_fake_programs(self.0);
+    }
+}
+
 /// Runs `child` in a subprocess whose PATH starts with a fake `program`.
 fn with_fake_program(program: &str, script_body: &str, child: &str) {
     let root = tempfile::tempdir().unwrap();
@@ -144,6 +153,7 @@ fn with_fake_program(program: &str, script_body: &str, child: &str) {
     fs::create_dir(&bin).unwrap();
     let script = bin.join(program);
     write_script(&script, script_body);
+    let _cleanup = KillsFakePrograms(root.path());
     let path = std::env::join_paths(std::iter::once(bin.clone()).chain(std::env::split_paths(
         &std::env::var_os("PATH").unwrap_or_default(),
     )))
@@ -154,7 +164,6 @@ fn with_fake_program(program: &str, script_body: &str, child: &str) {
         .env("PATH", path)
         .output()
         .unwrap();
-    kill_fake_programs(root.path());
     assert!(
         output.status.success(),
         "{}",
@@ -419,6 +428,7 @@ fn token_cancel_child() {
 const LINGERING_UMU: &str = r#"#!/bin/sh
 (
     trap 'touch "$WINEPREFIX/termed"; exit 0' TERM
+    : >"$WINEPREFIX/lingering"
     i=0
     while [ ! -e "$WINEPREFIX/release" ] && [ "$i" -lt 200 ]; do
         sleep 0.05
@@ -446,8 +456,9 @@ fn wait_until(mut ready: impl FnMut() -> bool) {
     }
 }
 
-/// Waits until umu has exited and left its child behind, so `settle` has
-/// taken over from `stop_group`.
+/// Waits until umu has exited and left its child behind, then gives `settle`
+/// a moment to take over from `stop_group`. Being late can't fail a correct
+/// wait, since `stop_group` returns on its own either way.
 fn wait_for_settle(prefix: &Path) {
     let pid = prefix.join("leader-pid");
     wait_until(|| fs::read_to_string(&pid).is_ok_and(|text| text.ends_with('\n')));
@@ -496,44 +507,36 @@ fn proton_settle_child() {
 
 #[test]
 fn ctrl_c_during_settle_signals_the_group_under_proton() {
-    with_fake_program(
-        "umu-run",
-        LINGERING_UMU,
-        "winetricks::tests::proton_settle_cancel_child",
+    let root = tempfile::tempdir().unwrap();
+    let prefix = root.path();
+    let leader = KillOnDrop::group(
+        Command::new("sh")
+            .args(["-c", LINGERING_UMU])
+            .env("WINEPREFIX", prefix)
+            .stdout(Stdio::null())
+            .process_group(0)
+            .spawn()
+            .unwrap(),
     );
-}
-
-#[test]
-fn proton_settle_cancel_child() {
-    let Some(prefix) = lingering_prefix() else {
-        return;
-    };
+    let identity = process::Identity::of(leader.id());
+    assert!(identity.is_some());
+    wait_until(|| prefix.join("lingering").exists());
+    wait_until(|| process::leader_exited(leader.child()).unwrap());
     let token = Token::new();
-    let waiter = {
-        let (prefix, token) = (prefix.clone(), token.clone());
-        thread::spawn(move || {
-            wait_for_settle(&prefix);
-            token.cancel();
-        })
-    };
+    token.cancel();
     let mut events = Vec::new();
-    let result = run(
+    // Called directly, so this request can only be settle's. Through `run` it
+    // could reach `stop_group` first, which sends SIGINT.
+    settle(
         &Runner::fake_proton("test"),
-        &prefix,
-        &BTreeMap::new(),
-        &verbs(&["-q", "corefonts"]),
-        30,
+        prefix,
+        leader.child(),
+        identity,
         &token,
-        Output::Log(&prefix.join("output.log")),
-        |event| events.push(event),
-    );
-    waiter.join().unwrap();
-    assert!(
-        result
-            .unwrap_err()
-            .downcast_ref::<Error>()
-            .is_some_and(|err| matches!(err, Error::Canceled("winetricks")))
-    );
+        &mut Escalation::new(Duration::from_secs(30), None),
+        &mut |event| events.push(event),
+    )
+    .unwrap();
     assert!(prefix.join("termed").exists(), "one Ctrl+C reached no one");
     assert!(
         events

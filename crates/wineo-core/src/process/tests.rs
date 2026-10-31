@@ -882,11 +882,21 @@ fn nothing_starts_in_a_closed_tracked_child() {
     assert!(!marker.exists());
 }
 
+/// Closes on drop, since a failed assertion leaves `TrackedChild` open.
+struct ClosesOnDrop(TrackedChild);
+
+impl Drop for ClosesOnDrop {
+    fn drop(&mut self) {
+        self.0.close();
+    }
+}
+
 #[test]
 fn closing_ends_a_running_tracked_child_and_its_group() {
     let root = tempfile::tempdir().unwrap();
     let marker = root.path().join("up");
     let tracked = TrackedChild::default();
+    let _guard = ClosesOnDrop(tracked.clone());
     let running = {
         let (tracked, marker) = (tracked.clone(), marker.clone());
         thread::spawn(move || {

@@ -89,6 +89,12 @@ impl KillOnDrop {
         self.child.as_ref().unwrap().id()
     }
 
+    /// The child, for code that only looks at it. Reaping takes `&mut`, so
+    /// this can't hide a reap from the guard.
+    pub fn child(&self) -> &Child {
+        self.child.as_ref().unwrap()
+    }
+
     /// Waits for the child to exit. Anything it left in its group is no
     /// longer killed on drop.
     pub fn wait(&mut self) -> io::Result<ExitStatus> {
