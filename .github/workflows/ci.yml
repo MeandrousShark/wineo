@@ -112,6 +112,10 @@ jobs:
       - name: Repository recipe tests
         run: scripts/test-repo-recipes.sh
 
+      # Stubs stand in for gh, podman, makepkg, and every service.
+      - name: Publish script tests
+        run: scripts/test-publish.sh
+
   # Advisories appear against code that hasn't changed, so this runs weekly as
   # well. The release workflow reuses this one, so a failure stops a release.
   # The license check keeps the vendored crates acceptable to the package

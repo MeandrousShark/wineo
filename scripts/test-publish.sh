@@ -1,0 +1,978 @@
+#!/bin/bash
+# Tests publish-packages.sh against a small real git repository, with stubs on
+# PATH for gh, curl, podman, makepkg, pycargoebuild, and sleep, and --dest-dir
+# fakes for the destinations, so nothing touches a service and nothing sleeps.
+# git, tar, cargo, gentoo-ebuild.sh, and prepare-debian-tree.sh are the real
+# ones. Each failure case checks the reason as well as the exit status, and
+# that nothing was uploaded past the point where it should stop.
+#
+# Usage: scripts/test-publish.sh
+# Exits non-zero if any case behaves wrongly. Needs cargo, jq, and python3.
+set -euo pipefail
+
+script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+root=$(cd "$script_dir/.." && pwd)
+version=$(awk '/^Version:/ { print $2; exit }' "$root/packaging/rpm/wineo.spec")
+tag=v$version
+
+failures=0
+cases=0
+
+pass() { cases=$((cases + 1)); }
+fail() {
+    cases=$((cases + 1))
+    failures=$((failures + 1))
+    echo "FAIL: $*" >&2
+}
+check() {
+    local what=$1
+    shift
+    if "$@" >/dev/null 2>&1; then pass; else fail "$what"; fi
+}
+
+tmp=$(mktemp -d)
+trap 'rm -rf "${tmp:?}"' EXIT
+stubs=$tmp/stubs
+mkdir -p "$stubs" "$tmp/home"
+
+# The toolchain stays where it is when HOME moves below.
+export RUSTUP_HOME=${RUSTUP_HOME:-$HOME/.rustup} CARGO_HOME=${CARGO_HOME:-$HOME/.cargo}
+export GIT_AUTHOR_NAME=test GIT_AUTHOR_EMAIL=test@example.invalid
+export GIT_COMMITTER_NAME=test GIT_COMMITTER_EMAIL=test@example.invalid
+export HOME=$tmp/home XDG_CONFIG_HOME=$tmp/home/.config XDG_STATE_HOME=$tmp/home/.state
+export XDG_CACHE_HOME=$tmp/home/.cache
+git config --global init.defaultBranch main
+git config --global advice.detachedHead false
+
+# Stubs. All state lives under $STUB, one directory per scenario.
+
+cat >"$stubs/gh" <<'EOF'
+#!/bin/bash
+echo "$*" >>"$STUB/gh.log"
+# tick NAME: true once NAME has been asked for more than its -after count.
+tick() {
+    local count=$(($(cat "$STUB/count-$1" 2>/dev/null || echo 0) + 1))
+    echo "$count" >"$STUB/count-$1"
+    ((count > $(cat "$STUB/$1-after" 2>/dev/null || echo 0)))
+}
+case "$1 $2" in
+    "api repos/MeandrousShark/wineo/git/ref/tags/"*)
+        [[ -f $STUB/tag.json ]] && tick tag || exit 1
+        cat "$STUB/tag.json"
+        ;;
+    "api repos/MeandrousShark/wineo/compare/"*)
+        cat "$STUB/compare.json"
+        ;;
+    "run list")
+        [[ " $* " == *" -R MeandrousShark/wineo "* ]] || exit 99
+        count=$(($(cat "$STUB/count-runs" 2>/dev/null || echo 0) + 1))
+        echo "$count" >"$STUB/count-runs"
+        while ((count > 1)) && [[ ! -f $STUB/runs.$count.json ]]; do count=$((count - 1)); done
+        cat "$STUB/runs.$count.json"
+        ;;
+    "release view")
+        [[ -f $STUB/release.json ]] && tick release || exit 1
+        cat "$STUB/release.json"
+        ;;
+    "release download")
+        shift 2
+        while (($# > 0)); do
+            case $1 in
+                -D) out=$2; shift 2 ;;
+                --pattern) name=$2; shift 2 ;;
+                *) shift ;;
+            esac
+        done
+        cp "$STUB/assets/$name" "$out/"
+        ;;
+    "auth git-credential") ;;
+    *)
+        echo "gh: unexpected call: $*" >&2
+        echo "UNEXPECTED $*" >>"$STUB/gh.log"
+        exit 99
+        ;;
+esac
+EOF
+
+cat >"$stubs/curl" <<'EOF'
+#!/bin/bash
+echo "$*" >>"$STUB/curl.log"
+out=
+url=
+while (($# > 0)); do
+    case $1 in
+        -o) out=$2; shift 2 ;;
+        --proto | --retry | --max-time | --data-urlencode) shift 2 ;;
+        -*) shift ;;
+        *) url=$1; shift ;;
+    esac
+done
+case $url in
+    */archive/refs/tags/*) [[ -f $STUB/no-tag-tarball ]] && exit 22; cp "$STUB/tag.tar.gz" "$out" ;;
+    */license-mapping.conf) : >"$out" ;;
+    *copr*/build/list*) [[ -f $STUB/copr-down ]] && exit 22; cat "$STUB/copr-builds.json" ;;
+    *api.launchpad.net*) echo '{"total_size":0,"entries":[]}' ;;
+    *) exit 22 ;;
+esac
+EOF
+
+cat >"$stubs/podman" <<'EOF'
+#!/bin/bash
+echo "$*" >>"$STUB/podman.log"
+case $1 in
+    image) [[ -e $STUB/image-${3##*/} ]]; exit ;;
+    commit) touch "$STUB/image-${3##*/}"; exit ;;
+    rm | rmi) exit 0 ;;
+    unshare) shift; exec "$@" ;;
+    run) ;;
+    *) exit 1 ;;
+esac
+step= identity= series=
+declare -A mount
+while (($# > 0)); do
+    case $1 in
+        -e)
+            case $2 in
+                STEP=*) step=${2#STEP=} ;;
+                IDENTITY=*) identity=${2#IDENTITY=} ;;
+                SERIES=*) series=${2#SERIES=} ;;
+            esac
+            shift 2
+            ;;
+        -v)
+            IFS=: read -r host inside _ <<<"$2"
+            mount[$inside]=$host
+            shift 2
+            ;;
+        *) shift ;;
+    esac
+done
+if [[ $step == "${PODMAN_FAIL_STEP:-none}" ]]; then
+    echo "${PODMAN_FAIL_TEXT:-podman stub: $step failed}"
+    exit 1
+fi
+case $step in
+    srpm)
+        top=${mount[/work/rpmbuild]}
+        name=$(awk '/^Version:/ { v = $2 } /^Release:/ { sub(/%.*/, "", $2); print v "-" $2; exit }' "$top/SPECS/wineo.spec")
+        cmp -s "$top/SOURCES/wineo-$VERSION_UNDER_TEST-vendored.tar.xz" "$STUB/assets/wineo-$VERSION_UNDER_TEST-vendored.tar.xz" || exit 1
+        touch "$top/SRPMS/wineo-$name.src.rpm"
+        ;;
+    deb-source)
+        dir=${mount[/work]}
+        tree=$dir/wineo-$VERSION_UNDER_TEST
+        id=$(sed -nE '1 s/^wineo \(([^)]+)\).*/\1/p' "$tree/debian/changelog")
+        cp "$tree/debian/control" "$dir/wineo_$id.dsc"
+        head -n 1 "$tree/debian/changelog" >"$dir/wineo_${id}_source.changes"
+        cmp "$tree/packaging/debian/changelog" "$STUB/orig-changelog" >>"$dir/wineo_${id}_source.changes" 2>&1 &&
+            echo "packaging/debian untouched" >>"$dir/wineo_${id}_source.changes"
+        touch "$dir/wineo_$id.debian.tar.xz"
+        ;;
+    gentoo-manifest)
+        dist=${mount[/var/cache/distfiles]}/wineo-$VERSION_UNDER_TEST.gh.tar.gz
+        echo "DIST ${dist##*/} $(stat -c %s "$dist") BLAKE2B stub" >>"${mount[/overlay]}/games-util/wineo/Manifest"
+        ;;
+esac
+EOF
+
+cat >"$stubs/makepkg" <<'EOF'
+#!/bin/bash
+[[ $1 == --printsrcinfo ]] || exit 1
+awk -F= '
+    /^pkgname=/ { print "pkgbase = " $2 }
+    /^pkgver=/ { print "\tpkgver = " $2 }
+    /^pkgrel=/ { print "\tpkgrel = " $2 }
+    /^sha256sums=/ { print "\tsha256sums = " $2 }
+' PKGBUILD
+EOF
+
+cat >"$stubs/sleep" <<'EOF'
+#!/bin/bash
+echo "$1" >>"$STUB/sleep.log"
+EOF
+
+# Keeps the lock it was pointed at; gentoo-ebuild.sh passes the crates' paths.
+cat >"$stubs/pycargoebuild" <<'EOF'
+#!/bin/bash
+for arg in "$@"; do
+    if [[ -f $arg/../../Cargo.lock ]]; then cp "$arg/../../Cargo.lock" "$STUB/lock-seen"; fi
+done
+EOF
+
+cat >"$stubs/cargo-deny" <<'EOF'
+#!/bin/bash
+echo "$PWD $*" >>"$STUB/deny.log"
+[[ ! -f $STUB/deny-fails ]]
+EOF
+
+chmod +x "$stubs"/*
+
+# The fixture: everything the script reads from a checkout, at the tag.
+
+base=$tmp/base
+mkdir -p "$base/scripts" "$base/.github/workflows" "$base/crates/fixture/src" "$base/crates/wineo-cli"
+touch "$base/crates/wineo-cli/.keep"
+cp "$root"/scripts/{publish-packages,prepare-debian-tree,gentoo-ebuild,rust-floor}.sh "$base/scripts/"
+cp -r "$root/packaging" "$base/packaging"
+cp "$root/PKGBUILD" "$base/PKGBUILD"
+cp "$root/.github/workflows/release.yml" "$base/.github/workflows/"
+cat >"$base/Cargo.toml" <<EOF
+[workspace]
+members = ["crates/fixture"]
+resolver = "2"
+
+[workspace.package]
+version = "$version"
+EOF
+cat >"$base/crates/fixture/Cargo.toml" <<EOF
+[package]
+name = "fixture"
+version.workspace = true
+edition = "2021"
+rust-version = "1.90"
+EOF
+: >"$base/crates/fixture/src/lib.rs"
+: >"$base/deny.toml"
+(cd "$base" && cargo generate-lockfile --offline -q)
+git -C "$base" init -q
+git -C "$base" add .
+git -C "$base" commit -qm fixture
+git -C "$base" tag -a "$tag" -m "$tag"
+commit=$(git -C "$base" rev-parse HEAD)
+tag_sha=$(git -C "$base" rev-parse "refs/tags/$tag")
+
+# new_scenario: fresh checkout, canned GitHub, and an empty destination.
+new_scenario() {
+    scenario=$tmp/s$cases-$RANDOM
+    repo=$scenario/repo
+    dest=$scenario/dest
+    export STUB=$scenario/stub
+    mkdir -p "$STUB/assets" "$dest/control"
+    cp -a "$base" "$repo"
+    make_assets
+    cp "$repo/packaging/debian/changelog" "$STUB/orig-changelog"
+    git -C "$repo" archive --prefix="wineo-$version/" "$tag" | gzip -n >"$STUB/tag.tar.gz"
+    printf '{"object":{"sha":"%s","type":"tag"}}\n' "$tag_sha" >"$STUB/tag.json"
+    echo '{"status":"identical","ahead_by":0,"behind_by":0}' >"$STUB/compare.json"
+    set_runs "$(run_json completed success)"
+    make_release false
+    echo '{"items":[]}' >"$STUB/copr-builds.json"
+    : >"$STUB/gh.log"
+}
+
+make_assets() {
+    git -C "$repo" archive --prefix="wineo-$version/" "${1:-$tag}" | xz -0 >"$STUB/assets/wineo-$version-vendored.tar.xz"
+    echo tarball >"$STUB/assets/wineo-$version-x86_64-linux.tar.gz"
+    echo deb >"$STUB/assets/wineo_${version}_amd64.deb"
+    echo rpm >"$STUB/assets/wineo-$version-1.x86_64.rpm"
+    rm -f "$STUB/assets/SHA256SUMS"
+    (cd "$STUB/assets" && sha256sum -- * >"$STUB/SHA256SUMS" && mv "$STUB/SHA256SUMS" SHA256SUMS)
+}
+
+run_json() {
+    printf '{"databaseId":7,"headSha":"%s","status":"%s","conclusion":"%s","url":"https://github.invalid/runs/7"}' \
+        "$commit" "$1" "$2"
+}
+
+# set_runs JSON...: what each successive `gh run list` answers.
+set_runs() {
+    local i=1 run
+    rm -f "$STUB"/runs.*.json
+    for run in "$@"; do
+        echo "[$run]" >"$STUB/runs.$i.json"
+        i=$((i + 1))
+    done
+}
+
+make_release() {
+    (cd "$STUB/assets" && ls) | jq -R . | jq -s --arg tag "$tag" --argjson draft "$1" \
+        '{tagName: $tag, isDraft: $draft, url: "https://github.invalid/release",
+          assets: map({name: .})}' >"$STUB/release.json"
+}
+
+# publish ARGS...: runs the script with the fakes, leaving $out and $rc.
+publish() {
+    publish_real --dest-dir "$dest" "$@"
+}
+
+publish_real() {
+    out=$scenario/output
+    rc=0
+    env PATH="$stubs:$PATH" CARGO_DENY="$stubs/cargo-deny" VERSION_UNDER_TEST="$version" \
+        WINEO_PUBLISH_WORK="$scenario/work" WINEO_PUBLISH_INTERVAL=0 WINEO_PUBLISH_BUILD_INTERVAL=0 \
+        WINEO_PUBLISH_MIRROR_LIMIT="${MIRROR_LIMIT:-30}" WINEO_PUBLISH_RUN_LIMIT="${RUN_LIMIT:-30}" \
+        WINEO_PUBLISH_RELEASE_LIMIT="${RELEASE_LIMIT:-30}" WINEO_PUBLISH_COPR_LIMIT="${BUILD_LIMIT:-30}" \
+        WINEO_PUBLISH_OBS_LIMIT="${BUILD_LIMIT:-30}" WINEO_PUBLISH_PPA_LIMIT="${BUILD_LIMIT:-30}" \
+        "$repo/scripts/publish-packages.sh" "$version" "$@" >"$out" 2>&1 || rc=$?
+}
+
+said() { grep -qE -- "$1" "$out"; }
+uploads() { cat "$dest/uploads.log" 2>/dev/null || true; }
+upload_count() { uploads | grep -c "${1:-.}" || true; }
+
+# expect_refused NAME REASON: stopped with REASON and nothing went out.
+expect_refused() {
+    local name=$1 reason=$2
+    check "$name: exit $rc, not 1" test "$rc" -eq 1
+    check "$name: no reason matching '$reason' in: $(tail -n 3 "$out")" said "$reason"
+    check "$name: something was uploaded: $(uploads)" test -z "$(uploads)"
+    check "$name: a destination ran" test "$(grep -c '^== overlay$' "$out")" -eq 0
+}
+
+reviewed_commit() {
+    git -C "$repo" add -- .
+    git -C "$repo" commit -qm "$1"
+}
+
+all_nine="overlay
+aur wineo
+aur wineo-bin
+aur wineo-git
+copr all
+obs all
+ppa jammy
+ppa noble
+ppa resolute
+ppa stonking"
+
+# Usage errors, before anything else happens.
+
+for args in "--only aur --skip ppa" "--only nope" "--skip nope" "--only" \
+    "--only aur --only ppa" "--bogus"; do
+    new_scenario
+    read -r -a words <<<"$args"
+    publish "${words[@]}"
+    check "'$args': exit $rc, not 2" test "$rc" -eq 2
+    check "'$args': it called gh" test ! -s "$STUB/gh.log"
+done
+new_scenario
+out=$scenario/output
+rc=0
+"$repo/scripts/publish-packages.sh" 1.1 >"$out" 2>&1 || rc=$?
+check "a bad version: exit $rc, not 2" test "$rc" -eq 2
+
+# A full run.
+
+new_scenario
+publish
+check "a full run: exit $rc, not 0: $(tail -n 5 "$out")" test "$rc" -eq 0
+check "a full run went to the wrong places, or in the wrong order: $(uploads)" \
+    test "$(uploads | awk '{ print ($2 == "overlay" ? "overlay" : $2 " " $3) }')" = "$all_nine"
+overlay_bare=$dest/remote/overlay.git
+show() { git -C "$1" show "HEAD:$2" 2>/dev/null; }
+check "the overlay lacks the ebuild" show "$overlay_bare" "games-util/wineo/wineo-$version.ebuild"
+check "the first run did not lay down all of packaging/gentoo" \
+    test -n "$(show "$overlay_bare" profiles/repo_name)" -a \
+    -n "$(show "$overlay_bare" metadata/layout.conf)" -a \
+    -n "$(show "$overlay_bare" LICENSE)" -a \
+    -n "$(show "$overlay_bare" games-util/wineo/metadata.xml)" -a \
+    -n "$(show "$overlay_bare" games-util/wineo/wineo-9999.ebuild)"
+check "the Manifest does not hold the tag tarball" \
+    grep -q "^DIST wineo-$version.gh.tar.gz $(stat -c %s "$STUB/tag.tar.gz") " \
+    <(show "$overlay_bare" games-util/wineo/Manifest)
+check "the overlay's branch is not main" git -C "$overlay_bare" rev-parse -q --verify refs/heads/main
+tag_sum=$(sha256sum "$STUB/tag.tar.gz" | awk '{print $1}')
+bin_sum=$(sha256sum "$STUB/assets/wineo-$version-x86_64-linux.tar.gz" | awk '{print $1}')
+aur=$dest/remote
+check "wineo is not pinned to the tag tarball" \
+    grep -qxF "sha256sums=('$tag_sum')" <(show "$aur/wineo.git" PKGBUILD)
+check "wineo-bin is not pinned from SHA256SUMS" \
+    grep -qxF "sha256sums=('$bin_sum')" <(show "$aur/wineo-bin.git" PKGBUILD)
+check "wineo-git lost its SKIP" grep -qxF "sha256sums=('SKIP')" <(show "$aur/wineo-git.git" PKGBUILD)
+check "wineo-git's pkgver was not filled in" grep -qxF "pkgver=$version" <(show "$aur/wineo-git.git" PKGBUILD)
+for package in wineo wineo-bin wineo-git; do
+    check "$package has no LICENSE" grep -q 'Permission to use' <(show "$aur/$package.git" LICENSE)
+    check "$package's .SRCINFO has the wrong pkgver" \
+        grep -qE "pkgver = $version$" <(show "$aur/$package.git" .SRCINFO)
+    check "$package's branch is not master" git -C "$aur/$package.git" rev-parse -q --verify refs/heads/master
+done
+check "the pins reached the checkout" grep -qxF "sha256sums=('SKIP')" "$repo/packaging/aur/wineo/PKGBUILD"
+check "the checkout changed" test -z "$(git -C "$repo" status --porcelain)"
+check "the SRPM was not recorded" \
+    test -f "$dest/uploads/copr/all/$version-1/wineo-$version-1.src.rpm"
+check "OBS did not get the spec and the tarball" \
+    test -f "$dest/uploads/obs/all/$version-1/wineo.spec" -a \
+    -f "$dest/uploads/obs/all/$version-1/wineo-$version-vendored.tar.xz"
+for series in jammy noble resolute stonking; do
+    ppa=$dest/uploads/ppa/$series/$version-1ppa1~${series}1
+    check "$series has the wrong version" \
+        grep -q "^wineo ($version-1ppa1~${series}1) $series;" "$ppa/wineo_$version-1ppa1~${series}1_source.changes"
+    check "$series edited packaging/debian in the unpacked tree" \
+        grep -q 'packaging/debian untouched' "$ppa/wineo_$version-1ppa1~${series}1_source.changes"
+    check "$series's orig differs from the Release's tarball" \
+        cmp -s "$ppa/wineo_$version.orig.tar.xz" "$STUB/assets/wineo-$version-vendored.tar.xz"
+done
+check "jammy's control doesn't name rustc-1.91" grep -q 'rustc-1.91' "$dest/uploads/ppa/jammy/$version-1ppa1~jammy1/wineo_$version-1ppa1~jammy1.dsc"
+check "stonking's control names rustc-1.91" test "$(grep -c 'rustc-1.91' "$dest/uploads/ppa/stonking/$version-1ppa1~stonking1/wineo_$version-1ppa1~stonking1.dsc")" -eq 0
+check "the license check did not run on the tag's tree" \
+    grep -qE "/wineo-$version --locked check licenses$" "$STUB/deny.log"
+check "the source package isn't -S -sa unsigned" grep -q "dpkg-buildpackage -S -sa -d -us -uc" "$STUB/podman.log"
+check "the SRPM has a dist tag" grep -q 'define "dist %{nil}"' "$STUB/podman.log"
+check "gh was asked to change something: $(grep UNEXPECTED "$STUB/gh.log" || true)" \
+    test "$(grep -c UNEXPECTED "$STUB/gh.log")" -eq 0
+check "gh ran without -R or against another repository" \
+    test "$(grep -vE '^(api repos/MeandrousShark/wineo/|.* -R MeandrousShark/wineo( |$))' "$STUB/gh.log" | grep -c . )" -eq 0
+check "the test reached a service: $(grep -vE 'github.com/MeandrousShark/wineo/archive|raw.githubusercontent.com/gentoo' "$STUB/curl.log" || true)" \
+    test "$(grep -cvE 'github.com/MeandrousShark/wineo/archive|raw.githubusercontent.com/gentoo' "$STUB/curl.log")" -eq 0
+# The summary.
+for line in "overlay +published \($version\)" "aur +published \($version-1\)" \
+    "copr +published \($version-1\)" "obs +published \($version-1\)" "ppa +published \($version-1ppa1\)"; do
+    check "the summary lacks '$line'" said "^  $line$"
+done
+
+# A rerun skips everything.
+publish
+check "a rerun: exit $rc, not 0" test "$rc" -eq 0
+check "a rerun uploaded again: $(uploads | tail -n 3)" test "$(upload_count)" -eq 10
+for d in overlay aur copr obs ppa; do
+    check "a rerun did not skip $d" said "^  $d +already published"
+done
+
+# Waiting: started before anything exists.
+
+new_scenario
+echo 2 >"$STUB/tag-after"
+echo 2 >"$STUB/release-after"
+set_runs '' "$(run_json in_progress '')" "$(run_json completed success)"
+echo '[]' >"$STUB/runs.1.json"
+publish --only overlay
+check "started early: exit $rc, not 0: $(tail -n 3 "$out")" test "$rc" -eq 0
+check "started early: it did not wait for each" \
+    test "$(grep -c '^== waiting for' "$out")" -ge 3
+check "started early: the upload is missing" test "$(upload_count overlay)" -eq 1
+
+# Failures before anything is published.
+
+new_scenario
+set_runs "$(run_json completed failure)"
+publish
+expect_refused "a failed run" 'ended in failure: https://github.invalid/runs/7'
+check "a failed run: it went on to the Release" test "$(grep -c 'release view' "$STUB/gh.log")" -eq 0
+
+new_scenario
+make_release true
+publish
+expect_refused "a draft" 'is a draft: https://github.invalid/release'
+check "a draft: it downloaded assets" test "$(grep -c 'release download' "$STUB/gh.log")" -eq 0
+
+new_scenario
+rm "$STUB/release.json"
+RELEASE_LIMIT=0 publish
+expect_refused "a missing Release" "there is no Release for $tag after 0s"
+
+new_scenario
+echo corrupt >>"$STUB/assets/wineo-$version-x86_64-linux.tar.gz"
+publish
+expect_refused "a corrupted asset" "does not match SHA256SUMS"
+check "a corrupted asset: it does not name the file" said "wineo-$version-x86_64-linux.tar.gz: FAILED"
+
+new_scenario
+rm "$STUB/assets/wineo_${version}_amd64.deb"
+make_release false
+publish
+expect_refused "a missing asset" "has no wineo_${version}_amd64.deb"
+
+new_scenario
+rm "$STUB/assets/SHA256SUMS"
+make_release false
+publish
+expect_refused "missing SHA256SUMS" "has no SHA256SUMS"
+
+new_scenario
+(cd "$STUB/assets" && grep -v '_amd64.deb' SHA256SUMS >sums && mv sums SHA256SUMS)
+publish
+expect_refused "a short SHA256SUMS" "does not list exactly"
+
+new_scenario
+printf '{"object":{"sha":"%040d","type":"tag"}}\n' 1 >"$STUB/tag.json"
+publish
+expect_refused "a mismatched tag" "local $tag is not GitHub's"
+
+new_scenario
+rm "$STUB/tag.json"
+MIRROR_LIMIT=0 publish
+expect_refused "a tag that never arrives" "did not reach GitHub in 0s"
+
+new_scenario
+echo '[]' >"$STUB/runs.1.json"
+rm "$STUB/release.json"
+RUN_LIMIT=0 publish
+expect_refused "a run that never comes" "release run for $tag did not finish"
+
+new_scenario
+set_runs "$(run_json in_progress '')"
+RUN_LIMIT=0 publish
+expect_refused "a run that never ends" "release run for $tag did not finish"
+
+# An old tag whose run has aged out still publishes, on the Release's word.
+new_scenario
+echo '[]' >"$STUB/runs.1.json"
+publish --only overlay
+check "no run left: exit $rc, not 0" test "$rc" -eq 0
+
+new_scenario
+echo '{"status":"ahead","ahead_by":1,"behind_by":0}' >"$STUB/compare.json"
+MIRROR_LIMIT=0 publish
+expect_refused "HEAD not on GitHub's main" "is not on GitHub's main"
+
+new_scenario
+echo dirty >>"$repo/packaging/rpm/wineo.spec"
+publish
+expect_refused "a dirty checkout" "uncommitted changes"
+check "a dirty checkout: it reached GitHub first" test ! -s "$STUB/gh.log"
+
+new_scenario
+echo stray >"$repo/stray"
+publish
+expect_refused "an untracked file" "uncommitted changes"
+
+new_scenario
+git -C "$repo" tag -d "$tag" >/dev/null
+publish
+expect_refused "no local tag" "no local tag $tag"
+
+new_scenario
+sed -i -E 's/^Version:( +).*/Version:\19.9.9/' "$repo/packaging/rpm/wineo.spec"
+reviewed_commit "another version"
+publish
+expect_refused "a spec at another version" "wineo.spec at HEAD is not at $version"
+
+new_scenario
+sed -i -E '1 s/^wineo \([^)]*\)/wineo (9.9.9-1ppa1)/' "$repo/packaging/debian/changelog"
+reviewed_commit "another version"
+publish
+expect_refused "a changelog at another version" "changelog at HEAD is at 9.9.9-1ppa1"
+
+new_scenario
+touch "$STUB/deny-fails"
+publish
+expect_refused "a refused license" "check licenses failed"
+
+# The floor is read from the Release's tree, so raise it there.
+new_scenario
+sed -i 's/rust-version = "1.90"/rust-version = "1.92"/' "$repo/crates/fixture/Cargo.toml"
+reviewed_commit "raise the floor"
+git -C "$repo" tag -d "$tag" >/dev/null
+git -C "$repo" tag -a "$tag" -m "$tag"
+tag_sha_new=$(git -C "$repo" rev-parse "refs/tags/$tag")
+printf '{"object":{"sha":"%s","type":"tag"}}\n' "$tag_sha_new" >"$STUB/tag.json"
+make_assets
+make_release false
+commit_saved=$commit
+commit=$(git -C "$repo" rev-parse HEAD)
+set_runs "$(run_json completed success)"
+commit=$commit_saved
+publish
+expect_refused "a target below the floor" "ppa jammy 1.91"
+check "a target below the floor: noble isn't named" said "ppa noble 1.91"
+check "a target below the floor: resolute is named" test "$(grep -c 'ppa resolute' "$out")" -eq 0
+
+# A destination that fails doesn't stop the later ones.
+
+new_scenario
+touch "$dest/control/fail-upload-copr"
+publish
+check "an upload that fails: exit $rc, not 1" test "$rc" -eq 1
+check "an upload that fails: the reason is missing" said "^  copr +failed: the upload of all failed"
+check "an upload that fails: it counts as uploaded: $(uploads)" test "$(upload_count ' copr ')" -eq 0
+check "an upload that fails: the later ones stopped" \
+    test "$(upload_count ' obs ')" -eq 1 -a "$(upload_count ' ppa ')" -eq 4
+check "an upload that fails: the summary lost the others" said "^  ppa +published"
+publish
+check "the retry: exit $rc, not 0: $(tail -n 5 "$out")" test "$rc" -eq 0
+check "the retry did not upload COPR once" test "$(upload_count ' copr ')" -eq 1
+check "the retry uploaded others again: $(uploads)" test "$(upload_count)" -eq 10
+check "the retry did not say it skipped obs" said "^  obs +already published"
+
+for d in overlay aur; do
+    new_scenario
+    touch "$dest/control/fail-upload-$d"
+    publish
+    check "a refused $d push: exit $rc, not 1" test "$rc" -eq 1
+    check "a refused $d push isn't in the summary" said "^  $d +failed"
+    check "a refused $d push stopped the later ones" test "$(upload_count ' ppa ')" -eq 4
+    publish --only "$d"
+    check "the $d retry: exit $rc, not 0: $(tail -n 3 "$out")" test "$rc" -eq 0
+done
+
+# A failed part-way PPA upload keeps what went, and sends only the rest.
+new_scenario
+echo always >"$dest/control/fail-upload-ppa"
+publish --only ppa
+check "a refused PPA: exit $rc, not 1" test "$rc" -eq 1
+check "a refused PPA went on to the next series: $(uploads)" test "$(upload_count)" -eq 0
+rm "$dest/control/fail-upload-ppa"
+mkdir -p "$dest/remote/ppa/jammy"
+touch "$dest/remote/ppa/jammy/$version-1ppa1~jammy1"
+publish --only ppa
+check "a partial PPA: exit $rc, not 0" test "$rc" -eq 0
+check "a partial PPA uploaded jammy again: $(uploads)" test "$(upload_count ' ppa jammy ')" -eq 0
+check "a partial PPA missed the rest: $(uploads)" test "$(upload_count ' ppa ')" -eq 3
+
+# Remote builds.
+
+new_scenario
+echo failed >"$dest/control/build-ppa-noble"
+publish --only ppa
+check "a failed build: exit $rc, not 1" test "$rc" -eq 1
+check "a failed build: the reason is missing" said "the build failed on noble"
+check "a failed build: it does not say what to do" said "bump its revision"
+check "a failed build: the summary says it" said "^  ppa +failed: the build failed on noble"
+publish --only ppa
+check "a failed build, rerun: exit $rc, not 1" test "$rc" -eq 1
+check "a failed build, rerun: uploaded again" test "$(upload_count ' ppa ')" -eq 4
+check "a failed build, rerun: the reason is missing" said "already failed to build on noble"
+
+# Only success counts: a target left behind holds the destination back.
+new_scenario
+echo building >"$dest/control/build-copr-fedora-44"
+BUILD_LIMIT=0 publish --only copr
+check "a timeout: exit $rc, not 1" test "$rc" -eq 1
+check "a timeout: the reason is missing" said "timed out after 0s waiting on fedora-44"
+check "a timeout: it doesn't promise no second upload" said "nothing is uploaded again"
+rm "$dest/control/build-copr-fedora-44"
+echo building >"$dest/control/build-copr"
+BUILD_LIMIT=0 publish --only copr
+check "a timeout, rerun: exit $rc, not 1" test "$rc" -eq 1
+check "a timeout, rerun: uploaded again" test "$(upload_count ' copr ')" -eq 1
+rm "$dest/control/build-copr"
+publish --only copr
+check "a timeout, resumed: exit $rc, not 0" test "$rc" -eq 0
+check "a timeout, resumed: uploaded again" test "$(upload_count ' copr ')" -eq 1
+check "a timeout, resumed: the summary is wrong" said "^  copr +already published"
+
+# Launchpad shows nothing until it has processed an upload, so only this
+# machine knows it went. A rerun must not send it twice.
+new_scenario
+echo hidden >"$dest/control/build-ppa"
+BUILD_LIMIT=0 publish --only ppa
+check "an unseen upload: exit $rc, not 1" test "$rc" -eq 1
+check "an unseen upload: it doesn't mention the mail" said "only by mail"
+BUILD_LIMIT=0 publish --only ppa
+check "an unseen upload, rerun: uploaded again: $(uploads)" test "$(upload_count ' ppa ')" -eq 4
+
+# A wait that ends well, polled at the default pace.
+new_scenario
+printf 'building\nbuilding\nbuilt\n' >"$dest/control/build-obs"
+publish --only obs
+check "a slow build: exit $rc, not 0: $(tail -n 3 "$out")" test "$rc" -eq 0
+check "a slow build: it did not say what it's waiting on" said "waiting on openSUSE_Tumbleweed"
+
+new_scenario
+printf 'building\nbuilt\n' >"$dest/control/build-copr"
+out=$scenario/output
+rc=0
+env PATH="$stubs:$PATH" CARGO_DENY="$stubs/cargo-deny" VERSION_UNDER_TEST="$version" \
+    WINEO_PUBLISH_WORK="$scenario/work" "$repo/scripts/publish-packages.sh" "$version" \
+    --only copr --dest-dir "$dest" >"$out" 2>&1 || rc=$?
+check "the default pace: exit $rc, not 0" test "$rc" -eq 0
+check "the default pace is not five minutes: $(sort -u "$STUB/sleep.log" | tr '\n' ' ')" \
+    test "$(sort -u "$STUB/sleep.log")" = 300
+statuses=$(grep -c '' "$STUB/sleep.log")
+check "a poll came without a full interval before it ($statuses sleeps)" test "$statuses" -ge 2
+
+# A revision bump goes out under the same tag.
+
+new_scenario
+publish
+check "before the bump: exit $rc, not 0" test "$rc" -eq 0
+sed -i 's/^pkgrel=1$/pkgrel=2/' "$repo/packaging/aur/wineo/PKGBUILD" "$repo/packaging/aur/wineo-bin/PKGBUILD" "$repo/PKGBUILD"
+sed -i -E 's/^Release:( +)1%/Release:\12%/' "$repo/packaging/rpm/wineo.spec"
+sed -i -E '1 s/-1ppa1\)/-1ppa2)/' "$repo/packaging/debian/changelog"
+sed -i 's/^# Release revision: 0$/# Release revision: 1/' "$repo/packaging/gentoo/games-util/wineo/wineo-9999.ebuild"
+reviewed_commit "Bump the package revisions"
+: >"$dest/uploads.log"
+publish
+check "a bump: exit $rc, not 0: $(tail -n 5 "$out")" test "$rc" -eq 0
+check "a bump: not every destination went: $(uploads)" test "$(upload_count)" -eq 10
+check "a bump: the wrong identities: $(uploads)" \
+    test "$(uploads | grep -c -e "overlay overlay $version-r1$" -e "aur .* $version-2$" -e "copr all $version-2$" -e "obs all $version-2$" -e "ppa .* $version-1ppa2~")" -eq 10
+overlay_bare=$dest/remote/overlay.git
+check "a bump: no -r1 ebuild" show "$overlay_bare" "games-util/wineo/wineo-$version-r1.ebuild"
+check "a bump: the first ebuild is gone" show "$overlay_bare" "games-util/wineo/wineo-$version.ebuild"
+changes=$dest/uploads/ppa/jammy/$version-1ppa2~jammy1/wineo_$version-1ppa2~jammy1_source.changes
+check "a bump: jammy's version is wrong" grep -q "^wineo ($version-1ppa2~jammy1) jammy;" "$changes"
+check "a bump: the bump went into the unpacked packaging/debian" grep -q 'packaging/debian untouched' "$changes"
+check "a bump: the source isn't the tag's" \
+    test "$(ls "$dest/uploads/obs/all/")" = "$version-1
+$version-2"
+check "a bump: the SRPM isn't the new one" test -f "$dest/uploads/copr/all/$version-2/wineo-$version-2.src.rpm"
+
+# HEAD's lock can move past the tag; the ebuild's must not.
+new_scenario
+echo '# moved' >>"$repo/Cargo.lock"
+reviewed_commit "Update dependencies"
+publish --only overlay
+check "a moved lock: exit $rc, not 0" test "$rc" -eq 0
+check "a moved lock: pycargoebuild saw no lock" test -f "$STUB/lock-seen"
+check "a moved lock: the crate list came from HEAD, not the tag" \
+    test "$(grep -c '# moved' "$STUB/lock-seen" || true)" -eq 0
+
+# --only and --skip.
+
+new_scenario
+publish --only obs
+check "--only: exit $rc, not 0" test "$rc" -eq 0
+check "--only went elsewhere: $(uploads)" test "$(uploads)" = "upload obs all $version-1"
+check "--only: the summary doesn't say the rest didn't run" said "^  ppa +not run \(--only obs\)"
+
+new_scenario
+publish --skip aur
+check "--skip aur: exit $rc, not 0" test "$rc" -eq 0
+check "--skip aur reached the AUR: $(uploads)" test "$(upload_count ' aur ')" -eq 0
+check "--skip aur: it needed makepkg's repositories" test ! -e "$dest/remote/wineo.git"
+check "--skip aur: the summary is wrong" said "^  aur +not run \(--skip\)"
+check "--skip aur: the rest didn't go" test "$(upload_count)" -eq 7
+publish --only aur
+check "--only aur after: exit $rc, not 0" test "$rc" -eq 0
+check "--only aur after: it didn't go: $(uploads)" test "$(upload_count ' aur ')" -eq 3
+check "--only aur after: others went again" test "$(upload_count)" -eq 10
+
+new_scenario
+publish --skip aur --skip ppa
+check "two --skips: exit $rc, not 0" test "$rc" -eq 0
+check "two --skips went to the AUR or PPA: $(uploads)" \
+    test "$(upload_count ' aur ')" -eq 0 -a "$(upload_count ' ppa ')" -eq 0
+
+# Recipes that can't go out.
+
+new_scenario
+sed -i "s/^sha256sums=('SKIP')$/sha256sums=('SKIP' 'SKIP')/" "$repo/packaging/aur/wineo-bin/PKGBUILD"
+reviewed_commit "two sources"
+publish
+check "SKIP left: exit $rc, not 1" test "$rc" -eq 1
+check "SKIP left: the reason is missing" said "wineo-bin still has a SKIP checksum"
+check "SKIP left: part of the AUR went: $(uploads)" test "$(upload_count ' aur ')" -eq 0
+check "SKIP left: the later ones stopped" test "$(upload_count ' copr ')" -eq 1 -a "$(upload_count ' ppa ')" -eq 4
+check "SKIP left: the summary doesn't say it" said "^  aur +failed: wineo-bin still has a SKIP"
+
+new_scenario
+touch "$STUB/no-tag-tarball"
+publish --only aur
+check "no tag tarball: exit $rc, not 1" test "$rc" -eq 1
+check "no tag tarball: the reason is missing" said "could not download GitHub's tarball"
+check "no tag tarball: it published anyway: $(uploads)" test "$(upload_count)" -eq 0
+
+export PODMAN_FAIL_STEP=gentoo-manifest PODMAN_FAIL_TEXT='pkgcheck: an error'
+new_scenario
+publish --only overlay
+check "a pkgcheck error: exit $rc, not 1" test "$rc" -eq 1
+check "a pkgcheck error: the reason is missing" said "ebuild manifest or pkgcheck failed"
+check "a pkgcheck error: it pushed anyway" test -z "$(git -C "$dest/remote/overlay.git" for-each-ref)"
+unset PODMAN_FAIL_STEP PODMAN_FAIL_TEXT
+
+# A manifest of something else isn't the tag's tarball.
+new_scenario
+cp "$stubs/podman" "$scenario/podman.saved"
+# shellcheck disable=SC2016
+sed -i 's/$(stat -c %s "$dist") BLAKE2B/1 BLAKE2B/' "$stubs/podman"
+publish --only overlay
+cp "$scenario/podman.saved" "$stubs/podman"
+check "a stale Manifest: exit $rc, not 1" test "$rc" -eq 1
+check "a stale Manifest: the reason is missing" said "Manifest doesn't hold GitHub's tarball"
+check "a stale Manifest: it pushed anyway" test -z "$(git -C "$dest/remote/overlay.git" for-each-ref)"
+
+# Without --dest-dir: what stops a destination before it can upload. These are
+# the real seams, with no service behind them.
+
+new_scenario
+publish_real --only copr
+check "no COPR token: exit $rc, not 1" test "$rc" -eq 1
+check "no COPR token: it does not say where to get one" \
+    said "^  copr +failed: .*copr is missing: get an API token from https://copr.fedorainfracloud.org/api/"
+check "no COPR token: it started a container" test "$(grep -c '^run' "$STUB/podman.log" 2>/dev/null || true)" -eq 0
+
+mkdir -p "$XDG_CONFIG_HOME"
+echo token >"$XDG_CONFIG_HOME/copr"
+chmod 644 "$XDG_CONFIG_HOME/copr"
+new_scenario
+publish_real --only copr
+check "a loose COPR token: exit $rc, not 1" test "$rc" -eq 1
+check "a loose COPR token: it does not name the mode" said "has mode 644: run chmod 600"
+
+chmod 600 "$XDG_CONFIG_HOME/copr"
+new_scenario
+PODMAN_FAIL_STEP=copr-upload PODMAN_FAIL_TEXT='Error: Login invalid/expired. Please visit the API page' publish_real --only copr
+check "an expired token: exit $rc, not 1" test "$rc" -eq 1
+check "an expired token: it does not say so" said "COPR tokens expire: get a new one from https://copr.fedorainfracloud.org/api/"
+check "the token isn't mounted read-only" grep -q "$XDG_CONFIG_HOME/copr:/root/.config/copr:ro" "$STUB/podman.log"
+
+# A state that can't be read must never count as absent.
+new_scenario
+touch "$STUB/copr-down"
+publish_real --only copr
+check "COPR down: exit $rc, not 1" test "$rc" -eq 1
+check "COPR down: the reason is missing" said "could not read the build state"
+check "COPR down: it went on to upload" test "$(grep -c 'copr-cli' "$STUB/podman.log" 2>/dev/null || true)" -eq 0
+
+new_scenario
+publish_real --only obs
+check "no oscrc: exit $rc, not 1" test "$rc" -eq 1
+check "no oscrc: it does not say what to do" said "oscrc is missing: create it"
+check "no oscrc: it started a container" test "$(grep -c '^run' "$STUB/podman.log" || true)" -eq 0
+
+# A status that prints nothing at all is not "all built".
+new_scenario
+# shellcheck disable=SC2016
+sed -i 's/^    if \[\[ -n \$dest_dir \]\] && has_remote_build "\$1"; then$/    if [[ -n ${EMPTY_STATUS:-} ]]; then return 0; fi\n&/' "$repo/scripts/publish-packages.sh"
+reviewed_commit "a status with no lines"
+EMPTY_STATUS=1 publish --only copr
+check "an empty status: exit $rc, not 1" test "$rc" -eq 1
+check "an empty status: the reason is missing" said "could not read the build state"
+check "an empty status: it published: $(uploads)" test -z "$(uploads)"
+
+# oscrc is the maintainer's own login: read-only mounts, and nothing else.
+mkdir -p "$XDG_CONFIG_HOME/osc"
+echo secret >"$XDG_CONFIG_HOME/osc/oscrc"
+new_scenario
+PODMAN_FAIL_STEP=obs-status publish_real --only obs
+check "OBS status: it isn't refused when unknown" said "could not read the build state"
+check "OBS status: it went on to upload" test "$(grep -c 'STEP=obs-upload' "$STUB/podman.log" || true)" -eq 0
+check "oscrc is mounted without :ro" test "$(grep -F oscrc "$STUB/podman.log" | grep -cv 'oscrc:/root/.config/osc/oscrc:ro')" -eq 0
+check "oscrc reached a work directory" test "$(grep -rl secret "$scenario/work" 2>/dev/null | grep -c . || true)" -eq 0
+rm -rf "$XDG_CONFIG_HOME/osc"
+
+new_scenario
+publish_real --only ppa
+check "no signing key: exit $rc, not 1" test "$rc" -eq 1
+check "no signing key: it does not say so" said "gpg has no key 8EE69509"
+check "no signing key: the status needed a login" test "$(grep -c 'api.launchpad.net' "$STUB/curl.log")" -eq 4
+
+# The parsers, on canned answers. Run in the script's own functions.
+
+script=$repo/scripts/publish-packages.sh
+pure() { (
+    set +eu
+    # shellcheck disable=SC1090
+    source "$script"
+    "$@"
+); }
+
+# The names in release.yml's `gh release create`, with its own variables.
+listed=$(awk '/gh release create/ { on = 1 } on && /dist\// { print } on && !/\\$/ { if (seen++) on = 0 }' \
+    "$root/.github/workflows/release.yml" |
+    sed -E 's/^ *"?dist\///; s/"? *\\?$//; s/\$\{?version\}?/'"$version"'/g' | sort)
+check "the asset names differ from release.yml: $listed" \
+    test "$listed" = "$(pure expected_assets "$version" | sort)"
+# shellcheck disable=SC2016
+check "SHA256SUMS' list differs from release.yml's check" \
+    grep -qF '"wineo-${version}-1.x86_64.rpm"' "$root/.github/workflows/release.yml"
+
+for row in "1.91 1.90 y" "1.90 1.90 y" "1.90.0 1.90 y" "1.89 1.90 n" "1.9 1.90 n" \
+    "1.100 1.99 y" "1.99.1 1.99.2 n"; do
+    read -r a b want <<<"$row"
+    if pure version_at_least "$a" "$b"; then got=y; else got=n; fi
+    check "version_at_least $a $b is $got" test "$got" = "$want"
+done
+check "a floor of 1.90 refuses something" test -z "$(pure targets_below_floor 1.90)"
+check "a floor of 1.92 doesn't refuse exactly jammy and noble" \
+    test "$(pure targets_below_floor 1.92)" = "ppa jammy 1.91
+ppa noble 1.91"
+check "a floor of 1.98 refuses the wrong ones" \
+    test "$(pure targets_below_floor 1.98 | awk '{print $2}' | tr '\n' ' ')" = "jammy noble resolute stonking 15.6 "
+check "the targets aren't all there" \
+    test "$(pure targets_of ppa | tr '\n' ' ')$(pure targets_of copr | tr '\n' ' ')$(pure targets_of obs | tr '\n' ' ')" = \
+    "jammy noble resolute stonking fedora-43 fedora-44 fedora-45 openSUSE_Tumbleweed 16.0 15.6 "
+
+check "tag_run picks the wrong run" test "$(pure tag_run abc <<<'[
+    {"databaseId":1,"headSha":"abc","conclusion":"failure"},
+    {"databaseId":3,"headSha":"zzz","conclusion":"failure"},
+    {"databaseId":2,"headSha":"abc","conclusion":"success"}]' | jq -r .databaseId)" = 2
+
+chroots='{"items":[
+    {"name":"fedora-43-x86_64","state":"succeeded"},
+    {"name":"fedora-44-x86_64","state":"running"},
+    {"name":"fedora-45-x86_64","state":"failed"}]}'
+check "copr_states reads it wrong" test "$(pure copr_states <<<"$chroots" | tr '\n' ' ')" = \
+    "fedora-43 built fedora-44 building fedora-45 failed "
+check "copr_states takes a missing chroot for built" \
+    test "$(pure copr_states <<<'{"items":[]}' | head -n 1)" = "fedora-43 absent"
+check "copr_states takes garbage for an answer" \
+    test "$(pure copr_states <<<'<html>' | head -n 1)" = "fedora-43 unknown"
+
+binary='{"entries":[{"status":"Published","distro_arch_series_link":"https://x/ubuntu/jammy/amd64"}]}'
+pending='{"entries":[{"status":"Pending","distro_arch_series_link":"https://x/ubuntu/jammy/amd64"}]}'
+wrong_arch='{"entries":[{"status":"Published","distro_arch_series_link":"https://x/ubuntu/jammy/amd64v3"}]}'
+builds() { # one amd64 build in state $1, plus an armhf build that failed
+    jq -nc --arg state "$1" '{entries:[{arch_tag:"armhf",buildstate:"Failed to build"},
+        {arch_tag:"amd64",buildstate:$state}]}'
+}
+lp_case() { # WANT STATUS BUILDSTATE BINARIES
+    local got
+    got=$(pure lp_state "$2" "$(builds "$3")" "$4")
+    check "lp_state '$2' '$3' is $got, not $1" test "$got" = "$1"
+}
+lp_case built Published 'Successfully built' "$binary"
+lp_case built Superseded 'Successfully built' "$binary"
+lp_case building Published 'Successfully built' "$pending"
+lp_case building Published 'Successfully built' "$wrong_arch"
+lp_case building Published 'Successfully built' ''
+lp_case building Pending 'Needs building' '{"entries":[]}'
+lp_case building Published 'Currently building' '{"entries":[]}'
+lp_case building Published 'Uploading build' '{"entries":[]}'
+lp_case failed Published 'Failed to build' '{"entries":[]}'
+lp_case failed Published 'Dependency wait' '{"entries":[]}'
+lp_case failed Published 'Chroot problem' '{"entries":[]}'
+lp_case failed Published 'Failed to upload' '{"entries":[]}'
+lp_case failed Published 'Cancelled build' '{"entries":[]}'
+lp_case failed Deleted 'Successfully built' "$binary"
+check "lp_state takes no answer for one" test "$(pure lp_state Published '' '')" = unknown
+check "lp_state counts another architecture" \
+    test "$(pure lp_state Published '{"entries":[{"arch_tag":"armhf","buildstate":"Successfully built"}]}' "$binary")" = building
+
+obs_dir() { # DIR SPEC_RELEASE DIRTY CODE JOB_SRCMD5 JOB_CODE
+    local dir=$1 target
+    rm -rf "$dir"
+    mkdir -p "$dir"
+    printf 'Version: 1.2.3\nRelease: %s%%{?dist}\n' "$2" >"$dir/spec"
+    echo '<directory name="wineo" rev="3" srcmd5="abc"/>' >"$dir/directory"
+    {
+        echo '<resultlist state="x">'
+        for target in openSUSE_Tumbleweed 16.0 15.6; do
+            echo "<result repository=\"$target\" arch=\"x86_64\" code=\"published\" state=\"published\" dirty=\"$3\"><status package=\"wineo\" code=\"$4\"/></result>"
+        done
+        echo '</resultlist>'
+    } >"$dir/result"
+    for target in openSUSE_Tumbleweed 16.0 15.6; do
+        echo "<jobhistlist><jobhist package=\"wineo\" srcmd5=\"old\" code=\"failed\"/><jobhist package=\"wineo\" srcmd5=\"$5\" code=\"$6\"/></jobhistlist>" >"$dir/jobhistory-$target"
+    done
+}
+obs_case() { # WANT WHY RELEASE DIRTY CODE JOB_SRCMD5 JOB_CODE
+    local want=$1 why=$2 got
+    obs_dir "$tmp/obs" "$3" "$4" "$5" "$6" "$7"
+    got=$(pure obs_states "$tmp/obs" 1.2.3-1 | awk '{print $2}' | sort -u | tr '\n' ' ')
+    check "obs_states $why is '$got', not $want" test "$got" = "$want "
+}
+obs_case built "a finished build" 1 false succeeded abc succeeded
+obs_case built "an unchanged rebuild" 1 false succeeded abc unchanged
+obs_case absent "another revision on the server" 2 false succeeded abc succeeded
+obs_case building "a dirty repository" 1 true succeeded abc succeeded
+obs_case building "the last revision's result" 1 false succeeded old succeeded
+obs_case failed "a failed build" 1 false failed abc failed
+obs_case failed "unresolvable" 1 false unresolvable abc succeeded
+obs_case failed "excluded" 1 false excluded abc succeeded
+obs_case building "scheduled" 1 false scheduled abc succeeded
+obs_dir "$tmp/obs" 1 false succeeded abc succeeded
+rm "$tmp/obs/result"
+check "obs_states takes a missing file for an answer" \
+    test "$(pure obs_states "$tmp/obs" 1.2.3-1 | head -n 1)" = "openSUSE_Tumbleweed unknown"
+touch "$tmp/obs/missing"
+check "obs_states misses an absent package" \
+    test "$(pure obs_states "$tmp/obs" 1.2.3-1 | head -n 1)" = "openSUSE_Tumbleweed absent"
+
+printf 'Error: Login invalid/expired.\n' >"$tmp/said"
+check "copr_auth_failed misses an expired login" pure copr_auth_failed "$tmp/said"
+printf 'Error: the build was refused\n' >"$tmp/said"
+if pure copr_auth_failed "$tmp/said"; then fail "copr_auth_failed fires on anything"; else pass; fi
+
+# shellcheck disable=SC2016
+check "the polling is not five minutes by default" \
+    grep -qxF 'build_interval=${WINEO_PUBLISH_BUILD_INTERVAL:-300}' "$root/scripts/publish-packages.sh"
+if grep -qE 'osc results.*(-w|--watch)|--watch' "$root/scripts/publish-packages.sh"; then
+    fail "the script watches OBS"
+else
+    pass
+fi
+
+echo "$((cases - failures)) of $cases cases behaved correctly"
+[[ $failures -eq 0 ]]
