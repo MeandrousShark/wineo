@@ -292,5 +292,32 @@ rc=0
 "$script_dir/prepare-debian-tree.sh" "$tmp/jammy" focal >/dev/null 2>&1 || rc=$?
 check "prepare-debian-tree.sh did not exit 2 for an unknown series (exit $rc)" test "$rc" -eq 2
 
+# --recipe: a bumped recipe from outside the tree, whose packaging/debian must
+# stay byte for byte what the orig tarball holds.
+tree=$tmp/recipe-tree
+bumped=$tmp/bumped
+mkdir -p "$tree/packaging"
+cp -r "$root/packaging/debian" "$tree/packaging/debian"
+cp -r "$root/packaging/debian" "$bumped"
+sed -i -E '1 s/-1ppa[0-9]+\)/-1ppa9)/' "$bumped/changelog"
+before=$(cd "$tree/packaging" && find debian -type f -exec sha256sum {} + | sort)
+rc=0
+"$script_dir/prepare-debian-tree.sh" --recipe "$bumped" "$tree" jammy >/dev/null 2>&1 || rc=$?
+check "prepare-debian-tree.sh --recipe failed (exit $rc)" test "$rc" -eq 0
+check "--recipe did not take the changelog from the recipe" \
+    grep -qE '^wineo \([0-9.]+-1ppa9~jammy1\) jammy; ' "$tree/debian/changelog"
+check "--recipe did not fill in the series' Rust" \
+    has_line "$tree/debian/control" " rustc-1.91 (>= $deb_floor),"
+after=$(cd "$tree/packaging" && find debian -type f -exec sha256sum {} + | sort)
+check "--recipe changed the tree's packaging/debian" test "$before" = "$after"
+check "--recipe changed the recipe it was given" \
+    grep -q '^wineo ([0-9.]*-1ppa9) UNRELEASED;' "$bumped/changelog"
+rc=0
+"$script_dir/prepare-debian-tree.sh" --recipe "$tmp/no-such-recipe" "$tmp/noble" jammy >/dev/null 2>&1 || rc=$?
+check "--recipe with no recipe there did not exit 1 (exit $rc)" test "$rc" -eq 1
+rc=0
+"$script_dir/prepare-debian-tree.sh" --recipe >/dev/null 2>&1 || rc=$?
+check "--recipe with no DIR did not exit 2 (exit $rc)" test "$rc" -eq 2
+
 echo "$((cases - failures)) of $cases cases behaved correctly"
 [[ $failures -eq 0 ]]

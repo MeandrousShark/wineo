@@ -9,19 +9,29 @@
 #                     version gains "~SERIES1", so an upgrade to the next
 #                     Ubuntu release always installs a newer package.
 #
-# Usage: scripts/prepare-debian-tree.sh TREE SERIES
+# Usage: scripts/prepare-debian-tree.sh [--recipe DIR] TREE SERIES
 #
 # TREE is the unpacked wineo-VERSION source, which already holds
 # packaging/debian. SERIES is jammy, noble, resolute, or stonking; a new
 # series is added below once its own Rust is checked against the floor.
+# --recipe takes the recipe from DIR instead of TREE/packaging/debian. A
+# revision bump after the tag needs it: the bumped recipe can't go into TREE's
+# packaging/debian, since dpkg-source refuses a tree that differs from the
+# orig tarball outside debian/.
 # Exits 2 on bad usage and 1 when debian/ already exists.
 set -euo pipefail
 
 usage() {
-    echo "usage: ${0##*/} TREE jammy|noble|resolute|stonking" >&2
+    echo "usage: ${0##*/} [--recipe DIR] TREE jammy|noble|resolute|stonking" >&2
     exit 2
 }
 
+recipe=
+if [[ ${1:-} == --recipe ]]; then
+    [[ $# -ge 2 && -n $2 ]] || usage
+    recipe=$2
+    shift 2
+fi
 [[ $# -eq 2 ]] || usage
 tree=$1
 series=$2
@@ -32,7 +42,7 @@ case $series in
     *) usage ;;
 esac
 
-src=$tree/packaging/debian
+src=${recipe:-$tree/packaging/debian}
 if [[ ! -f $src/control || ! -f $src/changelog ]]; then
     echo "${0##*/}: $src is not a Debian recipe" >&2
     exit 1
