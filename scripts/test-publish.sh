@@ -1057,7 +1057,7 @@ new_scenario
 touch "$STUB/no-key"
 publish_real --only ppa
 check "no signing key: exit $rc, not 1" test "$rc" -eq 1
-check "no signing key: it does not say so" said "gpg has no key 8EE69509"
+check "no signing key: it does not say so" said "gpg has no key 6D463D92CDF5CDEABD40D6301C369B098EE69509"
 check "no signing key: the status needed a login" test "$(grep -c 'api.launchpad.net' "$STUB/curl.log")" -eq 4
 # The stub answers any query, so the query itself is compared here: a wrong
 # identity would read as absent and upload again.
@@ -1354,7 +1354,7 @@ new_scenario
 BUILD_LIMIT=0 publish_real --only ppa
 for series in jammy noble resolute stonking; do
     changes=wineo_$version-1ppa1~${series}1_source.changes
-    check "debsign ran differently for $series" called debsign --no-conf -k8EE69509 "$changes"
+    check "debsign ran differently for $series" called debsign --no-conf -k6D463D92CDF5CDEABD40D6301C369B098EE69509 "$changes"
     check "dput ran differently for $series" called dput ppa:meandrous-shark/wineo "$changes"
 done
 check "dput ran before debsign" \

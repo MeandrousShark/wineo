@@ -55,7 +55,9 @@
 #   WINEO_PUBLISH_MIRROR_LIMIT, _RUN_LIMIT, _RELEASE_LIMIT,
 #   _COPR_LIMIT, _OBS_LIMIT, _PPA_LIMIT
 #                                 how long each wait lasts, in seconds
-#   WINEO_PUBLISH_PPA_KEY         the signing key (default 8EE69509)
+#   WINEO_PUBLISH_PPA_KEY         the signing key's full fingerprint, since
+#                                 debsign refuses a short ID (default
+#                                 6D463D92CDF5CDEABD40D6301C369B098EE69509)
 #   CARGO_DENY                    a cargo-deny to use instead of fetching the
 #                                 pinned one
 #   With --dest-dir only, for proving the real steps:
@@ -114,7 +116,7 @@ release_limit=${WINEO_PUBLISH_RELEASE_LIMIT:-600}
 copr_limit=${WINEO_PUBLISH_COPR_LIMIT:-21600}
 obs_limit=${WINEO_PUBLISH_OBS_LIMIT:-43200}
 ppa_limit=${WINEO_PUBLISH_PPA_LIMIT:-86400}
-ppa_key=${WINEO_PUBLISH_PPA_KEY:-8EE69509}
+ppa_key=${WINEO_PUBLISH_PPA_KEY:-6D463D92CDF5CDEABD40D6301C369B098EE69509}
 
 usage() {
     echo "usage: ${0##*/} VERSION [--only DEST] [--skip DEST]... [--dest-dir DIR]" >&2
