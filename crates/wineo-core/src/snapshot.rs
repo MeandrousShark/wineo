@@ -3,7 +3,7 @@
 use std::collections::BTreeSet;
 use std::fs::{self, File, OpenOptions};
 use std::io::Write;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 use anyhow::{Context, Result, anyhow, bail};
 use rustix::fs::{RenameFlags, renameat_with};
@@ -682,7 +682,13 @@ fn check_config_target(
         return Ok(());
     };
     let now = config_lock.config_target();
-    if paths::resolve(restored) != now {
+    // Only the parent resolves, for a symlinked portable root. The file must
+    // still be the one recorded, not a link from there to the current target.
+    let recorded = match (restored.parent(), restored.file_name()) {
+        (Some(parent), Some(file)) => paths::resolve(parent).join(file),
+        _ => restored.clone(),
+    };
+    if recorded != now {
         bail!(
             "{} now leads to {}, but the restore was writing {}, so nothing was changed. Point it back and run `wineo snapshot recover {name}` again.",
             paths.environment_config(name).display(),
@@ -907,6 +913,11 @@ fn read_marker(paths: &Paths, path: &Path, name: &str) -> Result<RestoreMarker> 
         }
         marker.prefix = root.join(&marker.prefix);
         marker.staging = root.join(&marker.staging);
+        if marker.config_target.as_ref().is_some_and(|target| {
+            !target.is_absolute() && target.components().any(|part| part == Component::ParentDir)
+        }) {
+            bail!("invalid restore marker at {}", path.display());
+        }
         marker.config_target = marker.config_target.map(|target| root.join(target));
     }
     if marker.version != VERSION

@@ -1439,3 +1439,92 @@ fn a_portable_config_target_outside_the_folder_stays_absolute() {
         Some(outside)
     );
 }
+
+#[test]
+fn recovery_refuses_a_recorded_target_that_became_a_link_to_the_current_one() {
+    let (root, paths, prefix, config) = fixture(false);
+    let target = linked_config(root.path(), &paths);
+    let link = paths.environment_config("game");
+    let other = root.path().join("dotfiles/b/game.toml");
+    fs::create_dir_all(other.parent().unwrap()).unwrap();
+    let other_text = format!("{config}# another environment's file\n");
+    fs::write(&other, &other_text).unwrap();
+    let mut marker = interrupted_marker(&paths, &prefix, &config);
+    marker.config_target = Some(paths::resolve(&target));
+    let marker_file = marker_path(&paths, "game");
+    fs::remove_file(&marker_file).unwrap();
+    write_marker(&marker_file, &marker).unwrap();
+
+    repoint(&link, &other);
+    fs::remove_file(&target).unwrap();
+    symlink(&other, &target).unwrap();
+
+    let error = recover(&paths, "game").unwrap_err().to_string();
+    assert!(error.contains(&*other.to_string_lossy()), "{error}");
+    assert!(error.contains(&*target.to_string_lossy()), "{error}");
+    assert_eq!(fs::read_to_string(&other).unwrap(), other_text);
+    assert!(marker_file.exists());
+}
+
+#[test]
+fn a_portable_config_target_survives_a_symlinked_root() {
+    let (root, usb, config) = portable_fixture();
+    let paths = portable(root.path(), &usb);
+    let prefix = usb.join("prefixes/game");
+    let staging = tempfile::Builder::new()
+        .prefix(".wineo-restore-")
+        .tempdir_in(prefix.parent().unwrap())
+        .unwrap()
+        .keep();
+    let marker = RestoreMarker {
+        version: VERSION,
+        environment: "game".to_owned(),
+        prefix: prefix.clone(),
+        staging,
+        old_directory: directory_identity(&prefix).unwrap(),
+        old_fingerprint: import::fingerprint(&prefix).unwrap(),
+        old_config: config,
+        config_target: Some(paths::resolve(&paths.environment_config("game"))),
+    };
+    let path = marker_path(&paths, "game");
+    write_marker(&path, &stored_marker(&paths, &marker).unwrap()).unwrap();
+
+    let linked = root.path().join("linked-usb");
+    symlink(&usb, &linked).unwrap();
+    let paths = portable(root.path(), &linked);
+    assert_eq!(
+        read_marker(&paths, &marker_path(&paths, "game"), "game")
+            .unwrap()
+            .config_target
+            .map(|target| target.ends_with("config/environments/game.toml")),
+        Some(true)
+    );
+    recover(&paths, "game").unwrap();
+    assert!(!marker_path(&paths, "game").exists());
+}
+
+#[test]
+fn a_relative_config_target_that_climbs_out_is_invalid() {
+    let (root, usb, config) = portable_fixture();
+    let paths = portable(root.path(), &usb);
+    let prefix = usb.join("prefixes/game");
+    let marker = RestoreMarker {
+        version: VERSION,
+        environment: "game".to_owned(),
+        prefix: prefix.clone(),
+        staging: prefix.with_file_name(".wineo-restore-x"),
+        old_directory: directory_identity(&prefix).unwrap(),
+        old_fingerprint: import::fingerprint(&prefix).unwrap(),
+        old_config: config,
+        config_target: None,
+    };
+    let mut stored = stored_marker(&paths, &marker).unwrap();
+    stored.config_target = Some(PathBuf::from("../outside/game.toml"));
+    let path = marker_path(&paths, "game");
+    write_marker(&path, &stored).unwrap();
+    let error = read_marker(&paths, &path, "game").unwrap_err();
+    assert!(
+        error.to_string().contains("invalid restore marker"),
+        "{error}"
+    );
+}
