@@ -43,9 +43,10 @@ configs, so they're replaced as before.
 Any config that already exists keeps its permissions when wineo rewrites it,
 link or not.
 
-A link whose target is missing is refused with an error that names it, and
-nothing gets created. A link repointed during a write is refused too, so
-nothing is written; try again. A link into a read-only place, such as a Nix
+A link whose target is missing is refused and nothing gets created. A global
+config error names the link; a dangling environment config just reads as an
+environment that doesn't exist. A link repointed during a write is refused too,
+so nothing is written; try again. A link into a read-only place, such as a Nix
 store, fails with a write error.
 
 ## Creating an environment by hand
