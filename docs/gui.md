@@ -498,11 +498,12 @@ While it waits, **Force stop** kills what can be killed and closes the window.
 Once a snapshot swap or portable publication starts, the app says
 **Finishing changes...** and waits; those changes have no Force stop.
 
-The process ends 10 seconds after the window closes, even if something is
-stuck. It prints `wineo-gui: gave up after 10 s on` and what it left, and exits
-0. Work ended this way doesn't clean up: a write leaves the old file and a
-stray `.tmp`, an import leaves its staging folder beside the destination, and
-a hook's program keeps running.
+The app ends within about 10 seconds of closing, even if something is stuck.
+It prints `wineo-gui: gave up after 10 s on` and what it left, and exits 0.
+While something is stuck, the window stays on screen, frozen, until then. Work
+ended this way doesn't clean up: a write leaves the old file and a stray
+`.tmp`, an import leaves its staging folder beside the destination, and a
+hook's program keeps running.
 
 ## Snapshots
 
