@@ -210,6 +210,28 @@ pub enum PlanError {
     Config(#[from] Error),
 }
 
+/// `KEY=VALUE` entries as a map, refusing a malformed or wineo-managed name.
+/// The first bad entry decides the error, and a repeated key keeps its last
+/// value.
+pub(super) fn parse_environment<S: AsRef<str>>(
+    entries: impl IntoIterator<Item = S>,
+) -> Result<BTreeMap<String, String>, PlanError> {
+    let mut env = BTreeMap::new();
+    for entry in entries {
+        let Some((key, value)) = entry.as_ref().split_once('=') else {
+            return Err(PlanError::EnvironmentFormat);
+        };
+        if key.is_empty() || key.contains(['=', '\0']) {
+            return Err(PlanError::EnvironmentName(key.to_owned()));
+        }
+        if crate::heroic::MANAGED_ENV.contains(&key) {
+            return Err(PlanError::ManagedEnvironment(key.to_owned()));
+        }
+        env.insert(key.to_owned(), value.to_owned());
+    }
+    Ok(env)
+}
+
 /// A Heroic game and everything decided about importing it: the settings it
 /// carries over, what happens to each thing Heroic reported, and where the
 /// prefix goes. Nothing is read or written after it's built, apart from the
@@ -621,19 +643,7 @@ impl GamePlan {
         &mut self,
         entries: impl IntoIterator<Item = S>,
     ) -> Result<(), PlanError> {
-        let mut env = BTreeMap::new();
-        for entry in entries {
-            let Some((key, value)) = entry.as_ref().split_once('=') else {
-                return Err(PlanError::EnvironmentFormat);
-            };
-            if key.is_empty() || key.contains(['=', '\0']) {
-                return Err(PlanError::EnvironmentName(key.to_owned()));
-            }
-            if crate::heroic::MANAGED_ENV.contains(&key) {
-                return Err(PlanError::ManagedEnvironment(key.to_owned()));
-            }
-            env.insert(key.to_owned(), value.to_owned());
-        }
+        let env = parse_environment(entries)?;
         self.import.env = env;
         for finding in &mut self.findings {
             if finding.issue.field.as_deref().is_some_and(|field| {

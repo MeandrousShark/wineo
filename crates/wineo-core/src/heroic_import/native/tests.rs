@@ -349,3 +349,27 @@ fn apply_native_refuses_when_heroic_changed() {
     ));
     assert!(!paths.environment_config("dusklight").exists());
 }
+
+#[test]
+fn native_environment_entries_are_refused_like_the_wine_plan_does() {
+    let root = tempdir().unwrap();
+    let source = dusklight(root.path(), r#"{"useGameMode":true}"#);
+    let mut plan = plan_native(&source, "dusk", None).unwrap();
+    plan.set_environment(["A=1", "B=two=2", "A=3"]).unwrap();
+    assert_eq!(plan.settings().env["A"], "3");
+    assert_eq!(plan.settings().env["B"], "two=2");
+    assert!(matches!(
+        plan.set_environment(["NOPE"]),
+        Err(PlanError::EnvironmentFormat)
+    ));
+    assert!(matches!(
+        plan.set_environment(["=x"]),
+        Err(PlanError::EnvironmentName(_))
+    ));
+    assert!(matches!(
+        plan.set_environment(["OK=1", "WINEPREFIX=/x"]),
+        Err(PlanError::ManagedEnvironment(name)) if name == "WINEPREFIX"
+    ));
+    // A refused edit leaves the environment as it was.
+    assert_eq!(plan.settings().env.len(), 2);
+}

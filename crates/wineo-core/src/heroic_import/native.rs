@@ -14,6 +14,7 @@ use crate::launch;
 use crate::name;
 use crate::paths::Paths;
 
+use super::plan::parse_environment;
 use super::{DesktopEntry, PlanError, Warning, default_name};
 
 /// The target a native import gets.
@@ -144,19 +145,7 @@ impl NativePlan {
         &mut self,
         entries: impl IntoIterator<Item = S>,
     ) -> Result<(), PlanError> {
-        let mut env = BTreeMap::new();
-        for entry in entries {
-            let Some((key, value)) = entry.as_ref().split_once('=') else {
-                return Err(PlanError::EnvironmentFormat);
-            };
-            if key.is_empty() || key.contains(['=', '\0']) {
-                return Err(PlanError::EnvironmentName(key.to_owned()));
-            }
-            if crate::heroic::MANAGED_ENV.contains(&key) {
-                return Err(PlanError::ManagedEnvironment(key.to_owned()));
-            }
-            env.insert(key.to_owned(), value.to_owned());
-        }
+        let env = parse_environment(entries)?;
         self.imported.env = env;
         self.imported.issues.retain(|issue| {
             !issue.field.as_deref().is_some_and(|field| {

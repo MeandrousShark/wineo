@@ -917,3 +917,25 @@ fn explicit_wayland_and_hdr_edits_follow_the_selected_runner() {
     assert!(!plan.settings().env.contains_key("PROTON_ENABLE_HDR"));
     assert!(!plan.resolved().enable_hdr);
 }
+
+#[test]
+fn environment_entries_parse_to_a_map_and_the_first_bad_entry_decides() {
+    let env = parse_environment(["A=1", "B=two=2", "C=", "A=3"]).unwrap();
+    assert_eq!(
+        env.into_iter().collect::<Vec<_>>(),
+        [("A", "3"), ("B", "two=2"), ("C", "")].map(|(k, v)| (k.to_owned(), v.to_owned()))
+    );
+    assert!(parse_environment(Vec::<String>::new()).unwrap().is_empty());
+    assert!(matches!(
+        parse_environment(["NOPE", "=x"]),
+        Err(PlanError::EnvironmentFormat)
+    ));
+    assert!(matches!(
+        parse_environment(["=x", "WINEPREFIX=/x"]),
+        Err(PlanError::EnvironmentName(name)) if name.is_empty()
+    ));
+    assert!(matches!(
+        parse_environment(["WINEPREFIX=/x", "NOPE"]),
+        Err(PlanError::ManagedEnvironment(name)) if name == "WINEPREFIX"
+    ));
+}
