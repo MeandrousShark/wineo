@@ -74,7 +74,7 @@ impl Fixture {
         // the sandbox cannot inherit the real PATH. It gets links to the few
         // tools the fake scripts reach for instead.
         for tool in [
-            "sh", "sleep", "rm", "kill", "printf", "seq", "touch", "head", "tr", "mkdir",
+            "sh", "sleep", "rm", "mv", "kill", "printf", "seq", "touch", "head", "tr", "mkdir",
         ] {
             if let Some(real) = find_on_path(tool) {
                 std::os::unix::fs::symlink(real, sandbox.join(tool)).unwrap();

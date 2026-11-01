@@ -92,6 +92,10 @@ pub const FAKE_WINE: &str = concat!(
     "#!/bin/sh\n",
     fake_cmd!(),
     r#"pids="$WINEPREFIX/fake-pids"
+record_pids() {
+    # Renamed into place, so nothing ever reads a half-written file.
+    echo "$*" >"$pids.$$" && mv -f "$pids.$$" "$pids"
+}
 # wineo lowers the core limit right after spawning, so wait for that to land.
 record_core_when_one() {
     i=0
@@ -176,12 +180,12 @@ noisy)
 noisy-exit)
     # Exits right away, leaving something in the prefix still writing.
     (sleep 0.5; burst; burst; rm -f "$pids") &
-    echo "$! $!" >"$pids"
+    record_pids "$! $!"
     exit 0
     ;;
 handoff)
     (sleep 2; touch "$WINEPREFIX/handoff-done"; rm -f "$pids") &
-    echo "$! $!" >"$pids"
+    record_pids "$! $!"
     exit 0
     ;;
 break-wineserver)
@@ -206,7 +210,7 @@ if [ "$1" = stubborn ]; then
 else
     trap 'kill "$!" 2>/dev/null; rm -f "$pids"; exit 0' TERM
 fi
-echo "$$ $!" >"$pids"
+record_pids "$$ $!"
 wait
 rm -f "$pids"
 "#
@@ -220,7 +224,16 @@ case "$1" in
     # Gives up after a minute, so a recorded pid that never goes away can't hold
     # it forever.
     i=0
-    while [ "$i" -lt 600 ] && read -r program _ 2>/dev/null <"$pids" && kill -0 "$program" 2>/dev/null; do
+    while [ "$i" -lt 600 ] && read -r program sleeper 2>/dev/null <"$pids" &&
+        read -r _ _ state _ 2>/dev/null <"/proc/$program/stat"; do
+        # wineo reaps the program only once this returns, so a zombie is as
+        # gone as it gets, the way the real wineserver sees it disconnect. The
+        # pids go too: returning ends a run, and `-k` may not have got to them.
+        if [ "$state" = Z ]; then
+            kill -9 "$sleeper" 2>/dev/null
+            rm -f "$pids"
+            break
+        fi
         sleep 0.1
         i=$((i + 1))
     done
@@ -262,6 +275,10 @@ if [ -z "$1" ]; then
 fi
 echo "umu-run: FAKE_VAR=${FAKE_VAR-}"
 pids="$WINEPREFIX/fake-pids"
+record_pids() {
+    # Renamed into place, so nothing ever reads a half-written file.
+    echo "$*" >"$pids.$$" && mv -f "$pids.$$" "$pids"
+}
 case "$1" in
 cmd)
     case "$3" in *.bat)
@@ -293,7 +310,7 @@ stubborn)
     # Nothing outside the container can ask it to close, so only SIGKILL to
     # the process group ends this.
     trap '' TERM
-    echo "$$ $$" >"$pids"
+    record_pids "$$ $$"
     # Gives up after a minute, so a killed test can't leave it looping.
     i=0
     while [ "$i" -lt 600 ]; do
@@ -319,7 +336,7 @@ handoff-held)
         touch "$WINEPREFIX/handoff-done"
         rm -f "$pids"
     ) &
-    echo "$!" >"$pids"
+    record_pids "$!"
     exit 0
     ;;
 stubborn-child)
@@ -335,13 +352,13 @@ stubborn-child)
         done
     ) &
     trap 'exit 0' TERM
-    echo "$$ $!" >"$pids"
+    record_pids "$$ $!"
     wait
     ;;
 esac
 sleep 60 &
 trap 'kill "$!" 2>/dev/null; rm -f "$pids"; exit 0' TERM
-echo "$$ $!" >"$pids"
+record_pids "$$ $!"
 wait
 rm -f "$pids"
 "#

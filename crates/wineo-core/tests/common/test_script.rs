@@ -9,6 +9,8 @@ use std::io::{self, Write};
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Output, Stdio};
+use std::thread;
+use std::time::Duration;
 
 use rustix::process::{Pid, PidfdFlags, Signal, kill_process_group, pidfd_open, pidfd_send_signal};
 
@@ -188,8 +190,31 @@ fn kill_recorded(prefix: &Path, pids: &Path) {
     }
 }
 
+/// The environment of a process, or None once there is nothing left to kill.
+///
+/// A process partway through exec reads as having an empty environment, and
+/// one a fake has only just started often is. Taking that for a stranger would
+/// leave it running, so this waits it out. The caller's pidfd pins the number,
+/// so a process that took it over meanwhile can't be signaled.
+fn environment_of(pid: i32) -> Option<Vec<u8>> {
+    for _ in 0..500 {
+        let environment = fs::read(format!("/proc/{pid}/environ")).ok()?;
+        if !environment.is_empty() {
+            return Some(environment);
+        }
+        let stat = fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+        // The state follows the name, which may hold spaces and parentheses.
+        let state = stat.rsplit(')').next()?.split_whitespace().next()?;
+        if matches!(state, "Z" | "X") {
+            return None;
+        }
+        thread::sleep(Duration::from_millis(10));
+    }
+    None
+}
+
 fn runs_in_prefix(pid: i32, prefix: &Path) -> bool {
-    let Ok(environment) = fs::read(format!("/proc/{pid}/environ")) else {
+    let Some(environment) = environment_of(pid) else {
         return false;
     };
     let prefix = fs::canonicalize(prefix).unwrap_or_else(|_| prefix.to_owned());
