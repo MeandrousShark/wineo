@@ -32,7 +32,7 @@ pub(crate) fn control<'a, M: Clone + 'a>(
         id: id.into(),
         on_press,
         mouse_focus: true,
-        row: false,
+        leaves_submit: false,
     })
 }
 
@@ -44,13 +44,35 @@ pub(crate) fn row<'a, M: Clone + 'a>(
     id: impl Into<iced::widget::Id>,
     on_press: M,
 ) -> Element<'a, M> {
+    leaves_submit(content, enabled, id, on_press)
+}
+
+/// A button that answers a question inside a flow. Like a row it leaves
+/// Ctrl+Enter alone, so submitting never also answers the question. This is
+/// not the default for every control: an uncaptured Ctrl+Enter also reaches
+/// the Library's Enter binding, which could start the selected game.
+pub(crate) fn answer<'a, M: Clone + 'a>(
+    content: Element<'a, M>,
+    enabled: bool,
+    id: impl Into<iced::widget::Id>,
+    on_press: M,
+) -> Element<'a, M> {
+    leaves_submit(content, enabled, id, on_press)
+}
+
+fn leaves_submit<'a, M: Clone + 'a>(
+    content: Element<'a, M>,
+    enabled: bool,
+    id: impl Into<iced::widget::Id>,
+    on_press: M,
+) -> Element<'a, M> {
     Element::new(FocusControl {
         content,
         enabled,
         id: id.into(),
         on_press,
         mouse_focus: true,
-        row: true,
+        leaves_submit: true,
     })
 }
 
@@ -69,7 +91,7 @@ pub(crate) fn keyboard_control<'a, M: Clone + 'a>(
         id: id.into(),
         on_press,
         mouse_focus: false,
-        row: false,
+        leaves_submit: false,
     })
 }
 
@@ -183,7 +205,7 @@ struct FocusControl<'a, M, R: AdvancedRenderer = iced::Renderer> {
     id: iced::widget::Id,
     on_press: M,
     mouse_focus: bool,
-    row: bool,
+    leaves_submit: bool,
 }
 
 #[derive(Default)]
@@ -301,7 +323,7 @@ where
                 ..
             }) if self.enabled
                 && state.focused
-                && !(self.row
+                && !(self.leaves_submit
                     && modifiers.control()
                     && *key == iced::keyboard::Key::Named(iced::keyboard::key::Named::Enter)) =>
             {
@@ -409,7 +431,7 @@ mod tests {
             id: UNDO_ID.into(),
             on_press: crate::Message::Undo,
             mouse_focus: true,
-            row: false,
+            leaves_submit: false,
         });
         let mut tree = tree::Tree::new(widget.as_widget());
         let bounds = Size::new(100.0, 32.0);
@@ -450,7 +472,7 @@ mod tests {
             id: UNDO_ID.into(),
             on_press: crate::Message::Undo,
             mouse_focus: true,
-            row: false,
+            leaves_submit: false,
         });
         let mut tree = tree::Tree::new(widget.as_widget());
         let bounds = Size::new(100.0, 32.0);
@@ -495,7 +517,7 @@ mod tests {
             id: UNDO_ID.into(),
             on_press: crate::Message::Undo,
             mouse_focus: true,
-            row: false,
+            leaves_submit: false,
         });
         let mut tree = tree::Tree::new(widget.as_widget());
         let bounds = Size::new(100.0, 32.0);
@@ -642,7 +664,7 @@ mod tests {
                         id: id.into(),
                         on_press: on_press.clone(),
                         mouse_focus: true,
-                        row: false,
+                        leaves_submit: false,
                     });
                 let mut tree = tree::Tree::new(widget.as_widget());
                 tree.state.downcast_mut::<State>().focus();

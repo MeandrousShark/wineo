@@ -118,7 +118,7 @@ pub(crate) fn offer_card<'a, M: Clone + 'static>(
             text(OFFER).size(14).color(palette.foreground),
             row![
                 Space::new().width(Fill),
-                crate::focus_button::control(
+                crate::focus_button::answer(
                     ui::secondary_button("No", palette)
                         .on_press_maybe(enabled.then(|| no.clone()))
                         .into(),
@@ -126,7 +126,7 @@ pub(crate) fn offer_card<'a, M: Clone + 'static>(
                     NO_ID,
                     no,
                 ),
-                crate::focus_button::control(
+                crate::focus_button::answer(
                     ui::accent_button("Yes", palette.primary, enabled, yes.clone()),
                     enabled,
                     YES_ID,
@@ -182,5 +182,31 @@ mod tests {
             "proton (GE-Proton11-3, Steam)"
         );
         assert_eq!(noted("fake", "fake", None), "fake (fake)");
+    }
+
+    #[test]
+    fn ctrl_enter_submits_without_answering_the_offer() {
+        use crate::focus_button::press;
+        use crate::layout_probe::lay_out;
+        use iced::advanced::widget::operation::focusable;
+        use iced::event::Status;
+        use iced::keyboard::{Modifiers, key::Named};
+
+        for (id, answer) in [(NO_ID, false), (YES_ID, true)] {
+            let mut laid = lay_out(
+                offer_card(Palette::DARK, true, |on| on),
+                iced::Size::new(600.0, 200.0),
+            );
+            laid.run(Box::new(focusable::focus::<()>(iced::widget::Id::new(id))));
+            // The flow's submit gets it, and nothing is answered.
+            let (messages, status) = press(&mut laid, Named::Enter, Modifiers::CTRL);
+            assert!(messages.is_empty(), "{id}");
+            assert_eq!(status, Status::Ignored, "{id}");
+            for key in [Named::Enter, Named::Space] {
+                let (messages, status) = press(&mut laid, key, Modifiers::empty());
+                assert_eq!(messages, [answer], "{id} {key:?}");
+                assert_eq!(status, Status::Captured, "{id} {key:?}");
+            }
+        }
     }
 }
