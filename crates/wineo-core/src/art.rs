@@ -1248,7 +1248,6 @@ impl ArtConfig {
 
     /// `path` is only used for error messages.
     pub fn parse(path: &Path, text: &str) -> Result<Self> {
-        config::check_schema(path, text)?;
         let (raw, deprecated): (RawArt, _) =
             config::parse_config(path, text, crate::deprecated::FileKind::Art)?;
         let mut art = raw

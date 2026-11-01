@@ -812,7 +812,6 @@ impl GlobalConfig {
 
     /// `path` is only used for error messages.
     pub fn parse(path: &Path, text: &str) -> Result<Self> {
-        check_schema(path, text)?;
         let (mut config, deprecated): (Self, _) = parse_config(path, text, FileKind::Global)?;
         config.deprecated = deprecated;
         validate_env(&config.env).map_err(|message| invalid(path, message))?;
@@ -864,7 +863,6 @@ impl GlobalConfig {
 impl EnvironmentConfig {
     /// `path` is only used for error messages.
     pub fn parse(path: &Path, text: &str) -> Result<Self> {
-        check_schema(path, text)?;
         let (raw, deprecated): (RawEnvironmentConfig, _) =
             parse_config(path, text, FileKind::Environment)?;
         let name = path.file_stem().unwrap_or_default().to_string_lossy();
@@ -1019,9 +1017,13 @@ struct SchemaProbe {
 /// newer wineo is reported as such rather than as unknown keys.
 pub(crate) fn check_schema(path: &Path, text: &str) -> Result<()> {
     let probe: SchemaProbe = parse_toml(path, text)?;
-    match probe.schema_version {
+    check_schema_value(path, probe.schema_version.as_ref())
+}
+
+fn check_schema_value(path: &Path, found: Option<&toml::Value>) -> Result<()> {
+    match found {
         None => Ok(()),
-        Some(toml::Value::Integer(version)) if version == i64::from(SCHEMA_VERSION) => Ok(()),
+        Some(toml::Value::Integer(version)) if *version == i64::from(SCHEMA_VERSION) => Ok(()),
         Some(found) => Err(Error::SchemaVersion {
             path: path.to_owned(),
             found: found.to_string(),
@@ -1044,20 +1046,32 @@ pub(crate) fn stamp_schema(doc: &mut DocumentMut) {
     }
 }
 
+#[cfg(test)]
+thread_local! {
+    /// How many times config text was parsed on this thread, so a test can
+    /// pin that loading parses it no more often than it must.
+    static PARSES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 pub(crate) fn parse_toml<T: serde::de::DeserializeOwned>(path: &Path, text: &str) -> Result<T> {
+    #[cfg(test)]
+    PARSES.with(|parses| parses.set(parses.get() + 1));
     toml::from_str(text).map_err(|source| deserialize_error(path, source))
 }
 
-/// Parses a config with its deprecated keys moved to their new names, and
-/// says which were. Deserializing from the text, rather than the parsed
-/// table, keeps line and column in errors, so that is only skipped for a
-/// file that used an old name.
+/// Checks the schema version, then parses a config with its deprecated keys
+/// moved to their new names, and says which were. The version is read from
+/// the table the deprecated-key pass needs anyway, so a newer file is still
+/// reported as such before unknown keys. Deserializing from the text, rather
+/// than the parsed table, keeps line and column in errors, so that is only
+/// skipped for a file that used an old name.
 pub(crate) fn parse_config<T: serde::de::DeserializeOwned>(
     path: &Path,
     text: &str,
     file: FileKind,
 ) -> Result<(T, Vec<Moved>)> {
     let mut table: toml::Table = parse_toml(path, text)?;
+    check_schema_value(path, table.get("schema_version"))?;
     let moved = deprecated::apply(file, path, &mut table)?;
     if moved.is_empty() {
         return Ok((parse_toml(path, text)?, moved));

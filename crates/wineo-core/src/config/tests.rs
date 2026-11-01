@@ -1275,3 +1275,77 @@ fn a_file_without_deprecated_keys_errors_exactly_as_before() {
         assert!(new.contains("line "), "{new}");
     }
 }
+
+/// What loading did before the version came from the table `parse_config`
+/// already parses: a separate probe parse, then the same function.
+fn probe_first<T: serde::de::DeserializeOwned>(file: FileKind, text: &str) -> String {
+    let path = Path::new(PATH);
+    let result = check_schema(path, text).and_then(|()| parse_config::<T>(path, text, file));
+    match result {
+        Ok((_, moved)) => format!("ok {moved:?}"),
+        Err(err) => crate::error::chain(&err),
+    }
+}
+
+fn load_text<T: serde::de::DeserializeOwned>(file: FileKind, text: &str) -> String {
+    match parse_config::<T>(Path::new(PATH), text, file) {
+        Ok((_, moved)) => format!("ok {moved:?}"),
+        Err(err) => crate::error::chain(&err),
+    }
+}
+
+#[test]
+fn the_version_check_inside_parse_config_reports_what_a_separate_probe_did() {
+    let env = "prefix = '/p'\nrunner = 'wine'\narch = 'win64'\n";
+    for text in [
+        "schema_version = 1\nstop_timeout = 3\n".to_owned(),
+        "schema_version = 2\nstop_timeout = 3\n".to_owned(),
+        "schema_version = 2\nstop_timeout = 'soon'\nnew_key = 1\n".to_owned(),
+        "schema_version = '1'\n".to_owned(),
+        "schema_version = 2\ntest_old_stop_timeout = 3\nstop_timeout = 4\n".to_owned(),
+        "schema_version = 1\ntest_old_stop_timeout = 3\nstop_timeout = 4\n".to_owned(),
+        "test_old_stop_timeout = 3\n".to_owned(),
+        "schema_version = 2\nstop_timeout = \n".to_owned(),
+        "schema_version = 1\nschema_version = 1\n".to_owned(),
+        "stop_timeout = 3\n[defaults\n".to_owned(),
+        "[defaults]\nschema_version = 1\n".to_owned(),
+        "\n\nschema_version = 1\nstop_timout = 3\n".to_owned(),
+    ] {
+        assert_eq!(
+            load_text::<GlobalConfig>(FileKind::Global, &text),
+            probe_first::<GlobalConfig>(FileKind::Global, &text),
+            "{text}"
+        );
+    }
+    for text in [
+        format!("schema_version = 2\n{env}new_key = 1\n"),
+        format!("schema_version = 1\n{env}test_old_gamemode = true\n"),
+        format!("schema_version = 2\n{env}test_old_gamemode = true\ngamemode = false\n"),
+        format!("schema_version = 1\n{env}test_old_gamemode = true\ngamemode = false\n"),
+        format!("{env}gamemode = 'yes'\n"),
+        format!("schema_version = 1\n{env}gamemod = true\n"),
+        format!("schema_version = 3\n{env}[targets.game\n"),
+    ] {
+        assert_eq!(
+            load_text::<RawEnvironmentConfig>(FileKind::Environment, &text),
+            probe_first::<RawEnvironmentConfig>(FileKind::Environment, &text),
+            "{text}"
+        );
+    }
+}
+
+#[test]
+fn loading_a_config_parses_its_text_twice() {
+    let env = "prefix = '/p'\nrunner = 'wine'\narch = 'win64'\n";
+    let parses = |load: &dyn Fn()| {
+        PARSES.with(|parses| parses.set(0));
+        load();
+        PARSES.with(std::cell::Cell::get)
+    };
+    // Once for the table the version and deprecated keys are read from, once
+    // for the typed value, which is what keeps line and column in errors.
+    assert_eq!(parses(&|| drop(global("stop_timeout = 3\n"))), 2);
+    assert_eq!(parses(&|| drop(environment(env))), 2);
+    // A file with an old name is typed from the table it already has.
+    assert_eq!(parses(&|| drop(global("test_old_stop_timeout = 3\n"))), 1);
+}
