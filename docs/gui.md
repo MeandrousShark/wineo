@@ -919,7 +919,9 @@ lists, and the version picker:
 | Ctrl+Enter | Submit the dialog, without choosing the row |
 
 The first row has focus when a list appears, and **Add**'s 1 to 5 keys still
-work with a row focused.
+work with a row focused. The version picker has nothing to submit, so Ctrl+Enter
+does nothing there. A runner offer's **No** and **Yes** work like rows: Enter or
+Space answers, and Ctrl+Enter submits without answering.
 
 In the SteamGridDB picker:
 

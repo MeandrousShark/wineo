@@ -115,7 +115,9 @@ program list, Heroic's and GOG's lists, and the version picker (plan
 0056): the first row has focus when a list
 appears, Up and Down move between rows and stop at the ends, Enter or Space
 chooses, and Ctrl+Enter still submits the dialog without choosing the row.
-When a list changes, focus stays on the same row if it is still there and
+A runner offer's No and Yes leave Ctrl+Enter alone the same way, but this
+isn't every control's default: left uncaptured outside a flow, Ctrl+Enter
+reaches the Library's Enter binding. When a list changes, focus stays on the same row if it is still there and
 moves to the nearest otherwise.
 
 Scrollbars use a thin rail: 6 px wide with a 4 px thumb in the border color

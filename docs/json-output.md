@@ -323,7 +323,8 @@ leaves it in `problems`, with its `fix` label, and lists it in neither
       "fix": "Remove oldb's leftover state",
       "message": "environment `oldb` is busy: a snapshot operation is running"
     }
-  ]
+  ],
+  "notes": []
 }
 ```
 
@@ -331,6 +332,10 @@ leaves it in `problems`, with its `fix` label, and lists it in neither
 behind by an environment that no longer exists. `level` is `error` or
 `warning`. `fix` is the label of the fix that would solve the problem, or
 `null` when there isn't one. Paths under the home dir are shown with `~`.
+
+`notes` is always there, and it's empty unless `--fix` had something to say. Each
+one is a flat string, in the order it came up: what a library repair did, which
+can run to two lines, or a warning, which also goes to stderr.
 
 `code` names the check, so a script can match on it instead of the message.
 The codes are stable:
