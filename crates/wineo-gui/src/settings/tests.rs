@@ -3662,3 +3662,5 @@ mod tabs;
 mod appearance_tab;
 
 mod custom_themes;
+
+mod key_rows;
