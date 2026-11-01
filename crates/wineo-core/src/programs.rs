@@ -235,7 +235,7 @@ fn collect_executables(drive_c: &Path, advertised: &BTreeSet<String>, listing: &
 /// Shortcuts first, then by name as someone reads it rather than by byte, so
 /// `autorun` does not sort after `DXSETUP`.
 fn tidy(programs: &mut Vec<Program>) {
-    programs.sort_by_key(|program| {
+    programs.sort_by_cached_key(|program| {
         (
             program.source,
             program.name.to_lowercase(),

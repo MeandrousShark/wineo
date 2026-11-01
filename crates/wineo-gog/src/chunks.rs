@@ -72,15 +72,14 @@ impl LinkEndpoint {
             return None;
         }
         let suffix = format!("{}/{}/{hash}", &hash[0..2], &hash[2..4]);
-        let mut parameters = self.parameters.clone();
-        let address = match parameters.get_mut("path") {
+        let address = match self.parameters.get("path") {
             Some(path) => {
-                *path = format!("{}/{suffix}", path.trim_end_matches('/'));
-                fill(&self.url_format, &parameters)
+                let path = format!("{}/{suffix}", path.trim_end_matches('/'));
+                fill(&self.url_format, &self.parameters, Some(&path))
             }
             None => format!(
                 "{}/{suffix}",
-                fill(&self.url_format, &parameters).trim_end_matches('/')
+                fill(&self.url_format, &self.parameters, None).trim_end_matches('/')
             ),
         };
         Url::parse(&address).ok()
@@ -92,17 +91,22 @@ impl LinkEndpoint {
 }
 
 /// Fills each `{key}` in one pass, so a value that looks like a key is
-/// left alone. Unknown keys stay as written.
-fn fill(format: &str, parameters: &BTreeMap<String, String>) -> String {
+/// left alone. Unknown keys stay as written. `path` replaces the `path`
+/// parameter without copying the others.
+fn fill(format: &str, parameters: &BTreeMap<String, String>, path: Option<&str>) -> String {
     let mut filled = String::with_capacity(format.len());
     let mut rest = format;
     while let Some(start) = rest.find('{') {
         filled.push_str(&rest[..start]);
         let after = &rest[start + 1..];
-        match after
-            .find('}')
-            .and_then(|end| Some((parameters.get(&after[..end])?, end)))
-        {
+        match after.find('}').and_then(|end| {
+            let key = &after[..end];
+            let value = match path {
+                Some(path) if key == "path" => path,
+                _ => parameters.get(key)?,
+            };
+            Some((value, end))
+        }) {
             Some((value, end)) => {
                 filled.push_str(value);
                 rest = &after[end + 1..];

@@ -75,6 +75,21 @@ fn a_chunk_url_appends_the_hash_to_the_path_and_fills_the_template() {
             .is_none()
     );
     assert!(fastly.chunk_url("ab").is_none());
+    // Slashes at the end of the path collapse to one, and a path that looks
+    // like a key is used as written. The parameters stay as they were.
+    let odd = endpoint(
+        "{base_url}{path}?p={path}&t={token}",
+        &[
+            ("base_url", "https://a"),
+            ("path", "/store//{token}///"),
+            ("token", "T"),
+        ],
+    );
+    assert_eq!(
+        odd.chunk_url(MD5).unwrap().as_str(),
+        format!("https://a/store//%7Btoken%7D/01/23/{MD5}?p=/store//{{token}}/01/23/{MD5}&t=T")
+    );
+    assert_eq!(odd.parameters["path"], "/store//{token}///");
 }
 
 /// The answer GOG gave for the dependency store on 2026-10-14: plain

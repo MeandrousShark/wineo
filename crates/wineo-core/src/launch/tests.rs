@@ -1105,3 +1105,49 @@ fn wineprefix_overrides_are_refused_only_for_wine() {
     let merged = merge(None, &global, &native("dusk", ""), &overrides).unwrap();
     assert_eq!(merged["WINEPREFIX"], "/x");
 }
+
+#[test]
+fn checking_a_native_exe_takes_path_from_the_environment_then_global_then_the_inherited_one() {
+    let f = fixture();
+    let home = f.prefix.parent().unwrap();
+    let from_global = home.join("global-bin");
+    let from_env = home.join("env-bin");
+    for dir in [&from_global, &from_env] {
+        script(&dir.join("dusk"), 0o755);
+    }
+    script(&from_global.join("only-global"), 0o755);
+    let path_of = |dir: &Path| BTreeMap::from([("PATH".to_owned(), dir.display().to_string())]);
+    let global = GlobalConfig {
+        env: path_of(&from_global),
+        ..GlobalConfig::default()
+    };
+    let check = |global: &GlobalConfig, env: &BTreeMap<String, String>, exe: &str| {
+        check_native_exe(&f.paths, global, "dusk", env, exe)
+    };
+    let none = BTreeMap::new();
+
+    assert_eq!(
+        check(&global, &none, "dusk").unwrap(),
+        from_global.join("dusk")
+    );
+    assert_eq!(
+        check(&global, &path_of(&from_env), "dusk").unwrap(),
+        from_env.join("dusk")
+    );
+    // The environment's PATH replaces the global one rather than adding to it.
+    assert!(matches!(
+        check(&global, &path_of(&from_env), "only-global"),
+        Err(Error::NotOnPath(_))
+    ));
+    // With neither set, the PATH wineo inherited applies.
+    let default = GlobalConfig::default();
+    let inherited = check(&default, &none, "sh").unwrap();
+    assert!(
+        inherited.is_absolute() && inherited.ends_with("sh"),
+        "{inherited:?}"
+    );
+    assert!(matches!(
+        check(&default, &none, "dusk"),
+        Err(Error::NotOnPath(_))
+    ));
+}

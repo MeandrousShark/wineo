@@ -917,15 +917,19 @@ pub fn check_native_exe(
     env: &BTreeMap<String, String>,
     exe: &str,
 ) -> Result<PathBuf> {
-    let mut merged = global.env.clone();
-    merged.extend(env.clone());
-    resolve_native_exe(paths, environment, exe, &native_path_var(&merged)).map(|(exe, _)| exe)
+    // Looked up in place: the environment's `[env]` wins over the global one.
+    let path = env.get("PATH").or_else(|| global.env.get("PATH"));
+    resolve_native_exe(paths, environment, exe, &path_or_inherited(path)).map(|(exe, _)| exe)
 }
 
 /// The PATH a native program gets: its own from `env`, or else wineo's, which
 /// it inherits.
 pub fn native_path_var(env: &BTreeMap<String, String>) -> OsString {
-    match env.get("PATH") {
+    path_or_inherited(env.get("PATH"))
+}
+
+fn path_or_inherited(path: Option<&String>) -> OsString {
+    match path {
         Some(path) => OsString::from(path),
         None => std::env::var_os("PATH").unwrap_or_default(),
     }
