@@ -714,6 +714,26 @@ pub fn summary(
     Ok((summary, warnings))
 }
 
+/// `summary` for an environment whose config the caller has already loaded,
+/// so it isn't read and parsed again.
+pub(crate) fn summary_for_config(
+    paths: &Paths,
+    name: &str,
+    config: &crate::config::EnvironmentConfig,
+    now: Timestamp,
+    tz: &dyn Zone,
+) -> Result<(Summary, Vec<String>)> {
+    let (summary, _, warnings) = summary_of(
+        paths,
+        name,
+        Some(config),
+        &SteamPlaytimes::new(paths),
+        now,
+        tz,
+    )?;
+    Ok((summary, warnings))
+}
+
 /// Reads a Wineo session log with its summary, returning no log for Steam.
 pub fn summary_with_log(
     paths: &Paths,

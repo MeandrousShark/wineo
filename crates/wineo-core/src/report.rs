@@ -361,9 +361,10 @@ impl EnvironmentReport {
             .and_then(|run| environment.config.targets.get(&run.target));
         let target_exe = target.map(|target| target.exe.clone());
         let components = components(paths, global, environment);
-        let (summary, _) = stats::summary(
+        let (summary, _) = stats::summary_for_config(
             paths,
             &environment.name,
+            &environment.config,
             Timestamp::now(),
             &LocalZone::new(),
         )?;

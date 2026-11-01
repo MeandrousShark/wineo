@@ -337,3 +337,21 @@ fn target_exe_is_looked_up_from_the_current_config() {
     let report = EnvironmentReport::load(&paths, &GlobalConfig::default(), &env).unwrap();
     assert_eq!(report.target_exe, None);
 }
+
+#[test]
+fn a_report_does_not_reread_the_config_it_was_given() {
+    let root = tempfile::tempdir().unwrap();
+    let paths = test_paths(root.path());
+    fs::create_dir_all(paths.environments_dir()).unwrap();
+    fs::write(
+        paths.environment_config("game"),
+        "prefix = \"~/prefix\"\nrunner = \"proton-ge\"\narch = \"win64\"\n",
+    )
+    .unwrap();
+    let env = Environment::load(&paths, "game").unwrap();
+
+    crate::read_log::clear();
+    let report = EnvironmentReport::load(&paths, &GlobalConfig::default(), &env).unwrap();
+    assert_eq!(report.name, "game");
+    assert_eq!(crate::read_log::count("game.toml"), 0);
+}

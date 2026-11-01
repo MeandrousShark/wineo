@@ -1034,3 +1034,29 @@ fn a_log_that_cannot_be_read_errors_as_before_and_is_not_cached() {
     }
     assert_eq!(cache.logs.len(), 1);
 }
+
+#[test]
+fn a_summary_from_a_loaded_config_matches_the_one_that_rereads_it() {
+    let root = tempfile::tempdir().unwrap();
+    let paths = tag_paths(root.path());
+    fs::create_dir_all(paths.environments_dir()).unwrap();
+    fs::write(
+        paths.environment_config("steamy"),
+        "kind = 'proxied'\nlauncher = 'steam'\napp_id = '10'\n",
+    )
+    .unwrap();
+    tagged_environment(&paths, "wine", &[]);
+    steam_played(&paths, &[("10", 60)]);
+    append_session(&paths, "wine", "game", "2026-09-20T19:00:00Z", 90);
+    let now = ts("2026-09-21T00:00:00Z");
+    for name in ["steamy", "wine"] {
+        let config = Environment::load(&paths, name).unwrap().config;
+        let again = summary(&paths, name, now, &TimeZone::UTC).unwrap();
+        let loaded = summary_for_config(&paths, name, &config, now, &TimeZone::UTC).unwrap();
+        assert_eq!(loaded, again, "{name}");
+    }
+    let steamy = summary(&paths, "steamy", now, &TimeZone::UTC).unwrap().0;
+    assert_eq!((steamy.source, steamy.seconds), (Source::Steam, 3600));
+    let wine = summary(&paths, "wine", now, &TimeZone::UTC).unwrap().0;
+    assert_eq!((wine.source, wine.seconds), (Source::Wineo, 90));
+}
