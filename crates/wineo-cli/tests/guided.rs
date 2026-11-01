@@ -807,18 +807,20 @@ fn guided_new_makes_an_empty_environment_with_nothing_switched_on() {
 }
 
 #[test]
-fn the_new_review_asks_yes_or_no_and_enter_accepts() {
-    let f = Fixture::new();
-    let mut pty = f.new_guided(&[]);
-    plain_answers(&mut pty, "game", "3");
-    pty.expect("Ready to create game:");
-    pty.expect("Esc to go back, Ctrl+C to cancel.");
-    pty.expect("Create it? [Y/n]: ");
-    pty.send("y");
-    pty.expect("Created game.");
-    let (status, output) = pty.finish();
-    assert!(status.success(), "{output}");
-    assert!(f.registered("game"));
+fn the_new_review_asks_yes_or_no_and_enter_and_y_accept() {
+    for answer in ["", "y"] {
+        let f = Fixture::new();
+        let mut pty = f.new_guided(&[]);
+        plain_answers(&mut pty, "game", "3");
+        pty.expect("Ready to create game:");
+        pty.expect("Esc to go back, Ctrl+C to cancel.");
+        pty.expect("Create it? [Y/n]: ");
+        pty.send(answer);
+        pty.expect("Created game.");
+        let (status, output) = pty.finish();
+        assert!(status.success(), "{answer:?}: {output}");
+        assert!(f.registered("game"), "{answer:?}");
+    }
 }
 
 #[test]
