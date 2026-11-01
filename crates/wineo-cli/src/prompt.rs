@@ -637,6 +637,35 @@ impl<I: Input, W: Write> Prompt<I, W> {
     }
 
     pub fn confirm(&mut self, label: &str, default: bool) -> anyhow::Result<Reply<bool>> {
+        self.confirm_with(label, default, None)
+    }
+
+    /// A review that ends in a yes or no, like `wineo new`'s. It also takes
+    /// `b` to go back and `q` to cancel, the way `review` does, so the
+    /// answers people already type there keep working.
+    pub fn confirm_review(
+        &mut self,
+        heading: &str,
+        label: &str,
+        back: bool,
+    ) -> anyhow::Result<Reply<bool>> {
+        writeln!(
+            self.out,
+            "{}",
+            crate::style::title_with_color(heading, self.color)
+        )?;
+        writeln!(self.out)?;
+        self.confirm_hint(back)?;
+        self.confirm_with(label, true, Some(back))
+    }
+
+    /// `shortcuts` is `Some(back)` when `b` and `q` are answers too.
+    fn confirm_with(
+        &mut self,
+        label: &str,
+        default: bool,
+        shortcuts: Option<bool>,
+    ) -> anyhow::Result<Reply<bool>> {
         if self.first_question {
             self.say(self.key_hint(false))?;
         }
@@ -647,6 +676,11 @@ impl<I: Input, W: Write> Prompt<I, W> {
                     Reply::Value(answer) => answer,
                     Reply::Back => return Ok(Reply::Back),
                 };
+                if let Some(back) = shortcuts
+                    && let Some(reply) = self.special(&answer, back)?
+                {
+                    return Ok(reply);
+                }
                 match answer.to_ascii_lowercase().as_str() {
                     "" => return Ok(Reply::Value(default)),
                     "y" | "yes" => return Ok(Reply::Value(true)),

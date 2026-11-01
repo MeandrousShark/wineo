@@ -370,6 +370,52 @@ fn confirm_takes_y_n_and_the_default() {
 }
 
 #[test]
+fn a_review_confirm_asks_yes_or_no_and_keeps_b_and_q() {
+    let mut p = prompt(&[""]);
+    assert_eq!(
+        p.confirm_review("Review:", "Create it?", true).unwrap(),
+        Reply::Value(true)
+    );
+    assert_eq!(
+        printed(&p),
+        "Review:\n\nEsc to go back, Ctrl+C to cancel.\nCreate it? [Y/n]: "
+    );
+    for (answer, expected) in [("y", true), ("YES", true), ("n", false), ("no", false)] {
+        let mut p = prompt(&[answer]);
+        assert_eq!(
+            p.confirm_review("Review:", "Create it?", true).unwrap(),
+            Reply::Value(expected),
+            "{answer}"
+        );
+    }
+    let mut p = prompt(&["b"]);
+    assert_eq!(
+        p.confirm_review("Review:", "Create it?", true).unwrap(),
+        Reply::Back
+    );
+    let mut p = prompt(&["q"]);
+    let error = p.confirm_review("Review:", "Create it?", true).unwrap_err();
+    assert!(error.is::<Canceled>());
+}
+
+#[test]
+fn a_review_confirm_without_back_treats_b_as_a_wrong_answer() {
+    let mut p = prompt(&["b", "n"]);
+    assert_eq!(
+        p.confirm_review("Review:", "Create it?", false).unwrap(),
+        Reply::Value(false)
+    );
+    assert!(printed(&p).contains("Answer y or n\n"));
+}
+
+#[test]
+fn a_plain_confirm_still_reads_b_and_q_as_wrong_answers() {
+    let mut p = prompt(&["b", "q", "y"]);
+    assert_eq!(p.confirm("Go?", true).unwrap(), Reply::Value(true));
+    assert_eq!(printed(&p).matches("Answer y or n\n").count(), 2);
+}
+
+#[test]
 fn a_list_keeps_each_value_whole() {
     let mut p = prompt(&["-config", r"C:\My Games\settings.ini", "  spaced  ", ""]);
     assert_eq!(

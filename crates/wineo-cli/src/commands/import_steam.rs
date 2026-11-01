@@ -551,7 +551,7 @@ fn guided<I: Input, W: Write>(
                 };
                 let key = art_key(paths, global, args.art);
                 review(&plan, key.is_some(), out)?;
-                out.say("Press Enter to import it, Esc to go back, Ctrl+C to cancel.")?;
+                out.confirm_hint(true)?;
                 match out.confirm("Import it?", true)? {
                     Reply::Back => step = Step::Name,
                     Reply::Value(false) => return Err(Canceled.into()),

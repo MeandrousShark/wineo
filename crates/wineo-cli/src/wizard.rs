@@ -1072,13 +1072,11 @@ fn review<I: Input, W: Write>(
             "\nThe first umu run downloads the Steam Linux Runtime, which takes a while.",
         );
     }
-    Ok(
-        match prompt.review::<()>(&heading, None, "create it", &[], true)? {
-            Reply::Value(None) => Reply::Value((runner, arch, dir)),
-            Reply::Value(Some(())) => unreachable!("the review has no edit choices"),
-            Reply::Back => Reply::Back,
-        },
-    )
+    Ok(match prompt.confirm_review(&heading, "Create it?", true)? {
+        Reply::Value(true) => Reply::Value((runner, arch, dir)),
+        Reply::Value(false) => return Err(Canceled.into()),
+        Reply::Back => Reply::Back,
+    })
 }
 
 fn review_native<I: Input, W: Write>(
@@ -1097,12 +1095,11 @@ fn review_native<I: Input, W: Write>(
             None => "none".to_owned(),
         }
     ));
-    Ok(
-        match prompt.review::<()>(&heading, None, "create it", &[], true)? {
-            Reply::Value(_) => Reply::Value(()),
-            Reply::Back => Reply::Back,
-        },
-    )
+    Ok(match prompt.confirm_review(&heading, "Create it?", true)? {
+        Reply::Value(true) => Reply::Value(()),
+        Reply::Value(false) => return Err(Canceled.into()),
+        Reply::Back => Reply::Back,
+    })
 }
 
 /// Registers a native environment, then adds its target the way an
