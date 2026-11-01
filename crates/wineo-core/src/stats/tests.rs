@@ -1060,3 +1060,65 @@ fn a_summary_from_a_loaded_config_matches_the_one_that_rereads_it() {
     let wine = summary(&paths, "wine", now, &TimeZone::UTC).unwrap().0;
     assert_eq!((wine.source, wine.seconds), (Source::Wineo, 90));
 }
+
+fn proxied_environment(paths: &Paths, name: &str, app_id: &str) {
+    fs::create_dir_all(paths.environments_dir()).unwrap();
+    fs::write(
+        paths.environment_config(name),
+        format!("kind = 'proxied'\nlauncher = 'steam'\napp_id = '{app_id}'\n"),
+    )
+    .unwrap();
+}
+
+#[test]
+fn a_bad_global_config_leaves_steam_playtime_unknown_with_its_reason() {
+    let root = tempfile::tempdir().unwrap();
+    let paths = tag_paths(root.path());
+    proxied_environment(&paths, "game", "10");
+    steam_played(&paths, &[("10", 60)]);
+    assert_eq!(overview(&paths).unwrap().steam_games, 1);
+
+    fs::create_dir_all(paths.global_config().parent().unwrap()).unwrap();
+    fs::write(paths.global_config(), "not toml [").unwrap();
+
+    let overview = overview(&paths).unwrap();
+    assert!(overview.errors.is_empty());
+    let summary = &overview.rows[0].1;
+    assert_eq!(summary.source, Source::Steam);
+    assert!(summary.playtime_unknown);
+    assert_eq!(summary.seconds, 0);
+    assert_eq!(overview.steam_games, 0);
+    assert_eq!(overview.unknown_steam_games, 1);
+    let error = crate::config::GlobalConfig::load(&paths).unwrap_err();
+    assert_eq!(
+        steam_playtime(&paths, "10"),
+        steam::Playtime::Unknown(format!("global config can't be read: {error}"))
+    );
+}
+
+#[test]
+fn a_config_a_load_refuses_still_says_a_game_is_steam_without_tags() {
+    let root = tempfile::tempdir().unwrap();
+    let paths = tag_paths(root.path());
+    proxied_environment(&paths, "game", "10");
+    steam_played(&paths, &[("10", 60)]);
+    let marker = paths.restore_marker("game");
+    fs::create_dir_all(marker.parent().unwrap()).unwrap();
+    fs::write(marker, "").unwrap();
+
+    let plain = overview(&paths).unwrap();
+    assert!(plain.errors.is_empty());
+    assert_eq!(plain.rows[0].1.source, Source::Steam);
+    assert_eq!(plain.rows[0].1.seconds, 3600);
+
+    let loaded = overview_with_options(
+        &paths,
+        OverviewOptions {
+            tags: None,
+            load_tags: true,
+        },
+    )
+    .unwrap();
+    assert!(loaded.rows.is_empty());
+    assert!(loaded.errors[0].message.contains("snapshot recover"));
+}

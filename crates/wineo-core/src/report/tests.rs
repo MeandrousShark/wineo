@@ -355,3 +355,205 @@ fn a_report_does_not_reread_the_config_it_was_given() {
     assert_eq!(report.name, "game");
     assert_eq!(crate::read_log::count("game.toml"), 0);
 }
+
+fn write_global(paths: &Paths, text: &str) {
+    let path = paths.global_config();
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    fs::write(path, text).unwrap();
+}
+
+fn installed_manifest(paths: &Paths, app_id: &str) {
+    fs::write(
+        paths
+            .home()
+            .join(".local/share/Steam/steamapps")
+            .join(format!("appmanifest_{app_id}.acf")),
+        format!("\"AppState\" {{ \"appid\" \"{app_id}\" \"name\" \"Live\" \"StateFlags\" \"4\" }}"),
+    )
+    .unwrap();
+}
+
+fn install_of(environment: &OverviewEnvironment) -> &InstallReport {
+    match &environment.kind {
+        Some(KindReport::Proxied { install, .. }) => install,
+        other => panic!("not proxied: {other:?}"),
+    }
+}
+
+fn write_steam_run(paths: &Paths, name: &str) {
+    let mut run = RunState::running(
+        RunMode::Detached,
+        "steam".to_owned(),
+        1,
+        None,
+        &Default::default(),
+    );
+    run.launcher = Some(Launcher::Steam);
+    Runtime::new(paths, name).write_state(&run).unwrap();
+}
+
+#[test]
+fn a_bad_global_config_means_no_install_to_the_overview() {
+    let root = tempfile::tempdir().unwrap();
+    let paths = test_paths(root.path());
+    steam_library(&paths, &[("game", "111")]);
+    installed_manifest(&paths, "111");
+    let calls = std::cell::Cell::new(0);
+    let scan = |_: &crate::steam::Install, _: &[String]| {
+        calls.set(calls.get() + 1);
+        Ok(HashMap::from([("111".to_owned(), vec![reaper(7)])]))
+    };
+
+    let good = overview_with(&paths, OverviewFilter::default(), &scan).unwrap();
+    assert!(good.steam.unwrap().install.is_some());
+    assert_eq!(install_of(&good.environments[0]).state, "installed");
+    assert_eq!(good.environments[0].status.state, State::SteamRunning);
+    assert_eq!(calls.replace(0), 1);
+
+    write_global(&paths, "not toml [");
+    let bad = overview_with(&paths, OverviewFilter::default(), &scan).unwrap();
+    assert!(bad.steam.is_none());
+    assert!(bad.errors.is_empty());
+    let install = install_of(&bad.environments[0]);
+    assert_eq!(install.state, "unknown");
+    assert_eq!(install.problem.as_deref(), Some("Steam isn't found"));
+    assert_eq!(bad.environments[0].status.state, State::Inactive);
+    assert_eq!(calls.get(), 0);
+}
+
+#[test]
+fn no_steam_with_a_good_global_config_still_has_a_steam_overview() {
+    let root = tempfile::tempdir().unwrap();
+    let paths = test_paths(root.path());
+    steam_library(&paths, &[("game", "111")]);
+    fs::remove_dir_all(paths.home().join(".local/share/Steam")).unwrap();
+
+    let overview = overview(&paths, OverviewFilter::default()).unwrap();
+    let steam = overview.steam.unwrap();
+    assert!(steam.install.is_none());
+    assert!(steam.manifests.is_empty());
+}
+
+#[test]
+fn a_lost_steam_run_is_cleaned_up_before_its_status_and_the_sweep() {
+    let root = tempfile::tempdir().unwrap();
+    let paths = test_paths(root.path());
+    steam_library(&paths, &[("idle", "111"), ("playing", "222")]);
+    for name in ["idle", "playing"] {
+        write_steam_run(&paths, name);
+        assert!(Runtime::new(&paths, name).status().unwrap().lost);
+    }
+    let scan = |_: &crate::steam::Install, _: &[String]| {
+        Ok(HashMap::from([("222".to_owned(), vec![reaper(7)])]))
+    };
+
+    let overview = overview_with(&paths, OverviewFilter::default(), &scan).unwrap();
+
+    let states: Vec<_> = overview
+        .environments
+        .iter()
+        .map(|environment| (environment.status.state, environment.status.lost))
+        .collect();
+    assert_eq!(
+        states,
+        [(State::Stopped, false), (State::SteamRunning, false)]
+    );
+    for name in ["idle", "playing"] {
+        let run = Runtime::new(&paths, name).read_state().unwrap().unwrap();
+        assert_eq!(run.status, RunStatus::Stopped);
+        assert!(run.lost);
+        assert!(!paths.stats_log(name).exists());
+    }
+}
+
+#[test]
+fn only_a_loaded_steam_environment_cleans_up_a_lost_run() {
+    let root = tempfile::tempdir().unwrap();
+    let paths = test_paths(root.path());
+    steam_library(&paths, &[("blocked", "111"), ("broken", "222")]);
+    fs::write(paths.environment_config("broken"), "not toml [").unwrap();
+    fs::write(paths.environment_config("native"), "kind = \"native\"\n").unwrap();
+    let marker = paths.restore_marker("blocked");
+    fs::create_dir_all(marker.parent().unwrap()).unwrap();
+    fs::write(marker, "").unwrap();
+    for name in ["blocked", "broken"] {
+        write_steam_run(&paths, name);
+    }
+    let mut run = RunState::running(
+        RunMode::Detached,
+        "app".to_owned(),
+        1,
+        None,
+        &Default::default(),
+    );
+    run.native = true;
+    Runtime::new(&paths, "native").write_state(&run).unwrap();
+
+    let overview = overview(&paths, OverviewFilter::default()).unwrap();
+
+    assert_eq!(overview.environments.len(), 3);
+    for environment in &overview.environments {
+        assert!(environment.status.lost, "{}", environment.name);
+        assert_eq!(environment.status.state, State::Failed);
+        let run = Runtime::new(&paths, &environment.name)
+            .read_state()
+            .unwrap()
+            .unwrap();
+        assert_eq!(run.status, RunStatus::Running);
+    }
+}
+
+#[test]
+fn a_bad_environment_is_a_blank_row_or_with_a_tag_filter_an_error() {
+    let root = tempfile::tempdir().unwrap();
+    let paths = test_paths(root.path());
+    steam_library(&paths, &[("blocked", "111")]);
+    fs::write(paths.environment_config("broken"), "not toml [").unwrap();
+    fs::write(paths.environment_config("binary"), [0xff, 0xfe]).unwrap();
+    let marker = paths.restore_marker("blocked");
+    fs::create_dir_all(marker.parent().unwrap()).unwrap();
+    fs::write(marker, "").unwrap();
+
+    let plain = overview(&paths, OverviewFilter::default()).unwrap();
+    assert!(plain.errors.is_empty());
+    let rows: Vec<_> = plain
+        .environments
+        .iter()
+        .map(|row| (row.name.as_str(), row.kind.is_none(), row.tags.is_empty()))
+        .collect();
+    assert_eq!(
+        rows,
+        [
+            ("binary", true, true),
+            ("blocked", true, true),
+            ("broken", true, true),
+        ]
+    );
+    assert!(plain.environments.iter().all(|row| row.hooks.is_none()));
+
+    let tags = ["game".to_owned()];
+    let filtered = overview(
+        &paths,
+        OverviewFilter {
+            tags: Some(&tags),
+            running_only: false,
+        },
+    )
+    .unwrap();
+    assert!(filtered.environments.is_empty());
+    let errors: Vec<_> = filtered
+        .errors
+        .iter()
+        .map(|error| (error.name.clone(), error.message.clone()))
+        .collect();
+    let expected: Vec<_> = ["binary", "blocked", "broken"]
+        .map(|name| {
+            let error = Environment::load(&paths, name).unwrap_err();
+            (name.to_owned(), format!("{:#}", anyhow::Error::from(error)))
+        })
+        .to_vec();
+    assert_eq!(errors, expected);
+    // The source's text is part of the message, not only the context.
+    assert!(errors[0].1.contains("failed to read"));
+    assert!(errors[0].1.contains("UTF-8"), "{}", errors[0].1);
+}

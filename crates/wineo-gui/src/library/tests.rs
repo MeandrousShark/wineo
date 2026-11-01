@@ -755,3 +755,164 @@ fn the_trash_strip_shows_with_no_environments_left() {
         Some("Unreadable trash entries block some environments.")
     );
 }
+
+/// Steam with a logged-in account, game 123 installed, and an hour played.
+fn played_steam_library(root: &std::path::Path) -> Paths {
+    let home = root.to_owned();
+    let paths = Paths::from_lookup(move |key| (key == "HOME").then(|| home.as_os_str().to_owned()))
+        .unwrap();
+    let steam = root.join(".local/share/Steam");
+    fs::create_dir_all(steam.join("steamapps")).unwrap();
+    fs::create_dir_all(steam.join("config")).unwrap();
+    fs::create_dir_all(steam.join("userdata/1/config")).unwrap();
+    fs::write(
+        steam.join("config/loginusers.vdf"),
+        r#""users" { "76561197960265729" { "MostRecent" "1" } }"#,
+    )
+    .unwrap();
+    fs::write(
+        steam.join("userdata/1/config/localconfig.vdf"),
+        r#""UserLocalConfigStore" { "Software" { "Valve" { "Steam" { "apps" { "123" { "Playtime" "60" "LastPlayed" "5" } } } } } }"#,
+    )
+    .unwrap();
+    fs::write(
+        steam.join("steamapps/appmanifest_123.acf"),
+        r#""AppState" { "appid" "123" "name" "Live title" "StateFlags" "4" "SizeOnDisk" "2048" }"#,
+    )
+    .unwrap();
+    fs::create_dir_all(paths.environments_dir()).unwrap();
+    fs::write(
+        paths.environment_config("game"),
+        "kind = 'proxied'\nlauncher = 'steam'\napp_id = '123'\ntitle = 'Saved'\n",
+    )
+    .unwrap();
+    paths
+}
+
+#[test]
+fn a_bad_global_config_is_no_install_and_unknown_playtime_on_one_card() {
+    let root = tempfile::tempdir().unwrap();
+    let paths = played_steam_library(root.path());
+
+    let good = load_library(&paths).unwrap().remove(0);
+    assert_eq!(good.display_title, "Live title");
+    assert_eq!(good.steam.as_ref().unwrap().install.state, "installed");
+    assert_eq!(good.playtime, time::duration_hm(3600));
+    assert!(!good.playtime_unknown);
+
+    fs::create_dir_all(paths.global_config().parent().unwrap()).unwrap();
+    fs::write(paths.global_config(), "not toml [").unwrap();
+
+    let bad = load_library(&paths).unwrap().remove(0);
+    assert_eq!(bad.error, None);
+    assert_eq!(bad.kind, Some(CardKind::Proxied));
+    assert_eq!(bad.display_title, "Saved");
+    assert_eq!(bad.install_warning(), Some("Steam isn't found"));
+    assert_eq!(bad.state_word(), "unknown");
+    let details = bad.steam.as_ref().unwrap();
+    assert_eq!(details.size, None);
+    assert_eq!(details.proton, None);
+    assert_eq!(bad.source.platform, None);
+    assert_eq!(bad.playtime, "unknown");
+    assert_eq!(bad.sessions, "-");
+    assert_eq!(bad.last_played, "never");
+    assert!(bad.playtime_unknown);
+}
+
+#[test]
+fn a_refresh_cleans_up_a_lost_steam_run_and_shows_it_stopped() {
+    use wineo_core::config::Launcher;
+    use wineo_core::runtime::{RunMode, RunState, RunStatus, Runtime};
+
+    let root = tempfile::tempdir().unwrap();
+    let paths = played_steam_library(root.path());
+    let runtime = Runtime::new(&paths, "game");
+    let mut run = RunState::running(
+        RunMode::Detached,
+        "steam".to_owned(),
+        1,
+        None,
+        &Default::default(),
+    );
+    run.launcher = Some(Launcher::Steam);
+    runtime.write_state(&run).unwrap();
+    assert!(runtime.status().unwrap().lost);
+
+    let card = load_library(&paths).unwrap().remove(0);
+
+    assert_eq!(card.state, State::Stopped);
+    assert!(!card.lost);
+    let run = runtime.read_state().unwrap().unwrap();
+    assert_eq!(run.status, RunStatus::Stopped);
+    assert!(run.lost);
+    assert_eq!(card.playtime, time::duration_hm(3600));
+}
+
+#[test]
+fn a_bad_config_keeps_its_error_and_its_logged_playtime() {
+    use wineo_core::stats::{self, End, Session};
+
+    let root = tempfile::tempdir().unwrap();
+    let paths = played_steam_library(root.path());
+    let started: Timestamp = "2026-09-20T19:00:00Z".parse().unwrap();
+    let ended: Timestamp = "2026-09-20T20:00:00Z".parse().unwrap();
+    for name in ["broken", "binary"] {
+        stats::append(
+            &paths.stats_log(name),
+            &Session::new("app".to_owned(), started, ended, End::Exited),
+        )
+        .unwrap();
+    }
+    fs::write(paths.environment_config("broken"), "not toml [").unwrap();
+    fs::write(paths.environment_config("binary"), [0xff, 0xfe]).unwrap();
+
+    let cards = load_library(&paths).unwrap();
+    assert_eq!(cards.len(), 3);
+    for name in ["broken", "binary"] {
+        let card = cards.iter().find(|card| card.name == name).unwrap();
+        let error = wineo_core::environment::Environment::load(&paths, name).unwrap_err();
+        assert_eq!(card.error, Some(error.to_string()));
+        assert_eq!(card.kind, None);
+        assert_eq!(card.steam, None);
+        assert_eq!(card.tags, Vec::<String>::new());
+        assert_eq!(card.state, State::Inactive);
+        assert_eq!(card.playtime, time::duration_hm(3600));
+        assert_eq!(card.sessions, "1");
+    }
+}
+
+#[test]
+fn a_refused_steam_game_shows_its_error_with_steams_playtime() {
+    let root = tempfile::tempdir().unwrap();
+    let paths = played_steam_library(root.path());
+    let marker = paths.restore_marker("game");
+    fs::create_dir_all(marker.parent().unwrap()).unwrap();
+    fs::write(marker, "").unwrap();
+
+    let card = load_library(&paths).unwrap().remove(0);
+
+    assert!(card.error.unwrap().contains("snapshot recover"));
+    assert_eq!(card.kind, None);
+    assert_eq!(card.steam, None);
+    assert_eq!(card.display_title, "game");
+    assert_eq!(card.playtime, time::duration_hm(3600));
+    assert_eq!(card.sessions, "-");
+}
+
+#[test]
+fn a_trash_blocked_steam_game_keeps_steams_playtime() {
+    let root = tempfile::tempdir().unwrap();
+    let paths = played_steam_library(root.path());
+    let config = fs::read_to_string(paths.environment_config("game")).unwrap();
+    let entry = wineo_core::trash::remove(&paths, "game", false).unwrap();
+    fs::write(paths.environment_config("game"), config).unwrap();
+    let manifest = paths.trash_dir().join(entry.id).join("manifest.toml");
+    let text = fs::read_to_string(&manifest).unwrap();
+    fs::write(&manifest, text.replacen("version = 1", "version = 2", 1)).unwrap();
+
+    let card = load_library(&paths).unwrap().remove(0);
+
+    assert_eq!(card.error.as_deref(), Some(TRASH_BLOCKED));
+    assert_eq!(card.kind, None);
+    assert_eq!(card.playtime, time::duration_hm(3600));
+}

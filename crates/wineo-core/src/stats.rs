@@ -852,6 +852,13 @@ impl<'a> SteamPlaytimes<'a> {
     }
 }
 
+/// What an overview's Steam lookup says for `app_id`, reason included, which
+/// a `Summary` doesn't keep.
+#[cfg(test)]
+fn steam_playtime(paths: &Paths, app_id: &str) -> steam::Playtime {
+    SteamPlaytimes::new(paths).playtime(app_id)
+}
+
 fn summarize_steam(playtime: steam::Playtime) -> Summary {
     let (seconds, last_played, playtime_unknown) = match playtime {
         steam::Playtime::Known {
