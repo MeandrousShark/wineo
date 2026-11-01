@@ -102,6 +102,12 @@ CLI's attached `wineo run` holds the terminal and isn't meant for a GUI.
   detail, returned with any warnings.
 - `stats::overview(paths)`: playtime for every environment, sorted and
   totaled. `stats::summary` and `stats::last_session_seconds` cover one.
+- `refresh::RefreshSnapshot::read(paths)`: one view of the disk for a frontend
+  that rebuilds its library often, so each config is read once per refresh.
+  Pass it to `report::overview_from_snapshot` and then
+  `stats::overview_from_snapshot`, in that order, since the report's lost-run
+  cleanup rewrites run state the stats go by. Use `environment` for its loads
+  and `pending` for its trash scan. Keep it for one refresh, never across them.
 - `view::*`: the serializable shapes behind `--json`, documented in
   [JSON output](json-output.md). A frontend can use the same structs.
 - `validate::check_all(paths) -> Report`: problems with codes and levels,
