@@ -1,53 +1,22 @@
 use std::ffi::OsString;
-use std::fmt;
-use std::path::Path;
 
 use iced::Task;
 use wineo_core::download::{Https, Transport};
 use wineo_core::paths::Paths;
 use wineo_core::secret_service::SecretServiceKeyring;
-use wineo_core::steamgriddb::{self, KeySource, Keyring, Saved as CoreSaved};
+use wineo_core::steamgriddb::{self, KeySource, Keyring};
 
 use super::Event;
 use crate::Message;
 use crate::task;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Busy {
-    Saving,
-    Removing,
-}
+use super::key_settings::{self, KeyStatus};
+pub(crate) use super::key_settings::{Busy, Secret};
+pub(super) use super::key_settings::{one_line, plain_text_warning};
 
-#[derive(Clone, Default, PartialEq, Eq)]
-pub(crate) struct Secret(String);
-
-impl Secret {
-    pub(crate) fn new(value: String) -> Self {
-        Self(value)
-    }
-
-    pub(crate) fn as_str(&self) -> &str {
-        &self.0
-    }
-}
-
-impl fmt::Debug for Secret {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str("<redacted>")
-    }
-}
-
-#[derive(Debug, Clone, Default)]
-pub(crate) struct Settings {
-    pub(crate) status: Option<Status>,
-    pub(crate) status_error: Option<String>,
-    pub(crate) warning: Option<String>,
-    pub(crate) input_open: bool,
-    pub(crate) input: Secret,
-    pub(crate) busy: Option<Busy>,
-    pub(crate) error: Option<String>,
-    pub(crate) result: Option<String>,
-}
+pub(crate) type Settings = key_settings::Settings<Status>;
+pub(crate) type Saved = key_settings::Saved<Status>;
+pub(crate) type Removed = key_settings::Removed<Status>;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Status {
@@ -55,12 +24,23 @@ pub(crate) struct Status {
     pub(crate) override_note: bool,
 }
 
-impl Status {
-    pub(crate) fn available(&self) -> bool {
-        self.source.is_some()
+impl KeyStatus for Status {
+    fn new(source: Option<KeySource>, override_note: bool) -> Self {
+        Self {
+            source,
+            override_note,
+        }
     }
 
-    pub(crate) fn label(&self, paths: &Paths) -> String {
+    fn source(&self) -> Option<KeySource> {
+        self.source
+    }
+
+    fn override_note(&self) -> bool {
+        self.override_note
+    }
+
+    fn label(&self, paths: &Paths) -> String {
         match self.source {
             Some(KeySource::Variable) => "From WINEO_STEAMGRIDDB_KEY".to_owned(),
             Some(KeySource::Keyring) => "Saved in the keyring".to_owned(),
@@ -72,23 +52,10 @@ impl Status {
         }
     }
 
-    pub(crate) fn warning(&self, paths: &Paths) -> Option<String> {
+    fn warning(&self, paths: &Paths) -> Option<String> {
         (self.source == Some(KeySource::File))
             .then(|| plain_text_warning(&steamgriddb::key_file(paths)))
     }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct Saved {
-    pub(crate) status: Status,
-    pub(crate) warning: Option<String>,
-    pub(crate) result: Option<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct Removed {
-    pub(crate) status: Status,
-    pub(crate) result: String,
 }
 
 pub(crate) fn status(paths: &Paths) -> Result<Status, String> {
@@ -104,13 +71,9 @@ fn status_with(
     lookup: impl Fn(&str) -> Option<OsString>,
     keyring: &dyn Keyring,
 ) -> Result<Status, String> {
-    let source = steamgriddb::find_key(paths, &lookup, keyring)
-        .map_err(one_line)?
-        .map(|key| key.source);
-    Ok(Status {
-        override_note: source == Some(KeySource::Variable),
-        source,
-    })
+    steamgriddb::find_key(paths, &lookup, keyring)
+        .map(key_settings::status_of)
+        .map_err(one_line)
 }
 
 fn save_with(
@@ -123,30 +86,14 @@ fn save_with(
     if !steamgriddb::check_key(transport, key).map_err(one_line)? {
         return Err("SteamGridDB rejected the key".to_owned());
     }
-    let override_note = steamgriddb::find_key(paths, &lookup, keyring)
-        .map_err(one_line)?
-        .is_some_and(|key| key.source == KeySource::Variable);
+    let override_note =
+        key_settings::overridden(steamgriddb::find_key(paths, &lookup, keyring).map_err(one_line)?);
     let saved = steamgriddb::save_key(paths, keyring, key).map_err(one_line)?;
-    let (saved_source, warning, result) = match saved {
-        CoreSaved::Keyring => (
-            KeySource::Keyring,
-            None,
-            Some("Saved the SteamGridDB key to the keyring".to_owned()),
-        ),
-        CoreSaved::File(path) => (KeySource::File, Some(plain_text_warning(&path)), None),
-    };
-    Ok(Saved {
-        status: Status {
-            source: Some(if override_note {
-                KeySource::Variable
-            } else {
-                saved_source
-            }),
-            override_note,
-        },
-        warning,
-        result,
-    })
+    Ok(key_settings::saved(
+        saved,
+        override_note,
+        "Saved the SteamGridDB key to the keyring",
+    ))
 }
 
 fn remove_with(
@@ -155,30 +102,15 @@ fn remove_with(
     keyring: &dyn Keyring,
 ) -> Result<Removed, String> {
     let removed = steamgriddb::remove_key(paths, keyring).map_err(one_line)?;
-    let override_note = steamgriddb::find_key(paths, &lookup, keyring)
-        .map_err(one_line)?
-        .is_some_and(|key| key.source == KeySource::Variable);
-    Ok(Removed {
-        status: Status {
-            source: override_note.then_some(KeySource::Variable),
-            override_note,
-        },
-        result: if removed.keyring || removed.file {
-            "Removed the SteamGridDB key".to_owned()
-        } else {
-            "No SteamGridDB key was saved".to_owned()
-        },
-    })
+    let override_note =
+        key_settings::overridden(steamgriddb::find_key(paths, &lookup, keyring).map_err(one_line)?);
+    Ok(key_settings::removed(
+        &removed,
+        override_note,
+        "Removed the SteamGridDB key",
+        "No SteamGridDB key was saved",
+    ))
 }
-
-pub(super) fn plain_text_warning(path: &Path) -> String {
-    format!(
-        "warning: no keyring, so the key is stored in plain text in {}",
-        path.display()
-    )
-}
-
-pub(super) use wineo_core::error::one_line;
 
 pub(crate) fn status_task(paths: Paths, generation: u64, sequence: u64) -> Task<Message> {
     Task::perform(

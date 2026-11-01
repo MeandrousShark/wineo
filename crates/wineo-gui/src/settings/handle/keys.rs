@@ -4,6 +4,7 @@ use iced::Task;
 use wineo_core::paths::Paths;
 
 use crate::Message;
+use crate::settings::key_settings::KeyStatus;
 use crate::settings::{Page, Step, steam_key, steamgriddb};
 
 impl Page {

@@ -11,6 +11,7 @@ use wineo_core::key_store::KeySource;
 
 use super::form::{self, Build, Choice, Field, GamescopeFields, List, Source, Switch};
 use super::global;
+use super::key_settings::KeyStatus;
 use super::load::Scan;
 use super::{Editor, Event, Page, TargetEdit, View, tabs};
 use crate::chips::{Chips, input_style};
@@ -619,15 +620,15 @@ pub(super) struct KeyRow<'a> {
     /// while unknown, or when a variable's key could hide a saved one,
     /// shows both.
     saved: Option<bool>,
-    busy: Option<super::steamgriddb::Busy>,
+    busy: Option<super::key_settings::Busy>,
     input_open: bool,
-    input: &'a super::steamgriddb::Secret,
+    input: &'a super::key_settings::Secret,
     placeholder: &'static str,
     open: Event,
     cancel: Event,
     set: Event,
     remove: Event,
-    text: fn(super::steamgriddb::Secret) -> Event,
+    text: fn(super::key_settings::Secret) -> Event,
 }
 
 fn saved(source: Option<KeySource>) -> Option<bool> {
@@ -648,9 +649,23 @@ fn status_or_checking(label: Option<String>, failed: bool) -> String {
     })
 }
 
-pub(super) fn steamgriddb_row<'a>(
-    settings: &'a super::steamgriddb::Settings,
+/// What differs between the key rows: the copy and the events they send.
+struct KeyRowParts {
+    /// Said when a variable's key overrides the saved one.
+    override_note: String,
+    hint: Option<String>,
+    placeholder: &'static str,
+    open: Event,
+    cancel: Event,
+    set: Event,
+    remove: Event,
+    text: fn(super::key_settings::Secret) -> Event,
+}
+
+fn provider_row<'a, S: KeyStatus>(
+    settings: &'a super::key_settings::Settings<S>,
     paths: &Paths,
+    parts: KeyRowParts,
 ) -> KeyRow<'a> {
     KeyRow {
         status: status_or_checking(
@@ -660,8 +675,8 @@ pub(super) fn steamgriddb_row<'a>(
         override_note: settings
             .status
             .as_ref()
-            .is_some_and(|status| status.override_note)
-            .then(|| "WINEO_STEAMGRIDDB_KEY is set and overrides the saved key".to_owned()),
+            .is_some_and(|status| status.override_note())
+            .then_some(parts.override_note),
         warning: settings.warning.clone().or_else(|| {
             settings
                 .status
@@ -671,73 +686,71 @@ pub(super) fn steamgriddb_row<'a>(
         status_error: settings.status_error.as_deref(),
         result: settings.result.as_deref(),
         error: settings.error.as_deref(),
-        hint: None,
+        hint: parts.hint,
         saved: settings
             .status
             .as_ref()
-            .and_then(|status| saved(status.source)),
+            .and_then(|status| saved(status.source())),
         busy: settings.busy,
         input_open: settings.input_open,
         input: &settings.input,
-        placeholder: "SteamGridDB API key",
-        open: Event::SteamGridDbKeySetOpen,
-        cancel: Event::SteamGridDbKeySetCancel,
-        set: Event::SteamGridDbKeySet,
-        remove: Event::SteamGridDbKeyRemove,
-        text: Event::SteamGridDbKeyText,
+        placeholder: parts.placeholder,
+        open: parts.open,
+        cancel: parts.cancel,
+        set: parts.set,
+        remove: parts.remove,
+        text: parts.text,
     }
+}
+
+pub(super) fn steamgriddb_row<'a>(
+    settings: &'a super::steamgriddb::Settings,
+    paths: &Paths,
+) -> KeyRow<'a> {
+    provider_row(
+        settings,
+        paths,
+        KeyRowParts {
+            override_note: "WINEO_STEAMGRIDDB_KEY is set and overrides the saved key".to_owned(),
+            hint: None,
+            placeholder: "SteamGridDB API key",
+            open: Event::SteamGridDbKeySetOpen,
+            cancel: Event::SteamGridDbKeySetCancel,
+            set: Event::SteamGridDbKeySet,
+            remove: Event::SteamGridDbKeyRemove,
+            text: Event::SteamGridDbKeyText,
+        },
+    )
 }
 
 pub(super) fn steam_key_row<'a>(
     settings: &'a super::steam_key::Settings,
     paths: &Paths,
 ) -> KeyRow<'a> {
-    KeyRow {
-        status: status_or_checking(
-            settings.status.as_ref().map(|status| status.label(paths)),
-            settings.status_error.is_some(),
-        ),
-        override_note: settings
-            .status
-            .as_ref()
-            .is_some_and(|status| status.override_note)
-            .then(|| {
-                format!(
-                    "{} is set and overrides the saved key",
-                    wineo_core::steam::key::KEY_VAR
-                )
-            }),
-        warning: settings.warning.clone().or_else(|| {
-            settings
-                .status
-                .as_ref()
-                .and_then(|status| status.warning(paths))
-        }),
-        status_error: settings.status_error.as_deref(),
-        result: settings.result.as_deref(),
-        error: settings.error.as_deref(),
-        hint: Some(format!("Get a key at {}.", super::steam_key::KEY_PAGE)),
-        saved: settings
-            .status
-            .as_ref()
-            .and_then(|status| saved(status.source)),
-        busy: settings.busy,
-        input_open: settings.input_open,
-        input: &settings.input,
-        placeholder: "Steam Web API key",
-        open: Event::SteamKeySetOpen,
-        cancel: Event::SteamKeySetCancel,
-        set: Event::SteamKeySet,
-        remove: Event::SteamKeyRemove,
-        text: Event::SteamKeyText,
-    }
+    provider_row(
+        settings,
+        paths,
+        KeyRowParts {
+            override_note: format!(
+                "{} is set and overrides the saved key",
+                wineo_core::steam::key::KEY_VAR
+            ),
+            hint: Some(format!("Get a key at {}.", super::steam_key::KEY_PAGE)),
+            placeholder: "Steam Web API key",
+            open: Event::SteamKeySetOpen,
+            cancel: Event::SteamKeySetCancel,
+            set: Event::SteamKeySet,
+            remove: Event::SteamKeyRemove,
+            text: Event::SteamKeyText,
+        },
+    )
 }
 
 impl KeyRow<'_> {
     fn busy_label(&self) -> Option<&'static str> {
         self.busy.map(|busy| match busy {
-            super::steamgriddb::Busy::Saving => "Checking and saving...",
-            super::steamgriddb::Busy::Removing => "Removing...",
+            super::key_settings::Busy::Saving => "Checking and saving...",
+            super::key_settings::Busy::Removing => "Removing...",
         })
     }
 
@@ -830,7 +843,7 @@ fn key_row<'a>(row_data: KeyRow<'a>, palette: Palette) -> Element<'a, Message> {
             .secure(true)
             .on_input_maybe(
                 busy.is_none()
-                    .then_some(move |value| send(on_text(super::steamgriddb::Secret::new(value)))),
+                    .then_some(move |value| send(on_text(super::key_settings::Secret::new(value)))),
             )
             .width(Fill)
             .padding([6, 10])
@@ -1042,7 +1055,7 @@ fn gog_row<'a>(
         let field = text_input("Address", settings.input.as_str())
             .secure(true)
             .on_input_maybe(idle.then_some(|value| {
-                gog_send(GogEvent::LoginText(super::steamgriddb::Secret::new(value)))
+                gog_send(GogEvent::LoginText(super::key_settings::Secret::new(value)))
             }))
             .on_submit_maybe(
                 (idle && !settings.input.as_str().trim().is_empty())

@@ -5,30 +5,22 @@ use std::ffi::OsString;
 
 use iced::Task;
 use wineo_core::config::GlobalConfig;
-use wineo_core::key_store::{KeySource, Keyring, Saved as CoreSaved};
+use wineo_core::key_store::{KeySource, Keyring};
 use wineo_core::paths::Paths;
 use wineo_core::secret_service::SecretServiceKeyring;
 use wineo_core::steam::api::SteamApi;
 use wineo_core::steam::{self, key, owned};
 
 use super::Event;
-use super::steamgriddb::{Busy, Secret, one_line, plain_text_warning};
+use super::key_settings::{self, KeyStatus, Secret, one_line, plain_text_warning};
 use crate::Message;
 use crate::task;
 
 pub(crate) const KEY_PAGE: &str = "https://steamcommunity.com/dev/apikey";
 
-#[derive(Debug, Clone, Default)]
-pub(crate) struct Settings {
-    pub(crate) status: Option<Status>,
-    pub(crate) status_error: Option<String>,
-    pub(crate) warning: Option<String>,
-    pub(crate) input_open: bool,
-    pub(crate) input: Secret,
-    pub(crate) busy: Option<Busy>,
-    pub(crate) error: Option<String>,
-    pub(crate) result: Option<String>,
-}
+pub(crate) type Settings = key_settings::Settings<Status>;
+pub(crate) type Saved = key_settings::Saved<Status>;
+pub(crate) type Removed = key_settings::Removed<Status>;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Status {
@@ -36,8 +28,23 @@ pub(crate) struct Status {
     pub(crate) override_note: bool,
 }
 
-impl Status {
-    pub(crate) fn label(&self, paths: &Paths) -> String {
+impl KeyStatus for Status {
+    fn new(source: Option<KeySource>, override_note: bool) -> Self {
+        Self {
+            source,
+            override_note,
+        }
+    }
+
+    fn source(&self) -> Option<KeySource> {
+        self.source
+    }
+
+    fn override_note(&self) -> bool {
+        self.override_note
+    }
+
+    fn label(&self, paths: &Paths) -> String {
         match self.source {
             Some(KeySource::Variable) => format!("From {}", key::KEY_VAR),
             Some(KeySource::Keyring) => "Saved in the keyring".to_owned(),
@@ -49,22 +56,9 @@ impl Status {
         }
     }
 
-    pub(crate) fn warning(&self, paths: &Paths) -> Option<String> {
+    fn warning(&self, paths: &Paths) -> Option<String> {
         (self.source == Some(KeySource::File)).then(|| plain_text_warning(&key::key_file(paths)))
     }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct Saved {
-    pub(crate) status: Status,
-    pub(crate) warning: Option<String>,
-    pub(crate) result: Option<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct Removed {
-    pub(crate) status: Status,
-    pub(crate) result: String,
 }
 
 fn keyring() -> SecretServiceKeyring {
@@ -76,9 +70,9 @@ fn overridden(
     lookup: impl Fn(&str) -> Option<OsString>,
     keyring: &dyn Keyring,
 ) -> Result<bool, String> {
-    Ok(key::find_key(paths, lookup, keyring)
-        .map_err(one_line)?
-        .is_some_and(|key| key.source == KeySource::Variable))
+    Ok(key_settings::overridden(
+        key::find_key(paths, lookup, keyring).map_err(one_line)?,
+    ))
 }
 
 fn status_with(
@@ -86,13 +80,9 @@ fn status_with(
     lookup: impl Fn(&str) -> Option<OsString>,
     keyring: &dyn Keyring,
 ) -> Result<Status, String> {
-    let source = key::find_key(paths, lookup, keyring)
-        .map_err(one_line)?
-        .map(|key| key.source);
-    Ok(Status {
-        override_note: source == Some(KeySource::Variable),
-        source,
-    })
+    key::find_key(paths, lookup, keyring)
+        .map(key_settings::status_of)
+        .map_err(one_line)
 }
 
 /// Checks the key with one owned games request, like `import steam --key`,
@@ -106,27 +96,12 @@ fn save_with(
 ) -> Result<Saved, String> {
     check(key)?;
     let override_note = overridden(paths, &lookup, keyring)?;
-    let (saved_source, warning, result) =
-        match key::save_key(paths, keyring, key).map_err(one_line)? {
-            CoreSaved::Keyring => (
-                KeySource::Keyring,
-                None,
-                Some("Saved the Steam Web API key to the keyring".to_owned()),
-            ),
-            CoreSaved::File(path) => (KeySource::File, Some(plain_text_warning(&path)), None),
-        };
-    Ok(Saved {
-        status: Status {
-            source: Some(if override_note {
-                KeySource::Variable
-            } else {
-                saved_source
-            }),
-            override_note,
-        },
-        warning,
-        result,
-    })
+    let saved = key::save_key(paths, keyring, key).map_err(one_line)?;
+    Ok(key_settings::saved(
+        saved,
+        override_note,
+        "Saved the Steam Web API key to the keyring",
+    ))
 }
 
 fn remove_with(
@@ -136,17 +111,12 @@ fn remove_with(
 ) -> Result<Removed, String> {
     let removed = key::remove_key(paths, keyring).map_err(one_line)?;
     let override_note = overridden(paths, &lookup, keyring)?;
-    Ok(Removed {
-        status: Status {
-            source: override_note.then_some(KeySource::Variable),
-            override_note,
-        },
-        result: if removed.keyring || removed.file {
-            "Removed the Steam Web API key".to_owned()
-        } else {
-            "No Steam Web API key was saved".to_owned()
-        },
-    })
+    Ok(key_settings::removed(
+        &removed,
+        override_note,
+        "Removed the Steam Web API key",
+        "No Steam Web API key was saved",
+    ))
 }
 
 /// The online check `import steam --key` makes, with its messages.
