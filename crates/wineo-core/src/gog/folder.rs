@@ -12,6 +12,7 @@
 //! environment's operation lock, then in-use locks in key order, then state
 //! locks in key order, then config locks.
 
+use std::collections::BTreeMap;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Write};
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
@@ -968,6 +969,54 @@ pub fn find(paths: &Paths, name: &str, gog_id: &str) -> Result<Option<FolderStat
         );
     }
     Ok(first)
+}
+
+/// Who installed each environment's game, from one read of every folder
+/// state, for a listing that would otherwise `find` per game. A lookup
+/// answers like `find`, and keeps its scope: a state file that can't be read
+/// could be any environment's, so it fails every lookup, while two folders
+/// of one game fail only that environment's game.
+pub struct InstallSources {
+    /// None when the states couldn't all be read. Each game maps to whether
+    /// wineo installed each of its folders.
+    games: Option<BTreeMap<String, BTreeMap<u64, Vec<bool>>>>,
+}
+
+impl InstallSources {
+    pub fn read(paths: &Paths) -> Self {
+        Self::from_listing(list(paths))
+    }
+
+    fn from_listing(listing: Result<Vec<(PathBuf, Result<FolderState>)>>) -> Self {
+        Self {
+            games: listing.ok().and_then(|listing| {
+                let mut games: BTreeMap<String, BTreeMap<u64, Vec<bool>>> = BTreeMap::new();
+                for (_, state) in listing {
+                    let state = state.ok()?;
+                    if let (Some(owner), Some(id)) = (state.owner.as_deref(), state.gog_id()) {
+                        games
+                            .entry(owner.to_owned())
+                            .or_default()
+                            .entry(id)
+                            .or_default()
+                            .push(state.installed_by_wineo());
+                    }
+                }
+                Some(games)
+            }),
+        }
+    }
+
+    /// Whether the one folder `name` owns for game `gog_id` records that
+    /// wineo installed it. A state that can't be read or a second folder
+    /// doesn't say, so it reads as not installed.
+    pub fn installed_by_wineo(&self, name: &str, gog_id: u64) -> bool {
+        let found = self
+            .games
+            .as_ref()
+            .and_then(|games| games.get(name)?.get(&gog_id));
+        matches!(found.map(Vec::as_slice), Some([true]))
+    }
 }
 
 /// Refuses a folder that is inside, or around, another state's folder.

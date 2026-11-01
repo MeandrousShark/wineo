@@ -1,9 +1,10 @@
-use std::collections::BTreeSet;
+use std::cell::LazyCell;
+use std::collections::{BTreeMap, BTreeSet};
 use std::process::ExitCode;
 
 use serde_json::{Value, json};
 use wineo_core::gog::api::OwnedProduct;
-use wineo_core::gog::folder;
+use wineo_core::gog::folder::InstallSources;
 use wineo_core::gog::owned;
 use wineo_core::gog::update::{self, Batch, Status};
 use wineo_core::heroic_import;
@@ -70,21 +71,29 @@ pub(super) fn run(paths: &Paths, args: &Args) -> anyhow::Result<ExitCode> {
     // Migrated is decided by what the environments record, so a game whose
     // update check failed is still listed as imported.
     let recorded = update::recorded_games(paths);
+    // Read on first use, which is after the update check that can write
+    // states, and only when some game has an environment. Once for the
+    // listing instead of once per game.
+    let sources = LazyCell::new(|| InstallSources::read(paths));
+    // Reversed so the first status of a game wins, as a linear search would.
+    let checked: BTreeMap<u64, &Status> = batch
+        .statuses
+        .iter()
+        .rev()
+        .map(|status| (status.gog_id, status))
+        .collect();
 
     let mut games: Vec<&OwnedProduct> = owned.games.iter().collect();
     games.sort_by_cached_key(|game| (game.title.to_lowercase(), game.id));
     let rows: Vec<Row> = games
         .into_iter()
         .map(|game| {
-            let status = batch
-                .statuses
-                .iter()
-                .find(|status| status.gog_id == game.id);
+            let status = checked.get(&game.id).copied();
             let environment = status
                 .map(|status| status.environment.clone())
                 .or_else(|| recorded.get(&game.id).cloned());
             let state = if let Some(name) = &environment {
-                if installed_by_wineo(paths, name, game.id) {
+                if sources.installed_by_wineo(name, game.id) {
                     State::Installed
                 } else {
                     State::Imported
@@ -124,15 +133,6 @@ pub(super) fn run(paths: &Paths, args: &Args) -> anyhow::Result<ExitCode> {
     } else {
         ExitCode::FAILURE
     })
-}
-
-/// Whether `name`'s folder for game `id` records that wineo installed it.
-/// A state that can't be read doesn't say, so the game reads as imported.
-fn installed_by_wineo(paths: &Paths, name: &str, id: u64) -> bool {
-    folder::find(paths, name, &id.to_string())
-        .ok()
-        .flatten()
-        .is_some_and(|state| state.installed_by_wineo())
 }
 
 /// The ids of the GOG games Heroic installed. A Heroic that can't be read

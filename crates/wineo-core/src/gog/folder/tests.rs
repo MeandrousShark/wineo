@@ -1005,3 +1005,82 @@ fn a_fresh_install_refuses_to_overlap_another_games_folder() {
     }
     check_fresh_install(&paths, &games.join("rimworld2"), "rimworld").unwrap();
 }
+
+/// What `find` says about wineo having installed the game, as the listing
+/// used to ask it.
+fn found_installed(paths: &Paths, name: &str, id: u64) -> bool {
+    find(paths, name, &id.to_string())
+        .ok()
+        .flatten()
+        .is_some_and(|state| state.installed_by_wineo())
+}
+
+fn installed(folder: &Path, owner: &str, gog_id: u64) -> FolderState {
+    let mut state = game(folder, Some(owner), gog_id);
+    state.committed.as_mut().unwrap().source = Some(Source::Install);
+    state
+}
+
+#[test]
+fn install_sources_answer_like_find_with_its_scope() {
+    let (root, paths) = setup();
+    let dir = |name: &str| root.path().join(name);
+    save(&paths, &installed(&dir("a"), "alpha", 1));
+    save(&paths, &game(&dir("b"), Some("beta"), 2));
+    save(&paths, &installed(&dir("c1"), "gamma", 3));
+    save(&paths, &installed(&dir("c2"), "gamma", 3));
+    // Another game of alpha's, and a folder nobody owns.
+    save(&paths, &installed(&dir("d"), "alpha", 4));
+    let mut unowned = installed(&dir("e"), "alpha", 1);
+    unowned.owner = None;
+    save(&paths, &unowned);
+    let lookups = [
+        ("alpha", 1),
+        ("alpha", 4),
+        ("alpha", 2),
+        ("beta", 2),
+        ("gamma", 3),
+        ("nobody", 1),
+    ];
+    let sources = InstallSources::read(&paths);
+    let expected = [true, true, false, false, false, false];
+    for ((name, id), expected) in lookups.into_iter().zip(expected) {
+        assert_eq!(
+            sources.installed_by_wineo(name, id),
+            expected,
+            "{name} {id}"
+        );
+        assert_eq!(found_installed(&paths, name, id), expected, "{name} {id}");
+    }
+
+    // One state that can't be read fails every lookup, whoever owns it.
+    fs::write(paths.gog_folders_dir().join("bad.toml"), "version = [").unwrap();
+    let sources = InstallSources::read(&paths);
+    for (name, id) in lookups {
+        assert!(!sources.installed_by_wineo(name, id), "{name} {id}");
+        assert!(!found_installed(&paths, name, id), "{name} {id}");
+    }
+}
+
+#[test]
+fn install_sources_read_the_states_once() {
+    let (root, paths) = setup();
+    let folder = root.path().join("a");
+    save(&paths, &installed(&folder, "alpha", 1));
+    let sources = InstallSources::read(&paths);
+    // Lookups answer from the snapshot, not from the files, which a lookup
+    // by `find` would no longer see.
+    fs::remove_dir_all(paths.gog_folders_dir()).unwrap();
+    assert!(!found_installed(&paths, "alpha", 1));
+    assert!(sources.installed_by_wineo("alpha", 1));
+}
+
+#[test]
+fn install_sources_fail_closed_when_the_states_directory_cant_be_listed() {
+    let (_root, paths) = setup();
+    let dir = paths.gog_folders_dir();
+    fs::create_dir_all(dir.parent().unwrap()).unwrap();
+    fs::write(&dir, "not a directory").unwrap();
+    assert!(list(&paths).is_err());
+    assert!(!InstallSources::read(&paths).installed_by_wineo("alpha", 1));
+}
