@@ -352,6 +352,30 @@ fn parse_hooks_whole(key: &str, raw: &str) -> Result<Whole, EditError> {
     }
 }
 
+/// The `name` table, replacing a `name = false` first. The comment after the
+/// `false` carries over to the table header.
+fn ensure_table_over_false<'a>(
+    root: &'a mut Table,
+    name: &str,
+    key: &str,
+) -> Result<&'a mut Table, EditError> {
+    let old_decor = root
+        .get(name)
+        .and_then(Item::as_value)
+        .filter(|value| value.as_bool() == Some(false))
+        .map(|value| value.decor().clone());
+    if old_decor.is_some() {
+        root.remove(name);
+    }
+    let table = ensure_table(root, name, key, false)?;
+    // Only the comment carries over. The value's prefix is the space after
+    // `=`, which would indent the table header.
+    if let Some(suffix) = old_decor.and_then(|decor| decor.suffix().cloned()) {
+        table.decor_mut().set_suffix(suffix);
+    }
+    Ok(table)
+}
+
 fn set_hooks(root: &mut Table, key: &str, raw: &str) -> Result<(), EditError> {
     match parse_hooks_whole(key, raw)? {
         Whole::Off => store_value(root, "hooks", Value::from(false)),
@@ -361,21 +385,7 @@ fn set_hooks(root: &mut Table, key: &str, raw: &str) -> Result<(), EditError> {
 }
 
 fn ensure_hooks<'a>(root: &'a mut Table, key: &str) -> Result<&'a mut Table, EditError> {
-    let old_decor = root
-        .get("hooks")
-        .and_then(Item::as_value)
-        .filter(|value| value.as_bool() == Some(false))
-        .map(|value| value.decor().clone());
-    if old_decor.is_some() {
-        root.remove("hooks");
-    }
-    let table = ensure_table(root, "hooks", key, false)?;
-    // Only the comment carries over. The value's prefix is the space after
-    // `=`, which would indent the table header.
-    if let Some(suffix) = old_decor.and_then(|decor| decor.suffix().cloned()) {
-        table.decor_mut().set_suffix(suffix);
-    }
-    Ok(table)
+    ensure_table_over_false(root, "hooks", key)
 }
 
 fn store_hooks_field(table: &mut Table, field: &str, value: Value) {
@@ -440,21 +450,7 @@ fn set_gamescope(root: &mut Table, key: &str, raw: &str) -> Result<(), EditError
 }
 
 fn ensure_gamescope<'a>(root: &'a mut Table, key: &str) -> Result<&'a mut Table, EditError> {
-    let old_decor = root
-        .get("gamescope")
-        .and_then(Item::as_value)
-        .filter(|value| value.as_bool() == Some(false))
-        .map(|value| value.decor().clone());
-    if old_decor.is_some() {
-        root.remove("gamescope");
-    }
-    let table = ensure_table(root, "gamescope", key, false)?;
-    // Only the comment carries over. The value's prefix is the space after
-    // `=`, which would indent the table header.
-    if let Some(suffix) = old_decor.and_then(|decor| decor.suffix().cloned()) {
-        table.decor_mut().set_suffix(suffix);
-    }
-    Ok(table)
+    ensure_table_over_false(root, "gamescope", key)
 }
 
 fn set_gamescope_field(

@@ -715,3 +715,51 @@ fn a_global_key_under_its_deprecated_name_counts_as_set() {
     assert!(global_has_key("stop_timeout = 3\n", "stop_timeout"));
     assert!(!global_has_key("log_limit_mb = 3\n", "stop_timeout"));
 }
+
+/// What turning `hooks = false` or `gamescope = false` into a table does to
+/// the rest of the file, written out in full so the two stay the same. The
+/// leading `# top` comment goes with the removed key, as it always has.
+#[test]
+fn an_off_table_becomes_a_table_that_keeps_its_comment() {
+    let target = "[targets.game]\nexe = 'game'\n";
+    let edit = |text: String, key: &str, raw: &str| {
+        let mut doc = parse(&text);
+        set(&mut doc, Scope::Environment, key, raw).unwrap();
+        doc.to_string()
+    };
+    for (name, field, value, line) in [
+        ("hooks", "before", "sync", "before = \"sync\"\n"),
+        ("gamescope", "width", "1920", "width = 1920\n"),
+    ] {
+        let off = format!("# top\n{name} = false # old\nother = 1\n");
+        assert_eq!(
+            edit(off.clone(), &format!("{name}.{field}"), value),
+            format!("other = 1\n\n[{name}] # old\n{line}")
+        );
+        assert_eq!(
+            edit(off, name, "{}"),
+            format!("other = 1\n\n[{name}] # old\n")
+        );
+        let off = format!("{target}{name} = false # old\n\n[x]\ny = 1\n");
+        assert_eq!(
+            edit(off, &format!("targets.game.{name}.{field}"), value),
+            format!("{target}\n[targets.game.{name}] # old\n{line}\n[x]\ny = 1\n")
+        );
+        assert_eq!(
+            edit(
+                target.to_owned(),
+                &format!("targets.game.{name}.{field}"),
+                value
+            ),
+            format!("{target}\n[targets.game.{name}]\n{line}")
+        );
+        assert_eq!(
+            edit(
+                format!("{name} = false\n"),
+                &format!("{name}.{field}"),
+                value
+            ),
+            format!("[{name}]\n{line}")
+        );
+    }
+}
