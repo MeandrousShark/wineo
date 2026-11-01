@@ -8,8 +8,9 @@ own numbered plan. What has shipped is in
 
 Harder Better Faster Stronger, the order the maintainer picked on
 2026-10-30, played backwards. Stronger shipped in 1.1.1. Plan 0060 covers the
-next two, each its own patch release, and plan 0061 covers the last. The rest
-get a plan when they come up, and the rows below have the details.
+next two, which ship together as 1.1.2, and plan 0061 covers the last. Plan
+0062, still a draft, covers item 4. The rest get a plan when they come up, and
+the rows below have the details.
 
 1. Faster: Simplification finds, Cheaper Steam refresh.
 2. Better: Ctrl+Enter on focused controls in flows, Fix notes in
