@@ -33,6 +33,9 @@ struct JsonOutput<'a> {
     problems: &'a [Problem],
     fixed: Vec<String>,
     errors: &'a [Failed],
+    /// What the fixes said while running, like a library repair's report.
+    /// Warnings are here and on stderr too.
+    notes: Vec<String>,
 }
 
 pub fn run(paths: &Paths, args: Args, verbose: bool) -> anyhow::Result<ExitCode> {
@@ -45,7 +48,10 @@ pub fn run(paths: &Paths, args: Args, verbose: bool) -> anyhow::Result<ExitCode>
 
     if args.json {
         let Applied {
-            applied, failed, ..
+            applied,
+            failed,
+            notes,
+            ..
         } = if args.fix {
             apply_all(paths, &fixes)
         } else {
@@ -56,6 +62,7 @@ pub fn run(paths: &Paths, args: Args, verbose: bool) -> anyhow::Result<ExitCode>
             problems: &report.problems,
             fixed: applied.iter().map(Fix::label).collect(),
             errors: &failed,
+            notes,
         })?;
         return Ok(exit(&report, !failed.is_empty()));
     }
@@ -104,6 +111,7 @@ pub fn run(paths: &Paths, args: Args, verbose: bool) -> anyhow::Result<ExitCode>
         applied,
         failed,
         reports,
+        ..
     } = apply_all(paths, &chosen);
     for failed in &failed {
         eprintln!(
@@ -152,6 +160,8 @@ struct Applied {
     failed: Vec<Failed>,
     /// What a fix reported doing, like a library repair, for the text report.
     reports: Vec<String>,
+    /// Every note, warnings included, for `--json`.
+    notes: Vec<String>,
 }
 
 /// Applies each fix on its own, so one failing leaves the rest to go on.
@@ -163,6 +173,7 @@ fn apply_all(paths: &Paths, fixes: &[Fix]) -> Applied {
     let mut applied = Vec::new();
     let mut failed = Vec::new();
     let mut reports = Vec::new();
+    let mut notes = Vec::new();
     for fix in fixes.iter().filter(|fix| fix.is_batch_safe()) {
         // Only winetricks honors the token here. A handler held across the
         // other fixes would swallow Ctrl+C instead of ending wineo.
@@ -195,8 +206,9 @@ fn apply_all(paths: &Paths, fixes: &[Fix]) -> Applied {
         );
         drop(cancellation);
         match result {
-            Ok(notes) => {
-                for note in notes {
+            Ok(fix_notes) => {
+                for note in fix_notes {
+                    notes.push(paths.contract_text(&note.to_string()));
                     match note {
                         Note::Warning(warning) => eprintln!("warning: {warning}"),
                         note @ Note::LibraryRepaired(_) => {
@@ -216,6 +228,7 @@ fn apply_all(paths: &Paths, fixes: &[Fix]) -> Applied {
         applied,
         failed,
         reports,
+        notes,
     }
 }
 

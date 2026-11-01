@@ -330,6 +330,7 @@ fn json_reports_without_asking_and_fix_lists_what_it_fixed() {
             ],
             "fixed": [],
             "errors": [],
+            "notes": [],
         })
     );
     assert_eq!(fs::read(art_toml(&f, "hades")).unwrap(), before);
@@ -343,6 +344,7 @@ fn json_reports_without_asking_and_fix_lists_what_it_fixed() {
     );
     assert_eq!(json["problems"].as_array().unwrap().len(), 1);
     assert_eq!(json["problems"][0]["code"], "exe_missing");
+    assert_eq!(json["notes"], serde_json::json!([]));
 }
 
 #[test]
@@ -353,7 +355,7 @@ fn json_for_a_clean_setup_exits_0() {
     assert_success(&output);
     assert_eq!(
         stdout(&output),
-        "{\"problems\":[],\"fixed\":[],\"errors\":[]}\n"
+        "{\"problems\":[],\"fixed\":[],\"errors\":[],\"notes\":[]}\n"
     );
 }
 
@@ -548,7 +550,7 @@ fn fix_repairs_an_unreadable_library_and_prints_what_came_back() {
 }
 
 #[test]
-fn json_fix_repairs_the_library_without_printing_the_report() {
+fn json_fix_repairs_the_library_and_puts_the_report_in_notes() {
     let f = Fixture::new();
     f.environment("hades", "");
     fs::write(
@@ -565,6 +567,19 @@ fn json_fix_repairs_the_library_without_printing_the_report() {
         serde_json::json!(["Repair library.toml, keeping a copy of the original"])
     );
     assert_eq!(json["problems"], serde_json::json!([]));
+    let notes = json["notes"].as_array().unwrap();
+    assert_eq!(notes.len(), 1, "{json}");
+    let note = notes[0].as_str().unwrap();
+    assert!(
+        note.starts_with("Recovered the one recognized entry. Some data could not be recovered.\nOriginal saved as library.toml.broken-"),
+        "{note}"
+    );
+    assert!(note.ends_with('.'), "{note}");
+    assert!(
+        stdout(&output).starts_with("{\"problems\""),
+        "{}",
+        stdout(&output)
+    );
 }
 
 #[test]
