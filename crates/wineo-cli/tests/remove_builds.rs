@@ -282,8 +282,9 @@ fn terminal_removal_shows_size_and_accepts_confirmation() {
     command.args(["runners", "remove", "wine-tkg"]);
     let mut pty = Pty::spawn(command);
 
+    pty.expect("Esc or Ctrl+C to cancel.");
     pty.expect("Remove runner wine-tkg (");
-    pty.expect(")? [y/N] ");
+    pty.expect(")? [y/N]: ");
     pty.send("y");
     let (status, output) = pty.finish();
     assert!(status.success(), "{output}");
@@ -306,7 +307,7 @@ fn empty_terminal_confirmation_keeps_the_build() {
     let mut pty = Pty::spawn(command);
 
     pty.expect("Remove runner wine-tkg (");
-    pty.expect(")? [y/N] ");
+    pty.expect(")? [y/N]: ");
     pty.send("");
     let (status, output) = pty.finish();
     assert_eq!(status.code(), Some(130), "{output}");
@@ -351,7 +352,7 @@ fn declining_terminal_confirmation_keeps_all_builds() {
             command.args(args);
             let mut pty = Pty::spawn(command);
 
-            pty.expect(")? [y/N] ");
+            pty.expect(")? [y/N]: ");
             if eof {
                 pty.send_eof();
             } else {
@@ -402,7 +403,7 @@ fn malformed_configs_refuse_removal_before_the_terminal_prompt() {
     let mut command = f.wineo();
     command.args(["runners", "remove", "wine-tkg"]);
     let mut pty = Pty::spawn(command);
-    pty.expect(")? [y/N] ");
+    pty.expect(")? [y/N]: ");
     pty.send("y");
     let (status, output) = pty.finish();
     assert!(status.success(), "{output}");

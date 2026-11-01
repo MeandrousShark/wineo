@@ -117,6 +117,11 @@ impl Pty {
         self.master.write_all(b"\x03").unwrap();
     }
 
+    /// Ctrl+D at an empty question, which ends the input.
+    pub fn send_eof(&mut self) {
+        self.master.write_all(b"\x04").unwrap();
+    }
+
     /// Esc pressed by itself, which the line editor finishes with its timeout.
     pub fn esc(&mut self) {
         self.master.write_all(b"\x1b").unwrap();

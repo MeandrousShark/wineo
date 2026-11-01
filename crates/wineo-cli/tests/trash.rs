@@ -1,12 +1,8 @@
 mod common;
 
 use std::fs;
-use std::io::{Read, Write};
-use std::os::unix::fs::OpenOptionsExt;
 
-use rustix::fs::OFlags;
-use rustix::pty::{OpenptFlags, grantpt, openpt, ptsname, unlockpt};
-
+use common::pty::Pty;
 use common::{Fixture, assert_success, stderr, stdout};
 
 fn native(f: &Fixture, name: &str) {
@@ -195,42 +191,54 @@ fn rm_include_prefix_help_matches_the_accepted_wording() {
 fn canceling_interactive_prune_keeps_the_entry() {
     let f = Fixture::new();
     let id = remove(&f, "game");
-    for (response, input) in [("n", &b"n\r"[..]), ("Ctrl+D", &b"\x04"[..])] {
-        let master = openpt(OpenptFlags::RDWR | OpenptFlags::NOCTTY).unwrap();
-        grantpt(&master).unwrap();
-        unlockpt(&master).unwrap();
-        let slave_name = ptsname(&master, Vec::new()).unwrap();
-        let slave = fs::OpenOptions::new()
-            .read(true)
-            .write(true)
-            .custom_flags(OFlags::NOCTTY.bits() as i32)
-            .open(slave_name.to_str().unwrap())
-            .unwrap();
+    for response in ["n", "Ctrl+D"] {
         let mut command = f.wineo();
-        command
-            .args(["prune", &id])
-            .stdin(slave.try_clone().unwrap())
-            .stdout(slave.try_clone().unwrap())
-            .stderr(slave);
-        let mut child = command.spawn().unwrap();
-        drop(command);
-        let mut master = fs::File::from(master);
-        master.write_all(input).unwrap();
-        assert_eq!(child.wait().unwrap().code(), Some(130), "{response}");
-        let mut output = String::new();
-        let mut bytes = [0; 1024];
-        while let Ok(read) = master.read(&mut bytes) {
-            if read == 0 {
-                break;
-            }
-            output.push_str(&String::from_utf8_lossy(&bytes[..read]));
+        command.args(["prune", &id]);
+        let mut pty = Pty::spawn(command);
+        pty.expect("Delete permanently? [y/N]: ");
+        if response == "Ctrl+D" {
+            pty.send_eof();
+        } else {
+            pty.send(response);
         }
+        let (status, output) = pty.finish();
+        assert_eq!(status.code(), Some(130), "{response}: {output}");
         assert!(
             output.contains("Canceled. Nothing was deleted."),
             "{response}: {output}"
         );
     }
     assert!(stdout(&f.run(&["trash", "list"])).contains(&id));
+}
+
+#[test]
+fn interactive_prune_defaults_to_no_and_y_deletes() {
+    let f = Fixture::new();
+    let id = remove(&f, "game");
+
+    let mut command = f.wineo();
+    command.args(["prune", &id]);
+    let mut pty = Pty::spawn(command);
+    pty.expect("Esc or Ctrl+C to cancel.");
+    pty.expect("Delete permanently? [y/N]: ");
+    pty.send("");
+    let (status, output) = pty.finish();
+    assert_eq!(status.code(), Some(130), "{output}");
+    assert!(
+        output.contains("Canceled. Nothing was deleted."),
+        "{output}"
+    );
+    assert!(stdout(&f.run(&["trash", "list"])).contains(&id));
+
+    let mut command = f.wineo();
+    command.args(["prune", &id]);
+    let mut pty = Pty::spawn(command);
+    pty.expect("Delete permanently? [y/N]: ");
+    pty.send("y");
+    let (status, output) = pty.finish();
+    assert!(status.success(), "{output}");
+    assert!(output.contains(&format!("Pruned {id}")), "{output}");
+    assert!(!stdout(&f.run(&["trash", "list"])).contains(&id));
 }
 
 fn manifest_path(f: &Fixture, id: &str) -> std::path::PathBuf {

@@ -1,4 +1,3 @@
-use std::io::{self, Write};
 use std::process::ExitCode;
 
 use anyhow::bail;
@@ -133,11 +132,7 @@ fn restore(paths: &Paths, env: &str, label: &str, yes: bool) -> anyhow::Result<E
         if !prompt::interactive() {
             bail!("restore needs an interactive terminal or --yes");
         }
-        print!("Restore {env} from {label}? [y/N] ");
-        crate::output::stdout().flush()?;
-        let mut answer = String::new();
-        io::stdin().read_line(&mut answer)?;
-        if !matches!(answer.trim().to_ascii_lowercase().as_str(), "y" | "yes") {
+        if !prompt::confirm_once(&format!("Restore {env} from {label}?"), false)? {
             println!("Restore canceled");
             return Ok(cancel::exit_code());
         }

@@ -86,6 +86,19 @@ pub fn terminal() -> anyhow::Result<Ask> {
     Ok(Prompt::new(Terminal::open()?, crate::output::stdout()).with_first_question(true))
 }
 
+/// A yes or no for a command with nothing else to ask. Esc, Ctrl+C, and the
+/// end of input answer no, so the caller can say what it left alone.
+pub fn confirm_once(label: &str, default: bool) -> anyhow::Result<bool> {
+    // The terminal is put back before the caller goes on.
+    let reply = terminal()?.confirm(label, default);
+    match reply {
+        Ok(Reply::Value(answer)) => Ok(answer),
+        Ok(Reply::Back) => Ok(false),
+        Err(error) if error.is::<Canceled>() => Ok(false),
+        Err(error) => Err(error),
+    }
+}
+
 /// Input for a flow that only prints, like a review that never asks.
 pub struct NoInput;
 

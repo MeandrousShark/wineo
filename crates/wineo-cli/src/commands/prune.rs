@@ -1,4 +1,3 @@
-use std::io::{self, Write};
 use std::process::ExitCode;
 
 use anyhow::bail;
@@ -87,11 +86,7 @@ pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
         if !prompt::interactive() {
             bail!("prune requires a terminal or --yes; nothing was deleted");
         }
-        print!("Delete permanently? [y/N] ");
-        crate::output::stdout().flush()?;
-        let mut answer = String::new();
-        io::stdin().read_line(&mut answer)?;
-        if !matches!(answer.trim(), "y" | "Y" | "yes" | "YES") {
+        if !prompt::confirm_once("Delete permanently?", false)? {
             println!("Canceled. Nothing was deleted.");
             return Ok(cancel::exit_code());
         }

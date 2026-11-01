@@ -1,4 +1,3 @@
-use std::io::{self, Write};
 use std::process::ExitCode;
 
 use anyhow::bail;
@@ -32,11 +31,8 @@ pub fn run(
         if uses.labels.is_empty() && lock.try_exclusive()?.is_some() {
             build_removal::refuse_unreadable(name, &uses.errors)?;
         }
-        print!("Remove {kind} {name} ({})? [y/N] ", style::size(size));
-        crate::output::stdout().flush()?;
-        let mut answer = String::new();
-        io::stdin().read_line(&mut answer)?;
-        if !matches!(answer.trim().to_ascii_lowercase().as_str(), "y" | "yes") {
+        let question = format!("Remove {kind} {name} ({})?", style::size(size));
+        if !prompt::confirm_once(&question, false)? {
             println!("Canceled. Nothing was removed.");
             return Ok(cancel::exit_code());
         }
