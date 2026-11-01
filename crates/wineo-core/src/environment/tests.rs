@@ -895,3 +895,37 @@ fn recorded_ids_write_through_a_symlinked_config() {
     }
     .check();
 }
+
+#[test]
+fn tags_lists_distinct_tags_of_readable_environments_with_one_trash_scan() {
+    let root = tempfile::tempdir().unwrap();
+    let paths = test_paths(root.path());
+    fs::create_dir_all(paths.environments_dir()).unwrap();
+    for index in 0..5 {
+        let name = format!("gone-{index}");
+        fs::write(
+            paths.environment_config(&name),
+            "kind = 'native'\ntags = ['trashed']\n",
+        )
+        .unwrap();
+        crate::trash::remove(&paths, &name, false).unwrap();
+    }
+    for (name, tags) in [
+        ("a", "['zeta', 'game']"),
+        ("b", "['game', 'co-op']"),
+        ("c", "[]"),
+    ] {
+        fs::write(
+            paths.environment_config(name),
+            format!("kind = 'native'\ntags = {tags}\n"),
+        )
+        .unwrap();
+    }
+    // An unreadable config is skipped rather than failing the listing.
+    fs::write(paths.environment_config("broken"), "kind = \n").unwrap();
+
+    crate::trash::take_manifest_reads();
+    assert_eq!(tags(&paths).unwrap(), ["co-op", "game", "zeta"]);
+    // Each manifest is read once, not once per environment.
+    assert_eq!(crate::trash::take_manifest_reads(), 5);
+}

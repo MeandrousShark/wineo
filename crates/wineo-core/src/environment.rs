@@ -624,8 +624,9 @@ pub fn names(paths: &Paths) -> Result<Vec<String>> {
 /// Distinct tags from readable environments, sorted for completion.
 pub fn tags(paths: &Paths) -> Result<Vec<String>> {
     let mut tags = BTreeSet::new();
+    let pending = crate::trash::PendingScan::new(paths);
     for name in names(paths)? {
-        if let Ok(environment) = Environment::load(paths, &name) {
+        if let Ok(environment) = Environment::load_with_pending(paths, &name, &pending) {
             tags.extend(environment.config.tags);
         }
     }
