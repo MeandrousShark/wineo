@@ -916,3 +916,65 @@ fn a_trash_blocked_steam_game_keeps_steams_playtime() {
     assert_eq!(card.kind, None);
     assert_eq!(card.playtime, time::duration_hm(3600));
 }
+
+/// Reads per file name in one `load_library_with`, with and without a cache.
+fn refresh_reads(paths: &Paths, files: &[&str]) -> Vec<Vec<usize>> {
+    use wineo_core::read_log;
+
+    let saved = wineo_core::library::load(paths);
+    let mut cache = stats::Cache::new();
+    let mut counts = Vec::new();
+    for stats in [None, Some(&mut cache)] {
+        read_log::clear();
+        load_library_with(paths, &saved, stats).unwrap();
+        counts.push(files.iter().map(|file| read_log::count(file)).collect());
+    }
+    counts
+}
+
+#[test]
+fn a_refresh_reads_each_config_once() {
+    let root = tempfile::tempdir().unwrap();
+    let paths = played_steam_library(root.path());
+    fs::write(
+        paths.environment_config("second"),
+        "kind = 'proxied'\nlauncher = 'steam'\napp_id = '456'\n",
+    )
+    .unwrap();
+    fs::write(paths.environment_config("native"), "kind = 'native'\n").unwrap();
+    fs::write(paths.environment_config("broken"), "not toml [").unwrap();
+    fs::write(paths.environment_config("binary"), [0xff, 0xfe]).unwrap();
+    fs::write(paths.environment_config("blocked"), "kind = 'native'\n").unwrap();
+    let marker = paths.restore_marker("blocked");
+    fs::create_dir_all(marker.parent().unwrap()).unwrap();
+    fs::write(marker, "").unwrap();
+    fs::create_dir_all(paths.global_config().parent().unwrap()).unwrap();
+    fs::write(paths.global_config(), "").unwrap();
+
+    // "root" counts finding the Steam install.
+    let files = [
+        "game.toml",
+        "second.toml",
+        "native.toml",
+        "broken.toml",
+        "binary.toml",
+        "blocked.toml",
+        "config.toml",
+        "root",
+        "loginusers.vdf",
+        "localconfig.vdf",
+    ];
+    let once = vec![1; files.len()];
+    assert_eq!(refresh_reads(&paths, &files), [once.clone(), once]);
+}
+
+#[test]
+fn a_refresh_with_no_steam_game_reads_no_steam_files() {
+    let root = tempfile::tempdir().unwrap();
+    let paths = played_steam_library(root.path());
+    fs::write(paths.environment_config("game"), "kind = 'native'\n").unwrap();
+
+    let files = ["game.toml", "config.toml", "root", "loginusers.vdf"];
+    let once = vec![1, 0, 0, 0];
+    assert_eq!(refresh_reads(&paths, &files), [once.clone(), once]);
+}
