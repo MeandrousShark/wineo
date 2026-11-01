@@ -102,7 +102,7 @@ wineo vkd3d remove 2.14 --yes
 ```
 
 Deletes an installed build from its root. `rm` works in place of `remove`. On a terminal it asks first with
-the build's size, `Remove runner GE-Proton9-20 (1.2 GiB)? [y/N]`, and prints
+the build's size, `Remove runner GE-Proton9-20 (1.2 GiB)? [y/N]:`, and prints
 `Removed runner GE-Proton9-20 (1.2 GiB freed)`. `--yes` skips the question.
 Without a terminal it needs `--yes`, and otherwise stops with `remove
 requires a terminal or --yes; nothing was removed`.
