@@ -6,7 +6,8 @@ mod common;
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write};
 use std::os::unix::fs::{OpenOptionsExt, symlink};
-use std::process::{Child, Command, ExitStatus, Stdio};
+use std::os::unix::process::CommandExt;
+use std::process::{Command, ExitStatus, Stdio};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
@@ -19,7 +20,7 @@ use common::*;
 /// wineo on the far side of a pseudo-terminal.
 struct Pty {
     master: File,
-    child: Child,
+    child: KillOnDrop,
     seen: Arc<Mutex<String>>,
     /// How much of the output earlier expectations have used up.
     cursor: usize,
@@ -38,11 +39,14 @@ impl Pty {
             .custom_flags(OFlags::NOCTTY.bits() as i32)
             .open(name.to_str().unwrap())
             .unwrap();
+        // Its own process group, so a test that gives up on it can end what
+        // it started too.
         command
+            .process_group(0)
             .stdin(slave.try_clone().unwrap())
             .stdout(slave.try_clone().unwrap())
             .stderr(slave);
-        let child = command.spawn().unwrap();
+        let child = KillOnDrop::group(command.spawn().unwrap());
         // The command holds the only other copies of the terminal's end, and
         // dropping them is what lets reading see the end once wineo exits.
         drop(command);
@@ -134,8 +138,6 @@ impl Pty {
                 break status;
             }
             if Instant::now() >= deadline {
-                let _ = self.child.kill();
-                let _ = self.child.wait();
                 panic!(
                     "wineo didn't exit; output so far:\n{}",
                     strip_escapes(&self.seen.lock().unwrap())

@@ -3,18 +3,18 @@ mod common;
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write};
 use std::os::unix::fs::OpenOptionsExt;
-use std::process::{Child, Command, ExitStatus};
+use std::process::{Command, ExitStatus};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
-use common::{Fixture, assert_success, stderr, stdout};
+use common::{Fixture, KillOnDrop, assert_success, stderr, stdout};
 use rustix::fs::OFlags;
 use rustix::pty::{OpenptFlags, grantpt, openpt, ptsname, unlockpt};
 
 struct Pty {
     master: File,
-    child: Child,
+    child: KillOnDrop,
     seen: Arc<Mutex<String>>,
     reader: Option<JoinHandle<()>>,
 }
@@ -35,7 +35,7 @@ impl Pty {
             .stdin(slave.try_clone().unwrap())
             .stdout(slave.try_clone().unwrap())
             .stderr(slave);
-        let child = command.spawn().unwrap();
+        let child = KillOnDrop::new(command.spawn().unwrap());
         drop(command);
 
         let master = File::from(master);
@@ -92,14 +92,6 @@ impl Pty {
         }
         let output = self.seen.lock().unwrap().clone();
         (status, output)
-    }
-}
-
-impl Drop for Pty {
-    fn drop(&mut self) {
-        // A failed test must not leave a child waiting at a prompt.
-        let _ = self.child.kill();
-        let _ = self.child.wait();
     }
 }
 
