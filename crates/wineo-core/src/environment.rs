@@ -162,7 +162,7 @@ impl Environment {
     fn read(paths: &Paths, name: &str) -> Result<Self> {
         crate::snapshot::check_recovery_marker(paths, name)?;
         let path = paths.environment_config(name);
-        #[cfg(test)]
+        #[cfg(any(test, feature = "test-support"))]
         crate::read_log::note(&path);
         let Some(text) = files::read_to_string_optional(&path)
             .context(|| format!("failed to read {}", path.display()))?

@@ -102,6 +102,8 @@ pub fn active_for(
     paths: &crate::paths::Paths,
     global: &crate::config::GlobalConfig,
 ) -> Option<Install> {
+    #[cfg(any(test, feature = "test-support"))]
+    crate::read_log::note(&paths.home().join(".steam/root"));
     active_install(&installs(paths.home()), global.steam).cloned()
 }
 

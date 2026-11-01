@@ -1,4 +1,4 @@
-//! Test-only: which files the code under test read on this thread, so a test
+//! Tests only, and the app's through `test-support`: which files the code under test read on this thread, so a test
 //! can pin that a batch reads each one once.
 
 use std::cell::RefCell;
@@ -9,17 +9,17 @@ thread_local! {
 }
 
 /// Records that `path` is about to be read.
-pub(crate) fn note(path: &Path) {
+pub fn note(path: &Path) {
     READS.with(|reads| reads.borrow_mut().push(path.to_owned()));
 }
 
 /// Forgets what was read so far.
-pub(crate) fn clear() {
+pub fn clear() {
     READS.with(|reads| reads.borrow_mut().clear());
 }
 
 /// How many times a file with this name was read since the last `clear`.
-pub(crate) fn count(file_name: &str) -> usize {
+pub fn count(file_name: &str) -> usize {
     READS.with(|reads| {
         reads
             .borrow()

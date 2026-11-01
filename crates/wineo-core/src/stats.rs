@@ -756,7 +756,7 @@ pub fn summary_with_log(
 /// is treated as a Wineo game, whose log is read all the same.
 fn lenient_config(paths: &Paths, name: &str) -> Option<crate::config::EnvironmentConfig> {
     let config_path = paths.environment_config(name);
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     crate::read_log::note(&config_path);
     let text = fs::read_to_string(&config_path).ok()?;
     crate::config::EnvironmentConfig::parse(&config_path, &text).ok()

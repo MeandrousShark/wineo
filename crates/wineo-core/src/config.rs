@@ -782,7 +782,7 @@ impl GlobalConfig {
     /// Loads the global config, treating a missing file as all defaults.
     pub fn load(paths: &Paths) -> Result<Self> {
         let path = paths.global_config();
-        #[cfg(test)]
+        #[cfg(any(test, feature = "test-support"))]
         crate::read_log::note(&path);
         match files::read_to_string_optional(&path)
             .context(|| format!("failed to read {}", path.display()))?

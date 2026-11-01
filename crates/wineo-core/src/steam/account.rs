@@ -31,7 +31,7 @@ pub fn active_account(install: &Install) -> Result<u64, String> {
 /// The SteamID64 of the same account, which the Web API takes.
 pub fn active_steam_id(install: &Install) -> Result<u64, String> {
     let path = install.root().join("config/loginusers.vdf");
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     crate::read_log::note(&path);
     let text = fs::read_to_string(&path)
         .map_err(|error| format!("{} can't be read: {error}", path.display()))?;
@@ -102,7 +102,7 @@ fn read_localconfig(install: &Install) -> Result<(std::path::PathBuf, vdf::Objec
         .join("userdata")
         .join(account.to_string())
         .join("config/localconfig.vdf");
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     crate::read_log::note(&path);
     let text = fs::read_to_string(&path)
         .map_err(|error| format!("{} can't be read: {error}", path.display()))?;

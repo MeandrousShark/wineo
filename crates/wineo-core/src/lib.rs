@@ -37,8 +37,9 @@ pub mod portable;
 pub mod prefix;
 pub mod process;
 pub mod programs;
-#[cfg(test)]
-pub(crate) mod read_log;
+#[cfg(any(test, feature = "test-support"))]
+#[doc(hidden)]
+pub mod read_log;
 pub mod report;
 pub mod runner;
 pub mod runner_alias;
