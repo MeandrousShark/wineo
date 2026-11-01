@@ -538,16 +538,16 @@ reviewed_commit() {
     git -C "$repo" commit -qm "$1"
 }
 
-all_nine="overlay
+all_nine="ppa jammy
+ppa noble
+ppa resolute
+ppa stonking
+overlay
 aur wineo
 aur wineo-bin
 aur wineo-git
 copr all
-obs all
-ppa jammy
-ppa noble
-ppa resolute
-ppa stonking"
+obs all"
 
 # Usage errors, before anything else happens.
 
@@ -797,9 +797,8 @@ publish
 check "an upload that fails: exit $rc, not 1" test "$rc" -eq 1
 check "an upload that fails: the reason is missing" said "^  copr +failed: the upload of all failed"
 check "an upload that fails: it counts as uploaded: $(uploads)" test "$(upload_count ' copr ')" -eq 0
-check "an upload that fails: the later ones stopped" \
-    test "$(upload_count ' obs ')" -eq 1 -a "$(upload_count ' ppa ')" -eq 4
-check "an upload that fails: the summary lost the others" said "^  ppa +published"
+check "an upload that fails: the later ones stopped" test "$(upload_count ' obs ')" -eq 1
+check "an upload that fails: the summary lost the others" said "^  obs +published"
 publish
 check "the retry: exit $rc, not 0: $(tail -n 5 "$out")" test "$rc" -eq 0
 check "the retry did not upload COPR once" test "$(upload_count ' copr ')" -eq 1
@@ -812,10 +811,17 @@ for d in overlay aur; do
     publish
     check "a refused $d push: exit $rc, not 1" test "$rc" -eq 1
     check "a refused $d push isn't in the summary" said "^  $d +failed"
-    check "a refused $d push stopped the later ones" test "$(upload_count ' ppa ')" -eq 4
+    check "a refused $d push stopped the later ones" test "$(upload_count ' copr ')" -eq 1 -a "$(upload_count ' obs ')" -eq 1
     publish --only "$d"
     check "the $d retry: exit $rc, not 0: $(tail -n 3 "$out")" test "$rc" -eq 0
 done
+
+new_scenario
+echo always >"$dest/control/fail-upload-ppa"
+publish
+check "a refused PPA upload: exit $rc, not 1" test "$rc" -eq 1
+check "a refused PPA upload stopped the later ones: $(uploads)" \
+    test "$(upload_count ' copr ')" -eq 1 -a "$(upload_count ' obs ')" -eq 1
 
 # A failed part-way PPA upload keeps what went, and sends only the rest.
 new_scenario
@@ -965,7 +971,7 @@ publish
 check "SKIP left: exit $rc, not 1" test "$rc" -eq 1
 check "SKIP left: the reason is missing" said "wineo-bin still has a SKIP checksum"
 check "SKIP left: part of the AUR went: $(uploads)" test "$(upload_count ' aur ')" -eq 0
-check "SKIP left: the later ones stopped" test "$(upload_count ' copr ')" -eq 1 -a "$(upload_count ' ppa ')" -eq 4
+check "SKIP left: the later ones stopped" test "$(upload_count ' copr ')" -eq 1 -a "$(upload_count ' obs ')" -eq 1
 check "SKIP left: the summary doesn't say it" said "^  aur +failed: wineo-bin still has a SKIP"
 
 new_scenario
@@ -1208,7 +1214,7 @@ pin_refused() { # NAME REASON: the AUR went nowhere, and the rest went on
     check "$name: part of the AUR went: $(uploads)" test "$(upload_count ' aur ')" -eq 0
     check "$name: nothing reached the AUR's repositories" \
         test -z "$(git -C "$dest/remote/wineo-bin.git" for-each-ref 2>/dev/null)"
-    check "$name: the later ones stopped" test "$(upload_count ' ppa ')" -eq 4
+    check "$name: the later ones stopped" test "$(upload_count ' copr ')" -eq 1 -a "$(upload_count ' obs ')" -eq 1
 }
 for package in wineo wineo-bin; do
     new_scenario

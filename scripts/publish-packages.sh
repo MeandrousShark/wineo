@@ -5,7 +5,7 @@
 # Usage: scripts/publish-packages.sh VERSION [--only DEST] [--skip DEST]...
 #                                    [--dest-dir DIR]
 #
-# DEST is overlay, aur, copr, obs, or ppa, published in that order. --only and
+# DEST is ppa, overlay, aur, copr, or obs, published in that order. --only and
 # --skip can't be combined. A release with no AUR account runs --skip aur, and
 # the recipes go up later with --only aur.
 #
@@ -87,7 +87,9 @@ fedora_image=registry.fedoraproject.org/fedora:44
 ubuntu_image=docker.io/library/ubuntu:24.04
 gentoo_image=docker.io/gentoo/stage3:latest
 
-destinations=(overlay aur copr obs ppa)
+# The PPA goes first because signing asks for the passphrase: the rest needs
+# nobody, so whoever started the run can walk away once that's typed.
+destinations=(ppa overlay aur copr obs)
 aur_packages=(wineo wineo-bin wineo-git)
 
 # Every repository target and its own Rust, reviewed against the plan's distro
