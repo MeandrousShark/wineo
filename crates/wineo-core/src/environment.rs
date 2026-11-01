@@ -152,15 +152,35 @@ impl Environment {
         name: &str,
         pending: &crate::trash::PendingScan,
     ) -> Result<Self> {
-        check_name(name)?;
-        pending
-            .check(paths, name, &[])
-            .map_err(|err| Error::Unsettled(err.to_string()))?;
-        Self::read(paths, name)
+        Self::load_noting_read(paths, name, pending).0
+    }
+
+    /// `load_with_pending`, and whether it got as far as reading the config,
+    /// since a config it never opened can still be perfectly readable.
+    pub(crate) fn load_noting_read(
+        paths: &Paths,
+        name: &str,
+        pending: &crate::trash::PendingScan,
+    ) -> (Result<Self>, bool) {
+        let checked = check_name(name)
+            .and_then(|()| {
+                pending
+                    .check(paths, name, &[])
+                    .map_err(|err| Error::Unsettled(err.to_string()))
+            })
+            .and_then(|()| crate::snapshot::check_recovery_marker(paths, name));
+        match checked {
+            Ok(()) => (Self::read_config(paths, name), true),
+            Err(error) => (Err(error), false),
+        }
     }
 
     fn read(paths: &Paths, name: &str) -> Result<Self> {
         crate::snapshot::check_recovery_marker(paths, name)?;
+        Self::read_config(paths, name)
+    }
+
+    fn read_config(paths: &Paths, name: &str) -> Result<Self> {
         let path = paths.environment_config(name);
         #[cfg(any(test, feature = "test-support"))]
         crate::read_log::note(&path);

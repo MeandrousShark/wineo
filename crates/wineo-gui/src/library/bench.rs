@@ -31,6 +31,7 @@ use std::time::{Duration, Instant};
 
 use wineo_core::environment::Environment;
 use wineo_core::paths::Paths;
+use wineo_core::refresh::RefreshSnapshot;
 use wineo_core::report::{self, OverviewFilter};
 use wineo_core::stats::{self, End, Session};
 use wineo_core::trash::PendingScan;
@@ -236,8 +237,8 @@ fn rescan_quiet_and_busy() {
 
 /// Where the read spends its time, to see whether the stats logs dominate.
 /// The parts overlap what `load_library` does, so they don't sum to it
-/// exactly: the overview and the card loop each load every config, and the
-/// stats overview loads them again.
+/// exactly: the app's read shares one snapshot between them, and each part
+/// here reads its own.
 #[test]
 #[ignore = "needs WINEO_BENCH_ROOT and a release-test build"]
 fn rescan_parts() {
@@ -261,11 +262,11 @@ fn rescan_parts() {
         "trash scan (PendingScan::new)",
         time(iterations, || PendingScan::new(&paths)),
     );
-    let pending = PendingScan::new(&paths);
     millis(
-        "report::overview_with_pending",
+        "report::overview_from_snapshot (with snapshot read)",
         time(iterations, || {
-            report::overview_with_pending(&paths, OverviewFilter::default(), &pending).unwrap()
+            let snapshot = RefreshSnapshot::read(&paths).unwrap();
+            report::overview_from_snapshot(&snapshot, OverviewFilter::default())
         }),
     );
     millis(
@@ -297,6 +298,7 @@ fn rescan_parts() {
                 .sum::<usize>()
         }),
     );
+    let pending = PendingScan::new(&paths);
     millis(
         "environment configs (load x all)",
         time(iterations, || {

@@ -7,11 +7,12 @@ use serde::Serialize;
 use crate::components::{Builds, Component, LATEST};
 use crate::config::{GlobalConfig, Kind, Launcher};
 use crate::desktop;
-use crate::environment::{self, Environment};
-use crate::error::{IoContext, Result};
+use crate::environment::Environment;
+use crate::error::{IoContext, Result, chain};
 use crate::install::{self, Wanted};
 use crate::operation::{Locks, Operation};
 use crate::paths::Paths;
+use crate::refresh::{RefreshSnapshot, SteamFiles};
 use crate::runners::Runners;
 use crate::runtime::{RunStatus, Runtime, State, Status};
 use crate::stats;
@@ -311,7 +312,8 @@ impl EnvironmentReport {
             Kind::Proxied(proxied) => vec![proxied.app_id.clone()],
             Kind::Wine(_) | Kind::Native => Vec::new(),
         };
-        let probe = SteamProbe::new(paths, Some(global), app_ids, &crate::steam::reapers_by_app);
+        let steam = SteamFiles::with_global(paths, global);
+        let probe = SteamProbe::new(&steam, app_ids, &crate::steam::reapers_by_app);
         let status = status(paths, &environment.name, busy, Some(environment), &probe)?;
         let wine = environment.config.wine();
         // An unresolvable runner is worth showing the rest of the status for.
@@ -433,41 +435,27 @@ type ReapersByApp = HashMap<String, Vec<crate::steam::Reaper>>;
 /// happen at most once, on the first environment that needs them, for every
 /// proxied environment in the batch.
 struct SteamProbe<'a> {
-    paths: &'a Paths,
-    global: Option<&'a GlobalConfig>,
+    steam: &'a SteamFiles<'a>,
     app_ids: Vec<String>,
     scan: &'a ReaperScan<'a>,
-    install: OnceCell<Option<crate::steam::Install>>,
     // io::Error can't be cloned, and every environment that asks after a
     // failed scan should report it.
     reapers: OnceCell<std::result::Result<ReapersByApp, (std::io::ErrorKind, String)>>,
 }
 
 impl<'a> SteamProbe<'a> {
-    fn new(
-        paths: &'a Paths,
-        global: Option<&'a GlobalConfig>,
-        app_ids: Vec<String>,
-        scan: &'a ReaperScan<'a>,
-    ) -> Self {
+    fn new(steam: &'a SteamFiles<'a>, app_ids: Vec<String>, scan: &'a ReaperScan<'a>) -> Self {
         Self {
-            paths,
-            global,
+            steam,
             app_ids,
             scan,
-            install: OnceCell::new(),
             reapers: OnceCell::new(),
         }
     }
 
     /// None when the global config can't be read or Steam isn't installed.
     fn install(&self) -> Option<&crate::steam::Install> {
-        self.install
-            .get_or_init(|| {
-                self.global
-                    .and_then(|global| crate::steam::active_for(self.paths, global))
-            })
-            .as_ref()
+        self.steam.install()
     }
 
     fn game_running(&self, install: &crate::steam::Install, app_id: &str) -> std::io::Result<bool> {
@@ -533,65 +521,44 @@ pub fn overview(paths: &Paths, filter: OverviewFilter<'_>) -> Result<Overview> {
     overview_with(paths, filter, &crate::steam::reapers_by_app)
 }
 
-/// `overview` against a trash scan the caller also uses for its own loads of
-/// the same environments, so one batch reads the trash once.
-pub fn overview_with_pending(
-    paths: &Paths,
+/// `overview` from a refresh's snapshot, for a caller that shares it with its
+/// own reads. Run state isn't in the snapshot, so a lost Steam run is cleaned
+/// up here as `overview` would, before anything that reads the state after.
+pub fn overview_from_snapshot(
+    snapshot: &RefreshSnapshot<'_>,
     filter: OverviewFilter<'_>,
-    pending: &crate::trash::PendingScan,
-) -> Result<Overview> {
-    overview_from(paths, filter, &crate::steam::reapers_by_app, Some(pending))
+) -> Overview {
+    overview_from(snapshot, filter, &crate::steam::reapers_by_app)
 }
 
 fn overview_with(paths: &Paths, filter: OverviewFilter<'_>, scan: &ReaperScan) -> Result<Overview> {
-    overview_from(paths, filter, scan, None)
+    Ok(overview_from(&RefreshSnapshot::read(paths)?, filter, scan))
 }
 
 fn overview_from(
-    paths: &Paths,
+    snapshot: &RefreshSnapshot<'_>,
     filter: OverviewFilter<'_>,
     scan: &ReaperScan,
-    pending: Option<&crate::trash::PendingScan>,
-) -> Result<Overview> {
+) -> Overview {
+    let paths = snapshot.paths();
     let locks = Locks::new(paths);
-    // Display only: without a readable global config the Steam rows say the
-    // playtime is unknown, and nothing here writes or launches.
-    let global = GlobalConfig::load(paths).ok();
+    let steam = snapshot.steam();
     let mut overview = Overview::default();
-    let names = environment::names(paths)?;
-    // Nothing here trashes or restores, so one trash scan serves every load.
-    let own;
-    let pending = match pending {
-        Some(pending) => pending,
-        None => {
-            own = crate::trash::PendingScan::new(paths);
-            &own
-        }
-    };
-    // Loaded up front so one process sweep can look for every Steam game.
-    let environments: Vec<_> = names
-        .into_iter()
-        .map(|name| {
-            let environment = Environment::load_with_pending(paths, &name, pending);
-            (name, environment)
+    // Collected up front so one process sweep can look for every Steam game.
+    let mut app_ids: Vec<String> = snapshot
+        .environments()
+        .filter_map(|(_, environment)| match &environment.ok()?.config.kind {
+            Kind::Proxied(proxied) => Some(proxied.app_id.clone()),
+            Kind::Wine(_) | Kind::Native => None,
         })
-        .collect();
-    let mut app_ids: Vec<String> = environments
-        .iter()
-        .filter_map(
-            |(_, environment)| match &environment.as_ref().ok()?.config.kind {
-                Kind::Proxied(proxied) => Some(proxied.app_id.clone()),
-                Kind::Wine(_) | Kind::Native => None,
-            },
-        )
         .collect();
     app_ids.sort();
     app_ids.dedup();
-    let probe = SteamProbe::new(paths, global.as_ref(), app_ids, scan);
-    for (name, environment) in environments {
-        let busy = locks.busy_with(&name).unwrap_or(None);
-        let current = status(paths, &name, busy, environment.as_ref().ok(), &probe);
-        let unresolved = busy.is_none() && unresolved(paths, &name);
+    let probe = SteamProbe::new(steam, app_ids, scan);
+    for (name, environment) in snapshot.environments() {
+        let busy = locks.busy_with(name).unwrap_or(None);
+        let current = status(paths, name, busy, environment.ok(), &probe);
+        let unresolved = busy.is_none() && unresolved(paths, name);
         match current {
             Ok(status)
                 if !filter.running_only
@@ -611,27 +578,27 @@ fn overview_from(
                         {
                             overview.environments.push(OverviewEnvironment {
                                 hooks: crate::view::HooksOutput::presence(crate::launch::hooks(
-                                    &environment,
+                                    environment,
                                     status.run.as_ref().and_then(|run| {
                                         environment.config.targets.get(&run.target)
                                     }),
                                 )),
-                                kind: Some(match &global {
-                                    Some(_) => match &environment.config.kind {
-                                        Kind::Proxied(_) => {
-                                            let steam = overview.steam.get_or_insert_with(|| {
-                                                steam_overview(probe.install().cloned())
-                                            });
-                                            kind_report_with_steam(
-                                                &environment.config.kind,
-                                                Some(steam),
-                                            )
-                                        }
-                                        _ => KindReport::new(&environment.config.kind),
-                                    },
-                                    None => KindReport::new(&environment.config.kind),
+                                kind: Some(match &environment.config.kind {
+                                    // Display only: without a readable global
+                                    // config there's no install to show, and
+                                    // nothing here writes or launches.
+                                    Kind::Proxied(_) if steam.global().is_ok() => {
+                                        let steam = overview.steam.get_or_insert_with(|| {
+                                            steam_overview(probe.install().cloned())
+                                        });
+                                        kind_report_with_steam(
+                                            &environment.config.kind,
+                                            Some(steam),
+                                        )
+                                    }
+                                    kind => KindReport::new(kind),
                                 }),
-                                name,
+                                name: name.to_owned(),
                                 status,
                                 busy,
                                 unresolved,
@@ -640,11 +607,11 @@ fn overview_from(
                         }
                     }
                     Err(err) if filter.tags.is_some() => overview.errors.push(OverviewError {
-                        name,
-                        message: format!("{:#}", anyhow::Error::from(err)),
+                        name: name.to_owned(),
+                        message: chain(err),
                     }),
                     Err(_) => overview.environments.push(OverviewEnvironment {
-                        name,
+                        name: name.to_owned(),
                         kind: None,
                         status,
                         busy,
@@ -656,12 +623,12 @@ fn overview_from(
             }
             Ok(_) => {}
             Err(err) => overview.errors.push(OverviewError {
-                name,
+                name: name.to_owned(),
                 message: format!("{:#}", anyhow::Error::from(err)),
             }),
         }
     }
-    Ok(overview)
+    overview
 }
 
 /// Reading the manifest needs the runner and the prefix, and neither is

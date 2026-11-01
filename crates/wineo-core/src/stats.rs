@@ -22,9 +22,10 @@ use crate::error::{IoContext, Result};
 use crate::files;
 use crate::heroic::HeroicSource;
 use crate::paths::Paths;
+use crate::refresh::{RefreshSnapshot, SteamFiles};
 use crate::runtime::{Runtime, State};
+use crate::steam;
 use crate::time::{LocalZone, Zone};
-use crate::{config::GlobalConfig, steam};
 
 /// How a session came to an end.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -374,26 +375,33 @@ pub fn overview_with_options(paths: &Paths, options: OverviewOptions<'_>) -> Res
     overview_inner(paths, options, None, Timestamp::now())
 }
 
+/// `overview` from a refresh's snapshot, through `cache` when given. Call it
+/// after `report::overview_from_snapshot`, which may clean up a lost run.
+pub fn overview_from_snapshot(
+    snapshot: &RefreshSnapshot<'_>,
+    cache: Option<&mut Cache>,
+) -> Overview {
+    let paths = snapshot.paths();
+    let names: Vec<&str> = snapshot.environments().map(|(name, _)| name).collect();
+    let mut rows = Rows::new(paths, snapshot.steam(), cache, Timestamp::now());
+    rows.keep_logs_of(names.iter().copied());
+    for name in names {
+        rows.add(name.to_owned(), None, snapshot.lenient_config(name));
+    }
+    rows.finish()
+}
+
 fn overview_inner(
     paths: &Paths,
     options: OverviewOptions<'_>,
-    mut cache: Option<&mut Cache>,
+    cache: Option<&mut Cache>,
     now: Timestamp,
 ) -> Result<Overview> {
-    let tz = LocalZone::new();
-    let mut rows = Vec::new();
-    let mut tags = BTreeMap::new();
-    let mut warnings = Vec::new();
-    let mut errors = Vec::new();
     // One reading of Steam's files for every Steam game in the overview.
-    let steam = SteamPlaytimes::new(paths);
+    let steam = SteamFiles::new(paths);
     let names = environment::names(paths)?;
-    if let Some(cache) = cache.as_deref_mut() {
-        // Every name counts, including ones a tag filter skips, so a filtered
-        // overview doesn't evict the logs an unfiltered one will want.
-        let live: HashSet<PathBuf> = names.iter().map(|name| paths.stats_log(name)).collect();
-        cache.logs.retain(|path, _| live.contains(path));
-    }
+    let mut rows = Rows::new(paths, &steam, cache, now);
+    rows.keep_logs_of(names.iter().map(String::as_str));
     let loads_configs = options.tags.is_some() || options.load_tags;
     // Nothing here trashes or restores, so one trash scan serves every load.
     let pending = loads_configs.then(|| crate::trash::PendingScan::new(paths));
@@ -411,7 +419,7 @@ fn overview_inner(
                     (Some(tags.clone()), Some(environment.config))
                 }
                 Err(err) => {
-                    errors.push(OverviewError {
+                    rows.errors.push(OverviewError {
                         name,
                         message: format!("{:#}", anyhow::Error::from(err)),
                     });
@@ -423,62 +431,129 @@ fn overview_inner(
         };
         // A config the tags already loaded isn't read and parsed again.
         let config = loaded.or_else(|| lenient_config(paths, &name));
-        let summary = match cache.as_deref_mut() {
-            Some(cache) => summary_cached(paths, &name, config.as_ref(), &steam, cache, now, &tz),
-            None => summary_of(paths, &name, config.as_ref(), &steam, now, &tz)
+        rows.add(name, environment_tags, config.as_ref());
+    }
+    Ok(rows.finish())
+}
+
+/// The rows of an overview as they're collected, and what reading them needs.
+struct Rows<'a> {
+    paths: &'a Paths,
+    steam: &'a SteamFiles<'a>,
+    cache: Option<&'a mut Cache>,
+    now: Timestamp,
+    tz: LocalZone,
+    rows: Vec<(String, Summary)>,
+    tags: BTreeMap<String, Vec<String>>,
+    warnings: Vec<String>,
+    errors: Vec<OverviewError>,
+}
+
+impl<'a> Rows<'a> {
+    fn new(
+        paths: &'a Paths,
+        steam: &'a SteamFiles<'a>,
+        cache: Option<&'a mut Cache>,
+        now: Timestamp,
+    ) -> Self {
+        Self {
+            paths,
+            steam,
+            cache,
+            now,
+            tz: LocalZone::new(),
+            rows: Vec::new(),
+            tags: BTreeMap::new(),
+            warnings: Vec::new(),
+            errors: Vec::new(),
+        }
+    }
+
+    /// Drops the cached logs of environments that are gone. Every name
+    /// counts, including ones a tag filter skips, so a filtered overview
+    /// doesn't evict the logs an unfiltered one will want.
+    fn keep_logs_of<'n>(&mut self, names: impl Iterator<Item = &'n str>) {
+        if let Some(cache) = self.cache.as_deref_mut() {
+            let live: HashSet<PathBuf> = names.map(|name| self.paths.stats_log(name)).collect();
+            cache.logs.retain(|path, _| live.contains(path));
+        }
+    }
+
+    fn add(
+        &mut self,
+        name: String,
+        environment_tags: Option<Vec<String>>,
+        config: Option<&crate::config::EnvironmentConfig>,
+    ) {
+        let (paths, steam, now) = (self.paths, self.steam, self.now);
+        let summary = match self.cache.as_deref_mut() {
+            Some(cache) => summary_cached(paths, &name, config, steam, cache, now, &self.tz),
+            None => summary_of(paths, &name, config, steam, now, &self.tz)
                 .map(|(summary, _, warns)| (summary, warns)),
         };
         match summary {
             Ok((summary, warns)) => {
-                warnings.extend(warns);
+                self.warnings.extend(warns);
                 if let Some(environment_tags) = environment_tags {
-                    tags.insert(name.clone(), environment_tags);
+                    self.tags.insert(name.clone(), environment_tags);
                 }
-                rows.push((name, summary));
+                self.rows.push((name, summary));
             }
-            Err(err) => errors.push(OverviewError {
+            Err(err) => self.errors.push(OverviewError {
                 name,
                 message: format!("{:#}", anyhow::Error::from(err)),
             }),
         }
     }
-    let mut played: Vec<usize> = (0..rows.len())
-        .filter(|&index| rows[index].1.seconds > 0)
-        .collect();
-    played.sort_by(|&a, &b| {
-        rows[b]
-            .1
-            .seconds
-            .cmp(&rows[a].1.seconds)
-            .then_with(|| rows[a].0.cmp(&rows[b].0))
-    });
-    let steam_games = rows
-        .iter()
-        .filter(|(_, summary)| summary.source == Source::Steam && !summary.playtime_unknown)
-        .count();
-    let unknown_steam_games = rows
-        .iter()
-        .filter(|(_, summary)| summary.source == Source::Steam && summary.playtime_unknown)
-        .count();
-    let never_played = rows.len() - played.len() - unknown_steam_games;
-    let total_seconds = rows
-        .iter()
-        .filter(|(_, summary)| !summary.playtime_unknown)
-        .map(|(_, summary)| summary.seconds)
-        .sum();
-    Ok(Overview {
-        rows,
-        tags,
-        played,
-        total_seconds,
-        never_played,
-        steam_games,
-        unknown_steam_games,
-        warnings,
-        errors,
-        now,
-        tz,
-    })
+
+    fn finish(self) -> Overview {
+        let Self {
+            rows,
+            tags,
+            warnings,
+            errors,
+            now,
+            tz,
+            ..
+        } = self;
+        let mut played: Vec<usize> = (0..rows.len())
+            .filter(|&index| rows[index].1.seconds > 0)
+            .collect();
+        played.sort_by(|&a, &b| {
+            rows[b]
+                .1
+                .seconds
+                .cmp(&rows[a].1.seconds)
+                .then_with(|| rows[a].0.cmp(&rows[b].0))
+        });
+        let steam_games = rows
+            .iter()
+            .filter(|(_, summary)| summary.source == Source::Steam && !summary.playtime_unknown)
+            .count();
+        let unknown_steam_games = rows
+            .iter()
+            .filter(|(_, summary)| summary.source == Source::Steam && summary.playtime_unknown)
+            .count();
+        let never_played = rows.len() - played.len() - unknown_steam_games;
+        let total_seconds = rows
+            .iter()
+            .filter(|(_, summary)| !summary.playtime_unknown)
+            .map(|(_, summary)| summary.seconds)
+            .sum();
+        Overview {
+            rows,
+            tags,
+            played,
+            total_seconds,
+            never_played,
+            steam_games,
+            unknown_steam_games,
+            warnings,
+            errors,
+            now,
+            tz,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -723,14 +798,8 @@ pub(crate) fn summary_for_config(
     now: Timestamp,
     tz: &dyn Zone,
 ) -> Result<(Summary, Vec<String>)> {
-    let (summary, _, warnings) = summary_of(
-        paths,
-        name,
-        Some(config),
-        &SteamPlaytimes::new(paths),
-        now,
-        tz,
-    )?;
+    let (summary, _, warnings) =
+        summary_of(paths, name, Some(config), &SteamFiles::new(paths), now, tz)?;
     Ok((summary, warnings))
 }
 
@@ -746,7 +815,7 @@ pub fn summary_with_log(
         paths,
         name,
         config.as_ref(),
-        &SteamPlaytimes::new(paths),
+        &SteamFiles::new(paths),
         now,
         tz,
     )
@@ -754,7 +823,10 @@ pub fn summary_with_log(
 
 /// The environment's config as far as it parses. A config that can't be read
 /// is treated as a Wineo game, whose log is read all the same.
-fn lenient_config(paths: &Paths, name: &str) -> Option<crate::config::EnvironmentConfig> {
+pub(crate) fn lenient_config(
+    paths: &Paths,
+    name: &str,
+) -> Option<crate::config::EnvironmentConfig> {
     let config_path = paths.environment_config(name);
     #[cfg(any(test, feature = "test-support"))]
     crate::read_log::note(&config_path);
@@ -768,7 +840,7 @@ fn summary_of(
     paths: &Paths,
     name: &str,
     config: Option<&crate::config::EnvironmentConfig>,
-    steam: &SteamPlaytimes<'_>,
+    steam: &SteamFiles<'_>,
     now: Timestamp,
     tz: &dyn Zone,
 ) -> Result<(Summary, Option<Log>, Vec<String>)> {
@@ -791,7 +863,7 @@ fn summary_cached(
     paths: &Paths,
     name: &str,
     config: Option<&crate::config::EnvironmentConfig>,
-    steam: &SteamPlaytimes<'_>,
+    steam: &SteamFiles<'_>,
     cache: &mut Cache,
     now: Timestamp,
     tz: &dyn Zone,
@@ -810,7 +882,7 @@ fn summary_cached(
 /// The summary of a Steam-backed environment, or `None` for a Wineo one.
 fn steam_summary(
     config: Option<&crate::config::EnvironmentConfig>,
-    steam: &SteamPlaytimes<'_>,
+    steam: &SteamFiles<'_>,
 ) -> Option<Summary> {
     let config = config?;
     let crate::config::Kind::Proxied(proxied) = &config.kind else {
@@ -819,44 +891,11 @@ fn steam_summary(
     Some(summarize_steam(steam.playtime(&proxied.app_id)))
 }
 
-/// Steam's playtime for the games of one overview. The global config, the
-/// install, and the account's `localconfig.vdf` are found and read once, on
-/// the first Steam game that asks, not again for each one.
-struct SteamPlaytimes<'a> {
-    paths: &'a Paths,
-    /// The reason nothing can be read, or the parsed playtime file.
-    playtimes: std::cell::OnceCell<std::result::Result<steam::Playtimes, String>>,
-}
-
-impl<'a> SteamPlaytimes<'a> {
-    fn new(paths: &'a Paths) -> Self {
-        Self {
-            paths,
-            playtimes: std::cell::OnceCell::new(),
-        }
-    }
-
-    fn playtime(&self, app_id: &str) -> steam::Playtime {
-        let playtimes = self
-            .playtimes
-            .get_or_init(|| match GlobalConfig::load(self.paths) {
-                Ok(global) => steam::active_for(self.paths, &global)
-                    .map(|install| steam::Playtimes::load(&install))
-                    .ok_or_else(|| "Steam was not found".to_owned()),
-                Err(error) => Err(format!("global config can't be read: {error}")),
-            });
-        match playtimes {
-            Ok(playtimes) => playtimes.get(app_id),
-            Err(reason) => steam::Playtime::Unknown(reason.clone()),
-        }
-    }
-}
-
 /// What an overview's Steam lookup says for `app_id`, reason included, which
 /// a `Summary` doesn't keep.
 #[cfg(test)]
 fn steam_playtime(paths: &Paths, app_id: &str) -> steam::Playtime {
-    SteamPlaytimes::new(paths).playtime(app_id)
+    SteamFiles::new(paths).playtime(app_id)
 }
 
 fn summarize_steam(playtime: steam::Playtime) -> Summary {

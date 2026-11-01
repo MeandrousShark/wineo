@@ -7,9 +7,9 @@ use iced::Color;
 use jiff::Timestamp;
 use wineo_core::art::{self, ArtConfig};
 use wineo_core::config::{EnvironmentConfig, Kind, Target};
-use wineo_core::environment::Environment;
 use wineo_core::launch;
 use wineo_core::paths::Paths;
+use wineo_core::refresh::RefreshSnapshot;
 use wineo_core::report::{self, OverviewFilter};
 use wineo_core::runtime::State;
 use wineo_core::source::{Facts, Source};
@@ -367,20 +367,19 @@ pub(super) fn load_library_with(
     saved: &wineo_core::library::Library,
     stats: Option<&mut stats::Cache>,
 ) -> anyhow::Result<Vec<Card>> {
-    // Building cards never trashes or restores, so the overview and every
-    // card's config load share one read of the trash.
-    let pending = PendingScan::new(paths);
-    let overview = report::overview_with_pending(paths, OverviewFilter::default(), &pending)?;
+    // The overviews and every card share one read of the trash, the configs,
+    // and Steam's files. The report comes first: its lost-run cleanup rewrites
+    // the run state that everything after it goes by.
+    let snapshot = RefreshSnapshot::read(paths)?;
+    let pending = snapshot.pending();
+    let overview = report::overview_from_snapshot(&snapshot, OverviewFilter::default());
     let tools = overview
         .steam
         .as_ref()
         .and_then(|steam| steam.install.as_ref())
         .map(steam::compat_tools)
         .unwrap_or_default();
-    let stats = match stats {
-        Some(cache) => stats::overview_cached(paths, cache)?,
-        None => stats::overview(paths)?,
-    };
+    let stats = stats::overview_from_snapshot(&snapshot, stats);
     let played: HashMap<_, _> = stats
         .rows
         .into_iter()
@@ -448,14 +447,17 @@ pub(super) fn load_library_with(
             steam_platform,
             ..Facts::default()
         });
-        let (error, art) = match Environment::load_with_pending(paths, &item.name, &pending) {
+        let loaded = snapshot
+            .environment(&item.name)
+            .expect("the overview lists the snapshot's environments");
+        let (error, art) = match loaded {
             Ok(env) => {
                 kind = Some(CardKind::new(&env.config.kind));
                 source = Source::of(&env.config, steam_platform);
-                gog_card = gog.card(paths, &env);
+                gog_card = gog.card(paths, env);
                 prefix = env.prefix(paths).ok();
                 targets = env.config.targets.keys().cloned().collect();
-                default_target = launch::default_target(&env).ok().map(str::to_owned);
+                default_target = launch::default_target(env).ok().map(str::to_owned);
                 let steam_name = match &item.kind {
                     Some(report::KindReport::Proxied { title, .. }) => {
                         targets = vec!["steam".to_owned()];
@@ -494,7 +496,7 @@ pub(super) fn load_library_with(
                 }
             }
             Err(error) => (
-                Some(load_error(paths, &pending, &item.name, error.to_string())),
+                Some(load_error(paths, pending, &item.name, error.to_string())),
                 None,
             ),
         };
@@ -543,7 +545,7 @@ pub(super) fn load_library_with(
             .unwrap_or_else(|| fallback_played(None));
         let entry = saved.environments.get(&error.name);
         let title = error.name.clone();
-        let message = load_error(paths, &pending, &error.name, error.message);
+        let message = load_error(paths, pending, &error.name, error.message);
         cards.push(Card {
             playtime: played.playtime,
             sessions: played.sessions,

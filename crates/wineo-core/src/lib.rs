@@ -40,6 +40,7 @@ pub mod programs;
 #[cfg(any(test, feature = "test-support"))]
 #[doc(hidden)]
 pub mod read_log;
+pub mod refresh;
 pub mod report;
 pub mod runner;
 pub mod runner_alias;
