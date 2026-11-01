@@ -221,19 +221,6 @@ fn review_picks_a_numbered_entry_to_edit() {
 }
 
 #[test]
-fn review_supports_an_empty_list_without_back() {
-    let mut p = prompt(&[""]);
-    let reply = p
-        .review::<()>("Review:", None, "create it", &[], false)
-        .unwrap();
-    assert_eq!(reply, Reply::Value(None));
-    assert_eq!(
-        printed(&p),
-        "Review:\n\nPress Enter to create it, Ctrl+C to cancel.\nCreate it? "
-    );
-}
-
-#[test]
 fn review_many_takes_several_numbers_on_a_line() {
     let choices = numbered([
         ("one".to_owned(), 1),

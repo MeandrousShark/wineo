@@ -668,8 +668,8 @@ fn staged_changes_are_saved_before_an_installer_runs() {
     pty.send("4");
     pty.expect("You have unsaved changes:");
     pty.expect("They are saved before the installer runs.");
-    pty.expect("Press Enter to save and run the installer, Esc to go back, Ctrl+C to cancel.");
-    pty.expect("Save and run the installer? ");
+    pty.expect("Esc to go back, Ctrl+C to cancel.");
+    pty.expect("Save and run the installer? [Y/n]: ");
     pty.send("");
     pty.expect("Saved app.");
     pty.expect("Installer or updater, as a Unix path or a Windows one: ");
@@ -683,6 +683,91 @@ fn staged_changes_are_saved_before_an_installer_runs() {
     assert!(status.success(), "{output}");
     assert!(f.config("app").contains("[targets.hades]"));
     assert!(!output.contains("Save these changes?"), "{output}");
+}
+
+/// Stages a target in `setup` and asks to run an installer, which stops at
+/// the question before saving.
+fn up_to_save_and_run(pty: &mut Pty) {
+    pty.expect("Choice [1]: ");
+    pty.send("1");
+    pty.expect("Add which, like 1 3: ");
+    pty.send("2");
+    pty.expect("Press Enter to add it, or pick a number. Esc to go back, Ctrl+C to cancel.");
+    pty.expect("Choice: ");
+    pty.send("");
+    pty.expect("What next?");
+    pty.expect("Choice [5]: ");
+    pty.send("4");
+    pty.expect("Save and run the installer? [Y/n]: ");
+}
+
+#[test]
+fn y_saves_and_runs_the_installer() {
+    let f = Fixture::new();
+    f.games("app", "");
+    let mut pty = f.setup("app");
+    up_to_save_and_run(&mut pty);
+    pty.send("y");
+    pty.expect("Saved app.");
+    pty.expect("Installer or updater, as a Unix path or a Windows one: ");
+    pty.ctrl_c();
+    let (status, output) = pty.finish();
+    assert_eq!(status.code(), Some(130), "{output}");
+    assert!(f.config("app").contains("[targets.hades]"));
+}
+
+#[test]
+fn n_declines_saving_and_running_the_installer_and_so_does_q() {
+    for answer in ["n", "No", "q"] {
+        let f = Fixture::new();
+        f.games("app", "");
+        let before = f.config("app");
+        let mut pty = f.setup("app");
+        up_to_save_and_run(&mut pty);
+        pty.send(answer);
+        let (status, output) = pty.finish();
+        assert_eq!(status.code(), Some(130), "{answer}: {output}");
+        assert!(!output.contains("Saved app."), "{answer}: {output}");
+        assert!(
+            !output.contains("Installer or updater"),
+            "{answer}: {output}"
+        );
+        assert_eq!(f.config("app"), before, "{answer}");
+    }
+}
+
+#[test]
+fn b_goes_back_from_saving_and_running_the_installer_and_keeps_the_changes() {
+    let f = Fixture::new();
+    f.games("app", "");
+    let before = f.config("app");
+    let mut pty = f.setup("app");
+    up_to_save_and_run(&mut pty);
+    pty.send("b");
+    pty.expect("What next?");
+    pty.expect("Choice [5]: ");
+    assert_eq!(f.config("app"), before);
+    pty.send("");
+    pty.expect("Saved app.");
+    let (status, output) = pty.finish();
+    assert!(status.success(), "{output}");
+    assert!(f.config("app").contains("[targets.hades]"));
+}
+
+#[test]
+fn an_unrecognized_answer_to_saving_and_running_the_installer_asks_again() {
+    let f = Fixture::new();
+    f.games("app", "");
+    let before = f.config("app");
+    let mut pty = f.setup("app");
+    up_to_save_and_run(&mut pty);
+    pty.send("maybe");
+    pty.expect("Answer y or n");
+    pty.expect("Save and run the installer? [Y/n]: ");
+    assert_eq!(f.config("app"), before);
+    pty.send("n");
+    let (status, output) = pty.finish();
+    assert_eq!(status.code(), Some(130), "{output}");
 }
 
 #[test]

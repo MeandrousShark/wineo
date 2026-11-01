@@ -285,15 +285,14 @@ pub(crate) fn menu<I: Input, W: Write>(
                     for line in picker::review(&batch) {
                         prompt.say(line)?;
                     }
-                    if prompt.review::<()>(
+                    match prompt.confirm_review(
                         "They are saved before the installer runs.",
-                        None,
-                        "save and run the installer",
-                        &[],
+                        "Save and run the installer?",
                         true,
-                    )? == Reply::Back
-                    {
-                        continue;
+                    )? {
+                        Reply::Value(true) => {}
+                        Reply::Value(false) => return Err(Canceled.into()),
+                        Reply::Back => continue,
                     }
                     if save(paths, global, name, prompt, &mut batch, false)? == Reply::Back {
                         continue;

@@ -329,6 +329,8 @@ pub enum Picked<T> {
     One(T),
 }
 
+const REVIEW_LABEL: &str = "Choice: ";
+
 pub struct Prompt<I, W> {
     input: I,
     out: W,
@@ -485,8 +487,8 @@ impl<I: Input, W: Write> Prompt<I, W> {
         back: bool,
     ) -> anyhow::Result<Reply<Option<T>>> {
         let result = (|| {
-            let label = self.review_menu(heading, note, enter_action, choices, back, "a number")?;
-            self.choose_or_enter(choices, back, &label)
+            self.review_menu(heading, note, enter_action, choices, back, "a number")?;
+            self.choose_or_enter(choices, back)
         })();
         if result.is_ok() {
             self.first_question = false;
@@ -506,9 +508,9 @@ impl<I: Input, W: Write> Prompt<I, W> {
         back: bool,
     ) -> anyhow::Result<Reply<Option<Vec<T>>>> {
         let result = (|| {
-            let label = self.review_menu(heading, note, enter_action, choices, back, "numbers")?;
+            self.review_menu(heading, note, enter_action, choices, back, "numbers")?;
             loop {
-                let answer = match self.read(&label)? {
+                let answer = match self.read(REVIEW_LABEL)? {
                     Reply::Value(answer) => answer,
                     Reply::Back if back => return Ok(Reply::Back),
                     Reply::Back => continue,
@@ -538,8 +540,7 @@ impl<I: Input, W: Write> Prompt<I, W> {
         result
     }
 
-    /// Prints a review menu and returns the label to ask with. `pick` is what
-    /// the keys line offers besides Enter.
+    /// Prints a review menu. `pick` is what the keys line offers besides Enter.
     fn review_menu<T>(
         &mut self,
         heading: &str,
@@ -548,7 +549,7 @@ impl<I: Input, W: Write> Prompt<I, W> {
         choices: &[Choice<T>],
         back: bool,
         pick: &str,
-    ) -> anyhow::Result<String> {
+    ) -> anyhow::Result<()> {
         writeln!(
             self.out,
             "{}",
@@ -561,31 +562,20 @@ impl<I: Input, W: Write> Prompt<I, W> {
             self.say(note)?;
         }
         writeln!(self.out)?;
-        let enter = if choices.is_empty() {
-            format!("Press Enter to {enter_action},")
-        } else {
-            format!("Press Enter to {enter_action}, or pick {pick}.")
-        };
         let rest = self.key_hint(back);
-        self.say(format!("{enter} {rest}"))?;
-        // "Choice:" with nothing numbered to choose reads like a missing list.
-        Ok(if choices.is_empty() {
-            let mut chars = enter_action.chars();
-            let first = chars.next().map(|c| c.to_uppercase().to_string());
-            format!("{}{}? ", first.unwrap_or_default(), chars.as_str())
-        } else {
-            "Choice: ".to_owned()
-        })
+        self.say(format!(
+            "Press Enter to {enter_action}, or pick {pick}. {rest}"
+        ))?;
+        Ok(())
     }
 
     fn choose_or_enter<T: Clone>(
         &mut self,
         choices: &[Choice<T>],
         back: bool,
-        label: &str,
     ) -> anyhow::Result<Reply<Option<T>>> {
         loop {
-            let answer = match self.read(label)? {
+            let answer = match self.read(REVIEW_LABEL)? {
                 Reply::Value(answer) => answer,
                 Reply::Back if back => return Ok(Reply::Back),
                 Reply::Back => continue,
