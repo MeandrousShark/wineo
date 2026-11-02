@@ -144,7 +144,7 @@ fn lookup(
 /// The configured compatibility tools by app ID. A malformed first entry is
 /// kept with an empty name so a later duplicate can't override it, matching
 /// Steam's first-key lookup. Empty names make lookups fall back to "0".
-/// Keys are lowercased, so use `compat_tool_in` instead of indexing directly.
+/// Keys are lowercased, so lowercase an id before indexing directly.
 pub fn compat_tools(install: &Install) -> HashMap<String, String> {
     let mut tools = HashMap::new();
     let Ok(text) = fs::read_to_string(install.root().join("config/config.vdf")) else {
@@ -174,19 +174,4 @@ pub fn compat_tools(install: &Install) -> HashMap<String, String> {
         tools.entry(app_id.to_ascii_lowercase()).or_insert(name);
     }
     tools
-}
-
-/// The Proton build a game is set to, or the `"0"` default when the game has
-/// no entry of its own. None when neither is set, or `config.vdf` can't be
-/// read.
-pub fn compat_tool(install: &Install, app_id: &str) -> Option<String> {
-    compat_tool_in(&compat_tools(install), app_id)
-}
-
-/// Look up an app's tool in `compat_tools`, falling back to "0" for missing
-/// or empty names. App IDs are case-insensitive.
-pub fn compat_tool_in(tools: &HashMap<String, String>, app_id: &str) -> Option<String> {
-    [app_id.to_ascii_lowercase(), "0".to_owned()]
-        .into_iter()
-        .find_map(|key| tools.get(&key).filter(|name| !name.is_empty()).cloned())
 }

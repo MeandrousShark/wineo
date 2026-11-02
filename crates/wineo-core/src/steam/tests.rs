@@ -1,4 +1,3 @@
-use std::collections::HashMap;
 use std::fs;
 use std::os::unix::fs::{PermissionsExt, symlink};
 use std::path::{Path, PathBuf};
@@ -910,39 +909,6 @@ fn compatibility_tools_keep_the_first_duplicate_entry() {
         compat_tools(&install).get("42").map(String::as_str),
         Some("")
     );
-    assert_eq!(compat_tool(&install, "42"), None);
-}
-
-#[test]
-fn compatibility_tool_in_falls_back_to_the_default() {
-    let tools = HashMap::from([("0".to_owned(), "proton_default".to_owned())]);
-    assert_eq!(
-        compat_tool_in(&tools, "42").as_deref(),
-        Some("proton_default")
-    );
-}
-
-#[test]
-fn compatibility_tool_in_empty_name_falls_back_to_the_default() {
-    let tools = HashMap::from([
-        ("0".to_owned(), "proton_default".to_owned()),
-        ("42".to_owned(), String::new()),
-    ]);
-    assert_eq!(
-        compat_tool_in(&tools, "42").as_deref(),
-        Some("proton_default")
-    );
-}
-
-#[test]
-fn compatibility_tool_in_app_ids_ignore_case() {
-    let tools = HashMap::from([
-        ("0".to_owned(), "proton_default".to_owned()),
-        ("abc".to_owned(), "GE-Proton".to_owned()),
-    ]);
-    for app_id in ["abc", "AbC", "ABC"] {
-        assert_eq!(compat_tool_in(&tools, app_id).as_deref(), Some("GE-Proton"));
-    }
 }
 
 #[test]
@@ -968,32 +934,26 @@ fn an_unreadable_config_leaves_no_platform_and_no_error() {
 }
 
 #[test]
-fn the_compatibility_tool_falls_back_to_the_default() {
+fn compatibility_tools_read_each_mapping_and_nothing_from_a_broken_file() {
     let home = tempfile::tempdir().unwrap();
     let home = home.path();
     let root = native(home);
     let install = only(home);
-    assert_eq!(compat_tool(&install, "1086940"), None);
+    assert!(compat_tools(&install).is_empty());
 
     write(
         &root.join("config/config.vdf"),
         "\"InstallConfigStore\"\n{\n\t\"Software\"\n\t{\n\t\t\"Valve\"\n\t\t{\n\t\t\t\"Steam\"\n\t\t\t{\n\t\t\t\t\"CompatToolMapping\"\n\t\t\t\t{\n\t\t\t\t\t\"0\"\n\t\t\t\t\t{\n\t\t\t\t\t\t\"name\"\t\t\"proton_experimental\"\n\t\t\t\t\t\t\"config\"\t\t\"\"\n\t\t\t\t\t}\n\t\t\t\t\t\"1086940\"\n\t\t\t\t\t{\n\t\t\t\t\t\t\"name\"\t\t\"GE-Proton9-20\"\n\t\t\t\t\t}\n\t\t\t\t\t\"1245620\"\n\t\t\t\t\t{\n\t\t\t\t\t\t\"name\"\t\t\"\"\n\t\t\t\t\t}\n\t\t\t\t}\n\t\t\t}\n\t\t}\n\t}\n}\n",
     );
-    assert_eq!(
-        compat_tool(&install, "1086940").as_deref(),
-        Some("GE-Proton9-20")
-    );
-    assert_eq!(
-        compat_tool(&install, "1300000").as_deref(),
-        Some("proton_experimental")
-    );
-    assert_eq!(
-        compat_tool(&install, "1245620").as_deref(),
-        Some("proton_experimental")
-    );
+    let tools = compat_tools(&install);
+    let tool = |app_id: &str| tools.get(app_id).map(String::as_str);
+    assert_eq!(tool("0"), Some("proton_experimental"));
+    assert_eq!(tool("1086940"), Some("GE-Proton9-20"));
+    assert_eq!(tool("1245620"), Some(""));
+    assert_eq!(tool("1300000"), None);
 
     write(&root.join("config/config.vdf"), "\"InstallConfigStore\" {");
-    assert_eq!(compat_tool(&install, "1086940"), None);
+    assert!(compat_tools(&install).is_empty());
 }
 
 #[test]

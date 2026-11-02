@@ -26,10 +26,7 @@ use std::path::{Path, PathBuf};
 
 use crate::art;
 
-pub use account::{
-    Playtime, Playtimes, active_account, active_steam_id, compat_tool, compat_tool_in,
-    compat_tools, playtime,
-};
+pub use account::{Playtime, Playtimes, active_account, active_steam_id, compat_tools, playtime};
 pub use appinfo_cache::AppInfoCache;
 pub use placement::{Placement, place};
 pub use process::{
