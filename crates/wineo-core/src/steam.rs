@@ -10,6 +10,7 @@ mod appinfo_cache;
 #[cfg(any(test, feature = "test-support"))]
 #[doc(hidden)]
 pub mod appinfo_fixture;
+mod discovery;
 pub mod key;
 pub mod owned;
 mod placement;
@@ -20,6 +21,7 @@ pub mod vdf;
 mod tests;
 
 use std::collections::HashSet;
+use std::ffi::OsString;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -28,6 +30,7 @@ use crate::art;
 
 pub use account::{Playtime, Playtimes, active_account, active_steam_id, compat_tools, playtime};
 pub use appinfo_cache::AppInfoCache;
+pub use discovery::{Discovery, PendingGame, discover};
 pub use placement::{Placement, place};
 pub use process::{
     Baseline, Reaper, baseline, client_running, eligible_reapers, matching_reapers, open_reaper,
@@ -152,6 +155,8 @@ pub fn libraries(install: &Install) -> Libraries {
     let mut paths = vec![install.root.clone()];
     let mut problem = None;
     let file = install.root.join("steamapps/libraryfolders.vdf");
+    #[cfg(any(test, feature = "test-support"))]
+    crate::read_log::note(&file);
     match fs::read_to_string(&file) {
         Ok(text) => match library_paths(&text) {
             Ok(listed) => paths.extend(listed),
@@ -292,44 +297,158 @@ pub struct ManifestEntry {
     pub manifest: Result<Manifest, String>,
 }
 
+/// How far a look through one library's `steamapps` got.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LibraryState {
+    /// Listed to the end, and every manifest in it read and parsed.
+    Complete,
+    /// The folder or its `steamapps` can't be read.
+    Unavailable,
+    /// There's no `steamapps`. The same thing an unmounted drive's empty mount
+    /// point shows, so it doesn't prove the library has no games.
+    NoSteamapps,
+    /// The listing failed, at the start or partway.
+    ListingFailed,
+    /// A manifest in it can't be read or parsed.
+    BadManifest,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LibraryScan {
+    pub path: PathBuf,
+    pub state: LibraryState,
+}
+
+/// One look through every library of an install.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Scan {
+    /// In `libraries` order, available or not.
+    pub libraries: Vec<LibraryScan>,
+    /// What `manifests` returns.
+    pub manifests: Vec<ManifestEntry>,
+    /// See `Libraries::problem`.
+    pub problem: Option<String>,
+}
+
+impl Scan {
+    /// Whether any library could be looked in at all.
+    pub fn readable(&self) -> bool {
+        self.libraries.iter().any(|library| {
+            !matches!(
+                library.state,
+                LibraryState::Unavailable | LibraryState::NoSteamapps
+            )
+        })
+    }
+
+    /// `app_state` answered from this scan. A library whose listing failed
+    /// might still hold a game the scan didn't see, so that alone looks again.
+    pub(crate) fn app_state(&self, install: Option<&Install>, app_id: &str) -> AppState {
+        if install.is_none() || !valid_app_id(app_id) {
+            return app_state(install, app_id);
+        }
+        if let Some(entry) = self.manifests.iter().find(|entry| entry.app_id == app_id) {
+            return match &entry.manifest {
+                Ok(manifest) => manifest.app_state(),
+                Err(error) => AppState::Unknown(error.clone()),
+            };
+        }
+        let state = |wanted| self.libraries.iter().find(move |it| it.state == wanted);
+        if state(LibraryState::ListingFailed).is_some() {
+            return app_state(install, app_id);
+        }
+        if let Some(library) = state(LibraryState::Unavailable) {
+            return AppState::Unavailable(library.path.clone());
+        }
+        match &self.problem {
+            Some(problem) => AppState::Unknown(problem.clone()),
+            None => AppState::NotInstalled,
+        }
+    }
+}
+
 /// Every manifest in every available library, in library order and then by
 /// file name. One bad manifest never hides the others.
 pub fn manifests(install: &Install) -> Vec<ManifestEntry> {
-    let mut found = Vec::new();
-    for library in libraries(install)
-        .entries
-        .into_iter()
-        .filter(|library| library.available)
-    {
-        let Ok(read) = fs::read_dir(library.path.join("steamapps")) else {
-            continue;
+    scan(install).manifests
+}
+
+/// `manifests`, saying how far it got in each library.
+pub fn scan(install: &Install) -> Scan {
+    let listing = libraries(install);
+    let mut scan = Scan {
+        libraries: Vec::with_capacity(listing.entries.len()),
+        manifests: Vec::new(),
+        problem: listing.problem,
+    };
+    for library in listing.entries {
+        let state = if library.available {
+            scan_library(&library.path, &mut scan.manifests)
+        } else {
+            LibraryState::Unavailable
         };
-        let mut files: Vec<(String, PathBuf)> = read
-            .flatten()
-            .filter_map(|entry| {
-                let file_name = entry.file_name().into_string().ok()?;
-                let app_id = file_name
-                    .strip_prefix("appmanifest_")?
-                    .strip_suffix(".acf")?;
-                all_digits(app_id).then(|| (app_id.to_owned(), entry.path()))
-            })
-            .collect();
-        files.sort();
-        for (app_id, path) in files {
-            let manifest = fs::read_to_string(&path)
-                .map_err(|error| format!("{} can't be read: {error}", path.display()))
-                .and_then(|text| {
-                    parse_manifest(&text, &app_id)
-                        .map_err(|error| format!("{}: {error}", path.display()))
-                });
-            found.push(ManifestEntry {
-                app_id,
-                library: library.path.clone(),
-                manifest,
-            });
-        }
+        scan.libraries.push(LibraryScan {
+            path: library.path,
+            state,
+        });
     }
-    found
+    scan
+}
+
+fn scan_library(library: &Path, found: &mut Vec<ManifestEntry>) -> LibraryState {
+    let read = match fs::read_dir(library.join("steamapps")) {
+        Ok(read) => read,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            return LibraryState::NoSteamapps;
+        }
+        Err(_) => return LibraryState::ListingFailed,
+    };
+    let (files, listed) =
+        manifest_files(read.map(|entry| entry.map(|entry| (entry.file_name(), entry.path()))));
+    let mut state = if listed {
+        LibraryState::Complete
+    } else {
+        LibraryState::ListingFailed
+    };
+    for (app_id, path) in files {
+        #[cfg(any(test, feature = "test-support"))]
+        crate::read_log::note(&path);
+        let manifest = fs::read_to_string(&path)
+            .map_err(|error| format!("{} can't be read: {error}", path.display()))
+            .and_then(|text| {
+                parse_manifest(&text, &app_id)
+                    .map_err(|error| format!("{}: {error}", path.display()))
+            });
+        if manifest.is_err() && state == LibraryState::Complete {
+            state = LibraryState::BadManifest;
+        }
+        found.push(ManifestEntry {
+            app_id,
+            library: library.to_owned(),
+            manifest,
+        });
+    }
+    state
+}
+
+/// The manifest files in a listing, sorted, and whether it ran to the end.
+/// Entries after a failure are still used, like everything else that's read.
+fn manifest_files(
+    listing: impl Iterator<Item = io::Result<(OsString, PathBuf)>>,
+) -> (Vec<(String, PathBuf)>, bool) {
+    let mut listed = true;
+    let mut files: Vec<(String, PathBuf)> = listing
+        .filter_map(|entry| {
+            let (name, path) = entry.map_err(|_| listed = false).ok()?;
+            let file_name = name.into_string().ok()?;
+            let app_id = file_name
+                .strip_prefix("appmanifest_")?
+                .strip_suffix(".acf")?;
+            all_digits(app_id).then(|| (app_id.to_owned(), path))
+        })
+        .collect();
+    files.sort();
+    (files, listed)
 }
 
 fn parse_manifest(text: &str, app_id: &str) -> Result<Manifest, String> {
@@ -497,6 +616,8 @@ pub fn app_details(install: Option<&Install>, app_id: &str) -> (AppState, Option
             .path
             .join("steamapps")
             .join(format!("appmanifest_{app_id}.acf"));
+        #[cfg(any(test, feature = "test-support"))]
+        crate::read_log::note(&path);
         let text = match fs::read_to_string(&path) {
             Ok(text) => text,
             Err(error) if error.kind() == io::ErrorKind::NotFound => continue,

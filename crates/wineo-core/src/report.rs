@@ -164,8 +164,11 @@ impl From<crate::steam::AppState> for InstallReport {
 }
 
 fn kind_report(paths: &Paths, global: &GlobalConfig, kind: &Kind) -> KindReport {
-    let steam = matches!(kind, Kind::Proxied(_))
-        .then(|| steam_overview(crate::steam::active_for(paths, global)));
+    let steam = matches!(kind, Kind::Proxied(_)).then(|| {
+        let install = crate::steam::active_for(paths, global);
+        let scan = install.as_ref().map(crate::steam::scan);
+        SteamOverview::new(install, scan)
+    });
     kind_report_with_steam(kind, steam.as_ref())
 }
 
@@ -179,7 +182,11 @@ fn kind_report_with_steam(kind: &Kind, steam: Option<&SteamOverview>) -> KindRep
     } = &mut report
     {
         let active = steam.and_then(|steam| steam.install.as_ref());
-        *install = crate::steam::app_state(active, app_id).into();
+        *install = match steam.and_then(|steam| steam.scan.as_ref()) {
+            Some(scan) => scan.app_state(active, app_id),
+            None => crate::steam::app_state(active, app_id),
+        }
+        .into();
         if let Some(manifest) = steam
             .into_iter()
             .flat_map(|steam| &steam.manifests)
@@ -192,12 +199,17 @@ fn kind_report_with_steam(kind: &Kind, steam: Option<&SteamOverview>) -> KindRep
     report
 }
 
-fn steam_overview(install: Option<crate::steam::Install>) -> SteamOverview {
-    let manifests = install
-        .as_ref()
-        .map(crate::steam::manifests)
-        .unwrap_or_default();
-    SteamOverview { install, manifests }
+impl SteamOverview {
+    fn new(install: Option<crate::steam::Install>, scan: Option<crate::steam::Scan>) -> Self {
+        Self {
+            install,
+            manifests: scan
+                .as_ref()
+                .map(|scan| scan.manifests.clone())
+                .unwrap_or_default(),
+            scan,
+        }
+    }
 }
 
 /// The little of `stats::Summary` that `status` shows: enough to say how much
@@ -249,6 +261,8 @@ pub struct Overview {
 pub struct SteamOverview {
     pub install: Option<crate::steam::Install>,
     pub manifests: Vec<crate::steam::ManifestEntry>,
+    /// What `manifests` came from. None when there's no install.
+    scan: Option<crate::steam::Scan>,
 }
 
 /// Optional filters shared by the list and running-status queries.
@@ -589,7 +603,10 @@ fn overview_from(
                                     // nothing here writes or launches.
                                     Kind::Proxied(_) if steam.global().is_ok() => {
                                         let steam = overview.steam.get_or_insert_with(|| {
-                                            steam_overview(probe.install().cloned())
+                                            SteamOverview::new(
+                                                probe.install().cloned(),
+                                                probe.steam.scan().cloned(),
+                                            )
                                         });
                                         kind_report_with_steam(
                                             &environment.config.kind,

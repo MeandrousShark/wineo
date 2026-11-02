@@ -984,3 +984,67 @@ fn art_maps_to_wineo_kinds_and_lists_only_what_exists() {
     assert!(art_files(&install, "1300000").is_empty());
     assert!(art_files(&install, "../1086940").is_empty());
 }
+
+#[test]
+fn a_listing_that_fails_partway_says_so_and_keeps_what_it_read() {
+    let name = |text: &str| std::ffi::OsString::from(text);
+    let listing = vec![
+        Ok((
+            name("appmanifest_2.acf"),
+            PathBuf::from("/s/appmanifest_2.acf"),
+        )),
+        Err(io::Error::other("the disk went away")),
+        Ok((
+            name("appmanifest_1.acf"),
+            PathBuf::from("/s/appmanifest_1.acf"),
+        )),
+        Ok((
+            name("libraryfolders.vdf"),
+            PathBuf::from("/s/libraryfolders.vdf"),
+        )),
+    ];
+
+    let (files, listed) = manifest_files(listing.into_iter());
+
+    assert!(!listed);
+    let ids: Vec<&str> = files.iter().map(|(id, _)| id.as_str()).collect();
+    assert_eq!(ids, ["1", "2"]);
+
+    let (_, listed) = manifest_files(std::iter::empty());
+    assert!(listed);
+}
+
+#[test]
+fn a_scan_answers_for_a_game_like_a_look_at_the_disk() {
+    let home = tempfile::tempdir().unwrap();
+    let root = native(home.path());
+    let extra = home.path().join("extra");
+    game(&extra, "2", "Two", 4);
+    game(&root, "3", "Three", 0);
+    write(&root.join("steamapps/appmanifest_4.acf"), "not vdf {");
+    let gone = home.path().join("gone");
+    write(
+        &root.join("steamapps/libraryfolders.vdf"),
+        &libraryfolders(&[&root, &extra, &gone]),
+    );
+    let install = only(home.path());
+
+    let found = scan(&install);
+    for app_id in ["2", "3", "4", "5", "nope"] {
+        assert_eq!(
+            found.app_state(Some(&install), app_id),
+            app_state(Some(&install), app_id),
+            "{app_id}"
+        );
+    }
+    assert_eq!(found.app_state(None, "2"), app_state(None, "2"));
+
+    // With every library readable, a game in none of them isn't installed.
+    write(
+        &root.join("steamapps/libraryfolders.vdf"),
+        &libraryfolders(&[&root, &extra]),
+    );
+    let found = scan(&install);
+    assert_eq!(found.app_state(Some(&install), "5"), AppState::NotInstalled);
+    assert_eq!(app_state(Some(&install), "5"), AppState::NotInstalled);
+}

@@ -6,12 +6,13 @@
 //! cleanup changes them.
 
 use std::cell::OnceCell;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::sync::Arc;
 
-use crate::config::{EnvironmentConfig, GlobalConfig};
+use crate::config::{EnvironmentConfig, GlobalConfig, Launcher};
 use crate::environment::{self, Environment};
 use crate::error::{Error, Result};
+use crate::library::Library;
 use crate::paths::Paths;
 use crate::steam;
 use crate::trash::PendingScan;
@@ -114,10 +115,34 @@ impl<'a> RefreshSnapshot<'a> {
     ) -> Option<&std::result::Result<steam::appinfo::AppInfo, steam::appinfo::ReadError>> {
         self.steam.appinfo()
     }
+
+    /// What's new in Steam compared with `saved`'s record. Nothing at all in a
+    /// portable folder, which can't import, or while `library.toml` can't be
+    /// read, since the record can't be known and writing would be refused.
+    pub fn discovery(&self, saved: &Library) -> steam::Discovery {
+        if self.paths.portable_root().is_some() || saved.problem.is_some() {
+            return steam::Discovery::default();
+        }
+        let Some(scan) = self.steam.scan() else {
+            return steam::Discovery::default();
+        };
+        let imported: HashSet<&str> = self
+            .environments
+            .keys()
+            .filter_map(|name| self.lenient_config(name)?.proxied())
+            .filter(|proxied| proxied.launcher == Launcher::Steam)
+            .map(|proxied| proxied.app_id.as_str())
+            .collect();
+        steam::discover(scan, &imported, &saved.steam, || {
+            self.appinfo().and_then(|read| read.as_ref().ok())
+        })
+    }
 }
 
 /// Steam's files for one batch of reads. Each is read at most once, on the
-/// first thing that asks, so a library with no Steam game reads none of them.
+/// first thing that asks. The refresh always asks for the install and its scan
+/// to notice new games, so only a machine with no Steam skips them; appinfo
+/// and the rest wait until something needs them.
 pub(crate) struct SteamFiles<'a> {
     paths: &'a Paths,
     /// Read into `read_global` when no caller gave it.
@@ -129,6 +154,7 @@ pub(crate) struct SteamFiles<'a> {
     /// Where `appinfo` is read through, when the caller keeps one.
     appinfo_cache: Option<&'a steam::AppInfoCache>,
     appinfo: OnceCell<Option<AppInfoRead>>,
+    scan: OnceCell<Option<steam::Scan>>,
 }
 
 type AppInfoRead = Arc<std::result::Result<steam::appinfo::AppInfo, steam::appinfo::ReadError>>;
@@ -152,6 +178,7 @@ impl<'a> SteamFiles<'a> {
             playtimes: OnceCell::new(),
             appinfo_cache: None,
             appinfo: OnceCell::new(),
+            scan: OnceCell::new(),
         }
     }
 
@@ -180,6 +207,14 @@ impl<'a> SteamFiles<'a> {
                     .ok()
                     .and_then(|global| steam::active_for(self.paths, global))
             })
+            .as_ref()
+    }
+
+    /// Every library and manifest of the install, or None when Steam isn't
+    /// installed.
+    pub(crate) fn scan(&self) -> Option<&steam::Scan> {
+        self.scan
+            .get_or_init(|| self.install().map(steam::scan))
             .as_ref()
     }
 
