@@ -31,12 +31,13 @@ const HEADER_LEN: usize = 16;
 /// update time, token, hash, change number, and binary hash.
 const ENTRY_META_LEN: usize = 60;
 
-/// Real files are tens of megabytes. The cap keeps a runaway file from filling
-/// memory.
-const MAX_FILE_BYTES: u64 = 256 * 1024 * 1024;
+/// Hitting a cap drops every game to the fallback, so these sit well above any
+/// real library and only stop a corrupt file. The file size also limits memory.
+const MAX_FILE_BYTES: u64 = 1024 * 1024 * 1024;
 /// Steam's whole catalog is a few hundred thousand apps.
 const MAX_APPS: usize = 1_000_000;
-const MAX_STRINGS: usize = 1 << 20;
+/// Depot ids are keys, so a big catalog has many distinct strings.
+const MAX_STRINGS: usize = 1 << 24;
 /// Entries nest a handful of levels. The cap keeps a hostile one from
 /// exhausting the stack.
 const MAX_DEPTH: usize = 64;
