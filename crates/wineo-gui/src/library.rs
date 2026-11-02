@@ -351,11 +351,12 @@ pub(super) struct Loaded {
     pub(super) discovery: steam::Discovery,
 }
 
+/// `load_read` for tests, which mostly want the cards.
+#[cfg(test)]
 pub(super) fn load_library(paths: &Paths) -> anyhow::Result<Vec<Card>> {
     load_read(paths).map(|loaded| loaded.cards)
 }
 
-/// `load_library` with what's new in Steam.
 pub(super) fn load_read(paths: &Paths) -> anyhow::Result<Loaded> {
     load_library_and_problem(paths).0
 }
