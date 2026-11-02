@@ -53,6 +53,7 @@ fn record(games: &[(&str, Recorded)], baselined: &[&str]) -> SteamRecord {
             .map(|(id, reason)| ((*id).to_owned(), *reason))
             .collect(),
         baselined: baselined.iter().map(|path| (*path).to_owned()).collect(),
+        auto_import: false,
     }
 }
 
@@ -413,4 +414,15 @@ fn a_real_scan_reports_each_library_and_every_way_it_can_fall_short() {
     );
     assert!(found.readable());
     assert_eq!(found.manifests, manifests);
+}
+
+#[test]
+fn the_setting_is_part_of_the_result_so_a_change_alone_reaches_the_app() {
+    let scan = scan(vec![library("/l", LibraryState::Complete)], Vec::new());
+    let mut on = record(&[], &["/l"]);
+    on.auto_import = true;
+    let off = discover(&scan, &HashSet::new(), &record(&[], &["/l"]), no_appinfo);
+    let on = discover(&scan, &HashSet::new(), &on, no_appinfo);
+    assert!(on.auto_import && !off.auto_import);
+    assert_ne!(on, off);
 }

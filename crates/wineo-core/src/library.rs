@@ -26,7 +26,7 @@ pub use cache::Cache;
 pub(crate) use check::{FindingKind, inspect, remove_strays};
 pub use record::{
     Claim, RecordChanges, Recorded, SteamRecord, apply_changes, claim_game, dismiss_game,
-    dismiss_games, finish_import, mark_baselined, record_games, release_claim,
+    dismiss_games, finish_import, mark_baselined, record_games, release_claim, set_auto_import,
 };
 pub use repair::{RepairReport, ViewRecovery, repair};
 pub use sort::{SortFields, compare};

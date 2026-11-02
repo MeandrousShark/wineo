@@ -552,6 +552,10 @@ impl SteamSection {
                 }
                 None => self.baselined_fields += 1,
             },
+            "auto_import" => {
+                self.other
+                    .keep(key, item.clone(), |_, item| item.as_bool().is_some());
+            }
             _ => self.other.keep(key, item.clone(), |_, _| true),
         }
     }

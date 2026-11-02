@@ -231,6 +231,12 @@ fn inspect_steam(item: &Item, inspection: &mut Inspection) {
         match key {
             "games" => inspect_steam_games(value, inspection),
             "baselined" => inspect_baselined(value, inspection),
+            "auto_import" if value.as_bool().is_some() => {}
+            "auto_import" => {
+                inspection
+                    .findings
+                    .push(invalid(None, &display_path(&["steam", key]), BOOL, value))
+            }
             _ => inspection
                 .findings
                 .push(unknown(None, &display_path(&["steam", key]))),

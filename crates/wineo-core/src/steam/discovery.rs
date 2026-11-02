@@ -22,6 +22,10 @@ pub struct PendingGame {
 pub struct Discovery {
     pub pending: Vec<PendingGame>,
     pub proposed: RecordChanges,
+    /// The setting as this scan read it. It's part of the result so that
+    /// turning it on reaches the app with nothing else changed, and only a
+    /// hint: an import checks the file again under its lock.
+    pub auto_import: bool,
 }
 
 /// Compares a scan with the record. `imported` holds the app ids that have an
@@ -43,7 +47,10 @@ pub fn discover<'a>(
     record: &SteamRecord,
     appinfo: impl FnOnce() -> Option<&'a AppInfo>,
 ) -> Discovery {
-    let mut discovery = Discovery::default();
+    let mut discovery = Discovery {
+        auto_import: record.auto_import,
+        ..Discovery::default()
+    };
     if !scan.readable() {
         return discovery;
     }

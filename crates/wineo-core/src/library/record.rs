@@ -55,6 +55,9 @@ pub struct SteamRecord {
     /// Libraries whose installed games have been recorded, by the path
     /// `steam::libraries` gives.
     pub baselined: BTreeSet<String>,
+    /// Import new installs without asking. Only the desktop app reads it, and
+    /// absent or invalid means off.
+    pub auto_import: bool,
 }
 
 impl SteamRecord {
@@ -173,6 +176,26 @@ pub fn release_claim(paths: &Paths, app_id: &str) -> Result<bool> {
     })
 }
 
+/// Saves whether new installs import on their own. A value already in the
+/// file is replaced in place, and absent already reads as off.
+pub fn set_auto_import(paths: &Paths, on: bool) -> Result<bool> {
+    edit(paths, |document| {
+        let current = document
+            .get("steam")
+            .and_then(Item::as_table_like)
+            .and_then(|steam| steam.get("auto_import"));
+        let matches = match current {
+            None => !on,
+            Some(item) => item.as_bool() == Some(on),
+        };
+        if matches {
+            return false;
+        }
+        store_value(steam_mut(document), "auto_import", Value::from(on));
+        true
+    })
+}
+
 /// Marks a library's baseline as done.
 pub fn mark_baselined(paths: &Paths, library: &str) -> Result<bool> {
     edit(paths, |document| add_baselined(document, library))
@@ -209,7 +232,15 @@ pub(super) fn read_record(document: &DocumentMut) -> SteamRecord {
                 .collect()
         })
         .unwrap_or_default();
-    SteamRecord { games, baselined }
+    let auto_import = steam
+        .get("auto_import")
+        .and_then(Item::as_bool)
+        .unwrap_or_default();
+    SteamRecord {
+        games,
+        baselined,
+        auto_import,
+    }
 }
 
 fn reason(item: &Item) -> Option<Recorded> {

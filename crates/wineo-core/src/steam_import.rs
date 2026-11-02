@@ -23,6 +23,8 @@ use crate::steam::api::{ApiError, SteamApi};
 use crate::steam::owned::{self, LoadError, Loaded, Owned, OwnedError, OwnedGame};
 use crate::steam::{self, AppState, Install, InstallState};
 
+pub mod auto;
+
 /// What a command knows about the owned list. It is loaded once per command
 /// and passed in, so nothing here fetches.
 #[derive(Debug, Clone, Copy)]

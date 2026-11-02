@@ -1044,3 +1044,27 @@ fn a_whole_record_counts_as_recovered_and_a_bad_one_as_lost() {
     );
     assert_eq!(load(&fixture.paths).steam, SteamRecord::default());
 }
+
+#[test]
+fn a_repair_keeps_a_valid_auto_import_and_drops_a_bad_one() {
+    for broken in ["[view\n", "not toml at all\n"] {
+        let fixture = Fixture::new();
+        // Before the bad line it's parsed, after it it's salvaged from the tail.
+        fixture.write(&if broken.starts_with('[') {
+            format!("schema_version = 1\n[steam]\nauto_import = true\n{broken}")
+        } else {
+            format!("schema_version = 1\n{broken}[steam]\nauto_import = true\n")
+        });
+        let report = repair_at(&fixture.paths, STAMP, sync_dir).unwrap().unwrap();
+        assert_eq!(report.steam, ViewRecovery::Recovered);
+        assert!(load(&fixture.paths).steam.auto_import);
+    }
+
+    let fixture = Fixture::new();
+    fixture.write("schema_version = 1\n[steam]\nauto_import = \"yes\"\n[view\n");
+    let report = repair_at(&fixture.paths, STAMP, sync_dir).unwrap().unwrap();
+    assert_eq!(report.steam, ViewRecovery::Lost);
+    assert_eq!(report.steam_dropped, 1);
+    assert!(!load(&fixture.paths).steam.auto_import);
+    assert!(!fixture.read().contains("auto_import"));
+}

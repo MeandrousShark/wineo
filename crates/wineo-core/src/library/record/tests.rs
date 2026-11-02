@@ -386,3 +386,67 @@ fn an_id_the_record_cant_hold_is_never_claimed() {
     }
     assert!(!fixture.paths.library_file().exists());
 }
+
+#[test]
+fn auto_import_reads_off_when_absent_and_writes_only_a_change() {
+    let fixture = Fixture::new();
+    assert!(!load(&fixture.paths).steam.auto_import);
+    assert!(!set_auto_import(&fixture.paths, false).unwrap());
+    assert!(!fixture.paths.library_file().exists(), "off is the default");
+
+    assert!(set_auto_import(&fixture.paths, true).unwrap());
+    assert!(load(&fixture.paths).steam.auto_import);
+    let written = fixture.read();
+    assert!(written.contains("[steam]\nauto_import = true"), "{written}");
+    assert!(!set_auto_import(&fixture.paths, true).unwrap());
+    assert_eq!(fixture.read(), written);
+
+    assert!(set_auto_import(&fixture.paths, false).unwrap());
+    assert!(!load(&fixture.paths).steam.auto_import);
+    assert!(!set_auto_import(&fixture.paths, false).unwrap());
+}
+
+#[test]
+fn auto_import_keeps_the_rest_of_the_file_and_the_record() {
+    let fixture = Fixture::new();
+    fixture.write(
+        "schema_version = 1\n\n# Mine\n[steam]\n# Keep this\nauto_import = false\n\n[steam.games]\n7 = \"dismissed\"\n",
+    );
+    assert!(set_auto_import(&fixture.paths, true).unwrap());
+    assert_eq!(
+        fixture.read(),
+        "schema_version = 1\n\n# Mine\n[steam]\n# Keep this\nauto_import = true\n\n[steam.games]\n7 = \"dismissed\"\n"
+    );
+    assert_eq!(fixture.reason("7"), Some(Recorded::Dismissed));
+}
+
+#[test]
+fn an_invalid_auto_import_reads_off_is_reported_and_a_write_replaces_it() {
+    let fixture = Fixture::new();
+    fixture.write("schema_version = 1\n\n[steam]\nauto_import = \"yes\"\n");
+    assert!(!load(&fixture.paths).steam.auto_import);
+    let findings = inspect(&fixture.paths).findings;
+    assert_eq!(findings.len(), 1, "{findings:?}");
+    assert_eq!(findings[0].kind, FindingKind::FieldInvalid);
+    assert!(
+        findings[0]
+            .message
+            .contains("steam.auto_import: expected true or false"),
+        "{}",
+        findings[0].message
+    );
+    assert!(set_auto_import(&fixture.paths, true).unwrap());
+    assert!(load(&fixture.paths).steam.auto_import);
+    assert!(inspect(&fixture.paths).findings.is_empty());
+}
+
+#[test]
+fn claiming_can_read_the_setting_under_the_lock() {
+    let fixture = Fixture::new();
+    let claim = || claim_game(&fixture.paths, "7", |library| library.steam.auto_import);
+    assert_eq!(claim().unwrap(), Claim::Refused);
+    assert_eq!(fixture.reason("7"), None);
+    set_auto_import(&fixture.paths, true).unwrap();
+    assert_eq!(claim().unwrap(), Claim::Claimed);
+    assert_eq!(claim().unwrap(), Claim::Recorded);
+}
