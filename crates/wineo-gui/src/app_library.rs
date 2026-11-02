@@ -115,6 +115,7 @@ impl App {
         match result {
             Ok(()) => {
                 self.steam_record.warned = false;
+                self.steam_auto.recovered();
                 self.outdate_reads()
             }
             Err(error) => {
@@ -248,6 +249,7 @@ impl App {
     }
 
     pub(crate) fn refresh(&mut self) -> Task<Message> {
+        self.steam_auto.try_again();
         let library = self.reload_library_once();
         let badge = if self.trash_refreshing {
             Task::none()

@@ -307,8 +307,9 @@ fn an_unwritable_record_imports_nothing_says_so_once_and_doesnt_loop() {
     assert!(!app.steam_auto.running());
     assert!(card_names(&app).is_empty());
 
-    // The next scan to reach the app tries once, quietly, and the banner
-    // stays up through it.
+    // Coming back to the window tries once, quietly, and the banner stays up
+    // through it.
+    let _ = app.update(Message::Refresh);
     reload(&mut app);
     assert!(app.steam_auto.running());
     assert_eq!(offered(&app), ["2"]);
@@ -321,6 +322,7 @@ fn an_unwritable_record_imports_nothing_says_so_once_and_doesnt_loop() {
 
     // Once it can be written, the game goes the usual way and a new run of
     // failures would be said again.
+    let _ = app.update(Message::Refresh);
     reload(&mut app);
     finish(&mut app, &Token::new());
     assert_eq!(reason(&app, "2"), Some(Recorded::Imported));
@@ -476,6 +478,111 @@ fn a_game_given_up_on_can_be_dismissed_from_the_banner_during_a_later_pass() {
     reload(&mut app);
     assert_eq!(reason(&app, "2"), Some(Recorded::Dismissed));
     assert_eq!(reason(&app, "3"), Some(Recorded::Imported));
+}
+
+/// A Steam environment the record doesn't have, which a scan proposes adding.
+fn imported_elsewhere(app: &App, id: &str) {
+    let config = app.paths.environment_config("elsewhere");
+    fs::create_dir_all(config.parent().unwrap()).unwrap();
+    fs::write(
+        config,
+        format!(
+            "schema_version = 1\nkind = \"proxied\"\nlauncher = \"steam\"\napp_id = \"{id}\"\ntitle = \"Elsewhere\"\ntags = [\"game\"]\ndesktop = false\n"
+        ),
+    )
+    .unwrap();
+}
+
+/// Lands what a scan's record write would do.
+fn record_proposal(app: &mut App) {
+    let proposed = scan(app).discovery.unwrap().proposed;
+    let result = crate::app_library::write_steam_record(&app.paths, &app.shown, &proposed);
+    let _ = app.update(Message::SteamRecorded(result));
+}
+
+#[test]
+fn a_stuck_pass_isnt_restarted_by_a_redelivered_proposal_and_recovers_when_it_lands() {
+    let (root, mut app) = settled(true);
+    imported_elsewhere(&app, "9");
+    steam_game(&root, "2", "New");
+    reload(&mut app);
+    assert!(
+        !scan(&app).discovery.unwrap().proposed.is_empty(),
+        "a proposal is outstanding"
+    );
+    assert!(app.steam_auto.running());
+    let games = scan(&app).discovery.unwrap().pending;
+
+    let pass = read_only(&app, || {
+        run_pass(&app.paths, &app.shown, &games, &Token::new())
+    });
+    assert!(pass.stopped.is_some());
+    let _ = app.update(Message::AutoImported(Ok(pass)));
+    record_proposal_failed(&mut app);
+
+    let mut started = 0;
+    let mut redelivered = 0;
+    for _ in 0..5 {
+        let found = rescan(&mut app).and_then(|scan| scan.discovery);
+        redelivered += usize::from(found.is_some());
+        started += usize::from(app.steam_auto.running());
+        assert_eq!(offered(&app), ["2"]);
+        record_proposal_failed(&mut app);
+    }
+    assert_eq!(redelivered, 5, "the failed write keeps bringing it back");
+    assert_eq!(started, 0, "and none of those starts a pass");
+    assert_eq!(reason(&app, "2"), None);
+
+    // The file can be written again: the proposal lands, the next discovery
+    // starts the pass, and the game imports.
+    rescan(&mut app).unwrap();
+    assert!(!app.steam_auto.running());
+    record_proposal(&mut app);
+    assert!(!app.steam_auto.stuck);
+    assert_eq!(reason(&app, "9"), Some(Recorded::Imported));
+    assert!(rescan(&mut app).unwrap().discovery.is_some());
+    assert!(app.steam_auto.running());
+    assert!(offered(&app).is_empty());
+    finish(&mut app, &Token::new());
+    assert_eq!(reason(&app, "2"), Some(Recorded::Imported));
+}
+
+fn record_proposal_failed(app: &mut App) {
+    let proposed = scan(app).discovery.unwrap().proposed;
+    let result = read_only(app, || {
+        crate::app_library::write_steam_record(&app.paths, &app.shown, &proposed)
+    });
+    assert!(result.is_err());
+    let _ = app.update(Message::SteamRecorded(result));
+}
+
+#[test]
+fn while_stuck_a_changed_list_or_a_focus_reload_may_try_again() {
+    let (root, mut app) = settled(true);
+    steam_game(&root, "2", "New");
+    rescan(&mut app).unwrap();
+    let games = scan(&app).discovery.unwrap().pending;
+    let stopped = Report {
+        stopped: Some("no".to_owned()),
+        ..Report::default()
+    };
+    let _ = app.update(Message::AutoImported(Ok(stopped.clone())));
+
+    reload(&mut app);
+    assert!(!app.steam_auto.running(), "the same list waits");
+
+    steam_game(&root, "3", "Newer");
+    reload(&mut app);
+    assert!(app.steam_auto.running(), "a changed list tries");
+    let _ = app.update(Message::AutoImported(Ok(stopped)));
+    reload(&mut app);
+    assert!(!app.steam_auto.running());
+
+    let _ = app.update(Message::Window(iced::window::Event::Unfocused));
+    let _ = app.update(Message::Window(iced::window::Event::Focused));
+    reload(&mut app);
+    assert!(app.steam_auto.running(), "coming back to the window tries");
+    assert_eq!(games.len(), 1);
 }
 
 /// A pass whose import didn't happen and whose cleanup couldn't write.

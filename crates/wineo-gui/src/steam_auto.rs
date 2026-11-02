@@ -22,6 +22,9 @@ pub(crate) struct AutoImport {
     running: Option<Token>,
     /// The last pass couldn't write the record, and that's been said.
     stuck: bool,
+    /// What the last pass was given. While stuck, the same list waits: a
+    /// failed write of the record has every scan bring it back.
+    tried: Vec<PendingGame>,
     /// Claims this session couldn't take back. Only these are retried, since
     /// any other claim may be another window's, live.
     unreleased: HashSet<String>,
@@ -44,6 +47,11 @@ impl AutoImport {
     pub(crate) fn recovered(&mut self) {
         self.stuck = false;
     }
+
+    /// Has the next discovery try a stuck list again.
+    pub(crate) fn try_again(&mut self) {
+        self.tried.clear();
+    }
 }
 
 impl App {
@@ -54,7 +62,8 @@ impl App {
     /// pending games are the pass's and the banner keeps only those a pass
     /// gave up on, so a game passing through is never drawn and `show` needs
     /// no claim. While the record can't be written the banner keeps them all,
-    /// since nothing's going to take them.
+    /// since nothing's going to take them, and the same list isn't tried again
+    /// until a write gets through, the window comes back, or the list changes.
     pub(crate) fn auto_import_read(&mut self, discovery: &Discovery) -> Task<Message> {
         let closing = self.closing || self.exiting;
         let on = discovery.auto_import && self.paths.portable_root().is_none() && !closing;
@@ -74,9 +83,10 @@ impl App {
             .filter(|game| self.steam_nudge.takes(&game.app_id))
             .cloned()
             .collect();
-        if games.is_empty() {
+        if games.is_empty() || (self.steam_auto.stuck && games == self.steam_auto.tried) {
             return Task::none();
         }
+        self.steam_auto.tried.clone_from(&games);
         let token = Token::new();
         self.steam_auto.running = Some(token.clone());
         let (paths, watch) = (self.paths.clone(), self.shown.clone());
