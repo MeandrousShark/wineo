@@ -288,7 +288,9 @@ fn an_unwritable_record_imports_nothing_says_so_once_and_doesnt_loop() {
     let _ = app.update(Message::AutoImported(Ok(report)));
     let notice = app.feature_notice.take().expect("the failure shows");
     assert!(
-        notice.0.contains("Couldn't import new Steam games"),
+        notice
+            .0
+            .contains("Couldn't import new Steam games: can't update library.toml: "),
         "{}",
         notice.0
     );

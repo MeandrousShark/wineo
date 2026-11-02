@@ -55,7 +55,8 @@ pub fn run(
             Ok(Claim::Claimed) => import_claimed(paths, global, game, cancel, &mut report),
             Ok(Claim::Recorded | Claim::Refused) => {}
             Err(error) => {
-                report.stopped = Some(crate::library_lifecycle::cause(&error));
+                let cause = crate::library_lifecycle::cause(&error);
+                report.stopped = Some(format!("can't update library.toml: {cause}"));
                 break;
             }
         }
