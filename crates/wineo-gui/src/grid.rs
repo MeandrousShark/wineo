@@ -1090,18 +1090,22 @@ impl App {
             .style(move |_| container::Style::default().background(palette.background))
             .into();
         }
+        // One child however many apply, so the grid after it keeps its place
+        // in the tree and its state, like its scroll position, when a strip
+        // comes or goes. Empty, it has no height and no gap.
+        let mut strips = column![];
         if let Some(banner) = self.library_banner() {
-            page = page.push(banner);
+            strips = strips.push(banner);
         }
         if let Some(banner) = self.trash_banner() {
-            page = page.push(banner);
+            strips = strips.push(banner);
         }
         // Problems come first; the offer sits nearest the grid.
         if let Some(banner) = self.steam_banner() {
-            page = page.push(banner);
+            strips = strips.push(banner);
         }
         if let Some(error) = &self.error {
-            page = page.push(
+            strips = strips.push(
                 container(text(format!("Failed to load library: {error}")).color(palette.danger))
                     .padding(16),
             );
@@ -1109,7 +1113,7 @@ impl App {
         // Not `refreshing`, which flips every background refresh and made the
         // empty state blink.
         if self.cards.is_empty() && self.loaded {
-            page = page.push(
+            strips = strips.push(
                 container(
                     column![
                         text("Your library is empty").size(22),
@@ -1125,6 +1129,7 @@ impl App {
                 .padding(24),
             );
         }
+        let page = page.push(strips);
         let visible = self.scroll_visible_until.is_some();
         let scroll = scrollable(self.grid())
             .id(iced::widget::Id::new(SCROLL_ID))

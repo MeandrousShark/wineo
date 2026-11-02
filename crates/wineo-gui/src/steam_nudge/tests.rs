@@ -506,3 +506,76 @@ fn a_long_title_in_a_small_window_keeps_both_buttons_in_reach() {
         }
     }
 }
+
+/// The grid's scroll offset after `change`, with the widget tree kept from
+/// before it the way the runtime keeps it between updates.
+fn scroll_after(app: &mut App, change: impl FnOnce(&mut App)) -> (Vec<f32>, Vec<f32>) {
+    use iced::advanced::widget::Id;
+    use iced::widget::scrollable::AbsoluteOffset;
+    let mut laid = crate::layout_probe::lay_out(app.view(), app.window_size);
+    laid.run(Box::new(
+        iced::advanced::widget::operation::scrollable::scroll_to::<()>(
+            Id::new(crate::SCROLL_ID),
+            AbsoluteOffset {
+                x: None,
+                y: Some(1000.0),
+            },
+        ),
+    ));
+    let before = laid.offsets();
+    let tree = laid.into_tree();
+    change(app);
+    let mut laid = crate::layout_probe::relay_out(app.view(), tree, app.window_size);
+    (before, laid.offsets())
+}
+
+fn scrolling_app() -> (tempfile::TempDir, App) {
+    let (root, mut app) = fixture();
+    let many = (0..200)
+        .map(|n| {
+            crate::tests::card(
+                &format!("game-{n:03}"),
+                wineo_core::runtime::State::Inactive,
+                0,
+            )
+        })
+        .collect();
+    let _ = app.update(Message::Loaded(Ok(many)));
+    (root, app)
+}
+
+#[test]
+fn a_banner_coming_and_going_keeps_the_grids_scroll_position() {
+    let (_root, mut app) = scrolling_app();
+    let game = PendingGame {
+        app_id: "2".into(),
+        title: "Hades".into(),
+    };
+
+    let (before, after) = scroll_after(&mut app, |app| {
+        app.steam_nudge.show(vec![game.clone()]);
+    });
+    assert!(before.iter().any(|offset| *offset > 0.0), "{before:?}");
+    assert!(shown(&app));
+    assert_eq!(before, after, "the offer appearing");
+
+    let (before, after) = scroll_after(&mut app, |app| app.steam_nudge.show(Vec::new()));
+    assert_eq!(before, after, "the offer leaving");
+
+    let (before, after) = scroll_after(&mut app, |app| {
+        app.trash_badge.unreadable = vec![None];
+    });
+    assert_eq!(before, after, "the trash banner appearing");
+
+    let (before, after) = scroll_after(&mut app, |app| {
+        app.library_problem = Some(wineo_core::library::Problem {
+            reason: "bad".into(),
+            line: Some(1),
+            newer_version: false,
+        });
+    });
+    assert_eq!(before, after, "the library.toml banner appearing");
+
+    let (before, after) = scroll_after(&mut app, |app| app.error = Some("boom".into()));
+    assert_eq!(before, after, "the load error appearing");
+}
