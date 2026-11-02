@@ -9,7 +9,7 @@
 %global debug_package %{nil}
 
 Name:           wineo
-Version:        1.1.1
+Version:        1.1.2
 Release:        1%{?dist}
 Summary:        Launcher for Wine and Proton programs, native games, Steam, and GOG
 # The crates compiled into the binaries, from `cargo deny list`, with each
@@ -120,6 +120,9 @@ scripts/stage-install.sh --license-dir %{_datadir}/licenses/%{name} \
 %endif
 
 %changelog
+* Sun Nov 01 2026 Michael Hannon <mphannon@pm.me> - 1.1.2-1
+- Package the 1.1.2 release from the vendored source tarball.
+
 * Sat Oct 31 2026 Michael Hannon <mphannon@pm.me> - 1.1.1-1
 - Package the 1.1.1 release from the vendored source tarball.
 

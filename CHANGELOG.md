@@ -4,6 +4,41 @@ A finished plan bumps the minor version and fixes between plans bump the
 patch version. A plan released in parts bumps the minor version for each
 part. See `AGENTS.md` for the rule.
 
+## 1.1.2 - 2026-11-01
+
+The last two of three small batches: less repeated work behind the scenes, and
+prompts that all ask the same way (plan 0060).
+
+New in this release:
+
+- `wineo validate --json` gains `notes`, so a script can see what a fix
+  reported, like a `library.toml` repair, along with any warnings. Warnings
+  still go to stderr too.
+- The library's refresh does less: each environment's config is read once
+  instead of three times, and `config.toml` and Steam's install discovery once
+  instead of twice. With no Steam game, those two aren't read at all.
+- `wineo import gog --list` reads folder states twice per run instead of once
+  per game.
+
+Fixes:
+
+- `n` at "Save and run the installer?" now declines it.
+- Ctrl+Enter on a runner offer's No or Yes submits the flow without also
+  answering the offer.
+
+Behavior changes:
+
+- `wineo new` and `wineo import steam` ask their final question as `[Y/n]`, with
+  the keys line `Esc to go back, Ctrl+C to cancel.` in place of the old "Press
+  Enter to ..." line. `n` at `wineo new` cancels the whole flow with exit 130,
+  as `q` does.
+- "Save and run the installer?" shows `[Y/n]` and the same keys line, and an
+  unrecognized answer asks again.
+- At `wineo prune`, `wineo snapshot restore`, and `wineo runners remove`, an
+  unrecognized answer asks again instead of declining, and Ctrl+C exits 130 with
+  the Canceled line instead of dying on the signal. All three still default to
+  no.
+
 ## 1.1.1 - 2026-10-31
 
 The first of three small batches, this one about things that hang, get
