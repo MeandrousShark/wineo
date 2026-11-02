@@ -412,6 +412,7 @@ added = 2026-10-18T19:30:00Z
 hidden = true
 
 [steam]
+auto_import = false
 baselined = ["/home/me/.local/share/Steam"]
 
 [steam.games]
@@ -441,7 +442,8 @@ warns about it; picking a theme for that slot in Settings writes a good value.
 defaults to `false`.
 
 `[steam]` is how the desktop app remembers what it has
-[offered](steam.md#new-installs). `baselined` lists the Steam libraries whose
+[offered](steam.md#new-installs). `auto_import` imports new installs without
+asking and defaults to `false`. `baselined` lists the Steam libraries whose
 games have been recorded, by the path `libraryfolders.vdf` gives. `[steam.games]`
 is keyed by app id, and an entry there is never offered again: `baseline` was
 installed when its library was first read, `dismissed` you said no to, `imported`

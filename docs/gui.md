@@ -195,6 +195,10 @@ the first time wineo sees it, so a drive you plug in later stays quiet. Each is
 a [Steam import](#add-import-and-clone) away. See
 [New installs](steam.md#new-installs).
 
+With **Import new Steam games automatically** on in [Settings](#settings),
+those games are imported on their own instead. A game that fails stays in the
+banner for you, and wineo doesn't try it again until the next launch.
+
 ### An unreadable trash entry
 
 If a trash entry can't be verified, a banner above the grid says what it
@@ -837,6 +841,12 @@ hide a saved one. Both apply right away, outside the Save bar, and don't count a
 edits. You can leave the page while one runs, and its result shows when you
 come back. With `WINEO_STEAMGRIDDB_KEY` set, the section says it overrides
 the saved key. See [The SteamGridDB key](art.md#the-steamgriddb-key).
+
+**Steam**: **Import new Steam games automatically**, off by default, skips the
+[banner](#new-steam-games) and imports new installs with the same defaults as
+`wineo import steam --all`. It covers what the banner is offering when you turn
+it on, and never the games you already have. It's off in a portable folder or
+with no Steam, and the row says why.
 
 **Steam Web API** works the same way for the key that lists
 [owned Steam games](steam.md#owned-games), checked with Steam before it's

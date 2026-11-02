@@ -209,6 +209,17 @@ isn't read all the way through while it's unavailable, its `steamapps` folder is
 missing or can't be listed, or a manifest in it is broken, and until it is, its
 games aren't offered. The CLI never offers anything.
 
+Turn on **Import new Steam games automatically** in the desktop app's
+[Settings](gui.md#settings) to skip the banner. Games are imported with `--all`'s
+defaults: the default name, Steam's cached art, and no network. It never launches
+or installs anything, and with it off, nothing is created on its own. Each game is
+claimed in the record first, under `library.toml`'s lock, so a dismissal from
+another window always wins, and if the record can't be written, nothing is imported
+and the banner stays. A game that fails goes back to the banner until the next
+launch. If wineo crashes partway through, or quits with `library.toml` unwritable,
+a game can stay claimed and unoffered: Add > Import from Steam still lists it, or
+remove its line from `[steam.games]`.
+
 ## The config
 
 ```toml
