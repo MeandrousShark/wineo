@@ -18,11 +18,16 @@ use crate::paths::Paths;
 
 mod cache;
 mod check;
+mod record;
 mod repair;
 mod sort;
 
 pub use cache::Cache;
 pub(crate) use check::{FindingKind, inspect, remove_strays};
+pub use record::{
+    Claim, RecordChanges, Recorded, SteamRecord, apply_changes, claim_game, dismiss_game,
+    finish_import, mark_baselined, record_games, release_claim,
+};
 pub use repair::{RepairReport, ViewRecovery, repair};
 pub use sort::{SortFields, compare};
 
@@ -158,6 +163,7 @@ pub struct Library {
     pub view: View,
     pub appearance: Appearance,
     pub environments: BTreeMap<String, Entry>,
+    pub steam: SteamRecord,
     pub problem: Option<Problem>,
 }
 
@@ -546,6 +552,7 @@ fn read_library(document: &DocumentMut) -> Library {
         view,
         appearance: read_appearance(document),
         environments,
+        steam: record::read_record(document),
         problem: None,
     }
 }

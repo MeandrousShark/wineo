@@ -6,6 +6,7 @@ use std::fs;
 
 use toml_edit::{DocumentMut, Item, Key};
 
+use super::record::{Recorded, valid_app_id};
 use super::{
     ReadFailure, SCHEMA_VERSION, SortKey, ZOOM_MAX, ZOOM_MIN, edit, read_document, read_zoom,
 };
@@ -68,6 +69,7 @@ pub(crate) fn inspect(paths: &Paths) -> Inspection {
             "view" => inspect_view(item, &mut inspection),
             "appearance" => inspect_appearance(paths, &mut themes, item, &mut inspection),
             "environments" => inspect_environments(item, &mut inspection),
+            "steam" => inspect_steam(item, &mut inspection),
             other => inspection
                 .findings
                 .push(unknown(None, &display_path(&[other]))),
@@ -215,6 +217,66 @@ fn inspect_environments(item: &Item, inspection: &mut Inspection) {
     for (name, entry) in table.iter() {
         inspection.entries.push(name.to_owned());
         inspect_entry(name, entry, inspection);
+    }
+}
+
+fn inspect_steam(item: &Item, inspection: &mut Inspection) {
+    let Some(table) = item.as_table_like() else {
+        inspection
+            .findings
+            .push(invalid(None, &display_path(&["steam"]), TABLE, item));
+        return;
+    };
+    for (key, value) in table.iter() {
+        match key {
+            "games" => inspect_steam_games(value, inspection),
+            "baselined" => inspect_baselined(value, inspection),
+            _ => inspection
+                .findings
+                .push(unknown(None, &display_path(&["steam", key]))),
+        }
+    }
+}
+
+fn inspect_steam_games(item: &Item, inspection: &mut Inspection) {
+    let Some(table) = item.as_table_like() else {
+        inspection.findings.push(invalid(
+            None,
+            &display_path(&["steam", "games"]),
+            TABLE,
+            item,
+        ));
+        return;
+    };
+    for (id, reason) in table.iter() {
+        let path = display_path(&["steam", "games", id]);
+        if !valid_app_id(id) {
+            let expected = "expected a Steam app id as the key";
+            inspection
+                .findings
+                .push(invalid(None, &path, expected, reason));
+        } else if reason.as_str().and_then(Recorded::from_str).is_none() {
+            let expected = format!("expected one of {}", Recorded::NAMES);
+            inspection
+                .findings
+                .push(invalid(None, &path, &expected, reason));
+        }
+    }
+}
+
+fn inspect_baselined(item: &Item, inspection: &mut Inspection) {
+    let path = display_path(&["steam", "baselined"]);
+    let expected = "expected a list of folder paths";
+    let Some(array) = item.as_array() else {
+        inspection
+            .findings
+            .push(invalid(None, &path, expected, item));
+        return;
+    };
+    for value in array.iter().filter(|value| value.as_str().is_none()) {
+        inspection
+            .findings
+            .push(invalid(None, &path, expected, &Item::Value(value.clone())));
     }
 }
 

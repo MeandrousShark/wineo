@@ -8,9 +8,10 @@ use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
 use jiff::Zoned;
-use toml_edit::{DocumentMut, Item, Key, Table};
+use toml_edit::{Array, DocumentMut, Item, Key, Table, Value};
 
 use super::check::{is_newer, is_offset_datetime};
+use super::record::{Recorded, valid_app_id};
 use super::{SCHEMA_VERSION, SortKey, read_zoom};
 use crate::error::{Error, IoContext, Result};
 use crate::operation::Locks;
@@ -37,6 +38,10 @@ pub struct RepairReport {
     pub partly: usize,
     pub view: ViewRecovery,
     pub appearance: ViewRecovery,
+    /// How much of the Steam game record came back.
+    pub steam: ViewRecovery,
+    /// Steam record entries that were invalid or couldn't be read.
+    pub steam_dropped: usize,
     /// Text that couldn't be attributed to a recognized entry or field was dropped.
     pub dropped_text: bool,
     pub backup: PathBuf,
@@ -57,6 +62,7 @@ impl RepairReport {
                 self.appearance,
                 ViewRecovery::Absent | ViewRecovery::Recovered
             )
+            && matches!(self.steam, ViewRecovery::Absent | ViewRecovery::Recovered)
     }
 }
 
@@ -95,6 +101,16 @@ impl fmt::Display for RepairReport {
             ViewRecovery::Recovered => f.write_str(" Appearance settings recovered.")?,
             ViewRecovery::Partly => f.write_str(" Appearance settings partly recovered.")?,
             ViewRecovery::Lost => f.write_str(" Appearance settings could not be recovered.")?,
+        }
+        match self.steam {
+            ViewRecovery::Absent => {}
+            ViewRecovery::Recovered => f.write_str(" Steam game record recovered.")?,
+            ViewRecovery::Partly => write!(
+                f,
+                " Steam game record partly recovered ({} dropped).",
+                self.steam_dropped
+            )?,
+            ViewRecovery::Lost => f.write_str(" Steam game record could not be recovered.")?,
         }
         let backup = self.backup.file_name().map_or_else(
             || self.backup.to_string_lossy(),
@@ -260,8 +276,8 @@ impl<'a> Lines<'a> {
 
 /// A header line, or one `key = value` with every line its value spans.
 enum Unit {
-    /// None for a header that isn't `[view]`, `[appearance]`, or
-    /// `[environments.<name>]`.
+    /// None for a header that isn't `[view]`, `[appearance]`, `[steam]`,
+    /// `[steam.games]`, or `[environments.<name>]`.
     Header {
         start: usize,
         header: Option<Header>,
@@ -285,6 +301,8 @@ impl Unit {
 enum Header {
     View,
     Appearance,
+    Steam,
+    SteamGames,
     Entry(String),
 }
 
@@ -431,6 +449,7 @@ impl Scan {
 struct Salvaged {
     view: Option<Section>,
     appearance: Option<Section>,
+    steam: Option<SteamSection>,
     entries: Vec<(String, Section)>,
     dropped_text: bool,
     newer_version: Option<i64>,
@@ -468,23 +487,109 @@ impl Section {
     /// Keeps a field from the broken tail that parses alone, is valid, and
     /// doesn't clash with a field already kept, so the first value wins.
     fn offer(&mut self, text: Option<String>, valid: fn(&str, &Item) -> bool) {
+        match lone_field(text) {
+            Some((key, item)) => self.keep(&key, item, valid),
+            None => self.fields += 1,
+        }
+    }
+
+    fn keep(&mut self, key: &Key, item: Item, valid: fn(&str, &Item) -> bool) {
         self.fields += 1;
-        let Some(document) = text.and_then(|text| text.parse::<DocumentMut>().ok()) else {
-            return;
-        };
-        let mut keys = document.iter();
-        let (Some((name, item)), None) = (keys.next(), keys.next()) else {
-            return;
-        };
-        let key = document
-            .as_table()
-            .key(name)
-            .cloned()
-            .unwrap_or_else(|| Key::new(name));
-        if valid(name, item) && merge(&mut self.table, &key, item.clone()) {
+        if valid(key.get(), &item) && merge(&mut self.table, key, item) {
             self.kept += 1;
         }
     }
+}
+
+/// The one key and value in a unit from the broken tail, if it parses alone.
+fn lone_field(text: Option<String>) -> Option<(Key, Item)> {
+    let document = text?.parse::<DocumentMut>().ok()?;
+    let mut keys = document.iter();
+    let (Some((name, item)), None) = (keys.next(), keys.next()) else {
+        return None;
+    };
+    let key = document
+        .as_table()
+        .key(name)
+        .cloned()
+        .unwrap_or_else(|| Key::new(name));
+    Some((key, item.clone()))
+}
+
+/// The Steam game record: `games` and `baselined` are kept entry by entry, so
+/// one bad item costs that item alone. Keys a newer release wrote stay in
+/// `other`.
+#[derive(Debug, Default)]
+struct SteamSection {
+    other: Section,
+    games: Section,
+    baselined: Vec<String>,
+    baselined_fields: usize,
+}
+
+impl SteamSection {
+    /// Takes one field of `[steam]`, whether the parser read it or the tail
+    /// gave it up.
+    fn read(&mut self, key: &Key, item: &Item) {
+        match key.get() {
+            "games" => match item.as_table_like() {
+                Some(games) => {
+                    for (id, reason) in games.iter() {
+                        let key = games.key(id).cloned().unwrap_or_else(|| Key::new(id));
+                        self.games.keep(&key, reason.clone(), valid_game);
+                    }
+                }
+                None => self.games.fields += 1,
+            },
+            "baselined" => match item.as_array() {
+                Some(paths) => {
+                    for path in paths {
+                        self.baselined_fields += 1;
+                        if let Some(path) = path.as_str() {
+                            self.baselined.push(path.to_owned());
+                        }
+                    }
+                }
+                None => self.baselined_fields += 1,
+            },
+            _ => self.other.keep(key, item.clone(), |_, _| true),
+        }
+    }
+
+    fn fields(&self) -> usize {
+        self.other.fields + self.games.fields + self.baselined_fields
+    }
+
+    fn kept(&self) -> usize {
+        self.other.kept + self.games.kept + self.baselined.len()
+    }
+
+    fn recovery(&self) -> ViewRecovery {
+        if self.kept() == self.fields() {
+            ViewRecovery::Recovered
+        } else if self.kept() == 0 {
+            ViewRecovery::Lost
+        } else {
+            ViewRecovery::Partly
+        }
+    }
+
+    fn table(&self) -> Table {
+        let mut table = fresh_table(&self.other.table);
+        if !self.baselined.is_empty() {
+            let paths: Array = self.baselined.iter().map(String::as_str).collect();
+            table.insert("baselined", Item::Value(Value::Array(paths)));
+        }
+        if self.games.kept > 0 {
+            table.insert("games", Item::Table(fresh_table(&self.games.table)));
+        }
+        table.set_implicit(true);
+        table
+    }
+}
+
+fn valid_game(id: &str, item: &Item) -> bool {
+    valid_app_id(id) && item.as_str().and_then(Recorded::from_str).is_some()
 }
 
 /// Adds `item` unless it redefines something, merging dotted keys like
@@ -516,6 +621,8 @@ enum Current {
     Top,
     View,
     Appearance,
+    Steam,
+    SteamGames,
     Entry(usize),
     Unattributed,
 }
@@ -540,6 +647,14 @@ fn salvage(bytes: &[u8]) -> Salvaged {
                     Some(Header::Appearance) => {
                         salvaged.appearance.get_or_insert_with(Section::default);
                         Current::Appearance
+                    }
+                    Some(Header::Steam) => {
+                        salvaged.steam.get_or_insert_default();
+                        Current::Steam
+                    }
+                    Some(Header::SteamGames) => {
+                        salvaged.steam.get_or_insert_default();
+                        Current::SteamGames
                     }
                     Some(Header::Entry(name)) => Current::Entry(salvaged.entry(name)),
                     None => {
@@ -585,6 +700,19 @@ fn salvage(bytes: &[u8]) -> Salvaged {
                 .as_mut()
                 .expect("appearance section was recorded")
                 .offer(text, valid_appearance_field),
+            Current::Steam => {
+                let steam = salvaged.steam.as_mut().expect("steam section was recorded");
+                match lone_field(text) {
+                    Some((key, item)) => steam.read(&key, &item),
+                    None => steam.other.fields += 1,
+                }
+            }
+            Current::SteamGames => salvaged
+                .steam
+                .as_mut()
+                .expect("steam section was recorded")
+                .games
+                .offer(text, valid_game),
             Current::Entry(index) => salvaged.entries[index].1.offer(text, valid_entry_field),
         }
     }
@@ -660,6 +788,13 @@ impl Salvaged {
                         appearance.read(&key, field, valid_appearance_field);
                     }
                 }
+                ("steam", Some(table)) => {
+                    let steam = self.steam.get_or_insert_default();
+                    for (name, field) in table.iter() {
+                        let key = table.key(name).cloned().unwrap_or_else(|| Key::new(name));
+                        steam.read(&key, field);
+                    }
+                }
                 ("environments", Some(environments)) => {
                     for (name, entry) in environments.iter() {
                         let Some(entry) = entry.as_table_like() else {
@@ -683,6 +818,10 @@ impl Salvaged {
                 [view] if view == "view" && self.view.is_some() => Current::View,
                 [appearance] if appearance == "appearance" && self.appearance.is_some() => {
                     Current::Appearance
+                }
+                [steam] if steam == "steam" && self.steam.is_some() => Current::Steam,
+                [steam, games] if steam == "steam" && games == "games" && self.steam.is_some() => {
+                    Current::SteamGames
                 }
                 [environments, name] if environments == "environments" => {
                     match self.entries.iter().position(|(seen, _)| seen == name) {
@@ -733,8 +872,8 @@ fn last_header(
     last.as_ref().map(|(_, path)| path.clone())
 }
 
-/// A header line on its own: exactly `[view]`, `[appearance]`, or
-/// `[environments.<name>]`.
+/// A header line on its own: exactly `[view]`, `[appearance]`, `[steam]`,
+/// `[steam.games]`, or `[environments.<name>]`.
 fn header(line: &str) -> Option<Header> {
     let document = line.parse::<DocumentMut>().ok()?;
     let mut keys = document.iter();
@@ -746,6 +885,17 @@ fn header(line: &str) -> Option<Header> {
     match key {
         "view" => table.is_empty().then_some(Header::View),
         "appearance" => table.is_empty().then_some(Header::Appearance),
+        "steam" => {
+            let mut children = table.iter();
+            match (children.next(), children.next()) {
+                (None, _) => Some(Header::Steam),
+                (Some(("games", child)), None) => child
+                    .as_table()
+                    .is_some_and(|child| child.is_empty())
+                    .then_some(Header::SteamGames),
+                _ => None,
+            }
+        }
         "environments" => {
             let mut children = table.iter();
             let (name, child) = children.next()?;
@@ -807,6 +957,9 @@ impl Salvaged {
             }
             document.insert("environments", Item::Table(environments));
         }
+        if let Some(steam) = self.steam.as_ref().filter(|steam| steam.kept() > 0) {
+            document.insert("steam", Item::Table(steam.table()));
+        }
         let mut text = document.to_string();
         if !text.ends_with('\n') {
             text.push('\n');
@@ -836,6 +989,14 @@ impl Salvaged {
                 .appearance
                 .as_ref()
                 .map_or(ViewRecovery::Absent, Section::recovery),
+            steam: self
+                .steam
+                .as_ref()
+                .map_or(ViewRecovery::Absent, SteamSection::recovery),
+            steam_dropped: self
+                .steam
+                .as_ref()
+                .map_or(0, |steam| steam.fields() - steam.kept()),
             dropped_text: self.dropped_text,
             backup,
         }

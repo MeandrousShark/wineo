@@ -2,7 +2,7 @@ use std::ffi::OsString;
 
 use super::*;
 use crate::files::sync_dir;
-use crate::library::{SortKey, load};
+use crate::library::{Recorded, SortKey, SteamRecord, load};
 
 struct Fixture {
     _root: tempfile::TempDir,
@@ -102,6 +102,8 @@ fn backs_up_the_original_and_recovers_every_recognized_entry() {
             partly: 0,
             view: ViewRecovery::Recovered,
             appearance: ViewRecovery::Absent,
+            steam: ViewRecovery::Absent,
+            steam_dropped: 0,
             dropped_text: false,
             backup: fixture.backup(STAMP),
         }
@@ -160,6 +162,8 @@ fn counts_partly_and_unrecovered_entries_and_skips_invalid_values() {
             partly: 1,
             view: ViewRecovery::Partly,
             appearance: ViewRecovery::Absent,
+            steam: ViewRecovery::Absent,
+            steam_dropped: 0,
             dropped_text: true,
             backup: fixture.backup(STAMP),
         }
@@ -475,6 +479,8 @@ fn wording_for_no_entries_and_lost_view() {
         partly: 0,
         view: ViewRecovery::Lost,
         appearance: ViewRecovery::Absent,
+        steam: ViewRecovery::Absent,
+        steam_dropped: 0,
         dropped_text: false,
         backup: PathBuf::from("/x/library.toml.broken-1"),
     };
@@ -488,6 +494,8 @@ fn wording_for_no_entries_and_lost_view() {
         partly: 0,
         view: ViewRecovery::Absent,
         appearance: ViewRecovery::Absent,
+        steam: ViewRecovery::Absent,
+        steam_dropped: 0,
         dropped_text: false,
         backup: PathBuf::from("/x/library.toml.broken-1"),
     };
@@ -922,6 +930,8 @@ fn appearance_wording_for_a_lost_table() {
         partly: 0,
         view: ViewRecovery::Absent,
         appearance: ViewRecovery::Lost,
+        steam: ViewRecovery::Absent,
+        steam_dropped: 0,
         dropped_text: false,
         backup: PathBuf::from("/x/library.toml.broken-1"),
     };
@@ -946,4 +956,91 @@ fn a_repair_writes_through_a_symlinked_library_file() {
         new_file: NewFile::NotCreated,
     }
     .check();
+}
+
+const RECORD: &str = r#"schema_version = 1
+
+[steam]
+baselined = ["/games/one", "/games/two", 7]
+
+[steam.games]
+440 = "baseline"
+570 = "dismissed"
+620 = "imported"
+730 = "claimed"
+1 = "nonsense"
+abc = "baseline"
+"#;
+
+#[test]
+fn a_repair_keeps_every_valid_record_entry_and_counts_the_rest() {
+    let fixture = Fixture::new();
+    // The record parses, and only the view after it breaks the file.
+    fixture.write(&format!("{RECORD}\n[view]\nsort = 'name\n"));
+
+    let report = repair_at(&fixture.paths, STAMP, sync_dir).unwrap().unwrap();
+
+    assert_eq!(report.steam, ViewRecovery::Partly);
+    assert_eq!(report.steam_dropped, 3);
+    assert!(!report.complete());
+    assert!(
+        report
+            .to_string()
+            .contains("Steam game record partly recovered (3 dropped)."),
+    );
+    let steam = load(&fixture.paths).steam;
+    assert_eq!(load(&fixture.paths).problem, None);
+    assert_eq!(
+        steam.games.iter().collect::<Vec<_>>(),
+        [
+            (&"440".to_owned(), &Recorded::Baseline),
+            (&"570".to_owned(), &Recorded::Dismissed),
+            (&"620".to_owned(), &Recorded::Imported),
+            (&"730".to_owned(), &Recorded::Claimed),
+        ]
+    );
+    assert_eq!(
+        steam.baselined.iter().collect::<Vec<_>>(),
+        ["/games/one", "/games/two"]
+    );
+}
+
+#[test]
+fn a_repair_reads_the_record_from_the_broken_tail() {
+    let fixture = Fixture::new();
+    // The bad line comes first, so the parser gives the whole record up.
+    fixture.write(
+        "schema_version = 1\nnot toml at all\n[steam]\nbaselined = [\n  \"/games/one\",\n  \"/games/two\",\n]\nfuture = 1\n\n[steam.games]\n440 = \"baseline\"\n570 = 5\n620 = \"dismissed\"\n",
+    );
+
+    let report = repair_at(&fixture.paths, STAMP, sync_dir).unwrap().unwrap();
+
+    assert_eq!(report.steam, ViewRecovery::Partly);
+    assert_eq!(report.steam_dropped, 1);
+    let steam = load(&fixture.paths).steam;
+    assert_eq!(steam.games.len(), 2);
+    assert_eq!(steam.games["620"], Recorded::Dismissed);
+    assert_eq!(steam.baselined.len(), 2);
+    assert!(fixture.read().contains("future = 1"));
+}
+
+#[test]
+fn a_whole_record_counts_as_recovered_and_a_bad_one_as_lost() {
+    let fixture = Fixture::new();
+    fixture.write("[steam.games]\n440 = \"baseline\"\n[view\n");
+    let report = repair_at(&fixture.paths, STAMP, sync_dir).unwrap().unwrap();
+    assert_eq!(report.steam, ViewRecovery::Recovered);
+    assert_eq!(report.steam_dropped, 0);
+    assert!(report.to_string().contains("Steam game record recovered."));
+
+    let fixture = Fixture::new();
+    fixture.write("[steam]\ngames = 5\n[view\n");
+    let report = repair_at(&fixture.paths, STAMP, sync_dir).unwrap().unwrap();
+    assert_eq!(report.steam, ViewRecovery::Lost);
+    assert!(
+        report
+            .to_string()
+            .contains("Steam game record could not be recovered.")
+    );
+    assert_eq!(load(&fixture.paths).steam, SteamRecord::default());
 }
