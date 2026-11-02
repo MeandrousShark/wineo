@@ -47,9 +47,8 @@ impl AppInfoCache {
     }
 
     /// The install's appinfo, read only if its file changed since the cached
-    /// read. With no file, or a file that changed while being read, the
-    /// result is returned and nothing is kept, so it can't outlive a state
-    /// the stamp doesn't describe.
+    /// read. The result is kept under the stamp from before the read, so a
+    /// write during the read counts as a change and the next call reads again.
     pub fn read(&self, install: &Install) -> Arc<Result<AppInfo, ReadError>> {
         self.read_using(install, appinfo::read)
     }
@@ -74,14 +73,10 @@ impl AppInfoCache {
             state.reads += 1;
         }
         let result = Arc::new(read(install));
-        // A write during the read changes the stamp, so a torn read isn't kept.
-        let after = Stamp::of(&path).ok().flatten();
-        if let (Some(before), Some(after)) = (before, after)
-            && before == after
-        {
+        if let Some(stamp) = before {
             state.cached = Some(Cached {
                 path,
-                stamp: before,
+                stamp,
                 result: Arc::clone(&result),
             });
         }
