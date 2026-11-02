@@ -5,6 +5,7 @@
 
 mod account;
 pub mod api;
+pub mod appinfo;
 pub mod key;
 pub mod owned;
 pub mod process;
