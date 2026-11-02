@@ -165,6 +165,50 @@ Installed.
 
 Only Steam games can be installed or uninstalled.
 
+## Platforms
+
+The desktop app places each installed game under Native or Windows, even
+before its first run, and shows a Proton row only for a Windows game. The first
+of these that applies decides:
+
+1. A game that isn't fully installed has no platform. An update in progress
+   still counts as installed.
+2. A Proton setting of its own in Steam makes it Windows. A Steam Linux Runtime
+   isn't Proton, so that setting doesn't count.
+3. Steam's `appinfo.vdf` lists the systems a game has. With `linux` on the list
+   it's Native, even if an old Proton prefix is lying around. Without it, it's
+   Windows.
+4. When Steam lists nothing, or the file can't be read, a Proton prefix from an
+   earlier run makes it Windows. Otherwise it has no platform, since a missing
+   list doesn't prove there's no Linux build.
+
+The Proton row shows the game's own setting, or Steam's default for everything
+else. wineo reads only those two fields of `appinfo.vdf`, which also holds
+access tokens. Platforms are for the desktop app, so they aren't in `--json`.
+
+## New installs
+
+The desktop app notices games Steam has installed since it last looked, and
+offers them in a [banner above the grid](gui.md#new-steam-games). A game is
+offered once it's fully installed, has no environment, and hasn't been offered
+already. `appinfo.vdf` says what it is: `game` and `application` count, and
+demos, music, tools, DLC, and configs don't. If that can't be read, wineo falls
+back to the same check `--list` uses for Steam's own tools, so a format change
+costs a stray offer rather than the whole feature.
+
+What's been dealt with lives in [`library.toml`](config-files.md#library-state),
+by app id, and it's permanent, so a game you dismissed or removed is never
+offered again, even after a reinstall. An import from anywhere joins it, the CLI
+included. `--list`, `--all`, and Add > Import from Steam ignore it, so nothing
+is ever out of reach.
+
+Each library has a baseline: the first time wineo reads one all the way
+through, its games join the record without an offer. So upgrading doesn't bring
+up your whole library, and neither does a drive that comes back later. A library
+isn't read all the way through while it's unavailable, its `steamapps` folder is
+missing or can't be listed, or a manifest in it is broken, and until it is, its
+games aren't offered. The CLI never offers anything.
+
 ## The config
 
 ```toml

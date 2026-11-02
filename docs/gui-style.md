@@ -198,6 +198,10 @@ Plan 0054 added these.
   toolbar with the message and at most one neutral action
   (**Open Checkup**). Each problem gets its own strip, and it clears itself
   when the problem does.
+- An offer, like new Steam games, uses the same strip in the primary tone,
+  below any problem strips and nearest the grid: an accent action, and a
+  neutral one to decline. Every strip sits in one always-present slot, so one
+  coming or going doesn't reset the grid's scroll.
 - Poster marks are a 24 px round chip in black at 55% opacity with a 14 px
   white icon, 8 px in from their corner, each corner holding one so nothing
   moves when another appears. The star has the top-right corner and a

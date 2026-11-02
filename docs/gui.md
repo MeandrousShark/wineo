@@ -104,9 +104,10 @@ them; the button counts them, as in **Filters (2)**. Clear filters clears
 the search, stores, platforms, and tags, and leaves the sort and Show
 hidden alone. Filters and Show hidden start fresh at every launch.
 
-A Steam game counts as Windows once Steam shows it runs through Proton:
-it has its own Proton setting in Steam, or a Proton prefix from its first
-run. Until then it has no platform, so only the Store filter finds it.
+An installed Steam game goes under Native or Windows from the start, even
+before its first run. See [Platforms](steam.md#platforms). One Steam doesn't
+say enough about has no platform, so only the Store filter finds it, and so
+does a game that isn't fully installed.
 
 While a store, platform, or tag filter is on, a tab hangs under
 **Filters** with a chip for each. A chip's x removes that filter, and the
@@ -176,6 +177,24 @@ and launches, without stars or hidden flags. A file written by a newer
 wineo gets the same banner without the button, since the fix is updating
 wineo. The banner clears on its own once the file reads again.
 
+### New Steam games
+
+When Steam finishes installing something new, a banner above the grid offers
+it: `1 new Steam game: Hades`, or `2 new Steam games`. It sits below any
+problem banner, and shows even in an empty library or under a filter.
+
+- **Import** opens the usual [Steam import](#add-import-and-clone) with just
+  those games, ready to review. One game opens at its name, and **Back**
+  reaches the list if you'd rather leave one out. Cancel and the banner stays.
+- **Dismiss** means no for good: those games are never offered again, even
+  after a reinstall. Add > Import from Steam still lists them.
+
+Soundtracks, demos, tools, DLC, and Steam's own runtimes aren't offered. Games
+you had before this appeared aren't either, and neither are a library's games
+the first time wineo sees it, so a drive you plug in later stays quiet. Each is
+a [Steam import](#add-import-and-clone) away. See
+[New installs](steam.md#new-installs).
+
 ### An unreadable trash entry
 
 If a trash entry can't be verified, a banner above the grid says what it
@@ -232,8 +251,8 @@ A [Steam game](steam.md) starts through Steam, so the panel says
 **Waiting for Steam...** until the game appears, with **Stop** available.
 Steam may be starting or updating first. A game started from the Steam
 client shows as running too, and **Stop** and **Force stop** work on it. The
-panel also shows **Launcher** (Steam), the game's **Proton** build when it
-has one, and its **Install size**.
+panel also shows **Launcher** (Steam), the **Proton** build of a Windows
+game, and its **Install size**. A native game has no Proton row.
 
 **Install** opens Steam's install dialog. The panel says **Asking Steam...**
 and then `Asked Steam to install NAME.`, or a note like `Already

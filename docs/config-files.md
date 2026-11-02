@@ -382,7 +382,7 @@ an older release only loses those preferences. The one exception is
 
 `~/.config/wineo/library.toml` holds how the desktop app shows each
 environment: favorites, hidden games, when it was added, the saved sort
-and grid view, and the app's theme.
+and grid view, the app's theme, and which Steam games it has dealt with.
 It's written for you, one field at a time, and never stops anything from
 launching. A bad value, like `favorite = "yes"`, counts as unset for that
 field only and stays in the file until you fix it or change that setting.
@@ -410,6 +410,14 @@ added = 2026-10-18T19:30:00Z
 
 [environments.old-demo]
 hidden = true
+
+[steam]
+baselined = ["/home/me/.local/share/Steam"]
+
+[steam.games]
+1145360 = "imported"
+413150 = "baseline"
+620 = "dismissed"
 ```
 
 `[view]` is the desktop app's saved sort and grid view: `sort` defaults to
@@ -432,6 +440,15 @@ warns about it; picking a theme for that slot in Settings writes a good value.
 `improve_readability` raises the contrast of text colors that need it and
 defaults to `false`.
 
+`[steam]` is how the desktop app remembers what it has
+[offered](steam.md#new-installs). `baselined` lists the Steam libraries whose
+games have been recorded, by the path `libraryfolders.vdf` gives. `[steam.games]`
+is keyed by app id, and an entry there is never offered again: `baseline` was
+installed when its library was first read, `dismissed` you said no to, `imported`
+has been imported, and `claimed` is an import in progress. Delete an entry to have
+a game offered again. An older wineo warns about this table in `validate`, and its
+repair drops it.
+
 Each `[environments.<name>]` entry is keyed by the
 environment's name. `favorite` and `hidden` default to `false`. `added` is
 when wineo created or imported it, a TOML datetime in UTC; environments
@@ -445,8 +462,8 @@ so the file stays exactly as it is. `wineo validate --fix` or Checkup can
 repair it: the original is copied to `library.toml.broken-<time>` (with
 `-2`, `-3` if that name is taken), and that copy is synced to disk before
 the new file replaces it. The repair keeps each setting whose line still
-reads correctly on its own, under an entry, `[view]`, or `[appearance]`, and
-reports what it couldn't keep. A file from a newer wineo is never repaired;
+reads correctly on its own, under an entry, `[view]`, `[appearance]`, or
+`[steam]`, and reports what it couldn't keep. A file from a newer wineo is never repaired;
 update wineo instead. The fix that removes entries for environments that no
 longer exist adds `schema_version = 1` if the file had none.
 
