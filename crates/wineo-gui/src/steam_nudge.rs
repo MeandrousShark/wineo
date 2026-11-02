@@ -2,6 +2,7 @@
 //! usual Steam review, and Dismiss. Pending games are worked out by each scan
 //! and held only in memory; the record on disk only ever gains decisions.
 
+use std::collections::HashSet;
 use std::ops::ControlFlow;
 
 use iced::widget::row;
@@ -21,11 +22,23 @@ pub(crate) struct Nudge {
     pending: Vec<PendingGame>,
     /// A dismissal is being written, so the banner's buttons wait for it.
     writing: bool,
+    /// Games dismissed this session. A dismissal is permanent, but a result
+    /// read before it can still arrive after (a flow's reload, say), so
+    /// anything that shows pending games is filtered through this.
+    dismissed: HashSet<String>,
 }
 
 impl Nudge {
-    pub(crate) fn show(&mut self, pending: Vec<PendingGame>) {
+    pub(crate) fn show(&mut self, mut pending: Vec<PendingGame>) {
+        pending.retain(|game| !self.dismissed.contains(&game.app_id));
         self.pending = pending;
+    }
+
+    /// Remembers `ids` as dismissed and takes them off the banner.
+    fn dismissed(&mut self, ids: &[String]) {
+        self.dismissed.extend(ids.iter().cloned());
+        let left = std::mem::take(&mut self.pending);
+        self.show(left);
     }
 
     pub(crate) fn pending(&self) -> &[PendingGame] {
@@ -146,9 +159,7 @@ impl App {
         self.steam_nudge.writing = false;
         match result {
             Ok(()) => {
-                let mut left = self.steam_nudge.pending().to_vec();
-                left.retain(|game| !ids.contains(&game.app_id));
-                self.steam_nudge.show(left);
+                self.steam_nudge.dismissed(ids);
                 self.shown.drop_pending(ids);
                 self.outdate_reads()
             }

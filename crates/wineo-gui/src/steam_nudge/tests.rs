@@ -351,6 +351,49 @@ fn a_game_that_arrives_after_the_banner_was_drawn_is_not_dismissed_by_it() {
 }
 
 #[test]
+fn a_flow_result_read_before_a_dismissal_cant_bring_the_games_back() {
+    let (root, mut app) = baselined(&["game"]);
+    steam_game(&root, "2", "Hades");
+    steam_game(&root, "3", "Celeste");
+    rescan(&mut app).unwrap();
+
+    // The flow's reload read the games as pending, and is still outstanding.
+    let outstanding = scan(&app).discovery.unwrap();
+    assert_eq!(outstanding.pending.len(), 2);
+    write_dismissal(&mut app, &ids(&["2", "3"])).unwrap();
+    assert!(!shown(&app));
+
+    let generation = app.flow_generation;
+    let _ = app.update(Message::FlowRead(
+        generation,
+        crate::flow::Action::Library {
+            name: None,
+            launch: false,
+        },
+        Box::new(outstanding),
+        cards(&app),
+    ));
+    assert!(pending(&app).is_empty());
+    assert!(!shown(&app));
+
+    // A game that arrives later is still offered.
+    steam_game(&root, "4", "Hollow");
+    rescan(&mut app).unwrap();
+    assert_eq!(pending(&app), ["4"]);
+}
+
+#[test]
+fn a_failed_dismissal_remembers_nothing() {
+    let (root, mut app) = baselined(&["game"]);
+    steam_game(&root, "2", "Hades");
+    rescan(&mut app).unwrap();
+    let _ = app.update(Message::NudgeDismissed(ids(&["2"]), Err("boom".into())));
+    let outstanding = scan(&app).discovery.unwrap();
+    let _ = app.discovery_read(outstanding);
+    assert_eq!(pending(&app), ["2"]);
+}
+
+#[test]
 fn a_dismissal_keeps_a_baseline_and_a_decision_made_elsewhere() {
     let (root, mut app) = baselined(&["game"]);
     steam_game(&root, "2", "Hades");
