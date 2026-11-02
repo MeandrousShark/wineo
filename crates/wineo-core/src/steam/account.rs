@@ -147,7 +147,10 @@ fn lookup(
 /// Keys are lowercased, so lowercase an id before indexing directly.
 pub fn compat_tools(install: &Install) -> HashMap<String, String> {
     let mut tools = HashMap::new();
-    let Ok(text) = fs::read_to_string(install.root().join("config/config.vdf")) else {
+    let path = install.root().join("config/config.vdf");
+    #[cfg(any(test, feature = "test-support"))]
+    crate::read_log::note(&path);
+    let Ok(text) = fs::read_to_string(&path) else {
         return tools;
     };
     let Ok(document) = vdf::parse(&text) else {

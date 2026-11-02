@@ -638,3 +638,179 @@ fn a_rescan_parses_appinfo_once_and_sees_it_change() {
     );
     assert_eq!(reads(&app), 2);
 }
+
+fn steam_game(root: &tempfile::TempDir, id: &str) {
+    let steamapps = root.path().join(".local/share/Steam/steamapps");
+    fs::create_dir_all(&steamapps).unwrap();
+    fs::write(
+        steamapps.join(format!("appmanifest_{id}.acf")),
+        format!(r#""AppState" {{ "appid" "{id}" "name" "Game {id}" "StateFlags" "4" }}"#),
+    )
+    .unwrap();
+}
+
+fn pending(scan: &Scan) -> Vec<&str> {
+    scan.discovery
+        .iter()
+        .flat_map(|discovery| &discovery.pending)
+        .map(|game| game.app_id.as_str())
+        .collect()
+}
+
+/// The app with one native card and Steam already baselined.
+fn baselined() -> (tempfile::TempDir, App) {
+    let (root, app) = shown(&["game"]);
+    steam_game(&root, "1");
+    let scan = rescan(&app, false);
+    let proposed = &scan.discovery.as_ref().unwrap().proposed;
+    saved::apply_changes(&app.paths, proposed).unwrap();
+    app.shown.refresh_library(&app.paths);
+    let settled = rescan(&app, false);
+    app.shown.show_discovery(settled.discovery.unwrap());
+    (root, app)
+}
+
+#[test]
+fn a_new_install_with_identical_cards_reaches_the_app() {
+    let (root, mut app) = baselined();
+    assert!(app.shown.changes(rescan(&app, false), now()).is_none());
+
+    steam_game(&root, "2");
+    let changes = app.shown.changes(rescan(&app, false), now()).unwrap();
+
+    assert_eq!(pending(&changes), ["2"]);
+    assert!(changes.library.is_none());
+    let _ = app.update(Message::Rescanned(Box::new(changes)));
+    assert!(app.shown.changes(rescan(&app, false), now()).is_none());
+}
+
+#[test]
+fn a_stale_discovery_is_dropped_by_revision() {
+    let (root, app) = baselined();
+    steam_game(&root, "2");
+    let scan = rescan(&app, false);
+
+    app.shown.reloading_library();
+
+    assert_eq!(pending(&scan), ["2"]);
+    assert!(app.shown.current(scan).discovery.is_none());
+}
+
+#[test]
+fn a_stale_reload_doesnt_apply_its_discovery() {
+    let (root, mut app) = baselined();
+    steam_game(&root, "2");
+    let discovery = rescan(&app, false).discovery.unwrap();
+    let stale = app.library_generation;
+    let _ = app.reload_library();
+
+    let _ = app.update(Message::LibraryScanned(
+        stale,
+        Box::new(discovery.clone()),
+        library(&app.paths),
+        None,
+    ));
+    let changes = app.shown.changes(rescan(&app, false), now()).unwrap();
+    assert_eq!(pending(&changes), ["2"]);
+
+    // The current reload's does apply, so the rescan has nothing to add.
+    let _ = app.update(Message::LibraryScanned(
+        app.library_generation,
+        Box::new(discovery),
+        library(&app.paths),
+        None,
+    ));
+    assert!(app.shown.changes(rescan(&app, false), now()).is_none());
+}
+
+#[test]
+fn a_flow_coming_back_carries_its_discovery() {
+    let (root, mut app) = baselined();
+    steam_game(&root, "2");
+    let discovery = rescan(&app, false).discovery.unwrap();
+
+    let _ = app.update(Message::FlowRead(
+        app.flow_generation.wrapping_add(1),
+        crate::flow::Action::Choose,
+        Box::new(discovery.clone()),
+        library(&app.paths),
+    ));
+    assert!(app.shown.changes(rescan(&app, false), now()).is_some());
+
+    let _ = app.update(Message::FlowRead(
+        app.flow_generation,
+        crate::flow::Action::Choose,
+        Box::new(discovery),
+        library(&app.paths),
+    ));
+    assert!(app.shown.changes(rescan(&app, false), now()).is_none());
+}
+
+#[test]
+fn a_scan_never_writes_and_the_app_applies_what_it_proposed() {
+    let (root, mut app) = shown(&["game"]);
+    steam_game(&root, "1");
+
+    let changes = app.shown.changes(rescan(&app, false), now()).unwrap();
+    assert!(!app.paths.library_file().exists());
+    let proposed = changes.discovery.as_ref().unwrap().proposed.clone();
+    assert_eq!(proposed.baseline, ["1"]);
+
+    // Run by hand, since a test doesn't run the task.
+    let _ = app.update(Message::Rescanned(Box::new(changes)));
+    let before = app.shown.revisions();
+    let result = crate::app_library::write_steam_record(&app.paths, &app.shown, &proposed);
+    let _ = app.update(Message::SteamRecorded(result));
+
+    assert!(wineo_core::library::load(&app.paths).steam.contains("1"));
+    assert_ne!(
+        app.shown.revisions(),
+        before,
+        "reads from before it are old"
+    );
+    let changes = app.shown.changes(rescan(&app, false), now()).unwrap();
+    assert!(changes.discovery.unwrap().proposed.is_empty());
+}
+
+#[test]
+fn a_failed_write_stays_pending_retries_and_warns_once() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let (root, mut app) = shown(&["game"]);
+    steam_game(&root, "1");
+    let scan = app.shown.changes(rescan(&app, false), now()).unwrap();
+    let proposed = scan.discovery.as_ref().unwrap().proposed.clone();
+    let _ = app.update(Message::Rescanned(Box::new(scan)));
+
+    let dir = app.paths.library_file().parent().unwrap().to_owned();
+    fs::create_dir_all(&dir).unwrap();
+    fs::set_permissions(&dir, fs::Permissions::from_mode(0o500)).unwrap();
+    let failed = crate::app_library::write_steam_record(&app.paths, &app.shown, &proposed);
+    fs::set_permissions(&dir, fs::Permissions::from_mode(0o700)).unwrap();
+    assert!(failed.is_err());
+
+    let _ = app.update(Message::SteamRecorded(failed.clone()));
+    let notice = app.feature_notice.take().expect("the failure shows");
+    assert!(notice.0.contains("Steam game record"), "{}", notice.0);
+
+    // The same discovery comes back, to try again, with nothing new to show.
+    let retry = app.shown.changes(rescan(&app, false), now()).unwrap();
+    assert_eq!(retry.discovery.as_ref().unwrap().proposed, proposed);
+    assert!(retry.library.is_none());
+    let _ = app.update(Message::Rescanned(Box::new(retry)));
+    let _ = app.update(Message::SteamRecorded(failed));
+    assert!(app.feature_notice.is_none(), "one failure, one notice");
+
+    // A success rearms the warning, for a later failure.
+    let _ = app.update(Message::SteamRecorded(Ok(())));
+    let _ = app.update(Message::SteamRecorded(Err("again".to_owned())));
+    assert!(app.feature_notice.is_some());
+}
+
+#[test]
+fn an_unreadable_library_toml_stops_discovery() {
+    let (root, app) = baselined();
+    steam_game(&root, "2");
+    write_library(&app, "not toml [");
+    assert_eq!(rescan(&app, false).discovery, Some(Default::default()));
+}

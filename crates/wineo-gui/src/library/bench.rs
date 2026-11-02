@@ -36,7 +36,7 @@ use wineo_core::report::{self, OverviewFilter};
 use wineo_core::stats::{self, End, Session};
 use wineo_core::trash::PendingScan;
 
-use super::{Card, load_library};
+use super::{Card, load_library, load_read};
 use crate::rescan::{self, Watch};
 
 fn iterations() -> usize {
@@ -206,6 +206,7 @@ fn rescan_quiet_and_busy() {
     let cards = library(&paths);
     let watch = Watch::default();
     watch.show_library(Ok(cards.clone()));
+    watch.show_discovery(load_read(&paths).unwrap().discovery);
     let now = jiff::Timestamp::now;
 
     header("rescan, quiet (nothing changed)", iterations);

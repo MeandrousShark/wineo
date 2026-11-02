@@ -974,7 +974,7 @@ fn a_refresh_reads_each_config_once() {
 }
 
 #[test]
-fn a_refresh_with_no_steam_game_reads_no_steam_files() {
+fn a_refresh_with_no_steam_game_still_scans_steam_but_reads_little_else() {
     let root = tempfile::tempdir().unwrap();
     let paths = played_steam_library(root.path());
     fs::write(paths.environment_config("game"), "kind = 'native'\n").unwrap();
@@ -984,11 +984,89 @@ fn a_refresh_with_no_steam_game_reads_no_steam_files() {
         "game.toml",
         "config.toml",
         "root",
+        "libraryfolders.vdf",
+        "appmanifest_123.acf",
         "loginusers.vdf",
+        "config.vdf",
         "appinfo.vdf",
     ];
-    let once = vec![1, 0, 0, 0, 0];
+    let once = vec![1, 1, 1, 1, 1, 0, 0, 0];
     assert_eq!(refresh_reads(&paths, &files), [once.clone(), once]);
+}
+
+#[test]
+fn a_refresh_with_no_steam_install_only_looks_for_one() {
+    let root = tempfile::tempdir().unwrap();
+    let paths = played_steam_library(root.path());
+    fs::write(paths.environment_config("game"), "kind = 'native'\n").unwrap();
+    fs::remove_dir_all(root.path().join(".local/share/Steam")).unwrap();
+
+    let files = ["root", "libraryfolders.vdf", "config.vdf", "appinfo.vdf"];
+    let once = vec![1, 0, 0, 0];
+    assert_eq!(refresh_reads(&paths, &files), [once.clone(), once]);
+    let saved = wineo_core::library::load(&paths);
+    let loaded = load_library_with(&paths, &saved, None, None).unwrap();
+    assert_eq!(loaded.discovery, steam::Discovery::default());
+}
+
+#[test]
+fn a_refresh_with_imported_games_reads_each_steam_file_once() {
+    let root = tempfile::tempdir().unwrap();
+    let paths = played_steam_library(root.path());
+    let steam = root.path().join(".local/share/Steam");
+    fs::write(
+        paths.environment_config("second"),
+        "kind = 'proxied'\nlauncher = 'steam'\napp_id = '456'\n",
+    )
+    .unwrap();
+    fs::write(
+        steam.join("steamapps/appmanifest_456.acf"),
+        r#""AppState" { "appid" "456" "name" "g" "StateFlags" "4" }"#,
+    )
+    .unwrap();
+    fs::create_dir_all(steam.join("config")).unwrap();
+    fs::write(
+        steam.join("config/config.vdf"),
+        r#""InstallConfigStore" { "Software" { "Valve" { "Steam" { "CompatToolMapping" {
+            "123" { "name" "GE-Proton9-20" }
+        } } } } }"#,
+    )
+    .unwrap();
+
+    let files = [
+        "libraryfolders.vdf",
+        "appmanifest_123.acf",
+        "appmanifest_456.acf",
+        "config.vdf",
+    ];
+    let once = vec![1; files.len()];
+    assert_eq!(refresh_reads(&paths, &files), [once.clone(), once]);
+}
+
+#[test]
+fn a_new_game_reads_appinfo_once_through_the_cache() {
+    let root = tempfile::tempdir().unwrap();
+    let paths = played_steam_library(root.path());
+    fs::write(paths.environment_config("game"), "kind = 'native'\n").unwrap();
+    write_appinfo(root.path(), &[game(123, Some("linux"))]);
+    let saved = wineo_core::library::load(&paths);
+    let loaded = load_library_with(&paths, &saved, None, None).unwrap();
+    wineo_core::library::apply_changes(&paths, &loaded.discovery.proposed).unwrap();
+    fs::write(
+        root.path()
+            .join(".local/share/Steam/steamapps/appmanifest_124.acf"),
+        r#""AppState" { "appid" "124" "name" "new" "StateFlags" "4" }"#,
+    )
+    .unwrap();
+    let mut stats = stats::Cache::new();
+    let appinfo = steam::AppInfoCache::new();
+
+    let reads = |stats: &mut stats::Cache| appinfo_reads(&paths, stats, &appinfo);
+    assert_eq!(reads(&mut stats), 1);
+    assert_eq!(reads(&mut stats), 0);
+    write_appinfo(root.path(), &[game(124, Some("linux"))]);
+    assert_eq!(reads(&mut stats), 1);
+    assert_eq!(reads(&mut stats), 0);
 }
 
 use wineo_core::steam::appinfo_fixture::{self, App, game};

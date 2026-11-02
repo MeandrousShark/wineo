@@ -543,3 +543,94 @@ fn steam_import_is_refused_for_a_portable_folder() {
     );
     assert!(!portable.exists());
 }
+
+fn library_toml(f: &Fixture) -> PathBuf {
+    f.config_dir().join("library.toml")
+}
+
+#[test]
+fn a_single_game_import_stays_in_the_record_after_removal() {
+    let f = Fixture::new();
+    add_game(&steam_root(&f, NATIVE_STEAM), "10", "Game");
+
+    assert_success(&run_at_home(
+        &f,
+        &["import", "steam", "--game", "10", "-n", "game"],
+    ));
+    let recorded = fs::read_to_string(library_toml(&f)).unwrap();
+    assert!(
+        recorded.contains("[steam.games]\n10 = \"imported\""),
+        "{recorded}"
+    );
+
+    assert_success(&run_at_home(&f, &["rm", "game"]));
+    let kept = fs::read_to_string(library_toml(&f)).unwrap();
+    assert!(kept.contains("[steam.games]\n10 = \"imported\""), "{kept}");
+
+    let validate = run_at_home(&f, &["validate"]);
+    assert_success(&validate);
+    assert!(
+        !stdout(&validate).contains("steam"),
+        "{}",
+        stdout(&validate)
+    );
+}
+
+#[test]
+fn an_all_import_records_each_game_and_a_rerun_writes_nothing() {
+    let f = Fixture::new();
+    add_game(&steam_root(&f, NATIVE_STEAM), "10", "Game");
+    add_game(&steam_root(&f, NATIVE_STEAM), "20", "Other");
+
+    assert_success(&run_at_home(&f, &["import", "steam", "--all", "--yes"]));
+    let once = fs::read(library_toml(&f)).unwrap();
+    assert_success(&run_at_home(&f, &["import", "steam", "--all", "--yes"]));
+
+    assert_eq!(fs::read(library_toml(&f)).unwrap(), once);
+    let text = String::from_utf8(once).unwrap();
+    assert!(text.contains("10 = \"imported\"") && text.contains("20 = \"imported\""));
+}
+
+#[test]
+fn an_import_that_cant_record_succeeds_and_warns_on_stderr() {
+    let f = Fixture::new();
+    add_game(&steam_root(&f, NATIVE_STEAM), "10", "Game");
+    fs::create_dir_all(f.config_dir()).unwrap();
+    fs::write(library_toml(&f), "schema_version = 99\n").unwrap();
+
+    let output = run_at_home(&f, &["import", "steam", "--game", "10", "-n", "game"]);
+
+    assert_success(&output);
+    assert!(f.config_dir().join("environments/game.toml").exists());
+    assert!(
+        stderr(&output).contains("may be offered as a new game"),
+        "{}",
+        stderr(&output)
+    );
+    assert_eq!(
+        fs::read_to_string(library_toml(&f)).unwrap(),
+        "schema_version = 99\n"
+    );
+}
+
+#[test]
+fn imports_racing_from_two_processes_both_land_in_the_record() {
+    let f = Fixture::new();
+    for id in ["10", "20", "30", "40"] {
+        add_game(&steam_root(&f, NATIVE_STEAM), id, &format!("Game {id}"));
+    }
+
+    std::thread::scope(|scope| {
+        for id in ["10", "20", "30", "40"] {
+            let f = &f;
+            scope.spawn(move || {
+                assert_success(&run_at_home(f, &["import", "steam", "--game", id]));
+            });
+        }
+    });
+
+    let text = fs::read_to_string(library_toml(&f)).unwrap();
+    for id in ["10", "20", "30", "40"] {
+        assert!(text.contains(&format!("{id} = \"imported\"")), "{text}");
+    }
+}

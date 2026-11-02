@@ -343,18 +343,28 @@ fn load_error(paths: &Paths, pending: &PendingScan, name: &str, error: String) -
     }
 }
 
+/// What one library read found: the cards, and what's new in Steam, which
+/// shows on no card.
+#[derive(Debug, Clone)]
+pub(super) struct Loaded {
+    pub(super) cards: Vec<Card>,
+    pub(super) discovery: steam::Discovery,
+}
+
 pub(super) fn load_library(paths: &Paths) -> anyhow::Result<Vec<Card>> {
+    load_read(paths).map(|loaded| loaded.cards)
+}
+
+/// `load_library` with what's new in Steam.
+pub(super) fn load_read(paths: &Paths) -> anyhow::Result<Loaded> {
     load_library_and_problem(paths).0
 }
 
-/// `load_library` with `library.toml`'s problem from the same read, so an
+/// `load_read` with `library.toml`'s problem from the same read, so an
 /// explicit reload shows or clears the banner itself.
 pub(super) fn load_library_and_problem(
     paths: &Paths,
-) -> (
-    anyhow::Result<Vec<Card>>,
-    Option<wineo_core::library::Problem>,
-) {
+) -> (anyhow::Result<Loaded>, Option<wineo_core::library::Problem>) {
     let saved = wineo_core::library::load(paths);
     (load_library_with(paths, &saved, None, None), saved.problem)
 }
@@ -367,7 +377,7 @@ pub(super) fn load_library_with(
     saved: &wineo_core::library::Library,
     stats: Option<&mut stats::Cache>,
     appinfo: Option<&steam::AppInfoCache>,
-) -> anyhow::Result<Vec<Card>> {
+) -> anyhow::Result<Loaded> {
     // The overviews and every card share one read of the trash, the configs,
     // and Steam's files. The report comes first: its lost-run cleanup rewrites
     // the run state that everything after it goes by.
@@ -581,7 +591,10 @@ pub(super) fn load_library_with(
         });
     }
     cards.sort_by(|a, b| a.name.cmp(&b.name));
-    Ok(cards)
+    Ok(Loaded {
+        cards,
+        discovery: snapshot.discovery(saved),
+    })
 }
 
 #[cfg(test)]

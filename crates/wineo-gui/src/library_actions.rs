@@ -371,7 +371,7 @@ impl App {
     /// read the file before a write that just finished. The card already
     /// shows that write's result, so an older read must not replace it: the
     /// rescan's comes back stale, and an explicit reload starts over.
-    fn outdate_reads(&mut self) -> Task<Message> {
+    pub(crate) fn outdate_reads(&mut self) -> Task<Message> {
         self.shown.reloading_library();
         if self.refreshing {
             self.reload_library()
@@ -380,7 +380,7 @@ impl App {
         }
     }
 
-    fn flag_notice(&mut self, notice: String) {
+    pub(crate) fn flag_notice(&mut self, notice: String) {
         self.feature_notice = Some((notice, Instant::now() + NOTICE_TIME));
     }
 

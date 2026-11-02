@@ -200,6 +200,8 @@ pub(crate) struct App {
     error: Option<String>,
     /// Why `library.toml` couldn't be used, as of the last read.
     library_problem: Option<wineo_core::library::Problem>,
+    /// Writes of the Steam game record, which run after a scan.
+    steam_record: app_library::SteamRecordWrites,
     refreshing: bool,
     /// The first library load has answered, so an empty library is real.
     loaded: bool,
@@ -365,6 +367,15 @@ pub(crate) enum Message {
         Result<Vec<Card>, String>,
         Option<wineo_core::library::Problem>,
     ),
+    /// `LibraryRead` with what's new in Steam from the same read.
+    LibraryScanned(
+        u64,
+        Box<wineo_core::steam::Discovery>,
+        Result<Vec<Card>, String>,
+        Option<wineo_core::library::Problem>,
+    ),
+    /// A write of what a scan proposed for the Steam game record finished.
+    SteamRecorded(Result<(), String>),
     TrashReloaded(u64, sidebar::TrashBadge),
     Section(sidebar::Section),
     /// A sidebar row was clicked, as opposed to a keyboard shortcut.
@@ -432,6 +443,13 @@ pub(crate) enum Message {
     CloseMenu,
     Flow(u64, flow::Event),
     FlowReturned(u64, flow::Action, Result<Vec<Card>, String>),
+    /// `FlowReturned` with what's new in Steam from the same read.
+    FlowRead(
+        u64,
+        flow::Action,
+        Box<wineo_core::steam::Discovery>,
+        Result<Vec<Card>, String>,
+    ),
     KeepWorking,
     CancelAndClose,
     ForceCloseWork,
@@ -523,6 +541,7 @@ impl App {
             current_art: HashMap::new(),
             error: None,
             library_problem: None,
+            steam_record: app_library::SteamRecordWrites::default(),
             refreshing: true,
             loaded: false,
             viewport_width: 1200.0 - sidebar::WIDTH,
@@ -1092,6 +1111,16 @@ impl App {
                 self.reduced_motion = reduced;
                 Task::none()
             }
+            Message::LibraryScanned(generation, discovery, result, problem) => {
+                let recording = if generation == self.library_generation {
+                    self.discovery_read(*discovery)
+                } else {
+                    Task::none()
+                };
+                let read = self.update(Message::LibraryRead(generation, result, problem));
+                Task::batch([recording, read])
+            }
+            Message::SteamRecorded(result) => self.steam_recorded(result),
             Message::LibraryRead(generation, result, problem) => {
                 if generation == self.library_generation {
                     self.problem_read(problem);
@@ -1300,6 +1329,14 @@ impl App {
                 self.flow_returned(action, result)
             }
             Message::FlowReturned(..) => Task::none(),
+            Message::FlowRead(generation, action, discovery, result)
+                if generation == self.flow_generation =>
+            {
+                let recording = self.discovery_read(*discovery);
+                let returned = self.flow_returned(action, result);
+                Task::batch([recording, returned])
+            }
+            Message::FlowRead(..) => Task::none(),
             Message::KeepWorking => {
                 self.close_prompt = false;
                 Task::none()

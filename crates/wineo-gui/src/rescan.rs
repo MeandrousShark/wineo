@@ -10,10 +10,11 @@ use std::time::Duration;
 use iced::futures::Stream;
 use wineo_core::library::{self as saved, Problem};
 use wineo_core::paths::Paths;
+use wineo_core::steam::Discovery;
 
 use crate::Message;
 use crate::art_page::{self, EnvironmentIdentity};
-use crate::library::{Card, load_library_with};
+use crate::library::{Card, Loaded, load_library_with};
 use crate::sidebar::TrashBadge;
 use crate::trash_page::{Snapshot, entry_label};
 
@@ -27,6 +28,11 @@ struct Shown {
     library: Option<Result<Vec<Card>, String>>,
     /// `library.toml`'s problem, as last shown.
     problem: Option<Problem>,
+    /// What's new in Steam, as last applied, for the library nudge to read.
+    discovery: Discovery,
+    /// The next scan's discovery goes to the app even if it's the same, since
+    /// what it proposed hasn't been written.
+    discovery_due: bool,
     badge: Option<TrashBadge>,
     /// The trash page's snapshot, with its "removed N ago" labels as of
     /// when it was applied.
@@ -157,6 +163,17 @@ impl Watch {
         self.shown().problem = problem;
     }
 
+    pub(crate) fn show_discovery(&self, discovery: Discovery) {
+        let mut shown = self.shown();
+        shown.discovery = discovery;
+        shown.discovery_due = false;
+    }
+
+    /// Has the next scan bring discovery back, so its writes are tried again.
+    pub(crate) fn discovery_due(&self) {
+        self.shown().discovery_due = true;
+    }
+
     pub(crate) fn show_badge(&self, badge: TrashBadge) {
         let mut shown = self.shown();
         shown.badge = Some(badge);
@@ -189,6 +206,7 @@ impl Watch {
         if scan.revisions.library != now.library {
             scan.library = None;
             scan.problem = None;
+            scan.discovery = None;
         }
         if scan.revisions.trash != now.trash {
             scan.trash = None;
@@ -210,6 +228,9 @@ impl Watch {
         let problem = scan
             .problem
             .filter(|problem| shown.library.is_some() && shown.problem != *problem);
+        let discovery = scan.discovery.filter(|discovery| {
+            shown.library.is_some() && (shown.discovery_due || shown.discovery != *discovery)
+        });
         let trash = scan.trash.filter(|trash| match trash {
             Trash::Badge(badge) => shown.badge.as_ref().is_some_and(|shown| shown != badge),
             Trash::Page(snapshot) => shown.trash.as_ref().is_some_and(|(shown, labels)| {
@@ -225,15 +246,19 @@ impl Watch {
                         && (art.identity != Some(*identity) || *snapshot != art.snapshot)
                 })
         });
-        (library.is_some() || problem.is_some() || trash.is_some() || art.is_some()).then_some(
-            Scan {
-                revisions: scan.revisions,
-                library,
-                problem,
-                trash,
-                art,
-            },
-        )
+        let changed = library.is_some()
+            || problem.is_some()
+            || discovery.is_some()
+            || trash.is_some()
+            || art.is_some();
+        changed.then_some(Scan {
+            revisions: scan.revisions,
+            library,
+            problem,
+            discovery,
+            trash,
+            art,
+        })
     }
 }
 
@@ -244,6 +269,9 @@ pub(crate) struct Scan {
     pub(crate) library: Option<Result<Vec<Card>, String>>,
     /// `library.toml`'s problem, read with `library`.
     pub(crate) problem: Option<Option<Problem>>,
+    /// What's new in Steam, read with `library`. A new install changes no
+    /// card, so it's compared on its own.
+    pub(crate) discovery: Option<Discovery>,
     pub(crate) trash: Option<Trash>,
     pub(crate) art: Option<Art>,
 }
@@ -303,13 +331,16 @@ pub(crate) fn read_with(
         caches.scans += 1;
     }
     let saved = caches.library.read(paths);
+    let (library, discovery) =
+        match load_library_with(paths, saved, Some(&mut caches.stats), Some(&caches.appinfo)) {
+            Ok(Loaded { cards, discovery }) => (Ok(cards), Some(discovery)),
+            Err(error) => (Err(error.to_string()), None),
+        };
     Scan {
         revisions,
-        library: Some(
-            load_library_with(paths, saved, Some(&mut caches.stats), Some(&caches.appinfo))
-                .map_err(|error| error.to_string()),
-        ),
+        library: Some(library),
         problem: Some(saved.problem.clone()),
+        discovery,
         trash: Some(if trash_page {
             Trash::Page(crate::trash_work::read(paths))
         } else {

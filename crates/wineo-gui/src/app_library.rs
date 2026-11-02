@@ -1,8 +1,11 @@
 //! Reloading the library and merging what a reload or rescan found.
 
 use iced::Task;
+use wineo_core::library::{self as saved, RecordChanges};
+use wineo_core::paths::Paths;
+use wineo_core::steam::Discovery;
 
-use crate::library::{Card, load_library_and_problem};
+use crate::library::{Card, Loaded, load_library_and_problem};
 use crate::{App, Message, order, rescan, sidebar, task, trash_page};
 
 impl App {
@@ -13,11 +16,14 @@ impl App {
         let paths = self.paths.clone();
         task::blocking_value(
             move || {
-                let (cards, problem) = load_library_and_problem(&paths);
-                (cards.map_err(|e| e.to_string()), problem)
+                let (loaded, problem) = load_library_and_problem(&paths);
+                (loaded.map_err(|e| e.to_string()), problem)
             },
             move |result| match result {
-                Ok((cards, problem)) => Message::LibraryRead(generation, cards, problem),
+                Ok((Ok(Loaded { cards, discovery }), problem)) => {
+                    Message::LibraryScanned(generation, Box::new(discovery), Ok(cards), problem)
+                }
+                Ok((Err(error), problem)) => Message::LibraryRead(generation, Err(error), problem),
                 Err(error) => Message::LibraryReloaded(generation, Err(error)),
             },
         )
@@ -74,7 +80,48 @@ impl App {
             }
             _ => Task::none(),
         };
-        Task::batch([library, trash, art])
+        let recording = scan
+            .discovery
+            .map_or_else(Task::none, |discovery| self.discovery_read(discovery));
+        Task::batch([library, trash, art, recording])
+    }
+
+    /// Has the rescan compare against `discovery`, and records what it
+    /// proposes: reads never write, so this is where the record catches up.
+    /// A write already running leaves this one to the scan after it.
+    pub(crate) fn discovery_read(&mut self, discovery: Discovery) -> Task<Message> {
+        let proposed = discovery.proposed.clone();
+        self.shown.show_discovery(discovery);
+        if proposed.is_empty() || self.steam_record.writing {
+            return Task::none();
+        }
+        self.steam_record.writing = true;
+        let (paths, watch) = (self.paths.clone(), self.shown.clone());
+        task::blocking(
+            move || write_steam_record(&paths, &watch, &proposed),
+            Message::SteamRecorded,
+        )
+    }
+
+    /// What's written can't be mistaken for an outside change, since reads
+    /// from before it are dropped. A failure leaves everything as it was, and
+    /// says so once however many scans it lasts.
+    pub(crate) fn steam_recorded(&mut self, result: Result<(), String>) -> Task<Message> {
+        self.steam_record.writing = false;
+        self.shown.discovery_due();
+        match result {
+            Ok(()) => {
+                self.steam_record.warned = false;
+                self.outdate_reads()
+            }
+            Err(error) => {
+                if !self.steam_record.warned {
+                    self.steam_record.warned = true;
+                    self.flag_notice(format!("Couldn't update the Steam game record: {error}"));
+                }
+                Task::none()
+            }
+        }
     }
 
     /// Shows or clears the banner for `library.toml`, and has the rescan
@@ -231,4 +278,23 @@ impl App {
         let checks = self.merge_checked(cards);
         Task::batch([art, checks, self.load_visible_art(), self.load_panel_art()])
     }
+}
+
+/// Where the record's writes stand.
+#[derive(Debug, Default)]
+pub(crate) struct SteamRecordWrites {
+    writing: bool,
+    /// The current run of failures has been shown.
+    warned: bool,
+}
+
+/// One write of what a scan proposed, then the rescan's cache rereads the file.
+pub(crate) fn write_steam_record(
+    paths: &Paths,
+    watch: &rescan::Watch,
+    proposed: &RecordChanges,
+) -> Result<(), String> {
+    let result = saved::apply_changes(paths, proposed);
+    watch.refresh_library(paths);
+    result.map(|_| ()).map_err(|error| error.to_string())
 }

@@ -5,7 +5,7 @@ use std::time::Instant;
 
 use iced::Task;
 
-use crate::library::{Card, load_library};
+use crate::library::{Card, Loaded, load_read};
 use crate::{App, Early, Message, flow, sidebar, task};
 
 impl App {
@@ -110,8 +110,16 @@ impl App {
             // An explicit library reload like `reload_library`.
             self.shown.reloading_library();
             return task::blocking(
-                move || load_library(&paths).map_err(|e| e.to_string()),
-                move |cards| Message::FlowReturned(generation, action.clone(), cards),
+                move || load_read(&paths).map_err(|e| e.to_string()),
+                move |read| match read {
+                    Ok(Loaded { cards, discovery }) => Message::FlowRead(
+                        generation,
+                        action.clone(),
+                        Box::new(discovery),
+                        Ok(cards),
+                    ),
+                    Err(error) => Message::FlowReturned(generation, action.clone(), Err(error)),
+                },
             );
         }
         task
