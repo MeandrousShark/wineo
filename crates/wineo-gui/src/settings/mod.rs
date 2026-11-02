@@ -75,6 +75,7 @@ pub(crate) enum Event {
     GlobalArt(ArtFetch),
     GlobalArtKind(wineo_core::art::Kind, bool),
     GlobalExternalRunners(bool),
+    GlobalAutoImport(bool),
     /// An edit on the Appearance tab, which the app previews at once.
     Appearance(appearance::Edit),
     /// Opens a folder picker for the Games folder.
@@ -326,7 +327,7 @@ impl ChangedFile {
     fn between(disk: &Texts, texts: &Texts) -> Self {
         if disk.environment != texts.environment || disk.global != texts.global {
             Self::Config
-        } else if disk.appearance != texts.appearance {
+        } else if disk.appearance != texts.appearance || disk.auto_import != texts.auto_import {
             Self::Library
         } else if disk.themes != texts.themes {
             Self::Theme
@@ -606,6 +607,9 @@ impl Page {
             View::Global(editor) => editor.form.is_dirty() || editor.appearance.is_dirty(),
             _ => false,
         }
+    }
+    fn steam_found(&self) -> bool {
+        matches!(&self.view, View::Global(editor) if editor.steam_found)
     }
     /// The Appearance tab's saved settings and draft, on a loaded global page.
     pub(crate) fn appearance(&self) -> Option<&appearance::Form> {

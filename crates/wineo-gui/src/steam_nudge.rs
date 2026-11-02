@@ -19,7 +19,14 @@ pub(crate) const DISMISS_ID: &str = "library-steam-nudge-dismiss";
 /// The games the banner offers, and whether a dismissal is being written.
 #[derive(Debug, Default)]
 pub(crate) struct Nudge {
+    /// The games offered: what the last scan found, less what's below.
     pending: Vec<PendingGame>,
+    scanned: Vec<PendingGame>,
+    /// Pending games belong to the auto-import pass, so only those it gave up
+    /// on are offered.
+    held: bool,
+    /// Games a pass couldn't import, left out of passes until the next launch.
+    gave_up: HashSet<String>,
     /// A dismissal is being written, so the banner's buttons wait for it.
     writing: bool,
     /// Games dismissed this session. A dismissal is permanent, but a result
@@ -29,16 +36,40 @@ pub(crate) struct Nudge {
 }
 
 impl Nudge {
-    pub(crate) fn show(&mut self, mut pending: Vec<PendingGame>) {
-        pending.retain(|game| !self.dismissed.contains(&game.app_id));
-        self.pending = pending;
+    pub(crate) fn show(&mut self, pending: Vec<PendingGame>) {
+        self.scanned = pending;
+        self.sift();
+    }
+
+    fn sift(&mut self) {
+        self.pending = self.scanned.clone();
+        self.pending.retain(|game| {
+            !self.dismissed.contains(&game.app_id)
+                && (!self.held || self.gave_up.contains(&game.app_id))
+        });
+    }
+
+    /// Whether the auto-import pass has the pending games.
+    pub(crate) fn hold(&mut self, held: bool) {
+        self.held = held;
+        self.sift();
+    }
+
+    /// Whether a pass may try this game.
+    pub(crate) fn takes(&self, app_id: &str) -> bool {
+        !self.gave_up.contains(app_id) && !self.dismissed.contains(app_id)
+    }
+
+    /// Remembers that a pass couldn't import `ids`, and offers them instead.
+    pub(crate) fn gave_up<'a>(&mut self, ids: impl IntoIterator<Item = &'a String>) {
+        self.gave_up.extend(ids.into_iter().cloned());
+        self.sift();
     }
 
     /// Remembers `ids` as dismissed and takes them off the banner.
     fn dismissed(&mut self, ids: &[String]) {
         self.dismissed.extend(ids.iter().cloned());
-        let left = std::mem::take(&mut self.pending);
-        self.show(left);
+        self.sift();
     }
 
     pub(crate) fn pending(&self) -> &[PendingGame] {

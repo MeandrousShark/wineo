@@ -24,12 +24,16 @@ impl Page {
         if !self.can_save() {
             return Step::none();
         }
-        let (edits, appearance) = match &self.view {
-            View::Form(editor) => (editor.form.edits(), None),
-            View::Global(editor) => (editor.form.edits(), editor.appearance.edits()),
+        let (edits, auto_import, appearance) = match &self.view {
+            View::Form(editor) => (editor.form.edits(), None, None),
+            View::Global(editor) => (
+                editor.form.edits(),
+                editor.form.auto_import_edit(),
+                editor.appearance.edits(),
+            ),
             _ => return Step::none(),
         };
-        if edits.is_empty() && appearance.is_none() {
+        if edits.is_empty() && auto_import.is_none() && appearance.is_none() {
             return Step::none();
         }
         self.saving = true;
@@ -41,6 +45,7 @@ impl Page {
             self.name.clone(),
             self.global,
             edits,
+            auto_import,
             appearance,
             self.generation,
         ))
@@ -148,7 +153,7 @@ impl Page {
             self.changed_on_disk = false;
             return Step::none();
         }
-        // Only `[appearance]` changed. Like the global file under an
+        // Only `[appearance]` or `auto_import` changed. Like the global file under an
         // environment page, it rebases, so General's edits stay; edits on
         // the Appearance tab ask for Reload instead.
         // Theme files count with it, since they're the same tab's.

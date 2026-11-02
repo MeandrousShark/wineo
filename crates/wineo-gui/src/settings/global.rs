@@ -92,6 +92,9 @@ pub(crate) struct Values {
     pub(crate) env: Vec<EnvRow>,
     /// Unset until the offer is answered, which reads as off.
     pub(crate) external_runners: Option<bool>,
+    /// `[steam] auto_import` in `library.toml`, which isn't this form's file,
+    /// so it's saved on its own rather than through `edits`.
+    pub(crate) auto_import: bool,
 }
 
 impl Values {
@@ -117,6 +120,7 @@ impl Values {
             gog_language: config.gog.language.clone().unwrap_or_default(),
             art_fetch: config.art.fetch,
             external_runners: config.external_runners,
+            auto_import: false,
             env: config
                 .env
                 .iter()
@@ -216,7 +220,12 @@ impl Form {
     pub(crate) fn revert(&mut self) {
         self.draft = self.loaded.clone();
     }
+    /// The new base can differ in `auto_import` alone, from another window,
+    /// and an untouched switch follows it.
     pub(crate) fn rebase(&mut self, values: Values) {
+        if self.draft.auto_import == self.loaded.auto_import {
+            self.draft.auto_import = values.auto_import;
+        }
         self.loaded = values;
     }
     pub(crate) fn set_switch(&mut self, key: Switch, on: bool) {
@@ -241,7 +250,11 @@ impl Form {
     }
     pub(crate) fn changes(&self) -> usize {
         let edits = self.edits();
-        edits.pairs.len() + edits.unset.len()
+        edits.pairs.len() + edits.unset.len() + usize::from(self.auto_import_edit().is_some())
+    }
+    /// What to save for `auto_import`, if it changed.
+    pub(crate) fn auto_import_edit(&self) -> Option<bool> {
+        (self.draft.auto_import != self.loaded.auto_import).then_some(self.draft.auto_import)
     }
     pub(crate) fn is_dirty(&self) -> bool {
         self.changes() != 0
@@ -359,6 +372,8 @@ pub(crate) struct Editor {
     pub(crate) appearance: appearance::Form,
     pub(crate) runners: Vec<RunnerChoice>,
     pub(crate) new_env: EnvRow,
+    /// A Steam install was there when the page loaded.
+    pub(crate) steam_found: bool,
 }
 
 impl Editor {
@@ -367,12 +382,14 @@ impl Editor {
         appearance: crate::theme::Appearance,
         themes: Vec<crate::theme::Custom>,
         runners: Vec<RunnerChoice>,
+        steam_found: bool,
     ) -> Self {
         Self {
             form: Form::new(values),
             appearance: appearance::Form::new(appearance, themes),
             runners,
             new_env: EnvRow::default(),
+            steam_found,
         }
     }
 }

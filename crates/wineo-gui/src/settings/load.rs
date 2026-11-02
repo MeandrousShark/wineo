@@ -17,6 +17,7 @@ use wineo_core::install::Change;
 use wineo_core::paths::Paths;
 use wineo_core::runners::Runners;
 use wineo_core::settings::{self, Applied, CheckError, ConfigFile};
+use wineo_core::steam;
 use wineo_core::themes::{self, ThemeKind, Themes};
 use wineo_core::{art, library, prefix, programs, target_path, winpath};
 
@@ -87,6 +88,7 @@ pub(crate) struct GlobalLoaded {
     pub(crate) appearance: Appearance,
     pub(crate) themes: Vec<Custom>,
     pub(crate) runners: Vec<RunnerChoice>,
+    pub(crate) steam_found: bool,
 }
 
 /// The environment and global config files as read, so a later read can tell
@@ -99,6 +101,9 @@ pub(crate) struct Texts {
     /// table counts, since favorites and the library's view write the file
     /// too.
     pub(crate) appearance: Option<Appearance>,
+    /// `[steam] auto_import` as read, on the global page, which is the only
+    /// other part of that file the page shows.
+    pub(crate) auto_import: Option<bool>,
     /// The custom theme files as read, on the global page.
     pub(crate) themes: Option<Themes>,
 }
@@ -109,14 +114,17 @@ impl Texts {
             environment: read_text(&paths.environment_config(name)),
             global: read_text(&paths.global_config()),
             appearance: None,
+            auto_import: None,
             themes: None,
         }
     }
     pub(crate) fn read_global(paths: &Paths) -> Self {
+        let library = library::load(paths);
         Self {
             environment: None,
             global: read_text(&paths.global_config()),
-            appearance: Some(library::load(paths).appearance),
+            appearance: Some(library.appearance),
+            auto_import: Some(library.steam.auto_import),
             themes: Some(themes::list(paths)),
         }
     }
@@ -151,7 +159,8 @@ pub(crate) fn snapshot_global(paths: &Paths) -> Snapshot {
     let texts = Texts::read_global(paths);
     let content = match GlobalConfig::load(paths) {
         Ok(config) => {
-            let values = global::Values::from_config(&config, texts.global.as_deref());
+            let mut values = global::Values::from_config(&config, texts.global.as_deref());
+            values.auto_import = texts.auto_import.unwrap_or_default();
             let (runners, _) = runner_choices(paths, &config, &config.defaults.runner);
             Content::Global(Box::new(GlobalLoaded {
                 values,
@@ -162,6 +171,7 @@ pub(crate) fn snapshot_global(paths: &Paths) -> Snapshot {
                     .map(theme::customs)
                     .unwrap_or_default(),
                 runners,
+                steam_found: steam::active_for(paths, &config).is_some(),
             }))
         }
         Err(error) => Content::Error(format!("{error:#}")),
@@ -564,11 +574,12 @@ pub(crate) fn save_global(paths: &Paths, edits: &Edits) -> Result<Report, String
 /// One Save on the global page: General's edits to `config.toml`, then the
 /// Appearance tab's theme files (new, edited, renamed), its `[appearance]` in
 /// `library.toml`, and last the theme deletes, so `library.toml` never names
-/// a file that's gone. Each part runs only when it has edits, and a failure
-/// stops the rest.
+/// a file that's gone. `auto_import` goes to `library.toml` after General's
+/// edits. Each part runs only when it has edits, and a failure stops the rest.
 pub(crate) fn save_global_page(
     paths: &Paths,
     edits: &Edits,
+    auto_import: Option<bool>,
     appearance: Option<&ToSave>,
 ) -> Result<Report, String> {
     let mut report = Report {
@@ -582,6 +593,12 @@ pub(crate) fn save_global_page(
         if report.failed.is_some() {
             return Ok(report);
         }
+    }
+    if let Some(on) = auto_import
+        && let Err(error) = library::set_auto_import(paths, on)
+    {
+        library_refused(paths, &error, &mut report);
+        return Ok(report);
     }
     let Some(save) = appearance else {
         return Ok(report);
@@ -611,16 +628,7 @@ pub(crate) fn save_global_page(
             return Ok(report);
         }
         if let Err(error) = library::set_appearance(paths, &appearance) {
-            report.failed = Some(crate::sort_control::error_text(paths, &error));
-            // Like the library's banner: a newer wineo's file has nothing for
-            // Checkup to repair, and the error already says to update.
-            report.checkup = matches!(
-                error,
-                Error::LibraryUnreadable {
-                    newer_version: false,
-                    ..
-                }
-            );
+            library_refused(paths, &error, &mut report);
             return Ok(report);
         }
     }
@@ -631,6 +639,19 @@ pub(crate) fn save_global_page(
         }
     }
     Ok(report)
+}
+
+fn library_refused(paths: &Paths, error: &Error, report: &mut Report) {
+    report.failed = Some(crate::sort_control::error_text(paths, error));
+    // Like the library's banner: a newer wineo's file has nothing for
+    // Checkup to repair, and the error already says to update.
+    report.checkup = matches!(
+        error,
+        Error::LibraryUnreadable {
+            newer_version: false,
+            ..
+        }
+    );
 }
 
 fn kind_of(kind: PresetKind) -> ThemeKind {
@@ -749,13 +770,14 @@ pub(crate) fn save_task(
     name: String,
     global: bool,
     edits: Edits,
+    auto_import: Option<bool>,
     appearance: Option<ToSave>,
     generation: u64,
 ) -> Task<Message> {
     task::blocking_value(
         move || {
             if global {
-                save_global_page(&paths, &edits, appearance.as_ref())
+                save_global_page(&paths, &edits, auto_import, appearance.as_ref())
             } else {
                 save(&paths, &name, &edits)
             }

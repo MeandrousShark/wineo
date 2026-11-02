@@ -434,6 +434,10 @@ fn proxied_editor_view<'a>(
     .into()
 }
 
+pub(super) const AUTO_IMPORT_NOTE: &str = "New installs, and any games the library is offering now, \
+     are imported with the same defaults as importing them all. Games you already have aren't \
+     touched, and nothing is launched or downloaded.";
+
 fn global_view<'a>(
     editor: &'a global::Editor,
     page: &'a Page,
@@ -561,6 +565,13 @@ fn global_view<'a>(
             palette,
         ));
     }
+    let steam = auto_import_rows(
+        draft.auto_import,
+        editor.steam_found,
+        portable,
+        locked,
+        palette,
+    );
     column![
         section("Launch defaults", launch.into(), palette),
         section("New environments", new_env.into(), palette),
@@ -571,6 +582,7 @@ fn global_view<'a>(
             key_row(steamgriddb_row(steamgriddb, paths), palette),
             palette,
         ),
+        section("Steam", steam, palette),
         container(section(
             "Steam Web API",
             key_row(steam_key_row(steam_key, paths), palette),
@@ -602,6 +614,38 @@ fn global_view<'a>(
     ]
     .spacing(24)
     .width(Fill)
+    .into()
+}
+
+/// The auto-import switch. It stays in place with a reason when it can't do
+/// anything, like the other builds switch in a portable folder.
+fn auto_import_rows<'a>(
+    on: bool,
+    steam_found: bool,
+    portable: bool,
+    locked: bool,
+    palette: Palette,
+) -> Element<'a, Message> {
+    let note = if portable {
+        "Not used in a portable folder."
+    } else if !steam_found {
+        "Steam wasn't found."
+    } else {
+        AUTO_IMPORT_NOTE
+    };
+    column![
+        switch_row(
+            "Import new Steam games automatically",
+            on,
+            None,
+            |on| send(Event::GlobalAutoImport(on)),
+            None,
+            locked || portable || !steam_found,
+            palette,
+        ),
+        text(note).size(13).color(palette.muted),
+    ]
+    .spacing(12)
     .into()
 }
 

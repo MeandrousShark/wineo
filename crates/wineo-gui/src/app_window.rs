@@ -30,6 +30,7 @@ impl App {
             // the wait runs out. Like any accepted close it takes the input,
             // but it shows nothing.
             self.closing = true;
+            self.steam_auto.cancel();
             self.close_prompt = true;
             self.close_quietly = true;
             Task::none()
@@ -52,6 +53,7 @@ impl App {
     /// here, so work still holding the runtime open can't keep the process.
     /// Starting it again is harmless.
     pub(crate) fn close_window(&mut self) -> Task<Message> {
+        self.steam_auto.cancel();
         let work = self.abandoned_work();
         self.watchdog.start(&work);
         iced::exit()
@@ -61,8 +63,11 @@ impl App {
     /// prints. Read here because the watchdog thread can't see the app.
     pub(crate) fn abandoned_work(&self) -> Vec<String> {
         let mut work = Vec::new();
-        if self.library_writes_pending() {
+        if self.view_writes.pending() || self.flag_writes.pending() {
             work.push("a library write".to_owned());
+        }
+        if self.steam_auto.running() {
+            work.push("a Steam import".to_owned());
         }
         if let Some(operation) = &self.operation {
             let name = &operation.name;
@@ -106,6 +111,7 @@ impl App {
     pub(crate) fn cancel_and_close(&mut self, event: Message) -> Task<Message> {
         let force = matches!(event, Message::ForceCloseWork);
         self.closing = true;
+        self.steam_auto.cancel();
         self.cancel_management();
         self.cancel_features(force);
         for page in self.art_pages.values() {

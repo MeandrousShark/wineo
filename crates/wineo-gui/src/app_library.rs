@@ -91,17 +91,19 @@ impl App {
     /// A write already running leaves this one to the scan after it.
     pub(crate) fn discovery_read(&mut self, discovery: Discovery) -> Task<Message> {
         let proposed = discovery.proposed.clone();
+        let auto_import = self.auto_import_read(&discovery);
         self.steam_nudge.show(discovery.pending.clone());
         self.shown.show_discovery(discovery);
         if proposed.is_empty() || self.steam_record.writing {
-            return Task::none();
+            return auto_import;
         }
         self.steam_record.writing = true;
         let (paths, watch) = (self.paths.clone(), self.shown.clone());
-        task::blocking(
+        let recording = task::blocking(
             move || write_steam_record(&paths, &watch, &proposed),
             Message::SteamRecorded,
-        )
+        );
+        Task::batch([recording, auto_import])
     }
 
     /// What's written can't be mistaken for an outside change, since reads

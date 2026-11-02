@@ -64,6 +64,7 @@ mod snapshots_page;
 mod sort_control;
 mod spinner;
 mod star_pop;
+mod steam_auto;
 mod steam_nudge;
 mod task;
 #[cfg(test)]
@@ -205,6 +206,8 @@ pub(crate) struct App {
     steam_record: app_library::SteamRecordWrites,
     /// The new Steam installs the banner offers.
     steam_nudge: steam_nudge::Nudge,
+    /// The opt-in import of what the banner would otherwise offer.
+    steam_auto: steam_auto::AutoImport,
     refreshing: bool,
     /// The first library load has answered, so an empty library is real.
     loaded: bool,
@@ -384,6 +387,8 @@ pub(crate) enum Message {
     /// The banner's Dismiss, with the app ids it showed.
     NudgeDismiss(Vec<String>),
     NudgeDismissed(Vec<String>, Result<(), String>),
+    /// An auto-import pass finished.
+    AutoImported(Result<wineo_core::steam_import::auto::Report, String>),
     TrashReloaded(u64, sidebar::TrashBadge),
     Section(sidebar::Section),
     /// A sidebar row was clicked, as opposed to a keyboard shortcut.
@@ -551,6 +556,7 @@ impl App {
             library_problem: None,
             steam_record: app_library::SteamRecordWrites::default(),
             steam_nudge: steam_nudge::Nudge::default(),
+            steam_auto: steam_auto::AutoImport::default(),
             refreshing: true,
             loaded: false,
             viewport_width: 1200.0 - sidebar::WIDTH,
@@ -1135,6 +1141,7 @@ impl App {
             Message::NudgeImport(ids) => self.nudge_import(ids)?,
             Message::NudgeDismiss(ids) => self.nudge_dismiss(ids)?,
             Message::NudgeDismissed(ids, result) => self.nudge_dismissed(&ids, result),
+            Message::AutoImported(result) => self.auto_imported(result),
             Message::LibraryRead(generation, result, problem) => {
                 if generation == self.library_generation {
                     self.problem_read(problem);
@@ -1431,9 +1438,11 @@ impl App {
         self.foreground_busy() || self.library_writes_pending()
     }
 
-    /// A sort, favorite, or hidden write is in flight.
+    /// A sort, favorite, or hidden write is in flight, or an auto-import
+    /// pass, whose claims are writes too: one left behind keeps its game from
+    /// being offered again.
     fn library_writes_pending(&self) -> bool {
-        self.view_writes.pending() || self.flag_writes.pending()
+        self.view_writes.pending() || self.flag_writes.pending() || self.steam_auto.running()
     }
 
     fn foreground_busy(&self) -> bool {

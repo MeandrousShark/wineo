@@ -111,6 +111,7 @@ fn save(app: &mut App, paths: &Paths) -> Report {
     let report = load::save_global_page(
         paths,
         &editor.form.edits(),
+        None,
         editor.appearance.edits().as_ref(),
     )
     .unwrap();
@@ -586,6 +587,7 @@ fn a_refused_library_toml_keeps_the_created_theme_and_maps_its_id() {
     let report = load::save_global_page(
         &paths,
         &editor.form.edits(),
+        None,
         editor.appearance.edits().as_ref(),
     )
     .unwrap();
@@ -942,7 +944,8 @@ fn a_field_edited_in_both_keeps_the_drafts_value_and_save_writes_it() {
     assert_eq!(theme.colors.primary.as_deref(), Some("#222222"));
     assert_eq!(theme.colors.muted.as_deref(), Some("#444444"));
     let report =
-        load::save_global_page(&paths, &form::Edits::default(), form.edits().as_ref()).unwrap();
+        load::save_global_page(&paths, &form::Edits::default(), None, form.edits().as_ref())
+            .unwrap();
     assert_eq!(report.failed, None);
     let text = theme_text(&paths, "night");
     assert!(text.contains("primary = \"#222222\""), "{text}");

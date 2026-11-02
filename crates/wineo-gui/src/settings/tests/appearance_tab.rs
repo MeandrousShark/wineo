@@ -83,6 +83,7 @@ fn save(app: &mut App, paths: &Paths) -> Report {
     let report = load::save_global_page(
         paths,
         &editor.form.edits(),
+        None,
         editor.appearance.edits().as_ref(),
     )
     .unwrap();
@@ -421,6 +422,7 @@ fn a_general_failure_stops_before_library_toml() {
     let result = load::save_global_page(
         &paths,
         &editor.form.edits(),
+        None,
         editor.appearance.edits().as_ref(),
     );
     assert!(

@@ -654,6 +654,146 @@ fn external_runners_switch_reads_and_writes_the_global_key() {
     );
 }
 
+/// A Steam install under the fixture's home, for the auto-import switch.
+fn steam_install(root: &tempfile::TempDir) {
+    fs::create_dir_all(root.path().join(".local/share/Steam/steamapps")).unwrap();
+}
+
+fn save_auto_import(paths: &Paths, page: &Page) -> load::Report {
+    let form = &global_editor(page).form;
+    load::save_global_page(paths, &form.edits(), form.auto_import_edit(), None).unwrap()
+}
+
+#[test]
+fn auto_import_switch_saves_to_the_library_and_not_the_config() {
+    let (root, paths) = setup();
+    steam_install(&root);
+    let mut page = global_page(&paths);
+    assert!(!global_editor(&page).form.draft.auto_import);
+    let _ = page.update(&paths, Event::GlobalAutoImport(true));
+    assert_eq!(page.changes(), 1);
+    assert!(page.is_dirty());
+    assert!(global_editor(&page).form.edits().is_empty());
+    assert!(save_auto_import(&paths, &page).failed.is_none());
+    assert!(wineo_core::library::load(&paths).steam.auto_import);
+    assert!(!paths.global_config().exists());
+
+    let mut page = global_page(&paths);
+    assert!(global_editor(&page).form.draft.auto_import);
+    assert!(!page.is_dirty());
+    let _ = page.update(&paths, Event::GlobalAutoImport(false));
+    assert!(save_auto_import(&paths, &page).failed.is_none());
+    assert!(!wineo_core::library::load(&paths).steam.auto_import);
+}
+
+#[test]
+fn saving_with_the_switch_untouched_leaves_the_library_alone() {
+    let (root, paths) = setup();
+    steam_install(&root);
+    let page = global_page(&paths);
+    assert!(save_auto_import(&paths, &page).failed.is_none());
+    assert!(!paths.library_file().exists());
+}
+
+#[test]
+fn reverting_puts_the_auto_import_switch_back() {
+    let (root, paths) = setup();
+    steam_install(&root);
+    let mut page = global_page(&paths);
+    let _ = page.update(&paths, Event::GlobalAutoImport(true));
+    let _ = page.update(&paths, Event::Revert);
+    assert!(!page.is_dirty());
+    assert!(!global_editor(&page).form.draft.auto_import);
+}
+
+#[test]
+fn a_library_that_refuses_the_switch_says_so_and_offers_checkup() {
+    let (root, paths) = setup();
+    steam_install(&root);
+    let mut page = global_page(&paths);
+    let _ = page.update(&paths, Event::GlobalAutoImport(true));
+    fs::create_dir_all(paths.library_file().parent().unwrap()).unwrap();
+    fs::write(paths.library_file(), "[steam\nbroken").unwrap();
+    let report = save_auto_import(&paths, &page);
+    assert!(report.failed.is_some());
+    assert!(report.checkup);
+}
+
+#[test]
+fn the_auto_import_switch_does_nothing_without_steam_or_in_a_portable_folder() {
+    let (_root, paths) = setup();
+    let mut page = global_page(&paths);
+    assert!(!global_editor(&page).steam_found);
+    let _ = page.update(&paths, Event::GlobalAutoImport(true));
+    assert!(!page.is_dirty());
+
+    let root = tempfile::tempdir().unwrap();
+    let home = root.path().to_owned();
+    let portable = root.path().join("portable");
+    let paths = Paths::select(
+        move |key| (key == "HOME").then(|| OsString::from(home.as_os_str())),
+        Some(&portable),
+    )
+    .unwrap();
+    steam_install(&root);
+    let mut page = global_page(&paths);
+    let _ = page.update(&paths, Event::GlobalAutoImport(true));
+    assert!(!page.is_dirty());
+}
+
+#[test]
+fn another_windows_auto_import_change_rebases_and_keeps_general_edits() {
+    let (root, paths) = setup();
+    steam_install(&root);
+    let mut page = global_page(&paths);
+    let _ = page.update(&paths, Event::GlobalArch(wineo_core::config::Arch::Win32));
+    wineo_core::library::set_auto_import(&paths, true).unwrap();
+
+    let texts = load::Texts::read_global(&paths);
+    let generation = page.generation;
+    page.drop_checks();
+    let _ = page.update(
+        &paths,
+        Event::Checked(generation, page.check_sequence, texts),
+    );
+    let _ = page.update(
+        &paths,
+        Event::Loaded(generation, load::snapshot_global(&paths)),
+    );
+    let form = &global_editor(&page).form;
+    assert!(form.draft.auto_import, "the untouched switch follows");
+    assert_eq!(form.auto_import_edit(), None);
+    assert_eq!(form.draft.arch, wineo_core::config::Arch::Win32);
+    assert_eq!(page.changes(), 1);
+    assert!(!page.changed_on_disk);
+}
+
+#[test]
+fn the_auto_import_edit_survives_another_windows_identical_change_as_no_edit() {
+    let (root, paths) = setup();
+    steam_install(&root);
+    let mut form = global_page(&paths);
+    let _ = form.update(&paths, Event::GlobalAutoImport(true));
+    let mut values = global_editor(&form).form.loaded.clone();
+    values.auto_import = true;
+    let View::Global(editor) = &mut form.view else {
+        panic!("global form expected");
+    };
+    editor.form.rebase(values);
+    assert_eq!(editor.form.auto_import_edit(), None);
+    assert!(editor.form.draft.auto_import);
+}
+
+#[test]
+fn the_auto_import_row_explains_itself_and_fits_a_small_window() {
+    let (root, paths) = setup();
+    steam_install(&root);
+    let app = open_global_app(&paths);
+    let _ = crate::layout_probe::layout(&mut app.view(), iced::Size::new(760.0, 520.0));
+    assert!(view::AUTO_IMPORT_NOTE.contains("offering now"));
+    assert!(view::AUTO_IMPORT_NOTE.contains("aren't touched"));
+}
+
 #[test]
 fn an_alias_resolving_into_steams_folder_is_labeled_steam() {
     let (root, paths) = setup();

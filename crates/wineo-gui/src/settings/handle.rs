@@ -182,6 +182,20 @@ impl Page {
                 }
                 Step::none()
             }
+            // Importing needs Steam and refuses a portable folder, so the
+            // switch would do nothing.
+            Event::GlobalAutoImport(_)
+                if paths.portable_root().is_some() || !self.steam_found() =>
+            {
+                Step::none()
+            }
+            Event::GlobalAutoImport(on) => {
+                self.edited();
+                if let View::Global(editor) = &mut self.view {
+                    editor.form.draft.auto_import = on;
+                }
+                Step::none()
+            }
             Event::GlobalArtKind(kind, on) => {
                 if let View::Global(editor) = &self.view {
                     let fetch = editor.form.draft.art_fetch.with(kind, on);
@@ -416,9 +430,11 @@ impl Page {
                     _ => unreachable!("checked above"),
                 };
                 editor.appearance.rebase(info.appearance, info.themes);
+                editor.steam_found = info.steam_found;
                 if config_moved {
                     if let Some(disk) = &mut self.disk {
                         disk.appearance = snapshot.texts.appearance;
+                        disk.auto_import = snapshot.texts.auto_import;
                         disk.themes = snapshot.texts.themes;
                     }
                 } else {
@@ -477,6 +493,7 @@ impl Page {
                             info.appearance,
                             info.themes,
                             info.runners,
+                            info.steam_found,
                         );
                         if pending.mode == Mode::Replace
                             && let View::Global(previous) = &self.view
