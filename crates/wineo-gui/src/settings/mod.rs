@@ -262,6 +262,7 @@ impl Event {
                 | Event::GlobalArt(_)
                 | Event::GlobalArtKind(_, _)
                 | Event::GlobalExternalRunners(_)
+                | Event::GlobalAutoImport(_)
                 | Event::Appearance(_)
                 | Event::Target(..)
                 | Event::ProgramPicked(_)

@@ -373,6 +373,7 @@ impl Page {
                     | Event::GlobalArt(_)
                     | Event::GlobalArtKind(_, _)
                     | Event::GlobalExternalRunners(_)
+                    | Event::GlobalAutoImport(_)
                     | Event::Appearance(_)
                     | Event::EnvKey(..)
                     | Event::EnvValue(..)
@@ -394,6 +395,7 @@ impl Page {
                     | Event::GlobalArt(_)
                     | Event::GlobalArtKind(_, _)
                     | Event::GlobalExternalRunners(_)
+                    | Event::GlobalAutoImport(_)
                     | Event::Appearance(_)
             )
         {

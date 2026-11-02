@@ -687,6 +687,28 @@ fn auto_import_switch_saves_to_the_library_and_not_the_config() {
 }
 
 #[test]
+fn the_auto_import_switch_waits_while_the_page_saves() {
+    let (root, paths) = setup();
+    steam_install(&root);
+    let mut page = global_page(&paths);
+    page.saving = true;
+    let _ = page.update(&paths, Event::GlobalAutoImport(true));
+    page.saving = false;
+    assert!(!page.is_dirty());
+}
+
+#[test]
+fn an_environment_page_ignores_the_auto_import_switch() {
+    let (_root, paths) = setup();
+    write(&paths, GAME);
+    let mut page = Page::new("game".to_owned(), 1);
+    let _ = page.reload(&paths, Mode::Replace);
+    let _ = page.update(&paths, Event::Loaded(1, load::snapshot(&paths, "game")));
+    let _ = page.update(&paths, Event::GlobalAutoImport(true));
+    assert!(!page.is_dirty());
+}
+
+#[test]
 fn saving_with_the_switch_untouched_leaves_the_library_alone() {
     let (root, paths) = setup();
     steam_install(&root);
