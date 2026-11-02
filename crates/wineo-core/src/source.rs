@@ -67,7 +67,7 @@ pub struct Facts<'a> {
     /// The Wine config's `store`, which only Heroic imports usually set.
     pub store_hint: Option<&'a str>,
     /// What a proxied Steam game runs on, when something shows it (see
-    /// `steam::proton_platform`). Ignored for every other game.
+    /// `steam::place`). Ignored for every other game.
     pub steam_platform: Option<Platform>,
 }
 

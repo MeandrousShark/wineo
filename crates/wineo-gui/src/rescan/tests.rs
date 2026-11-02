@@ -587,3 +587,54 @@ fn the_caches_survive_a_subscription_restart() {
     assert!(after > scans, "the restarted streams scanned");
     assert_eq!((reads, parses), (1, 1), "nothing unchanged was read again");
 }
+
+#[test]
+fn a_rescan_parses_appinfo_once_and_sees_it_change() {
+    use wineo_core::source::Platform;
+    use wineo_core::steam::appinfo_fixture::{build, game};
+
+    let (root, mut app) = shown(&[]);
+    let steam = root.path().join(".local/share/Steam");
+    fs::create_dir_all(steam.join("steamapps")).unwrap();
+    fs::create_dir_all(steam.join("appcache")).unwrap();
+    fs::write(
+        steam.join("steamapps/appmanifest_5.acf"),
+        r#""AppState" { "appid" "5" "name" "G" "installdir" "G" "StateFlags" "4" }"#,
+    )
+    .unwrap();
+    fs::create_dir_all(app.paths.environments_dir()).unwrap();
+    fs::write(
+        app.paths.environment_config("steamy"),
+        "kind = 'proxied'\nlauncher = 'steam'\napp_id = '5'\n",
+    )
+    .unwrap();
+    let appinfo = steam.join("appcache/appinfo.vdf");
+    fs::write(&appinfo, build(&[game(5, Some("windows,linux"))])).unwrap();
+    let reads = |app: &App| app.shown.0.caches.lock().unwrap().appinfo.reads();
+    let platform = |scan: &Scan| {
+        let cards = scan.library.as_ref().unwrap().as_ref().unwrap();
+        cards
+            .iter()
+            .find(|card| card.name == "steamy")
+            .unwrap()
+            .source
+            .platform
+    };
+
+    let scan = rescan(&app, false);
+    assert_eq!(platform(&scan), Some(Platform::Native));
+    let scan = app.shown.changes(scan, now()).unwrap();
+    let _ = app.update(Message::Rescanned(Box::new(scan)));
+    assert_eq!(platform(&rescan(&app, false)), Some(Platform::Native));
+    assert_eq!(reads(&app), 1, "an unchanged file isn't parsed again");
+
+    fs::write(&appinfo, build(&[game(5, Some("windows"))])).unwrap();
+    let scan = rescan(&app, false);
+    assert_eq!(platform(&scan), Some(Platform::Windows));
+    assert!(
+        app.shown
+            .changes(scan, now())
+            .is_some_and(|scan| scan.library.is_some())
+    );
+    assert_eq!(reads(&app), 2);
+}

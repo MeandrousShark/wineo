@@ -224,7 +224,9 @@ fn steam_cards_read_live_state_title_size_proton_and_implicit_art() {
         assert!(card.install_warning().is_none());
         let details = card.steam.as_ref().unwrap();
         assert_eq!(details.size, Some(2048));
-        assert_eq!(details.proton.as_deref(), Some("proton_experimental"));
+        // Only a game that is there shows a Proton row.
+        let proton = playable.then_some("proton_experimental");
+        assert_eq!(details.proton.as_deref(), proton);
         assert_eq!(card.targets, ["steam"]);
         assert!(card.art.is_some());
         assert!(card.panel_art["steam"].hero.is_some());
@@ -275,7 +277,8 @@ fn steam_cards_run_on_windows_only_when_steam_shows_proton() {
     fs::create_dir_all(paths.environments_dir()).unwrap();
     // Installed games: forced onto Proton (own), prefix on disk (pfx), only
     // the global default (default), and an empty compatdata folder (empty).
-    // gone has its own entry but isn't installed anywhere.
+    // gone has its own entry but isn't installed anywhere, so it has no
+    // platform whatever its mapping says.
     for (name, id) in [
         ("own", "100"),
         ("pfx", "200"),
@@ -322,7 +325,7 @@ fn steam_cards_run_on_windows_only_when_steam_shows_proton() {
         })
     };
     let windows = Some(Platform::Windows);
-    assert_eq!(platforms(&paths), [windows, windows, None, None, windows]);
+    assert_eq!(platforms(&paths), [windows, windows, None, None, None]);
 
     // An unreadable config.vdf leaves only the prefix to go on, and loading
     // doesn't fail.
@@ -457,7 +460,9 @@ fn load_library_never_reads_the_owned_list() {
 }
 
 #[test]
-fn steam_card_compatibility_tool_lookup_ignores_case() {
+fn a_steam_card_with_a_name_for_an_id_has_no_manifest_and_so_no_placement() {
+    // Manifests are found by digit-only ids, so an id like this is never
+    // installed. The tools map ignores case, and `place` has a test for it.
     let root = tempfile::tempdir().unwrap();
     let paths =
         Paths::from_lookup(|key| (key == "HOME").then(|| root.path().as_os_str().to_owned()))
@@ -479,10 +484,8 @@ fn steam_card_compatibility_tool_lookup_ignores_case() {
 
     let cards = load_library(&paths).unwrap();
     assert_eq!(cards.len(), 1);
-    assert_eq!(
-        cards[0].steam.as_ref().unwrap().proton.as_deref(),
-        Some("GE-Proton")
-    );
+    assert_eq!(cards[0].steam.as_ref().unwrap().proton, None);
+    assert_eq!(cards[0].source.platform, None);
 }
 
 #[test]
@@ -917,16 +920,17 @@ fn a_trash_blocked_steam_game_keeps_steams_playtime() {
     assert_eq!(card.playtime, time::duration_hm(3600));
 }
 
-/// Reads per file name in one `load_library_with`, with and without a cache.
+/// Reads per file name in one `load_library_with`, with and without caches.
 fn refresh_reads(paths: &Paths, files: &[&str]) -> Vec<Vec<usize>> {
     use wineo_core::read_log;
 
     let saved = wineo_core::library::load(paths);
     let mut cache = stats::Cache::new();
+    let appinfo = steam::AppInfoCache::new();
     let mut counts = Vec::new();
-    for stats in [None, Some(&mut cache)] {
+    for (stats, appinfo) in [(None, None), (Some(&mut cache), Some(&appinfo))] {
         read_log::clear();
-        load_library_with(paths, &saved, stats).unwrap();
+        load_library_with(paths, &saved, stats, appinfo).unwrap();
         counts.push(files.iter().map(|file| read_log::count(file)).collect());
     }
     counts
@@ -963,6 +967,7 @@ fn a_refresh_reads_each_config_once() {
         "root",
         "loginusers.vdf",
         "localconfig.vdf",
+        "appinfo.vdf",
     ];
     let once = vec![1; files.len()];
     assert_eq!(refresh_reads(&paths, &files), [once.clone(), once]);
@@ -973,8 +978,197 @@ fn a_refresh_with_no_steam_game_reads_no_steam_files() {
     let root = tempfile::tempdir().unwrap();
     let paths = played_steam_library(root.path());
     fs::write(paths.environment_config("game"), "kind = 'native'\n").unwrap();
+    write_appinfo(root.path(), &[game(123, Some("linux"))]);
 
-    let files = ["game.toml", "config.toml", "root", "loginusers.vdf"];
-    let once = vec![1, 0, 0, 0];
+    let files = [
+        "game.toml",
+        "config.toml",
+        "root",
+        "loginusers.vdf",
+        "appinfo.vdf",
+    ];
+    let once = vec![1, 0, 0, 0, 0];
     assert_eq!(refresh_reads(&paths, &files), [once.clone(), once]);
+}
+
+use wineo_core::steam::appinfo_fixture::{self, App, game};
+
+fn write_appinfo(root: &std::path::Path, apps: &[App<'_>]) {
+    let file = appinfo_path(root);
+    fs::create_dir_all(file.parent().unwrap()).unwrap();
+    fs::write(file, appinfo_fixture::build(apps)).unwrap();
+}
+
+fn appinfo_path(root: &std::path::Path) -> std::path::PathBuf {
+    root.join(".local/share/Steam/appcache/appinfo.vdf")
+}
+
+/// Installed Steam games, each named for the case it covers, with a global
+/// default tool and no mapping of their own.
+fn placed_library(root: &std::path::Path) -> Paths {
+    let paths = played_steam_library(root);
+    let steamapps = root.join(".local/share/Steam/steamapps");
+    for (name, id) in [
+        ("native", 1),
+        ("windows", 2),
+        ("stale", 3),
+        ("nolist", 4),
+        ("unknown", 5),
+    ] {
+        fs::write(
+            paths.environment_config(name),
+            format!("kind = 'proxied'\nlauncher = 'steam'\napp_id = '{id}'\n"),
+        )
+        .unwrap();
+        fs::write(
+            steamapps.join(format!("appmanifest_{id}.acf")),
+            format!(
+                r#""AppState" {{ "appid" "{id}" "name" "{name}" "installdir" "G" "StateFlags" "4" }}"#
+            ),
+        )
+        .unwrap();
+    }
+    // Steam made an empty folder for the native game and a prefix long ago
+    // for the one that moved to a Linux build.
+    fs::create_dir_all(steamapps.join("compatdata/1")).unwrap();
+    fs::create_dir_all(steamapps.join("compatdata/3/pfx")).unwrap();
+    fs::write(
+        root.join(".local/share/Steam/config/config.vdf"),
+        r#""InstallConfigStore" { "Software" { "Valve" { "Steam" { "CompatToolMapping" {
+            "0" { "name" "proton_experimental" }
+        } } } } }"#,
+    )
+    .unwrap();
+    write_appinfo(
+        root,
+        &[
+            game(1, Some("windows,linux")),
+            game(2, Some("windows")),
+            game(3, Some("linux")),
+            game(4, None),
+        ],
+    );
+    paths
+}
+
+fn placements(paths: &Paths) -> Vec<(Option<wineo_core::source::Platform>, Option<String>)> {
+    let cards = load_library(paths).unwrap();
+    ["native", "windows", "stale", "nolist", "unknown"]
+        .map(|name| {
+            let card = cards.iter().find(|card| card.name == name).unwrap();
+            let proton = card.steam.as_ref().unwrap().proton.clone();
+            (card.source.platform, proton)
+        })
+        .to_vec()
+}
+
+#[test]
+fn steam_games_land_under_native_or_windows_from_appinfo() {
+    use wineo_core::source::Platform::{Native, Windows};
+
+    let root = tempfile::tempdir().unwrap();
+    let paths = placed_library(root.path());
+    let proton = Some("proton_experimental".to_owned());
+
+    // Without a retained cache, as on the first load.
+    assert_eq!(
+        placements(&paths),
+        [
+            (Some(Native), None),
+            (Some(Windows), proton.clone()),
+            (Some(Native), None),
+            (None, None),
+            (None, None),
+        ]
+    );
+
+    // A file that can't be read leaves the prefix rule, with no Proton row
+    // for a game without a platform.
+    fs::write(appinfo_path(root.path()), "broken").unwrap();
+    assert_eq!(
+        placements(&paths),
+        [
+            (None, None),
+            (None, None),
+            (Some(Windows), proton),
+            (None, None),
+            (None, None),
+        ]
+    );
+}
+
+fn appinfo_reads(paths: &Paths, stats: &mut stats::Cache, appinfo: &steam::AppInfoCache) -> usize {
+    use wineo_core::read_log;
+
+    let saved = wineo_core::library::load(paths);
+    read_log::clear();
+    load_library_with(paths, &saved, Some(stats), Some(appinfo)).unwrap();
+    read_log::count("appinfo.vdf")
+}
+
+#[test]
+fn a_refresh_parses_appinfo_only_when_its_file_changes() {
+    let root = tempfile::tempdir().unwrap();
+    let paths = placed_library(root.path());
+    let mut stats = stats::Cache::new();
+    let appinfo = steam::AppInfoCache::new();
+
+    let reads = |stats: &mut stats::Cache| appinfo_reads(&paths, stats, &appinfo);
+    assert_eq!(reads(&mut stats), 1);
+    assert_eq!(reads(&mut stats), 0);
+    assert_eq!(reads(&mut stats), 0);
+
+    write_appinfo(root.path(), &[game(1, Some("windows"))]);
+    assert_eq!(reads(&mut stats), 1);
+    assert_eq!(reads(&mut stats), 0);
+
+    // A broken file is kept as broken, and fixed when it is rewritten.
+    fs::write(appinfo_path(root.path()), "broken").unwrap();
+    assert_eq!(reads(&mut stats), 1);
+    assert_eq!(reads(&mut stats), 0);
+    write_appinfo(root.path(), &[game(1, Some("linux"))]);
+    assert_eq!(reads(&mut stats), 1);
+    assert_eq!(appinfo.reads(), 4);
+}
+
+#[test]
+fn appinfo_is_not_read_without_an_imported_steam_game() {
+    let root = tempfile::tempdir().unwrap();
+    let paths = placed_library(root.path());
+    for name in ["native", "windows", "stale", "nolist", "unknown", "game"] {
+        fs::remove_file(paths.environment_config(name)).unwrap();
+    }
+    fs::write(paths.environment_config("plain"), "kind = 'native'\n").unwrap();
+    let mut stats = stats::Cache::new();
+    let appinfo = steam::AppInfoCache::new();
+
+    assert_eq!(appinfo_reads(&paths, &mut stats, &appinfo), 0);
+    assert_eq!(appinfo.reads(), 0);
+}
+
+#[test]
+fn appinfo_is_not_read_for_games_that_do_not_need_it() {
+    let root = tempfile::tempdir().unwrap();
+    let paths = placed_library(root.path());
+    // Every game is either not installed or has a mapping of its own.
+    let steam = root.path().join(".local/share/Steam");
+    for id in 1..=5 {
+        fs::remove_file(steam.join(format!("steamapps/appmanifest_{id}.acf"))).unwrap();
+    }
+    fs::write(
+        steam.join("steamapps/appmanifest_123.acf"),
+        r#""AppState" { "appid" "123" "name" "g" "StateFlags" "4" }"#,
+    )
+    .unwrap();
+    fs::write(
+        steam.join("config/config.vdf"),
+        r#""InstallConfigStore" { "Software" { "Valve" { "Steam" { "CompatToolMapping" {
+            "123" { "name" "GE-Proton9-20" }
+        } } } } }"#,
+    )
+    .unwrap();
+    let mut stats = stats::Cache::new();
+    let appinfo = steam::AppInfoCache::new();
+
+    assert_eq!(appinfo_reads(&paths, &mut stats, &appinfo), 0);
 }

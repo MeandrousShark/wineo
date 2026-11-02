@@ -6,8 +6,13 @@
 mod account;
 pub mod api;
 pub mod appinfo;
+mod appinfo_cache;
+#[cfg(any(test, feature = "test-support"))]
+#[doc(hidden)]
+pub mod appinfo_fixture;
 pub mod key;
 pub mod owned;
+mod placement;
 pub mod process;
 pub mod vdf;
 
@@ -23,8 +28,10 @@ use crate::art;
 
 pub use account::{
     Playtime, Playtimes, active_account, active_steam_id, compat_tool, compat_tool_in,
-    compat_tools, playtime, proton_platform,
+    compat_tools, playtime,
 };
+pub use appinfo_cache::AppInfoCache;
+pub use placement::{Placement, place};
 pub use process::{
     Baseline, Reaper, baseline, client_running, eligible_reapers, matching_reapers, open_reaper,
     reapers_by_app, stop_tree, wait_pidfd_exit,
@@ -234,6 +241,12 @@ impl Manifest {
         } else {
             AppState::NotInstalled
         }
+    }
+
+    /// Installed or being updated, and not being removed: the manifest says
+    /// the files are there. A first install in progress isn't.
+    pub fn is_fully_installed(&self) -> bool {
+        matches!(self.app_state(), AppState::Installed | AppState::Updating)
     }
 
     /// How far an install is, from 0 to 100. See `install_bytes`.

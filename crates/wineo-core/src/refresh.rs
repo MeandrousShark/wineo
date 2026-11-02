@@ -7,6 +7,7 @@
 
 use std::cell::OnceCell;
 use std::collections::BTreeMap;
+use std::sync::Arc;
 
 use crate::config::{EnvironmentConfig, GlobalConfig};
 use crate::environment::{self, Environment};
@@ -34,6 +35,12 @@ struct LoadedEnvironment {
 
 impl<'a> RefreshSnapshot<'a> {
     pub fn read(paths: &'a Paths) -> Result<Self> {
+        Self::read_with(paths, None)
+    }
+
+    /// `read`, with Steam's `appinfo.vdf` going through `appinfo` when given,
+    /// so a caller that refreshes often parses it only when it changes.
+    pub fn read_with(paths: &'a Paths, appinfo: Option<&'a steam::AppInfoCache>) -> Result<Self> {
         // Nothing a refresh does trashes or restores, so one scan serves it.
         let pending = PendingScan::new(paths);
         let environments = environment::names(paths)?
@@ -52,7 +59,7 @@ impl<'a> RefreshSnapshot<'a> {
             paths,
             pending,
             environments,
-            steam: SteamFiles::new(paths),
+            steam: SteamFiles::new(paths).with_appinfo(appinfo),
         })
     }
 
@@ -98,6 +105,15 @@ impl<'a> RefreshSnapshot<'a> {
     pub(crate) fn steam(&self) -> &SteamFiles<'a> {
         &self.steam
     }
+
+    /// What Steam's `appinfo.vdf` says, read on the first ask and then kept
+    /// for this refresh. None when Steam isn't found, and an error when the
+    /// file can't be read as a whole.
+    pub fn appinfo(
+        &self,
+    ) -> Option<&std::result::Result<steam::appinfo::AppInfo, steam::appinfo::ReadError>> {
+        self.steam.appinfo()
+    }
 }
 
 /// Steam's files for one batch of reads. Each is read at most once, on the
@@ -110,7 +126,12 @@ pub(crate) struct SteamFiles<'a> {
     install: OnceCell<Option<steam::Install>>,
     /// The reason nothing can be read, or the parsed playtime file.
     playtimes: OnceCell<std::result::Result<steam::Playtimes, String>>,
+    /// Where `appinfo` is read through, when the caller keeps one.
+    appinfo_cache: Option<&'a steam::AppInfoCache>,
+    appinfo: OnceCell<Option<AppInfoRead>>,
 }
+
+type AppInfoRead = Arc<std::result::Result<steam::appinfo::AppInfo, steam::appinfo::ReadError>>;
 
 impl<'a> SteamFiles<'a> {
     pub(crate) fn new(paths: &'a Paths) -> Self {
@@ -129,7 +150,14 @@ impl<'a> SteamFiles<'a> {
             read_global: OnceCell::new(),
             install: OnceCell::new(),
             playtimes: OnceCell::new(),
+            appinfo_cache: None,
+            appinfo: OnceCell::new(),
         }
+    }
+
+    fn with_appinfo(mut self, cache: Option<&'a steam::AppInfoCache>) -> Self {
+        self.appinfo_cache = cache;
+        self
     }
 
     /// Overviews give a bad global config two meanings, so its error is kept
@@ -153,6 +181,21 @@ impl<'a> SteamFiles<'a> {
                     .and_then(|global| steam::active_for(self.paths, global))
             })
             .as_ref()
+    }
+
+    /// None when Steam isn't installed.
+    pub(crate) fn appinfo(
+        &self,
+    ) -> Option<&std::result::Result<steam::appinfo::AppInfo, steam::appinfo::ReadError>> {
+        self.appinfo
+            .get_or_init(|| {
+                let install = self.install()?;
+                Some(match self.appinfo_cache {
+                    Some(cache) => cache.read(install),
+                    None => Arc::new(steam::appinfo::read(install)),
+                })
+            })
+            .as_deref()
     }
 
     pub(crate) fn playtime(&self, app_id: &str) -> steam::Playtime {

@@ -67,6 +67,7 @@ struct Inner {
 pub(crate) struct RescanCaches {
     library: saved::Cache,
     stats: wineo_core::stats::Cache,
+    appinfo: wineo_core::steam::AppInfoCache,
     #[cfg(test)]
     scans: usize,
 }
@@ -305,7 +306,7 @@ pub(crate) fn read_with(
     Scan {
         revisions,
         library: Some(
-            load_library_with(paths, saved, Some(&mut caches.stats))
+            load_library_with(paths, saved, Some(&mut caches.stats), Some(&caches.appinfo))
                 .map_err(|error| error.to_string()),
         ),
         problem: Some(saved.problem.clone()),

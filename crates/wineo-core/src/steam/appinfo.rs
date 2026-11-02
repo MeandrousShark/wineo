@@ -21,7 +21,7 @@
 use std::collections::HashMap;
 use std::fs;
 use std::io::{self, Read};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use super::Install;
 
@@ -108,9 +108,14 @@ impl AppInfo {
     }
 }
 
+/// Where the install keeps its `appinfo.vdf`.
+pub(crate) fn path(install: &Install) -> PathBuf {
+    install.root().join("appcache/appinfo.vdf")
+}
+
 /// Reads and parses the install's `appcache/appinfo.vdf`.
 pub fn read(install: &Install) -> Result<AppInfo, ReadError> {
-    read_file(&install.root().join("appcache/appinfo.vdf"), LIMITS)
+    read_file(&path(install), LIMITS)
 }
 
 fn read_file(path: &Path, limits: Limits) -> Result<AppInfo, ReadError> {

@@ -356,21 +356,22 @@ pub(super) fn load_library_and_problem(
     Option<wineo_core::library::Problem>,
 ) {
     let saved = wineo_core::library::load(paths);
-    (load_library_with(paths, &saved, None), saved.problem)
+    (load_library_with(paths, &saved, None, None), saved.problem)
 }
 
 /// `load_library` with `library.toml` already read and, when given, the
-/// stats logs read through a cache, so a caller that reads often can skip
-/// what didn't change.
+/// stats logs and Steam's `appinfo.vdf` read through caches, so a caller that
+/// reads often can skip what didn't change.
 pub(super) fn load_library_with(
     paths: &Paths,
     saved: &wineo_core::library::Library,
     stats: Option<&mut stats::Cache>,
+    appinfo: Option<&steam::AppInfoCache>,
 ) -> anyhow::Result<Vec<Card>> {
     // The overviews and every card share one read of the trash, the configs,
     // and Steam's files. The report comes first: its lost-run cleanup rewrites
     // the run state that everything after it goes by.
-    let snapshot = RefreshSnapshot::read(paths)?;
+    let snapshot = RefreshSnapshot::read_with(paths, appinfo)?;
     let pending = snapshot.pending();
     let overview = report::overview_from_snapshot(&snapshot, OverviewFilter::default());
     let tools = overview
@@ -421,11 +422,14 @@ pub(super) fn load_library_with(
                 .steam
                 .as_ref()
                 .and_then(|steam| steam.manifests.iter().find(|entry| entry.app_id == *app_id));
-            steam_platform =
-                steam::proton_platform(&tools, app_id, entry.map(|entry| entry.library.as_path()));
+            // appinfo is only read if this game's placement gets that far.
+            let placement = steam::place(entry, &tools, app_id, || {
+                snapshot.appinfo().and_then(|read| read.as_ref().ok())
+            });
+            steam_platform = placement.platform;
             Some(SteamDetails {
                 install: install.clone(),
-                proton: steam::compat_tool_in(&tools, app_id),
+                proton: placement.proton,
                 size: entry
                     .and_then(|entry| entry.manifest.as_ref().ok())
                     .map(|manifest| manifest.size_on_disk),
