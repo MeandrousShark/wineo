@@ -446,3 +446,20 @@ fn nothing_is_offered_without_steam_or_in_portable_mode() {
     assert!(pending(&app).is_empty());
     assert!(!shown(&app));
 }
+
+#[test]
+fn a_long_title_in_a_small_window_keeps_both_buttons_in_reach() {
+    let (root, mut app) = baselined(&["game"]);
+    steam_game(&root, "2", &"A very long Steam game title ".repeat(6));
+    rescan(&mut app).unwrap();
+    for width in [480.0, 720.0, 1200.0] {
+        app.window_size = iced::Size::new(width, 500.0);
+        for id in [IMPORT_ID, DISMISS_ID] {
+            let found = bounds(&app, id).unwrap();
+            assert!(
+                found.x >= 0.0 && found.x + found.width <= width,
+                "{id} at {width}: {found:?}"
+            );
+        }
+    }
+}
