@@ -389,6 +389,9 @@ pub(crate) enum Message {
     NudgeDismissed(Vec<String>, Result<(), String>),
     /// An auto-import pass finished.
     AutoImported(Result<wineo_core::steam_import::auto::Report, String>),
+    /// A retry of claims a pass couldn't take back finished, with the ids it
+    /// got through.
+    ClaimsReleased(Result<Vec<String>, String>),
     TrashReloaded(u64, sidebar::TrashBadge),
     Section(sidebar::Section),
     /// A sidebar row was clicked, as opposed to a keyboard shortcut.
@@ -1142,6 +1145,7 @@ impl App {
             Message::NudgeDismiss(ids) => self.nudge_dismiss(ids)?,
             Message::NudgeDismissed(ids, result) => self.nudge_dismissed(&ids, result),
             Message::AutoImported(result) => self.auto_imported(result),
+            Message::ClaimsReleased(result) => self.claims_released(result),
             Message::LibraryRead(generation, result, problem) => {
                 if generation == self.library_generation {
                     self.problem_read(problem);

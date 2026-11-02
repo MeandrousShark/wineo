@@ -477,3 +477,125 @@ fn a_game_given_up_on_can_be_dismissed_from_the_banner_during_a_later_pass() {
     assert_eq!(reason(&app, "2"), Some(Recorded::Dismissed));
     assert_eq!(reason(&app, "3"), Some(Recorded::Imported));
 }
+
+/// A pass whose import didn't happen and whose cleanup couldn't write.
+fn left_claimed(app: &mut App, report: Report) {
+    saved::claim_game(&app.paths, "2", |_| true).unwrap();
+    app.shown.refresh_library(&app.paths);
+    let _ = app.update(Message::AutoImported(Ok(report)));
+}
+
+/// Runs the retry the last discovery started.
+fn finish_release(app: &mut App) {
+    let ids: Vec<String> = app.steam_auto.unreleased.iter().cloned().collect();
+    let released = release_claims(&app.paths, &app.shown, &ids, &Token::new());
+    let _ = app.update(Message::ClaimsReleased(Ok(released)));
+}
+
+#[test]
+fn a_failed_game_whose_claim_stuck_is_offered_once_the_record_recovers() {
+    let (root, mut app) = settled(true);
+    steam_game(&root, "2", "New");
+    rescan(&mut app).unwrap();
+    left_claimed(
+        &mut app,
+        Report {
+            failures: vec![wineo_core::steam_import::Failure {
+                app_id: "2".to_owned(),
+                name: "new".to_owned(),
+                reason: "no".to_owned(),
+            }],
+            unreleased: vec!["2".to_owned()],
+            ..Report::default()
+        },
+    );
+    reload(&mut app);
+    assert_eq!(reason(&app, "2"), Some(Recorded::Claimed));
+    assert!(offered(&app).is_empty(), "hidden while it's claimed");
+    assert!(app.steam_auto.running(), "with nothing pending, it retries");
+
+    // Still unwritable: quiet, and the next scan comes back without a change.
+    let ids: Vec<String> = app.steam_auto.unreleased.iter().cloned().collect();
+    let released = read_only(&app, || {
+        release_claims(&app.paths, &app.shown, &ids, &Token::new())
+    });
+    assert!(released.is_empty());
+    let _ = app.update(Message::ClaimsReleased(Ok(released)));
+    assert!(!app.steam_auto.running());
+    assert_eq!(app.steam_auto.unreleased.len(), 1);
+    assert!(app.feature_notice.is_none());
+    assert!(rescan(&mut app).unwrap().discovery.is_some());
+    assert!(app.steam_auto.running());
+
+    finish_release(&mut app);
+    assert_eq!(reason(&app, "2"), None);
+    assert!(app.steam_auto.unreleased.is_empty());
+    assert!(app.refreshing, "a read follows, for the game");
+    reload(&mut app);
+    assert_eq!(offered(&app), ["2"], "offered, not imported again");
+    assert!(!app.steam_auto.running());
+}
+
+#[test]
+fn a_canceled_game_whose_claim_stuck_goes_back_to_the_pass() {
+    let (root, mut app) = settled(true);
+    steam_game(&root, "2", "New");
+    rescan(&mut app).unwrap();
+    left_claimed(
+        &mut app,
+        Report {
+            canceled: true,
+            unreleased: vec!["2".to_owned()],
+            ..Report::default()
+        },
+    );
+    reload(&mut app);
+    assert!(app.steam_auto.running());
+    finish_release(&mut app);
+    reload(&mut app);
+    assert!(
+        app.steam_auto.running(),
+        "not a failure, so it's taken again"
+    );
+    assert!(offered(&app).is_empty());
+    finish(&mut app, &Token::new());
+    assert_eq!(reason(&app, "2"), Some(Recorded::Imported));
+}
+
+#[test]
+fn a_retry_runs_with_the_setting_off_and_touches_only_its_own_claims() {
+    let (root, mut app) = settled(true);
+    steam_game(&root, "2", "New");
+    rescan(&mut app).unwrap();
+    left_claimed(
+        &mut app,
+        Report {
+            canceled: true,
+            unreleased: vec!["2".to_owned()],
+            ..Report::default()
+        },
+    );
+    saved::set_auto_import(&app.paths, false).unwrap();
+    saved::record_games(&app.paths, &["3".to_owned()], Recorded::Claimed).unwrap();
+    saved::dismiss_game(&app.paths, "2").unwrap();
+    reload(&mut app);
+    assert!(app.steam_auto.running());
+    finish_release(&mut app);
+    assert_eq!(reason(&app, "2"), Some(Recorded::Dismissed));
+    assert_eq!(
+        reason(&app, "3"),
+        Some(Recorded::Claimed),
+        "another window's"
+    );
+}
+
+#[test]
+fn a_new_launch_doesnt_sweep_claims() {
+    let (root, app) = settled(true);
+    saved::record_games(&app.paths, &["2".to_owned()], Recorded::Claimed).unwrap();
+    steam_game(&root, "2", "New");
+    let mut next = App::boot(app.paths.clone()).0;
+    reload(&mut next);
+    assert!(!next.steam_auto.running());
+    assert_eq!(reason(&next, "2"), Some(Recorded::Claimed));
+}

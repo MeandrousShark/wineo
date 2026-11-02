@@ -22,6 +22,9 @@ pub struct Report {
     /// unreadable.
     pub stopped: Option<String>,
     pub canceled: bool,
+    /// Games whose claim couldn't be taken back after the import didn't
+    /// happen, so nothing offers them until `release_claims` gets through.
+    pub unreleased: Vec<String>,
 }
 
 impl Report {
@@ -91,8 +94,10 @@ fn import_claimed(
         Ok(()) => report.imported.push(app_id.clone()),
         Err(error) => {
             // A claim that can't be taken back keeps the game unoffered, the
-            // safe way to fail, and Add > Import from Steam still lists it.
-            let _ = library::release_claim(paths, app_id);
+            // safe way to fail, until the app's retry gets through.
+            if library::release_claim(paths, app_id).is_err() {
+                report.unreleased.push(app_id.clone());
+            }
             if cancel.is_canceled() {
                 report.canceled = true;
             } else {

@@ -4,9 +4,12 @@
 //! claim in the record, so this only keeps the pass single and the banner
 //! honest.
 
+use std::collections::HashSet;
+
 use iced::Task;
 use wineo_core::cancel::Token;
 use wineo_core::config::GlobalConfig;
+use wineo_core::library as saved;
 use wineo_core::paths::Paths;
 use wineo_core::steam::{Discovery, PendingGame};
 use wineo_core::steam_import::auto::{self, Report};
@@ -15,10 +18,13 @@ use crate::{App, Message, rescan, task};
 
 #[derive(Debug, Default)]
 pub(crate) struct AutoImport {
-    /// The pass running, which there's never more than one of.
+    /// The pass or claim retry running, never more than one between them.
     running: Option<Token>,
     /// The last pass couldn't write the record, and that's been said.
     stuck: bool,
+    /// Claims this session couldn't take back. Only these are retried, since
+    /// any other claim may be another window's, live.
+    unreleased: HashSet<String>,
 }
 
 impl AutoImport {
@@ -33,6 +39,11 @@ impl AutoImport {
             token.cancel();
         }
     }
+
+    /// A write of the record went through.
+    pub(crate) fn recovered(&mut self) {
+        self.stuck = false;
+    }
 }
 
 impl App {
@@ -45,12 +56,16 @@ impl App {
     /// no claim. While the record can't be written the banner keeps them all,
     /// since nothing's going to take them.
     pub(crate) fn auto_import_read(&mut self, discovery: &Discovery) -> Task<Message> {
-        let on = discovery.auto_import
-            && self.paths.portable_root().is_none()
-            && !self.closing
-            && !self.exiting;
+        let closing = self.closing || self.exiting;
+        let on = discovery.auto_import && self.paths.portable_root().is_none() && !closing;
         self.steam_nudge.hold(on && !self.steam_auto.stuck);
-        if !on || self.steam_auto.running() {
+        if closing || self.steam_auto.running() {
+            return Task::none();
+        }
+        if !self.steam_auto.unreleased.is_empty() {
+            return self.retry_claims();
+        }
+        if !on {
             return Task::none();
         }
         let games: Vec<PendingGame> = discovery
@@ -71,6 +86,43 @@ impl App {
         )
     }
 
+    /// Takes back what a pass couldn't, whether or not anything is pending.
+    /// It holds the pass's place, so the pass waits and a close does too.
+    fn retry_claims(&mut self) -> Task<Message> {
+        let token = Token::new();
+        self.steam_auto.running = Some(token.clone());
+        let ids: Vec<String> = self.steam_auto.unreleased.iter().cloned().collect();
+        let (paths, watch) = (self.paths.clone(), self.shown.clone());
+        task::blocking_value(
+            move || release_claims(&paths, &watch, &ids, &token),
+            Message::ClaimsReleased,
+        )
+    }
+
+    /// A claim retry finished. A released game is pending again, and the read
+    /// that shows it offers it if it failed and passes it on if it didn't.
+    /// What's left has nothing to bring it back to a scan but this, and a
+    /// failure stays quiet: the record's trouble has been said already.
+    pub(crate) fn claims_released(&mut self, result: Result<Vec<String>, String>) -> Task<Message> {
+        self.steam_auto.running = None;
+        if self.closing || self.exiting {
+            return Task::none();
+        }
+        let released = result.unwrap_or_default();
+        for id in &released {
+            self.steam_auto.unreleased.remove(id);
+        }
+        if !self.steam_auto.unreleased.is_empty() {
+            self.shown.discovery_due();
+        }
+        if released.is_empty() {
+            return Task::none();
+        }
+        self.steam_auto.recovered();
+        let reads = self.outdate_reads();
+        Task::batch([reads, self.reload_library_once()])
+    }
+
     /// A pass finished. Failed games stay out of later passes until the next
     /// launch and go on the banner. Reads from before now are old, and the
     /// fresh one shows the new cards and starts on anything found meanwhile.
@@ -87,6 +139,13 @@ impl App {
         });
         self.steam_nudge
             .gave_up(report.failures.iter().map(|failure| &failure.app_id));
+        if !report.unreleased.is_empty() {
+            self.steam_auto
+                .unreleased
+                .extend(report.unreleased.iter().cloned());
+            // Nothing pending changes, so a scan has no other reason to report.
+            self.shown.discovery_due();
+        }
         if let Some(error) = &report.stopped {
             if !self.steam_auto.stuck {
                 self.flag_notice(format!("Couldn't import new Steam games: {error}"));
@@ -96,7 +155,7 @@ impl App {
             if !report.claimed() {
                 return Task::none();
             }
-        } else if report.claimed() {
+        } else if report.claimed() && report.unreleased.is_empty() {
             self.steam_auto.stuck = false;
         }
         let reads = self.outdate_reads();
@@ -120,6 +179,24 @@ pub(crate) fn run_pass(
     };
     watch.refresh_library(paths);
     report
+}
+
+/// Tries to take back `ids`, then the rescan's cache rereads the file. Gives
+/// the ones that are settled. `release_claim` leaves anything but a claim, so
+/// a dismissal made since counts as settled and stays.
+pub(crate) fn release_claims(
+    paths: &Paths,
+    watch: &rescan::Watch,
+    ids: &[String],
+    cancel: &Token,
+) -> Vec<String> {
+    let released = ids
+        .iter()
+        .filter(|id| !cancel.is_canceled() && saved::release_claim(paths, id).is_ok())
+        .cloned()
+        .collect();
+    watch.refresh_library(paths);
+    released
 }
 
 #[cfg(test)]

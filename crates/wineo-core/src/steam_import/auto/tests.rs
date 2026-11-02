@@ -412,3 +412,34 @@ fn no_steam_install_fails_the_game_and_leaves_no_claim() {
     assert_eq!(report.failures.len(), 1);
     assert_eq!(fixture.reason("10"), None);
 }
+
+#[test]
+fn a_claim_that_cant_be_taken_back_is_reported() {
+    let fixture = Fixture::on();
+    let clash = fixture.game("10", "One");
+    let waiting = fixture.game("20", "Two");
+    fixture.taken(&default_name("One", None));
+    library::claim_game(&fixture.paths, "10", |_| true).unwrap();
+    library::claim_game(&fixture.paths, "20", |_| true).unwrap();
+    let canceled = Token::new();
+    canceled.cancel();
+
+    let report = fixture.read_only(|| {
+        let mut report = Report::default();
+        let fine = Token::new();
+        import_claimed(&fixture.paths, &fixture.global, &clash, &fine, &mut report);
+        import_claimed(
+            &fixture.paths,
+            &fixture.global,
+            &waiting,
+            &canceled,
+            &mut report,
+        );
+        report
+    });
+    assert_eq!(report.unreleased, ["10", "20"]);
+    assert_eq!(report.failures.len(), 1, "only a real failure is one");
+    assert!(report.canceled);
+    assert_eq!(fixture.reason("10"), Some(Recorded::Claimed));
+    assert_eq!(fixture.reason("20"), Some(Recorded::Claimed));
+}
