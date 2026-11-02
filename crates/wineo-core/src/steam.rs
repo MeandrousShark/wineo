@@ -41,7 +41,8 @@ use vdf::{Object, Value};
 const FLATPAK_ID: &str = "com.valvesoftware.Steam";
 
 /// Steam's tools have manifests like games, and only Steam's binary
-/// `appinfo.vdf` says what they are. These are the ones that matter.
+/// `appinfo.vdf` says what they are. The import list, and discovery when that
+/// file can't say, go by these, the ones that matter.
 const TOOL_APP_IDS: [&str; 5] = ["228980", "1070560", "1391110", "1628350", "4183110"];
 // The trailing spaces keep games like "Protonic" from matching.
 const TOOL_NAME_PREFIXES: [&str; 3] = ["Proton ", "Steam Linux Runtime", "Steamworks "];
