@@ -1015,6 +1015,34 @@ fn a_listing_that_fails_partway_says_so_and_keeps_what_it_read() {
 }
 
 #[test]
+fn a_failed_listing_can_hide_the_copy_that_should_win() {
+    let home = tempfile::tempdir().unwrap();
+    let root = native(home.path());
+    let extra = home.path().join("extra");
+    game(&root, "7", "Seven", 1026);
+    game(&extra, "7", "Seven", 4);
+    write(
+        &root.join("steamapps/libraryfolders.vdf"),
+        &libraryfolders(&[&root, &extra]),
+    );
+    let install = only(home.path());
+
+    let mut found = scan(&install);
+    let first = found.libraries[0].path.clone();
+    found.libraries[0].state = LibraryState::ListingFailed;
+    found.manifests.retain(|entry| entry.library != first);
+
+    assert_eq!(
+        found.app_state(Some(&install), "7"),
+        AppState::Installing(None)
+    );
+    assert_eq!(
+        found.app_state(Some(&install), "7"),
+        app_state(Some(&install), "7")
+    );
+}
+
+#[test]
 fn a_scan_answers_for_a_game_like_a_look_at_the_disk() {
     let home = tempfile::tempdir().unwrap();
     let root = native(home.path());

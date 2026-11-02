@@ -126,12 +126,16 @@ pub fn finish_import(paths: &Paths, app_id: &str) -> Result<bool> {
 
 /// Claims a game for an import about to start, unless it's in the record or
 /// `check` says no. `check` runs on the file as read under the lock, so a
-/// decision made anywhere else since is seen.
+/// decision made anywhere else since is seen. An id the record can't hold is
+/// refused, since a claim that isn't written protects nothing.
 pub fn claim_game(
     paths: &Paths,
     app_id: &str,
     check: impl FnOnce(&Library) -> bool,
 ) -> Result<Claim> {
+    if !valid_app_id(app_id) {
+        return Ok(Claim::Refused);
+    }
     let mut claim = Claim::Recorded;
     edit(paths, |document| {
         if entry(document, app_id).is_some() {

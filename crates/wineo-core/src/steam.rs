@@ -342,9 +342,14 @@ impl Scan {
     }
 
     /// `app_state` answered from this scan. A library whose listing failed
-    /// might still hold a game the scan didn't see, so that alone looks again.
+    /// might hold a game the scan didn't see, even one a later library also
+    /// has, so that alone looks again.
     pub(crate) fn app_state(&self, install: Option<&Install>, app_id: &str) -> AppState {
-        if install.is_none() || !valid_app_id(app_id) {
+        let state = |wanted| self.libraries.iter().find(move |it| it.state == wanted);
+        if install.is_none()
+            || !valid_app_id(app_id)
+            || state(LibraryState::ListingFailed).is_some()
+        {
             return app_state(install, app_id);
         }
         if let Some(entry) = self.manifests.iter().find(|entry| entry.app_id == app_id) {
@@ -352,10 +357,6 @@ impl Scan {
                 Ok(manifest) => manifest.app_state(),
                 Err(error) => AppState::Unknown(error.clone()),
             };
-        }
-        let state = |wanted| self.libraries.iter().find(move |it| it.state == wanted);
-        if state(LibraryState::ListingFailed).is_some() {
-            return app_state(install, app_id);
         }
         if let Some(library) = state(LibraryState::Unavailable) {
             return AppState::Unavailable(library.path.clone());

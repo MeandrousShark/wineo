@@ -313,3 +313,16 @@ fn an_id_that_is_not_a_number_is_never_written() {
     assert!(!dismiss_game(&fixture.paths, "abc").unwrap());
     assert!(!fixture.paths.library_file().exists());
 }
+
+#[test]
+fn an_id_the_record_cant_hold_is_never_claimed() {
+    let fixture = Fixture::new();
+    for id in ["", "abc", "+42", "4 2"] {
+        assert_eq!(
+            claim_game(&fixture.paths, id, |_| panic!("not asked")).unwrap(),
+            Claim::Refused,
+            "{id:?}"
+        );
+    }
+    assert!(!fixture.paths.library_file().exists());
+}
