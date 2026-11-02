@@ -123,6 +123,7 @@ fn an_own_mapping_is_found_whatever_the_case_of_the_id() {
     for app_id in ["abc", "AbC", "ABC"] {
         let placed = place(Some(&entry), &tools, app_id, || None);
         assert_eq!(placed.platform, Some(Windows), "{app_id}");
+        assert_eq!(placed.proton.as_deref(), Some("GE-Proton"), "{app_id}");
     }
 }
 

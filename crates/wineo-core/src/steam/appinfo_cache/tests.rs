@@ -37,6 +37,27 @@ fn an_unchanged_file_is_parsed_once() {
 }
 
 #[test]
+fn a_file_rewritten_during_a_read_is_not_kept() {
+    let home = tempfile::tempdir().unwrap();
+    let install = install(home.path());
+    write(&install, &build(&[game(1, Some("linux"))]));
+    let cache = AppInfoCache::new();
+
+    let torn = cache.read_using(&install, |install| {
+        let result = appinfo::read(install);
+        write(install, &build(&[game(1, Some("windows"))]));
+        result
+    });
+    assert_eq!(oslist(&torn, 1).as_deref(), Some("linux"));
+
+    let next = cache.read(&install);
+    assert_eq!(oslist(&next, 1).as_deref(), Some("windows"));
+    assert_eq!(cache.reads(), 2);
+    assert_eq!(oslist(&cache.read(&install), 1).as_deref(), Some("windows"));
+    assert_eq!(cache.reads(), 2);
+}
+
+#[test]
 fn a_changed_file_is_parsed_again() {
     let home = tempfile::tempdir().unwrap();
     let install = install(home.path());

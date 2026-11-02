@@ -51,6 +51,14 @@ impl AppInfoCache {
     /// result is returned and nothing is kept, so it can't outlive a state
     /// the stamp doesn't describe.
     pub fn read(&self, install: &Install) -> Arc<Result<AppInfo, ReadError>> {
+        self.read_using(install, appinfo::read)
+    }
+
+    fn read_using(
+        &self,
+        install: &Install,
+        read: impl FnOnce(&Install) -> Result<AppInfo, ReadError>,
+    ) -> Arc<Result<AppInfo, ReadError>> {
         let path = appinfo::path(install);
         let mut state = self.state();
         let before = Stamp::of(&path).ok().flatten();
@@ -65,7 +73,7 @@ impl AppInfoCache {
         {
             state.reads += 1;
         }
-        let result = Arc::new(appinfo::read(install));
+        let result = Arc::new(read(install));
         // A write during the read changes the stamp, so a torn read isn't kept.
         let after = Stamp::of(&path).ok().flatten();
         if let (Some(before), Some(after)) = (before, after)
