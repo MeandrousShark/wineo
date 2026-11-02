@@ -117,6 +117,19 @@ pub fn dismiss_game(paths: &Paths, app_id: &str) -> Result<bool> {
     })
 }
 
+/// Records dismissals for all of `ids` in one locked write, so a crash can't
+/// leave some of them and another window's choice is seen first. Each id
+/// follows `dismiss_game`'s rule.
+pub fn dismiss_games(paths: &Paths, ids: &[String]) -> Result<bool> {
+    edit(paths, |document| {
+        let mut changed = false;
+        for id in ids {
+            changed |= settle(document, id, Recorded::Dismissed);
+        }
+        changed
+    })
+}
+
 /// Records a finished import, which replaces a claim.
 pub fn finish_import(paths: &Paths, app_id: &str) -> Result<bool> {
     edit(paths, |document| {

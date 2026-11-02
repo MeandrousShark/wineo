@@ -138,6 +138,66 @@ fn a_dismissal_and_a_finished_import_replace_a_claim() {
 }
 
 #[test]
+fn a_batch_dismissal_follows_the_single_rule_in_one_write() {
+    let fixture = Fixture::new();
+    fixture.add("1", Recorded::Baseline);
+    fixture.add("2", Recorded::Claimed);
+    fixture.add("3", Recorded::Imported);
+    fixture.add("4", Recorded::Dismissed);
+    let ids: Vec<String> = ["1", "2", "3", "4", "5", "6", "x"]
+        .map(str::to_owned)
+        .to_vec();
+    assert!(dismiss_games(&fixture.paths, &ids).unwrap());
+
+    assert_eq!(fixture.reason("1"), Some(Recorded::Baseline));
+    assert_eq!(
+        fixture.reason("2"),
+        Some(Recorded::Dismissed),
+        "a claim goes"
+    );
+    assert_eq!(fixture.reason("3"), Some(Recorded::Imported));
+    assert_eq!(fixture.reason("4"), Some(Recorded::Dismissed));
+    assert_eq!(fixture.reason("5"), Some(Recorded::Dismissed));
+    assert_eq!(fixture.reason("6"), Some(Recorded::Dismissed));
+    assert_eq!(fixture.reason("x"), None);
+
+    // Nothing left to change writes nothing.
+    let before = fixture.read();
+    assert!(!dismiss_games(&fixture.paths, &ids).unwrap());
+    assert!(!dismiss_games(&fixture.paths, &[]).unwrap());
+    assert_eq!(fixture.read(), before);
+}
+
+#[test]
+fn a_batch_dismissal_that_cant_write_leaves_none_of_them() {
+    let fixture = Fixture::new();
+    fixture.write("not toml [");
+    let ids = ["1".to_owned(), "2".to_owned()];
+    assert!(dismiss_games(&fixture.paths, &ids).is_err());
+    assert_eq!(fixture.read(), "not toml [");
+}
+
+#[test]
+fn concurrent_batch_dismissals_all_land() {
+    let fixture = Fixture::new();
+    let barrier = Arc::new(Barrier::new(4));
+    let threads: Vec<_> = (0..4)
+        .map(|thread| {
+            let (paths, barrier) = (fixture.paths.clone(), barrier.clone());
+            std::thread::spawn(move || {
+                let ids: Vec<String> = (0..5).map(|n| (thread * 10 + n).to_string()).collect();
+                barrier.wait();
+                dismiss_games(&paths, &ids).unwrap();
+            })
+        })
+        .collect();
+    for thread in threads {
+        thread.join().unwrap();
+    }
+    assert_eq!(load(&fixture.paths).steam.games.len(), 20);
+}
+
+#[test]
 fn a_failed_imports_cleanup_removes_only_its_own_claim() {
     let fixture = Fixture::new();
     claim_game(&fixture.paths, "1", |_| true).unwrap();
