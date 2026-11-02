@@ -1192,3 +1192,158 @@ fn cancellation_stops_at_the_next_game_and_keeps_what_finished() {
     assert!(report.done.is_empty());
     assert!(!paths.environment_config("two").exists());
 }
+
+fn recorded(paths: &Paths, app_id: &str) -> Option<crate::library::Recorded> {
+    crate::library::load(paths).steam.games.get(app_id).copied()
+}
+
+#[test]
+fn an_import_records_the_game_so_removing_it_cant_make_it_new() {
+    let root = tempfile::tempdir().unwrap();
+    let paths = paths(root.path(), false);
+    let steam = steam_root(&paths, false);
+    manifest(&steam, "10", "Game", 4, 1);
+    let global = GlobalConfig::default();
+
+    let applied = imported(&paths, &ready(&paths, &global, "10", None));
+
+    assert_eq!(applied.warnings, Vec::<String>::new());
+    assert_eq!(
+        recorded(&paths, "10"),
+        Some(crate::library::Recorded::Imported)
+    );
+
+    fs::remove_file(paths.environment_config(&applied.environment.name)).unwrap();
+    let saved = crate::library::load(&paths);
+    let snapshot = crate::refresh::RefreshSnapshot::read(&paths).unwrap();
+    assert_eq!(snapshot.discovery(&saved).pending, []);
+    // Manual import ignores the record.
+    assert_eq!(
+        listing(&paths, &global, OwnedGames::Unloaded)
+            .unwrap()
+            .len(),
+        1
+    );
+}
+
+#[test]
+fn already_imported_records_the_game_too() {
+    let root = tempfile::tempdir().unwrap();
+    let paths = paths(root.path(), false);
+    let steam = steam_root(&paths, false);
+    manifest(&steam, "10", "Game", 4, 1);
+    let global = GlobalConfig::default();
+    let plan = ready(&paths, &global, "10", None);
+    imported(&paths, &plan);
+    fs::remove_file(paths.library_file()).unwrap();
+
+    let outcome = apply(&paths, &global, OwnedGames::Unloaded, &plan, &Token::new()).unwrap();
+
+    assert!(matches!(outcome, ApplyOutcome::AlreadyImported(_)));
+    assert_eq!(
+        recorded(&paths, "10"),
+        Some(crate::library::Recorded::Imported)
+    );
+}
+
+#[test]
+fn an_import_finishes_a_claim_and_leaves_a_dismissal() {
+    let root = tempfile::tempdir().unwrap();
+    let paths = paths(root.path(), false);
+    let steam = steam_root(&paths, false);
+    manifest(&steam, "10", "Game", 4, 1);
+    manifest(&steam, "20", "Other", 4, 1);
+    let global = GlobalConfig::default();
+
+    crate::library::claim_game(&paths, "10", |_| true).unwrap();
+    crate::library::dismiss_game(&paths, "20").unwrap();
+    imported(&paths, &ready(&paths, &global, "10", None));
+    imported(&paths, &ready(&paths, &global, "20", None));
+
+    assert_eq!(
+        recorded(&paths, "10"),
+        Some(crate::library::Recorded::Imported)
+    );
+    assert_eq!(
+        recorded(&paths, "20"),
+        Some(crate::library::Recorded::Dismissed)
+    );
+}
+
+#[test]
+fn a_record_that_cant_be_written_warns_and_the_import_stands() {
+    let root = tempfile::tempdir().unwrap();
+    let paths = paths(root.path(), false);
+    let steam = steam_root(&paths, false);
+    manifest(&steam, "10", "Game", 4, 1);
+    let global = GlobalConfig::default();
+    fs::create_dir_all(paths.library_file().parent().unwrap()).unwrap();
+    fs::write(paths.library_file(), "schema_version = 99\n").unwrap();
+
+    let applied = imported(&paths, &ready(&paths, &global, "10", None));
+
+    assert!(paths.environment_config(&applied.environment.name).exists());
+    assert_eq!(
+        fs::read_to_string(paths.library_file()).unwrap(),
+        "schema_version = 99\n"
+    );
+    assert!(
+        applied
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("may be offered as a new game")),
+        "{:?}",
+        applied.warnings
+    );
+
+    // Once the file works again, the scan after it catches the record up.
+    fs::remove_file(paths.library_file()).unwrap();
+    let saved = crate::library::load(&paths);
+    let snapshot = crate::refresh::RefreshSnapshot::read(&paths).unwrap();
+    assert_eq!(snapshot.discovery(&saved).proposed.imported, ["10"]);
+}
+
+#[test]
+fn a_failed_import_records_nothing_and_stays_pending() {
+    let root = tempfile::tempdir().unwrap();
+    let paths = paths(root.path(), false);
+    let steam = steam_root(&paths, false);
+    manifest(&steam, "10", "Game", 4, 1);
+    let global = GlobalConfig::default();
+    let mut plan = ready(&paths, &global, "10", None);
+    fs::create_dir_all(paths.environments_dir()).unwrap();
+    fs::write(paths.environment_config("taken"), "kind = 'native'\n").unwrap();
+    plan.name = "taken".to_owned();
+
+    assert!(apply(&paths, &global, OwnedGames::Unloaded, &plan, &Token::new()).is_err());
+    assert_eq!(recorded(&paths, "10"), None);
+}
+
+#[test]
+fn imports_from_two_threads_both_land_in_the_record() {
+    let root = tempfile::tempdir().unwrap();
+    let paths = paths(root.path(), false);
+    let steam = steam_root(&paths, false);
+    let ids: Vec<String> = (1..=6).map(|id| (id * 10).to_string()).collect();
+    for id in &ids {
+        manifest(&steam, id, &format!("Game {id}"), 4, 1);
+    }
+    let global = GlobalConfig::default();
+    let plans: Vec<Plan> = ids
+        .iter()
+        .map(|id| ready(&paths, &global, id, None))
+        .collect();
+
+    std::thread::scope(|scope| {
+        for chunk in plans.chunks(3) {
+            let paths = &paths;
+            scope.spawn(move || {
+                for plan in chunk {
+                    imported(paths, plan);
+                }
+            });
+        }
+    });
+
+    assert_eq!(crate::library::load(&paths).steam.games.len(), 6);
+}

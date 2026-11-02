@@ -457,6 +457,9 @@ pub fn apply(
         .into_iter()
         .find(|(id, _)| id == &plan.app_id)
     {
+        // Nothing here to warn on, and the app's pass after each scan adds any
+        // imported game the record doesn't have.
+        let _ = crate::library::finish_import(paths, &plan.app_id);
         return Ok(ApplyOutcome::AlreadyImported(existing));
     }
     let install = active_install(paths, global)?;
@@ -480,6 +483,13 @@ pub fn apply(
     let mut warnings = Vec::new();
     if let Some(warning) = crate::library_lifecycle::fresh_warning(paths, &plan.name) {
         warnings.push(warning);
+    }
+    if let Err(error) = crate::library::finish_import(paths, &plan.app_id) {
+        warnings.push(format!(
+            "Can't update library.toml: {}. {} may be offered as a new game if it's removed.",
+            crate::library_lifecycle::cause(&error),
+            plan.name
+        ));
     }
     for (kind, source) in steam::art_files(&install, &plan.app_id) {
         if cancel.is_canceled() {
