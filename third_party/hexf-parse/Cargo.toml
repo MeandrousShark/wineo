@@ -12,3 +12,8 @@ edition = "2018"
 
 [dependencies]
 libm = "0.2.2"
+
+# Cargo only caps lints for registry crates, so this copy's deprecation
+# warnings would otherwise print in every build.
+[lints.rust]
+deprecated = "allow"

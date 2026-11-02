@@ -6,10 +6,10 @@ release on crates.io still says CC0-1.0, which Fedora does not allow for
 code, and upstream has not published the new license. wineo reaches it
 through naga and wgpu.
 
-The code is unmodified: `Cargo.toml` and `src/lib.rs` are upstream's, and
-`LICENSE` is upstream's text from a later commit (`f43eda3`), since
-`8a14eb63c3` has none. The root `Cargo.toml` swaps it in with
-`[patch.crates-io]`.
+The code is unmodified: `src/lib.rs` is upstream's, `Cargo.toml` is upstream's
+plus a `[lints.rust]` table, and `LICENSE` is upstream's text from a later
+commit (`f43eda3`), since `8a14eb63c3` has none. The root `Cargo.toml` swaps it
+in with `[patch.crates-io]`.
 
 Delete this directory and the patch once upstream publishes a release with
 the 0BSD license.
