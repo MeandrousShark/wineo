@@ -189,6 +189,7 @@ impl App {
             || self.change.is_some()
             || self.library_problem.is_some()
             || self.trash_banner_text().is_some()
+            || self.steam_offer().is_some()
             || self.error.is_some()
         {
             return None;

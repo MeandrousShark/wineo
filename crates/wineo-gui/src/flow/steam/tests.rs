@@ -883,3 +883,94 @@ fn refresh_reloads_posters_whose_install_state_flipped_and_retries_failures() {
     );
     assert!(!page.posters.contains_key(&("2".to_owned(), false)));
 }
+
+#[test]
+fn a_banner_review_lists_only_its_games_and_goes_straight_to_the_review() {
+    let temp = TempDir::new().unwrap();
+    let paths = paths(temp.path(), false);
+    let steam = temp.path().join("home/.local/share/Steam");
+    fs::create_dir_all(steam.join("steamapps")).unwrap();
+    for (id, title) in [("1", "Alpha"), ("2", "Beta"), ("3", "Gamma")] {
+        manifest(&steam, id, title, 4);
+    }
+
+    // Two of three: all chosen, planned at once, the owned list untouched.
+    let (mut page, _) = Page::only(paths.clone(), vec!["1".into(), "3".into()]);
+    let generation = page.generation;
+    let result = page_listing(&paths, &page);
+    let _ = page.update(Event::Listed(generation, result));
+    let titles: Vec<_> = page
+        .listing
+        .as_ref()
+        .unwrap()
+        .games
+        .iter()
+        .map(|game| game.title.as_str())
+        .collect();
+    assert_eq!(titles, ["Alpha", "Gamma"]);
+    assert_eq!(page.grid.chosen.len(), 2);
+    assert!(page.waiting(), "planning");
+    assert!(!page.owned_loading);
+    assert!(!page.refresh_available());
+    let review = plan_review(
+        &paths,
+        page.listing.as_ref().unwrap().games.clone(),
+        None,
+        &OwnedData::Unloaded,
+    );
+    assert_eq!(review.ready.len(), 2);
+    let _ = page.update(Event::Planned(page.generation, review));
+    assert_eq!(page.step, Step::Review);
+
+    // Back reaches the games, and from there the library, not the Add choices.
+    let _ = page.update(Event::Back);
+    assert_eq!(page.step, Step::Games);
+    assert!(page.take_action().is_none());
+    let _ = page.update(Event::Back);
+    assert!(matches!(
+        page.take_action(),
+        Some(Action::Library {
+            name: None,
+            launch: false
+        })
+    ));
+}
+
+#[test]
+fn a_banner_review_of_one_game_asks_for_its_name_first() {
+    let temp = TempDir::new().unwrap();
+    let paths = paths(temp.path(), false);
+    let steam = temp.path().join("home/.local/share/Steam");
+    fs::create_dir_all(steam.join("steamapps")).unwrap();
+    manifest(&steam, "1", "Alpha", 4);
+    manifest(&steam, "2", "Beta", 4);
+
+    let (mut page, _) = Page::only(paths.clone(), vec!["2".into()]);
+    let generation = page.generation;
+    let result = page_listing(&paths, &page);
+    let _ = page.update(Event::Listed(generation, result));
+    assert_eq!(page.step, Step::Details);
+    assert_eq!(page.name, "beta");
+}
+
+#[test]
+fn a_banner_review_whose_games_are_gone_says_so() {
+    let temp = TempDir::new().unwrap();
+    let paths = paths(temp.path(), false);
+    let steam = temp.path().join("home/.local/share/Steam");
+    fs::create_dir_all(steam.join("steamapps")).unwrap();
+    manifest(&steam, "1", "Alpha", 4);
+
+    let (mut page, _) = Page::only(paths.clone(), vec!["9".into()]);
+    let generation = page.generation;
+    let result = page_listing(&paths, &page);
+    let _ = page.update(Event::Listed(generation, result));
+    assert_eq!(page.step, Step::Games);
+    assert!(page.listing.as_ref().unwrap().games.is_empty());
+    assert!(!page.waiting());
+}
+
+/// What the page's listing task would answer.
+fn page_listing(paths: &Paths, page: &Page) -> Result<Listing, String> {
+    load_listing_only(paths, page.only.as_deref())
+}

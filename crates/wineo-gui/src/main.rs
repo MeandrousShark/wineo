@@ -64,6 +64,7 @@ mod snapshots_page;
 mod sort_control;
 mod spinner;
 mod star_pop;
+mod steam_nudge;
 mod task;
 #[cfg(test)]
 #[allow(dead_code)]
@@ -202,6 +203,8 @@ pub(crate) struct App {
     library_problem: Option<wineo_core::library::Problem>,
     /// Writes of the Steam game record, which run after a scan.
     steam_record: app_library::SteamRecordWrites,
+    /// The new Steam installs the banner offers.
+    steam_nudge: steam_nudge::Nudge,
     refreshing: bool,
     /// The first library load has answered, so an empty library is real.
     loaded: bool,
@@ -376,6 +379,11 @@ pub(crate) enum Message {
     ),
     /// A write of what a scan proposed for the Steam game record finished.
     SteamRecorded(Result<(), String>),
+    /// The banner's Import, with the app ids it showed.
+    NudgeImport(Vec<String>),
+    /// The banner's Dismiss, with the app ids it showed.
+    NudgeDismiss(Vec<String>),
+    NudgeDismissed(Vec<String>, Result<(), String>),
     TrashReloaded(u64, sidebar::TrashBadge),
     Section(sidebar::Section),
     /// A sidebar row was clicked, as opposed to a keyboard shortcut.
@@ -542,6 +550,7 @@ impl App {
             error: None,
             library_problem: None,
             steam_record: app_library::SteamRecordWrites::default(),
+            steam_nudge: steam_nudge::Nudge::default(),
             refreshing: true,
             loaded: false,
             viewport_width: 1200.0 - sidebar::WIDTH,
@@ -905,6 +914,8 @@ impl App {
                     | Message::Unhover(_)
                     | Message::StarHover(..)
                     | Message::Add
+                    | Message::NudgeImport(_)
+                    | Message::NudgeDismiss(_)
                     | Message::CloneEnvironment(_)
                     | Message::GogUpdate(_)
                     | Message::Checkup(
@@ -1121,6 +1132,9 @@ impl App {
                 Task::batch([recording, read])
             }
             Message::SteamRecorded(result) => self.steam_recorded(result),
+            Message::NudgeImport(ids) => self.nudge_import(ids)?,
+            Message::NudgeDismiss(ids) => self.nudge_dismiss(ids)?,
+            Message::NudgeDismissed(ids, result) => self.nudge_dismissed(&ids, result),
             Message::LibraryRead(generation, result, problem) => {
                 if generation == self.library_generation {
                     self.problem_read(problem);

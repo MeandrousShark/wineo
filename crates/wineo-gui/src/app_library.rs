@@ -91,6 +91,7 @@ impl App {
     /// A write already running leaves this one to the scan after it.
     pub(crate) fn discovery_read(&mut self, discovery: Discovery) -> Task<Message> {
         let proposed = discovery.proposed.clone();
+        self.steam_nudge.show(discovery.pending.clone());
         self.shown.show_discovery(discovery);
         if proposed.is_empty() || self.steam_record.writing {
             return Task::none();

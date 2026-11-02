@@ -8,7 +8,6 @@ use wineo_core::library::Problem;
 
 use crate::filter_control::Event;
 use crate::library_menu::icon;
-use crate::theme::Palette;
 use crate::ui;
 use crate::{App, Message, focus_button};
 
@@ -175,32 +174,39 @@ impl App {
     /// names its focus ID.
     fn banner(&self, words: String, checkup: Option<&'static str>) -> Element<'_, Message> {
         let palette = self.palette;
+        let action = checkup.map(|id| {
+            focus_button::control(
+                ui::secondary_button("Open Checkup", palette)
+                    .on_press(Message::Section(crate::sidebar::Section::Checkup))
+                    .into(),
+                true,
+                id,
+                Message::Section(crate::sidebar::Section::Checkup),
+            )
+        });
+        self.strip(palette.warning, words, action)
+    }
+
+    /// The strip's chrome: a dot and words, with `action` at the right when
+    /// there is one. `tone` is the dot and the tint, so an offer can use
+    /// another role than a problem does.
+    pub(crate) fn strip<'a>(
+        &'a self,
+        tone: iced::Color,
+        words: String,
+        action: Option<Element<'a, Message>>,
+    ) -> Element<'a, Message> {
+        let palette = self.palette;
         let message = text(words).size(13).color(palette.foreground).width(Fill);
-        let content: Element<'_, Message> = match checkup {
+        let content: Element<'_, Message> = match action {
             None => message.into(),
-            Some(id) => crate::ends::ends(
-                message,
-                focus_button::control(
-                    ui::secondary_button("Open Checkup", palette)
-                        .on_press(Message::Section(crate::sidebar::Section::Checkup))
-                        .into(),
-                    true,
-                    id,
-                    Message::Section(crate::sidebar::Section::Checkup),
-                ),
-                12.0,
-                crate::ends::MIN_LEFT,
-            ),
+            Some(action) => crate::ends::ends(message, action, 12.0, crate::ends::MIN_LEFT),
         };
         container(
-            container(
-                row![warning_mark(palette), content]
-                    .spacing(10)
-                    .align_y(Center),
-            )
-            .padding([8, 12])
-            .width(Fill)
-            .style(move |_| banner_style(palette)),
+            container(row![mark(tone), content].spacing(10).align_y(Center))
+                .padding([8, 12])
+                .width(Fill)
+                .style(move |_| strip_style(tone)),
         )
         .padding([8, 16])
         .into()
@@ -217,23 +223,23 @@ fn show_hidden(button: iced::widget::Button<'_, Message>) -> Element<'_, Message
     )
 }
 
-fn warning_mark(palette: Palette) -> Element<'static, Message> {
+fn mark(tone: iced::Color) -> Element<'static, Message> {
     container(Space::new().width(8).height(8))
         .style(move |_| {
             container::Style::default()
-                .background(palette.warning)
+                .background(tone)
                 .border(iced::border::rounded(4))
         })
         .into()
 }
 
-fn banner_style(palette: Palette) -> container::Style {
+fn strip_style(tone: iced::Color) -> container::Style {
     container::Style::default()
-        .background(palette.warning.scale_alpha(0.10))
+        .background(tone.scale_alpha(0.10))
         .border(
             iced::border::rounded(ui::CONTROL_RADIUS)
                 .width(1)
-                .color(palette.warning.scale_alpha(0.6)),
+                .color(tone.scale_alpha(0.6)),
         )
 }
 

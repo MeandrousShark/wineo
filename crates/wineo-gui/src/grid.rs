@@ -1096,6 +1096,10 @@ impl App {
         if let Some(banner) = self.trash_banner() {
             page = page.push(banner);
         }
+        // Problems come first; the offer sits nearest the grid.
+        if let Some(banner) = self.steam_banner() {
+            page = page.push(banner);
+        }
         if let Some(error) = &self.error {
             page = page.push(
                 container(text(format!("Failed to load library: {error}")).color(palette.danger))

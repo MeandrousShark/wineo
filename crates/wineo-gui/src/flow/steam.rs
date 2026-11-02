@@ -141,10 +141,23 @@ pub(crate) struct Page {
     status: String,
     error: Option<String>,
     action: Option<Action>,
+    /// Lists only these app ids, for a review the library's banner opened. It
+    /// goes straight to the review and leaves the owned list alone, and Back
+    /// from the games returns to the library, not to the Add choices.
+    only: Option<Vec<String>>,
 }
 
 impl Page {
     pub(crate) fn new(paths: Paths) -> (Self, Task<Event>) {
+        Self::start(paths, None)
+    }
+
+    /// The review for just `ids`, all chosen.
+    pub(crate) fn only(paths: Paths, ids: Vec<String>) -> (Self, Task<Event>) {
+        Self::start(paths, Some(ids))
+    }
+
+    fn start(paths: Paths, only: Option<Vec<String>>) -> (Self, Task<Event>) {
         let mut page = Self {
             paths,
             step: Step::Games,
@@ -163,6 +176,7 @@ impl Page {
             status: String::new(),
             error: None,
             action: None,
+            only,
         };
         let task = page.list();
         (page, task)
@@ -179,6 +193,11 @@ impl Page {
     #[cfg(test)]
     pub(crate) fn spinning(&self) -> bool {
         self.waiting() || self.owned_loading
+    }
+
+    #[cfg(test)]
+    pub(crate) fn only_ids(&self) -> Option<&[String]> {
+        self.only.as_deref()
     }
 
     fn owned_games(&self) -> OwnedData {
@@ -222,6 +241,12 @@ impl Page {
         self.status.clear();
         self.error = None;
         match self.step {
+            Step::Games if self.only.is_some() => {
+                self.action = Some(Action::Library {
+                    name: None,
+                    launch: false,
+                })
+            }
             Step::Games => self.action = Some(Action::Choose),
             Step::Details => self.step = Step::Games,
             Step::Review if self.grid.chosen.len() == 1 => self.step = Step::Details,
@@ -249,8 +274,9 @@ impl Page {
         self.generation = self.generation.wrapping_add(1);
         let generation = self.generation;
         let paths = self.paths.clone();
+        let only = self.only.clone();
         task::blocking(
-            move || load_listing(&paths),
+            move || load_listing_only(&paths, only.as_deref()),
             move |result| Event::Listed(generation, result),
         )
     }
@@ -277,6 +303,7 @@ impl Page {
             && self.listing.is_some()
             && !self.waiting()
             && !self.owned_loading
+            && self.only.is_none()
             && self.owned_note != Some(OwnedNote::NoKey)
     }
 
@@ -461,6 +488,16 @@ impl Page {
             Event::Listed(generation, result) if generation == self.generation => {
                 self.status.clear();
                 match result {
+                    Ok(listing) if self.only.is_some() => {
+                        let task = self.load_posters(&listing);
+                        self.grid.chosen = listing
+                            .games
+                            .iter()
+                            .map(|game| game.app_id.clone())
+                            .collect();
+                        self.listing = Some(listing);
+                        Task::batch([task, self.import_selected()])
+                    }
                     Ok(listing) => {
                         let task = self.load_posters(&listing);
                         self.listing = Some(listing);
@@ -650,7 +687,9 @@ impl Page {
                         }
                         None => {}
                     }
-                    let refresh = (self.owned_note != Some(OwnedNote::NoKey)).then(|| {
+                    let refresh = (self.only.is_none()
+                        && self.owned_note != Some(OwnedNote::NoKey))
+                    .then(|| {
                         secondary_button("Refresh", palette)
                             .on_press_maybe(self.refresh_available().then_some(Event::Refresh))
                     });
@@ -817,6 +856,15 @@ impl Page {
         }
         frame::page_frame(page)
     }
+}
+
+/// The installed games, limited to `only` when given.
+fn load_listing_only(paths: &Paths, only: Option<&[String]>) -> Result<Listing, String> {
+    let mut listing = load_listing(paths)?;
+    if let Some(only) = only {
+        listing.games.retain(|game| only.contains(&game.app_id));
+    }
+    Ok(listing)
 }
 
 fn load_listing(paths: &Paths) -> Result<Listing, String> {

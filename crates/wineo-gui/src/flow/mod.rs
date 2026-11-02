@@ -158,6 +158,12 @@ impl Page {
         (Self::Clone(Box::new(page)), task.map(Event::from))
     }
 
+    /// The Steam review limited to `ids`, which the library's banner offered.
+    pub(crate) fn steam_games(paths: Paths, ids: Vec<String>) -> (Self, Task<Event>) {
+        let (page, task) = steam::Page::only(paths, ids);
+        (Self::Steam(Box::new(page)), task.map(Event::from))
+    }
+
     /// Updates `name`'s GOG game, or finishes its interrupted update.
     pub(crate) fn gog_update(paths: Paths, name: String) -> (Self, Task<Event>) {
         let (page, task) = gog_update::Page::new(paths, name);
@@ -255,6 +261,15 @@ impl Page {
             Self::Gog(page) => page.waiting(),
             Self::GogUpdate(page) => page.waiting(),
             _ => false,
+        }
+    }
+
+    /// The app ids a banner-opened Steam review is limited to.
+    #[cfg(test)]
+    pub(crate) fn steam_ids(&self) -> Option<&[String]> {
+        match self {
+            Self::Steam(page) => page.only_ids(),
+            _ => None,
         }
     }
 

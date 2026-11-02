@@ -169,6 +169,15 @@ impl Watch {
         shown.discovery_due = false;
     }
 
+    /// Forgets that `ids` are pending, after they were dismissed, so the next
+    /// scan has nothing to report about them.
+    pub(crate) fn drop_pending(&self, ids: &[String]) {
+        self.shown()
+            .discovery
+            .pending
+            .retain(|game| !ids.contains(&game.app_id));
+    }
+
     /// Has the next scan bring discovery back, so its writes are tried again.
     pub(crate) fn discovery_due(&self) {
         self.shown().discovery_due = true;
