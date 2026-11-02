@@ -41,6 +41,9 @@ const MAX_STRINGS: usize = 1 << 24;
 /// Entries nest a handful of levels. The cap keeps a hostile one from
 /// exhausting the stack.
 const MAX_DEPTH: usize = 64;
+/// A kept value is a short word or list. Every app keeps its own copy, so the
+/// file cap alone wouldn't bound what stays in memory.
+const MAX_VALUE_BYTES: usize = 1024;
 
 #[derive(Debug, Clone, Copy)]
 struct Limits {
@@ -48,6 +51,7 @@ struct Limits {
     apps: usize,
     strings: usize,
     depth: usize,
+    value_bytes: usize,
 }
 
 const LIMITS: Limits = Limits {
@@ -55,6 +59,7 @@ const LIMITS: Limits = Limits {
     apps: MAX_APPS,
     strings: MAX_STRINGS,
     depth: MAX_DEPTH,
+    value_bytes: MAX_VALUE_BYTES,
 };
 
 /// Why the whole file can't be used. An app that is merely absent or has a bad
@@ -127,6 +132,9 @@ pub fn parse(bytes: &[u8]) -> Result<AppInfo, ReadError> {
 }
 
 fn parse_with(bytes: &[u8], limits: Limits) -> Result<AppInfo, ReadError> {
+    if bytes.len() as u64 > limits.file_bytes {
+        return Err(ReadError::TooLarge);
+    }
     let mut header = Cursor::new(bytes);
     let magic = header
         .u32()
@@ -175,7 +183,7 @@ fn parse_with(bytes: &[u8], limits: Limits) -> Result<AppInfo, ReadError> {
         ))?;
         let facts = body
             .get(ENTRY_META_LEN..)
-            .and_then(|kv| entry_facts(kv, &strings, limits.depth));
+            .and_then(|kv| entry_facts(kv, &strings, limits));
         if let Some(facts) = facts {
             apps.entry(app_id).or_insert(facts);
         }
@@ -215,11 +223,11 @@ enum Scope {
 }
 
 /// The facts in one entry's key/values, or `None` when it is bad.
-fn entry_facts(kv: &[u8], strings: &[&[u8]], max_depth: usize) -> Option<AppFacts> {
+fn entry_facts(kv: &[u8], strings: &[&[u8]], limits: Limits) -> Option<AppFacts> {
     let mut walker = Walker {
         cursor: Cursor::new(kv),
         strings,
-        max_depth,
+        limits,
         facts: AppFacts::default(),
     };
     // One root object, then the end marker of the level it sits in. Trailing
@@ -235,7 +243,7 @@ fn entry_facts(kv: &[u8], strings: &[&[u8]], max_depth: usize) -> Option<AppFact
 struct Walker<'a, 's> {
     cursor: Cursor<'a>,
     strings: &'s [&'a [u8]],
-    max_depth: usize,
+    limits: Limits,
     facts: AppFacts,
 }
 
@@ -255,7 +263,7 @@ impl<'a> Walker<'a, '_> {
             let key = self.key()?;
             match kind {
                 0 => {
-                    if depth >= self.max_depth {
+                    if depth >= self.limits.depth {
                         return None;
                     }
                     let child = if scope == Scope::Root && key.eq_ignore_ascii_case(b"common") {
@@ -288,12 +296,15 @@ impl<'a> Walker<'a, '_> {
         }
     }
 
-    /// `None` when a value we keep isn't UTF-8. Other strings are skipped
-    /// unchecked, since a bad one there can't change what we report.
+    /// `None` when a value we keep isn't UTF-8 or is over the cap. Other strings
+    /// are skipped unchecked, since a bad one there can't change what we report.
     fn keep(&mut self, key: &[u8], value: &[u8]) -> Option<()> {
         let is_oslist = key.eq_ignore_ascii_case(b"oslist");
         if !is_oslist && !key.eq_ignore_ascii_case(b"type") {
             return Some(());
+        }
+        if value.len() > self.limits.value_bytes {
+            return None;
         }
         let value = std::str::from_utf8(value).ok()?;
         if is_oslist {

@@ -457,8 +457,66 @@ fn a_table_offset_inside_the_entries_is_unreadable_or_harmless() {
     for offset in 16..good.len() {
         let mut bytes = good.clone();
         bytes[8..16].copy_from_slice(&i64::try_from(offset).unwrap().to_le_bytes());
-        let _ = parse(&bytes);
+        // Keys now index garbage, so an app can only be missing or still right.
+        if let Ok(info) = parse(&bytes) {
+            assert!(info.len() <= 2, "offset {offset}");
+            for (app_id, oslist) in [(1, "windows"), (2, "linux")] {
+                assert!(
+                    info.get(app_id)
+                        .is_none_or(|facts| facts.oslist.as_deref() == Some(oslist)),
+                    "offset {offset}"
+                );
+            }
+        }
     }
+}
+
+#[test]
+fn parsing_honors_the_size_cap_too() {
+    let mut fixture = Fixture::new();
+    fixture.app(1, game("windows"));
+    let bytes = fixture.build();
+    let len = u64::try_from(bytes.len()).unwrap();
+    let limits = |file_bytes| Limits {
+        file_bytes,
+        ..LIMITS
+    };
+    assert!(parse_with(&bytes, limits(len)).is_ok());
+    assert!(matches!(
+        parse_with(&bytes, limits(len - 1)),
+        Err(ReadError::TooLarge)
+    ));
+}
+
+#[test]
+fn a_kept_value_over_the_cap_is_a_miss_for_that_app() {
+    let mut fixture = Fixture::new();
+    fixture
+        .app(1, game(&",".repeat(16)))
+        .app(2, game("windows"));
+    let bytes = fixture.build();
+
+    let limits = Limits {
+        value_bytes: 7,
+        ..LIMITS
+    };
+    let info = parse_with(&bytes, limits).unwrap();
+    assert_eq!(info.get(1), None);
+    assert_eq!(info.get(2).unwrap().oslist.as_deref(), Some("windows"));
+
+    let limits = Limits {
+        value_bytes: 16,
+        ..LIMITS
+    };
+    assert_eq!(
+        parse_with(&bytes, limits)
+            .unwrap()
+            .get(1)
+            .unwrap()
+            .oslist
+            .as_deref(),
+        Some("")
+    );
 }
 
 #[test]
