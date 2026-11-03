@@ -538,6 +538,7 @@ fn steam_card(name: &str, state: State, install: wineo_core::steam::AppState) ->
     let mut card = crate::tests::card(name, state, 60);
     card.kind = Some(crate::library::CardKind::Proxied);
     card.steam = Some(crate::library::SteamDetails {
+        app_id: "1".into(),
         install: install.into(),
         proton: None,
         size: None,

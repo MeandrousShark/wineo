@@ -612,26 +612,33 @@ impl App {
             // Always a layer, so the ones above keep their places.
             self.filter_tab_view(),
         ];
+        // One column, so the toasts stack instead of covering each other.
+        let mut toasts = iced::widget::Column::new().spacing(8).align_x(Center);
+        let mut any = false;
+        if let Some(toast) = self.import_toast_view() {
+            any = true;
+            toasts = toasts.push(toast);
+        }
         if let Some((message, _)) = &self.feature_notice {
+            any = true;
             let palette = self.palette;
-            page = page.push(
-                container(
-                    container(text(message).color(palette.foreground))
-                        .padding(12)
-                        .style(move |_| {
-                            container::Style::default()
-                                .background(palette.surface)
-                                .border(border::rounded(8).width(1).color(palette.border))
-                        }),
-                )
-                .padding(16)
-                .align_bottom(Fill)
-                .center_x(Fill),
+            toasts = toasts.push(
+                container(text(message).color(palette.foreground))
+                    .padding(12)
+                    .style(move |_| {
+                        container::Style::default()
+                            .background(palette.surface)
+                            .border(border::rounded(8).width(1).color(palette.border))
+                    }),
             );
         }
         if self.toast.is_some() {
+            any = true;
+            toasts = toasts.push(self.toast_view());
+        }
+        if any {
             page = page.push(
-                container(self.toast_view())
+                container(toasts)
                     .padding(16)
                     .align_bottom(Fill)
                     .center_x(Fill),
@@ -1629,6 +1636,7 @@ mod tests {
         let mut card = crate::tests::card("game", State::Inactive, 60);
         card.kind = Some(crate::library::CardKind::Proxied);
         card.steam = Some(crate::library::SteamDetails {
+            app_id: "1".into(),
             install: wineo_core::steam::AppState::Installing(Some(40)).into(),
             proton: None,
             size: None,

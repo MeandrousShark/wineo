@@ -1,5 +1,6 @@
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
+use std::time::{Duration, Instant};
 
 use wineo_core::library::{self as saved, Recorded};
 
@@ -705,4 +706,197 @@ fn a_new_launch_doesnt_sweep_claims() {
     reload(&mut next);
     assert!(!next.steam_auto.running());
     assert_eq!(reason(&next, "2"), Some(Recorded::Claimed));
+}
+
+/// The toast, once a pass has imported `ids` and the reload has landed.
+fn import_pass(root: &tempfile::TempDir, app: &mut App, games: &[(&str, &str)]) -> Report {
+    for (id, title) in games {
+        steam_game(root, id, title);
+    }
+    rescan(app).expect("new installs are news");
+    let discovery = scan(app).discovery.unwrap();
+    let report = run_pass(&app.paths, &app.shown, &discovery.pending, &Token::new());
+    let _ = app.update(Message::AutoImported(Ok(report.clone())));
+    reload(app);
+    report
+}
+
+fn clicked(app: &mut App) {
+    let _ = app.update(Message::ImportToast);
+}
+
+#[test]
+fn one_import_toasts_its_title_and_a_click_opens_the_panel() {
+    let (root, mut app) = settled(true);
+    let before = Instant::now();
+    import_pass(&root, &mut app, &[("2", "New")]);
+    assert_eq!(app.import_toast.text(), Some("Imported New"));
+    let until = app.import_toast.expires_at().expect("the Library is shown");
+    assert!(until >= before + Duration::from_secs(8));
+    assert!(app.feature_notice.is_none());
+    assert_eq!(app.selected, None);
+
+    clicked(&mut app);
+    let name = app.cards[0].name.clone();
+    assert_eq!(app.selected, Some(name));
+    assert!(app.panel_open);
+    assert!(app.import_toast.text().is_none(), "a click dismisses it");
+}
+
+#[test]
+fn several_imports_toast_a_count_and_a_click_does_nothing() {
+    let (root, mut app) = settled(true);
+    import_pass(&root, &mut app, &[("2", "New"), ("3", "Newer")]);
+    assert_eq!(app.import_toast.text(), Some("Imported 2 Steam games"));
+
+    clicked(&mut app);
+    assert_eq!(app.selected, None);
+    assert!(!app.panel_open);
+    assert_eq!(app.import_toast.text(), Some("Imported 2 Steam games"));
+}
+
+#[test]
+fn a_pass_with_no_imports_shows_no_toast() {
+    let (root, mut app) = settled(true);
+    steam_game(&root, "2", "New");
+    let failure = wineo_core::steam_import::Failure {
+        app_id: "2".to_owned(),
+        name: "new".to_owned(),
+        reason: "no".to_owned(),
+    };
+    let reports = [
+        Report {
+            failures: vec![failure],
+            ..Report::default()
+        },
+        Report {
+            stopped: Some("can't".to_owned()),
+            ..Report::default()
+        },
+        Report {
+            canceled: true,
+            ..Report::default()
+        },
+    ];
+    for report in reports {
+        let _ = app.update(Message::AutoImported(Ok(report)));
+        app.refreshing = false;
+        reload(&mut app);
+        assert!(app.import_toast.text().is_none());
+    }
+}
+
+#[test]
+fn imports_beside_failures_still_toast() {
+    let (root, mut app) = settled(true);
+    steam_game(&root, "2", "New");
+    rescan(&mut app).unwrap();
+    let discovery = scan(&app).discovery.unwrap();
+    let mut report = run_pass(&app.paths, &app.shown, &discovery.pending, &Token::new());
+    report.failures.push(wineo_core::steam_import::Failure {
+        app_id: "9".to_owned(),
+        name: "nine".to_owned(),
+        reason: "no".to_owned(),
+    });
+    let _ = app.update(Message::AutoImported(Ok(report)));
+    reload(&mut app);
+    assert_eq!(app.import_toast.text(), Some("Imported New"));
+}
+
+#[test]
+fn an_id_without_a_card_is_left_out() {
+    let (root, mut app) = settled(true);
+    steam_game(&root, "2", "New");
+    rescan(&mut app).unwrap();
+    let discovery = scan(&app).discovery.unwrap();
+    let mut report = run_pass(&app.paths, &app.shown, &discovery.pending, &Token::new());
+    report.imported.push("404".to_owned());
+    let _ = app.update(Message::AutoImported(Ok(report)));
+    reload(&mut app);
+    assert_eq!(app.import_toast.text(), Some("Imported New"));
+
+    let gone = Report {
+        imported: vec!["404".to_owned()],
+        ..Report::default()
+    };
+    let _ = app.update(Message::ImportToast);
+    let _ = app.update(Message::AutoImported(Ok(gone)));
+    app.refreshing = false;
+    reload(&mut app);
+    assert!(app.import_toast.text().is_none());
+}
+
+#[test]
+fn a_toast_finished_behind_another_section_starts_on_the_library() {
+    let (root, mut app) = settled(true);
+    app.section = crate::sidebar::Section::Trash;
+    import_pass(&root, &mut app, &[("2", "New")]);
+    assert_eq!(app.import_toast.text(), Some("Imported New"));
+    assert!(app.import_toast.waiting());
+    assert!(app.import_toast.expires_at().is_none());
+    assert!(app.import_toast_view().is_none(), "not drawn while waiting");
+    clicked(&mut app);
+    assert_eq!(app.selected, None, "a click can't reach it");
+    assert_eq!(app.import_toast.text(), Some("Imported New"));
+
+    let before = Instant::now();
+    let _ = app.update(Message::Section(crate::sidebar::Section::Library));
+    assert!(!app.import_toast.waiting());
+    let until = app.import_toast.expires_at().unwrap();
+    assert!(until >= before + Duration::from_secs(8));
+    assert!(until <= Instant::now() + Duration::from_secs(8));
+    assert_eq!(app.next_toast_deadline(), Some(until));
+    assert!(app.import_toast_view().is_some());
+}
+
+#[test]
+fn the_toast_expires_after_its_eight_seconds() {
+    let (root, mut app) = settled(true);
+    import_pass(&root, &mut app, &[("2", "New")]);
+    let until = app.import_toast.expires_at().unwrap();
+    assert_eq!(app.toast_wake.due(), Some(until));
+
+    app.import_toast
+        .set_deadline(Instant::now() + Duration::from_secs(5));
+    let _ = app.update(Message::ToastHover(false));
+    assert!(app.import_toast.text().is_some());
+
+    app.import_toast
+        .set_deadline(Instant::now() - Duration::from_millis(1));
+    let _ = app.update(Message::ToastHover(false));
+    assert!(app.import_toast.text().is_none());
+    assert_eq!(app.next_toast_deadline(), None);
+}
+
+#[test]
+fn a_covered_window_ignores_the_click() {
+    let (root, mut app) = settled(true);
+    import_pass(&root, &mut app, &[("2", "New")]);
+    app.close_prompt = true;
+    clicked(&mut app);
+    assert_eq!(app.selected, None);
+    assert_eq!(app.import_toast.text(), Some("Imported New"));
+}
+
+#[test]
+fn a_newer_pass_replaces_the_toast() {
+    let (root, mut app) = settled(true);
+    import_pass(&root, &mut app, &[("2", "New")]);
+    import_pass(&root, &mut app, &[("3", "Newer")]);
+    assert_eq!(app.import_toast.text(), Some("Imported Newer"));
+}
+
+#[test]
+fn the_toast_stacks_with_the_undo_toast_and_the_notice() {
+    let (root, mut app) = settled(true);
+    import_pass(&root, &mut app, &[("2", "New")]);
+    let name = app.cards[0].name.clone();
+    let entry = wineo_core::trash::remove(&app.paths, &name, false).unwrap();
+    app.toast = Some(crate::removal::Toast::new(entry));
+    app.flag_notice("Something".to_owned());
+    let _ = app.update(Message::ToastHover(false));
+    assert!(app.toast.is_some());
+    assert!(app.feature_notice.is_some());
+    assert_eq!(app.import_toast.text(), Some("Imported New"));
+    let _ = app.view();
 }

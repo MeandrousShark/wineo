@@ -279,6 +279,7 @@ impl App {
             self.hook_stop_confirm = None;
             self.hook_stop_identity = None;
         }
+        self.import_toast.resolve(&cards);
         let art = self.refresh_art(&cards);
         let checks = self.merge_checked(cards);
         Task::batch([art, checks, self.load_visible_art(), self.load_panel_art()])
