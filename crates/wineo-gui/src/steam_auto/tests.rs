@@ -900,3 +900,73 @@ fn the_toast_stacks_with_the_undo_toast_and_the_notice() {
     assert_eq!(app.import_toast.text(), Some("Imported New"));
     let _ = app.view();
 }
+
+#[test]
+fn a_failed_reload_keeps_the_toast_for_the_next_good_one() {
+    let (root, mut app) = settled(true);
+    steam_game(&root, "2", "New");
+    rescan(&mut app).unwrap();
+    let discovery = scan(&app).discovery.unwrap();
+    let report = run_pass(&app.paths, &app.shown, &discovery.pending, &Token::new());
+    let _ = app.update(Message::AutoImported(Ok(report)));
+    let _ = app.update(Message::Loaded(Err("unreadable".to_owned())));
+    assert!(app.import_toast.text().is_none());
+
+    reload(&mut app);
+    assert_eq!(app.import_toast.text(), Some("Imported New"));
+}
+
+#[test]
+fn toasts_coming_and_going_above_undo_leave_its_focus_alone() {
+    use crate::focus_button::UNDO_ID;
+    use crate::layout_probe::{lay_out, relay_out};
+    use iced::advanced::widget::operation::focusable;
+
+    let (root, mut app) = settled(true);
+    import_pass(&root, &mut app, &[("2", "New")]);
+    let name = app.cards[0].name.clone();
+    let entry = wineo_core::trash::remove(&app.paths, &name, false).unwrap();
+    app.toast = Some(crate::removal::Toast::new(entry));
+    app.import_toast.set_deadline(Instant::now());
+    app.import_toast
+        .expire(Instant::now() + Duration::from_secs(1));
+    assert!(app.import_toast.text().is_none());
+
+    let size = app.window_size;
+    let mut laid = lay_out(app.view(), size);
+    laid.run(Box::new(focusable::focus::<()>(iced::widget::Id::new(
+        UNDO_ID,
+    ))));
+    assert_eq!(laid.focused(), [iced::widget::Id::new(UNDO_ID)]);
+    let mut tree = laid.into_tree();
+
+    // The import toast appears, then the notice, then each leaves.
+    let toast_ids = ["2".to_owned()];
+    app.import_toast.await_cards(&toast_ids);
+    let cards = app.cards.clone();
+    app.import_toast.resolve(&cards);
+    app.settle_import_toast(Instant::now());
+    assert!(app.import_toast.text().is_some());
+    let steps: [fn(&mut App); 4] = [
+        |_| {},
+        |app| app.flag_notice("Something".to_owned()),
+        |app| {
+            app.import_toast
+                .set_deadline(Instant::now() - Duration::from_secs(1))
+        },
+        |app| app.feature_notice = None,
+    ];
+    for step in steps {
+        step(&mut app);
+        app.import_toast.expire(Instant::now());
+        let mut laid = relay_out(app.view(), tree, size);
+        assert_eq!(laid.focused(), [iced::widget::Id::new(UNDO_ID)]);
+        tree = laid.into_tree();
+    }
+    assert!(app.import_toast.text().is_none());
+    assert!(app.feature_notice.is_none());
+
+    // Focus still pauses the Undo timer.
+    let _ = app.update(Message::ToastFocus(true, Instant::now()));
+    assert!(app.toast.as_ref().unwrap().deadline().is_none());
+}

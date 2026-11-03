@@ -1188,7 +1188,6 @@ impl App {
             Message::Loaded(Err(error)) => {
                 self.refreshing = false;
                 self.loaded = true;
-                self.import_toast.forget();
                 self.shown.show_library(Err(error.clone()));
                 self.error = Some(error);
                 Task::none()

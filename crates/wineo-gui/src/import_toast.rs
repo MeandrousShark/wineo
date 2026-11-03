@@ -18,7 +18,8 @@ const MAX_WIDTH: f32 = 480.0;
 
 #[derive(Debug, Default)]
 pub(crate) struct ImportToast {
-    /// App ids from the last pass whose cards the next reload shows.
+    /// App ids from the last pass whose cards the next reload shows. A failed
+    /// reload leaves them for the next good one.
     awaiting: Vec<String>,
     shown: Option<Shown>,
 }
@@ -39,14 +40,12 @@ impl ImportToast {
         self.awaiting = ids.to_vec();
     }
 
-    /// The reload failed, so there are no cards to resolve against.
-    pub(crate) fn forget(&mut self) {
-        self.awaiting.clear();
-    }
-
     /// Turns the awaited ids into a toast, from the cards the reload found.
     /// A card that's gone since is left out.
     pub(crate) fn resolve(&mut self, cards: &[Card]) {
+        // Two environments can share an app id; the first card stands for
+        // it, since telling them apart would need the pass to say which it
+        // made.
         let mut found: Vec<(&str, &str)> = Vec::new();
         for id in std::mem::take(&mut self.awaiting) {
             let card = cards

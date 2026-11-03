@@ -612,30 +612,45 @@ impl App {
             // Always a layer, so the ones above keep their places.
             self.filter_tab_view(),
         ];
-        // One column, so the toasts stack instead of covering each other.
-        let mut toasts = iced::widget::Column::new().spacing(8).align_x(Center);
-        let mut any = false;
-        if let Some(toast) = self.import_toast_view() {
-            any = true;
-            toasts = toasts.push(toast);
-        }
-        if let Some((message, _)) = &self.feature_notice {
-            any = true;
-            let palette = self.palette;
-            toasts = toasts.push(
-                container(text(message).color(palette.foreground))
-                    .padding(12)
-                    .style(move |_| {
-                        container::Style::default()
-                            .background(palette.surface)
-                            .border(border::rounded(8).width(1).color(palette.border))
-                    }),
-            );
-        }
-        if self.toast.is_some() {
-            any = true;
-            toasts = toasts.push(self.toast_view());
-        }
+        // One column with a fixed slot for each toast, empty when it's absent.
+        // Undo keeps its place in the tree as the others come and go, so it
+        // keeps its focus. (iced's keyed column can't do this: it guesses an
+        // insertion before the last child is an append.) The gap sits under a
+        // toast, only when another one is below it.
+        const GAP: f32 = 8.0;
+        let below =
+            |present: bool| iced::Padding::default().bottom(if present { GAP } else { 0.0 });
+        let undo = self.toast.is_some();
+        let notice = self.feature_notice.is_some();
+        let import = self.import_toast_view();
+        let any = undo || notice || import.is_some();
+        let import_slot: Element<'_, Message> = match import {
+            Some(toast) => container(toast).padding(below(notice || undo)).into(),
+            None => Space::new().into(),
+        };
+        let notice_slot: Element<'_, Message> = match &self.feature_notice {
+            Some((message, _)) => {
+                let palette = self.palette;
+                container(
+                    container(text(message).color(palette.foreground))
+                        .padding(12)
+                        .style(move |_| {
+                            container::Style::default()
+                                .background(palette.surface)
+                                .border(border::rounded(8).width(1).color(palette.border))
+                        }),
+                )
+                .padding(below(undo))
+                .into()
+            }
+            None => Space::new().into(),
+        };
+        let undo_slot: Element<'_, Message> = if undo {
+            self.toast_view()
+        } else {
+            Space::new().into()
+        };
+        let toasts = column![import_slot, notice_slot, undo_slot].align_x(Center);
         if any {
             page = page.push(
                 container(toasts)
