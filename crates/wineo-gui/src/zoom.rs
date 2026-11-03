@@ -243,6 +243,19 @@ impl App {
         (anchor, reveal)
     }
 
+    /// Keeps the place through a dock or undock that just set the cards
+    /// moving, since a column change would otherwise reflow the clicked card
+    /// out of view. Called after the spring sets out, when the new slots
+    /// plus offsets give where cards are drawn now. A zoom in progress keeps
+    /// its own anchor.
+    pub(crate) fn anchor_dock(&mut self) -> Task<Message> {
+        if !self.grid_motion.active() || self.zooming.gesture.is_some() {
+            return Task::none();
+        }
+        self.grid_motion.anchor = self.find_anchor().0;
+        self.hold_anchor()
+    }
+
     /// Starts a gesture unless one is running.
     fn begin_gesture(&mut self) {
         if self.zooming.gesture.is_some() {

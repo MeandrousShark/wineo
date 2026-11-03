@@ -318,8 +318,9 @@ column change halfway through a zoom never jumps.
   and wraps again at rest. The fade keeps its own frames, so a stopped
   zoom, a drag, or a flow opening still finishes it; the poster-only
   toggle snaps it.
-- A zoom or the toggle keeps the place: the selected card if any of it is
-  visible, otherwise the first visible card, holds its top where it was.
+- A zoom, the toggle, or a panel dock or undock keeps the place: the
+  selected card if any of it is visible, otherwise the first visible card,
+  holds its top where it was.
   A manual scroll, arrow key, or click ends that.
 - After a new order, the selection scrolls once, straight to where it
   lands. A scroll waiting on motion runs once when the last motion ends,

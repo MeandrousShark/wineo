@@ -1380,7 +1380,10 @@ impl App {
         }
         let task = if panel_was_open != self.panel_open {
             let waited = self.move_grid();
-            task.chain(self.load_visible_art()).chain(waited)
+            let hold = self.anchor_dock();
+            task.chain(hold)
+                .chain(self.load_visible_art())
+                .chain(waited)
         } else {
             task
         };

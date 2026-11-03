@@ -468,6 +468,38 @@ fn the_poster_only_toggle_springs_the_cards_to_their_new_rows_holding_the_place(
 }
 
 #[test]
+fn a_dock_and_undock_that_change_the_columns_hold_the_selection_in_place() {
+    let (_root, mut app) = fixture(&named("game", 60));
+    let _ = resize(&mut app, 1700.0);
+    let closed = app.columns();
+    // The selection, a little below the viewport's top.
+    app.scroll_offset = app.grid_places().slots[22].y - 100.0;
+    for (open, message) in [
+        (true, Message::Select("game-22".into())),
+        (false, Message::ClosePanel),
+    ] {
+        let _ = app.update(message);
+        assert_eq!(app.panel_open, open);
+        if open {
+            assert!(app.columns() < closed, "{} of {closed}", app.columns());
+        }
+        let start = set_out(&app);
+        assert_eq!(app.grid_motion.anchor, Some(("game-22".to_owned(), 100.0)));
+        // Every frame keeps the selection's top where it was.
+        for ms in [0, 40, 120, 250, 1000] {
+            let _ = app.update(Message::GridTick(
+                app.grid_motion.generation(),
+                start + Duration::from_millis(ms),
+            ));
+            let top = tops_in_view(&app)[22];
+            assert!((top - 100.0).abs() < 0.01, "open {open}, {ms} ms: {top}");
+        }
+        assert!(!app.grid_motion.active());
+        assert!(app.grid_motion.anchor.is_none());
+    }
+}
+
+#[test]
 fn leaving_cards_keep_the_text_they_left_with_through_the_toggle() {
     let mut names = named("drop", 9);
     names.push("keep-00".into());
