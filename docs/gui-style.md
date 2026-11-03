@@ -202,6 +202,11 @@ Plan 0054 added these.
   below any problem strips and nearest the grid: an accent action, and a
   neutral one to decline. Every strip sits in one always-present slot, so one
   coming or going doesn't reset the grid's scroll.
+- Short-lived notes sit bottom-center on the surface with a thin border and
+  stack 8 px apart instead of covering each other: an auto-import note on
+  top, at most 480 px wide, then a feature notice, then the removal bar with
+  **Undo**. A note that can act, like one naming a single imported game, is
+  a neutral button with hover and focus states.
 - Poster marks are a 24 px round chip in black at 55% opacity with a 14 px
   white icon, 8 px in from their corner, each corner holding one so nothing
   moves when another appears. The star has the top-right corner and a

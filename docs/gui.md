@@ -196,8 +196,11 @@ a [Steam import](#add-import-and-clone) away. See
 [New installs](steam.md#new-installs).
 
 With **Import new Steam games automatically** on in [Settings](#settings),
-those games are imported on their own instead. A game that fails stays in the
-banner for you, and wineo doesn't try it again until the next launch.
+those games are imported on their own instead, and a note at the bottom of the
+Library says so for 8 seconds: `Imported Hades`, which you can click to open its
+details, or `Imported 3 Steam games`. If you're on another page, it waits until
+you're back. A game that fails stays in the banner for you, and wineo doesn't
+try it again until the next launch.
 
 ### An unreadable trash entry
 
