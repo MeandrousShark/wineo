@@ -623,7 +623,6 @@ impl App {
         let undo = self.toast.is_some();
         let notice = self.feature_notice.is_some();
         let import = self.import_toast_view();
-        let any = undo || notice || import.is_some();
         let import_slot: Element<'_, Message> = match import {
             Some(toast) => container(toast).padding(below(notice || undo)).into(),
             None => Space::new().into(),
@@ -651,14 +650,14 @@ impl App {
             Space::new().into()
         };
         let toasts = column![import_slot, notice_slot, undo_slot].align_x(Center);
-        if any {
-            page = page.push(
-                container(toasts)
-                    .padding(16)
-                    .align_bottom(Fill)
-                    .center_x(Fill),
-            );
-        }
+        // Always a layer, so the dialogs above keep their places, and their
+        // focus, when a toast comes or goes. Empty slots take no input.
+        page = page.push(
+            container(toasts)
+                .padding(16)
+                .align_bottom(Fill)
+                .center_x(Fill),
+        );
         if self.removal.is_some() {
             page = page.push(iced::widget::opaque(
                 mouse_area(container(self.remove_view()).center(Fill).style(|_| {
