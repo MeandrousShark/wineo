@@ -4,6 +4,48 @@ A finished plan bumps the minor version and fixes between plans bump the
 patch version. A plan released in parts bumps the minor version for each
 part. See `AGENTS.md` for the rule.
 
+## 1.2.0 - 2026-11-02
+
+Steam games land where they belong, and the library notices new ones (plan
+0061, "Harder").
+
+New in this release:
+
+- wineo reads Steam's `appinfo.vdf` to tell native games from Windows ones, so
+  every installed Steam game sits under Native or Windows, even before its first
+  run. One shared rule now drives both the platform filter and the panel's
+  Proton row.
+- The desktop app notices games Steam installs after the upgrade and offers
+  them in a banner above the grid, with **Import** and **Dismiss**. Soundtracks,
+  demos, tools, DLC, and Steam's runtimes aren't offered, and neither is
+  anything you already had. A dismissed or removed game is never offered again,
+  even after a reinstall.
+- **Import new Steam games automatically** in Settings imports new installs on
+  its own, with `import steam --all`'s defaults. It's off by default. A note at
+  the bottom of the Library names what it brought in, and clicking it opens a
+  single game's details.
+- `library.toml` gains a `[steam]` table: a baseline of each Steam library's
+  games, and what's been dismissed, imported, or claimed by auto-import. Every
+  Steam import joins it, the CLI included.
+
+Fixes:
+
+- Opening or closing the details panel keeps the clicked card in place, the
+  way a zoom does, instead of letting the column change reflow it out of view.
+- The removal bar with **Undo** and a feature notice no longer draw on top of
+  each other; short-lived notes stack at the bottom.
+
+Behavior changes:
+
+- A native Steam game no longer shows a Proton row, and a Windows game shows
+  one before its first run, from its own setting or Steam's default.
+- An uninstalled Steam game has no platform and no Proton row, so it no longer
+  shows under the Windows filter from an old Proton setting.
+- The first launch of 1.2.0 records the games you already have without
+  offering them. Running an older wineo's `validate --fix` afterward drops the
+  unknown `[steam]` table and, with it, that record, so the next 1.2.0 launch
+  starts a fresh baseline.
+
 ## 1.1.2 - 2026-11-01
 
 The last two of three small batches: less repeated work behind the scenes, and
