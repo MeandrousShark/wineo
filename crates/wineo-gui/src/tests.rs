@@ -827,6 +827,7 @@ fn steam_install_changes_swap_the_card_between_color_and_grayscale() {
     let mut card = card_with_art(art);
     card.kind = Some(crate::library::CardKind::Proxied);
     card.steam = Some(crate::library::SteamDetails {
+        app_id: "1".into(),
         install: wineo_core::steam::AppState::Installed.into(),
         proton: None,
         size: None,
@@ -967,6 +968,7 @@ fn steam_card(name: &str, install: wineo_core::steam::AppState) -> Card {
     card.targets = vec!["steam".into()];
     card.default_target = Some("steam".into());
     card.steam = Some(crate::library::SteamDetails {
+        app_id: "1".into(),
         install: install.into(),
         proton: None,
         size: None,
@@ -2113,6 +2115,7 @@ fn steam_waiting_and_client_runs_use_stop_and_force_stop() {
         let card = &mut app.cards[0];
         card.kind = Some(crate::library::CardKind::Proxied);
         card.steam = Some(crate::library::SteamDetails {
+            app_id: "1".into(),
             install: wineo_core::steam::AppState::Installed.into(),
             proton: Some("proton_experimental".to_owned()),
             size: Some(2048),

@@ -15,7 +15,8 @@ use crate::{App, Message, focus_button, remove_work, spinner};
 const PREFIX_ID: &str = "remove-prefix";
 const CANCEL_ID: &str = "remove-cancel";
 const REMOVE_ID: &str = "remove-confirm";
-const TOAST_WRAPPING: iced::widget::text::Wrapping = iced::widget::text::Wrapping::WordOrGlyph;
+pub(crate) const TOAST_WRAPPING: iced::widget::text::Wrapping =
+    iced::widget::text::Wrapping::WordOrGlyph;
 
 pub(crate) struct Dialog {
     pub(crate) name: String,
@@ -405,7 +406,8 @@ impl App {
     pub(crate) fn next_toast_deadline(&self) -> Option<Instant> {
         let toast = self.toast.as_ref().and_then(Toast::deadline);
         let notice = self.feature_notice.as_ref().map(|(_, until)| *until);
-        [toast, notice].into_iter().flatten().min()
+        let import = self.import_toast.deadline();
+        [toast, notice, import].into_iter().flatten().min()
     }
 
     pub(crate) fn remove_reason(&self, name: &str) -> Option<String> {

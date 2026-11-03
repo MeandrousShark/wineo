@@ -36,6 +36,7 @@ mod gog_library;
 mod grid;
 mod grid_motion;
 mod hover_fade;
+mod import_toast;
 mod keys;
 #[cfg(test)]
 mod layout_probe;
@@ -282,6 +283,7 @@ pub(crate) struct App {
     change: Option<removal::Change>,
     toast: Option<removal::Toast>,
     toast_wake: wake::Wake,
+    import_toast: import_toast::ImportToast,
     /// When a close waiting on sort writes gives up and exits anyway.
     close_by: Option<Instant>,
     close_wake: wake::Wake,
@@ -484,6 +486,8 @@ pub(crate) enum Message {
     UndoFinished(u64, Result<Vec<String>, String>),
     /// The toast or feature notice deadline, tagged with its wakeup.
     ToastTick(u64),
+    /// A click on the toast that names the one game auto-import brought in.
+    ImportToast,
     /// A key came up or a finger went down, by which time any focus move it
     /// caused has happened.
     FocusRecheck,
@@ -625,6 +629,7 @@ impl App {
             change: None,
             toast: None,
             toast_wake: wake::Wake::default(),
+            import_toast: import_toast::ImportToast::default(),
             close_by: None,
             close_wake: wake::Wake::default(),
             exiting: false,
@@ -841,6 +846,7 @@ impl App {
             self.refresh_facts();
         }
         self.settle_toast();
+        self.settle_import_toast(Instant::now());
         // Leaving the Library or opening anything over it closes the menu,
         // so it doesn't come back on its own later.
         if self.sort_menu && !self.sort_menu_shown() {
@@ -884,6 +890,7 @@ impl App {
         {
             self.feature_notice = None;
         }
+        self.import_toast.expire(Instant::now());
         if self.message_blocked(&message) {
             return Task::none();
         }
@@ -901,6 +908,7 @@ impl App {
                 message,
                 Message::SearchChanged(_)
                     | Message::Select(_)
+                    | Message::ImportToast
                     | Message::DoubleClick(_)
                     | Message::ClosePanel
                     | Message::TargetPicked(_)
@@ -954,7 +962,10 @@ impl App {
         if !self.collapse.idle()
             && matches!(
                 message,
-                Message::Select(_) | Message::DoubleClick(_) | Message::Context(_)
+                Message::Select(_)
+                    | Message::DoubleClick(_)
+                    | Message::Context(_)
+                    | Message::ImportToast
             )
         {
             return true;
@@ -1009,6 +1020,7 @@ impl App {
             | Message::ToastAnswer(..)) => removal::update(self, message),
             Message::SearchChanged(search) => self.search_changed(search),
             Message::Select(name) => self.select_card(name),
+            Message::ImportToast => self.import_toast_clicked(),
             Message::DoubleClick(name) => self.double_click_card(name),
             Message::ClosePanel => {
                 self.close_panel();

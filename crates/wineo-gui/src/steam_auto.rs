@@ -168,6 +168,9 @@ impl App {
         } else if report.claimed() && report.unreleased.is_empty() {
             self.steam_auto.stuck = false;
         }
+        if !report.imported.is_empty() {
+            self.import_toast.await_cards(&report.imported);
+        }
         let reads = self.outdate_reads();
         Task::batch([reads, self.reload_library_once()])
     }

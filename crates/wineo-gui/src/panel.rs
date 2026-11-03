@@ -1352,6 +1352,7 @@ mod tests {
             let mut card = card(State::Inactive);
             card.kind = Some(crate::library::CardKind::Proxied);
             card.steam = Some(crate::library::SteamDetails {
+                app_id: "1".into(),
                 install: wineo_core::report::InstallReport {
                     state,
                     problem: None,

@@ -69,6 +69,7 @@ impl CardKind {
 
 #[derive(Debug, Clone, PartialEq)]
 pub(super) struct SteamDetails {
+    pub(super) app_id: String,
     pub(super) install: report::InstallReport,
     pub(super) proton: Option<String>,
     pub(super) size: Option<u64>,
@@ -439,6 +440,7 @@ pub(super) fn load_library_with(
             });
             steam_platform = placement.platform;
             Some(SteamDetails {
+                app_id: app_id.clone(),
                 install: install.clone(),
                 proton: placement.proton,
                 size: entry

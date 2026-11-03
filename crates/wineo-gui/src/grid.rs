@@ -612,9 +612,24 @@ impl App {
             // Always a layer, so the ones above keep their places.
             self.filter_tab_view(),
         ];
-        if let Some((message, _)) = &self.feature_notice {
-            let palette = self.palette;
-            page = page.push(
+        // One column with a fixed slot for each toast, empty when it's absent.
+        // Undo keeps its place in the tree as the others come and go, so it
+        // keeps its focus. (iced's keyed column can't do this: it guesses an
+        // insertion before the last child is an append.) The gap sits under a
+        // toast, only when another one is below it.
+        const GAP: f32 = 8.0;
+        let below =
+            |present: bool| iced::Padding::default().bottom(if present { GAP } else { 0.0 });
+        let undo = self.toast.is_some();
+        let notice = self.feature_notice.is_some();
+        let import = self.import_toast_view();
+        let import_slot: Element<'_, Message> = match import {
+            Some(toast) => container(toast).padding(below(notice || undo)).into(),
+            None => Space::new().into(),
+        };
+        let notice_slot: Element<'_, Message> = match &self.feature_notice {
+            Some((message, _)) => {
+                let palette = self.palette;
                 container(
                     container(text(message).color(palette.foreground))
                         .padding(12)
@@ -624,19 +639,25 @@ impl App {
                                 .border(border::rounded(8).width(1).color(palette.border))
                         }),
                 )
+                .padding(below(undo))
+                .into()
+            }
+            None => Space::new().into(),
+        };
+        let undo_slot: Element<'_, Message> = if undo {
+            self.toast_view()
+        } else {
+            Space::new().into()
+        };
+        let toasts = column![import_slot, notice_slot, undo_slot].align_x(Center);
+        // Always a layer, so the dialogs above keep their places, and their
+        // focus, when a toast comes or goes. Empty slots take no input.
+        page = page.push(
+            container(toasts)
                 .padding(16)
                 .align_bottom(Fill)
                 .center_x(Fill),
-            );
-        }
-        if self.toast.is_some() {
-            page = page.push(
-                container(self.toast_view())
-                    .padding(16)
-                    .align_bottom(Fill)
-                    .center_x(Fill),
-            );
-        }
+        );
         if self.removal.is_some() {
             page = page.push(iced::widget::opaque(
                 mouse_area(container(self.remove_view()).center(Fill).style(|_| {
@@ -1629,6 +1650,7 @@ mod tests {
         let mut card = crate::tests::card("game", State::Inactive, 60);
         card.kind = Some(crate::library::CardKind::Proxied);
         card.steam = Some(crate::library::SteamDetails {
+            app_id: "1".into(),
             install: wineo_core::steam::AppState::Installing(Some(40)).into(),
             proton: None,
             size: None,
