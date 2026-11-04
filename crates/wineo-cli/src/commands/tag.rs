@@ -20,6 +20,7 @@ enum Command {
     /// Add a tag to environments
     Add(Change),
     /// Remove a tag from environments
+    #[command(visible_alias = "rm")]
     Remove(Change),
 }
 

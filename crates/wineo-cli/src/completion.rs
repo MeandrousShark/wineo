@@ -173,7 +173,7 @@ pub fn tags(current: &OsStr) -> Vec<CompletionCandidate> {
         .collect()
 }
 
-/// Completes `wineo tag`'s names: for `remove`, only those with the tag, and
+/// Completes `wineo tag`'s names: for `remove` or `rm`, only those with the tag, and
 /// for `add`, those without it. A config that can't be read is offered to
 /// `add`, since it isn't known to have the tag.
 pub fn tag_environments(current: &OsStr) -> Vec<CompletionCandidate> {
@@ -194,7 +194,7 @@ pub fn tag_environments(current: &OsStr) -> Vec<CompletionCandidate> {
     };
     let wanted = match action.as_str() {
         "add" => false,
-        "remove" => true,
+        "remove" | "rm" => true,
         _ => return Vec::new(),
     };
     environment::names(&paths)

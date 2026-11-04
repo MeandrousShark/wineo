@@ -293,3 +293,25 @@ fn tag_gets_man_pages() {
     let top = fs::read_to_string(dir.join("wineo.1")).unwrap();
     assert!(top.contains(r"wineo\-tag"), "{top}");
 }
+
+#[test]
+fn rm_is_remove() {
+    let f = library();
+    let out = f.run(&["tag", "rm", "co-op", "hades", "--json"]);
+    assert_success(&out);
+    assert_eq!(
+        json(&out),
+        json!({"tag": "co-op", "changed": ["hades"], "unchanged": [], "errors": []})
+    );
+    let out = f.run(&["tag", "rm", "co-op", "hades"]);
+    assert_success(&out);
+    assert_eq!(stderr(&out), "hades doesn't have co-op\n");
+
+    let help = stdout(&f.run(&["tag", "--help"]));
+    assert!(help.contains("[alias: rm]"), "{help}");
+    // Like the other `rm` aliases, it's documented on the `remove` page.
+    let dir = f.root.path().join("man");
+    assert_success(&f.run(&["manpages", dir.to_str().unwrap()]));
+    assert!(dir.join("wineo-tag-remove.1").is_file());
+    assert!(!dir.join("wineo-tag-rm.1").exists());
+}

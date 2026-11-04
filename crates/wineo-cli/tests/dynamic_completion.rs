@@ -669,3 +669,27 @@ fn tag_completion_takes_hyphen_words_after_the_separator() {
     );
     assert_eq!(names, ["hollow"]);
 }
+
+#[test]
+fn tag_rm_completes_like_remove() {
+    let root = tempfile::tempdir().unwrap();
+    write_environment(root.path(), "hades", "kind = 'native'\ntags = ['co-op']\n");
+    write_environment(root.path(), "halo", "kind = 'native'\ntags = ['fps']\n");
+    for action in ["remove", "rm"] {
+        let tags: Vec<String> = complete(root.path(), "fish", &["wineo", "tag", action, ""])
+            .into_iter()
+            .filter(|word| !word.starts_with('-'))
+            .collect();
+        assert_eq!(tags, ["co-op", "fps"], "{action}");
+        let names = complete(root.path(), "fish", &["wineo", "tag", action, "co-op", "h"]);
+        assert_eq!(names, ["hades"], "{action}");
+    }
+    assert_eq!(
+        complete(root.path(), "fish", &["wineo", "tag", "rm"]),
+        ["rm"]
+    );
+    assert_eq!(
+        complete(root.path(), "fish", &["wineo", "tag", "rem"]),
+        ["remove"]
+    );
+}
