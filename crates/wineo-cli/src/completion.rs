@@ -279,7 +279,8 @@ pub fn snapshots(current: &OsStr) -> Vec<CompletionCandidate> {
     let Some(("snapshot", args)) = command_args(&words) else {
         return Vec::new();
     };
-    let [action, name, ..] = args else {
+    let mut positional = positionals(args);
+    let (Some(action), Some(name)) = (positional.next(), positional.next()) else {
         return Vec::new();
     };
     if !matches!(action.as_str(), "restore" | "remove" | "rm" | "delete") {
