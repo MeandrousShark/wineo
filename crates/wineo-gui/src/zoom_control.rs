@@ -94,7 +94,7 @@ pub(crate) fn toggle_label(poster_only: bool) -> &'static str {
     }
 }
 
-fn with_tooltip<'a>(
+pub(crate) fn with_tooltip<'a>(
     content: Element<'a, Message>,
     label: &'a str,
     palette: Palette,

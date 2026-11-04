@@ -53,6 +53,7 @@ mod picker;
 mod portable_page;
 mod prefix_facts;
 mod progress;
+mod random_pick;
 mod removal;
 mod remove_work;
 mod rescan;
@@ -503,6 +504,7 @@ pub(crate) enum Message {
     /// Favoriting and hiding a card.
     Mark(library_actions::Event),
     Zoom(zoom::Event),
+    Random(random_pick::Event),
     /// The wait for `library.toml` writes on close is over, tagged with its
     /// wakeup.
     CloseWaitOver(u64),
@@ -945,6 +947,7 @@ impl App {
                 || matches!(message, Message::Sort(event) if event.is_input())
                 || matches!(message, Message::Filter(event) if event.is_input())
                 || matches!(message, Message::Mark(event) if event.is_input())
+                || matches!(message, Message::Random(event) if event.is_input())
                 || matches!(message, Message::Zoom(event) if event.is_input()))
         {
             return true;
@@ -960,13 +963,13 @@ impl App {
             return true;
         }
         if !self.collapse.idle()
-            && matches!(
+            && (matches!(
                 message,
                 Message::Select(_)
                     | Message::DoubleClick(_)
                     | Message::Context(_)
                     | Message::ImportToast
-            )
+            ) || matches!(&message, Message::Random(event) if event.is_input()))
         {
             return true;
         }
@@ -1004,6 +1007,7 @@ impl App {
             Message::Filter(event) => filter_control::update(self, event),
             Message::Mark(event) => library_actions::update(self, event),
             Message::Zoom(event) => zoom::update(self, event),
+            Message::Random(event) => random_pick::update(self, event),
             message @ (Message::Remove(_)
             | Message::RemovePrefix(_)
             | Message::RemoveSize(..)

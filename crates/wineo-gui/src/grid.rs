@@ -1328,6 +1328,7 @@ impl App {
                     search,
                     crate::sort_control::toolbar(self),
                     crate::filter_control::toolbar(self),
+                    crate::random_pick::toolbar(self),
                     crate::zoom_control::toolbar(self),
                 ]
                 .spacing(8)

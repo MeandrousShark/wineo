@@ -498,6 +498,42 @@ fn tab_reaches_the_slider_after_the_filter_tab_chips() {
 }
 
 #[test]
+fn tab_reaches_the_dice_after_the_filter_tab_chips_and_before_the_slider() {
+    let (_root, mut app) = library(4);
+    for card in &mut app.cards {
+        card.source = wineo_core::source::Source::new(wineo_core::source::Facts {
+            steam: true,
+            ..Default::default()
+        });
+    }
+    app.filters.stores.insert("Steam");
+    app.reorder();
+    assert_eq!(app.filtered().len(), 4);
+    let mut laid = lay_out(app.view(), app.window_size);
+    let redraw = iced::Event::Window(iced::window::Event::RedrawRequested(Instant::now()));
+    let messages = laid.event(&redraw);
+    drop(laid);
+    for message in messages {
+        let _ = app.update(message);
+    }
+    assert!(app.filter_tab().is_some());
+    let mut laid = lay_out(app.view(), app.window_size);
+    focus(&mut laid, crate::filter_control::FILTER_BUTTON_ID);
+    let mut seen = Vec::new();
+    for _ in 0..4 {
+        drive(&mut laid, crate::filter_tab::step(&app, false));
+        seen.push(format!("{:?}", laid.focused()));
+    }
+    let dice = seen
+        .iter()
+        .position(|focused| focused.contains(crate::random_pick::BUTTON_ID))
+        .expect("the dice in Tab's order");
+    // The tab's x for Steam, then its clear-all, then the dice.
+    assert_eq!(dice, 2, "{seen:?}");
+    assert!(seen[dice + 1].contains(SLIDER_ID), "{seen:?}");
+}
+
+#[test]
 fn the_search_box_shrinks_to_its_minimum_before_the_toolbar_clips() {
     let (_root, app) = library(4);
     let width = |window: f32| {
@@ -1015,6 +1051,7 @@ fn tab_cycles_the_toolbar_from_add_in_its_order() {
         crate::sort_control::SORT_BUTTON_ID,
         crate::sort_control::DIRECTION_BUTTON_ID,
         crate::filter_control::FILTER_BUTTON_ID,
+        crate::random_pick::BUTTON_ID,
         SLIDER_ID,
         POSTER_ONLY_ID,
     ];
@@ -1091,9 +1128,9 @@ fn a_disabled_add_takes_no_focus_and_tab_skips_it() {
             .flatten()
             .all(|id| *id != iced::widget::Id::new(crate::grid::ADD_ID))
     );
-    assert_eq!(seen[6], Vec::<iced::widget::Id>::new(), "{seen:?}");
+    assert_eq!(seen[7], Vec::<iced::widget::Id>::new(), "{seen:?}");
     assert_eq!(
-        seen[7],
+        seen[8],
         [iced::widget::Id::new(crate::SEARCH_ID)],
         "{seen:?}"
     );

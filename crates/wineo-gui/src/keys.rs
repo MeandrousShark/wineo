@@ -22,6 +22,7 @@ pub(crate) enum Action {
     ClearSearch,
     FocusSearch,
     ToggleFavorite,
+    PickRandom,
 }
 
 pub(crate) fn action(
@@ -44,6 +45,13 @@ pub(crate) fn action(
                 && character.eq_ignore_ascii_case("f") =>
         {
             Action::ToggleFavorite
+        }
+        Key::Character(character)
+            if !search_focused
+                && !(modifiers.control() || modifiers.alt() || modifiers.logo())
+                && character.eq_ignore_ascii_case("r") =>
+        {
+            Action::PickRandom
         }
         Key::Named(Named::Escape) if log_open => Action::CloseLog,
         Key::Named(Named::Escape) if panel_open => Action::ClosePanel,
@@ -249,6 +257,18 @@ impl App {
                     Some(name) => self.toggle_flag(&name, crate::library_actions::Flag::Favorite),
                     None => Task::none(),
                 }
+            }
+            // Same scope as favoriting: nothing else has the keys. A card
+            // doesn't need to be selected.
+            Action::PickRandom => {
+                if captured
+                    || self.action_menu.is_some()
+                    || self.version_visible()
+                    || (self.checkup_visible() && !self.panel_log_visible())
+                {
+                    return Task::none();
+                }
+                self.update(Message::Random(crate::random_pick::Event::Pick))
             }
             Action::OpenOrPlay => {
                 if self.action_menu.is_some()
