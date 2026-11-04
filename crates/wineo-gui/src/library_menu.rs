@@ -292,6 +292,19 @@ pub(crate) fn menu_row<'a>(
     id: impl Into<iced::widget::Id>,
     message: Message,
 ) -> Element<'a, Message> {
+    menu_row_with(content, palette, chosen, id, message, None)
+}
+
+/// A menu row that also sends `exclude` on a right-click or X while it has
+/// focus, when there is one.
+pub(crate) fn menu_row_with<'a>(
+    content: Element<'a, Message>,
+    palette: Palette,
+    chosen: bool,
+    id: impl Into<iced::widget::Id>,
+    message: Message,
+    exclude: Option<Message>,
+) -> Element<'a, Message> {
     let row = button(container(content).height(Fill).center_y(Fill))
         .width(Fill)
         .height(ui::BUTTON_HEIGHT)
@@ -304,7 +317,11 @@ pub(crate) fn menu_row<'a>(
             }
             style
         });
-    focus_button::control(row.into(), true, id, message)
+    let Some(exclude) = exclude else {
+        return focus_button::control(row.into(), true, id, message);
+    };
+    let control = focus_button::excludable(row.into(), id, message, exclude.clone());
+    mouse_area(control).on_right_press(exclude).into()
 }
 
 /// A box that shows whether a toggle is on. Noto Sans has no check mark, so

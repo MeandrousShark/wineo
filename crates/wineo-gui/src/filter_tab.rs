@@ -1,7 +1,9 @@
 //! The tab that hangs from the Filters button while store, platform, or
-//! tag filters are on: a chip with an x for each, and one x that clears
+//! tag filters are on or excluded: a chip with an x for each, and one x that clears
 //! them all. It sits over the gap between the toolbar and the grid, so it
 //! never moves the grid.
+
+use std::borrow::Cow;
 
 use iced::advanced::widget::{Id, Operation, operation::Focusable};
 use iced::advanced::{
@@ -50,19 +52,36 @@ const MORE_PADDING: f32 = 8.0;
 const CLEAR_SIZE: f32 = 24.0;
 const CLEAR_ICON: f32 = 14.0;
 
-/// A checked filter the tab shows.
+/// A checked or excluded filter the tab shows. The `Not` ones read
+/// "Not co-op".
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Chip {
     Store(&'static str),
     Platform(&'static str),
     Tag(String),
+    NotStore(&'static str),
+    NotPlatform(&'static str),
+    NotTag(String),
 }
 
 impl Chip {
     fn label(&self) -> &str {
         match self {
-            Self::Store(label) | Self::Platform(label) => label,
-            Self::Tag(tag) => tag,
+            Self::Store(label)
+            | Self::Platform(label)
+            | Self::NotStore(label)
+            | Self::NotPlatform(label) => label,
+            Self::Tag(tag) | Self::NotTag(tag) => tag,
+        }
+    }
+
+    /// What the chip says: the label, or "Not" and the label.
+    fn text(&self) -> Cow<'_, str> {
+        match self {
+            Self::Store(_) | Self::Platform(_) | Self::Tag(_) => Cow::Borrowed(self.label()),
+            Self::NotStore(_) | Self::NotPlatform(_) | Self::NotTag(_) => {
+                Cow::Owned(format!("Not {}", self.label()))
+            }
         }
     }
 
@@ -73,6 +92,13 @@ impl Chip {
                 format!("library-filter-tab-platform-{}", label.to_lowercase())
             }
             Self::Tag(tag) => format!("library-filter-tab-tag-{tag}"),
+            Self::NotStore(label) => {
+                format!("library-filter-tab-not-store-{}", label.to_lowercase())
+            }
+            Self::NotPlatform(label) => {
+                format!("library-filter-tab-not-platform-{}", label.to_lowercase())
+            }
+            Self::NotTag(tag) => format!("library-filter-tab-not-tag-{tag}"),
         }
     }
 }
@@ -152,34 +178,38 @@ fn fit(widths: &[f32], more: impl Fn(usize) -> f32, room: f32) -> usize {
 }
 
 impl App {
-    /// The checked stores, platforms, and tags, each group in the popup's order.
+    /// The checked and excluded stores, platforms, and tags, each group in
+    /// the popup's order.
     pub(crate) fn filter_chips(&self) -> Vec<Chip> {
         let offered = self.offered();
-        let mut chips: Vec<Chip> = offered
-            .stores
-            .into_iter()
-            .filter(|label| self.filters.stores.contains(label))
-            .map(Chip::Store)
-            .collect();
-        chips.extend(
-            offered
-                .platforms
-                .into_iter()
-                .filter(|label| self.filters.platforms.contains(label))
-                .map(Chip::Platform),
-        );
-        chips.extend(
-            offered
-                .tags
-                .into_iter()
-                .filter(|tag| self.filters.tags.contains(tag))
-                .map(Chip::Tag),
-        );
+        let filters = &self.filters;
+        let mut chips: Vec<Chip> = Vec::new();
+        for label in offered.stores {
+            if filters.stores.contains(label) {
+                chips.push(Chip::Store(label));
+            } else if filters.not_stores.contains(label) {
+                chips.push(Chip::NotStore(label));
+            }
+        }
+        for label in offered.platforms {
+            if filters.platforms.contains(label) {
+                chips.push(Chip::Platform(label));
+            } else if filters.not_platforms.contains(label) {
+                chips.push(Chip::NotPlatform(label));
+            }
+        }
+        for tag in offered.tags {
+            if filters.tags.contains(&tag) {
+                chips.push(Chip::Tag(tag));
+            } else if filters.not_tags.contains(&tag) {
+                chips.push(Chip::NotTag(tag));
+            }
+        }
         chips
     }
 
     /// The tab shows over the Library while a store, platform, or tag
-    /// filter is on, once the Filters button has reported where it is. It
+    /// filter is on or excluded, once the Filters button has reported where it is. It
     /// stays away while a row under the toolbar shows, so it never covers a
     /// warning, and when even +N and its x don't fit.
     pub(crate) fn filter_tab(&self) -> Option<Tab> {
@@ -202,7 +232,7 @@ impl App {
         }
         let room =
             right - button.x - 2.0 * TAB_BORDER - TAB_PADDING_LEFT - TAB_PADDING_RIGHT - CLEAR_SIZE;
-        let widths: Vec<f32> = chips.iter().map(|chip| chip_width(chip.label())).collect();
+        let widths: Vec<f32> = chips.iter().map(|chip| chip_width(&chip.text())).collect();
         let visible = fit(&widths, more_width, room);
         if visible == 0 && more_width(chips.len()) + SPACING > room {
             return None;
@@ -334,9 +364,9 @@ fn cross(palette: Palette, size: f32, rest: Color, live: bool) -> Element<'stati
 }
 
 fn chip_view(chip: Chip, palette: Palette, live: bool) -> Element<'static, Message> {
-    let width = chip_width(chip.label());
+    let label = chip.text().into_owned();
+    let width = chip_width(&label);
     let id = chip.id();
-    let label = chip.label().to_owned();
     let x = button(container(cross(palette, CHIP_ICON, palette.muted, live)).center(CHIP_X))
         .width(CHIP_X)
         .height(CHIP_X)
@@ -430,6 +460,9 @@ pub(crate) fn remove(app: &mut App, chip: &Chip, keyboard: bool) -> Task<Message
         Chip::Store(label) => app.filters.stores.remove(label),
         Chip::Platform(label) => app.filters.platforms.remove(label),
         Chip::Tag(tag) => app.filters.tags.remove(tag),
+        Chip::NotStore(label) => app.filters.not_stores.remove(label),
+        Chip::NotPlatform(label) => app.filters.not_platforms.remove(label),
+        Chip::NotTag(tag) => app.filters.not_tags.remove(tag),
     };
     if !removed {
         return Task::none();
@@ -453,15 +486,13 @@ fn unfocus() -> Task<Message> {
     iced::advanced::widget::operate(iced::advanced::widget::operation::focusable::unfocus())
 }
 
-/// Clears the store, platform, and tag filters, leaving the search alone
-/// since the tab doesn't show it.
+/// Clears the store, platform, and tag filters, included and excluded,
+/// leaving the search alone since the tab doesn't show it.
 pub(crate) fn clear(app: &mut App, keyboard: bool) -> Task<Message> {
     if app.filter_tab_blocked() || app.filters.active() == 0 {
         return Task::none();
     }
-    app.filters.stores.clear();
-    app.filters.platforms.clear();
-    app.filters.tags.clear();
+    app.filters.clear();
     let resorted = app.resorted();
     if !keyboard {
         return Task::batch([resorted, unfocus()]);

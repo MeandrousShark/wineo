@@ -33,6 +33,26 @@ pub(crate) fn control<'a, M: Clone + 'a>(
         on_press,
         mouse_focus: true,
         leaves_submit: false,
+        exclude: None,
+    })
+}
+
+/// A control that also takes X while focused, sending `on_exclude`, for a
+/// row that can be excluded as well as chosen.
+pub(crate) fn excludable<'a, M: Clone + 'a>(
+    content: Element<'a, M>,
+    id: impl Into<iced::widget::Id>,
+    on_press: M,
+    on_exclude: M,
+) -> Element<'a, M> {
+    Element::new(FocusControl {
+        content,
+        enabled: true,
+        id: id.into(),
+        on_press,
+        mouse_focus: true,
+        leaves_submit: false,
+        exclude: Some(on_exclude),
     })
 }
 
@@ -73,6 +93,7 @@ fn leaves_submit<'a, M: Clone + 'a>(
         on_press,
         mouse_focus: true,
         leaves_submit: true,
+        exclude: None,
     })
 }
 
@@ -92,6 +113,7 @@ pub(crate) fn keyboard_control<'a, M: Clone + 'a>(
         on_press,
         mouse_focus: false,
         leaves_submit: false,
+        exclude: None,
     })
 }
 
@@ -206,6 +228,10 @@ struct FocusControl<'a, M, R: AdvancedRenderer = iced::Renderer> {
     on_press: M,
     mouse_focus: bool,
     leaves_submit: bool,
+    /// Sent when X is pressed while this control has focus. The control
+    /// owns the key, since a popup's own key handler can't tell which row
+    /// is focused.
+    exclude: Option<M>,
 }
 
 #[derive(Default)]
@@ -331,6 +357,22 @@ where
                 shell.capture_event();
                 return;
             }
+            Event::Keyboard(iced::keyboard::Event::KeyPressed {
+                key: iced::keyboard::Key::Character(character),
+                modifiers,
+                repeat: false,
+                ..
+            }) if self.enabled
+                && state.focused
+                && character.eq_ignore_ascii_case("x")
+                && !(modifiers.control() || modifiers.alt() || modifiers.logo()) =>
+            {
+                if let Some(exclude) = &self.exclude {
+                    shell.publish(exclude.clone());
+                    shell.capture_event();
+                    return;
+                }
+            }
             _ => {}
         }
 
@@ -432,6 +474,7 @@ mod tests {
             on_press: crate::Message::Undo,
             mouse_focus: true,
             leaves_submit: false,
+            exclude: None,
         });
         let mut tree = tree::Tree::new(widget.as_widget());
         let bounds = Size::new(100.0, 32.0);
@@ -473,6 +516,7 @@ mod tests {
             on_press: crate::Message::Undo,
             mouse_focus: true,
             leaves_submit: false,
+            exclude: None,
         });
         let mut tree = tree::Tree::new(widget.as_widget());
         let bounds = Size::new(100.0, 32.0);
@@ -518,6 +562,7 @@ mod tests {
             on_press: crate::Message::Undo,
             mouse_focus: true,
             leaves_submit: false,
+            exclude: None,
         });
         let mut tree = tree::Tree::new(widget.as_widget());
         let bounds = Size::new(100.0, 32.0);
@@ -665,6 +710,7 @@ mod tests {
                         on_press: on_press.clone(),
                         mouse_focus: true,
                         leaves_submit: false,
+                        exclude: None,
                     });
                 let mut tree = tree::Tree::new(widget.as_widget());
                 tree.state.downcast_mut::<State>().focus();

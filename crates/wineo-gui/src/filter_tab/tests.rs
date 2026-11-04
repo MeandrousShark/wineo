@@ -813,3 +813,127 @@ fn a_mouse_removal_leaves_no_ring_on_the_tab() {
         let _ = filter(&mut app, Event::ToggleStore("GOG"));
     }
 }
+
+#[test]
+fn excluded_chips_read_not_and_follow_the_popup_order() {
+    let mut app = loaded(1600.0);
+    for event in [
+        Event::ExcludeTag("rpg".into()),
+        Event::ExcludeStore("Steam"),
+        Event::ToggleStore("GOG"),
+        Event::ExcludePlatform("Native"),
+        Event::ToggleTag("game".into()),
+    ] {
+        let _ = filter(&mut app, event);
+    }
+    // A value is one chip: an include or an exclude, in the popup's place.
+    let chips = app.filter_chips();
+    assert_eq!(
+        chips,
+        [
+            Chip::Store("GOG"),
+            Chip::NotStore("Steam"),
+            Chip::NotPlatform("Native"),
+            Chip::Tag("game".into()),
+            Chip::NotTag("rpg".into()),
+        ]
+    );
+    let text: Vec<String> = chips.iter().map(|chip| chip.text().into_owned()).collect();
+    assert_eq!(text, ["GOG", "Not Steam", "Not Native", "game", "Not rpg"]);
+    // Every chip has its own control, apart from the same value included.
+    let ids: Vec<String> = chips.iter().map(Chip::id).collect();
+    let mut unique = ids.clone();
+    unique.sort();
+    unique.dedup();
+    assert_eq!(unique.len(), ids.len());
+    assert_ne!(Chip::Store("Steam").id(), Chip::NotStore("Steam").id());
+    assert_ne!(
+        Chip::Tag("rpg".into()).id(),
+        Chip::NotTag("rpg".into()).id()
+    );
+    placed(&mut app);
+    let tab = app.filter_tab().unwrap();
+    assert_eq!(tab.hidden(), 0);
+    let mut laid = lay_out(app.view(), app.window_size);
+    assert_eq!(tab_controls(&mut laid), debug_ids(&tab.ids()));
+}
+
+#[test]
+fn an_exclude_alone_brings_the_tab_and_a_not_chip_is_as_wide_as_its_words() {
+    let mut app = loaded(1200.0);
+    placed(&mut app);
+    assert!(app.filter_tab().is_none());
+    let _ = filter(&mut app, Event::ExcludeTag("rpg".into()));
+    placed(&mut app);
+    assert!(app.filter_tab().is_some());
+    assert!(chip_width("Not rpg") > chip_width("rpg"));
+    let mut laid = lay_out(app.view(), app.window_size);
+    let x = bounds(&mut laid, Chip::NotTag("rpg".into()).id()).unwrap();
+    assert!(x.width > 0.0);
+}
+
+#[test]
+fn a_not_chip_x_removes_only_its_exclude() {
+    let mut app = loaded(1200.0);
+    let _ = filter(&mut app, Event::ExcludeStore("GOG"));
+    let _ = filter(&mut app, Event::ExcludeTag("rpg".into()));
+    let _ = filter(&mut app, Event::ToggleTag("game".into()));
+    placed(&mut app);
+    assert_eq!(shown(&app), ["balatro"]);
+
+    let mut laid = lay_out(app.view(), app.window_size);
+    let x = bounds(&mut laid, Chip::NotStore("GOG").id()).unwrap();
+    let messages = click(&mut laid, x.center());
+    drop(laid);
+    assert!(
+        messages.iter().any(|message| matches!(
+            message,
+            Message::Filter(Event::Remove(Chip::NotStore("GOG")))
+        )),
+        "{messages:?}"
+    );
+    for message in messages {
+        let _ = app.update(message);
+    }
+    assert!(app.filters.not_stores.is_empty());
+    assert!(app.filters.not_tags.contains("rpg"));
+    assert!(app.filters.tags.contains("game"));
+    assert_eq!(shown(&app), ["balatro", "papers-please"]);
+}
+
+#[test]
+fn removing_a_not_chip_from_the_keyboard_moves_focus_to_a_neighbor() {
+    let mut app = loaded(1600.0);
+    for event in [
+        Event::ExcludeStore("GOG"),
+        Event::ToggleStore("Steam"),
+        Event::ExcludeTag("rpg".into()),
+    ] {
+        let _ = filter(&mut app, event);
+    }
+    placed(&mut app);
+    assert_eq!(
+        remove_from_keyboard(&mut app, Chip::NotStore("GOG")),
+        [Id::from(Chip::Store("Steam").id())]
+    );
+    assert_eq!(
+        remove_from_keyboard(&mut app, Chip::NotTag("rpg".into())),
+        [Id::from(Chip::Store("Steam").id())]
+    );
+    assert!(app.filters.not_stores.is_empty() && app.filters.not_tags.is_empty());
+}
+
+#[test]
+fn the_tab_x_clears_excludes_too() {
+    let mut app = loaded(1200.0);
+    let _ = filter(&mut app, Event::ExcludeStore("GOG"));
+    let _ = filter(&mut app, Event::ExcludePlatform("Native"));
+    let _ = filter(&mut app, Event::ExcludeTag("rpg".into()));
+    let _ = filter(&mut app, Event::ToggleTag("tool".into()));
+    placed(&mut app);
+    assert_eq!(app.filters.active(), 4);
+    let _ = filter(&mut app, Event::ClearChips);
+    assert_eq!(app.filters.active(), 0);
+    assert!(app.filter_tab().is_none());
+    assert_eq!(shown(&app).len(), 4);
+}
