@@ -126,8 +126,9 @@ While a store, platform, or tag filter is on, a tab hangs under
 reads **Not co-op**, with a danger-colored border and tint. A chip's x
 removes that filter, and the larger x at the end clears them all but
 leaves the search. When the chips don't fit, the last one becomes **+N**,
-which opens the popup. Tab reaches the x's right after Filters. The grid scrolls under the tab, and the tab
-steps aside while a notice shows under the toolbar.
+which opens the popup. Tab reaches the x's right after Filters. The grid
+scrolls under the tab, and the tab steps aside while a notice shows under
+the toolbar.
 
 A hidden game leaves the grid and search. Show hidden brings it back
 dimmed, with a crossed-out eye on its poster, so you can unhide it.

@@ -38,7 +38,8 @@ pub(crate) enum Event {
     ToggleStore(&'static str),
     TogglePlatform(&'static str),
     ToggleTag(String),
-    /// A right-click, or X on the focused row, which excludes the value.
+    /// A right-click, or X on the focused row, which excludes an off value
+    /// and turns a chosen one off.
     ExcludeStore(&'static str),
     ExcludePlatform(&'static str),
     ExcludeTag(String),
@@ -439,8 +440,8 @@ fn mark_box(mark: Mark, palette: Palette) -> Element<'static, Message> {
 
 /// A tag that toggles its filter. Included, it has a check mark and the
 /// accent tint and border the sidebar's selected item uses; excluded, a drawn
-/// x with the same tint and border in the danger color. Either way it reads as chosen without color alone,
-/// and the focus ring stays outside it.
+/// x with the same tint and border in the danger color. Either way it reads
+/// as chosen without color alone, and the focus ring stays outside it.
 fn chip(tag: String, mark: Mark, palette: Palette) -> Element<'static, Message> {
     let id = tag_id(&tag);
     let message = Message::Filter(Event::ToggleTag(tag.clone()));
