@@ -693,3 +693,126 @@ fn tag_rm_completes_like_remove() {
         ["remove"]
     );
 }
+
+/// Writes the files `snapshot::list` reads for one label. The manifest records
+/// `manifest_prefix` the way the config does, relative for a portable folder.
+fn write_snapshot(prefix: &Path, manifest_prefix: &str, name: &str, label: &str) {
+    let dir = prefix
+        .parent()
+        .unwrap()
+        .join(".wineo-snapshots")
+        .join(name)
+        .join(label);
+    fs::create_dir_all(dir.join("prefix")).unwrap();
+    fs::write(dir.join("config.toml"), "").unwrap();
+    let manifest = serde_json::json!({
+        "version": 1,
+        "environment": name,
+        "label": label,
+        "prefix": manifest_prefix,
+        "layout": "Wine",
+        "created_at": "2026-11-03T00:00:00Z",
+    });
+    fs::write(dir.join("manifest.json"), manifest.to_string()).unwrap();
+}
+
+/// An environment with its prefix under `root/prefixes`, and one snapshot per label.
+fn write_environment_with_snapshots(root: &Path, name: &str, labels: &[&str]) {
+    let prefix = root.join("prefixes").join(name);
+    fs::create_dir_all(&prefix).unwrap();
+    // The manifest has to name the resolved path, which a symlinked temp dir changes.
+    let prefix = fs::canonicalize(&prefix).unwrap();
+    write_environment(
+        root,
+        name,
+        &format!(
+            "prefix = '{}'\nrunner = 'wine'\narch = 'win64'\n",
+            prefix.display()
+        ),
+    );
+    for label in labels {
+        write_snapshot(&prefix, prefix.to_str().unwrap(), name, label);
+    }
+}
+
+#[test]
+fn snapshot_labels_skip_flags_and_read_names_after_the_separator() {
+    let root = tempfile::tempdir().unwrap();
+    write_environment_with_snapshots(root.path(), "hades", &["before", "clean"]);
+    write_environment_with_snapshots(root.path(), "-x", &["fresh"]);
+    let labels = |words: &[&str]| -> Vec<String> {
+        complete(root.path(), "fish", words)
+            .into_iter()
+            .filter(|word| !word.starts_with('-'))
+            .collect()
+    };
+
+    // A flag before the name doesn't stand in for it.
+    for words in [
+        &["wineo", "snapshot", "restore", "--yes", "hades", ""][..],
+        &["wineo", "snapshot", "restore", "hades", "--yes", ""],
+        &["wineo", "-v", "snapshot", "restore", "--yes", "hades", ""],
+        &["wineo", "snapshot", "rm", "-v", "hades", ""],
+    ] {
+        assert_eq!(labels(words), ["before", "clean"], "{words:?}");
+    }
+    assert_eq!(
+        labels(&["wineo", "snapshot", "restore", "--yes", "hades", "c"]),
+        ["clean"]
+    );
+
+    // After the separator a hyphen starts a name, not a flag.
+    assert_eq!(
+        labels(&["wineo", "snapshot", "restore", "--", "-x", ""]),
+        ["fresh"]
+    );
+    assert_eq!(
+        labels(&["wineo", "snapshot", "restore", "--yes", "--", "-x", ""]),
+        ["fresh"]
+    );
+    assert_eq!(
+        labels(&["wineo", "snapshot", "restore", "--", "hades", ""]),
+        ["before", "clean"]
+    );
+
+    // The folder's value is taken out before the name is read, wherever it sits.
+    let dir = root.path().join("portable");
+    write_portable(
+        &dir,
+        "hermes",
+        "prefix = 'prefixes/hermes'\nrunner = 'wine'\narch = 'win64'\n",
+    );
+    write_snapshot(
+        &dir.join("prefixes/hermes"),
+        "prefixes/hermes",
+        "hermes",
+        "boat",
+    );
+    let dir_arg = dir.to_str().unwrap();
+    assert_eq!(
+        labels(&[
+            "wineo",
+            "snapshot",
+            "restore",
+            "--portable",
+            dir_arg,
+            "--yes",
+            "hermes",
+            "",
+        ]),
+        ["boat"]
+    );
+    assert_eq!(
+        labels(&[
+            "wineo",
+            "snapshot",
+            "restore",
+            "--yes",
+            "--portable",
+            dir_arg,
+            "hermes",
+            "",
+        ]),
+        ["boat"]
+    );
+}
