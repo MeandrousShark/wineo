@@ -388,3 +388,86 @@ fn a_rescan_shows_and_clears_the_banner() {
     let _ = app.update(Message::Rescanned(Box::new(scan)));
     assert!(app.library_banner().is_none());
 }
+
+#[test]
+fn excluding_everything_is_no_matches_and_counts_the_hidden_games_it_leaves() {
+    // The shown games are balatro, hades, notepad, and papers-please, and
+    // old-demo is hidden with rpg and game.
+    let (_root, mut app) = loaded();
+    for tag in ["game", "tool"] {
+        filter(&mut app, Event::ExcludeTag(tag.into()));
+    }
+    assert!(app.filtered().is_empty());
+    // old-demo has game too, so the exclude takes it out of the hidden
+    // matches as well.
+    assert_eq!(
+        app.empty_state(),
+        Some(Empty::NoMatches { hidden_matching: 0 })
+    );
+
+    // Excluding only what the shown games have leaves old-demo to count.
+    filter(&mut app, Event::Clear);
+    for store in ["GOG", "Steam"] {
+        filter(&mut app, Event::ExcludeStore(store));
+    }
+    filter(&mut app, Event::ExcludePlatform("Native"));
+    filter(&mut app, Event::ExcludeTag("tool".into()));
+    assert!(app.filtered().is_empty());
+    assert_eq!(
+        app.empty_state(),
+        Some(Empty::NoMatches { hidden_matching: 1 })
+    );
+    assert_eq!(matching_note(1), "1 match is hidden");
+
+    // Show hidden brings the match, and the exclude still applies to it.
+    filter(&mut app, Event::ShowHidden);
+    assert_eq!(app.empty_state(), None);
+    assert_eq!(
+        app.filtered()
+            .iter()
+            .map(|card| card.name.as_str())
+            .collect::<Vec<_>>(),
+        ["old-demo"]
+    );
+    filter(&mut app, Event::ExcludeTag("rpg".into()));
+    assert_eq!(
+        app.empty_state(),
+        Some(Empty::NoMatches { hidden_matching: 0 })
+    );
+}
+
+#[test]
+fn an_exclude_on_all_hidden_games_is_no_matches_not_all_hidden() {
+    let (_root, mut app) = fixture();
+    let _ = app.update(Message::Loaded(Ok(all_hidden())));
+    assert!(matches!(app.empty_state(), Some(Empty::AllHidden { .. })));
+    // The filter is what's narrowing, so Clear filters has a job and the
+    // note reports the hidden games it would leave.
+    filter(&mut app, Event::ExcludeTag("game".into()));
+    assert_eq!(
+        app.empty_state(),
+        Some(Empty::NoMatches { hidden_matching: 1 })
+    );
+    filter(&mut app, Event::ExcludeTag("tool".into()));
+    assert_eq!(
+        app.empty_state(),
+        Some(Empty::NoMatches { hidden_matching: 0 })
+    );
+}
+
+#[test]
+fn clear_filters_from_an_exclude_only_no_matches_shows_the_library_again() {
+    let (_root, mut app) = loaded();
+    filter(&mut app, Event::ExcludeTag("game".into()));
+    filter(&mut app, Event::ExcludeTag("tool".into()));
+    let _ = crate::tests::settle_grid(&mut app);
+    let messages = press_control(&app, CLEAR_ID);
+    assert!(
+        messages
+            .iter()
+            .any(|message| matches!(message, Message::Filter(Event::Clear)))
+    );
+    filter(&mut app, Event::Clear);
+    assert_eq!(app.empty_state(), None);
+    assert_eq!(app.filtered().len(), 4);
+}
