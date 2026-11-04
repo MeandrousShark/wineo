@@ -75,6 +75,13 @@ impl Chip {
         }
     }
 
+    fn is_not(&self) -> bool {
+        matches!(
+            self,
+            Self::NotStore(_) | Self::NotPlatform(_) | Self::NotTag(_)
+        )
+    }
+
     /// What the chip says: the label, or "Not" and the label.
     fn text(&self) -> Cow<'_, str> {
         match self {
@@ -363,10 +370,14 @@ fn cross(palette: Palette, size: f32, rest: Color, live: bool) -> Element<'stati
         .into()
 }
 
+/// The faint danger fill behind a "Not" chip, as light as the popup's chip tint.
+const EXCLUDED_TINT: f32 = 0.15;
+
 fn chip_view(chip: Chip, palette: Palette, live: bool) -> Element<'static, Message> {
     let label = chip.text().into_owned();
     let width = chip_width(&label);
     let id = chip.id();
+    let excluded = chip.is_not();
     let x = button(container(cross(palette, CHIP_ICON, palette.muted, live)).center(CHIP_X))
         .width(CHIP_X)
         .height(CHIP_X)
@@ -398,8 +409,18 @@ fn chip_view(chip: Chip, palette: Palette, live: bool) -> Element<'static, Messa
         right: CHIP_PADDING_RIGHT,
     })
     .style(move |_| {
-        container::Style::default()
-            .border(border::rounded(CHIP_RADIUS).width(1).color(palette.border))
+        let style = container::Style::default().border(
+            border::rounded(CHIP_RADIUS).width(1).color(if excluded {
+                palette.danger
+            } else {
+                palette.border
+            }),
+        );
+        if excluded {
+            style.background(palette.danger.scale_alpha(EXCLUDED_TINT))
+        } else {
+            style
+        }
     })
     .into()
 }

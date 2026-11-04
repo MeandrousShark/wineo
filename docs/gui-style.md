@@ -194,18 +194,17 @@ Plan 0054 added these.
 - Check rows ("Favorites first", stores, platforms, "Show hidden (N)")
   use a drawn 16 px check box: a bordered square with 4 px corners, filled
   with the primary color and a check in its ink color when on. An excluded
-  store or platform row shows the same square, unfilled, with a drawn x in
-  the foreground color.
+  store or platform row shows the same square filled with the danger color,
+  with a drawn x in its ink color.
 - The Filters popup ends with a muted 12 px hint line, "Right-click or press
   X to exclude.", after **Clear filters**.
 - Tag chips are pills that wrap. A selected chip shows a check before its
   label, a 15% primary tint, and a primary border, so selection never rests
-  on color alone. An excluded chip shows an x before its label, a faint
-  foreground tint, and a foreground border. Excluded rows and chips stay
-  neutral, so they never read as errors. The keyboard focus ring stays a
+  on color alone. An excluded chip shows a danger x before its label, a 15%
+  danger tint, and a danger border. The keyboard focus ring stays a
   separate outline outside the chip.
 - An excluded value's chip in the filter tab reads **Not <value>**, with
-  the usual x.
+  the usual x, a danger border, and a faint danger tint.
 - An empty grid shows one grouped surface over the grid area, at most
   440 px wide and clear of the docked panel: a muted SVG icon, a 16 px
   semibold heading, one muted line, and one accent action. A secondary

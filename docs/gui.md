@@ -104,11 +104,11 @@ them.
 
 Right-click an entry, or focus it and press X, to exclude it instead: the
 library then shows everything except what matches, like every game without
-the co-op tag. An excluded entry shows a box or chip with an x. A game has
-to match none of the excluded entries, in any group. Right-click or X on an
-excluded entry turns it off, and on a checked one switches it to excluded.
-A plain click always undoes what the entry shows, so it turns an excluded
-entry off. A game with no store or platform doesn't match an exclude, so
+the co-op tag. An excluded entry shows a box or chip with an x in the
+theme's danger color. A game has to match none of the excluded entries, in
+any group. Right-click or X on a checked or excluded entry turns it off, so
+excluding a checked entry takes two presses. A plain click also turns
+either off. A game with no store or platform doesn't match an exclude, so
 excluding Windows keeps a game that's not known to be Windows.
 
 The button counts checked and excluded entries, as in **Filters (2)**.
@@ -123,11 +123,12 @@ does a game that isn't fully installed.
 
 While a store, platform, or tag filter is on, a tab hangs under
 **Filters** with a chip for each, in the popup's order. An excluded one
-reads **Not co-op**. A chip's x removes that filter, and the
-larger x at the end clears them all but leaves the search. When the chips
-don't fit, the last one becomes **+N**, which opens the popup. Tab reaches
-the x's right after Filters. The grid scrolls under the tab, and the tab
-steps aside while a notice shows under the toolbar.
+reads **Not co-op**, with a danger-colored border and tint. A chip's x
+removes that filter, and the larger x at the end clears them all but
+leaves the search. When the chips don't fit, the last one becomes **+N**,
+which opens the popup. Tab reaches the x's right after Filters. The grid
+scrolls under the tab, and the tab steps aside while a notice shows under
+the toolbar.
 
 A hidden game leaves the grid and search. Show hidden brings it back
 dimmed, with a crossed-out eye on its poster, so you can unhide it.

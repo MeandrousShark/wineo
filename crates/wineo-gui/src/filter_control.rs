@@ -38,7 +38,8 @@ pub(crate) enum Event {
     ToggleStore(&'static str),
     TogglePlatform(&'static str),
     ToggleTag(String),
-    /// A right-click, or X on the focused row, which excludes the value.
+    /// A right-click, or X on the focused row, which excludes an off value
+    /// and turns a chosen one off.
     ExcludeStore(&'static str),
     ExcludePlatform(&'static str),
     ExcludeTag(String),
@@ -108,12 +109,12 @@ impl Mark {
         }
     }
 
-    /// Excluding an off or included row excludes it; on an excluded row it
-    /// turns the exclude off.
+    /// Excluding an off row excludes it; any press on a chosen row turns it
+    /// off, so a right-click never flips an include straight to an exclude.
     fn excluded(self) -> Self {
         match self {
-            Self::Off | Self::Included => Self::Excluded,
-            Self::Excluded => Self::Off,
+            Self::Off => Self::Excluded,
+            Self::Included | Self::Excluded => Self::Off,
         }
     }
 
@@ -409,18 +410,23 @@ fn heading(label: &str, palette: Palette) -> Element<'_, Message> {
         .into()
 }
 
-/// A box that shows an excluded row. The x is drawn, like the check, and the
-/// box stays neutral so an exclude doesn't read as an error.
+/// A box that shows an excluded row: the check box's shape, filled with the
+/// danger color and holding a drawn x, so the two read as the same kind of mark.
 fn exclude_box(palette: Palette) -> Element<'static, Message> {
-    container(icon(crate::filter_tab::CROSS, palette.foreground, 12.0))
-        .width(16)
-        .height(16)
-        .center(16)
-        .style(move |_| {
-            container::Style::default()
-                .border(border::rounded(4).width(1).color(palette.foreground))
-        })
-        .into()
+    container(icon(
+        crate::filter_tab::CROSS,
+        ui::accent_ink(palette.danger),
+        12.0,
+    ))
+    .width(16)
+    .height(16)
+    .center(16)
+    .style(move |_| {
+        container::Style::default()
+            .background(palette.danger)
+            .border(border::rounded(4).width(1).color(palette.danger))
+    })
+    .into()
 }
 
 /// The box in front of a store or platform row.
@@ -434,8 +440,8 @@ fn mark_box(mark: Mark, palette: Palette) -> Element<'static, Message> {
 
 /// A tag that toggles its filter. Included, it has a check mark and the
 /// accent tint and border the sidebar's selected item uses; excluded, a drawn
-/// x and a neutral tint. Either way it reads as chosen without color alone,
-/// and the focus ring stays outside it.
+/// x with the same tint and border in the danger color. Either way it reads
+/// as chosen without color alone, and the focus ring stays outside it.
 fn chip(tag: String, mark: Mark, palette: Palette) -> Element<'static, Message> {
     let id = tag_id(&tag);
     let message = Message::Filter(Event::ToggleTag(tag.clone()));
@@ -446,7 +452,7 @@ fn chip(tag: String, mark: Mark, palette: Palette) -> Element<'static, Message> 
             .align_y(Center)
             .into(),
         Mark::Excluded => row![
-            icon(crate::filter_tab::CROSS, palette.foreground, 12.0),
+            icon(crate::filter_tab::CROSS, palette.danger, 12.0),
             text(tag).size(13)
         ]
         .spacing(4)
@@ -461,7 +467,7 @@ fn chip(tag: String, mark: Mark, palette: Palette) -> Element<'static, Message> 
             let mut style = context_menu_style(palette, false, status);
             style.border = border::rounded(12).width(1).color(match mark {
                 Mark::Included => palette.primary,
-                Mark::Excluded => palette.foreground,
+                Mark::Excluded => palette.danger,
                 Mark::Off => palette.border,
             });
             let tint = match status {
@@ -473,7 +479,7 @@ fn chip(tag: String, mark: Mark, palette: Palette) -> Element<'static, Message> 
                     style.background = Some(palette.primary.scale_alpha(tint).into());
                 }
                 Mark::Excluded => {
-                    style.background = Some(palette.foreground.scale_alpha(tint / 2.0).into());
+                    style.background = Some(palette.danger.scale_alpha(tint).into());
                 }
                 Mark::Off => {}
             }

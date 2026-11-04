@@ -1,4 +1,4 @@
-//! `wineo tag add|remove TAG NAME...`, one tag across many environments.
+//! `wineo tag add|remove TAG ENV...`, one tag across many environments.
 
 mod common;
 
