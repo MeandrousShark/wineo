@@ -1103,10 +1103,27 @@ fn a_row_goes_between_off_included_and_excluded_on_click_and_exclude() {
     assert_eq!(Off.after(Press::Click), Included);
     assert_eq!(Included.after(Press::Click), Off);
     assert_eq!(Excluded.after(Press::Click), Off);
-    // Right-click or X: off and included exclude, excluded turns off.
+    // Right-click or X: off excludes, and a chosen row turns off.
     assert_eq!(Off.after(Press::Exclude), Excluded);
-    assert_eq!(Included.after(Press::Exclude), Excluded);
+    assert_eq!(Included.after(Press::Exclude), Off);
     assert_eq!(Excluded.after(Press::Exclude), Off);
+}
+
+#[test]
+fn a_right_press_on_an_included_row_turns_it_off() {
+    let (_root, mut app) = loaded();
+    let _ = filter(&mut app, Event::ToggleTag("rpg".into()));
+    let _ = filter(&mut app, Event::ExcludeTag("rpg".into()));
+    assert!(app.filters.tags.is_empty());
+    assert!(app.filters.not_tags.is_empty());
+    let _ = filter(&mut app, Event::ToggleStore("Steam"));
+    let _ = filter(&mut app, Event::ExcludeStore("Steam"));
+    assert!(app.filters.stores.is_empty());
+    assert!(app.filters.not_stores.is_empty());
+    let _ = filter(&mut app, Event::TogglePlatform("Windows"));
+    let _ = filter(&mut app, Event::ExcludePlatform("Windows"));
+    assert!(app.filters.platforms.is_empty());
+    assert!(app.filters.not_platforms.is_empty());
 }
 
 #[test]
@@ -1122,6 +1139,8 @@ fn a_value_is_never_included_and_excluded_at_once() {
     let _ = filter(&mut app, Event::ToggleStore("Steam"));
     assert_eq!(mark(&app), (Mark::Included, 1));
     let _ = filter(&mut app, Event::ExcludeStore("Steam"));
+    assert_eq!(mark(&app), (Mark::Off, 0));
+    let _ = filter(&mut app, Event::ExcludeStore("Steam"));
     assert_eq!(mark(&app), (Mark::Excluded, 1));
     let _ = filter(&mut app, Event::ToggleStore("Steam"));
     assert_eq!(mark(&app), (Mark::Off, 0));
@@ -1131,11 +1150,11 @@ fn a_value_is_never_included_and_excluded_at_once() {
     assert_eq!(mark(&app), (Mark::Off, 0));
 
     // Platforms and tags move the same way.
-    let _ = filter(&mut app, Event::TogglePlatform("Windows"));
     let _ = filter(&mut app, Event::ExcludePlatform("Windows"));
     assert!(app.filters.platforms.is_empty());
     assert!(app.filters.not_platforms.contains("Windows"));
-    let _ = filter(&mut app, Event::ToggleTag("rpg".into()));
+    let _ = filter(&mut app, Event::TogglePlatform("Windows"));
+    assert!(app.filters.not_platforms.is_empty());
     let _ = filter(&mut app, Event::ExcludeTag("rpg".into()));
     assert!(app.filters.tags.is_empty());
     assert!(app.filters.not_tags.contains("rpg"));
@@ -1162,8 +1181,10 @@ fn an_include_and_an_exclude_in_the_same_group_both_apply() {
     // Games, but not the Indie ones.
     set(&mut app, &["game"], &["Indie"]);
     assert_eq!(shown(&app), ["hades"]);
-    // A tag the game has can't be both, so excluding the included one
-    // swaps it.
+    // A right press on the included tag turns it off, and a second one
+    // excludes it.
+    set(&mut app, &[], &["game"]);
+    assert_eq!(shown(&app), ["hades", "notepad"]);
     set(&mut app, &[], &["game"]);
     assert_eq!(shown(&app), ["notepad"]);
     // Including others keeps both excludes.
@@ -1179,8 +1200,11 @@ fn excludes_in_one_group_narrow_includes_in_another() {
     assert_eq!(shown(&app), ["papers-please", "rimworld"]);
     let _ = filter(&mut app, Event::ExcludePlatform("Native"));
     assert_eq!(shown(&app), ["papers-please"]);
-    // Excluding the included store swaps it, so GOG games go and the
-    // Native exclude still takes balatro.
+    // Excluding the included store turns it off first, then a second press
+    // excludes it, so GOG games go and the Native exclude still takes
+    // balatro.
+    let _ = filter(&mut app, Event::ExcludeStore("GOG"));
+    assert_eq!(shown(&app), ["hades", "notepad", "papers-please"]);
     let _ = filter(&mut app, Event::ExcludeStore("GOG"));
     assert_eq!(shown(&app), ["hades", "notepad"]);
     let _ = filter(&mut app, Event::Clear);
@@ -1279,7 +1303,10 @@ fn the_button_counts_excludes_with_includes() {
     let _ = filter(&mut app, Event::ToggleStore("GOG"));
     assert_eq!(button_label(&app), "Filters (6)");
     assert_eq!(app.filters.active(), 6);
-    // A swap keeps the count.
+    // A right press on an included row turns it off, and the next one
+    // excludes it.
+    let _ = filter(&mut app, Event::ExcludeStore("GOG"));
+    assert_eq!(button_label(&app), "Filters (5)");
     let _ = filter(&mut app, Event::ExcludeStore("GOG"));
     assert_eq!(button_label(&app), "Filters (6)");
     let _ = filter(&mut app, Event::ExcludeStore("GOG"));
@@ -1468,6 +1495,22 @@ fn a_right_click_on_a_row_excludes_it_without_closing_the_popup() {
             .all(|message| !matches!(message, Message::Filter(Event::ToggleShowHidden))),
         "{messages:?}"
     );
+}
+
+#[test]
+fn a_right_press_on_an_included_tag_chip_or_store_row_leaves_it_off() {
+    let (_root, mut app) = loaded();
+    open_filters(&mut app);
+    let _ = filter(&mut app, Event::ToggleTag("rpg".into()));
+    let _ = filter(&mut app, Event::ToggleStore("Steam"));
+    for id in ["library-filter-tag-rpg", "library-filter-store-steam"] {
+        for message in right_click(&app, id) {
+            let _ = app.update(message);
+        }
+    }
+    assert!(app.filters.tags.is_empty() && app.filters.not_tags.is_empty());
+    assert!(app.filters.stores.is_empty() && app.filters.not_stores.is_empty());
+    assert!(app.filter_menu);
 }
 
 #[test]

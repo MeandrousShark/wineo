@@ -108,12 +108,12 @@ impl Mark {
         }
     }
 
-    /// Excluding an off or included row excludes it; on an excluded row it
-    /// turns the exclude off.
+    /// Excluding an off row excludes it; any press on a chosen row turns it
+    /// off, so a right-click never flips an include straight to an exclude.
     fn excluded(self) -> Self {
         match self {
-            Self::Off | Self::Included => Self::Excluded,
-            Self::Excluded => Self::Off,
+            Self::Off => Self::Excluded,
+            Self::Included | Self::Excluded => Self::Off,
         }
     }
 
