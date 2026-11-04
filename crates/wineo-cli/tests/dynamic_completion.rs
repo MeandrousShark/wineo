@@ -638,3 +638,34 @@ fn tag_completes_tags_then_names_with_or_without_the_tag() {
     ));
     assert_eq!(names, ["co-op"]);
 }
+
+#[test]
+fn tag_completion_takes_hyphen_words_after_the_separator() {
+    let root = tempfile::tempdir().unwrap();
+    write_environment(root.path(), "hades", "kind = 'native'\ntags = ['-co-op']\n");
+    write_environment(root.path(), "-halo", "kind = 'native'\ntags = ['-co-op']\n");
+    write_environment(root.path(), "hollow", "kind = 'native'\n");
+
+    let tags = complete(root.path(), "fish", &["wineo", "tag", "remove", "--", "-c"]);
+    assert_eq!(tags, ["-co-op"]);
+    let names = complete(
+        root.path(),
+        "fish",
+        &["wineo", "tag", "remove", "--", "-co-op", "h"],
+    );
+    assert_eq!(names, ["hades"]);
+    let names = complete(
+        root.path(),
+        "fish",
+        &[
+            "wineo", "tag", "remove", "--json", "--", "-co-op", "hades", "-h",
+        ],
+    );
+    assert_eq!(names, ["-halo"]);
+    let names = complete(
+        root.path(),
+        "fish",
+        &["wineo", "tag", "add", "--", "-co-op", "h"],
+    );
+    assert_eq!(names, ["hollow"]);
+}

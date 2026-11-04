@@ -188,7 +188,7 @@ pub fn tag_environments(current: &OsStr) -> Vec<CompletionCandidate> {
     let Some(("tag", args)) = command_args(&words) else {
         return Vec::new();
     };
-    let mut positional = args.iter().filter(|arg| !arg.starts_with('-'));
+    let mut positional = positionals(args);
     let (Some(action), Some(tag)) = (positional.next(), positional.next()) else {
         return Vec::new();
     };
@@ -356,6 +356,18 @@ fn command_args(words: &[String]) -> Option<(&str, &[String])> {
     None
 }
 
+/// The positional words of a command whose only options are flags without
+/// values, like `tag`'s `--json`. Tags and names may start with `-`, which
+/// only `--` lets through, so every word after it is positional.
+fn positionals(args: &[String]) -> impl Iterator<Item = &String> {
+    let separator = args.iter().position(|arg| arg == "--");
+    let (options, rest) = args.split_at(separator.unwrap_or(args.len()));
+    options
+        .iter()
+        .filter(|arg| !arg.starts_with('-'))
+        .chain(rest.iter().skip(1))
+}
+
 fn selected_environment(args: &[String]) -> Option<&str> {
     let mut awaiting_value = false;
     for arg in args {
@@ -403,7 +415,7 @@ fn first_winetricks_value(args: &[String]) -> bool {
 mod tests {
     use std::path::PathBuf;
 
-    use super::{first_winetricks_value, selected_environment, split_portable};
+    use super::{first_winetricks_value, positionals, selected_environment, split_portable};
 
     fn strings(words: &[&str]) -> Vec<String> {
         words.iter().map(|word| (*word).to_owned()).collect()
@@ -467,6 +479,15 @@ mod tests {
                 "x"
             ])
         );
+    }
+
+    #[test]
+    fn positionals_honor_the_separator() {
+        let args = strings(&["remove", "--json", "-x", "co-op", "--", "-hades", "--json"]);
+        let found: Vec<&String> = positionals(&args).collect();
+        assert_eq!(found, ["remove", "co-op", "-hades", "--json"]);
+        let args = strings(&["remove", "--"]);
+        assert_eq!(positionals(&args).count(), 1);
     }
 
     #[test]
