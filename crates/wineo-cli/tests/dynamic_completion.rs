@@ -572,3 +572,69 @@ fn path_arguments_complete_paths_of_their_kind() {
         assert_eq!(complete(words), dirs, "{words:?}");
     }
 }
+
+#[test]
+fn tag_completes_tags_then_names_with_or_without_the_tag() {
+    let root = tempfile::tempdir().unwrap();
+    write_environment(root.path(), "hades", "kind = 'native'\ntags = ['co-op']\n");
+    write_environment(
+        root.path(),
+        "halo",
+        "kind = 'native'\ntags = ['co-op', 'fps']\n",
+    );
+    write_environment(root.path(), "hollow", "kind = 'native'\n");
+    write_environment(root.path(), "hbroken", "not valid toml");
+
+    let values = |found: Vec<String>| -> Vec<String> {
+        found
+            .into_iter()
+            .filter(|word| !word.starts_with('-'))
+            .collect()
+    };
+    for action in ["add", "remove"] {
+        let tags = values(complete(root.path(), "fish", &["wineo", "tag", action, ""]));
+        assert_eq!(tags, ["co-op", "fps"], "{action}");
+    }
+    // Several names, each one offered after the last.
+    for words in [
+        &["wineo", "tag", "remove", "co-op", "h"][..],
+        &["wineo", "tag", "remove", "co-op", "hades", "h"],
+        &["wineo", "tag", "remove", "--json", "co-op", "hades", "h"],
+    ] {
+        let mut names = complete(root.path(), "fish", words);
+        names.sort();
+        assert_eq!(names, ["hades", "halo"], "{words:?}");
+    }
+    let mut names = complete(
+        root.path(),
+        "fish",
+        &["wineo", "tag", "add", "fps", "hades", "h"],
+    );
+    names.sort();
+    assert_eq!(names, ["hades", "hbroken", "hollow"]);
+
+    let dir = root.path().join("portable");
+    write_portable(&dir, "hermes", "kind = 'native'\ntags = ['co-op']\n");
+    let dir_arg = dir.to_str().unwrap();
+    let names = complete(
+        root.path(),
+        "fish",
+        &[
+            "wineo",
+            "--portable",
+            dir_arg,
+            "tag",
+            "remove",
+            "co-op",
+            "h",
+        ],
+    );
+    assert_eq!(names, ["hermes"]);
+    let names = values(complete_with(
+        root.path(),
+        Some(&dir),
+        "fish",
+        &["wineo", "tag", "add", ""],
+    ));
+    assert_eq!(names, ["co-op"]);
+}

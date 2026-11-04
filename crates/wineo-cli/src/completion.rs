@@ -173,6 +173,44 @@ pub fn tags(current: &OsStr) -> Vec<CompletionCandidate> {
         .collect()
 }
 
+/// Completes `wineo tag`'s names: for `remove`, only those with the tag, and
+/// for `add`, those without it. A config that can't be read is offered to
+/// `add`, since it isn't known to have the tag.
+pub fn tag_environments(current: &OsStr) -> Vec<CompletionCandidate> {
+    let Some(Completing {
+        prefix,
+        words,
+        paths,
+    }) = Completing::new(current)
+    else {
+        return Vec::new();
+    };
+    let Some(("tag", args)) = command_args(&words) else {
+        return Vec::new();
+    };
+    let mut positional = args.iter().filter(|arg| !arg.starts_with('-'));
+    let (Some(action), Some(tag)) = (positional.next(), positional.next()) else {
+        return Vec::new();
+    };
+    let wanted = match action.as_str() {
+        "add" => false,
+        "remove" => true,
+        _ => return Vec::new(),
+    };
+    environment::names(&paths)
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|name| name.starts_with(prefix))
+        .filter(|name| {
+            let has = Environment::load(&paths, name)
+                .map(|environment| environment.config.tags.contains(tag))
+                .ok();
+            has.map_or(!wanted, |has| has == wanted)
+        })
+        .map(CompletionCandidate::new)
+        .collect()
+}
+
 pub fn targets(current: &OsStr) -> Vec<CompletionCandidate> {
     let Some(Completing {
         prefix,
