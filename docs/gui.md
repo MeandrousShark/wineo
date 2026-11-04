@@ -132,6 +132,16 @@ steps aside while a notice shows under the toolbar.
 A hidden game leaves the grid and search. Show hidden brings it back
 dimmed, with a crossed-out eye on its poster, so you can unhide it.
 
+### Picking at random
+
+The dice after **Filters**, or R, picks one of the shown games when you
+can't decide. It selects the game, opens its panel, and scrolls to it, but
+never starts it. Every game has the same chance. It skips games that can't
+start right now, like one that's running, busy, not installed, or blocked,
+unless none of the shown games can. It never picks the selected game while
+there's another choice. Hidden games only come up with Show hidden on, and
+with nothing shown, the dice is off.
+
 ### Favorites
 
 Star a game with the star beside its title in the panel, **Add to
@@ -928,6 +938,7 @@ edits, the bar says which, and **Reload** takes what's on disk.
 | Arrow keys | Move between cards |
 | Enter | Open the panel, or play when it's open (only for a card that's shown) |
 | F | Add the selected card to favorites, or remove it (only for a card that's shown) |
+| R | Pick a shown game at random, as the dice does (Library only) |
 | Esc | Close the log, version picker, or results, then the panel, then clear the search |
 | `/` or Ctrl+F | Search |
 | Ctrl+N | Open Add (Library only) |
