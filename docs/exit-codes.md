@@ -20,6 +20,12 @@ print everything they could read and exit 1 if any environment couldn't be
 read. With `--json`, the readable ones are in the output and the rest are in
 `errors`. See [JSON output](json-output.md).
 
+`tag add` and `tag remove` change every name they can and exit 1 if any
+name failed, so one broken config never blocks the rest. Names that already
+had the tag, or didn't for `remove`, are unchanged, not failed, so a run with
+nothing to do exits 0. A tag that isn't valid exits 1 before anything is
+written.
+
 `validate` also exits 1 when an error-level problem is left after checking
 and fixing; warnings alone exit 0. See [Validate](validate.md).
 
