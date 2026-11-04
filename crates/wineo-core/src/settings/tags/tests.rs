@@ -112,6 +112,105 @@ fn a_multi_line_list_keeps_one_tag_a_line() {
     }
 }
 
+/// Applies `change` to a native config holding `before` and checks the result
+/// is exactly `after`.
+fn edits_to(paths: &Paths, before: &str, change: TagChange, after: &str) {
+    let text = format!("schema_version = 1\nkind = 'native'\n{before}");
+    write_env(paths, "game", &text);
+    assert_eq!(change_tags(paths, "game", change).unwrap(), Tagged::Changed);
+    assert_eq!(
+        read_env(paths, "game"),
+        format!("schema_version = 1\nkind = 'native'\n{after}"),
+        "{change:?} on {before:?}"
+    );
+}
+
+#[test]
+fn removing_keeps_every_comment_but_the_removed_tags_own() {
+    let (_root, paths) = setup();
+    let three =
+        "tags = [\n  \"rpg\", # first tag\n  \"mid\", # middle tag\n  \"solo\" # last tag\n]\n";
+    edits_to(
+        &paths,
+        three,
+        TagChange::Remove("solo"),
+        "tags = [\n  \"rpg\", # first tag\n  \"mid\" # middle tag\n]\n",
+    );
+    edits_to(
+        &paths,
+        three,
+        TagChange::Remove("rpg"),
+        "tags = [\n  \"mid\", # middle tag\n  \"solo\" # last tag\n]\n",
+    );
+    edits_to(
+        &paths,
+        three,
+        TagChange::Remove("mid"),
+        "tags = [\n  \"rpg\", # first tag\n  \"solo\" # last tag\n]\n",
+    );
+    // With a trailing comma, and a note closing the array.
+    let closed = "tags = [\n  \"rpg\", # first tag\n  \"solo\", # last tag\n  # end note\n]\n";
+    edits_to(
+        &paths,
+        closed,
+        TagChange::Remove("solo"),
+        "tags = [\n  \"rpg\", # first tag\n  # end note\n]\n",
+    );
+    edits_to(
+        &paths,
+        closed,
+        TagChange::Remove("rpg"),
+        "tags = [\n  \"solo\", # last tag\n  # end note\n]\n",
+    );
+    // A single-line list.
+    edits_to(
+        &paths,
+        "tags = [\"rpg\", \"solo\"] # mine\n",
+        TagChange::Remove("solo"),
+        "tags = [\"rpg\"] # mine\n",
+    );
+}
+
+#[test]
+fn removing_the_only_tag_keeps_the_comments_above_it() {
+    let (_root, paths) = setup();
+    edits_to(
+        &paths,
+        "tags = [\n  # the one tag\n  \"rpg\", # mine\n]\n",
+        TagChange::Remove("rpg"),
+        "tags = [\n  # the one tag\n]\n",
+    );
+    edits_to(
+        &paths,
+        "tags = [\n  # the one tag\n  \"rpg\" # mine\n]\n",
+        TagChange::Remove("rpg"),
+        "tags = [\n  # the one tag\n]\n",
+    );
+}
+
+#[test]
+fn adding_keeps_the_last_tags_comment_beside_it() {
+    let (_root, paths) = setup();
+    edits_to(
+        &paths,
+        "tags = [\n  \"rpg\", # first tag\n  \"solo\" # last tag\n]\n",
+        TagChange::Add("co-op"),
+        "tags = [\n  \"rpg\", # first tag\n  \"solo\", # last tag\n  \"co-op\"\n]\n",
+    );
+    edits_to(
+        &paths,
+        "tags = [\n  # the one tag\n  \"rpg\", # mine\n  # end note\n]\n",
+        TagChange::Add("co-op"),
+        "tags = [\n  # the one tag\n  \"rpg\", # mine\n  \"co-op\",\n  # end note\n]\n",
+    );
+    edits_to(
+        &paths,
+        "tags = [\"rpg\" # mine\n]\n",
+        TagChange::Add("co-op"),
+        "tags = [\"rpg\", # mine\n\"co-op\"\n]\n",
+    );
+}
+
 #[test]
 fn an_unchanged_list_leaves_the_file_byte_identical() {
     let (_root, paths) = setup();
