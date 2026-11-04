@@ -583,11 +583,23 @@ fn an_open_menu_keeps_the_tab_drawn_but_inert() {
     let x = bounds(&mut laid, Chip::Store("GOG").id()).unwrap();
     drop(laid);
 
-    let menus: [fn(&mut App); 3] = [
+    let menus: [fn(&mut App); 4] = [
         crate::sort_control::tests::open_sort,
         crate::filter_control::tests::open_filters,
         |app| {
             let _ = app.update(Message::Context("hades".into()));
+        },
+        |app| {
+            use crate::random_pick::Event;
+            let _ = app.update(Message::Random(Event::OpenMenu));
+            let request = app
+                .random_opening
+                .pending
+                .expect("a request waits for the dice");
+            let dice =
+                iced::Rectangle::new(iced::Point::new(600.0, 20.0), iced::Size::new(32.0, 32.0));
+            let _ = app.update(Message::Random(Event::OpenUnder(request, Some(dice))));
+            assert!(app.random_menu);
         },
     ];
     for open in menus {
