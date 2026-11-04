@@ -109,12 +109,17 @@ fn change_tags_with_target(
     Ok(Tagged::Changed)
 }
 
-// In a multi-line array, toml_edit keeps a comment that follows a value's
-// comma in the next value's prefix, or in the array's trailing text after the
-// last one. Without a trailing comma, the last value's own comment is in its
-// suffix instead. So the comment on a value's line lives in whatever text
-// follows it, up to the first line break, and these edits move or drop text by
-// whole lines to keep each comment with the value it was written beside.
+// The rule for comments in a tags array: removing a tag drops only its own
+// comment, the one on the line where the tag ends. Every other comment line is
+// kept, on a line of its own, and adding a tag keeps them all. Odd layouts may
+// move a kept comment to another line or change blank lines; that's a known
+// limit, not a loss.
+//
+// toml_edit splits the text between values into decor: a value's prefix, from
+// the comma before it, and its suffix, up to the comma after it. The array's
+// trailing text follows the last value, or its trailing comma. So the text
+// after a value is its suffix plus the next prefix or the trailing text, and
+// the first line of that, up to a line break, is the value's own comment.
 
 /// Appends `tag` laid out like the tag before it: on its own line in a
 /// multi-line list, in the same quotes, without copying a comment.
@@ -132,14 +137,15 @@ fn push_tag(tags: &mut Array, tag: &str) {
     .expect("a valid tag is a valid TOML string");
     let indent = layout(prefix(last), " ");
     let at = tags.len() - 1;
-    // The text after the last tag starts with that tag's own comment, which
-    // has to stay on its line, after the comma the new tag brings.
+    // What's on the line after the last tag, like its own comment, stays on
+    // that line, after the comma the new tag brings. Its suffix's other lines
+    // stay where they were.
     let after = if tags.trailing_comma() {
         tags.trailing().as_str().unwrap_or("").to_owned()
     } else {
         suffix(last).to_owned()
     };
-    let (comment, rest) = first_line(&after);
+    let (comment, rest) = first_line(&after).unwrap_or(("", after.as_str()));
     let indent = if comment.is_empty() || indent.contains('\n') {
         indent
     } else {
@@ -158,9 +164,8 @@ fn push_tag(tags: &mut Array, tag: &str) {
     tags.push_formatted(value);
 }
 
-/// Removes `tag`, which a valid config holds once at most. Only the removed
-/// tag's own comment, on its line after it, goes with it. Comments above it,
-/// or beside the tag before it, stay.
+/// Removes `tag`, which a valid config holds once at most, dropping only its
+/// own comment.
 fn remove_tag(tags: &mut Array, tag: &str) {
     let Some(at) = tags.iter().position(|value| value.as_str() == Some(tag)) else {
         return;
@@ -168,10 +173,9 @@ fn remove_tag(tags: &mut Array, tag: &str) {
     let removed = tags.remove(at);
     let before = prefix(&removed);
     if let Some(next) = tags.get_mut(at) {
-        let next_prefix = prefix(next).to_owned();
-        let joined = match next_prefix.find('\n') {
-            // Drops the first line, the removed tag's own comment.
-            Some(line_end) => format!("{}{}", head(before), &next_prefix[line_end..]),
+        let after = format!("{}{}", suffix(&removed), prefix(next));
+        let joined = match first_line(&after) {
+            Some((_, rest)) => joined(head(before), rest),
             // Only spacing follows, so the removed tag's spacing is kept.
             None => before.to_owned(),
         };
@@ -179,23 +183,13 @@ fn remove_tag(tags: &mut Array, tag: &str) {
         return;
     }
     // The removed tag was the last one, so what followed it closes the array.
-    let after = if tags.trailing_comma() {
-        tags.trailing().as_str().unwrap_or("").to_owned()
-    } else {
-        format!(
-            "{}{}",
-            suffix(&removed),
-            tags.trailing().as_str().unwrap_or("")
-        )
-    };
-    let (_, rest) = first_line(&after);
-    let kept = head(before);
-    let closing = if kept.is_empty() || rest.starts_with('\n') {
-        format!("{kept}{rest}")
-    } else {
-        // A comment kept from above has to end before `]`.
-        format!("{kept}\n{rest}")
-    };
+    let after = format!(
+        "{}{}",
+        suffix(&removed),
+        tags.trailing().as_str().unwrap_or("")
+    );
+    let rest = first_line(&after).map_or(after.as_str(), |(_, rest)| rest);
+    let closing = joined(head(before), rest);
     match tags.len().checked_sub(1) {
         Some(last) if !tags.trailing_comma() => {
             tags.set_trailing("");
@@ -208,19 +202,35 @@ fn remove_tag(tags: &mut Array, tag: &str) {
     }
 }
 
-/// Splits text at its first line break: what's left on the line, such as a
-/// comment, and the rest from the break on. Text with no break is all rest.
-fn first_line(text: &str) -> (&str, &str) {
-    match text.find('\n') {
-        Some(at) => text.split_at(at),
-        None => ("", text),
+/// `kept` then `rest`, with a line break between them when `kept` could end
+/// in a comment that would otherwise swallow what follows.
+fn joined(kept: &str, rest: &str) -> String {
+    if kept.is_empty() || rest.starts_with('\n') || rest.starts_with("\r\n") {
+        format!("{kept}{rest}")
+    } else {
+        format!("{kept}\n{rest}")
     }
+}
+
+/// Splits text at its first line break, `\n` or `\r\n`: what's on the line,
+/// such as a comment, and the rest from the break on.
+fn first_line(text: &str) -> Option<(&str, &str)> {
+    let at = text.find('\n')?;
+    let at = if text[..at].ends_with('\r') {
+        at - 1
+    } else {
+        at
+    };
+    Some(text.split_at(at))
 }
 
 /// A prefix without its last line, the indent before the value. Whatever
 /// comes before that, comments included, belongs to the lines above.
 fn head(prefix: &str) -> &str {
-    prefix.rfind('\n').map_or("", |at| &prefix[..at])
+    let Some(at) = prefix.rfind('\n') else {
+        return "";
+    };
+    prefix[..at].strip_suffix('\r').unwrap_or(&prefix[..at])
 }
 
 fn prefix(value: &Value) -> &str {
@@ -242,6 +252,7 @@ fn suffix(value: &Value) -> &str {
 /// The whitespace a decor puts around a value, without any comment in it.
 fn layout(decor: &str, default: &str) -> String {
     match decor.rsplit_once('\n') {
+        Some((line, indent)) if line.ends_with('\r') => format!("\r\n{indent}"),
         Some((_, indent)) => format!("\n{indent}"),
         None if decor.trim().is_empty() => decor.to_owned(),
         None => default.to_owned(),

@@ -214,6 +214,122 @@ fn adding_keeps_the_last_tags_comment_beside_it() {
 }
 
 #[test]
+fn removing_keeps_comment_lines_in_the_removed_tags_suffix() {
+    let (_root, paths) = setup();
+    for line_end in ["\n", "\r\n"] {
+        for (before, kept) in [
+            (
+                "tags = [\n  \"a\" # own comment\n  # KEEP\n  , \"b\"\n]\n",
+                ["b"],
+            ),
+            (
+                "tags = [\n  \"b\",\n  \"a\" # own comment\n  # KEEP\n  ,\n]\n",
+                ["b"],
+            ),
+        ] {
+            let text =
+                format!("schema_version = 1\nkind = 'native'\n{before}").replace('\n', line_end);
+            write_env(&paths, "game", &text);
+            change_tags(&paths, "game", TagChange::Remove("a")).unwrap();
+            let after = read_env(&paths, "game");
+            assert!(after.contains("# KEEP"), "{after:?}");
+            assert!(!after.contains("own comment"), "{after:?}");
+            assert_eq!(tags(&paths, "game"), kept, "{after:?}");
+        }
+    }
+}
+
+/// Layouts with a comment in every place one can go, each named for where it
+/// is, and for each tag the comment on the line where it ends, if any.
+type OwnComments = &'static [(&'static str, Option<&'static str>)];
+
+const LAYOUTS: &[(&str, OwnComments)] = &[
+    (
+        "tags = [ # open\n  # above-a\n  \"a\" # a-line\n  # a-own-line\n  , # after-comma-a\n  # above-b\n  \"b\", # b-line\n  \"c\" # c-line\n  # c-own-line\n  , # after-comma-c\n  # closing\n]\n",
+        &[
+            ("a", Some("a-line")),
+            ("b", Some("b-line")),
+            ("c", Some("c-line")),
+        ],
+    ),
+    (
+        "tags = [ # open\n  \"a\", # a-line\n  # above-b\n  \"b\" # b-line\n  , \"c\" # c-line\n  # closing\n]\n",
+        &[
+            ("a", Some("a-line")),
+            ("b", Some("b-line")),
+            ("c", Some("c-line")),
+        ],
+    ),
+    (
+        "tags = [\n  \"a\", \"b\", # b-line\n  \"c\"\n  # closing\n]\n",
+        &[("a", None), ("b", Some("b-line")), ("c", None)],
+    ),
+    (
+        "tags = [\"a\", \"b\", \"c\"] # key\n",
+        &[("a", None), ("b", None), ("c", None)],
+    ),
+    (
+        "tags = [ \"a\", \"b\", \"c\", ] # key\n",
+        &[("a", None), ("b", None), ("c", None)],
+    ),
+    (
+        "tags = [\n  # above-a\n  \"a\" # a-line\n  # closing\n]\n",
+        &[("a", Some("a-line"))],
+    ),
+    (
+        "tags = [\n  # above-a\n  \"a\", # a-line\n  # closing\n]\n",
+        &[("a", Some("a-line"))],
+    ),
+];
+
+fn comments(layout: &str) -> Vec<&str> {
+    layout
+        .split('#')
+        .skip(1)
+        .map(|rest| rest.split(['\r', '\n']).next().unwrap().trim())
+        .collect()
+}
+
+#[test]
+fn every_layout_keeps_every_comment_but_the_removed_tags_own() {
+    let (_root, paths) = setup();
+    for line_end in ["\n", "\r\n"] {
+        for (layout, values) in LAYOUTS {
+            let text =
+                format!("schema_version = 1\nkind = 'native'\n{layout}").replace('\n', line_end);
+            let all: Vec<&str> = values.iter().map(|(tag, _)| *tag).collect();
+            for (tag, own) in *values {
+                write_env(&paths, "game", &text);
+                change_tags(&paths, "game", TagChange::Remove(tag)).unwrap();
+                let after = read_env(&paths, "game");
+                let left: Vec<&str> = all.iter().copied().filter(|other| other != tag).collect();
+                assert_eq!(tags(&paths, "game"), left, "removing {tag}: {after:?}");
+                for comment in comments(layout) {
+                    let expected = Some(comment) != *own;
+                    assert_eq!(
+                        after.contains(&format!("# {comment}")),
+                        expected,
+                        "removing {tag}, {comment}: {after:?}"
+                    );
+                }
+            }
+            write_env(&paths, "game", &text);
+            change_tags(&paths, "game", TagChange::Add("new")).unwrap();
+            let after = read_env(&paths, "game");
+            let mut grown = all.clone();
+            grown.push("new");
+            assert_eq!(tags(&paths, "game"), grown, "adding: {after:?}");
+            for comment in comments(layout) {
+                assert!(
+                    after.contains(&format!("# {comment}")),
+                    "adding, {comment}: {after:?}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
 fn an_unchanged_list_leaves_the_file_byte_identical() {
     let (_root, paths) = setup();
     let text = "# legacy, no version\nkind = 'native'\ntags = [ 'rpg' ]\n";
