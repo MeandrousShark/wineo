@@ -31,6 +31,16 @@ for `setup`, `config`, `start`, `stop`, `restart`, `programs`, `rm`, `status`,
 unless `--global` is present, and the first environment value passed to
 `winetricks`. `update` offers only environments that track a GOG game. For example, `wineo start <Tab>` offers environments.
 
+`tag add` and `tag remove` (or `rm`) offer the tags already in use first,
+then environment names, and keep offering names after each one. `remove`
+offers only environments that have the tag, and `add` only those that don't.
+After `--`, a word that starts with `-` counts as a tag or name:
+
+```sh
+wineo tag rm co-op <Tab>
+wineo tag remove -- -beta <Tab>
+```
+
 For `start`, `run`, and `restart`, `--target` offers targets from the selected
 environment only:
 

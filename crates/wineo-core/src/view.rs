@@ -210,6 +210,15 @@ pub struct CollectionError {
     pub message: String,
 }
 
+/// `wineo tag add|remove --json`'s shape. Names keep the order they were given.
+#[derive(Serialize)]
+pub struct TagOutput<'a> {
+    pub tag: &'a str,
+    pub changed: Vec<&'a str>,
+    pub unchanged: Vec<&'a str>,
+    pub errors: Vec<CollectionError>,
+}
+
 /// `wineo stats [NAME] --json`'s shape, named or as one of a collection's
 /// `environments`. This week's and this month's totals are text-only: they
 /// depend on the local time zone and the current time, and scripts can work

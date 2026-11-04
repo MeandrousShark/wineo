@@ -38,6 +38,7 @@ pub mod stats;
 pub mod status;
 pub mod stop;
 mod table;
+pub mod tag;
 pub mod templates;
 pub mod transfer;
 pub mod trash;

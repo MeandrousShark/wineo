@@ -1,7 +1,7 @@
 # JSON output
 
-`status`, `list`, `validate`, `stats`, `import gog --list`, and `update
---check` accept `--json` for scripting:
+`status`, `list`, `validate`, `stats`, `tag`, `import gog --list`, and
+`update --check` accept `--json` for scripting:
 
 ```sh
 wineo status hades --json
@@ -9,6 +9,7 @@ wineo status --json
 wineo list --json
 wineo validate --json
 wineo stats --json
+wineo tag add co-op hades celeste --json
 wineo import gog --list --json
 wineo update --check --json
 ```
@@ -368,6 +369,31 @@ and both are empty without `--fix`. A failed fix's problem stays in
 The command exits 1 when any error-level problem is left or any fix failed,
 and 0 otherwise. A failure before the checks finish exits 1 with a diagnostic
 on stderr and no JSON on stdout.
+
+## Tag
+
+`wineo tag add` and `wineo tag remove` (or `rm`) with `--json` report what
+happened to each name, in the order given:
+
+```json
+{
+  "tag": "co-op",
+  "changed": ["celeste"],
+  "unchanged": ["hades"],
+  "errors": [
+    { "name": "missing", "message": "environment `missing` does not exist" }
+  ]
+}
+```
+
+`changed` lists the environments whose config was written, and `unchanged`
+those that already had the tag (or, for `remove`, didn't have it), whose
+files weren't touched. A name whose config is missing, unreadable, or invalid
+goes to `errors` with its `name` and `message`, as in a collection, and the
+others still apply. The command exits 1 when `errors` isn't empty, and 0
+otherwise, including when everything was unchanged. A tag that isn't valid
+fails before anything is written, exiting 1 with a diagnostic on stderr and no
+JSON on stdout.
 
 ## Stats
 
