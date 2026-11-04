@@ -633,6 +633,7 @@ fn a_bad_zoom_reads_as_the_default_and_touches_no_other_field() {
             favorites_first: true,
             zoom: 100,
             poster_only: false,
+            random: RandomPool::Launchable,
         }
     );
 
@@ -752,6 +753,91 @@ fn zoom_and_poster_only_edits_keep_comments_and_other_keys() {
 }
 
 #[test]
+fn random_defaults_to_launchable_and_reads_both_values() {
+    let fixture = Fixture::new();
+    assert_eq!(load(&fixture.paths).view.random, RandomPool::Launchable);
+    // An older file has no key.
+    fixture.write("schema_version = 1\n\n[view]\nsort = \"added\"\n");
+    assert_eq!(load(&fixture.paths).view.random, RandomPool::Launchable);
+    for (text, expected) in [
+        ("launchable", RandomPool::Launchable),
+        ("any", RandomPool::Any),
+    ] {
+        fixture.write(&format!(
+            "schema_version = 1\n\n[view]\nrandom = \"{text}\"\n"
+        ));
+        assert_eq!(load(&fixture.paths).view.random, expected, "{text}");
+        assert_eq!(expected.as_str(), text);
+        assert_eq!(RandomPool::parse(text), Some(expected));
+    }
+}
+
+#[test]
+fn an_unknown_random_value_reads_as_the_default_and_touches_no_other_field() {
+    let fixture = Fixture::new();
+    for bad in ["\"favorites\"", "\"Any\"", "true", "1"] {
+        fixture.write(&format!(
+            "schema_version = 1\n\n[view]\nsort = \"playtime\"\nrandom = {bad}\n"
+        ));
+        let library = load(&fixture.paths);
+        assert_eq!(library.problem, None, "{bad}");
+        assert_eq!(library.view.random, RandomPool::Launchable, "{bad}");
+        assert_eq!(library.view.sort, SortKey::Playtime, "{bad}");
+    }
+}
+
+#[test]
+fn set_random_round_trips_and_skips_no_ops() {
+    let fixture = Fixture::new();
+    // The default on a missing file writes nothing.
+    assert!(!set_random(&fixture.paths, RandomPool::Launchable).unwrap());
+    assert!(!fixture.paths.library_file().exists());
+
+    assert!(set_random(&fixture.paths, RandomPool::Any).unwrap());
+    assert_eq!(load(&fixture.paths).view.random, RandomPool::Any);
+    assert!(fixture.read().contains("random = \"any\""));
+    assert!(!set_random(&fixture.paths, RandomPool::Any).unwrap());
+
+    assert!(set_random(&fixture.paths, RandomPool::Launchable).unwrap());
+    assert_eq!(load(&fixture.paths).view.random, RandomPool::Launchable);
+    assert!(!set_random(&fixture.paths, RandomPool::Launchable).unwrap());
+
+    // A bad value is replaced by the default when that is what is saved.
+    fixture.write("schema_version = 1\n\n[view]\nrandom = \"favorites\"\n");
+    assert!(set_random(&fixture.paths, RandomPool::Launchable).unwrap());
+    assert!(fixture.read().contains("random = \"launchable\""));
+}
+
+#[test]
+fn a_random_write_changes_only_that_line() {
+    let fixture = Fixture::new();
+    let before = "# my library\nschema_version = 1\n\n[view]\n# newest first\ndescending = true\nzoom = 90 # small\nfuture_view = \"kept\"\n\n[environments.hades]\n# my favorite\nfavorite = true\n";
+    fixture.write(before);
+    assert!(set_random(&fixture.paths, RandomPool::Any).unwrap());
+    let after = fixture.read();
+    let without: String = after
+        .lines()
+        .filter(|line| !line.starts_with("random ="))
+        .map(|line| format!("{line}\n"))
+        .collect();
+    assert_eq!(without, before, "{after}");
+    assert!(after.contains("random = \"any\""), "{after}");
+
+    // A no-op leaves the bytes alone.
+    assert!(!set_random(&fixture.paths, RandomPool::Any).unwrap());
+    assert_eq!(fixture.read(), after);
+}
+
+#[test]
+fn a_random_write_is_refused_on_a_broken_file() {
+    let fixture = Fixture::new();
+    fixture.write("[view\nrandom = \"any\"\n");
+    assert!(set_random(&fixture.paths, RandomPool::Launchable).is_err());
+    assert!(set_random(&fixture.paths, RandomPool::Any).is_err());
+    assert_eq!(fixture.read(), "[view\nrandom = \"any\"\n");
+}
+
+#[test]
 fn zoom_and_poster_only_edits_leave_the_other_view_keys_alone() {
     let fixture = Fixture::new();
     assert!(set_order(&fixture.paths, SortKey::Playtime, true).unwrap());
@@ -766,6 +852,7 @@ fn zoom_and_poster_only_edits_leave_the_other_view_keys_alone() {
             favorites_first: true,
             zoom: 70,
             poster_only: true,
+            random: RandomPool::Launchable,
         }
     );
 }

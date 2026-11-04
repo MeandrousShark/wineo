@@ -208,6 +208,22 @@ poster_only = "yes"
     }
 }
 
+#[test]
+fn random_is_a_known_view_key_and_a_bad_value_is_reported() {
+    for good in ["launchable", "any"] {
+        let inspection = inspect_text(&format!("[view]\nrandom = \"{good}\"\n"));
+        assert_eq!(inspection.findings, [], "{good}");
+    }
+    let inspection = inspect_text("[view]\nrandom = \"favorites\"\n");
+    assert_eq!(
+        messages(&inspection, FindingKind::FieldInvalid),
+        ["library.toml: view.random: expected one of launchable, any, found \"favorites\""]
+    );
+    assert_eq!(messages(&inspection, FindingKind::KeyUnknown).len(), 0);
+    let inspection = inspect_text("[view]\nrandom = true\n");
+    assert_eq!(messages(&inspection, FindingKind::FieldInvalid).len(), 1);
+}
+
 fn inspect_with_themes(text: &str, themes: &[(&str, &str)]) -> Inspection {
     let root = tempfile::tempdir().unwrap();
     let paths = paths(&root);

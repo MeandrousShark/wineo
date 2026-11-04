@@ -34,6 +34,7 @@ pub(crate) fn control<'a, M: Clone + 'a>(
         mouse_focus: true,
         leaves_submit: false,
         exclude: None,
+        menu: None,
     })
 }
 
@@ -53,6 +54,30 @@ pub(crate) fn excludable<'a, M: Clone + 'a>(
         mouse_focus: true,
         leaves_submit: false,
         exclude: Some(on_exclude),
+        menu: None,
+    })
+}
+
+/// A control that also opens a menu: a right-click on it, or Shift+F10 or
+/// the Menu key while it has focus, sends `on_menu`. The right-click works
+/// only while the control is enabled, since a disabled one has no place to
+/// open the menu from.
+pub(crate) fn with_menu<'a, M: Clone + 'a>(
+    content: Element<'a, M>,
+    enabled: bool,
+    id: impl Into<iced::widget::Id>,
+    on_press: M,
+    on_menu: M,
+) -> Element<'a, M> {
+    Element::new(FocusControl {
+        content,
+        enabled,
+        id: id.into(),
+        on_press,
+        mouse_focus: true,
+        leaves_submit: false,
+        exclude: None,
+        menu: Some(on_menu),
     })
 }
 
@@ -94,6 +119,7 @@ fn leaves_submit<'a, M: Clone + 'a>(
         mouse_focus: true,
         leaves_submit: true,
         exclude: None,
+        menu: None,
     })
 }
 
@@ -114,6 +140,7 @@ pub(crate) fn keyboard_control<'a, M: Clone + 'a>(
         mouse_focus: false,
         leaves_submit: false,
         exclude: None,
+        menu: None,
     })
 }
 
@@ -232,6 +259,8 @@ struct FocusControl<'a, M, R: AdvancedRenderer = iced::Renderer> {
     /// owns the key, since a popup's own key handler can't tell which row
     /// is focused.
     exclude: Option<M>,
+    /// Sent for the keys and click that open a context menu.
+    menu: Option<M>,
 }
 
 #[derive(Default)]
@@ -357,6 +386,35 @@ where
                 shell.capture_event();
                 return;
             }
+            Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Right))
+                if self.enabled && cursor.is_over(layout.bounds()) =>
+            {
+                if let Some(menu) = &self.menu {
+                    shell.publish(menu.clone());
+                    shell.capture_event();
+                    return;
+                }
+            }
+            Event::Keyboard(iced::keyboard::Event::KeyPressed {
+                key: iced::keyboard::Key::Named(named),
+                modifiers,
+                repeat: false,
+                ..
+            }) if self.enabled
+                && state.focused
+                && !(modifiers.control() || modifiers.alt() || modifiers.logo())
+                && match named {
+                    iced::keyboard::key::Named::ContextMenu => true,
+                    iced::keyboard::key::Named::F10 => modifiers.shift(),
+                    _ => false,
+                } =>
+            {
+                if let Some(menu) = &self.menu {
+                    shell.publish(menu.clone());
+                    shell.capture_event();
+                    return;
+                }
+            }
             Event::Keyboard(iced::keyboard::Event::KeyPressed {
                 key: iced::keyboard::Key::Character(character),
                 modifiers,
@@ -475,6 +533,7 @@ mod tests {
             mouse_focus: true,
             leaves_submit: false,
             exclude: None,
+            menu: None,
         });
         let mut tree = tree::Tree::new(widget.as_widget());
         let bounds = Size::new(100.0, 32.0);
@@ -517,6 +576,7 @@ mod tests {
             mouse_focus: true,
             leaves_submit: false,
             exclude: None,
+            menu: None,
         });
         let mut tree = tree::Tree::new(widget.as_widget());
         let bounds = Size::new(100.0, 32.0);
@@ -563,6 +623,7 @@ mod tests {
             mouse_focus: true,
             leaves_submit: false,
             exclude: None,
+            menu: None,
         });
         let mut tree = tree::Tree::new(widget.as_widget());
         let bounds = Size::new(100.0, 32.0);
@@ -711,6 +772,7 @@ mod tests {
                         mouse_focus: true,
                         leaves_submit: false,
                         exclude: None,
+                        menu: None,
                     });
                 let mut tree = tree::Tree::new(widget.as_widget());
                 tree.state.downcast_mut::<State>().focus();

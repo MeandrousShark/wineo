@@ -146,8 +146,9 @@ Plan 0054 added these.
 - The toolbar reads the wordmark, the accent **Add**, search, **Sort:
   <key>** with a chevron, a 32 px square direction button, **Filters** (or
   **Filters (N)** with N chosen or excluded stores, platforms, and tags),
-  the zoom slider, and the poster-only toggle. All are 32 px high, and Tab
-  follows that order, with the filter tab's chips right after **Filters**. Its
+  the 32 px square dice, the zoom slider, and the poster-only toggle. All
+  are 32 px high, and Tab follows that order, with the filter tab's chips
+  right after **Filters**. Its
   bottom padding is 15 px, room for the filter tab. Search is 320 px wide
   and shrinks first as the window narrows, down to 160 px; then the right
   end clips.
@@ -157,8 +158,17 @@ Plan 0054 added these.
   square icon button, an outline poster over a short title line, with the
   tag chips' selected look while on (15% primary tint, primary border and
   icon); its tooltip says "Hide titles" or "Show titles".
+- The dice shows a die face of five, in the foreground color, or muted
+  while there's nothing to pick from; its tooltip says "Pick one at
+  random (right-click for options)". Right-click, Shift+F10, or the Menu
+  key while it has focus opens a 272 px menu in the Sort menu's chrome
+  under it, with one check row, **Only games that can launch**. Focus
+  moves to the row, the toggle leaves the menu open, and Esc closes it and
+  returns focus to the dice. Only one toolbar menu or context menu is open
+  at a time.
 - Icons that Noto Sans lacks (arrows, chevron, check, star, crossed-out
-  eye, search) are inline SVGs tinted with palette tokens, never glyphs.
+  eye, search, die) are inline SVGs tinted with palette tokens, never
+  glyphs.
 - A tooltip is 13 px text padded 4 by 8 on the surface color, with a 1 px
   border, 8 px corners, and a 6 px gap. Toolbar tooltips sit below their
   button. The direction button's names the current order ("Most played

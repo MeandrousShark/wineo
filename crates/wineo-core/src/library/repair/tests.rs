@@ -860,6 +860,41 @@ fn repair_keeps_a_valid_zoom_and_poster_only_and_drops_invalid_ones() {
 }
 
 #[test]
+fn repair_keeps_a_valid_random_and_drops_an_invalid_one() {
+    for (value, kept) in [("\"any\"", true), ("\"launchable\"", true)] {
+        let fixture = Fixture::new();
+        fixture.write(&format!(
+            "[view]\nrandom = {value}\n\n[environments.hades]\nfavorite = true\nthis is broken\n"
+        ));
+        repair_at(&fixture.paths, STAMP, sync_dir).unwrap().unwrap();
+        assert_eq!(fixture.read().contains("random"), kept, "{value}");
+    }
+    let fixture = Fixture::new();
+    fixture.write("[view]\nrandom = \"any\"\nthis is broken\n");
+    repair_at(&fixture.paths, STAMP, sync_dir).unwrap().unwrap();
+    assert_eq!(
+        load(&fixture.paths).view.random,
+        crate::library::RandomPool::Any
+    );
+
+    for bad in ["\"favorites\"", "true", "3"] {
+        let fixture = Fixture::new();
+        fixture.write(&format!(
+            "[view]\nrandom = {bad}\ndescending = true\nthis is broken\n"
+        ));
+        let report = repair_at(&fixture.paths, STAMP, sync_dir).unwrap().unwrap();
+        assert_eq!(report.view, ViewRecovery::Partly, "{bad}");
+        let text = fixture.read();
+        assert!(!text.contains("random"), "{bad}: {text}");
+        let view = load(&fixture.paths).view;
+        assert_eq!(
+            (view.random, view.descending),
+            (crate::library::RandomPool::Launchable, true)
+        );
+    }
+}
+
+#[test]
 fn repair_keeps_the_readable_appearance_lines() {
     let fixture = Fixture::new();
     // The duplicate header makes the file unparseable; the parsed part and

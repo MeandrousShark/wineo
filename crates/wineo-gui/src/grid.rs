@@ -797,6 +797,10 @@ impl App {
             let [backdrop, menu] = self.filter_menu_view();
             return page.push(backdrop).push(menu).into();
         }
+        if self.random_menu_shown() {
+            let [backdrop, menu] = self.random_menu_view();
+            return page.push(backdrop).push(menu).into();
+        }
         if let Some(name) = &self.action_menu {
             let palette = self.palette;
             let wine_actions = self.wine_actions_with(&self.facts, name);
@@ -1328,6 +1332,7 @@ impl App {
                     search,
                     crate::sort_control::toolbar(self),
                     crate::filter_control::toolbar(self),
+                    crate::random_pick::toolbar(self),
                     crate::zoom_control::toolbar(self),
                 ]
                 .spacing(8)
@@ -1507,10 +1512,20 @@ fn text_width(content: &str) -> f32 {
 }
 
 pub(crate) fn menu_position(pointer: iced::Point, window: Size, menu_height: f32) -> iced::Point {
+    menu_position_of(pointer, window, ACTION_MENU_WIDTH, menu_height)
+}
+
+/// `menu_position` for a menu of another width.
+pub(crate) fn menu_position_of(
+    pointer: iced::Point,
+    window: Size,
+    menu_width: f32,
+    menu_height: f32,
+) -> iced::Point {
     iced::Point::new(
         (pointer.x + 4.0).clamp(
             ACTION_MENU_MARGIN,
-            (window.width - ACTION_MENU_WIDTH - ACTION_MENU_MARGIN).max(ACTION_MENU_MARGIN),
+            (window.width - menu_width - ACTION_MENU_MARGIN).max(ACTION_MENU_MARGIN),
         ),
         (pointer.y + 4.0).clamp(
             ACTION_MENU_MARGIN,
