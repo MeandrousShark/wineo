@@ -30,7 +30,7 @@ struct Change {
     tag: String,
     /// Environments to change
     #[arg(
-        value_name = "NAME",
+        value_name = "ENV",
         required = true,
         add = ArgValueCompleter::new(crate::completion::tag_environments)
     )]
