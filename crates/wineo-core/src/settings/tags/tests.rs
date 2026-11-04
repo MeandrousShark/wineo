@@ -2,9 +2,11 @@ use std::ffi::OsString;
 use std::fs;
 use std::os::unix::fs::MetadataExt;
 use std::path::Path;
+use std::sync::mpsc;
 use std::time::Duration;
 
 use super::*;
+use crate::operation::lock_wait_hooks;
 use crate::settings::update;
 
 fn setup() -> (tempfile::TempDir, Paths) {
@@ -322,17 +324,43 @@ fn a_steam_game_takes_tags() {
     assert_eq!(read_env(&paths, "bg3"), format!("{text}tags = []\n"));
 }
 
+/// Runs `write` on its own thread, which says so on `waiting` the moment it
+/// finds the config lock held, so a test knows it's blocked there.
+fn spawn_waiting<T: Send + 'static>(
+    waiting: &mpsc::Sender<()>,
+    write: impl FnOnce() -> T + Send + 'static,
+) -> std::thread::JoinHandle<T> {
+    let waiting = waiting.clone();
+    std::thread::spawn(move || {
+        lock_wait_hooks::on_wait(move || waiting.send(()).unwrap());
+        write()
+    })
+}
+
+/// Waits for `count` writers to block on the lock. Bounded, since a writer
+/// that never waits would otherwise hang the suite.
+fn all_waiting(waiting: &mpsc::Receiver<()>, count: usize) {
+    for _ in 0..count {
+        waiting
+            .recv_timeout(Duration::from_secs(5))
+            .expect("a writer never waited on the config lock");
+    }
+}
+
 #[test]
 fn a_change_is_read_under_the_lock_so_a_concurrent_write_is_kept() {
     let (_root, paths) = setup();
     write_env(&paths, "notepad", NOTEPAD);
     let config = paths.environment_config("notepad");
     let held = Locks::new(&paths).config(&config).unwrap();
+    let (tx, waiting) = mpsc::channel();
     let change = {
         let paths = paths.clone();
-        std::thread::spawn(move || change_tags(&paths, "notepad", TagChange::Add("b")))
+        spawn_waiting(&tx, move || {
+            change_tags(&paths, "notepad", TagChange::Add("b"))
+        })
     };
-    std::thread::sleep(Duration::from_millis(50));
+    all_waiting(&waiting, 1);
     // What another writer holding the lock gets in first.
     fs::write(&config, format!("{NOTEPAD}tags = [\"a\"]\n")).unwrap();
     drop(held);
@@ -346,16 +374,17 @@ fn two_writers_at_once_both_land() {
     write_env(&paths, "notepad", NOTEPAD);
     let config = paths.environment_config("notepad");
     let held = Locks::new(&paths).config(&config).unwrap();
+    let (tx, waiting) = mpsc::channel();
     let mut writers = Vec::new();
     for tag in ["a", "b", "c", "d"] {
         let paths = paths.clone();
-        writers.push(std::thread::spawn(move || {
+        writers.push(spawn_waiting(&tx, move || {
             change_tags(&paths, "notepad", TagChange::Add(tag)).map(|_| ())
         }));
     }
     let set = {
         let paths = paths.clone();
-        std::thread::spawn(move || {
+        spawn_waiting(&tx, move || {
             update(
                 &paths,
                 ConfigFile::Environment("notepad"),
@@ -365,7 +394,7 @@ fn two_writers_at_once_both_land() {
             .map(|_| ())
         })
     };
-    std::thread::sleep(Duration::from_millis(50));
+    all_waiting(&waiting, 5);
     drop(held);
     for writer in writers {
         writer.join().unwrap().unwrap();
