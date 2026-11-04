@@ -961,7 +961,7 @@ fn art_scrolled_out_of_range_is_evicted_and_reloads_when_it_returns() {
     assert_eq!(app.loading.len(), evicted);
 }
 
-fn steam_card(name: &str, install: wineo_core::steam::AppState) -> Card {
+pub(crate) fn steam_card(name: &str, install: wineo_core::steam::AppState) -> Card {
     let mut card = card(name, State::Inactive, 0);
     card.kind = Some(crate::library::CardKind::Proxied);
     card.tags = vec!["game".into()];

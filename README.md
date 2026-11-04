@@ -316,7 +316,8 @@ Every command has `--help`. The common ones:
 | Add a game already on disk, with a desktop entry | `wineo new -n palworld --exe ~/Games/Palworld/Palworld.exe -d` |
 | Add a native Linux game | `wineo new -n rimworld --native --exe ~/Games/RimWorld/start.sh -d`, or by hand from [`docs/native-environment.toml.example`](docs/native-environment.toml.example) |
 | List environments, or only tagged ones | `wineo list`, `wineo list --tag game` |
-| Tag environments | `wineo set hades 'tags=["game", "co-op"]'` |
+| Tag environments, one or many at once | `wineo tag add co-op hades celeste`, `wineo tag rm co-op hades` |
+| Set an environment's whole tag list | `wineo set hades 'tags=["game", "co-op"]'` |
 | Launch the default target, or a named one | `wineo start hades`, `wineo start hades.server` |
 | Launch attached to the terminal | `wineo run hades` |
 | Check and stop runs | `wineo status`, `wineo stop hades`, `wineo logs hades` |

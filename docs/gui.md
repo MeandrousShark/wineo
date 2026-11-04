@@ -100,9 +100,21 @@ GOG, Epic, Amazon), the platforms they run on (Native, Windows), your
 tags, **Show hidden**, and **Clear filters**, listing only what's in your
 library. Within each group, a game has to match any of the checked
 entries, and with checks in more than one group, it has to match each of
-them; the button counts them, as in **Filters (2)**. Clear filters clears
-the search, stores, platforms, and tags, and leaves the sort and Show
-hidden alone. Filters and Show hidden start fresh at every launch.
+them.
+
+Right-click an entry, or focus it and press X, to exclude it instead: the
+library then shows everything except what matches, like every game without
+the co-op tag. An excluded entry shows a box or chip with an x in the
+theme's danger color. A game has to match none of the excluded entries, in
+any group. Right-click or X on a checked or excluded entry turns it off, so
+excluding a checked entry takes two presses. A plain click also turns
+either off. A game with no store or platform doesn't match an exclude, so
+excluding Windows keeps a game that's not known to be Windows.
+
+The button counts checked and excluded entries, as in **Filters (2)**.
+Clear filters clears the search, stores, platforms, and tags, excludes
+included, and leaves the sort and Show hidden alone. Filters and Show
+hidden start fresh at every launch.
 
 An installed Steam game goes under Native or Windows from the start, even
 before its first run. See [Platforms](steam.md#platforms). One Steam doesn't
@@ -110,14 +122,32 @@ say enough about has no platform, so only the Store filter finds it, and so
 does a game that isn't fully installed.
 
 While a store, platform, or tag filter is on, a tab hangs under
-**Filters** with a chip for each. A chip's x removes that filter, and the
-larger x at the end clears them all but leaves the search. When the chips
-don't fit, the last one becomes **+N**, which opens the popup. Tab reaches
-the x's right after Filters. The grid scrolls under the tab, and the tab
-steps aside while a notice shows under the toolbar.
+**Filters** with a chip for each, in the popup's order. An excluded one
+reads **Not co-op**, with a danger-colored border and tint. A chip's x
+removes that filter, and the larger x at the end clears them all but
+leaves the search. When the chips don't fit, the last one becomes **+N**,
+which opens the popup. Tab reaches the x's right after Filters. The grid
+scrolls under the tab, and the tab steps aside while a notice shows under
+the toolbar.
 
 A hidden game leaves the grid and search. Show hidden brings it back
 dimmed, with a crossed-out eye on its poster, so you can unhide it.
+
+### Picking at random
+
+The dice after **Filters**, or R, picks one of the shown games when you
+can't decide. It selects the game, opens its panel, and scrolls to it, but
+never starts it. Every game has the same chance. It skips games that can't
+start right now, like one that's running, busy, not installed, or blocked,
+unless none of the shown games can. It never picks the selected game while
+there's another choice. Hidden games only come up with Show hidden on, and
+with nothing shown, the dice is off.
+
+Right-click the dice, or press Shift+F10 or the Menu key on it, for its
+menu. **Only games that can launch** is on by default; turn it off and every
+shown game is a candidate, including ones that can't start. Either way the
+selected game is skipped while there's another choice. The choice is saved
+in `library.toml` (`random` under `[view]`) and kept between launches.
 
 ### Favorites
 
@@ -915,6 +945,8 @@ edits, the bar says which, and **Reload** takes what's on disk.
 | Arrow keys | Move between cards |
 | Enter | Open the panel, or play when it's open (only for a card that's shown) |
 | F | Add the selected card to favorites, or remove it (only for a card that's shown) |
+| R | Pick a shown game at random, as the dice does (Library only) |
+| Shift+F10 or Menu | Open the focused dice's menu (Library only) |
 | Esc | Close the log, version picker, or results, then the panel, then clear the search |
 | `/` or Ctrl+F | Search |
 | Ctrl+N | Open Add (Library only) |
@@ -931,13 +963,15 @@ edits, the bar says which, and **Reload** takes what's on disk.
 The mouse Back button does whatever Esc does on the current page, here and
 in every table below. Forward does nothing.
 
-In the Sort menu and the Filters popup, which take every key while open:
+In the Sort menu, the Filters popup, and the dice's menu, which take every key
+while open:
 
 | Key | Does |
 |---|---|
 | Enter, Space (on Sort or Filters) | Open the menu under its button, on the current choice |
 | Arrow keys, Tab, Shift+Tab | Move between rows |
 | Enter, Space | Pick a sort, or toggle a check box or tag |
+| X (in Filters) | Exclude the focused store, platform, or tag, or turn it off if it's checked or excluded |
 | Esc | Close the menu and go back to its button |
 
 In the choice lists on **Add**, New's program list, the Heroic and GOG

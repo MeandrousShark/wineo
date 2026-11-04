@@ -779,6 +779,8 @@ fn take(file: &File, path: &Path, shared: bool, attempts: u32) -> Result<bool> {
     };
     let mut attempt = 1;
     while !try_flock(file, path, operation)? {
+        #[cfg(test)]
+        lock_wait_hooks::run_on_wait();
         if attempt >= attempts {
             return Ok(false);
         }
@@ -786,6 +788,30 @@ fn take(file: &File, path: &Path, shared: bool, attempts: u32) -> Result<bool> {
         thread::sleep(LOCK_RETRY);
     }
     Ok(true)
+}
+
+/// Test-only: a hook that runs once, the first time this thread finds a lock
+/// held by someone else, so a test can tell a writer is waiting on it rather
+/// than guessing with a sleep.
+#[cfg(test)]
+pub(crate) mod lock_wait_hooks {
+    use std::cell::RefCell;
+
+    type Hook = Box<dyn FnOnce()>;
+
+    thread_local! {
+        static ON_WAIT: RefCell<Option<Hook>> = const { RefCell::new(None) };
+    }
+
+    pub(crate) fn on_wait(hook: impl FnOnce() + 'static) {
+        ON_WAIT.with(|slot| *slot.borrow_mut() = Some(Box::new(hook)));
+    }
+
+    pub(super) fn run_on_wait() {
+        if let Some(hook) = ON_WAIT.with(|slot| slot.borrow_mut().take()) {
+            hook();
+        }
+    }
 }
 
 /// A single shared attempt, released explicitly the instant it succeeds so a

@@ -145,6 +145,16 @@ CLI's attached `wineo run` holds the terminal and isn't meant for a GUI.
   changed. A failure after the checks passed comes back in `failed`, with
   the other fields holding whatever completed first. That can be no
   component changes at all, or a config that was already written.
+- `settings::change_tags(paths, name, TagChange) -> Tagged`: adds or
+  removes one tag (`TagChange::Add` or `Remove`), as `wineo tag` does. It
+  reads the config under the config lock and computes the new list from that
+  read, so a concurrent writer's change is never lost. `Tagged::Unchanged`
+  means nothing was written and the file is byte-identical. It keeps
+  comments: removing a tag drops only the comment on the line where that tag
+  ends. It doesn't reconcile desktop entries, since tags never reach one, so
+  it takes no launch lock and resolves no runner. `settings::check_tag(tag)`
+  runs the same check up front, which a bulk change uses to refuse a bad tag
+  before touching any file. `view::TagOutput` is `wineo tag --json`'s shape.
 - `launch::start(paths, name, overrides, exe, &token, winetricks_output,
   events) -> StartOutcome`: builds a missing prefix, reconciles, installs
   missing winetricks verbs, and starts the target detached.
@@ -625,7 +635,9 @@ added it.
   share that rule, so a banner and Checkup never disagree. A bad field falls back to its
   default without affecting the entry's other fields.
 - `set_favorite`, `set_hidden` (per environment) and `set_sort`,
-  `set_descending`, `set_favorites_first` (the `[view]` table): each
+  `set_descending`, `set_favorites_first`, `set_random` (the `[view]`
+  table; `set_random` takes a `RandomPool`, `Launchable` or `Any`, and
+  `View::random` reads it, defaulting to `Launchable`): each
   changes one field. It reads the file fresh and holds its config lock
   through the atomic replace, so it never writes back a frontend's cached
   copy. `Ok(true)` means the file changed, `Ok(false)` a no-op that left

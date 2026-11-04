@@ -29,6 +29,9 @@ use crate::runner::Runner;
 use crate::runners::Runners;
 use crate::runtime::Runtime;
 
+mod tags;
+pub use tags::{TagChange, Tagged, change_tags, check_tag};
+
 /// Which config file `update` edits.
 #[derive(Debug, Clone, Copy)]
 pub enum ConfigFile<'a> {

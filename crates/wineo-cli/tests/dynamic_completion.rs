@@ -572,3 +572,247 @@ fn path_arguments_complete_paths_of_their_kind() {
         assert_eq!(complete(words), dirs, "{words:?}");
     }
 }
+
+#[test]
+fn tag_completes_tags_then_names_with_or_without_the_tag() {
+    let root = tempfile::tempdir().unwrap();
+    write_environment(root.path(), "hades", "kind = 'native'\ntags = ['co-op']\n");
+    write_environment(
+        root.path(),
+        "halo",
+        "kind = 'native'\ntags = ['co-op', 'fps']\n",
+    );
+    write_environment(root.path(), "hollow", "kind = 'native'\n");
+    write_environment(root.path(), "hbroken", "not valid toml");
+
+    let values = |found: Vec<String>| -> Vec<String> {
+        found
+            .into_iter()
+            .filter(|word| !word.starts_with('-'))
+            .collect()
+    };
+    for action in ["add", "remove"] {
+        let tags = values(complete(root.path(), "fish", &["wineo", "tag", action, ""]));
+        assert_eq!(tags, ["co-op", "fps"], "{action}");
+    }
+    // Several names, each one offered after the last.
+    for words in [
+        &["wineo", "tag", "remove", "co-op", "h"][..],
+        &["wineo", "tag", "remove", "co-op", "hades", "h"],
+        &["wineo", "tag", "remove", "--json", "co-op", "hades", "h"],
+    ] {
+        let mut names = complete(root.path(), "fish", words);
+        names.sort();
+        assert_eq!(names, ["hades", "halo"], "{words:?}");
+    }
+    let mut names = complete(
+        root.path(),
+        "fish",
+        &["wineo", "tag", "add", "fps", "hades", "h"],
+    );
+    names.sort();
+    assert_eq!(names, ["hades", "hbroken", "hollow"]);
+
+    let dir = root.path().join("portable");
+    write_portable(&dir, "hermes", "kind = 'native'\ntags = ['co-op']\n");
+    let dir_arg = dir.to_str().unwrap();
+    let names = complete(
+        root.path(),
+        "fish",
+        &[
+            "wineo",
+            "--portable",
+            dir_arg,
+            "tag",
+            "remove",
+            "co-op",
+            "h",
+        ],
+    );
+    assert_eq!(names, ["hermes"]);
+    let names = values(complete_with(
+        root.path(),
+        Some(&dir),
+        "fish",
+        &["wineo", "tag", "add", ""],
+    ));
+    assert_eq!(names, ["co-op"]);
+}
+
+#[test]
+fn tag_completion_takes_hyphen_words_after_the_separator() {
+    let root = tempfile::tempdir().unwrap();
+    write_environment(root.path(), "hades", "kind = 'native'\ntags = ['-co-op']\n");
+    write_environment(root.path(), "-halo", "kind = 'native'\ntags = ['-co-op']\n");
+    write_environment(root.path(), "hollow", "kind = 'native'\n");
+
+    let tags = complete(root.path(), "fish", &["wineo", "tag", "remove", "--", "-c"]);
+    assert_eq!(tags, ["-co-op"]);
+    let names = complete(
+        root.path(),
+        "fish",
+        &["wineo", "tag", "remove", "--", "-co-op", "h"],
+    );
+    assert_eq!(names, ["hades"]);
+    let names = complete(
+        root.path(),
+        "fish",
+        &[
+            "wineo", "tag", "remove", "--json", "--", "-co-op", "hades", "-h",
+        ],
+    );
+    assert_eq!(names, ["-halo"]);
+    let names = complete(
+        root.path(),
+        "fish",
+        &["wineo", "tag", "add", "--", "-co-op", "h"],
+    );
+    assert_eq!(names, ["hollow"]);
+}
+
+#[test]
+fn tag_rm_completes_like_remove() {
+    let root = tempfile::tempdir().unwrap();
+    write_environment(root.path(), "hades", "kind = 'native'\ntags = ['co-op']\n");
+    write_environment(root.path(), "halo", "kind = 'native'\ntags = ['fps']\n");
+    for action in ["remove", "rm"] {
+        let tags: Vec<String> = complete(root.path(), "fish", &["wineo", "tag", action, ""])
+            .into_iter()
+            .filter(|word| !word.starts_with('-'))
+            .collect();
+        assert_eq!(tags, ["co-op", "fps"], "{action}");
+        let names = complete(root.path(), "fish", &["wineo", "tag", action, "co-op", "h"]);
+        assert_eq!(names, ["hades"], "{action}");
+    }
+    assert_eq!(
+        complete(root.path(), "fish", &["wineo", "tag", "rm"]),
+        ["rm"]
+    );
+    assert_eq!(
+        complete(root.path(), "fish", &["wineo", "tag", "rem"]),
+        ["remove"]
+    );
+}
+
+/// Writes the files `snapshot::list` reads for one label. The manifest records
+/// `manifest_prefix` the way the config does, relative for a portable folder.
+fn write_snapshot(prefix: &Path, manifest_prefix: &str, name: &str, label: &str) {
+    let dir = prefix
+        .parent()
+        .unwrap()
+        .join(".wineo-snapshots")
+        .join(name)
+        .join(label);
+    fs::create_dir_all(dir.join("prefix")).unwrap();
+    fs::write(dir.join("config.toml"), "").unwrap();
+    let manifest = serde_json::json!({
+        "version": 1,
+        "environment": name,
+        "label": label,
+        "prefix": manifest_prefix,
+        "layout": "Wine",
+        "created_at": "2026-11-03T00:00:00Z",
+    });
+    fs::write(dir.join("manifest.json"), manifest.to_string()).unwrap();
+}
+
+/// An environment with its prefix under `root/prefixes`, and one snapshot per label.
+fn write_environment_with_snapshots(root: &Path, name: &str, labels: &[&str]) {
+    let prefix = root.join("prefixes").join(name);
+    fs::create_dir_all(&prefix).unwrap();
+    // The manifest has to name the resolved path, which a symlinked temp dir changes.
+    let prefix = fs::canonicalize(&prefix).unwrap();
+    write_environment(
+        root,
+        name,
+        &format!(
+            "prefix = '{}'\nrunner = 'wine'\narch = 'win64'\n",
+            prefix.display()
+        ),
+    );
+    for label in labels {
+        write_snapshot(&prefix, prefix.to_str().unwrap(), name, label);
+    }
+}
+
+#[test]
+fn snapshot_labels_skip_flags_and_read_names_after_the_separator() {
+    let root = tempfile::tempdir().unwrap();
+    write_environment_with_snapshots(root.path(), "hades", &["before", "clean"]);
+    write_environment_with_snapshots(root.path(), "-x", &["fresh"]);
+    let labels = |words: &[&str]| -> Vec<String> {
+        complete(root.path(), "fish", words)
+            .into_iter()
+            .filter(|word| !word.starts_with('-'))
+            .collect()
+    };
+
+    // A flag before the name doesn't stand in for it.
+    for words in [
+        &["wineo", "snapshot", "restore", "--yes", "hades", ""][..],
+        &["wineo", "snapshot", "restore", "hades", "--yes", ""],
+        &["wineo", "-v", "snapshot", "restore", "--yes", "hades", ""],
+        &["wineo", "snapshot", "rm", "-v", "hades", ""],
+    ] {
+        assert_eq!(labels(words), ["before", "clean"], "{words:?}");
+    }
+    assert_eq!(
+        labels(&["wineo", "snapshot", "restore", "--yes", "hades", "c"]),
+        ["clean"]
+    );
+
+    // After the separator a hyphen starts a name, not a flag.
+    assert_eq!(
+        labels(&["wineo", "snapshot", "restore", "--", "-x", ""]),
+        ["fresh"]
+    );
+    assert_eq!(
+        labels(&["wineo", "snapshot", "restore", "--yes", "--", "-x", ""]),
+        ["fresh"]
+    );
+    assert_eq!(
+        labels(&["wineo", "snapshot", "restore", "--", "hades", ""]),
+        ["before", "clean"]
+    );
+
+    // The folder's value is taken out before the name is read, wherever it sits.
+    let dir = root.path().join("portable");
+    write_portable(
+        &dir,
+        "hermes",
+        "prefix = 'prefixes/hermes'\nrunner = 'wine'\narch = 'win64'\n",
+    );
+    write_snapshot(
+        &dir.join("prefixes/hermes"),
+        "prefixes/hermes",
+        "hermes",
+        "boat",
+    );
+    let dir_arg = dir.to_str().unwrap();
+    assert_eq!(
+        labels(&[
+            "wineo",
+            "snapshot",
+            "restore",
+            "--portable",
+            dir_arg,
+            "--yes",
+            "hermes",
+            "",
+        ]),
+        ["boat"]
+    );
+    assert_eq!(
+        labels(&[
+            "wineo",
+            "snapshot",
+            "restore",
+            "--yes",
+            "--portable",
+            dir_arg,
+            "hermes",
+            "",
+        ]),
+        ["boat"]
+    );
+}

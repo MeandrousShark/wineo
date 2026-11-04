@@ -173,6 +173,44 @@ pub fn tags(current: &OsStr) -> Vec<CompletionCandidate> {
         .collect()
 }
 
+/// Completes `wineo tag`'s names: for `remove` or `rm`, only those with the tag, and
+/// for `add`, those without it. A config that can't be read is offered to
+/// `add`, since it isn't known to have the tag.
+pub fn tag_environments(current: &OsStr) -> Vec<CompletionCandidate> {
+    let Some(Completing {
+        prefix,
+        words,
+        paths,
+    }) = Completing::new(current)
+    else {
+        return Vec::new();
+    };
+    let Some(("tag", args)) = command_args(&words) else {
+        return Vec::new();
+    };
+    let mut positional = positionals(args);
+    let (Some(action), Some(tag)) = (positional.next(), positional.next()) else {
+        return Vec::new();
+    };
+    let wanted = match action.as_str() {
+        "add" => false,
+        "remove" | "rm" => true,
+        _ => return Vec::new(),
+    };
+    environment::names(&paths)
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|name| name.starts_with(prefix))
+        .filter(|name| {
+            let has = Environment::load(&paths, name)
+                .map(|environment| environment.config.tags.contains(tag))
+                .ok();
+            has.map_or(!wanted, |has| has == wanted)
+        })
+        .map(CompletionCandidate::new)
+        .collect()
+}
+
 pub fn targets(current: &OsStr) -> Vec<CompletionCandidate> {
     let Some(Completing {
         prefix,
@@ -241,7 +279,8 @@ pub fn snapshots(current: &OsStr) -> Vec<CompletionCandidate> {
     let Some(("snapshot", args)) = command_args(&words) else {
         return Vec::new();
     };
-    let [action, name, ..] = args else {
+    let mut positional = positionals(args);
+    let (Some(action), Some(name)) = (positional.next(), positional.next()) else {
         return Vec::new();
     };
     if !matches!(action.as_str(), "restore" | "remove" | "rm" | "delete") {
@@ -318,6 +357,18 @@ fn command_args(words: &[String]) -> Option<(&str, &[String])> {
     None
 }
 
+/// The positional words of a command whose only options are flags without
+/// values, like `tag`'s `--json`. Tags and names may start with `-`, which
+/// only `--` lets through, so every word after it is positional.
+fn positionals(args: &[String]) -> impl Iterator<Item = &String> {
+    let separator = args.iter().position(|arg| arg == "--");
+    let (options, rest) = args.split_at(separator.unwrap_or(args.len()));
+    options
+        .iter()
+        .filter(|arg| !arg.starts_with('-'))
+        .chain(rest.iter().skip(1))
+}
+
 fn selected_environment(args: &[String]) -> Option<&str> {
     let mut awaiting_value = false;
     for arg in args {
@@ -365,7 +416,7 @@ fn first_winetricks_value(args: &[String]) -> bool {
 mod tests {
     use std::path::PathBuf;
 
-    use super::{first_winetricks_value, selected_environment, split_portable};
+    use super::{first_winetricks_value, positionals, selected_environment, split_portable};
 
     fn strings(words: &[&str]) -> Vec<String> {
         words.iter().map(|word| (*word).to_owned()).collect()
@@ -429,6 +480,15 @@ mod tests {
                 "x"
             ])
         );
+    }
+
+    #[test]
+    fn positionals_honor_the_separator() {
+        let args = strings(&["remove", "--json", "-x", "co-op", "--", "-hades", "--json"]);
+        let found: Vec<&String> = positionals(&args).collect();
+        assert_eq!(found, ["remove", "co-op", "-hades", "--json"]);
+        let args = strings(&["remove", "--"]);
+        assert_eq!(positionals(&args).count(), 1);
     }
 
     #[test]

@@ -17,6 +17,7 @@ wineo-gog = { path = "crates/wineo-gog" }
 anstream = "1.0"
 anstyle = "1.0"
 anyhow = "1"
+fastrand = "2"
 filetime = "0.2"
 flate2 = "1"
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls-native-roots"] }

@@ -1,5 +1,5 @@
-//! What the library toolbar's Sort menu and Filters popup share: one open at
-//! a time, opening under their button, and their rows.
+//! What the library toolbar's Sort menu, Filters popup, and dice menu share:
+//! one open at a time, opening under their button, and their rows.
 
 use iced::widget::{Space, button, container, mouse_area, svg};
 use iced::{Color, Element, Fill, Point, Rectangle, Task, border};
@@ -53,14 +53,14 @@ pub(crate) fn request_bounds(
 }
 
 impl App {
-    /// Either toolbar menu is open.
+    /// Any toolbar menu is open: Sort, Filters, or the dice's.
     pub(crate) fn library_menu_open(&self) -> bool {
-        self.sort_menu || self.filter_menu
+        self.sort_menu || self.filter_menu || self.random_menu
     }
 
-    /// Either toolbar menu is showing over the Library.
+    /// Any toolbar menu is showing over the Library.
     pub(crate) fn library_menu_shown(&self) -> bool {
-        self.sort_menu_shown() || self.filter_menu_shown()
+        self.sort_menu_shown() || self.filter_menu_shown() || self.random_menu_shown()
     }
 
     /// Whether a menu can open: nothing took the window since it was asked
@@ -70,6 +70,7 @@ impl App {
             || self.closing
             || self.sort_menu
             || self.filter_menu
+            || self.random_menu
             || self.action_menu.is_some()
             || self.hook_stop_confirm.is_some()
             || self.section != crate::sidebar::Section::Library
@@ -81,8 +82,10 @@ impl App {
     pub(crate) fn close_library_menus(&mut self) {
         self.sort_menu = false;
         self.filter_menu = false;
+        self.random_menu = false;
         self.sort_opening.cancel();
         self.filter_opening.cancel();
+        self.random_opening.cancel();
         self.action_menu = None;
     }
 }
@@ -292,6 +295,19 @@ pub(crate) fn menu_row<'a>(
     id: impl Into<iced::widget::Id>,
     message: Message,
 ) -> Element<'a, Message> {
+    menu_row_with(content, palette, chosen, id, message, None)
+}
+
+/// A menu row that also sends `exclude` on a right-click or X while it has
+/// focus, when there is one.
+pub(crate) fn menu_row_with<'a>(
+    content: Element<'a, Message>,
+    palette: Palette,
+    chosen: bool,
+    id: impl Into<iced::widget::Id>,
+    message: Message,
+    exclude: Option<Message>,
+) -> Element<'a, Message> {
     let row = button(container(content).height(Fill).center_y(Fill))
         .width(Fill)
         .height(ui::BUTTON_HEIGHT)
@@ -304,7 +320,11 @@ pub(crate) fn menu_row<'a>(
             }
             style
         });
-    focus_button::control(row.into(), true, id, message)
+    let Some(exclude) = exclude else {
+        return focus_button::control(row.into(), true, id, message);
+    };
+    let control = focus_button::excludable(row.into(), id, message, exclude.clone());
+    mouse_area(control).on_right_press(exclude).into()
 }
 
 /// A box that shows whether a toggle is on. Noto Sans has no check mark, so

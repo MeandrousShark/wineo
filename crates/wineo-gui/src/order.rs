@@ -30,7 +30,8 @@ impl From<library::View> for Query {
 }
 
 /// What narrows the library besides search. None of it is saved, so each
-/// launch starts with the whole library.
+/// launch starts with the whole library. A value is in at most one of its
+/// include and exclude sets; the popup keeps it that way.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct Filters {
     /// Store labels; a card matches any of them. A game with no store
@@ -40,30 +41,50 @@ pub(crate) struct Filters {
     pub(crate) platforms: BTreeSet<&'static str>,
     /// A card matches when it has any of these.
     pub(crate) tags: BTreeSet<String>,
+    /// A card with any of these stores is out. A game with no store stays in.
+    pub(crate) not_stores: BTreeSet<&'static str>,
+    /// Platforms that take a card out. A game with no platform isn't known
+    /// to be on any, so it stays in.
+    pub(crate) not_platforms: BTreeSet<&'static str>,
+    /// A card with any of these tags is out.
+    pub(crate) not_tags: BTreeSet<String>,
     pub(crate) show_hidden: bool,
 }
 
 impl Filters {
-    /// How many store, platform, and tag filters are on, for the Filters
-    /// button.
+    /// How many store, platform, and tag filters are on, included or
+    /// excluded, for the Filters button.
     pub(crate) fn active(&self) -> usize {
-        self.stores.len() + self.platforms.len() + self.tags.len()
+        self.stores.len()
+            + self.platforms.len()
+            + self.tags.len()
+            + self.not_stores.len()
+            + self.not_platforms.len()
+            + self.not_tags.len()
     }
 
-    /// Any checked value within a group matches, and every group with a
-    /// check has to.
+    /// Turns every store, platform, and tag filter off, leaving Show hidden.
+    pub(crate) fn clear(&mut self) {
+        self.stores.clear();
+        self.platforms.clear();
+        self.tags.clear();
+        self.not_stores.clear();
+        self.not_platforms.clear();
+        self.not_tags.clear();
+    }
+
+    /// Any checked value within a group matches, every group with a check
+    /// has to, and no excluded value in any group may match.
     fn admit(&self, card: &Card) -> bool {
-        (self.stores.is_empty()
-            || card
-                .source
-                .store
-                .is_some_and(|store| self.stores.contains(store.label())))
+        let store = card.source.store.map(Store::label);
+        let platform = card.source.platform.map(Platform::label);
+        (self.stores.is_empty() || store.is_some_and(|label| self.stores.contains(label)))
             && (self.platforms.is_empty()
-                || card
-                    .source
-                    .platform
-                    .is_some_and(|platform| self.platforms.contains(platform.label())))
+                || platform.is_some_and(|label| self.platforms.contains(label)))
             && (self.tags.is_empty() || card.tags.iter().any(|tag| self.tags.contains(tag)))
+            && !store.is_some_and(|label| self.not_stores.contains(label))
+            && !platform.is_some_and(|label| self.not_platforms.contains(label))
+            && !card.tags.iter().any(|tag| self.not_tags.contains(tag))
     }
 }
 

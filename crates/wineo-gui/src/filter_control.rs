@@ -4,14 +4,14 @@
 use std::collections::BTreeSet;
 
 use iced::keyboard::{Key, Modifiers, key::Named};
-use iced::widget::{Row, button, column, container, row, scrollable, text};
+use iced::widget::{Row, button, column, container, mouse_area, row, scrollable, text};
 use iced::{Center, Element, Font, Point, Rectangle, Task, border, font};
 
 use crate::grid::{
     ACTION_MENU_HEADER_HEIGHT, ACTION_MENU_MARGIN, ACTION_MENU_PADDING, ACTION_MENU_SPACING,
     ACTION_MENU_WIDTH, context_menu_style, menu_position,
 };
-use crate::library_menu::{CHECK, CHEVRON, anchor_under, check_box, icon, menu_row};
+use crate::library_menu::{CHECK, CHEVRON, anchor_under, check_box, icon, menu_row, menu_row_with};
 use crate::theme::Palette;
 use crate::ui::{self, ScrollStyle};
 use crate::{App, Message, focus_button};
@@ -38,11 +38,16 @@ pub(crate) enum Event {
     ToggleStore(&'static str),
     TogglePlatform(&'static str),
     ToggleTag(String),
+    /// A right-click, or X on the focused row, which excludes an off value
+    /// and turns a chosen one off.
+    ExcludeStore(&'static str),
+    ExcludePlatform(&'static str),
+    ExcludeTag(String),
     ToggleShowHidden,
     /// An empty state's Show hidden, which only turns it on.
     ShowHidden,
-    /// Clears the search and the store, platform, and tag filters, leaving the sort
-    /// and Show hidden alone.
+    /// Clears the search and the store, platform, and tag filters, included
+    /// and excluded, leaving the sort and Show hidden alone.
     Clear,
     /// Where the Filters button is now, for the filter tab.
     ButtonBounds(Rectangle),
@@ -67,6 +72,76 @@ impl Event {
     }
 }
 
+/// Where a popup row stands: off, included, or excluded, never two at once.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Mark {
+    Off,
+    Included,
+    Excluded,
+}
+
+/// How a row was pressed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Press {
+    /// A click, Enter, or Space.
+    Click,
+    /// A right-click or X.
+    Exclude,
+}
+
+impl Mark {
+    fn of<T: Ord>(include: &BTreeSet<T>, exclude: &BTreeSet<T>, value: &T) -> Self {
+        if include.contains(value) {
+            Self::Included
+        } else if exclude.contains(value) {
+            Self::Excluded
+        } else {
+            Self::Off
+        }
+    }
+
+    /// A click includes an off row and turns off one that's included or
+    /// excluded, so clicking a ticked row unticks it as it always has.
+    fn clicked(self) -> Self {
+        match self {
+            Self::Off => Self::Included,
+            Self::Included | Self::Excluded => Self::Off,
+        }
+    }
+
+    /// Excluding an off row excludes it; any press on a chosen row turns it
+    /// off, so a right-click never flips an include straight to an exclude.
+    fn excluded(self) -> Self {
+        match self {
+            Self::Off => Self::Excluded,
+            Self::Included | Self::Excluded => Self::Off,
+        }
+    }
+
+    fn after(self, press: Press) -> Self {
+        match press {
+            Press::Click => self.clicked(),
+            Press::Exclude => self.excluded(),
+        }
+    }
+}
+
+/// Applies `press` to `value`'s row, moving it between the two sets.
+fn press_row<T: Ord>(include: &mut BTreeSet<T>, exclude: &mut BTreeSet<T>, value: T, press: Press) {
+    let next = Mark::of(include, exclude, &value).after(press);
+    include.remove(&value);
+    exclude.remove(&value);
+    match next {
+        Mark::Off => {}
+        Mark::Included => {
+            include.insert(value);
+        }
+        Mark::Excluded => {
+            exclude.insert(value);
+        }
+    }
+}
+
 fn store_id(label: &str) -> String {
     format!("library-filter-store-{}", label.to_lowercase())
 }
@@ -83,10 +158,14 @@ pub(crate) struct Offered {
     pub(crate) tags: Vec<String>,
 }
 
-/// `listed` plus any `chosen` it lacks, sorted A to Z.
-fn with_chosen(listed: &[&'static str], chosen: &BTreeSet<&'static str>) -> Vec<&'static str> {
+/// `listed` plus any `chosen` or `excluded` it lacks, sorted A to Z.
+fn with_chosen(
+    listed: &[&'static str],
+    chosen: &BTreeSet<&'static str>,
+    excluded: &BTreeSet<&'static str>,
+) -> Vec<&'static str> {
     let mut labels = listed.to_vec();
-    for label in chosen {
+    for label in chosen.iter().chain(excluded) {
         if !labels.contains(label) {
             labels.push(label);
         }
@@ -114,15 +193,23 @@ impl App {
     }
 
     /// What the popup offers: the library's stores, platforms, and tags,
-    /// plus any chosen one it no longer has, so a filter never turns off
-    /// behind your back and can still be turned off here.
+    /// plus any chosen or excluded one it no longer has, so a filter never
+    /// turns off behind your back and can still be turned off here.
     pub(crate) fn offered(&self) -> Offered {
         let options = self.order.options(self.order_inputs());
-        let stores = with_chosen(&options.stores, &self.filters.stores);
-        let platforms = with_chosen(&options.platforms, &self.filters.platforms);
+        let stores = with_chosen(
+            &options.stores,
+            &self.filters.stores,
+            &self.filters.not_stores,
+        );
+        let platforms = with_chosen(
+            &options.platforms,
+            &self.filters.platforms,
+            &self.filters.not_platforms,
+        );
         let mut tags = options.tags.clone();
         let mut gone = false;
-        for chosen in &self.filters.tags {
+        for chosen in self.filters.tags.iter().chain(&self.filters.not_tags) {
             if !tags.contains(chosen) {
                 tags.push(chosen.clone());
                 gone = true;
@@ -180,24 +267,12 @@ pub(crate) fn update(app: &mut App, event: Event) -> Task<Message> {
             app.filter_menu = false;
             Task::none()
         }
-        Event::ToggleStore(label) => {
-            if !app.filters.stores.remove(label) {
-                app.filters.stores.insert(label);
-            }
-            app.resorted()
-        }
-        Event::TogglePlatform(label) => {
-            if !app.filters.platforms.remove(label) {
-                app.filters.platforms.insert(label);
-            }
-            app.resorted()
-        }
-        Event::ToggleTag(tag) => {
-            if !app.filters.tags.remove(&tag) {
-                app.filters.tags.insert(tag);
-            }
-            app.resorted()
-        }
+        Event::ToggleStore(label) => press_store(app, label, Press::Click),
+        Event::TogglePlatform(label) => press_platform(app, label, Press::Click),
+        Event::ToggleTag(tag) => press_tag(app, tag, Press::Click),
+        Event::ExcludeStore(label) => press_store(app, label, Press::Exclude),
+        Event::ExcludePlatform(label) => press_platform(app, label, Press::Exclude),
+        Event::ExcludeTag(tag) => press_tag(app, tag, Press::Exclude),
         Event::ToggleShowHidden => {
             app.filters.show_hidden = !app.filters.show_hidden;
             app.resorted()
@@ -214,9 +289,7 @@ pub(crate) fn update(app: &mut App, event: Event) -> Task<Message> {
                 return Task::none();
             }
             app.search.clear();
-            app.filters.stores.clear();
-            app.filters.platforms.clear();
-            app.filters.tags.clear();
+            app.filters.clear();
             let resorted = app.resorted();
             if !app.filter_menu {
                 return resorted;
@@ -242,6 +315,29 @@ pub(crate) fn update(app: &mut App, event: Event) -> Task<Message> {
             crate::filter_tab::wheel(delta, app.modifiers.shift())
         }
     }
+}
+
+fn press_store(app: &mut App, label: &'static str, press: Press) -> Task<Message> {
+    let filters = &mut app.filters;
+    press_row(&mut filters.stores, &mut filters.not_stores, label, press);
+    app.resorted()
+}
+
+fn press_platform(app: &mut App, label: &'static str, press: Press) -> Task<Message> {
+    let filters = &mut app.filters;
+    press_row(
+        &mut filters.platforms,
+        &mut filters.not_platforms,
+        label,
+        press,
+    );
+    app.resorted()
+}
+
+fn press_tag(app: &mut App, tag: String, press: Press) -> Task<Message> {
+    let filters = &mut app.filters;
+    press_row(&mut filters.tags, &mut filters.not_tags, tag, press);
+    app.resorted()
 }
 
 fn open_menu(app: &mut App, position: Point) -> Task<Message> {
@@ -272,7 +368,8 @@ pub(crate) fn key(app: &mut App, key: &Key, modifiers: Modifiers) -> Task<Messag
     }
 }
 
-/// The Filters button's label, with how many store, platform, and tag filters are on.
+/// The Filters button's label, with how many store, platform, and tag
+/// filters are on, included or excluded.
 pub(crate) fn button_label(app: &App) -> String {
     match app.filters.active() {
         0 => "Filters".to_owned(),
@@ -313,40 +410,83 @@ fn heading(label: &str, palette: Palette) -> Element<'_, Message> {
         .into()
 }
 
-/// A tag that toggles its filter. While it's on it has a check mark and
-/// the accent tint and border the sidebar's selected item uses, so it reads
+/// A box that shows an excluded row: the check box's shape, filled with the
+/// danger color and holding a drawn x, so the two read as the same kind of mark.
+fn exclude_box(palette: Palette) -> Element<'static, Message> {
+    container(icon(
+        crate::filter_tab::CROSS,
+        ui::accent_ink(palette.danger),
+        12.0,
+    ))
+    .width(16)
+    .height(16)
+    .center(16)
+    .style(move |_| {
+        container::Style::default()
+            .background(palette.danger)
+            .border(border::rounded(4).width(1).color(palette.danger))
+    })
+    .into()
+}
+
+/// The box in front of a store or platform row.
+fn mark_box(mark: Mark, palette: Palette) -> Element<'static, Message> {
+    match mark {
+        Mark::Off => check_box(false, palette),
+        Mark::Included => check_box(true, palette),
+        Mark::Excluded => exclude_box(palette),
+    }
+}
+
+/// A tag that toggles its filter. Included, it has a check mark and the
+/// accent tint and border the sidebar's selected item uses; excluded, a drawn
+/// x with the same tint and border in the danger color. Either way it reads
 /// as chosen without color alone, and the focus ring stays outside it.
-fn chip(tag: String, on: bool, palette: Palette) -> Element<'static, Message> {
+fn chip(tag: String, mark: Mark, palette: Palette) -> Element<'static, Message> {
     let id = tag_id(&tag);
     let message = Message::Filter(Event::ToggleTag(tag.clone()));
-    let label: Element<'static, Message> = if on {
-        row![icon(CHECK, palette.primary, 12.0), text(tag).size(13)]
+    let exclude = Message::Filter(Event::ExcludeTag(tag.clone()));
+    let label: Element<'static, Message> = match mark {
+        Mark::Included => row![icon(CHECK, palette.primary, 12.0), text(tag).size(13)]
             .spacing(4)
             .align_y(Center)
-            .into()
-    } else {
-        text(tag).size(13).into()
+            .into(),
+        Mark::Excluded => row![
+            icon(crate::filter_tab::CROSS, palette.danger, 12.0),
+            text(tag).size(13)
+        ]
+        .spacing(4)
+        .align_y(Center)
+        .into(),
+        Mark::Off => text(tag).size(13).into(),
     };
     let chip = button(label)
         .padding([4, 10])
         .on_press(message.clone())
         .style(move |_, status| {
             let mut style = context_menu_style(palette, false, status);
-            style.border = border::rounded(12).width(1).color(if on {
-                palette.primary
-            } else {
-                palette.border
+            style.border = border::rounded(12).width(1).color(match mark {
+                Mark::Included => palette.primary,
+                Mark::Excluded => palette.danger,
+                Mark::Off => palette.border,
             });
-            if on {
-                let tint = match status {
-                    button::Status::Hovered | button::Status::Pressed => 0.24,
-                    _ => 0.15,
-                };
-                style.background = Some(palette.primary.scale_alpha(tint).into());
+            let tint = match status {
+                button::Status::Hovered | button::Status::Pressed => 0.24,
+                _ => 0.15,
+            };
+            match mark {
+                Mark::Included => {
+                    style.background = Some(palette.primary.scale_alpha(tint).into());
+                }
+                Mark::Excluded => {
+                    style.background = Some(palette.danger.scale_alpha(tint).into());
+                }
+                Mark::Off => {}
             }
             style
         });
-    focus_button::control(chip.into(), true, id, message)
+    let control = focus_button::excludable(chip.into(), id, message, exclude.clone());
+    mouse_area(control).on_right_press(exclude).into()
 }
 
 impl App {
@@ -378,7 +518,9 @@ impl App {
             &'a str,
             Vec<&'static str>,
             &'a BTreeSet<&'static str>,
+            &'a BTreeSet<&'static str>,
             fn(&str) -> String,
+            fn(&'static str) -> Event,
             fn(&'static str) -> Event,
         );
         let groups: [Group<'_>; 2] = [
@@ -386,43 +528,46 @@ impl App {
                 "Store",
                 stores,
                 &self.filters.stores,
+                &self.filters.not_stores,
                 store_id,
                 Event::ToggleStore,
+                Event::ExcludeStore,
             ),
             (
                 "Platform",
                 platforms,
                 &self.filters.platforms,
+                &self.filters.not_platforms,
                 platform_id,
                 Event::TogglePlatform,
+                Event::ExcludePlatform,
             ),
         ];
-        for (title, labels, checked, id, toggle) in groups {
+        for (title, labels, included, excluded, id, toggle, exclude) in groups {
             if labels.is_empty() {
                 continue;
             }
             rows = rows.push(heading(title, palette));
             for label in labels {
-                rows = rows.push(menu_row(
-                    row![
-                        check_box(checked.contains(label), palette),
-                        text(label).size(14),
-                    ]
-                    .spacing(8)
-                    .align_y(Center)
-                    .into(),
+                let mark = Mark::of(included, excluded, &label);
+                rows = rows.push(menu_row_with(
+                    row![mark_box(mark, palette), text(label).size(14)]
+                        .spacing(8)
+                        .align_y(Center)
+                        .into(),
                     palette,
                     false,
                     id(label),
                     Message::Filter(toggle(label)),
+                    Some(Message::Filter(exclude(label))),
                 ));
             }
         }
         if !tags.is_empty() {
             rows = rows.push(heading("Tags", palette));
             let chips = tags.into_iter().map(|tag| {
-                let on = self.filters.tags.contains(&tag);
-                chip(tag, on, palette)
+                let mark = Mark::of(&self.filters.tags, &self.filters.not_tags, &tag);
+                chip(tag, mark, palette)
             });
             rows = rows.push(
                 container(
@@ -467,7 +612,12 @@ impl App {
                 clear_enabled,
                 CLEAR_ID,
                 clear_message,
-            ));
+            ))
+            .push(
+                text("Right-click or press X to exclude.")
+                    .size(12)
+                    .color(palette.muted),
+            );
         let menu = container(
             scrollable(rows)
                 .id(iced::widget::Id::new(MENU_SCROLL_ID))

@@ -1085,3 +1085,442 @@ fn keyboard_focus_scrolls_the_sort_menu_in_a_short_window() {
     );
     assert!(laid.offsets().iter().any(|offset| *offset > 0.0));
 }
+
+/// Includes (`+`) and excludes (`-`) values, one event each.
+fn set(app: &mut App, tags: &[&str], not_tags: &[&str]) {
+    for tag in tags {
+        let _ = filter(app, Event::ToggleTag((*tag).to_owned()));
+    }
+    for tag in not_tags {
+        let _ = filter(app, Event::ExcludeTag((*tag).to_owned()));
+    }
+}
+
+#[test]
+fn a_row_goes_between_off_included_and_excluded_on_click_and_exclude() {
+    use Mark::{Excluded, Included, Off};
+    // Click: off includes, and an included or excluded row turns off.
+    assert_eq!(Off.after(Press::Click), Included);
+    assert_eq!(Included.after(Press::Click), Off);
+    assert_eq!(Excluded.after(Press::Click), Off);
+    // Right-click or X: off excludes, and a chosen row turns off.
+    assert_eq!(Off.after(Press::Exclude), Excluded);
+    assert_eq!(Included.after(Press::Exclude), Off);
+    assert_eq!(Excluded.after(Press::Exclude), Off);
+}
+
+#[test]
+fn a_right_press_on_an_included_row_turns_it_off() {
+    let (_root, mut app) = loaded();
+    let _ = filter(&mut app, Event::ToggleTag("rpg".into()));
+    let _ = filter(&mut app, Event::ExcludeTag("rpg".into()));
+    assert!(app.filters.tags.is_empty());
+    assert!(app.filters.not_tags.is_empty());
+    let _ = filter(&mut app, Event::ToggleStore("Steam"));
+    let _ = filter(&mut app, Event::ExcludeStore("Steam"));
+    assert!(app.filters.stores.is_empty());
+    assert!(app.filters.not_stores.is_empty());
+    let _ = filter(&mut app, Event::TogglePlatform("Windows"));
+    let _ = filter(&mut app, Event::ExcludePlatform("Windows"));
+    assert!(app.filters.platforms.is_empty());
+    assert!(app.filters.not_platforms.is_empty());
+}
+
+#[test]
+fn a_value_is_never_included_and_excluded_at_once() {
+    let (_root, mut app) = loaded();
+    let mark = |app: &App| {
+        (
+            Mark::of(&app.filters.stores, &app.filters.not_stores, &"Steam"),
+            app.filters.stores.len() + app.filters.not_stores.len(),
+        )
+    };
+    assert_eq!(mark(&app), (Mark::Off, 0));
+    let _ = filter(&mut app, Event::ToggleStore("Steam"));
+    assert_eq!(mark(&app), (Mark::Included, 1));
+    let _ = filter(&mut app, Event::ExcludeStore("Steam"));
+    assert_eq!(mark(&app), (Mark::Off, 0));
+    let _ = filter(&mut app, Event::ExcludeStore("Steam"));
+    assert_eq!(mark(&app), (Mark::Excluded, 1));
+    let _ = filter(&mut app, Event::ToggleStore("Steam"));
+    assert_eq!(mark(&app), (Mark::Off, 0));
+    let _ = filter(&mut app, Event::ExcludeStore("Steam"));
+    assert_eq!(mark(&app), (Mark::Excluded, 1));
+    let _ = filter(&mut app, Event::ExcludeStore("Steam"));
+    assert_eq!(mark(&app), (Mark::Off, 0));
+
+    // Platforms and tags move the same way.
+    let _ = filter(&mut app, Event::ExcludePlatform("Windows"));
+    assert!(app.filters.platforms.is_empty());
+    assert!(app.filters.not_platforms.contains("Windows"));
+    let _ = filter(&mut app, Event::TogglePlatform("Windows"));
+    assert!(app.filters.not_platforms.is_empty());
+    let _ = filter(&mut app, Event::ExcludeTag("rpg".into()));
+    assert!(app.filters.tags.is_empty());
+    assert!(app.filters.not_tags.contains("rpg"));
+    let _ = filter(&mut app, Event::ToggleTag("rpg".into()));
+    assert!(app.filters.not_tags.is_empty());
+    assert!(app.filters.tags.is_empty());
+}
+
+#[test]
+fn excluding_a_tag_hides_the_games_that_have_it() {
+    let (_root, mut app) = loaded();
+    set(&mut app, &[], &["rpg"]);
+    assert_eq!(shown(&app), ["balatro", "notepad", "papers-please"]);
+    // Any excluded tag takes a game out.
+    set(&mut app, &[], &["tool"]);
+    assert_eq!(shown(&app), ["balatro", "papers-please"]);
+    let _ = filter(&mut app, Event::ToggleShowHidden);
+    assert_eq!(shown(&app), ["balatro", "papers-please"]);
+}
+
+#[test]
+fn an_include_and_an_exclude_in_the_same_group_both_apply() {
+    let (_root, mut app) = loaded();
+    // Games, but not the Indie ones.
+    set(&mut app, &["game"], &["Indie"]);
+    assert_eq!(shown(&app), ["hades"]);
+    // A right press on the included tag turns it off, and a second one
+    // excludes it.
+    set(&mut app, &[], &["game"]);
+    assert_eq!(shown(&app), ["hades", "notepad"]);
+    set(&mut app, &[], &["game"]);
+    assert_eq!(shown(&app), ["notepad"]);
+    // Including others keeps both excludes.
+    set(&mut app, &["tool", "rpg"], &[]);
+    assert_eq!(shown(&app), ["notepad"]);
+}
+
+#[test]
+fn excludes_in_one_group_narrow_includes_in_another() {
+    let (_root, mut app) = mixed_app();
+    // GOG games that aren't native: the native GOG game goes.
+    let _ = filter(&mut app, Event::ToggleStore("GOG"));
+    assert_eq!(shown(&app), ["papers-please", "rimworld"]);
+    let _ = filter(&mut app, Event::ExcludePlatform("Native"));
+    assert_eq!(shown(&app), ["papers-please"]);
+    // Excluding the included store turns it off first, then a second press
+    // excludes it, so GOG games go and the Native exclude still takes
+    // balatro.
+    let _ = filter(&mut app, Event::ExcludeStore("GOG"));
+    assert_eq!(shown(&app), ["hades", "notepad", "papers-please"]);
+    let _ = filter(&mut app, Event::ExcludeStore("GOG"));
+    assert_eq!(shown(&app), ["hades", "notepad"]);
+    let _ = filter(&mut app, Event::Clear);
+
+    // A tag include with a store exclude.
+    set(&mut app, &["game"], &[]);
+    let _ = filter(&mut app, Event::ExcludeStore("Steam"));
+    assert_eq!(shown(&app), ["balatro", "papers-please", "rimworld"]);
+    // A tag exclude with a platform include.
+    let _ = filter(&mut app, Event::Clear);
+    let _ = filter(&mut app, Event::TogglePlatform("Native"));
+    set(&mut app, &[], &["Indie"]);
+    assert_eq!(shown(&app), ["rimworld"]);
+}
+
+#[test]
+fn excluding_a_store_keeps_games_with_no_store() {
+    let (_root, mut app) = mixed_app();
+    for store in ["Steam", "GOG", "Epic", "Amazon"] {
+        let _ = filter(&mut app, Event::ExcludeStore(store));
+    }
+    // notepad and balatro have no store, so nothing says they're from one.
+    assert_eq!(shown(&app), ["balatro", "notepad"]);
+}
+
+#[test]
+fn excluding_a_platform_keeps_games_with_no_platform() {
+    let (_root, mut app) = mixed_app();
+    let _ = filter(&mut app, Event::ExcludePlatform("Windows"));
+    // The proxied Steam game has no platform, so it isn't known to be
+    // Windows and stays under "Not Windows".
+    assert_eq!(shown(&app), ["balatro", "hades", "rimworld"]);
+    let _ = filter(&mut app, Event::ExcludePlatform("Native"));
+    assert_eq!(shown(&app), ["hades"]);
+    // Including Windows next to it is the same as without the exclude.
+    let _ = filter(&mut app, Event::Clear);
+    let _ = filter(&mut app, Event::TogglePlatform("Windows"));
+    assert_eq!(shown(&app), ["notepad", "papers-please"]);
+}
+
+#[test]
+fn an_exclude_counts_hidden_matches_and_works_with_show_hidden() {
+    let (_root, mut app) = loaded();
+    let expect = |shown, hidden_matching| crate::order::Counts {
+        shown,
+        hidden_matching,
+        hidden: 1,
+    };
+    // old-demo is hidden and has rpg; hades has it too.
+    set(&mut app, &[], &["rpg"]);
+    assert_eq!(counts(&app), expect(3, 0));
+    let _ = filter(&mut app, Event::Clear);
+    set(&mut app, &[], &["tool"]);
+    assert_eq!(counts(&app), expect(3, 1));
+    let _ = filter(&mut app, Event::ToggleShowHidden);
+    assert_eq!(
+        shown(&app),
+        ["balatro", "hades", "old-demo", "papers-please"]
+    );
+    assert_eq!(counts(&app), expect(4, 0));
+    let _ = filter(&mut app, Event::ToggleShowHidden);
+    // The search narrows what the exclude leaves.
+    let _ = app.update(Message::SearchChanged("demo".into()));
+    assert_eq!(counts(&app), expect(0, 1));
+    // Every read came from the rebuild.
+    assert_eq!(app.order.misses.get(), 0);
+}
+
+#[test]
+fn a_filter_exclude_rebuilds_the_order() {
+    let (_root, mut app) = loaded();
+    let before = app.order.rebuilds;
+    let _ = filter(&mut app, Event::ExcludeStore("GOG"));
+    assert_eq!(app.order.rebuilds, before + 1);
+    let _ = filter(&mut app, Event::ExcludePlatform("Native"));
+    assert_eq!(app.order.rebuilds, before + 2);
+    let _ = filter(&mut app, Event::ExcludeTag("rpg".into()));
+    assert_eq!(app.order.rebuilds, before + 3);
+    // A rescan of the same cards keeps it.
+    let _ = app.update(Message::Loaded(Ok(library())));
+    assert_eq!(app.order.rebuilds, before + 3);
+    let _ = filter(&mut app, Event::Clear);
+    assert_eq!(app.order.rebuilds, before + 4);
+    assert_eq!(app.order.misses.get(), 0);
+}
+
+#[test]
+fn the_button_counts_excludes_with_includes() {
+    let (_root, mut app) = loaded();
+    let _ = filter(&mut app, Event::ExcludeTag("rpg".into()));
+    assert_eq!(button_label(&app), "Filters (1)");
+    let _ = filter(&mut app, Event::ExcludeStore("Steam"));
+    let _ = filter(&mut app, Event::ExcludePlatform("Native"));
+    let _ = filter(&mut app, Event::TogglePlatform("Windows"));
+    let _ = filter(&mut app, Event::ToggleTag("tool".into()));
+    let _ = filter(&mut app, Event::ToggleStore("GOG"));
+    assert_eq!(button_label(&app), "Filters (6)");
+    assert_eq!(app.filters.active(), 6);
+    // A right press on an included row turns it off, and the next one
+    // excludes it.
+    let _ = filter(&mut app, Event::ExcludeStore("GOG"));
+    assert_eq!(button_label(&app), "Filters (5)");
+    let _ = filter(&mut app, Event::ExcludeStore("GOG"));
+    assert_eq!(button_label(&app), "Filters (6)");
+    let _ = filter(&mut app, Event::ExcludeStore("GOG"));
+    assert_eq!(button_label(&app), "Filters (5)");
+}
+
+#[test]
+fn clear_filters_clears_excludes_and_an_exclude_alone_is_clearable() {
+    let (_root, mut app) = loaded();
+    assert!(!app.filters_clearable());
+    let _ = filter(&mut app, Event::ExcludeTag("rpg".into()));
+    assert!(app.filters_clearable());
+    let _ = filter(&mut app, Event::ExcludeStore("Steam"));
+    let _ = filter(&mut app, Event::ExcludePlatform("Windows"));
+    let _ = filter(&mut app, Event::ToggleShowHidden);
+    let _ = filter(&mut app, Event::Clear);
+    assert_eq!(app.filters.active(), 0);
+    assert!(app.filters.not_stores.is_empty());
+    assert!(app.filters.not_platforms.is_empty());
+    assert!(app.filters.not_tags.is_empty());
+    assert!(app.filters.show_hidden);
+    assert!(!app.filters_clearable());
+    assert_eq!(button_label(&app), "Filters");
+}
+
+#[test]
+fn an_excluded_value_the_library_lost_stays_offered_and_on() {
+    let (_root, mut app) = loaded();
+    let _ = filter(&mut app, Event::ExcludeStore("Steam"));
+    let _ = filter(&mut app, Event::ExcludePlatform("Native"));
+    let _ = filter(&mut app, Event::ExcludeTag("tool".into()));
+    let lost: Vec<Card> = library()
+        .into_iter()
+        .filter(|card| !["hades", "notepad", "balatro"].contains(&card.name.as_str()))
+        .collect();
+    let _ = app.update(Message::Loaded(Ok(lost)));
+    let offered = app.offered();
+    assert_eq!(offered.stores, ["GOG", "Steam"]);
+    assert_eq!(offered.platforms, ["Native", "Windows"]);
+    assert_eq!(offered.tags, ["game", "Indie", "rpg", "tool"]);
+    assert_eq!(app.filters.active(), 3);
+    // It can still be turned off.
+    let _ = filter(&mut app, Event::ExcludeTag("tool".into()));
+    assert!(app.filters.not_tags.is_empty());
+}
+
+fn char_key(character: &str, modifiers: Modifiers) -> iced::Event {
+    let key = Key::Character(character.into());
+    iced::Event::Keyboard(iced::keyboard::Event::KeyPressed {
+        key: key.clone(),
+        modified_key: key,
+        physical_key: iced::keyboard::key::Physical::Unidentified(
+            iced::keyboard::key::NativeCode::Unidentified,
+        ),
+        location: iced::keyboard::Location::Standard,
+        modifiers,
+        text: None,
+        repeat: false,
+    })
+}
+
+/// What `event` publishes while the popup's row `id` has focus, with the
+/// pointer elsewhere.
+fn on_focused_row(app: &App, id: &'static str, event: &iced::Event) -> Vec<Message> {
+    let focus: Task<Message> = iced::widget::operation::focus(iced::widget::Id::new(id));
+    let mut laid = focus_after(app, run_operations(focus));
+    assert_eq!(laid.focused(), [iced::widget::Id::new(id)]);
+    laid.event(event)
+}
+
+/// `messages` holds exactly `expected` among its filter messages.
+fn is_event(messages: &[Message], expected: Event) -> bool {
+    let filters: Vec<String> = messages
+        .iter()
+        .filter_map(|message| match message {
+            Message::Filter(event) => Some(format!("{event:?}")),
+            _ => None,
+        })
+        .collect();
+    filters == [format!("{expected:?}")]
+}
+
+#[test]
+fn x_on_a_focused_row_excludes_it_and_enter_still_includes() {
+    let (_root, mut app) = loaded();
+    open_filters(&mut app);
+    let x = char_key("x", Modifiers::empty());
+    for (id, expected) in [
+        ("library-filter-store-steam", Event::ExcludeStore("Steam")),
+        (
+            "library-filter-platform-windows",
+            Event::ExcludePlatform("Windows"),
+        ),
+        ("library-filter-tag-rpg", Event::ExcludeTag("rpg".into())),
+    ] {
+        let messages = on_focused_row(&app, id, &x);
+        assert!(is_event(&messages, expected), "{id}: {messages:?}");
+    }
+    // Shift and Caps Lock make a capital X, which is still X.
+    let capital = char_key("X", Modifiers::SHIFT);
+    let messages = on_focused_row(&app, "library-filter-store-gog", &capital);
+    assert!(
+        is_event(&messages, Event::ExcludeStore("GOG")),
+        "{messages:?}"
+    );
+    // Enter and Space still include.
+    let messages = on_focused_row(&app, "library-filter-store-steam", &press(Named::Enter));
+    assert!(
+        is_event(&messages, Event::ToggleStore("Steam")),
+        "{messages:?}"
+    );
+    let messages = on_focused_row(&app, "library-filter-tag-rpg", &press(Named::Space));
+    assert!(
+        is_event(&messages, Event::ToggleTag("rpg".into())),
+        "{messages:?}"
+    );
+}
+
+#[test]
+fn x_does_nothing_on_an_unfocused_row_or_with_a_command_key() {
+    let (_root, mut app) = loaded();
+    open_filters(&mut app);
+    let mut laid = crate::layout_probe::lay_out(app.view(), app.window_size);
+    assert!(laid.event(&char_key("x", Modifiers::empty())).is_empty());
+    drop(laid);
+    for modifiers in [Modifiers::CTRL, Modifiers::ALT, Modifiers::LOGO] {
+        let messages = on_focused_row(
+            &app,
+            "library-filter-store-steam",
+            &char_key("x", modifiers),
+        );
+        assert!(messages.is_empty(), "{modifiers:?}: {messages:?}");
+    }
+    // Show hidden and Clear filters have nothing to exclude.
+    let messages = on_focused_row(&app, SHOW_HIDDEN_ID, &char_key("x", Modifiers::empty()));
+    assert!(messages.is_empty(), "{messages:?}");
+}
+
+/// What a right-click on the centre of the popup's row `id` publishes.
+fn right_click(app: &App, id: &'static str) -> Vec<Message> {
+    let mut laid = crate::layout_probe::lay_out(app.view(), app.window_size);
+    let found = std::sync::Arc::new(std::sync::Mutex::new(None));
+    let sink = found.clone();
+    laid.run(Box::new(iced::advanced::widget::operation::map(
+        crate::library_menu::bounds_of(id),
+        move |bounds| *sink.lock().unwrap() = bounds,
+    )));
+    let bounds = (*found.lock().unwrap()).expect("the row is on screen");
+    laid.event_at(
+        &iced::Event::Mouse(iced::mouse::Event::ButtonPressed(
+            iced::mouse::Button::Right,
+        )),
+        iced::mouse::Cursor::Available(bounds.center()),
+    )
+}
+
+#[test]
+fn a_right_click_on_a_row_excludes_it_without_closing_the_popup() {
+    let (_root, mut app) = loaded();
+    open_filters(&mut app);
+    for (id, expected) in [
+        ("library-filter-store-steam", Event::ExcludeStore("Steam")),
+        (
+            "library-filter-platform-native",
+            Event::ExcludePlatform("Native"),
+        ),
+        (
+            "library-filter-tag-Indie",
+            Event::ExcludeTag("Indie".into()),
+        ),
+    ] {
+        let messages = right_click(&app, id);
+        assert!(is_event(&messages, expected), "{id}: {messages:?}");
+    }
+    for message in right_click(&app, "library-filter-store-steam") {
+        let _ = app.update(message);
+    }
+    assert!(app.filter_menu);
+    assert!(app.filters.not_stores.contains("Steam"));
+    // Show hidden has no exclude, so a right-click there reaches the
+    // backdrop's close as it did before.
+    let messages = right_click(&app, SHOW_HIDDEN_ID);
+    assert!(
+        messages
+            .iter()
+            .all(|message| !matches!(message, Message::Filter(Event::ToggleShowHidden))),
+        "{messages:?}"
+    );
+}
+
+#[test]
+fn a_right_press_on_an_included_tag_chip_or_store_row_leaves_it_off() {
+    let (_root, mut app) = loaded();
+    open_filters(&mut app);
+    let _ = filter(&mut app, Event::ToggleTag("rpg".into()));
+    let _ = filter(&mut app, Event::ToggleStore("Steam"));
+    for id in ["library-filter-tag-rpg", "library-filter-store-steam"] {
+        for message in right_click(&app, id) {
+            let _ = app.update(message);
+        }
+    }
+    assert!(app.filters.tags.is_empty() && app.filters.not_tags.is_empty());
+    assert!(app.filters.stores.is_empty() && app.filters.not_stores.is_empty());
+    assert!(app.filter_menu);
+}
+
+#[test]
+fn the_popup_draws_included_and_excluded_rows_and_its_hint() {
+    let (_root, mut app) = loaded();
+    open_filters(&mut app);
+    let _ = filter(&mut app, Event::ToggleStore("GOG"));
+    let _ = filter(&mut app, Event::ExcludeStore("Steam"));
+    let _ = filter(&mut app, Event::ExcludePlatform("Native"));
+    let _ = filter(&mut app, Event::ToggleTag("game".into()));
+    let _ = filter(&mut app, Event::ExcludeTag("rpg".into()));
+    let _ = crate::layout_probe::layout(&mut app.view(), app.window_size);
+}

@@ -63,6 +63,34 @@ impl SortKey {
     }
 }
 
+/// What the desktop app's random picker draws from, saved as `random`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum RandomPool {
+    /// Shown games that can launch now, unless none can.
+    #[default]
+    Launchable,
+    /// Every shown game.
+    Any,
+}
+
+impl RandomPool {
+    /// The value `library.toml` holds.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Launchable => "launchable",
+            Self::Any => "any",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "launchable" => Some(Self::Launchable),
+            "any" => Some(Self::Any),
+            _ => None,
+        }
+    }
+}
+
 /// The grid's zoom in whole percent: any integer in range is valid, so the
 /// slider can rest anywhere.
 pub const ZOOM_MIN: u16 = 60;
@@ -76,6 +104,7 @@ pub struct View {
     pub favorites_first: bool,
     pub zoom: u16,
     pub poster_only: bool,
+    pub random: RandomPool,
 }
 
 impl Default for View {
@@ -86,6 +115,7 @@ impl Default for View {
             favorites_first: false,
             zoom: ZOOM_DEFAULT,
             poster_only: false,
+            random: RandomPool::default(),
         }
     }
 }
@@ -352,6 +382,10 @@ pub fn set_poster_only(paths: &Paths, poster_only: bool) -> Result<bool> {
     })
 }
 
+pub fn set_random(paths: &Paths, random: RandomPool) -> Result<bool> {
+    edit(paths, |document| set_view_random(document, random))
+}
+
 /// Writes only the fields that differ from what the file reads as, so an
 /// unchanged `Appearance` never rewrites it.
 pub fn set_appearance(paths: &Paths, appearance: &Appearance) -> Result<bool> {
@@ -536,6 +570,11 @@ fn read_library(document: &DocumentMut) -> Library {
                 .get("poster_only")
                 .and_then(Item::as_bool)
                 .unwrap_or_default(),
+            random: table
+                .get("random")
+                .and_then(Item::as_str)
+                .and_then(RandomPool::parse)
+                .unwrap_or_default(),
         })
         .unwrap_or_default();
     let environments = document
@@ -640,6 +679,26 @@ fn set_view_sort(document: &mut DocumentMut, sort: SortKey) -> bool {
         view_table_mut(document),
         "sort",
         Value::from(sort_name(sort)),
+    );
+    true
+}
+
+fn set_view_random(document: &mut DocumentMut, random: RandomPool) -> bool {
+    let current = document
+        .get("view")
+        .and_then(Item::as_table_like)
+        .and_then(|table| table.get("random"));
+    let matches = match current {
+        None => random == RandomPool::default(),
+        Some(item) => item.as_str().and_then(RandomPool::parse) == Some(random),
+    };
+    if matches {
+        return false;
+    }
+    store_value(
+        view_table_mut(document),
+        "random",
+        Value::from(random.as_str()),
     );
     true
 }
