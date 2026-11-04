@@ -142,6 +142,12 @@ unless none of the shown games can. It never picks the selected game while
 there's another choice. Hidden games only come up with Show hidden on, and
 with nothing shown, the dice is off.
 
+Right-click the dice, or press Shift+F10 or the Menu key on it, for its
+menu. **Only games that can launch** is on by default; turn it off and every
+shown game is a candidate, including ones that can't start. Either way the
+selected game is skipped while there's another choice. The choice is saved
+in `library.toml` (`random` under `[view]`) and kept between launches.
+
 ### Favorites
 
 Star a game with the star beside its title in the panel, **Add to
@@ -939,6 +945,7 @@ edits, the bar says which, and **Reload** takes what's on disk.
 | Enter | Open the panel, or play when it's open (only for a card that's shown) |
 | F | Add the selected card to favorites, or remove it (only for a card that's shown) |
 | R | Pick a shown game at random, as the dice does (Library only) |
+| Shift+F10 or Menu | Open the focused dice's menu (Library only) |
 | Esc | Close the log, version picker, or results, then the panel, then clear the search |
 | `/` or Ctrl+F | Search |
 | Ctrl+N | Open Add (Library only) |

@@ -160,7 +160,12 @@ Plan 0054 added these.
   icon); its tooltip says "Hide titles" or "Show titles".
 - The dice shows a die face of five, in the foreground color, or muted
   while there's nothing to pick from; its tooltip says "Pick one at
-  random".
+  random (right-click for options)". Right-click, Shift+F10, or the Menu
+  key while it has focus opens a 272 px menu in the Sort menu's chrome
+  under it, with one check row, **Only games that can launch**. Focus
+  moves to the row, the toggle leaves the menu open, and Esc closes it and
+  returns focus to the dice. Only one toolbar menu or context menu is open
+  at a time.
 - Icons that Noto Sans lacks (arrows, chevron, check, star, crossed-out
   eye, search, die) are inline SVGs tinted with palette tokens, never
   glyphs.

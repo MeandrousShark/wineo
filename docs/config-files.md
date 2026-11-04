@@ -396,6 +396,7 @@ descending = true
 favorites_first = true
 zoom = 125                # grid size in percent, 60 to 200
 poster_only = true
+random = "any"            # launchable (default) or any
 
 [appearance]
 follow_system = true
@@ -425,7 +426,11 @@ baselined = ["/home/me/.local/share/Steam"]
 `name`, and `descending` and `favorites_first` to `false`. `zoom` is the
 grid's size in whole percent, any integer from 60 to 200, and defaults to
 100. `poster_only` hides titles under the posters and defaults to `false`.
-Filters and Show hidden aren't saved.
+`random` is what the random picker draws from: `launchable`, the default,
+skips shown games that can't start right now unless none can, and `any`
+draws from every shown game. Either way the selected game is skipped while
+there's another choice. An unknown `random` reads as `launchable`, and
+`validate` warns about it. Filters and Show hidden aren't saved.
 
 `[appearance]` is the desktop app's theme (plan
 0057). With `follow_system` on, the default,
