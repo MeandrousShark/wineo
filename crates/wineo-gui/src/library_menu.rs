@@ -53,12 +53,12 @@ pub(crate) fn request_bounds(
 }
 
 impl App {
-    /// Either toolbar menu is open.
+    /// Any toolbar menu is open: Sort, Filters, or the dice's.
     pub(crate) fn library_menu_open(&self) -> bool {
         self.sort_menu || self.filter_menu || self.random_menu
     }
 
-    /// Either toolbar menu is showing over the Library.
+    /// Any toolbar menu is showing over the Library.
     pub(crate) fn library_menu_shown(&self) -> bool {
         self.sort_menu_shown() || self.filter_menu_shown() || self.random_menu_shown()
     }

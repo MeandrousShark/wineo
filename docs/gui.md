@@ -963,14 +963,15 @@ edits, the bar says which, and **Reload** takes what's on disk.
 The mouse Back button does whatever Esc does on the current page, here and
 in every table below. Forward does nothing.
 
-In the Sort menu and the Filters popup, which take every key while open:
+In the Sort menu, the Filters popup, and the dice's menu, which take every key
+while open:
 
 | Key | Does |
 |---|---|
 | Enter, Space (on Sort or Filters) | Open the menu under its button, on the current choice |
 | Arrow keys, Tab, Shift+Tab | Move between rows |
 | Enter, Space | Pick a sort, or toggle a check box or tag |
-| X (in Filters) | Exclude the focused store, platform, or tag, or turn its exclude off |
+| X (in Filters) | Exclude the focused store, platform, or tag, or turn it off if it's checked or excluded |
 | Esc | Close the menu and go back to its button |
 
 In the choice lists on **Add**, New's program list, the Heroic and GOG
