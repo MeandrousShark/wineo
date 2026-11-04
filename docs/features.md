@@ -12,7 +12,8 @@ Faster and Better in 1.1.2, and Harder in 1.2.0. Plan 0062 covers item 1. The
 rest get a plan when they come up, and the rows below have the details.
 
 1. Library views parts 3 and 4 (list view, saved presets and grouping), with
-   Exclude filters, Bulk tagging, and Random game picker.
+   Bulk tagging's GUI half. Exclude filters, the Random game picker, and
+   `wineo tag` shipped in 1.3.0, the plan's first part.
 2. GUI accessibility settings and Tray icon and hide on launch.
 3. Publish to the repositories in parallel.
 

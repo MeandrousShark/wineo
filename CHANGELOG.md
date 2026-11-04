@@ -4,6 +4,38 @@ A finished plan bumps the minor version and fixes between plans bump the
 patch version. A plan released in parts bumps the minor version for each
 part. See `AGENTS.md` for the rule.
 
+## 1.3.0 - 2026-11-04
+
+Exclude filters, a random pick, and tagging many environments at once (plan
+0062, part 1 of 3).
+
+New in this release:
+
+- The Filters popup can exclude a store, platform, or tag: right-click it, or
+  focus it and press X. An excluded entry shows an x in the theme's danger
+  color, its chip in the filter tab reads **Not co-op**, and the library shows
+  only games that match none of the excluded entries. Any press on a chosen
+  entry turns it off.
+- A dice button in the toolbar picks a random game from what's shown, selects
+  it, opens its panel, and scrolls to it; R does the same outside the search
+  box. It never starts anything and skips the selected game while there's
+  another choice. Right-click it, or press Shift+F10 or the Menu key, for
+  **Only games that can launch**, on by default and saved as `random` under
+  `[view]` in `library.toml`.
+- `wineo tag add TAG ENV...` and `wineo tag remove` (or `rm`) add or remove a
+  tag on many environments at once, keep the comments in each `tags` array,
+  and support `--json`. Completion offers tags, then names.
+
+Fixes:
+
+- `wineo snapshot` completion skips flags and honors `--`, so
+  `snapshot restore --yes NAME <Tab>` offers that environment's labels.
+
+Behavior changes:
+
+- After the dice's setting is saved, an older wineo still reads
+  `library.toml` but its `validate` warns about the unknown `random` key.
+
 ## 1.2.0 - 2026-11-02
 
 Steam games land where they belong, and the library notices new ones (plan
