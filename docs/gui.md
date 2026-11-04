@@ -100,9 +100,21 @@ GOG, Epic, Amazon), the platforms they run on (Native, Windows), your
 tags, **Show hidden**, and **Clear filters**, listing only what's in your
 library. Within each group, a game has to match any of the checked
 entries, and with checks in more than one group, it has to match each of
-them; the button counts them, as in **Filters (2)**. Clear filters clears
-the search, stores, platforms, and tags, and leaves the sort and Show
-hidden alone. Filters and Show hidden start fresh at every launch.
+them.
+
+Right-click an entry, or focus it and press X, to exclude it instead: the
+library then shows everything except what matches, like every game without
+the co-op tag. An excluded entry shows a box or chip with an x. A game has
+to match none of the excluded entries, in any group. Right-click or X on an
+excluded entry turns it off, and on a checked one switches it to excluded.
+A plain click always undoes what the entry shows, so it turns an excluded
+entry off. A game with no store or platform doesn't match an exclude, so
+excluding Windows keeps a game that's not known to be Windows.
+
+The button counts checked and excluded entries, as in **Filters (2)**.
+Clear filters clears the search, stores, platforms, and tags, excludes
+included, and leaves the sort and Show hidden alone. Filters and Show
+hidden start fresh at every launch.
 
 An installed Steam game goes under Native or Windows from the start, even
 before its first run. See [Platforms](steam.md#platforms). One Steam doesn't
@@ -110,7 +122,8 @@ say enough about has no platform, so only the Store filter finds it, and so
 does a game that isn't fully installed.
 
 While a store, platform, or tag filter is on, a tab hangs under
-**Filters** with a chip for each. A chip's x removes that filter, and the
+**Filters** with a chip for each, in the popup's order. An excluded one
+reads **Not co-op**. A chip's x removes that filter, and the
 larger x at the end clears them all but leaves the search. When the chips
 don't fit, the last one becomes **+N**, which opens the popup. Tab reaches
 the x's right after Filters. The grid scrolls under the tab, and the tab
@@ -938,6 +951,7 @@ In the Sort menu and the Filters popup, which take every key while open:
 | Enter, Space (on Sort or Filters) | Open the menu under its button, on the current choice |
 | Arrow keys, Tab, Shift+Tab | Move between rows |
 | Enter, Space | Pick a sort, or toggle a check box or tag |
+| X (in Filters) | Exclude the focused store, platform, or tag, or turn its exclude off |
 | Esc | Close the menu and go back to its button |
 
 In the choice lists on **Add**, New's program list, the Heroic and GOG
