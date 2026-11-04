@@ -166,6 +166,11 @@ pub(crate) struct App {
     filter_menu: bool,
     filter_menu_position: iced::Point,
     filter_opening: library_menu::Opening,
+    /// What the random picker draws from, and its options menu.
+    random_pool: wineo_core::library::RandomPool,
+    random_menu: bool,
+    random_menu_position: iced::Point,
+    random_opening: library_menu::Opening,
     /// The Filters button's bounds as last laid out, which the filter tab
     /// hangs from.
     filter_button: Option<iced::Rectangle>,
@@ -534,6 +539,10 @@ impl App {
             filter_menu: false,
             filter_menu_position: iced::Point::ORIGIN,
             filter_opening: library_menu::Opening::default(),
+            random_pool: wineo_core::library::RandomPool::default(),
+            random_menu: false,
+            random_menu_position: iced::Point::ORIGIN,
+            random_opening: library_menu::Opening::default(),
             filter_button: None,
             sort_menu_position: iced::Point::ORIGIN,
             view_writes: sort_control::Writes::default(),
@@ -657,6 +666,7 @@ impl App {
         app.sync_palette();
         app.zoom = saved.view.zoom;
         app.poster_only = saved.view.poster_only;
+        app.random_pool = saved.view.random;
         app.query = saved.view.into();
         // The banner shows from the first frame, before the cards arrive.
         app.problem_read(saved.problem);
@@ -856,6 +866,9 @@ impl App {
         }
         if self.filter_menu && !self.filter_menu_shown() {
             self.filter_menu = false;
+        }
+        if self.random_menu && !self.random_menu_shown() {
+            self.random_menu = false;
         }
         // Whichever way a close got here, once only `library.toml` writes
         // are left they get a bounded wait.
@@ -1285,6 +1298,9 @@ impl App {
             }
             Message::Key(key, modifiers, _) if self.filter_menu_shown() => {
                 filter_control::key(self, &key, modifiers)
+            }
+            Message::Key(key, modifiers, _) if self.random_menu_shown() => {
+                random_pick::key(self, &key, modifiers)
             }
             Message::Key(key, modifiers, status) if self.flow.is_some() => {
                 self.flow_key(key, modifiers, status)?

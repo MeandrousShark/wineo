@@ -1,5 +1,5 @@
-//! What the library toolbar's Sort menu and Filters popup share: one open at
-//! a time, opening under their button, and their rows.
+//! What the library toolbar's Sort menu, Filters popup, and dice menu share:
+//! one open at a time, opening under their button, and their rows.
 
 use iced::widget::{Space, button, container, mouse_area, svg};
 use iced::{Color, Element, Fill, Point, Rectangle, Task, border};
@@ -55,12 +55,12 @@ pub(crate) fn request_bounds(
 impl App {
     /// Either toolbar menu is open.
     pub(crate) fn library_menu_open(&self) -> bool {
-        self.sort_menu || self.filter_menu
+        self.sort_menu || self.filter_menu || self.random_menu
     }
 
     /// Either toolbar menu is showing over the Library.
     pub(crate) fn library_menu_shown(&self) -> bool {
-        self.sort_menu_shown() || self.filter_menu_shown()
+        self.sort_menu_shown() || self.filter_menu_shown() || self.random_menu_shown()
     }
 
     /// Whether a menu can open: nothing took the window since it was asked
@@ -70,6 +70,7 @@ impl App {
             || self.closing
             || self.sort_menu
             || self.filter_menu
+            || self.random_menu
             || self.action_menu.is_some()
             || self.hook_stop_confirm.is_some()
             || self.section != crate::sidebar::Section::Library
@@ -81,8 +82,10 @@ impl App {
     pub(crate) fn close_library_menus(&mut self) {
         self.sort_menu = false;
         self.filter_menu = false;
+        self.random_menu = false;
         self.sort_opening.cancel();
         self.filter_opening.cancel();
+        self.random_opening.cancel();
         self.action_menu = None;
     }
 }

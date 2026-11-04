@@ -101,6 +101,9 @@ impl App {
         if self.filter_menu_shown() {
             return crate::filter_control::key(self, &key, modifiers);
         }
+        if self.random_menu_shown() {
+            return crate::random_pick::key(self, &key, modifiers);
+        }
         if let Some(task) = crate::checkup::key(
             self,
             &key,
