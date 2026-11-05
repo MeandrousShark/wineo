@@ -235,6 +235,89 @@ fn esc_closes_the_log_then_clears_marks_then_the_panel_then_the_search() {
     assert!(app.search.is_empty());
 }
 
+fn esc_with(app: &mut App, captured: bool) {
+    let task = press(app, Key::Named(Named::Escape), Modifiers::empty(), captured);
+    answer(app, task);
+}
+
+#[test]
+fn esc_leaves_the_marks_under_the_version_picker_results_and_context_menu() {
+    // The version picker closes first, like the log.
+    let (_root, mut app) = fixture();
+    let mut cards = games(3);
+    cards[1].kind = Some(crate::library::CardKind::Wine);
+    cards[1].gog = Some(crate::gog_library::GogCard {
+        gog_id: Some("1".into()),
+        unfinished: false,
+        blocked_by: None,
+        install: false,
+        version: None,
+    });
+    let _ = app.update(Message::Loaded(Ok(cards)));
+    click(&mut app, "game-1", Modifiers::empty());
+    click(&mut app, "game-2", Modifiers::CTRL);
+    let _ = app.update(Message::Version(crate::version_picker::Event::Open(
+        "game-1".into(),
+    )));
+    assert!(app.version_visible());
+    esc(&mut app);
+    assert!(!app.version_visible());
+    assert_eq!(app.marked, names(&["game-2"]));
+    esc(&mut app);
+    assert!(app.marked.is_empty());
+    assert!(app.panel_open);
+
+    // Results take Esc as Back, and a captured Esc, from the search,
+    // closes the panel under them as before.
+    for captured in [false, true] {
+        let (_root, mut app) = library(3);
+        click(&mut app, "game-1", Modifiers::empty());
+        click(&mut app, "game-2", Modifiers::CTRL);
+        app.show_checkup_results("game-1");
+        assert!(app.checkup_visible());
+        esc_with(&mut app, captured);
+        assert_eq!(app.marked, names(&["game-2"]), "captured {captured}");
+        assert_eq!(app.panel_open, !captured, "captured {captured}");
+    }
+
+    // The context menu stays in charge of its own Esc.
+    let (_root, mut app) = library(3);
+    click(&mut app, "game-2", Modifiers::CTRL);
+    let _ = app.update(Message::Context("game-1".into()));
+    assert!(app.action_menu.is_some());
+    esc(&mut app);
+    assert_eq!(app.marked, names(&["game-2"]));
+}
+
+#[test]
+fn a_space_answer_after_something_took_the_keys_marks_nothing() {
+    type Open = fn(&mut App);
+    let opens: [(&str, Open); 4] = [
+        ("context menu", |app| {
+            let _ = app.update(Message::Context("game-0".into()));
+        }),
+        ("sort menu", |app| {
+            app.sort_menu = true;
+        }),
+        ("results", |app| app.show_checkup_results("game-1")),
+        ("another section", |app| {
+            app.section = crate::sidebar::Section::Trash;
+        }),
+    ];
+    for (what, open) in opens {
+        let (_root, mut app) = library(3);
+        click(&mut app, "game-1", Modifiers::empty());
+        open(&mut app);
+        let _ = app.update(Message::SpaceFocus(false));
+        assert!(app.marked.is_empty(), "{what}");
+    }
+    // With nothing in the way the same answer marks.
+    let (_root, mut app) = library(3);
+    click(&mut app, "game-1", Modifiers::empty());
+    let _ = app.update(Message::SpaceFocus(false));
+    assert_eq!(app.marked, names(&["game-1"]));
+}
+
 #[test]
 fn a_filter_or_search_drops_the_marks_it_hides() {
     let (_root, mut app) = library(12);

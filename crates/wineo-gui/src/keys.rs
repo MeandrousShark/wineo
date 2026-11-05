@@ -185,10 +185,14 @@ impl App {
                 Task::none()
             };
         }
-        // Marks clear after the log and version picker and before the panel.
+        // Marks clear after the log, version picker, results, and context
+        // menu, and before the panel.
         if key == Key::Named(Named::Escape)
             && !self.marked.is_empty()
-            && !(self.panel_log_visible() || self.version_visible())
+            && !(self.panel_log_visible()
+                || self.version_visible()
+                || self.checkup_visible()
+                || self.action_menu.is_some())
         {
             self.clear_marks();
             return Task::none();
@@ -296,14 +300,9 @@ impl App {
                 }
                 self.update(Message::Random(crate::random_pick::Event::Pick))
             }
-            // Same scope as favoriting. A captured Ctrl+A is the log's or
-            // the search's own select all.
+            // A captured Ctrl+A is the log's or the search's own select all.
             Action::MarkAll => {
-                if captured
-                    || self.action_menu.is_some()
-                    || self.version_visible()
-                    || (self.checkup_visible() && !self.panel_log_visible())
-                {
+                if captured || !self.marking_keys_free() {
                     return Task::none();
                 }
                 self.mark_all();
@@ -313,12 +312,7 @@ impl App {
             // whether anything has focus is asked rather than read from the
             // capture.
             Action::MarkSelected => {
-                if captured
-                    || self.action_menu.is_some()
-                    || self.version_visible()
-                    || (self.checkup_visible() && !self.panel_log_visible())
-                    || !self.selected_shown()
-                {
+                if captured || !self.marking_keys_free() || !self.selected_shown() {
                     return Task::none();
                 }
                 iced::advanced::widget::operate(

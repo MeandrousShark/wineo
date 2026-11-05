@@ -47,12 +47,26 @@ impl App {
     /// Space's answer to whether a control has keyboard focus. A focused
     /// control keeps Space for itself.
     pub(crate) fn space_answered(&mut self, focused: bool) {
-        if focused || !self.selected_shown() {
+        // Anything could have opened while the answer was on its way.
+        if focused || !self.marking_keys_free() || !self.selected_shown() {
             return;
         }
         if let Some(name) = self.selected.clone() {
             self.toggle_mark(&name);
         }
+    }
+
+    /// Ctrl+A and Space mark only on the Library's grid, with nothing
+    /// else taking the keys: the same scope as F.
+    pub(crate) fn marking_keys_free(&self) -> bool {
+        self.section == crate::sidebar::Section::Library
+            && self.settings.is_none()
+            && !self.feature_page_open()
+            && !self.input_covered()
+            && !self.library_menu_shown()
+            && self.action_menu.is_none()
+            && !self.version_visible()
+            && !(self.checkup_visible() && !self.panel_log_visible())
     }
 
     pub(crate) fn toggle_mark(&mut self, name: &str) {
@@ -152,7 +166,7 @@ impl App {
 /// The primary wash over a marked card's art, under its corner layers.
 pub(crate) fn wash(palette: Palette, alpha: f32) -> Element<'static, Message> {
     let color = palette.primary.scale_alpha(WASH * alpha);
-    container(iced::widget::Space::new())
+    container(iced::widget::Space::new().width(Fill).height(Fill))
         .width(Fill)
         .height(Fill)
         .style(move |_| {
