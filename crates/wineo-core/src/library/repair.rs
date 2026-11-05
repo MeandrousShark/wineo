@@ -12,7 +12,7 @@ use toml_edit::{Array, DocumentMut, Item, Key, Table, Value};
 
 use super::check::{is_newer, is_offset_datetime};
 use super::record::{Recorded, valid_app_id};
-use super::{RandomPool, SCHEMA_VERSION, SortKey, read_zoom};
+use super::{RandomPool, SCHEMA_VERSION, SortKey, ViewLayout, read_zoom};
 use crate::error::{Error, IoContext, Result};
 use crate::operation::Locks;
 use crate::paths::Paths;
@@ -930,6 +930,7 @@ fn valid_view_field(key: &str, item: &Item) -> bool {
         "descending" | "favorites_first" | "poster_only" => item.as_bool().is_some(),
         "zoom" => read_zoom(item).is_some(),
         "random" => item.as_str().and_then(RandomPool::parse).is_some(),
+        "layout" => item.as_str().and_then(ViewLayout::parse).is_some(),
         _ => true,
     }
 }

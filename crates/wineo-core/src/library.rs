@@ -91,6 +91,34 @@ impl RandomPool {
     }
 }
 
+/// How the desktop app lays out the library, saved as `layout`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum ViewLayout {
+    /// Posters in rows.
+    #[default]
+    Grid,
+    /// One row per game, with columns.
+    List,
+}
+
+impl ViewLayout {
+    /// The value `library.toml` holds.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Grid => "grid",
+            Self::List => "list",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "grid" => Some(Self::Grid),
+            "list" => Some(Self::List),
+            _ => None,
+        }
+    }
+}
+
 /// The grid's zoom in whole percent: any integer in range is valid, so the
 /// slider can rest anywhere.
 pub const ZOOM_MIN: u16 = 60;
@@ -105,6 +133,7 @@ pub struct View {
     pub zoom: u16,
     pub poster_only: bool,
     pub random: RandomPool,
+    pub layout: ViewLayout,
 }
 
 impl Default for View {
@@ -116,6 +145,7 @@ impl Default for View {
             zoom: ZOOM_DEFAULT,
             poster_only: false,
             random: RandomPool::default(),
+            layout: ViewLayout::default(),
         }
     }
 }
@@ -386,6 +416,10 @@ pub fn set_random(paths: &Paths, random: RandomPool) -> Result<bool> {
     edit(paths, |document| set_view_random(document, random))
 }
 
+pub fn set_layout(paths: &Paths, layout: ViewLayout) -> Result<bool> {
+    edit(paths, |document| set_view_layout(document, layout))
+}
+
 /// Writes only the fields that differ from what the file reads as, so an
 /// unchanged `Appearance` never rewrites it.
 pub fn set_appearance(paths: &Paths, appearance: &Appearance) -> Result<bool> {
@@ -575,6 +609,11 @@ fn read_library(document: &DocumentMut) -> Library {
                 .and_then(Item::as_str)
                 .and_then(RandomPool::parse)
                 .unwrap_or_default(),
+            layout: table
+                .get("layout")
+                .and_then(Item::as_str)
+                .and_then(ViewLayout::parse)
+                .unwrap_or_default(),
         })
         .unwrap_or_default();
     let environments = document
@@ -699,6 +738,26 @@ fn set_view_random(document: &mut DocumentMut, random: RandomPool) -> bool {
         view_table_mut(document),
         "random",
         Value::from(random.as_str()),
+    );
+    true
+}
+
+fn set_view_layout(document: &mut DocumentMut, layout: ViewLayout) -> bool {
+    let current = document
+        .get("view")
+        .and_then(Item::as_table_like)
+        .and_then(|table| table.get("layout"));
+    let matches = match current {
+        None => layout == ViewLayout::default(),
+        Some(item) => item.as_str().and_then(ViewLayout::parse) == Some(layout),
+    };
+    if matches {
+        return false;
+    }
+    store_value(
+        view_table_mut(document),
+        "layout",
+        Value::from(layout.as_str()),
     );
     true
 }

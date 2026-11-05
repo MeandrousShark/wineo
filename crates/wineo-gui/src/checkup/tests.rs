@@ -922,7 +922,7 @@ fn a_view_warning_is_under_library_toml_and_an_entry_warning_under_its_environme
     let (_root, app) = fixture();
     std::fs::write(
         app.paths.library_file(),
-        "schema_version = 1\n[view]\nlayout = \"grid\"\n[environments.game]\nfavorite = \"yes\"\n",
+        "schema_version = 1\n[view]\nfuture_view = \"grid\"\n[environments.game]\nfavorite = \"yes\"\n",
     )
     .unwrap();
 
