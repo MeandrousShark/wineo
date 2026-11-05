@@ -1,3 +1,4 @@
+mod action_bar;
 mod app_art;
 mod app_flow;
 mod app_grid;
@@ -11,6 +12,7 @@ mod art_navigation;
 mod art_page;
 mod art_picker;
 mod artwork;
+mod bulk_tags;
 mod checkup;
 mod checkup_work;
 mod chips;
@@ -172,6 +174,12 @@ pub(crate) struct App {
     random_menu: bool,
     random_menu_position: iced::Point,
     random_opening: library_menu::Opening,
+    /// The action bar's tag popup is open.
+    tag_menu: bool,
+    tag_popup: action_bar::Popup,
+    tag_opening: library_menu::Opening,
+    /// Tag writes in flight from the action bar.
+    tag_writes: bulk_tags::Writes,
     /// The Filters button's bounds as last laid out, which the filter tab
     /// hangs from.
     filter_button: Option<iced::Rectangle>,
@@ -521,6 +529,8 @@ pub(crate) enum Message {
     Mark(library_actions::Event),
     Zoom(zoom::Event),
     Random(random_pick::Event),
+    /// The action bar and its tag popup.
+    Tags(action_bar::Event),
     /// The wait for `library.toml` writes on close is over, tagged with its
     /// wakeup.
     CloseWaitOver(u64),
@@ -554,6 +564,10 @@ impl App {
             random_menu: false,
             random_menu_position: iced::Point::ORIGIN,
             random_opening: library_menu::Opening::default(),
+            tag_menu: false,
+            tag_popup: action_bar::Popup::default(),
+            tag_opening: library_menu::Opening::default(),
+            tag_writes: bulk_tags::Writes::default(),
             filter_button: None,
             sort_menu_position: iced::Point::ORIGIN,
             view_writes: sort_control::Writes::default(),
@@ -883,6 +897,9 @@ impl App {
         if self.random_menu && !self.random_menu_shown() {
             self.random_menu = false;
         }
+        if self.tag_menu && !self.tag_menu_shown() {
+            self.tag_menu = false;
+        }
         // Whichever way a close got here, once only `library.toml` writes
         // are left they get a bounded wait.
         if self.closing
@@ -976,6 +993,7 @@ impl App {
                 || matches!(message, Message::Filter(event) if event.is_input())
                 || matches!(message, Message::Mark(event) if event.is_input())
                 || matches!(message, Message::Random(event) if event.is_input())
+                || matches!(message, Message::Tags(event) if event.is_input())
                 || matches!(message, Message::Zoom(event) if event.is_input()))
         {
             return true;
@@ -1038,6 +1056,7 @@ impl App {
             Message::Mark(event) => library_actions::update(self, event),
             Message::Zoom(event) => zoom::update(self, event),
             Message::Random(event) => random_pick::update(self, event),
+            Message::Tags(event) => action_bar::update(self, event),
             message @ (Message::Remove(_)
             | Message::RemovePrefix(_)
             | Message::RemoveSize(..)
@@ -1324,6 +1343,9 @@ impl App {
             Message::Key(key, modifiers, _) if self.random_menu_shown() => {
                 random_pick::key(self, &key, modifiers)
             }
+            Message::Key(key, modifiers, _) if self.tag_menu_shown() => {
+                action_bar::key(self, &key, modifiers)
+            }
             Message::Key(key, modifiers, status) if self.flow.is_some() => {
                 self.flow_key(key, modifiers, status)?
             }
@@ -1499,11 +1521,14 @@ impl App {
         self.foreground_busy() || self.library_writes_pending()
     }
 
-    /// A sort, favorite, or hidden write is in flight, or an auto-import
-    /// pass, whose claims are writes too: one left behind keeps its game from
-    /// being offered again.
+    /// A sort, favorite, hidden, or tag write is in flight, or an
+    /// auto-import pass, whose claims are writes too: one left behind keeps
+    /// its game from being offered again.
     fn library_writes_pending(&self) -> bool {
-        self.view_writes.pending() || self.flag_writes.pending() || self.steam_auto.running()
+        self.view_writes.pending()
+            || self.flag_writes.pending()
+            || self.tag_writes.pending()
+            || self.steam_auto.running()
     }
 
     fn foreground_busy(&self) -> bool {

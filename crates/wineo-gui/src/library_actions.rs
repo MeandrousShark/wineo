@@ -388,11 +388,7 @@ impl App {
     /// now on, and the order is rebuilt; cards that moved snap, and the
     /// selection stays in view.
     fn set_flag(&mut self, name: &str, flag: Flag, value: bool) -> Task<Message> {
-        let before: Vec<String> = self
-            .filtered()
-            .iter()
-            .map(|card| card.name.clone())
-            .collect();
+        let before = self.shown_order();
         let Some(card) = self.cards.iter_mut().find(|card| card.name == name) else {
             return Task::none();
         };
@@ -400,14 +396,30 @@ impl App {
             return Task::none();
         }
         flag.set(card, value);
+        self.cards_edited(&before)
+    }
+
+    /// The names shown now, in order, for `cards_edited`.
+    pub(crate) fn shown_order(&self) -> Vec<String> {
+        self.filtered()
+            .iter()
+            .map(|card| card.name.clone())
+            .collect()
+    }
+
+    /// After the window changed its own cards: the rescan compares against
+    /// them from now on and the order is rebuilt. When that moved anything
+    /// from `before`, cards snap and the selection stays in view.
+    pub(crate) fn cards_edited(&mut self, before: &[String]) -> Task<Message> {
         self.shown.show_library(Ok(self.cards.clone()));
+        self.order.cards_edited();
         self.reorder();
         let moved = {
             let after = self.filtered();
             after.len() != before.len()
                 || after
                     .iter()
-                    .zip(&before)
+                    .zip(before)
                     .any(|(card, name)| &card.name != name)
         };
         if !moved {

@@ -15,6 +15,8 @@ use crate::ui::{self, ScrollStyle, secondary_button};
 use crate::wheel;
 use crate::{App, Message, SCROLL_ID, SEARCH_ID, WHEEL_STEP_SCALE};
 
+/// The bottom notes' and action bar's distance from the window's edges.
+pub(crate) const NOTES_MARGIN: f32 = 16.0;
 pub(crate) const ACTION_MENU_WIDTH: f32 = 248.0;
 const ACTION_MENU_MAX_HEIGHT: f32 = 600.0;
 pub(crate) const ACTION_MENU_MARGIN: f32 = 8.0;
@@ -631,6 +633,7 @@ impl App {
         let undo = self.toast.is_some();
         let notice = self.feature_notice.is_some();
         let import = self.import_toast_view();
+        let imported = import.is_some();
         let import_slot: Element<'_, Message> = match import {
             Some(toast) => container(toast).padding(below(notice || undo)).into(),
             None => Space::new().into(),
@@ -657,12 +660,21 @@ impl App {
         } else {
             Space::new().into()
         };
-        let toasts = column![import_slot, notice_slot, undo_slot].align_x(Center);
+        // The action bar stays while the notes above it come and go.
+        let bar_slot: Element<'_, Message> = if self.action_bar_shown() {
+            let above = imported || notice || undo;
+            container(self.action_bar_view())
+                .padding(iced::Padding::default().top(if above { GAP } else { 0.0 }))
+                .into()
+        } else {
+            Space::new().into()
+        };
+        let toasts = column![import_slot, notice_slot, undo_slot, bar_slot].align_x(Center);
         // Always a layer, so the dialogs above keep their places, and their
         // focus, when a toast comes or goes. Empty slots take no input.
         page = page.push(
             container(toasts)
-                .padding(16)
+                .padding(NOTES_MARGIN)
                 .align_bottom(Fill)
                 .center_x(Fill),
         );
@@ -807,6 +819,10 @@ impl App {
         }
         if self.random_menu_shown() {
             let [backdrop, menu] = self.random_menu_view();
+            return page.push(backdrop).push(menu).into();
+        }
+        if self.tag_menu_shown() {
+            let [backdrop, menu] = self.tag_menu_view();
             return page.push(backdrop).push(menu).into();
         }
         if let Some(name) = &self.action_menu {
@@ -1164,7 +1180,8 @@ impl App {
         }
         let page = page.push(strips);
         let visible = self.scroll_visible_until.is_some();
-        let scroll = scrollable(self.grid())
+        // Always there, so the grid keeps its place in the tree.
+        let scroll = scrollable(column![self.grid(), Space::new().height(self.bar_room())])
             .id(iced::widget::Id::new(SCROLL_ID))
             .width(Fill)
             .height(Fill)
