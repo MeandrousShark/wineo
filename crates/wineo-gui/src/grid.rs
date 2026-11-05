@@ -1385,7 +1385,14 @@ impl App {
                     crate::sort_control::toolbar(self),
                     crate::filter_control::toolbar(self),
                     crate::random_pick::toolbar(self),
-                    crate::zoom_control::toolbar(self),
+                    crate::layout_switch::toolbar(self),
+                    // Always a child, so the controls before it keep their
+                    // places in the tree, and their focus.
+                    if self.layout == crate::grid_motion::ViewLayout::Grid {
+                        crate::zoom_control::toolbar(self)
+                    } else {
+                        Space::new().into()
+                    },
                 ]
                 .spacing(8)
                 .align_y(Center),

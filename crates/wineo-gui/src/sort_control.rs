@@ -4,7 +4,7 @@
 use iced::keyboard::{Key, Modifiers, key::Named};
 use iced::widget::{button, column, container, row, scrollable, text, tooltip};
 use iced::{Center, Element, Fill, Font, Point, Rectangle, Task, border, font};
-use wineo_core::library::{self, RandomPool, SortKey};
+use wineo_core::library::{self, RandomPool, SortKey, ViewLayout};
 use wineo_core::paths::Paths;
 
 use crate::grid::{
@@ -67,6 +67,7 @@ pub(crate) enum Field {
     Zoom(u16),
     PosterOnly(bool),
     Random(RandomPool),
+    Layout(ViewLayout),
 }
 
 /// The value each field's write in flight is writing. One write per field
@@ -79,6 +80,7 @@ pub(crate) struct Writes {
     pub(crate) zoom: Option<u16>,
     pub(crate) poster_only: Option<bool>,
     pub(crate) random: Option<RandomPool>,
+    pub(crate) layout: Option<ViewLayout>,
 }
 
 impl Writes {
@@ -90,6 +92,7 @@ impl Writes {
             Field::Zoom(_) => self.zoom.is_some(),
             Field::PosterOnly(_) => self.poster_only.is_some(),
             Field::Random(_) => self.random.is_some(),
+            Field::Layout(_) => self.layout.is_some(),
         }
     }
 
@@ -101,6 +104,7 @@ impl Writes {
             Field::Zoom(value) => self.zoom = Some(value),
             Field::PosterOnly(value) => self.poster_only = Some(value),
             Field::Random(value) => self.random = Some(value),
+            Field::Layout(value) => self.layout = Some(value),
         }
     }
 
@@ -112,6 +116,7 @@ impl Writes {
             || self.zoom.is_some()
             || self.poster_only.is_some()
             || self.random.is_some()
+            || self.layout.is_some()
     }
 
     fn finish(&mut self, field: Field) {
@@ -122,6 +127,7 @@ impl Writes {
             Field::Zoom(_) => self.zoom = None,
             Field::PosterOnly(_) => self.poster_only = None,
             Field::Random(_) => self.random = None,
+            Field::Layout(_) => self.layout = None,
         }
     }
 }
@@ -176,6 +182,7 @@ pub(crate) fn save(paths: &Paths, watch: &rescan::Watch, field: Field) -> Result
         Field::Zoom(zoom) => library::set_zoom(paths, zoom),
         Field::PosterOnly(poster_only) => library::set_poster_only(paths, poster_only),
         Field::Random(random) => library::set_random(paths, random),
+        Field::Layout(layout) => library::set_layout(paths, layout),
     };
     watch.refresh_library(paths);
     result
@@ -211,6 +218,7 @@ impl App {
             Field::Zoom(_) => Field::Zoom(self.zoom),
             Field::PosterOnly(_) => Field::PosterOnly(self.poster_only),
             Field::Random(_) => Field::Random(self.random_pool),
+            Field::Layout(_) => Field::Layout(self.layout),
         }
     }
 
@@ -312,7 +320,9 @@ pub(crate) fn update(app: &mut App, event: Event) -> Task<Message> {
             if let Err(error) = result {
                 // The window keeps the view it chose.
                 let what = match written {
-                    Field::Zoom(_) | Field::PosterOnly(_) | Field::Random(_) => "view",
+                    Field::Zoom(_) | Field::PosterOnly(_) | Field::Random(_) | Field::Layout(_) => {
+                        "view"
+                    }
                     _ => "sort",
                 };
                 app.feature_notice = Some((

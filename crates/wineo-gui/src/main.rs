@@ -42,6 +42,7 @@ mod import_toast;
 mod keys;
 #[cfg(test)]
 mod layout_probe;
+mod layout_switch;
 mod library;
 mod library_actions;
 mod library_menu;
@@ -155,6 +156,8 @@ pub(crate) struct App {
     poster_only: bool,
     /// Posters in a grid, or one row per game.
     layout: grid_motion::ViewLayout,
+    /// The layout segment's thumb: 0 on the list side, 1 on the grid's.
+    layout_thumb: panel_motion::PanelMotion,
     /// Store, platform, and tag filters and Show hidden, which reset each launch.
     filters: order::Filters,
     /// The held modifier keys, for a wheel turn the filter tab hands to the grid.
@@ -532,6 +535,7 @@ pub(crate) enum Message {
     Mark(library_actions::Event),
     Zoom(zoom::Event),
     Random(random_pick::Event),
+    Layout(layout_switch::Event),
     /// The action bar and its tag popup.
     Tags(action_bar::Event),
     /// The wait for `library.toml` writes on close is over, tagged with its
@@ -556,6 +560,7 @@ impl App {
             zooming: zoom::Zoom::default(),
             poster_only: false,
             layout: grid_motion::ViewLayout::Grid,
+            layout_thumb: panel_motion::PanelMotion::default(),
             filters: order::Filters::default(),
             modifiers: keyboard::Modifiers::empty(),
             order: order::Order::default(),
@@ -698,6 +703,9 @@ impl App {
         app.zoom = saved.view.zoom;
         app.poster_only = saved.view.poster_only;
         app.random_pool = saved.view.random;
+        app.layout = saved.view.layout;
+        app.layout_thumb
+            .snap(app.layout == grid_motion::ViewLayout::Grid);
         app.query = saved.view.into();
         // The banner shows from the first frame, before the cards arrive.
         app.problem_read(saved.problem);
@@ -819,6 +827,15 @@ impl App {
         } else {
             self.grid_motion.subscription()
         };
+        let layout_thumb = if self.layout_thumb.active() {
+            window::frames()
+                .with(self.layout_thumb.generation())
+                .map(|(generation, now)| {
+                    Message::Layout(layout_switch::Event::Tick(generation, now))
+                })
+        } else {
+            Subscription::none()
+        };
         let zoom = if self.panel_hidden() {
             Subscription::none()
         } else {
@@ -865,6 +882,7 @@ impl App {
             self.details_fade.subscription(),
             zoom,
             collapse,
+            layout_thumb,
             // Only a toast has focus to recheck.
             if self.toast.is_some() {
                 iced::event::listen_with(|event, _, _| focus_input(event))
@@ -997,6 +1015,7 @@ impl App {
                 || matches!(message, Message::Filter(event) if event.is_input())
                 || matches!(message, Message::Mark(event) if event.is_input())
                 || matches!(message, Message::Random(event) if event.is_input())
+                || matches!(message, Message::Layout(event) if event.is_input())
                 || matches!(message, Message::Tags(event) if event.is_input())
                 || matches!(message, Message::Zoom(event) if event.is_input()))
         {
@@ -1060,6 +1079,7 @@ impl App {
             Message::Mark(event) => library_actions::update(self, event),
             Message::Zoom(event) => zoom::update(self, event),
             Message::Random(event) => random_pick::update(self, event),
+            Message::Layout(event) => layout_switch::update(self, event),
             Message::Tags(event) => action_bar::update(self, event),
             message @ (Message::Remove(_)
             | Message::RemovePrefix(_)

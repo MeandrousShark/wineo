@@ -223,7 +223,7 @@ impl App {
     /// the viewport, read from where cards are drawn now, so a place kept
     /// mid-motion is the one on screen. Also whether the selection is off
     /// screen.
-    fn find_anchor(&self) -> (Option<(String, f32)>, bool) {
+    pub(crate) fn find_anchor(&self) -> (Option<(String, f32)>, bool) {
         let places = self.grid_places();
         let shown = self.grid_motion.shown(&places);
         let top = self.scroll_offset;
