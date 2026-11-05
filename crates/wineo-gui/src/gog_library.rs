@@ -518,7 +518,7 @@ pub(crate) fn checked_since(
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use std::ffi::OsString;
 
     use wineo_core::gog::folder::{Platform, Track};

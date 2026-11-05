@@ -24,6 +24,31 @@ pub(crate) fn lines(title: &str, width: f32, size: f32, font: Font) -> Vec<Strin
     })
 }
 
+/// `line` on one line `width` wide, cut with an ellipsis when it doesn't
+/// fit, for list cells. Kept per text and style like `lines`.
+pub(crate) fn fit(line: &str, width: f32, size: f32, font: Font) -> String {
+    thread_local! {
+        static CACHE: RefCell<Cache<String>> = RefCell::new(Cache::new(CACHE_LIMIT));
+    }
+    let width = width.max(0.0);
+    let key = (line.to_owned(), width.to_bits(), size.to_bits(), font);
+    CACHE.with_borrow_mut(|cache| {
+        cache.get_or_insert_with(key, || {
+            let measure = |content: &str| measure(content, size, font);
+            if measure(line) <= width {
+                line.to_owned()
+            } else {
+                cut(line, width, &measure)
+            }
+        })
+    })
+}
+
+/// The width `content` takes on one line, for laying out around it.
+pub(crate) fn line_width(content: &str, size: f32, font: Font) -> f32 {
+    measure(content, size, font)
+}
+
 /// The size a text widget with default settings takes for `content` when
 /// it may wrap within `width`, for predicting the height of wrapped labels.
 pub(crate) fn wrapped_size(content: &str, width: f32, size: f32, font: Font) -> Size {

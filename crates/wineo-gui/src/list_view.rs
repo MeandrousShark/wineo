@@ -5,6 +5,7 @@ use iced::widget::{Space, button, column, container, image, row, stack, svg, tex
 use iced::{Center, Color, ContentFit, Element, Fill, Font, Length, Padding, border, font};
 use wineo_core::library::SortKey;
 
+use crate::gog_library::Badge;
 use crate::grid::{card_area, install_bar, shows_identifier};
 use crate::grid_motion::PADDING;
 use crate::library::{Card, CardKind};
@@ -41,6 +42,13 @@ const STAR_BOX: f32 = 24.0;
 const CHECK_CHIP: f32 = 22.0;
 const CHECK_ICON: f32 = 14.0;
 const SELECTED_BORDER: f32 = 2.0;
+/// The GOG pill, as on the poster.
+const PILL_SIZE: f32 = 11.0;
+const PILL_PADDING: f32 = 2.0;
+const PILL_SIDE: f32 = 8.0;
+const MARKS_GAP: f32 = 4.0;
+/// How much the star grows at the top of its pop.
+const STAR_LIFT: f32 = 4.0;
 
 /// A column after Title and State, which a narrow row drops.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -132,6 +140,12 @@ pub(crate) struct RowFacts {
     pub(crate) source: &'static str,
     pub(crate) tags: String,
     pub(crate) star: Star,
+    /// How far the hover has faded in, 0 to 1, as on the poster.
+    pub(crate) hover: f32,
+    /// How far the star has grown in its pop, 0 to 1.
+    pub(crate) lift: f32,
+    /// The GOG pill: an update waiting, or one to finish.
+    pub(crate) gog: Option<Badge>,
     /// The crossed eye of a hidden game.
     pub(crate) eye: bool,
     pub(crate) steam: bool,
@@ -157,7 +171,10 @@ impl App {
 
     pub(crate) fn row_facts(&self, card: &Card, palette: Palette) -> RowFacts {
         let hovered = self.hovered.as_ref() == Some(&card.name);
+        let selected = self.selected.as_ref() == Some(&card.name);
         let dimmed = card.not_installed();
+        // The poster's hover fade, so the row's hover and star ease the same.
+        let (hover, _) = self.hover_fades.progress(&card.name, hovered, selected);
         RowFacts {
             title: card.display_title.clone(),
             identifier: shows_identifier(card).then(|| card.name.clone()),
@@ -169,17 +186,23 @@ impl App {
             tags: card.tags.join(", "),
             star: if card.favorite {
                 Star::Filled
-            } else if hovered {
+            } else if hovered || hover > 0.0 {
                 Star::Outline
             } else {
                 Star::None
             },
+            hover,
+            lift: self
+                .star_pops
+                .progress(&card.name)
+                .map_or(0.0, crate::star_pop::lift),
+            gog: crate::gog_library::badge(card.gog.as_ref(), self.gog_updates.status(&card.name)),
             eye: card.hidden,
             steam: card.kind == Some(CardKind::Proxied),
             install: card.install_progress(),
             faded: dimmed || card.hidden,
             gray: dimmed,
-            selected: self.selected.as_ref() == Some(&card.name),
+            selected,
             hovered,
             marked: self.marked.contains(&card.name),
         }
@@ -227,14 +250,11 @@ impl App {
         } else {
             thumb
         };
-        let semibold = Font {
-            weight: font::Weight::Semibold,
-            ..Font::DEFAULT
-        };
+        let fitted = row_text(&facts, width);
         let mut title = column![
-            text(facts.title)
+            text(fitted.title)
                 .size(TITLE_SIZE)
-                .font(semibold)
+                .font(SEMIBOLD)
                 .color(if facts.faded {
                     palette.muted
                 } else {
@@ -243,7 +263,7 @@ impl App {
                 .wrapping(text::Wrapping::None),
         ]
         .spacing(2);
-        if let Some(identifier) = facts.identifier {
+        if let Some(identifier) = fitted.identifier {
             title = title.push(
                 text(identifier)
                     .size(IDENTIFIER_SIZE)
@@ -251,7 +271,10 @@ impl App {
                     .wrapping(text::Wrapping::None),
             );
         }
-        let mut marks = row![].spacing(4).align_y(Center);
+        let mut marks = row![].spacing(MARKS_GAP).align_y(Center);
+        if let Some(badge) = facts.gog {
+            marks = marks.push(pill(badge, palette, alpha));
+        }
         if facts.steam {
             marks = marks.push(
                 svg(svg::Handle::from_memory(include_bytes!(
@@ -265,7 +288,14 @@ impl App {
         if facts.eye {
             marks = marks.push(icon(EYE_OFF, palette.muted, MARK_ICON).opacity(alpha));
         }
-        marks = marks.push(star(&card.name, facts.star, palette));
+        marks = marks.push(star(
+            &card.name,
+            facts.star,
+            facts.hovered,
+            facts.hover,
+            facts.lift,
+            palette,
+        ));
         let title_cell = row![thumb, container(title).width(Fill).clip(true), marks,]
             .spacing(THUMB_GAP)
             .align_y(Center)
@@ -277,7 +307,7 @@ impl App {
                 .style(move |_| container::Style::default()
                     .background(facts.dot)
                     .border(border::rounded(DOT / 2.0))),
-            text(facts.state)
+            text(fitted.state)
                 .size(CELL_SIZE)
                 .color(palette.foreground)
                 .wrapping(text::Wrapping::None),
@@ -287,13 +317,7 @@ impl App {
         let mut cells = row![title_cell, container(state).width(STATE_WIDTH).clip(true)]
             .spacing(CELL_GAP)
             .align_y(Center);
-        for column in columns(width) {
-            let value = match column {
-                Column::Playtime => facts.playtime.clone(),
-                Column::LastPlayed => facts.last_played.clone(),
-                Column::Source => facts.source.to_owned(),
-                Column::Tags => facts.tags.clone(),
-            };
+        for (column, value) in fitted.cells {
             cells = cells.push(
                 container(
                     text(value)
@@ -311,8 +335,8 @@ impl App {
                     .primary
                     .scale_alpha(crate::multi_select::WASH * alpha),
             )
-        } else if facts.hovered {
-            Some(palette.surface)
+        } else if facts.hover > 0.0 {
+            Some(palette.surface.scale_alpha(facts.hover))
         } else {
             None
         };
@@ -392,24 +416,19 @@ impl App {
         width: Length,
     ) -> Element<'static, Message> {
         let palette = self.palette;
-        let semibold = Font {
-            weight: font::Weight::Semibold,
-            ..Font::DEFAULT
-        };
         let active = sort.is_some_and(|sort| sort == self.query.sort);
-        let mut content = row![
-            text(label)
-                .size(HEADER_SIZE)
-                .font(semibold)
-                .color(if active {
-                    palette.foreground
-                } else {
-                    palette.muted
-                })
-                .wrapping(text::Wrapping::None),
-        ]
-        .spacing(4)
-        .align_y(Center);
+        let label = text(label)
+            .size(HEADER_SIZE)
+            .font(SEMIBOLD)
+            .wrapping(text::Wrapping::None);
+        let Some(sort) = sort else {
+            return container(label.color(palette.muted))
+                .width(width)
+                .clip(true)
+                .into();
+        };
+        // Colored by the button's style, so hover and press reach it.
+        let mut content = row![label].spacing(4).align_y(Center);
         if active {
             let arrow = if self.query.descending {
                 ARROW_DOWN
@@ -418,40 +437,166 @@ impl App {
             };
             content = content.push(icon(arrow, palette.foreground, 12.0));
         }
-        let Some(sort) = sort else {
-            return container(content).width(width).clip(true).into();
-        };
         let cell = button(content)
-            .padding(0)
+            .padding([2, 0])
             .on_press(Message::Sort(crate::sort_control::Event::Header(sort)))
-            .style(move |_, status| {
-                let mut style = button::Style::default();
-                if matches!(status, button::Status::Hovered | button::Status::Pressed) {
-                    style.text_color = palette.foreground;
-                }
-                style
-            });
+            .style(move |_, status| header_style(palette, status, active));
         container(cell).width(width).clip(true).into()
     }
 }
 
-/// The row's star: a favorite's filled one, or the outline while hovered,
-/// pressed the way the poster's is. Its room stays with none showing.
-fn star<'a>(name: &str, look: Star, palette: Palette) -> Element<'a, Message> {
-    let (bytes, color) = match look {
+const SEMIBOLD: Font = Font {
+    weight: font::Weight::Semibold,
+    ..Font::DEFAULT
+};
+
+/// A row's text cut to its cells with an ellipsis, so nothing clips
+/// mid-glyph.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct RowText {
+    pub(crate) title: String,
+    pub(crate) identifier: Option<String>,
+    pub(crate) state: String,
+    pub(crate) cells: Vec<(Column, String)>,
+}
+
+/// The room the title's text has in a row `width` wide, after the
+/// thumbnail, the other columns, and the marks beside it.
+pub(crate) fn title_room(facts: &RowFacts, width: f32) -> f32 {
+    let others: f32 = columns(width)
+        .iter()
+        .map(|column| CELL_GAP + column.width())
+        .sum();
+    let cell = width - 2.0 * ROW_PADDING - CELL_GAP - STATE_WIDTH - others;
+    let mut marks = STAR_BOX;
+    if facts.steam {
+        marks += MARK_ICON + MARKS_GAP;
+    }
+    if facts.eye {
+        marks += MARK_ICON + MARKS_GAP;
+    }
+    if let Some(badge) = facts.gog {
+        marks += pill_width(badge) + MARKS_GAP;
+    }
+    (cell - THUMB_WIDTH - 2.0 * THUMB_GAP - marks).max(0.0)
+}
+
+/// The state's room beside its dot.
+pub(crate) const STATE_ROOM: f32 = STATE_WIDTH - DOT - 8.0;
+
+pub(crate) fn row_text(facts: &RowFacts, width: f32) -> RowText {
+    use crate::tile_title::fit;
+    let room = title_room(facts, width);
+    RowText {
+        title: fit(&facts.title, room, TITLE_SIZE, SEMIBOLD),
+        identifier: facts
+            .identifier
+            .as_ref()
+            .map(|identifier| fit(identifier, room, IDENTIFIER_SIZE, Font::DEFAULT)),
+        state: fit(facts.state, STATE_ROOM, CELL_SIZE, Font::DEFAULT),
+        cells: columns(width)
+            .iter()
+            .map(|column| {
+                let value = match column {
+                    Column::Playtime => facts.playtime.as_str(),
+                    Column::LastPlayed => facts.last_played.as_str(),
+                    Column::Source => facts.source,
+                    Column::Tags => facts.tags.as_str(),
+                };
+                (
+                    *column,
+                    fit(value, column.width(), CELL_SIZE, Font::DEFAULT),
+                )
+            })
+            .collect(),
+    }
+}
+
+fn pill_width(badge: Badge) -> f32 {
+    crate::tile_title::line_width(badge.label(), PILL_SIZE, Font::DEFAULT) + 2.0 * PILL_SIDE
+}
+
+/// The GOG pill in its semantic color, as the poster draws it.
+fn pill(badge: Badge, palette: Palette, alpha: f32) -> Element<'static, Message> {
+    let color = badge_color(badge, palette);
+    let ink = ui::accent_ink(color);
+    container(
+        text(badge.label())
+            .size(PILL_SIZE)
+            .color(ink.scale_alpha(alpha))
+            .wrapping(text::Wrapping::None),
+    )
+    .width(pill_width(badge))
+    .padding([PILL_PADDING, PILL_SIDE])
+    .style(move |_| {
+        container::Style::default()
+            .background(color)
+            .border(border::rounded(8))
+    })
+    .into()
+}
+
+/// The poster pill's color: primary for an update waiting, warning for one
+/// to finish.
+pub(crate) fn badge_color(badge: Badge, palette: Palette) -> Color {
+    match badge {
+        Badge::UpdateAvailable => palette.primary,
+        Badge::FinishUpdate | Badge::FinishInstall => palette.warning,
+    }
+}
+
+/// A sortable header's look: a list row's hover and press, with the label
+/// muted until it's the sort or the pointer is on it.
+pub(crate) fn header_style(
+    palette: Palette,
+    status: button::Status,
+    active: bool,
+) -> button::Style {
+    let mut style = ui::list_row_style(palette, status);
+    if !active && status == button::Status::Active {
+        style.text_color = palette.muted;
+    }
+    style
+}
+
+/// The row's star: a favorite's filled one, or the outline fading with the
+/// hover, pressed the way the poster's is and growing in its pop. Its room
+/// stays with none showing.
+fn star<'a>(
+    name: &str,
+    look: Star,
+    hovered: bool,
+    hover: f32,
+    lift: f32,
+    palette: Palette,
+) -> Element<'a, Message> {
+    let (bytes, color, strength) = match look {
         Star::None => return Space::new().width(STAR_BOX).height(STAR_BOX).into(),
-        Star::Outline => (STAR_OUTLINE, palette.muted),
-        Star::Filled => (STAR, palette.primary),
+        Star::Outline => (STAR_OUTLINE, palette.muted, hover.max(f32::from(hovered))),
+        Star::Filled => (STAR, palette.primary, 1.0),
     };
-    button(container(icon(bytes, color, MARK_ICON)).center(STAR_BOX))
+    let size = MARK_ICON + STAR_LIFT * lift;
+    // A star fading out with the hover takes no presses.
+    let press = (look == Star::Filled || hovered)
+        .then(|| Message::Mark(crate::library_actions::Event::PosterStar(name.to_owned())));
+    button(container(icon(bytes, color, size).opacity(strength)).center(STAR_BOX))
         .width(STAR_BOX)
         .height(STAR_BOX)
         .padding(0)
-        .on_press(Message::Mark(crate::library_actions::Event::PosterStar(
-            name.to_owned(),
-        )))
-        .style(|_, _| button::Style::default())
+        .on_press_maybe(press)
+        .style(move |_, status| star_style(palette, status))
         .into()
+}
+
+/// A list row's hover and press, round to fit the star.
+pub(crate) fn star_style(palette: Palette, status: button::Status) -> button::Style {
+    let style = ui::list_row_style(palette, status);
+    button::Style {
+        border: border::rounded(STAR_BOX / 2.0)
+            .width(style.border.width)
+            .color(style.border.color),
+        ..style
+    }
 }
 
 /// A marked row's check, centered on its thumbnail like the poster's on

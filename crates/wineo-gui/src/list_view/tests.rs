@@ -1,7 +1,7 @@
 use std::time::{Duration, Instant};
 
 use iced::keyboard::{Key, Modifiers, key::Named};
-use iced::{Rectangle, Size};
+use iced::{Font, Rectangle, Size};
 use wineo_core::library::SortKey;
 use wineo_core::runtime::State;
 use wineo_core::source::{Facts, Source};
@@ -176,14 +176,48 @@ fn a_row_shows_what_its_poster_does() {
         gog_id: Some("1"),
         ..Facts::default()
     });
+    let gog = |name: &str, unfinished: bool, install: bool| {
+        let mut card = card(name, State::Inactive, 0);
+        card.gog = Some(crate::gog_library::GogCard {
+            gog_id: Some("1".into()),
+            unfinished,
+            blocked_by: None,
+            install,
+            version: None,
+        });
+        card
+    };
+    let finish_install = gog("finish-install", true, true);
+    let finish_update = gog("finish-update", true, false);
+    let update = gog("update", false, false);
     let mut native = card("native", State::Inactive, 0);
     native.source = Source::new(Facts {
         native: true,
         ..Facts::default()
     });
     let _ = app.update(Message::Loaded(Ok(vec![
-        plain, favorite, hovered, hidden, missing, installing, broken, running, titled, native,
+        plain,
+        favorite,
+        hovered,
+        hidden,
+        missing,
+        installing,
+        broken,
+        running,
+        titled,
+        native,
+        finish_install,
+        finish_update,
+        update,
     ])));
+    app.gog_updates.insert(
+        "update".to_owned(),
+        crate::gog_library::tests::status(
+            "update",
+            wineo_core::gog::update::UpdateState::Available,
+            true,
+        ),
+    );
     app.layout = ViewLayout::List;
     app.hovered = Some("hovered".into());
     let palette = app.palette;
@@ -194,7 +228,7 @@ fn a_row_shows_what_its_poster_does() {
         (Star::None, false, false, None)
     );
     assert_eq!(
-        (plain.faded, plain.gray, plain.identifier),
+        (plain.faded, plain.gray, plain.identifier.clone()),
         (false, false, None)
     );
     assert_eq!((plain.state, plain.dot), ("inactive", palette.muted));
@@ -230,6 +264,23 @@ fn a_row_shows_what_its_poster_does() {
     assert_eq!(titled.last_played, "yesterday");
     assert_eq!(titled.source, "GOG");
     assert_eq!(facts(&app, "native").source, "Native");
+
+    use crate::gog_library::Badge;
+    assert_eq!(plain.gog, None);
+    for (name, badge, color) in [
+        ("finish-install", Badge::FinishInstall, palette.warning),
+        ("finish-update", Badge::FinishUpdate, palette.warning),
+        ("update", Badge::UpdateAvailable, palette.primary),
+    ] {
+        let facts = facts(&app, name);
+        assert_eq!(facts.gog, Some(badge), "{name}");
+        assert_eq!(badge_color(badge, palette), color, "{name}");
+        // The pill takes its room from the title, as the marks do.
+        assert!(
+            title_room(&facts, 1000.0) < title_room(&plain, 1000.0),
+            "{name}"
+        );
+    }
 
     assert!(!plain.marked && !plain.selected);
     app.toggle_mark("plain");
@@ -406,4 +457,107 @@ fn the_list_has_no_collapse() {
     let (_root, mut app) = listed(6);
     app.start_collapse(Instant::now());
     assert!(app.collapse.idle());
+}
+
+#[test]
+fn overlong_text_ends_in_an_ellipsis_within_its_column() {
+    use crate::tile_title::line_width;
+    let (_root, mut app) = fixture();
+    let mut long = card(
+        "a-very-long-environment-name-for-a-game",
+        State::SteamRunning,
+        0,
+    );
+    long.display_title = "The Elder Scrolls V: Skyrim Special Anniversary Edition Deluxe".into();
+    long.tags = ["rpg", "open-world", "fantasy", "single-player", "modded"]
+        .map(String::from)
+        .into();
+    let short = card("short", State::Inactive, 0);
+    let _ = app.update(Message::Loaded(Ok(vec![long, short])));
+    for width in [500.0, 700.0, 1000.0] {
+        let long = facts(&app, "a-very-long-environment-name-for-a-game");
+        let text = row_text(&long, width);
+        let room = title_room(&long, width);
+        assert!(text.title.ends_with("..."), "{width}: {}", text.title);
+        assert!(line_width(&text.title, 14.0, SEMIBOLD) <= room, "{width}");
+        let identifier = text.identifier.unwrap();
+        assert!(identifier.ends_with("..."), "{width}: {identifier}");
+        assert!(line_width(&identifier, 12.0, Font::DEFAULT) <= room);
+        assert_eq!(long.state, "running (started from Steam)");
+        assert!(text.state.ends_with("..."), "{}", text.state);
+        assert!(line_width(&text.state, 13.0, Font::DEFAULT) <= STATE_ROOM);
+        for (column, value) in &text.cells {
+            assert!(line_width(value, 13.0, Font::DEFAULT) <= column.width());
+            if *column == Column::Tags {
+                assert!(value.ends_with("..."), "{value}");
+            }
+        }
+        // What fits stays whole.
+        let short = row_text(&facts(&app, "short"), width);
+        assert_eq!(short.title, "short");
+        assert_eq!(short.state, "inactive");
+    }
+}
+
+#[test]
+fn headers_and_the_star_show_hover_and_press() {
+    use iced::widget::button::Status;
+    let (_root, app) = fixture();
+    let palette = app.palette;
+    let idle = header_style(palette, Status::Active, false);
+    let hovered = header_style(palette, Status::Hovered, false);
+    let pressed = header_style(palette, Status::Pressed, false);
+    assert_eq!(idle.text_color, palette.muted);
+    assert_eq!(
+        header_style(palette, Status::Active, true).text_color,
+        palette.foreground
+    );
+    assert_eq!(hovered.text_color, palette.foreground);
+    assert_ne!(hovered.background, idle.background);
+    assert_ne!(pressed.background, hovered.background);
+    assert_eq!(pressed.border.color, palette.primary);
+    let idle = star_style(palette, Status::Active);
+    let hovered = star_style(palette, Status::Hovered);
+    let pressed = star_style(palette, Status::Pressed);
+    assert_ne!(hovered.background, idle.background);
+    assert_ne!(pressed.background, hovered.background);
+    assert_eq!(pressed.border.color, palette.primary);
+}
+
+#[test]
+fn the_row_hover_and_star_follow_the_posters_fade_and_pop() {
+    let (_root, mut app) = listed(3);
+    let _ = app.update(Message::Hover(Some("game-001".into())));
+    let start = facts(&app, "game-001");
+    assert_eq!(start.star, Star::Outline);
+    // The first frame starts the fade's clock.
+    let now = Instant::now();
+    let _ = app.update(Message::HoverTick(app.hover_fades.generation(), now));
+    let _ = app.update(Message::HoverTick(
+        app.hover_fades.generation(),
+        now + Duration::from_millis(30),
+    ));
+    let rising = facts(&app, "game-001").hover;
+    assert!(rising > 0.0 && rising < 1.0, "{rising}");
+    // The pointer leaves; the hover fades rather than vanishing.
+    let _ = app.update(Message::Unhover("game-001".into()));
+    let leaving = facts(&app, "game-001");
+    assert!(!leaving.hovered);
+    assert!(app.hover_fades.fading("game-001"));
+    assert!(leaving.hover > 0.0);
+    assert_eq!(leaving.star, Star::Outline);
+    let _ = app.update(Message::Hover(Some("game-001".into())));
+    let _ = app.update(Message::Mark(crate::library_actions::Event::PosterStar(
+        "game-001".into(),
+    )));
+    assert!(app.star_pops.progress("game-001").is_some());
+    let now = Instant::now();
+    let _ = app.update(Message::PopTick(app.star_pops.generation(), now));
+    let _ = app.update(Message::PopTick(
+        app.star_pops.generation(),
+        now + Duration::from_millis(60),
+    ));
+    let popping = facts(&app, "game-001");
+    assert_eq!(popping.star, Star::Filled);
+    assert!(popping.lift > 0.0, "{}", popping.lift);
 }
