@@ -232,10 +232,29 @@ fn the_zoom_leaves_the_toolbar_and_its_keys_do_nothing_in_the_list() {
 
 #[test]
 fn a_zoom_in_flight_ends_where_it_was_heading_before_the_list_shows() {
-    let (_root, mut app) = library(30);
+    let (_root, mut app) = library(120);
+    // Five columns at 100% and at 110%, so stopping the tween only scales.
+    app.viewport_width = 1000.0;
+    app.snap_grid();
+    assert_eq!(app.columns(), 5);
+    app.scroll_offset = 3000.0;
     let _ = app.update(Message::Zoom(ZoomEvent::Key(ZoomKey::In)));
     assert!(app.zooming.active());
+    let generation = app.zooming.generation();
+    let _ = app.update(Message::Zoom(ZoomEvent::Frame(
+        generation,
+        Instant::now() + Duration::from_millis(40),
+    )));
+    let shown = app.zooming.shown().expect("mid-tween");
+    assert!(shown > 100.0 && shown < 110.0, "{shown}");
+    assert_eq!(app.columns(), 5);
+    // The card at the top as drawn mid-tween keeps its place in the list.
+    let (anchor, _) = app.find_anchor();
+    let (name, offset) = anchor.unwrap();
     let _ = set(&mut app, ViewLayout::List);
+    let places = app.grid_places();
+    let slot = places.slots[places.index(&name).unwrap()];
+    assert_eq!(slot.y - app.scroll_offset, offset, "{name}");
     assert!(!app.zooming.moving());
     assert_eq!(app.zoom, 110);
     let _ = set(&mut app, ViewLayout::Grid);

@@ -140,6 +140,12 @@ impl Zoom {
         self.revision
     }
 
+    /// The generation a tween's frames carry.
+    #[cfg(test)]
+    pub(crate) fn generation(&self) -> u64 {
+        self.generation
+    }
+
     fn moved(&mut self) {
         self.revision = self.revision.wrapping_add(1);
     }

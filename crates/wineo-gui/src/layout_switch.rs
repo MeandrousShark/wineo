@@ -74,12 +74,16 @@ impl App {
         if layout == self.layout {
             return Task::none();
         }
-        // The zoom stays saved for the grid, so one in flight ends where
-        // it was heading.
+        // Found where the cards are drawn now, before a zoom in flight
+        // jumps them to where it was heading.
+        let (anchor, reveal) = self.find_anchor();
+        // The zoom stays saved for the grid, so one in flight ends where it
+        // was heading. Its own anchor and pending scroll would fight the
+        // place kept here.
+        self.interrupt_zoom();
+        self.grid_scroll_after_settle = None;
         let stopped = self.stop_zoom();
         self.collapse.reset();
-        // Found in the layout shown before the switch.
-        let (anchor, reveal) = self.find_anchor();
         let header = self.header_room();
         self.layout = layout;
         self.viewport_height = (self.viewport_height + header - self.header_room()).max(0.0);
