@@ -152,6 +152,8 @@ pub(crate) struct App {
     zooming: zoom::Zoom,
     /// Titles hide until a poster is pointed at or selected.
     poster_only: bool,
+    /// Posters in a grid, or one row per game.
+    layout: grid_motion::ViewLayout,
     /// Store, platform, and tag filters and Show hidden, which reset each launch.
     filters: order::Filters,
     /// The held modifier keys, for a wheel turn the filter tab hands to the grid.
@@ -552,6 +554,7 @@ impl App {
             zoom: wineo_core::library::ZOOM_DEFAULT,
             zooming: zoom::Zoom::default(),
             poster_only: false,
+            layout: grid_motion::ViewLayout::Grid,
             filters: order::Filters::default(),
             modifiers: keyboard::Modifiers::empty(),
             order: order::Order::default(),
@@ -1584,7 +1587,12 @@ impl App {
                 .iter()
                 .map(|card| grid::card_height(card, layout))
                 .collect();
-            let columns = grid_motion::columns_for_viewport(self.viewport_width, false, layout);
+            let columns = grid_motion::columns_for_viewport(
+                self.viewport_width,
+                false,
+                layout,
+                grid_motion::ViewLayout::Grid,
+            );
             let floor = self.scroll_offset + self.viewport_height;
             let visible = grid_motion::cards_between(&heights, columns, self.scroll_offset, floor);
             // Nothing in view would leave only hidden cards and nothing to click.
@@ -1646,10 +1654,29 @@ impl App {
         self.prune_marks();
     }
     fn columns(&self) -> usize {
-        grid_motion::columns_for_viewport(self.viewport_width, self.panel_open, self.grid_layout())
+        grid_motion::columns_for_viewport(
+            self.viewport_width,
+            self.panel_open,
+            self.grid_layout(),
+            self.layout,
+        )
     }
     fn grid_shift(&self) -> f32 {
-        grid_motion::shift_for_viewport(self.viewport_width, self.panel_open, self.grid_layout())
+        grid_motion::shift_for_viewport(
+            self.viewport_width,
+            self.panel_open,
+            self.grid_layout(),
+            self.layout,
+        )
+    }
+    /// Every slot's width: a poster's, or a list row's.
+    pub(crate) fn slot_width(&self) -> f32 {
+        grid_motion::width_for_viewport(
+            self.viewport_width,
+            self.panel_open,
+            self.grid_layout(),
+            self.layout,
+        )
     }
     pub(crate) fn grid_layout(&self) -> grid_motion::GridLayout {
         match self.zooming.shown() {

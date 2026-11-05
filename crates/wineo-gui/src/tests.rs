@@ -765,7 +765,12 @@ fn deep_scrolls_load_art_for_every_visible_row_of_mixed_heights() {
     let mut app = app();
     app.viewport_width = 1000.0;
     app.viewport_height = 800.0;
-    let columns = grid_motion::columns_for_viewport(app.viewport_width, false, app.grid_layout());
+    let columns = grid_motion::columns_for_viewport(
+        app.viewport_width,
+        false,
+        app.grid_layout(),
+        grid_motion::ViewLayout::Grid,
+    );
     app.cards = (0..columns * 120)
         .map(|index| {
             let mut card = card(&format!("game-{index:04}"), State::Inactive, 0);
@@ -911,7 +916,12 @@ fn art_scrolled_out_of_range_is_evicted_and_reloads_when_it_returns() {
     let mut app = app();
     app.viewport_width = 1000.0;
     app.viewport_height = 800.0;
-    let columns = grid_motion::columns_for_viewport(app.viewport_width, false, app.grid_layout());
+    let columns = grid_motion::columns_for_viewport(
+        app.viewport_width,
+        false,
+        app.grid_layout(),
+        grid_motion::ViewLayout::Grid,
+    );
     app.merge(
         (0..columns * 60)
             .map(|index| {
@@ -1207,7 +1217,12 @@ fn opening_the_panel_keeps_art_for_cards_sweeping_through_the_viewport() {
     let range = |open| {
         grid_motion::cards_between(
             &heights,
-            grid_motion::columns_for_viewport(app.viewport_width, open, app.grid_layout()),
+            grid_motion::columns_for_viewport(
+                app.viewport_width,
+                open,
+                app.grid_layout(),
+                grid_motion::ViewLayout::Grid,
+            ),
             app.scroll_offset - margin,
             app.scroll_offset + app.viewport_height + margin,
         )
@@ -1268,7 +1283,12 @@ fn closing_the_panel_near_the_bottom_keeps_art_for_cards_rising_into_view() {
     let range = |open| {
         grid_motion::cards_between(
             &heights,
-            grid_motion::columns_for_viewport(app.viewport_width, open, app.grid_layout()),
+            grid_motion::columns_for_viewport(
+                app.viewport_width,
+                open,
+                app.grid_layout(),
+                grid_motion::ViewLayout::Grid,
+            ),
             app.scroll_offset - margin,
             app.scroll_offset + app.viewport_height + margin,
         )

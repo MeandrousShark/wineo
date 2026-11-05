@@ -236,6 +236,7 @@ impl App {
             self.panel_open,
             scene,
             self.grid_layout(),
+            self.layout,
             crate::details_fade::DetailsFade::drift(progress),
         )
     }
