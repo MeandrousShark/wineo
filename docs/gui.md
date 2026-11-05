@@ -175,8 +175,24 @@ land as a double-click. A plain click clears the marks and selects as usual.
 Esc clears them too, once the log, version picker, results, and menus are
 closed.
 A filter or search that hides a marked game drops its mark, and so does
-removing it. Sorting and rescans keep the rest. Marks last until you close
-wineo and are never saved.
+removing it. Sorting, rescans, and tag changes keep the rest. Marks last
+until you close wineo and are never saved.
+
+While games are marked, a bar at the bottom of the Library says how many,
+like **3 selected**, with **Tags** and an x that clears the marks. The grid
+leaves room under its last row so the bar never covers a card.
+
+**Tags** opens a list of every tag in the library. A tag's box is checked
+when every marked game has it, shows a dash when some do, and is empty when
+none do. Click a dash or an empty box to add the tag to all of them, and a
+checked box to remove it from all of them. Type a new tag in the field under
+the list and press Enter to add it; a name wineo can't use says why under
+the field. A tag you just took off every marked game stays listed until the
+list closes, so you can put it back.
+
+Each change saves to the games' configs right away, like favorites. If some
+can't be saved, those go back to what they had and a notice names them,
+like `Couldn't tag 2 of 3 (Hades, Celeste): ...` or `Couldn't untag ...`.
 
 ### Zoom and poster-only
 
@@ -967,7 +983,7 @@ edits, the bar says which, and **Reload** takes what's on disk.
 | Ctrl+A | Mark every shown game, unless the search or log has focus (Library only) |
 | R | Pick a shown game at random, as the dice does (Library only) |
 | Shift+F10 or Menu | Open the focused dice's menu (Library only) |
-| Esc | Close the log, version picker, or results, then clear the marks, then close the panel, then clear the search |
+| Esc | Close the log, version picker, results, or Tags list, then clear the marks, then close the panel, then clear the search |
 | `/` or Ctrl+F | Search |
 | Ctrl+N | Open Add (Library only) |
 | Ctrl+= or Ctrl++, Ctrl+- | Make the posters bigger or smaller (Library only) |
@@ -983,14 +999,15 @@ edits, the bar says which, and **Reload** takes what's on disk.
 The mouse Back button does whatever Esc does on the current page, here and
 in every table below. Forward does nothing.
 
-In the Sort menu, the Filters popup, and the dice's menu, which take every key
-while open:
+In the Sort menu, the Filters popup, the dice's menu, and the marked games'
+Tags list, which take every key while open:
 
 | Key | Does |
 |---|---|
 | Enter, Space (on Sort or Filters) | Open the menu under its button, on the current choice |
 | Arrow keys, Tab, Shift+Tab | Move between rows |
 | Enter, Space | Pick a sort, or toggle a check box or tag |
+| Enter (in the Tags list's field) | Add the typed tag to every marked game |
 | X (in Filters) | Exclude the focused store, platform, or tag, or turn it off if it's checked or excluded |
 | Esc | Close the menu and go back to its button |
 

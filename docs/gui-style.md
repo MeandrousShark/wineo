@@ -224,6 +224,18 @@ Plan 0054 added these.
   top, at most 480 px wide, then a feature notice, then the removal bar with
   **Undo**. A note that can act, like one naming a single imported game, is
   a neutral button with hover and focus states.
+- The action bar for marked cards is the last item in that stack, 16 px
+  above the window's bottom, and shows with no motion like the notes above
+  it. It's 48 px high in the context menu's chrome: "N selected" in 14 px, a neutral **Tags** button with an up
+  chevron, and a 32 px square x with a "Clear selection" tooltip above it.
+  While it shows, the grid keeps 72 px under its last row, and scrolling a
+  card into view or holding one through a zoom treats that strip as covered.
+- The Tags list opens above its button with left edges aligned, 248 px wide,
+  in the Sort menu's chrome and keys. It grows up to the window's top edge,
+  then scrolls, and ends with a separator and a "New tag" field whose
+  problems show live under it in danger text. A tag some but not all marked
+  games have shows the check box filled with the primary color and a drawn
+  dash in its ink color.
 - Poster marks are a 24 px round chip in black at 55% opacity with a 14 px
   white icon, 8 px in from their corner, each corner holding one so nothing
   moves when another appears. The star has the top-right corner and a
