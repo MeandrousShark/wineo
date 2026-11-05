@@ -46,6 +46,7 @@ mod library_menu;
 mod library_states;
 mod logview;
 mod menu_anchor;
+mod multi_select;
 mod order;
 mod panel;
 mod panel_motion;
@@ -90,7 +91,7 @@ mod worker;
 mod zoom;
 mod zoom_control;
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::ops::ControlFlow;
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -177,6 +178,10 @@ pub(crate) struct App {
     /// What `view` reads in place of the disk; see `prefix_facts`.
     facts: prefix_facts::Stored,
     pub(crate) selected: Option<String>,
+    /// The cards marked for a bulk action, which only ever holds shown
+    /// games. `selected` stays the panel's card.
+    pub(crate) marked: BTreeSet<String>,
+    mark_range: multi_select::Range,
     panel_open: bool,
     panel_motion: panel_motion::PanelMotion,
     grid_motion: grid_motion::GridMotion,
@@ -334,7 +339,13 @@ pub(crate) struct Operation {
 #[derive(Debug, Clone)]
 pub(crate) enum Message {
     SearchChanged(String),
+    /// A card's press, which marks with Ctrl or Shift held.
     Select(String),
+    /// Selects a card and opens its panel whatever keys are held, for
+    /// Enter and other ways in that aren't a press on the card.
+    OpenCard(String),
+    /// Space's answer to whether a control has keyboard focus.
+    SpaceFocus(bool),
     DoubleClick(String),
     ClosePanel,
     TargetPicked(String),
@@ -549,6 +560,8 @@ impl App {
             flag_writes: library_actions::Writes::default(),
             facts: prefix_facts::Stored::default(),
             selected: None,
+            marked: BTreeSet::new(),
+            mark_range: multi_select::Range::default(),
             panel_open: false,
             panel_motion: panel_motion::PanelMotion::default(),
             grid_motion: grid_motion::GridMotion::default(),
@@ -923,6 +936,8 @@ impl App {
                 message,
                 Message::SearchChanged(_)
                     | Message::Select(_)
+                    | Message::OpenCard(_)
+                    | Message::SpaceFocus(_)
                     | Message::ImportToast
                     | Message::DoubleClick(_)
                     | Message::ClosePanel
@@ -979,6 +994,8 @@ impl App {
             && (matches!(
                 message,
                 Message::Select(_)
+                    | Message::OpenCard(_)
+                    | Message::SpaceFocus(_)
                     | Message::DoubleClick(_)
                     | Message::Context(_)
                     | Message::ImportToast
@@ -1036,7 +1053,12 @@ impl App {
             | Message::ToastFocus(..)
             | Message::ToastAnswer(..)) => removal::update(self, message),
             Message::SearchChanged(search) => self.search_changed(search),
-            Message::Select(name) => self.select_card(name),
+            Message::Select(name) => self.card_pressed(name),
+            Message::OpenCard(name) => self.select_card(name),
+            Message::SpaceFocus(focused) => {
+                self.space_answered(focused);
+                Task::none()
+            }
             Message::ImportToast => self.import_toast_clicked(),
             Message::DoubleClick(name) => self.double_click_card(name),
             Message::ClosePanel => {
@@ -1596,6 +1618,7 @@ impl App {
             filters: &self.filters,
         };
         self.order.rebuild(of);
+        self.prune_marks();
     }
     fn columns(&self) -> usize {
         grid_motion::columns_for_viewport(self.viewport_width, self.panel_open, self.grid_layout())

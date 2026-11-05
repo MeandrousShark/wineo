@@ -271,7 +271,7 @@ pub(crate) fn update(app: &mut App, event: Event) -> Task<Message> {
                 return navigation;
             }
             app.close_panel();
-            Task::batch([navigation, app.update(Message::Select(name))])
+            Task::batch([navigation, app.update(Message::OpenCard(name))])
         }
         Event::OpenInstallLog(scope) => {
             let Some((name, source)) = app.checkup_install_log(&scope) else {

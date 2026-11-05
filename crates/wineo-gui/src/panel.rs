@@ -386,7 +386,7 @@ impl App {
             return Task::none();
         }
         let select = if self.selected.as_deref() != Some(&name) || !self.panel_open {
-            self.update(Message::Select(name.clone()))
+            self.update(Message::OpenCard(name.clone()))
         } else {
             Task::none()
         };
