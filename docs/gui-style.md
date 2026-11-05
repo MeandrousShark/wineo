@@ -146,7 +146,8 @@ Plan 0054 added these.
 - The toolbar reads the wordmark, the accent **Add**, search, **Sort:
   <key>** with a chevron, a 32 px square direction button, **Filters** (or
   **Filters (N)** with N chosen or excluded stores, platforms, and tags),
-  the 32 px square dice, the zoom slider, and the poster-only toggle. All
+  the 32 px square dice, the layout switch, the zoom slider, and the
+  poster-only toggle (the last two in the grid only). All
   are 32 px high, and Tab follows that order, with the filter tab's chips
   right after **Filters**. Its
   bottom padding is 15 px, room for the filter tab. Search is 320 px wide
@@ -158,6 +159,15 @@ Plan 0054 added these.
   square icon button, an outline poster over a short title line, with the
   tag chips' selected look while on (15% primary tint, primary border and
   icon); its tooltip says "Hide titles" or "Show titles".
+- The layout switch is a segment, 64 x 32 px: two 32 px sides, a list icon
+  (dots and lines) on the left and a grid icon (2 x 2 squares) on the right,
+  each its own Tab stop with a tooltip ("Show as list", "Show as grid"). One
+  thumb sits under the chosen side with the poster-only toggle's selected
+  look, and the chosen side's icon is primary; hovering a side adds a faint
+  foreground tint. The thumb slides with the panel's spring and snaps under
+  reduced motion. In the list, an empty slot holds the slider and toggle's
+  place, so the toolbar keeps its shape. With the switch the toolbar's right
+  end starts clipping about 72 px sooner.
 - The dice shows a die face of five, in the foreground color, or muted
   while there's nothing to pick from; its tooltip says "Pick one at
   random (right-click for options)". Right-click, Shift+F10, or the Menu
@@ -325,6 +335,36 @@ Keep scroll position, bottom rows, keyboard columns, and visible art loading
 correct through a transition.
 Clicking unused Library space closes the panel. Card clicks, scrollbars,
 menus, and the panel itself keep their own input handling.
+
+## List rows
+
+Plan 0062 added these.
+
+- Rows are 56 px and full width, one column through the same motion owner
+  as cards, so re-sorts and filters animate the same way. A 32 x 48 px
+  thumbnail of the grid art leads, grayscale when not installed and faded
+  when hidden or not installed, like the poster.
+- The title cell takes what's left after the other columns: the title over
+  a muted environment name when they differ, then the row's marks at its
+  right end (GOG pill, Steam mark, eye, star), each sized as on the poster.
+  The star keeps its place when hidden and fades in on hover like the
+  poster's. The install bar runs along the row's bottom edge, and a
+  warning shows as the State column's dot.
+- Columns are fixed: State 128, Playtime 96, Last played 112, Source 80,
+  and Tags 176 px, with the title at least 200 px. They leave from the
+  right as the width drops: Tags, Source, Last played, then Playtime. Text
+  that doesn't fit is cut between graphemes and ends in an ellipsis.
+- The header is 32 px and stays put above the scrolling rows. Sortable
+  labels are buttons that tint 6 px past their text on hover and press (10%
+  and 22% primary, with a primary border pressed), with cells widened so
+  labels line up with the row cells below. The active sort shows its
+  direction arrow. The header is mouse-only; the Sort menu covers the
+  keyboard.
+- A selected row gets a 2 px primary border, rounded 6; a hovered row fades
+  in a surface-colored background with the poster's hover timing. A marked
+  row gets the marked poster's 25% primary wash across the row and a 22 px
+  check centered on the thumbnail.
+- Switching layouts snaps rather than morphing posters into rows.
 
 ## Grid motion
 

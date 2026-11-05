@@ -635,9 +635,11 @@ added it.
   share that rule, so a banner and Checkup never disagree. A bad field falls back to its
   default without affecting the entry's other fields.
 - `set_favorite`, `set_hidden` (per environment) and `set_sort`,
-  `set_descending`, `set_favorites_first`, `set_random` (the `[view]`
-  table; `set_random` takes a `RandomPool`, `Launchable` or `Any`, and
-  `View::random` reads it, defaulting to `Launchable`): each
+  `set_descending`, `set_favorites_first`, `set_random`, `set_layout` (the
+  `[view]` table; `set_random` takes a `RandomPool`, `Launchable` or `Any`,
+  and `View::random` reads it, defaulting to `Launchable`; `set_layout` takes
+  a `ViewLayout`, `Grid` or `List`, and `View::layout` reads it, defaulting
+  to `Grid`): each
   changes one field. It reads the file fresh and holds its config lock
   through the atomic replace, so it never writes back a frontend's cached
   copy. `Ok(true)` means the file changed, `Ok(false)` a no-op that left

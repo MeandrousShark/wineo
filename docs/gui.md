@@ -194,6 +194,31 @@ Each change saves to the games' configs right away, like favorites. If some
 can't be saved, those go back to what they had and a notice names them,
 like `Couldn't tag 2 of 3 (Hades, Celeste): ...` or `Couldn't untag ...`.
 
+### List view
+
+The switch left of the zoom slider shows the library as a grid of posters
+or as a list, and Ctrl+L flips between them. The list has one 56 px row per
+game: a small poster, the title with the environment name under it when
+they differ, then State, Playtime, Last played, Source, and Tags. A row
+shows what its poster does: the star, the eye, the Steam mark, a GOG pill,
+the install bar, the state's dot, and the dim for a hidden or not installed
+game. Text that doesn't fit ends in an ellipsis.
+
+Click **Title**, **Playtime**, or **Last played** in the header to sort by
+it, the same as picking it in the Sort menu, and click it again to flip the
+direction. Date added stays in the Sort menu. As the window or the panel
+narrows the list, columns leave from the right: Tags, then Source, Last
+played, and Playtime. Title and State always stay.
+
+Rows work like cards: click to select, double-click to play, right-click
+for the menu, the arrow keys to move, and the same marking, Tags bar,
+favorites, and random pick. The zoom slider and the titles button leave the
+toolbar in the list, and the zoom keys do nothing there; the zoom is kept
+for the way back. Switching keeps the sort, the marks, and the selection,
+and keeps your place: the selected game if it's in view, otherwise
+whatever was at the same spot. The choice saves to `library.toml`
+(`layout` under `[view]`).
+
 ### Zoom and poster-only
 
 The slider at the right of the toolbar sizes the posters, from 60% to 200%
@@ -976,7 +1001,8 @@ edits, the bar says which, and **Reload** takes what's on disk.
 
 | Key | Does |
 |---|---|
-| Arrow keys | Move between cards |
+| Arrow keys | Move between cards or rows |
+| Ctrl+L | Switch between the grid and the list (Library only) |
 | Enter | Open the panel, or play when it's open (only for a card that's shown) |
 | F | Add the selected card to favorites, or remove it (only for a card that's shown) |
 | Space | Mark or unmark the selected card, when no button or field has focus (Library only) |
@@ -986,14 +1012,14 @@ edits, the bar says which, and **Reload** takes what's on disk.
 | Esc | Close the log, version picker, results, or Tags list, then clear the marks, then close the panel, then clear the search |
 | `/` or Ctrl+F | Search |
 | Ctrl+N | Open Add (Library only) |
-| Ctrl+= or Ctrl++, Ctrl+- | Make the posters bigger or smaller (Library only) |
-| Ctrl+0 | Posters back to the usual size (Library only) |
+| Ctrl+= or Ctrl++, Ctrl+- | Make the posters bigger or smaller (Library grid only) |
+| Ctrl+0 | Posters back to the usual size (Library grid only) |
 | Delete | Remove the selected environment, asking first (on the details) |
 | Ctrl+Z | Undo a removal while its bar shows |
 | Ctrl+1, Ctrl+2, Ctrl+3, Ctrl+4, Ctrl+5 | Library, Trash, Checkup, Downloads, Snapshots |
 | Ctrl+, | Global settings |
 | Down (in the search) | Back to the cards |
-| Tab, Shift+Tab | Move focus through the toolbar from Add to the titles button, then panel actions |
+| Tab, Shift+Tab | Move focus through the toolbar from Add to the layout switch (then the zoom slider and titles button in the grid), then panel actions |
 | Left, Right (on the zoom slider) | Make the posters smaller or bigger |
 
 The mouse Back button does whatever Esc does on the current page, here and
@@ -1067,5 +1093,4 @@ the palette, spacing, control states, motion, and layout rules for future pages.
 ## Not yet
 
 - Gamepad navigation.
-- A list view, saved filter presets, and grouping (the later parts of the
-  library views series in plan 0054).
+- Saved filter presets and grouping (plan 0062, coming in 1.4.0).
