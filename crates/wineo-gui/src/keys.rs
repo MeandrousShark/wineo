@@ -23,6 +23,8 @@ pub(crate) enum Action {
     FocusSearch,
     ToggleFavorite,
     PickRandom,
+    MarkAll,
+    MarkSelected,
 }
 
 pub(crate) fn action(
@@ -38,6 +40,19 @@ pub(crate) fn action(
             Action::FocusSearch
         }
         Key::Character("/") if !search_focused => Action::FocusSearch,
+        Key::Character(character)
+            if !search_focused
+                && modifiers.control()
+                && !(modifiers.alt() || modifiers.logo())
+                && character.eq_ignore_ascii_case("a") =>
+        {
+            Action::MarkAll
+        }
+        Key::Named(Named::Space) | Key::Character(" ")
+            if !search_focused && !(modifiers.control() || modifiers.alt() || modifiers.logo()) =>
+        {
+            Action::MarkSelected
+        }
         // Shift is allowed, so Caps Lock doesn't matter.
         Key::Character(character)
             if !search_focused
@@ -170,6 +185,18 @@ impl App {
                 Task::none()
             };
         }
+        // Marks clear after the log, version picker, results, and context
+        // menu, and before the panel.
+        if key == Key::Named(Named::Escape)
+            && !self.marked.is_empty()
+            && !(self.panel_log_visible()
+                || self.version_visible()
+                || self.checkup_visible()
+                || self.action_menu.is_some())
+        {
+            self.clear_marks();
+            return Task::none();
+        }
         match action(
             &key,
             modifiers,
@@ -273,6 +300,26 @@ impl App {
                 }
                 self.update(Message::Random(crate::random_pick::Event::Pick))
             }
+            // A captured Ctrl+A is the log's or the search's own select all.
+            Action::MarkAll => {
+                if captured || !self.marking_keys_free() {
+                    return Task::none();
+                }
+                self.mark_all();
+                Task::none()
+            }
+            // A focused button takes Space only when it isn't a repeat, so
+            // whether anything has focus is asked rather than read from the
+            // capture.
+            Action::MarkSelected => {
+                if captured || !self.marking_keys_free() || !self.selected_shown() {
+                    return Task::none();
+                }
+                iced::advanced::widget::operate(
+                    iced::advanced::widget::operation::focusable::count(),
+                )
+                .map(|count| Message::SpaceFocus(count.focused.is_some()))
+            }
             Action::OpenOrPlay => {
                 if self.action_menu.is_some()
                     || self.version_visible()
@@ -283,7 +330,7 @@ impl App {
                 } else if self.panel_open {
                     self.start_selected()
                 } else if let Some(name) = self.selected.clone() {
-                    self.update(Message::Select(name))
+                    self.update(Message::OpenCard(name))
                 } else {
                     Task::none()
                 }

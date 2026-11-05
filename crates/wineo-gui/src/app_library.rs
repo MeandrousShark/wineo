@@ -216,6 +216,7 @@ impl App {
             Some(built) => self.order.replace(built, of),
             None => self.order.keep(of),
         }
+        self.prune_marks();
         self.refresh_facts();
         if layout_changed {
             // Settles a transition in flight too.

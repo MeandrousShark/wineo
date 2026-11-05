@@ -35,6 +35,10 @@ impl App {
     }
 
     pub(crate) fn double_click_card(&mut self, name: String) -> Task<Message> {
+        // Fast marking clicks land as double-clicks, which must never launch.
+        if self.modifiers.control() || self.modifiers.shift() {
+            return Task::none();
+        }
         let prior_target = self
             .card_click_target
             .take()

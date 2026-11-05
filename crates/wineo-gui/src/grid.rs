@@ -370,7 +370,12 @@ impl App {
             ..Font::DEFAULT
         };
         let steam_mark = card.kind == Some(crate::library::CardKind::Proxied);
+        let marked = self.marked.contains(&card.name);
         let mut layers = stack![poster];
+        // Under the title and corner layers, so their meaning shows through.
+        if marked {
+            layers = layers.push(crate::multi_select::wash(self.palette, alpha));
+        }
         if overlay {
             layers = layers.push(title_overlay(
                 &card.display_title,
@@ -405,6 +410,9 @@ impl App {
                     .align_bottom(Fill)
                     .padding(8),
             );
+        }
+        if marked {
+            layers = layers.push(crate::multi_select::check(self.palette, alpha));
         }
         let chip = (text_mode.chip() && !card.idle())
             .then(|| crate::library_actions::status_chip(card.dot(palette), alpha));
