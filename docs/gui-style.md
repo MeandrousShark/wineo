@@ -283,8 +283,13 @@ chips, and badges keep their sizes at every zoom.
   24 px badge instead: a circle in the pill's color with a 14 px down arrow
   in its ink color. The panel keeps the words. At 60 to 62% with a chip,
   a badge, and a mark, the badge sits flush against the mark.
+- A card marked for a bulk action (plan 0062) gets a 25% primary wash over
+  its art and a 32 px primary circle centered on it, holding a 20 px check
+  in the primary's ink. Both sit above the art and under the title overlay
+  and every corner layer, so the corners keep their meaning, and the
+  selected card's border still draws over a marked card.
 - Every poster layer fades with its card, including the marks, the pill
-  or badge, and the install bar's track.
+  or badge, the marked wash and check, and the install bar's track.
 
 ## Panel motion
 

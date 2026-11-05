@@ -160,6 +160,24 @@ no key for it, since the game disappears. Both save to `library.toml` right
 away. If a save fails, the card goes back to what's saved and a notice says
 why, like `Couldn't hide Hades: ...`.
 
+### Marking several games
+
+Ctrl+click a card to mark it, or press Space on the selected card when no
+button or field has focus. Ctrl+click or Space again unmarks it. Shift+click
+marks every shown card from the last one you marked, or from the selected
+card, to the one you click, in the order they're shown. Another Shift+click
+replaces that range and keeps your other marks, and Ctrl+Shift+click adds a
+range instead. Ctrl+A marks every shown game. A marked poster gets a wash in
+the theme's primary color and a check in its middle.
+
+Marking never opens the panel or launches anything, even when the clicks
+land as a double-click. A plain click clears the marks and selects as usual.
+Esc clears them too, once the log, version picker, results, and menus are
+closed.
+A filter or search that hides a marked game drops its mark, and so does
+removing it. Sorting and rescans keep the rest. Marks last until you close
+wineo and are never saved.
+
 ### Zoom and poster-only
 
 The slider at the right of the toolbar sizes the posters, from 60% to 200%
@@ -945,9 +963,11 @@ edits, the bar says which, and **Reload** takes what's on disk.
 | Arrow keys | Move between cards |
 | Enter | Open the panel, or play when it's open (only for a card that's shown) |
 | F | Add the selected card to favorites, or remove it (only for a card that's shown) |
+| Space | Mark or unmark the selected card, when no button or field has focus (Library only) |
+| Ctrl+A | Mark every shown game, unless the search or log has focus (Library only) |
 | R | Pick a shown game at random, as the dice does (Library only) |
 | Shift+F10 or Menu | Open the focused dice's menu (Library only) |
-| Esc | Close the log, version picker, or results, then the panel, then clear the search |
+| Esc | Close the log, version picker, or results, then clear the marks, then close the panel, then clear the search |
 | `/` or Ctrl+F | Search |
 | Ctrl+N | Open Add (Library only) |
 | Ctrl+= or Ctrl++, Ctrl+- | Make the posters bigger or smaller (Library only) |
