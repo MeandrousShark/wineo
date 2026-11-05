@@ -13,7 +13,8 @@ rest get a plan when they come up, and the rows below have the details.
 
 1. Library views parts 3 and 4 (list view, saved presets and grouping), with
    Bulk tagging's GUI half. Exclude filters, the Random game picker, and
-   `wineo tag` shipped in 1.3.0, the plan's first part.
+   `wineo tag` shipped in 1.3.0, the plan's first part. The rest ships
+   together as 1.4.0.
 2. GUI accessibility settings and Tray icon and hide on launch.
 3. Publish to the repositories in parallel.
 
