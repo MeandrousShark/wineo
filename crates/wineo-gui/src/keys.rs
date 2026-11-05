@@ -25,6 +25,7 @@ pub(crate) enum Action {
     PickRandom,
     MarkAll,
     MarkSelected,
+    ToggleLayout,
 }
 
 pub(crate) fn action(
@@ -40,6 +41,13 @@ pub(crate) fn action(
             Action::FocusSearch
         }
         Key::Character("/") if !search_focused => Action::FocusSearch,
+        Key::Character(character)
+            if modifiers.control()
+                && !(modifiers.alt() || modifiers.logo())
+                && character.eq_ignore_ascii_case("l") =>
+        {
+            Action::ToggleLayout
+        }
         Key::Character(character)
             if !search_focused
                 && modifiers.control()
@@ -302,6 +310,14 @@ impl App {
                     return Task::none();
                 }
                 self.update(Message::Random(crate::random_pick::Event::Pick))
+            }
+            // Search has no use for Ctrl+L, but anything else that took it
+            // keeps it.
+            Action::ToggleLayout => {
+                if captured && !search_focused {
+                    return Task::none();
+                }
+                self.update(Message::Layout(crate::layout_switch::Event::Toggle))
             }
             // A captured Ctrl+A is the log's or the search's own select all.
             Action::MarkAll => {

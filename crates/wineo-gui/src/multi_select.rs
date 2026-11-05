@@ -12,7 +12,7 @@ use crate::theme::Palette;
 use crate::{App, Message, ui};
 
 /// How strongly a marked card's art is washed in the primary color.
-const WASH: f32 = 0.25;
+pub(crate) const WASH: f32 = 0.25;
 const CHECK_CHIP: f32 = 32.0;
 const CHECK_ICON: f32 = 20.0;
 

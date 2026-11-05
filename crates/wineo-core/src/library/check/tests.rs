@@ -90,13 +90,14 @@ fn tables_of_the_wrong_shape_are_bad_values() {
 
 #[test]
 fn unknown_keys_are_found_at_every_level() {
-    let inspection =
-        inspect_text("zoom = 2\n[view]\nlayout = \"grid\"\n[environments.hades]\nnotes = \"hi\"\n");
+    let inspection = inspect_text(
+        "zoom = 2\n[view]\nfuture_view = \"grid\"\n[environments.hades]\nnotes = \"hi\"\n",
+    );
     assert_eq!(
         messages(&inspection, FindingKind::KeyUnknown),
         [
             "library.toml: zoom: unknown key, ignored",
-            "library.toml: view.layout: unknown key, ignored",
+            "library.toml: view.future_view: unknown key, ignored",
             "library.toml: environments.hades.notes: unknown key, ignored",
         ]
     );
@@ -221,6 +222,22 @@ fn random_is_a_known_view_key_and_a_bad_value_is_reported() {
     );
     assert_eq!(messages(&inspection, FindingKind::KeyUnknown).len(), 0);
     let inspection = inspect_text("[view]\nrandom = true\n");
+    assert_eq!(messages(&inspection, FindingKind::FieldInvalid).len(), 1);
+}
+
+#[test]
+fn layout_is_a_known_view_key_and_a_bad_value_is_reported() {
+    for good in ["grid", "list"] {
+        let inspection = inspect_text(&format!("[view]\nlayout = \"{good}\"\n"));
+        assert_eq!(inspection.findings, [], "{good}");
+    }
+    let inspection = inspect_text("[view]\nlayout = \"table\"\n");
+    assert_eq!(
+        messages(&inspection, FindingKind::FieldInvalid),
+        ["library.toml: view.layout: expected one of grid, list, found \"table\""]
+    );
+    assert_eq!(messages(&inspection, FindingKind::KeyUnknown).len(), 0);
+    let inspection = inspect_text("[view]\nlayout = true\n");
     assert_eq!(messages(&inspection, FindingKind::FieldInvalid).len(), 1);
 }
 

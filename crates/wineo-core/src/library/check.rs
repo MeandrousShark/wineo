@@ -8,8 +8,8 @@ use toml_edit::{DocumentMut, Item, Key};
 
 use super::record::{Recorded, valid_app_id};
 use super::{
-    RandomPool, ReadFailure, SCHEMA_VERSION, SortKey, ZOOM_MAX, ZOOM_MIN, edit, read_document,
-    read_zoom,
+    RandomPool, ReadFailure, SCHEMA_VERSION, SortKey, ViewLayout, ZOOM_MAX, ZOOM_MIN, edit,
+    read_document, read_zoom,
 };
 use crate::paths::Paths;
 use crate::themes::{self, CUSTOM_PREFIX, ThemeKind, Themes};
@@ -116,6 +116,10 @@ fn inspect_view(item: &Item, inspection: &mut Inspection) {
             "random" => match value.as_str() {
                 Some(name) if RandomPool::parse(name).is_some() => continue,
                 _ => "expected one of launchable, any".to_owned(),
+            },
+            "layout" => match value.as_str() {
+                Some(name) if ViewLayout::parse(name).is_some() => continue,
+                _ => "expected one of grid, list".to_owned(),
             },
             "zoom" if read_zoom(value).is_some() => continue,
             "zoom" => format!("expected a whole number from {ZOOM_MIN} to {ZOOM_MAX}"),

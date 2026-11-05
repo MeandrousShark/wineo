@@ -610,7 +610,7 @@ fn a_view_warning_is_under_library_toml_and_an_entry_warning_under_its_environme
     let library = f.config_dir().join("library.toml");
     fs::write(
         &library,
-        "schema_version = 1\n[view]\nlayout = \"grid\"\n[environments.hades]\nfavorite = \"yes\"\n",
+        "schema_version = 1\n[view]\nfuture_view = \"grid\"\n[environments.hades]\nfavorite = \"yes\"\n",
     )
     .unwrap();
 
@@ -619,7 +619,7 @@ fn a_view_warning_is_under_library_toml_and_an_entry_warning_under_its_environme
     assert_eq!(
         stdout(&output),
         format!(
-            "{}\n  warning  library.toml: view.layout: unknown key, ignored\nhades\n  warning  library.toml: environments.hades.favorite: expected true or false, found \"yes\"\n\n2 warnings.\n",
+            "{}\n  warning  library.toml: view.future_view: unknown key, ignored\nhades\n  warning  library.toml: environments.hades.favorite: expected true or false, found \"yes\"\n\n2 warnings.\n",
             library.display()
         )
     );

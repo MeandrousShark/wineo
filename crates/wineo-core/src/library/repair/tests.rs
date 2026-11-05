@@ -895,6 +895,41 @@ fn repair_keeps_a_valid_random_and_drops_an_invalid_one() {
 }
 
 #[test]
+fn repair_keeps_a_valid_layout_and_drops_an_invalid_one() {
+    for value in ["\"list\"", "\"grid\""] {
+        let fixture = Fixture::new();
+        fixture.write(&format!(
+            "[view]\nlayout = {value}\n\n[environments.hades]\nfavorite = true\nthis is broken\n"
+        ));
+        repair_at(&fixture.paths, STAMP, sync_dir).unwrap().unwrap();
+        assert!(fixture.read().contains("layout"), "{value}");
+    }
+    let fixture = Fixture::new();
+    fixture.write("[view]\nlayout = \"list\"\nthis is broken\n");
+    repair_at(&fixture.paths, STAMP, sync_dir).unwrap().unwrap();
+    assert_eq!(
+        load(&fixture.paths).view.layout,
+        crate::library::ViewLayout::List
+    );
+
+    for bad in ["\"table\"", "true", "3"] {
+        let fixture = Fixture::new();
+        fixture.write(&format!(
+            "[view]\nlayout = {bad}\ndescending = true\nthis is broken\n"
+        ));
+        let report = repair_at(&fixture.paths, STAMP, sync_dir).unwrap().unwrap();
+        assert_eq!(report.view, ViewRecovery::Partly, "{bad}");
+        let text = fixture.read();
+        assert!(!text.contains("layout"), "{bad}: {text}");
+        let view = load(&fixture.paths).view;
+        assert_eq!(
+            (view.layout, view.descending),
+            (crate::library::ViewLayout::Grid, true)
+        );
+    }
+}
+
+#[test]
 fn repair_keeps_the_readable_appearance_lines() {
     let fixture = Fixture::new();
     // The duplicate header makes the file unparseable; the parsed part and

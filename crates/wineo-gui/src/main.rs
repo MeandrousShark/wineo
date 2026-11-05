@@ -42,10 +42,12 @@ mod import_toast;
 mod keys;
 #[cfg(test)]
 mod layout_probe;
+mod layout_switch;
 mod library;
 mod library_actions;
 mod library_menu;
 mod library_states;
+mod list_view;
 mod logview;
 mod menu_anchor;
 mod multi_select;
@@ -152,6 +154,10 @@ pub(crate) struct App {
     zooming: zoom::Zoom,
     /// Titles hide until a poster is pointed at or selected.
     poster_only: bool,
+    /// Posters in a grid, or one row per game.
+    layout: grid_motion::ViewLayout,
+    /// The layout segment's thumb: 0 on the list side, 1 on the grid's.
+    layout_thumb: panel_motion::PanelMotion,
     /// Store, platform, and tag filters and Show hidden, which reset each launch.
     filters: order::Filters,
     /// The held modifier keys, for a wheel turn the filter tab hands to the grid.
@@ -529,6 +535,7 @@ pub(crate) enum Message {
     Mark(library_actions::Event),
     Zoom(zoom::Event),
     Random(random_pick::Event),
+    Layout(layout_switch::Event),
     /// The action bar and its tag popup.
     Tags(action_bar::Event),
     /// The wait for `library.toml` writes on close is over, tagged with its
@@ -552,6 +559,8 @@ impl App {
             zoom: wineo_core::library::ZOOM_DEFAULT,
             zooming: zoom::Zoom::default(),
             poster_only: false,
+            layout: grid_motion::ViewLayout::Grid,
+            layout_thumb: panel_motion::PanelMotion::default(),
             filters: order::Filters::default(),
             modifiers: keyboard::Modifiers::empty(),
             order: order::Order::default(),
@@ -694,6 +703,9 @@ impl App {
         app.zoom = saved.view.zoom;
         app.poster_only = saved.view.poster_only;
         app.random_pool = saved.view.random;
+        app.layout = saved.view.layout;
+        app.layout_thumb
+            .snap(app.layout == grid_motion::ViewLayout::Grid);
         app.query = saved.view.into();
         // The banner shows from the first frame, before the cards arrive.
         app.problem_read(saved.problem);
@@ -815,6 +827,15 @@ impl App {
         } else {
             self.grid_motion.subscription()
         };
+        let layout_thumb = if self.layout_thumb.active() {
+            window::frames()
+                .with(self.layout_thumb.generation())
+                .map(|(generation, now)| {
+                    Message::Layout(layout_switch::Event::Tick(generation, now))
+                })
+        } else {
+            Subscription::none()
+        };
         let zoom = if self.panel_hidden() {
             Subscription::none()
         } else {
@@ -861,6 +882,7 @@ impl App {
             self.details_fade.subscription(),
             zoom,
             collapse,
+            layout_thumb,
             // Only a toast has focus to recheck.
             if self.toast.is_some() {
                 iced::event::listen_with(|event, _, _| focus_input(event))
@@ -993,6 +1015,7 @@ impl App {
                 || matches!(message, Message::Filter(event) if event.is_input())
                 || matches!(message, Message::Mark(event) if event.is_input())
                 || matches!(message, Message::Random(event) if event.is_input())
+                || matches!(message, Message::Layout(event) if event.is_input())
                 || matches!(message, Message::Tags(event) if event.is_input())
                 || matches!(message, Message::Zoom(event) if event.is_input()))
         {
@@ -1056,6 +1079,7 @@ impl App {
             Message::Mark(event) => library_actions::update(self, event),
             Message::Zoom(event) => zoom::update(self, event),
             Message::Random(event) => random_pick::update(self, event),
+            Message::Layout(event) => layout_switch::update(self, event),
             Message::Tags(event) => action_bar::update(self, event),
             message @ (Message::Remove(_)
             | Message::RemovePrefix(_)
@@ -1558,7 +1582,9 @@ impl App {
     /// Drops the visible cards, or fades them with reduced motion. The panel
     /// closes without animating so the cards fall from their closed slots.
     fn start_collapse(&mut self, now: Instant) {
+        // The posters fall; a list has none.
         if !self.collapse.idle()
+            || self.layout == grid_motion::ViewLayout::List
             || self.section != sidebar::Section::Library
             || self.panel_hidden()
             || self.filtered().is_empty()
@@ -1584,7 +1610,12 @@ impl App {
                 .iter()
                 .map(|card| grid::card_height(card, layout))
                 .collect();
-            let columns = grid_motion::columns_for_viewport(self.viewport_width, false, layout);
+            let columns = grid_motion::columns_for_viewport(
+                self.viewport_width,
+                false,
+                layout,
+                grid_motion::ViewLayout::Grid,
+            );
             let floor = self.scroll_offset + self.viewport_height;
             let visible = grid_motion::cards_between(&heights, columns, self.scroll_offset, floor);
             // Nothing in view would leave only hidden cards and nothing to click.
@@ -1646,10 +1677,29 @@ impl App {
         self.prune_marks();
     }
     fn columns(&self) -> usize {
-        grid_motion::columns_for_viewport(self.viewport_width, self.panel_open, self.grid_layout())
+        grid_motion::columns_for_viewport(
+            self.viewport_width,
+            self.panel_open,
+            self.grid_layout(),
+            self.layout,
+        )
     }
     fn grid_shift(&self) -> f32 {
-        grid_motion::shift_for_viewport(self.viewport_width, self.panel_open, self.grid_layout())
+        grid_motion::shift_for_viewport(
+            self.viewport_width,
+            self.panel_open,
+            self.grid_layout(),
+            self.layout,
+        )
+    }
+    /// Every slot's width: a poster's, or a list row's.
+    pub(crate) fn slot_width(&self) -> f32 {
+        grid_motion::width_for_viewport(
+            self.viewport_width,
+            self.panel_open,
+            self.grid_layout(),
+            self.layout,
+        )
     }
     pub(crate) fn grid_layout(&self) -> grid_motion::GridLayout {
         match self.zooming.shown() {

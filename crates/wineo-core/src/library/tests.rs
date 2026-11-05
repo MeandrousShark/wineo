@@ -634,6 +634,7 @@ fn a_bad_zoom_reads_as_the_default_and_touches_no_other_field() {
             zoom: 100,
             poster_only: false,
             random: RandomPool::Launchable,
+            layout: ViewLayout::Grid,
         }
     );
 
@@ -838,6 +839,88 @@ fn a_random_write_is_refused_on_a_broken_file() {
 }
 
 #[test]
+fn layout_defaults_to_grid_and_reads_both_values() {
+    let fixture = Fixture::new();
+    assert_eq!(load(&fixture.paths).view.layout, ViewLayout::Grid);
+    // An older file has no key.
+    fixture.write("schema_version = 1\n\n[view]\nsort = \"added\"\n");
+    assert_eq!(load(&fixture.paths).view.layout, ViewLayout::Grid);
+    for (text, expected) in [("grid", ViewLayout::Grid), ("list", ViewLayout::List)] {
+        fixture.write(&format!(
+            "schema_version = 1\n\n[view]\nlayout = \"{text}\"\n"
+        ));
+        assert_eq!(load(&fixture.paths).view.layout, expected, "{text}");
+        assert_eq!(expected.as_str(), text);
+        assert_eq!(ViewLayout::parse(text), Some(expected));
+    }
+}
+
+#[test]
+fn an_unknown_layout_reads_as_grid_and_touches_no_other_field() {
+    let fixture = Fixture::new();
+    for bad in ["\"table\"", "\"List\"", "true", "1"] {
+        fixture.write(&format!(
+            "schema_version = 1\n\n[view]\nsort = \"playtime\"\nlayout = {bad}\n"
+        ));
+        let library = load(&fixture.paths);
+        assert_eq!(library.problem, None, "{bad}");
+        assert_eq!(library.view.layout, ViewLayout::Grid, "{bad}");
+        assert_eq!(library.view.sort, SortKey::Playtime, "{bad}");
+    }
+}
+
+#[test]
+fn set_layout_round_trips_and_skips_no_ops() {
+    let fixture = Fixture::new();
+    // The default on a missing file writes nothing.
+    assert!(!set_layout(&fixture.paths, ViewLayout::Grid).unwrap());
+    assert!(!fixture.paths.library_file().exists());
+
+    assert!(set_layout(&fixture.paths, ViewLayout::List).unwrap());
+    assert_eq!(load(&fixture.paths).view.layout, ViewLayout::List);
+    assert!(fixture.read().contains("layout = \"list\""));
+    assert!(!set_layout(&fixture.paths, ViewLayout::List).unwrap());
+
+    assert!(set_layout(&fixture.paths, ViewLayout::Grid).unwrap());
+    assert_eq!(load(&fixture.paths).view.layout, ViewLayout::Grid);
+    assert!(!set_layout(&fixture.paths, ViewLayout::Grid).unwrap());
+
+    // A bad value is replaced by the default when that is what is saved.
+    fixture.write("schema_version = 1\n\n[view]\nlayout = \"table\"\n");
+    assert!(set_layout(&fixture.paths, ViewLayout::Grid).unwrap());
+    assert!(fixture.read().contains("layout = \"grid\""));
+}
+
+#[test]
+fn a_layout_write_changes_only_that_line() {
+    let fixture = Fixture::new();
+    let before = "# my library\nschema_version = 1\n\n[view]\n# newest first\ndescending = true\nzoom = 90 # small\nfuture_view = \"kept\"\n\n[environments.hades]\n# my favorite\nfavorite = true\n";
+    fixture.write(before);
+    assert!(set_layout(&fixture.paths, ViewLayout::List).unwrap());
+    let after = fixture.read();
+    let without: String = after
+        .lines()
+        .filter(|line| !line.starts_with("layout ="))
+        .map(|line| format!("{line}\n"))
+        .collect();
+    assert_eq!(without, before, "{after}");
+    assert!(after.contains("layout = \"list\""), "{after}");
+
+    // A no-op leaves the bytes alone.
+    assert!(!set_layout(&fixture.paths, ViewLayout::List).unwrap());
+    assert_eq!(fixture.read(), after);
+}
+
+#[test]
+fn a_layout_write_is_refused_on_a_broken_file() {
+    let fixture = Fixture::new();
+    fixture.write("[view\nlayout = \"list\"\n");
+    assert!(set_layout(&fixture.paths, ViewLayout::Grid).is_err());
+    assert!(set_layout(&fixture.paths, ViewLayout::List).is_err());
+    assert_eq!(fixture.read(), "[view\nlayout = \"list\"\n");
+}
+
+#[test]
 fn zoom_and_poster_only_edits_leave_the_other_view_keys_alone() {
     let fixture = Fixture::new();
     assert!(set_order(&fixture.paths, SortKey::Playtime, true).unwrap());
@@ -853,6 +936,7 @@ fn zoom_and_poster_only_edits_leave_the_other_view_keys_alone() {
             zoom: 70,
             poster_only: true,
             random: RandomPool::Launchable,
+            layout: ViewLayout::Grid,
         }
     );
 }

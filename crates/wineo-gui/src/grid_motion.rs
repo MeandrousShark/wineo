@@ -17,6 +17,7 @@ use iced::{
 
 use crate::collapse::{Collapse, Look};
 use crate::{CARD_WIDTH, GAP, SCROLL_ID};
+pub(crate) use wineo_core::library::ViewLayout;
 use wineo_core::library::{ZOOM_DEFAULT, ZOOM_MAX, ZOOM_MIN};
 
 const DURATION: Duration = Duration::from_millis(300);
@@ -39,6 +40,9 @@ const FRAME_INSET: f32 = 4.0;
 const TILE_TITLE_SIZE: f32 = 14.0;
 const TILE_TITLE_MIN: f32 = 12.0;
 const TILE_TITLE_MAX: f32 = 18.0;
+/// The gap between list rows, which keeps one row's selection border off
+/// the next.
+pub(crate) const ROW_GAP: f32 = 4.0;
 /// Below this zoom, cards with titles shown keep only the title under the
 /// poster.
 pub(crate) const COMPACT_BELOW: u16 = 90;
@@ -299,6 +303,7 @@ pub(crate) struct Places {
     /// The grid's content height with every card in its slot.
     pub(crate) height: f32,
     pub(crate) layout: GridLayout,
+    pub(crate) mode: ViewLayout,
     indices: HashMap<String, usize>,
 }
 
@@ -313,22 +318,28 @@ pub(crate) struct PlacesKey {
     /// A width change that keeps the column count still moves every slot
     /// when it changes the shift.
     pub(crate) shift: f32,
+    pub(crate) mode: ViewLayout,
+    /// Each slot's width, which a list row takes from the window.
+    pub(crate) width: f32,
 }
 
 impl Places {
     pub(crate) fn new(
         names: Vec<String>,
         heights: &[f32],
+        widths: &[f32],
         columns: usize,
         shift: f32,
         layout: GridLayout,
+        mode: ViewLayout,
     ) -> Self {
         let columns = columns.max(1);
         let sizes: Vec<Size> = heights
             .iter()
-            .map(|height| Size::new(layout.card_width, *height))
+            .zip(widths)
+            .map(|(height, width)| Size::new(*width, *height))
             .collect();
-        let (points, height) = slots(&sizes, columns, shift, layout);
+        let (points, height) = slots(&sizes, columns, shift, row_gap(mode));
         Self {
             indices: names
                 .iter()
@@ -344,6 +355,7 @@ impl Places {
             columns,
             height,
             layout,
+            mode,
         }
     }
 
@@ -658,7 +670,10 @@ impl GridMotion {
     }
 }
 
-fn columns(width: f32, layout: GridLayout) -> usize {
+fn columns(width: f32, layout: GridLayout, mode: ViewLayout) -> usize {
+    if mode == ViewLayout::List {
+        return 1;
+    }
     ((width - 2.0 * PADDING + GAP) / (layout.card_width + GAP))
         .floor()
         .max(1.0) as usize
@@ -668,8 +683,11 @@ fn columns(width: f32, layout: GridLayout) -> usize {
 /// split evenly between the two sides. Whole pixels keep the cards sharp,
 /// and a single column wider than `width` gets no shift rather than a
 /// negative one.
-fn shift(width: f32, layout: GridLayout) -> f32 {
-    let columns = columns(width, layout) as f32;
+fn shift(width: f32, layout: GridLayout, mode: ViewLayout) -> f32 {
+    if mode == ViewLayout::List {
+        return 0.0;
+    }
+    let columns = columns(width, layout, mode) as f32;
     let used = 2.0 * PADDING + columns * layout.card_width + (columns - 1.0) * GAP;
     ((width - used) / 2.0).floor().max(0.0)
 }
@@ -680,12 +698,44 @@ fn available(width: f32, open: bool) -> f32 {
     width - if open { DOCK_WIDTH } else { 0.0 }
 }
 
-pub(crate) fn columns_for_viewport(width: f32, open: bool, layout: GridLayout) -> usize {
-    columns(available(width, open), layout)
+pub(crate) fn columns_for_viewport(
+    width: f32,
+    open: bool,
+    layout: GridLayout,
+    mode: ViewLayout,
+) -> usize {
+    columns(available(width, open), layout, mode)
 }
 
-pub(crate) fn shift_for_viewport(width: f32, open: bool, layout: GridLayout) -> f32 {
-    shift(available(width, open), layout)
+pub(crate) fn shift_for_viewport(
+    width: f32,
+    open: bool,
+    layout: GridLayout,
+    mode: ViewLayout,
+) -> f32 {
+    shift(available(width, open), layout, mode)
+}
+
+/// Every slot's width: the poster's in the grid, and in the list a row
+/// across the width beside the docked panel, inside the padding.
+pub(crate) fn width_for_viewport(
+    width: f32,
+    open: bool,
+    layout: GridLayout,
+    mode: ViewLayout,
+) -> f32 {
+    match mode {
+        ViewLayout::Grid => layout.card_width,
+        ViewLayout::List => (available(width, open) - 2.0 * PADDING).max(0.0),
+    }
+}
+
+/// The gap between rows of slots.
+pub(crate) fn row_gap(mode: ViewLayout) -> f32 {
+    match mode {
+        ViewLayout::Grid => GAP,
+        ViewLayout::List => ROW_GAP,
+    }
 }
 
 /// The cards whose rows overlap `top..bottom`, with rows stacked the way
@@ -731,24 +781,26 @@ pub(crate) fn card_tops(heights: &[f32], columns: usize) -> (Vec<f32>, f32) {
     (tops, height)
 }
 
-fn slots(sizes: &[Size], columns: usize, shift: f32, layout: GridLayout) -> (Vec<Point>, f32) {
+/// Each slot's top left and the content height, with `sizes` in rows of
+/// `columns`, each slot as wide as its own size says and each row as tall
+/// as its tallest, `gap` apart.
+fn slots(sizes: &[Size], columns: usize, shift: f32, gap: f32) -> (Vec<Point>, f32) {
     let mut result = Vec::with_capacity(sizes.len());
     let mut y = PADDING;
-    for row in sizes.chunks(columns) {
-        for (column, _) in row.iter().enumerate() {
-            result.push(Point::new(
-                PADDING + shift + column as f32 * (layout.card_width + GAP),
-                y,
-            ));
+    for row in sizes.chunks(columns.max(1)) {
+        let mut x = PADDING + shift;
+        for size in row {
+            result.push(Point::new(x, y));
+            x += size.width + GAP;
         }
-        y += row.iter().map(|size| size.height).fold(0.0, f32::max) + GAP;
+        y += row.iter().map(|size| size.height).fold(0.0, f32::max) + gap;
     }
     (
         result,
         if sizes.is_empty() {
             2.0 * PADDING
         } else {
-            y - GAP + PADDING
+            y - gap + PADDING
         },
     )
 }
@@ -800,6 +852,7 @@ pub(crate) struct CardDetails<'a, Message> {
 /// The grid of `cards` in shown order, then `leaving` drawn beneath them,
 /// with every card's details `drift` below their place. `open` picks the
 /// docked panel's column count.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn grid<'a, Message: Clone + 'a>(
     cards: Vec<GridCard<'a, Message>>,
     leaving: Vec<Outgoing<'a, Message>>,
@@ -807,6 +860,7 @@ pub(crate) fn grid<'a, Message: Clone + 'a>(
     open: bool,
     scene: Option<Scene<'a, Message>>,
     layout: GridLayout,
+    mode: ViewLayout,
     drift: f32,
 ) -> Element<'a, Message> {
     let shown = cards.len();
@@ -846,6 +900,7 @@ pub(crate) fn grid<'a, Message: Clone + 'a>(
         hold: motion.hold().unwrap_or(0.0),
         open,
         layout,
+        mode,
         scene,
         drift,
     })
@@ -864,6 +919,7 @@ struct Grid<'a, Message> {
     hold: f32,
     open: bool,
     layout: GridLayout,
+    mode: ViewLayout,
     scene: Option<Scene<'a, Message>>,
     drift: f32,
 }
@@ -893,6 +949,7 @@ struct GridState {
     width: f32,
     open: bool,
     layout: GridLayout,
+    mode: ViewLayout,
     sizes: Vec<Size>,
     slots: Vec<Point>,
     looks: Vec<Look>,
@@ -1024,18 +1081,28 @@ impl<Message: Clone> Widget<Message, Theme, Renderer> for Grid<'_, Message> {
         let sizes: Vec<_> = nodes[..self.shown].iter().map(layout::Node::size).collect();
         let state = tree.state.downcast_mut::<GridState>();
         let grid = self.layout;
+        let mode = self.mode;
         if state.width != width
             || state.open != self.open
             || state.layout != grid
+            || state.mode != mode
             || state.sizes != sizes
         {
             state.width = width;
             state.open = self.open;
             state.layout = grid;
+            state.mode = mode;
             state.sizes = sizes.clone();
-            let columns = columns_for_viewport(width, self.open, grid);
-            let shift = shift_for_viewport(width, self.open, grid);
-            state.slots = slots(&sizes, columns, shift, grid).0;
+            let columns = columns_for_viewport(width, self.open, grid, mode);
+            let shift = shift_for_viewport(width, self.open, grid, mode);
+            // Measured as `Places` measures them, whatever size a card's
+            // element came out.
+            let slot_width = width_for_viewport(width, self.open, grid, mode);
+            let measured: Vec<Size> = sizes
+                .iter()
+                .map(|size| Size::new(slot_width, size.height))
+                .collect();
+            state.slots = slots(&measured, columns, shift, row_gap(mode)).0;
         }
         let mut height = (2.0 * PADDING).max(self.hold);
         let collapse = self.scene.as_ref().map(|scene| scene.collapse);
@@ -1071,7 +1138,7 @@ impl<Message: Clone> Widget<Message, Theme, Renderer> for Grid<'_, Message> {
             })
             .collect();
         state.details = children.split_off(first_details.min(children.len()));
-        let columns = columns_for_viewport(width, self.open, grid);
+        let columns = columns_for_viewport(width, self.open, grid, mode);
         state.bands = vec![None; self.details_of.len()];
         for (index, details) in self.details_of.iter().enumerate() {
             let Some((details, top)) = details.map(|(child, top)| (child - first_details, top))
@@ -1594,7 +1661,7 @@ mod tests {
             (200, 100.0, 1),
         ] {
             assert_eq!(
-                columns_for_viewport(width, false, at(zoom)),
+                columns_for_viewport(width, false, at(zoom), ViewLayout::Grid),
                 closed,
                 "{zoom}% at {width}"
             );
@@ -1608,7 +1675,7 @@ mod tests {
             (100, 400.0, 1),
         ] {
             assert_eq!(
-                columns_for_viewport(width, true, at(zoom)),
+                columns_for_viewport(width, true, at(zoom), ViewLayout::Grid),
                 open,
                 "{zoom}% at {width} docked"
             );
@@ -1619,7 +1686,7 @@ mod tests {
     /// with `shift` in `available`.
     fn margins(available: f32, columns: usize, shift: f32, layout: GridLayout) -> (f32, f32) {
         let sizes = vec![Size::new(layout.card_width(), 100.0); columns];
-        let (points, _) = slots(&sizes, columns, shift, layout);
+        let (points, _) = slots(&sizes, columns, shift, GAP);
         let left = points[0].x;
         let right = available - (points[columns - 1].x + layout.card_width());
         (left, right)
@@ -1638,9 +1705,12 @@ mod tests {
             (200, 1300.0, true, 2, 91.0),
         ] {
             let layout = GridLayout::new(zoom);
-            assert_eq!(columns_for_viewport(width, open, layout), columns);
             assert_eq!(
-                shift_for_viewport(width, open, layout),
+                columns_for_viewport(width, open, layout, ViewLayout::Grid),
+                columns
+            );
+            assert_eq!(
+                shift_for_viewport(width, open, layout, ViewLayout::Grid),
                 shift,
                 "{zoom}% at {width}, open {open}"
             );
@@ -1650,8 +1720,8 @@ mod tests {
             for open in [false, true] {
                 for width in (600..=2400).step_by(7).map(|width| width as f32 + 0.5) {
                     let available = width - if open { DOCK_WIDTH } else { 0.0 };
-                    let columns = columns_for_viewport(width, open, layout);
-                    let shift = shift_for_viewport(width, open, layout);
+                    let columns = columns_for_viewport(width, open, layout, ViewLayout::Grid);
+                    let shift = shift_for_viewport(width, open, layout, ViewLayout::Grid);
                     if available < 2.0 * PADDING + layout.card_width() {
                         assert_eq!(shift, 0.0, "{zoom}% at {width}, open {open}");
                         continue;
@@ -1676,20 +1746,29 @@ mod tests {
         // pixel, which isn't worth moving the cards for.
         let layout = GridLayout::default();
         for width in [896.0, 897.0] {
-            assert_eq!(shift_for_viewport(width, false, layout), 0.0, "{width}");
             assert_eq!(
-                shift_for_viewport(width + DOCK_WIDTH, true, layout),
+                shift_for_viewport(width, false, layout, ViewLayout::Grid),
+                0.0,
+                "{width}"
+            );
+            assert_eq!(
+                shift_for_viewport(width + DOCK_WIDTH, true, layout, ViewLayout::Grid),
                 0.0,
                 "{width}"
             );
         }
-        assert_eq!(shift_for_viewport(898.0, false, layout), 1.0);
+        assert_eq!(
+            shift_for_viewport(898.0, false, layout, ViewLayout::Grid),
+            1.0
+        );
         let full = Places::new(
             (0..7).map(|index| index.to_string()).collect(),
             &[300.0; 7],
-            columns_for_viewport(896.0, false, layout),
-            shift_for_viewport(896.0, false, layout),
+            &[layout.card_width(); 7],
+            columns_for_viewport(896.0, false, layout, ViewLayout::Grid),
+            shift_for_viewport(896.0, false, layout, ViewLayout::Grid),
             layout,
+            ViewLayout::Grid,
         );
         let xs: Vec<f32> = full.slots.iter().map(|slot| slot.x).collect();
         assert_eq!(xs, [16.0, 192.0, 368.0, 544.0, 720.0, 16.0, 192.0]);
@@ -1699,10 +1778,128 @@ mod tests {
             for columns in 1..=6 {
                 let count = columns as f32;
                 let width = 2.0 * PADDING + count * layout.card_width() + (count - 1.0) * GAP;
-                assert_eq!(columns_for_viewport(width, false, layout), columns);
-                assert_eq!(shift_for_viewport(width, false, layout), 0.0, "{zoom}%");
+                assert_eq!(
+                    columns_for_viewport(width, false, layout, ViewLayout::Grid),
+                    columns
+                );
+                assert_eq!(
+                    shift_for_viewport(width, false, layout, ViewLayout::Grid),
+                    0.0,
+                    "{zoom}%"
+                );
             }
         }
+    }
+
+    #[test]
+    fn per_slot_widths_place_a_uniform_grid_as_before() {
+        for zoom in [60, 73, 100, 137, 200] {
+            let layout = GridLayout::new(zoom);
+            for width in [600.0, 896.0, 1000.0, 1777.5, 2400.0] {
+                for open in [false, true] {
+                    let columns = columns_for_viewport(width, open, layout, ViewLayout::Grid);
+                    let shift = shift_for_viewport(width, open, layout, ViewLayout::Grid);
+                    let slot = width_for_viewport(width, open, layout, ViewLayout::Grid);
+                    assert_eq!(slot, layout.card_width());
+                    let heights: Vec<f32> = (0..13).map(|index| 200.0 + index as f32).collect();
+                    let places = Places::new(
+                        (0..13).map(|index| index.to_string()).collect(),
+                        &heights,
+                        &[slot; 13],
+                        columns,
+                        shift,
+                        layout,
+                        ViewLayout::Grid,
+                    );
+                    let (tops, height) = card_tops(&heights, columns);
+                    assert_eq!(places.height, height);
+                    for (index, place) in places.slots.iter().enumerate() {
+                        let column = (index % columns) as f32;
+                        // The grid's old formula, from before widths per slot.
+                        let x = PADDING + shift + column * (layout.card_width() + GAP);
+                        assert_eq!(
+                            (place.x, place.y, place.width, place.height),
+                            (x, tops[index], layout.card_width(), heights[index]),
+                            "{zoom}% at {width}, open {open}, card {index}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn slots_follow_each_slots_own_width() {
+        let sizes = [
+            Size::new(100.0, 40.0),
+            Size::new(50.0, 60.0),
+            Size::new(70.0, 40.0),
+            Size::new(30.0, 10.0),
+        ];
+        let (points, height) = slots(&sizes, 3, 4.0, 2.0);
+        let xs: Vec<f32> = points.iter().map(|point| point.x).collect();
+        assert_eq!(
+            xs,
+            [
+                PADDING + 4.0,
+                PADDING + 4.0 + 100.0 + GAP,
+                PADDING + 4.0 + 150.0 + 2.0 * GAP,
+                PADDING + 4.0
+            ]
+        );
+        assert_eq!(points[3].y, PADDING + 60.0 + 2.0);
+        assert_eq!(height, PADDING + 60.0 + 2.0 + 10.0 + PADDING);
+    }
+
+    #[test]
+    fn the_list_is_one_column_of_rows_across_the_free_width() {
+        for zoom in [60, 100, 200] {
+            let layout = GridLayout::new(zoom);
+            for width in [0.0, 300.0, 1000.0, 2400.0] {
+                for open in [false, true] {
+                    let free = width - if open { DOCK_WIDTH } else { 0.0 };
+                    assert_eq!(
+                        columns_for_viewport(width, open, layout, ViewLayout::List),
+                        1
+                    );
+                    assert_eq!(
+                        shift_for_viewport(width, open, layout, ViewLayout::List),
+                        0.0
+                    );
+                    assert_eq!(
+                        width_for_viewport(width, open, layout, ViewLayout::List),
+                        (free - 2.0 * PADDING).max(0.0),
+                        "{zoom}% at {width}, open {open}"
+                    );
+                }
+            }
+        }
+        assert_eq!(row_gap(ViewLayout::List), ROW_GAP);
+        assert_eq!(row_gap(ViewLayout::Grid), GAP);
+        let rows = Places::new(
+            vec!["a".into(), "b".into(), "c".into()],
+            &[56.0; 3],
+            &[968.0; 3],
+            1,
+            0.0,
+            GridLayout::default(),
+            ViewLayout::List,
+        );
+        let tops: Vec<f32> = rows.slots.iter().map(|slot| slot.y).collect();
+        assert_eq!(
+            tops,
+            [
+                PADDING,
+                PADDING + 56.0 + ROW_GAP,
+                PADDING + 2.0 * (56.0 + ROW_GAP)
+            ]
+        );
+        assert!(
+            rows.slots
+                .iter()
+                .all(|slot| slot.x == PADDING && slot.width == 968.0)
+        );
+        assert_eq!(rows.height, PADDING + 3.0 * 56.0 + 2.0 * ROW_GAP + PADDING);
     }
 
     #[test]
@@ -1711,18 +1908,38 @@ mod tests {
             let layout = GridLayout::new(zoom);
             for width in [0.0, 1.0, 50.0, 100.0, layout.card_width()] {
                 for open in [false, true] {
-                    assert_eq!(columns_for_viewport(width, open, layout), 1);
-                    assert_eq!(shift_for_viewport(width, open, layout), 0.0);
+                    assert_eq!(
+                        columns_for_viewport(width, open, layout, ViewLayout::Grid),
+                        1
+                    );
+                    assert_eq!(
+                        shift_for_viewport(width, open, layout, ViewLayout::Grid),
+                        0.0
+                    );
                 }
             }
         }
-        let empty = Places::new(Vec::new(), &[], 1, 0.0, GridLayout::default());
+        let empty = Places::new(
+            Vec::new(),
+            &[],
+            &[],
+            1,
+            0.0,
+            GridLayout::default(),
+            ViewLayout::Grid,
+        );
         assert!(empty.slots.is_empty());
         assert_eq!(empty.height, 2.0 * PADDING);
         // A lone column with room to spare sits in the middle.
         let layout = GridLayout::new(200);
-        assert_eq!(columns_for_viewport(600.0, false, layout), 1);
-        assert_eq!(shift_for_viewport(600.0, false, layout), 124.0);
+        assert_eq!(
+            columns_for_viewport(600.0, false, layout, ViewLayout::Grid),
+            1
+        );
+        assert_eq!(
+            shift_for_viewport(600.0, false, layout, ViewLayout::Grid),
+            124.0
+        );
         assert_eq!(margins(600.0, 1, 124.0, layout), (140.0, 140.0));
     }
 
@@ -1731,7 +1948,7 @@ mod tests {
         for (zoom, step) in [(60, 96.0 + GAP), (200, 320.0 + GAP)] {
             let layout = GridLayout::new(zoom);
             let card = Size::new(layout.card_width(), layout.poster_height() + 60.0);
-            let (points, height) = slots(&[card; 5], 2, 0.0, layout);
+            let (points, height) = slots(&[card; 5], 2, 0.0, GAP);
             let xs: Vec<f32> = points.iter().map(|point| point.x).collect();
             assert_eq!(
                 xs,
@@ -1782,7 +1999,7 @@ mod tests {
             .iter()
             .map(|height| Size::new(160.0, *height))
             .collect();
-        let (points, height) = slots(&sizes, 2, 0.0, GridLayout::default());
+        let (points, height) = slots(&sizes, 2, 0.0, GAP);
         let (tops, total) = card_tops(&heights, 2);
         assert_eq!(tops, points.iter().map(|point| point.y).collect::<Vec<_>>());
         assert_eq!(total, height);
@@ -1796,7 +2013,7 @@ mod tests {
             Size::new(160.0, 315.0),
             Size::new(160.0, 270.0),
         ];
-        let (points, height) = slots(&sizes, 2, 0.0, GridLayout::default());
+        let (points, height) = slots(&sizes, 2, 0.0, GAP);
         assert_eq!(points[2].y, PADDING + 315.0 + GAP);
         assert_eq!(height, PADDING + 315.0 + GAP + 270.0 + PADDING);
     }
@@ -1806,9 +2023,11 @@ mod tests {
         Places::new(
             names.iter().map(|name| (*name).to_owned()).collect(),
             &heights,
+            &vec![layout.card_width(); names.len()],
             columns,
             0.0,
             layout,
+            ViewLayout::Grid,
         )
     }
 

@@ -143,6 +143,8 @@ impl App {
                 layout,
                 columns: self.columns(),
                 shift: self.grid_shift(),
+                mode: self.layout,
+                width: self.slot_width(),
             });
         if let Some(key) = &key
             && let Some((cached, places)) = &*self.places.borrow()
@@ -151,17 +153,23 @@ impl App {
             return places.clone();
         }
         let filtered = self.filtered();
-        let heights: Vec<f32> = filtered
-            .iter()
-            .map(|card| grid::card_height(card, layout))
-            .collect();
+        let heights: Vec<f32> = match self.layout {
+            grid_motion::ViewLayout::Grid => filtered
+                .iter()
+                .map(|card| grid::card_height(card, layout))
+                .collect(),
+            grid_motion::ViewLayout::List => vec![crate::list_view::ROW_HEIGHT; filtered.len()],
+        };
+        let widths = vec![self.slot_width(); heights.len()];
         let names = filtered.iter().map(|card| card.name.clone()).collect();
         let places = Rc::new(grid_motion::Places::new(
             names,
             &heights,
+            &widths,
             self.columns(),
             self.grid_shift(),
             layout,
+            self.layout,
         ));
         *self.places.borrow_mut() = key.map(|key| (key, places.clone()));
         places

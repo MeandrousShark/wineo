@@ -140,6 +140,12 @@ impl Zoom {
         self.revision
     }
 
+    /// The generation a tween's frames carry.
+    #[cfg(test)]
+    pub(crate) fn generation(&self) -> u64 {
+        self.generation
+    }
+
     fn moved(&mut self) {
         self.revision = self.revision.wrapping_add(1);
     }
@@ -214,7 +220,8 @@ impl App {
     /// Zoom input counts while the Library shows with nothing over it: no
     /// menu, popup, flow, or dialog.
     pub(crate) fn zoom_allowed(&self) -> bool {
-        self.library_menu_may_open()
+        // A list has no posters to size; the zoom waits for the grid.
+        self.library_menu_may_open() && self.layout == crate::grid_motion::ViewLayout::Grid
     }
 
     /// The card that keeps the place: the selected one when any of it is on
@@ -222,7 +229,7 @@ impl App {
     /// the viewport, read from where cards are drawn now, so a place kept
     /// mid-motion is the one on screen. Also whether the selection is off
     /// screen.
-    fn find_anchor(&self) -> (Option<(String, f32)>, bool) {
+    pub(crate) fn find_anchor(&self) -> (Option<(String, f32)>, bool) {
         let places = self.grid_places();
         let shown = self.grid_motion.shown(&places);
         let top = self.scroll_offset;
