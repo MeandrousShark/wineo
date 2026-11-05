@@ -452,11 +452,7 @@ impl App {
             };
         let gog = crate::gog_library::badge(card.gog.as_ref(), self.gog_updates.status(&card.name))
             .map(|badge| {
-                let color = match badge {
-                    crate::gog_library::Badge::UpdateAvailable => palette.primary,
-                    crate::gog_library::Badge::FinishUpdate
-                    | crate::gog_library::Badge::FinishInstall => palette.warning,
-                };
+                let color = badge.color(palette);
                 let ink = ui::accent_ink(color);
                 if !pill_fits(badge.label(), room) {
                     return Gog::Badge(gog_badge(color, ink, alpha));

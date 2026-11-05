@@ -42,6 +42,10 @@ const STAR_BOX: f32 = 24.0;
 const CHECK_CHIP: f32 = 22.0;
 const CHECK_ICON: f32 = 14.0;
 const SELECTED_BORDER: f32 = 2.0;
+/// A header button's tint reaches this far past its label. The header's
+/// cells grow by it on each side and its gaps and padding shrink to match,
+/// so the labels still line up with the rows' cells.
+pub(crate) const HEADER_INSET: f32 = 6.0;
 /// The GOG pill, as on the poster.
 const PILL_SIZE: f32 = 11.0;
 const PILL_PADDING: f32 = 2.0;
@@ -295,6 +299,7 @@ impl App {
             facts.hover,
             facts.lift,
             palette,
+            alpha,
         ));
         let title_cell = row![thumb, container(title).width(Fill).clip(true), marks,]
             .spacing(THUMB_GAP)
@@ -386,20 +391,24 @@ impl App {
         let width = self.slot_width();
         let mut cells = row![
             self.header_cell("Title", Some(SortKey::Name), Length::Fill),
-            self.header_cell("State", None, Length::Fixed(STATE_WIDTH)),
+            self.header_cell(
+                "State",
+                None,
+                Length::Fixed(STATE_WIDTH + 2.0 * HEADER_INSET)
+            ),
         ]
-        .spacing(CELL_GAP)
+        .spacing(CELL_GAP - 2.0 * HEADER_INSET)
         .align_y(Center);
         for column in columns(width) {
             cells = cells.push(self.header_cell(
                 column.label(),
                 column.sort(),
-                Length::Fixed(column.width()),
+                Length::Fixed(column.width() + 2.0 * HEADER_INSET),
             ));
         }
         container(
             container(cells)
-                .padding([0.0, ROW_PADDING])
+                .padding([0.0, ROW_PADDING - HEADER_INSET])
                 .width(width)
                 .height(HEADER_HEIGHT)
                 .center_y(HEADER_HEIGHT),
@@ -423,6 +432,7 @@ impl App {
             .wrapping(text::Wrapping::None);
         let Some(sort) = sort else {
             return container(label.color(palette.muted))
+                .padding([0.0, HEADER_INSET])
                 .width(width)
                 .clip(true)
                 .into();
@@ -438,7 +448,7 @@ impl App {
             content = content.push(icon(arrow, palette.foreground, 12.0));
         }
         let cell = button(content)
-            .padding([2, 0])
+            .padding([2.0, HEADER_INSET])
             .on_press(Message::Sort(crate::sort_control::Event::Header(sort)))
             .style(move |_, status| header_style(palette, status, active));
         container(cell).width(width).clip(true).into()
@@ -518,7 +528,7 @@ fn pill_width(badge: Badge) -> f32 {
 
 /// The GOG pill in its semantic color, as the poster draws it.
 fn pill(badge: Badge, palette: Palette, alpha: f32) -> Element<'static, Message> {
-    let color = badge_color(badge, palette);
+    let color = badge.color(palette);
     let ink = ui::accent_ink(color);
     container(
         text(badge.label())
@@ -534,15 +544,6 @@ fn pill(badge: Badge, palette: Palette, alpha: f32) -> Element<'static, Message>
             .border(border::rounded(8))
     })
     .into()
-}
-
-/// The poster pill's color: primary for an update waiting, warning for one
-/// to finish.
-pub(crate) fn badge_color(badge: Badge, palette: Palette) -> Color {
-    match badge {
-        Badge::UpdateAvailable => palette.primary,
-        Badge::FinishUpdate | Badge::FinishInstall => palette.warning,
-    }
 }
 
 /// A sortable header's look: a list row's hover and press, with the label
@@ -569,12 +570,15 @@ fn star<'a>(
     hover: f32,
     lift: f32,
     palette: Palette,
+    alpha: f32,
 ) -> Element<'a, Message> {
-    let (bytes, color, strength) = match look {
+    let (bytes, color) = match look {
         Star::None => return Space::new().width(STAR_BOX).height(STAR_BOX).into(),
-        Star::Outline => (STAR_OUTLINE, palette.muted, hover.max(f32::from(hovered))),
-        Star::Filled => (STAR, palette.primary, 1.0),
+        Star::Outline => (STAR_OUTLINE, palette.muted),
+        Star::Filled => (STAR, palette.primary),
     };
+    // The renderer's tint ignores its alpha, so the icon fades by opacity.
+    let strength = star_strength(look, hover) * alpha;
     let size = MARK_ICON + STAR_LIFT * lift;
     // A star fading out with the hover takes no presses.
     let press = (look == Star::Filled || hovered)
@@ -586,6 +590,16 @@ fn star<'a>(
         .on_press_maybe(press)
         .style(move |_, status| star_style(palette, status))
         .into()
+}
+
+/// How strongly the star draws before the row's fade: a favorite's at full
+/// strength, the outline with the hover's fade in and out, as the poster's.
+pub(crate) fn star_strength(look: Star, hover: f32) -> f32 {
+    match look {
+        Star::None => 0.0,
+        Star::Outline => hover,
+        Star::Filled => 1.0,
+    }
 }
 
 /// A list row's hover and press, round to fit the star.

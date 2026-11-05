@@ -176,6 +176,15 @@ impl Badge {
             Self::FinishInstall => "Finish install",
         }
     }
+
+    /// The pill's color on a poster or a list row: primary for an update
+    /// waiting, warning for one to finish.
+    pub(crate) fn color(self, palette: crate::theme::Palette) -> iced::Color {
+        match self {
+            Self::UpdateAvailable => palette.primary,
+            Self::FinishUpdate | Self::FinishInstall => palette.warning,
+        }
+    }
 }
 
 pub(crate) fn badge(gog: Option<&GogCard>, status: Option<&Status>) -> Option<Badge> {

@@ -28,7 +28,7 @@ pub(crate) fn lines(title: &str, width: f32, size: f32, font: Font) -> Vec<Strin
 /// fit, for list cells. Kept per text and style like `lines`.
 pub(crate) fn fit(line: &str, width: f32, size: f32, font: Font) -> String {
     thread_local! {
-        static CACHE: RefCell<Cache<String>> = RefCell::new(Cache::new(CACHE_LIMIT));
+        static CACHE: RefCell<Cache<String>> = RefCell::new(Cache::new(FIT_LIMIT));
     }
     let width = width.max(0.0);
     let key = (line.to_owned(), width.to_bits(), size.to_bits(), font);
@@ -46,7 +46,11 @@ pub(crate) fn fit(line: &str, width: f32, size: f32, font: Font) -> String {
 
 /// The width `content` takes on one line, for laying out around it.
 pub(crate) fn line_width(content: &str, size: f32, font: Font) -> f32 {
-    measure(content, size, font)
+    thread_local! {
+        static CACHE: RefCell<Cache<f32>> = RefCell::new(Cache::new(CACHE_LIMIT));
+    }
+    let key = (content.to_owned(), 0, size.to_bits(), font);
+    CACHE.with_borrow_mut(|cache| cache.get_or_insert_with(key, || measure(content, size, font)))
 }
 
 /// The size a text widget with default settings takes for `content` when
@@ -82,6 +86,11 @@ pub(crate) fn wrapped_size(content: &str, width: f32, size: f32, font: Font) -> 
 /// Comfortably more titles than one screen draws, so a redraw never evicts
 /// what it is about to reuse.
 const CACHE_LIMIT: usize = 8192;
+
+/// A list row fits about seven cells, and the list builds every row each
+/// frame, so this holds a library of several thousand games without
+/// reshaping between frames.
+const FIT_LIMIT: usize = 65536;
 
 type Key = (String, u32, u32, Font);
 

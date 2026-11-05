@@ -107,20 +107,24 @@ fn the_docked_panel_takes_columns_from_the_right_and_the_header_follows() {
         columns(app.slot_width()),
         &[Column::Playtime, Column::LastPlayed]
     );
-    // The header and every row lay out the same cells at the same places.
+    // The header's labels sit over the same cells as every row's, each
+    // header cell reaching its button's inset past them on either side.
+    // Both lay out from the same origin, as the scroll's content does.
     let header = layout(&mut app.list_header(), Size::new(1100.0, 100.0));
     let cells = |node: &iced::advanced::layout::Node, path: &[usize]| {
-        let row = bounds_at(node, path);
         let mut layout = iced::advanced::Layout::new(node);
         for index in path {
             layout = layout.children().nth(*index).unwrap();
         }
         layout
             .children()
-            .map(|cell| (cell.bounds().x - row.x, cell.bounds().width))
+            .map(|cell| (cell.bounds().x, cell.bounds().width))
             .collect::<Vec<_>>()
     };
-    let header_cells = cells(&header, &[0, 0]);
+    let header_cells: Vec<_> = cells(&header, &[0, 0])
+        .into_iter()
+        .map(|(x, width)| (x + HEADER_INSET, width - 2.0 * HEADER_INSET))
+        .collect();
     assert_eq!(header_cells.len(), 2 + 2);
     let grid = layout(
         &mut app.grid(),
@@ -129,7 +133,6 @@ fn the_docked_panel_takes_columns_from_the_right_and_the_header_follows() {
     // A row's pointer area takes no layout of its own: its container,
     // then the cells.
     assert_eq!(cells(&grid, &[0, 0]), header_cells);
-    assert_eq!(bounds_at(&header, &[0, 0]).x, bounds_at(&grid, &[0, 0]).x);
 }
 
 #[test]
@@ -274,11 +277,29 @@ fn a_row_shows_what_its_poster_does() {
     ] {
         let facts = facts(&app, name);
         assert_eq!(facts.gog, Some(badge), "{name}");
-        assert_eq!(badge_color(badge, palette), color, "{name}");
+        assert_eq!(badge.color(palette), color, "{name}");
         // The pill takes its room from the title, as the marks do.
         assert!(
             title_room(&facts, 1000.0) < title_room(&plain, 1000.0),
             "{name}"
+        );
+        // And it's drawn: the marks gain it before the star, and the title
+        // keeps exactly the room left.
+        let card = app.cards.iter().find(|card| card.name == name).unwrap();
+        let node = layout(
+            &mut app.row_drawn(card, 1.0, 1000.0),
+            Size::new(2000.0, 500.0),
+        );
+        let marks = iced::advanced::Layout::new(&node)
+            .children()
+            .next()
+            .and_then(|cells| cells.children().next())
+            .and_then(|title| title.children().nth(2))
+            .unwrap();
+        assert_eq!(marks.children().count(), 2, "{name}");
+        assert_eq!(
+            bounds_at(&node, &[0, 0, 1]).width,
+            title_room(&facts, 1000.0)
         );
     }
 
@@ -537,8 +558,11 @@ fn the_row_hover_and_star_follow_the_posters_fade_and_pop() {
         app.hover_fades.generation(),
         now + Duration::from_millis(30),
     ));
-    let rising = facts(&app, "game-001").hover;
-    assert!(rising > 0.0 && rising < 1.0, "{rising}");
+    let rising = facts(&app, "game-001");
+    assert!(rising.hover > 0.0 && rising.hover < 1.0, "{}", rising.hover);
+    // The star fades in with it, as the poster's does, rather than at once.
+    assert_eq!(rising.star, Star::Outline);
+    assert_eq!(star_strength(rising.star, rising.hover), rising.hover);
     // The pointer leaves; the hover fades rather than vanishing.
     let _ = app.update(Message::Unhover("game-001".into()));
     let leaving = facts(&app, "game-001");
