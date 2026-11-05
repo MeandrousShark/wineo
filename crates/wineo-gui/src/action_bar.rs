@@ -26,6 +26,17 @@ const MENU_SCROLL_ID: &str = "library-tag-menu";
 pub(crate) const CLEAR_LABEL: &str = "Clear selection";
 /// The popup's distance above the Tags button.
 const GAP: f32 = 4.0;
+/// The bar's padding around its controls, top and bottom.
+const BAR_PADDING: f32 = 8.0;
+/// The bar's height: one row of controls and its padding.
+pub(crate) const BAR_HEIGHT: f32 = ui::BUTTON_HEIGHT + 2.0 * BAR_PADDING;
+/// The space between the last row of posters and the bar, once scrolled
+/// to the end.
+const BAR_CLEARANCE: f32 = 8.0;
+/// The room the grid keeps under its last row while the bar shows, so the
+/// row can scroll clear of it: the bar, the notes' margin below it, and
+/// some space above.
+pub(crate) const BAR_ROOM: f32 = crate::grid::NOTES_MARGIN + BAR_HEIGHT + BAR_CLEARANCE;
 
 const CHEVRON_UP: &[u8] = br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><path d="M4 10l4-4 4 4" fill="none" stroke="#000" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>"##;
 
@@ -100,6 +111,16 @@ impl App {
             && self.art_page.is_none()
             && self.tool_page.is_none()
             && self.portable_page.is_none()
+    }
+
+    /// How much of the grid's viewport bottom the bar covers, which the
+    /// grid adds under its last row and scrolling into view keeps clear.
+    pub(crate) fn bar_room(&self) -> f32 {
+        if self.action_bar_shown() {
+            BAR_ROOM
+        } else {
+            0.0
+        }
     }
 
     /// The popup shows only with its bar, and like the toolbar's menus.
@@ -316,11 +337,12 @@ impl App {
         .align_y(Center);
         container(content)
             .padding(Padding {
-                top: 8.0,
-                right: 8.0,
-                bottom: 8.0,
+                top: BAR_PADDING,
+                right: BAR_PADDING,
+                bottom: BAR_PADDING,
                 left: 12.0,
             })
+            .height(BAR_HEIGHT)
             .style(move |_| crate::library_menu::surface_style(palette))
             .into()
     }

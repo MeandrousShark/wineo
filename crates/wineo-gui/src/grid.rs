@@ -15,6 +15,8 @@ use crate::ui::{self, ScrollStyle, secondary_button};
 use crate::wheel;
 use crate::{App, Message, SCROLL_ID, SEARCH_ID, WHEEL_STEP_SCALE};
 
+/// The bottom notes' and action bar's distance from the window's edges.
+pub(crate) const NOTES_MARGIN: f32 = 16.0;
 pub(crate) const ACTION_MENU_WIDTH: f32 = 248.0;
 const ACTION_MENU_MAX_HEIGHT: f32 = 600.0;
 pub(crate) const ACTION_MENU_MARGIN: f32 = 8.0;
@@ -672,7 +674,7 @@ impl App {
         // focus, when a toast comes or goes. Empty slots take no input.
         page = page.push(
             container(toasts)
-                .padding(16)
+                .padding(NOTES_MARGIN)
                 .align_bottom(Fill)
                 .center_x(Fill),
         );
@@ -1178,7 +1180,8 @@ impl App {
         }
         let page = page.push(strips);
         let visible = self.scroll_visible_until.is_some();
-        let scroll = scrollable(self.grid())
+        // Always there, so the grid keeps its place in the tree.
+        let scroll = scrollable(column![self.grid(), Space::new().height(self.bar_room())])
             .id(iced::widget::Id::new(SCROLL_ID))
             .width(Fill)
             .height(Fill)

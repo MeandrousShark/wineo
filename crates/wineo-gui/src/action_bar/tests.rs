@@ -1,6 +1,7 @@
 use std::collections::BTreeSet;
 use std::fs;
 
+use iced::Rectangle;
 use iced::keyboard::{Key, Modifiers, key::Named};
 use wineo_core::paths::Paths;
 use wineo_core::runtime::State;
@@ -617,4 +618,156 @@ fn enter_on_a_focused_row_toggles_its_tag() {
         let _ = app.update(message);
     }
     assert_eq!(app.tag_share("solo"), Share::All);
+}
+
+// Room for the bar under the grid.
+
+/// What the layout says about the grid, a card in it, and the bar.
+#[derive(Debug, Default, Clone, Copy)]
+struct Measured {
+    viewport: Rectangle,
+    content: Rectangle,
+    card: Rectangle,
+    tags: Option<Rectangle>,
+}
+
+struct Measure {
+    card: iced::widget::Id,
+    out: std::sync::Arc<std::sync::Mutex<Measured>>,
+}
+
+impl iced::advanced::widget::Operation for Measure {
+    fn traverse(&mut self, operate: &mut dyn FnMut(&mut dyn iced::advanced::widget::Operation)) {
+        operate(self);
+    }
+
+    fn container(&mut self, id: Option<&iced::widget::Id>, bounds: Rectangle) {
+        if id == Some(&self.card) {
+            self.out.lock().unwrap().card = bounds;
+        }
+    }
+
+    fn scrollable(
+        &mut self,
+        id: Option<&iced::widget::Id>,
+        bounds: Rectangle,
+        content_bounds: Rectangle,
+        _translation: iced::Vector,
+        _state: &mut dyn iced::advanced::widget::operation::Scrollable,
+    ) {
+        if id == Some(&iced::widget::Id::new(crate::SCROLL_ID)) {
+            let mut out = self.out.lock().unwrap();
+            out.viewport = bounds;
+            out.content = content_bounds;
+        }
+    }
+
+    fn focusable(
+        &mut self,
+        id: Option<&iced::widget::Id>,
+        bounds: Rectangle,
+        _state: &mut dyn iced::advanced::widget::operation::Focusable,
+    ) {
+        if id == Some(&iced::widget::Id::new(TAGS_BUTTON_ID)) {
+            self.out.lock().unwrap().tags = Some(bounds);
+        }
+    }
+}
+
+fn measure(app: &App, card: &str) -> Measured {
+    let out = std::sync::Arc::default();
+    let mut laid = crate::layout_probe::lay_out(app.view(), app.window_size);
+    laid.run(Box::new(Measure {
+        card: iced::widget::Id::from(format!("library-card:{card}")),
+        out: std::sync::Arc::clone(&out),
+    }));
+    *out.lock().unwrap()
+}
+
+/// More games than one screen holds at any zoom, configs not needed.
+fn crowded() -> (tempfile::TempDir, App) {
+    let root = tempfile::tempdir().unwrap();
+    let mut app = App::boot(paths(&root)).0;
+    let cards = (0..80)
+        .map(|index| tagged(&format!("game-{index:02}"), &[]))
+        .collect();
+    let _ = app.update(Message::Loaded(Ok(cards)));
+    (root, app)
+}
+
+fn last_shown(app: &App) -> String {
+    app.filtered().last().unwrap().name.clone()
+}
+
+#[test]
+fn the_last_row_scrolls_clear_of_the_bar_at_every_zoom() {
+    for (zoom, poster_only) in [
+        (60, false),
+        (100, false),
+        (200, false),
+        (60, true),
+        (150, true),
+    ] {
+        let case = format!("zoom {zoom}, poster-only {poster_only}");
+        let (_root, mut app) = crowded();
+        app.zoom = zoom;
+        app.poster_only = poster_only;
+        let last = last_shown(&app);
+        let without = measure(&app, &last);
+        assert!(without.tags.is_none(), "{case}");
+        app.toggle_mark("game-00");
+        let with = measure(&app, &last);
+        assert!(with.content.height > with.viewport.height, "{case}");
+        // Only the bar's room is added, and only while it shows.
+        assert_eq!(
+            with.content.height - without.content.height,
+            BAR_ROOM,
+            "{case}"
+        );
+        assert_eq!(with.card, without.card, "{case}");
+        // Scrolled to the end, the last row's bottom sits above the bar.
+        let end = with.content.height - with.viewport.height;
+        let bottom = with.viewport.y + (with.card.y + with.card.height - with.content.y) - end;
+        let bar_top = with.tags.unwrap().y - BAR_PADDING;
+        assert!(
+            bottom + BAR_CLEARANCE <= bar_top + 0.5,
+            "{case}: bottom {bottom}, bar {bar_top}"
+        );
+    }
+}
+
+#[test]
+fn scrolling_a_last_row_card_into_view_clears_the_bar() {
+    let (_root, mut app) = crowded();
+    let last = last_shown(&app);
+    app.selected = Some(last.clone());
+    app.toggle_mark("game-00");
+    // Arrow keys and clicks find the card where it's laid out.
+    let task = app.scroll_selection();
+    let located = answers(&app, task);
+    assert!(matches!(located.as_slice(), [Message::GridCardLocated(..)]));
+    for message in located {
+        let _ = app.update(message);
+    }
+    let laid = measure(&app, &last);
+    let visible = laid.viewport.height - BAR_ROOM;
+    let bottom = laid.card.y + laid.card.height - laid.content.y - app.scroll_offset;
+    assert!(
+        bottom <= visible + 0.5,
+        "bottom {bottom}, visible {visible}"
+    );
+    assert!(bottom > visible - 1.0, "only as far as needed");
+
+    // The random pick and a new order go by the places instead.
+    app.scroll_offset = 0.0;
+    app.viewport_height = laid.viewport.height;
+    let _ = app.scroll_to_landing();
+    let places = app.grid_places();
+    let slot = places.slots[places.index(&last).unwrap()];
+    let bottom = slot.y + slot.height - app.scroll_offset;
+    assert!(
+        bottom <= visible + 0.5,
+        "bottom {bottom}, visible {visible}"
+    );
+    assert!(bottom > visible - 1.0, "only as far as needed");
 }

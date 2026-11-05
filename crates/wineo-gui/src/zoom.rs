@@ -226,7 +226,8 @@ impl App {
         let places = self.grid_places();
         let shown = self.grid_motion.shown(&places);
         let top = self.scroll_offset;
-        let bottom = top + self.viewport_height;
+        // What the action bar covers isn't on screen.
+        let bottom = top + (self.viewport_height - self.bar_room()).max(0.0);
         let in_view = |index: usize| {
             let card: iced::Rectangle = shown[index];
             card.y < bottom && card.y + card.height > top
@@ -284,7 +285,7 @@ impl App {
             return Task::none();
         };
         let card = self.grid_motion.drawn(&places, index);
-        let height = self.grid_motion.content_height(&places);
+        let height = self.grid_motion.content_height(&places) + self.bar_room();
         let wanted = if card.height > self.viewport_height {
             card.y
         } else {

@@ -24,10 +24,12 @@ impl App {
         }
         let top = bounds.card.y - bounds.viewport.y;
         let bottom = top + bounds.card.height;
+        // The action bar covers the viewport's bottom while it shows.
+        let visible = (bounds.viewport.height - self.bar_room()).max(0.0);
         let offset = if top < bounds.offset.y {
             top
-        } else if bottom > bounds.offset.y + bounds.viewport.height {
-            bottom - bounds.viewport.height
+        } else if bottom > bounds.offset.y + visible {
+            (bottom - visible).min(top)
         } else {
             return ControlFlow::Break(Task::none());
         };
@@ -260,10 +262,11 @@ impl App {
         else {
             return Task::none();
         };
+        let visible = (self.viewport_height - self.bar_room()).max(0.0);
         let offset = if slot.y < self.scroll_offset {
             slot.y
-        } else if slot.y + slot.height > self.scroll_offset + self.viewport_height {
-            slot.y + slot.height - self.viewport_height
+        } else if slot.y + slot.height > self.scroll_offset + visible {
+            (slot.y + slot.height - visible).min(slot.y)
         } else {
             return Task::none();
         };
