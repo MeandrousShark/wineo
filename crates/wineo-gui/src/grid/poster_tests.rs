@@ -820,3 +820,50 @@ fn the_pill_keeps_its_words_wherever_they_fit() {
     assert!(pill_fits("Finish update", 16.0 + 37.0));
     assert!(!pill_fits("Finish update", 16.0 + 36.0));
 }
+
+/// Each poster layer's first child, bottom first: the art itself has none.
+fn layer_contents(node: &Node) -> Vec<Option<Rectangle>> {
+    let mut layout = Layout::new(node);
+    for index in [0, 0, 0] {
+        layout = layout.children().nth(index).unwrap();
+    }
+    layout
+        .children()
+        .map(|layer| layer.children().next().map(|child| child.bounds()))
+        .collect()
+}
+
+#[test]
+fn a_marked_card_gets_a_wash_and_a_centered_check_and_its_corners_stay() {
+    let mut app = crate::tests::app();
+    let mut card = art_card("game", State::Running);
+    card.favorite = true;
+    card.hidden = true;
+    decoded(&mut app, &card, [128, 128, 128]);
+    for poster_only in [true, false] {
+        app.poster_only = poster_only;
+        for zoom in [60, 100, 200] {
+            app.zoom = zoom;
+            app.marked.clear();
+            let plain = layer_contents(&card_node(&app, &card));
+            app.marked.insert(card.name.clone());
+            let node = card_node(&app, &card);
+            let marked = layer_contents(&node);
+            let case = format!("poster-only {poster_only} at {zoom}%");
+            let art = bounds_at(&node, &[0, 0]);
+            let check = Rectangle::new(
+                art.center() - Vector::new(16.0, 16.0),
+                Size::new(32.0, 32.0),
+            );
+            assert_eq!(marked.len(), plain.len() + 2, "{case}");
+            assert!(marked.contains(&Some(art)), "no wash, {case}");
+            assert!(marked.contains(&Some(check)), "no check, {case}");
+            // The corner marks keep their places, and nothing else is drawn.
+            let rest: Vec<_> = marked
+                .iter()
+                .filter(|child| **child != Some(art) && **child != Some(check))
+                .collect();
+            assert_eq!(rest, plain.iter().collect::<Vec<_>>(), "{case}");
+        }
+    }
+}
