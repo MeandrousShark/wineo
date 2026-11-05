@@ -41,7 +41,8 @@ pub(super) fn layers(node: &Node) -> Vec<Rectangle> {
 }
 
 /// Whether the poster-only title overlay is drawn: a layer as wide as the
-/// art along its bottom, taller than the install bar.
+/// art along its bottom, taller than the install bar but shorter than the
+/// art, so a marked card's full-poster wash doesn't count.
 pub(super) fn overlay_shown(node: &Node) -> bool {
     let art = bounds_at(node, &[0, 0]);
     (1..layers(node).len()).any(|index| {
@@ -49,6 +50,7 @@ pub(super) fn overlay_shown(node: &Node) -> bool {
         child.width == art.width
             && child.y + child.height == art.y + art.height
             && child.height > INSTALL_BAR_HEIGHT
+            && child.height < art.height
     })
 }
 
