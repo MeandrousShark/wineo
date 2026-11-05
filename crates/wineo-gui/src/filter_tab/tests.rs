@@ -583,7 +583,7 @@ fn an_open_menu_keeps_the_tab_drawn_but_inert() {
     let x = bounds(&mut laid, Chip::Store("GOG").id()).unwrap();
     drop(laid);
 
-    let menus: [fn(&mut App); 4] = [
+    let menus: [fn(&mut App); 5] = [
         crate::sort_control::tests::open_sort,
         crate::filter_control::tests::open_filters,
         |app| {
@@ -600,6 +600,19 @@ fn an_open_menu_keeps_the_tab_drawn_but_inert() {
                 iced::Rectangle::new(iced::Point::new(600.0, 20.0), iced::Size::new(32.0, 32.0));
             let _ = app.update(Message::Random(Event::OpenUnder(request, Some(dice))));
             assert!(app.random_menu);
+        },
+        |app| {
+            use crate::action_bar::Event;
+            app.toggle_mark("papers-please");
+            let _ = app.update(Message::Tags(Event::ToggleMenu));
+            let request = app
+                .tag_opening
+                .pending
+                .expect("a request waits for the Tags button");
+            let tags =
+                iced::Rectangle::new(iced::Point::new(500.0, 740.0), iced::Size::new(80.0, 32.0));
+            let _ = app.update(Message::Tags(Event::OpenAbove(request, Some(tags))));
+            assert!(app.tag_menu_shown());
         },
     ];
     for open in menus {

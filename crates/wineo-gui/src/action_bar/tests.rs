@@ -771,3 +771,78 @@ fn scrolling_a_last_row_card_into_view_clears_the_bar() {
     );
     assert!(bottom > visible - 1.0, "only as far as needed");
 }
+
+#[test]
+fn with_no_tags_the_keys_keep_the_new_tag_field_focused() {
+    let (_root, mut app) = marked();
+    let untagged: Vec<Card> = library()
+        .into_iter()
+        .map(|mut card| {
+            card.tags.clear();
+            card
+        })
+        .collect();
+    let _ = app.update(Message::Loaded(Ok(untagged)));
+    let focus = open(&mut app);
+    assert!(app.tag_rows().is_empty());
+    assert_eq!(
+        focused_after(&app, focus),
+        [iced::widget::Id::new(NEW_TAG_ID)]
+    );
+    for named in [Named::Tab, Named::ArrowDown, Named::ArrowUp] {
+        let pressed = key(&mut app, named);
+        let field = crate::library_menu::focus(NEW_TAG_ID, MENU_SCROLL_ID);
+        assert_eq!(
+            focused_after(&app, field.chain(pressed)),
+            [iced::widget::Id::new(NEW_TAG_ID)],
+            "{named:?}"
+        );
+    }
+    let pressed = app.update(Message::Key(
+        Key::Named(Named::Tab),
+        Modifiers::SHIFT,
+        iced::event::Status::Ignored,
+    ));
+    let field = crate::library_menu::focus(NEW_TAG_ID, MENU_SCROLL_ID);
+    assert_eq!(
+        focused_after(&app, field.chain(pressed)),
+        [iced::widget::Id::new(NEW_TAG_ID)]
+    );
+}
+
+#[test]
+fn a_failed_game_rolls_back_even_when_another_was_gone() {
+    let (_root, mut app) = marked();
+    let _ = open(&mut app);
+    fs::write(
+        app.paths.environment_config("bravo"),
+        "schema_version = 1\ntags = [\n",
+    )
+    .unwrap();
+    fs::remove_file(app.paths.environment_config("charlie")).unwrap();
+    let _ = tags_event(&mut app, Event::Draft("co-op".into()));
+    let task = tags_event(&mut app, Event::Submit);
+    finish(&mut app, task);
+    // Before the reload lands, bravo already shows what its file has.
+    assert!(app.refreshing, "a reload shows charlie gone");
+    assert!(!has(&app, "bravo", "co-op"));
+    assert!(has(&app, "alpha", "co-op"));
+    let text = notice(&app).unwrap();
+    assert!(text.starts_with("Couldn't tag 1 of 3 (bravo): "), "{text}");
+}
+
+#[test]
+fn a_dead_worker_rolls_back_before_the_reload() {
+    let (_root, mut app) = marked();
+    let _ = open(&mut app);
+    let _ = toggle(&mut app, "rpg");
+    assert!(has(&app, "charlie", "rpg"));
+    let _ = app.update(Message::Tags(Event::Saved(Saved {
+        tag: "rpg".into(),
+        value: true,
+        games: vec![("charlie".into(), None)],
+        results: Err("worker panicked".into()),
+    })));
+    assert!(app.refreshing);
+    assert!(!has(&app, "charlie", "rpg"));
+}

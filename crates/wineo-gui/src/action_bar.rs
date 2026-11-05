@@ -266,9 +266,15 @@ pub(crate) fn key(app: &mut App, key: &Key, modifiers: Modifiers) -> Task<Messag
             iced::widget::operation::focus(iced::widget::Id::new(TAGS_BUTTON_ID))
         }
         Key::Named(Named::Tab | Named::ArrowDown | Named::ArrowUp) => {
+            let mut ids = app.tag_menu_ids();
+            // Cycling a lone control unfocuses it, so with no tags the
+            // field just keeps its focus.
+            if ids.len() == 1 {
+                return crate::library_menu::focus(ids.swap_remove(0), MENU_SCROLL_ID);
+            }
             let reverse = *key == Key::Named(Named::ArrowUp)
                 || (*key == Key::Named(Named::Tab) && modifiers.shift());
-            crate::library_menu::cycle(&app.tag_menu_ids(), reverse, MENU_SCROLL_ID)
+            crate::library_menu::cycle(&ids, reverse, MENU_SCROLL_ID)
         }
         _ => Task::none(),
     }

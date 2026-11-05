@@ -295,12 +295,13 @@ impl App {
             let notice = failure_notice(value, &failed, games.len());
             self.flag_notice(notice);
         }
+        let back = self.show_tag(&back, &tag, !value);
         // A worker that died may have written some before it did, so the
         // file says which.
-        let shown = if worker.is_some() || gone {
+        let reload = if worker.is_some() || gone {
             self.reload_library_once()
         } else {
-            self.show_tag(&back, &tag, !value)
+            Task::none()
         };
         // Everything queued behind this batch wants the opposite of it.
         for (name, added) in &again {
@@ -314,7 +315,7 @@ impl App {
             );
         }
         let follow = self.write_tags(again, &tag, !value);
-        Task::batch([reads, shown, follow])
+        Task::batch([reads, back, reload, follow])
     }
 
     /// Shows `tag` on or off the cards `names`, as `set_flag` does a flag.
