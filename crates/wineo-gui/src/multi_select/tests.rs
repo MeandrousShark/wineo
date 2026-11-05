@@ -293,13 +293,16 @@ fn a_rescan_a_re_sort_and_a_tag_change_keep_the_marks() {
 #[test]
 fn a_ctrl_or_shift_double_click_never_launches() {
     for held in [Modifiers::CTRL, Modifiers::SHIFT] {
+        // Selected with its panel open, where a double-click starts it.
         let (_root, mut app) = library(3);
+        click(&mut app, "game-1", Modifiers::empty());
+        assert!(app.panel_open);
         hold(&mut app, held);
         let _ = app.update(Message::Select("game-1".into()));
         let _ = app.update(Message::Select("game-1".into()));
         let _ = app.update(Message::DoubleClick("game-1".into()));
         assert!(app.operation.is_none(), "{held:?}");
-        assert!(!app.panel_open, "{held:?}");
+        assert!(app.panel_open, "{held:?}");
     }
     // A plain double-click still launches.
     let (_root, mut app) = library(3);
