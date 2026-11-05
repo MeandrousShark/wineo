@@ -46,6 +46,7 @@ mod library;
 mod library_actions;
 mod library_menu;
 mod library_states;
+mod list_view;
 mod logview;
 mod menu_anchor;
 mod multi_select;
@@ -1561,7 +1562,9 @@ impl App {
     /// Drops the visible cards, or fades them with reduced motion. The panel
     /// closes without animating so the cards fall from their closed slots.
     fn start_collapse(&mut self, now: Instant) {
+        // The posters fall; a list has none.
         if !self.collapse.idle()
+            || self.layout == grid_motion::ViewLayout::List
             || self.section != sidebar::Section::Library
             || self.panel_hidden()
             || self.filtered().is_empty()

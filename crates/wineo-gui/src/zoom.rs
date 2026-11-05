@@ -214,7 +214,8 @@ impl App {
     /// Zoom input counts while the Library shows with nothing over it: no
     /// menu, popup, flow, or dialog.
     pub(crate) fn zoom_allowed(&self) -> bool {
-        self.library_menu_may_open()
+        // A list has no posters to size; the zoom waits for the grid.
+        self.library_menu_may_open() && self.layout == crate::grid_motion::ViewLayout::Grid
     }
 
     /// The card that keeps the place: the selected one when any of it is on

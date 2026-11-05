@@ -24,7 +24,7 @@ const MENU_SCROLL_ID: &str = "library-sort-menu";
 const NOTICE_TIME: std::time::Duration = std::time::Duration::from_secs(8);
 
 pub(crate) const ARROW_DOWN: &[u8] = br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><path d="M8 2.5v11M3.5 9l4.5 4.5L12.5 9" fill="none" stroke="#000" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>"##;
-const ARROW_UP: &[u8] = br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><path d="M8 13.5v-11M3.5 7l4.5-4.5L12.5 7" fill="none" stroke="#000" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>"##;
+pub(crate) const ARROW_UP: &[u8] = br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><path d="M8 13.5v-11M3.5 7l4.5-4.5L12.5 7" fill="none" stroke="#000" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>"##;
 
 #[derive(Debug, Clone)]
 pub(crate) enum Event {
@@ -37,6 +37,9 @@ pub(crate) enum Event {
     /// A click outside the menu.
     CloseMenu,
     Pick(SortKey),
+    /// A click on a list column's header: its sort, or the other
+    /// direction when it's the sort already.
+    Header(SortKey),
     FlipDirection,
     ToggleFavoritesFirst,
     /// A write finished, with the value it wrote.
@@ -282,6 +285,16 @@ pub(crate) fn update(app: &mut App, event: Event) -> Task<Message> {
                 focus,
                 app.sort_changed(Field::Sort(sort, app.query.descending)),
             ])
+        }
+        Event::Header(sort) if sort == app.query.sort => {
+            app.query.descending = !app.query.descending;
+            app.sort_changed(Field::Descending(app.query.descending))
+        }
+        Event::Header(sort) => {
+            app.sort_menu = false;
+            app.query.sort = sort;
+            app.query.descending = sort.starts_descending();
+            app.sort_changed(Field::Sort(sort, app.query.descending))
         }
         Event::FlipDirection => {
             app.query.descending = !app.query.descending;

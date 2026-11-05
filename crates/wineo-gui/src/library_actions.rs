@@ -18,9 +18,9 @@ use crate::{App, Message, focus_button, rescan};
 pub(crate) const PANEL_FAVORITE_ID: &str = "panel-favorite";
 const NOTICE_TIME: Duration = Duration::from_secs(8);
 
-const STAR: &[u8] = br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><path d="M8 1.6l1.95 4.1 4.45.55-3.3 3.05.85 4.45L8 11.55l-3.95 2.2.85-4.45-3.3-3.05 4.45-.55z" fill="#000" stroke="#000" stroke-width="1" stroke-linejoin="round"/></svg>"##;
-const STAR_OUTLINE: &[u8] = br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><path d="M8 1.6l1.95 4.1 4.45.55-3.3 3.05.85 4.45L8 11.55l-3.95 2.2.85-4.45-3.3-3.05 4.45-.55z" fill="none" stroke="#000" stroke-width="1.3" stroke-linejoin="round"/></svg>"##;
-const EYE_OFF: &[u8] = br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><path d="M1.5 8s2.4-4.5 6.5-4.5S14.5 8 14.5 8s-2.4 4.5-6.5 4.5S1.5 8 1.5 8z" fill="none" stroke="#000" stroke-width="1.4" stroke-linejoin="round"/><circle cx="8" cy="8" r="2" fill="none" stroke="#000" stroke-width="1.4"/><path d="M2.5 13.5l11-11" fill="none" stroke="#000" stroke-width="1.4" stroke-linecap="round"/></svg>"##;
+pub(crate) const STAR: &[u8] = br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><path d="M8 1.6l1.95 4.1 4.45.55-3.3 3.05.85 4.45L8 11.55l-3.95 2.2.85-4.45-3.3-3.05 4.45-.55z" fill="#000" stroke="#000" stroke-width="1" stroke-linejoin="round"/></svg>"##;
+pub(crate) const STAR_OUTLINE: &[u8] = br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><path d="M8 1.6l1.95 4.1 4.45.55-3.3 3.05.85 4.45L8 11.55l-3.95 2.2.85-4.45-3.3-3.05 4.45-.55z" fill="none" stroke="#000" stroke-width="1.3" stroke-linejoin="round"/></svg>"##;
+pub(crate) const EYE_OFF: &[u8] = br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><path d="M1.5 8s2.4-4.5 6.5-4.5S14.5 8 14.5 8s-2.4 4.5-6.5 4.5S1.5 8 1.5 8z" fill="none" stroke="#000" stroke-width="1.4" stroke-linejoin="round"/><circle cx="8" cy="8" r="2" fill="none" stroke="#000" stroke-width="1.4"/><path d="M2.5 13.5l11-11" fill="none" stroke="#000" stroke-width="1.4" stroke-linecap="round"/></svg>"##;
 
 /// The poster marks' size and their backdrop, which keeps them readable on
 /// light and dark art alike.

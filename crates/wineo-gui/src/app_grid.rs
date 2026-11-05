@@ -153,10 +153,13 @@ impl App {
             return places.clone();
         }
         let filtered = self.filtered();
-        let heights: Vec<f32> = filtered
-            .iter()
-            .map(|card| grid::card_height(card, layout))
-            .collect();
+        let heights: Vec<f32> = match self.layout {
+            grid_motion::ViewLayout::Grid => filtered
+                .iter()
+                .map(|card| grid::card_height(card, layout))
+                .collect(),
+            grid_motion::ViewLayout::List => vec![crate::list_view::ROW_HEIGHT; filtered.len()],
+        };
         let widths = vec![self.slot_width(); heights.len()];
         let names = filtered.iter().map(|card| card.name.clone()).collect();
         let places = Rc::new(grid_motion::Places::new(

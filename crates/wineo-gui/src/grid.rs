@@ -60,7 +60,7 @@ pub(crate) const SEARCH_WIDTH: f32 = 320.0;
 pub(crate) const SEARCH_MIN_WIDTH: f32 = 160.0;
 
 /// The identifier shows as muted context only when a title replaces it.
-fn shows_identifier(card: &Card) -> bool {
+pub(crate) fn shows_identifier(card: &Card) -> bool {
     card.name != card.display_title
 }
 
@@ -186,10 +186,19 @@ impl App {
                 .collect(),
             on_press: self.collapse.restorable().then_some(Message::Rebuild),
         });
+        let list = self.layout == crate::grid_motion::ViewLayout::List;
+        let row_width = self.slot_width();
         let cards = filtered
             .into_iter()
             .map(|card| {
                 let opacity = self.grid_motion.opacity(&card.name);
+                if list {
+                    return crate::grid_motion::GridCard {
+                        name: card.name.clone(),
+                        card: self.row_drawn(card, opacity, row_width),
+                        details: None,
+                    };
+                }
                 crate::grid_motion::GridCard {
                     name: card.name.clone(),
                     card: self.card_drawn(card, opacity, layout, Details::Apart),
@@ -221,6 +230,16 @@ impl App {
             })
             .filter_map(|leaving| {
                 let card = by_name.get(leaving.name.as_str())?;
+                // A layout switch snaps, ending every fade, so what leaves
+                // left from the layout shown.
+                if list {
+                    return Some(crate::grid_motion::Outgoing {
+                        name: leaving.name.clone(),
+                        bounds: leaving.bounds,
+                        card: self.row_drawn(card, leaving.opacity, leaving.bounds.width),
+                        details: None,
+                    });
+                }
                 Some(crate::grid_motion::Outgoing {
                     name: leaving.name.clone(),
                     bounds: leaving.bounds,
@@ -1193,7 +1212,13 @@ impl App {
             ))
             .on_scroll(Message::Scrolled)
             .style(move |theme, status| crate::ui::scroll_style(theme, status, palette, visible));
-        let library = mouse_area(wheel::zoom(
+        // Always a child, so the scroll after it keeps its place in the tree.
+        let header: Element<'_, Message> = if self.layout == crate::grid_motion::ViewLayout::List {
+            self.list_header()
+        } else {
+            Space::new().into()
+        };
+        let scroll = wheel::zoom(
             wheel::scale(scroll, WHEEL_STEP_SCALE),
             wheel::Zoom {
                 on_zoom: self
@@ -1205,8 +1230,9 @@ impl App {
                     .then_some(Message::Zoom(crate::zoom::Event::Interrupted)),
                 modifiers: self.modifiers,
             },
-        ))
-        .on_exit(Message::Zoom(crate::zoom::Event::PointerLeft));
+        );
+        let library = mouse_area(column![header, scroll])
+            .on_exit(Message::Zoom(crate::zoom::Event::PointerLeft));
         let library = if self.panel_open {
             library.on_press(Message::ClosePanel)
         } else if self.collapse.faded() {
@@ -1420,7 +1446,10 @@ fn gog_badge(color: Color, ink: Color, alpha: f32) -> Element<'static, Message> 
 }
 
 /// A card's content as one pointer target.
-fn card_area<'a>(content: impl Into<Element<'a, Message>>, card: &Card) -> Element<'a, Message> {
+pub(crate) fn card_area<'a>(
+    content: impl Into<Element<'a, Message>>,
+    card: &Card,
+) -> Element<'a, Message> {
     mouse_area(content)
         .on_press(Message::Select(card.name.clone()))
         .on_double_click(Message::DoubleClick(card.name.clone()))
@@ -1493,7 +1522,7 @@ fn title_overlay(
         .into()
 }
 
-fn install_bar(percent: u8, palette: Palette, alpha: f32) -> Element<'static, Message> {
+pub(crate) fn install_bar(percent: u8, palette: Palette, alpha: f32) -> Element<'static, Message> {
     let done = u16::from(percent.min(100));
     let mut bar = row![].width(Fill).height(INSTALL_BAR_HEIGHT);
     if done > 0 {

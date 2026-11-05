@@ -737,6 +737,43 @@ fn the_last_row_scrolls_clear_of_the_bar_at_every_zoom() {
 }
 
 #[test]
+fn the_last_list_row_scrolls_clear_of_the_bar() {
+    let (_root, mut app) = crowded();
+    app.layout = crate::grid_motion::ViewLayout::List;
+    app.snap_grid();
+    let last = last_shown(&app);
+    let without = measure(&app, &last);
+    app.toggle_mark("game-00");
+    let with = measure(&app, &last);
+    assert!(with.content.height > with.viewport.height);
+    assert_eq!(with.content.height - without.content.height, BAR_ROOM);
+    assert_eq!(with.card, without.card);
+    assert_eq!(with.card.height, crate::list_view::ROW_HEIGHT);
+    let end = with.content.height - with.viewport.height;
+    let bottom = with.viewport.y + (with.card.y + with.card.height - with.content.y) - end;
+    let bar_top = with.tags.unwrap().y - BAR_PADDING;
+    assert!(
+        bottom + BAR_CLEARANCE <= bar_top + 0.5,
+        "bottom {bottom}, bar {bar_top}"
+    );
+
+    // Scrolling the selection into view keeps it clear of the bar too.
+    app.selected = Some(last.clone());
+    app.scroll_offset = 0.0;
+    app.viewport_height = with.viewport.height;
+    let _ = app.scroll_to_landing();
+    let places = app.grid_places();
+    let slot = places.slots[places.index(&last).unwrap()];
+    let visible = with.viewport.height - BAR_ROOM;
+    let bottom = slot.y + slot.height - app.scroll_offset;
+    assert!(
+        bottom <= visible + 0.5,
+        "bottom {bottom}, visible {visible}"
+    );
+    assert!(bottom > visible - 1.0, "only as far as needed");
+}
+
+#[test]
 fn scrolling_a_last_row_card_into_view_clears_the_bar() {
     let (_root, mut app) = crowded();
     let last = last_shown(&app);

@@ -149,7 +149,7 @@ impl App {
     pub(crate) fn window_resized(&mut self, size: iced::Size) -> Task<Message> {
         self.window_size = size;
         self.viewport_width = (size.width - sidebar::WIDTH).max(0.0);
-        self.viewport_height = (size.height - 48.0).max(0.0);
+        self.viewport_height = (size.height - 48.0 - self.header_room()).max(0.0);
         // Every frame of a drag would restart the springs.
         self.snap_grid();
         self.collapse.reset();
