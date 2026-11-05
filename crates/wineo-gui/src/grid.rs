@@ -631,6 +631,7 @@ impl App {
         let undo = self.toast.is_some();
         let notice = self.feature_notice.is_some();
         let import = self.import_toast_view();
+        let imported = import.is_some();
         let import_slot: Element<'_, Message> = match import {
             Some(toast) => container(toast).padding(below(notice || undo)).into(),
             None => Space::new().into(),
@@ -657,7 +658,16 @@ impl App {
         } else {
             Space::new().into()
         };
-        let toasts = column![import_slot, notice_slot, undo_slot].align_x(Center);
+        // The action bar stays while the notes above it come and go.
+        let bar_slot: Element<'_, Message> = if self.action_bar_shown() {
+            let above = imported || notice || undo;
+            container(self.action_bar_view())
+                .padding(iced::Padding::default().top(if above { GAP } else { 0.0 }))
+                .into()
+        } else {
+            Space::new().into()
+        };
+        let toasts = column![import_slot, notice_slot, undo_slot, bar_slot].align_x(Center);
         // Always a layer, so the dialogs above keep their places, and their
         // focus, when a toast comes or goes. Empty slots take no input.
         page = page.push(
@@ -807,6 +817,10 @@ impl App {
         }
         if self.random_menu_shown() {
             let [backdrop, menu] = self.random_menu_view();
+            return page.push(backdrop).push(menu).into();
+        }
+        if self.tag_menu_shown() {
+            let [backdrop, menu] = self.tag_menu_view();
             return page.push(backdrop).push(menu).into();
         }
         if let Some(name) = &self.action_menu {

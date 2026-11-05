@@ -296,6 +296,12 @@ impl Order {
         self.keep(of);
     }
 
+    /// The cards changed where they are, which their address can't tell,
+    /// so the next rebuild lists their stores, platforms, and tags again.
+    pub(crate) fn cards_edited(&mut self) {
+        self.built_from.cards = (0, 0);
+    }
+
     /// Records that the order still fits new cards whose sort, filter, and
     /// search inputs match the old ones card for card, so their stores,
     /// platforms, and tags are the same too.

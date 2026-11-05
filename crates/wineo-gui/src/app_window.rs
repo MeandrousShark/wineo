@@ -66,6 +66,9 @@ impl App {
         if self.view_writes.pending() || self.flag_writes.pending() {
             work.push("a library write".to_owned());
         }
+        if self.tag_writes.pending() {
+            work.push("a tag write".to_owned());
+        }
         if self.steam_auto.running() {
             work.push("a Steam import".to_owned());
         }
