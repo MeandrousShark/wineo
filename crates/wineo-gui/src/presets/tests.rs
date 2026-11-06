@@ -7,6 +7,7 @@ use wineo_core::library::{GroupBy, SortKey, ViewLayout};
 use super::*;
 use crate::filter_control::tests::{library, open_filters};
 use crate::filter_control::{Event as FilterEvent, FILTER_BUTTON_ID, button_label};
+use crate::grid::ACTION_MENU_SPACING;
 use crate::sort_control::tests::{answers, press};
 
 /// Couch co-op narrows to GOG and Steam games tagged game but not rpg, with
@@ -435,7 +436,7 @@ fn saving_the_view_under_a_new_name() {
     let view = app.view_preset();
     assert_eq!(
         app.presets.writing,
-        Some(Write::Save("Night owl".into(), Box::new(view.clone())))
+        Some(Write::Create("Night owl".into(), Box::new(view.clone())))
     );
     let _ = finish(&mut app);
     assert!(app.presets.writing.is_none());
@@ -1001,4 +1002,422 @@ fn a_failed_delete_or_update_is_forgotten_when_the_popup_opens_again() {
         assert!(app.presets.edit.is_none());
         let _ = filter(&mut app, FilterEvent::CloseMenu);
     }
+}
+
+/// Runs the write in flight on disk, then a rescan that reads it before the
+/// write's reply arrives, then the reply.
+fn land_with_a_rescan_first(app: &mut App) {
+    let write = app.presets.writing.clone().expect("a write in flight");
+    let (result, presets) = super::write(&app.paths, &app.shown, &write);
+    rescan(app);
+    let _ = send(
+        app,
+        Event::Saved(Box::new(Done {
+            write,
+            result,
+            presets,
+        })),
+    );
+}
+
+fn rescan(app: &mut App) {
+    let scan = crate::rescan::read(&app.paths, &app.shown, false, None);
+    let scan = app.shown.current(scan);
+    if let Some(scan) = app.shown.changes(scan, jiff::Timestamp::now()) {
+        let _ = app.update(Message::Rescanned(Box::new(scan)));
+    }
+}
+
+/// Another window saved the same name after this one last read the file:
+/// Save never overwrites it, and shows the name as taken, offering Update.
+#[test]
+fn a_name_saved_elsewhere_since_the_last_read_is_never_overwritten() {
+    let (_root, mut app) = booted(FILE);
+    let elsewhere = Preset {
+        show_hidden: true,
+        ..Preset::default()
+    };
+    for popup_open in [true, false] {
+        let name = if popup_open { "Late" } else { "Later" };
+        open_filters(&mut app);
+        let _ = send(&mut app, Event::StartSave);
+        let _ = send(&mut app, Event::Draft(name.into()));
+        library::set_preset(&app.paths, name, &elsewhere).unwrap();
+        assert!(app.save_taken(name).is_none());
+        let _ = send(&mut app, Event::Submit);
+        if !popup_open {
+            let _ = filter(&mut app, FilterEvent::CloseMenu);
+        }
+        let _ = finish(&mut app);
+        assert_eq!(
+            wineo_core::library::load(&app.paths).preset(name),
+            Some(&elsewhere)
+        );
+        assert!(names(&app).contains(&name));
+        assert!(app.presets.active.is_none());
+        if popup_open {
+            // The same state as a name the list already had.
+            assert_eq!(app.save_taken(name), Some(name));
+            assert!(app.preset_ids().contains(&OFFER_ID.to_owned()));
+            assert!(app.presets.failure.is_none());
+        } else {
+            let (notice, _) = app.feature_notice.clone().expect("a notice");
+            assert_eq!(
+                notice,
+                format!("Couldn't save \"{name}\": A preset named {name} already exists.")
+            );
+            open_filters(&mut app);
+            assert!(app.preset_ids().contains(&OFFER_ID.to_owned()));
+        }
+        assert_eq!(app.presets.edit, Some(Edit::Save(name.into())));
+        let _ = app.view();
+        let _ = filter(&mut app, FilterEvent::CloseMenu);
+        app.presets.edit = None;
+        app.presets.failure = None;
+    }
+}
+
+/// A save that lands after another preset was applied leaves that one active.
+#[test]
+fn a_save_landing_after_a_later_apply_leaves_the_later_preset_active() {
+    let (_root, mut app) = booted(FILE);
+    open_filters(&mut app);
+    let _ = send(&mut app, Event::Apply("Tools".into()));
+    let _ = filter(&mut app, FilterEvent::ToggleShowHidden);
+    open_filters(&mut app);
+    let _ = send(&mut app, Event::Update("Tools".into()));
+    let _ = send(&mut app, Event::Apply("Couch co-op".into()));
+    let _ = finish(&mut app);
+    assert_eq!(app.presets.active.as_deref(), Some("Couch co-op"));
+    assert_eq!(button_label(&app), "Filters (Couch co-op)");
+    assert!(
+        wineo_core::library::load(&app.paths)
+            .preset("Tools")
+            .unwrap()
+            .show_hidden
+    );
+
+    // The same for a new one.
+    open_filters(&mut app);
+    let _ = send(&mut app, Event::StartSave);
+    let _ = send(&mut app, Event::Draft("Night owl".into()));
+    let _ = send(&mut app, Event::Submit);
+    let _ = send(&mut app, Event::Apply("Tools".into()));
+    let _ = finish(&mut app);
+    assert_eq!(app.presets.active.as_deref(), Some("Tools"));
+    assert!(names(&app).contains(&"Night owl"));
+}
+
+#[test]
+fn a_rename_of_the_active_preset_keeps_it_active_through_a_rescan_before_its_reply() {
+    let (_root, mut app) = booted(FILE);
+    open_filters(&mut app);
+    let _ = send(&mut app, Event::Apply("Tools".into()));
+    open_filters(&mut app);
+    let _ = send(&mut app, Event::Rename("Tools".into()));
+    let _ = send(&mut app, Event::Draft("Gadgets".into()));
+    let _ = send(&mut app, Event::Submit);
+    land_with_a_rescan_first(&mut app);
+    assert_eq!(names(&app), ["Couch co-op", "Gadgets"]);
+    assert_eq!(app.presets.active.as_deref(), Some("Gadgets"));
+    assert_eq!(button_label(&app), "Filters (Gadgets)");
+}
+
+#[test]
+fn a_preset_removed_elsewhere_stops_being_active_while_another_is_renamed() {
+    let (_root, mut app) = booted(FILE);
+    open_filters(&mut app);
+    let _ = send(&mut app, Event::Apply("Couch co-op".into()));
+    open_filters(&mut app);
+    let _ = send(&mut app, Event::Rename("Tools".into()));
+    let _ = send(&mut app, Event::Draft("Gadgets".into()));
+    let _ = send(&mut app, Event::Submit);
+    library::remove_preset(&app.paths, "Couch co-op").unwrap();
+    land_with_a_rescan_first(&mut app);
+    assert_eq!(names(&app), ["Gadgets"]);
+    assert!(app.presets.active.is_none());
+}
+
+#[test]
+fn a_delete_or_update_of_the_active_preset_survives_a_rescan_before_its_reply() {
+    let (_root, mut app) = booted(FILE);
+    open_filters(&mut app);
+    let _ = send(&mut app, Event::Apply("Tools".into()));
+    let _ = filter(&mut app, FilterEvent::ToggleShowHidden);
+    open_filters(&mut app);
+    let _ = send(&mut app, Event::Update("Tools".into()));
+    land_with_a_rescan_first(&mut app);
+    assert_eq!(app.presets.active.as_deref(), Some("Tools"));
+    assert_eq!(button_label(&app), "Filters (Tools)");
+
+    let _ = send(&mut app, Event::AskDelete("Tools".into()));
+    let _ = send(&mut app, Event::Delete("Tools".into()));
+    land_with_a_rescan_first(&mut app);
+    assert_eq!(names(&app), ["Couch co-op"]);
+    assert!(app.presets.active.is_none());
+}
+
+/// Every `[view]` write in flight, run and answered in turn, follow-ups too.
+fn finish_view(app: &mut App) {
+    loop {
+        let writes = &app.view_writes;
+        let field = writes
+            .sort
+            .map(|(sort, descending)| Field::Sort(sort, descending))
+            .or(writes.descending.map(Field::Descending))
+            .or(writes.favorites_first.map(Field::FavoritesFirst))
+            .or(writes.layout.map(Field::Layout))
+            .or(writes.group.map(Field::Group));
+        let Some(field) = field else {
+            return;
+        };
+        let result = crate::sort_control::save(&app.paths, &app.shown, field);
+        let _ = app.update(Message::Sort(crate::sort_control::Event::Saved(
+            field, result,
+        )));
+    }
+}
+
+fn sort_event(app: &mut App, event: crate::sort_control::Event) {
+    let _ = app.update(Message::Sort(event));
+}
+
+/// Decision 16, for each control the preset sets: after applying, a change
+/// saves only its own field.
+#[test]
+fn after_applying_each_control_saves_only_its_own_field() {
+    use crate::sort_control::Event as Sort;
+    type Check = fn(&wineo_core::library::View) -> bool;
+    type Change = fn(&mut App);
+    let cases: [(&str, Change, Check); 4] = [
+        (
+            "sort",
+            |app| sort_event(app, Sort::Pick(SortKey::Playtime)),
+            |view| view.sort == SortKey::Playtime && view.descending,
+        ),
+        (
+            "favorites first",
+            |app| sort_event(app, Sort::ToggleFavoritesFirst),
+            |view| !view.favorites_first && view.sort == SortKey::Name,
+        ),
+        (
+            "group",
+            |app| sort_event(app, Sort::Group(GroupBy::State)),
+            |view| view.group == GroupBy::State && view.sort == SortKey::Name,
+        ),
+        (
+            "layout",
+            |app| {
+                let _ = app.update(Message::Layout(crate::layout_switch::Event::Toggle));
+            },
+            |view| view.layout == ViewLayout::Grid && view.sort == SortKey::Name,
+        ),
+    ];
+    for (what, change, check) in cases {
+        // Saved away from every default, so a stray write of the preset's
+        // value would show.
+        let (_root, mut app) = booted(&format!(
+            "schema_version = 1\n\n[view]\nfavorites_first = true\nlayout = \"list\"\n\n{}",
+            FILE.trim_start_matches("schema_version = 1\n")
+        ));
+        let before = wineo_core::library::load(&app.paths).view;
+        open_filters(&mut app);
+        let _ = send(&mut app, Event::Apply("Couch co-op".into()));
+        change(&mut app);
+        finish_view(&mut app);
+        let view = wineo_core::library::load(&app.paths).view;
+        assert!(check(&view), "{what}: {view:?}");
+        // Nothing else moved from what was saved before.
+        let mut expected = before.clone();
+        match what {
+            "sort" => {
+                expected.sort = view.sort;
+                expected.descending = view.descending;
+            }
+            "favorites first" => expected.favorites_first = view.favorites_first,
+            "group" => expected.group = view.group,
+            _ => expected.layout = view.layout,
+        }
+        assert_eq!(view, expected, "{what}");
+    }
+}
+
+/// A write running when a preset lands doesn't follow up with the preset's
+/// value, but one a control changed again meanwhile does, for each field.
+#[test]
+fn an_overtaken_write_follows_up_only_after_another_change_for_every_field() {
+    use crate::sort_control::Event as Sort;
+    fn toggle_layout(app: &mut App) {
+        let _ = app.update(Message::Layout(crate::layout_switch::Event::Toggle));
+    }
+    type Step = fn(&mut App);
+    type Read = fn(&wineo_core::library::View) -> String;
+    // Tools is the default view. Each second change ends on a value other
+    // than both the first change and Tools', so only a follow-up writes it.
+    let cases: [(&str, Step, Step, Read, &str, &str); 4] = [
+        (
+            "sort",
+            |app| sort_event(app, Sort::Pick(SortKey::Playtime)),
+            |app| sort_event(app, Sort::Pick(SortKey::Added)),
+            |view| format!("{:?}", view.sort),
+            "Playtime",
+            "Added",
+        ),
+        (
+            "favorites first",
+            |app| sort_event(app, Sort::ToggleFavoritesFirst),
+            |app| {
+                sort_event(app, Sort::ToggleFavoritesFirst);
+                sort_event(app, Sort::ToggleFavoritesFirst);
+            },
+            |view| view.favorites_first.to_string(),
+            "true",
+            "false",
+        ),
+        (
+            "group",
+            |app| sort_event(app, Sort::Group(GroupBy::State)),
+            |app| sort_event(app, Sort::Group(GroupBy::Source)),
+            |view| format!("{:?}", view.group),
+            "State",
+            "Source",
+        ),
+        (
+            "layout",
+            toggle_layout,
+            |app| {
+                toggle_layout(app);
+                toggle_layout(app);
+            },
+            |view| format!("{:?}", view.layout),
+            "List",
+            "Grid",
+        ),
+    ];
+    for (what, first, again, read, overtaken, followed) in cases {
+        for change_again in [false, true] {
+            let (_root, mut app) = booted(FILE);
+            first(&mut app);
+            assert!(app.view_writes.pending(), "{what}");
+            open_filters(&mut app);
+            let _ = send(&mut app, Event::Apply("Tools".into()));
+            if change_again {
+                again(&mut app);
+            }
+            finish_view(&mut app);
+            let view = wineo_core::library::load(&app.paths).view;
+            let expected = if change_again { followed } else { overtaken };
+            assert_eq!(read(&view), expected, "{what}, again: {change_again}");
+        }
+    }
+}
+
+/// The focused row's bounds, the popup's scroll offset, and its viewport,
+/// laid out in the app's window after `tasks`.
+fn focused_in_popup(app: &App, tasks: Vec<Task<Message>>) -> (Rectangle, f32, Rectangle) {
+    let mut laid = crate::layout_probe::lay_out(app.view(), app.window_size);
+    for task in tasks {
+        drive(&mut laid, task);
+    }
+    let offset = laid
+        .offsets()
+        .into_iter()
+        .rev()
+        .find(|offset| *offset > 0.0)
+        .unwrap_or(0.0);
+    type Slot = std::sync::Arc<std::sync::Mutex<Option<Rectangle>>>;
+    struct Focused(Slot);
+    impl iced::advanced::widget::Operation for Focused {
+        fn traverse(
+            &mut self,
+            operate: &mut dyn FnMut(&mut dyn iced::advanced::widget::Operation),
+        ) {
+            operate(self);
+        }
+        fn focusable(
+            &mut self,
+            _id: Option<&iced::widget::Id>,
+            bounds: Rectangle,
+            state: &mut dyn iced::advanced::widget::operation::Focusable,
+        ) {
+            if state.is_focused() {
+                *self.0.lock().unwrap() = Some(bounds);
+            }
+        }
+    }
+    let slot = Slot::default();
+    laid.run(Box::new(Focused(slot.clone())));
+    let row = slot.lock().unwrap().expect("a control has focus");
+    let viewport = crate::layout_probe::probe(&mut app.view(), app.window_size)
+        .scrollables
+        .into_iter()
+        .map(|(viewport, _)| viewport)
+        .find(|viewport| viewport.width < ACTION_MENU_WIDTH)
+        .expect("the popup scrolls");
+    (row, offset, viewport)
+}
+
+fn assert_visible(row: Rectangle, offset: f32, viewport: Rectangle, what: &str) {
+    let top = row.y - offset;
+    assert!(
+        top >= viewport.y - 0.5 && top + row.height <= viewport.y + viewport.height + 0.5,
+        "{what}: {row:?} offset {offset} in {viewport:?}"
+    );
+}
+
+#[test]
+fn a_popup_with_many_presets_scrolls_to_the_focused_row_and_shows_a_failure() {
+    let mut text = FILE.to_owned();
+    for index in 0..22 {
+        text.push_str(&format!(
+            "\n[presets.\"Preset {index:02} with a long name that needs cutting short\"]\ntags = [\"game\"]\n"
+        ));
+    }
+    let (_root, mut app) = booted(&text);
+    app.window_size = iced::Size::new(900.0, 420.0);
+    assert_eq!(app.presets.list().len(), 24);
+    open_filters(&mut app);
+    // Up from the first filter row, where the popup opens, walks back
+    // through every preset. Keys don't change the app, so each check
+    // replays them on a fresh layout.
+    let first = "library-filter-store-gog";
+    let ups = app.preset_ids().len();
+    for count in [1, 6, 12, 18, ups] {
+        let mut tasks = vec![crate::library_menu::focus(
+            first,
+            crate::filter_control::MENU_SCROLL_ID,
+        )];
+        tasks.extend((0..count).map(|_| key(&mut app, Named::ArrowUp)));
+        let (row, offset, viewport) = focused_in_popup(&app, tasks);
+        assert_visible(row, offset, viewport, &format!("after {count} Ups"));
+    }
+
+    // A refused save shows its reason and Open Checkup at the end of the
+    // presets, scrolled into view with the focus.
+    write_file(&app.paths, "schema_version = [");
+    app.problem_read(wineo_core::library::load(&app.paths).problem);
+    let _ = send(&mut app, Event::StartSave);
+    let _ = send(&mut app, Event::Draft("Fresh".into()));
+    let _ = send(&mut app, Event::Submit);
+    assert!(
+        app.presets
+            .failure
+            .as_ref()
+            .is_some_and(|failure| failure.checkup)
+    );
+    let focus = crate::library_menu::focus(CHECKUP_ID, crate::filter_control::MENU_SCROLL_ID);
+    let (button, offset, viewport) = focused_in_popup(&app, vec![focus]);
+    assert_eq!(
+        bounds(&controls(&app), CHECKUP_ID).height,
+        button.height,
+        "Open Checkup has focus"
+    );
+    assert_visible(button, offset, viewport, "Open Checkup");
+    // The reason sits right above it, in view too.
+    let line = Rectangle {
+        y: button.y - ACTION_MENU_SPACING - 16.0,
+        height: 16.0,
+        ..button
+    };
+    assert_visible(line, offset, viewport, "the reason");
 }

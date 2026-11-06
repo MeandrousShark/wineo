@@ -96,7 +96,9 @@ pub(crate) enum Edit {
 /// One write to `library.toml`'s presets.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Write {
-    /// Creates the preset or saves over it.
+    /// Saves a new preset, refused when the name is taken on disk by then.
+    Create(String, Box<Preset>),
+    /// Saves over the preset, or creates it again if it's gone.
     Save(String, Box<Preset>),
     Rename(String, String),
     Delete(String),
@@ -106,7 +108,7 @@ impl Write {
     /// The lead-in of a notice when this write fails.
     fn failed(&self) -> String {
         match self {
-            Self::Save(name, _) => format!("Couldn't save \"{name}\""),
+            Self::Create(name, _) | Self::Save(name, _) => format!("Couldn't save \"{name}\""),
             Self::Rename(old, _) => format!("Couldn't rename \"{old}\""),
             Self::Delete(name) => format!("Couldn't delete \"{name}\""),
         }
@@ -120,6 +122,8 @@ pub(crate) struct Failure {
     /// `library.toml` refused it in a way Checkup can repair, so the popup
     /// offers Open Checkup.
     pub(crate) checkup: bool,
+    /// Core refused a name another preset has.
+    pub(crate) taken: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -148,6 +152,11 @@ pub(crate) struct Presets {
     /// The write in flight. Only one runs at a time.
     pub(crate) writing: Option<Write>,
     pub(crate) failure: Option<Failure>,
+    /// Bumped by every apply and every save started, so a save that lands
+    /// after a later choice doesn't take the active preset back.
+    intent: u64,
+    /// `intent` when the write in flight started.
+    started: u64,
 }
 
 impl Presets {
@@ -254,6 +263,7 @@ pub(crate) fn write(
     write: &Write,
 ) -> (Result<(), Failure>, Option<List>) {
     let result = match write {
+        Write::Create(name, preset) => library::create_preset(paths, name, preset),
         Write::Save(name, preset) => library::set_preset(paths, name, preset),
         Write::Rename(old, new) => library::rename_preset(paths, old, new),
         Write::Delete(name) => library::remove_preset(paths, name),
@@ -266,6 +276,7 @@ pub(crate) fn write(
             wineo_core::error::one_line(crate::sort_control::error_text(paths, &error))
         ),
         checkup: repairable(&error),
+        taken: matches!(error, Error::PresetNameTaken(_)),
     });
     (result, presets)
 }
@@ -319,7 +330,15 @@ impl App {
     pub(crate) fn presets_read(&mut self, presets: Vec<(String, Preset)>) {
         self.shown.show_presets(presets.clone());
         self.presets.saved.presets = presets;
+        // A rename of the active preset that's landing on disk takes its
+        // name along when its reply comes, so a read in between doesn't
+        // count it as removed.
+        let renaming = matches!(
+            (&self.presets.writing, &self.presets.active),
+            (Some(Write::Rename(old, _)), Some(active)) if old == active
+        );
         if let Some(active) = &self.presets.active
+            && !renaming
             && self.presets.get(active).is_none()
         {
             self.presets.active = None;
@@ -436,6 +455,7 @@ impl App {
         self.presets.edit = None;
         self.presets.failure = None;
         self.presets.active = Some(name);
+        self.presets.intent += 1;
         // A `[view]` write in flight was for the view as the controls left
         // it, so it mustn't follow up with the preset's.
         self.view_writes.overtake(&[
@@ -477,6 +497,7 @@ impl App {
                 wineo_core::error::one_line(error.to_string())
             ),
             checkup: repairable(&error),
+            taken: false,
         });
         true
     }
@@ -486,6 +507,10 @@ impl App {
             return Task::none();
         }
         self.presets.failure = None;
+        if matches!(write, Write::Create(..) | Write::Save(..)) {
+            self.presets.intent += 1;
+        }
+        self.presets.started = self.presets.intent;
         self.presets.writing = Some(write.clone());
         let paths = self.paths.clone();
         let watch = self.shown.clone();
@@ -499,6 +524,7 @@ impl App {
                         Err(Failure {
                             text: format!("{}: {error}", write.failed()),
                             checkup: false,
+                            taken: false,
                         }),
                         None,
                     ),
@@ -524,7 +550,7 @@ impl App {
                     return Task::none();
                 }
                 let preset = self.view_preset();
-                self.start_preset_write(Write::Save(name, Box::new(preset)))
+                self.start_preset_write(Write::Create(name, Box::new(preset)))
             }
             Some(Edit::Rename { old, draft }) => {
                 let Ok(name) = library::normalize_preset_name(&draft) else {
@@ -554,8 +580,11 @@ impl App {
         let focus = match done.result {
             Ok(()) => {
                 let id = match &done.write {
-                    Write::Save(name, _) => {
-                        self.presets.active = Some(name.clone());
+                    Write::Create(name, _) | Write::Save(name, _) => {
+                        // Only when nothing was applied or saved since.
+                        if self.presets.intent == self.presets.started {
+                            self.presets.active = Some(name.clone());
+                        }
                         row_id(name)
                     }
                     Write::Rename(old, new) => {
@@ -579,10 +608,15 @@ impl App {
             Err(failure) => {
                 // The view and the label stay; what was typed stays in its
                 // field for another try.
-                if !self.filter_menu_shown() {
+                let shown = self.filter_menu_shown();
+                if !shown {
                     self.flag_notice(failure.text.clone());
                 }
-                self.presets.failure = Some(failure);
+                // A name taken on disk since the last read shows as one taken
+                // in the list does, once the list below is read.
+                if !(shown && failure.taken && matches!(done.write, Write::Create(..))) {
+                    self.presets.failure = Some(failure);
+                }
                 None
             }
         };
@@ -863,7 +897,13 @@ impl App {
                 preset_message(Event::StartSave),
             )),
         }
-        if let Some(failure) = &self.presets.failure {
+        // The taken name's message under the field already says it.
+        if let Some(failure) = self
+            .presets
+            .failure
+            .as_ref()
+            .filter(|failure| !(failure.taken && matches!(edit, Some(Edit::Save(_)))))
+        {
             items.push(danger_line(failure.text.clone(), palette));
             if failure.checkup {
                 let open = preset_message(Event::OpenCheckup);
