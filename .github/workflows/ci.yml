@@ -80,6 +80,9 @@ jobs:
       - name: Stage install tests
         run: scripts/test-stage-install.sh
 
+      - name: Acceptance library tests
+        run: scripts/test-acceptance-library.sh
+
       - name: Tarball tests
         run: scripts/test-tarball.sh
 
