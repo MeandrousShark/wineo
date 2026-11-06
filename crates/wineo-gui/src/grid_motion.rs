@@ -16,7 +16,7 @@ use iced::{
 };
 
 use crate::collapse::{Collapse, Look};
-use crate::slot::SlotId;
+use crate::slot::{SectionKey, SlotId};
 use crate::{CARD_WIDTH, GAP, SCROLL_ID};
 pub(crate) use wineo_core::library::ViewLayout;
 use wineo_core::library::{ZOOM_DEFAULT, ZOOM_MAX, ZOOM_MIN};
@@ -44,6 +44,8 @@ const TILE_TITLE_MAX: f32 = 18.0;
 /// The gap between list rows, which keeps one row's selection border off
 /// the next.
 pub(crate) const ROW_GAP: f32 = 4.0;
+/// A section header's row, in the grid and the list alike.
+pub(crate) const HEADER_HEIGHT: f32 = 32.0;
 /// Below this zoom, cards with titles shown keep only the title under the
 /// poster.
 pub(crate) const COMPACT_BELOW: u16 = 90;
@@ -298,17 +300,41 @@ impl Sweep {
 /// grid lays them out.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub(crate) struct Places {
-    /// Each slot's card, in shown order. A game can have more than one.
+    /// Each card slot's card, in shown order. A game can have more than
+    /// one. Headers are kept apart in `headers`, so a card index never
+    /// lands on one.
     pub(crate) ids: Vec<SlotId>,
     pub(crate) slots: Vec<Rectangle>,
+    /// The section headers, in shown order, laid out with the cards.
+    pub(crate) headers: Vec<HeaderPlace>,
     pub(crate) columns: usize,
     /// The grid's content height with every card in its slot.
     pub(crate) height: f32,
     pub(crate) layout: GridLayout,
     pub(crate) mode: ViewLayout,
+    /// Each card's neighbor in the next row of its section, in its column.
+    pub(crate) below: Vec<Option<usize>>,
     indices: HashMap<SlotId, usize>,
     /// Each game's first slot in shown order.
     first: HashMap<String, usize>,
+}
+
+/// A section header to lay out: what it shows and the card slot it sits
+/// before. A collapsed section's header sits before the next section's.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct Header {
+    pub(crate) key: SectionKey,
+    /// How many games the section holds, collapsed or not.
+    pub(crate) count: usize,
+    pub(crate) collapsed: bool,
+    pub(crate) at: usize,
+}
+
+/// A header and the full-width row it sits in.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct HeaderPlace {
+    pub(crate) header: Header,
+    pub(crate) slot: Rectangle,
 }
 
 /// What `Places` is measured from, besides the zoom and dock it names.
@@ -328,10 +354,40 @@ pub(crate) struct PlacesKey {
 }
 
 impl Places {
+    /// Cards with no sections, as the flat library lays them out.
+    #[cfg(test)]
     pub(crate) fn new(
         ids: Vec<SlotId>,
         heights: &[f32],
         widths: &[f32],
+        columns: usize,
+        shift: f32,
+        layout: GridLayout,
+        mode: ViewLayout,
+    ) -> Self {
+        let width = widths.first().copied().unwrap_or(layout.card_width);
+        Self::sectioned(
+            ids,
+            heights,
+            widths,
+            Vec::new(),
+            width,
+            columns,
+            shift,
+            layout,
+            mode,
+        )
+    }
+
+    /// Cards with `headers` among them, each slot `width` wide for the
+    /// headers' span when no card says otherwise.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn sectioned(
+        ids: Vec<SlotId>,
+        heights: &[f32],
+        widths: &[f32],
+        headers: Vec<Header>,
+        width: f32,
         columns: usize,
         shift: f32,
         layout: GridLayout,
@@ -343,7 +399,18 @@ impl Places {
             .zip(widths)
             .map(|(height, width)| Size::new(*width, *height))
             .collect();
-        let (points, height) = slots(&sizes, columns, shift, row_gap(mode));
+        let breaks: Vec<usize> = headers.iter().map(|header| header.at).collect();
+        let arranged = arrange(&sizes, &breaks, columns, shift, row_gap(mode));
+        let span = span(width, columns);
+        let headers = headers
+            .into_iter()
+            .zip(&arranged.headers)
+            .map(|(header, point)| HeaderPlace {
+                header,
+                slot: Rectangle::new(*point, Size::new(span, HEADER_HEIGHT)),
+            })
+            .collect();
+        let (points, height) = (arranged.cards, arranged.height);
         let mut first = HashMap::new();
         for (index, id) in ids.iter().enumerate() {
             first.entry(id.name().to_owned()).or_insert(index);
@@ -361,11 +428,39 @@ impl Places {
                 .zip(sizes)
                 .map(|(point, size)| Rectangle::new(point, size))
                 .collect(),
+            headers,
             columns,
             height,
             layout,
             mode,
+            below: arranged.below,
         }
+    }
+
+    /// The card slots in rows that reach into `top..bottom`, each row as
+    /// tall as its tallest card, the way the flat grid's rows always were.
+    pub(crate) fn between(&self, top: f32, bottom: f32) -> std::ops::Range<usize> {
+        let (mut first, mut last) = (None, 0);
+        let mut start = 0;
+        while start < self.slots.len() {
+            let y = self.slots[start].y;
+            let end = (start..self.slots.len())
+                .find(|&index| self.slots[index].y != y)
+                .unwrap_or(self.slots.len());
+            if y > bottom {
+                break;
+            }
+            let height = self.slots[start..end]
+                .iter()
+                .map(|slot| slot.height)
+                .fold(0.0, f32::max);
+            if y + height >= top {
+                first.get_or_insert(start);
+                last = end;
+            }
+            start = end;
+        }
+        first.map_or(0..0, |first| first..last)
     }
 
     pub(crate) fn index(&self, id: &SlotId) -> Option<usize> {
@@ -426,6 +521,48 @@ pub(crate) struct Leaving {
     pub(crate) opacity: f32,
 }
 
+/// A header that left the grid, drawn where it was while it fades out.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct LeavingHeader {
+    pub(crate) header: Header,
+    pub(crate) bounds: Rectangle,
+    pub(crate) opacity: f32,
+}
+
+/// Where a body sets out from: where it's drawn, how fast, and how faded.
+type Start = (Point, Vector, f32);
+
+/// A body for `slot` springing from `start`, or fading in there.
+fn body_from(start: Option<Start>, slot: Rectangle, delay: Instant) -> Body {
+    let (drawn, velocity, opacity) = start.unwrap_or((slot.position(), Vector::ZERO, 0.0));
+    let offset = drawn - slot.position();
+    Body {
+        slot,
+        x: Spring::at(offset.x, velocity.x, delay),
+        y: Spring::at(offset.y, velocity.y, delay),
+        from: offset,
+        opacity,
+    }
+}
+
+fn start_of(body: &Body) -> Start {
+    (
+        body.slot.position() + body.offset(),
+        Vector::new(body.x.velocity, body.y.velocity),
+        body.opacity,
+    )
+}
+
+fn resting(slot: Rectangle, now: Instant) -> Body {
+    Body {
+        slot,
+        x: Spring::at(0.0, 0.0, now),
+        y: Spring::at(0.0, 0.0, now),
+        from: Vector::ZERO,
+        opacity: 1.0,
+    }
+}
+
 /// The one thing that moves the grid's cards. Each card, by slot, is drawn
 /// at an offset from its slot that springs back to zero, so any change of
 /// slots carries every card on from where it's drawn now. Cards that arrive
@@ -434,6 +571,11 @@ pub(crate) struct Leaving {
 pub(crate) struct GridMotion {
     bodies: HashMap<SlotId, Body>,
     leaving: Vec<Leaving>,
+    /// Section headers move with the cards, by section.
+    headers: HashMap<SectionKey, Body>,
+    leaving_headers: Vec<LeavingHeader>,
+    /// The headers last given, for what one shows as it leaves.
+    shown_headers: Vec<Header>,
     columns: usize,
     height: f32,
     layout: GridLayout,
@@ -455,20 +597,20 @@ impl GridMotion {
             .ids
             .iter()
             .zip(&places.slots)
-            .map(|(id, slot)| {
-                (
-                    id.clone(),
-                    Body {
-                        slot: *slot,
-                        x: Spring::at(0.0, 0.0, now),
-                        y: Spring::at(0.0, 0.0, now),
-                        from: Vector::ZERO,
-                        opacity: 1.0,
-                    },
-                )
-            })
+            .map(|(id, slot)| (id.clone(), resting(*slot, now)))
+            .collect();
+        self.headers = places
+            .headers
+            .iter()
+            .map(|place| (place.header.key.clone(), resting(place.slot, now)))
+            .collect();
+        self.shown_headers = places
+            .headers
+            .iter()
+            .map(|place| place.header.clone())
             .collect();
         self.leaving.clear();
+        self.leaving_headers.clear();
         self.columns = places.columns;
         self.height = places.height;
         self.layout = places.layout;
@@ -491,29 +633,60 @@ impl GridMotion {
             } else {
                 now + stagger(index)
             };
-            let (drawn, velocity, opacity) = if let Some(body) = old.remove(id) {
-                (
-                    body.slot.position() + body.offset(),
-                    Vector::new(body.x.velocity, body.y.velocity),
-                    body.opacity,
-                )
+            let start = if let Some(body) = old.remove(id) {
+                Some(start_of(&body))
             } else if let Some(at) = self.leaving.iter().position(|card| &card.id == id) {
                 let card = self.leaving.remove(at);
-                (card.bounds.position(), Vector::ZERO, card.opacity)
+                Some((card.bounds.position(), Vector::ZERO, card.opacity))
             } else {
-                (slot.position(), Vector::ZERO, 0.0)
+                None
             };
-            let offset = drawn - slot.position();
-            let body = Body {
-                slot: *slot,
-                x: Spring::at(offset.x, velocity.x, delay),
-                y: Spring::at(offset.y, velocity.y, delay),
-                from: offset,
-                opacity,
-            };
-            moving |= body.moving() || velocity != Vector::ZERO;
+            let body = body_from(start, *slot, delay);
+            moving |=
+                body.moving() || start.is_some_and(|(_, velocity, _)| velocity != Vector::ZERO);
             self.bodies.insert(id.clone(), body);
         }
+        let mut old_headers = std::mem::take(&mut self.headers);
+        for place in &places.headers {
+            let key = &place.header.key;
+            let start = if let Some(body) = old_headers.remove(key) {
+                Some(start_of(&body))
+            } else if let Some(at) = self
+                .leaving_headers
+                .iter()
+                .position(|leaving| &leaving.header.key == key)
+            {
+                let leaving = self.leaving_headers.remove(at);
+                Some((leaving.bounds.position(), Vector::ZERO, leaving.opacity))
+            } else {
+                None
+            };
+            let delay = if was_active { now } else { now + stagger(0) };
+            let body = body_from(start, place.slot, delay);
+            moving |=
+                body.moving() || start.is_some_and(|(_, velocity, _)| velocity != Vector::ZERO);
+            self.headers.insert(key.clone(), body);
+        }
+        // The labels a header left with, for drawing it while it fades.
+        let labels: HashMap<SectionKey, Header> = self
+            .shown_headers
+            .drain(..)
+            .map(|header| (header.key.clone(), header))
+            .collect();
+        for (key, body) in old_headers {
+            if let Some(header) = labels.get(&key) {
+                self.leaving_headers.push(LeavingHeader {
+                    header: header.clone(),
+                    bounds: Rectangle::new(body.slot.position() + body.offset(), body.slot.size()),
+                    opacity: body.opacity,
+                });
+            }
+        }
+        self.shown_headers = places
+            .headers
+            .iter()
+            .map(|place| place.header.clone())
+            .collect();
         let mut left: Vec<_> = old.into_iter().collect();
         // Shown order, so the oldest cards draw first, beneath the rest.
         left.sort_by(|(_, a), (_, b)| {
@@ -528,7 +701,8 @@ impl GridMotion {
                 layout: self.layout,
                 opacity: body.opacity,
             }));
-        self.hold = (!self.leaving.is_empty()).then_some(previous_height);
+        self.hold = (!self.leaving.is_empty() || !self.leaving_headers.is_empty())
+            .then_some(previous_height);
         self.columns = places.columns;
         self.height = places.height;
         self.layout = places.layout;
@@ -546,6 +720,16 @@ impl GridMotion {
                 body.slot = *slot;
             }
         }
+        for place in &places.headers {
+            if let Some(body) = self.headers.get_mut(&place.header.key) {
+                body.slot = place.slot;
+            }
+        }
+        self.shown_headers = places
+            .headers
+            .iter()
+            .map(|place| place.header.clone())
+            .collect();
         self.columns = places.columns;
         self.height = places.height;
         self.layout = places.layout;
@@ -557,7 +741,12 @@ impl GridMotion {
         let same = places.columns == self.columns
             && places.layout.text == self.layout.text
             && places.ids.len() == self.bodies.len()
-            && places.ids.iter().all(|id| self.bodies.contains_key(id));
+            && places.ids.iter().all(|id| self.bodies.contains_key(id))
+            && places.headers.len() == self.headers.len()
+            && places
+                .headers
+                .iter()
+                .all(|place| self.headers.contains_key(&place.header.key));
         if same {
             self.scale_to(places);
         } else {
@@ -573,7 +762,7 @@ impl GridMotion {
         self.last_tick = Some(now);
         let fade = now.saturating_duration_since(previous).as_secs_f32() / FADE.as_secs_f32();
         let settled = self.deadline.is_some_and(|deadline| now >= deadline);
-        for body in self.bodies.values_mut() {
+        for body in self.bodies.values_mut().chain(self.headers.values_mut()) {
             if let Some(deadline) = self.deadline {
                 if settled {
                     body.x.rest(0.0);
@@ -591,8 +780,12 @@ impl GridMotion {
         for card in &mut self.leaving {
             card.opacity -= fade;
         }
+        for header in &mut self.leaving_headers {
+            header.opacity -= fade;
+        }
         self.leaving.retain(|card| card.opacity > 0.0);
-        if self.leaving.is_empty() {
+        self.leaving_headers.retain(|header| header.opacity > 0.0);
+        if self.leaving.is_empty() && self.leaving_headers.is_empty() {
             self.hold = None;
         }
         if !self.active() {
@@ -604,7 +797,12 @@ impl GridMotion {
     pub(crate) fn active(&self) -> bool {
         self.deadline.is_some()
             || !self.leaving.is_empty()
-            || self.bodies.values().any(|body| body.opacity < 1.0)
+            || !self.leaving_headers.is_empty()
+            || self
+                .bodies
+                .values()
+                .chain(self.headers.values())
+                .any(|body| body.opacity < 1.0)
     }
 
     pub(crate) fn generation(&self) -> u64 {
@@ -635,6 +833,19 @@ impl GridMotion {
         &self.leaving
     }
 
+    /// How far from its row the header of `key` is drawn.
+    pub(crate) fn header_offset(&self, key: &SectionKey) -> Vector {
+        self.headers.get(key).map_or(Vector::ZERO, Body::offset)
+    }
+
+    pub(crate) fn header_opacity(&self, key: &SectionKey) -> f32 {
+        self.headers.get(key).map_or(1.0, |body| body.opacity)
+    }
+
+    pub(crate) fn leaving_headers(&self) -> &[LeavingHeader] {
+        &self.leaving_headers
+    }
+
     /// The content height kept for cards fading out.
     pub(crate) fn hold(&self) -> Option<f32> {
         self.hold
@@ -659,8 +870,14 @@ impl GridMotion {
     /// overshoot, fade out, or hold the height for those that did.
     pub(crate) fn content_height(&self, places: &Places) -> f32 {
         let moving = (0..places.ids.len()).map(|index| self.drawn(places, index));
+        let headers = places
+            .headers
+            .iter()
+            .map(|place| place.slot + self.header_offset(&place.header.key));
         moving
+            .chain(headers)
             .chain(self.leaving.iter().map(|card| card.bounds))
+            .chain(self.leaving_headers.iter().map(|header| header.bounds))
             .map(|bounds| bounds.y + bounds.height + PADDING)
             .fold(places.height, f32::max)
             .max(self.hold.unwrap_or(0.0))
@@ -670,11 +887,14 @@ impl GridMotion {
     fn content_height_now(&self) -> f32 {
         self.bodies
             .values()
+            .chain(self.headers.values())
             .map(|body| body.slot.y + body.offset().y + body.slot.height + PADDING)
             .chain(
                 self.leaving
                     .iter()
-                    .map(|card| card.bounds.y + card.bounds.height + PADDING),
+                    .map(|card| card.bounds)
+                    .chain(self.leaving_headers.iter().map(|header| header.bounds))
+                    .map(|bounds| bounds.y + bounds.height + PADDING),
             )
             .fold(self.height, f32::max)
             .max(self.hold.unwrap_or(0.0))
@@ -751,6 +971,7 @@ pub(crate) fn row_gap(mode: ViewLayout) -> f32 {
 
 /// The cards whose rows overlap `top..bottom`, with rows stacked the way
 /// `slots` stacks them: each as tall as its tallest card.
+#[cfg(test)]
 pub(crate) fn cards_between(
     heights: &[f32],
     columns: usize,
@@ -792,28 +1013,74 @@ pub(crate) fn card_tops(heights: &[f32], columns: usize) -> (Vec<f32>, f32) {
     (tops, height)
 }
 
-/// Each slot's top left and the content height, with `sizes` in rows of
-/// `columns`, each slot as wide as its own size says and each row as tall
-/// as its tallest, `gap` apart.
-fn slots(sizes: &[Size], columns: usize, shift: f32, gap: f32) -> (Vec<Point>, f32) {
-    let mut result = Vec::with_capacity(sizes.len());
+/// Where `arrange` put the cards and headers.
+#[derive(Debug, Clone, Default, PartialEq)]
+struct Arranged {
+    cards: Vec<Point>,
+    headers: Vec<Point>,
+    /// Each card's neighbor in the next row of its section, same column.
+    below: Vec<Option<usize>>,
+    height: f32,
+}
+
+/// The headers' span: every column, gaps included.
+fn span(width: f32, columns: usize) -> f32 {
+    let columns = columns.max(1) as f32;
+    columns * width + (columns - 1.0) * GAP
+}
+
+/// Each card slot's and header's top left and the content height. Cards go
+/// in rows of `columns`, each slot as wide as its own size says and each
+/// row as tall as its tallest, `gap` apart. A header sits before the card
+/// its `breaks` entry names, in a row of its own, and the cards after it
+/// start a new row. With no headers this is the flat grid.
+fn arrange(sizes: &[Size], breaks: &[usize], columns: usize, shift: f32, gap: f32) -> Arranged {
+    let columns = columns.max(1);
+    let count = sizes.len();
+    let mut arranged = Arranged {
+        cards: Vec::with_capacity(count),
+        headers: Vec::with_capacity(breaks.len()),
+        below: Vec::with_capacity(count),
+        height: 2.0 * PADDING,
+    };
+    let left = PADDING + shift;
     let mut y = PADDING;
-    for row in sizes.chunks(columns.max(1)) {
-        let mut x = PADDING + shift;
-        for size in row {
-            result.push(Point::new(x, y));
-            x += size.width + GAP;
+    let mut placed = false;
+    let lead = breaks.first().copied().unwrap_or(count).min(count);
+    let sections =
+        std::iter::once((false, 0..lead)).chain(breaks.iter().enumerate().map(|(index, &at)| {
+            let end = breaks.get(index + 1).copied().unwrap_or(count).min(count);
+            (true, at.min(end)..end)
+        }));
+    for (header, cards) in sections {
+        if header {
+            arranged.headers.push(Point::new(left, y));
+            y += HEADER_HEIGHT + gap;
+            placed = true;
         }
-        y += row.iter().map(|size| size.height).fold(0.0, f32::max) + gap;
+        let end = cards.end;
+        for row in cards.step_by(columns) {
+            let row = row..(row + columns).min(end);
+            let mut x = left;
+            for index in row.clone() {
+                arranged.cards.push(Point::new(x, y));
+                arranged
+                    .below
+                    .push((index + columns < end).then_some(index + columns));
+                x += sizes[index].width + GAP;
+            }
+            y += sizes[row]
+                .iter()
+                .map(|size| size.height)
+                .fold(0.0, f32::max)
+                + gap;
+            placed = true;
+        }
     }
-    (
-        result,
-        if sizes.is_empty() {
-            2.0 * PADDING
-        } else {
-            y - gap + PADDING
-        },
-    )
+    if placed {
+        arranged.height = y - gap + PADDING;
+    }
+    arranged
 }
 
 pub(crate) fn bounded_axis(from: f32, to: f32, progress: f32) -> f32 {
@@ -860,13 +1127,71 @@ pub(crate) struct CardDetails<'a, Message> {
     pub(crate) top: f32,
 }
 
+/// A shown section header: its section and its element.
+pub(crate) struct GridHeader<'a, Message> {
+    pub(crate) key: SectionKey,
+    pub(crate) element: Element<'a, Message>,
+}
+
+/// A header leaving the grid, drawn where it was as it fades.
+pub(crate) struct OutgoingHeader<'a, Message> {
+    pub(crate) key: SectionKey,
+    pub(crate) bounds: Rectangle,
+    pub(crate) element: Element<'a, Message>,
+}
+
+/// The section headers the grid lays out among its cards: the shown ones,
+/// each before the card its `breaks` entry names, and the leaving ones.
+pub(crate) struct Headers<'a, Message> {
+    pub(crate) shown: Vec<GridHeader<'a, Message>>,
+    pub(crate) breaks: Vec<usize>,
+    pub(crate) leaving: Vec<OutgoingHeader<'a, Message>>,
+}
+
+impl<Message> Default for Headers<'_, Message> {
+    fn default() -> Self {
+        Self {
+            shown: Vec::new(),
+            breaks: Vec::new(),
+            leaving: Vec::new(),
+        }
+    }
+}
+
 /// The grid of `cards` in shown order, then `leaving` drawn beneath them,
 /// with every card's details `drift` below their place. `open` picks the
 /// docked panel's column count.
+#[cfg(test)]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn grid<'a, Message: Clone + 'a>(
     cards: Vec<GridCard<'a, Message>>,
     leaving: Vec<Outgoing<'a, Message>>,
+    motion: &GridMotion,
+    open: bool,
+    scene: Option<Scene<'a, Message>>,
+    layout: GridLayout,
+    mode: ViewLayout,
+    drift: f32,
+) -> Element<'a, Message> {
+    sectioned(
+        cards,
+        leaving,
+        Headers::default(),
+        motion,
+        open,
+        scene,
+        layout,
+        mode,
+        drift,
+    )
+}
+
+/// `grid` with section headers among the cards.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn sectioned<'a, Message: Clone + 'a>(
+    cards: Vec<GridCard<'a, Message>>,
+    leaving: Vec<Outgoing<'a, Message>>,
+    headers: Headers<'a, Message>,
     motion: &GridMotion,
     open: bool,
     scene: Option<Scene<'a, Message>>,
@@ -895,7 +1220,28 @@ pub(crate) fn grid<'a, Message: Clone + 'a>(
         outgoing.push(card.bounds);
         elements.push(card.card);
     }
+    // Details are only ever a card's, so they index the cards alone.
     let mut details_of = vec![None; elements.len()];
+    let Headers {
+        shown: shown_headers,
+        breaks,
+        leaving: leaving_headers,
+    } = headers;
+    let header_offsets = shown_headers
+        .iter()
+        .map(|header| motion.header_offset(&header.key))
+        .collect();
+    let header_count = shown_headers.len();
+    for header in shown_headers {
+        keys.push(Child::Header(header.key));
+        elements.push(header.element);
+    }
+    let mut outgoing_headers = Vec::with_capacity(leaving_headers.len());
+    for header in leaving_headers {
+        keys.push(Child::Header(header.key));
+        outgoing_headers.push(header.bounds);
+        elements.push(header.element);
+    }
     for (index, key, details) in details {
         details_of[index] = Some((elements.len(), details.top));
         keys.push(key);
@@ -908,6 +1254,10 @@ pub(crate) fn grid<'a, Message: Clone + 'a>(
         details_of,
         offsets,
         outgoing,
+        headers: header_count,
+        breaks,
+        header_offsets,
+        outgoing_headers,
         hold: motion.hold().unwrap_or(0.0),
         open,
         layout,
@@ -922,10 +1272,12 @@ pub(crate) fn grid<'a, Message: Clone + 'a>(
 enum Child {
     Card(SlotId),
     Details(SlotId),
+    Header(SectionKey),
 }
 
 struct Grid<'a, Message> {
-    /// The shown cards, then the leaving ones, then the cards' details.
+    /// The shown cards, then the leaving ones, then the shown headers and
+    /// the leaving ones, then the cards' details.
     cards: Vec<Element<'a, Message>>,
     keys: Vec<Child>,
     shown: usize,
@@ -934,6 +1286,12 @@ struct Grid<'a, Message> {
     details_of: Vec<Option<(usize, f32)>>,
     offsets: Vec<Vector>,
     outgoing: Vec<Rectangle>,
+    /// How many shown headers follow the leaving cards.
+    headers: usize,
+    /// The card each shown header sits before.
+    breaks: Vec<usize>,
+    header_offsets: Vec<Vector>,
+    outgoing_headers: Vec<Rectangle>,
     hold: f32,
     open: bool,
     layout: GridLayout,
@@ -942,11 +1300,40 @@ struct Grid<'a, Message> {
     drift: f32,
 }
 
-/// The card drawn below the one at `index`: the next row's, in the same
-/// column.
+impl<Message> Grid<'_, Message> {
+    /// The first header child.
+    fn first_header(&self) -> usize {
+        self.shown + self.outgoing.len()
+    }
+
+    /// The first details child, after every card and header.
+    fn first_details(&self) -> usize {
+        self.first_header() + self.headers + self.outgoing_headers.len()
+    }
+
+    /// The shown headers' children.
+    fn header_range(&self) -> std::ops::Range<usize> {
+        self.first_header()..self.first_header() + self.headers
+    }
+}
+
+/// The card drawn below the one at `index` in a flat grid: the next row's,
+/// in the same column.
+#[cfg(test)]
 fn below(index: usize, columns: usize, shown: usize) -> Option<usize> {
-    let below = index + columns.max(1);
-    (below < shown).then_some(below)
+    let sizes = vec![Size::new(1.0, 1.0); shown];
+    arrange(&sizes, &[], columns, 0.0, GAP)
+        .below
+        .get(index)
+        .copied()
+        .flatten()
+}
+
+/// Each slot's top left and the content height in a flat grid.
+#[cfg(test)]
+fn slots(sizes: &[Size], columns: usize, shift: f32, gap: f32) -> (Vec<Point>, f32) {
+    let arranged = arrange(sizes, &[], columns, shift, gap);
+    (arranged.cards, arranged.height)
 }
 
 /// Where a card's details may draw: across the card, from its top down to
@@ -969,7 +1356,10 @@ struct GridState {
     layout: GridLayout,
     mode: ViewLayout,
     sizes: Vec<Size>,
+    breaks: Vec<usize>,
     slots: Vec<Point>,
+    header_slots: Vec<Point>,
+    below: Vec<Option<usize>>,
     looks: Vec<Look>,
     /// The details' nodes, kept out of the grid's own so its children
     /// stay one per card.
@@ -1080,52 +1470,66 @@ impl<Message: Clone> Widget<Message, Theme, Renderer> for Grid<'_, Message> {
     ) -> layout::Node {
         let width = limits.max().width;
         let card_limits = limits.loose();
+        let grid = self.layout;
+        let mode = self.mode;
+        let columns = columns_for_viewport(width, self.open, grid, mode);
+        // Measured as `Places` measures them, whatever size a card's
+        // element came out.
+        let slot_width = width_for_viewport(width, self.open, grid, mode);
+        let header_size = Size::new(span(slot_width, columns), HEADER_HEIGHT);
+        let first_header = self.first_header();
+        let first_leaving_header = first_header + self.headers;
+        let first_details = self.first_details();
         let nodes: Vec<_> = self
             .cards
             .iter_mut()
             .zip(&mut tree.children)
             .enumerate()
             .map(|(index, (card, state))| {
-                // A leaving card keeps the size it left with.
-                let limits = match index.checked_sub(self.shown) {
-                    Some(leaving) if leaving < self.outgoing.len() => {
-                        layout::Limits::new(Size::ZERO, self.outgoing[leaving].size())
-                    }
-                    _ => card_limits,
+                let limits = if index < self.shown || index >= first_details {
+                    card_limits
+                } else if index < first_header {
+                    // A leaving card keeps the size it left with.
+                    layout::Limits::new(Size::ZERO, self.outgoing[index - self.shown].size())
+                } else if index < first_leaving_header {
+                    layout::Limits::new(Size::ZERO, header_size)
+                } else {
+                    layout::Limits::new(
+                        Size::ZERO,
+                        self.outgoing_headers[index - first_leaving_header].size(),
+                    )
                 };
                 card.as_widget_mut().layout(state, renderer, &limits)
             })
             .collect();
         let sizes: Vec<_> = nodes[..self.shown].iter().map(layout::Node::size).collect();
         let state = tree.state.downcast_mut::<GridState>();
-        let grid = self.layout;
-        let mode = self.mode;
         if state.width != width
             || state.open != self.open
             || state.layout != grid
             || state.mode != mode
             || state.sizes != sizes
+            || state.breaks != self.breaks
         {
             state.width = width;
             state.open = self.open;
             state.layout = grid;
             state.mode = mode;
             state.sizes = sizes.clone();
-            let columns = columns_for_viewport(width, self.open, grid, mode);
+            state.breaks = self.breaks.clone();
             let shift = shift_for_viewport(width, self.open, grid, mode);
-            // Measured as `Places` measures them, whatever size a card's
-            // element came out.
-            let slot_width = width_for_viewport(width, self.open, grid, mode);
             let measured: Vec<Size> = sizes
                 .iter()
                 .map(|size| Size::new(slot_width, size.height))
                 .collect();
-            state.slots = slots(&measured, columns, shift, row_gap(mode)).0;
+            let arranged = arrange(&measured, &self.breaks, columns, shift, row_gap(mode));
+            state.slots = arranged.cards;
+            state.header_slots = arranged.headers;
+            state.below = arranged.below;
         }
         let mut height = (2.0 * PADDING).max(self.hold);
         let collapse = self.scene.as_ref().map(|scene| scene.collapse);
         state.looks.clear();
-        let first_details = self.shown + self.outgoing.len();
         let mut children: Vec<layout::Node> = nodes
             .into_iter()
             .enumerate()
@@ -1134,7 +1538,26 @@ impl<Message: Clone> Widget<Message, Theme, Renderer> for Grid<'_, Message> {
                 if index >= first_details {
                     return node;
                 }
-                let Some(slot) = state.slots.get(index) else {
+                if index >= first_leaving_header {
+                    let bounds = self.outgoing_headers[index - first_leaving_header];
+                    height = height.max(bounds.y + bounds.height + PADDING);
+                    return node.move_to(bounds.position());
+                }
+                if index >= first_header {
+                    let header = index - first_header;
+                    let Some(slot) = state.header_slots.get(header) else {
+                        return node;
+                    };
+                    let offset = self
+                        .header_offsets
+                        .get(header)
+                        .copied()
+                        .unwrap_or(Vector::ZERO);
+                    let position = *slot + offset;
+                    height = height.max(position.y + HEADER_HEIGHT + PADDING);
+                    return node.move_to(position);
+                }
+                let Some(slot) = state.slots.get(index).filter(|_| index < self.shown) else {
                     let bounds = self.outgoing[index - self.shown];
                     height = height.max(bounds.y + bounds.height + PADDING);
                     return node.move_to(bounds.position());
@@ -1156,7 +1579,6 @@ impl<Message: Clone> Widget<Message, Theme, Renderer> for Grid<'_, Message> {
             })
             .collect();
         state.details = children.split_off(first_details.min(children.len()));
-        let columns = columns_for_viewport(width, self.open, grid, mode);
         state.bands = vec![None; self.details_of.len()];
         for (index, details) in self.details_of.iter().enumerate() {
             let Some((details, top)) = details.map(|(child, top)| (child - first_details, top))
@@ -1175,7 +1597,11 @@ impl<Message: Clone> Widget<Message, Theme, Renderer> for Grid<'_, Message> {
             if !matches!(state.look(index), Look::Normal(_)) {
                 continue;
             }
-            let below = below(index, columns, self.shown)
+            let below = state
+                .below
+                .get(index)
+                .copied()
+                .flatten()
                 .filter(|below| matches!(state.look(*below), Look::Normal(_)))
                 .map(|below| children[below].bounds());
             state.bands[index] = band_clip(card, state.details[details].bounds(), below);
@@ -1203,6 +1629,17 @@ impl<Message: Clone> Widget<Message, Theme, Renderer> for Grid<'_, Message> {
                         operation.container(Some(&slot.widget_id()), layout.bounds());
                     }
                     card.as_widget_mut()
+                        .operate(state, layout, renderer, operation);
+                });
+            // Headers take Tab focus, in shown order; leaving ones don't.
+            let headers = self.header_range();
+            self.cards[headers.clone()]
+                .iter_mut()
+                .zip(&mut tree.children[headers.clone()])
+                .zip(layout.children().skip(headers.start))
+                .for_each(|((header, state), layout)| {
+                    header
+                        .as_widget_mut()
                         .operate(state, layout, renderer, operation);
                 });
         });
@@ -1243,7 +1680,21 @@ impl<Message: Clone> Widget<Message, Theme, Renderer> for Grid<'_, Message> {
             }
             return;
         }
-        // Leaving cards take no input.
+        // Leaving cards and headers take no input. Headers never overlap
+        // a card's slot, so they hear events after the cards.
+        let headers = self.header_range();
+        for ((header, state), layout) in self.cards[headers.clone()]
+            .iter_mut()
+            .zip(&mut tree.children[headers.clone()])
+            .zip(layout.children().skip(headers.start))
+        {
+            header.as_widget_mut().update(
+                state, event, layout, cursor, renderer, clipboard, shell, viewport,
+            );
+            if shell.is_event_captured() {
+                return;
+            }
+        }
         for ((card, state), layout) in self.cards[..self.shown]
             .iter_mut()
             .zip(&mut tree.children)
@@ -1280,7 +1731,7 @@ impl<Message: Clone> Widget<Message, Theme, Renderer> for Grid<'_, Message> {
             .zip(layout.children())
             .collect();
         let (shown, leaving) = children.split_at(self.shown.min(children.len()));
-        let first_details = self.shown + self.outgoing.len();
+        let first_details = self.first_details();
         let origin = layout.position() - Point::ORIGIN;
         let drift = Vector::new(0.0, self.drift);
         let draw_details = |renderer: &mut Renderer, index: usize| {
@@ -1315,12 +1766,22 @@ impl<Message: Clone> Widget<Message, Theme, Renderer> for Grid<'_, Message> {
                 });
             });
         };
-        for (index, ((card, state), layout)) in leaving.iter().enumerate() {
+        let leaving_cards = self.outgoing.len().min(leaving.len());
+        for (index, ((card, state), layout)) in leaving[..leaving_cards].iter().enumerate() {
             if layout.bounds().intersects(viewport) {
                 card.as_widget()
                     .draw(state, renderer, theme, style, *layout, cursor, viewport);
             }
             draw_details(renderer, self.shown + index);
+        }
+        // Headers draw beneath the cards, which spring across them.
+        let headers = self.headers + self.outgoing_headers.len();
+        for ((header, state), layout) in leaving[leaving_cards..].iter().take(headers).rev() {
+            if layout.bounds().intersects(viewport) {
+                header
+                    .as_widget()
+                    .draw(state, renderer, theme, style, *layout, cursor, viewport);
+            }
         }
         for (index, ((card, state), layout)) in shown.iter().enumerate() {
             let layout = *layout;
@@ -1378,10 +1839,17 @@ impl<Message: Clone> Widget<Message, Theme, Renderer> for Grid<'_, Message> {
                 mouse::Interaction::default()
             };
         }
+        let headers = self.header_range();
         self.cards[..self.shown]
             .iter()
             .zip(&tree.children)
             .zip(layout.children())
+            .chain(
+                self.cards[headers.clone()]
+                    .iter()
+                    .zip(&tree.children[headers.clone()])
+                    .zip(layout.children().skip(headers.start)),
+            )
             .rev()
             .find_map(|((card, state), layout)| {
                 if !cursor.is_over(layout.bounds()) {

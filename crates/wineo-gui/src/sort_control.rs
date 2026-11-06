@@ -4,7 +4,7 @@
 use iced::keyboard::{Key, Modifiers, key::Named};
 use iced::widget::{button, column, container, row, scrollable, text, tooltip};
 use iced::{Center, Element, Fill, Font, Point, Rectangle, Task, border, font};
-use wineo_core::library::{self, RandomPool, SortKey, ViewLayout};
+use wineo_core::library::{self, GroupBy, RandomPool, SortKey, ViewLayout};
 use wineo_core::paths::Paths;
 
 use crate::grid::{
@@ -20,6 +20,11 @@ use crate::{App, Message, focus_button, rescan};
 pub(crate) const SORT_BUTTON_ID: &str = "library-sort";
 pub(crate) const DIRECTION_BUTTON_ID: &str = "library-sort-direction";
 const FAVORITES_FIRST_ID: &str = "library-sort-favorites-first";
+const GROUP_ID: &str = "library-sort-group";
+/// The Group by submenu's width, which fits its longest row.
+const GROUP_MENU_WIDTH: f32 = 160.0;
+/// The submenu's gap from the Sort menu's side.
+const GROUP_MENU_GAP: f32 = 4.0;
 const MENU_SCROLL_ID: &str = "library-sort-menu";
 const NOTICE_TIME: std::time::Duration = std::time::Duration::from_secs(8);
 
@@ -42,6 +47,10 @@ pub(crate) enum Event {
     Header(SortKey),
     FlipDirection,
     ToggleFavoritesFirst,
+    /// The Group by row, which opens its submenu.
+    OpenGroups,
+    /// A Group by submenu row.
+    Group(GroupBy),
     /// A write finished, with the value it wrote.
     Saved(Field, Result<(), String>),
 }
@@ -68,6 +77,7 @@ pub(crate) enum Field {
     PosterOnly(bool),
     Random(RandomPool),
     Layout(ViewLayout),
+    Group(GroupBy),
 }
 
 /// The value each field's write in flight is writing. One write per field
@@ -81,6 +91,7 @@ pub(crate) struct Writes {
     pub(crate) poster_only: Option<bool>,
     pub(crate) random: Option<RandomPool>,
     pub(crate) layout: Option<ViewLayout>,
+    pub(crate) group: Option<GroupBy>,
 }
 
 impl Writes {
@@ -93,6 +104,7 @@ impl Writes {
             Field::PosterOnly(_) => self.poster_only.is_some(),
             Field::Random(_) => self.random.is_some(),
             Field::Layout(_) => self.layout.is_some(),
+            Field::Group(_) => self.group.is_some(),
         }
     }
 
@@ -105,6 +117,7 @@ impl Writes {
             Field::PosterOnly(value) => self.poster_only = Some(value),
             Field::Random(value) => self.random = Some(value),
             Field::Layout(value) => self.layout = Some(value),
+            Field::Group(value) => self.group = Some(value),
         }
     }
 
@@ -117,6 +130,7 @@ impl Writes {
             || self.poster_only.is_some()
             || self.random.is_some()
             || self.layout.is_some()
+            || self.group.is_some()
     }
 
     fn finish(&mut self, field: Field) {
@@ -128,6 +142,7 @@ impl Writes {
             Field::PosterOnly(_) => self.poster_only = None,
             Field::Random(_) => self.random = None,
             Field::Layout(_) => self.layout = None,
+            Field::Group(_) => self.group = None,
         }
     }
 }
@@ -168,12 +183,37 @@ fn row_id(sort: SortKey) -> &'static str {
     }
 }
 
-/// The menu's focusable rows, in order.
+fn group_row_id(group: GroupBy) -> &'static str {
+    match group {
+        GroupBy::None => "library-group-none",
+        GroupBy::Tag => "library-group-tag",
+        GroupBy::Source => "library-group-source",
+        GroupBy::State => "library-group-state",
+    }
+}
+
+/// The sort rows and Favorites first, in order.
 fn menu_ids() -> Vec<&'static str> {
     SortKey::ALL
         .into_iter()
         .map(row_id)
         .chain([FAVORITES_FIRST_ID])
+        .collect()
+}
+
+/// Every focusable row of the menu, in order, with Group by's between the
+/// sort rows and Favorites first.
+fn cycle_ids() -> Vec<&'static str> {
+    let mut ids = menu_ids();
+    ids.insert(ids.len() - 1, GROUP_ID);
+    ids
+}
+
+/// The Group by submenu's rows, in order.
+fn group_ids() -> Vec<&'static str> {
+    crate::sections::GROUPS
+        .into_iter()
+        .map(group_row_id)
         .collect()
 }
 
@@ -187,6 +227,7 @@ pub(crate) fn save(paths: &Paths, watch: &rescan::Watch, field: Field) -> Result
         Field::PosterOnly(poster_only) => library::set_poster_only(paths, poster_only),
         Field::Random(random) => library::set_random(paths, random),
         Field::Layout(layout) => library::set_layout(paths, layout),
+        Field::Group(group) => library::set_group(paths, group),
     };
     watch.refresh_library(paths);
     result
@@ -223,6 +264,7 @@ impl App {
             Field::PosterOnly(_) => Field::PosterOnly(self.poster_only),
             Field::Random(_) => Field::Random(self.random_pool),
             Field::Layout(_) => Field::Layout(self.layout),
+            Field::Group(_) => Field::Group(self.group),
         }
     }
 
@@ -313,8 +355,31 @@ pub(crate) fn update(app: &mut App, event: Event) -> Task<Message> {
             app.sort_changed(Field::Descending(app.query.descending))
         }
         Event::ToggleFavoritesFirst => {
+            app.group_menu = false;
             app.query.favorites_first = !app.query.favorites_first;
             app.sort_changed(Field::FavoritesFirst(app.query.favorites_first))
+        }
+        Event::OpenGroups => {
+            if !app.sort_menu_shown() {
+                return Task::none();
+            }
+            // A second press closes it, like the menu's own button.
+            app.group_menu = !app.group_menu;
+            if app.group_menu {
+                iced::widget::operation::focus(iced::widget::Id::new(group_row_id(app.group)))
+            } else {
+                iced::widget::operation::focus(iced::widget::Id::new(GROUP_ID))
+            }
+        }
+        Event::Group(group) => {
+            app.sort_menu = false;
+            app.group_menu = false;
+            let focus = iced::widget::operation::focus(iced::widget::Id::new(SORT_BUTTON_ID));
+            if group == app.group {
+                return focus;
+            }
+            app.group = group;
+            Task::batch([focus, app.sort_changed(Field::Group(group))])
         }
         Event::Saved(written, result) => {
             app.view_writes.finish(written);
@@ -324,9 +389,11 @@ pub(crate) fn update(app: &mut App, event: Event) -> Task<Message> {
             if let Err(error) = result {
                 // The window keeps the view it chose.
                 let what = match written {
-                    Field::Zoom(_) | Field::PosterOnly(_) | Field::Random(_) | Field::Layout(_) => {
-                        "view"
-                    }
+                    Field::Zoom(_)
+                    | Field::PosterOnly(_)
+                    | Field::Random(_)
+                    | Field::Layout(_)
+                    | Field::Group(_) => "view",
                     _ => "sort",
                 };
                 app.feature_notice = Some((
@@ -350,6 +417,7 @@ pub(crate) fn update(app: &mut App, event: Event) -> Task<Message> {
 fn open_menu(app: &mut App, position: Point) -> Task<Message> {
     app.close_library_menus();
     app.sort_menu = true;
+    app.group_menu = false;
     app.sort_menu_position = position;
     // Focus moves into the menu, so a second Enter or Space picks a row
     // instead of closing it again.
@@ -360,6 +428,23 @@ fn open_menu(app: &mut App, position: Point) -> Task<Message> {
 /// arrows move through its rows, and the rows take Enter and Space
 /// themselves. Nothing else reaches the grid behind it.
 pub(crate) fn key(app: &mut App, key: &Key, modifiers: Modifiers) -> Task<Message> {
+    // The submenu has the keys while it's open: Escape and Left go back to
+    // its row, and the rest stay among its own rows.
+    if app.group_menu {
+        return match key {
+            Key::Named(Named::Escape | Named::ArrowLeft) => {
+                app.group_menu = false;
+                iced::widget::operation::focus(iced::widget::Id::new(GROUP_ID))
+            }
+            Key::Named(Named::Tab | Named::ArrowDown | Named::ArrowUp) => {
+                let reverse = *key == Key::Named(Named::ArrowUp)
+                    || (*key == Key::Named(Named::Tab) && modifiers.shift());
+                iced::advanced::widget::operate(focus_button::cycle(&group_ids(), reverse))
+                    .discard()
+            }
+            _ => Task::none(),
+        };
+    }
     match key {
         Key::Named(Named::Escape) => {
             app.sort_menu = false;
@@ -368,7 +453,7 @@ pub(crate) fn key(app: &mut App, key: &Key, modifiers: Modifiers) -> Task<Messag
         Key::Named(Named::Tab | Named::ArrowDown | Named::ArrowUp) => {
             let reverse = *key == Key::Named(Named::ArrowUp)
                 || (*key == Key::Named(Named::Tab) && modifiers.shift());
-            crate::library_menu::cycle(&menu_ids(), reverse, MENU_SCROLL_ID)
+            crate::library_menu::cycle(&cycle_ids(), reverse, MENU_SCROLL_ID)
         }
         _ => Task::none(),
     }
@@ -433,7 +518,8 @@ pub(crate) fn toolbar(app: &App) -> Element<'_, Message> {
     .into()
 }
 
-const MENU_ROWS: usize = SortKey::ALL.len() + 1;
+/// The sort rows, Group by, and Favorites first.
+const MENU_ROWS: usize = SortKey::ALL.len() + 2;
 
 fn menu_height(window_height: f32) -> f32 {
     let items = 1 + MENU_ROWS + 1;
@@ -475,6 +561,22 @@ impl App {
             .push(ui::separator(palette).padding([3, 0]))
             .push(menu_row(
                 row![
+                    text("Group by").size(14).width(Fill),
+                    text(crate::sections::label(self.group))
+                        .size(14)
+                        .color(palette.muted),
+                    icon(crate::sections::CHEVRON_RIGHT, palette.muted, 16.0),
+                ]
+                .spacing(6)
+                .align_y(Center)
+                .into(),
+                palette,
+                self.group_menu,
+                GROUP_ID,
+                Message::Sort(Event::OpenGroups),
+            ))
+            .push(menu_row(
+                row![
                     check_box(self.query.favorites_first, palette),
                     text("Favorites first").size(14),
                 ]
@@ -497,6 +599,69 @@ impl App {
         .height(height)
         .style(move |_| crate::library_menu::surface_style(palette));
         crate::library_menu::layers(menu.into(), position, Message::Sort(Event::CloseMenu))
+    }
+
+    /// The open Group by submenu, beside its row: on the Sort menu's right,
+    /// or its left when the window has no room there, kept inside it.
+    pub(crate) fn group_menu_view(&self) -> Option<Element<'_, Message>> {
+        if !self.group_menu {
+            return None;
+        }
+        let palette = self.palette;
+        let height = 2.0 * ACTION_MENU_PADDING
+            + crate::sections::GROUPS.len() as f32 * ui::BUTTON_HEIGHT
+            + (crate::sections::GROUPS.len() - 1) as f32 * ACTION_MENU_SPACING;
+        let menu = menu_position(
+            self.sort_menu_position,
+            self.window_size,
+            menu_height(self.window_size.height),
+        );
+        // The Group by row's top inside the menu: the heading and the sort
+        // rows above it, and the separator.
+        let row_top = menu.y
+            + ACTION_MENU_PADDING
+            + ACTION_MENU_HEADER_HEIGHT
+            + SortKey::ALL.len() as f32 * (ui::BUTTON_HEIGHT + ACTION_MENU_SPACING)
+            + ACTION_MENU_SPACING
+            + 7.0
+            + ACTION_MENU_SPACING
+            - ACTION_MENU_PADDING;
+        let right = menu.x + ACTION_MENU_WIDTH + GROUP_MENU_GAP;
+        let x = if right + GROUP_MENU_WIDTH + ACTION_MENU_MARGIN <= self.window_size.width {
+            right
+        } else {
+            (menu.x - GROUP_MENU_GAP - GROUP_MENU_WIDTH).max(ACTION_MENU_MARGIN)
+        };
+        let y = row_top.clamp(
+            ACTION_MENU_MARGIN,
+            (self.window_size.height - height - ACTION_MENU_MARGIN).max(ACTION_MENU_MARGIN),
+        );
+        let rows = crate::sections::GROUPS.into_iter().map(|group| {
+            menu_row(
+                text(crate::sections::label(group)).size(14).into(),
+                palette,
+                group == self.group,
+                group_row_id(group),
+                Message::Sort(Event::Group(group)),
+            )
+        });
+        let submenu = container(column(rows).spacing(ACTION_MENU_SPACING))
+            .padding(ACTION_MENU_PADDING)
+            .width(GROUP_MENU_WIDTH)
+            .height(height)
+            .style(move |_| crate::library_menu::surface_style(palette));
+        Some(
+            container(submenu)
+                .padding(iced::Padding {
+                    top: y,
+                    left: x,
+                    right: 0.0,
+                    bottom: 0.0,
+                })
+                .width(Fill)
+                .height(Fill)
+                .into(),
+        )
     }
 }
 

@@ -169,13 +169,15 @@ impl App {
                 .cards
                 .iter()
                 .zip(&cards)
-                .all(|(old, new)| order::same_inputs(old, new)))
+                .all(|(old, new)| order::same_inputs(old, new, self.group)))
         .then(|| {
             order::Order::sorted(order::Of {
                 cards: &cards,
                 search: &self.search,
                 query: self.query,
                 filters: &self.filters,
+                group: self.group,
+                collapsed: &self.collapsed,
             })
         });
         let layout_changed = new_order.as_ref().is_some_and(|built| {
@@ -185,6 +187,9 @@ impl App {
                 || old.iter().zip(indices).any(|(old, &index)| {
                     old.name != cards[index].name || old.display_title != cards[index].display_title
                 })
+                // A game can change sections without moving in the flat
+                // order, like a State section on a launch.
+                || !built.same_sections(&self.order.sections(self.order_inputs()), &self.cards, &cards)
         });
         if self
             .selected
@@ -212,6 +217,8 @@ impl App {
             search: &self.search,
             query: self.query,
             filters: &self.filters,
+            group: self.group,
+            collapsed: &self.collapsed,
         };
         match new_order {
             Some(built) => self.order.replace(built, of),

@@ -63,6 +63,7 @@ mod removal;
 mod remove_work;
 mod rescan;
 mod runner_label;
+mod sections;
 mod settings;
 mod shortcuts;
 mod sidebar;
@@ -163,10 +164,17 @@ pub(crate) struct App {
     filters: order::Filters,
     /// The held modifier keys, for a wheel turn the filter tab hands to the grid.
     modifiers: keyboard::Modifiers,
+    /// What the library is grouped into sections by, from the saved view.
+    group: wineo_core::library::GroupBy,
+    /// The sections collapsed this session. Never saved, and a key whose
+    /// section is gone stays until the session ends.
+    collapsed: BTreeSet<slot::SectionKey>,
     /// The shown order, rebuilt by `reorder`.
     order: order::Order,
     /// The sort menu is open.
     sort_menu: bool,
+    /// Its Group by submenu is open too.
+    group_menu: bool,
     sort_menu_position: iced::Point,
     view_writes: sort_control::Writes,
     /// Favorite and hidden writes in flight.
@@ -576,8 +584,11 @@ impl App {
             layout_thumb: panel_motion::PanelMotion::default(),
             filters: order::Filters::default(),
             modifiers: keyboard::Modifiers::empty(),
+            group: wineo_core::library::GroupBy::default(),
+            collapsed: BTreeSet::new(),
             order: order::Order::default(),
             sort_menu: false,
+            group_menu: false,
             sort_opening: library_menu::Opening::default(),
             filter_menu: false,
             filter_menu_position: iced::Point::ORIGIN,
@@ -720,6 +731,7 @@ impl App {
         app.poster_only = saved.view.poster_only;
         app.random_pool = saved.view.random;
         app.layout = saved.view.layout;
+        app.group = saved.view.group;
         app.layout_thumb
             .snap(app.layout == grid_motion::ViewLayout::Grid);
         app.query = saved.view.into();
@@ -930,6 +942,10 @@ impl App {
         // so it doesn't come back on its own later.
         if self.sort_menu && !self.sort_menu_shown() {
             self.sort_menu = false;
+        }
+        // The submenu only ever shows with its menu.
+        if self.group_menu && !self.sort_menu {
+            self.group_menu = false;
         }
         if self.filter_menu && !self.filter_menu_shown() {
             self.filter_menu = false;
@@ -1626,11 +1642,13 @@ impl App {
             self.collapse.fade(now);
         } else {
             let layout = self.grid_layout();
-            let filtered = self.filtered();
-            let heights: Vec<f32> = filtered
+            // The slots as drawn, sections and all, with the panel shut.
+            let places = self.grid_places();
+            let tallest = places
+                .slots
                 .iter()
-                .map(|card| grid::card_height(card, layout))
-                .collect();
+                .map(|slot| slot.height)
+                .fold(0.0, f32::max);
             let columns = grid_motion::columns_for_viewport(
                 self.viewport_width,
                 false,
@@ -1638,7 +1656,7 @@ impl App {
                 grid_motion::ViewLayout::Grid,
             );
             let floor = self.scroll_offset + self.viewport_height;
-            let visible = grid_motion::cards_between(&heights, columns, self.scroll_offset, floor);
+            let visible = places.between(self.scroll_offset, floor);
             // Nothing in view would leave only hidden cards and nothing to click.
             if visible.is_empty() {
                 return;
@@ -1649,7 +1667,7 @@ impl App {
             let seed = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .map_or(0, |elapsed| elapsed.as_nanos() as u64);
-            let count = heights.len();
+            let count = places.slots.len();
             self.collapse.fall(
                 now,
                 count,
@@ -1663,7 +1681,7 @@ impl App {
                         iced::Vector::new(frame.width / 2.0, frame.height / 2.0)
                     },
                     // A partly visible top row can start a card height above.
-                    drop: self.viewport_height + heights.iter().copied().fold(0.0, f32::max),
+                    drop: self.viewport_height + tallest,
                 },
                 placeholder,
                 seed,
@@ -1682,6 +1700,8 @@ impl App {
             search: &self.search,
             query: self.query,
             filters: &self.filters,
+            group: self.group,
+            collapsed: &self.collapsed,
         }
     }
 
@@ -1693,6 +1713,8 @@ impl App {
             search: &self.search,
             query: self.query,
             filters: &self.filters,
+            group: self.group,
+            collapsed: &self.collapsed,
         };
         self.order.rebuild(of);
         self.prune_marks();

@@ -262,9 +262,37 @@ impl App {
                 })
             })
             .collect();
-        crate::grid_motion::grid(
+        let headers = crate::grid_motion::Headers {
+            shown: places
+                .headers
+                .iter()
+                .map(|place| crate::grid_motion::GridHeader {
+                    key: place.header.key.clone(),
+                    element: self.section_header(
+                        &place.header,
+                        self.grid_motion.header_opacity(&place.header.key),
+                    ),
+                })
+                .collect(),
+            breaks: places.headers.iter().map(|place| place.header.at).collect(),
+            leaving: self
+                .grid_motion
+                .leaving_headers()
+                .iter()
+                .filter(|leaving| {
+                    leaving.bounds.y <= bottom && leaving.bounds.y + leaving.bounds.height >= top
+                })
+                .map(|leaving| crate::grid_motion::OutgoingHeader {
+                    key: leaving.header.key.clone(),
+                    bounds: leaving.bounds,
+                    element: self.section_header(&leaving.header, leaving.opacity),
+                })
+                .collect(),
+        };
+        crate::grid_motion::sectioned(
             cards,
             leaving,
+            headers,
             &self.grid_motion,
             self.panel_open,
             scene,
@@ -869,7 +897,11 @@ impl App {
         }
         if self.sort_menu_shown() {
             let [backdrop, menu] = self.sort_menu_view();
-            return page.push(backdrop).push(menu).into();
+            let page = page.push(backdrop).push(menu);
+            return match self.group_menu_view() {
+                Some(groups) => page.push(groups).into(),
+                None => page.into(),
+            };
         }
         if self.filter_menu_shown() {
             let [backdrop, menu] = self.filter_menu_view();

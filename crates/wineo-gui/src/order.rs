@@ -3,12 +3,13 @@
 //! it depends on changes, and every reader takes the cached indices.
 
 use std::borrow::Cow;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
-use wineo_core::library::{self, SortFields, SortKey};
+use wineo_core::library::{self, GroupBy, SortFields, SortKey};
 use wineo_core::source::{Platform, Store};
 
 use crate::library::Card;
+use crate::slot::SectionKey;
 
 /// How the library is sorted. Search stays `App::search`, which most of the
 /// app reads directly.
@@ -138,16 +139,50 @@ impl Options {
     }
 }
 
+/// One section of the shown order, with the indices of its cards in shown
+/// order. A collapsed section keeps them, for its count, but draws none.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Section {
+    pub(crate) key: SectionKey,
+    pub(crate) cards: Vec<usize>,
+    pub(crate) collapsed: bool,
+}
+
 /// A rebuild's result: the shown indices and what it counted on the way.
 #[derive(Debug, Default)]
 pub(crate) struct Built {
     indices: Vec<usize>,
     counts: Counts,
+    sections: Vec<Section>,
 }
 
 impl Built {
     pub(crate) fn indices(&self) -> &[usize] {
         &self.indices
+    }
+
+    /// Whether these sections, of `cards`, hold the same games in the same
+    /// order as `old`, of `old_cards`, so no slot moved.
+    pub(crate) fn same_sections(
+        &self,
+        old: &[Section],
+        old_cards: &[Card],
+        cards: &[Card],
+    ) -> bool {
+        let names = |section: &Section, cards: &[Card]| -> Vec<String> {
+            section
+                .cards
+                .iter()
+                .filter_map(|&index| cards.get(index))
+                .map(|card| card.name.clone())
+                .collect()
+        };
+        self.sections.len() == old.len()
+            && self.sections.iter().zip(old).all(|(new, old)| {
+                new.key == old.key
+                    && new.collapsed == old.collapsed
+                    && names(new, cards) == names(old, old_cards)
+            })
     }
 }
 
@@ -156,6 +191,7 @@ pub(crate) struct Order {
     /// Indices into the cards, in shown order.
     indices: Vec<usize>,
     counts: Counts,
+    sections: Vec<Section>,
     options: Options,
     /// What the order was built from. Every change goes through
     /// `App::reorder`, so in the app this always matches; tests that set
@@ -178,6 +214,8 @@ struct Inputs {
     search: String,
     query: Query,
     filters: Filters,
+    group: GroupBy,
+    collapsed: BTreeSet<SectionKey>,
 }
 
 /// Everything the shown order depends on, borrowed from the app.
@@ -187,6 +225,9 @@ pub(crate) struct Of<'a> {
     pub(crate) search: &'a str,
     pub(crate) query: Query,
     pub(crate) filters: &'a Filters,
+    pub(crate) group: GroupBy,
+    /// The sections collapsed this session, which may name some not shown.
+    pub(crate) collapsed: &'a BTreeSet<SectionKey>,
 }
 
 impl Of<'_> {
@@ -202,6 +243,8 @@ impl Inputs {
             search: of.search.to_owned(),
             query: of.query,
             filters: of.filters.clone(),
+            group: of.group,
+            collapsed: of.collapsed.clone(),
         }
     }
 
@@ -210,6 +253,8 @@ impl Inputs {
             && self.search == of.search
             && self.query == of.query
             && self.filters == *of.filters
+            && self.group == of.group
+            && self.collapsed == *of.collapsed
     }
 }
 
@@ -224,6 +269,8 @@ impl Order {
             search,
             query,
             filters,
+            group,
+            collapsed,
         } = of;
         let needle = search.to_lowercase();
         let titles: Vec<String> = cards
@@ -299,7 +346,12 @@ impl Order {
                 query.favorites_first,
             )
         });
-        Built { indices, counts }
+        let sections = sections(cards, &indices, group, collapsed);
+        Built {
+            indices,
+            counts,
+            sections,
+        }
     }
 
     pub(crate) fn rebuild(&mut self, of: Of<'_>) {
@@ -310,6 +362,7 @@ impl Order {
     pub(crate) fn replace(&mut self, built: Built, of: Of<'_>) {
         self.indices = built.indices;
         self.counts = built.counts;
+        self.sections = built.sections;
         #[cfg(test)]
         {
             self.rebuilds += 1;
@@ -372,6 +425,16 @@ impl Order {
             .collect()
     }
 
+    /// The shown order's sections: one `All` while the library isn't
+    /// grouped, else each with a card in it, in the order they show.
+    pub(crate) fn sections(&self, of: Of<'_>) -> Cow<'_, [Section]> {
+        if self.fits(of) {
+            Cow::Borrowed(&self.sections)
+        } else {
+            Cow::Owned(Self::sorted(of).sections)
+        }
+    }
+
     pub(crate) fn counts(&self, of: Of<'_>) -> Counts {
         if self.fits(of) {
             self.counts
@@ -389,9 +452,130 @@ impl Order {
     }
 }
 
-/// Whether two versions of a card would sort, filter, and match a search
-/// alike.
-pub(crate) fn same_inputs(a: &Card, b: &Card) -> bool {
+/// How many games Recently played holds (plan 0062, question 20).
+pub(crate) const RECENT: usize = 10;
+
+/// The sections `indices`, already in shown order, fall into under
+/// `group`. A card with several tags sits in each of their sections (plan
+/// 0062, question 12). Sections run A to Z, with the catch-all last, keep
+/// the shown order inside, and only show with a card in them. Any grouping
+/// pins Recently played first and Hidden last (question 21): a hidden game
+/// sits only in Hidden, and a recent one in Recently played as well as its
+/// usual sections.
+fn sections(
+    cards: &[Card],
+    indices: &[usize],
+    group: GroupBy,
+    collapsed: &BTreeSet<SectionKey>,
+) -> Vec<Section> {
+    if group == GroupBy::None {
+        return vec![Section {
+            key: SectionKey::All,
+            cards: indices.to_vec(),
+            collapsed: false,
+        }];
+    }
+    // Hidden games are only here with Show hidden on.
+    let (hidden, indices): (Vec<usize>, Vec<usize>) =
+        indices.iter().partition(|&&index| cards[index].hidden);
+    let indices = indices.as_slice();
+    // The newest first whatever the sort, and the shown order between
+    // games played at the same moment, since the sort is stable.
+    let mut recent: Vec<usize> = indices
+        .iter()
+        .copied()
+        .filter(|&index| cards[index].last_played_at.is_some())
+        .collect();
+    recent.sort_by(|&a, &b| cards[b].last_played_at.cmp(&cards[a].last_played_at));
+    recent.truncate(RECENT);
+    let grouped: Vec<(SectionKey, Vec<usize>)> = match group {
+        GroupBy::None => Vec::new(),
+        GroupBy::Tag => {
+            let mut tags: BTreeMap<(String, &str), Vec<usize>> = BTreeMap::new();
+            let mut untagged = Vec::new();
+            for &index in indices {
+                // A tag listed twice still puts the card in its section once.
+                let own: BTreeSet<&str> = cards[index].tags.iter().map(String::as_str).collect();
+                if own.is_empty() {
+                    untagged.push(index);
+                }
+                for tag in own {
+                    tags.entry((tag.to_lowercase(), tag))
+                        .or_default()
+                        .push(index);
+                }
+            }
+            tags.into_iter()
+                .map(|((_, tag), cards)| (SectionKey::Tag(tag.to_owned()), cards))
+                .chain([(SectionKey::NoTag, untagged)])
+                .collect()
+        }
+        GroupBy::Source => {
+            let mut sources: BTreeMap<(String, &'static str), Vec<usize>> = BTreeMap::new();
+            let mut unknown = Vec::new();
+            for &index in indices {
+                match cards[index].source.label() {
+                    Some(label) => sources
+                        .entry((label.to_lowercase(), label))
+                        .or_default()
+                        .push(index),
+                    None => unknown.push(index),
+                }
+            }
+            sources
+                .into_iter()
+                .map(|((_, label), cards)| (SectionKey::Source(label), cards))
+                .chain([(SectionKey::NoSource, unknown)])
+                .collect()
+        }
+        GroupBy::State => {
+            let mut states: [(SectionKey, Vec<usize>); 3] = [
+                (SectionKey::Running, Vec::new()),
+                (SectionKey::OtherState, Vec::new()),
+                (SectionKey::NotInstalled, Vec::new()),
+            ];
+            for &index in indices {
+                let key = state_section(&cards[index]);
+                if let Some((_, cards)) = states.iter_mut().find(|(section, _)| *section == key) {
+                    cards.push(index);
+                }
+            }
+            states.into_iter().collect()
+        }
+    };
+    std::iter::once((SectionKey::Recent, recent))
+        .chain(grouped)
+        .chain([(SectionKey::Hidden, hidden)])
+        .filter(|(_, cards)| !cards.is_empty())
+        .map(|(key, cards)| Section {
+            collapsed: collapsed.contains(&key),
+            key,
+            cards,
+        })
+        .collect()
+}
+
+/// The section a card sits in while grouped by State: running, not
+/// installed, or neither.
+pub(crate) fn state_section(card: &Card) -> SectionKey {
+    if card.active() {
+        SectionKey::Running
+    } else if card.not_installed() {
+        SectionKey::NotInstalled
+    } else {
+        SectionKey::OtherState
+    }
+}
+
+/// Whether two versions of a card would sort, filter, match a search, and
+/// fall into sections alike under `group`. A State section moves with the
+/// runtime and Steam's install state, which only grouping by State reads, so
+/// every other rescan keeps its shortcut.
+pub(crate) fn same_inputs(a: &Card, b: &Card, group: GroupBy) -> bool {
+    (group != GroupBy::State || state_section(a) == state_section(b)) && same_order_inputs(a, b)
+}
+
+fn same_order_inputs(a: &Card, b: &Card) -> bool {
     a.name == b.name
         && a.display_title == b.display_title
         && a.seconds == b.seconds

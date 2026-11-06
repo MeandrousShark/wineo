@@ -402,29 +402,20 @@ impl App {
         self.cards_edited(&before)
     }
 
-    /// The names shown now, in order, for `cards_edited`.
-    pub(crate) fn shown_order(&self) -> Vec<String> {
-        self.filtered()
-            .iter()
-            .map(|card| card.name.clone())
-            .collect()
+    /// The slots shown now, in order, for `cards_edited`. A tag edit can
+    /// move a game between sections without moving it in the flat order.
+    pub(crate) fn shown_order(&self) -> Vec<crate::slot::SlotId> {
+        self.grid_places().ids.clone()
     }
 
     /// After the window changed its own cards: the rescan compares against
     /// them from now on and the order is rebuilt. When that moved anything
     /// from `before`, cards snap and the selection stays in view.
-    pub(crate) fn cards_edited(&mut self, before: &[String]) -> Task<Message> {
+    pub(crate) fn cards_edited(&mut self, before: &[crate::slot::SlotId]) -> Task<Message> {
         self.shown.show_library(Ok(self.cards.clone()));
         self.order.cards_edited();
         self.reorder();
-        let moved = {
-            let after = self.filtered();
-            after.len() != before.len()
-                || after
-                    .iter()
-                    .zip(before)
-                    .any(|(card, name)| &card.name != name)
-        };
+        let moved = self.grid_places().ids != before;
         if !moved {
             return Task::none();
         }
