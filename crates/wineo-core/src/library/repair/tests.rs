@@ -117,6 +117,7 @@ fn backs_up_the_original_and_recovers_every_recognized_entry() {
             partly: 0,
             view: ViewRecovery::Recovered,
             appearance: ViewRecovery::Absent,
+            presets: ViewRecovery::Absent,
             steam: ViewRecovery::Absent,
             steam_dropped: 0,
             dropped_text: false,
@@ -177,6 +178,7 @@ fn counts_partly_and_unrecovered_entries_and_skips_invalid_values() {
             partly: 1,
             view: ViewRecovery::Partly,
             appearance: ViewRecovery::Absent,
+            presets: ViewRecovery::Absent,
             steam: ViewRecovery::Absent,
             steam_dropped: 0,
             dropped_text: true,
@@ -494,6 +496,7 @@ fn wording_for_no_entries_and_lost_view() {
         partly: 0,
         view: ViewRecovery::Lost,
         appearance: ViewRecovery::Absent,
+        presets: ViewRecovery::Absent,
         steam: ViewRecovery::Absent,
         steam_dropped: 0,
         dropped_text: false,
@@ -509,6 +512,7 @@ fn wording_for_no_entries_and_lost_view() {
         partly: 0,
         view: ViewRecovery::Absent,
         appearance: ViewRecovery::Absent,
+        presets: ViewRecovery::Absent,
         steam: ViewRecovery::Absent,
         steam_dropped: 0,
         dropped_text: false,
@@ -1050,6 +1054,7 @@ fn appearance_wording_for_a_lost_table() {
         partly: 0,
         view: ViewRecovery::Absent,
         appearance: ViewRecovery::Lost,
+        presets: ViewRecovery::Absent,
         steam: ViewRecovery::Absent,
         steam_dropped: 0,
         dropped_text: false,
@@ -1187,4 +1192,286 @@ fn a_repair_keeps_a_valid_auto_import_and_drops_a_bad_one() {
     assert_eq!(report.steam_dropped, 1);
     assert!(!load(&fixture.paths).steam.auto_import);
     assert!(!fixture.read().contains("auto_import"));
+}
+
+fn repaired(text: &str) -> (Fixture, RepairReport) {
+    let fixture = Fixture::new();
+    fixture.write(text);
+    let report = repair_at(&fixture.paths, STAMP, sync_dir).unwrap().unwrap();
+    (fixture, report)
+}
+
+#[test]
+fn repair_keeps_presets_the_parser_read() {
+    let (fixture, report) = repaired(
+        r#"schema_version = 1
+
+[presets."Couch co-op"]
+sort = "last-played"
+descending = true
+stores = ["steam", "itch"]
+tags = ["co-op"] # keep
+layout = "list"
+future = { a = 1 }
+
+[presets.Plain]
+
+[environments.hades]
+favorite = true
+
+[environments.hades]
+future = 1
+"#,
+    );
+    assert_eq!(report.presets, ViewRecovery::Recovered);
+    assert!(report.complete());
+    assert!(report.to_string().contains(" Presets recovered."));
+    assert_eq!(
+        fixture.read(),
+        r#"schema_version = 1
+
+[presets."Couch co-op"]
+sort = "last-played"
+descending = true
+stores = ["steam", "itch"]
+tags = ["co-op"] # keep
+layout = "list"
+future = { a = 1 }
+
+[presets.Plain]
+
+[environments.hades]
+favorite = true
+future = 1
+"#
+    );
+    let library = load(&fixture.paths);
+    assert_eq!(library.problem, None);
+    assert_eq!(
+        library
+            .presets
+            .iter()
+            .map(|(name, _)| name.as_str())
+            .collect::<Vec<_>>(),
+        ["Couch co-op", "Plain"]
+    );
+    assert_eq!(
+        library.preset("Couch co-op").unwrap().sort,
+        SortKey::LastPlayed
+    );
+}
+
+#[test]
+fn repair_keeps_presets_found_in_the_broken_tail() {
+    let (fixture, report) = repaired(
+        r#"[view]
+sort = "added"
+
+[presets.Early]
+sort = "playtime"
+
+[environments.hades]
+favorite true
+
+[presets.Late]
+descending = true
+stores = ["gog"]
+not_tags = [
+  "vr",
+  "demo",
+]
+group = "source"
+
+[presets.Late]
+layout = "list"
+
+[presets.Early]
+show_hidden = true
+"#,
+    );
+    assert_eq!(report.presets, ViewRecovery::Recovered);
+    let library = load(&fixture.paths);
+    assert_eq!(library.problem, None);
+    let late = library.preset("Late").unwrap();
+    assert!(late.descending);
+    assert_eq!(late.stores.len(), 1);
+    assert_eq!(late.not_tags.len(), 2);
+    assert_eq!(late.group, crate::library::GroupBy::Source);
+    assert_eq!(late.layout, crate::library::ViewLayout::List);
+    let early = library.preset("Early").unwrap();
+    assert_eq!(early.sort, SortKey::Playtime);
+    assert!(early.show_hidden);
+}
+
+#[test]
+fn repair_drops_a_bad_preset_field_the_way_it_drops_a_bad_view_key() {
+    let (fixture, report) = repaired(
+        r#"[view]
+sort = "bogus"
+
+[presets.Mixed]
+sort = "bogus"
+descending = "yes"
+favorites_first = true
+stores = "steam"
+platforms = ["windows"]
+tags = ["ok", 3]
+not_tags = ["vr"]
+show_hidden = 1
+group = "genre"
+layout = "list"
+future = 1
+
+[presets.Mixed
+"#,
+    );
+    assert_eq!(report.presets, ViewRecovery::Partly);
+    assert!(!report.complete());
+    assert!(report.to_string().contains(" Presets partly recovered."));
+    assert_eq!(
+        fixture.read(),
+        r#"schema_version = 1
+
+[presets.Mixed]
+favorites_first = true
+platforms = ["windows"]
+not_tags = ["vr"]
+layout = "list"
+future = 1
+"#
+    );
+}
+
+#[test]
+fn repair_keeps_a_preset_whose_every_field_was_bad_as_an_empty_one() {
+    let (fixture, report) = repaired(
+        "[presets.Bad]\nsort = \"bogus\"\ngroup = 3\n\n[presets.Fine]\nsort = \"added\"\n\n[broken header\n",
+    );
+    // The bad preset's fields are lost, but its name still lists.
+    assert_eq!(report.presets, ViewRecovery::Partly);
+    assert_eq!(
+        fixture.read(),
+        "schema_version = 1\n\n[presets.Bad]\n\n[presets.Fine]\nsort = \"added\"\n"
+    );
+    let (_, report) = repaired("[presets.Bad]\nsort = \"bogus\"\n\n[broken header\n");
+    assert_eq!(report.presets, ViewRecovery::Lost);
+    assert!(
+        report
+            .to_string()
+            .contains(" Presets could not be recovered.")
+    );
+}
+
+#[test]
+fn repair_keeps_the_rest_of_a_preset_around_a_line_it_cannot_read() {
+    let (fixture, report) = repaired(
+        "[presets.P]\nsort = \"added\"\nstores =\nlayout = \"list\"\nnot a field\ngroup = \"tag\"\n",
+    );
+    assert_eq!(report.presets, ViewRecovery::Partly);
+    assert!(report.dropped_text);
+    assert_eq!(
+        fixture.read(),
+        "schema_version = 1\n\n[presets.P]\nsort = \"added\"\nlayout = \"list\"\ngroup = \"tag\"\n"
+    );
+}
+
+#[test]
+fn repair_drops_entries_that_are_not_presets_and_says_so() {
+    let (fixture, report) = repaired(
+        "[presets]\nbroken = 1\n[presets.Good]\nsort = \"added\"\n[presets.\" \"]\nsort = \"added\"\n[presets.\"\"]\n[broken header\n",
+    );
+    assert!(report.dropped_text);
+    assert!(!report.complete());
+    assert_eq!(
+        fixture.read(),
+        "schema_version = 1\n\n[presets.Good]\nsort = \"added\"\n"
+    );
+}
+
+#[test]
+fn repair_keeps_presets_of_a_file_with_an_older_schema_version() {
+    let (fixture, report) = repaired("schema_version = 0\n[presets.P]\nsort = \"added\"\n");
+    assert_eq!(report.presets, ViewRecovery::Recovered);
+    assert_eq!(
+        fixture.read(),
+        "schema_version = 1\n\n[presets.P]\nsort = \"added\"\n"
+    );
+}
+
+#[test]
+fn repair_keeps_presets_beside_every_other_table() {
+    let (fixture, report) = repaired(
+        r#"[appearance]
+theme = "dracula"
+
+[presets."a.b"]
+layout = "list"
+
+[steam]
+auto_import = true
+
+[environments.hades]
+favorite = true
+
+[view
+"#,
+    );
+    assert_eq!(report.presets, ViewRecovery::Recovered);
+    let library = load(&fixture.paths);
+    assert_eq!(library.problem, None);
+    assert!(library.preset("a.b").is_some());
+    assert!(library.steam.auto_import);
+    assert!(library.environments["hades"].favorite);
+}
+
+#[test]
+fn presets_wording_is_after_appearance_and_before_steam() {
+    let report = RepairReport {
+        entries: 0,
+        full: 0,
+        partly: 0,
+        view: ViewRecovery::Absent,
+        appearance: ViewRecovery::Recovered,
+        presets: ViewRecovery::Partly,
+        steam: ViewRecovery::Recovered,
+        steam_dropped: 0,
+        dropped_text: false,
+        backup: PathBuf::from("/x/library.toml.broken-1"),
+    };
+    assert_eq!(
+        report.to_string(),
+        "No library entries were recognized. Some data could not be recovered. Appearance settings recovered. Presets partly recovered. Steam game record recovered.\nOriginal saved as library.toml.broken-1."
+    );
+}
+
+#[test]
+fn a_readable_file_with_presets_is_never_repaired() {
+    let fixture = Fixture::new();
+    let text = "schema_version = 1\n[presets.P]\nsort = \"bogus\"\nfuture = 1\n";
+    fixture.write(text);
+    assert!(
+        repair_at(&fixture.paths, STAMP, sync_dir)
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(fixture.read(), text);
+}
+
+#[test]
+fn repair_drops_a_blank_preset_header_in_the_broken_tail() {
+    let (fixture, report) = repaired(
+        "[view]\nsort = \"added\"\nbroken =\n[presets.\" \"]\nsort = \"added\"\n[presets.Good]\nsort = \"playtime\"\n",
+    );
+    assert!(report.dropped_text);
+    assert_eq!(report.presets, ViewRecovery::Recovered);
+    let library = load(&fixture.paths);
+    assert_eq!(library.problem, None);
+    assert_eq!(
+        library
+            .presets
+            .iter()
+            .map(|(name, _)| name.as_str())
+            .collect::<Vec<_>>(),
+        ["Good"]
+    );
 }

@@ -11,6 +11,7 @@ use jiff::Zoned;
 use toml_edit::{Array, DocumentMut, Item, Key, Table, Value};
 
 use super::check::{is_newer, is_offset_datetime};
+use super::preset::readable_name;
 use super::record::{Recorded, valid_app_id};
 use super::{GroupBy, RandomPool, SCHEMA_VERSION, SortKey, ViewLayout, read_zoom};
 use crate::error::{Error, IoContext, Result};
@@ -38,6 +39,9 @@ pub struct RepairReport {
     pub partly: usize,
     pub view: ViewRecovery,
     pub appearance: ViewRecovery,
+    /// How much of the saved presets came back, counting every field in
+    /// every preset the repair could recognize.
+    pub presets: ViewRecovery,
     /// How much of the Steam game record came back.
     pub steam: ViewRecovery,
     /// Steam record entries that were invalid or couldn't be read.
@@ -62,6 +66,7 @@ impl RepairReport {
                 self.appearance,
                 ViewRecovery::Absent | ViewRecovery::Recovered
             )
+            && matches!(self.presets, ViewRecovery::Absent | ViewRecovery::Recovered)
             && matches!(self.steam, ViewRecovery::Absent | ViewRecovery::Recovered)
     }
 }
@@ -101,6 +106,12 @@ impl fmt::Display for RepairReport {
             ViewRecovery::Recovered => f.write_str(" Appearance settings recovered.")?,
             ViewRecovery::Partly => f.write_str(" Appearance settings partly recovered.")?,
             ViewRecovery::Lost => f.write_str(" Appearance settings could not be recovered.")?,
+        }
+        match self.presets {
+            ViewRecovery::Absent => {}
+            ViewRecovery::Recovered => f.write_str(" Presets recovered.")?,
+            ViewRecovery::Partly => f.write_str(" Presets partly recovered.")?,
+            ViewRecovery::Lost => f.write_str(" Presets could not be recovered.")?,
         }
         match self.steam {
             ViewRecovery::Absent => {}
@@ -277,7 +288,7 @@ impl<'a> Lines<'a> {
 /// A header line, or one `key = value` with every line its value spans.
 enum Unit {
     /// None for a header that isn't `[view]`, `[appearance]`, `[steam]`,
-    /// `[steam.games]`, or `[environments.<name>]`.
+    /// `[steam.games]`, `[presets.<name>]`, or `[environments.<name>]`.
     Header {
         start: usize,
         header: Option<Header>,
@@ -303,6 +314,7 @@ enum Header {
     Appearance,
     Steam,
     SteamGames,
+    Preset(String),
     Entry(String),
 }
 
@@ -450,6 +462,7 @@ struct Salvaged {
     view: Option<Section>,
     appearance: Option<Section>,
     steam: Option<SteamSection>,
+    presets: Vec<(String, Section)>,
     entries: Vec<(String, Section)>,
     dropped_text: bool,
     newer_version: Option<i64>,
@@ -627,6 +640,7 @@ enum Current {
     Appearance,
     Steam,
     SteamGames,
+    Preset(usize),
     Entry(usize),
     Unattributed,
 }
@@ -659,6 +673,14 @@ fn salvage(bytes: &[u8]) -> Salvaged {
                     Some(Header::SteamGames) => {
                         salvaged.steam.get_or_insert_default();
                         Current::SteamGames
+                    }
+                    // A name the reader would skip can't be shown or picked.
+                    Some(Header::Preset(name)) if readable_name(&name) => {
+                        Current::Preset(salvaged.preset(name))
+                    }
+                    Some(Header::Preset(_)) => {
+                        salvaged.dropped_text = true;
+                        Current::Unattributed
                     }
                     Some(Header::Entry(name)) => Current::Entry(salvaged.entry(name)),
                     None => {
@@ -717,6 +739,7 @@ fn salvage(bytes: &[u8]) -> Salvaged {
                 .expect("steam section was recorded")
                 .games
                 .offer(text, valid_game),
+            Current::Preset(index) => salvaged.presets[index].1.offer(text, valid_preset_field),
             Current::Entry(index) => salvaged.entries[index].1.offer(text, valid_entry_field),
         }
     }
@@ -757,6 +780,16 @@ fn parsed_prefix(lines: &Lines<'_>) -> (usize, DocumentMut) {
 }
 
 impl Salvaged {
+    fn preset(&mut self, name: String) -> usize {
+        match self.presets.iter().position(|(seen, _)| *seen == name) {
+            Some(index) => index,
+            None => {
+                self.presets.push((name, Section::default()));
+                self.presets.len() - 1
+            }
+        }
+    }
+
     fn entry(&mut self, name: String) -> usize {
         match self.entries.iter().position(|(seen, _)| *seen == name) {
             Some(index) => index,
@@ -799,6 +832,24 @@ impl Salvaged {
                         steam.read(&key, field);
                     }
                 }
+                ("presets", Some(presets)) => {
+                    for (name, preset) in presets.iter() {
+                        let preset = preset.as_table_like().filter(|_| readable_name(name));
+                        let Some(preset) = preset else {
+                            self.dropped_text = true;
+                            continue;
+                        };
+                        let index = self.preset(name.to_owned());
+                        let section = &mut self.presets[index].1;
+                        for (field, value) in preset.iter() {
+                            let key = preset
+                                .key(field)
+                                .cloned()
+                                .unwrap_or_else(|| Key::new(field));
+                            section.read(&key, value, valid_preset_field);
+                        }
+                    }
+                }
                 ("environments", Some(environments)) => {
                     for (name, entry) in environments.iter() {
                         let Some(entry) = entry.as_table_like() else {
@@ -826,6 +877,12 @@ impl Salvaged {
                 [steam] if steam == "steam" && self.steam.is_some() => Current::Steam,
                 [steam, games] if steam == "steam" && games == "games" && self.steam.is_some() => {
                     Current::SteamGames
+                }
+                [presets, name] if presets == "presets" => {
+                    match self.presets.iter().position(|(seen, _)| seen == name) {
+                        Some(index) => Current::Preset(index),
+                        None => Current::Unattributed,
+                    }
                 }
                 [environments, name] if environments == "environments" => {
                     match self.entries.iter().position(|(seen, _)| seen == name) {
@@ -877,7 +934,7 @@ fn last_header(
 }
 
 /// A header line on its own: exactly `[view]`, `[appearance]`, `[steam]`,
-/// `[steam.games]`, or `[environments.<name>]`.
+/// `[steam.games]`, `[presets.<name>]`, or `[environments.<name>]`.
 fn header(line: &str) -> Option<Header> {
     let document = line.parse::<DocumentMut>().ok()?;
     let mut keys = document.iter();
@@ -900,7 +957,7 @@ fn header(line: &str) -> Option<Header> {
                 _ => None,
             }
         }
-        "environments" => {
+        "presets" | "environments" => {
             let mut children = table.iter();
             let (name, child) = children.next()?;
             if children.next().is_some() {
@@ -909,7 +966,13 @@ fn header(line: &str) -> Option<Header> {
             child
                 .as_table()
                 .is_some_and(|child| child.is_empty())
-                .then(|| Header::Entry(name.to_owned()))
+                .then(|| {
+                    if key == "presets" {
+                        Header::Preset(name.to_owned())
+                    } else {
+                        Header::Entry(name.to_owned())
+                    }
+                })
         }
         _ => None,
     }
@@ -920,6 +983,21 @@ fn valid_entry_field(key: &str, item: &Item) -> bool {
         "favorite" | "hidden" => item.as_bool().is_some(),
         "added" => is_offset_datetime(item),
         // A newer release may have written it.
+        _ => true,
+    }
+}
+
+/// Only the types, so an id a newer wineo added to a filter list is no
+/// reason to drop the list; `validate` is where an unknown id is reported.
+fn valid_preset_field(key: &str, item: &Item) -> bool {
+    match key {
+        "sort" => item.as_str().and_then(SortKey::from_str).is_some(),
+        "descending" | "favorites_first" | "show_hidden" => item.as_bool().is_some(),
+        "group" => item.as_str().and_then(GroupBy::parse).is_some(),
+        "layout" => item.as_str().and_then(ViewLayout::parse).is_some(),
+        "stores" | "platforms" | "tags" | "not_stores" | "not_platforms" | "not_tags" => item
+            .as_array()
+            .is_some_and(|list| list.iter().all(|value| value.is_str())),
         _ => true,
     }
 }
@@ -956,6 +1034,14 @@ impl Salvaged {
         if let Some(appearance) = self.appearance.as_ref().filter(|table| table.kept > 0) {
             document.insert("appearance", Item::Table(fresh_table(&appearance.table)));
         }
+        if !self.presets.is_empty() {
+            let mut presets = Table::new();
+            presets.set_implicit(true);
+            for (name, preset) in &self.presets {
+                presets.insert(name, Item::Table(fresh_table(&preset.table)));
+            }
+            document.insert("presets", Item::Table(presets));
+        }
         if !self.entries.is_empty() {
             let mut environments = Table::new();
             environments.set_implicit(true);
@@ -972,6 +1058,22 @@ impl Salvaged {
             text.push('\n');
         }
         text
+    }
+
+    /// The presets taken together: a preset with every field kept doesn't
+    /// hide another that lost some.
+    fn presets_recovery(&self) -> ViewRecovery {
+        let fields: usize = self.presets.iter().map(|(_, preset)| preset.fields).sum();
+        let kept: usize = self.presets.iter().map(|(_, preset)| preset.kept).sum();
+        if self.presets.is_empty() {
+            ViewRecovery::Absent
+        } else if kept == fields {
+            ViewRecovery::Recovered
+        } else if kept == 0 {
+            ViewRecovery::Lost
+        } else {
+            ViewRecovery::Partly
+        }
     }
 
     fn report(&self, backup: PathBuf) -> RepairReport {
@@ -996,6 +1098,7 @@ impl Salvaged {
                 .appearance
                 .as_ref()
                 .map_or(ViewRecovery::Absent, Section::recovery),
+            presets: self.presets_recovery(),
             steam: self
                 .steam
                 .as_ref()
