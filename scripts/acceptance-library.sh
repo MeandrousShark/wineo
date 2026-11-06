@@ -510,6 +510,47 @@ shown=$(printf '%s\n' "$summary" | wc -l)
     printf 'sort = "name"\ndescending = false\nfavorites_first = false\n'
     printf 'zoom = 100\nposter_only = false\nrandom = "launchable"\n'
     printf '%s' "$library"
+    # Saved views (plan 0062): the whole view, defaults left out, Show hidden
+    # with a grouping, a name long enough to be cut off, ids and a tag this
+    # library doesn't have, lowercase beside uppercase for the A to Z order,
+    # and a comment an edit must keep.
+    cat <<'EOF'
+
+# Couch co-op: typing "couch CO-OP" to save should offer Update instead.
+[presets."Couch co-op"]
+sort = "last-played"
+descending = true
+favorites_first = true
+stores = ["gog", "steam"]
+tags = ["rpg"]
+not_tags = ["indie"]
+show_hidden = false
+group = "tag"
+layout = "list"
+
+[presets.Tools]
+tags = ["work"]
+
+[presets."Hidden gems"]
+show_hidden = true
+group = "state"
+
+[presets."A preset name that runs to sixty characters to test the cuts"]
+sort = "playtime"
+descending = true
+
+# DELIBERATE validate warnings: Odd's itch and amiga are ids no wineo knows.
+[presets.Odd]
+stores = ["gog", "itch"]
+platforms = ["amiga"]
+tags = ["no-such-tag"]
+
+[presets.alpha]
+group = "source"
+
+[presets.Beta]
+layout = "list"
+EOF
 } >"$config/library.toml"
 
 # Give the folder the mode a plain mkdir would, since mktemp made it 700.
