@@ -1212,7 +1212,37 @@ fn names_that_differ_only_in_unicode_case_collide_on_save_and_rename() {
 
 #[test]
 fn presets_sort_ignoring_unicode_case_too() {
+    // Plain lowercasing keeps the two sigmas apart and sorts "ςb" first.
     let fixture =
-        Fixture::with("[presets.\"b\"]\n[presets.\"Ä\"]\n[presets.\"a\"]\n[presets.\"Z\"]\n");
-    assert_eq!(fixture.presets(), ["a", "b", "Z", "Ä"]);
+        Fixture::with("[presets.\"ςb\"]\n[presets.\"σa\"]\n[presets.\"Ä\"]\n[presets.\"z\"]\n");
+    assert_eq!(fixture.presets(), ["z", "Ä", "σa", "ςb"]);
+}
+
+#[test]
+fn several_entries_added_to_an_empty_or_lone_list_are_spaced() {
+    for existing in ["[]", "[\"a\"]"] {
+        let fixture = Fixture::with(&format!("[presets.P]\ntags = {existing}\n"));
+        let wanted = Preset {
+            tags: tags(&["c", "d", "e"]),
+            ..Preset::default()
+        };
+        assert!(set_preset(&fixture.paths, "P", &wanted).unwrap());
+        let text = fixture.read();
+        assert!(text.contains("[\"c\", \"d\", \"e\"]"), "{existing}: {text}");
+    }
+    let fixture = Fixture::with("[presets.P]\ntags = [\"a\"]\n");
+    let wanted = Preset {
+        tags: tags(&["a", "b", "c"]),
+        ..Preset::default()
+    };
+    set_preset(&fixture.paths, "P", &wanted).unwrap();
+    assert!(fixture.read().contains("[\"a\", \"b\", \"c\"]"));
+    // A list already written without spaces keeps that style.
+    let fixture = Fixture::with("[presets.P]\ntags = [\"a\",\"b\"]\n");
+    let wanted = Preset {
+        tags: tags(&["a", "b", "c"]),
+        ..Preset::default()
+    };
+    set_preset(&fixture.paths, "P", &wanted).unwrap();
+    assert!(fixture.read().contains("[\"a\",\"b\",\"c\"]"));
 }

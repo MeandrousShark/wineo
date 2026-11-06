@@ -400,14 +400,15 @@ fn set_list<T: Ord>(
             .map(name)
             .collect();
         joining.sort();
-        // A lone entry has no neighbor to copy a separator from, and would
-        // otherwise be followed by `,"x"`.
-        let lone = array.len() == 1;
-        for (index, text) in joining.iter().enumerate() {
+        // With fewer than two entries there is no spacing to copy, so
+        // `push_tag` would run the new ones together as `"a","b"`.
+        let bare = array.len() < 2;
+        for text in &joining {
             push_tag(array, text);
-            if lone
-                && index == 0
-                && let Some(added) = array.get_mut(1)
+            let last = array.len() - 1;
+            if bare
+                && last > 0
+                && let Some(added) = array.get_mut(last)
                 && added
                     .decor()
                     .prefix()

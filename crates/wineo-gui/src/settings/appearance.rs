@@ -235,12 +235,13 @@ impl Form {
             .iter_mut()
             .find(|theme| theme.id == id && !theme.read_only)
     }
-    /// Whether a custom theme other than `id` is called `name`, ignoring case.
+    /// Whether a custom theme other than `id` is called `name`, ignoring case
+    /// the way core's rename does, so the inline check agrees with the save.
     fn name_taken(&self, name: &str, id: Option<&str>) -> bool {
-        let name = name.to_lowercase();
-        self.themes
-            .iter()
-            .any(|theme| Some(theme.id.as_str()) != id && theme.name.to_lowercase() == name)
+        let name = wineo_core::name::fold_case(name);
+        self.themes.iter().any(|theme| {
+            Some(theme.id.as_str()) != id && wineo_core::name::fold_case(&theme.name) == name
+        })
     }
     fn copy(&mut self, slot: Slot) {
         let source = self.shown(slot);

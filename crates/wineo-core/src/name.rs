@@ -10,7 +10,7 @@ pub fn is_valid(name: &str) -> bool {
 /// A key for comparing text without regard to case. Lowercasing alone leaves
 /// a capital sigma and the final sigma apart, and `ß` and `SS`; going through
 /// uppercase first folds each pair together.
-pub(crate) fn fold_case(text: &str) -> String {
+pub fn fold_case(text: &str) -> String {
     text.to_uppercase().to_lowercase()
 }
 

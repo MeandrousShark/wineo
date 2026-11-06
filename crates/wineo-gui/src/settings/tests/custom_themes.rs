@@ -393,6 +393,25 @@ fn rename_refuses_a_name_another_custom_theme_has() {
 }
 
 #[test]
+fn rename_refuses_names_that_differ_only_in_unicode_case() {
+    let (_root, paths) = setup();
+    write_theme(&paths, "night", NIGHT);
+    write_theme(&paths, "strasse", "name = \"Straße\"\n");
+    write_theme(&paths, "sigma", "name = \"ΟΔΥΣΣΕΥΣ\"\n");
+    write_library(&paths, "[appearance]\ndark = \"custom:night\"\n");
+    let mut app = open_global_app(&paths);
+    show_appearance(&mut app);
+    for taken in ["STRASSE", "οδυσσευς"] {
+        edit(&mut app, Edit::RenameOpen("custom:night".into()));
+        edit(&mut app, Edit::RenameText(taken.into()));
+        edit(&mut app, Edit::RenameApply);
+        assert!(form(&app).renaming.as_ref().unwrap().taken, "{taken}");
+        edit(&mut app, Edit::RenameCancel);
+    }
+    assert_eq!(names(&app), ["Night", "Straße", "ΟΔΥΣΣΕΥΣ"]);
+}
+
+#[test]
 fn delete_asks_first_and_an_in_use_theme_falls_back_in_every_slot() {
     let (_root, paths) = setup();
     write_theme(&paths, "night", NIGHT);
