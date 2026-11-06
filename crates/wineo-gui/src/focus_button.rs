@@ -932,9 +932,9 @@ mod tests {
         // Text has no size without a real renderer, so aim at the laid-out
         // control rather than a fixed point.
         let over = mouse::Cursor::Available(Layout::new(&node).bounds().center());
-        let mut send = |widget: &mut Element<'_, crate::Message, iced::Theme, ()>,
-                        tree: &mut tree::Tree,
-                        event: Event| {
+        let send = |widget: &mut Element<'_, crate::Message, iced::Theme, ()>,
+                    tree: &mut tree::Tree,
+                    event: Event| {
             let mut messages = Vec::new();
             let mut shell = Shell::new(&mut messages);
             widget.as_widget_mut().update(
