@@ -2,7 +2,7 @@
 
 use crate::config::{EnvironmentConfig, Kind};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Store {
     Steam,
     Gog,
@@ -11,6 +11,23 @@ pub enum Store {
 }
 
 impl Store {
+    pub const ALL: [Self; 4] = [Self::Steam, Self::Gog, Self::Epic, Self::Amazon];
+
+    /// The lowercase id a saved preset names it by. Unlike `label`, it never
+    /// changes with the wording on screen.
+    pub fn id(self) -> &'static str {
+        match self {
+            Self::Steam => "steam",
+            Self::Gog => "gog",
+            Self::Epic => "epic",
+            Self::Amazon => "amazon",
+        }
+    }
+
+    pub fn from_id(id: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|store| store.id() == id)
+    }
+
     pub fn label(self) -> &'static str {
         match self {
             Self::Steam => "Steam",
@@ -22,13 +39,27 @@ impl Store {
 }
 
 /// What an environment runs on.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Platform {
     Native,
     Windows,
 }
 
 impl Platform {
+    pub const ALL: [Self; 2] = [Self::Native, Self::Windows];
+
+    /// The lowercase id a saved preset names it by; see `Store::id`.
+    pub fn id(self) -> &'static str {
+        match self {
+            Self::Native => "native",
+            Self::Windows => "windows",
+        }
+    }
+
+    pub fn from_id(id: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|platform| platform.id() == id)
+    }
+
     pub fn label(self) -> &'static str {
         match self {
             Self::Native => "Native",
@@ -325,6 +356,27 @@ mod tests {
             [Platform::Native, Platform::Windows].map(Platform::label),
             ["Native", "Windows"]
         );
+    }
+
+    #[test]
+    fn ids_are_lowercase_stable_and_read_back() {
+        assert_eq!(
+            Store::ALL.map(Store::id),
+            ["steam", "gog", "epic", "amazon"]
+        );
+        assert_eq!(Platform::ALL.map(Platform::id), ["native", "windows"]);
+        for store in Store::ALL {
+            assert_eq!(Store::from_id(store.id()), Some(store));
+        }
+        for platform in Platform::ALL {
+            assert_eq!(Platform::from_id(platform.id()), Some(platform));
+        }
+        // Ids are exact, so a label or a different case isn't one.
+        assert_eq!(Store::from_id("GOG"), None);
+        assert_eq!(Store::from_id("Steam"), None);
+        assert_eq!(Store::from_id(""), None);
+        assert_eq!(Platform::from_id("Windows"), None);
+        assert_eq!(Store::from_id("windows"), None);
     }
 
     #[test]
