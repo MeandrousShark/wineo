@@ -168,7 +168,8 @@ marks every shown card from the last one you marked, or from the selected
 card, to the one you click, in the order they're shown. Another Shift+click
 replaces that range and keeps your other marks, and Ctrl+Shift+click adds a
 range instead. Ctrl+A marks every shown game. A marked poster gets a wash in
-the theme's primary color and a check in its middle.
+the theme's primary color and a check in its top-left corner, which moves the
+running light and GOG pill along to its right.
 
 Marking never opens the panel or launches anything, even when the clicks
 land as a double-click. A plain click clears the marks and selects as usual.
@@ -1020,6 +1021,7 @@ edits, the bar says which, and **Reload** takes what's on disk.
 | Ctrl+, | Global settings |
 | Down (in the search) | Back to the cards |
 | Tab, Shift+Tab | Move focus through the toolbar from Add to the layout switch (then the zoom slider and titles button in the grid), then panel actions |
+| Left, Right, Space, Enter (on the layout switch) | Switch between the grid and the list |
 | Left, Right (on the zoom slider) | Make the posters smaller or bigger |
 
 The mouse Back button does whatever Esc does on the current page, here and

@@ -161,15 +161,17 @@ Plan 0054 added these.
   icon); its tooltip says "Hide titles" or "Show titles".
 - The layout switch is a segment, 64 x 32 px: two 32 px sides, a list icon
   (dots and lines) on the left and a grid icon (2 x 2 squares) on the right,
-  each its own Tab stop with a tooltip ("Show as list", "Show as grid"). One
-  thumb sits under the chosen side with the poster-only toggle's selected
-  look, and the chosen side's icon is primary; hovering a side adds a faint
-  foreground tint. The thumb slides with the panel's spring and snaps under
-  reduced motion. Only the keyboard focuses a side, since a click already
-  moves the thumb: the focus ring then goes around the whole segment, and
-  the focused side takes the hover tint to show which one it is. In the
-  list, an empty slot holds the slider and toggle's place, so the toolbar
-  keeps its shape. With the switch the toolbar's right end starts clipping
+  each with a tooltip ("Show as list", "Show as grid"). One thumb sits under
+  the chosen side with the poster-only toggle's selected look, and the
+  chosen side's icon is primary; hovering a side adds a faint foreground
+  tint. The thumb slides with the panel's spring and snaps under reduced
+  motion. The keyboard treats the segment as one control, like a radio
+  group: it's a single Tab stop, its focus ring goes around the whole
+  segment, and Left, Right, Space, and Enter flip it while it has focus,
+  so the arrows don't reach the library then. Held arrows don't repeat the
+  flip. A click picks a side and never takes focus, since the thumb already
+  shows the change. In the list, an empty slot holds the slider and
+  toggle's place, so the toolbar keeps its shape. With the switch the toolbar's right end starts clipping
   about 72 px sooner.
 - The dice shows a die face of five, in the foreground color, or muted
   while there's nothing to pick from; its tooltip says "Pick one at
@@ -309,10 +311,15 @@ chips, and badges keep their sizes at every zoom.
   in its ink color. The panel keeps the words. At 60 to 62% with a chip,
   a badge, and a mark, the badge sits flush against the mark.
 - A card marked for a bulk action (plan 0062) gets a 25% primary wash over
-  its art and a 32 px primary circle centered on it, holding a 20 px check
-  in the primary's ink. Both sit above the art and under the title overlay
-  and every corner layer, so the corners keep their meaning, and the
-  selected card's border still draws over a marked card.
+  its art, under the title overlay and the corner layers, and the selected
+  card's border still draws over it. Its check leads the top-left corner: a
+  24 px primary circle holding a 14 px check in the primary's ink, 8 px in.
+  The status chip and the GOG pill or badge follow it in one row with 4 px
+  gaps, jumping right at once when the mark comes or goes, and the pill's
+  fit counts the check, so marking can turn it into its badge. The row may
+  run flush against the star's circle, as the badge already could. When a
+  marked card's check, chip, and badge can't all fit, below about 78%, the
+  badge hides until the mark clears.
 - Every poster layer fades with its card, including the marks, the pill
   or badge, the marked wash and check, and the install bar's track.
 
