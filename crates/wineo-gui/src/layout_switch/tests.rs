@@ -287,7 +287,7 @@ fn a_zoom_in_flight_ends_where_it_was_heading_before_the_list_shows() {
     let _ = set(&mut app, ViewLayout::List);
     let places = app.grid_places();
     let slot = places.slots[places.index(&name).unwrap()];
-    assert_eq!(slot.y - app.scroll_offset, offset.max(0.0), "{name}");
+    assert_eq!(slot.y - app.scroll_offset, offset.max(0.0), "{name:?}");
     assert!(!app.zooming.moving());
     assert_eq!(app.zoom, 110);
     let _ = set(&mut app, ViewLayout::Grid);
@@ -341,7 +341,7 @@ fn the_selected_card_stays_in_view_after_a_switch() {
         for layout in [ViewLayout::List, ViewLayout::Grid] {
             let _ = set(&mut app, layout);
             let places = app.grid_places();
-            let slot = places.slots[places.index(name).unwrap()];
+            let slot = places.slots[places.index(&name.into()).unwrap()];
             let visible = app.viewport_height - app.bar_room();
             assert!(
                 slot.y >= app.scroll_offset - 0.5
@@ -383,14 +383,14 @@ fn with_nothing_selected_the_first_card_in_view_keeps_its_place() {
     let _ = set(&mut app, ViewLayout::List);
     let places = app.grid_places();
     let slot = places.slots[places.index(&name).unwrap()];
-    assert_eq!(slot.y - app.scroll_offset, offset.max(0.0), "{name}");
+    assert_eq!(slot.y - app.scroll_offset, offset.max(0.0), "{name:?}");
     // Back to the grid, the row at the top keeps it.
     let (anchor, _) = app.find_anchor();
     let (name, offset) = anchor.unwrap();
     let _ = set(&mut app, ViewLayout::Grid);
     let places = app.grid_places();
     let slot = places.slots[places.index(&name).unwrap()];
-    assert_eq!(slot.y - app.scroll_offset, offset.max(0.0), "{name}");
+    assert_eq!(slot.y - app.scroll_offset, offset.max(0.0), "{name:?}");
 }
 
 #[test]
@@ -400,14 +400,14 @@ fn a_clipped_first_card_lands_on_the_top_edge_going_to_the_list() {
     app.scroll_offset = 200.0;
     let (anchor, reveal) = app.find_anchor();
     let (name, offset) = anchor.unwrap();
-    assert!(offset < 0.0 && !reveal, "{name} at {offset}");
+    assert!(offset < 0.0 && !reveal, "{name:?} at {offset}");
     let _ = set(&mut app, ViewLayout::List);
     let places = app.grid_places();
     let slot = places.slots[places.index(&name).unwrap()];
     assert!(
         slot.y >= app.scroll_offset
             && slot.y + slot.height <= app.scroll_offset + app.viewport_height,
-        "{name}: {slot:?} at {}",
+        "{name:?}: {slot:?} at {}",
         app.scroll_offset
     );
 }
@@ -420,14 +420,14 @@ fn a_clipped_row_lands_on_the_top_edge_going_back_to_the_grid() {
     app.scroll_offset = 100.0;
     let (anchor, reveal) = app.find_anchor();
     let (name, offset) = anchor.unwrap();
-    assert!(offset < 0.0 && !reveal, "{name} at {offset}");
+    assert!(offset < 0.0 && !reveal, "{name:?} at {offset}");
     let _ = set(&mut app, ViewLayout::Grid);
     let places = app.grid_places();
     let slot = places.slots[places.index(&name).unwrap()];
     assert!(
         slot.y >= app.scroll_offset
             && slot.y + slot.height <= app.scroll_offset + app.viewport_height,
-        "{name}: {slot:?} at {}",
+        "{name:?}: {slot:?} at {}",
         app.scroll_offset
     );
 }
@@ -435,7 +435,7 @@ fn a_clipped_row_lands_on_the_top_edge_going_back_to_the_grid() {
 /// Asserts `name`'s card is drawn whole above the action bar.
 fn assert_whole_on_screen(app: &App, name: &str) {
     let places = app.grid_places();
-    let slot = places.slots[places.index(name).unwrap()];
+    let slot = places.slots[places.index(&name.into()).unwrap()];
     let bottom = app.scroll_offset + app.viewport_height - app.bar_room();
     assert!(
         slot.y >= app.scroll_offset && slot.y + slot.height <= bottom,
@@ -455,7 +455,7 @@ fn at_the_end_of_the_list_the_first_row_in_view_shows_whole_in_the_grid() {
     let (name, _) = anchor.unwrap();
     assert!(!reveal);
     let _ = set(&mut app, ViewLayout::Grid);
-    assert_whole_on_screen(&app, &name);
+    assert_whole_on_screen(&app, name.name());
 }
 
 #[test]
@@ -471,7 +471,7 @@ fn a_selected_row_near_the_bottom_shows_whole_in_the_grid() {
         .rev()
         .find(|&index| places.slots[index].y + places.slots[index].height <= bottom)
         .unwrap();
-    let name = places.names[index].clone();
+    let name = places.ids[index].name().to_owned();
     app.selected = Some(name.clone());
     let (anchor, reveal) = app.find_anchor();
     let (_, offset) = anchor.unwrap();

@@ -799,7 +799,7 @@ fn the_selected_card_anchors_when_any_of_it_is_on_screen() {
     let _ = zoom(&mut app, Event::Key(Key::In));
     assert_eq!(
         app.zooming.gesture.as_ref().unwrap().anchor,
-        Some((app.filtered()[25].name.clone(), offset))
+        Some((app.filtered()[25].name.clone().into(), offset))
     );
     let _ = settle(&mut app);
     let (tops, _) = drawn_tops(&app);
@@ -897,7 +897,7 @@ fn an_off_screen_selection_scrolls_into_view_when_the_zoom_ends() {
     // The first card in view anchors instead.
     assert_eq!(
         app.zooming.gesture.as_ref().unwrap().anchor,
-        Some((app.filtered()[0].name.clone(), 16.0))
+        Some((app.filtered()[0].name.clone().into(), 16.0))
     );
     let early = frame(&mut app, 80);
     assert!(!located(&app, early, &name));

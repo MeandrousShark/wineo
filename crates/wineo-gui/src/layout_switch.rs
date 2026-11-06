@@ -101,8 +101,8 @@ impl App {
         let _ = self.motion_ended(false);
         let save = self.save_field(Field::Layout(layout));
         let places = self.grid_places();
-        if let Some((name, offset)) = anchor
-            && let Some(index) = places.index(&name)
+        if let Some((slot, offset)) = anchor
+            && let Some(index) = places.index(&slot)
         {
             // A card clipped by the top edge would otherwise keep its clipped
             // offset, and a shorter row would then land above the viewport.

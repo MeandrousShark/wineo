@@ -12,6 +12,7 @@ use wineo_core::paths::Paths;
 
 use crate::library::Card;
 use crate::library_menu::icon;
+use crate::slot::SlotId;
 use crate::ui;
 use crate::{App, Message, focus_button, rescan};
 
@@ -100,9 +101,9 @@ impl Flag {
 pub(crate) enum Event {
     /// The context menu row or the panel star for this card.
     Toggle(String, Flag),
-    /// A left click on this card's poster star, which pops it when it
+    /// A left click on the poster star in this slot, which pops it when it
     /// favorites the card.
-    PosterStar(String),
+    PosterStar(SlotId),
     /// A write finished.
     Saved(Saved),
 }
@@ -215,17 +216,18 @@ pub(crate) fn update(app: &mut App, event: Event) -> Task<Message> {
             app.action_menu = None;
             app.toggle_flag(&name, flag)
         }
-        Event::PosterStar(name) => {
+        Event::PosterStar(slot) => {
             app.action_menu = None;
             let favorite = |app: &App| {
                 app.cards
                     .iter()
-                    .any(|card| card.name == name && card.favorite)
+                    .any(|card| card.name == slot.name() && card.favorite)
             };
             let was = favorite(app);
-            let task = app.toggle_flag(&name, Flag::Favorite);
+            let task = app.toggle_flag(slot.name(), Flag::Favorite);
+            // Only the copy clicked pops.
             if !was && favorite(app) && !app.reduced_motion && app.collapse.idle() {
-                app.star_pops.start(&name);
+                app.star_pops.start(&slot);
             }
             task
         }
@@ -470,7 +472,13 @@ pub(crate) fn poster_marks(
         primary: Color::WHITE,
         lift: 0.0,
     };
-    poster_marks_faded(card, alpha, hovered, star)
+    poster_marks_faded(
+        &SlotId::from(card.name.as_str()),
+        card,
+        alpha,
+        hovered,
+        star,
+    )
 }
 
 /// How the poster star draws beyond its card's fade.
@@ -489,6 +497,7 @@ pub(crate) struct StarLook {
 
 /// `poster_marks` with the star drawn as `look` says.
 pub(crate) fn poster_marks_faded(
+    slot: &SlotId,
     card: &Card,
     alpha: f32,
     hovered: bool,
@@ -517,14 +526,14 @@ pub(crate) fn poster_marks_faded(
         .height(STAR_TARGET)
         .padding((STAR_TARGET - size) / 2.0)
         .on_press_maybe(
-            (card.favorite || hovered).then(|| Message::Mark(Event::PosterStar(card.name.clone()))),
+            (card.favorite || hovered).then(|| Message::Mark(Event::PosterStar(slot.clone()))),
         )
         .style(|_, _| button::Style::default());
     // A left press is the button's, so only the pointer's coming and
     // going reach here.
     let star = mouse_area(target)
-        .on_enter(Message::StarHover(card.name.clone(), true))
-        .on_exit(Message::StarHover(card.name.clone(), false));
+        .on_enter(Message::StarHover(slot.clone(), true))
+        .on_exit(Message::StarHover(slot.clone(), false));
     Some(
         container(star)
             .width(Fill)

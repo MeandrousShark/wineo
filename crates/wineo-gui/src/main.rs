@@ -67,6 +67,7 @@ mod settings;
 mod shortcuts;
 mod sidebar;
 mod size;
+mod slot;
 mod snapshots_page;
 mod sort_control;
 mod spinner;
@@ -210,9 +211,9 @@ pub(crate) struct App {
     grid_scroll_after_settle: Option<String>,
     pub(crate) target: Option<String>,
     card_click_target: Option<(String, Option<String>)>,
-    pub(crate) hovered: Option<String>,
+    pub(crate) hovered: Option<slot::SlotId>,
     /// The card whose poster star has the pointer, which lights it up.
-    pub(crate) star_hovered: Option<String>,
+    pub(crate) star_hovered: Option<slot::SlotId>,
     pub(crate) images: art_cache::ArtCache<ArtKey>,
     /// Art decoding, by key and whether it is decoded dimmed.
     loading: HashSet<(ArtKey, bool)>,
@@ -386,11 +387,11 @@ pub(crate) enum Message {
     LogScrolled(scrollable::Viewport),
     LogFollow,
     CopyLog,
-    Hover(Option<String>),
+    Hover(Option<slot::SlotId>),
     /// The pointer left this card.
-    Unhover(String),
+    Unhover(slot::SlotId),
     /// The pointer moved onto this card's poster star, or off it.
-    StarHover(String, bool),
+    StarHover(slot::SlotId, bool),
     Refresh,
     /// The parts of a periodic rescan that differ from what is shown.
     Rescanned(Box<rescan::Scan>),

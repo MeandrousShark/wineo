@@ -1,7 +1,8 @@
 //! The poster star's pop when a click on it favorites a card: the chip
 //! springs up toward its target and settles while a ring ripples out once
 //! and fades. Each pop runs to its end whatever the pointer does, and is
-//! keyed by the card's name so it follows the card through a re-sort.
+//! keyed by the card's slot so it follows the card through a re-sort and
+//! plays only on the copy that was clicked.
 
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
@@ -12,6 +13,7 @@ use iced::advanced::widget::Tree;
 use iced::advanced::{Layout, Renderer as _, Widget};
 use iced::{Color, Element, Length, Point, Rectangle, Renderer, Size, Theme, border, mouse};
 
+use crate::slot::SlotId;
 use crate::zoom::ease_out;
 
 pub(crate) const POP: Duration = Duration::from_millis(240);
@@ -28,18 +30,18 @@ struct Pop {
 
 #[derive(Debug, Default)]
 pub(crate) struct StarPops {
-    pops: HashMap<String, Pop>,
+    pops: HashMap<SlotId, Pop>,
     generation: u64,
 }
 
 impl StarPops {
-    /// Pops `name`'s star from the start, even if it's popping already.
-    pub(crate) fn start(&mut self, name: &str) {
+    /// Pops `slot`'s star from the start, even if it's popping already.
+    pub(crate) fn start(&mut self, slot: &SlotId) {
         if !self.active() {
             self.generation = self.generation.wrapping_add(1);
         }
         self.pops.insert(
-            name.to_owned(),
+            slot.clone(),
             Pop {
                 start: None,
                 t: 0.0,
@@ -59,14 +61,14 @@ impl StarPops {
         self.pops.retain(|_, pop| pop.t < 1.0);
     }
 
-    /// How far `name`'s pop has run, 0 to 1, while it runs.
-    pub(crate) fn progress(&self, name: &str) -> Option<f32> {
-        self.pops.get(name).map(|pop| pop.t)
+    /// How far `slot`'s pop has run, 0 to 1, while it runs.
+    pub(crate) fn progress(&self, slot: &SlotId) -> Option<f32> {
+        self.pops.get(slot).map(|pop| pop.t)
     }
 
     /// Drops the pops `keep` turns down.
-    pub(crate) fn retain(&mut self, keep: impl Fn(&str) -> bool) {
-        self.pops.retain(|name, _| keep(name));
+    pub(crate) fn retain(&mut self, keep: impl Fn(&SlotId) -> bool) {
+        self.pops.retain(|slot, _| keep(slot));
     }
 
     pub(crate) fn clear(&mut self) {

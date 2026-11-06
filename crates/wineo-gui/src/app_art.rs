@@ -104,7 +104,11 @@ impl App {
             .leaving()
             .iter()
             .filter(|card| near(card.bounds))
-            .filter_map(|leaving| self.cards.iter().find(|card| card.name == leaving.name));
+            .filter_map(|leaving| {
+                self.cards
+                    .iter()
+                    .find(|card| card.name == leaving.id.name())
+            });
         let mut seen = HashSet::new();
         let mut keys = Vec::new();
         for card in in_view

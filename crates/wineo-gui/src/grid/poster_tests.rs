@@ -107,7 +107,7 @@ fn the_overlay_shows_on_hover_and_selection_only() {
             app.zoom = zoom;
             for (hovered, selected) in [(false, false), (true, false), (false, true), (true, true)]
             {
-                app.hovered = hovered.then(|| card.name.clone());
+                app.hovered = hovered.then(|| card.name.clone().into());
                 app.selected = selected.then(|| card.name.clone());
                 let shown = overlay_shown(&card_node(&app, &card));
                 assert_eq!(
@@ -126,7 +126,7 @@ fn the_overlay_sits_at_the_bottom_of_the_art_in_one_or_two_lines() {
     app.poster_only = true;
     let mut card = art_card("game", State::Inactive);
     decoded(&mut app, &card, [128, 128, 128]);
-    app.hovered = Some(card.name.clone());
+    app.hovered = Some(card.name.clone().into());
     let line = iced::widget::text::LineHeight::default()
         .to_absolute(CARD_TITLE_SIZE.into())
         .0;
@@ -177,7 +177,7 @@ fn the_overlay_title_leaves_room_for_a_hidden_cards_eye() {
     app.poster_only = true;
     let mut card = art_card("game", State::Inactive);
     decoded(&mut app, &card, [128, 128, 128]);
-    app.hovered = Some(card.name.clone());
+    app.hovered = Some(card.name.clone().into());
     // Without the eye the title keeps its 8 px margin; with it, the eye's
     // margin, its width, and a 4 px gap.
     for (hidden, left) in [(false, 8.0), (true, 8.0 + 24.0 + 4.0)] {
@@ -229,7 +229,7 @@ fn art_less_cards_keep_their_tile_title_and_loading_art_gets_the_overlay() {
     let none = crate::tests::card("plain", State::Inactive, 60);
     let loading = art_card("loading", State::Inactive);
     for card in [&none, &loading] {
-        app.hovered = Some(card.name.clone());
+        app.hovered = Some(card.name.clone().into());
         let node = card_node(&app, card);
         let tile = bounds_at(&node, &[0, 0, 0, 0, 0]);
         if card.art.is_none() {
@@ -423,7 +423,7 @@ fn the_overlay_is_dark_white_text_and_a_hidden_cards_title_is_muted() {
     let title = 10..150;
     // Hovered art dims to 85%, but the title over it stays white.
     app.selected = None;
-    app.hovered = Some(card.name.clone());
+    app.hovered = Some(card.name.clone().into());
     decoded(&mut app, &card, [128, 128, 128]);
     let pixels = render(&mut app.card(&card), size);
     assert!(brightest(&pixels, width, text.clone(), title.clone()) >= 250);
@@ -472,7 +472,7 @@ fn the_overlay_is_dark_white_text_and_a_hidden_cards_title_is_muted() {
     absent.art = card.art.clone();
     absent.display_title = card.display_title.clone();
     decoded(&mut app, &absent, [128; 3]);
-    app.hovered = Some(absent.name.clone());
+    app.hovered = Some(absent.name.clone().into());
     let pixels = render(&mut app.card(&absent), size);
     let ink = lightest(&pixels, width, text.clone(), title.clone());
     assert!((150..=180).contains(&ink[0]), "{ink:?}");
@@ -525,12 +525,24 @@ fn every_poster_only_layer_fades_with_its_card() {
     let size = Size::new(200.0, 300.0);
     let layout = app.grid_layout();
     let shown = render(
-        &mut app.card_drawn(&card, 1.0, layout, Details::Inline),
+        &mut app.card_drawn(
+            &card.name.as_str().into(),
+            &card,
+            1.0,
+            layout,
+            Details::Inline,
+        ),
         size,
     );
     assert!(shown.chunks(4).any(|pixel| pixel[3] > 0));
     let gone = render(
-        &mut app.card_drawn(&card, 0.0, layout, Details::Inline),
+        &mut app.card_drawn(
+            &card.name.as_str().into(),
+            &card,
+            0.0,
+            layout,
+            Details::Inline,
+        ),
         size,
     );
     assert!(gone.chunks(4).all(|pixel| pixel[3] == 0));
@@ -776,7 +788,13 @@ fn a_pill_too_small_for_its_words_becomes_a_round_badge() {
     // It fades with the card.
     let layout = app.grid_layout();
     let gone = render(
-        &mut app.card_drawn(&card, 0.0, layout, Details::Inline),
+        &mut app.card_drawn(
+            &card.name.as_str().into(),
+            &card,
+            0.0,
+            layout,
+            Details::Inline,
+        ),
         size,
     );
     assert!(gone.chunks(4).all(|pixel| pixel[3] == 0));
@@ -1079,12 +1097,24 @@ fn the_check_fades_with_its_card() {
     let size = Size::new(160.0, 240.0);
     let layout = app.grid_layout();
     let drawn = render(
-        &mut app.card_drawn(&card, 1.0, layout, Details::Inline),
+        &mut app.card_drawn(
+            &card.name.as_str().into(),
+            &card,
+            1.0,
+            layout,
+            Details::Inline,
+        ),
         size,
     );
     assert!(drawn.chunks(4).any(|pixel| pixel[3] != 0));
     let gone = render(
-        &mut app.card_drawn(&card, 0.0, layout, Details::Inline),
+        &mut app.card_drawn(
+            &card.name.as_str().into(),
+            &card,
+            0.0,
+            layout,
+            Details::Inline,
+        ),
         size,
     );
     assert!(gone.chunks(4).all(|pixel| pixel[3] == 0));

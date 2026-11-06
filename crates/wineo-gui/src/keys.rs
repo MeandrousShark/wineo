@@ -384,8 +384,12 @@ impl App {
         if self.grid_motion.active() || self.zooming.moving() {
             self.grid_scroll_after_settle = Some(name.clone());
         }
+        // A selection the grid doesn't show has no card to find.
+        let Some(slot) = self.selected_slot() else {
+            return Task::none();
+        };
         let generation = self.grid_revision();
-        crate::grid_motion::locate_card(&name)
+        crate::grid_motion::locate_card(&slot)
             .map(move |bounds| Message::GridCardLocated(name.clone(), generation, bounds))
     }
 }

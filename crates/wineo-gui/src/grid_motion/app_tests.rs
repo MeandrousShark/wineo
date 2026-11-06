@@ -227,7 +227,7 @@ fn a_resize_snaps_a_transition() {
     assert!(!app.grid_motion.active());
     assert_eq!(frames(&app), 0);
     for name in shown(&app) {
-        assert_eq!(app.grid_motion.offset(&name), Vector::ZERO);
+        assert_eq!(app.grid_motion.offset(&name.into()), Vector::ZERO);
     }
 }
 
@@ -244,8 +244,8 @@ fn a_rescan_mid_transition_settles_it_first() {
     assert_eq!(shown(&app), ["keep-00", "keep-01"]);
     assert!(!app.grid_motion.active());
     assert!(app.grid_motion.leaving().is_empty());
-    assert_eq!(app.grid_motion.offset("keep-00"), Vector::ZERO);
-    assert_eq!(app.grid_motion.opacity("keep-01"), 1.0);
+    assert_eq!(app.grid_motion.offset(&"keep-00".into()), Vector::ZERO);
+    assert_eq!(app.grid_motion.opacity(&"keep-01".into()), 1.0);
 }
 
 /// A search leaves 20 of 120 cards fading out, with a selection scroll
@@ -416,13 +416,13 @@ fn ticks_follow_a_dock_until_it_settles() {
         start + Duration::from_millis(120),
     ));
     assert!(app.grid_motion.active());
-    assert_ne!(app.grid_motion.offset("game-07"), Vector::ZERO);
+    assert_ne!(app.grid_motion.offset(&"game-07".into()), Vector::ZERO);
     let _ = app.update(Message::GridTick(
         generation,
         start + Duration::from_secs(1),
     ));
     assert!(!app.grid_motion.active());
-    assert_eq!(app.grid_motion.offset("game-07"), Vector::ZERO);
+    assert_eq!(app.grid_motion.offset(&"game-07".into()), Vector::ZERO);
 }
 
 /// Each shown card's top as the grid draws it now, less the scroll.
@@ -449,7 +449,7 @@ fn the_poster_only_toggle_springs_the_cards_to_their_new_rows_holding_the_place(
         assert_ne!(app.grid_motion.generation(), generation);
         assert!(app.grid_motion.active());
         assert_eq!(frames(&app), 1);
-        assert_eq!(app.grid_motion.anchor, Some(("game-22".to_owned(), 100.0)));
+        assert_eq!(app.grid_motion.anchor, Some(("game-22".into(), 100.0)));
         let height = app.grid_places().slots[0].height;
         assert_eq!(height, if poster_only { 240.0 } else { full });
         // Every frame keeps the selection's top where it was.
@@ -484,7 +484,7 @@ fn a_dock_and_undock_that_change_the_columns_hold_the_selection_in_place() {
             assert!(app.columns() < closed, "{} of {closed}", app.columns());
         }
         let start = set_out(&app);
-        assert_eq!(app.grid_motion.anchor, Some(("game-22".to_owned(), 100.0)));
+        assert_eq!(app.grid_motion.anchor, Some(("game-22".into(), 100.0)));
         // Every frame keeps the selection's top where it was.
         for ms in [0, 40, 120, 250, 1000] {
             let _ = app.update(Message::GridTick(
@@ -512,7 +512,7 @@ fn leaving_cards_keep_the_text_they_left_with_through_the_toggle() {
         .grid_motion
         .leaving()
         .iter()
-        .find(|card| card.name == left.name)
+        .find(|card| card.id == left.id)
         .expect("still fading")
         .clone();
     assert_eq!(left_now.layout, left.layout);
@@ -568,11 +568,11 @@ fn a_resort_scrolls_an_off_screen_selection_once_to_where_it_lands() {
     // Straight to the bottom of its new slot, the way an arrow key would
     // bring it just into view, while it's still drawn at the top.
     let places = app.grid_places();
-    let slot = places.slots[places.index("game-00").unwrap()];
+    let slot = places.slots[places.index(&"game-00".into()).unwrap()];
     let landing = slot.y + slot.height - app.viewport_height;
     assert!(landing > 0.0);
     assert_eq!(app.scroll_offset, landing);
-    assert!(app.grid_motion.offset("game-00") != Vector::ZERO);
+    assert!(app.grid_motion.offset(&"game-00".into()) != Vector::ZERO);
     assert!(app.grid_scroll_after_settle.is_none());
     assert_eq!(located(&app, task, "game-00"), 0);
     // Nothing scrolls again when the cards settle.

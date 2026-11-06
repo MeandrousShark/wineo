@@ -11,6 +11,7 @@ use crate::grid_motion::PADDING;
 use crate::library::{Card, CardKind};
 use crate::library_actions::{EYE_OFF, STAR, STAR_OUTLINE};
 use crate::library_menu::{CHECK, icon};
+use crate::slot::SlotId;
 use crate::sort_control::{ARROW_DOWN, ARROW_UP};
 use crate::theme::Palette;
 use crate::{App, Message, ui};
@@ -167,12 +168,13 @@ impl App {
         }
     }
 
-    pub(crate) fn row_facts(&self, card: &Card, palette: Palette) -> RowFacts {
-        let hovered = self.hovered.as_ref() == Some(&card.name);
+    /// What `card`'s row in `slot` shows.
+    pub(crate) fn row_facts(&self, slot: &SlotId, card: &Card, palette: Palette) -> RowFacts {
+        let hovered = self.hovered.as_ref() == Some(slot);
         let selected = self.selected.as_ref() == Some(&card.name);
         let dimmed = card.not_installed();
         // The poster's hover fade, so the row's hover and star ease the same.
-        let (hover, _) = self.hover_fades.progress(&card.name, hovered, selected);
+        let (hover, _) = self.hover_fades.progress(slot, hovered, selected);
         RowFacts {
             title: card.display_title.clone(),
             identifier: shows_identifier(card).then(|| card.name.clone()),
@@ -192,7 +194,7 @@ impl App {
             hover,
             lift: self
                 .star_pops
-                .progress(&card.name)
+                .progress(slot)
                 .map_or(0.0, crate::star_pop::lift),
             gog: crate::gog_library::badge(card.gog.as_ref(), self.gog_updates.status(&card.name)),
             eye: card.hidden,
@@ -202,20 +204,22 @@ impl App {
             gray: dimmed,
             selected,
             hovered,
-            marked: self.marked.contains(&card.name),
+            marked: self.marked.contains(slot.name()),
         }
     }
 
-    /// A list row `width` wide at `opacity`, as it fades in or out.
+    /// `card`'s row in `slot`, `width` wide at `opacity`, as it fades in or
+    /// out.
     pub(crate) fn row_drawn<'a>(
         &'a self,
+        slot: &SlotId,
         card: &'a Card,
         opacity: f32,
         width: f32,
     ) -> Element<'a, Message> {
         let alpha = self.collapse.alpha() * opacity;
         let palette = self.palette.faded(alpha);
-        let facts = self.row_facts(card, palette);
+        let facts = self.row_facts(slot, card, palette);
         let dim = if facts.faded {
             crate::panel::DIMMED_OPACITY
         } else {
@@ -287,7 +291,7 @@ impl App {
             marks = marks.push(icon(EYE_OFF, palette.muted, MARK_ICON).opacity(alpha));
         }
         marks = marks.push(star(
-            &card.name,
+            slot,
             facts.star,
             facts.hovered,
             facts.hover,
@@ -375,7 +379,7 @@ impl App {
             .into(),
             None => body.into(),
         };
-        card_area(content, card)
+        card_area(content, slot)
     }
 
     /// The column names over the rows, at the rows' width. Every one but
@@ -558,7 +562,7 @@ pub(crate) fn header_style(
 /// hover, pressed the way the poster's is and growing in its pop. Its room
 /// stays with none showing.
 fn star<'a>(
-    name: &str,
+    slot: &SlotId,
     look: Star,
     hovered: bool,
     hover: f32,
@@ -576,7 +580,7 @@ fn star<'a>(
     let size = MARK_ICON + STAR_LIFT * lift;
     // A star fading out with the hover takes no presses.
     let press = (look == Star::Filled || hovered)
-        .then(|| Message::Mark(crate::library_actions::Event::PosterStar(name.to_owned())));
+        .then(|| Message::Mark(crate::library_actions::Event::PosterStar(slot.clone())));
     button(container(icon(bytes, color, size).opacity(strength)).center(STAR_BOX))
         .width(STAR_BOX)
         .height(STAR_BOX)

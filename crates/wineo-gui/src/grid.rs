@@ -10,6 +10,7 @@ use iced::{
 use crate::grid_motion::{CardText, GridLayout};
 use crate::library::Card;
 use crate::library_actions::{Event, Flag};
+use crate::slot::SlotId;
 use crate::theme::Palette;
 use crate::ui::{self, ScrollStyle, secondary_button};
 use crate::wheel;
@@ -188,20 +189,23 @@ impl App {
         });
         let list = self.layout == crate::grid_motion::ViewLayout::List;
         let row_width = self.slot_width();
+        // `Places` lists the slots in the shown order, one per card.
+        let places = self.grid_places();
         let cards = filtered
             .into_iter()
-            .map(|card| {
-                let opacity = self.grid_motion.opacity(&card.name);
+            .zip(&places.ids)
+            .map(|(card, id)| {
+                let opacity = self.grid_motion.opacity(id);
                 if list {
                     return crate::grid_motion::GridCard {
-                        name: card.name.clone(),
-                        card: self.row_drawn(card, opacity, row_width),
+                        id: id.clone(),
+                        card: self.row_drawn(id, card, opacity, row_width),
                         details: None,
                     };
                 }
                 crate::grid_motion::GridCard {
-                    name: card.name.clone(),
-                    card: self.card_drawn(card, opacity, layout, Details::Apart),
+                    id: id.clone(),
+                    card: self.card_drawn(id, card, opacity, layout, Details::Apart),
                     details: self.details_apart(card, opacity, layout, progress),
                 }
             })
@@ -229,21 +233,32 @@ impl App {
                 leaving.bounds.y <= bottom && leaving.bounds.y + leaving.bounds.height >= top
             })
             .filter_map(|leaving| {
-                let card = by_name.get(leaving.name.as_str())?;
+                let card = by_name.get(leaving.id.name())?;
                 // A layout switch snaps, ending every fade, so what leaves
                 // left from the layout shown.
                 if list {
                     return Some(crate::grid_motion::Outgoing {
-                        name: leaving.name.clone(),
+                        id: leaving.id.clone(),
                         bounds: leaving.bounds,
-                        card: self.row_drawn(card, leaving.opacity, leaving.bounds.width),
+                        card: self.row_drawn(
+                            &leaving.id,
+                            card,
+                            leaving.opacity,
+                            leaving.bounds.width,
+                        ),
                         details: None,
                     });
                 }
                 Some(crate::grid_motion::Outgoing {
-                    name: leaving.name.clone(),
+                    id: leaving.id.clone(),
                     bounds: leaving.bounds,
-                    card: self.card_drawn(card, leaving.opacity, leaving.layout, Details::Apart),
+                    card: self.card_drawn(
+                        &leaving.id,
+                        card,
+                        leaving.opacity,
+                        leaving.layout,
+                        Details::Apart,
+                    ),
                     details: self.details_apart(card, leaving.opacity, leaving.layout, progress),
                 })
             })
@@ -308,15 +323,18 @@ impl App {
         };
         Some((art.unwrap_or(placeholder).clone(), opacity))
     }
+    /// `card` in the flat library's slot.
     #[cfg(test)]
     pub(crate) fn card<'a>(&'a self, card: &'a Card) -> Element<'a, Message> {
-        self.card_drawn(card, 1.0, self.grid_layout(), Details::Inline)
+        let slot = crate::slot::SlotId::from(card.name.as_str());
+        self.card_drawn(&slot, card, 1.0, self.grid_layout(), Details::Inline)
     }
 
-    /// A card drawn at `opacity` and `layout`, as it fades in or out of the
-    /// grid.
+    /// A card drawn in `slot` at `opacity` and `layout`, as it fades in or
+    /// out of the grid.
     pub(crate) fn card_drawn<'a>(
         &'a self,
+        slot: &SlotId,
         card: &'a Card,
         opacity: f32,
         layout: GridLayout,
@@ -325,12 +343,13 @@ impl App {
         let alpha = self.collapse.alpha() * opacity;
         let caption = self.collapse.caption_alpha() * opacity;
         let palette = self.palette.faded(alpha);
-        let hovered = self.hovered.as_ref() == Some(&card.name);
+        let hovered = self.hovered.as_ref() == Some(slot);
+        // Every copy of the selected game shows the selection.
         let selected = self.selected.as_ref() == Some(&card.name);
-        let (star, shade) = self.hover_fades.progress(&card.name, hovered, selected);
+        let (star, shade) = self.hover_fades.progress(slot, hovered, selected);
         let glow = self
             .hover_fades
-            .glow(&card.name, self.glowing_star() == Some(card.name.as_str()));
+            .glow(slot, self.glowing_star() == Some(slot));
         let dimmed = card.not_installed();
         let art = card.art.as_ref().and_then(|art| {
             self.images
@@ -392,7 +411,8 @@ impl App {
             ..Font::DEFAULT
         };
         let steam_mark = card.kind == Some(crate::library::CardKind::Proxied);
-        let marked = self.marked.contains(&card.name);
+        // Marks belong to the game, so every copy shows them.
+        let marked = self.marked.contains(slot.name());
         let mut layers = stack![poster];
         // Under the title and corner layers, so their meaning shows through.
         if marked {
@@ -537,7 +557,7 @@ impl App {
         if let Some(eye) = crate::library_actions::poster_eye(card, alpha) {
             layers = layers.push(eye);
         }
-        let pop = self.star_pops.progress(&card.name);
+        let pop = self.star_pops.progress(slot);
         if let Some(t) = pop {
             layers = layers.push(crate::library_actions::star_ring(
                 t,
@@ -551,7 +571,8 @@ impl App {
             primary: self.palette.primary,
             lift: pop.map_or(0.0, crate::star_pop::lift),
         };
-        if let Some(marks) = crate::library_actions::poster_marks_faded(card, alpha, hovered, look)
+        if let Some(marks) =
+            crate::library_actions::poster_marks_faded(slot, card, alpha, hovered, look)
         {
             layers = layers.push(marks);
         }
@@ -575,7 +596,7 @@ impl App {
                 }))
             });
         if text_mode == CardText::PosterOnly {
-            return card_area(column![framed].width(layout.card_width()), card);
+            return card_area(column![framed].width(layout.card_width()), slot);
         }
         let label = crate::tile_title::lines(
             &card.display_title,
@@ -603,7 +624,7 @@ impl App {
         .spacing(CARD_SPACING)
         .width(layout.card_width());
         if text_mode == CardText::Title {
-            return card_area(content, card);
+            return card_area(content, slot);
         }
         match details {
             #[cfg(test)]
@@ -620,7 +641,7 @@ impl App {
                 content = content.push(Space::new().height(meta_height(card, layout)));
             }
         }
-        card_area(content, card)
+        card_area(content, slot)
     }
     /// How wide the Add, import, and clone dialog is in the current window.
     pub(crate) fn flow_width(&self) -> f32 {
@@ -1471,16 +1492,19 @@ fn gog_badge(color: Color, ink: Color, alpha: f32) -> Element<'static, Message> 
 }
 
 /// A card's content as one pointer target.
+/// A card's pointer input. Hover belongs to the slot under the pointer;
+/// the rest acts on its game.
 pub(crate) fn card_area<'a>(
     content: impl Into<Element<'a, Message>>,
-    card: &Card,
+    slot: &SlotId,
 ) -> Element<'a, Message> {
+    let name = slot.name().to_owned();
     mouse_area(content)
-        .on_press(Message::Select(card.name.clone()))
-        .on_double_click(Message::DoubleClick(card.name.clone()))
-        .on_right_press(Message::Context(card.name.clone()))
-        .on_enter(Message::Hover(Some(card.name.clone())))
-        .on_exit(Message::Unhover(card.name.clone()))
+        .on_press(Message::Select(name.clone()))
+        .on_double_click(Message::DoubleClick(name.clone()))
+        .on_right_press(Message::Context(name))
+        .on_enter(Message::Hover(Some(slot.clone())))
+        .on_exit(Message::Unhover(slot.clone()))
         .interaction(mouse::Interaction::Pointer)
         .into()
 }
@@ -1766,12 +1790,24 @@ mod tests {
         let size = Size::new(200.0, 400.0);
         let layout = GridLayout::default();
         let shown = crate::layout_probe::render(
-            &mut app.card_drawn(&card, 1.0, layout, Details::Inline),
+            &mut app.card_drawn(
+                &card.name.as_str().into(),
+                &card,
+                1.0,
+                layout,
+                Details::Inline,
+            ),
             size,
         );
         assert!(shown.chunks(4).any(|pixel| pixel[3] > 0));
         let gone = crate::layout_probe::render(
-            &mut app.card_drawn(&card, 0.0, layout, Details::Inline),
+            &mut app.card_drawn(
+                &card.name.as_str().into(),
+                &card,
+                0.0,
+                layout,
+                Details::Inline,
+            ),
             size,
         );
         assert!(gone.chunks(4).all(|pixel| pixel[3] == 0));

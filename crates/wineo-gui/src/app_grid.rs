@@ -7,6 +7,7 @@ use std::time::{Duration, Instant};
 use iced::Task;
 use iced::widget::scrollable;
 
+use crate::slot::{SectionKey, SlotId};
 use crate::{App, Early, Message, SCROLL_ID, grid, grid_motion, sidebar};
 
 impl App {
@@ -70,10 +71,10 @@ impl App {
 
     /// The card whose poster star lights up: the pointer is on it, its card
     /// is hovered, so it takes presses, and nothing covers the grid.
-    pub(crate) fn glowing_star(&self) -> Option<&str> {
+    pub(crate) fn glowing_star(&self) -> Option<&crate::slot::SlotId> {
         self.star_hovered
-            .as_deref()
-            .filter(|name| self.hovered.as_deref() == Some(name))
+            .as_ref()
+            .filter(|slot| self.hovered.as_ref() == Some(slot))
             .filter(|_| !self.input_covered() && self.collapse.idle())
     }
 
@@ -83,8 +84,7 @@ impl App {
         // A hover that moved off the star's card by any path, not just the
         // pointer, leaves the star too. The star's own enter can come just
         // before its card's, so it's kept while the hover holds still.
-        if self.hovered.as_deref() != self.hover_fades.hovered()
-            && self.star_hovered != self.hovered
+        if self.hovered.as_ref() != self.hover_fades.hovered() && self.star_hovered != self.hovered
         {
             self.star_hovered = None;
         }
@@ -93,26 +93,32 @@ impl App {
         if self.input_covered() || !self.collapse.idle() {
             self.star_hovered = None;
         }
-        let glowing = self.glowing_star().map(str::to_owned);
+        let glowing = self.glowing_star().cloned();
+        // Measured only when the selection's slots need retargeting.
+        let shown = self
+            .hover_fades
+            .selection_moves(self.selected.as_deref())
+            .then(|| self.grid_places());
         self.hover_fades.sync(
-            self.hovered.as_deref(),
+            self.hovered.as_ref(),
             self.selected.as_deref(),
-            glowing.as_deref(),
+            glowing.as_ref(),
+            shown.as_ref().map_or(&[][..], |places| &places.ids),
         );
         if !self.hover_fades.active() {
             return;
         }
-        if let Some(name) = &self.hovered
-            && self.hover_fades.fading(name)
+        if let Some(slot) = &self.hovered
+            && self.hover_fades.fading(slot)
             && self
                 .cards
                 .iter()
-                .any(|card| &card.name == name && card.favorite)
+                .any(|card| card.name == slot.name() && card.favorite)
         {
-            self.hover_fades.fill_star(name);
+            self.hover_fades.fill_star(slot);
         }
         let places = self.grid_places();
-        self.hover_fades.retain(|name| places.index(name).is_some());
+        self.hover_fades.retain(|slot| places.index(slot).is_some());
     }
 
     /// Drops the pops of cards no longer shown or no longer favorites.
@@ -122,9 +128,11 @@ impl App {
         }
         let places = self.grid_places();
         let cards = &self.cards;
-        self.star_pops.retain(|name| {
-            places.index(name).is_some()
-                && cards.iter().any(|card| card.name == name && card.favorite)
+        self.star_pops.retain(|slot| {
+            places.index(slot).is_some()
+                && cards
+                    .iter()
+                    .any(|card| card.name == slot.name() && card.favorite)
         });
     }
 
@@ -161,9 +169,13 @@ impl App {
             grid_motion::ViewLayout::List => vec![crate::list_view::ROW_HEIGHT; filtered.len()],
         };
         let widths = vec![self.slot_width(); heights.len()];
-        let names = filtered.iter().map(|card| card.name.clone()).collect();
+        // The flat library is one section, so each game has one slot.
+        let ids = filtered
+            .iter()
+            .map(|card| SlotId::new(SectionKey::All, card.name.as_str()))
+            .collect();
         let places = Rc::new(grid_motion::Places::new(
-            names,
+            ids,
             &heights,
             &widths,
             self.columns(),
@@ -190,7 +202,7 @@ impl App {
         if self
             .hovered
             .as_ref()
-            .is_some_and(|name| places.index(name).is_none())
+            .is_some_and(|slot| places.index(slot).is_none())
         {
             self.hovered = None;
         }
@@ -263,9 +275,7 @@ impl App {
         }
         let places = self.grid_places();
         let Some(slot) = self
-            .selected
-            .as_ref()
-            .and_then(|name| places.index(name))
+            .selected_index(&places)
             .map(|index| places.slots[index])
         else {
             return Task::none();

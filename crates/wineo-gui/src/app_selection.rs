@@ -4,9 +4,24 @@ use std::time::Instant;
 
 use iced::Task;
 
+use crate::grid_motion::Places;
+use crate::slot::SlotId;
 use crate::{App, Message};
 
 impl App {
+    /// Where the selected card is in `places`: the selected game's first
+    /// slot.
+    pub(crate) fn selected_index(&self, places: &Places) -> Option<usize> {
+        places.first(self.selected.as_deref()?)
+    }
+
+    /// The selected card's slot, when it's shown.
+    pub(crate) fn selected_slot(&self) -> Option<SlotId> {
+        let places = self.grid_places();
+        self.selected_index(&places)
+            .map(|index| places.ids[index].clone())
+    }
+
     pub(crate) fn select_card(&mut self, name: String) -> Task<Message> {
         if self.selected.as_deref() == Some(&name) && self.panel_open {
             self.card_click_target = Some((name, self.target.clone()));

@@ -763,7 +763,7 @@ fn the_last_list_row_scrolls_clear_of_the_bar() {
     app.viewport_height = with.viewport.height;
     let _ = app.scroll_to_landing();
     let places = app.grid_places();
-    let slot = places.slots[places.index(&last).unwrap()];
+    let slot = places.slots[places.index(&(&last).into()).unwrap()];
     let visible = with.viewport.height - BAR_ROOM;
     let bottom = slot.y + slot.height - app.scroll_offset;
     assert!(
@@ -800,7 +800,7 @@ fn scrolling_a_last_row_card_into_view_clears_the_bar() {
     app.viewport_height = laid.viewport.height;
     let _ = app.scroll_to_landing();
     let places = app.grid_places();
-    let slot = places.slots[places.index(&last).unwrap()];
+    let slot = places.slots[places.index(&(&last).into()).unwrap()];
     let bottom = slot.y + slot.height - app.scroll_offset;
     assert!(
         bottom <= visible + 0.5,
