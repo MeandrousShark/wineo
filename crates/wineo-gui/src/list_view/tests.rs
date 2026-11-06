@@ -9,7 +9,7 @@ use wineo_core::steam::AppState;
 
 use super::*;
 use crate::grid_motion::{DOCK_WIDTH, ROW_GAP, ViewLayout};
-use crate::layout_probe::{bounds_at, click_at, layout};
+use crate::layout_probe::{bounds_at, click_at, layout, render};
 use crate::sort_control::Event as SortEvent;
 use crate::tests::{card, steam_card};
 
@@ -479,6 +479,133 @@ fn the_source_and_tags_headers_sort_flip_and_show_the_indicator() {
     assert_eq!(shown(&app), ["d", "a", "b", "c"]);
     // The header builds with the arrow on the sorted column.
     let _ = app.list_header();
+}
+
+/// Which header cells show a sort arrow at `size`: the button's row holds
+/// the label alone, or the label and the arrow.
+fn arrows(app: &App, size: Size) -> Vec<(&'static str, bool)> {
+    let node = layout(&mut app.list_header(), size);
+    let mut cells = vec![("Title", 0)];
+    cells.extend(
+        columns(app.slot_width())
+            .iter()
+            .enumerate()
+            .map(|(index, column)| (column.label(), index + 2)),
+    );
+    cells
+        .into_iter()
+        .map(|(label, cell)| {
+            let button = iced::advanced::Layout::new(&node)
+                .children()
+                .next()
+                .and_then(|inner| inner.children().next())
+                .and_then(|cells| cells.children().nth(cell))
+                .and_then(|cell| cell.children().next())
+                .and_then(|button| button.children().next())
+                .unwrap_or_else(|| panic!("no button in the {label} cell"));
+            (label, button.children().count() == 2)
+        })
+        .collect()
+}
+
+#[test]
+fn the_sorted_source_and_tags_headers_alone_show_the_arrow_and_it_flips() {
+    let (_root, mut app) = fixture();
+    labeled(&mut app);
+    app.viewport_width = 1400.0;
+    let size = Size::new(1400.0, 100.0);
+    let only = |label: &str| {
+        ["Title", "Playtime", "Last played", "Source", "Tags"]
+            .map(|name| (name, name == label))
+            .to_vec()
+    };
+    // Name leads at first, as the library boots.
+    assert_eq!(arrows(&app, size), only("Title"));
+    for (sort, label, cell) in [(SortKey::Source, "Source", 4), (SortKey::Tags, "Tags", 5)] {
+        let _ = app.update(Message::Sort(SortEvent::Header(sort)));
+        assert!(!app.query.descending);
+        assert_eq!(arrows(&app, size), only(label), "{sort:?}");
+        let up = render(&mut app.list_header(), size);
+        let _ = app.update(Message::Sort(SortEvent::Header(sort)));
+        assert!(app.query.descending);
+        assert_eq!(arrows(&app, size), only(label), "{sort:?} flipped");
+        let down = render(&mut app.list_header(), size);
+        // Only the sorted cell's arrow changes between the directions.
+        let node = layout(&mut app.list_header(), size);
+        let cell = bounds_at(&node, &[0, 0, cell]);
+        let width = size.width as usize;
+        let mut changed = 0;
+        for (index, (a, b)) in up.chunks(4).zip(down.chunks(4)).enumerate() {
+            if a != b {
+                changed += 1;
+                let x = (index % width) as f32;
+                assert!(
+                    x >= cell.x && x < cell.x + cell.width,
+                    "{sort:?}: a pixel at x {x} changed outside its cell"
+                );
+            }
+        }
+        assert!(changed > 0, "{sort:?}: the arrow didn't turn around");
+    }
+}
+
+#[test]
+fn a_source_sort_follows_a_rescan_that_changes_a_games_source() {
+    let (_root, mut app) = fixture();
+    labeled(&mut app);
+    let _ = app.update(Message::Sort(SortEvent::Header(SortKey::Source)));
+    assert_eq!(shown(&app), ["a", "d", "b", "c"]);
+    // As a rescan delivers: c is now a GOG install and a is native, with
+    // nothing else about them different.
+    let mut cards = app.cards.clone();
+    for card in &mut cards {
+        let facts = match card.name.as_str() {
+            "c" => Facts {
+                gog_id: Some("2"),
+                ..Facts::default()
+            },
+            "a" => Facts {
+                native: true,
+                ..Facts::default()
+            },
+            _ => continue,
+        };
+        card.source = Source::new(facts);
+    }
+    let _ = app.update(Message::Loaded(Ok(cards)));
+    // GOG (c), Native (a, d), Steam (b).
+    assert_eq!(shown(&app), ["c", "a", "d", "b"]);
+    let _ = app.update(Message::Sort(SortEvent::Header(SortKey::Source)));
+    assert_eq!(shown(&app), ["b", "a", "d", "c"]);
+}
+
+#[test]
+fn a_tags_sort_follows_a_bulk_tag_batch_and_a_rescan_of_one_games_tags() {
+    let (_root, mut app) = fixture();
+    labeled(&mut app);
+    let _ = app.update(Message::Sort(SortEvent::Header(SortKey::Tags)));
+    assert_eq!(shown(&app), ["b", "a", "d", "c"]);
+    // A batch over c and d, as the action bar's tag popup runs it: c gains
+    // "arcade" and leaves the untagged end, and d's [rpg] becomes
+    // [arcade, rpg].
+    app.marked.insert("c".to_owned());
+    app.marked.insert("d".to_owned());
+    let _ = app.tag_marked("arcade", true);
+    assert_eq!(shown(&app), ["c", "d", "b", "a"]);
+    // Taking it off again puts c back last.
+    let _ = app.tag_marked("arcade", false);
+    assert_eq!(shown(&app), ["b", "a", "d", "c"]);
+    // One game alone, the way a single-game edit that the rescan reads back
+    // arrives: a's tags become [zed], which now sorts after rpg.
+    let mut cards = app.cards.clone();
+    cards.iter_mut().find(|card| card.name == "a").unwrap().tags = vec!["zed".to_owned()];
+    let _ = app.update(Message::Loaded(Ok(cards)));
+    assert_eq!(shown(&app), ["b", "d", "a", "c"]);
+    // Marking just one game and tagging it works the same.
+    app.marked.clear();
+    app.marked.insert("c".to_owned());
+    let _ = app.tag_marked("aaa", true);
+    assert_eq!(shown(&app), ["c", "b", "d", "a"]);
 }
 
 #[test]
