@@ -926,12 +926,55 @@ fn the_submenu_opens_beside_its_row_and_flips_left_near_the_edge() {
     assert!(app.group_menu_view().is_none());
 }
 
+/// The pointer moved onto `slot`'s card as drawn, through the grid widget,
+/// and what that published handed to the app.
+fn point_at(app: &mut App, slot: &SlotId) {
+    let places = app.grid_places();
+    let at = app
+        .grid_motion
+        .drawn(&places, places.index(slot).unwrap())
+        .center();
+    let messages = {
+        let mut laid =
+            crate::layout_probe::lay_out(app.grid(), Size::new(app.viewport_width, 4000.0));
+        laid.event_at(
+            &iced::Event::Mouse(iced::mouse::Event::CursorMoved { position: at }),
+            iced::mouse::Cursor::Available(at),
+        )
+    };
+    for message in messages {
+        let _ = app.update(message);
+    }
+}
+
+/// A press and release on `slot`'s card as drawn, with `modifiers` held.
+fn click_slot(app: &mut App, slot: &SlotId, modifiers: Modifiers) {
+    let places = app.grid_places();
+    let at = app
+        .grid_motion
+        .drawn(&places, places.index(slot).unwrap())
+        .center();
+    let messages = click(app, at);
+    assert!(
+        messages
+            .iter()
+            .any(|message| matches!(message, Message::Press(pressed) if pressed == slot)),
+        "{slot:?}: {messages:?}"
+    );
+    app.modifiers = modifiers;
+    for message in messages {
+        let _ = app.update(message);
+    }
+    app.modifiers = Modifiers::empty();
+}
+
 #[test]
 fn two_copies_of_a_multi_tag_game_hover_select_mark_and_hide_as_one_game() {
     let mut app = grouped(
         vec![
             tagged("hades", &["rpg", "co-op"]),
             tagged("celeste", &["rpg"]),
+            tagged("zelda", &["rpg"]),
         ],
         GroupBy::Tag,
     );
@@ -940,42 +983,188 @@ fn two_copies_of_a_multi_tag_game_hover_select_mark_and_hide_as_one_game() {
     let places = app.grid_places();
     assert_eq!(
         places.ids,
-        [coop.clone(), slot(tag("rpg"), "celeste"), rpg.clone()]
+        [
+            coop.clone(),
+            slot(tag("rpg"), "celeste"),
+            rpg.clone(),
+            slot(tag("rpg"), "zelda")
+        ]
     );
     assert_ne!(coop.widget_id(), rpg.widget_id());
-    // Hover belongs to one copy.
-    let _ = app.update(Message::Hover(Some(rpg.clone())));
+    // The pointer on the drawn rpg copy hovers that copy alone.
+    point_at(&mut app, &rpg);
     assert_eq!(app.hovered.as_ref(), Some(&rpg));
     assert!(app.hover_fades.fading(&rpg) && !app.hover_fades.fading(&coop));
-    let _ = app.update(Message::Unhover(rpg.clone()));
-    // A press on the rpg copy selects the game with the cursor there.
-    let _ = app.update(Message::Press(rpg.clone()));
+    // A click on it selects the game with the cursor there.
+    click_slot(&mut app, &rpg, Modifiers::empty());
     assert_eq!(app.selected.as_deref(), Some("hades"));
     assert_eq!(app.selected_slot(), Some(rpg.clone()));
     assert!(app.panel_open);
     // The other copy moves the cursor and leaves the panel open.
-    let _ = app.update(Message::Press(coop.clone()));
+    click_slot(&mut app, &coop, Modifiers::empty());
     assert!(app.panel_open);
     assert_eq!(app.selected_slot(), Some(coop.clone()));
-    // Its own motion: each copy keeps its own body.
     assert_eq!(app.grid_motion.opacity(&coop), 1.0);
     assert_eq!(app.grid_motion.opacity(&rpg), 1.0);
-    // A mark is the game's, on both copies.
-    app.modifiers = Modifiers::CTRL;
-    let _ = app.update(Message::Press(rpg.clone()));
-    app.modifiers = Modifiers::empty();
+    // A Ctrl+click marks the game, on both copies.
+    click_slot(&mut app, &rpg, Modifiers::CTRL);
     assert!(app.marked.contains("hades"));
-    // Hiding the game takes both copies, and the cursor moves on.
-    if let Some(card) = app.cards.iter_mut().find(|card| card.name == "hades") {
-        card.hidden = true;
-    }
-    app.order.cards_edited();
-    app.reorder();
-    app.reflow_grid();
-    assert_eq!(app.grid_places().ids, [slot(tag("rpg"), "celeste")]);
+    // Back on the rpg copy, the real Hide takes both copies, and the
+    // cursor's successor is the slot after it, counting the co-op copy
+    // before it that leaves too.
+    click_slot(&mut app, &rpg, Modifiers::empty());
+    let _ = app.update(Message::Mark(crate::library_actions::Event::Toggle(
+        "hades".to_owned(),
+        crate::library_actions::Flag::Hidden,
+    )));
+    assert!(
+        app.cards
+            .iter()
+            .any(|card| card.name == "hades" && card.hidden)
+    );
+    assert_eq!(
+        app.grid_places().ids,
+        [slot(tag("rpg"), "celeste"), slot(tag("rpg"), "zelda")]
+    );
     assert!(app.marked.is_empty());
+    assert_eq!(app.selected_slot(), Some(slot(tag("rpg"), "zelda")));
     let _ = settle_grid(&mut app);
     assert!(!app.grid_motion.active());
+}
+
+#[test]
+fn the_action_bar_acts_once_on_a_marked_game_shown_twice() {
+    let mut app = grouped(
+        vec![
+            tagged("hades", &["rpg", "co-op"]),
+            tagged("celeste", &["rpg"]),
+            tagged("zelda", &["rpg"]),
+        ],
+        GroupBy::Tag,
+    );
+    click_slot(&mut app, &slot(tag("co-op"), "hades"), Modifiers::CTRL);
+    click_slot(&mut app, &slot(tag("rpg"), "celeste"), Modifiers::CTRL);
+    // Three marked slots, two games: the bar counts games.
+    let places = app.grid_places();
+    let marked_slots = places
+        .ids
+        .iter()
+        .filter(|slot| app.marked.contains(slot.name()))
+        .count();
+    assert_eq!(marked_slots, 3);
+    assert!(app.action_bar_shown());
+    assert_eq!(
+        crate::action_bar::count_label(app.marked.len()),
+        "2 selected"
+    );
+    // Favorite once per game.
+    let _ = app.update(Message::Tags(crate::action_bar::Event::ToggleFlag(
+        crate::library_actions::Flag::Favorite,
+    )));
+    let favorites: BTreeSet<&str> = app
+        .cards
+        .iter()
+        .filter(|card| card.favorite)
+        .map(|card| card.name.as_str())
+        .collect();
+    assert_eq!(favorites, BTreeSet::from(["celeste", "hades"]));
+    assert_eq!(app.marked.len(), 2);
+    // A tag from the bar's list puts hades in another section, keeping
+    // its other copies.
+    let _ = app.update(Message::Tags(crate::action_bar::Event::ToggleMenu));
+    let request = app.tag_opening.pending.expect("a request for the button");
+    let _ = app.update(Message::Tags(crate::action_bar::Event::OpenAbove(
+        request,
+        Some(Rectangle::new(
+            iced::Point::new(400.0, 700.0),
+            Size::new(80.0, 32.0),
+        )),
+    )));
+    assert!(app.tag_menu_shown());
+    let _ = app.update(Message::Tags(crate::action_bar::Event::Toggle(
+        "vr".to_owned(),
+    )));
+    assert!(app.grid_places().index(&slot(tag("vr"), "hades")).is_some());
+    assert!(
+        app.grid_places()
+            .index(&slot(tag("rpg"), "hades"))
+            .is_some()
+    );
+    let _ = app.update(Message::Tags(crate::action_bar::Event::CloseMenu));
+    // Hide takes every copy of both, and their marks.
+    let _ = app.update(Message::Tags(crate::action_bar::Event::ToggleFlag(
+        crate::library_actions::Flag::Hidden,
+    )));
+    assert_eq!(app.grid_places().ids, [slot(tag("rpg"), "zelda")]);
+    assert!(app.marked.is_empty());
+    assert!(!app.action_bar_shown());
+}
+
+#[test]
+fn a_grouped_cursor_falls_back_through_filters_regroups_rescans_and_removals() {
+    let cards = || {
+        vec![
+            played(tagged("hades", &["rpg", "co-op"]), 5),
+            tagged("celeste", &["platformer"]),
+            tagged("zelda", &["rpg"]),
+        ]
+    };
+    let mut app = grouped(cards(), GroupBy::Tag);
+    let coop = slot(tag("co-op"), "hades");
+    click_slot(&mut app, &coop, Modifiers::empty());
+    assert_eq!(app.selected_slot(), Some(coop.clone()));
+
+    // A filter that hides another game keeps the cursor's copy.
+    app.filters.not_tags.insert("platformer".to_owned());
+    let _ = app.resorted();
+    assert_eq!(app.selected_slot(), Some(coop.clone()));
+    // One that hides the game leaves nothing to point at, and the panel
+    // stays; clearing it comes back to the same copy.
+    app.search = "zel".to_owned();
+    let _ = app.resorted();
+    assert_eq!(app.selected_slot(), None);
+    assert!(app.panel_open);
+    app.search.clear();
+    app.filters.not_tags.clear();
+    let _ = app.resorted();
+    assert_eq!(app.selected_slot(), Some(coop.clone()));
+
+    // A regroup without that section falls back to the game's first copy.
+    app.group = GroupBy::Source;
+    let _ = app.resorted();
+    let first = app.selected_slot().unwrap();
+    assert_eq!(first.name(), "hades");
+    assert_eq!(first.section(), &SectionKey::Recent);
+    app.group = GroupBy::Tag;
+    let _ = app.resorted();
+    assert_eq!(app.selected_slot().unwrap().name(), "hades");
+
+    // A rescan that drops hades from Recently played, with the cursor
+    // there, falls back to its first copy left.
+    click_slot(
+        &mut app,
+        &slot(SectionKey::Recent, "hades"),
+        Modifiers::empty(),
+    );
+    let mut unplayed = cards();
+    unplayed[0].last_played_at = None;
+    app.merge(unplayed);
+    assert_eq!(app.selected_slot(), Some(coop.clone()));
+    assert!(app.panel_open);
+
+    // A removal of another game keeps the cursor; removing hades clears
+    // it and closes the panel.
+    click_slot(&mut app, &slot(tag("rpg"), "hades"), Modifiers::empty());
+    let mut fewer = cards();
+    fewer[0].last_played_at = None;
+    fewer.remove(1);
+    app.merge(fewer.clone());
+    assert_eq!(app.selected_slot(), Some(slot(tag("rpg"), "hades")));
+    fewer.remove(0);
+    app.merge(fewer);
+    assert_eq!(app.selected, None);
+    assert_eq!(app.selected_slot(), None);
+    assert!(!app.panel_open);
 }
 
 fn header_places(sections: &[(&str, &[&str])]) -> Places {
