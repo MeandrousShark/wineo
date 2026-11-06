@@ -206,7 +206,7 @@ pub fn list(paths: &Paths) -> Themes {
     }
     themes
         .themes
-        .sort_by_cached_key(|theme| (theme.name.to_lowercase(), theme.id.clone()));
+        .sort_by_cached_key(|theme| (crate::name::fold_case(&theme.name), theme.id.clone()));
     themes.invalid.sort_by(|a, b| a.path.cmp(&b.path));
     themes
 }
@@ -400,10 +400,9 @@ pub fn rename(paths: &Paths, id: &str, new_name: &str) -> Result<bool> {
     let target = resolve(&path);
     let mut document = editable(&path, id)?;
     let new_name = new_name.trim();
-    let taken = list(paths)
-        .themes
-        .iter()
-        .any(|other| other.id != id && other.name.to_lowercase() == new_name.to_lowercase());
+    let taken = list(paths).themes.iter().any(|other| {
+        other.id != id && crate::name::fold_case(&other.name) == crate::name::fold_case(new_name)
+    });
     if taken {
         return Err(Error::ThemeNameTaken);
     }
