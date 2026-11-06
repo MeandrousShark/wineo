@@ -1,25 +1,65 @@
-//! Adding a tag to every marked game, or removing it from them: the cards
-//! change at once, each environment's config is written off the UI thread
-//! through core's `change_tags`, and the ones that fail go back.
+//! Changing every marked game at once: adding or removing a tag, favoriting,
+//! or hiding. The cards change at once, each game is written off the UI
+//! thread, and the ones that fail go back. Tags go through core's
+//! `change_tags`, the flags through `set_favorite_for` and `set_hidden_for`.
 
 use std::collections::BTreeMap;
 
 use iced::Task;
 use jiff::Timestamp;
 use wineo_core::error::Error;
+use wineo_core::library::{self, Guarded};
 use wineo_core::paths::Paths;
 use wineo_core::settings::{self, TagChange};
 
 use crate::library::Card;
-use crate::{App, Message};
+use crate::library_actions::Flag;
+use crate::{App, Message, rescan};
 
 /// How many failed games a notice names before it counts the rest.
 const NAMED_FAILURES: usize = 3;
 
-/// The writes in flight, one per game and tag. A change made meanwhile is
+/// What a batch changes on each game. For a tag the value is whether the
+/// game has it, for a flag whether it's set.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) enum Change {
+    Tag(String),
+    Flag(Flag),
+}
+
+impl Change {
+    /// Whether `card` has this change's value now.
+    fn present(&self, card: &Card) -> bool {
+        match self {
+            Self::Tag(tag) => has_tag(card, tag),
+            Self::Flag(flag) => flag.of(card),
+        }
+    }
+
+    fn set(&self, card: &mut Card, value: bool) {
+        match self {
+            Self::Tag(tag) => set_tag(card, tag, value),
+            Self::Flag(flag) => flag.set(card, value),
+        }
+    }
+
+    /// The verb a failure notice leads with when the batch sets `value`.
+    fn verb(&self, value: bool) -> &'static str {
+        match (self, value) {
+            (Self::Tag(_), true) => "tag",
+            (Self::Tag(_), false) => "untag",
+            (Self::Flag(Flag::Favorite), true) => "favorite",
+            (Self::Flag(Flag::Favorite), false) => "unfavorite",
+            (Self::Flag(Flag::Hidden), true) => "hide",
+            (Self::Flag(Flag::Hidden), false) => "show",
+        }
+    }
+}
+
+/// The writes in flight, one per game and change. A change made meanwhile is
 /// written when the one in flight returns, so the last state wins.
 #[derive(Debug, Default)]
-pub(crate) struct Writes(BTreeMap<(String, String), Pending>);
+pub(crate) struct Writes(BTreeMap<(String, Change), Pending>);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct Pending {
@@ -46,7 +86,17 @@ impl Writes {
 
     #[cfg(test)]
     pub(crate) fn get(&self, name: &str, tag: &str) -> Option<Pending> {
-        self.0.get(&(name.to_owned(), tag.to_owned())).copied()
+        self.get_change(name, &Change::Tag(tag.to_owned()))
+    }
+
+    #[cfg(test)]
+    pub(crate) fn get_flag(&self, name: &str, flag: Flag) -> Option<Pending> {
+        self.get_change(name, &Change::Flag(flag))
+    }
+
+    #[cfg(test)]
+    fn get_change(&self, name: &str, change: &Change) -> Option<Pending> {
+        self.0.get(&(name.to_owned(), change.clone())).copied()
     }
 
     /// Matches the writes to cards just read. A write whose environment is
@@ -55,13 +105,13 @@ impl Writes {
     /// choice over the cards, so a read made before a write landed doesn't
     /// undo it on screen meanwhile.
     pub(crate) fn reconcile(&mut self, cards: &mut [Card]) {
-        self.0.retain(|(name, tag), pending| {
+        self.0.retain(|(name, change), pending| {
             match cards
                 .iter_mut()
                 .find(|card| &card.name == name && card.added == pending.added)
             {
                 Some(card) => {
-                    set_tag(card, tag, pending.wanted());
+                    change.set(card, pending.wanted());
                     true
                 }
                 None => false,
@@ -97,8 +147,8 @@ pub(crate) enum Outcome {
 
 #[derive(Debug, Clone)]
 pub(crate) struct Saved {
-    pub(crate) tag: String,
-    /// Whether the batch added the tag.
+    pub(crate) change: Change,
+    /// Whether the batch added the tag, or set the flag.
     pub(crate) value: bool,
     /// Each game in the batch, with its `added` when the change was made.
     pub(crate) games: Vec<(String, Option<Timestamp>)>,
@@ -106,36 +156,74 @@ pub(crate) struct Saved {
     pub(crate) results: Result<Vec<Result<Outcome, String>>, String>,
 }
 
-/// Changes `tag` on each of `names` in turn. Each stands alone, so one that
+/// Makes `change` on each of `games` in turn. Each stands alone, so one that
 /// fails leaves the rest changed, as with `wineo tag`.
 pub(crate) fn save(
     paths: &Paths,
-    names: &[String],
-    tag: &str,
+    watch: &rescan::Watch,
+    games: &[(String, Option<Timestamp>)],
+    change: &Change,
     value: bool,
 ) -> Vec<Result<Outcome, String>> {
+    let results = games
+        .iter()
+        .map(|(name, added)| {
+            let written = match change {
+                Change::Tag(tag) => write_tag(paths, name, tag, value),
+                Change::Flag(flag) => write_flag(paths, name, *added, *flag, value),
+            };
+            match written {
+                Ok(outcome) => Ok(outcome),
+                // A parse error spans lines, which a notice can't.
+                Err(error) => Err(wineo_core::error::one_line(
+                    crate::sort_control::error_text(paths, &error),
+                )),
+            }
+        })
+        .collect();
+    if matches!(change, Change::Flag(_)) {
+        // Whether the writes saved or not, so the rescan's cache never holds
+        // a value that wasn't saved.
+        watch.refresh_library(paths);
+    }
+    results
+}
+
+fn write_tag(paths: &Paths, name: &str, tag: &str, value: bool) -> Result<Outcome, Error> {
     let change = if value {
         TagChange::Add(tag)
     } else {
         TagChange::Remove(tag)
     };
-    names
-        .iter()
-        .map(|name| match settings::change_tags(paths, name, change) {
-            Ok(_) => Ok(Outcome::Done),
-            Err(Error::UnknownEnvironment(_)) => Ok(Outcome::Gone),
-            // A parse error spans lines, which a notice can't.
-            Err(error) => Err(wineo_core::error::one_line(
-                crate::sort_control::error_text(paths, &error),
-            )),
-        })
-        .collect()
+    match settings::change_tags(paths, name, change) {
+        Ok(_) => Ok(Outcome::Done),
+        Err(Error::UnknownEnvironment(_)) => Ok(Outcome::Gone),
+        Err(error) => Err(error),
+    }
 }
 
-/// The notice for a batch where `failed` of `total` games failed, naming
-/// them and the first reason.
-fn failure_notice(value: bool, failed: &[(String, String)], total: usize) -> String {
-    let verb = if value { "tag" } else { "untag" };
+/// The `added` check happens in core under the library lock, so a game
+/// removed or recreated since the window read it is `Gone`.
+fn write_flag(
+    paths: &Paths,
+    name: &str,
+    added: Option<Timestamp>,
+    flag: Flag,
+    value: bool,
+) -> Result<Outcome, Error> {
+    let guarded = match flag {
+        Flag::Favorite => library::set_favorite_for(paths, name, added, value),
+        Flag::Hidden => library::set_hidden_for(paths, name, added, value),
+    }?;
+    Ok(match guarded {
+        Guarded::Set(_) => Outcome::Done,
+        Guarded::Gone => Outcome::Gone,
+    })
+}
+
+/// The notice for a batch where `failed` of `total` games failed to `verb`,
+/// naming them and the first reason.
+fn failure_notice(verb: &str, failed: &[(String, String)], total: usize) -> String {
     let reason = &failed[0].1;
     if total == 1 {
         return format!("Couldn't {verb} {}: {reason}", failed[0].0);
@@ -170,18 +258,46 @@ impl App {
     /// every one that has it. The cards change at once and the writes run
     /// off the UI thread.
     pub(crate) fn tag_marked(&mut self, tag: &str, value: bool) -> Task<Message> {
+        self.change_marked(&Change::Tag(tag.to_owned()), value)
+    }
+
+    /// Sets `flag` on every marked game that doesn't have it as `value`.
+    pub(crate) fn flag_marked(&mut self, flag: Flag, value: bool) -> Task<Message> {
+        self.change_marked(&Change::Flag(flag), value)
+    }
+
+    fn change_marked(&mut self, change: &Change, value: bool) -> Task<Message> {
         let targets: Vec<(String, Option<Timestamp>)> = self
             .marked_cards()
             .into_iter()
-            .filter(|card| has_tag(card, tag) != value)
+            .filter(|card| change.present(card) != value)
             .map(|card| (card.name.clone(), card.added))
             .collect();
         if targets.is_empty() {
             return Task::none();
         }
+        // Same as a single card's toggle: the banner already says the file
+        // can't be used, so nothing is written and nothing changes.
+        if matches!(change, Change::Flag(_))
+            && let Some(problem) = &self.library_problem
+        {
+            let refused = Error::LibraryUnreadable {
+                newer_version: problem.newer_version,
+                source: problem.message().into(),
+            };
+            let failed: Vec<(String, String)> = self
+                .marked_cards()
+                .into_iter()
+                .filter(|card| change.present(card) != value)
+                .map(|card| (card.display_title.clone(), refused.to_string()))
+                .collect();
+            let notice = failure_notice(change.verb(value), &failed, failed.len());
+            self.flag_notice(notice);
+            return Task::none();
+        }
         let mut start = Vec::new();
         for (name, added) in &targets {
-            let key = (name.clone(), tag.to_owned());
+            let key = (name.clone(), change.clone());
             if let Some(pending) = self.tag_writes.0.get_mut(&key)
                 && pending.added == *added
             {
@@ -201,29 +317,30 @@ impl App {
             start.push((name.clone(), *added));
         }
         let names: Vec<String> = targets.into_iter().map(|(name, _)| name).collect();
-        let shown = self.show_tag(&names, tag, value);
-        let write = self.write_tags(start, tag, value);
+        let shown = self.show_change(&names, change, value);
+        let write = self.write_batch(start, change, value);
         Task::batch([shown, write])
     }
 
-    fn write_tags(
+    fn write_batch(
         &mut self,
         games: Vec<(String, Option<Timestamp>)>,
-        tag: &str,
+        change: &Change,
         value: bool,
     ) -> Task<Message> {
         if games.is_empty() {
             return Task::none();
         }
         let paths = self.paths.clone();
-        let names: Vec<String> = games.iter().map(|(name, _)| name.clone()).collect();
-        let tag = tag.to_owned();
-        let reply = tag.clone();
+        let watch = self.shown.clone();
+        let work = games.clone();
+        let change = change.clone();
+        let reply = change.clone();
         crate::task::blocking_value(
-            move || save(&paths, &names, &tag, value),
+            move || save(&paths, &watch, &work, &change, value),
             move |results| {
                 Message::Tags(crate::action_bar::Event::Saved(Saved {
-                    tag: reply,
+                    change: reply,
                     value,
                     games,
                     results,
@@ -232,9 +349,9 @@ impl App {
         )
     }
 
-    pub(crate) fn tags_saved(&mut self, saved: Saved) -> Task<Message> {
+    pub(crate) fn batch_saved(&mut self, saved: Saved) -> Task<Message> {
         let Saved {
-            tag,
+            change,
             value,
             games,
             results,
@@ -246,7 +363,7 @@ impl App {
         let mut again = Vec::new();
         let mut gone = false;
         for ((name, added), result) in games.iter().zip(results) {
-            let key = (name.clone(), tag.clone());
+            let key = (name.clone(), change.clone());
             // A write for an environment that has since left the library.
             if self
                 .tag_writes
@@ -292,10 +409,10 @@ impl App {
         }
         let reads = self.outdate_reads();
         if !failed.is_empty() {
-            let notice = failure_notice(value, &failed, games.len());
+            let notice = failure_notice(change.verb(value), &failed, games.len());
             self.flag_notice(notice);
         }
-        let back = self.show_tag(&back, &tag, !value);
+        let back = self.show_change(&back, &change, !value);
         // A worker that died may have written some before it did, so the
         // file says which.
         let reload = if worker.is_some() || gone {
@@ -306,7 +423,7 @@ impl App {
         // Everything queued behind this batch wants the opposite of it.
         for (name, added) in &again {
             self.tag_writes.0.insert(
-                (name.clone(), tag.clone()),
+                (name.clone(), change.clone()),
                 Pending {
                     added: *added,
                     writing: !value,
@@ -314,12 +431,14 @@ impl App {
                 },
             );
         }
-        let follow = self.write_tags(again, &tag, !value);
+        let follow = self.write_batch(again, &change, !value);
         Task::batch([reads, back, reload, follow])
     }
 
-    /// Shows `tag` on or off the cards `names`, as `set_flag` does a flag.
-    fn show_tag(&mut self, names: &[String], tag: &str, value: bool) -> Task<Message> {
+    /// Shows `change` as `value` on the cards `names`, as `set_flag` does a
+    /// flag. The order is rebuilt, which also drops the marks of games that
+    /// a hide takes out of view.
+    fn show_change(&mut self, names: &[String], change: &Change, value: bool) -> Task<Message> {
         let before = self.shown_order();
         let mut changed = false;
         for card in self
@@ -327,8 +446,8 @@ impl App {
             .iter_mut()
             .filter(|card| names.contains(&card.name))
         {
-            if has_tag(card, tag) != value {
-                set_tag(card, tag, value);
+            if change.present(card) != value {
+                change.set(card, value);
                 changed = true;
             }
         }
@@ -342,7 +461,8 @@ impl App {
 
 #[cfg(test)]
 mod tests {
-    use super::failure_notice;
+    use super::{Change, failure_notice};
+    use crate::library_actions::Flag;
 
     fn failed(titles: &[&str]) -> Vec<(String, String)> {
         titles
@@ -354,16 +474,31 @@ mod tests {
     #[test]
     fn a_failure_notice_names_the_games_and_the_first_reason() {
         assert_eq!(
-            failure_notice(true, &failed(&["Hades"]), 1),
+            failure_notice("tag", &failed(&["Hades"]), 1),
             "Couldn't tag Hades: Hades broke"
         );
         assert_eq!(
-            failure_notice(true, &failed(&["Hades", "Celeste"]), 3),
+            failure_notice("tag", &failed(&["Hades", "Celeste"]), 3),
             "Couldn't tag 2 of 3 (Hades, Celeste): Hades broke"
         );
         assert_eq!(
-            failure_notice(false, &failed(&["A", "B", "C", "D", "E"]), 6),
+            failure_notice("untag", &failed(&["A", "B", "C", "D", "E"]), 6),
             "Couldn't untag 5 of 6 (A, B, C, and 2 more): A broke"
+        );
+    }
+
+    #[test]
+    fn each_change_has_its_own_verbs() {
+        let verbs = |change: Change| (change.verb(true), change.verb(false));
+        assert_eq!(verbs(Change::Tag("rpg".into())), ("tag", "untag"));
+        assert_eq!(
+            verbs(Change::Flag(Flag::Favorite)),
+            ("favorite", "unfavorite")
+        );
+        assert_eq!(verbs(Change::Flag(Flag::Hidden)), ("hide", "show"));
+        assert_eq!(
+            failure_notice(Change::Flag(Flag::Hidden).verb(false), &failed(&["A"]), 1),
+            "Couldn't show A: A broke"
         );
     }
 }

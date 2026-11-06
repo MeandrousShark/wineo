@@ -1,7 +1,7 @@
 //! The bar that floats at the bottom of the Library while games are marked:
-//! how many, **Tags**, and an x that clears the marks. **Tags** opens a
-//! popup above it with a box per tag across the marked games and a field
-//! for a new one.
+//! how many, **Tags**, a favorite and a hide button, and an x that clears the
+//! marks. **Tags** opens a popup above it with a box per tag across the
+//! marked games and a field for a new one.
 
 use std::collections::BTreeSet;
 
@@ -14,12 +14,15 @@ use crate::grid::{
     ACTION_MENU_HEADER_HEIGHT, ACTION_MENU_MARGIN, ACTION_MENU_PADDING, ACTION_MENU_SPACING,
     ACTION_MENU_WIDTH, menu_position,
 };
+use crate::library_actions::Flag;
 use crate::library_menu::{check_box, icon, menu_row, mixed_box};
 use crate::theme::Palette;
 use crate::ui::{self, ScrollStyle};
 use crate::{App, Message, bulk_tags, focus_button};
 
 pub(crate) const TAGS_BUTTON_ID: &str = "library-action-tags";
+pub(crate) const FAVORITE_BUTTON_ID: &str = "library-action-favorite";
+pub(crate) const HIDE_BUTTON_ID: &str = "library-action-hide";
 pub(crate) const CLEAR_ID: &str = "library-action-clear";
 pub(crate) const NEW_TAG_ID: &str = "library-tag-new";
 const MENU_SCROLL_ID: &str = "library-tag-menu";
@@ -51,6 +54,9 @@ pub(crate) enum Event {
     CloseMenu,
     /// The bar's x.
     Clear,
+    /// The bar's favorite or hide button: sets the flag on every marked game
+    /// unless all have it, then clears it from all.
+    ToggleFlag(Flag),
     /// A tag's row: adds it to every marked game unless all have it, then
     /// removes it from all.
     Toggle(String),
@@ -147,6 +153,13 @@ impl App {
         }
     }
 
+    /// Whether every marked game has `flag`, which the bar's button then
+    /// undoes instead of setting.
+    pub(crate) fn flag_all(&self, flag: Flag) -> bool {
+        let marked = self.marked_cards();
+        !marked.is_empty() && marked.iter().all(|card| flag.of(card))
+    }
+
     /// Every tag in the library, A to Z as the Filters popup lists them,
     /// plus any changed since the popup opened.
     pub(crate) fn tag_rows(&self) -> Vec<String> {
@@ -216,6 +229,13 @@ pub(crate) fn update(app: &mut App, event: Event) -> Task<Message> {
             app.clear_marks();
             Task::none()
         }
+        Event::ToggleFlag(flag) => {
+            if !app.action_bar_shown() {
+                return Task::none();
+            }
+            let value = !app.flag_all(flag);
+            app.flag_marked(flag, value)
+        }
         Event::Toggle(tag) => {
             if !app.tag_menu_shown() {
                 return Task::none();
@@ -238,7 +258,7 @@ pub(crate) fn update(app: &mut App, event: Event) -> Task<Message> {
             app.tag_popup.touched.insert(draft.clone());
             app.tag_marked(&draft, true)
         }
-        Event::Saved(saved) => app.tags_saved(saved),
+        Event::Saved(saved) => app.batch_saved(saved),
     }
 }
 
@@ -285,9 +305,36 @@ pub(crate) fn count_label(count: usize) -> String {
     format!("{count} selected")
 }
 
+/// The label of the bar's button for `flag`, which says what pressing it
+/// does to the marked games: `all` of them have the flag already.
+pub(crate) fn flag_label(flag: Flag, all: bool) -> &'static str {
+    match (flag, all) {
+        (Flag::Favorite, false) => "Favorite",
+        (Flag::Favorite, true) => "Unfavorite",
+        (Flag::Hidden, false) => "Hide",
+        (Flag::Hidden, true) => "Show",
+    }
+}
+
+/// A text-only button of the bar.
+fn flag_button(
+    palette: Palette,
+    label: &'static str,
+    id: &'static str,
+    message: Message,
+) -> Element<'static, Message> {
+    let button = button(text(label).size(14).height(Fill).align_y(Center))
+        .height(ui::BUTTON_HEIGHT)
+        .padding([0, 12])
+        .on_press(message.clone())
+        .style(move |_, status| ui::secondary_style(palette, status));
+    focus_button::control(button.into(), true, id, message)
+}
+
 /// What the bar does to the marked games. Each action is one more button
-/// here, before the x.
-fn actions(palette: Palette) -> Vec<Element<'static, Message>> {
+/// here, before the x, and Tab visits them in this order.
+fn actions(app: &App) -> Vec<Element<'static, Message>> {
+    let palette = app.palette;
     let message = Message::Tags(Event::ToggleMenu);
     let tags = button(
         row![text("Tags").size(14), icon(CHEVRON_UP, palette.muted, 16.0)]
@@ -299,12 +346,21 @@ fn actions(palette: Palette) -> Vec<Element<'static, Message>> {
     .padding([0, 12])
     .on_press(message.clone())
     .style(move |_, status| ui::secondary_style(palette, status));
-    vec![focus_button::control(
-        tags.into(),
-        true,
-        TAGS_BUTTON_ID,
-        message,
-    )]
+    vec![
+        focus_button::control(tags.into(), true, TAGS_BUTTON_ID, message),
+        flag_button(
+            palette,
+            flag_label(Flag::Favorite, app.flag_all(Flag::Favorite)),
+            FAVORITE_BUTTON_ID,
+            Message::Tags(Event::ToggleFlag(Flag::Favorite)),
+        ),
+        flag_button(
+            palette,
+            flag_label(Flag::Hidden, app.flag_all(Flag::Hidden)),
+            HIDE_BUTTON_ID,
+            Message::Tags(Event::ToggleFlag(Flag::Hidden)),
+        ),
+    ]
 }
 
 impl App {
@@ -336,7 +392,7 @@ impl App {
             .color(palette.foreground);
         let content = Row::with_children(
             std::iter::once(container(count).padding([0, 4]).into())
-                .chain(actions(palette))
+                .chain(actions(self))
                 .chain(std::iter::once(clear)),
         )
         .spacing(8)

@@ -60,7 +60,7 @@ impl Flag {
         }
     }
 
-    fn set(self, card: &mut Card, value: bool) {
+    pub(crate) fn set(self, card: &mut Card, value: bool) {
         match self {
             Self::Favorite => card.favorite = value,
             Self::Hidden => card.hidden = value,
