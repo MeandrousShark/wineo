@@ -490,6 +490,9 @@ add wine-played-month-ago tags=game added=2026-08-01T09:00:00Z \
 # source: Windows; tags: none; last played 10 days ago
 add wine-played-ten-days-ago added=2026-07-01T09:00:00Z sessions="2026-10-27T20:00:00Z@4000"
 
+# source: Windows; tags: several (rpg, co-op); hidden and played yesterday, where Group by's Hidden and Recently played sections meet
+add wine-hidden-recent tags="rpg co-op" hidden added=2026-09-12T09:00:00Z sessions="2026-11-05T20:00:00Z@3600"
+
 # Summary: the table comes from the `# source:` comment above each add call.
 summary=$(awk '
     /^# source:/ { note = substr($0, 11); next }
