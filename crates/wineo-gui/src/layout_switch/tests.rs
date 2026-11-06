@@ -84,6 +84,35 @@ fn focusable(app: &App, id: &'static str) -> bool {
     laid.focused() == vec![iced::widget::Id::new(id)]
 }
 
+/// The focusable ids under `element` with their bounds, in Tab's order.
+fn tab_stops(element: Element<'_, Message>) -> Vec<(iced::widget::Id, iced::Rectangle)> {
+    use std::sync::{Arc, Mutex};
+    struct Stops(Arc<Mutex<Vec<(iced::widget::Id, iced::Rectangle)>>>);
+    impl iced::advanced::widget::Operation for Stops {
+        fn traverse(
+            &mut self,
+            operate: &mut dyn FnMut(&mut dyn iced::advanced::widget::Operation),
+        ) {
+            operate(self);
+        }
+        fn focusable(
+            &mut self,
+            id: Option<&iced::widget::Id>,
+            bounds: iced::Rectangle,
+            _state: &mut dyn iced::advanced::widget::operation::Focusable,
+        ) {
+            self.0
+                .lock()
+                .unwrap()
+                .push((id.expect("an id").clone(), bounds));
+        }
+    }
+    let mut laid = lay_out(element, Size::new(200.0, 100.0));
+    let found = Arc::new(Mutex::new(Vec::new()));
+    laid.run(Box::new(Stops(found.clone())));
+    found.lock().unwrap().clone()
+}
+
 fn settle_thumb(app: &mut App) {
     let generation = app.layout_thumb.generation();
     let _ = app.update(Message::Layout(Event::Tick(
@@ -193,10 +222,13 @@ fn reduced_motion_snaps_the_thumb() {
 }
 
 #[test]
-fn the_sides_take_keyboard_focus_and_say_what_they_do() {
+fn the_segment_is_one_tab_stop_and_the_sides_say_what_they_do() {
     let (_root, app) = library(4);
-    assert!(focusable(&app, LIST_ID));
-    assert!(focusable(&app, GRID_ID));
+    assert!(focusable(&app, ID));
+    let stops = tab_stops(toolbar(&app));
+    assert_eq!(stops.len(), 1, "one stop, not one per side");
+    assert_eq!(stops[0].0, iced::widget::Id::new(ID));
+    assert_eq!(stops[0].1.size(), Size::new(WIDTH, ui::BUTTON_HEIGHT));
     assert_eq!(label(ViewLayout::List), "Show as list");
     assert_eq!(label(ViewLayout::Grid), "Show as grid");
 }
@@ -209,7 +241,7 @@ fn the_zoom_leaves_the_toolbar_and_its_keys_do_nothing_in_the_list() {
     let _ = set(&mut app, ViewLayout::List);
     assert!(!focusable(&app, crate::zoom_control::SLIDER_ID));
     assert!(!focusable(&app, crate::zoom_control::POSTER_ONLY_ID));
-    assert!(focusable(&app, LIST_ID), "the segment stays");
+    assert!(focusable(&app, ID), "the segment stays");
     assert!(!app.zoom_allowed());
     for key in [ZoomKey::In, ZoomKey::Out, ZoomKey::Reset] {
         let _ = app.update(Message::Zoom(ZoomEvent::Key(key)));
@@ -449,4 +481,126 @@ fn a_selected_row_near_the_bottom_shows_whole_in_the_grid() {
     );
     let _ = set(&mut app, ViewLayout::Grid);
     assert_whole_on_screen(&app, &name);
+}
+
+/// Hands `named` to the window's focused segment and applies what it sent.
+fn press_on_segment(app: &mut App, named: iced::keyboard::key::Named) -> iced::event::Status {
+    let mut laid = lay_out(app.view(), app.window_size);
+    laid.run(Box::new(
+        iced::advanced::widget::operation::focusable::focus(iced::widget::Id::new(ID)),
+    ));
+    let (messages, status) = laid.event_with_status(
+        &crate::sort_control::tests::press(named),
+        iced::mouse::Cursor::Unavailable,
+    );
+    drop(laid);
+    for message in messages {
+        let _ = app.update(message);
+    }
+    status
+}
+
+#[test]
+fn left_right_space_and_enter_each_flip_a_focused_segment() {
+    use iced::keyboard::key::Named;
+    let (_root, mut app) = library(4);
+    for named in [
+        Named::ArrowLeft,
+        Named::ArrowRight,
+        Named::Space,
+        Named::Enter,
+    ] {
+        for start in [ViewLayout::Grid, ViewLayout::List] {
+            let _ = set(&mut app, start);
+            let other = if start == ViewLayout::Grid {
+                ViewLayout::List
+            } else {
+                ViewLayout::Grid
+            };
+            assert_eq!(
+                press_on_segment(&mut app, named),
+                iced::event::Status::Captured
+            );
+            assert_eq!(app.layout, other, "{named:?} from {start:?}");
+            assert_eq!(
+                press_on_segment(&mut app, named),
+                iced::event::Status::Captured
+            );
+            assert_eq!(app.layout, start, "{named:?} again comes back");
+        }
+    }
+}
+
+#[test]
+fn an_unfocused_segment_ignores_the_keys() {
+    let (_root, app) = library(4);
+    let mut laid = lay_out(app.view(), app.window_size);
+    for named in [
+        iced::keyboard::key::Named::ArrowLeft,
+        iced::keyboard::key::Named::ArrowRight,
+    ] {
+        let messages = laid.event(&crate::sort_control::tests::press(named));
+        assert!(
+            messages
+                .iter()
+                .all(|message| !matches!(message, Message::Layout(_)))
+        );
+    }
+}
+
+#[test]
+fn a_click_picks_a_side_without_focusing_the_segment() {
+    let (_root, app) = library(4);
+    let mut laid = lay_out(toolbar(&app), Size::new(200.0, 100.0));
+    let left = iced::mouse::Button::Left;
+    laid.run(Box::new(
+        iced::advanced::widget::operation::focusable::focus(iced::widget::Id::new(ID)),
+    ));
+    assert_eq!(laid.focused(), vec![iced::widget::Id::new(ID)]);
+    // Text has no size without a real renderer, so aim at each laid-out side.
+    for (side, expected) in [(0, "Set(List)"), (1, "Set(Grid)")] {
+        let bounds = crate::layout_probe::bounds_at(&laid.node, &[2, side]);
+        let cursor = iced::mouse::Cursor::Available(bounds.center());
+        let mut messages = laid.event_at(
+            &iced::Event::Mouse(iced::mouse::Event::ButtonPressed(left)),
+            cursor,
+        );
+        messages.extend(laid.event_at(
+            &iced::Event::Mouse(iced::mouse::Event::ButtonReleased(left)),
+            cursor,
+        ));
+        assert_eq!(messages.len(), 1);
+        assert!(
+            format!("{:?}", messages[0]).contains(expected),
+            "{messages:?}"
+        );
+        assert!(laid.focused().is_empty(), "a click leaves no focus");
+    }
+}
+
+#[test]
+fn a_focused_segment_keeps_the_arrows_from_the_librarys_selection() {
+    use iced::keyboard::key::Named;
+    let (_root, mut app) = library(4);
+    assert_eq!(app.selected, None);
+    for named in [Named::ArrowLeft, Named::ArrowRight] {
+        let status = press_on_segment(&mut app, named);
+        assert_eq!(status, iced::event::Status::Captured);
+        // The app sees the key as captured, as the runtime hands it over.
+        let _ = app.update(Message::KeyWithFocus(
+            Key::Named(named),
+            Modifiers::empty(),
+            status,
+            false,
+        ));
+        assert_eq!(app.selected, None, "{named:?} moved the selection");
+    }
+    // The same arrow, uncaptured, does move it, so the check above bites.
+    let _ = app.update(Message::KeyWithFocus(
+        Key::Named(Named::ArrowRight),
+        Modifiers::empty(),
+        iced::event::Status::Ignored,
+        false,
+    ));
+    assert!(app.selected.is_some());
 }

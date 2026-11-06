@@ -452,8 +452,7 @@ fn the_toolbar_reads_add_search_sort_filters_then_the_zoom_controls() {
         crate::sort_control::SORT_BUTTON_ID,
         crate::sort_control::DIRECTION_BUTTON_ID,
         crate::filter_control::FILTER_BUTTON_ID,
-        crate::layout_switch::LIST_ID,
-        crate::layout_switch::GRID_ID,
+        crate::layout_switch::ID,
         SLIDER_ID,
         POSTER_ONLY_ID,
     ];
@@ -469,11 +468,9 @@ fn the_toolbar_reads_add_search_sort_filters_then_the_zoom_controls() {
         Size::new(32.0, 32.0)
     );
     // The layout segment's two halves make one 64 px control.
-    let list = bounds(&mut laid, crate::layout_switch::LIST_ID);
-    let grid = bounds(&mut laid, crate::layout_switch::GRID_ID);
-    assert_eq!(list.size(), Size::new(32.0, 32.0));
-    assert_eq!(grid.x, list.x + 32.0);
-    assert_eq!(slider.x, grid.x + grid.width + 8.0);
+    let segment = bounds(&mut laid, crate::layout_switch::ID);
+    assert_eq!(segment.size(), Size::new(64.0, 32.0));
+    assert_eq!(slider.x, segment.x + segment.width + 8.0);
 }
 
 #[test]
@@ -500,11 +497,10 @@ fn tab_reaches_the_slider_after_the_filter_tab_chips() {
         .iter()
         .position(|focused| focused.contains(SLIDER_ID))
         .expect("the slider in Tab's order");
-    // The tab's x for Steam, then its clear-all, then the layout segment's
-    // two sides, then the slider.
-    assert!(seen[2].contains(crate::layout_switch::LIST_ID), "{seen:?}");
-    assert!(seen[3].contains(crate::layout_switch::GRID_ID), "{seen:?}");
-    assert_eq!(slider, 4, "{seen:?}");
+    // The tab's x for Steam, then its clear-all, then the layout segment,
+    // then the slider.
+    assert!(seen[2].contains(crate::layout_switch::ID), "{seen:?}");
+    assert_eq!(slider, 3, "{seen:?}");
     assert!(seen[slider + 1].contains(POSTER_ONLY_ID), "{seen:?}");
 }
 
@@ -540,17 +536,13 @@ fn tab_reaches_the_dice_after_the_filter_tab_chips_and_before_the_slider() {
         .position(|focused| focused.contains(crate::random_pick::BUTTON_ID))
         .expect("the dice in Tab's order");
     // The tab's x for Steam, then its clear-all, then the dice, then the
-    // layout segment's two sides before the slider.
+    // layout segment before the slider.
     assert_eq!(dice, 2, "{seen:?}");
     assert!(
-        seen[dice + 1].contains(crate::layout_switch::LIST_ID),
+        seen[dice + 1].contains(crate::layout_switch::ID),
         "{seen:?}"
     );
-    assert!(
-        seen[dice + 2].contains(crate::layout_switch::GRID_ID),
-        "{seen:?}"
-    );
-    assert!(seen[dice + 3].contains(SLIDER_ID), "{seen:?}");
+    assert!(seen[dice + 2].contains(SLIDER_ID), "{seen:?}");
 }
 
 #[test]
@@ -1073,8 +1065,7 @@ fn tab_cycles_the_toolbar_from_add_in_its_order() {
         crate::sort_control::DIRECTION_BUTTON_ID,
         crate::filter_control::FILTER_BUTTON_ID,
         crate::random_pick::BUTTON_ID,
-        crate::layout_switch::LIST_ID,
-        crate::layout_switch::GRID_ID,
+        crate::layout_switch::ID,
         SLIDER_ID,
         POSTER_ONLY_ID,
     ];
@@ -1136,8 +1127,8 @@ fn a_disabled_add_takes_no_focus_and_tab_skips_it() {
     assert!(laid.focused().is_empty());
     let mut tree = laid.into_tree();
     let mut seen = Vec::new();
-    // Two more since the layout segment's sides joined the toolbar.
-    for _ in 0..11 {
+    // One more since the layout segment joined the toolbar.
+    for _ in 0..10 {
         let (next, focused) = press_tab(&mut app, tree);
         tree = next;
         seen.push(focused);
@@ -1152,9 +1143,9 @@ fn a_disabled_add_takes_no_focus_and_tab_skips_it() {
             .flatten()
             .all(|id| *id != iced::widget::Id::new(crate::grid::ADD_ID))
     );
-    assert_eq!(seen[9], Vec::<iced::widget::Id>::new(), "{seen:?}");
+    assert_eq!(seen[8], Vec::<iced::widget::Id>::new(), "{seen:?}");
     assert_eq!(
-        seen[10],
+        seen[9],
         [iced::widget::Id::new(crate::SEARCH_ID)],
         "{seen:?}"
     );
