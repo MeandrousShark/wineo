@@ -41,15 +41,24 @@ pub enum SortKey {
     LastPlayed,
     Playtime,
     Added,
+    Source,
+    Tags,
 }
 
 impl SortKey {
-    pub const ALL: [Self; 4] = [Self::Name, Self::LastPlayed, Self::Playtime, Self::Added];
+    pub const ALL: [Self; 6] = [
+        Self::Name,
+        Self::LastPlayed,
+        Self::Playtime,
+        Self::Added,
+        Self::Source,
+        Self::Tags,
+    ];
 
-    /// Whether the key starts descending when picked: names run A to Z, and
-    /// the rest lead with the most recent, most played, or newest.
+    /// Whether the key starts descending when picked: the text keys run A
+    /// to Z, and the rest lead with the most recent, most played, or newest.
     pub fn starts_descending(self) -> bool {
-        self != Self::Name
+        !matches!(self, Self::Name | Self::Source | Self::Tags)
     }
 
     fn from_str(value: &str) -> Option<Self> {
@@ -58,6 +67,8 @@ impl SortKey {
             "last-played" => Some(Self::LastPlayed),
             "playtime" => Some(Self::Playtime),
             "added" => Some(Self::Added),
+            "source" => Some(Self::Source),
+            "tags" => Some(Self::Tags),
             _ => None,
         }
     }
@@ -966,6 +977,8 @@ fn sort_name(sort: SortKey) -> &'static str {
         SortKey::LastPlayed => "last-played",
         SortKey::Playtime => "playtime",
         SortKey::Added => "added",
+        SortKey::Source => "source",
+        SortKey::Tags => "tags",
     }
 }
 

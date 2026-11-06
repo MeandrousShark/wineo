@@ -39,6 +39,14 @@ fn a_missing_or_clean_file_has_no_findings() {
 }
 
 #[test]
+fn the_source_and_tags_sorts_are_valid() {
+    for sort in ["source", "tags"] {
+        let inspection = inspect_text(&format!("schema_version = 1\n[view]\nsort = \"{sort}\"\n"));
+        assert_eq!(inspection.findings, [], "{sort}");
+    }
+}
+
+#[test]
 fn bad_values_name_the_field_what_was_expected_and_what_was_found() {
     let inspection = inspect_text(
         r#"[view]
@@ -57,7 +65,7 @@ hidden = 1
     assert_eq!(
         messages(&inspection, FindingKind::FieldInvalid),
         [
-            "library.toml: view.sort: expected one of name, last-played, playtime, added, source, found \"random\"",
+            "library.toml: view.sort: expected one of name, last-played, playtime, added, source, tags, found \"random\"",
             "library.toml: view.descending: expected true or false, found \"yes\"",
             "library.toml: environments.hades.favorite: expected true or false, found \"yes\"",
             "library.toml: environments.hades.added: expected a date and time with an offset, like 2026-10-17T18:00:00Z, found 2026-10-17",

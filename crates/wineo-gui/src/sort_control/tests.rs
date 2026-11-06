@@ -131,7 +131,7 @@ fn favorites_write(writes: &Writes) -> Option<Field> {
 #[test]
 fn every_key_and_direction_orders_the_grid() {
     let (_root, mut app) = loaded();
-    let cases: [(SortKey, bool, [&str; 6]); 8] = [
+    let cases: [(SortKey, bool, [&str; 6]); 10] = [
         (
             SortKey::Name,
             false,
@@ -226,6 +226,31 @@ fn every_key_and_direction_orders_the_grid() {
                 "hades",
                 "steam-game",
                 "balatro",
+            ],
+        ),
+        // GOG, Native, Steam twice, then the two Windows games, by title.
+        (
+            SortKey::Source,
+            false,
+            [
+                "papers-please",
+                "balatro",
+                "hades",
+                "steam-game",
+                "notepad",
+                "old-demo",
+            ],
+        ),
+        (
+            SortKey::Source,
+            true,
+            [
+                "notepad",
+                "old-demo",
+                "hades",
+                "steam-game",
+                "balatro",
+                "papers-please",
             ],
         ),
     ];
@@ -233,6 +258,59 @@ fn every_key_and_direction_orders_the_grid() {
         sort(&mut app, key, descending);
         assert_eq!(shown(&app), expected, "{key:?} descending {descending}");
     }
+}
+
+#[test]
+fn the_tags_sort_compares_lowercased_tags_and_leaves_untagged_games_last() {
+    let (_root, mut app) = fixture();
+    let mut cards = library();
+    for (name, tags) in [
+        ("hades", vec!["RPG", "co-op"]),
+        ("balatro", vec!["rpg"]),
+        ("papers-please", vec!["Puzzle"]),
+        ("old-demo", vec!["puzzle"]),
+    ] {
+        let card = cards.iter_mut().find(|card| card.name == name).unwrap();
+        card.tags = tags.into_iter().map(str::to_owned).collect();
+    }
+    let _ = app.update(Message::Loaded(Ok(cards)));
+    // co-op+rpg, puzzle (old-demo before papers by title), rpg, then the
+    // untagged notepad and steam-game.
+    sort(&mut app, SortKey::Tags, false);
+    assert_eq!(
+        shown(&app),
+        [
+            "hades",
+            "old-demo",
+            "papers-please",
+            "balatro",
+            "notepad",
+            "steam-game"
+        ]
+    );
+    sort(&mut app, SortKey::Tags, true);
+    assert_eq!(
+        shown(&app),
+        [
+            "balatro",
+            "old-demo",
+            "papers-please",
+            "hades",
+            "notepad",
+            "steam-game"
+        ]
+    );
+}
+
+#[test]
+fn the_menu_lists_source_and_tags_with_their_ids() {
+    assert_eq!(label(SortKey::Source), "Source");
+    assert_eq!(label(SortKey::Tags), "Tags");
+    assert_eq!(row_id(SortKey::Source), "library-sort-source");
+    assert_eq!(row_id(SortKey::Tags), "library-sort-tags");
+    let ids = menu_ids();
+    assert!(ids.contains(&"library-sort-source") && ids.contains(&"library-sort-tags"));
+    assert_eq!(ids.len(), SortKey::ALL.len() + 1);
 }
 
 #[test]
@@ -544,17 +622,25 @@ fn boot_applies_the_saved_zoom_to_the_grid() {
 }
 
 #[test]
-fn a_saved_source_sort_boots_as_name_with_the_saved_direction() {
-    let root = tempfile::tempdir().unwrap();
-    let paths = paths(&root);
-    let text = "[view]\nsort = \"source\"\ndescending = true\n";
-    write_library(&paths, text);
-    let mut app = App::boot(paths.clone()).0;
-    assert_eq!(app.query.sort, SortKey::Name);
-    assert!(app.query.descending);
-    let _ = app.update(Message::Loaded(Ok(library())));
-    assert_eq!(shown(&app)[0], "steam-game");
-    assert_eq!(fs::read_to_string(paths.library_file()).unwrap(), text);
+fn a_saved_sort_boots_with_the_saved_direction_and_an_unknown_one_as_name() {
+    // Name descending leads with steam-game, Source descending with the
+    // Windows games, and Tags with every game untagged falls to the title.
+    for (value, sort, first) in [
+        ("future-sort", SortKey::Name, "steam-game"),
+        ("source", SortKey::Source, "notepad"),
+        ("tags", SortKey::Tags, "balatro"),
+    ] {
+        let root = tempfile::tempdir().unwrap();
+        let paths = paths(&root);
+        let text = format!("[view]\nsort = \"{value}\"\ndescending = true\n");
+        write_library(&paths, &text);
+        let mut app = App::boot(paths.clone()).0;
+        assert_eq!(app.query.sort, sort, "{value}");
+        assert!(app.query.descending);
+        let _ = app.update(Message::Loaded(Ok(library())));
+        assert_eq!(shown(&app)[0], first, "{value}");
+        assert_eq!(fs::read_to_string(paths.library_file()).unwrap(), text);
+    }
 }
 
 #[test]
@@ -1257,6 +1343,10 @@ fn the_direction_tooltip_names_the_current_order_of_each_key() {
         (SortKey::LastPlayed, false, "Least recent first"),
         (SortKey::Added, true, "Newest first"),
         (SortKey::Added, false, "Oldest first"),
+        (SortKey::Source, false, "A to Z"),
+        (SortKey::Source, true, "Z to A"),
+        (SortKey::Tags, false, "A to Z"),
+        (SortKey::Tags, true, "Z to A"),
     ];
     for (key, descending, expected) in cases {
         assert_eq!(direction_label(key, descending), expected);
@@ -1462,6 +1552,8 @@ fn picking_a_key_starts_it_in_its_natural_order_and_saves_both() {
         (SortKey::LastPlayed, true),
         (SortKey::Playtime, true),
         (SortKey::Added, true),
+        (SortKey::Source, false),
+        (SortKey::Tags, false),
     ];
     for (key, descending) in cases {
         // From either direction of any other key.

@@ -374,7 +374,13 @@ fn ctrl_and_shift_clicks_mark_rows_and_space_and_ctrl_a_do_too() {
 
 #[test]
 fn header_clicks_sort_like_the_menu_and_flip_on_a_second_click() {
-    for sort in [SortKey::Name, SortKey::LastPlayed, SortKey::Playtime] {
+    for sort in [
+        SortKey::Name,
+        SortKey::LastPlayed,
+        SortKey::Playtime,
+        SortKey::Source,
+        SortKey::Tags,
+    ] {
         let (_root, mut menu) = listed(4);
         let (_root, mut header) = listed(4);
         let _ = menu.update(Message::Sort(SortEvent::Pick(SortKey::Added)));
@@ -395,7 +401,7 @@ fn header_clicks_sort_like_the_menu_and_flip_on_a_second_click() {
 }
 
 #[test]
-fn the_title_header_sends_its_sort_and_state_and_source_take_no_click() {
+fn each_header_but_state_sends_its_sort() {
     let (_root, mut app) = listed(2);
     app.viewport_width = 1400.0;
     let size = Size::new(1400.0, 100.0);
@@ -406,9 +412,11 @@ fn the_title_header_sends_its_sort_and_state_and_source_take_no_click() {
     assert_eq!(messages, ["Sort(Header(Playtime))"]);
     let messages = click_at(app.list_header(), size, &[0, 0, 3, 0]);
     assert_eq!(messages, ["Sort(Header(LastPlayed))"]);
-    for cell in [1, 4, 5] {
-        assert!(click_at(app.list_header(), size, &[0, 0, cell]).is_empty());
-    }
+    let messages = click_at(app.list_header(), size, &[0, 0, 4, 0]);
+    assert_eq!(messages, ["Sort(Header(Source))"]);
+    let messages = click_at(app.list_header(), size, &[0, 0, 5, 0]);
+    assert_eq!(messages, ["Sort(Header(Tags))"]);
+    assert!(click_at(app.list_header(), size, &[0, 0, 1]).is_empty());
     // Date added stays in the menu.
     let _ = app.update(Message::Sort(SortEvent::Pick(SortKey::Added)));
     assert!(
@@ -416,6 +424,61 @@ fn the_title_header_sends_its_sort_and_state_and_source_take_no_click() {
             .iter()
             .all(|column| column.sort() != Some(SortKey::Added))
     );
+}
+
+/// A list of four games whose sources and tags differ: `b` is Steam with
+/// rpg and co-op, `a` is GOG with puzzle, `d` is Native with rpg, and `c`
+/// has no tags and a plain Windows source.
+fn labeled(app: &mut App) {
+    let mut cards = Vec::new();
+    for (name, steam, gog, native, tags) in [
+        ("a", false, Some("1"), false, vec!["puzzle"]),
+        ("b", true, None, false, vec!["rpg", "co-op"]),
+        ("c", false, None, false, vec![]),
+        ("d", false, None, true, vec!["rpg"]),
+    ] {
+        let mut card = card(name, State::Inactive, 60);
+        card.source = Source::new(Facts {
+            steam,
+            gog_id: gog,
+            native,
+            ..Facts::default()
+        });
+        card.tags = tags.into_iter().map(str::to_owned).collect();
+        cards.push(card);
+    }
+    let _ = app.update(Message::Loaded(Ok(cards)));
+    app.layout = ViewLayout::List;
+    app.snap_grid();
+}
+
+#[test]
+fn the_source_and_tags_headers_sort_flip_and_show_the_indicator() {
+    let (_root, mut app) = fixture();
+    labeled(&mut app);
+    // Source A to Z: GOG, Native, Steam, Windows.
+    let _ = app.update(Message::Sort(SortEvent::Header(SortKey::Source)));
+    assert_eq!(
+        (app.query.sort, app.query.descending),
+        (SortKey::Source, false)
+    );
+    assert_eq!(shown(&app), ["a", "d", "b", "c"]);
+    let _ = app.update(Message::Sort(SortEvent::Header(SortKey::Source)));
+    assert!(app.query.descending);
+    assert_eq!(shown(&app), ["c", "b", "d", "a"]);
+    // Tags A to Z: co-op+rpg, puzzle, rpg, then the untagged game last
+    // in both directions.
+    let _ = app.update(Message::Sort(SortEvent::Header(SortKey::Tags)));
+    assert_eq!(
+        (app.query.sort, app.query.descending),
+        (SortKey::Tags, false)
+    );
+    assert_eq!(shown(&app), ["b", "a", "d", "c"]);
+    let _ = app.update(Message::Sort(SortEvent::Header(SortKey::Tags)));
+    assert!(app.query.descending);
+    assert_eq!(shown(&app), ["d", "a", "b", "c"]);
+    // The header builds with the arrow on the sorted column.
+    let _ = app.list_header();
 }
 
 #[test]

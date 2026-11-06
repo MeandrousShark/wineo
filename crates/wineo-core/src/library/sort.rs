@@ -18,6 +18,12 @@ pub struct SortFields<'a> {
     pub playtime_unknown: bool,
     pub last_played: Option<Timestamp>,
     pub added: Option<Timestamp>,
+    /// The shown source label, lowercased like the title, or None when
+    /// neither a store nor a platform is known.
+    pub source: Option<&'a str>,
+    /// The game's tags, lowercased and sorted, so two lists compare tag by
+    /// tag. Empty for an untagged game.
+    pub tags: &'a [String],
     pub favorite: bool,
 }
 
@@ -63,6 +69,12 @@ fn compare_key(
         // Never played is None, which is older than any time.
         SortKey::LastPlayed => directed(last_played(a), last_played(b), descending),
         SortKey::Added => directed(added(a), added(b), descending),
+        SortKey::Source => directed(
+            a.source.map_or(Value::Unknown, Value::Known),
+            b.source.map_or(Value::Unknown, Value::Known),
+            descending,
+        ),
+        SortKey::Tags => directed(tags(a), tags(b), descending),
     }
 }
 
@@ -93,6 +105,14 @@ fn added(fields: &SortFields<'_>) -> Value<Timestamp> {
     fields.added.map_or(Value::Unknown, Value::Known)
 }
 
+fn tags<'a>(fields: &SortFields<'a>) -> Value<&'a [String]> {
+    if fields.tags.is_empty() {
+        Value::Unknown
+    } else {
+        Value::Known(fields.tags)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -105,6 +125,8 @@ mod tests {
         playtime_unknown: bool,
         last_played: Option<Timestamp>,
         added: Option<Timestamp>,
+        source: Option<&'static str>,
+        tags: Vec<&'static str>,
         favorite: bool,
     }
 
@@ -120,6 +142,8 @@ mod tests {
             playtime_unknown: false,
             last_played: None,
             added: None,
+            source: None,
+            tags: Vec::new(),
             favorite: false,
         }
     }
@@ -161,15 +185,31 @@ mod tests {
     }
 
     fn order(games: &[Game], sort: SortKey, descending: bool, favorites_first: bool) -> Vec<&str> {
+        let sources: Vec<Option<String>> = games
+            .iter()
+            .map(|game| game.source.map(str::to_lowercase))
+            .collect();
+        let tags: Vec<Vec<String>> = games
+            .iter()
+            .map(|game| {
+                let mut tags: Vec<String> =
+                    game.tags.iter().map(|tag| tag.to_lowercase()).collect();
+                tags.sort();
+                tags
+            })
+            .collect();
         let fields: Vec<_> = games
             .iter()
-            .map(|game| SortFields {
+            .enumerate()
+            .map(|(index, game)| SortFields {
                 title: &game.title,
                 name: game.name,
                 seconds: game.seconds,
                 playtime_unknown: game.playtime_unknown,
                 last_played: game.last_played,
                 added: game.added,
+                source: sources[index].as_deref(),
+                tags: &tags[index],
                 favorite: game.favorite,
             })
             .collect();
@@ -257,6 +297,104 @@ mod tests {
         }
     }
 
+    /// Sources and tags over the question 3 library, with notepad having
+    /// neither.
+    fn labeled() -> Vec<Game> {
+        let mut games = library();
+        games[0].source = Some("Steam");
+        games[0].tags = vec!["rpg", "Co-op"];
+        games[1].source = Some("GOG");
+        games[1].tags = vec!["puzzle"];
+        games[3].source = Some("native");
+        games[3].tags = vec!["rpg"];
+        games[4].source = Some("Epic");
+        games[4].tags = vec!["Puzzle", "arcade"];
+        games
+    }
+
+    #[test]
+    fn source_sorts_by_the_lowercased_label_and_missing_ones_last_both_ways() {
+        let games = labeled();
+        // epic, gog, native, steam, then notepad with none.
+        assert_eq!(
+            order(&games, SortKey::Source, false, false),
+            ["old-demo", "papers-please", "balatro", "hades", "notepad"]
+        );
+        assert_eq!(
+            order(&games, SortKey::Source, true, false),
+            ["hades", "balatro", "papers-please", "old-demo", "notepad"]
+        );
+    }
+
+    #[test]
+    fn source_ties_fall_back_to_the_title_both_ways() {
+        let mut games = labeled();
+        games[2].source = Some("GOG");
+        games[2].title = "a notepad".to_owned();
+        for descending in [false, true] {
+            let order = order(&games, SortKey::Source, descending, false);
+            let gog: Vec<_> = order
+                .iter()
+                .filter(|name| matches!(**name, "notepad" | "papers-please"))
+                .collect();
+            assert_eq!(gog, [&"notepad", &"papers-please"], "{descending}");
+        }
+    }
+
+    #[test]
+    fn tags_compare_tag_by_tag_over_the_sorted_lowercased_list() {
+        let games = labeled();
+        // arcade+puzzle, co-op+rpg, puzzle, rpg, then the untagged notepad.
+        assert_eq!(
+            order(&games, SortKey::Tags, false, false),
+            ["old-demo", "hades", "papers-please", "balatro", "notepad"]
+        );
+        assert_eq!(
+            order(&games, SortKey::Tags, true, false),
+            ["balatro", "papers-please", "hades", "old-demo", "notepad"]
+        );
+    }
+
+    #[test]
+    fn a_shorter_tag_list_precedes_a_longer_one_it_starts() {
+        let mut games = labeled();
+        games[3].tags = vec!["co-op"];
+        assert_eq!(
+            order(&games, SortKey::Tags, false, false)[..3],
+            ["old-demo", "balatro", "hades"]
+        );
+    }
+
+    #[test]
+    fn tag_ties_fall_back_to_the_title_and_untagged_stay_last_both_ways() {
+        let mut games = labeled();
+        games[1].tags = vec!["rpg"];
+        games.push(game("another-untagged"));
+        for descending in [false, true] {
+            let order = order(&games, SortKey::Tags, descending, false);
+            let rpg: Vec<_> = order
+                .iter()
+                .filter(|name| matches!(**name, "balatro" | "papers-please"))
+                .collect();
+            assert_eq!(rpg, [&"balatro", &"papers-please"], "{descending}");
+            assert_eq!(order[order.len() - 2..], ["another-untagged", "notepad"]);
+        }
+    }
+
+    #[test]
+    fn favorites_lead_a_source_or_tags_sort_in_either_direction() {
+        let games = labeled();
+        for sort in [SortKey::Source, SortKey::Tags] {
+            for descending in [false, true] {
+                let order = order(&games, sort, descending, true);
+                assert!(
+                    matches!(order[..2], ["hades", "balatro"] | ["balatro", "hades"]),
+                    "{sort:?} {descending}: {order:?}"
+                );
+            }
+        }
+    }
+
     #[test]
     fn favorites_lead_either_direction_only_when_asked() {
         let games = library();
@@ -293,6 +431,8 @@ mod tests {
             SortKey::LastPlayed,
             SortKey::Playtime,
             SortKey::Added,
+            SortKey::Source,
+            SortKey::Tags,
         ] {
             assert_eq!(
                 order(&games, sort, false, false),

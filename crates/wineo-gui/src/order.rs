@@ -251,10 +251,36 @@ impl Order {
             }
         }
         counts.shown = indices.len();
+        // Only the key being sorted by needs these, so the others skip the
+        // allocations.
+        let sources: Vec<Option<String>> = if query.sort == SortKey::Source {
+            cards
+                .iter()
+                .map(|card| card.source.label().map(str::to_lowercase))
+                .collect()
+        } else {
+            Vec::new()
+        };
+        let tags: Vec<Vec<String>> = if query.sort == SortKey::Tags {
+            cards
+                .iter()
+                .map(|card| {
+                    let mut tags: Vec<String> =
+                        card.tags.iter().map(|tag| tag.to_lowercase()).collect();
+                    tags.sort_unstable();
+                    tags
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
         let fields: Vec<SortFields<'_>> = cards
             .iter()
             .zip(&titles)
-            .map(|(card, title)| SortFields {
+            .enumerate()
+            .map(|(index, (card, title))| SortFields {
+                source: sources.get(index).and_then(Option::as_deref),
+                tags: tags.get(index).map_or(&[], Vec::as_slice),
                 title,
                 name: &card.name,
                 seconds: card.seconds,

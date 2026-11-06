@@ -138,14 +138,16 @@ pub(crate) fn label(sort: SortKey) -> &'static str {
         SortKey::LastPlayed => "Last played",
         SortKey::Playtime => "Playtime",
         SortKey::Added => "Date added",
+        SortKey::Source => "Source",
+        SortKey::Tags => "Tags",
     }
 }
 
 /// The order the direction button currently gives, for its tooltip.
 pub(crate) fn direction_label(sort: SortKey, descending: bool) -> &'static str {
     match (sort, descending) {
-        (SortKey::Name, false) => "A to Z",
-        (SortKey::Name, true) => "Z to A",
+        (SortKey::Name | SortKey::Source | SortKey::Tags, false) => "A to Z",
+        (SortKey::Name | SortKey::Source | SortKey::Tags, true) => "Z to A",
         (SortKey::Playtime, true) => "Most played first",
         (SortKey::Playtime, false) => "Least played first",
         (SortKey::LastPlayed, true) => "Most recent first",
@@ -161,6 +163,8 @@ fn row_id(sort: SortKey) -> &'static str {
         SortKey::LastPlayed => "library-sort-last-played",
         SortKey::Playtime => "library-sort-playtime",
         SortKey::Added => "library-sort-added",
+        SortKey::Source => "library-sort-source",
+        SortKey::Tags => "library-sort-tags",
     }
 }
 
