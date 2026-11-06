@@ -849,7 +849,7 @@ fn a_filter_change_keeps_the_selection_and_scrolls_to_it() {
     // moving to, once, with nothing left for when it lands.
     assert_ne!(app.grid_motion.generation(), generation);
     let places = app.grid_places();
-    let slot = places.slots[places.index("papers-please").unwrap()];
+    let slot = places.slots[places.index(&"papers-please".into()).unwrap()];
     assert_eq!(app.scroll_offset, slot.y);
     assert!(app.grid_scroll_after_settle.is_none());
 }

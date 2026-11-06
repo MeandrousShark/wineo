@@ -799,11 +799,42 @@ fn the_selected_card_anchors_when_any_of_it_is_on_screen() {
     let _ = zoom(&mut app, Event::Key(Key::In));
     assert_eq!(
         app.zooming.gesture.as_ref().unwrap().anchor,
-        Some((app.filtered()[25].name.clone(), offset))
+        Some((app.filtered()[25].name.clone().into(), offset))
     );
     let _ = settle(&mut app);
     let (tops, _) = drawn_tops(&app);
     assert_eq!(tops[25] - app.scroll_offset, offset);
+}
+
+#[test]
+fn the_cursors_copy_anchors_a_zoom_rather_than_the_games_first() {
+    let (_root, mut app) = library(120);
+    let copy = app.show_test_copy("game-005", 10);
+    let places = app.grid_places();
+    let at = places.index(&copy).unwrap();
+    let tops: Vec<f32> = app
+        .grid_motion
+        .shown(&places)
+        .iter()
+        .map(|card| card.y)
+        .collect();
+    // The first copy is partly on screen too.
+    app.scroll_offset = tops[5] + 10.0;
+    app.selected = Some("game-005".into());
+    app.active_slot = Some(copy.clone());
+    let offset = tops[at] - app.scroll_offset;
+    let _ = zoom(&mut app, Event::Key(Key::In));
+    assert_eq!(
+        app.zooming.gesture.as_ref().unwrap().anchor,
+        Some((copy.clone(), offset))
+    );
+    let _ = settle(&mut app);
+    let places = app.grid_places();
+    let at = places.index(&copy).unwrap();
+    assert_eq!(
+        app.grid_motion.shown(&places)[at].y - app.scroll_offset,
+        offset
+    );
 }
 
 #[test]
@@ -897,7 +928,7 @@ fn an_off_screen_selection_scrolls_into_view_when_the_zoom_ends() {
     // The first card in view anchors instead.
     assert_eq!(
         app.zooming.gesture.as_ref().unwrap().anchor,
-        Some((app.filtered()[0].name.clone(), 16.0))
+        Some((app.filtered()[0].name.clone().into(), 16.0))
     );
     let early = frame(&mut app, 80);
     assert!(!located(&app, early, &name));
@@ -1397,12 +1428,12 @@ fn a_selection_located_before_a_zoom_frame_is_dropped() {
     let _ = frame(&mut app, 40);
     assert_ne!(app.grid_revision(), before);
     let offset = app.scroll_offset;
-    let _ = app.update(Message::GridCardLocated(name.clone(), before, stale));
+    let _ = app.update(Message::GridCardLocated(name.clone().into(), before, stale));
     assert_eq!(app.scroll_offset, offset);
     let during = app.grid_revision();
     let _ = frame(&mut app, 80);
     assert_ne!(app.grid_revision(), during);
-    let _ = app.update(Message::GridCardLocated(name.clone(), during, stale));
+    let _ = app.update(Message::GridCardLocated(name.clone().into(), during, stale));
     assert_eq!(app.scroll_offset, offset);
     let _ = settle(&mut app);
     let dragged = app.grid_revision();
@@ -1410,10 +1441,18 @@ fn a_selection_located_before_a_zoom_frame_is_dropped() {
     assert_ne!(app.grid_revision(), dragged);
     let _ = zoom(&mut app, Event::DragEnded);
     let offset = app.scroll_offset;
-    let _ = app.update(Message::GridCardLocated(name.clone(), dragged, stale));
+    let _ = app.update(Message::GridCardLocated(
+        name.clone().into(),
+        dragged,
+        stale,
+    ));
     assert_eq!(app.scroll_offset, offset);
     // One measured now still scrolls.
-    let _ = app.update(Message::GridCardLocated(name, app.grid_revision(), stale));
+    let _ = app.update(Message::GridCardLocated(
+        name.into(),
+        app.grid_revision(),
+        stale,
+    ));
     assert_eq!(app.scroll_offset, 5000.0 - 50.0 + 300.0 - 600.0);
 }
 

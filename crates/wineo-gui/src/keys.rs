@@ -239,7 +239,9 @@ impl App {
                     return Task::none();
                 }
                 let old = self.selected.clone();
-                self.selected = self.filtered().first().map(|card| card.name.clone());
+                if let Some(first) = self.grid_places().ids.first() {
+                    self.set_cursor(first.clone());
+                }
                 if self.selected != old {
                     self.selection_changed();
                 }
@@ -260,20 +262,19 @@ impl App {
             Action::Move(direction) => {
                 self.interrupt_zoom();
                 let old = self.selected.clone();
-                let filtered = self.filtered();
+                let places = self.grid_places();
                 // A selection the filters hide stays put when there's
                 // nothing to move to.
-                if filtered.is_empty() {
+                if places.ids.is_empty() {
                     return Task::none();
                 }
-                let current = self
-                    .selected
-                    .as_ref()
-                    .and_then(|name| filtered.iter().position(|card| &card.name == name));
+                // The arrows walk slots, so stepping onto another copy of
+                // the selected game moves the cursor and leaves the panel.
+                let current = self.selected_index(&places);
                 let columns = self.columns();
-                let next = move_index(current, filtered.len(), columns, direction);
-                let next_name = next.map(|index| filtered[index].name.clone());
-                self.selected = next_name;
+                if let Some(next) = move_index(current, places.ids.len(), columns, direction) {
+                    self.set_cursor(places.ids[next].clone());
+                }
                 if self.selected != old {
                     self.selection_changed();
                 }
@@ -376,17 +377,24 @@ impl App {
         self.panel_note = None;
     }
 
+    /// Brings the card the cursor is on into view, now or, while the grid
+    /// moves, once it settles.
     pub(crate) fn scroll_selection(&mut self) -> Task<Message> {
-        let Some(name) = self.selected.as_deref() else {
+        let Some(name) = self.selected.clone() else {
             return Task::none();
         };
-        let name = name.to_owned();
         if self.grid_motion.active() || self.zooming.moving() {
-            self.grid_scroll_after_settle = Some(name.clone());
+            // The copy is found again when it fires, so it follows the
+            // cursor meanwhile.
+            self.grid_scroll_after_settle = Some(name);
         }
+        // A selection the grid doesn't show has no card to find.
+        let Some(slot) = self.selected_slot() else {
+            return Task::none();
+        };
         let generation = self.grid_revision();
-        crate::grid_motion::locate_card(&name)
-            .map(move |bounds| Message::GridCardLocated(name.clone(), generation, bounds))
+        crate::grid_motion::locate_card(&slot)
+            .map(move |bounds| Message::GridCardLocated(slot.clone(), generation, bounds))
     }
 }
 

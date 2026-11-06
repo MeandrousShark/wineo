@@ -16,6 +16,7 @@ use iced::{
 };
 
 use crate::collapse::{Collapse, Look};
+use crate::slot::SlotId;
 use crate::{CARD_WIDTH, GAP, SCROLL_ID};
 pub(crate) use wineo_core::library::ViewLayout;
 use wineo_core::library::{ZOOM_DEFAULT, ZOOM_MAX, ZOOM_MIN};
@@ -297,14 +298,17 @@ impl Sweep {
 /// grid lays them out.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub(crate) struct Places {
-    pub(crate) names: Vec<String>,
+    /// Each slot's card, in shown order. A game can have more than one.
+    pub(crate) ids: Vec<SlotId>,
     pub(crate) slots: Vec<Rectangle>,
     pub(crate) columns: usize,
     /// The grid's content height with every card in its slot.
     pub(crate) height: f32,
     pub(crate) layout: GridLayout,
     pub(crate) mode: ViewLayout,
-    indices: HashMap<String, usize>,
+    indices: HashMap<SlotId, usize>,
+    /// Each game's first slot in shown order.
+    first: HashMap<String, usize>,
 }
 
 /// What `Places` is measured from, besides the zoom and dock it names.
@@ -325,7 +329,7 @@ pub(crate) struct PlacesKey {
 
 impl Places {
     pub(crate) fn new(
-        names: Vec<String>,
+        ids: Vec<SlotId>,
         heights: &[f32],
         widths: &[f32],
         columns: usize,
@@ -340,13 +344,18 @@ impl Places {
             .map(|(height, width)| Size::new(*width, *height))
             .collect();
         let (points, height) = slots(&sizes, columns, shift, row_gap(mode));
+        let mut first = HashMap::new();
+        for (index, id) in ids.iter().enumerate() {
+            first.entry(id.name().to_owned()).or_insert(index);
+        }
         Self {
-            indices: names
+            indices: ids
                 .iter()
                 .enumerate()
-                .map(|(index, name)| (name.clone(), index))
+                .map(|(index, id)| (id.clone(), index))
                 .collect(),
-            names,
+            first,
+            ids,
             slots: points
                 .into_iter()
                 .zip(sizes)
@@ -359,8 +368,13 @@ impl Places {
         }
     }
 
-    pub(crate) fn index(&self, name: &str) -> Option<usize> {
-        self.indices.get(name).copied()
+    pub(crate) fn index(&self, id: &SlotId) -> Option<usize> {
+        self.indices.get(id).copied()
+    }
+
+    /// The game `name`'s first slot in shown order.
+    pub(crate) fn first(&self, name: &str) -> Option<usize> {
+        self.first.get(name).copied()
     }
 }
 
@@ -404,7 +418,7 @@ fn bounded(offset: f32, from: f32) -> f32 {
 /// A card that left the grid, drawn where it was while it fades out.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct Leaving {
-    pub(crate) name: String,
+    pub(crate) id: SlotId,
     pub(crate) bounds: Rectangle,
     /// The geometry and text it left with, which a zoom or the poster-only
     /// toggle during the fade keeps.
@@ -412,13 +426,13 @@ pub(crate) struct Leaving {
     pub(crate) opacity: f32,
 }
 
-/// The one thing that moves the grid's cards. Each card, by name, is drawn
+/// The one thing that moves the grid's cards. Each card, by slot, is drawn
 /// at an offset from its slot that springs back to zero, so any change of
 /// slots carries every card on from where it's drawn now. Cards that arrive
 /// fade in at their slot, and cards that leave fade out where they were.
 #[derive(Debug, Default)]
 pub(crate) struct GridMotion {
-    bodies: HashMap<String, Body>,
+    bodies: HashMap<SlotId, Body>,
     leaving: Vec<Leaving>,
     columns: usize,
     height: f32,
@@ -427,7 +441,7 @@ pub(crate) struct GridMotion {
     /// doesn't jump under them.
     hold: Option<f32>,
     /// A zoom's anchor, kept in place until the cards it set moving stop.
-    pub(crate) anchor: Option<(String, f32)>,
+    pub(crate) anchor: Option<(SlotId, f32)>,
     last_tick: Option<Instant>,
     deadline: Option<Instant>,
     generation: u64,
@@ -438,12 +452,12 @@ impl GridMotion {
     pub(crate) fn snap_to(&mut self, places: &Places) {
         let now = Instant::now();
         self.bodies = places
-            .names
+            .ids
             .iter()
             .zip(&places.slots)
-            .map(|(name, slot)| {
+            .map(|(id, slot)| {
                 (
-                    name.clone(),
+                    id.clone(),
                     Body {
                         slot: *slot,
                         x: Spring::at(0.0, 0.0, now),
@@ -471,19 +485,19 @@ impl GridMotion {
         let previous_height = self.content_height_now();
         let mut old = std::mem::take(&mut self.bodies);
         let mut moving = false;
-        for (index, (name, slot)) in places.names.iter().zip(&places.slots).enumerate() {
+        for (index, (id, slot)) in places.ids.iter().zip(&places.slots).enumerate() {
             let delay = if was_active {
                 now
             } else {
                 now + stagger(index)
             };
-            let (drawn, velocity, opacity) = if let Some(body) = old.remove(name) {
+            let (drawn, velocity, opacity) = if let Some(body) = old.remove(id) {
                 (
                     body.slot.position() + body.offset(),
                     Vector::new(body.x.velocity, body.y.velocity),
                     body.opacity,
                 )
-            } else if let Some(at) = self.leaving.iter().position(|card| &card.name == name) {
+            } else if let Some(at) = self.leaving.iter().position(|card| &card.id == id) {
                 let card = self.leaving.remove(at);
                 (card.bounds.position(), Vector::ZERO, card.opacity)
             } else {
@@ -498,7 +512,7 @@ impl GridMotion {
                 opacity,
             };
             moving |= body.moving() || velocity != Vector::ZERO;
-            self.bodies.insert(name.clone(), body);
+            self.bodies.insert(id.clone(), body);
         }
         let mut left: Vec<_> = old.into_iter().collect();
         // Shown order, so the oldest cards draw first, beneath the rest.
@@ -508,8 +522,8 @@ impl GridMotion {
                 .unwrap_or(std::cmp::Ordering::Equal)
         });
         self.leaving
-            .extend(left.into_iter().map(|(name, body)| Leaving {
-                name,
+            .extend(left.into_iter().map(|(id, body)| Leaving {
+                id,
                 bounds: Rectangle::new(body.slot.position() + body.offset(), body.slot.size()),
                 layout: self.layout,
                 opacity: body.opacity,
@@ -527,8 +541,8 @@ impl GridMotion {
     /// zoom within one column count only scales the grid, and a spring in
     /// flight carries on toward the scaled slot.
     pub(crate) fn scale_to(&mut self, places: &Places) {
-        for (name, slot) in places.names.iter().zip(&places.slots) {
-            if let Some(body) = self.bodies.get_mut(name) {
+        for (id, slot) in places.ids.iter().zip(&places.slots) {
+            if let Some(body) = self.bodies.get_mut(id) {
                 body.slot = *slot;
             }
         }
@@ -542,11 +556,8 @@ impl GridMotion {
     pub(crate) fn zoom_to(&mut self, places: &Places, now: Instant) {
         let same = places.columns == self.columns
             && places.layout.text == self.layout.text
-            && places.names.len() == self.bodies.len()
-            && places
-                .names
-                .iter()
-                .all(|name| self.bodies.contains_key(name));
+            && places.ids.len() == self.bodies.len()
+            && places.ids.iter().all(|id| self.bodies.contains_key(id));
         if same {
             self.scale_to(places);
         } else {
@@ -611,13 +622,13 @@ impl GridMotion {
         }
     }
 
-    /// How far from its slot `name` is drawn.
-    pub(crate) fn offset(&self, name: &str) -> Vector {
-        self.bodies.get(name).map_or(Vector::ZERO, Body::offset)
+    /// How far from its slot the card `id` is drawn.
+    pub(crate) fn offset(&self, id: &SlotId) -> Vector {
+        self.bodies.get(id).map_or(Vector::ZERO, Body::offset)
     }
 
-    pub(crate) fn opacity(&self, name: &str) -> f32 {
-        self.bodies.get(name).map_or(1.0, |body| body.opacity)
+    pub(crate) fn opacity(&self, id: &SlotId) -> f32 {
+        self.bodies.get(id).map_or(1.0, |body| body.opacity)
     }
 
     pub(crate) fn leaving(&self) -> &[Leaving] {
@@ -632,22 +643,22 @@ impl GridMotion {
     /// Where each card in `places` is drawn now.
     pub(crate) fn shown(&self, places: &Places) -> Vec<Rectangle> {
         places
-            .names
+            .ids
             .iter()
             .zip(&places.slots)
-            .map(|(name, slot)| *slot + self.offset(name))
+            .map(|(id, slot)| *slot + self.offset(id))
             .collect()
     }
 
     /// Where the card at `index` in `places` is drawn now.
     pub(crate) fn drawn(&self, places: &Places, index: usize) -> Rectangle {
-        places.slots[index] + self.offset(&places.names[index])
+        places.slots[index] + self.offset(&places.ids[index])
     }
 
     /// The grid's drawn content height: its slots', or more while cards
     /// overshoot, fade out, or hold the height for those that did.
     pub(crate) fn content_height(&self, places: &Places) -> f32 {
-        let moving = (0..places.names.len()).map(|index| self.drawn(places, index));
+        let moving = (0..places.ids.len()).map(|index| self.drawn(places, index));
         moving
             .chain(self.leaving.iter().map(|card| card.bounds))
             .map(|bounds| bounds.y + bounds.height + PADDING)
@@ -828,16 +839,16 @@ pub(crate) struct Scene<'a, Message> {
 /// A card leaving the grid: its element, built at the geometry it left
 /// with, and where it's drawn at that size.
 pub(crate) struct Outgoing<'a, Message> {
-    pub(crate) name: String,
+    pub(crate) id: SlotId,
     pub(crate) bounds: Rectangle,
     pub(crate) card: Element<'a, Message>,
     pub(crate) details: Option<CardDetails<'a, Message>>,
 }
 
-/// A shown card: its name, its element, and the details the grid draws
+/// A shown card: its slot, its element, and the details the grid draws
 /// apart from it.
 pub(crate) struct GridCard<'a, Message> {
-    pub(crate) name: String,
+    pub(crate) id: SlotId,
     pub(crate) card: Element<'a, Message>,
     pub(crate) details: Option<CardDetails<'a, Message>>,
 }
@@ -864,35 +875,35 @@ pub(crate) fn grid<'a, Message: Clone + 'a>(
     drift: f32,
 ) -> Element<'a, Message> {
     let shown = cards.len();
-    let offsets = cards.iter().map(|card| motion.offset(&card.name)).collect();
-    let mut names = Vec::with_capacity(shown + leaving.len());
+    let offsets = cards.iter().map(|card| motion.offset(&card.id)).collect();
+    let mut keys = Vec::with_capacity(shown + leaving.len());
     let mut elements = Vec::with_capacity(shown + leaving.len());
     let mut details = Vec::new();
     for card in cards {
         if let Some(element) = card.details {
-            details.push((names.len(), format!("details:{}", card.name), element));
+            details.push((keys.len(), Child::Details(card.id.clone()), element));
         }
-        names.push(card.name);
+        keys.push(Child::Card(card.id));
         elements.push(card.card);
     }
     let mut outgoing = Vec::with_capacity(leaving.len());
     for card in leaving {
         if let Some(element) = card.details {
-            details.push((names.len(), format!("details:{}", card.name), element));
+            details.push((keys.len(), Child::Details(card.id.clone()), element));
         }
-        names.push(card.name);
+        keys.push(Child::Card(card.id));
         outgoing.push(card.bounds);
         elements.push(card.card);
     }
     let mut details_of = vec![None; elements.len()];
-    for (index, name, details) in details {
+    for (index, key, details) in details {
         details_of[index] = Some((elements.len(), details.top));
-        names.push(name);
+        keys.push(key);
         elements.push(details.element);
     }
     Element::new(Grid {
         cards: elements,
-        names,
+        keys,
         shown,
         details_of,
         offsets,
@@ -906,10 +917,17 @@ pub(crate) fn grid<'a, Message: Clone + 'a>(
     })
 }
 
+/// What a grid child belongs to, which its widget state follows.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+enum Child {
+    Card(SlotId),
+    Details(SlotId),
+}
+
 struct Grid<'a, Message> {
     /// The shown cards, then the leaving ones, then the cards' details.
     cards: Vec<Element<'a, Message>>,
-    names: Vec<String>,
+    keys: Vec<Child>,
     shown: usize,
     /// Each shown or leaving card's details child, if it has one, and
     /// their top inside the card.
@@ -945,7 +963,7 @@ fn band_clip(card: Rectangle, details: Rectangle, below: Option<Rectangle>) -> O
 #[derive(Default)]
 struct GridState {
     /// Each child's card, so a card keeps its state when the order changes.
-    names: Vec<String>,
+    keys: Vec<Child>,
     width: f32,
     open: bool,
     layout: GridLayout,
@@ -1019,7 +1037,7 @@ impl<Message: Clone> Widget<Message, Theme, Renderer> for Grid<'_, Message> {
 
     fn state(&self) -> tree::State {
         tree::State::new(GridState {
-            names: self.names.clone(),
+            keys: self.keys.clone(),
             ..GridState::default()
         })
     }
@@ -1030,22 +1048,22 @@ impl<Message: Clone> Widget<Message, Theme, Renderer> for Grid<'_, Message> {
 
     fn diff(&self, tree: &mut Tree) {
         let state = tree.state.downcast_mut::<GridState>();
-        if state.names != self.names {
+        if state.keys != self.keys {
             // iced matches children by index; a card's hover and widget
-            // state belong to the card, wherever it moved.
-            if state.names.len() == tree.children.len() {
-                let mut old: HashMap<String, Tree> = std::mem::take(&mut state.names)
+            // state belong to its slot, wherever it moved.
+            if state.keys.len() == tree.children.len() {
+                let mut old: HashMap<Child, Tree> = std::mem::take(&mut state.keys)
                     .into_iter()
                     .zip(std::mem::take(&mut tree.children))
                     .collect();
                 tree.children = self
-                    .names
+                    .keys
                     .iter()
                     .zip(&self.cards)
-                    .map(|(name, card)| old.remove(name).unwrap_or_else(|| Tree::new(card)))
+                    .map(|(key, card)| old.remove(key).unwrap_or_else(|| Tree::new(card)))
                     .collect();
             }
-            state.names = self.names.clone();
+            state.keys = self.keys.clone();
         }
         tree.diff_children(&self.cards);
     }
@@ -1181,8 +1199,9 @@ impl<Message: Clone> Widget<Message, Theme, Renderer> for Grid<'_, Message> {
                 .zip(layout.children())
                 .enumerate()
                 .for_each(|(index, ((card, state), layout))| {
-                    let id = Id::from(format!("library-card:{}", self.names[index]));
-                    operation.container(Some(&id), layout.bounds());
+                    if let Child::Card(slot) = &self.keys[index] {
+                        operation.container(Some(&slot.widget_id()), layout.bounds());
+                    }
                     card.as_widget_mut()
                         .operate(state, layout, renderer, operation);
                 });
@@ -1450,8 +1469,8 @@ impl Operation<CardBounds> for LocateCard {
     }
 }
 
-pub(crate) fn locate_card(name: &str) -> Task<CardBounds> {
-    locate(Id::from(format!("library-card:{name}")), Id::new(SCROLL_ID))
+pub(crate) fn locate_card(slot: &SlotId) -> Task<CardBounds> {
+    locate(slot.widget_id(), Id::new(SCROLL_ID))
 }
 
 /// Finds a container and the scrollable it sits in, by their ids.
@@ -1470,6 +1489,9 @@ mod app_tests;
 
 #[cfg(test)]
 mod details_tests;
+
+#[cfg(test)]
+mod slot_tests;
 
 #[cfg(test)]
 mod tests {
@@ -1762,7 +1784,7 @@ mod tests {
             1.0
         );
         let full = Places::new(
-            (0..7).map(|index| index.to_string()).collect(),
+            (0..7).map(|index| index.to_string().into()).collect(),
             &[300.0; 7],
             &[layout.card_width(); 7],
             columns_for_viewport(896.0, false, layout, ViewLayout::Grid),
@@ -1803,7 +1825,7 @@ mod tests {
                     assert_eq!(slot, layout.card_width());
                     let heights: Vec<f32> = (0..13).map(|index| 200.0 + index as f32).collect();
                     let places = Places::new(
-                        (0..13).map(|index| index.to_string()).collect(),
+                        (0..13).map(|index| index.to_string().into()).collect(),
                         &heights,
                         &[slot; 13],
                         columns,
@@ -2021,7 +2043,7 @@ mod tests {
     fn places(names: &[&str], columns: usize, layout: GridLayout) -> Places {
         let heights = vec![layout.poster_height() + 60.0; names.len()];
         Places::new(
-            names.iter().map(|name| (*name).to_owned()).collect(),
+            names.iter().map(|name| (*name).into()).collect(),
             &heights,
             &vec![layout.card_width(); names.len()],
             columns,
@@ -2032,7 +2054,7 @@ mod tests {
     }
 
     fn drawn(motion: &GridMotion, places: &Places, name: &str) -> Point {
-        motion.shown(places)[places.index(name).unwrap()].position()
+        motion.shown(places)[places.index(&name.into()).unwrap()].position()
     }
 
     fn frames(motion: &GridMotion) -> usize {
@@ -2060,7 +2082,7 @@ mod tests {
         for name in ["a", "b", "c", "d", "e"] {
             assert_eq!(
                 drawn(&motion, &after, name),
-                before.slots[before.index(name).unwrap()].position()
+                before.slots[before.index(&name.into()).unwrap()].position()
             );
         }
         let generation = motion.generation();
@@ -2069,8 +2091,8 @@ mod tests {
         motion.tick(generation, start + DURATION);
         assert!(!motion.active());
         assert_eq!(frames(&motion), 0);
-        for (name, slot) in after.names.iter().zip(&after.slots) {
-            assert_eq!(drawn(&motion, &after, name), slot.position());
+        for (id, slot) in after.ids.iter().zip(&after.slots) {
+            assert_eq!(drawn(&motion, &after, id.name()), slot.position());
         }
     }
 
@@ -2086,13 +2108,13 @@ mod tests {
         let mid = start + Duration::from_millis(90);
         motion.tick(motion.generation(), mid);
         let at = drawn(&motion, &docked, "c");
-        let velocity = motion.bodies["c"].y.velocity;
+        let velocity = motion.bodies[&SlotId::from("c")].y.velocity;
         assert!(at != docked.slots[2].position());
         // A re-sort lands halfway through.
         let sorted = places(&["d", "c", "b", "a"], 2, layout);
         motion.spring_to(&sorted, mid);
         assert!(close(drawn(&motion, &sorted, "c"), at));
-        assert_eq!(motion.bodies["c"].y.velocity, velocity);
+        assert_eq!(motion.bodies[&SlotId::from("c")].y.velocity, velocity);
         let generation = motion.generation();
         motion.tick(generation, mid + Duration::from_millis(16));
         // It carries on smoothly instead of jumping to either slot.
@@ -2144,7 +2166,7 @@ mod tests {
         let b = all.slots[1];
         let fewer = places(&["a", "c"], 3, layout);
         motion.spring_to(&fewer, start);
-        let leaving: Vec<_> = motion.leaving().iter().map(|card| &card.name).collect();
+        let leaving: Vec<_> = motion.leaving().iter().map(|card| card.id.name()).collect();
         assert_eq!(leaving, ["b", "d", "e", "f"]);
         assert_eq!(motion.leaving()[0].bounds, b);
         assert_eq!(motion.leaving()[0].opacity, 1.0);
@@ -2162,18 +2184,18 @@ mod tests {
         // from where it was drawn to its new slot.
         let back = places(&["a", "b", "c"], 3, layout);
         motion.spring_to(&back, mid);
-        assert_eq!(motion.opacity("b"), faded);
+        assert_eq!(motion.opacity(&"b".into()), faded);
         assert!(close(drawn(&motion, &back, "b"), b.position()));
-        assert!(motion.leaving().iter().all(|card| card.name != "b"));
+        assert!(motion.leaving().iter().all(|card| card.id.name() != "b"));
         let generation = motion.generation();
         motion.tick(generation, mid + FADE / 4);
-        assert!(motion.opacity("b") > faded);
+        assert!(motion.opacity(&"b".into()) > faded);
         // The other leaving cards fade on, and the height lets go with the
         // last of them.
         motion.tick(generation, mid + FADE);
         assert!(motion.leaving().is_empty());
         assert_eq!(motion.hold(), None);
-        assert_eq!(motion.opacity("b"), 1.0);
+        assert_eq!(motion.opacity(&"b".into()), 1.0);
         motion.tick(generation, mid + DURATION);
         assert!(!motion.active());
         assert_eq!(frames(&motion), 0);
@@ -2187,15 +2209,15 @@ mod tests {
         motion.snap_to(&places(&["a", "c"], 3, layout));
         let more = places(&["a", "b", "c"], 3, layout);
         motion.spring_to(&more, start);
-        assert_eq!(motion.opacity("b"), 0.0);
+        assert_eq!(motion.opacity(&"b".into()), 0.0);
         assert_eq!(drawn(&motion, &more, "b"), more.slots[1].position());
         let generation = motion.generation();
         motion.tick(generation, start + FADE / 3);
-        assert!(motion.opacity("b") > 0.0 && motion.opacity("b") < 1.0);
+        assert!(motion.opacity(&"b".into()) > 0.0 && motion.opacity(&"b".into()) < 1.0);
         assert_eq!(drawn(&motion, &more, "b"), more.slots[1].position());
         motion.tick(generation, start + DURATION);
         assert!(!motion.active());
-        assert_eq!(motion.opacity("b"), 1.0);
+        assert_eq!(motion.opacity(&"b".into()), 1.0);
     }
 
     #[test]
@@ -2213,7 +2235,7 @@ mod tests {
         assert!(motion.leaving().is_empty());
         assert_eq!(motion.hold(), None);
         assert_eq!(motion.anchor, None);
-        assert_eq!(motion.offset("c"), Vector::ZERO);
+        assert_eq!(motion.offset(&"c".into()), Vector::ZERO);
         motion.tick(stale, start + Duration::from_millis(50));
         assert!(!motion.active());
         assert_eq!(frames(&motion), 0);

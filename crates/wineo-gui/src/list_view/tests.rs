@@ -44,7 +44,7 @@ fn shown(app: &App) -> Vec<String> {
 
 fn facts(app: &App, name: &str) -> RowFacts {
     let card = app.cards.iter().find(|card| card.name == name).unwrap();
-    app.row_facts(card, app.palette)
+    app.row_facts(&card.name.as_str().into(), card, app.palette)
 }
 
 fn answer(app: &mut App, task: iced::Task<Message>) {
@@ -287,7 +287,7 @@ fn a_row_shows_what_its_poster_does() {
         // keeps exactly the room left.
         let card = app.cards.iter().find(|card| card.name == name).unwrap();
         let node = layout(
-            &mut app.row_drawn(card, 1.0, 1000.0),
+            &mut app.row_drawn(&card.name.as_str().into(), card, 1.0, 1000.0),
             Size::new(2000.0, 500.0),
         );
         let marks = iced::advanced::Layout::new(&node)
@@ -313,7 +313,7 @@ fn a_row_shows_what_its_poster_does() {
     let width = app.slot_width();
     for card in &app.cards {
         let node = layout(
-            &mut app.row_drawn(card, 1.0, width),
+            &mut app.row_drawn(&card.name.as_str().into(), card, 1.0, width),
             Size::new(2000.0, 500.0),
         );
         assert_eq!(node.size(), Size::new(width, ROW_HEIGHT), "{}", card.name);
@@ -328,20 +328,20 @@ fn a_row_takes_presses_like_a_card() {
     assert!(
         messages
             .iter()
-            .any(|message| message == "Select(\"game-001\")"),
+            .any(|message| message == r#"Press(SlotId { section: All, name: "game-001" })"#),
         "{messages:?}"
     );
     // The star's room on a hovered row favorites it, as the poster's does.
     let (_root, mut app) = listed(3);
     app.hovered = Some("game-001".into());
     let card = app.cards[1].clone();
-    let row = app.row_drawn(&card, 1.0, app.slot_width());
+    let row = app.row_drawn(&card.name.as_str().into(), &card, 1.0, app.slot_width());
     // Cells, title cell, marks, star.
     let messages = click_at(row, Size::new(2000.0, 100.0), &[0, 0, 2, 0]);
     assert!(
-        messages
-            .iter()
-            .any(|message| message.contains("PosterStar(\"game-001\")")),
+        messages.iter().any(|message| {
+            message.contains(r#"PosterStar(SlotId { section: All, name: "game-001" })"#)
+        }),
         "{messages:?}"
     );
 }
@@ -615,7 +615,7 @@ fn a_resort_moves_the_rows_through_the_motion() {
     let _ = app.update(Message::Sort(SortEvent::Header(SortKey::Name)));
     assert!(app.query.descending);
     let after = app.grid_places();
-    assert_eq!(after.names.first(), before.names.last());
+    assert_eq!(after.ids.first(), before.ids.last());
     assert!(app.grid_motion.active(), "rows spring to their new places");
     let _ = crate::tests::settle_grid(&mut app);
     assert_eq!(app.grid_motion.shown(&after), after.slots);
@@ -657,7 +657,7 @@ fn a_random_pick_lands_on_a_row_and_scrolls_to_it() {
     answer(&mut app, task);
     assert_eq!(app.selected.as_deref(), Some(last.as_str()));
     let places = app.grid_places();
-    let slot = places.slots[places.index(&last).unwrap()];
+    let slot = places.slots[places.index(&(&last).into()).unwrap()];
     assert!(app.scroll_offset > 0.0, "the list stayed at the top");
     assert!(slot.y >= app.scroll_offset);
     assert!(slot.y + slot.height <= app.scroll_offset + app.viewport_height + 0.5);
@@ -757,14 +757,14 @@ fn the_row_hover_and_star_follow_the_posters_fade_and_pop() {
     let _ = app.update(Message::Unhover("game-001".into()));
     let leaving = facts(&app, "game-001");
     assert!(!leaving.hovered);
-    assert!(app.hover_fades.fading("game-001"));
+    assert!(app.hover_fades.fading(&"game-001".into()));
     assert!(leaving.hover > 0.0);
     assert_eq!(leaving.star, Star::Outline);
     let _ = app.update(Message::Hover(Some("game-001".into())));
     let _ = app.update(Message::Mark(crate::library_actions::Event::PosterStar(
         "game-001".into(),
     )));
-    assert!(app.star_pops.progress("game-001").is_some());
+    assert!(app.star_pops.progress(&"game-001".into()).is_some());
     let now = Instant::now();
     let _ = app.update(Message::PopTick(app.star_pops.generation(), now));
     let _ = app.update(Message::PopTick(

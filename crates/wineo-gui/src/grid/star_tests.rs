@@ -80,12 +80,10 @@ fn click<M>(laid: &mut Laid<'_, M>, at: Point) -> Vec<M> {
 fn toggles(messages: &[Message], name: &str) -> usize {
     messages
         .iter()
-        .filter(|message| {
-            matches!(
-                message,
-                Message::Mark(Event::Toggle(found, Flag::Favorite) | Event::PosterStar(found))
-                    if found == name
-            )
+        .filter(|message| match message {
+            Message::Mark(Event::Toggle(found, Flag::Favorite)) => found == name,
+            Message::Mark(Event::PosterStar(found)) => found.name() == name,
+            _ => false,
         })
         .count()
 }
@@ -183,7 +181,10 @@ fn a_star_click_toggles_the_favorite_and_never_selects_opens_or_launches() {
         ),
         "{messages:?}"
     );
-    assert_eq!(app.hovered.as_deref(), Some("game-01"));
+    assert_eq!(
+        app.hovered.as_ref().map(|slot| slot.name()),
+        Some("game-01")
+    );
     let messages = click(&mut laid, star);
     assert_eq!(toggles(&messages, "game-01"), 1, "{messages:?}");
     assert_eq!(messages.len(), 1, "{messages:?}");
@@ -285,7 +286,7 @@ fn hover_and_star_presses_do_nothing_under_a_flow_or_dialog() {
 fn the_star_fades_with_its_card_and_a_leaving_card_takes_no_presses() {
     let mut app = crate::tests::app();
     let card = crate::tests::card("game", State::Inactive, 60);
-    app.hovered = Some(card.name.clone());
+    app.hovered = Some(card.name.clone().into());
     let layout = app.grid_layout();
     let size = Size::new(200.0, 400.0);
     // The star's chip darkens the tile's corner, less so as it fades.
@@ -295,17 +296,35 @@ fn the_star_fades_with_its_card_and_a_leaving_card_takes_no_presses() {
     };
     app.hovered = None;
     let plain = render(
-        &mut app.card_drawn(&card, 1.0, layout, Details::Inline),
+        &mut app.card_drawn(
+            &card.name.as_str().into(),
+            &card,
+            1.0,
+            layout,
+            Details::Inline,
+        ),
         size,
     );
-    app.hovered = Some(card.name.clone());
+    app.hovered = Some(card.name.clone().into());
     let shown = render(
-        &mut app.card_drawn(&card, 1.0, layout, Details::Inline),
+        &mut app.card_drawn(
+            &card.name.as_str().into(),
+            &card,
+            1.0,
+            layout,
+            Details::Inline,
+        ),
         size,
     );
     assert_ne!(star(&shown), star(&plain));
     let gone = render(
-        &mut app.card_drawn(&card, 0.0, layout, Details::Inline),
+        &mut app.card_drawn(
+            &card.name.as_str().into(),
+            &card,
+            0.0,
+            layout,
+            Details::Inline,
+        ),
         size,
     );
     assert!(gone.chunks(4).all(|pixel| pixel[3] == 0));
@@ -320,7 +339,7 @@ fn the_star_fades_with_its_card_and_a_leaving_card_takes_no_presses() {
         .grid_motion
         .leaving()
         .iter()
-        .find(|card| card.name == "drop-00")
+        .find(|card| card.id.name() == "drop-00")
         .expect("the leaving card")
         .bounds;
     assert_eq!(app.hovered, None);
@@ -348,7 +367,7 @@ fn the_gog_corner_is_the_same_at_rest_and_on_hover() {
             let chip = state == State::Running && app.grid_layout().text().chip();
             app.hovered = None;
             let rest = gog_at(&card_node(&app, &card), chip);
-            app.hovered = Some(card.name.clone());
+            app.hovered = Some(card.name.clone().into());
             let node = card_node(&app, &card);
             let hovered = gog_at(&node, chip);
             let what = format!("poster-only {poster_only} at {zoom}%, {state:?}");
@@ -378,7 +397,7 @@ fn a_hidden_cards_eye_sits_in_the_bottom_left_and_the_star_keeps_the_top_right()
     let place = Vector::new(8.0, layout.poster_height() - 4.0 - 8.0 - 24.0);
     // At rest, hovered with the outline star, and a favorite.
     assert_eq!(eye(&app, &card), place);
-    app.hovered = Some(card.name.clone());
+    app.hovered = Some(card.name.clone().into());
     assert_eq!(eye(&app, &card), place);
     card.favorite = true;
     assert_eq!(eye(&app, &card), place);
@@ -396,7 +415,13 @@ fn a_hidden_cards_eye_sits_in_the_bottom_left_and_the_star_keeps_the_top_right()
     let layout = app.grid_layout();
     let size = Size::new(400.0, 900.0);
     let gone = render(
-        &mut app.card_drawn(&card, 0.0, layout, Details::Inline),
+        &mut app.card_drawn(
+            &card.name.as_str().into(),
+            &card,
+            0.0,
+            layout,
+            Details::Inline,
+        ),
         size,
     );
     assert!(gone.chunks(4).all(|pixel| pixel[3] == 0));
@@ -440,7 +465,7 @@ fn a_star_click_that_resorts_moves_the_card_and_its_eye_stays_put() {
         eye_chip(&node).expect("eye").position() - art.position()
     };
     let rest = eye(&app);
-    let _ = app.update(Message::Hover(Some(card.name.clone())));
+    let _ = app.update(Message::Hover(Some(card.name.clone().into())));
     assert_eq!(eye(&app), rest);
     let mut laid = lay_out(app.grid(), grid_size(&app));
     let star = star_on(&app, bounds_at(&laid.node, &[before]));
@@ -475,7 +500,7 @@ fn the_star_shows_in_poster_only_above_the_overlay() {
     app.poster_only = true;
     let card = art_card("game", State::Inactive);
     decoded(&mut app, &card, [128, 128, 128]);
-    app.hovered = Some(card.name.clone());
+    app.hovered = Some(card.name.clone().into());
     let node = card_node(&app, &card);
     assert!(overlay_shown(&node));
     // The poster, the overlay, then the marks on top.
@@ -540,7 +565,10 @@ fn the_star_is_no_tab_stop() {
     let _ = app.update(Message::Hover(None));
     let rest = order(&app);
     let _ = app.update(Message::Hover(Some("game-01".into())));
-    assert_eq!(app.hovered.as_deref(), Some("game-01"));
+    assert_eq!(
+        app.hovered.as_ref().map(|slot| slot.name()),
+        Some("game-01")
+    );
     assert_eq!(order(&app), rest);
     let _ = app.update(Message::Mark(Event::Toggle(
         "game-01".into(),
@@ -562,7 +590,7 @@ fn the_pointer_on_the_star_lights_it_and_on_the_card_alone_doesnt() {
         for message in messages {
             let _ = app.update(message);
         }
-        assert_eq!(app.hovered.as_deref(), Some(name));
+        assert_eq!(app.hovered.as_ref().map(|slot| slot.name()), Some(name));
         assert_eq!(app.glowing_star(), None, "{name}");
         // Onto the star, then off it again onto the card.
         let mut laid = relay_out(app.grid(), tree, size);
@@ -572,15 +600,15 @@ fn the_pointer_on_the_star_lights_it_and_on_the_card_alone_doesnt() {
         for message in messages {
             let _ = app.update(message);
         }
-        assert_eq!(app.glowing_star(), Some(name));
-        assert!(app.hover_fades.fading(name));
+        assert_eq!(app.glowing_star().map(|slot| slot.name()), Some(name));
+        assert!(app.hover_fades.fading(&name.into()));
         let mut laid = relay_out(app.grid(), tree, size);
         let messages = laid.event_at(&moved(card.center()), Cursor::Available(card.center()));
         drop(laid);
         for message in messages {
             let _ = app.update(message);
         }
-        assert_eq!(app.hovered.as_deref(), Some(name));
+        assert_eq!(app.hovered.as_ref().map(|slot| slot.name()), Some(name));
         assert_eq!(app.glowing_star(), None, "{name}");
         let _ = app.update(Message::Hover(None));
     }
@@ -601,7 +629,7 @@ fn star_click(app: &mut App, name: &str) {
 }
 
 fn popping(app: &App, name: &str) -> bool {
-    app.star_pops.progress(name).is_some()
+    app.star_pops.progress(&name.into()).is_some()
 }
 
 /// Runs the pops `millis` past their first frame.
@@ -627,13 +655,13 @@ fn only_a_star_click_that_favorites_pops() {
     assert!(!app.star_pops.active());
     star_click(&mut app, "game");
     assert!(favorite(&app, "game"));
-    assert_eq!(app.star_pops.progress("game"), Some(0.0));
+    assert_eq!(app.star_pops.progress(&"game".into()), Some(0.0));
     assert!(!popping(&app, "other"));
     assert!(subscriptions(&app) > idle);
     // It runs to its end even with the pointer gone.
     let _ = app.update(Message::Hover(None));
     pop_for(&mut app, crate::star_pop::POP.as_millis() as u64 * 45 / 100);
-    let t = app.star_pops.progress("game").unwrap();
+    let t = app.star_pops.progress(&"game".into()).unwrap();
     assert!(t > 0.4 && t < 0.5, "{t}");
     pop_for(&mut app, crate::star_pop::POP.as_millis() as u64);
     assert!(!app.star_pops.active());
@@ -688,12 +716,12 @@ fn reduced_motion_skips_the_pop_but_not_the_glow() {
     app.reduced_motion = true;
     let _ = app.update(Message::Hover(Some("game".into())));
     let _ = app.update(Message::StarHover("game".into(), true));
-    assert_eq!(app.glowing_star(), Some("game"));
-    assert!(app.hover_fades.fading("game"));
+    assert_eq!(app.glowing_star().map(|slot| slot.name()), Some("game"));
+    assert!(app.hover_fades.fading(&"game".into()));
     star_click(&mut app, "game");
     assert!(favorite(&app, "game"));
     assert!(!app.star_pops.active());
-    assert!(app.hover_fades.fading("game"));
+    assert!(app.hover_fades.fading(&"game".into()));
 }
 
 #[test]
@@ -738,7 +766,7 @@ fn a_pop_follows_its_card_through_a_favorites_first_resort() {
     assert!(!app.collapse.idle());
     assert!(!app.star_pops.active());
     let _ = app.update(Message::StarHover("game-00".into(), true));
-    assert_eq!(app.glowing_star(), None);
+    assert_eq!(app.glowing_star().map(|slot| slot.name()), None);
 }
 
 #[test]
@@ -757,7 +785,7 @@ fn the_pops_ring_stays_in_the_stars_corner() {
         let plain = render(&mut app.card(&card), Size::new(400.0, 900.0));
         let pop = crate::star_pop::POP.as_millis() as u64;
         for millis in [12, 31, 62, 87].map(|percent| pop * percent / 100) {
-            app.star_pops.start("game");
+            app.star_pops.start(&"game".into());
             let now = Instant::now();
             let generation = app.star_pops.generation();
             app.star_pops.tick(generation, now);
@@ -832,21 +860,21 @@ fn a_star_left_under_a_flow_stays_dark_once_it_closes() {
     let mut pointer = Pointer::default();
     pointer.to(&mut app, card.center());
     pointer.to(&mut app, star);
-    assert_eq!(app.glowing_star(), Some("game"));
+    assert_eq!(app.glowing_star().map(|slot| slot.name()), Some("game"));
     let _ = app.update(Message::Add);
     assert!(app.flow.is_some());
-    assert_eq!(app.glowing_star(), None);
+    assert_eq!(app.glowing_star().map(|slot| slot.name()), None);
     // Off the star onto the card, unheard under the flow.
     pointer.to(&mut app, card.center());
     let generation = app.flow_generation;
     let _ = app.update(Message::Flow(generation, crate::flow::Event::Back));
     assert!(app.flow.is_none());
     pointer.to(&mut app, Point::new(card.center().x, card.center().y + 1.0));
-    assert_eq!(app.hovered.as_deref(), Some("game"));
-    assert_eq!(app.glowing_star(), None);
+    assert_eq!(app.hovered.as_ref().map(|slot| slot.name()), Some("game"));
+    assert_eq!(app.glowing_star().map(|slot| slot.name()), None);
     // A fresh enter lights it again.
     pointer.to(&mut app, star);
-    assert_eq!(app.glowing_star(), Some("game"));
+    assert_eq!(app.glowing_star().map(|slot| slot.name()), Some("game"));
 }
 
 #[test]
@@ -859,7 +887,10 @@ fn a_sweep_straight_from_star_to_star_lights_the_one_it_lands_on() {
     for (from, to) in [(0, 1), (1, 0)] {
         pointer.to(&mut app, cards[from].center());
         pointer.to(&mut app, stars[from]);
-        assert_eq!(app.glowing_star(), Some(names[from]));
+        assert_eq!(
+            app.glowing_star().map(|slot| slot.name()),
+            Some(names[from])
+        );
         let messages = pointer.to(&mut app, stars[to]);
         assert!(
             messages.iter().any(|message| matches!(
@@ -869,7 +900,7 @@ fn a_sweep_straight_from_star_to_star_lights_the_one_it_lands_on() {
             "{messages:?}"
         );
         assert_eq!(
-            app.star_hovered.as_deref(),
+            app.star_hovered.as_ref().map(|slot| slot.name()),
             Some(names[to]),
             "{from} to {to}: {messages:?}"
         );
@@ -884,7 +915,10 @@ fn a_jump_straight_from_card_to_card_hovers_the_one_it_lands_on() {
     let mut pointer = Pointer::default();
     for (from, to) in [(0, 1), (1, 0)] {
         pointer.to(&mut app, cards[from].center());
-        assert_eq!(app.hovered.as_deref(), Some(names[from]));
+        assert_eq!(
+            app.hovered.as_ref().map(|slot| slot.name()),
+            Some(names[from])
+        );
         let messages = pointer.to(&mut app, cards[to].center());
         assert!(
             messages.iter().any(|message| matches!(
@@ -894,7 +928,7 @@ fn a_jump_straight_from_card_to_card_hovers_the_one_it_lands_on() {
             "{messages:?}"
         );
         assert_eq!(
-            app.hovered.as_deref(),
+            app.hovered.as_ref().map(|slot| slot.name()),
             Some(names[to]),
             "{from} to {to}: {messages:?}"
         );

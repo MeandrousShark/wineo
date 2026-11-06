@@ -69,9 +69,9 @@ fn card_of(app: &App, name: &str) -> Card {
 
 /// The star's and the overlay's strength on `name` as the grid draws it.
 fn progress(app: &App, name: &str) -> (f32, f32) {
-    let hovered = app.hovered.as_deref() == Some(name);
+    let hovered = app.hovered.as_ref().map(|slot| slot.name()) == Some(name);
     let selected = app.selected.as_deref() == Some(name);
-    app.hover_fades.progress(name, hovered, selected)
+    app.hover_fades.progress(&name.into(), hovered, selected)
 }
 
 fn star(app: &App, name: &str) -> f32 {
@@ -130,12 +130,10 @@ fn left_click(app: &App, card: &Card, at: Point) -> Vec<Message> {
 fn toggles(messages: &[Message], name: &str) -> usize {
     messages
         .iter()
-        .filter(|message| {
-            matches!(
-                message,
-                Message::Mark(Event::Toggle(found, Flag::Favorite) | Event::PosterStar(found))
-                    if found == name
-            )
+        .filter(|message| match message {
+            Message::Mark(Event::Toggle(found, Flag::Favorite)) => found == name,
+            Message::Mark(Event::PosterStar(found)) => found.name() == name,
+            _ => false,
         })
         .count()
 }
@@ -269,17 +267,17 @@ fn a_card_filtered_out_or_removed_mid_fade_drops_its_fade() {
     hover(&mut app, Some("drop"));
     let mut clock = Clock::start(&mut app);
     clock.tick(&mut app, 75);
-    assert!(app.hover_fades.fading("drop"));
+    assert!(app.hover_fades.fading(&"drop".into()));
     let _ = app.update(Message::SearchChanged("keep".into()));
     assert_eq!(app.hovered, None);
-    assert!(!app.hover_fades.fading("drop"));
+    assert!(!app.hover_fades.fading(&"drop".into()));
     assert!(settled(&app));
     // The leaving card draws neither the star nor the overlay.
     assert!(
         app.grid_motion
             .leaving()
             .iter()
-            .any(|card| card.name == "drop")
+            .any(|card| card.id.name() == "drop")
     );
     assert_eq!(progress(&app, "drop"), (0.0, 0.0));
     let node = card_node(&app, &card_of(&app, "drop"));
@@ -291,7 +289,7 @@ fn a_card_filtered_out_or_removed_mid_fade_drops_its_fade() {
     hover(&mut app, Some("keep"));
     let mut clock = Clock::start(&mut app);
     clock.tick(&mut app, 75);
-    assert!(app.hover_fades.fading("keep"));
+    assert!(app.hover_fades.fading(&"keep".into()));
     let remaining: Vec<Card> = app
         .cards
         .iter()
@@ -299,7 +297,7 @@ fn a_card_filtered_out_or_removed_mid_fade_drops_its_fade() {
         .cloned()
         .collect();
     let _ = app.update(Message::Loaded(Ok(remaining)));
-    assert!(!app.hover_fades.fading("keep"));
+    assert!(!app.hover_fades.fading(&"keep".into()));
     assert!(settled(&app));
 }
 
@@ -324,7 +322,7 @@ fn a_flow_or_dialog_opening_mid_fade_lets_it_finish() {
         open(&mut app);
         // Hover is ignored under it, and the fade carries on regardless.
         hover(&mut app, Some("other"));
-        assert_eq!(app.hovered.as_deref(), Some("game"));
+        assert_eq!(app.hovered.as_ref().map(|slot| slot.name()), Some("game"));
         assert_eq!(star(&app, "game"), at);
         assert!(frames(&app) > 0);
         let during = into_recipes(app.subscription()).len();
@@ -433,7 +431,7 @@ fn the_star_takes_presses_fading_in_and_none_fading_out() {
     assert!(
         messages
             .iter()
-            .any(|message| matches!(message, Message::Select(name) if name == "game")),
+            .any(|message| matches!(message, Message::Press(slot) if *slot == "game")),
         "{messages:?}"
     );
 }
@@ -455,7 +453,7 @@ fn the_fading_overlay_is_no_pointer_target() {
     assert!(
         messages
             .iter()
-            .any(|message| matches!(message, Message::Select(name) if name == "game")),
+            .any(|message| matches!(message, Message::Press(slot) if *slot == "game")),
         "{messages:?}"
     );
 }
@@ -466,7 +464,10 @@ fn star_hover(app: &mut App, name: &str, on: bool) {
 }
 
 fn glow(app: &App, name: &str) -> f32 {
-    app.hover_fades.glow(name, app.glowing_star() == Some(name))
+    app.hover_fades.glow(
+        &name.into(),
+        app.glowing_star().is_some_and(|slot| slot == name),
+    )
 }
 
 /// The filled star's icon at the chip's center: white at rest, the primary
@@ -542,7 +543,13 @@ fn a_favorites_filled_star_tints_to_the_primary_color() {
     );
     let layout = app.grid_layout();
     let gone = render(
-        &mut app.card_drawn(&card, 0.0, layout, Details::Inline),
+        &mut app.card_drawn(
+            &card.name.as_str().into(),
+            &card,
+            0.0,
+            layout,
+            Details::Inline,
+        ),
         size(),
     );
     assert!(gone.chunks(4).all(|pixel| pixel[3] == 0));
@@ -555,14 +562,14 @@ fn a_star_that_takes_no_presses_never_glows() {
     star_hover(&mut app, "game", true);
     assert_eq!(glow(&app, "game"), 0.0);
     hover(&mut app, Some("game"));
-    assert_eq!(app.glowing_star(), Some("game"));
+    assert_eq!(app.glowing_star().map(|slot| slot.name()), Some("game"));
     let mut clock = Clock::start(&mut app);
     clock.tick(&mut app, 200);
     assert!(settled(&app));
 
     // Fading out with the hover, it fades its glow too.
     hover(&mut app, None);
-    assert_eq!(app.glowing_star(), None);
+    assert_eq!(app.glowing_star().map(|slot| slot.name()), None);
     let mut clock = Clock::start(&mut app);
     clock.tick(&mut app, 200);
     assert!(settled(&app));
@@ -576,7 +583,7 @@ fn a_star_that_takes_no_presses_never_glows() {
     let _ = app.update(Message::SearchChanged(String::new()));
     let _ = crate::tests::settle_grid(&mut app);
     hover(&mut app, Some("game"));
-    assert_eq!(app.glowing_star(), None);
+    assert_eq!(app.glowing_star().map(|slot| slot.name()), None);
     let mut clock = Clock::start(&mut app);
     clock.tick(&mut app, 200);
     assert!(settled(&app));
@@ -594,7 +601,7 @@ fn a_star_that_takes_no_presses_never_glows() {
         assert_eq!(glow(&app, "game"), 1.0);
         open(&mut app);
         star_hover(&mut app, "game", false);
-        assert_eq!(app.glowing_star(), None);
+        assert_eq!(app.glowing_star().map(|slot| slot.name()), None);
         let mut clock = Clock::start(&mut app);
         clock.tick(&mut app, 200);
         assert!(settled(&app));
@@ -605,7 +612,7 @@ fn a_star_that_takes_no_presses_never_glows() {
         // Uncovered with the card still hovered, it stays dark until the
         // pointer enters the star again.
         hover(&mut app, Some("game"));
-        assert_eq!(app.glowing_star(), None);
+        assert_eq!(app.glowing_star().map(|slot| slot.name()), None);
         assert!(settled(&app));
     }
 }

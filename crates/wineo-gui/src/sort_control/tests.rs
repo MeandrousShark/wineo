@@ -425,7 +425,7 @@ fn a_resort_keeps_the_selection_and_scrolls_to_it() {
     // It's shown, so the grid scrolls it just into view at the slot it's
     // moving to, once, with nothing left for when it lands.
     let places = app.grid_places();
-    let slot = places.slots[places.index("old-demo").unwrap()];
+    let slot = places.slots[places.index(&"old-demo".into()).unwrap()];
     assert_eq!(app.scroll_offset, slot.y);
     assert!(app.grid_motion.active());
     assert!(app.grid_scroll_after_settle.is_none());
@@ -490,7 +490,11 @@ fn a_resort_retargets_cards_in_motion() {
     assert!(!app.grid_motion.active());
     assert!(app.grid_scroll_after_settle.is_none());
     for name in shown(&app) {
-        assert_eq!(app.grid_motion.offset(name), iced::Vector::ZERO, "{name}");
+        assert_eq!(
+            app.grid_motion.offset(&name.into()),
+            iced::Vector::ZERO,
+            "{name}"
+        );
     }
 }
 

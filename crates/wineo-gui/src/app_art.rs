@@ -90,7 +90,7 @@ impl App {
         let top = self.scroll_offset - margin;
         let bottom = self.scroll_offset + self.viewport_height + margin;
         let near = |bounds: Rectangle| bounds.y <= bottom && bounds.y + bounds.height >= top;
-        let filtered = self.filtered();
+        let filtered = self.slot_cards(&places);
         let in_view = (0..shown.len()).filter(|&index| near(shown[index]));
         // A card's path stays within the box its two ends span, give or
         // take the few pixels of overshoot, so one crossing the view while
@@ -104,7 +104,11 @@ impl App {
             .leaving()
             .iter()
             .filter(|card| near(card.bounds))
-            .filter_map(|leaving| self.cards.iter().find(|card| card.name == leaving.name));
+            .filter_map(|leaving| {
+                self.cards
+                    .iter()
+                    .find(|card| card.name == leaving.id.name())
+            });
         let mut seen = HashSet::new();
         let mut keys = Vec::new();
         for card in in_view

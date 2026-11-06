@@ -7,7 +7,9 @@ use std::collections::{BTreeSet, HashSet};
 use iced::widget::container;
 use iced::{Element, Fill, Task, border};
 
+use crate::app_selection::cursor;
 use crate::library_menu::{CHECK, icon};
+use crate::slot::SlotId;
 use crate::theme::Palette;
 use crate::{App, Message, ui};
 
@@ -29,19 +31,32 @@ pub(crate) struct Range {
 }
 
 impl App {
-    /// A press on a card, or `Message::Select` from anywhere: Ctrl toggles
-    /// its mark and Shift marks a range, both leaving the selection and
-    /// the panel alone. A plain press clears the marks and selects.
-    pub(crate) fn card_pressed(&mut self, name: String) -> Task<Message> {
+    /// A press on `name`'s card in `slot`, or `Message::Select` from
+    /// anywhere with no slot: Ctrl toggles its mark and Shift marks a
+    /// range, both leaving the selection and the panel alone. A plain press
+    /// clears the marks, puts the cursor on the slot, and selects.
+    pub(crate) fn card_pressed(&mut self, name: String, slot: Option<SlotId>) -> Task<Message> {
         let held = self.modifiers;
         if held.shift() {
-            self.mark_range(&name, held.control());
+            self.mark_range(&name, slot.as_ref(), held.control());
             Task::none()
         } else if held.control() {
             self.toggle_mark(&name);
             Task::none()
         } else {
             self.clear_marks();
+            if let Some(slot) = slot {
+                // Another copy of the open panel's game only moves the
+                // cursor, rather than closing the panel as its own card
+                // does.
+                let elsewhere = self.panel_open
+                    && self.selected.as_deref() == Some(&name)
+                    && self.selected_slot().is_some_and(|cursor| cursor != slot);
+                self.active_slot = Some(slot);
+                if elsewhere {
+                    return Task::none();
+                }
+            }
             self.select_card(name)
         }
     }
@@ -86,24 +101,24 @@ impl App {
         }
     }
 
-    /// Marks from the anchor to `name` in shown order. The anchor is the
-    /// last card marked by Ctrl+click or Space, else the selected card,
+    /// Marks from the anchor to `name`'s card in `slot`, or the copy the
+    /// cursor is on or its first without one, in shown order. The anchor is
+    /// the last card marked by Ctrl+click or Space, else the cursor's card,
     /// else `name` itself. With Ctrl held too, the last range stays.
-    fn mark_range(&mut self, name: &str, keep_last: bool) {
-        let shown: Vec<String> = self
-            .filtered()
-            .iter()
-            .map(|card| card.name.clone())
-            .collect();
-        let Some(to) = shown.iter().position(|shown| shown == name) else {
+    fn mark_range(&mut self, name: &str, slot: Option<&SlotId>, keep_last: bool) {
+        let places = self.grid_places();
+        let active = self.active_slot.as_ref();
+        let to = match slot {
+            Some(slot) => places.index(slot),
+            None => cursor(&places, Some(name), active),
+        };
+        let Some(to) = to else {
             return;
         };
-        let position = |anchor: &Option<String>| {
-            anchor
-                .as_ref()
-                .and_then(|anchor| shown.iter().position(|shown| shown == anchor))
-        };
-        let from = match position(&self.mark_range.anchor).or_else(|| position(&self.selected)) {
+        // Marks are kept by game, so the anchor is the copy the cursor is
+        // on when it's the cursor's game, else its first.
+        let anchor = self.mark_range.anchor.as_deref();
+        let from = match cursor(&places, anchor, active).or_else(|| self.selected_index(&places)) {
             Some(from) => from,
             None => {
                 self.mark_range.anchor = Some(name.to_owned());
@@ -116,9 +131,9 @@ impl App {
                 self.marked.remove(name);
             }
         }
-        for name in &shown[from.min(to)..=from.max(to)] {
-            if self.marked.insert(name.clone()) {
-                self.mark_range.added.insert(name.clone());
+        for slot in &places.ids[from.min(to)..=from.max(to)] {
+            if self.marked.insert(slot.name().to_owned()) {
+                self.mark_range.added.insert(slot.name().to_owned());
             }
         }
     }

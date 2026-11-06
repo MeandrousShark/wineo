@@ -7,16 +7,18 @@ use std::time::{Duration, Instant};
 use iced::Task;
 use iced::widget::scrollable;
 
+use crate::slot::{SectionKey, SlotId};
 use crate::{App, Early, Message, SCROLL_ID, grid, grid_motion, sidebar};
 
 impl App {
     pub(crate) fn grid_card_located(
         &mut self,
-        name: String,
+        slot: SlotId,
         generation: u64,
         bounds: grid_motion::CardBounds,
     ) -> Early {
-        if self.selected.as_deref() != Some(&name)
+        // A reply for a copy the cursor has left is stale too.
+        if self.selected_slot().as_ref() != Some(&slot)
             || self.panel_hidden()
             || generation != self.grid_revision()
         {
@@ -70,10 +72,10 @@ impl App {
 
     /// The card whose poster star lights up: the pointer is on it, its card
     /// is hovered, so it takes presses, and nothing covers the grid.
-    pub(crate) fn glowing_star(&self) -> Option<&str> {
+    pub(crate) fn glowing_star(&self) -> Option<&crate::slot::SlotId> {
         self.star_hovered
-            .as_deref()
-            .filter(|name| self.hovered.as_deref() == Some(name))
+            .as_ref()
+            .filter(|slot| self.hovered.as_ref() == Some(slot))
             .filter(|_| !self.input_covered() && self.collapse.idle())
     }
 
@@ -83,8 +85,7 @@ impl App {
         // A hover that moved off the star's card by any path, not just the
         // pointer, leaves the star too. The star's own enter can come just
         // before its card's, so it's kept while the hover holds still.
-        if self.hovered.as_deref() != self.hover_fades.hovered()
-            && self.star_hovered != self.hovered
+        if self.hovered.as_ref() != self.hover_fades.hovered() && self.star_hovered != self.hovered
         {
             self.star_hovered = None;
         }
@@ -93,26 +94,32 @@ impl App {
         if self.input_covered() || !self.collapse.idle() {
             self.star_hovered = None;
         }
-        let glowing = self.glowing_star().map(str::to_owned);
+        let glowing = self.glowing_star().cloned();
+        // Measured only when the selection's slots need retargeting.
+        let shown = self
+            .hover_fades
+            .selection_moves(self.selected.as_deref())
+            .then(|| self.grid_places());
         self.hover_fades.sync(
-            self.hovered.as_deref(),
+            self.hovered.as_ref(),
             self.selected.as_deref(),
-            glowing.as_deref(),
+            glowing.as_ref(),
+            shown.as_ref().map_or(&[][..], |places| &places.ids),
         );
         if !self.hover_fades.active() {
             return;
         }
-        if let Some(name) = &self.hovered
-            && self.hover_fades.fading(name)
+        if let Some(slot) = &self.hovered
+            && self.hover_fades.fading(slot)
             && self
                 .cards
                 .iter()
-                .any(|card| &card.name == name && card.favorite)
+                .any(|card| card.name == slot.name() && card.favorite)
         {
-            self.hover_fades.fill_star(name);
+            self.hover_fades.fill_star(slot);
         }
         let places = self.grid_places();
-        self.hover_fades.retain(|name| places.index(name).is_some());
+        self.hover_fades.retain(|slot| places.index(slot).is_some());
     }
 
     /// Drops the pops of cards no longer shown or no longer favorites.
@@ -122,9 +129,11 @@ impl App {
         }
         let places = self.grid_places();
         let cards = &self.cards;
-        self.star_pops.retain(|name| {
-            places.index(name).is_some()
-                && cards.iter().any(|card| card.name == name && card.favorite)
+        self.star_pops.retain(|slot| {
+            places.index(slot).is_some()
+                && cards
+                    .iter()
+                    .any(|card| card.name == slot.name() && card.favorite)
         });
     }
 
@@ -152,18 +161,32 @@ impl App {
         {
             return places.clone();
         }
-        let filtered = self.filtered();
+        #[allow(unused_mut)]
+        let mut cards = self.filtered();
+        // The flat library is one section, so each game has one slot.
+        #[allow(unused_mut)]
+        let mut ids: Vec<SlotId> = cards
+            .iter()
+            .map(|card| SlotId::new(SectionKey::All, card.name.as_str()))
+            .collect();
+        #[cfg(test)]
+        if let Some((name, at)) = &self.test_copy
+            && let Some(card) = cards.iter().find(|card| &card.name == name).copied()
+        {
+            let at = (*at).min(ids.len());
+            ids.insert(at, SlotId::new(SectionKey::Test("copy"), name.as_str()));
+            cards.insert(at, card);
+        }
         let heights: Vec<f32> = match self.layout {
-            grid_motion::ViewLayout::Grid => filtered
+            grid_motion::ViewLayout::Grid => cards
                 .iter()
                 .map(|card| grid::card_height(card, layout))
                 .collect(),
-            grid_motion::ViewLayout::List => vec![crate::list_view::ROW_HEIGHT; filtered.len()],
+            grid_motion::ViewLayout::List => vec![crate::list_view::ROW_HEIGHT; cards.len()],
         };
         let widths = vec![self.slot_width(); heights.len()];
-        let names = filtered.iter().map(|card| card.name.clone()).collect();
         let places = Rc::new(grid_motion::Places::new(
-            names,
+            ids,
             &heights,
             &widths,
             self.columns(),
@@ -173,6 +196,34 @@ impl App {
         ));
         *self.places.borrow_mut() = key.map(|key| (key, places.clone()));
         places
+    }
+
+    /// Each slot's card in `places`, which `filtered` already is while every
+    /// shown game has one slot.
+    pub(crate) fn slot_cards(&self, places: &grid_motion::Places) -> Vec<&crate::library::Card> {
+        let filtered = self.filtered();
+        if filtered.len() == places.ids.len() {
+            return filtered;
+        }
+        let by_name: std::collections::HashMap<&str, &crate::library::Card> = filtered
+            .iter()
+            .map(|card| (card.name.as_str(), *card))
+            .collect();
+        places
+            .ids
+            .iter()
+            .filter_map(|slot| by_name.get(slot.name()).copied())
+            .collect()
+    }
+
+    /// Shows `name` a second time, in a test-only section at `at` in the
+    /// shown order, as grouping will.
+    #[cfg(test)]
+    pub(crate) fn show_test_copy(&mut self, name: &str, at: usize) -> SlotId {
+        self.test_copy = Some((name.to_owned(), at));
+        *self.places.borrow_mut() = None;
+        self.snap_grid();
+        SlotId::new(SectionKey::Test("copy"), name)
     }
 
     /// Springs the cards to their slots from where they're drawn, or puts
@@ -190,7 +241,7 @@ impl App {
         if self
             .hovered
             .as_ref()
-            .is_some_and(|name| places.index(name).is_none())
+            .is_some_and(|slot| places.index(slot).is_none())
         {
             self.hovered = None;
         }
@@ -263,9 +314,7 @@ impl App {
         }
         let places = self.grid_places();
         let Some(slot) = self
-            .selected
-            .as_ref()
-            .and_then(|name| places.index(name))
+            .selected_index(&places)
             .map(|index| places.slots[index])
         else {
             return Task::none();

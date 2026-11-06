@@ -1781,16 +1781,16 @@ fn unchanged_refresh_does_not_cut_grid_motion_short() {
         Instant::now() + Duration::from_millis(90),
     ));
     let drawn = (
-        app.grid_motion.offset("game"),
-        app.grid_motion.opacity("game"),
+        app.grid_motion.offset(&"game".into()),
+        app.grid_motion.opacity(&"game".into()),
     );
     app.merge(app.cards.clone());
     assert!(app.grid_motion.active());
     assert_eq!(app.grid_motion.generation(), generation);
     assert_eq!(
         (
-            app.grid_motion.offset("game"),
-            app.grid_motion.opacity("game")
+            app.grid_motion.offset(&"game".into()),
+            app.grid_motion.opacity(&"game".into())
         ),
         drawn
     );
