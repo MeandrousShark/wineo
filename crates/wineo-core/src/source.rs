@@ -72,6 +72,15 @@ pub struct Facts<'a> {
 }
 
 impl Source {
+    /// The word the desktop app shows for it: the store, or failing that
+    /// what it runs on. None when neither is known. Core owns it so the
+    /// Source column and the Source sort agree.
+    pub fn label(&self) -> Option<&'static str> {
+        self.store
+            .map(Store::label)
+            .or_else(|| self.platform.map(Platform::label))
+    }
+
     /// The first matching rule wins: Steam, then a GOG id, then a Heroic
     /// import, then plain.
     pub fn new(facts: Facts<'_>) -> Self {
@@ -316,6 +325,49 @@ mod tests {
             [Platform::Native, Platform::Windows].map(Platform::label),
             ["Native", "Windows"]
         );
+    }
+
+    #[test]
+    fn the_shown_label_is_the_store_then_the_platform_then_none() {
+        let label = |facts| Source::new(facts).label();
+        assert_eq!(
+            label(Facts {
+                steam: true,
+                steam_platform: Some(Platform::Windows),
+                ..Facts::default()
+            }),
+            Some("Steam")
+        );
+        assert_eq!(
+            label(Facts {
+                gog_id: Some("1"),
+                ..Facts::default()
+            }),
+            Some("GOG")
+        );
+        assert_eq!(
+            label(Facts {
+                native: true,
+                ..Facts::default()
+            }),
+            Some("Native")
+        );
+        assert_eq!(label(Facts::default()), Some("Windows"));
+        // A Heroic import of an unknown store falls back to its platform.
+        assert_eq!(
+            label(Facts {
+                heroic_id: Some("x"),
+                store_hint: Some("zoom"),
+                ..Facts::default()
+            }),
+            Some("Windows")
+        );
+        let none = Source {
+            store: None,
+            platform: None,
+            ..Source::new(Facts::default())
+        };
+        assert_eq!(none.label(), None);
     }
 
     #[test]

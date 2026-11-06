@@ -2336,7 +2336,7 @@ fn library_fields_unknown_keys_and_stray_entries_are_reported() {
                 Code::LibraryFieldInvalid,
                 None,
                 None,
-                "library.toml: view.sort: expected one of name, last-played, playtime, added, source, found \"random\"".to_owned()
+                "library.toml: view.sort: expected one of name, last-played, playtime, added, source, tags, found \"random\"".to_owned()
             ),
             (
                 Code::LibraryFieldInvalid,

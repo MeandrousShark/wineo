@@ -334,7 +334,7 @@ pub(super) fn is_offset_datetime(item: &Item) -> bool {
 pub(super) fn sort_expected() -> String {
     format!(
         "expected one of {}",
-        ["name", "last-played", "playtime", "added", "source"].join(", ")
+        ["name", "last-played", "playtime", "added", "source", "tags"].join(", ")
     )
 }
 

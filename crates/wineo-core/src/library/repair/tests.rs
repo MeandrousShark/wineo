@@ -88,6 +88,21 @@ favorite = true
 "#;
 
 #[test]
+fn repair_keeps_a_source_or_tags_sort_and_the_view_recovers_whole() {
+    for (text, sort) in [("source", SortKey::Source), ("tags", SortKey::Tags)] {
+        let fixture = Fixture::new();
+        fixture.write(&format!(
+            "[view]\nsort = \"{text}\"\ndescending = true\n\n[broken header\n"
+        ));
+        let report = repair_at(&fixture.paths, STAMP, sync_dir).unwrap().unwrap();
+        assert_eq!(report.view, ViewRecovery::Recovered, "{text}");
+        let view = load(&fixture.paths).view;
+        assert_eq!((view.sort, view.descending), (sort, true), "{text}");
+        assert!(fixture.read().contains(&format!("sort = \"{text}\"")));
+    }
+}
+
+#[test]
 fn backs_up_the_original_and_recovers_every_recognized_entry() {
     let fixture = Fixture::new();
     fixture.write(RECOVERABLE);

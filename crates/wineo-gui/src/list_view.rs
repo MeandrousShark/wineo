@@ -90,7 +90,8 @@ impl Column {
         match self {
             Self::Playtime => Some(SortKey::Playtime),
             Self::LastPlayed => Some(SortKey::LastPlayed),
-            Self::Source | Self::Tags => None,
+            Self::Source => Some(SortKey::Source),
+            Self::Tags => Some(SortKey::Tags),
         }
     }
 }
@@ -109,17 +110,10 @@ pub(crate) fn columns(width: f32) -> &'static [Column] {
     &Column::ALL[..count]
 }
 
-/// The store, or failing that what it runs on.
+/// The store, or failing that what it runs on, as core words it for the
+/// Source sort too.
 pub(crate) fn source_label(card: &Card) -> &'static str {
-    card.source
-        .store
-        .map(wineo_core::source::Store::label)
-        .or_else(|| {
-            card.source
-                .platform
-                .map(wineo_core::source::Platform::label)
-        })
-        .unwrap_or("-")
+    card.source.label().unwrap_or("-")
 }
 
 /// The poster star's three looks, which a row shows the same way.
@@ -384,9 +378,9 @@ impl App {
         card_area(content, card)
     }
 
-    /// The column names over the rows, at the rows' width. Title,
-    /// Playtime, and Last played sort like the Sort menu's rows, and a
-    /// second click flips the direction.
+    /// The column names over the rows, at the rows' width. Every one but
+    /// State sorts like the Sort menu's rows, and a second click flips the
+    /// direction.
     pub(crate) fn list_header(&self) -> Element<'_, Message> {
         let width = self.slot_width();
         let mut cells = row![

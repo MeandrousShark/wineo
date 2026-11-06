@@ -167,22 +167,39 @@ fn set_order_writes_the_key_and_direction_in_one_edit() {
 }
 
 #[test]
-fn a_saved_source_sort_reads_as_name_and_keeps_the_direction() {
-    let fixture = Fixture::new();
-    fixture.write("schema_version = 1\n\n[view]\nsort = \"source\"\ndescending = true\n");
-    let view = load(&fixture.paths).view;
-    assert_eq!((view.sort, view.descending), (SortKey::Name, true));
-    assert_eq!(
-        fixture.read().matches("source").count(),
-        1,
-        "reads don't rewrite"
-    );
+fn source_and_tags_sorts_round_trip_and_keep_the_direction() {
+    for (text, sort) in [("source", SortKey::Source), ("tags", SortKey::Tags)] {
+        let fixture = Fixture::new();
+        fixture.write(&format!(
+            "schema_version = 1\n\n[view]\nsort = \"{text}\" # keep\ndescending = true\n"
+        ));
+        let before = fixture.read();
+        let view = load(&fixture.paths).view;
+        assert_eq!((view.sort, view.descending), (sort, true), "{text}");
+        assert_eq!(fixture.read(), before, "reads don't rewrite");
+        assert!(!set_sort(&fixture.paths, sort).unwrap(), "{text}");
+        assert_eq!(fixture.read(), before, "a no-op edit doesn't rewrite");
+
+        assert!(set_sort(&fixture.paths, SortKey::Name).unwrap());
+        assert!(fixture.read().contains("sort = \"name\" # keep"));
+        assert!(set_sort(&fixture.paths, sort).unwrap());
+        assert!(
+            fixture
+                .read()
+                .contains(&format!("sort = \"{text}\" # keep"))
+        );
+        assert_eq!(load(&fixture.paths).view.sort, sort);
+    }
 }
 
 #[test]
-fn only_name_starts_ascending() {
-    for sort in SortKey::ALL {
-        assert_eq!(sort.starts_descending(), sort != SortKey::Name, "{sort:?}");
+fn set_order_saves_the_new_keys_ascending() {
+    for sort in [SortKey::Source, SortKey::Tags] {
+        let fixture = Fixture::new();
+        assert!(set_order(&fixture.paths, sort, false).unwrap());
+        let view = load(&fixture.paths).view;
+        assert_eq!((view.sort, view.descending), (sort, false));
+        assert!(!set_order(&fixture.paths, sort, false).unwrap());
     }
 }
 
