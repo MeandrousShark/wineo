@@ -346,7 +346,8 @@ Plan 0062 added these.
   when hidden or not installed, like the poster.
 - The title cell takes what's left after the other columns: the title over
   a muted environment name when they differ, then the row's marks at its
-  right end (GOG pill, Steam mark, eye, star), each sized as on the poster.
+  right end: the poster's GOG pill, then the Steam mark, eye, and star as
+  bare 16 px icons, without the poster's round backdrops.
   The star keeps its place when hidden and fades in on hover like the
   poster's. The install bar runs along the row's bottom edge, and a
   warning shows as the State column's dot.
