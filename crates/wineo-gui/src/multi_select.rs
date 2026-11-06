@@ -13,8 +13,10 @@ use crate::{App, Message, ui};
 
 /// How strongly a marked card's art is washed in the primary color.
 pub(crate) const WASH: f32 = 0.25;
-const CHECK_CHIP: f32 = 32.0;
-const CHECK_ICON: f32 = 20.0;
+/// The poster's check is a corner mark like the status chip, so it takes
+/// their size and icon size.
+const CHECK_CHIP: f32 = crate::library_actions::MARK_SIZE;
+const CHECK_ICON: f32 = 14.0;
 
 /// Where a Shift+click range starts and what the last one added.
 #[derive(Debug, Default)]
@@ -177,11 +179,12 @@ pub(crate) fn wash(palette: Palette, alpha: f32) -> Element<'static, Message> {
         .into()
 }
 
-/// The check centered on a marked card, clear of the four corners.
+/// The check chip for a marked card's top-left corner, where the grid
+/// lays it out before the status chip and the GOG pill.
 pub(crate) fn check(palette: Palette, alpha: f32) -> Element<'static, Message> {
     let fill = palette.primary;
     // The renderer's tint ignores its alpha, so the icon fades by opacity.
-    let chip = container(icon(CHECK, ui::accent_ink(fill), CHECK_ICON).opacity(alpha))
+    container(icon(CHECK, ui::accent_ink(fill), CHECK_ICON).opacity(alpha))
         .width(CHECK_CHIP)
         .height(CHECK_CHIP)
         .center(CHECK_CHIP)
@@ -189,8 +192,8 @@ pub(crate) fn check(palette: Palette, alpha: f32) -> Element<'static, Message> {
             container::Style::default()
                 .background(fill.scale_alpha(alpha))
                 .border(border::rounded(CHECK_CHIP / 2.0))
-        });
-    container(chip).center(Fill).into()
+        })
+        .into()
 }
 
 #[cfg(test)]
