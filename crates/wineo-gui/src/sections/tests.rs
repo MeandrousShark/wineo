@@ -1669,3 +1669,169 @@ fn every_card_operation_skips_headers() {
     let _ = app.select_in_place(place.unwrap());
     assert_eq!(app.selected_slot(), Some(slot(tag("rpg"), "celeste")));
 }
+
+/// The library mid-switch from no grouping to Group by Tag in `layout`:
+/// the cards spring from their flat places, across the headers that just
+/// appeared at theirs.
+fn mid_regroup(layout: ViewLayout) -> App {
+    let cards: Vec<Card> = ["alpha", "beta", "gamma", "delta"]
+        .iter()
+        .map(|name| {
+            let mut card = tagged(name, &["rpg", "co-op"]);
+            // Favorites show their star whether hovered or not.
+            card.favorite = true;
+            card
+        })
+        .collect();
+    let mut app = grouped(cards, GroupBy::None);
+    app.layout = layout;
+    app.snap_grid();
+    let _ = settle_grid(&mut app);
+    app.group = GroupBy::Tag;
+    let _ = app.resorted();
+    assert!(app.grid_motion.active());
+    app
+}
+
+/// Where a card is drawn over a header now, and the card's slot.
+fn overlaps(app: &App) -> Vec<(SlotId, Rectangle)> {
+    let places = app.grid_places();
+    let mut found = Vec::new();
+    for place in &places.headers {
+        for (index, id) in places.ids.iter().enumerate() {
+            if app.grid_motion.opacity(id) < 1.0 {
+                continue;
+            }
+            if let Some(both) = app
+                .grid_motion
+                .drawn(&places, index)
+                .intersection(&place.slot)
+                && both.width > 2.0
+                && both.height > 2.0
+            {
+                found.push((id.clone(), both));
+            }
+        }
+    }
+    found
+}
+
+/// What a press and release at `at` on the drawn grid publish, after the
+/// pointer moves there.
+fn click(app: &App, at: iced::Point) -> Vec<Message> {
+    let mut laid = crate::layout_probe::lay_out(app.grid(), Size::new(app.viewport_width, 4000.0));
+    let cursor = iced::mouse::Cursor::Available(at);
+    let left = iced::mouse::Button::Left;
+    let mut messages = laid.event_at(
+        &iced::Event::Mouse(iced::mouse::Event::CursorMoved { position: at }),
+        cursor,
+    );
+    messages.extend(laid.event_at(
+        &iced::Event::Mouse(iced::mouse::Event::ButtonPressed(left)),
+        cursor,
+    ));
+    messages.extend(laid.event_at(
+        &iced::Event::Mouse(iced::mouse::Event::ButtonReleased(left)),
+        cursor,
+    ));
+    messages
+}
+
+/// Points across `area`, 16 px apart, inside its edges.
+fn points(area: Rectangle) -> Vec<iced::Point> {
+    let mut points = Vec::new();
+    let mut y = area.y + 2.0;
+    while y < area.y + area.height - 1.0 {
+        let mut x = area.x + 2.0;
+        while x < area.x + area.width - 1.0 {
+            points.push(iced::Point::new(x, y));
+            x += 16.0;
+        }
+        y += 16.0;
+    }
+    points
+}
+
+#[test]
+fn a_card_springing_over_a_header_takes_the_pointer_before_the_header() {
+    // Events follow the drawing: the card on top hears a press first, so
+    // it never falls through to the header beneath it.
+    for layout in [ViewLayout::Grid, ViewLayout::List] {
+        let app = mid_regroup(layout);
+        let overlaps = overlaps(&app);
+        assert!(!overlaps.is_empty(), "{layout:?}: no card over a header");
+        let (mut presses, mut stars, mut hovers) = (0, 0, 0);
+        // A few overlaps are plenty; each point lays out the whole grid.
+        for (slot, area) in overlaps.iter().take(2) {
+            for at in points(*area) {
+                let messages = click(&app, at);
+                assert!(
+                    !messages
+                        .iter()
+                        .any(|message| matches!(message, Message::ToggleSection(_))),
+                    "{layout:?} at {at:?}: {messages:?}"
+                );
+                for message in &messages {
+                    match message {
+                        Message::Press(pressed) if pressed == slot => presses += 1,
+                        Message::Mark(crate::library_actions::Event::PosterStar(starred))
+                            if starred == slot =>
+                        {
+                            stars += 1;
+                        }
+                        Message::Hover(Some(hovered)) if hovered == slot => hovers += 1,
+                        _ => {}
+                    }
+                }
+            }
+        }
+        assert!(presses > 0 && hovers > 0, "{layout:?}");
+        assert!(
+            stars > 0,
+            "{layout:?}: the star over a header took no press"
+        );
+    }
+}
+
+#[test]
+fn ctrl_and_shift_on_a_card_over_a_header_mark_and_never_collapse() {
+    for layout in [ViewLayout::Grid, ViewLayout::List] {
+        for modifiers in [Modifiers::empty(), Modifiers::CTRL, Modifiers::SHIFT] {
+            let mut app = mid_regroup(layout);
+            let (slot, area) = overlaps(&app)[0].clone();
+            let at = area.center();
+            let messages = click(&app, at);
+            app.modifiers = modifiers;
+            for message in messages {
+                let _ = app.update(message);
+            }
+            app.modifiers = Modifiers::empty();
+            assert!(app.collapsed.is_empty(), "{layout:?} {modifiers:?}");
+            if modifiers.is_empty() {
+                assert_eq!(app.selected_slot(), Some(slot.clone()), "{layout:?}");
+                assert!(app.marked.is_empty());
+            } else {
+                assert!(app.marked.contains(slot.name()), "{layout:?} {modifiers:?}");
+            }
+        }
+    }
+}
+
+#[test]
+fn a_press_on_a_header_with_no_card_over_it_collapses_its_section() {
+    for layout in [ViewLayout::Grid, ViewLayout::List] {
+        let mut app = mid_regroup(layout);
+        let _ = settle_grid(&mut app);
+        assert!(overlaps(&app).is_empty());
+        let header = app.grid_places().headers[0].clone();
+        let messages = click(&app, header.slot.center());
+        assert!(
+            matches!(messages.as_slice(), [Message::ToggleSection(key)] if *key == header.header.key),
+            "{layout:?}: {messages:?}"
+        );
+        for message in messages {
+            let _ = app.update(message);
+        }
+        assert!(app.collapsed.contains(&header.header.key), "{layout:?}");
+    }
+}

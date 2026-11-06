@@ -1706,21 +1706,10 @@ impl<Message: Clone> Widget<Message, Theme, Renderer> for Grid<'_, Message> {
             }
             return;
         }
-        // Leaving cards and headers take no input. Headers never overlap
-        // a card's slot, so they hear events after the cards.
-        let headers = self.header_range();
-        for ((header, state), layout) in self.cards[headers.clone()]
-            .iter_mut()
-            .zip(&mut tree.children[headers.clone()])
-            .zip(layout.children().skip(headers.start))
-        {
-            header.as_widget_mut().update(
-                state, event, layout, cursor, renderer, clipboard, shell, viewport,
-            );
-            if shell.is_event_captured() {
-                return;
-            }
-        }
+        // Leaving cards and headers take no input. Events go topmost first,
+        // as things are drawn: the cards over the headers, which a card
+        // springing across one covers, so a press on it never reaches the
+        // header beneath.
         for ((card, state), layout) in self.cards[..self.shown]
             .iter_mut()
             .zip(&mut tree.children)
@@ -1735,6 +1724,19 @@ impl<Message: Clone> Widget<Message, Theme, Renderer> for Grid<'_, Message> {
             }
             if cursor.is_over(layout.bounds()) {
                 cursor = cursor.levitate();
+            }
+        }
+        let headers = self.header_range();
+        for ((header, state), layout) in self.cards[headers.clone()]
+            .iter_mut()
+            .zip(&mut tree.children[headers.clone()])
+            .zip(layout.children().skip(headers.start))
+        {
+            header.as_widget_mut().update(
+                state, event, layout, cursor, renderer, clipboard, shell, viewport,
+            );
+            if shell.is_event_captured() {
+                return;
             }
         }
     }
@@ -1865,16 +1867,17 @@ impl<Message: Clone> Widget<Message, Theme, Renderer> for Grid<'_, Message> {
                 mouse::Interaction::default()
             };
         }
+        // Topmost first, as drawn: the cards, then the headers under them.
         let headers = self.header_range();
-        self.cards[..self.shown]
+        self.cards[headers.clone()]
             .iter()
-            .zip(&tree.children)
-            .zip(layout.children())
+            .zip(&tree.children[headers.clone()])
+            .zip(layout.children().skip(headers.start))
             .chain(
-                self.cards[headers.clone()]
+                self.cards[..self.shown]
                     .iter()
-                    .zip(&tree.children[headers.clone()])
-                    .zip(layout.children().skip(headers.start)),
+                    .zip(&tree.children)
+                    .zip(layout.children()),
             )
             .rev()
             .find_map(|((card, state), layout)| {
