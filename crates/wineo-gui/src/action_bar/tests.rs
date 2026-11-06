@@ -1383,3 +1383,195 @@ fn bar_bounds(app: &App) -> std::collections::BTreeMap<&'static str, Rectangle> 
         })
         .collect()
 }
+
+// Selection when a batch hides the selected card.
+
+#[test]
+fn hiding_the_selected_marked_card_hands_the_panel_to_the_next_one_that_stays() {
+    let (_root, mut app) = flagged_library(&[], &[]);
+    app.clear_marks();
+    app.toggle_mark("alpha");
+    app.toggle_mark("bravo");
+    let _ = app.select_card("bravo".into());
+    assert!(app.panel_open);
+    let task = flag_event(&mut app, Flag::Hidden);
+    // alpha went too, so the card after bravo that stays is charlie.
+    assert_eq!(shown(&app), ["charlie", "delta"]);
+    assert_eq!(app.selected.as_deref(), Some("charlie"));
+    assert!(app.panel_open);
+    finish(&mut app, task);
+    assert_eq!(app.selected.as_deref(), Some("charlie"));
+}
+
+#[test]
+fn hiding_the_last_cards_selection_falls_back_to_the_last_one_shown() {
+    let (_root, mut app) = flagged_library(&[], &[]);
+    app.clear_marks();
+    app.toggle_mark("charlie");
+    app.toggle_mark("delta");
+    let _ = app.select_card("charlie".into());
+    let _ = flag_event(&mut app, Flag::Hidden);
+    assert_eq!(shown(&app), ["alpha", "bravo"]);
+    assert_eq!(app.selected.as_deref(), Some("bravo"));
+}
+
+#[test]
+fn hiding_marked_cards_leaves_a_selection_outside_the_batch_alone() {
+    let (_root, mut app) = flagged_library(&[], &[]);
+    let _ = app.select_card("delta".into());
+    let _ = flag_event(&mut app, Flag::Hidden);
+    assert_eq!(shown(&app), ["delta"]);
+    assert_eq!(app.selected.as_deref(), Some("delta"));
+    assert!(app.panel_open);
+}
+
+#[test]
+fn hiding_every_shown_card_closes_the_panel() {
+    let (_root, mut app) = flagged_library(&[], &[]);
+    app.toggle_mark("delta");
+    let _ = app.select_card("bravo".into());
+    let _ = flag_event(&mut app, Flag::Hidden);
+    assert!(shown(&app).is_empty());
+    assert!(app.selected.is_none());
+    assert!(!app.panel_open);
+}
+
+#[test]
+fn showing_and_favoriting_never_move_the_selection() {
+    let (_root, mut app) = flagged_library(&[], &["alpha", "bravo", "charlie"]);
+    show_hidden(&mut app);
+    for name in ["alpha", "bravo", "charlie"] {
+        app.toggle_mark(name);
+    }
+    let _ = app.select_card("bravo".into());
+    assert!(app.flag_all(Flag::Hidden));
+    let _ = flag_event(&mut app, Flag::Hidden);
+    assert_eq!(app.selected.as_deref(), Some("bravo"));
+    let _ = flag_event(&mut app, Flag::Hidden);
+    // Hidden again with hidden games shown: still in view, still selected.
+    assert_eq!(app.selected.as_deref(), Some("bravo"));
+    let _ = flag_event(&mut app, Flag::Favorite);
+    assert_eq!(app.selected.as_deref(), Some("bravo"));
+    assert!(app.panel_open);
+}
+
+// Failures, pending maps, the cache, and labels.
+
+#[test]
+fn a_mixed_failure_rolls_back_only_the_games_written_and_counts_them() {
+    let (_root, mut app) = flagged_library(&["alpha"], &[]);
+    fs::remove_file(app.paths.library_file()).unwrap();
+    fs::create_dir_all(app.paths.library_file()).unwrap();
+    let task = flag_event(&mut app, Flag::Favorite);
+    finish(&mut app, task);
+    assert!(flagged(&app, "alpha", Flag::Favorite), "was one already");
+    assert!(!flagged(&app, "bravo", Flag::Favorite));
+    assert!(!flagged(&app, "charlie", Flag::Favorite));
+    // As with tags, the count is of the games the batch wrote, not of the
+    // marked ones: alpha needed nothing.
+    let text = notice(&app).unwrap();
+    assert!(
+        text.starts_with("Couldn't favorite 2 of 2 (bravo, charlie): "),
+        "{text}"
+    );
+    assert_eq!(app.marked.len(), 3);
+}
+
+/// Runs the single-game write `task` starts and hands the reply back.
+fn finish_single(app: &mut App, task: Task<Message>) {
+    let is_single = |message: &Message| {
+        matches!(
+            message,
+            Message::Mark(crate::library_actions::Event::Saved(_))
+        )
+    };
+    for reply in run_counting(task, false, 1, is_single)
+        .messages
+        .into_iter()
+        .filter(is_single)
+    {
+        let _ = app.update(reply);
+    }
+}
+
+#[test]
+fn a_batch_and_a_single_toggle_pending_together_both_survive_a_rescan() {
+    let (_root, mut app) = flagged_library(&[], &[]);
+    let batch = flag_event(&mut app, Flag::Favorite);
+    let single = app.update(Message::Mark(crate::library_actions::Event::Toggle(
+        "delta".into(),
+        Flag::Hidden,
+    )));
+    assert!(app.tag_writes.get_flag("alpha", Flag::Favorite).is_some());
+    assert!(app.flag_writes.get("delta", Flag::Hidden).is_some());
+    // A read from before either write landed.
+    let _ = app.update(Message::Loaded(Ok(library())));
+    for name in ["alpha", "bravo", "charlie"] {
+        assert!(flagged(&app, name, Flag::Favorite), "{name}");
+    }
+    assert!(flagged(&app, "delta", Flag::Hidden));
+    // And a rescan that started before both finished.
+    let stale = crate::rescan::Scan {
+        revisions: app.shown.revisions(),
+        library: Some(Ok(library())),
+        ..Default::default()
+    };
+    finish(&mut app, batch);
+    finish_single(&mut app, single);
+    assert!(!app.tag_writes.pending());
+    assert!(!app.flag_writes.pending());
+    let _ = app.update(Message::Rescanned(Box::new(stale)));
+    for name in ["alpha", "bravo", "charlie"] {
+        assert!(flagged(&app, name, Flag::Favorite), "{name}");
+        assert!(entry(&app, name).favorite, "{name}");
+    }
+    assert!(flagged(&app, "delta", Flag::Hidden));
+    assert!(entry(&app, "delta").hidden);
+}
+
+#[test]
+fn a_flag_batch_rereads_the_rescan_cache_once_whether_it_saved_or_not() {
+    let (_root, mut app) = flagged_library(&[], &[]);
+    let reads = app.shown.library_reads();
+    let task = flag_event(&mut app, Flag::Favorite);
+    assert_eq!(app.shown.library_reads(), reads, "not on the UI thread");
+    finish(&mut app, task);
+    assert_eq!(app.shown.library_reads(), reads + 1, "one per batch");
+
+    let reads = app.shown.library_reads();
+    fs::remove_file(app.paths.library_file()).unwrap();
+    fs::create_dir_all(app.paths.library_file()).unwrap();
+    let task = flag_event(&mut app, Flag::Favorite);
+    finish(&mut app, task);
+    assert!(notice(&app).is_some());
+    assert_eq!(app.shown.library_reads(), reads + 1);
+
+    // A tag batch doesn't touch library.toml's cache.
+    let reads = app.shown.library_reads();
+    let _ = open(&mut app);
+    let task = toggle(&mut app, "rpg");
+    finish(&mut app, task);
+    assert_eq!(app.shown.library_reads(), reads);
+}
+
+#[test]
+fn the_button_reads_unfavorite_as_soon_as_the_press_changes_the_cards() {
+    let (_root, mut app) = flagged_library(&["alpha"], &[]);
+    let width = |app: &App| bar_bounds(app)[FAVORITE_BUTTON_ID].width;
+    let before = width(&app);
+    assert_eq!(
+        flag_label(Flag::Favorite, app.flag_all(Flag::Favorite)),
+        "Favorite"
+    );
+    let task = flag_event(&mut app, Flag::Favorite);
+    // The reply hasn't come back.
+    assert!(app.tag_writes.get_flag("bravo", Flag::Favorite).is_some());
+    assert!(app.flag_all(Flag::Favorite));
+    assert_eq!(
+        flag_label(Flag::Favorite, app.flag_all(Flag::Favorite)),
+        "Unfavorite"
+    );
+    assert!(width(&app) > before, "the drawn label is the longer one");
+    finish(&mut app, task);
+    assert!(app.flag_all(Flag::Favorite));
+}

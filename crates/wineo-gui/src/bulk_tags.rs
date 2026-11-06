@@ -317,9 +317,32 @@ impl App {
             start.push((name.clone(), *added));
         }
         let names: Vec<String> = targets.into_iter().map(|(name, _)| name).collect();
+        let place = self.place_after_hide(&names, change, value);
         let shown = self.show_change(&names, change, value);
+        let selection = place.map_or_else(Task::none, |place| self.select_in_place(place));
         let write = self.write_batch(start, change, value);
-        Task::batch([shown, write])
+        Task::batch([shown, selection, write])
+    }
+
+    /// Where the selected card's successor sits once the batch is shown, when
+    /// the batch hides the selected card out of view. It's the card's place
+    /// now less the batch's games before it, so the first card after it that
+    /// stays comes next, as with hiding one card.
+    fn place_after_hide(&self, names: &[String], change: &Change, value: bool) -> Option<usize> {
+        if *change != Change::Flag(Flag::Hidden) || !value || self.filters.show_hidden {
+            return None;
+        }
+        let selected = self.selected.as_deref()?;
+        if !names.iter().any(|name| name == selected) {
+            return None;
+        }
+        let shown = self.filtered();
+        let at = shown.iter().position(|card| card.name == selected)?;
+        let before = shown[..at]
+            .iter()
+            .filter(|card| names.contains(&card.name))
+            .count();
+        Some(at - before)
     }
 
     fn write_batch(

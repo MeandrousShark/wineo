@@ -435,7 +435,7 @@ impl App {
 
     /// Selects the card now at `place` in the shown order, or the last one,
     /// or nothing when nothing is left.
-    fn select_in_place(&mut self, place: usize) -> Task<Message> {
+    pub(crate) fn select_in_place(&mut self, place: usize) -> Task<Message> {
         let shown = self.filtered();
         let Some(next) = shown
             .get(place)
