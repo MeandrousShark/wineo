@@ -249,6 +249,22 @@ fn layout_is_a_known_view_key_and_a_bad_value_is_reported() {
     assert_eq!(messages(&inspection, FindingKind::FieldInvalid).len(), 1);
 }
 
+#[test]
+fn group_is_a_known_view_key_and_a_bad_value_is_reported() {
+    for good in ["none", "tag", "source", "state"] {
+        let inspection = inspect_text(&format!("[view]\ngroup = \"{good}\"\n"));
+        assert_eq!(inspection.findings, [], "{good}");
+    }
+    let inspection = inspect_text("[view]\ngroup = \"genre\"\n");
+    assert_eq!(
+        messages(&inspection, FindingKind::FieldInvalid),
+        ["library.toml: view.group: expected one of none, tag, source, state, found \"genre\""]
+    );
+    assert_eq!(messages(&inspection, FindingKind::KeyUnknown).len(), 0);
+    let inspection = inspect_text("[view]\ngroup = true\n");
+    assert_eq!(messages(&inspection, FindingKind::FieldInvalid).len(), 1);
+}
+
 fn inspect_with_themes(text: &str, themes: &[(&str, &str)]) -> Inspection {
     let root = tempfile::tempdir().unwrap();
     let paths = paths(&root);

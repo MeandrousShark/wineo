@@ -652,6 +652,7 @@ fn a_bad_zoom_reads_as_the_default_and_touches_no_other_field() {
             poster_only: false,
             random: RandomPool::Launchable,
             layout: ViewLayout::Grid,
+            group: GroupBy::None,
         }
     );
 
@@ -938,6 +939,101 @@ fn a_layout_write_is_refused_on_a_broken_file() {
 }
 
 #[test]
+fn group_defaults_to_none_and_reads_every_value() {
+    let fixture = Fixture::new();
+    assert_eq!(load(&fixture.paths).view.group, GroupBy::None);
+    // An older file has no key.
+    fixture.write("schema_version = 1\n\n[view]\nlayout = \"list\"\n");
+    assert_eq!(load(&fixture.paths).view.group, GroupBy::None);
+    for (text, expected) in [
+        ("none", GroupBy::None),
+        ("tag", GroupBy::Tag),
+        ("source", GroupBy::Source),
+        ("state", GroupBy::State),
+    ] {
+        fixture.write(&format!(
+            "schema_version = 1\n\n[view]\ngroup = \"{text}\"\n"
+        ));
+        assert_eq!(load(&fixture.paths).view.group, expected, "{text}");
+        assert_eq!(expected.as_str(), text);
+        assert_eq!(GroupBy::parse(text), Some(expected));
+    }
+}
+
+#[test]
+fn an_unknown_group_reads_as_none_and_touches_no_other_field() {
+    let fixture = Fixture::new();
+    // "recent" and "hidden" are pinned sections, never a grouping (plan
+    // 0062, question 21).
+    for bad in ["\"recent\"", "\"hidden\"", "\"Tag\"", "true", "1"] {
+        fixture.write(&format!(
+            "schema_version = 1\n\n[view]\nsort = \"playtime\"\ngroup = {bad}\n"
+        ));
+        let library = load(&fixture.paths);
+        assert_eq!(library.problem, None, "{bad}");
+        assert_eq!(library.view.group, GroupBy::None, "{bad}");
+        assert_eq!(library.view.sort, SortKey::Playtime, "{bad}");
+    }
+}
+
+#[test]
+fn set_group_round_trips_and_skips_no_ops() {
+    let fixture = Fixture::new();
+    // The default on a missing file writes nothing.
+    assert!(!set_group(&fixture.paths, GroupBy::None).unwrap());
+    assert!(!fixture.paths.library_file().exists());
+
+    for group in [GroupBy::Tag, GroupBy::Source, GroupBy::State] {
+        assert!(set_group(&fixture.paths, group).unwrap());
+        assert_eq!(load(&fixture.paths).view.group, group);
+        assert!(
+            fixture
+                .read()
+                .contains(&format!("group = \"{}\"", group.as_str()))
+        );
+        assert!(!set_group(&fixture.paths, group).unwrap());
+    }
+
+    assert!(set_group(&fixture.paths, GroupBy::None).unwrap());
+    assert_eq!(load(&fixture.paths).view.group, GroupBy::None);
+    assert!(!set_group(&fixture.paths, GroupBy::None).unwrap());
+
+    // A bad value is replaced by the default when that is what is saved.
+    fixture.write("schema_version = 1\n\n[view]\ngroup = \"genre\"\n");
+    assert!(set_group(&fixture.paths, GroupBy::None).unwrap());
+    assert!(fixture.read().contains("group = \"none\""));
+}
+
+#[test]
+fn a_group_write_changes_only_that_line() {
+    let fixture = Fixture::new();
+    let before = "# my library\nschema_version = 1\n\n[view]\n# newest first\ndescending = true\nlayout = \"list\" # rows\nfuture_view = \"kept\"\n\n[environments.hades]\n# my favorite\nfavorite = true\n";
+    fixture.write(before);
+    assert!(set_group(&fixture.paths, GroupBy::Tag).unwrap());
+    let after = fixture.read();
+    let without: String = after
+        .lines()
+        .filter(|line| !line.starts_with("group ="))
+        .map(|line| format!("{line}\n"))
+        .collect();
+    assert_eq!(without, before, "{after}");
+    assert!(after.contains("group = \"tag\""), "{after}");
+
+    // A no-op leaves the bytes alone.
+    assert!(!set_group(&fixture.paths, GroupBy::Tag).unwrap());
+    assert_eq!(fixture.read(), after);
+}
+
+#[test]
+fn a_group_write_is_refused_on_a_broken_file() {
+    let fixture = Fixture::new();
+    fixture.write("[view\ngroup = \"tag\"\n");
+    assert!(set_group(&fixture.paths, GroupBy::None).is_err());
+    assert!(set_group(&fixture.paths, GroupBy::Tag).is_err());
+    assert_eq!(fixture.read(), "[view\ngroup = \"tag\"\n");
+}
+
+#[test]
 fn zoom_and_poster_only_edits_leave_the_other_view_keys_alone() {
     let fixture = Fixture::new();
     assert!(set_order(&fixture.paths, SortKey::Playtime, true).unwrap());
@@ -954,6 +1050,7 @@ fn zoom_and_poster_only_edits_leave_the_other_view_keys_alone() {
             poster_only: true,
             random: RandomPool::Launchable,
             layout: ViewLayout::Grid,
+            group: GroupBy::None,
         }
     );
 }

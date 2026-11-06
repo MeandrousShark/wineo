@@ -945,6 +945,41 @@ fn repair_keeps_a_valid_layout_and_drops_an_invalid_one() {
 }
 
 #[test]
+fn repair_keeps_a_valid_group_and_drops_an_invalid_one() {
+    for value in ["\"tag\"", "\"source\"", "\"state\"", "\"none\""] {
+        let fixture = Fixture::new();
+        fixture.write(&format!(
+            "[view]\ngroup = {value}\n\n[environments.hades]\nfavorite = true\nthis is broken\n"
+        ));
+        repair_at(&fixture.paths, STAMP, sync_dir).unwrap().unwrap();
+        assert!(fixture.read().contains("group"), "{value}");
+    }
+    let fixture = Fixture::new();
+    fixture.write("[view]\ngroup = \"tag\"\nthis is broken\n");
+    repair_at(&fixture.paths, STAMP, sync_dir).unwrap().unwrap();
+    assert_eq!(
+        load(&fixture.paths).view.group,
+        crate::library::GroupBy::Tag
+    );
+
+    for bad in ["\"genre\"", "true", "3"] {
+        let fixture = Fixture::new();
+        fixture.write(&format!(
+            "[view]\ngroup = {bad}\ndescending = true\nthis is broken\n"
+        ));
+        let report = repair_at(&fixture.paths, STAMP, sync_dir).unwrap().unwrap();
+        assert_eq!(report.view, ViewRecovery::Partly, "{bad}");
+        let text = fixture.read();
+        assert!(!text.contains("group"), "{bad}: {text}");
+        let view = load(&fixture.paths).view;
+        assert_eq!(
+            (view.group, view.descending),
+            (crate::library::GroupBy::None, true)
+        );
+    }
+}
+
+#[test]
 fn repair_keeps_the_readable_appearance_lines() {
     let fixture = Fixture::new();
     // The duplicate header makes the file unparseable; the parsed part and
