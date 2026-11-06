@@ -495,8 +495,9 @@ where
     ) {
         let focused = self.enabled && tree.state.downcast_ref::<State>().focused;
         // A ring around a whole segment can't say which side has focus, so
-        // that side takes its hover tint as well.
-        if focused && self.ring != Padding::ZERO {
+        // that side takes its hover tint as well. Under the pointer the
+        // hover already draws it, and two would show darker.
+        if focused && self.ring != Padding::ZERO && !cursor.is_over(layout.bounds()) {
             renderer.fill_quad(
                 renderer::Quad {
                     bounds: layout.bounds(),
@@ -897,7 +898,7 @@ mod tests {
     }
 
     #[test]
-    fn a_click_takes_keyboard_focus_off_a_segment_side() {
+    fn a_click_presses_a_segment_side_but_never_focuses_it() {
         let button = iced::widget::button::Button::<crate::Message, iced::Theme, ()>::new("List")
             .on_press(crate::Message::Undo);
         let mut widget: Element<'_, crate::Message, iced::Theme, ()> = Element::new(FocusControl {
@@ -928,14 +929,17 @@ mod tests {
             .operate(&mut tree, Layout::new(&node), &(), &mut operation);
         assert!(tree.state.downcast_ref::<State>().focused, "Tab focuses it");
 
-        let click = Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left));
-        let over = mouse::Cursor::Available(iced::Point::new(16.0, 16.0));
-        for _ in 0..2 {
+        // Text has no size without a real renderer, so aim at the laid-out
+        // control rather than a fixed point.
+        let over = mouse::Cursor::Available(Layout::new(&node).bounds().center());
+        let mut send = |widget: &mut Element<'_, crate::Message, iced::Theme, ()>,
+                        tree: &mut tree::Tree,
+                        event: Event| {
             let mut messages = Vec::new();
             let mut shell = Shell::new(&mut messages);
             widget.as_widget_mut().update(
-                &mut tree,
-                &click,
+                tree,
+                &event,
                 Layout::new(&node),
                 over,
                 &(),
@@ -943,7 +947,26 @@ mod tests {
                 &mut shell,
                 &Rectangle::with_size(bounds),
             );
+            messages
+        };
+        let press = Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left));
+        let release = Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left));
+        for _ in 0..2 {
+            let mut messages = send(&mut widget, &mut tree, press.clone());
             assert!(!tree.state.downcast_ref::<State>().focused);
+            messages.extend(send(&mut widget, &mut tree, release.clone()));
+            assert!(
+                matches!(messages.as_slice(), [crate::Message::Undo]),
+                "the click still reaches the side"
+            );
         }
+
+        // Tab back to it, and Enter presses it.
+        widget
+            .as_widget_mut()
+            .operate(&mut tree, Layout::new(&node), &(), &mut operation);
+        assert!(tree.state.downcast_ref::<State>().focused);
+        let messages = send(&mut widget, &mut tree, key_event(Named::Enter));
+        assert!(matches!(messages.as_slice(), [crate::Message::Undo]));
     }
 }
