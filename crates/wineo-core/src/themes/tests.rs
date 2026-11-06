@@ -432,6 +432,18 @@ fn rename_to_a_taken_name_says_name_taken_ignoring_case() {
 }
 
 #[test]
+fn rename_folds_unicode_case_too() {
+    let fixture = Fixture::new();
+    fixture.create("ΟΔΥΣΣΕΥΣ");
+    fixture.create("Straße");
+    let other = fixture.create("Other");
+    for taken in ["οδυσσευς", "STRASSE"] {
+        let error = rename(&fixture.paths, &other, taken).unwrap_err();
+        assert!(matches!(error, Error::ThemeNameTaken), "{taken}");
+    }
+}
+
+#[test]
 fn delete_removes_the_file_and_a_missing_one_is_not_an_error() {
     let fixture = Fixture::new();
     let id = fixture.create("Gone");
