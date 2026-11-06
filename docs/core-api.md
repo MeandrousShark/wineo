@@ -654,7 +654,9 @@ added it.
   `(name, Preset)`; `Library::preset(name)` finds one by its exact name and
   `taken_preset_name(name)` returns the name already used for it, exactly or
   differing only in case. `set_preset(paths, name, &preset)`,
-  `remove_preset(paths, name)`, and `rename_preset(paths, old, new)` write
+  `create_preset` (the same, but it refuses a name that's taken rather than
+  saving over it), `remove_preset(paths, name)`, and
+  `rename_preset(paths, old, new)` write
   like the view setters: under the lock, `Ok(false)` for a no-op, field by
   field, keeping comments, unknown keys, and position. A name another preset
   uses in any case is refused with `Error::PresetNameTaken`, a bad name with

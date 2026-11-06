@@ -145,7 +145,9 @@ Plan 0054 added these.
 
 - The toolbar reads the wordmark, the accent **Add**, search, **Sort:
   <key>** with a chevron, a 32 px square direction button, **Filters** (or
-  **Filters (N)** with N chosen or excluded stores, platforms, and tags),
+  **Filters (N)** with N chosen or excluded stores, platforms, and tags,
+  or **Filters (Name)** while the view matches a preset, its name cut at
+  120 px),
   the 32 px square dice, the layout switch, the zoom slider, and the
   poster-only toggle (the last two in the grid only). All
   are 32 px high, and Tab follows that order, with the filter tab's chips
@@ -207,6 +209,16 @@ Plan 0054 added these.
   show the focused row (to the top for the first row), and Esc closes it and
   returns focus to its button. The Filters popup grows with its content up
   to the window's edge, then scrolls.
+- The Filters popup starts with its presets: a muted 12 px **Presets**
+  heading, one quiet 32 px row per preset, the active one tinted 12% primary
+  while the view matches it, names cut with an ellipsis at 204 px, then
+  **Update "X"** when shown and **Save as preset**, which becomes a name
+  field, and a separator before the filters. It still opens on the first
+  filter row. Rename and Delete show as rows indented 12 px under their
+  preset, Delete in danger text, and deleting asks in a card with 8 px
+  padding and a 1 px danger border, **Keep it** focused. Name problems show
+  live under the field in 12 px danger text, and a failed save shows under
+  the presets with **Open Checkup** when Checkup can repair the file.
 - The filter tab floats 3 px under **Filters**, left edges aligned, over
   the gap above the grid: 26 px high, the surface color, a 1 px border,
   8 px corners, and 4 px between items. It leaves 3 px above the first

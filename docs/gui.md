@@ -148,7 +148,34 @@ excluding Windows keeps a game that's not known to be Windows.
 The button counts checked and excluded entries, as in **Filters (2)**.
 Clear filters clears the search, stores, platforms, and tags, excludes
 included, and leaves the sort and Show hidden alone. Filters and Show
-hidden start fresh at every launch.
+hidden start fresh at every launch, unless you save them in a preset.
+
+### Presets
+
+A preset is a saved view: the filters, excludes included, Show hidden, the
+sort and its direction, Favorites first, Group by, and the layout. Presets
+are at the top of the Filters popup, A to Z, above the filters. The popup
+still opens on the first filter, so Up or Shift+Tab reaches them.
+
+- **Apply** a preset by clicking it, or Enter or Space on it. Everything it
+  holds changes at once and the popup closes. Applying saves nothing: the
+  view you had saved stays saved, and the next launch opens it, until you
+  change a setting yourself. The search, zoom, and titles stay as they were.
+  While the view still matches, the button names the preset, as in
+  **Filters (Couch co-op)**.
+- **Save as preset** turns into a name field; type a name and press Enter.
+  A name is up to 60 characters. If another preset already has the name, in
+  any case, it says so and offers **Update** instead.
+- **Update "X"** shows once you change the view after applying or saving X,
+  and saves the view you have now over it.
+- **Rename** and **Delete**: right-click a preset, or press Shift+F10 or the
+  Menu key on it, for both under it. R renames it and Delete asks first,
+  with **Keep it** focused.
+
+Presets live in `library.toml` (see
+[Library state](config-files.md#library-state)), so every window and the
+next launch see them. If a save fails, the reason shows under the presets
+and the name you typed stays until you save or cancel it.
 
 An installed Steam game goes under Native or Windows from the start, even
 before its first run. See [Platforms](steam.md#platforms). One Steam doesn't
@@ -1080,7 +1107,10 @@ Tags list, which take every key while open:
 | Enter, Space | Pick a sort, or toggle a check box or tag |
 | Enter (in the Tags list's field) | Add the typed tag to every marked game |
 | X (in Filters) | Exclude the focused store, platform, or tag, or turn it off if it's checked or excluded |
-| Esc | Close the menu and go back to its button |
+| Enter (in a preset's name field) | Save the view as that preset, or rename it |
+| R, Delete (on a preset) | Rename it, or delete it after asking |
+| Shift+F10, Menu, right-click (on a preset) | Show Rename and Delete under it |
+| Esc | Close a preset's name field or question first, then the menu, going back to its button |
 
 In the choice lists on **Add**, New's program list, the Heroic and GOG
 lists, and the version picker:
@@ -1138,4 +1168,3 @@ the palette, spacing, control states, motion, and layout rules for future pages.
 ## Not yet
 
 - Gamepad navigation.
-- Saved filter presets (plan 0062, coming in 1.4.0).
