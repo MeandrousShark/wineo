@@ -123,18 +123,21 @@ fn change_tags_with_target(
 
 /// Appends `tag` laid out like the tag before it: on its own line in a
 /// multi-line list, in the same quotes, without copying a comment.
-fn push_tag(tags: &mut Array, tag: &str) {
+pub(crate) fn push_tag(tags: &mut Array, tag: &str) {
     let Some(last) = tags.iter().last() else {
         tags.push(tag);
         return;
     };
-    let mut value: Value = if raw(last).starts_with('\'') {
-        format!("'{tag}'")
-    } else {
-        format!("\"{tag}\"")
-    }
-    .parse()
-    .expect("a valid tag is a valid TOML string");
+    // A preset keeps whatever text a tag was saved with, so quote only what
+    // fits a literal string and let toml_edit escape the rest.
+    let mut value: Value =
+        if raw(last).starts_with('\'') && !tag.contains(|c: char| c == '\'' || c.is_control()) {
+            format!("'{tag}'")
+                .parse()
+                .expect("a literal string without quotes or controls is valid TOML")
+        } else {
+            Value::from(tag)
+        };
     let indent = layout(prefix(last), " ");
     let at = tags.len() - 1;
     // What's on the line after the last tag, like its own comment, stays on
@@ -166,7 +169,7 @@ fn push_tag(tags: &mut Array, tag: &str) {
 
 /// Removes `tag`, which a valid config holds once at most, dropping only its
 /// own comment.
-fn remove_tag(tags: &mut Array, tag: &str) {
+pub(crate) fn remove_tag(tags: &mut Array, tag: &str) {
     let Some(at) = tags.iter().position(|value| value.as_str() == Some(tag)) else {
         return;
     };

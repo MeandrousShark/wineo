@@ -7,11 +7,13 @@
 
 use std::collections::BTreeSet;
 
-use toml_edit::{Array, DocumentMut, Item, Table, TableLike, Value};
+use toml_edit::{DocumentMut, Entry, Item, Key, Table, TableLike, Value};
 
 use super::{GroupBy, SortKey, ViewLayout, edit, sort_name, store_value, table_mut};
 use crate::error::{Error, Result};
+use crate::name::fold_case;
 use crate::paths::Paths;
+use crate::settings::{push_tag, remove_tag};
 use crate::source::{Platform, Store};
 
 /// The longest preset name, in characters, so a pasted blurb can't swamp the
@@ -83,7 +85,7 @@ pub(super) fn read_presets(document: &DocumentMut) -> Vec<(String, Preset)> {
         .filter(|(name, _)| readable_name(name))
         .filter_map(|(name, item)| Some((name.to_owned(), read_preset(item.as_table_like()?))))
         .collect();
-    presets.sort_by_cached_key(|(name, _)| (name.to_lowercase(), name.clone()));
+    presets.sort_by_cached_key(|(name, _)| (fold_case(name), name.clone()));
     presets
 }
 
@@ -182,24 +184,58 @@ pub fn rename_preset(paths: &Paths, old: &str, new: &str) -> Result<bool> {
         if old == new {
             return false;
         }
-        let lowered = new.to_lowercase();
+        let folded = fold_case(new);
         let taken = presets
             .iter()
-            .find(|(name, item)| {
-                *name != old && item.is_table_like() && name.to_lowercase() == lowered
-            })
+            .find(|(name, item)| *name != old && item.is_table_like() && fold_case(name) == folded)
             .map(|(name, _)| name.to_owned());
         if let Some(taken) = taken {
             refused = Some(Error::PresetNameTaken(taken));
             return false;
         }
-        let item = presets.remove(old).expect("the preset was just found");
-        presets.insert(new, item);
+        rename_key(presets, old, new);
         true
     })?;
     match refused {
         Some(error) => Err(error),
         None => Ok(changed),
+    }
+}
+
+/// Gives the entry `old` the key `new` in the same place, with the old key's
+/// comments. toml_edit can't rename a key, so the entries from `old` on are
+/// taken out and put back in order. That keeps the order of a dotted or
+/// inline table, where a headered table's position already holds its place.
+fn rename_key(table: &mut dyn TableLike, old: &str, new: &str) {
+    // Whatever else sits under the new name is not a preset, or the collision
+    // check would have refused, and would be in the way.
+    table.remove(new);
+    let order: Vec<String> = table.iter().map(|(name, _)| name.to_owned()).collect();
+    let from = order
+        .iter()
+        .position(|name| name == old)
+        .expect("the preset was just found");
+    let moved: Vec<(Key, Item)> = order[from..]
+        .iter()
+        .filter_map(|name| Some((table.key(name)?.clone(), table.remove(name)?)))
+        .collect();
+    for (index, (key, item)) in moved.into_iter().enumerate() {
+        let key = if index == 0 {
+            let mut renamed = Key::new(new);
+            *renamed.leaf_decor_mut() = key.leaf_decor().clone();
+            *renamed.dotted_decor_mut() = key.dotted_decor().clone();
+            renamed
+        } else {
+            key
+        };
+        match table.entry_format(&key) {
+            Entry::Vacant(slot) => {
+                slot.insert(item);
+            }
+            Entry::Occupied(mut slot) => {
+                slot.insert(item);
+            }
+        }
     }
 }
 
@@ -211,10 +247,10 @@ fn case_variant(document: &DocumentMut, name: &str) -> Option<String> {
     if presets.get(name).is_some_and(Item::is_table_like) {
         return None;
     }
-    let lowered = name.to_lowercase();
+    let folded = fold_case(name);
     presets
         .iter()
-        .find(|(other, item)| item.is_table_like() && other.to_lowercase() == lowered)
+        .find(|(other, item)| item.is_table_like() && fold_case(other) == folded)
         .map(|(other, _)| other.to_owned())
 }
 
@@ -328,8 +364,10 @@ fn set_flag(table: &mut dyn TableLike, field: &str, value: bool, fresh: bool) ->
 
 /// A list is left alone while it reads as the wanted set, so ids a newer
 /// wineo wrote beside the ones this one knows survive an update that doesn't
-/// touch that list. An empty set removes the key, so a list is only there
-/// when it filters something.
+/// touch that list. Otherwise the array is edited in place: the entries that
+/// left go, the ones that joined are appended, and the rest keep their place
+/// and their comments. An empty set removes the key, so a list is only there
+/// when it filters something, unless it still holds a comment.
 fn set_list<T: Ord>(
     table: &mut dyn TableLike,
     field: &str,
@@ -337,19 +375,58 @@ fn set_list<T: Ord>(
     parse: fn(&str) -> Option<T>,
     name: fn(&T) -> String,
 ) -> bool {
-    let matches = match table.get(field) {
+    let current = table.get(field);
+    let have = read_list(current, parse);
+    let matches = match current {
         None => wanted.is_empty(),
-        Some(item) => item.is_array() && read_list(Some(item), parse) == *wanted,
+        Some(item) => item.is_array() && have == *wanted,
     };
     if matches {
         return false;
+    }
+    if let Some(array) = table.get_mut(field).and_then(Item::as_array_mut) {
+        let leaving: Vec<String> = array
+            .iter()
+            .filter_map(Value::as_str)
+            .filter(|text| parse(text).is_some_and(|known| !wanted.contains(&known)))
+            .map(str::to_owned)
+            .collect();
+        for text in &leaving {
+            remove_tag(array, text);
+        }
+        let mut joining: Vec<String> = wanted
+            .iter()
+            .filter(|known| !have.contains(known))
+            .map(name)
+            .collect();
+        joining.sort();
+        // A lone entry has no neighbor to copy a separator from, and would
+        // otherwise be followed by `,"x"`.
+        let lone = array.len() == 1;
+        for (index, text) in joining.iter().enumerate() {
+            push_tag(array, text);
+            if lone
+                && index == 0
+                && let Some(added) = array.get_mut(1)
+                && added
+                    .decor()
+                    .prefix()
+                    .is_none_or(|prefix| prefix.as_str() == Some(""))
+            {
+                added.decor_mut().set_prefix(" ");
+            }
+        }
+        if wanted.is_empty() && array.is_empty() && !array.to_string().contains('#') {
+            table.remove(field);
+        }
+        return true;
     }
     if wanted.is_empty() {
         return table.remove(field).is_some();
     }
     let mut names: Vec<String> = wanted.iter().map(name).collect();
     names.sort();
-    let array: Array = names.iter().map(String::as_str).collect();
+    let array: toml_edit::Array = names.iter().map(String::as_str).collect();
     store_value(table, field, Value::Array(array));
     true
 }

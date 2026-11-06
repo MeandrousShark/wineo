@@ -297,7 +297,7 @@ impl Library {
     /// one with exactly that name, else one that differs only in case. The
     /// app offers to update it instead of saving a second, look-alike one.
     pub fn taken_preset_name(&self, name: &str) -> Option<&str> {
-        let lowered = name.to_lowercase();
+        let folded = crate::name::fold_case(name);
         self.presets
             .iter()
             .map(|(saved, _)| saved.as_str())
@@ -306,7 +306,7 @@ impl Library {
                 self.presets
                     .iter()
                     .map(|(saved, _)| saved.as_str())
-                    .find(|saved| saved.to_lowercase() == lowered)
+                    .find(|saved| crate::name::fold_case(saved) == folded)
             })
     }
 }

@@ -446,7 +446,7 @@ fn updating_writes_only_the_lines_that_changed() {
     assert!(set_preset(&fixture.paths, "P", &changed).unwrap());
     let expected = before
         .replace("descending = true", "descending = false")
-        .replace("stores = [\"steam\"]", "stores = [\"gog\", \"steam\"]")
+        .replace("stores = [\"steam\"]", "stores = [\"steam\", \"gog\"]")
         .replace("not_tags = [\"vr\"]\n", "");
     assert_eq!(fixture.read(), expected);
     assert_eq!(fixture.preset("P"), changed);
@@ -543,7 +543,7 @@ fn ids_a_newer_wineo_wrote_survive_an_update_that_leaves_that_list_alone() {
     assert!(
         fixture
             .read()
-            .contains("stores = [\"epic\", \"steam\"]\nplatforms = [\"macos\"]")
+            .contains("stores = [\"steam\", \"itch\", \"epic\"]\nplatforms = [\"macos\"]")
     );
 }
 
@@ -991,4 +991,228 @@ fn saving_writes_through_a_symlinked_library_file() {
         new_file: NewFile::Default,
     }
     .check();
+}
+
+const MULTILINE: &str = r#"[presets.P]
+tags = [
+  "co-op", # couch only
+  # a note on its own line
+  "solo", # alone
+  "vr",
+  # last words
+]
+not_stores = [ "epic" ] # trailing
+"#;
+
+fn multiline_preset() -> Preset {
+    Preset {
+        tags: tags(&["co-op", "solo", "vr"]),
+        not_stores: set([Store::Epic]),
+        ..Preset::default()
+    }
+}
+
+#[test]
+fn adding_to_a_list_keeps_every_comment_inside_it() {
+    let fixture = Fixture::with(MULTILINE);
+    assert_eq!(fixture.preset("P"), multiline_preset());
+    let wanted = Preset {
+        tags: tags(&["co-op", "solo", "vr", "rpg"]),
+        not_stores: set([Store::Epic, Store::Gog]),
+        ..Preset::default()
+    };
+    assert!(set_preset(&fixture.paths, "P", &wanted).unwrap());
+    assert_eq!(
+        fixture.read(),
+        r#"schema_version = 1
+[presets.P]
+tags = [
+  "co-op", # couch only
+  # a note on its own line
+  "solo", # alone
+  "vr",
+  "rpg",
+  # last words
+]
+not_stores = [ "epic", "gog" ] # trailing
+"#
+    );
+    assert_eq!(fixture.preset("P"), wanted);
+}
+
+#[test]
+fn removing_from_a_list_drops_only_that_entrys_own_comment() {
+    let fixture = Fixture::with(MULTILINE);
+    let wanted = Preset {
+        tags: tags(&["co-op", "vr"]),
+        not_stores: set([Store::Epic]),
+        ..Preset::default()
+    };
+    assert!(set_preset(&fixture.paths, "P", &wanted).unwrap());
+    assert_eq!(
+        fixture.read(),
+        r#"schema_version = 1
+[presets.P]
+tags = [
+  "co-op", # couch only
+  # a note on its own line
+  "vr",
+  # last words
+]
+not_stores = [ "epic" ] # trailing
+"#
+    );
+}
+
+#[test]
+fn a_list_that_loses_everything_keeps_its_comments_but_a_bare_one_goes() {
+    let fixture = Fixture::with(MULTILINE);
+    assert!(set_preset(&fixture.paths, "P", &Preset::default()).unwrap());
+    let text = fixture.read();
+    assert!(text.contains("# a note on its own line"), "{text}");
+    assert!(text.contains("# last words"), "{text}");
+    assert!(text.contains("not_stores = [ ] # trailing"), "{text}");
+    assert_eq!(fixture.preset("P"), Preset::default());
+
+    let fixture = Fixture::with("[presets.P]\ntags = [\"a\", \"b\"]\nsort = \"added\"\n");
+    let wanted = Preset {
+        sort: SortKey::Added,
+        ..Preset::default()
+    };
+    assert!(set_preset(&fixture.paths, "P", &wanted).unwrap());
+    assert_eq!(
+        fixture.read(),
+        "schema_version = 1\n[presets.P]\nsort = \"added\"\n"
+    );
+}
+
+#[test]
+fn entries_that_stay_keep_their_order_and_new_ones_follow_sorted() {
+    let fixture = Fixture::with("[presets.P]\ntags = [\"zed\", \"alpha\", \"mid\"]\n");
+    let wanted = Preset {
+        tags: tags(&["zed", "mid", "beta", "aardvark"]),
+        ..Preset::default()
+    };
+    assert!(set_preset(&fixture.paths, "P", &wanted).unwrap());
+    assert_eq!(
+        fixture.read(),
+        "schema_version = 1\n[presets.P]\ntags = [\"zed\", \"mid\", \"aardvark\", \"beta\"]\n"
+    );
+}
+
+#[test]
+fn tags_with_quotes_and_backslashes_are_escaped_when_joined() {
+    for existing in ["[\"a\"]", "['a']", "[\"a\", 'b']"] {
+        let fixture = Fixture::with(&format!("[presets.P]\ntags = {existing}\n"));
+        let wanted = Preset {
+            tags: tags(&["a", "it's \"x\"", "back\\slash", "tab\there"]),
+            ..Preset::default()
+        };
+        assert!(
+            set_preset(&fixture.paths, "P", &wanted).unwrap(),
+            "{existing}"
+        );
+        let read = fixture.preset("P").tags;
+        assert!(read.contains("it's \"x\""), "{existing}");
+        assert!(read.contains("back\\slash"), "{existing}");
+        assert!(read.contains("tab\there"), "{existing}");
+        assert!(read.contains("a"), "{existing}");
+    }
+}
+
+#[test]
+fn renaming_an_inline_preset_keeps_its_comment_and_place() {
+    let text = "[presets]\n# first\nAlpha = { sort = \"added\" }\n# the one to rename\nOld = { sort = \"playtime\", tags = [\"a\"] } # trailing\n# last\nZed = { sort = \"tags\" }\n";
+    let fixture = Fixture::with(text);
+    assert!(rename_preset(&fixture.paths, "Old", "Middle").unwrap());
+    assert_eq!(
+        fixture.read(),
+        format!(
+            "schema_version = 1\n{}",
+            text.replace("Old = ", "Middle = ")
+        )
+    );
+    assert_eq!(fixture.presets(), ["Alpha", "Middle", "Zed"]);
+    assert_eq!(fixture.preset("Middle").sort, SortKey::Playtime);
+}
+
+#[test]
+fn renaming_a_dotted_preset_keeps_its_comment_and_place() {
+    let text = "schema_version = 1\n# first\npresets.Alpha.sort = \"added\"\n# the one to rename\npresets.Old.sort = \"playtime\"\npresets.Old.tags = [\"a\"] # trailing\n# last\npresets.Zed.sort = \"tags\"\n";
+    let fixture = Fixture::with(text);
+    assert_eq!(fixture.presets(), ["Alpha", "Old", "Zed"]);
+    assert!(rename_preset(&fixture.paths, "Old", "Middle").unwrap());
+    assert_eq!(
+        fixture.read(),
+        text.replace("presets.Old.", "presets.Middle.")
+    );
+    assert_eq!(fixture.presets(), ["Alpha", "Middle", "Zed"]);
+    assert_eq!(fixture.preset("Middle").sort, SortKey::Playtime);
+}
+
+#[test]
+fn renaming_a_standard_preset_keeps_the_comment_above_its_header() {
+    let text = "# first\n[presets.Alpha]\nsort = \"added\"\n\n# the one to rename\n[presets.Old]\nsort = \"playtime\"\n\n# last\n[presets.Zed]\nsort = \"tags\"\n";
+    let fixture = Fixture::with(text);
+    assert!(rename_preset(&fixture.paths, "Old", "Middle").unwrap());
+    assert_eq!(
+        fixture.read(),
+        format!(
+            "schema_version = 1\n{}",
+            text.replace("[presets.Old]", "[presets.Middle]")
+        )
+    );
+}
+
+#[test]
+fn renaming_over_an_entry_that_is_not_a_preset_replaces_it() {
+    let fixture = Fixture::with(
+        "[presets]\nOld = { sort = \"added\" }\nNew = 3\nAfter = { sort = \"tags\" }\n",
+    );
+    assert!(rename_preset(&fixture.paths, "Old", "New").unwrap());
+    assert_eq!(fixture.presets(), ["After", "New"]);
+    assert_eq!(fixture.preset("New").sort, SortKey::Added);
+}
+
+/// Pairs that `to_lowercase` keeps apart but that are the same name to a
+/// reader: the two sigmas, and sharp s against SS.
+const FOLDED: [(&str, &str); 3] = [
+    ("ΟΔΥΣΣΕΥΣ", "οδυσσευς"),
+    ("Σίσυφος", "ςίσυφοσ"),
+    ("Straße", "STRASSE"),
+];
+
+#[test]
+fn names_that_differ_only_in_unicode_case_collide_on_save_and_rename() {
+    for (first, second) in FOLDED {
+        let fixture = Fixture::new();
+        set_preset(&fixture.paths, first, &couch()).unwrap();
+        let error = set_preset(&fixture.paths, second, &Preset::default()).unwrap_err();
+        assert!(
+            matches!(&error, Error::PresetNameTaken(taken) if taken == first),
+            "{first} / {second}: {error:?}"
+        );
+        assert_eq!(
+            fixture.library().taken_preset_name(second),
+            Some(first),
+            "{first} / {second}"
+        );
+        assert_eq!(fixture.preset(first), couch());
+
+        set_preset(&fixture.paths, "Other", &couch()).unwrap();
+        let error = rename_preset(&fixture.paths, "Other", second).unwrap_err();
+        assert!(
+            matches!(&error, Error::PresetNameTaken(taken) if taken == first),
+            "{first} / {second}"
+        );
+        // Its own name in another case is still fine.
+        assert!(rename_preset(&fixture.paths, first, second).unwrap());
+    }
+}
+
+#[test]
+fn presets_sort_ignoring_unicode_case_too() {
+    let fixture =
+        Fixture::with("[presets.\"b\"]\n[presets.\"Ä\"]\n[presets.\"a\"]\n[presets.\"Z\"]\n");
+    assert_eq!(fixture.presets(), ["a", "b", "Z", "Ä"]);
 }
