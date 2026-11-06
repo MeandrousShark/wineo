@@ -172,7 +172,7 @@ for ((i = 0; i < count; i++)); do
                 ;;
             heroic)
                 printf 'heroic_id = "%016x"\n' $((0xabc0000000000 + i * 7919))
-                echo 'store = "epic"'
+                echo 'store = "egs"'
                 ;;
             store) echo 'store = "steam"' ;;
         esac
