@@ -92,6 +92,11 @@ pub(crate) struct Writes {
     pub(crate) random: Option<RandomPool>,
     pub(crate) layout: Option<ViewLayout>,
     pub(crate) group: Option<GroupBy>,
+    /// Fields whose write in flight a preset overtook. Applying a preset
+    /// writes nothing (plan 0062, decision 16), so when the write lands it
+    /// doesn't follow up with the preset's value, unless a control changed
+    /// the field again meanwhile.
+    overtaken: Vec<std::mem::Discriminant<Field>>,
 }
 
 impl Writes {
@@ -106,6 +111,24 @@ impl Writes {
             Field::Layout(_) => self.layout.is_some(),
             Field::Group(_) => self.group.is_some(),
         }
+    }
+
+    /// Marks each of `fields` with a write in flight as overtaken.
+    pub(crate) fn overtake(&mut self, fields: &[Field]) {
+        for &field in fields {
+            let kind = std::mem::discriminant(&field);
+            if self.busy(field) && !self.overtaken.contains(&kind) {
+                self.overtaken.push(kind);
+            }
+        }
+    }
+
+    /// Whether `field` was overtaken, which it then stops being.
+    fn settle(&mut self, field: Field) -> bool {
+        let kind = std::mem::discriminant(&field);
+        let overtaken = self.overtaken.contains(&kind);
+        self.overtaken.retain(|other| *other != kind);
+        overtaken
     }
 
     fn start(&mut self, field: Field) {
@@ -272,6 +295,8 @@ impl App {
     /// flight, which writes again when it finishes if the value moved on.
     pub(crate) fn save_field(&mut self, field: Field) -> Task<Message> {
         if self.view_writes.busy(field) {
+            // A control changed it again, so the follow-up writes it.
+            self.view_writes.settle(field);
             return Task::none();
         }
         let field = self.current(field);
@@ -383,6 +408,7 @@ pub(crate) fn update(app: &mut App, event: Event) -> Task<Message> {
         }
         Event::Saved(written, result) => {
             app.view_writes.finish(written);
+            let overtaken = app.view_writes.settle(written);
             if app.exiting {
                 return Task::none();
             }
@@ -404,6 +430,7 @@ pub(crate) fn update(app: &mut App, event: Event) -> Task<Message> {
             // A drag saves only where it lets go, so the values it passes
             // through wait for its release.
             if app.current(written) == written
+                || overtaken
                 || (matches!(written, Field::Zoom(_)) && app.zooming.dragging())
             {
                 Task::none()

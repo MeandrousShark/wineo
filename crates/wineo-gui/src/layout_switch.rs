@@ -67,9 +67,19 @@ pub(crate) fn update(app: &mut App, event: Event) -> Task<Message> {
 }
 
 impl App {
-    /// Shows the library as `layout`, keeping the marks, the sort, and the
-    /// selection, with the card that held the place still on screen.
+    /// Shows the library as `layout` and saves it.
     pub(crate) fn set_layout(&mut self, layout: ViewLayout) -> Task<Message> {
+        if layout == self.layout {
+            return Task::none();
+        }
+        let switched = self.switch_layout(layout);
+        Task::batch([switched, self.save_field(Field::Layout(layout))])
+    }
+
+    /// Shows the library as `layout` without saving it, keeping the marks,
+    /// the sort, and the selection, with the card that held the place still
+    /// on screen.
+    pub(crate) fn switch_layout(&mut self, layout: ViewLayout) -> Task<Message> {
         if layout == self.layout {
             return Task::none();
         }
@@ -99,7 +109,6 @@ impl App {
         self.star_hovered = None;
         self.snap_grid();
         let _ = self.motion_ended(false);
-        let save = self.save_field(Field::Layout(layout));
         let places = self.grid_places();
         if let Some((slot, offset)) = anchor
             && let Some(index) = places.index(&slot)
@@ -127,7 +136,7 @@ impl App {
         } else {
             self.scroll_to_landing()
         };
-        Task::batch([stopped, save, scroll, landing, self.load_visible_art()])
+        Task::batch([stopped, scroll, landing, self.load_visible_art()])
     }
 }
 

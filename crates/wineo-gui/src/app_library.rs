@@ -63,6 +63,9 @@ impl App {
         if let Some(problem) = scan.problem {
             self.problem_read(problem);
         }
+        if let Some(presets) = scan.presets {
+            self.presets_read(presets);
+        }
         let library = match scan.library {
             Some(result) if !self.refreshing => self.update(Message::Loaded(result)),
             _ => Task::none(),
