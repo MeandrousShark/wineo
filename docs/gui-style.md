@@ -188,6 +188,17 @@ Plan 0054 added these.
   border, 8 px corners, and a 6 px gap. Toolbar tooltips sit below their
   button. The direction button's names the current order ("Most played
   first", "A to Z").
+- **Group by** is a row in the Sort menu, between the sorts and Favorites
+  first, showing the current grouping and a right chevron. Opening it shows
+  a 160 px list beside the menu, on the left near the window's right edge,
+  in the same chrome; Up, Down, and Tab move in it, Esc or Left returns to
+  the row, and a pick closes both. It doesn't open on hover.
+- A section header is a 32 px row across the grid's columns or the list:
+  a chevron pointing down while open and right while collapsed, the name in
+  16 px semibold, and the count muted, as "(12)". It tints like a list row
+  on hover and press, takes Tab focus but not focus from a click, and sits
+  the layout's usual gap from the cards above and below. Cards drawn over a
+  header while they move take the pointer before it.
 - The Sort menu and the Filters popup share the context menu's chrome,
   248 px wide. Only one of them or the context menu is open at a time. A
   click, Enter, or Space opens it under its button.
@@ -383,8 +394,11 @@ Plan 0062 added these.
 
 ## Grid motion
 
-One owner moves the Library's cards, matching each card by name, so its
-hover and state follow it. Every layout change springs each card from where
+One owner moves the Library's cards, matching each card by its slot (its
+section and game), so its hover and state follow it. When a game's copies
+change sections, a copy that stays keeps its place, and the others pair up
+by game, first with first in shown order, so they spring rather than fade.
+Section headers spring and fade like cards. Every layout change springs each card from where
 it's drawn now, with the panel's spring, so a re-sort during the dock or a
 column change halfway through a zoom never jumps.
 

@@ -97,6 +97,36 @@ opens the same way. A window keeps its own order while it's open, even if
 another window changes the saved one. If the save fails, the window keeps
 the order you picked and says why.
 
+### Grouping
+
+**Group by**, in the Sort menu between the sorts and **Favorites first**,
+splits the library into sections: by **Tag**, **Source**, or **State**, or
+**None** for one flat grid as before. Press it, or Enter or Space on it, to
+open its list beside the menu; Esc or Left goes back.
+
+- **Tag** gives each tag its own section, A to Z, and a game with several
+  tags shows in each of them, with **No tag** last. The copies are one game:
+  starring, marking, or hiding one does all of them, and the panel stays open
+  when you move between them.
+- **Source** follows the Source sort's labels, with **No source** last.
+- **State** shows **Running**, then **Other**, then **Not installed**. A game
+  moves as it starts or stops, or as Steam installs or removes it.
+
+While grouped, **Recently played** comes first, with the ten games you played
+last, newest first, and hidden games sit together in **Hidden** at the end
+when Show hidden is on. Inside each section, games follow the sort and
+Favorites first.
+
+Each section has a header with its name and count, like **rpg (12)**. Click
+it, or Tab to it and press Enter or Space, to collapse it to just the
+header, and again to open it. Collapsed sections stay that way until you
+close wineo. Marks, Ctrl+A, and the dice only count what you can see: a game
+whose every copy is collapsed loses its mark, and Ctrl+A and the dice skip
+it.
+
+Group by is saved with the sort in `library.toml`, so the next launch opens
+grouped the same way.
+
 ### Filters and hidden games
 
 **Filters** opens a popup with the stores your games came from (Steam,
@@ -1014,12 +1044,12 @@ edits, the bar says which, and **Reload** takes what's on disk.
 
 | Key | Does |
 |---|---|
-| Arrow keys | Move between cards or rows |
+| Arrow keys | Move between cards or rows; Up and Down cross section headers to the nearest card above or below |
 | Ctrl+L | Switch between the grid and the list (Library only) |
 | Enter | Open the panel, or play when it's open (only for a card that's shown) |
 | F | Add the selected card to favorites, or remove it (only for a card that's shown) |
 | Space | Mark or unmark the selected card, when no button or field has focus (Library only) |
-| Ctrl+A | Mark every shown game, unless the search or log has focus (Library only) |
+| Ctrl+A | Mark every game in view, skipping collapsed sections, unless the search or log has focus (Library only) |
 | R | Pick a shown game at random, as the dice does (Library only) |
 | Shift+F10 or Menu | Open the focused dice's menu (Library only) |
 | Esc | Close the log, version picker, results, or Tags list, then clear the marks, then close the panel, then clear the search |
@@ -1032,8 +1062,9 @@ edits, the bar says which, and **Reload** takes what's on disk.
 | Ctrl+1, Ctrl+2, Ctrl+3, Ctrl+4, Ctrl+5 | Library, Trash, Checkup, Downloads, Snapshots |
 | Ctrl+, | Global settings |
 | Down (in the search) | Back to the cards |
-| Tab, Shift+Tab | Move focus through the toolbar from Add to the layout switch (then the zoom slider and titles button in the grid), then panel actions |
+| Tab, Shift+Tab | Move focus through the toolbar from Add to the layout switch (then the zoom slider and titles button in the grid), then section headers while grouped, then panel actions |
 | Left, Right, Space, Enter (on the layout switch) | Switch between the grid and the list |
+| Enter, Space (on a section header) | Collapse the section, or open it |
 | Left, Right (on the zoom slider) | Make the posters smaller or bigger |
 
 The mouse Back button does whatever Esc does on the current page, here and
@@ -1107,4 +1138,4 @@ the palette, spacing, control states, motion, and layout rules for future pages.
 ## Not yet
 
 - Gamepad navigation.
-- Saved filter presets and grouping (plan 0062, coming in 1.4.0).
+- Saved filter presets (plan 0062, coming in 1.4.0).

@@ -398,6 +398,7 @@ zoom = 125                # grid size in percent, 60 to 200
 poster_only = true
 random = "any"            # launchable (default) or any
 layout = "list"           # grid (default) or list
+group = "tag"             # none (default), tag, source, or state
 
 [appearance]
 follow_system = true
