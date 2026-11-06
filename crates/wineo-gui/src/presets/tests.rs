@@ -1421,3 +1421,67 @@ fn a_popup_with_many_presets_scrolls_to_the_focused_row_and_shows_a_failure() {
     };
     assert_visible(line, offset, viewport, "the reason");
 }
+
+/// The taken-name refusal stays on screen when the reread list can't show
+/// the name as taken: the file became unreadable, or the taker went again.
+#[test]
+fn a_taken_name_refusal_stays_when_the_list_cannot_show_it() {
+    for unreadable in [true, false] {
+        let (_root, mut app) = booted(FILE);
+        open_filters(&mut app);
+        let _ = send(&mut app, Event::StartSave);
+        let _ = send(&mut app, Event::Draft("Late".into()));
+        library::set_preset(&app.paths, "Late", &Preset::default()).unwrap();
+        let _ = send(&mut app, Event::Submit);
+        let write = app.presets.writing.clone().expect("a write in flight");
+        let (result, _) = super::write(&app.paths, &app.shown, &write);
+        assert!(result.as_ref().is_err_and(|failure| failure.taken));
+        let presets = if unreadable {
+            None
+        } else {
+            // Gone again before the list was read.
+            library::remove_preset(&app.paths, "Late").unwrap();
+            app.shown.refresh_library_presets(&app.paths)
+        };
+        let _ = send(
+            &mut app,
+            Event::Saved(Box::new(Done {
+                write,
+                result,
+                presets,
+            })),
+        );
+        let failure = app.presets.failure.clone().expect("the refusal shows");
+        assert_eq!(
+            failure.text,
+            "Couldn't save \"Late\": A preset named Late already exists."
+        );
+        assert!(app.save_taken("Late").is_none(), "unreadable: {unreadable}");
+        assert_eq!(app.presets.edit, Some(Edit::Save("Late".into())));
+        let _ = app.view();
+    }
+}
+
+/// The rename guard keeps only the preset this window is renaming: one
+/// another window deleted first still stops being active.
+#[test]
+fn renaming_the_active_preset_after_another_window_deleted_it_clears_it() {
+    let (_root, mut app) = booted(FILE);
+    open_filters(&mut app);
+    let _ = send(&mut app, Event::Apply("Tools".into()));
+    open_filters(&mut app);
+    let _ = send(&mut app, Event::Rename("Tools".into()));
+    let _ = send(&mut app, Event::Draft("Gadgets".into()));
+    let _ = send(&mut app, Event::Submit);
+    library::remove_preset(&app.paths, "Tools").unwrap();
+    land_with_a_rescan_first(&mut app);
+    assert!(app.presets.active.is_none());
+    let on_disk: Vec<String> = wineo_core::library::load(&app.paths)
+        .presets
+        .into_iter()
+        .map(|(name, _)| name)
+        .collect();
+    assert_eq!(names(&app), on_disk);
+    assert_eq!(names(&app), ["Couch co-op"]);
+    assert!(app.presets.failure.is_some());
+}

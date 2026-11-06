@@ -577,6 +577,9 @@ impl App {
             return Task::none();
         }
         let reads = self.outdate_reads();
+        // A name taken on disk since the last read, which the list read
+        // below may show as taken just as a name it already had.
+        let mut created = None;
         let focus = match done.result {
             Ok(()) => {
                 let id = match &done.write {
@@ -612,16 +615,20 @@ impl App {
                 if !shown {
                     self.flag_notice(failure.text.clone());
                 }
-                // A name taken on disk since the last read shows as one taken
-                // in the list does, once the list below is read.
-                if !(shown && failure.taken && matches!(done.write, Write::Create(..))) {
-                    self.presets.failure = Some(failure);
+                if let (true, Write::Create(name, _)) = (shown && failure.taken, &done.write) {
+                    created = Some(name.clone());
                 }
+                self.presets.failure = Some(failure);
                 None
             }
         };
         if let Some(presets) = done.presets {
             self.presets_read(presets);
+            // Only when the list now shows it is the failure line redundant;
+            // an unreadable file or a taker gone again leaves it to say why.
+            if created.is_some_and(|name| self.presets.taken(&name).is_some()) {
+                self.presets.failure = None;
+            }
         }
         let focus = focus.map_or_else(Task::none, |id| self.focus_in_popup(id));
         Task::batch([reads, focus])
@@ -898,12 +905,10 @@ impl App {
             )),
         }
         // The taken name's message under the field already says it.
-        if let Some(failure) = self
-            .presets
-            .failure
-            .as_ref()
-            .filter(|failure| !(failure.taken && matches!(edit, Some(Edit::Save(_)))))
-        {
+        if let Some(failure) = self.presets.failure.as_ref().filter(|failure| {
+            !(failure.taken
+                && matches!(edit, Some(Edit::Save(draft)) if self.save_taken(draft).is_some()))
+        }) {
             items.push(danger_line(failure.text.clone(), palette));
             if failure.checkup {
                 let open = preset_message(Event::OpenCheckup);

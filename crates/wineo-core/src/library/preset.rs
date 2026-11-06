@@ -155,8 +155,8 @@ fn save_preset(
     }
     let mut refused = None;
     let changed = edit(paths, |document| {
-        if let Some(taken) = taken(document, name) {
-            refused = Some(Error::PresetNameTaken(taken));
+        if let Some(existing) = taken(document, name) {
+            refused = Some(Error::PresetNameTaken(existing));
             return false;
         }
         write_preset(document, name, preset)
