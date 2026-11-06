@@ -1867,7 +1867,9 @@ impl<Message: Clone> Widget<Message, Theme, Renderer> for Grid<'_, Message> {
                 mouse::Interaction::default()
             };
         }
-        // Topmost first, as drawn: the cards, then the headers under them.
+        // Topmost first, as drawn: the cards, then the headers under them. The
+        // first one under the cursor answers, even with no interaction, as
+        // `update` stops there too.
         let headers = self.header_range();
         self.cards[headers.clone()]
             .iter()
@@ -1880,14 +1882,10 @@ impl<Message: Clone> Widget<Message, Theme, Renderer> for Grid<'_, Message> {
                     .zip(layout.children()),
             )
             .rev()
-            .find_map(|((card, state), layout)| {
-                if !cursor.is_over(layout.bounds()) {
-                    return None;
-                }
-                let interaction = card
-                    .as_widget()
-                    .mouse_interaction(state, layout, cursor, viewport, renderer);
-                (interaction != mouse::Interaction::None).then_some(interaction)
+            .find(|(_, layout)| cursor.is_over(layout.bounds()))
+            .map(|((card, state), layout)| {
+                card.as_widget()
+                    .mouse_interaction(state, layout, cursor, viewport, renderer)
             })
             .unwrap_or_default()
     }
