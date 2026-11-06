@@ -369,8 +369,8 @@ Plan 0062 added these.
   and Tags 176 px, with the title at least 200 px. They leave from the
   right as the width drops: Tags, Source, Last played, then Playtime. Text
   that doesn't fit is cut between graphemes and ends in an ellipsis.
-- The header is 32 px and stays put above the scrolling rows. Sortable
-  labels are buttons that tint 6 px past their text on hover and press (10%
+- The header is 32 px and stays put above the scrolling rows. Every label
+  but State sorts. Sortable labels are buttons that tint 6 px past their text on hover and press (10%
   and 22% primary, with a primary border pressed), with cells widened so
   labels line up with the row cells below. The active sort shows its
   direction arrow. The header is mouse-only; the Sort menu covers the

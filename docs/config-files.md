@@ -391,7 +391,7 @@ field only and stays in the file until you fix it or change that setting.
 schema_version = 1
 
 [view]
-sort = "playtime"         # name, last-played, playtime, or added
+sort = "playtime"         # name, last-played, playtime, added, source, or tags
 descending = true
 favorites_first = true
 zoom = 125                # grid size in percent, 60 to 200

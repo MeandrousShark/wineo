@@ -75,9 +75,13 @@ tag, so `rpg` finds games tagged `rpg`.
 ### Sorting
 
 **Sort** beside the search field picks the order: Name (the title shown on
-the card), Last played, Playtime, or Date added. Picking one starts it in
-its natural direction: Name A to Z, Last played most recent first, Playtime
-most played first, and Date added newest first. The arrow button next to it
+the card), Last played, Playtime, Date added, Source, or Tags. Picking one
+starts it in its natural direction: Name, Source, and Tags A to Z, Last
+played most recent first, Playtime most played first, and Date added newest
+first. Source goes by the label a game's list row shows, like GOG, Steam, or
+Windows. Tags compares each game's tags in A to Z order, one by one, so
+`co-op, rpg` comes before `rpg`; untagged games come last either way, as do
+games with no source. The arrow button next to it
 flips the direction, and its tooltip names the order you have, like "Most
 played first" or "A to Z". **Favorites first**, at the bottom of
 the Sort menu, puts favorites ahead of everything else in the same order.
@@ -213,9 +217,9 @@ shows what its poster does: the star, the eye, the Steam mark, a GOG pill,
 the install bar, the state's dot, and the dim for a hidden or not installed
 game. Text that doesn't fit ends in an ellipsis.
 
-Click **Title**, **Playtime**, or **Last played** in the header to sort by
-it, the same as picking it in the Sort menu, and click it again to flip the
-direction. Date added stays in the Sort menu. As the window or the panel
+Click **Title**, **Playtime**, **Last played**, **Source**, or **Tags** in
+the header to sort by it, the same as picking it in the Sort menu, and click
+it again to flip the direction. Date added stays in the Sort menu. As the window or the panel
 narrows the list, columns leave from the right: Tags, then Source, Last
 played, and Playtime. Title and State always stay.
 
