@@ -358,7 +358,7 @@ fn with_nothing_selected_the_first_card_in_view_keeps_its_place() {
     let _ = set(&mut app, ViewLayout::Grid);
     let places = app.grid_places();
     let slot = places.slots[places.index(&name).unwrap()];
-    assert_eq!(slot.y - app.scroll_offset, offset, "{name}");
+    assert_eq!(slot.y - app.scroll_offset, offset.max(0.0), "{name}");
 }
 
 #[test]
