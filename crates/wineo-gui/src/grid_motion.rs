@@ -627,6 +627,28 @@ impl GridMotion {
         let previous_height = self.content_height_now();
         let mut old = std::mem::take(&mut self.bodies);
         let mut moving = false;
+        // Plan 0062, question 17: a slot keeps its own body, and a copy
+        // with none takes one its game left behind, first with first in
+        // shown order, so a game moving between sections springs rather
+        // than fading. Only what's left over fades.
+        let kept: std::collections::HashSet<&SlotId> = places.ids.iter().collect();
+        let mut spare: Vec<(&SlotId, Rectangle)> = old
+            .iter()
+            .filter(|(id, _)| !kept.contains(id))
+            .map(|(id, body)| (id, body.slot))
+            .collect();
+        spare.sort_by(|(_, a), (_, b)| {
+            (a.y, a.x)
+                .partial_cmp(&(b.y, b.x))
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+        let mut spares: HashMap<String, std::collections::VecDeque<SlotId>> = HashMap::new();
+        for (id, _) in spare {
+            spares
+                .entry(id.name().to_owned())
+                .or_default()
+                .push_back(id.clone());
+        }
         for (index, (id, slot)) in places.ids.iter().zip(&places.slots).enumerate() {
             let delay = if was_active {
                 now
@@ -639,7 +661,11 @@ impl GridMotion {
                 let card = self.leaving.remove(at);
                 Some((card.bounds.position(), Vector::ZERO, card.opacity))
             } else {
-                None
+                spares
+                    .get_mut(id.name())
+                    .and_then(std::collections::VecDeque::pop_front)
+                    .and_then(|copy| old.remove(&copy))
+                    .map(|body| start_of(&body))
             };
             let body = body_from(start, *slot, delay);
             moving |=

@@ -13,6 +13,7 @@ use wineo_core::runtime::State;
 use wineo_core::source::{Facts, Source};
 
 use crate::grid_motion::{self, GridLayout, HEADER_HEIGHT, PADDING, Places, ViewLayout};
+use crate::keys::{Direction, move_index, walk};
 use crate::library::Card;
 use crate::order::{self, Filters, Of, Order, Query, RECENT};
 use crate::slot::{SectionKey, SlotId};
@@ -1080,4 +1081,288 @@ fn a_tag_edit_that_only_moves_a_game_between_sections_still_moves_the_cards() {
     // popping up with no body.
     assert!(app.grid_motion.active());
     assert_eq!(app.grid_motion.opacity(&new), 0.0);
+}
+
+fn walk_places(rows: &[(&str, &[&str])], columns: usize, mode: ViewLayout) -> Places {
+    let layout = GridLayout::default();
+    let mut ids = Vec::new();
+    let mut headers = Vec::new();
+    for (section, games) in rows {
+        headers.push(grid_motion::Header {
+            key: tag(section),
+            count: games.len(),
+            collapsed: false,
+            at: ids.len(),
+        });
+        ids.extend(games.iter().map(|game| slot(tag(section), game)));
+    }
+    let count = ids.len();
+    let (height, width) = match mode {
+        ViewLayout::Grid => (layout.poster_height(), layout.card_width()),
+        ViewLayout::List => (crate::list_view::ROW_HEIGHT, 700.0),
+    };
+    Places::sectioned(
+        ids,
+        &vec![height; count],
+        &vec![width; count],
+        headers,
+        width,
+        columns,
+        0.0,
+        layout,
+        mode,
+    )
+}
+
+/// A slot as `section:game`.
+fn named(slot: &SlotId) -> String {
+    format!("{}:{}", slot.section().title(), slot.name())
+}
+
+fn walked(places: &Places, from: &str, direction: Direction) -> String {
+    let at = places.ids.iter().position(|slot| named(slot) == from);
+    assert!(at.is_some(), "{from}");
+    let next = walk(places, at, direction).unwrap();
+    named(&places.ids[next])
+}
+
+#[test]
+fn up_and_down_cross_sections_by_nearest_column_and_left_and_right_follow_shown_order() {
+    // Plan 0062, question 13: rows stop lining up across sections.
+    let places = walk_places(
+        &[
+            ("a", &["a1", "a2", "a3", "a4", "a5"]),
+            ("b", &["b1", "b2"]),
+            ("c", &["c1", "c2", "c3", "c4"]),
+        ],
+        4,
+        ViewLayout::Grid,
+    );
+    // From a3 and a4, a's last row has only a5, the nearest.
+    assert_eq!(walked(&places, "a:a3", Direction::Down), "a:a5");
+    assert_eq!(walked(&places, "a:a4", Direction::Down), "a:a5");
+    // a5 down into b, past its header, same column.
+    assert_eq!(walked(&places, "a:a5", Direction::Down), "b:b1");
+    // b2 down to c's first row, same column.
+    assert_eq!(walked(&places, "b:b2", Direction::Down), "c:c2");
+    // Up from b2 lands on a5, the only card in a's last row.
+    assert_eq!(walked(&places, "b:b2", Direction::Up), "a:a5");
+    assert_eq!(walked(&places, "c:c4", Direction::Up), "b:b2");
+    assert_eq!(walked(&places, "c:c1", Direction::Up), "b:b1");
+    assert_eq!(walked(&places, "b:b1", Direction::Up), "a:a5");
+    // Nowhere to go stays put.
+    assert_eq!(walked(&places, "a:a2", Direction::Up), "a:a2");
+    assert_eq!(walked(&places, "c:c3", Direction::Down), "c:c3");
+    // Left and Right run in shown order across headers and wrap.
+    assert_eq!(walked(&places, "a:a5", Direction::Right), "b:b1");
+    assert_eq!(walked(&places, "b:b1", Direction::Left), "a:a5");
+    assert_eq!(walked(&places, "c:c4", Direction::Right), "a:a1");
+    assert_eq!(walked(&places, "a:a1", Direction::Left), "c:c4");
+    // No cursor starts on the first slot; nothing shown goes nowhere.
+    assert_eq!(walk(&places, None, Direction::Down), Some(0));
+    let empty = walk_places(&[], 4, ViewLayout::Grid);
+    assert_eq!(walk(&empty, None, Direction::Down), None);
+
+    // The list is one column, so Up and Down step through the shown order
+    // across headers.
+    let rows = walk_places(&[("a", &["a1", "a2"]), ("b", &["b1"])], 1, ViewLayout::List);
+    assert_eq!(walked(&rows, "a:a2", Direction::Down), "b:b1");
+    assert_eq!(walked(&rows, "b:b1", Direction::Up), "a:a2");
+    assert_eq!(walked(&rows, "b:b1", Direction::Down), "b:b1");
+}
+
+#[test]
+fn the_walk_matches_the_old_arithmetic_on_a_flat_grid() {
+    // Group by off moves exactly as before.
+    let layout = GridLayout::default();
+    for columns in 1..=6 {
+        for count in 0..=14 {
+            let ids: Vec<SlotId> = (0..count)
+                .map(|index| SlotId::new(SectionKey::All, format!("game-{index}")))
+                .collect();
+            let places = Places::new(
+                ids,
+                &vec![layout.poster_height(); count],
+                &vec![layout.card_width(); count],
+                columns,
+                0.0,
+                layout,
+                ViewLayout::Grid,
+            );
+            for direction in [
+                Direction::Left,
+                Direction::Right,
+                Direction::Up,
+                Direction::Down,
+            ] {
+                for current in std::iter::once(None).chain((0..count).map(Some)) {
+                    assert_eq!(
+                        walk(&places, current, direction),
+                        move_index(current, count, columns, direction),
+                        "{columns} columns, {count} cards, {current:?} {direction:?}"
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn the_arrow_keys_walk_copies_across_sections_in_the_app() {
+    for layout in [ViewLayout::Grid, ViewLayout::List] {
+        let mut app = grouped(
+            vec![
+                played(tagged("hades", &["rpg"]), 5),
+                tagged("celeste", &["rpg"]),
+                tagged("balatro", &["rpg"]),
+            ],
+            GroupBy::Tag,
+        );
+        app.layout = layout;
+        app.snap_grid();
+        let _ = app.update(Message::Press(slot(SectionKey::Recent, "hades")));
+        let press = |app: &mut App, named: Named| {
+            let _ = app.update(Message::KeyWithFocus(
+                Key::Named(named),
+                Modifiers::empty(),
+                iced::event::Status::Ignored,
+                false,
+            ));
+        };
+        // Down from Recently played lands in rpg's first row.
+        press(&mut app, Named::ArrowDown);
+        let first = app.selected_slot().unwrap();
+        assert_eq!(first.section(), &tag("rpg"), "{layout:?}");
+        // Right in shown order to rpg's copy of hades: the cursor moves,
+        // and the panel stays on the game.
+        let rpg_hades = slot(tag("rpg"), "hades");
+        while app.selected_slot().as_ref() != Some(&rpg_hades) {
+            press(&mut app, Named::ArrowRight);
+        }
+        assert!(app.panel_open, "{layout:?}");
+        assert_eq!(app.selected.as_deref(), Some("hades"));
+        // Left from rpg's first slot goes back across the header.
+        let places = app.grid_places();
+        app.set_cursor(places.ids[1].clone());
+        press(&mut app, Named::ArrowLeft);
+        assert_eq!(
+            app.selected_slot(),
+            Some(slot(SectionKey::Recent, "hades")),
+            "{layout:?}"
+        );
+    }
+}
+
+#[test]
+fn a_game_moving_between_sections_springs_and_its_extra_copies_fade() {
+    // Plan 0062, question 17's A, with hades tagged rpg and co-op.
+    let start = std::time::Instant::now();
+    let flat = |names: &[&str]| -> Places {
+        let layout = GridLayout::default();
+        Places::new(
+            names
+                .iter()
+                .map(|name| SlotId::new(SectionKey::All, *name))
+                .collect(),
+            &vec![layout.poster_height(); names.len()],
+            &vec![layout.card_width(); names.len()],
+            3,
+            0.0,
+            layout,
+            ViewLayout::Grid,
+        )
+    };
+    let none = flat(&["celeste", "hades", "notepad"]);
+    let by_tag = header_places(&[
+        ("co-op", &["hades"]),
+        ("platformer", &["celeste"]),
+        ("rpg", &["hades"]),
+    ]);
+    let mut motion = grid_motion::GridMotion::default();
+    motion.snap_to(&none);
+    let drawn = |motion: &grid_motion::GridMotion, places: &Places, id: &SlotId| {
+        let index = places.index(id).unwrap();
+        motion.drawn(places, index).position()
+    };
+    let old_hades = drawn(&motion, &none, &SlotId::new(SectionKey::All, "hades"));
+    let old_celeste = drawn(&motion, &none, &SlotId::new(SectionKey::All, "celeste"));
+    motion.spring_to(&by_tag, start);
+    // The first copy in shown order springs from the old spot.
+    assert_eq!(
+        drawn(&motion, &by_tag, &slot(tag("co-op"), "hades")),
+        old_hades
+    );
+    assert_eq!(motion.opacity(&slot(tag("co-op"), "hades")), 1.0);
+    // The extra copy is new, so it fades in where it lands.
+    assert_eq!(motion.opacity(&slot(tag("rpg"), "hades")), 0.0);
+    assert_eq!(
+        motion.offset(&slot(tag("rpg"), "hades")),
+        iced::Vector::ZERO
+    );
+    // A game in one section springs to its spot.
+    assert_eq!(
+        drawn(&motion, &by_tag, &slot(tag("platformer"), "celeste")),
+        old_celeste
+    );
+    // Notepad has no tag here, so it leaves.
+    let leaving: Vec<&str> = motion.leaving().iter().map(|card| card.id.name()).collect();
+    assert_eq!(leaving, ["notepad"]);
+
+    // Back to None: the first copy springs, the extra fades out.
+    motion.snap_to(&by_tag);
+    let coop = drawn(&motion, &by_tag, &slot(tag("co-op"), "hades"));
+    motion.spring_to(&none, start);
+    assert_eq!(
+        drawn(&motion, &none, &SlotId::new(SectionKey::All, "hades")),
+        coop
+    );
+    let leaving: Vec<&SlotId> = motion.leaving().iter().map(|card| &card.id).collect();
+    assert_eq!(leaving, [&slot(tag("rpg"), "hades")]);
+}
+
+#[test]
+fn a_copy_that_stays_keeps_its_own_body_when_another_copy_goes() {
+    // Hades leaves co-op, above rpg: rpg's copy keeps its place rather
+    // than springing from co-op's.
+    let start = std::time::Instant::now();
+    let both = header_places(&[("co-op", &["hades"]), ("rpg", &["celeste", "hades"])]);
+    let rpg_only = header_places(&[("rpg", &["celeste", "hades"])]);
+    let mut motion = grid_motion::GridMotion::default();
+    motion.snap_to(&both);
+    let before = motion
+        .drawn(&both, both.index(&slot(tag("rpg"), "hades")).unwrap())
+        .position();
+    motion.spring_to(&rpg_only, start);
+    let index = rpg_only.index(&slot(tag("rpg"), "hades")).unwrap();
+    assert_eq!(motion.drawn(&rpg_only, index).position(), before);
+    let leaving: Vec<&SlotId> = motion.leaving().iter().map(|card| &card.id).collect();
+    assert_eq!(leaving, [&slot(tag("co-op"), "hades")]);
+}
+
+#[test]
+fn switching_group_by_in_the_app_springs_the_paired_copies() {
+    let mut app = grouped(
+        vec![
+            tagged("hades", &["rpg", "co-op"]),
+            tagged("celeste", &["platformer"]),
+        ],
+        GroupBy::None,
+    );
+    let _ = settle_grid(&mut app);
+    app.group = GroupBy::Tag;
+    let _ = app.resorted();
+    assert!(app.grid_motion.active());
+    assert_eq!(app.grid_motion.opacity(&slot(tag("co-op"), "hades")), 1.0);
+    assert_eq!(app.grid_motion.opacity(&slot(tag("rpg"), "hades")), 0.0);
+    assert!(app.grid_motion.leaving().is_empty());
+    let _ = settle_grid(&mut app);
+    app.group = GroupBy::None;
+    let _ = app.resorted();
+    let leaving: Vec<&SlotId> = app
+        .grid_motion
+        .leaving()
+        .iter()
+        .map(|card| &card.id)
+        .collect();
+    assert_eq!(leaving, [&slot(tag("rpg"), "hades")]);
 }

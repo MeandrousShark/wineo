@@ -271,8 +271,7 @@ impl App {
                 // The arrows walk slots, so stepping onto another copy of
                 // the selected game moves the cursor and leaves the panel.
                 let current = self.selected_index(&places);
-                let columns = self.columns();
-                if let Some(next) = move_index(current, places.ids.len(), columns, direction) {
+                if let Some(next) = walk(&places, current, direction) {
                     self.set_cursor(places.ids[next].clone());
                 }
                 if self.selected != old {
@@ -398,6 +397,59 @@ impl App {
     }
 }
 
+/// The slot an arrow moves the cursor to from `current`, the first slot
+/// without one. Left and Right follow the shown order and wrap. Up and Down
+/// go to the nearest row above or below by where the slots sit, so they
+/// cross section headers, and land on the slot whose middle is nearest the
+/// cursor's, the leftmost on a tie. With no row there, the cursor stays.
+pub(crate) fn walk(
+    places: &crate::grid_motion::Places,
+    current: Option<usize>,
+    direction: Direction,
+) -> Option<usize> {
+    let count = places.slots.len();
+    if count == 0 {
+        return None;
+    }
+    let Some(index) = current else {
+        return Some(0);
+    };
+    let here = places.slots[index];
+    let row = match direction {
+        Direction::Left => return Some((index + count - 1) % count),
+        Direction::Right => return Some((index + 1) % count),
+        Direction::Up => places
+            .slots
+            .iter()
+            .map(|slot| slot.y)
+            .filter(|y| *y < here.y)
+            .reduce(f32::max),
+        Direction::Down => places
+            .slots
+            .iter()
+            .map(|slot| slot.y)
+            .filter(|y| *y > here.y)
+            .reduce(f32::min),
+    };
+    let Some(row) = row else {
+        return Some(index);
+    };
+    let middle = here.center_x();
+    places
+        .slots
+        .iter()
+        .enumerate()
+        .filter(|(_, slot)| slot.y == row)
+        .min_by(|(_, a), (_, b)| {
+            (a.center_x() - middle)
+                .abs()
+                .total_cmp(&(b.center_x() - middle).abs())
+        })
+        .map(|(index, _)| index)
+}
+
+/// The arrows on one uniform grid, as the art picker's are. `walk` moves
+/// the same way over a flat library.
 pub(crate) fn move_index(
     selected: Option<usize>,
     count: usize,
