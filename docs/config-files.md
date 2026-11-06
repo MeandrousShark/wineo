@@ -382,7 +382,7 @@ an older release only loses those preferences. The one exception is
 
 `~/.config/wineo/library.toml` holds how the desktop app shows each
 environment: favorites, hidden games, when it was added, the saved sort
-and grid view, the app's theme, and which Steam games it has dealt with.
+and grid view, saved views (presets), the app's theme, and which Steam games it has dealt with.
 It's written for you, one field at a time, and never stops anything from
 launching. A bad value, like `favorite = "yes"`, counts as unset for that
 field only and stays in the file until you fix it or change that setting.
@@ -414,6 +414,17 @@ added = 2026-10-18T19:30:00Z
 [environments.old-demo]
 hidden = true
 
+[presets."Couch co-op"]
+sort = "last-played"
+descending = true
+favorites_first = false
+stores = ["steam"]
+tags = ["co-op"]
+not_tags = ["vr"]
+show_hidden = false
+group = "tag"
+layout = "list"
+
 [steam]
 auto_import = false
 baselined = ["/home/me/.local/share/Steam"]
@@ -434,7 +445,24 @@ draws from every shown game. Either way the selected game is skipped while
 there's another choice. An unknown `random` reads as `launchable`, and
 `validate` warns about it. `layout` is how the library shows, `grid`, the
 default, or `list`; an unknown value reads as `grid`, and `validate` warns
-about it. Filters and Show hidden aren't saved.
+about it. `group` is how the library splits into sections, `none`, the
+default, `tag`, `source`, or `state`; collapsed sections aren't saved. The
+window's filters and Show hidden aren't saved in `[view]`, only in a preset.
+
+Each `[presets."<name>"]` table is a saved view the desktop app can apply: a
+sort and direction, `favorites_first`, the filters, `show_hidden`, `group`,
+and `layout`. The filters are lists of ids: `stores` and `not_stores` take
+`steam`, `gog`, `epic`, and `amazon`; `platforms` and `not_platforms` take
+`native` and `windows`; `tags` and `not_tags` take tag names. A `not_` list
+excludes what it names, and an empty or missing list filters nothing. A
+preset doesn't hold the search, zoom, titles, or random setting, and
+applying one doesn't change `[view]`. Names are up to 60 characters, not
+empty, without control characters or space at either end, and two names
+can't differ only in case. wineo writes every setting of a new preset, edits
+a changed one a field at a time, and keeps comments, unknown keys, and ids
+it doesn't know. A bad value counts as unset for that field only, and
+`validate` reports it. An older wineo warns about this table in `validate`,
+leaves it alone when it writes the file, and its repair drops it.
 
 `[appearance]` is the desktop app's theme (plan
 0057). With `follow_system` on, the default,
@@ -473,8 +501,8 @@ so the file stays exactly as it is. `wineo validate --fix` or Checkup can
 repair it: the original is copied to `library.toml.broken-<time>` (with
 `-2`, `-3` if that name is taken), and that copy is synced to disk before
 the new file replaces it. The repair keeps each setting whose line still
-reads correctly on its own, under an entry, `[view]`, `[appearance]`, or
-`[steam]`, and reports what it couldn't keep. A file from a newer wineo is never repaired;
+reads correctly on its own, under an entry, `[view]`, `[appearance]`,
+`[steam]`, or a preset, and reports what it couldn't keep. A file from a newer wineo is never repaired;
 update wineo instead. The fix that removes entries for environments that no
 longer exist adds `schema_version = 1` if the file had none.
 

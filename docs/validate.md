@@ -108,7 +108,7 @@ says how much came back:
 
 ```
 Recovered 38 of 40 recognized entries fully and 2 partly. Some data could
-not be recovered. Sort settings recovered.
+not be recovered. Sort settings recovered. Presets recovered.
 Original saved as library.toml.broken-2026-10-17T19-20-05.
 ```
 

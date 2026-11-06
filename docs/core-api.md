@@ -647,6 +647,22 @@ added it.
   be read refuses with `Error::LibraryUnreadable` and stays byte-for-byte
   as it was. Its `newer_version` says a newer wineo wrote the file, which
   has no repair, so the refusal says to update wineo instead.
+- `set_group` writes `[view] group`, a `GroupBy` (`None`, `Tag`, `Source`,
+  or `State`), the same way, and `View::group` reads it, defaulting to
+  `None`.
+- `Library::presets` lists the saved views, A to Z ignoring case, as
+  `(name, Preset)`; `Library::preset(name)` finds one by its exact name and
+  `taken_preset_name(name)` returns the name already used for it, exactly or
+  differing only in case. `set_preset(paths, name, &preset)`,
+  `remove_preset(paths, name)`, and `rename_preset(paths, old, new)` write
+  like the view setters: under the lock, `Ok(false)` for a no-op, field by
+  field, keeping comments, unknown keys, and position. A name another preset
+  uses in any case is refused with `Error::PresetNameTaken`, a bad name with
+  `Error::InvalidPresetName`, and renaming a missing preset with
+  `Error::UnknownPreset`; removing one that isn't there is a no-op.
+  `normalize_preset_name` trims a typed name and checks it. `Store::id`,
+  `Platform::id`, and their `from_id` give the lowercase ids a preset's
+  filter lists hold.
 - `set_favorite_for` and `set_hidden_for(paths, name, added, value)` are
   the same writes tied to one environment: under the lock they check that
   the environment's config still exists and that its entry's `added`
