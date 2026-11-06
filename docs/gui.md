@@ -180,8 +180,15 @@ removing it. Sorting, rescans, and tag changes keep the rest. Marks last
 until you close wineo and are never saved.
 
 While games are marked, a bar at the bottom of the Library says how many,
-like **3 selected**, with **Tags** and an x that clears the marks. The grid
-leaves room under its last row so the bar never covers a card.
+like **3 selected**, with **Tags**, **Favorite**, **Hide**, and an x that
+clears the marks. The grid leaves room under its last row so the bar never
+covers a card.
+
+**Favorite** stars every marked game. Once they all are, it reads
+**Unfavorite** and takes the star off all of them. **Hide** and **Show** work
+the same way. Hiding games while hidden ones aren't shown takes them out of
+view, so their marks go too, and if the panel's game was one of them, the
+panel moves on to the next game, as a single hide does.
 
 **Tags** opens a list of every tag in the library. A tag's box is checked
 when every marked game has it, shows a dash when some do, and is empty when
@@ -191,9 +198,10 @@ the list and press Enter to add it; a name wineo can't use says why under
 the field. A tag you just took off every marked game stays listed until the
 list closes, so you can put it back.
 
-Each change saves to the games' configs right away, like favorites. If some
-can't be saved, those go back to what they had and a notice names them,
-like `Couldn't tag 2 of 3 (Hades, Celeste): ...` or `Couldn't untag ...`.
+Each change saves right away, like a single favorite. If some can't be
+saved, those go back to what they had and a notice names them,
+like `Couldn't tag 2 of 3 (Hades, Celeste): ...`, `Couldn't untag ...`, or
+`Couldn't favorite ...`.
 
 ### List view
 

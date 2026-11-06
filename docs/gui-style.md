@@ -241,8 +241,12 @@ Plan 0054 added these.
   a neutral button with hover and focus states.
 - The action bar for marked cards is the last item in that stack, 16 px
   above the window's bottom, and shows with no motion like the notes above
-  it. It's 48 px high in the context menu's chrome: "N selected" in 14 px, a neutral **Tags** button with an up
-  chevron, and a 32 px square x with a "Clear selection" tooltip above it.
+  it. It's 48 px high in the context menu's chrome: "N selected" in 14 px, a
+  neutral **Tags** button with an up chevron, text buttons for **Favorite**
+  and **Hide** in the same style, and a 32 px square x with a "Clear
+  selection" tooltip above it, each a Tab stop in that order. The flag
+  buttons read **Unfavorite** and **Show** once every marked game has the
+  flag, so the bar grows about 22 px and, being centered, shifts about 11 px.
   While it shows, the grid keeps 72 px under its last row, and scrolling a
   card into view or holding one through a zoom treats that strip as covered.
 - The Tags list opens above its button with left edges aligned, 248 px wide,
