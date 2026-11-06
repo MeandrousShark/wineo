@@ -261,7 +261,7 @@ impl App {
             && value
             && !self.filters.show_hidden
             && self.selected.as_deref() == Some(name))
-        .then(|| self.selected_index(&self.grid_places()))
+        .then(|| self.place_after_leaving(|gone| gone == name))
         .flatten();
         let write = self.write_flag(name, added, flag, value);
         let shown = self.set_flag(name, flag, value);
@@ -434,6 +434,20 @@ impl App {
         } else {
             self.load_visible_art()
         }
+    }
+
+    /// Where the cursor's successor will sit once every slot of the games
+    /// `leaving` picks is gone: the cursor's slot now, less the leaving
+    /// slots before it, so the first slot after it that stays comes next.
+    /// Each game's copies all leave together, so earlier copies count too.
+    pub(crate) fn place_after_leaving(&self, leaving: impl Fn(&str) -> bool) -> Option<usize> {
+        let places = self.grid_places();
+        let at = self.selected_index(&places)?;
+        let before = places.ids[..at]
+            .iter()
+            .filter(|slot| leaving(slot.name()))
+            .count();
+        Some(at - before)
     }
 
     /// Puts the cursor on the slot now at `place` in the shown order, or the

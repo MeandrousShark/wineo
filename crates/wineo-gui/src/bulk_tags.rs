@@ -325,9 +325,8 @@ impl App {
     }
 
     /// Where the selected card's successor sits once the batch is shown, when
-    /// the batch hides the selected card out of view. It's the cursor's slot
-    /// now less the batch's slots before it, so the first card after it that
-    /// stays comes next, as with hiding one card.
+    /// the batch hides the selected card out of view, as with hiding one
+    /// card.
     fn place_after_hide(&self, names: &[String], change: &Change, value: bool) -> Option<usize> {
         if *change != Change::Flag(Flag::Hidden) || !value || self.filters.show_hidden {
             return None;
@@ -336,13 +335,7 @@ impl App {
         if !names.iter().any(|name| name == selected) {
             return None;
         }
-        let places = self.grid_places();
-        let at = self.selected_index(&places)?;
-        let before = places.ids[..at]
-            .iter()
-            .filter(|slot| names.iter().any(|name| name == slot.name()))
-            .count();
-        Some(at - before)
+        self.place_after_leaving(|gone| names.iter().any(|name| name == gone))
     }
 
     fn write_batch(

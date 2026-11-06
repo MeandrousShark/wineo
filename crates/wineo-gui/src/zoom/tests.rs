@@ -807,6 +807,37 @@ fn the_selected_card_anchors_when_any_of_it_is_on_screen() {
 }
 
 #[test]
+fn the_cursors_copy_anchors_a_zoom_rather_than_the_games_first() {
+    let (_root, mut app) = library(120);
+    let copy = app.show_test_copy("game-005", 10);
+    let places = app.grid_places();
+    let at = places.index(&copy).unwrap();
+    let tops: Vec<f32> = app
+        .grid_motion
+        .shown(&places)
+        .iter()
+        .map(|card| card.y)
+        .collect();
+    // The first copy is partly on screen too.
+    app.scroll_offset = tops[5] + 10.0;
+    app.selected = Some("game-005".into());
+    app.active_slot = Some(copy.clone());
+    let offset = tops[at] - app.scroll_offset;
+    let _ = zoom(&mut app, Event::Key(Key::In));
+    assert_eq!(
+        app.zooming.gesture.as_ref().unwrap().anchor,
+        Some((copy.clone(), offset))
+    );
+    let _ = settle(&mut app);
+    let places = app.grid_places();
+    let at = places.index(&copy).unwrap();
+    assert_eq!(
+        app.grid_motion.shown(&places)[at].y - app.scroll_offset,
+        offset
+    );
+}
+
+#[test]
 fn the_anchor_clamps_to_the_scroll_range() {
     let (_root, mut app) = library(120);
     // At the bottom, zooming out shortens the grid under the anchor.

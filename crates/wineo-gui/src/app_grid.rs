@@ -161,20 +161,30 @@ impl App {
         {
             return places.clone();
         }
-        let filtered = self.filtered();
-        let heights: Vec<f32> = match self.layout {
-            grid_motion::ViewLayout::Grid => filtered
-                .iter()
-                .map(|card| grid::card_height(card, layout))
-                .collect(),
-            grid_motion::ViewLayout::List => vec![crate::list_view::ROW_HEIGHT; filtered.len()],
-        };
-        let widths = vec![self.slot_width(); heights.len()];
+        #[allow(unused_mut)]
+        let mut cards = self.filtered();
         // The flat library is one section, so each game has one slot.
-        let ids = filtered
+        #[allow(unused_mut)]
+        let mut ids: Vec<SlotId> = cards
             .iter()
             .map(|card| SlotId::new(SectionKey::All, card.name.as_str()))
             .collect();
+        #[cfg(test)]
+        if let Some((name, at)) = &self.test_copy
+            && let Some(card) = cards.iter().find(|card| &card.name == name).copied()
+        {
+            let at = (*at).min(ids.len());
+            ids.insert(at, SlotId::new(SectionKey::Test("copy"), name.as_str()));
+            cards.insert(at, card);
+        }
+        let heights: Vec<f32> = match self.layout {
+            grid_motion::ViewLayout::Grid => cards
+                .iter()
+                .map(|card| grid::card_height(card, layout))
+                .collect(),
+            grid_motion::ViewLayout::List => vec![crate::list_view::ROW_HEIGHT; cards.len()],
+        };
+        let widths = vec![self.slot_width(); heights.len()];
         let places = Rc::new(grid_motion::Places::new(
             ids,
             &heights,
@@ -186,6 +196,34 @@ impl App {
         ));
         *self.places.borrow_mut() = key.map(|key| (key, places.clone()));
         places
+    }
+
+    /// Each slot's card in `places`, which `filtered` already is while every
+    /// shown game has one slot.
+    pub(crate) fn slot_cards(&self, places: &grid_motion::Places) -> Vec<&crate::library::Card> {
+        let filtered = self.filtered();
+        if filtered.len() == places.ids.len() {
+            return filtered;
+        }
+        let by_name: std::collections::HashMap<&str, &crate::library::Card> = filtered
+            .iter()
+            .map(|card| (card.name.as_str(), *card))
+            .collect();
+        places
+            .ids
+            .iter()
+            .filter_map(|slot| by_name.get(slot.name()).copied())
+            .collect()
+    }
+
+    /// Shows `name` a second time, in a test-only section at `at` in the
+    /// shown order, as grouping will.
+    #[cfg(test)]
+    pub(crate) fn show_test_copy(&mut self, name: &str, at: usize) -> SlotId {
+        self.test_copy = Some((name.to_owned(), at));
+        *self.places.borrow_mut() = None;
+        self.snap_grid();
+        SlotId::new(SectionKey::Test("copy"), name)
     }
 
     /// Springs the cards to their slots from where they're drawn, or puts

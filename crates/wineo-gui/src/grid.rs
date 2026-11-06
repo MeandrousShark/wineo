@@ -172,7 +172,8 @@ impl App {
     pub(crate) fn grid(&self) -> Element<'_, Message> {
         let layout = self.grid_layout();
         let progress = self.details_progress();
-        let filtered = self.filtered();
+        let places = self.grid_places();
+        let filtered = self.slot_cards(&places);
         let scene = (!self.collapse.idle()).then(|| crate::grid_motion::Scene {
             collapse: &self.collapse,
             posters: filtered
@@ -189,8 +190,6 @@ impl App {
         });
         let list = self.layout == crate::grid_motion::ViewLayout::List;
         let row_width = self.slot_width();
-        // `Places` lists the slots in the shown order, one per card.
-        let places = self.grid_places();
         let cards = filtered
             .into_iter()
             .zip(&places.ids)

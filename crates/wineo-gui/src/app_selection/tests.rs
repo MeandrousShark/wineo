@@ -196,3 +196,100 @@ fn hiding_the_selected_game_moves_the_cursor_to_the_next_slot() {
     assert_eq!(app.selected.as_deref(), Some("game-03"));
     assert_eq!(app.active_slot, Some(flat("game-03")));
 }
+
+// The grid below shows one game twice, through the test-only copy.
+
+#[test]
+fn hiding_a_later_copy_counts_the_earlier_copy_that_leaves_too() {
+    // game-00, game-01, game-00 again, game-02, game-03, game-04, game-05
+    let (_root, mut app) = fixture(6);
+    let copy = app.show_test_copy("game-00", 2);
+    let _ = app.update(Message::Press(copy.clone()));
+    assert_eq!(app.selected_slot(), Some(copy));
+    let _ = app.toggle_flag("game-00", Flag::Hidden);
+    // The first card after the cursor that stays.
+    assert_eq!(app.selected.as_deref(), Some("game-02"));
+    assert_eq!(app.active_slot, Some(flat("game-02")));
+}
+
+#[test]
+fn a_bulk_hide_counts_every_leaving_copy_before_the_cursor() {
+    // game-00, game-01, game-02, game-00 again, game-03, game-04
+    let (_root, mut app) = fixture(5);
+    let copy = app.show_test_copy("game-00", 3);
+    let _ = app.update(Message::Press(copy));
+    app.marked.insert("game-00".into());
+    app.marked.insert("game-01".into());
+    let _ = app.flag_marked(Flag::Hidden, true);
+    assert_eq!(app.selected.as_deref(), Some("game-03"));
+    assert_eq!(app.active_slot, Some(flat("game-03")));
+}
+
+#[test]
+fn arrows_walk_across_both_copies_of_a_game() {
+    // game-00, game-00 again, game-01, ...
+    let (_root, mut app) = fixture(4);
+    let copy = app.show_test_copy("game-00", 1);
+    let _ = app.update(Message::Press(flat("game-00")));
+    assert!(app.panel_open);
+    key(&mut app, Named::ArrowRight);
+    assert_eq!(app.selected.as_deref(), Some("game-00"));
+    assert_eq!(app.active_slot, Some(copy.clone()));
+    assert_eq!(app.selected_slot(), Some(copy.clone()));
+    assert!(app.panel_open);
+    key(&mut app, Named::ArrowRight);
+    assert_eq!(app.active_slot, Some(flat("game-01")));
+    key(&mut app, Named::ArrowLeft);
+    assert_eq!(app.selected_slot(), Some(copy));
+    key(&mut app, Named::ArrowLeft);
+    assert_eq!(app.selected_slot(), Some(flat("game-00")));
+    assert!(app.panel_open);
+}
+
+#[test]
+fn a_scroll_reply_for_the_other_shown_copy_is_ignored() {
+    let (_root, mut app) = fixture(40);
+    let copy = app.show_test_copy("game-30", 36);
+    let _ = app.update(Message::Press(copy.clone()));
+    let _ = settle_grid(&mut app);
+    let task = app.scroll_selection();
+    let asked: Vec<_> = crate::sort_control::tests::answers(&app, task)
+        .into_iter()
+        .filter_map(|message| match message {
+            Message::GridCardLocated(slot, ..) => Some(slot),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(asked, std::slice::from_ref(&copy));
+    let offset = app.scroll_offset;
+    let revision = app.grid_revision();
+    let _ = app.update(Message::GridCardLocated(
+        flat("game-30"),
+        revision,
+        below(&app),
+    ));
+    assert_eq!(app.scroll_offset, offset);
+    let _ = app.update(Message::GridCardLocated(copy, revision, below(&app)));
+    assert_ne!(app.scroll_offset, offset);
+}
+
+#[test]
+fn a_layout_switch_keeps_the_cursors_copy_in_place() {
+    let (_root, mut app) = fixture(40);
+    let copy = app.show_test_copy("game-05", 6);
+    let _ = app.update(Message::Press(copy.clone()));
+    let _ = settle_grid(&mut app);
+    // The first copy is partly in view too, and isn't the one kept.
+    let places = app.grid_places();
+    app.scroll_offset = places.slots[5].y + 10.0;
+    let (anchor, reveal) = app.find_anchor();
+    let (slot, offset) = anchor.expect("an anchor");
+    assert_eq!(slot, copy);
+    assert!(!reveal);
+    let _ = app.update(Message::Layout(crate::layout_switch::Event::Set(
+        ViewLayout::List,
+    )));
+    let places = app.grid_places();
+    let at = places.index(&copy).unwrap();
+    assert_eq!(places.slots[at].y - app.scroll_offset, offset.max(0.0));
+}

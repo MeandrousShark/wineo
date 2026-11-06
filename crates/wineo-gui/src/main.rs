@@ -197,6 +197,10 @@ pub(crate) struct App {
     /// arrow keys. Unset, or for another game, it's the first copy; see
     /// `App::selected_index`.
     pub(crate) active_slot: Option<slot::SlotId>,
+    /// A game the grid shows a second time, and where; see
+    /// `App::show_test_copy`.
+    #[cfg(test)]
+    test_copy: Option<(String, usize)>,
     /// The cards marked for a bulk action, which only ever holds shown
     /// games. `selected` stays the panel's card.
     pub(crate) marked: BTreeSet<String>,
@@ -593,6 +597,8 @@ impl App {
             facts: prefix_facts::Stored::default(),
             selected: None,
             active_slot: None,
+            #[cfg(test)]
+            test_copy: None,
             marked: BTreeSet::new(),
             mark_range: multi_select::Range::default(),
             panel_open: false,
