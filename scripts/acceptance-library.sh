@@ -8,8 +8,13 @@
 #   scripts/acceptance-library.sh DIR
 #   env WINEO_PORTABLE_DIR=DIR wineo-gui
 #
-# DIR must not exist or must be empty, and nothing is ever deleted. To start
-# over, remove the folder yourself and run this again.
+# DIR must not exist or must be an empty folder, and nothing of DIR's is ever
+# changed or deleted. The library is built in a private folder (mode 700) made
+# next to DIR, then moved into place with one rename, which replaces an empty
+# DIR or a missing one and fails on anything else, including a symlink or a
+# folder something filled in the meantime. The up-front check only gives a
+# friendly message; the rename is what keeps DIR safe. To start over, remove
+# the folder yourself and run this again.
 #
 # Layout of a portable root (see crates/wineo-core/src/paths.rs):
 #   config/environments/NAME.toml   the games
@@ -54,7 +59,8 @@ Usage: acceptance-library.sh DIR
 Writes the standard acceptance-test library into DIR, a WINEO_PORTABLE_DIR
 folder with about fifty games covering every source, tag, favorite, hidden,
 playtime, title, and art case the desktop app shows. DIR must not exist or
-must be empty; nothing is deleted. Then run:
+must be an empty folder, and its parent must exist; nothing is deleted or
+overwritten. Then run:
 
   env WINEO_PORTABLE_DIR=DIR wineo-gui
 
@@ -74,12 +80,37 @@ esac
     exit 2
 }
 
-if [[ -e $1 ]]; then
-    [[ -d $1 ]] || die "$1 exists and is not a folder"
-    [[ -z $(ls -A -- "$1") ]] || die "$1 is not empty; use a new or empty folder (nothing is deleted)"
+dir=$1
+while [[ $dir == */ && $dir != / ]]; do dir=${dir%/}; done
+base=$(basename -- "$dir")
+case $base in
+    / | . | ..) die "$1 has no folder name to create; give a new folder name" ;;
+esac
+parent=$(dirname -- "$dir")
+[[ -d $parent ]] || die "the parent folder $parent doesn't exist (it is not created for you)"
+
+# A friendly early refusal. It fails closed: a folder that can't be listed
+# counts as not empty. The rename at the end is what actually protects DIR.
+if [[ -L $dir ]]; then
+    die "$dir is a symlink; give the name of a new or empty folder instead"
+elif [[ -e $dir ]]; then
+    [[ -d $dir ]] || die "$dir exists and is not a folder"
+    listing=$(ls -A -- "$dir" 2>&1) || die "can't list $dir, so can't tell it is empty (nothing was changed)"
+    [[ -z $listing ]] || die "$dir is not empty; use a new or empty folder (nothing is deleted)"
 fi
-mkdir -p -- "$1"
-root=$(realpath -- "$1")
+
+# Everything is written into a private folder beside DIR, so nothing else can
+# write into it and a symlink swapped into DIR can't redirect a write. Only
+# this folder is ever removed, and only until the final rename succeeds.
+root=$(mktemp -d -- "$parent/.acceptance-library.XXXXXX") || die "can't make a work folder in $parent"
+moved=0
+cleanup() {
+    if [[ $moved -eq 0 && -n $root ]]; then
+        rm -rf -- "$root"
+    fi
+}
+trap cleanup EXIT
+trap 'exit 1' HUP INT TERM
 
 config=$root/config
 mkdir -p "$config/environments" "$root/games" "$root/stats" "$root/art" "$root/prefixes"
@@ -212,14 +243,14 @@ add() {
     } >"$config/environments/$name.toml"
 
     if [[ $kind == wine && $prefix == 1 ]]; then
-        local dir=$root/prefixes/$name
-        mkdir -p "$dir/dosdevices" "$dir/drive_c/Games/$name"
+        local prefix_dir=$root/prefixes/$name
+        mkdir -p "$prefix_dir/dosdevices" "$prefix_dir/drive_c/Games/$name"
         printf 'WINE REGISTRY Version 2\n;; All keys relative to \\\\Machine\n\n#arch=win64\n' \
-            >"$dir/system.reg"
-        printf 'WINE REGISTRY Version 2\n' >"$dir/user.reg"
-        printf 'WINE REGISTRY Version 2\n' >"$dir/userdef.reg"
-        ln -s ../drive_c "$dir/dosdevices/c:"
-        : >"$dir/drive_c/Games/$name/game.exe"
+            >"$prefix_dir/system.reg"
+        printf 'WINE REGISTRY Version 2\n' >"$prefix_dir/user.reg"
+        printf 'WINE REGISTRY Version 2\n' >"$prefix_dir/userdef.reg"
+        ln -s ../drive_c "$prefix_dir/dosdevices/c:"
+        : >"$prefix_dir/drive_c/Games/$name/game.exe"
     fi
 
     if [[ $kind == native ]]; then
@@ -412,7 +443,7 @@ add wine-accent-title title="Éclair Tactics" added=2026-09-12T09:00:00Z
 add wine-digit-title title="7 Days of Dust" added=2026-09-13T09:00:00Z
 
 # source: Windows; tags: a very long tag (80 characters)
-add wine-long-tag tags="game a-really-long-tag-name-that-should-wrap-or-be-cut-in-chips-and-the-filter-list" \
+add wine-long-tag tags="game a-really-long-tag-name-that-will-wrap-or-be-cut-in-chips-too-and-the-filter-list" \
     added=2026-09-14T09:00:00Z
 
 # source: Windows; tags: mixed case only (Game is not game, so the button says Launch)
@@ -459,15 +490,15 @@ add wine-played-month-ago tags=game added=2026-08-01T09:00:00Z \
 add wine-played-ten-days-ago added=2026-07-01T09:00:00Z sessions="2026-10-27T20:00:00Z@4000"
 
 # Summary: the table comes from the `# source:` comment above each add call.
-awk '
+summary=$(awk '
     /^# source:/ { note = substr($0, 11); next }
     /^add / {
         if (note == "") { print "missing # source: comment for " $2 > "/dev/stderr"; exit 1 }
         printf "%-28s %s\n", $2, note
         note = ""
     }
-' "${BASH_SOURCE[0]}" >"$root/.summary" || die "a game has no # source: comment"
-shown=$(wc -l <"$root/.summary")
+' "${BASH_SOURCE[0]}") || die "a game has no # source: comment"
+shown=$(printf '%s\n' "$summary" | wc -l)
 [[ $shown -eq $games ]] || die "bug: $games games but $shown summary rows"
 
 {
@@ -477,10 +508,20 @@ shown=$(wc -l <"$root/.summary")
     printf '%s' "$library"
 } >"$config/library.toml"
 
-echo "Wrote $games games to $root"
+# Give the folder the mode a plain mkdir would, since mktemp made it 700.
+chmod "$(printf '%03o' $((0777 & ~$(umask))))" "$root"
+
+# One rename(2): it replaces an empty folder or a missing name, and refuses a
+# non-empty folder, a symlink, or a file, whatever happened since the check.
+if ! failure=$(mv -T -- "$root" "$dir" 2>&1); then
+    die "can't move the library into $dir; it may have changed since the check, so nothing was written there ($failure)"
+fi
+moved=1
+final=$(realpath -- "$dir")
+
+echo "Wrote $games games to $final"
 echo
 echo "Name                         Covers"
-cat "$root/.summary"
-rm -f -- "$root/.summary"
+echo "$summary"
 echo
-printf 'Open it with: env WINEO_PORTABLE_DIR=%q wineo-gui\n' "$root"
+printf 'Open it with: env WINEO_PORTABLE_DIR=%q wineo-gui\n' "$final"
