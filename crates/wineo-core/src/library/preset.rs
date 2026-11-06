@@ -1,0 +1,358 @@
+//! Saved views: a name for a sort, filters, and layout, kept under
+//! `[presets.<name>]` in `library.toml`.
+//!
+//! Read as leniently as `[view]`: a bad field falls back for that field only,
+//! and a key or filter id this wineo doesn't know is ignored. Every write
+//! sets only the lines it owns, so comments and keys a newer wineo added stay.
+
+use std::collections::BTreeSet;
+
+use toml_edit::{Array, DocumentMut, Item, Table, TableLike, Value};
+
+use super::{GroupBy, SortKey, ViewLayout, edit, sort_name, store_value, table_mut};
+use crate::error::{Error, Result};
+use crate::paths::Paths;
+use crate::source::{Platform, Store};
+
+/// The longest preset name, in characters, so a pasted blurb can't swamp the
+/// Filters popup that lists them.
+pub const PRESET_NAME_MAX_CHARS: usize = 60;
+
+/// How the library looks when the preset is applied. Search, zoom, and
+/// poster-only aren't part of it, so applying one never resizes the grid or
+/// leaves a stale query behind.
+///
+/// Filter ids are the lowercase `Store::id` and `Platform::id`; tags are
+/// kept as typed, and a tag no environment has any more is kept too.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Preset {
+    pub sort: SortKey,
+    pub descending: bool,
+    pub favorites_first: bool,
+    pub stores: BTreeSet<Store>,
+    pub platforms: BTreeSet<Platform>,
+    pub tags: BTreeSet<String>,
+    pub not_stores: BTreeSet<Store>,
+    pub not_platforms: BTreeSet<Platform>,
+    pub not_tags: BTreeSet<String>,
+    pub show_hidden: bool,
+    pub group: GroupBy,
+    pub layout: ViewLayout,
+}
+
+/// Why a preset name, as stored, breaks the rules. None when it's fine.
+/// Trimming is the caller's job when it takes what a person typed; see
+/// `normalize_preset_name`.
+pub fn preset_name_problem(name: &str) -> Option<String> {
+    let reason = if name.trim().is_empty() {
+        "can't be empty".to_owned()
+    } else if name.chars().any(char::is_control) {
+        "can't contain control characters".to_owned()
+    } else if name.trim() != name {
+        "can't start or end with whitespace".to_owned()
+    } else if name.chars().count() > PRESET_NAME_MAX_CHARS {
+        format!("can't be longer than {PRESET_NAME_MAX_CHARS} characters")
+    } else {
+        return None;
+    };
+    Some(format!("Invalid preset name: {reason}."))
+}
+
+/// What a person typed as a preset name, trimmed and checked.
+pub fn normalize_preset_name(raw: &str) -> std::result::Result<String, String> {
+    let name = raw.trim();
+    match preset_name_problem(name) {
+        Some(problem) => Err(problem),
+        None => Ok(name.to_owned()),
+    }
+}
+
+/// A name the reader can show. Anything else about it is `validate`'s
+/// business, so a hand-made name is never hidden for being long.
+pub(super) fn readable_name(name: &str) -> bool {
+    !name.trim().is_empty()
+}
+
+/// Every preset the file holds, A to Z ignoring case.
+pub(super) fn read_presets(document: &DocumentMut) -> Vec<(String, Preset)> {
+    let Some(table) = document.get("presets").and_then(Item::as_table_like) else {
+        return Vec::new();
+    };
+    let mut presets: Vec<(String, Preset)> = table
+        .iter()
+        .filter(|(name, _)| readable_name(name))
+        .filter_map(|(name, item)| Some((name.to_owned(), read_preset(item.as_table_like()?))))
+        .collect();
+    presets.sort_by_cached_key(|(name, _)| (name.to_lowercase(), name.clone()));
+    presets
+}
+
+fn read_preset(table: &dyn TableLike) -> Preset {
+    let text = |field: &str| table.get(field).and_then(Item::as_str);
+    let flag = |field: &str| table.get(field).and_then(Item::as_bool).unwrap_or_default();
+    Preset {
+        sort: text("sort").and_then(SortKey::from_str).unwrap_or_default(),
+        descending: flag("descending"),
+        favorites_first: flag("favorites_first"),
+        stores: read_list(table.get("stores"), Store::from_id),
+        platforms: read_list(table.get("platforms"), Platform::from_id),
+        tags: read_list(table.get("tags"), tag),
+        not_stores: read_list(table.get("not_stores"), Store::from_id),
+        not_platforms: read_list(table.get("not_platforms"), Platform::from_id),
+        not_tags: read_list(table.get("not_tags"), tag),
+        show_hidden: flag("show_hidden"),
+        group: text("group").and_then(GroupBy::parse).unwrap_or_default(),
+        layout: text("layout")
+            .and_then(ViewLayout::parse)
+            .unwrap_or_default(),
+    }
+}
+
+fn tag(value: &str) -> Option<String> {
+    Some(value.to_owned())
+}
+
+/// The ids in a list that this wineo knows, so one it doesn't, or a value
+/// that isn't text, costs only itself. Not a list at all reads as empty.
+pub(super) fn read_list<T: Ord>(
+    item: Option<&Item>,
+    parse: impl Fn(&str) -> Option<T>,
+) -> BTreeSet<T> {
+    item.and_then(Item::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|value| parse(value.as_str()?))
+        .collect()
+}
+
+/// Saves the preset under `name`, creating it or changing only the lines that
+/// differ from what the file reads as. A name that differs from an existing
+/// preset's only in case is refused, so the list never holds two that look
+/// alike. Returns whether the file changed.
+pub fn set_preset(paths: &Paths, name: &str, preset: &Preset) -> Result<bool> {
+    if let Some(problem) = preset_name_problem(name) {
+        return Err(Error::InvalidPresetName(problem));
+    }
+    let mut refused = None;
+    let changed = edit(paths, |document| {
+        if let Some(taken) = case_variant(document, name) {
+            refused = Some(Error::PresetNameTaken(taken));
+            return false;
+        }
+        write_preset(document, name, preset)
+    })?;
+    match refused {
+        Some(error) => Err(error),
+        None => Ok(changed),
+    }
+}
+
+/// Removes the preset. Returns whether there was one; none is not an error.
+pub fn remove_preset(paths: &Paths, name: &str) -> Result<bool> {
+    edit(paths, |document| {
+        document
+            .get_mut("presets")
+            .and_then(Item::as_table_like_mut)
+            .is_some_and(|presets| {
+                presets.get(name).is_some_and(Item::is_table_like) && presets.remove(name).is_some()
+            })
+    })
+}
+
+/// Gives the preset a new name in the one write, so a failure leaves the old
+/// one. The table moves whole, with its comments and keys this wineo doesn't
+/// know. Another preset's name is taken whatever its case; the preset's own
+/// name in another case is fine. Renaming to the same name writes nothing.
+pub fn rename_preset(paths: &Paths, old: &str, new: &str) -> Result<bool> {
+    if old != new
+        && let Some(problem) = preset_name_problem(new)
+    {
+        return Err(Error::InvalidPresetName(problem));
+    }
+    let mut refused = None;
+    let changed = edit(paths, |document| {
+        let Some(presets) = document
+            .get_mut("presets")
+            .and_then(Item::as_table_like_mut)
+            .filter(|presets| presets.get(old).is_some_and(Item::is_table_like))
+        else {
+            refused = Some(Error::UnknownPreset(old.to_owned()));
+            return false;
+        };
+        if old == new {
+            return false;
+        }
+        let lowered = new.to_lowercase();
+        let taken = presets
+            .iter()
+            .find(|(name, item)| {
+                *name != old && item.is_table_like() && name.to_lowercase() == lowered
+            })
+            .map(|(name, _)| name.to_owned());
+        if let Some(taken) = taken {
+            refused = Some(Error::PresetNameTaken(taken));
+            return false;
+        }
+        let item = presets.remove(old).expect("the preset was just found");
+        presets.insert(new, item);
+        true
+    })?;
+    match refused {
+        Some(error) => Err(error),
+        None => Ok(changed),
+    }
+}
+
+/// The name of a preset that `name` collides with: it differs from it only in
+/// case. None when `name` is the exact name of a preset (that's an update)
+/// or matches none.
+fn case_variant(document: &DocumentMut, name: &str) -> Option<String> {
+    let presets = document.get("presets").and_then(Item::as_table_like)?;
+    if presets.get(name).is_some_and(Item::is_table_like) {
+        return None;
+    }
+    let lowered = name.to_lowercase();
+    presets
+        .iter()
+        .find(|(other, item)| item.is_table_like() && other.to_lowercase() == lowered)
+        .map(|(other, _)| other.to_owned())
+}
+
+fn write_preset(document: &mut DocumentMut, name: &str, preset: &Preset) -> bool {
+    let present = document
+        .get("presets")
+        .and_then(Item::as_table_like)
+        .and_then(|presets| presets.get(name))
+        .is_some_and(Item::is_table_like);
+    let presets = table_mut(document.as_table_mut(), "presets");
+    if !present {
+        presets.insert(name, Item::Table(Table::new()));
+    }
+    let table = presets
+        .get_mut(name)
+        .and_then(Item::as_table_like_mut)
+        .expect("the preset was just made a table");
+    // A new preset names every setting, so a default that changes later can't
+    // change what it means. An existing one is left as written wherever it
+    // already reads the same.
+    let fresh = !present;
+    let mut changed = fresh;
+    changed |= set_choice(
+        table,
+        "sort",
+        preset.sort,
+        sort_name(preset.sort),
+        SortKey::from_str,
+        fresh,
+    );
+    changed |= set_flag(table, "descending", preset.descending, fresh);
+    changed |= set_flag(table, "favorites_first", preset.favorites_first, fresh);
+    changed |= set_list(table, "stores", &preset.stores, Store::from_id, |store| {
+        store.id().to_owned()
+    });
+    changed |= set_list(
+        table,
+        "platforms",
+        &preset.platforms,
+        Platform::from_id,
+        |platform| platform.id().to_owned(),
+    );
+    changed |= set_list(table, "tags", &preset.tags, tag, String::clone);
+    changed |= set_list(
+        table,
+        "not_stores",
+        &preset.not_stores,
+        Store::from_id,
+        |store| store.id().to_owned(),
+    );
+    changed |= set_list(
+        table,
+        "not_platforms",
+        &preset.not_platforms,
+        Platform::from_id,
+        |platform| platform.id().to_owned(),
+    );
+    changed |= set_list(table, "not_tags", &preset.not_tags, tag, String::clone);
+    changed |= set_flag(table, "show_hidden", preset.show_hidden, fresh);
+    changed |= set_choice(
+        table,
+        "group",
+        preset.group,
+        preset.group.as_str(),
+        GroupBy::parse,
+        fresh,
+    );
+    changed |= set_choice(
+        table,
+        "layout",
+        preset.layout,
+        preset.layout.as_str(),
+        ViewLayout::parse,
+        fresh,
+    );
+    changed
+}
+
+fn set_choice<T: Copy + PartialEq + Default>(
+    table: &mut dyn TableLike,
+    field: &str,
+    value: T,
+    name: &str,
+    parse: fn(&str) -> Option<T>,
+    fresh: bool,
+) -> bool {
+    let matches = !fresh
+        && match table.get(field) {
+            None => value == T::default(),
+            Some(item) => item.as_str().and_then(parse) == Some(value),
+        };
+    if matches {
+        return false;
+    }
+    store_value(table, field, Value::from(name));
+    true
+}
+
+fn set_flag(table: &mut dyn TableLike, field: &str, value: bool, fresh: bool) -> bool {
+    let matches = !fresh
+        && match table.get(field) {
+            None => !value,
+            Some(item) => item.as_bool() == Some(value),
+        };
+    if matches {
+        return false;
+    }
+    store_value(table, field, Value::from(value));
+    true
+}
+
+/// A list is left alone while it reads as the wanted set, so ids a newer
+/// wineo wrote beside the ones this one knows survive an update that doesn't
+/// touch that list. An empty set removes the key, so a list is only there
+/// when it filters something.
+fn set_list<T: Ord>(
+    table: &mut dyn TableLike,
+    field: &str,
+    wanted: &BTreeSet<T>,
+    parse: fn(&str) -> Option<T>,
+    name: fn(&T) -> String,
+) -> bool {
+    let matches = match table.get(field) {
+        None => wanted.is_empty(),
+        Some(item) => item.is_array() && read_list(Some(item), parse) == *wanted,
+    };
+    if matches {
+        return false;
+    }
+    if wanted.is_empty() {
+        return table.remove(field).is_some();
+    }
+    let mut names: Vec<String> = wanted.iter().map(name).collect();
+    names.sort();
+    let array: Array = names.iter().map(String::as_str).collect();
+    store_value(table, field, Value::Array(array));
+    true
+}
+
+#[cfg(test)]
+mod tests;

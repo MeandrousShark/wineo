@@ -18,12 +18,17 @@ use crate::paths::Paths;
 
 mod cache;
 mod check;
+mod preset;
 mod record;
 mod repair;
 mod sort;
 
 pub use cache::Cache;
 pub(crate) use check::{FindingKind, inspect, remove_strays};
+pub use preset::{
+    PRESET_NAME_MAX_CHARS, Preset, normalize_preset_name, preset_name_problem, remove_preset,
+    rename_preset, set_preset,
+};
 pub use record::{
     Claim, RecordChanges, Recorded, SteamRecord, apply_changes, claim_game, dismiss_game,
     dismiss_games, finish_import, mark_baselined, record_games, release_claim, set_auto_import,
@@ -273,8 +278,37 @@ pub struct Library {
     pub view: View,
     pub appearance: Appearance,
     pub environments: BTreeMap<String, Entry>,
+    /// Saved views by name, A to Z ignoring case.
+    pub presets: Vec<(String, Preset)>,
     pub steam: SteamRecord,
     pub problem: Option<Problem>,
+}
+
+impl Library {
+    /// The preset saved under exactly `name`.
+    pub fn preset(&self, name: &str) -> Option<&Preset> {
+        self.presets
+            .iter()
+            .find(|(saved, _)| saved == name)
+            .map(|(_, preset)| preset)
+    }
+
+    /// The saved preset a new preset called `name` would collide with: the
+    /// one with exactly that name, else one that differs only in case. The
+    /// app offers to update it instead of saving a second, look-alike one.
+    pub fn taken_preset_name(&self, name: &str) -> Option<&str> {
+        let lowered = name.to_lowercase();
+        self.presets
+            .iter()
+            .map(|(saved, _)| saved.as_str())
+            .find(|saved| *saved == name)
+            .or_else(|| {
+                self.presets
+                    .iter()
+                    .map(|(saved, _)| saved.as_str())
+                    .find(|saved| saved.to_lowercase() == lowered)
+            })
+    }
 }
 
 /// Why the file can't be used. `newer` says a newer wineo wrote it: its
@@ -689,6 +723,7 @@ fn read_library(document: &DocumentMut) -> Library {
         view,
         appearance: read_appearance(document),
         environments,
+        presets: preset::read_presets(document),
         steam: record::read_record(document),
         problem: None,
     }
