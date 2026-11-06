@@ -433,23 +433,22 @@ impl App {
                     .padding(8),
             );
         }
-        if marked {
-            layers = layers.push(crate::multi_select::check(self.palette, alpha));
-        }
         let chip = (text_mode.chip() && !card.idle())
             .then(|| crate::library_actions::status_chip(card.dot(palette), alpha));
         // The marks draw above the corner, so it keeps clear of their
         // column on every card, even with no mark showing, and nothing
         // shifts when the hover star appears. A pill squeezed by them wraps
         // between words and clips rather than spill under a mark.
-        let room = layout.art_frame().width
-            - CORNER_PADDING
-            - MARKS_ROOM
-            - if chip.is_some() {
-                crate::library_actions::MARK_SIZE + 4.0
-            } else {
-                0.0
-            };
+        //
+        // A marked card's check takes the corner first, then the chip and
+        // the pill follow it, so each one that shows pushes the next right.
+        let step = crate::library_actions::MARK_SIZE + 4.0;
+        let ahead = [marked, chip.is_some()]
+            .into_iter()
+            .filter(|shown| *shown)
+            .count() as f32
+            * step;
+        let room = layout.art_frame().width - CORNER_PADDING - MARKS_ROOM - ahead;
         let gog = crate::gog_library::badge(card.gog.as_ref(), self.gog_updates.status(&card.name))
             .map(|badge| {
                 let color = badge.color(palette);
@@ -474,30 +473,53 @@ impl App {
                 )
             });
         // Below about 63% three 24 px circles and their margins outgrow the
-        // art, so a badge may give up its gap to the marks, never more.
+        // art, so a badge may give up its gap to the marks, never more. A
+        // marked card's check adds a fourth margin, so a badge that still
+        // can't clear the marks is left out until the mark goes.
+        let flush = CORNER_PADDING + crate::library_actions::MARK_SIZE;
+        let gog = gog.filter(|gog| {
+            !matches!(gog, Gog::Badge(_))
+                || CORNER_PADDING + ahead + crate::library_actions::MARK_SIZE + flush
+                    <= layout.art_frame().width
+        });
         let right = match &gog {
-            Some(Gog::Badge(_)) => CORNER_PADDING + crate::library_actions::MARK_SIZE,
-            _ => MARKS_ROOM,
+            Some(Gog::Pill(_)) => MARKS_ROOM,
+            _ => flush,
         };
-        let corner: Option<Element<'_, Message>> = match (chip, gog) {
-            (Some(chip), Some(Gog::Pill(pill))) => {
-                // The chip keeps the corner, mirroring the marks, and a
-                // one-line pill centers on it. On a small poster the pill
-                // wraps, growing down instead of pushing the chip.
+        // The check, chip, and pill or badge share one row, 4 px apart, so
+        // marking a card moves the chip and pill at once with no animation.
+        let mut corner: Vec<Element<'_, Message>> = Vec::new();
+        if marked {
+            corner.push(crate::multi_select::check(self.palette, alpha));
+        }
+        corner.extend(chip);
+        let leads = !corner.is_empty();
+        match gog {
+            Some(Gog::Pill(pill)) if leads => {
+                // The marks in front keep the corner, mirroring the star, and
+                // a one-line pill centers on them. On a small poster the pill
+                // wraps, growing down instead of pushing them.
                 let line = iced::widget::text::LineHeight::default()
                     .to_absolute(GOG_PILL_SIZE.into())
                     .0
                     + 2.0 * GOG_PILL_PADDING;
-                let pill = container(pill).padding(iced::Padding {
-                    top: ((crate::library_actions::MARK_SIZE - line) / 2.0).max(0.0),
-                    ..iced::Padding::ZERO
-                });
-                Some(row![chip, pill].spacing(4).into())
+                corner.push(
+                    container(pill)
+                        .padding(iced::Padding {
+                            top: ((crate::library_actions::MARK_SIZE - line) / 2.0).max(0.0),
+                            ..iced::Padding::ZERO
+                        })
+                        .into(),
+                );
             }
-            (Some(chip), Some(Gog::Badge(badge))) => Some(row![chip, badge].spacing(4).into()),
-            (Some(chip), None) => Some(chip),
-            (None, Some(Gog::Pill(gog) | Gog::Badge(gog))) => Some(gog),
-            (None, None) => None,
+            Some(Gog::Pill(gog) | Gog::Badge(gog)) => corner.push(gog),
+            None => {}
+        }
+        // One thing alone sits in the corner itself, as it always has.
+        let corner: Option<Element<'_, Message>> = if corner.len() > 1 {
+            Some(row(corner).spacing(4).into())
+        } else {
+            corner.pop()
         };
         if let Some(corner) = corner {
             layers = layers.push(

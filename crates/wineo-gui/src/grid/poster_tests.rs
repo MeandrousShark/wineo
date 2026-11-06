@@ -835,8 +835,34 @@ fn layer_contents(node: &Node) -> Vec<Option<Rectangle>> {
         .collect()
 }
 
+/// The top-left corner's layer and its items left to right: the layer
+/// whose first child sits 8 px in from the art's corner, with the row's
+/// children when it holds several things. A lone item is the child itself.
+fn corner_items(node: &Node) -> Option<(usize, Vec<Rectangle>)> {
+    let art = bounds_at(node, &[0, 0]);
+    let mut layout = Layout::new(node);
+    for index in [0, 0, 0] {
+        layout = layout.children().nth(index).unwrap();
+    }
+    layout.children().enumerate().find_map(|(index, layer)| {
+        let child = layer.children().next()?;
+        if child.bounds().position() != art.position() + Vector::new(8.0, 8.0) {
+            return None;
+        }
+        let items: Vec<_> = child.children().map(|item| item.bounds()).collect();
+        Some((
+            index,
+            if items.len() > 1 {
+                items
+            } else {
+                vec![child.bounds()]
+            },
+        ))
+    })
+}
+
 #[test]
-fn a_marked_card_gets_a_wash_and_a_centered_check_and_its_corners_stay() {
+fn a_marked_card_gets_a_wash_and_a_corner_check_and_its_other_corners_stay() {
     let mut app = crate::tests::app();
     let mut card = art_card("game", State::Running);
     card.favorite = true;
@@ -847,25 +873,219 @@ fn a_marked_card_gets_a_wash_and_a_centered_check_and_its_corners_stay() {
         for zoom in [60, 100, 200] {
             app.zoom = zoom;
             app.marked.clear();
-            let plain = layer_contents(&card_node(&app, &card));
+            let plain = card_node(&app, &card);
             app.marked.insert(card.name.clone());
             let node = card_node(&app, &card);
-            let marked = layer_contents(&node);
             let case = format!("poster-only {poster_only} at {zoom}%");
             let art = bounds_at(&node, &[0, 0]);
-            let check = Rectangle::new(
+            let (index, items) = corner_items(&node).expect(&case);
+            // 24 px, 8 px in from the corner like the other marks.
+            assert_eq!(
+                items[0],
+                Rectangle::new(
+                    art.position() + Vector::new(8.0, 8.0),
+                    Size::new(24.0, 24.0)
+                ),
+                "{case}"
+            );
+            // Above the wash and the title overlay, with the corner layers.
+            let marked = layer_contents(&node);
+            let wash = marked.iter().position(|child| *child == Some(art));
+            assert_eq!(wash, Some(1), "no wash, {case}");
+            assert!(index > 1, "{case}");
+            // Nothing is drawn at the art's center any more.
+            let centered = Rectangle::new(
                 art.center() - Vector::new(16.0, 16.0),
                 Size::new(32.0, 32.0),
             );
-            assert_eq!(marked.len(), plain.len() + 2, "{case}");
-            assert!(marked.contains(&Some(art)), "no wash, {case}");
-            assert!(marked.contains(&Some(check)), "no check, {case}");
-            // The corner marks keep their places, and nothing else is drawn.
-            let rest: Vec<_> = marked
-                .iter()
-                .filter(|child| **child != Some(art) && **child != Some(check))
-                .collect();
-            assert_eq!(rest, plain.iter().collect::<Vec<_>>(), "{case}");
+            assert!(!marked.contains(&Some(centered)), "{case}");
+            // The other corners keep their places, and nothing else is drawn.
+            let before = layer_contents(&plain);
+            let skip = corner_items(&plain).map(|(index, _)| index);
+            let rest = |layers: &[Option<Rectangle>], drop: &[Option<usize>]| {
+                layers
+                    .iter()
+                    .enumerate()
+                    .filter(|(at, _)| !drop.contains(&Some(*at)))
+                    .map(|(_, layer)| *layer)
+                    .collect::<Vec<_>>()
+            };
+            assert_eq!(
+                rest(&marked, &[Some(1), Some(index)]),
+                rest(&before, &[skip]),
+                "{case}"
+            );
         }
     }
+}
+
+#[test]
+fn the_chip_and_the_pill_step_right_of_the_check_with_no_animation() {
+    let mut app = crate::tests::app();
+    let mut running = crate::tests::card("running", State::Running, 60);
+    gog(&mut running);
+    let mut idle = crate::tests::card("idle", State::Inactive, 60);
+    gog(&mut idle);
+    for (poster_only, zoom) in [(true, 150), (true, 100), (false, 80)] {
+        app.poster_only = poster_only;
+        app.zoom = zoom;
+        let case = format!("poster-only {poster_only} at {zoom}%");
+        for card in [&running, &idle] {
+            app.marked.clear();
+            let node = card_node(&app, card);
+            let art = bounds_at(&node, &[0, 0]);
+            let (_, bare) = corner_items(&node).expect(&case);
+            app.marked.insert(card.name.clone());
+            let node = card_node(&app, card);
+            let (_, marked) = corner_items(&node).expect(&case);
+            assert_eq!(bare.len() + 1, marked.len(), "{case}");
+            // The check holds the corner and everything else is one check
+            // and its 4 px gap further right, on the first frame.
+            assert_eq!(marked[0].x, art.x + 8.0, "{case}");
+            for (before, after) in bare.iter().zip(&marked[1..]) {
+                assert_eq!(after.x, before.x + 28.0, "{case}");
+            }
+            for pair in marked.windows(2) {
+                assert_eq!(pair[1].x, pair[0].x + pair[0].width + 4.0, "{case}");
+            }
+        }
+    }
+}
+
+#[test]
+fn marking_a_card_through_the_app_moves_the_corner_at_once() {
+    let mut app = crate::tests::app();
+    app.poster_only = true;
+    app.zoom = 150;
+    let mut card = crate::tests::card("game", State::Running, 60);
+    gog(&mut card);
+    let _ = app.update(Message::Loaded(Ok(vec![card.clone()])));
+    let card = app.filtered().remove(0).clone();
+    let before = card_node(&app, &card);
+    let _ = app.update(Message::Modifiers(iced::keyboard::Modifiers::CTRL));
+    let _ = app.update(Message::Select("game".into()));
+    assert!(app.marked.contains("game"));
+    // No spring or fade was started for the move.
+    let node = card_node(&app, &card);
+    let art = bounds_at(&node, &[0, 0]);
+    let (_, items) = corner_items(&node).unwrap();
+    let (_, bare) = corner_items(&before).unwrap();
+    assert_eq!(items.len(), 3);
+    assert_eq!(items[0].x, art.x + 8.0);
+    assert_eq!(items[1].x, art.x + 36.0);
+    assert_eq!(items[2].x, bare[1].x + 28.0);
+    // Clearing the marks puts it all back at once.
+    app.clear_marks();
+    assert_eq!(corner_items(&card_node(&app, &card)).unwrap().1, bare);
+}
+
+#[test]
+fn a_mark_that_takes_the_pills_room_turns_it_into_its_badge() {
+    let mut app = crate::tests::app();
+    app.poster_only = true;
+    // "Finish update" fits alone in the corner at 70% and not after the
+    // check.
+    app.zoom = 70;
+    let mut card = crate::tests::card("game", State::Inactive, 60);
+    gog(&mut card);
+    let node = card_node(&app, &card);
+    let art = bounds_at(&node, &[0, 0]);
+    let (pill, badge) = gog_at(&node, false);
+    assert!(!badge);
+    assert_eq!(pill.x, art.x + 8.0);
+    app.marked.insert(card.name.clone());
+    let node = card_node(&app, &card);
+    let (_, items) = corner_items(&node).unwrap();
+    assert_eq!(items.len(), 2);
+    assert_eq!(items[1].size(), Size::new(24.0, 24.0));
+    assert_eq!(items[1].x, art.x + 36.0);
+    assert_eq!(items[1].y, items[0].y);
+    // The badge keeps the marks clear, and the pill is back with the mark gone.
+    assert!(items[1].x + 24.0 <= art.x + art.width - 32.0);
+    app.marked.clear();
+    let (pill, badge) = gog_at(&card_node(&app, &card), false);
+    assert!(!badge);
+    assert_eq!(pill.x, art.x + 8.0);
+}
+
+#[test]
+fn at_60_percent_a_marked_card_keeps_its_check_and_chip_and_drops_the_badge() {
+    let mut app = crate::tests::app();
+    app.poster_only = true;
+    app.zoom = 60;
+    let mut card = crate::tests::card("game", State::Running, 60);
+    gog(&mut card);
+    card.favorite = true;
+    card.hidden = true;
+    let node = card_node(&app, &card);
+    let (_, bare) = corner_items(&node).unwrap();
+    // Unmarked: the chip and the badge, the badge flush against the mark.
+    assert_eq!(bare.len(), 2);
+    app.marked.insert(card.name.clone());
+    let node = card_node(&app, &card);
+    let art = bounds_at(&node, &[0, 0]);
+    let (_, items) = corner_items(&node).unwrap();
+    // Three circles can't clear the star's column, so the badge waits for
+    // the mark to go; the other two sit flush against the star.
+    assert_eq!(items.len(), 2);
+    assert_eq!(items[0].x, art.x + 8.0);
+    assert_eq!(items[1].x, art.x + 36.0);
+    assert_eq!(items[1].x + items[1].width, star_slot(&node).x);
+}
+
+#[test]
+fn a_marked_corner_keeps_the_star_column_clear_at_every_zoom() {
+    let mut app = crate::tests::app();
+    // Every few steps and the edges where the corner changes shape: the
+    // whole range takes a minute to lay out.
+    let zooms = (60..=200).step_by(9).chain([61, 62, 63, 77, 78, 79, 200]);
+    for (poster_only, zoom) in zooms.flat_map(|zoom| [(true, zoom), (false, zoom)]) {
+        app.poster_only = poster_only;
+        app.zoom = zoom;
+        for state in [State::Running, State::Inactive] {
+            for with_gog in [true, false] {
+                let mut card = crate::tests::card("game", state, 60);
+                if with_gog {
+                    gog(&mut card);
+                }
+                app.marked.insert(card.name.clone());
+                let case =
+                    format!("poster-only {poster_only} at {zoom}%, {state:?}, gog {with_gog}");
+                let node = card_node(&app, &card);
+                let star = star_slot(&node);
+                let (_, items) = corner_items(&node).expect(&case);
+                let last = items.last().unwrap();
+                let pill = last.size() != Size::new(24.0, 24.0);
+                // 36 px clear, or 32 for the round marks and badge.
+                let gap = if pill { 4.0 } else { 0.0 };
+                assert!(
+                    last.x + last.width <= star.x - gap + 0.01,
+                    "{case}: {last:?} against {star:?}"
+                );
+                for pair in items.windows(2) {
+                    assert_eq!(pair[1].x, pair[0].x + pair[0].width + 4.0, "{case}");
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn the_check_fades_with_its_card() {
+    let mut app = crate::tests::app();
+    app.poster_only = true;
+    let card = crate::tests::card("game", State::Inactive, 60);
+    app.marked.insert(card.name.clone());
+    let size = Size::new(160.0, 240.0);
+    let layout = app.grid_layout();
+    let drawn = render(
+        &mut app.card_drawn(&card, 1.0, layout, Details::Inline),
+        size,
+    );
+    assert!(drawn.chunks(4).any(|pixel| pixel[3] != 0));
+    let gone = render(
+        &mut app.card_drawn(&card, 0.0, layout, Details::Inline),
+        size,
+    );
+    assert!(gone.chunks(4).all(|pixel| pixel[3] == 0));
 }
