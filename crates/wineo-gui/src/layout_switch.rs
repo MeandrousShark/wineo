@@ -12,8 +12,7 @@ use crate::library_menu::icon;
 use crate::sort_control::Field;
 use crate::{App, Message, SCROLL_ID, focus_button, ui, zoom_control};
 
-pub(crate) const LIST_ID: &str = "library-layout-list";
-pub(crate) const GRID_ID: &str = "library-layout-grid";
+pub(crate) const ID: &str = "library-layout";
 pub(crate) const WIDTH: f32 = 64.0;
 const SIDE: f32 = WIDTH / 2.0;
 
@@ -22,9 +21,9 @@ const GRID: &[u8] = br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16
 
 #[derive(Debug, Clone)]
 pub(crate) enum Event {
-    /// A click, Enter, or Space on one side.
+    /// A click on one side.
     Set(ViewLayout),
-    /// Ctrl+L.
+    /// Ctrl+L, or Enter, Space, Left, or Right on the focused segment.
     Toggle,
     /// A frame of the thumb's slide.
     Tick(u64, Instant),
@@ -168,55 +167,40 @@ pub(crate) fn toolbar(app: &App) -> Element<'_, Message> {
     })
     .width(WIDTH)
     .height(ui::BUTTON_HEIGHT);
-    let side = |layout: ViewLayout, bytes: &'static [u8], id: &'static str| {
+    let side = |layout: ViewLayout, bytes: &'static [u8]| {
         let chosen = app.layout == layout;
         let ink = if chosen {
             palette.primary
         } else {
             palette.foreground
         };
-        let message = Message::Layout(Event::Set(layout));
         let side = button(container(icon(bytes, ink, 16.0)).center(Fill))
             .width(SIDE)
             .height(ui::BUTTON_HEIGHT)
             .padding(0)
-            .on_press(message.clone())
+            .on_press(Message::Layout(Event::Set(layout)))
             .style(move |_, status| button::Style {
                 background: matches!(status, button::Status::Hovered | button::Status::Pressed)
                     .then(|| palette.foreground.scale_alpha(0.08).into()),
                 border: border::rounded(ui::CONTROL_RADIUS),
                 ..button::Style::default()
             });
-        // The ring reaches over the other side, so either one outlines the
-        // whole segment.
-        let ring = match layout {
-            ViewLayout::List => Padding {
-                right: SIDE,
-                ..Padding::ZERO
-            },
-            ViewLayout::Grid => Padding {
-                left: SIDE,
-                ..Padding::ZERO
-            },
-        };
-        focus_button::segment_side(
-            zoom_control::with_tooltip(side.into(), label(layout), palette),
-            id,
-            message,
-            ring,
-        )
+        zoom_control::with_tooltip(side.into(), label(layout), palette)
     };
-    stack![
-        track,
-        thumb,
-        row![
-            side(ViewLayout::List, LIST, LIST_ID),
-            side(ViewLayout::Grid, GRID, GRID_ID)
-        ],
-    ]
-    .width(WIDTH)
-    .height(ui::BUTTON_HEIGHT)
-    .into()
+    // One Tab stop and one ring for both sides, since the keys flip the
+    // layout whichever side is chosen.
+    focus_button::segment(
+        stack![
+            track,
+            thumb,
+            row![side(ViewLayout::List, LIST), side(ViewLayout::Grid, GRID)],
+        ]
+        .width(WIDTH)
+        .height(ui::BUTTON_HEIGHT)
+        .into(),
+        ID,
+        Message::Layout(Event::Toggle),
+    )
 }
 
 #[cfg(test)]

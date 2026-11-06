@@ -452,8 +452,7 @@ fn the_toolbar_reads_add_search_sort_filters_then_the_zoom_controls() {
         crate::sort_control::SORT_BUTTON_ID,
         crate::sort_control::DIRECTION_BUTTON_ID,
         crate::filter_control::FILTER_BUTTON_ID,
-        crate::layout_switch::LIST_ID,
-        crate::layout_switch::GRID_ID,
+        crate::layout_switch::ID,
         SLIDER_ID,
         POSTER_ONLY_ID,
     ];
@@ -469,11 +468,9 @@ fn the_toolbar_reads_add_search_sort_filters_then_the_zoom_controls() {
         Size::new(32.0, 32.0)
     );
     // The layout segment's two halves make one 64 px control.
-    let list = bounds(&mut laid, crate::layout_switch::LIST_ID);
-    let grid = bounds(&mut laid, crate::layout_switch::GRID_ID);
-    assert_eq!(list.size(), Size::new(32.0, 32.0));
-    assert_eq!(grid.x, list.x + 32.0);
-    assert_eq!(slider.x, grid.x + grid.width + 8.0);
+    let segment = bounds(&mut laid, crate::layout_switch::ID);
+    assert_eq!(segment.size(), Size::new(64.0, 32.0));
+    assert_eq!(slider.x, segment.x + segment.width + 8.0);
 }
 
 #[test]
@@ -500,11 +497,10 @@ fn tab_reaches_the_slider_after_the_filter_tab_chips() {
         .iter()
         .position(|focused| focused.contains(SLIDER_ID))
         .expect("the slider in Tab's order");
-    // The tab's x for Steam, then its clear-all, then the layout segment's
-    // two sides, then the slider.
-    assert!(seen[2].contains(crate::layout_switch::LIST_ID), "{seen:?}");
-    assert!(seen[3].contains(crate::layout_switch::GRID_ID), "{seen:?}");
-    assert_eq!(slider, 4, "{seen:?}");
+    // The tab's x for Steam, then its clear-all, then the layout segment,
+    // then the slider.
+    assert!(seen[2].contains(crate::layout_switch::ID), "{seen:?}");
+    assert_eq!(slider, 3, "{seen:?}");
     assert!(seen[slider + 1].contains(POSTER_ONLY_ID), "{seen:?}");
 }
 
@@ -540,17 +536,13 @@ fn tab_reaches_the_dice_after_the_filter_tab_chips_and_before_the_slider() {
         .position(|focused| focused.contains(crate::random_pick::BUTTON_ID))
         .expect("the dice in Tab's order");
     // The tab's x for Steam, then its clear-all, then the dice, then the
-    // layout segment's two sides before the slider.
+    // layout segment before the slider.
     assert_eq!(dice, 2, "{seen:?}");
     assert!(
-        seen[dice + 1].contains(crate::layout_switch::LIST_ID),
+        seen[dice + 1].contains(crate::layout_switch::ID),
         "{seen:?}"
     );
-    assert!(
-        seen[dice + 2].contains(crate::layout_switch::GRID_ID),
-        "{seen:?}"
-    );
-    assert!(seen[dice + 3].contains(SLIDER_ID), "{seen:?}");
+    assert!(seen[dice + 2].contains(SLIDER_ID), "{seen:?}");
 }
 
 #[test]
@@ -1050,6 +1042,142 @@ fn press_tab(
     (laid.into_tree(), focused)
 }
 
+/// Hands `key` to the view laid out over `tree`, applies what it sent, and
+/// returns the tree and what has focus after the view is laid out again
+/// over it, as the runtime does after an update.
+fn press_on_tree(
+    app: &mut App,
+    tree: iced::advanced::widget::Tree,
+    key: Named,
+) -> (iced::advanced::widget::Tree, Vec<iced::widget::Id>) {
+    let mut laid = crate::layout_probe::relay_out(app.view(), tree, app.window_size);
+    let messages = laid.event(&crate::sort_control::tests::press(key));
+    let tree = laid.into_tree();
+    for message in messages {
+        let _ = app.update(message);
+    }
+    let mut laid = crate::layout_probe::relay_out(app.view(), tree, app.window_size);
+    let focused = laid.focused();
+    (laid.into_tree(), focused)
+}
+
+fn segment_id() -> Vec<iced::widget::Id> {
+    vec![iced::widget::Id::new(crate::layout_switch::ID)]
+}
+
+#[test]
+fn the_segment_keeps_focus_through_its_own_flips_in_both_directions() {
+    use crate::grid_motion::ViewLayout;
+    for start in [ViewLayout::Grid, ViewLayout::List] {
+        let (_root, mut app) = library(4);
+        let _ = app.update(Message::Layout(crate::layout_switch::Event::Set(start)));
+        let mut laid = lay_out(app.view(), app.window_size);
+        focus(&mut laid, crate::layout_switch::ID);
+        let mut tree = laid.into_tree();
+        for key in [
+            Named::ArrowRight,
+            Named::ArrowLeft,
+            Named::Space,
+            Named::Enter,
+        ] {
+            let (next, focused) = press_on_tree(&mut app, tree, key);
+            assert_ne!(app.layout, start, "{key:?} from {start:?} flips");
+            assert_eq!(focused, segment_id(), "{key:?} from {start:?}");
+            let (next, focused) = press_on_tree(&mut app, next, key);
+            assert_eq!(app.layout, start, "{key:?} again flips back");
+            assert_eq!(focused, segment_id(), "{key:?} again");
+            tree = next;
+        }
+    }
+}
+
+/// Tab or Shift+Tab from `tree`, as the app does it.
+fn step_tab(
+    app: &mut App,
+    tree: iced::advanced::widget::Tree,
+    shift: bool,
+) -> (iced::advanced::widget::Tree, Vec<iced::widget::Id>) {
+    let task = app.update(Message::KeyWithFocus(
+        keyboard::Key::Named(Named::Tab),
+        if shift {
+            Modifiers::SHIFT
+        } else {
+            Modifiers::empty()
+        },
+        iced::event::Status::Ignored,
+        false,
+    ));
+    let mut laid = crate::layout_probe::relay_out(app.view(), tree, app.window_size);
+    drive(&mut laid, task);
+    let focused = laid.focused();
+    (laid.into_tree(), focused)
+}
+
+#[test]
+fn tab_and_shift_tab_leave_the_segment_for_the_right_neighbors_after_a_flip() {
+    let id = |name: &str| vec![iced::widget::Id::from(name.to_owned())];
+    let (_root, mut app) = library(4);
+    let mut laid = lay_out(app.view(), app.window_size);
+    focus(&mut laid, crate::layout_switch::ID);
+    let tree = laid.into_tree();
+    // Grid to list: the slider and the toggle leave, so Tab goes on past
+    // the toolbar's end and Shift+Tab goes back to the dice.
+    let (tree, focused) = press_on_tree(&mut app, tree, Named::ArrowRight);
+    assert_eq!(app.layout, crate::grid_motion::ViewLayout::List);
+    assert_eq!(focused, segment_id());
+    let (back, before) = step_tab(&mut app, tree, true);
+    assert_eq!(before, id(crate::random_pick::BUTTON_ID));
+    let (back, again) = step_tab(&mut app, back, false);
+    assert_eq!(again, segment_id());
+    let (_back, after) = step_tab(&mut app, back, false);
+    // Past the toolbar focus leaves it, as it does past the toggle.
+    assert!(
+        !after.contains(&iced::widget::Id::new(SLIDER_ID)),
+        "{after:?}"
+    );
+    assert!(
+        !after.contains(&iced::widget::Id::new(POSTER_ONLY_ID)),
+        "{after:?}"
+    );
+    assert_ne!(after, segment_id());
+    // Back to the grid: the slider follows the segment again.
+    let mut laid = lay_out(app.view(), app.window_size);
+    focus(&mut laid, crate::layout_switch::ID);
+    let tree = laid.into_tree();
+    let (tree, _) = press_on_tree(&mut app, tree, Named::ArrowLeft);
+    assert_eq!(app.layout, crate::grid_motion::ViewLayout::Grid);
+    let (tree, next) = step_tab(&mut app, tree, false);
+    assert_eq!(next, id(SLIDER_ID));
+    let (tree, _) = step_tab(&mut app, tree, true);
+    let (_tree, previous) = step_tab(&mut app, tree, true);
+    assert_eq!(previous, id(crate::random_pick::BUTTON_ID));
+}
+
+#[test]
+fn ctrl_l_from_a_focused_zoom_control_leaves_the_toolbar_without_stale_focus() {
+    for gone in [SLIDER_ID, POSTER_ONLY_ID] {
+        let (_root, mut app) = library(4);
+        let mut laid = lay_out(app.view(), app.window_size);
+        focus(&mut laid, gone);
+        assert_eq!(laid.focused(), [iced::widget::Id::new(gone)]);
+        let tree = laid.into_tree();
+        let _ = app.update(Message::KeyWithFocus(
+            keyboard::Key::Character("l".into()),
+            Modifiers::CTRL,
+            iced::event::Status::Ignored,
+            false,
+        ));
+        assert_eq!(app.layout, crate::grid_motion::ViewLayout::List);
+        let mut laid = crate::layout_probe::relay_out(app.view(), tree, app.window_size);
+        // The control is gone, and nothing else took its focus.
+        assert_eq!(laid.focused(), Vec::<iced::widget::Id>::new(), "{gone}");
+        // Tab starts over at the toolbar's first stop, Add.
+        let tree = laid.into_tree();
+        let (_tree, next) = step_tab(&mut app, tree, false);
+        assert_eq!(next, [iced::widget::Id::new(crate::grid::ADD_ID)], "{gone}");
+    }
+}
+
 fn busy() -> crate::Operation {
     crate::Operation {
         name: "game-000".into(),
@@ -1073,8 +1201,7 @@ fn tab_cycles_the_toolbar_from_add_in_its_order() {
         crate::sort_control::DIRECTION_BUTTON_ID,
         crate::filter_control::FILTER_BUTTON_ID,
         crate::random_pick::BUTTON_ID,
-        crate::layout_switch::LIST_ID,
-        crate::layout_switch::GRID_ID,
+        crate::layout_switch::ID,
         SLIDER_ID,
         POSTER_ONLY_ID,
     ];
@@ -1136,8 +1263,8 @@ fn a_disabled_add_takes_no_focus_and_tab_skips_it() {
     assert!(laid.focused().is_empty());
     let mut tree = laid.into_tree();
     let mut seen = Vec::new();
-    // Two more since the layout segment's sides joined the toolbar.
-    for _ in 0..11 {
+    // One more since the layout segment joined the toolbar.
+    for _ in 0..10 {
         let (next, focused) = press_tab(&mut app, tree);
         tree = next;
         seen.push(focused);
@@ -1152,9 +1279,9 @@ fn a_disabled_add_takes_no_focus_and_tab_skips_it() {
             .flatten()
             .all(|id| *id != iced::widget::Id::new(crate::grid::ADD_ID))
     );
-    assert_eq!(seen[9], Vec::<iced::widget::Id>::new(), "{seen:?}");
+    assert_eq!(seen[8], Vec::<iced::widget::Id>::new(), "{seen:?}");
     assert_eq!(
-        seen[10],
+        seen[9],
         [iced::widget::Id::new(crate::SEARCH_ID)],
         "{seen:?}"
     );

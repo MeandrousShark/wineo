@@ -3,7 +3,7 @@ use iced::advanced::{
     Clipboard, Layout, Renderer as AdvancedRenderer, Shell, Widget, layout, mouse, overlay,
     renderer, widget::tree,
 };
-use iced::{Element, Event, Length, Padding, Rectangle, Size, Vector};
+use iced::{Element, Event, Length, Rectangle, Size, Vector};
 
 mod rows;
 
@@ -35,7 +35,7 @@ pub(crate) fn control<'a, M: Clone + 'a>(
         leaves_submit: false,
         exclude: None,
         menu: None,
-        ring: Padding::ZERO,
+        arrows: false,
     })
 }
 
@@ -56,7 +56,7 @@ pub(crate) fn excludable<'a, M: Clone + 'a>(
         leaves_submit: false,
         exclude: Some(on_exclude),
         menu: None,
-        ring: Padding::ZERO,
+        arrows: false,
     })
 }
 
@@ -80,7 +80,7 @@ pub(crate) fn with_menu<'a, M: Clone + 'a>(
         leaves_submit: false,
         exclude: None,
         menu: Some(on_menu),
-        ring: Padding::ZERO,
+        arrows: false,
     })
 }
 
@@ -123,7 +123,7 @@ fn leaves_submit<'a, M: Clone + 'a>(
         leaves_submit: true,
         exclude: None,
         menu: None,
-        ring: Padding::ZERO,
+        arrows: false,
     })
 }
 
@@ -145,20 +145,18 @@ pub(crate) fn keyboard_control<'a, M: Clone + 'a>(
         leaves_submit: false,
         exclude: None,
         menu: None,
-        ring: Padding::ZERO,
+        arrows: false,
     })
 }
 
-/// One side of a segment: it takes focus only from the keyboard, since a
-/// click already moves the segment's thumb, and its ring reaches past its
-/// own edges by `ring` so it outlines the whole segment, not one side.
-/// Focused, it also takes the hover tint, since that ring can't say which
-/// side has focus.
-pub(crate) fn segment_side<'a, M: Clone + 'a>(
+/// A two-way segment as one control, like a radio group: it takes focus
+/// only from the keyboard, since a click already moves the segment's thumb,
+/// and while focused Enter, Space, Left, and Right all press it. Left and
+/// Right are captured, so they never reach the library's selection.
+pub(crate) fn segment<'a, M: Clone + 'a>(
     content: Element<'a, M>,
     id: impl Into<iced::widget::Id>,
     on_press: M,
-    ring: Padding,
 ) -> Element<'a, M> {
     Element::new(FocusControl {
         content,
@@ -169,13 +167,8 @@ pub(crate) fn segment_side<'a, M: Clone + 'a>(
         leaves_submit: false,
         exclude: None,
         menu: None,
-        ring,
+        arrows: true,
     })
-}
-
-/// Where the focus ring sits around a control at `bounds`.
-fn ring_bounds(bounds: Rectangle, ring: Padding) -> Rectangle {
-    bounds.expand(2.0).expand(ring)
 }
 
 /// Asks whether the Undo control has focus. Unlike `is_focused`, which says
@@ -295,9 +288,8 @@ struct FocusControl<'a, M, R: AdvancedRenderer = iced::Renderer> {
     exclude: Option<M>,
     /// Sent for the keys and click that open a context menu.
     menu: Option<M>,
-    /// How far the focus ring reaches past this control's own edges, on top
-    /// of the usual 2 px, so one part of a larger control can ring all of it.
-    ring: Padding,
+    /// Left and Right press it as well, for a segment of two choices.
+    arrows: bool,
 }
 
 #[derive(Default)]
@@ -423,6 +415,28 @@ where
                 shell.capture_event();
                 return;
             }
+            Event::Keyboard(iced::keyboard::Event::KeyPressed {
+                key:
+                    iced::keyboard::Key::Named(
+                        iced::keyboard::key::Named::ArrowLeft
+                        | iced::keyboard::key::Named::ArrowRight,
+                    ),
+                modifiers,
+                repeat,
+                ..
+            }) if self.arrows
+                && self.enabled
+                && state.focused
+                && !(modifiers.control() || modifiers.alt() || modifiers.logo()) =>
+            {
+                // A held key repeats, and a repeat must not slip through to
+                // the library's selection, nor flip the layout back and forth.
+                if !repeat {
+                    shell.publish(self.on_press.clone());
+                }
+                shell.capture_event();
+                return;
+            }
             Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Right))
                 if self.enabled && cursor.is_over(layout.bounds()) =>
             {
@@ -494,20 +508,6 @@ where
         viewport: &Rectangle,
     ) {
         let focused = self.enabled && tree.state.downcast_ref::<State>().focused;
-        // A ring around a whole segment can't say which side has focus, so
-        // that side takes its hover tint as well. Under the pointer the
-        // hover already draws it, and two would show darker.
-        if focused && self.ring != Padding::ZERO && !cursor.is_over(layout.bounds()) {
-            renderer.fill_quad(
-                renderer::Quad {
-                    bounds: layout.bounds(),
-                    border: iced::border::rounded(crate::ui::CONTROL_RADIUS),
-                    shadow: iced::Shadow::default(),
-                    snap: false,
-                },
-                theme.palette().text.scale_alpha(0.08),
-            );
-        }
         self.content.as_widget().draw(
             &tree.children[0],
             renderer,
@@ -521,7 +521,7 @@ where
         if focused {
             renderer.fill_quad(
                 renderer::Quad {
-                    bounds: ring_bounds(layout.bounds(), self.ring),
+                    bounds: layout.bounds().expand(2.0),
                     border: iced::border::rounded(crate::ui::CONTROL_RADIUS + 2.0)
                         .width(2)
                         .color(theme.palette().primary),
@@ -586,7 +586,7 @@ mod tests {
             leaves_submit: false,
             exclude: None,
             menu: None,
-            ring: Padding::ZERO,
+            arrows: false,
         });
         let mut tree = tree::Tree::new(widget.as_widget());
         let bounds = Size::new(100.0, 32.0);
@@ -630,7 +630,7 @@ mod tests {
             leaves_submit: false,
             exclude: None,
             menu: None,
-            ring: Padding::ZERO,
+            arrows: false,
         });
         let mut tree = tree::Tree::new(widget.as_widget());
         let bounds = Size::new(100.0, 32.0);
@@ -678,7 +678,7 @@ mod tests {
             leaves_submit: false,
             exclude: None,
             menu: None,
-            ring: Padding::ZERO,
+            arrows: false,
         });
         let mut tree = tree::Tree::new(widget.as_widget());
         let bounds = Size::new(100.0, 32.0);
@@ -828,7 +828,7 @@ mod tests {
                         leaves_submit: false,
                         exclude: None,
                         menu: None,
-                        ring: Padding::ZERO,
+                        arrows: false,
                     });
                 let mut tree = tree::Tree::new(widget.as_widget());
                 tree.state.downcast_mut::<State>().focus();
@@ -857,6 +857,10 @@ mod tests {
     }
 
     fn key_event(key: Named) -> Event {
+        key_with(key, keyboard::Modifiers::empty(), false)
+    }
+
+    fn key_with(key: Named, modifiers: keyboard::Modifiers, repeat: bool) -> Event {
         let key = Key::Named(key);
         Event::Keyboard(keyboard::Event::KeyPressed {
             key: key.clone(),
@@ -865,65 +869,141 @@ mod tests {
                 keyboard::key::NativeCode::Unidentified,
             ),
             location: keyboard::Location::Standard,
-            modifiers: keyboard::Modifiers::empty(),
+            modifiers,
             text: None,
-            repeat: false,
+            repeat,
         })
     }
 
-    #[test]
-    fn either_side_of_a_segment_rings_the_whole_segment() {
-        let list = Rectangle::new(iced::Point::new(10.0, 4.0), Size::new(32.0, 32.0));
-        let grid = Rectangle::new(iced::Point::new(42.0, 4.0), Size::new(32.0, 32.0));
-        let from_list = ring_bounds(
-            list,
-            Padding {
-                right: 32.0,
-                ..Padding::ZERO
-            },
-        );
-        let from_grid = ring_bounds(
-            grid,
-            Padding {
-                left: 32.0,
-                ..Padding::ZERO
-            },
-        );
-        assert_eq!(from_list, from_grid);
-        assert_eq!(
-            from_list,
-            Rectangle::new(iced::Point::new(8.0, 2.0), Size::new(68.0, 36.0))
-        );
-        assert_eq!(ring_bounds(list, Padding::ZERO), list.expand(2.0));
-    }
-
-    #[test]
-    fn a_click_presses_a_segment_side_but_never_focuses_it() {
+    /// A segment around a button, laid out in 64 x 32.
+    fn segment_fixture() -> (
+        Element<'static, crate::Message, iced::Theme, ()>,
+        tree::Tree,
+        layout::Node,
+    ) {
         let button = iced::widget::button::Button::<crate::Message, iced::Theme, ()>::new("List")
             .on_press(crate::Message::Undo);
         let mut widget: Element<'_, crate::Message, iced::Theme, ()> = Element::new(FocusControl {
             content: button.into(),
             enabled: true,
-            id: "segment-side".into(),
+            id: "segment".into(),
             on_press: crate::Message::Undo,
             mouse_focus: false,
             leaves_submit: false,
             exclude: None,
             menu: None,
-            ring: Padding {
-                right: 32.0,
-                ..Padding::ZERO
-            },
+            arrows: true,
         });
         let mut tree = tree::Tree::new(widget.as_widget());
-        let bounds = Size::new(32.0, 32.0);
-        let node =
-            widget
-                .as_widget_mut()
-                .layout(&mut tree, &(), &layout::Limits::new(Size::ZERO, bounds));
-        let mut operation = iced::advanced::widget::operation::focusable::focus(
-            iced::widget::Id::new("segment-side"),
+        let node = widget.as_widget_mut().layout(
+            &mut tree,
+            &(),
+            &layout::Limits::new(Size::ZERO, Size::new(64.0, 32.0)),
         );
+        (widget, tree, node)
+    }
+
+    fn send(
+        widget: &mut Element<'_, crate::Message, iced::Theme, ()>,
+        tree: &mut tree::Tree,
+        node: &layout::Node,
+        cursor: mouse::Cursor,
+        event: Event,
+    ) -> (Vec<crate::Message>, iced::event::Status) {
+        let mut messages = Vec::new();
+        let mut shell = Shell::new(&mut messages);
+        widget.as_widget_mut().update(
+            tree,
+            &event,
+            Layout::new(node),
+            cursor,
+            &(),
+            &mut iced::advanced::clipboard::Null,
+            &mut shell,
+            &Rectangle::with_size(Size::new(64.0, 32.0)),
+        );
+        let status = shell.event_status();
+        (messages, status)
+    }
+
+    #[test]
+    fn a_focused_segment_presses_on_enter_space_left_and_right_and_keeps_them() {
+        let (mut widget, mut tree, node) = segment_fixture();
+        let none = mouse::Cursor::Unavailable;
+        for key in [Named::ArrowLeft, Named::ArrowRight] {
+            let (messages, status) = send(&mut widget, &mut tree, &node, none, key_event(key));
+            assert!(messages.is_empty(), "unfocused, {key:?} is not its");
+            assert_eq!(status, iced::event::Status::Ignored);
+        }
+        tree.state.downcast_mut::<State>().focus();
+        for key in [
+            Named::Enter,
+            Named::Space,
+            Named::ArrowLeft,
+            Named::ArrowRight,
+        ] {
+            let (messages, status) = send(&mut widget, &mut tree, &node, none, key_event(key));
+            assert!(
+                matches!(messages.as_slice(), [crate::Message::Undo]),
+                "{key:?}"
+            );
+            assert_eq!(status, iced::event::Status::Captured, "{key:?}");
+        }
+        // Up and Down are not the segment's.
+        for key in [Named::ArrowUp, Named::ArrowDown] {
+            let (messages, status) = send(&mut widget, &mut tree, &node, none, key_event(key));
+            assert!(messages.is_empty());
+            assert_eq!(status, iced::event::Status::Ignored);
+        }
+        // A held arrow is kept from the library but flips only once.
+        let held = key_with(Named::ArrowRight, keyboard::Modifiers::empty(), true);
+        let (messages, status) = send(&mut widget, &mut tree, &node, none, held);
+        assert!(messages.is_empty());
+        assert_eq!(status, iced::event::Status::Captured);
+        // A shortcut with Ctrl is left to the app.
+        let ctrl = key_with(Named::ArrowLeft, keyboard::Modifiers::CTRL, false);
+        let (messages, status) = send(&mut widget, &mut tree, &node, none, ctrl);
+        assert!(messages.is_empty());
+        assert_eq!(status, iced::event::Status::Ignored);
+    }
+
+    #[test]
+    fn a_plain_focus_control_leaves_the_arrows_alone() {
+        let button = iced::widget::button::Button::<crate::Message, iced::Theme, ()>::new("Undo");
+        let mut widget: Element<'_, crate::Message, iced::Theme, ()> = Element::new(FocusControl {
+            content: button.into(),
+            enabled: true,
+            id: "plain".into(),
+            on_press: crate::Message::Undo,
+            mouse_focus: false,
+            leaves_submit: false,
+            exclude: None,
+            menu: None,
+            arrows: false,
+        });
+        let mut tree = tree::Tree::new(widget.as_widget());
+        tree.state.downcast_mut::<State>().focus();
+        let node = widget.as_widget_mut().layout(
+            &mut tree,
+            &(),
+            &layout::Limits::new(Size::ZERO, Size::new(64.0, 32.0)),
+        );
+        let (messages, status) = send(
+            &mut widget,
+            &mut tree,
+            &node,
+            mouse::Cursor::Unavailable,
+            key_event(Named::ArrowRight),
+        );
+        assert!(messages.is_empty());
+        assert_eq!(status, iced::event::Status::Ignored);
+    }
+
+    #[test]
+    fn a_click_presses_a_segment_but_never_focuses_it() {
+        let (mut widget, mut tree, node) = segment_fixture();
+        let mut operation =
+            iced::advanced::widget::operation::focusable::focus(iced::widget::Id::new("segment"));
         widget
             .as_widget_mut()
             .operate(&mut tree, Layout::new(&node), &(), &mut operation);
@@ -932,32 +1012,15 @@ mod tests {
         // Text has no size without a real renderer, so aim at the laid-out
         // control rather than a fixed point.
         let over = mouse::Cursor::Available(Layout::new(&node).bounds().center());
-        let send = |widget: &mut Element<'_, crate::Message, iced::Theme, ()>,
-                    tree: &mut tree::Tree,
-                    event: Event| {
-            let mut messages = Vec::new();
-            let mut shell = Shell::new(&mut messages);
-            widget.as_widget_mut().update(
-                tree,
-                &event,
-                Layout::new(&node),
-                over,
-                &(),
-                &mut iced::advanced::clipboard::Null,
-                &mut shell,
-                &Rectangle::with_size(bounds),
-            );
-            messages
-        };
         let press = Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left));
         let release = Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left));
         for _ in 0..2 {
-            let mut messages = send(&mut widget, &mut tree, press.clone());
+            let (mut messages, _) = send(&mut widget, &mut tree, &node, over, press.clone());
             assert!(!tree.state.downcast_ref::<State>().focused);
-            messages.extend(send(&mut widget, &mut tree, release.clone()));
+            messages.extend(send(&mut widget, &mut tree, &node, over, release.clone()).0);
             assert!(
                 matches!(messages.as_slice(), [crate::Message::Undo]),
-                "the click still reaches the side"
+                "the click still reaches the segment"
             );
         }
 
@@ -966,7 +1029,7 @@ mod tests {
             .as_widget_mut()
             .operate(&mut tree, Layout::new(&node), &(), &mut operation);
         assert!(tree.state.downcast_ref::<State>().focused);
-        let messages = send(&mut widget, &mut tree, key_event(Named::Enter));
+        let (messages, _) = send(&mut widget, &mut tree, &node, over, key_event(Named::Enter));
         assert!(matches!(messages.as_slice(), [crate::Message::Undo]));
     }
 }
