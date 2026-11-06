@@ -12,7 +12,9 @@ script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 script=$script_dir/acceptance-library.sh
 
 tmp=$(mktemp -d)
-trap 'rm -rf "$tmp"' EXIT
+# A run that stops mid-case can leave the 0300 folder behind, which rm can't
+# enter.
+trap 'chmod -R u+rwx "$tmp" 2>/dev/null; rm -rf "$tmp"' EXIT
 
 failures=0
 cases=0

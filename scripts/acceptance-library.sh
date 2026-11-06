@@ -8,8 +8,9 @@
 #   scripts/acceptance-library.sh DIR
 #   env WINEO_PORTABLE_DIR=DIR wineo-gui
 #
-# DIR must not exist or must be an empty folder, and nothing of DIR's is ever
-# changed or deleted. The library is built in a private folder (mode 700) made
+# DIR must not exist or must be an empty folder, and nothing in DIR is ever
+# changed or deleted. An empty DIR is replaced by a new folder, so its own
+# mode, owner, and ACLs don't carry over. The library is built in a private folder (mode 700) made
 # next to DIR, then moved into place with one rename, which replaces an empty
 # DIR or a missing one and fails on anything else, including a symlink or a
 # folder something filled in the meantime. The up-front check only gives a
@@ -43,7 +44,7 @@
 #   - Run state (exited, failed, stopped, lost). It lives in host XDG state.
 #     Starting the long-running game below creates a small folder there.
 #
-# Needs bash, GNU date, and base64 (coreutils).
+# Needs bash, GNU date, base64, mktemp, realpath, and mv -T (coreutils).
 
 set -euo pipefail
 
@@ -514,7 +515,7 @@ chmod "$(printf '%03o' $((0777 & ~$(umask))))" "$root"
 # One rename(2): it replaces an empty folder or a missing name, and refuses a
 # non-empty folder, a symlink, or a file, whatever happened since the check.
 if ! failure=$(mv -T -- "$root" "$dir" 2>&1); then
-    die "can't move the library into $dir; it may have changed since the check, so nothing was written there ($failure)"
+    die "can't move the library into $dir; it may have changed since the check or be a mount point, so nothing was written there ($failure)"
 fi
 moved=1
 final=$(realpath -- "$dir")
