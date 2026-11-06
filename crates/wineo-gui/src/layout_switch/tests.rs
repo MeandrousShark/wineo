@@ -399,3 +399,54 @@ fn a_clipped_row_lands_on_the_top_edge_going_back_to_the_grid() {
         app.scroll_offset
     );
 }
+
+/// Asserts `name`'s card is drawn whole above the action bar.
+fn assert_whole_on_screen(app: &App, name: &str) {
+    let places = app.grid_places();
+    let slot = places.slots[places.index(name).unwrap()];
+    let bottom = app.scroll_offset + app.viewport_height - app.bar_room();
+    assert!(
+        slot.y >= app.scroll_offset && slot.y + slot.height <= bottom,
+        "{name}: {slot:?} in {}..{bottom}",
+        app.scroll_offset
+    );
+}
+
+#[test]
+fn at_the_end_of_the_list_the_first_row_in_view_shows_whole_in_the_grid() {
+    let (_root, mut app) = library(120);
+    app.viewport_height = 400.0;
+    let _ = set(&mut app, ViewLayout::List);
+    let places = app.grid_places();
+    app.scroll_offset = places.height + app.bar_room() - app.viewport_height;
+    let (anchor, reveal) = app.find_anchor();
+    let (name, _) = anchor.unwrap();
+    assert!(!reveal);
+    let _ = set(&mut app, ViewLayout::Grid);
+    assert_whole_on_screen(&app, &name);
+}
+
+#[test]
+fn a_selected_row_near_the_bottom_shows_whole_in_the_grid() {
+    let (_root, mut app) = library(120);
+    app.viewport_height = 400.0;
+    let _ = set(&mut app, ViewLayout::List);
+    app.scroll_offset = 2000.0;
+    let places = app.grid_places();
+    let bottom = app.scroll_offset + app.viewport_height - app.bar_room();
+    // The last whole row in view, too low for its poster to fit there.
+    let index = (0..places.slots.len())
+        .rev()
+        .find(|&index| places.slots[index].y + places.slots[index].height <= bottom)
+        .unwrap();
+    let name = places.names[index].clone();
+    app.selected = Some(name.clone());
+    let (anchor, reveal) = app.find_anchor();
+    let (_, offset) = anchor.unwrap();
+    assert!(
+        !reveal && offset > app.viewport_height / 2.0,
+        "{name} at {offset}"
+    );
+    let _ = set(&mut app, ViewLayout::Grid);
+    assert_whole_on_screen(&app, &name);
+}
