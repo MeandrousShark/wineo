@@ -248,13 +248,14 @@ fn a_zoom_in_flight_ends_where_it_was_heading_before_the_list_shows() {
     let shown = app.zooming.shown().expect("mid-tween");
     assert!(shown > 100.0 && shown < 110.0, "{shown}");
     assert_eq!(app.columns(), 5);
-    // The card at the top as drawn mid-tween keeps its place in the list.
+    // The card at the top as drawn mid-tween keeps its place in the list,
+    // on the top edge when it was clipped there.
     let (anchor, _) = app.find_anchor();
     let (name, offset) = anchor.unwrap();
     let _ = set(&mut app, ViewLayout::List);
     let places = app.grid_places();
     let slot = places.slots[places.index(&name).unwrap()];
-    assert_eq!(slot.y - app.scroll_offset, offset, "{name}");
+    assert_eq!(slot.y - app.scroll_offset, offset.max(0.0), "{name}");
     assert!(!app.zooming.moving());
     assert_eq!(app.zoom, 110);
     let _ = set(&mut app, ViewLayout::Grid);
@@ -350,7 +351,7 @@ fn with_nothing_selected_the_first_card_in_view_keeps_its_place() {
     let _ = set(&mut app, ViewLayout::List);
     let places = app.grid_places();
     let slot = places.slots[places.index(&name).unwrap()];
-    assert_eq!(slot.y - app.scroll_offset, offset, "{name}");
+    assert_eq!(slot.y - app.scroll_offset, offset.max(0.0), "{name}");
     // Back to the grid, the row at the top keeps it.
     let (anchor, _) = app.find_anchor();
     let (name, offset) = anchor.unwrap();
@@ -358,4 +359,43 @@ fn with_nothing_selected_the_first_card_in_view_keeps_its_place() {
     let places = app.grid_places();
     let slot = places.slots[places.index(&name).unwrap()];
     assert_eq!(slot.y - app.scroll_offset, offset, "{name}");
+}
+
+#[test]
+fn a_clipped_first_card_lands_on_the_top_edge_going_to_the_list() {
+    let (_root, mut app) = library(120);
+    // The first row of posters is clipped by the top edge.
+    app.scroll_offset = 200.0;
+    let (anchor, reveal) = app.find_anchor();
+    let (name, offset) = anchor.unwrap();
+    assert!(offset < 0.0 && !reveal, "{name} at {offset}");
+    let _ = set(&mut app, ViewLayout::List);
+    let places = app.grid_places();
+    let slot = places.slots[places.index(&name).unwrap()];
+    assert!(
+        slot.y >= app.scroll_offset
+            && slot.y + slot.height <= app.scroll_offset + app.viewport_height,
+        "{name}: {slot:?} at {}",
+        app.scroll_offset
+    );
+}
+
+#[test]
+fn a_clipped_row_lands_on_the_top_edge_going_back_to_the_grid() {
+    let (_root, mut app) = library(120);
+    let _ = set(&mut app, ViewLayout::List);
+    // The row under the top edge is clipped.
+    app.scroll_offset = 100.0;
+    let (anchor, reveal) = app.find_anchor();
+    let (name, offset) = anchor.unwrap();
+    assert!(offset < 0.0 && !reveal, "{name} at {offset}");
+    let _ = set(&mut app, ViewLayout::Grid);
+    let places = app.grid_places();
+    let slot = places.slots[places.index(&name).unwrap()];
+    assert!(
+        slot.y >= app.scroll_offset
+            && slot.y + slot.height <= app.scroll_offset + app.viewport_height,
+        "{name}: {slot:?} at {}",
+        app.scroll_offset
+    );
 }

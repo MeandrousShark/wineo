@@ -105,6 +105,9 @@ impl App {
         if let Some((name, offset)) = anchor
             && let Some(index) = places.index(&name)
         {
+            // A card clipped by the top edge would otherwise keep its clipped
+            // offset, and a shorter row would then land above the viewport.
+            let offset = offset.max(0.0);
             let height = places.height + self.bar_room();
             let top = places.slots[index].y - offset;
             self.scroll_offset = top.clamp(0.0, (height - self.viewport_height).max(0.0));
