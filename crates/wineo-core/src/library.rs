@@ -26,8 +26,8 @@ mod sort;
 pub use cache::Cache;
 pub(crate) use check::{FindingKind, inspect, remove_strays};
 pub use preset::{
-    PRESET_NAME_MAX_CHARS, Preset, normalize_preset_name, preset_name_problem, remove_preset,
-    rename_preset, set_preset,
+    PRESET_NAME_MAX_CHARS, Preset, create_preset, normalize_preset_name, preset_name_problem,
+    remove_preset, rename_preset, set_preset,
 };
 pub use record::{
     Claim, RecordChanges, Recorded, SteamRecord, apply_changes, claim_game, dismiss_game,
