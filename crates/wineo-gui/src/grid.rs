@@ -1492,15 +1492,15 @@ fn gog_badge(color: Color, ink: Color, alpha: f32) -> Element<'static, Message> 
 }
 
 /// A card's content as one pointer target.
-/// A card's pointer input. Hover belongs to the slot under the pointer;
-/// the rest acts on its game.
+/// A card's pointer input. A press and the hover belong to the slot under
+/// the pointer; the rest acts on its game.
 pub(crate) fn card_area<'a>(
     content: impl Into<Element<'a, Message>>,
     slot: &SlotId,
 ) -> Element<'a, Message> {
     let name = slot.name().to_owned();
     mouse_area(content)
-        .on_press(Message::Select(name.clone()))
+        .on_press(Message::Press(slot.clone()))
         .on_double_click(Message::DoubleClick(name.clone()))
         .on_right_press(Message::Context(name))
         .on_enter(Message::Hover(Some(slot.clone())))

@@ -431,7 +431,7 @@ fn the_star_takes_presses_fading_in_and_none_fading_out() {
     assert!(
         messages
             .iter()
-            .any(|message| matches!(message, Message::Select(name) if name == "game")),
+            .any(|message| matches!(message, Message::Press(slot) if *slot == "game")),
         "{messages:?}"
     );
 }
@@ -453,7 +453,7 @@ fn the_fading_overlay_is_no_pointer_target() {
     assert!(
         messages
             .iter()
-            .any(|message| matches!(message, Message::Select(name) if name == "game")),
+            .any(|message| matches!(message, Message::Press(slot) if *slot == "game")),
         "{messages:?}"
     );
 }

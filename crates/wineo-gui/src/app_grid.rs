@@ -13,11 +13,12 @@ use crate::{App, Early, Message, SCROLL_ID, grid, grid_motion, sidebar};
 impl App {
     pub(crate) fn grid_card_located(
         &mut self,
-        name: String,
+        slot: SlotId,
         generation: u64,
         bounds: grid_motion::CardBounds,
     ) -> Early {
-        if self.selected.as_deref() != Some(&name)
+        // A reply for a copy the cursor has left is stale too.
+        if self.selected_slot().as_ref() != Some(&slot)
             || self.panel_hidden()
             || generation != self.grid_revision()
         {

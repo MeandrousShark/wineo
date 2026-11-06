@@ -255,12 +255,13 @@ impl App {
             self.flag_notice(notice);
             return Task::none();
         }
-        // Hiding the selected card hands its place to the one after it.
+        // Hiding the selected card hands the cursor's place to the one
+        // after it.
         let place = (flag == Flag::Hidden
             && value
             && !self.filters.show_hidden
             && self.selected.as_deref() == Some(name))
-        .then(|| self.filtered().iter().position(|card| card.name == name))
+        .then(|| self.selected_index(&self.grid_places()))
         .flatten();
         let write = self.write_flag(name, added, flag, value);
         let shown = self.set_flag(name, flag, value);
@@ -435,20 +436,16 @@ impl App {
         }
     }
 
-    /// Selects the card now at `place` in the shown order, or the last one,
-    /// or nothing when nothing is left.
+    /// Puts the cursor on the slot now at `place` in the shown order, or the
+    /// last one, or selects nothing when nothing is left.
     pub(crate) fn select_in_place(&mut self, place: usize) -> Task<Message> {
-        let shown = self.filtered();
-        let Some(next) = shown
-            .get(place)
-            .or(shown.last())
-            .map(|card| card.name.clone())
-        else {
+        let places = self.grid_places();
+        let Some(next) = places.ids.get(place).or(places.ids.last()).cloned() else {
             self.selected = None;
             self.close_panel();
             return Task::none();
         };
-        self.selected = Some(next);
+        self.set_cursor(next);
         self.selection_changed();
         Task::batch([
             self.scroll_selection(),

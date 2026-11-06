@@ -193,6 +193,10 @@ pub(crate) struct App {
     /// What `view` reads in place of the disk; see `prefix_facts`.
     facts: prefix_facts::Stored,
     pub(crate) selected: Option<String>,
+    /// Which copy of the selected game the cursor is on, set by clicks and
+    /// arrow keys. Unset, or for another game, it's the first copy; see
+    /// `App::selected_index`.
+    pub(crate) active_slot: Option<slot::SlotId>,
     /// The cards marked for a bulk action, which only ever holds shown
     /// games. `selected` stays the panel's card.
     pub(crate) marked: BTreeSet<String>,
@@ -354,7 +358,11 @@ pub(crate) struct Operation {
 #[derive(Debug, Clone)]
 pub(crate) enum Message {
     SearchChanged(String),
-    /// A card's press, which marks with Ctrl or Shift held.
+    /// A press on the card in this slot, which marks with Ctrl or Shift
+    /// held.
+    Press(slot::SlotId),
+    /// A press on this game's card, on the copy the cursor is on or else
+    /// its first.
     Select(String),
     /// Selects a card and opens its panel whatever keys are held, for
     /// Enter and other ways in that aren't a press on the card.
@@ -436,7 +444,7 @@ pub(crate) enum Message {
     TrashBadgeLoaded(sidebar::TrashBadge),
     ArtLoaded(ArtKey, bool, Result<image::Handle, String>),
     Scrolled(scrollable::Viewport),
-    GridCardLocated(String, u64, grid_motion::CardBounds),
+    GridCardLocated(slot::SlotId, u64, grid_motion::CardBounds),
     /// The scrollbar fade deadline, tagged with the wakeup that scheduled it.
     ScrollIdle(u64),
     Window(window::Event),
@@ -584,6 +592,7 @@ impl App {
             flag_writes: library_actions::Writes::default(),
             facts: prefix_facts::Stored::default(),
             selected: None,
+            active_slot: None,
             marked: BTreeSet::new(),
             mark_range: multi_select::Range::default(),
             panel_open: false,
@@ -899,6 +908,8 @@ impl App {
         // One place for every path that changes the theme: an Appearance
         // edit, a save, Revert, leaving Settings, or the system's mode.
         self.sync_palette();
+        // One place for every path that changes the selection.
+        self.sync_active_slot();
         // One place for every path that changes the hover or selection.
         self.sync_hover_fades();
         self.sync_star_pops();
@@ -975,6 +986,7 @@ impl App {
             && (matches!(
                 message,
                 Message::SearchChanged(_)
+                    | Message::Press(_)
                     | Message::Select(_)
                     | Message::OpenCard(_)
                     | Message::SpaceFocus(_)
@@ -1035,7 +1047,8 @@ impl App {
         if !self.collapse.idle()
             && (matches!(
                 message,
-                Message::Select(_)
+                Message::Press(_)
+                    | Message::Select(_)
                     | Message::OpenCard(_)
                     | Message::SpaceFocus(_)
                     | Message::DoubleClick(_)
@@ -1097,7 +1110,8 @@ impl App {
             | Message::ToastFocus(..)
             | Message::ToastAnswer(..)) => removal::update(self, message),
             Message::SearchChanged(search) => self.search_changed(search),
-            Message::Select(name) => self.card_pressed(name),
+            Message::Press(slot) => self.card_pressed(slot.name().to_owned(), Some(slot)),
+            Message::Select(name) => self.card_pressed(name, None),
             Message::OpenCard(name) => self.select_card(name),
             Message::SpaceFocus(focused) => {
                 self.space_answered(focused);
@@ -1277,8 +1291,8 @@ impl App {
             }
             Message::ArtLoaded(key, dimmed, result) => self.art_result(key, dimmed, result)?,
             Message::Scrolled(viewport) => self.grid_scrolled(viewport),
-            Message::GridCardLocated(name, generation, bounds) => {
-                self.grid_card_located(name, generation, bounds)?
+            Message::GridCardLocated(slot, generation, bounds) => {
+                self.grid_card_located(slot, generation, bounds)?
             }
             // Handled in `update`, which polls the toast's focus for it.
             Message::FocusRecheck => Task::none(),

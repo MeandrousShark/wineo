@@ -8,18 +8,47 @@ use crate::grid_motion::Places;
 use crate::slot::SlotId;
 use crate::{App, Message};
 
+/// The slot in `places` the cursor is on: `active` while it's a shown copy
+/// of the `selected` game, else that game's first copy.
+pub(crate) fn cursor(
+    places: &Places,
+    selected: Option<&str>,
+    active: Option<&SlotId>,
+) -> Option<usize> {
+    let selected = selected?;
+    active
+        .filter(|slot| slot.name() == selected)
+        .and_then(|slot| places.index(slot))
+        .or_else(|| places.first(selected))
+}
+
 impl App {
-    /// Where the selected card is in `places`: the selected game's first
-    /// slot.
+    /// Where the cursor is in `places`: the copy of the selected game it's
+    /// on, else that game's first.
     pub(crate) fn selected_index(&self, places: &Places) -> Option<usize> {
-        places.first(self.selected.as_deref()?)
+        cursor(places, self.selected.as_deref(), self.active_slot.as_ref())
     }
 
-    /// The selected card's slot, when it's shown.
+    /// The slot the cursor is on, when the selected game is shown.
     pub(crate) fn selected_slot(&self) -> Option<SlotId> {
         let places = self.grid_places();
         self.selected_index(&places)
             .map(|index| places.ids[index].clone())
+    }
+
+    /// Puts the cursor on `slot`, selecting its game.
+    pub(crate) fn set_cursor(&mut self, slot: SlotId) {
+        self.selected = Some(slot.name().to_owned());
+        self.active_slot = Some(slot);
+    }
+
+    /// Forgets a copy of a game that isn't the selected one, however the
+    /// selection moved, so coming back to that game later starts on its
+    /// first copy.
+    pub(crate) fn sync_active_slot(&mut self) {
+        if self.active_slot.as_ref().map(SlotId::name) != self.selected.as_deref() {
+            self.active_slot = None;
+        }
     }
 
     pub(crate) fn select_card(&mut self, name: String) -> Task<Message> {
@@ -69,3 +98,6 @@ impl App {
         Task::batch([panel_art, self.load_panel_art(), self.start_selected()])
     }
 }
+
+#[cfg(test)]
+mod tests;

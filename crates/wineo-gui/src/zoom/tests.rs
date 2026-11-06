@@ -1397,12 +1397,12 @@ fn a_selection_located_before_a_zoom_frame_is_dropped() {
     let _ = frame(&mut app, 40);
     assert_ne!(app.grid_revision(), before);
     let offset = app.scroll_offset;
-    let _ = app.update(Message::GridCardLocated(name.clone(), before, stale));
+    let _ = app.update(Message::GridCardLocated(name.clone().into(), before, stale));
     assert_eq!(app.scroll_offset, offset);
     let during = app.grid_revision();
     let _ = frame(&mut app, 80);
     assert_ne!(app.grid_revision(), during);
-    let _ = app.update(Message::GridCardLocated(name.clone(), during, stale));
+    let _ = app.update(Message::GridCardLocated(name.clone().into(), during, stale));
     assert_eq!(app.scroll_offset, offset);
     let _ = settle(&mut app);
     let dragged = app.grid_revision();
@@ -1410,10 +1410,18 @@ fn a_selection_located_before_a_zoom_frame_is_dropped() {
     assert_ne!(app.grid_revision(), dragged);
     let _ = zoom(&mut app, Event::DragEnded);
     let offset = app.scroll_offset;
-    let _ = app.update(Message::GridCardLocated(name.clone(), dragged, stale));
+    let _ = app.update(Message::GridCardLocated(
+        name.clone().into(),
+        dragged,
+        stale,
+    ));
     assert_eq!(app.scroll_offset, offset);
     // One measured now still scrolls.
-    let _ = app.update(Message::GridCardLocated(name, app.grid_revision(), stale));
+    let _ = app.update(Message::GridCardLocated(
+        name.into(),
+        app.grid_revision(),
+        stale,
+    ));
     assert_eq!(app.scroll_offset, 5000.0 - 50.0 + 300.0 - 600.0);
 }
 

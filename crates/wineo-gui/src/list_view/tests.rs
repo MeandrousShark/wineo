@@ -328,7 +328,7 @@ fn a_row_takes_presses_like_a_card() {
     assert!(
         messages
             .iter()
-            .any(|message| message == "Select(\"game-001\")"),
+            .any(|message| message == r#"Press(SlotId { section: All, name: "game-001" })"#),
         "{messages:?}"
     );
     // The star's room on a hovered row favorites it, as the poster's does.
