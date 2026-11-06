@@ -1246,3 +1246,44 @@ fn several_entries_added_to_an_empty_or_lone_list_are_spaced() {
     set_preset(&fixture.paths, "P", &wanted).unwrap();
     assert!(fixture.read().contains("[\"a\",\"b\",\"c\"]"));
 }
+
+#[test]
+fn create_preset_saves_a_new_name() {
+    let fixture = Fixture::new();
+    assert!(create_preset(&fixture.paths, "Couch co-op", &couch()).unwrap());
+    assert_eq!(fixture.preset("Couch co-op"), couch());
+}
+
+#[test]
+fn create_preset_refuses_a_name_taken_exactly_or_in_another_case_and_writes_nothing() {
+    let fixture = Fixture::with(
+        "schema_version = 1\n\n# Kept.\n[presets.\"Couch co-op\"]\ntags = [\"vr\"]\n",
+    );
+    let before = fixture.read();
+    let inode = fixture.inode();
+    for name in ["Couch co-op", "couch CO-OP"] {
+        let error = create_preset(&fixture.paths, name, &couch()).unwrap_err();
+        assert!(
+            matches!(&error, Error::PresetNameTaken(taken) if taken == "Couch co-op"),
+            "{name}: {error:?}"
+        );
+        assert_eq!(
+            error.to_string(),
+            "A preset named Couch co-op already exists."
+        );
+    }
+    assert_eq!(fixture.read(), before);
+    assert_eq!(fixture.inode(), inode);
+    // The upsert still saves over the exact name.
+    assert!(set_preset(&fixture.paths, "Couch co-op", &couch()).unwrap());
+}
+
+#[test]
+fn create_preset_checks_the_name_like_set_preset() {
+    let fixture = Fixture::new();
+    assert!(matches!(
+        create_preset(&fixture.paths, " padded", &couch()),
+        Err(Error::InvalidPresetName(_))
+    ));
+    assert!(!fixture.paths.library_file().exists());
+}

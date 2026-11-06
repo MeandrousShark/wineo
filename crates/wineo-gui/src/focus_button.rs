@@ -36,6 +36,8 @@ pub(crate) fn control<'a, M: Clone + 'a>(
         exclude: None,
         menu: None,
         arrows: false,
+        rename: None,
+        delete: None,
     })
 }
 
@@ -57,6 +59,8 @@ pub(crate) fn excludable<'a, M: Clone + 'a>(
         exclude: Some(on_exclude),
         menu: None,
         arrows: false,
+        rename: None,
+        delete: None,
     })
 }
 
@@ -81,6 +85,34 @@ pub(crate) fn with_menu<'a, M: Clone + 'a>(
         exclude: None,
         menu: Some(on_menu),
         arrows: false,
+        rename: None,
+        delete: None,
+    })
+}
+
+/// A row of a saved list that can also be renamed and deleted: R sends
+/// `on_rename` and Delete `on_delete` while it has focus, and a right-click,
+/// Shift+F10, or the Menu key sends `on_menu`, as `with_menu` does.
+pub(crate) fn editable_row<'a, M: Clone + 'a>(
+    content: Element<'a, M>,
+    id: impl Into<iced::widget::Id>,
+    on_press: M,
+    on_menu: M,
+    on_rename: M,
+    on_delete: M,
+) -> Element<'a, M> {
+    Element::new(FocusControl {
+        content,
+        enabled: true,
+        id: id.into(),
+        on_press,
+        mouse_focus: true,
+        leaves_submit: false,
+        exclude: None,
+        menu: Some(on_menu),
+        arrows: false,
+        rename: Some(on_rename),
+        delete: Some(on_delete),
     })
 }
 
@@ -124,6 +156,8 @@ fn leaves_submit<'a, M: Clone + 'a>(
         exclude: None,
         menu: None,
         arrows: false,
+        rename: None,
+        delete: None,
     })
 }
 
@@ -146,6 +180,8 @@ pub(crate) fn keyboard_control<'a, M: Clone + 'a>(
         exclude: None,
         menu: None,
         arrows: false,
+        rename: None,
+        delete: None,
     })
 }
 
@@ -168,6 +204,8 @@ pub(crate) fn segment<'a, M: Clone + 'a>(
         exclude: None,
         menu: None,
         arrows: true,
+        rename: None,
+        delete: None,
     })
 }
 
@@ -290,6 +328,12 @@ struct FocusControl<'a, M, R: AdvancedRenderer = iced::Renderer> {
     menu: Option<M>,
     /// Left and Right press it as well, for a segment of two choices.
     arrows: bool,
+    /// Sent for R while focused, and `delete` for Delete, for a row that
+    /// can be renamed or deleted from the keyboard. Like `exclude`, the
+    /// control owns the keys, since its popup can't tell which row is
+    /// focused.
+    rename: Option<M>,
+    delete: Option<M>,
 }
 
 #[derive(Default)]
@@ -482,6 +526,37 @@ where
                     return;
                 }
             }
+            Event::Keyboard(iced::keyboard::Event::KeyPressed {
+                key: iced::keyboard::Key::Character(character),
+                modifiers,
+                repeat: false,
+                ..
+            }) if self.enabled
+                && state.focused
+                && character.eq_ignore_ascii_case("r")
+                && !(modifiers.control() || modifiers.alt() || modifiers.logo()) =>
+            {
+                if let Some(rename) = &self.rename {
+                    shell.publish(rename.clone());
+                    shell.capture_event();
+                    return;
+                }
+            }
+            Event::Keyboard(iced::keyboard::Event::KeyPressed {
+                key: iced::keyboard::Key::Named(iced::keyboard::key::Named::Delete),
+                modifiers,
+                repeat: false,
+                ..
+            }) if self.enabled
+                && state.focused
+                && !(modifiers.control() || modifiers.alt() || modifiers.logo()) =>
+            {
+                if let Some(delete) = &self.delete {
+                    shell.publish(delete.clone());
+                    shell.capture_event();
+                    return;
+                }
+            }
             _ => {}
         }
 
@@ -587,6 +662,8 @@ mod tests {
             exclude: None,
             menu: None,
             arrows: false,
+            rename: None,
+            delete: None,
         });
         let mut tree = tree::Tree::new(widget.as_widget());
         let bounds = Size::new(100.0, 32.0);
@@ -631,6 +708,8 @@ mod tests {
             exclude: None,
             menu: None,
             arrows: false,
+            rename: None,
+            delete: None,
         });
         let mut tree = tree::Tree::new(widget.as_widget());
         let bounds = Size::new(100.0, 32.0);
@@ -679,6 +758,8 @@ mod tests {
             exclude: None,
             menu: None,
             arrows: false,
+            rename: None,
+            delete: None,
         });
         let mut tree = tree::Tree::new(widget.as_widget());
         let bounds = Size::new(100.0, 32.0);
@@ -829,6 +910,8 @@ mod tests {
                         exclude: None,
                         menu: None,
                         arrows: false,
+                        rename: None,
+                        delete: None,
                     });
                 let mut tree = tree::Tree::new(widget.as_widget());
                 tree.state.downcast_mut::<State>().focus();
@@ -893,6 +976,8 @@ mod tests {
             exclude: None,
             menu: None,
             arrows: true,
+            rename: None,
+            delete: None,
         });
         let mut tree = tree::Tree::new(widget.as_widget());
         let node = widget.as_widget_mut().layout(
@@ -980,6 +1065,8 @@ mod tests {
             exclude: None,
             menu: None,
             arrows: false,
+            rename: None,
+            delete: None,
         });
         let mut tree = tree::Tree::new(widget.as_widget());
         tree.state.downcast_mut::<State>().focus();

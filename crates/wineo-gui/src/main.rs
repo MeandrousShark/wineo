@@ -57,6 +57,7 @@ mod panel_motion;
 mod picker;
 mod portable_page;
 mod prefix_facts;
+mod presets;
 mod progress;
 mod random_pick;
 mod removal;
@@ -195,6 +196,9 @@ pub(crate) struct App {
     tag_opening: library_menu::Opening,
     /// Tag writes in flight from the action bar.
     tag_writes: bulk_tags::Writes,
+    /// Saved presets, the one applied, and what the Filters popup is doing
+    /// to them.
+    presets: presets::Presets,
     /// The Filters button's bounds as last laid out, which the filter tab
     /// hangs from.
     filter_button: Option<iced::Rectangle>,
@@ -606,6 +610,7 @@ impl App {
             tag_popup: action_bar::Popup::default(),
             tag_opening: library_menu::Opening::default(),
             tag_writes: bulk_tags::Writes::default(),
+            presets: presets::Presets::default(),
             filter_button: None,
             sort_menu_position: iced::Point::ORIGIN,
             view_writes: sort_control::Writes::default(),
@@ -743,6 +748,7 @@ impl App {
         app.query = saved.view.into();
         // The banner shows from the first frame, before the cards arrive.
         app.problem_read(saved.problem);
+        app.presets_read(saved.presets);
         app.reorder();
         let load = app.reload_library();
         let badge = app.reload_badge();
@@ -1598,6 +1604,7 @@ impl App {
         self.view_writes.pending()
             || self.flag_writes.pending()
             || self.tag_writes.pending()
+            || self.presets.writing.is_some()
             || self.steam_auto.running()
     }
 

@@ -132,13 +132,31 @@ pub(super) fn read_list<T: Ord>(
 /// preset's only in case is refused, so the list never holds two that look
 /// alike. Returns whether the file changed.
 pub fn set_preset(paths: &Paths, name: &str, preset: &Preset) -> Result<bool> {
+    save_preset(paths, name, preset, case_variant)
+}
+
+/// Saves a new preset under `name`, refusing when one already has that name
+/// in any case, so a preset another writer made since the caller last read
+/// the file is never overwritten. Returns whether the file changed.
+pub fn create_preset(paths: &Paths, name: &str, preset: &Preset) -> Result<bool> {
+    save_preset(paths, name, preset, existing_name)
+}
+
+/// `set_preset` and `create_preset`, refusing whatever name `taken` finds
+/// under the lock.
+fn save_preset(
+    paths: &Paths,
+    name: &str,
+    preset: &Preset,
+    taken: fn(&DocumentMut, &str) -> Option<String>,
+) -> Result<bool> {
     if let Some(problem) = preset_name_problem(name) {
         return Err(Error::InvalidPresetName(problem));
     }
     let mut refused = None;
     let changed = edit(paths, |document| {
-        if let Some(taken) = case_variant(document, name) {
-            refused = Some(Error::PresetNameTaken(taken));
+        if let Some(existing) = taken(document, name) {
+            refused = Some(Error::PresetNameTaken(existing));
             return false;
         }
         write_preset(document, name, preset)
@@ -252,6 +270,15 @@ fn case_variant(document: &DocumentMut, name: &str) -> Option<String> {
         .iter()
         .find(|(other, item)| item.is_table_like() && fold_case(other) == folded)
         .map(|(other, _)| other.to_owned())
+}
+
+/// The preset named `name` exactly, else one that differs only in case.
+fn existing_name(document: &DocumentMut, name: &str) -> Option<String> {
+    let presets = document.get("presets").and_then(Item::as_table_like)?;
+    if presets.get(name).is_some_and(Item::is_table_like) {
+        return Some(name.to_owned());
+    }
+    case_variant(document, name)
 }
 
 fn write_preset(document: &mut DocumentMut, name: &str, preset: &Preset) -> bool {

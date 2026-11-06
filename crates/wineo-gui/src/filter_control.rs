@@ -19,7 +19,7 @@ use crate::{App, Message, focus_button};
 pub(crate) const FILTER_BUTTON_ID: &str = "library-filters";
 const SHOW_HIDDEN_ID: &str = "library-filter-show-hidden";
 const CLEAR_ID: &str = "library-filter-clear";
-const MENU_SCROLL_ID: &str = "library-filter-menu";
+pub(crate) const MENU_SCROLL_ID: &str = "library-filter-menu";
 /// What the popup's placement assumes it needs at least, so a button near
 /// the bottom of a short window still leaves room for a few rows.
 const MIN_HEIGHT: f32 = 200.0;
@@ -61,6 +61,8 @@ pub(crate) enum Event {
     ClearChipsFromKeyboard,
     /// A wheel turn over the filter tab, which scrolls the grid under it.
     Wheel(iced::mouse::ScrollDelta),
+    /// The presets at the top of the popup.
+    Preset(crate::presets::Event),
 }
 
 impl Event {
@@ -68,7 +70,10 @@ impl Event {
     pub(crate) fn is_input(&self) -> bool {
         // The reply always arrives, so it can clear its request even when
         // an overlay is up; `OpenUnder` checks the window itself.
-        !matches!(self, Self::OpenUnder(..) | Self::ButtonBounds(_))
+        match self {
+            Self::Preset(event) => event.is_input(),
+            _ => !matches!(self, Self::OpenUnder(..) | Self::ButtonBounds(_)),
+        }
     }
 }
 
@@ -225,7 +230,15 @@ impl App {
         }
     }
 
-    /// The popup's focusable rows, in order.
+    /// Every focusable control in the popup, in order: the presets part,
+    /// then the filter rows.
+    pub(crate) fn popup_ids(&self) -> Vec<String> {
+        let mut ids = self.preset_ids();
+        ids.extend(self.filter_menu_ids());
+        ids
+    }
+
+    /// The popup's focusable filter rows, in order.
     fn filter_menu_ids(&self) -> Vec<String> {
         let offered = self.offered();
         let mut ids: Vec<String> = offered.stores.iter().map(|label| store_id(label)).collect();
@@ -314,6 +327,7 @@ pub(crate) fn update(app: &mut App, event: Event) -> Task<Message> {
             app.interrupt_zoom();
             crate::filter_tab::wheel(delta, app.modifiers.shift())
         }
+        Event::Preset(event) => crate::presets::update(app, event),
     }
 }
 
@@ -344,33 +358,44 @@ fn open_menu(app: &mut App, position: Point) -> Task<Message> {
     app.close_library_menus();
     app.filter_menu = true;
     app.filter_menu_position = position;
+    app.presets_opened();
     // Focus moves into the popup, so a second Enter or Space toggles a row
-    // instead of closing it again.
+    // instead of closing it again. It lands on the first filter row as it
+    // did before presets, which sit one Up or Shift+Tab above it.
     let first = app.filter_menu_ids().swap_remove(0);
     crate::library_menu::focus(first, MENU_SCROLL_ID)
 }
 
-/// Keys while the popup is open: Escape closes it, Tab and the up and down
-/// arrows move through its rows, and the rows take Enter and Space
-/// themselves. Nothing else reaches the grid behind it.
+/// Keys while the popup is open: Escape closes a preset's edit, or else
+/// the popup, Tab and the up and down arrows move through its rows, and the
+/// rows take Enter, Space, X, R, and Delete themselves. Nothing else reaches
+/// the grid behind it.
 pub(crate) fn key(app: &mut App, key: &Key, modifiers: Modifiers) -> Task<Message> {
     match key {
         Key::Named(Named::Escape) => {
+            if let Some(task) = app.cancel_preset_edit() {
+                return task;
+            }
             app.filter_menu = false;
             iced::widget::operation::focus(iced::widget::Id::new(FILTER_BUTTON_ID))
         }
         Key::Named(Named::Tab | Named::ArrowDown | Named::ArrowUp) => {
             let reverse = *key == Key::Named(Named::ArrowUp)
                 || (*key == Key::Named(Named::Tab) && modifiers.shift());
-            crate::library_menu::cycle(&app.filter_menu_ids(), reverse, MENU_SCROLL_ID)
+            crate::library_menu::cycle(&app.popup_ids(), reverse, MENU_SCROLL_ID)
         }
         _ => Task::none(),
     }
 }
 
-/// The Filters button's label, with how many store, platform, and tag
-/// filters are on, included or excluded.
+/// The Filters button's label: the active preset while the view matches
+/// it, or else how many store, platform, and tag filters are on, included
+/// or excluded.
 pub(crate) fn button_label(app: &App) -> String {
+    if let Some(name) = app.preset_shown() {
+        let name = crate::tile_title::fit(name, crate::presets::BUTTON_NAME, 14.0, Font::DEFAULT);
+        return format!("Filters ({name})");
+    }
     match app.filters.active() {
         0 => "Filters".to_owned(),
         count => format!("Filters ({count})"),
@@ -512,8 +537,13 @@ impl App {
                 .color(palette.foreground)
                 .height(ACTION_MENU_HEADER_HEIGHT)
                 .align_y(Center),
+            heading("Presets", palette),
         ]
         .spacing(ACTION_MENU_SPACING);
+        for item in self.presets_view() {
+            rows = rows.push(item);
+        }
+        rows = rows.push(ui::separator(palette).padding([3, 0]));
         type Group<'a> = (
             &'a str,
             Vec<&'static str>,
