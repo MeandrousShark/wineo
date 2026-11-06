@@ -233,9 +233,9 @@ impl App {
             Action::ClearSearch => self.update(Message::SearchChanged(String::new())),
             Action::GridFromSearch => {
                 self.interrupt_zoom();
-                // With nothing shown there's nowhere to go, so the kept
+                // With nothing in view there's nowhere to go, so the kept
                 // selection and the search's focus both stay.
-                if self.filtered().is_empty() {
+                if self.grid_places().ids.is_empty() {
                     return Task::none();
                 }
                 let old = self.selected.clone();
@@ -270,7 +270,16 @@ impl App {
                 }
                 // The arrows walk slots, so stepping onto another copy of
                 // the selected game moves the cursor and leaves the panel.
-                let current = self.selected_index(&places);
+                // A cursor on a header starts from there.
+                let current = match self.header_cursor.as_ref().and_then(|key| {
+                    places
+                        .headers
+                        .iter()
+                        .position(|place| &place.header.key == key)
+                }) {
+                    Some(header) => Some(Spot::Header(header)),
+                    None => self.selected_index(&places).map(Spot::Card),
+                };
                 if let Some(next) = walk(&places, current, direction) {
                     self.set_cursor(places.ids[next].clone());
                 }
@@ -357,11 +366,12 @@ impl App {
         }
     }
 
-    /// The selected card is in the shown grid, whatever else hides it.
+    /// The selected game has a copy in view: shown, and not only in
+    /// collapsed sections (plan 0062, question 22).
     pub(crate) fn selected_shown(&self) -> bool {
         self.selected
             .as_ref()
-            .is_some_and(|name| self.filtered().iter().any(|card| &card.name == name))
+            .is_some_and(|name| self.grid_places().first(name).is_some())
     }
 
     pub(crate) fn selection_changed(&mut self) {
@@ -397,27 +407,48 @@ impl App {
     }
 }
 
+/// Where the cursor is: on a card's slot, or on a section's header.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Spot {
+    Card(usize),
+    Header(usize),
+}
+
 /// The slot an arrow moves the cursor to from `current`, the first slot
-/// without one. Left and Right follow the shown order and wrap. Up and Down
-/// go to the nearest row above or below by where the slots sit, so they
-/// cross section headers, and land on the slot whose middle is nearest the
-/// cursor's, the leftmost on a tie. With no row there, the cursor stays.
+/// without one. Left and Right follow the shown order and wrap; from a
+/// header they go to the cards either side of it. Up and Down go to the
+/// nearest row above or below by where the slots sit, so they cross
+/// section headers, and land on the slot whose middle is nearest the
+/// cursor's, the leftmost on a tie; from a header that's the row's first.
+/// With no row there, the cursor stays: `None` from a header.
 pub(crate) fn walk(
     places: &crate::grid_motion::Places,
-    current: Option<usize>,
+    current: Option<Spot>,
     direction: Direction,
 ) -> Option<usize> {
     let count = places.slots.len();
     if count == 0 {
         return None;
     }
-    let Some(index) = current else {
-        return Some(0);
+    let (here, middle, before, after) = match current {
+        None => return Some(0),
+        Some(Spot::Card(index)) => {
+            let here = places.slots[index];
+            (here, here.center_x(), index + count - 1, index + 1)
+        }
+        Some(Spot::Header(header)) => {
+            let place = places.headers.get(header)?;
+            let at = place.header.at;
+            (place.slot, place.slot.x, at + count - 1, at)
+        }
     };
-    let here = places.slots[index];
+    let stay = match current {
+        Some(Spot::Card(index)) => Some(index),
+        _ => None,
+    };
     let row = match direction {
-        Direction::Left => return Some((index + count - 1) % count),
-        Direction::Right => return Some((index + 1) % count),
+        Direction::Left => return Some(before % count),
+        Direction::Right => return Some(after % count),
         Direction::Up => places
             .slots
             .iter()
@@ -432,9 +463,8 @@ pub(crate) fn walk(
             .reduce(f32::min),
     };
     let Some(row) = row else {
-        return Some(index);
+        return stay;
     };
-    let middle = here.center_x();
     places
         .slots
         .iter()

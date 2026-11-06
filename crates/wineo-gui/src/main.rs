@@ -205,6 +205,9 @@ pub(crate) struct App {
     /// arrow keys. Unset, or for another game, it's the first copy; see
     /// `App::selected_index`.
     pub(crate) active_slot: Option<slot::SlotId>,
+    /// The header the cursor moved to when its section collapsed, which
+    /// the arrows then start from (plan 0062, question 22).
+    pub(crate) header_cursor: Option<slot::SectionKey>,
     /// A game the grid shows a second time, and where; see
     /// `App::show_test_copy`.
     #[cfg(test)]
@@ -373,6 +376,8 @@ pub(crate) enum Message {
     /// A press on the card in this slot, which marks with Ctrl or Shift
     /// held.
     Press(slot::SlotId),
+    /// A click, Enter, or Space on a section's header.
+    ToggleSection(slot::SectionKey),
     /// A press on this game's card, on the copy the cursor is on or else
     /// its first.
     Select(String),
@@ -608,6 +613,7 @@ impl App {
             facts: prefix_facts::Stored::default(),
             selected: None,
             active_slot: None,
+            header_cursor: None,
             #[cfg(test)]
             test_copy: None,
             marked: BTreeSet::new(),
@@ -1009,6 +1015,7 @@ impl App {
                 message,
                 Message::SearchChanged(_)
                     | Message::Press(_)
+                    | Message::ToggleSection(_)
                     | Message::Select(_)
                     | Message::OpenCard(_)
                     | Message::SpaceFocus(_)
@@ -1070,6 +1077,7 @@ impl App {
             && (matches!(
                 message,
                 Message::Press(_)
+                    | Message::ToggleSection(_)
                     | Message::Select(_)
                     | Message::OpenCard(_)
                     | Message::SpaceFocus(_)
@@ -1133,6 +1141,7 @@ impl App {
             | Message::ToastAnswer(..)) => removal::update(self, message),
             Message::SearchChanged(search) => self.search_changed(search),
             Message::Press(slot) => self.card_pressed(slot.name().to_owned(), Some(slot)),
+            Message::ToggleSection(key) => self.toggle_section(key),
             Message::Select(name) => self.card_pressed(name, None),
             Message::OpenCard(name) => self.select_card(name),
             Message::SpaceFocus(focused) => {

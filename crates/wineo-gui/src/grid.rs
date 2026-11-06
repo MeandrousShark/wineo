@@ -271,6 +271,7 @@ impl App {
                     element: self.section_header(
                         &place.header,
                         self.grid_motion.header_opacity(&place.header.key),
+                        true,
                     ),
                 })
                 .collect(),
@@ -285,7 +286,7 @@ impl App {
                 .map(|leaving| crate::grid_motion::OutgoingHeader {
                     key: leaving.header.key.clone(),
                     bounds: leaving.bounds,
-                    element: self.section_header(&leaving.header, leaving.opacity),
+                    element: self.section_header(&leaving.header, leaving.opacity, false),
                 })
                 .collect(),
         };

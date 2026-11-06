@@ -99,7 +99,6 @@ impl SlotId {
     }
 
     /// The section it's drawn in.
-    #[cfg(test)]
     pub(crate) fn section(&self) -> &SectionKey {
         &self.section
     }

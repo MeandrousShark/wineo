@@ -13,7 +13,7 @@ use wineo_core::runtime::State;
 use wineo_core::source::{Facts, Source};
 
 use crate::grid_motion::{self, GridLayout, HEADER_HEIGHT, PADDING, Places, ViewLayout};
-use crate::keys::{Direction, move_index, walk};
+use crate::keys::{Direction, Spot, move_index, walk};
 use crate::library::Card;
 use crate::order::{self, Filters, Of, Order, Query, RECENT};
 use crate::slot::{SectionKey, SlotId};
@@ -1122,7 +1122,7 @@ fn named(slot: &SlotId) -> String {
 fn walked(places: &Places, from: &str, direction: Direction) -> String {
     let at = places.ids.iter().position(|slot| named(slot) == from);
     assert!(at.is_some(), "{from}");
-    let next = walk(places, at, direction).unwrap();
+    let next = walk(places, at.map(Spot::Card), direction).unwrap();
     named(&places.ids[next])
 }
 
@@ -1197,7 +1197,7 @@ fn the_walk_matches_the_old_arithmetic_on_a_flat_grid() {
             ] {
                 for current in std::iter::once(None).chain((0..count).map(Some)) {
                     assert_eq!(
-                        walk(&places, current, direction),
+                        walk(&places, current.map(Spot::Card), direction),
                         move_index(current, count, columns, direction),
                         "{columns} columns, {count} cards, {current:?} {direction:?}"
                     );
@@ -1365,4 +1365,307 @@ fn switching_group_by_in_the_app_springs_the_paired_copies() {
         .map(|card| &card.id)
         .collect();
     assert_eq!(leaving, [&slot(tag("rpg"), "hades")]);
+}
+
+/// Recently played holds hades, rpg holds hades and celeste, and No tag
+/// holds notepad: the plan's question 22 library.
+fn collapsible() -> App {
+    let mut app = grouped(
+        vec![
+            played(tagged("hades", &["rpg"]), 5),
+            tagged("celeste", &["rpg"]),
+            tagged("notepad", &[]),
+        ],
+        GroupBy::Tag,
+    );
+    let _ = settle_grid(&mut app);
+    app
+}
+
+fn header_keys(app: &App) -> Vec<(SectionKey, usize, bool)> {
+    app.grid_places()
+        .headers
+        .iter()
+        .map(|place| {
+            (
+                place.header.key.clone(),
+                place.header.count,
+                place.header.collapsed,
+            )
+        })
+        .collect()
+}
+
+fn ctrl_a(app: &mut App) {
+    let _ = app.update(Message::KeyWithFocus(
+        Key::Character("a".into()),
+        Modifiers::CTRL,
+        iced::event::Status::Ignored,
+        false,
+    ));
+}
+
+#[test]
+fn a_collapsed_section_keeps_its_header_and_count_and_opens_again() {
+    // Plan 0062, question 13's A.
+    let mut app = collapsible();
+    let notepad_before = app.grid_places().slots[3];
+    let _ = app.update(Message::ToggleSection(tag("rpg")));
+    assert_eq!(
+        header_keys(&app),
+        [
+            (SectionKey::Recent, 1, false),
+            (tag("rpg"), 2, true),
+            (SectionKey::NoTag, 1, false),
+        ]
+    );
+    let places = app.grid_places();
+    assert_eq!(
+        places.ids,
+        [
+            slot(SectionKey::Recent, "hades"),
+            slot(SectionKey::NoTag, "notepad")
+        ]
+    );
+    // What's below moves up, springing there.
+    assert!(app.grid_motion.active());
+    assert!(places.slots[1].y < notepad_before.y);
+    // Nothing about it is saved.
+    assert!(app.view_writes.group.is_none());
+    assert!(
+        !app.paths.library_file().exists() || {
+            let saved = std::fs::read_to_string(app.paths.library_file()).unwrap();
+            !saved.contains("collapsed")
+        }
+    );
+    // Collapsing lasts the session, through a regroup and back.
+    app.group = GroupBy::Source;
+    app.reorder();
+    app.group = GroupBy::Tag;
+    app.reorder();
+    assert_eq!(header_keys(&app)[1], (tag("rpg"), 2, true));
+    let _ = app.update(Message::ToggleSection(tag("rpg")));
+    assert_eq!(header_keys(&app)[1], (tag("rpg"), 2, false));
+    assert_eq!(app.grid_places().ids.len(), 4);
+}
+
+#[test]
+fn ctrl_a_marks_only_what_is_in_view() {
+    // Plan 0062, question 22's A: hades comes in through Recently played.
+    let mut app = collapsible();
+    let _ = app.update(Message::ToggleSection(tag("rpg")));
+    ctrl_a(&mut app);
+    let marked: Vec<&str> = app.marked.iter().map(String::as_str).collect();
+    assert_eq!(marked, ["hades", "notepad"]);
+}
+
+#[test]
+fn collapsing_drops_only_the_marks_with_no_copy_left_in_view() {
+    // Plan 0062, question 22's A.
+    let mut app = collapsible();
+    ctrl_a(&mut app);
+    assert_eq!(app.marked.len(), 3);
+    let _ = app.update(Message::ToggleSection(tag("rpg")));
+    // hades is still in Recently played; celeste had only rpg.
+    let marked: Vec<&str> = app.marked.iter().map(String::as_str).collect();
+    assert_eq!(marked, ["hades", "notepad"]);
+    // Collapsing hades's other copy too drops its mark.
+    let _ = app.update(Message::ToggleSection(SectionKey::Recent));
+    let marked: Vec<&str> = app.marked.iter().map(String::as_str).collect();
+    assert_eq!(marked, ["notepad"]);
+    // Opening a section never brings a mark back.
+    let _ = app.update(Message::ToggleSection(tag("rpg")));
+    assert_eq!(app.marked.len(), 1);
+    // A mark can't land on a game with no copy in view.
+    let _ = app.update(Message::ToggleSection(tag("rpg")));
+    app.toggle_mark("celeste");
+    assert!(!app.marked.contains("celeste"));
+}
+
+#[test]
+fn a_range_skips_a_collapsed_section() {
+    // Plan 0062, question 22's A: Shift+click across rpg skips it.
+    let mut app = collapsible();
+    let _ = app.update(Message::ToggleSection(tag("rpg")));
+    let _ = app.update(Message::Press(slot(SectionKey::Recent, "hades")));
+    app.modifiers = Modifiers::SHIFT;
+    let _ = app.update(Message::Press(slot(SectionKey::NoTag, "notepad")));
+    app.modifiers = Modifiers::empty();
+    let marked: Vec<&str> = app.marked.iter().map(String::as_str).collect();
+    assert_eq!(marked, ["hades", "notepad"]);
+}
+
+#[test]
+fn the_random_picker_draws_by_game_from_what_is_in_view() {
+    // Plan 0062, question 22's A, and a game shown twice isn't twice as
+    // likely.
+    let mut app = collapsible();
+    app.random_pool = wineo_core::library::RandomPool::Any;
+    let mut rng = fastrand::Rng::with_seed(7);
+    let mut seen = BTreeSet::new();
+    for _ in 0..200 {
+        seen.insert(app.random_choice(&mut rng).unwrap());
+    }
+    assert_eq!(seen.len(), 3);
+    let _ = app.update(Message::ToggleSection(tag("rpg")));
+    let mut seen = BTreeSet::new();
+    let mut hades = 0;
+    for _ in 0..400 {
+        let pick = app.random_choice(&mut rng).unwrap();
+        hades += usize::from(pick == "hades");
+        seen.insert(pick);
+    }
+    assert_eq!(
+        seen,
+        BTreeSet::from(["hades".to_owned(), "notepad".to_owned()])
+    );
+    // Two games, one pick each: hades's one copy in view is one chance.
+    assert!((120..280).contains(&hades), "{hades}");
+    // With every section collapsed there's nothing to pick.
+    for key in [SectionKey::Recent, SectionKey::NoTag] {
+        let _ = app.update(Message::ToggleSection(key));
+    }
+    assert!(app.grid_places().ids.is_empty());
+    assert_eq!(app.random_choice(&mut rng), None);
+}
+
+#[test]
+fn the_cursors_section_collapsing_moves_it_to_the_header_and_keeps_the_panel() {
+    // Plan 0062, question 22.
+    let mut app = collapsible();
+    let celeste = slot(tag("rpg"), "celeste");
+    let _ = app.update(Message::Press(celeste));
+    assert!(app.panel_open);
+    let _ = app.update(Message::ToggleSection(tag("rpg")));
+    assert_eq!(app.header_cursor, Some(tag("rpg")));
+    assert_eq!(app.active_slot, None);
+    assert!(app.panel_open);
+    assert_eq!(app.selected.as_deref(), Some("celeste"));
+    // The selected game has no copy in view, so keys that act on it wait.
+    assert!(!app.selected_shown());
+    let key = |app: &mut App, named: Named| {
+        let _ = app.update(Message::KeyWithFocus(
+            Key::Named(named),
+            Modifiers::empty(),
+            iced::event::Status::Ignored,
+            false,
+        ));
+    };
+    // Down from the header goes to the first card after it.
+    key(&mut app, Named::ArrowDown);
+    assert_eq!(
+        app.selected_slot(),
+        Some(slot(SectionKey::NoTag, "notepad"))
+    );
+    assert_eq!(app.header_cursor, None);
+    // Back on the header, Up goes to the row above and Left to the card
+    // before it in shown order.
+    app.header_cursor = Some(tag("rpg"));
+    key(&mut app, Named::ArrowUp);
+    assert_eq!(app.selected_slot(), Some(slot(SectionKey::Recent, "hades")));
+    app.header_cursor = Some(tag("rpg"));
+    key(&mut app, Named::ArrowLeft);
+    assert_eq!(app.selected_slot(), Some(slot(SectionKey::Recent, "hades")));
+    app.header_cursor = Some(tag("rpg"));
+    key(&mut app, Named::ArrowRight);
+    assert_eq!(
+        app.selected_slot(),
+        Some(slot(SectionKey::NoTag, "notepad"))
+    );
+    // A cursor outside the section stays where it is.
+    let _ = app.update(Message::ToggleSection(tag("rpg")));
+    let _ = app.update(Message::ToggleSection(SectionKey::Recent));
+    assert_eq!(app.header_cursor, None);
+    assert_eq!(
+        app.selected_slot(),
+        Some(slot(SectionKey::NoTag, "notepad"))
+    );
+}
+
+#[test]
+fn a_cursor_on_the_last_header_with_nothing_below_stays_there() {
+    let mut app = collapsible();
+    let _ = app.update(Message::Press(slot(SectionKey::NoTag, "notepad")));
+    let _ = app.update(Message::ToggleSection(SectionKey::NoTag));
+    assert_eq!(app.header_cursor, Some(SectionKey::NoTag));
+    let _ = app.update(Message::KeyWithFocus(
+        Key::Named(Named::ArrowDown),
+        Modifiers::empty(),
+        iced::event::Status::Ignored,
+        false,
+    ));
+    assert_eq!(app.header_cursor, Some(SectionKey::NoTag));
+    assert_eq!(app.selected.as_deref(), Some("notepad"));
+    // The header going away, as on a regroup, takes the cursor with it.
+    let _ = app.update(Message::Sort(Event::Group(GroupBy::None)));
+    assert_eq!(app.header_cursor, None);
+}
+
+#[test]
+fn headers_take_tab_focus_after_the_toolbar_and_toggle_on_enter() {
+    use crate::focus_button::{focusables, press};
+    let app = collapsible();
+    let mut laid = crate::layout_probe::lay_out(app.view(), Size::new(1200.0, 800.0));
+    let ids = focusables(&mut laid);
+    let position = |id: iced::widget::Id| {
+        let id = Some(format!("{id:?}"));
+        ids.iter().position(|found| *found == id)
+    };
+    let sort = position(iced::widget::Id::new(crate::sort_control::SORT_BUTTON_ID)).unwrap();
+    let headers: Vec<usize> = app
+        .grid_places()
+        .headers
+        .iter()
+        .map(|place| position(place.header.key.header_id()).expect("a focusable header"))
+        .collect();
+    assert_eq!(headers.len(), 3);
+    assert!(headers.iter().all(|header| *header > sort), "{ids:?}");
+    assert!(headers.windows(2).all(|pair| pair[0] < pair[1]));
+    crate::focus_button::run_task(
+        &mut laid,
+        iced::widget::operation::focus::<Message>(tag("rpg").header_id()),
+    );
+    let (messages, status) = press(&mut laid, Named::Enter, Modifiers::empty());
+    assert_eq!(status, iced::event::Status::Captured);
+    assert!(
+        matches!(messages.as_slice(), [Message::ToggleSection(key)] if *key == tag("rpg")),
+        "{messages:?}"
+    );
+    let (messages, _) = press(&mut laid, Named::Space, Modifiers::empty());
+    assert!(matches!(messages.as_slice(), [Message::ToggleSection(_)]));
+}
+
+#[test]
+fn a_header_toggle_waits_while_a_dialog_covers_the_library() {
+    let mut app = collapsible();
+    app.close_prompt = true;
+    let _ = app.update(Message::ToggleSection(tag("rpg")));
+    assert!(app.collapsed.is_empty());
+}
+
+#[test]
+fn every_card_operation_skips_headers() {
+    // Headers are never in the card slots, so an index into them is always
+    // a card: the zoom's and layout switch's anchor, the hide's next
+    // card, the range, and art all read cards.
+    let mut app = collapsible();
+    app.scroll_offset = 0.0;
+    let (anchor, _) = app.find_anchor();
+    let (anchor, _) = anchor.expect("a card in view");
+    assert_eq!(anchor, slot(SectionKey::Recent, "hades"));
+    let places = app.grid_places();
+    assert_eq!(places.ids.len(), places.slots.len());
+    assert_eq!(app.slot_cards(&places).len(), places.ids.len());
+    // A hide of the first card hands the cursor to the next card, not to
+    // the rpg header between them.
+    let _ = app.update(Message::Press(slot(SectionKey::Recent, "hades")));
+    let place = app.place_after_leaving(|name| name == "hades");
+    assert_eq!(place, Some(0));
+    if let Some(card) = app.cards.iter_mut().find(|card| card.name == "hades") {
+        card.hidden = true;
+    }
+    app.order.cards_edited();
+    app.reorder();
+    let _ = app.select_in_place(place.unwrap());
+    assert_eq!(app.selected_slot(), Some(slot(tag("rpg"), "celeste")));
 }
