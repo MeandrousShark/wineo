@@ -60,7 +60,7 @@ impl Flag {
         }
     }
 
-    fn set(self, card: &mut Card, value: bool) {
+    pub(crate) fn set(self, card: &mut Card, value: bool) {
         match self {
             Self::Favorite => card.favorite = value,
             Self::Hidden => card.hidden = value,
@@ -435,7 +435,7 @@ impl App {
 
     /// Selects the card now at `place` in the shown order, or the last one,
     /// or nothing when nothing is left.
-    fn select_in_place(&mut self, place: usize) -> Task<Message> {
+    pub(crate) fn select_in_place(&mut self, place: usize) -> Task<Message> {
         let shown = self.filtered();
         let Some(next) = shown
             .get(place)

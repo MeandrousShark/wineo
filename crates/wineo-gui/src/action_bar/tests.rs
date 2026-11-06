@@ -7,7 +7,7 @@ use wineo_core::paths::Paths;
 use wineo_core::runtime::State;
 
 use super::*;
-use crate::bulk_tags::Saved;
+use crate::bulk_tags::{Change, Saved};
 use crate::library::Card;
 use crate::sort_control::tests::{answers, run_counting};
 use crate::tests::card;
@@ -462,7 +462,7 @@ fn a_dead_worker_reloads_the_library_rather_than_guess() {
     let _ = open(&mut app);
     let _ = toggle(&mut app, "rpg");
     let _ = app.update(Message::Tags(Event::Saved(Saved {
-        tag: "rpg".into(),
+        change: Change::Tag("rpg".into()),
         value: true,
         games: vec![("charlie".into(), None)],
         results: Err("worker panicked".into()),
@@ -537,7 +537,7 @@ fn a_late_reply_for_a_recreated_game_changes_nothing() {
     let _ = open(&mut app);
     let _ = toggle(&mut app, "rpg");
     let late = Message::Tags(Event::Saved(Saved {
-        tag: "rpg".into(),
+        change: Change::Tag("rpg".into()),
         value: true,
         games: vec![("charlie".into(), Some(jiff::Timestamp::UNIX_EPOCH))],
         results: Ok(vec![Err("failed".into())]),
@@ -875,11 +875,704 @@ fn a_dead_worker_rolls_back_before_the_reload() {
     let _ = toggle(&mut app, "rpg");
     assert!(has(&app, "charlie", "rpg"));
     let _ = app.update(Message::Tags(Event::Saved(Saved {
-        tag: "rpg".into(),
+        change: Change::Tag("rpg".into()),
         value: true,
         games: vec![("charlie".into(), None)],
         results: Err("worker panicked".into()),
     })));
     assert!(app.refreshing);
     assert!(!has(&app, "charlie", "rpg"));
+}
+
+// Favorite and hide.
+
+fn flag_event(app: &mut App, flag: Flag) -> Task<Message> {
+    tags_event(app, Event::ToggleFlag(flag))
+}
+
+fn flagged(app: &App, name: &str, flag: Flag) -> bool {
+    flag.of(app.cards.iter().find(|card| card.name == name).unwrap())
+}
+
+fn entry(app: &App, name: &str) -> wineo_core::library::Entry {
+    wineo_core::library::load(&app.paths)
+        .environments
+        .get(name)
+        .cloned()
+        .unwrap_or_default()
+}
+
+/// `marked()` with `favorites` and `hidden` set on the cards and in the
+/// file, and the same three games marked afterward, since a hidden game
+/// can't be marked while hidden games aren't shown.
+fn flagged_library(favorites: &[&str], hidden: &[&str]) -> (tempfile::TempDir, App) {
+    let (root, mut app) = marked();
+    app.clear_marks();
+    let mut cards = library();
+    for card in &mut cards {
+        card.favorite = favorites.contains(&card.name.as_str());
+        card.hidden = hidden.contains(&card.name.as_str());
+    }
+    for name in favorites {
+        wineo_core::library::set_favorite_for(&app.paths, name, None, true).unwrap();
+    }
+    for name in hidden {
+        wineo_core::library::set_hidden_for(&app.paths, name, None, true).unwrap();
+    }
+    let _ = app.update(Message::Loaded(Ok(cards)));
+    for name in ["alpha", "bravo", "charlie"] {
+        app.toggle_mark(name);
+    }
+    (root, app)
+}
+
+fn show_hidden(app: &mut App) {
+    let _ = app.update(Message::Filter(
+        crate::filter_control::Event::ToggleShowHidden,
+    ));
+}
+
+fn shown(app: &App) -> Vec<&str> {
+    app.filtered()
+        .iter()
+        .map(|card| card.name.as_str())
+        .collect()
+}
+
+#[test]
+fn the_favorite_button_favorites_all_marked_unless_all_are_then_unfavorites() {
+    let (_root, mut app) = flagged_library(&["alpha"], &[]);
+    // Mixed: it reads Favorite and favorites the rest.
+    assert!(!app.flag_all(Flag::Favorite));
+    assert_eq!(
+        flag_label(Flag::Favorite, app.flag_all(Flag::Favorite)),
+        "Favorite"
+    );
+    let task = flag_event(&mut app, Flag::Favorite);
+    for name in ["alpha", "bravo", "charlie"] {
+        assert!(flagged(&app, name, Flag::Favorite), "{name} at once");
+    }
+    assert!(!flagged(&app, "delta", Flag::Favorite));
+    assert!(!entry(&app, "bravo").favorite, "written off the UI thread");
+    // Only the games that lacked it are written.
+    assert!(app.tag_writes.get_flag("alpha", Flag::Favorite).is_none());
+    assert!(app.tag_writes.get_flag("bravo", Flag::Favorite).is_some());
+    finish(&mut app, task);
+    assert!(!app.tag_writes.pending());
+    for name in ["alpha", "bravo", "charlie"] {
+        assert!(entry(&app, name).favorite, "{name}");
+    }
+    assert!(!entry(&app, "delta").favorite);
+    assert!(app.feature_notice.is_none());
+
+    // All of them: it reads Unfavorite and clears them all.
+    assert!(app.flag_all(Flag::Favorite));
+    assert_eq!(
+        flag_label(Flag::Favorite, app.flag_all(Flag::Favorite)),
+        "Unfavorite"
+    );
+    let task = flag_event(&mut app, Flag::Favorite);
+    for name in ["alpha", "bravo", "charlie"] {
+        assert!(!flagged(&app, name, Flag::Favorite), "{name} at once");
+    }
+    finish(&mut app, task);
+    for name in ["alpha", "bravo", "charlie"] {
+        assert!(!entry(&app, name).favorite, "{name}");
+    }
+    assert_eq!(app.marked, names(&["alpha", "bravo", "charlie"]));
+}
+
+#[test]
+fn the_hide_button_hides_all_marked_unless_all_are_then_shows_them() {
+    let (_root, mut app) = flagged_library(&[], &[]);
+    show_hidden(&mut app);
+    assert_eq!(flag_label(Flag::Hidden, app.flag_all(Flag::Hidden)), "Hide");
+    let task = flag_event(&mut app, Flag::Hidden);
+    for name in ["alpha", "bravo", "charlie"] {
+        assert!(flagged(&app, name, Flag::Hidden), "{name} at once");
+    }
+    finish(&mut app, task);
+    for name in ["alpha", "bravo", "charlie"] {
+        assert!(entry(&app, name).hidden, "{name}");
+    }
+    assert!(!entry(&app, "delta").hidden);
+    // Hidden games are shown, so the marks stay and the label flips.
+    assert_eq!(app.marked, names(&["alpha", "bravo", "charlie"]));
+    assert_eq!(flag_label(Flag::Hidden, app.flag_all(Flag::Hidden)), "Show");
+    let task = flag_event(&mut app, Flag::Hidden);
+    for name in ["alpha", "bravo", "charlie"] {
+        assert!(!flagged(&app, name, Flag::Hidden), "{name} at once");
+    }
+    finish(&mut app, task);
+    for name in ["alpha", "bravo", "charlie"] {
+        assert!(!entry(&app, name).hidden, "{name}");
+    }
+}
+
+#[test]
+fn a_mixed_hidden_set_reads_hide_and_hides_the_rest() {
+    let (_root, mut app) = flagged_library(&[], &["bravo"]);
+    show_hidden(&mut app);
+    app.toggle_mark("delta");
+    assert!(!app.flag_all(Flag::Hidden));
+    assert_eq!(flag_label(Flag::Hidden, false), "Hide");
+    let task = flag_event(&mut app, Flag::Hidden);
+    finish(&mut app, task);
+    for name in ["alpha", "bravo", "charlie", "delta"] {
+        assert!(entry(&app, name).hidden, "{name}");
+    }
+}
+
+#[test]
+fn hiding_marked_games_that_are_then_out_of_view_drops_their_marks() {
+    let (_root, mut app) = flagged_library(&[], &[]);
+    app.toggle_mark("delta");
+    assert!(!app.filters.show_hidden);
+    let task = flag_event(&mut app, Flag::Hidden);
+    // Every marked game left the shown order, so every mark went with it.
+    assert_eq!(shown(&app), Vec::<&str>::new());
+    assert!(app.marked.is_empty());
+    assert!(!app.action_bar_shown());
+    finish(&mut app, task);
+    for name in ["alpha", "bravo", "charlie", "delta"] {
+        assert!(entry(&app, name).hidden, "{name}");
+    }
+}
+
+#[test]
+fn favoriting_with_favorites_first_resorts_and_the_marks_survive() {
+    let (_root, mut app) = flagged_library(&[], &[]);
+    let _ = app.update(Message::Sort(
+        crate::sort_control::Event::ToggleFavoritesFirst,
+    ));
+    assert!(app.query.favorites_first);
+    app.clear_marks();
+    app.toggle_mark("charlie");
+    app.toggle_mark("delta");
+    assert_eq!(shown(&app), ["alpha", "bravo", "charlie", "delta"]);
+    let task = flag_event(&mut app, Flag::Favorite);
+    assert_eq!(shown(&app), ["charlie", "delta", "alpha", "bravo"]);
+    assert_eq!(app.marked, names(&["charlie", "delta"]));
+    assert!(app.action_bar_shown());
+    finish(&mut app, task);
+    assert_eq!(app.marked, names(&["charlie", "delta"]));
+    assert_eq!(shown(&app), ["charlie", "delta", "alpha", "bravo"]);
+}
+
+#[test]
+fn a_read_from_before_a_flag_write_landed_keeps_the_change_on_screen() {
+    let (_root, mut app) = flagged_library(&[], &[]);
+    let task = flag_event(&mut app, Flag::Favorite);
+    assert!(app.tag_writes.get_flag("charlie", Flag::Favorite).is_some());
+    // A rescan read the file before the write reached it.
+    let _ = app.update(Message::Loaded(Ok(library())));
+    for name in ["alpha", "bravo", "charlie"] {
+        assert!(flagged(&app, name, Flag::Favorite), "{name}");
+    }
+    assert!(app.tag_writes.get_flag("charlie", Flag::Favorite).is_some());
+    finish(&mut app, task);
+    assert!(flagged(&app, "charlie", Flag::Favorite));
+    assert!(entry(&app, "charlie").favorite);
+
+    // A rescan that read before the batch finished is dropped.
+    let (_root, mut app) = flagged_library(&[], &[]);
+    let task = flag_event(&mut app, Flag::Favorite);
+    let stale = crate::rescan::Scan {
+        revisions: app.shown.revisions(),
+        library: Some(Ok(library())),
+        ..Default::default()
+    };
+    finish(&mut app, task);
+    let _ = app.update(Message::Rescanned(Box::new(stale)));
+    assert!(flagged(&app, "charlie", Flag::Favorite));
+}
+
+#[test]
+fn a_failed_flag_batch_rolls_back_and_names_the_games() {
+    let (_root, mut app) = flagged_library(&[], &[]);
+    // A directory where the file should be fails every write.
+    fs::create_dir_all(app.paths.library_file()).unwrap();
+    let reason = "failed to read ~/.config/wineo/library.toml: Is a directory (os error 21)";
+    let task = flag_event(&mut app, Flag::Favorite);
+    assert!(flagged(&app, "bravo", Flag::Favorite));
+    finish(&mut app, task);
+    for name in ["alpha", "bravo", "charlie"] {
+        assert!(!flagged(&app, name, Flag::Favorite), "{name} rolled back");
+    }
+    assert_eq!(
+        notice(&app),
+        Some(format!("Couldn't favorite 3 of 3 (alpha, bravo, charlie): {reason}").as_str())
+    );
+    assert!(!app.tag_writes.pending());
+    assert_eq!(app.marked.len(), 3, "marks stay");
+
+    // A hide that fails puts the games back in view.
+    let task = flag_event(&mut app, Flag::Hidden);
+    assert!(app.marked.is_empty());
+    finish(&mut app, task);
+    assert_eq!(shown(&app), ["alpha", "bravo", "charlie", "delta"]);
+    assert_eq!(
+        notice(&app),
+        Some(format!("Couldn't hide 3 of 3 (alpha, bravo, charlie): {reason}").as_str())
+    );
+}
+
+#[test]
+fn undoing_a_flag_batch_that_fails_says_unfavorite_and_show() {
+    let (_root, mut app) = flagged_library(&["alpha", "bravo", "charlie"], &[]);
+    fs::remove_file(app.paths.library_file()).unwrap();
+    fs::create_dir_all(app.paths.library_file()).unwrap();
+    let task = flag_event(&mut app, Flag::Favorite);
+    finish(&mut app, task);
+    let text = notice(&app).unwrap();
+    assert!(
+        text.starts_with("Couldn't unfavorite 3 of 3 (alpha, bravo, charlie): "),
+        "{text}"
+    );
+    for name in ["alpha", "bravo", "charlie"] {
+        assert!(flagged(&app, name, Flag::Favorite), "{name} rolled back");
+    }
+
+    let (_root, mut app) = flagged_library(&[], &["alpha", "bravo", "charlie"]);
+    show_hidden(&mut app);
+    for name in ["alpha", "bravo", "charlie"] {
+        app.toggle_mark(name);
+    }
+    fs::remove_file(app.paths.library_file()).unwrap();
+    fs::create_dir_all(app.paths.library_file()).unwrap();
+    assert!(app.flag_all(Flag::Hidden));
+    let task = flag_event(&mut app, Flag::Hidden);
+    finish(&mut app, task);
+    let text = notice(&app).unwrap();
+    assert!(
+        text.starts_with("Couldn't show 3 of 3 (alpha, bravo, charlie): "),
+        "{text}"
+    );
+    assert!(flagged(&app, "alpha", Flag::Hidden));
+}
+
+#[test]
+fn a_flag_batch_with_the_library_file_unreadable_is_refused_up_front() {
+    let (_root, mut app) = flagged_library(&[], &[]);
+    let broken = "[environments.alpha\nfavorite = true\n";
+    fs::write(app.paths.library_file(), broken).unwrap();
+    app.problem_read(wineo_core::library::load(&app.paths).problem);
+    let task = flag_event(&mut app, Flag::Favorite);
+    assert!(saved(task, 0).is_empty());
+    let refused = "Can't save to library.toml: it can't be read. Fix it, or repair it in Checkup.";
+    assert_eq!(
+        notice(&app),
+        Some(format!("Couldn't favorite 3 of 3 (alpha, bravo, charlie): {refused}").as_str())
+    );
+    assert!(!app.tag_writes.pending());
+    assert!(app.cards.iter().all(|card| !card.favorite));
+    assert_eq!(
+        fs::read_to_string(app.paths.library_file()).unwrap(),
+        broken
+    );
+}
+
+#[test]
+fn a_game_removed_before_its_flag_write_ran_is_left_gone() {
+    let (_root, mut app) = flagged_library(&[], &[]);
+    let task = flag_event(&mut app, Flag::Favorite);
+    // `rm` moved charlie to the trash before the write reached it.
+    let config = app.paths.environment_config("charlie");
+    fs::remove_file(&config).unwrap();
+    finish(&mut app, task);
+    assert!(!config.exists(), "nothing recreated");
+    assert!(app.feature_notice.is_none());
+    assert!(app.refreshing, "a reload shows it gone");
+    assert!(entry(&app, "alpha").favorite);
+    assert!(entry(&app, "bravo").favorite);
+    assert!(
+        !wineo_core::library::load(&app.paths)
+            .environments
+            .contains_key("charlie")
+    );
+}
+
+#[test]
+fn a_game_recreated_before_its_flag_write_ran_is_left_alone() {
+    let (_root, mut app) = flagged_library(&[], &[]);
+    let task = flag_event(&mut app, Flag::Hidden);
+    // Removed and made again: the new entry carries a fresh `added` the
+    // window's card doesn't.
+    wineo_core::library::fresh(&app.paths, "charlie").unwrap();
+    let fresh = entry(&app, "charlie");
+    assert!(fresh.added.is_some());
+    finish(&mut app, task);
+    assert_eq!(entry(&app, "charlie"), fresh, "the new one is untouched");
+    assert!(entry(&app, "alpha").hidden);
+    assert!(app.feature_notice.is_none());
+    assert!(app.refreshing);
+}
+
+#[test]
+fn a_late_flag_reply_for_a_recreated_game_changes_nothing() {
+    let (_root, mut app) = flagged_library(&[], &[]);
+    let _ = flag_event(&mut app, Flag::Favorite);
+    let late = Message::Tags(Event::Saved(Saved {
+        change: Change::Flag(Flag::Favorite),
+        value: true,
+        games: vec![("charlie".into(), Some(jiff::Timestamp::UNIX_EPOCH))],
+        results: Ok(vec![Err("failed".into())]),
+    }));
+    let _ = app.update(late);
+    assert!(app.tag_writes.get_flag("charlie", Flag::Favorite).is_some());
+    assert!(flagged(&app, "charlie", Flag::Favorite));
+    assert!(app.feature_notice.is_none());
+}
+
+#[test]
+fn rapid_flag_presses_end_with_the_last_state_written() {
+    let (_root, mut app) = flagged_library(&[], &[]);
+    let first = flag_event(&mut app, Flag::Favorite);
+    // All have it now, so this clears it: each write waits behind its add.
+    let second = flag_event(&mut app, Flag::Favorite);
+    assert_eq!(
+        app.tag_writes
+            .get_flag("charlie", Flag::Favorite)
+            .map(|pending| pending.next),
+        Some(Some(false))
+    );
+    // Every write is queued behind an add in flight, so the second press
+    // starts none of its own.
+    assert!(saved(second, 0).is_empty());
+    finish(&mut app, first);
+    assert!(!app.tag_writes.pending());
+    for name in ["alpha", "bravo", "charlie"] {
+        assert!(!flagged(&app, name, Flag::Favorite), "{name}");
+        assert!(!entry(&app, name).favorite, "{name}");
+    }
+}
+
+#[test]
+fn a_tag_and_a_flag_change_of_one_game_do_not_share_a_write() {
+    let (_root, mut app) = flagged_library(&[], &[]);
+    let _ = open(&mut app);
+    let tag_task = toggle(&mut app, "rpg");
+    let flag_task = flag_event(&mut app, Flag::Favorite);
+    assert!(app.tag_writes.get("charlie", "rpg").is_some());
+    assert!(app.tag_writes.get_flag("charlie", Flag::Favorite).is_some());
+    finish(&mut app, tag_task);
+    finish(&mut app, flag_task);
+    assert!(!app.tag_writes.pending());
+    assert_eq!(on_disk(&app, "charlie"), ["rpg"]);
+    assert!(entry(&app, "charlie").favorite);
+}
+
+#[test]
+fn the_flag_buttons_press_through_their_ids_and_are_tab_stops_after_tags() {
+    let (_root, app) = flagged_library(&[], &[]);
+    for (id, flag) in [
+        (FAVORITE_BUTTON_ID, Flag::Favorite),
+        (HIDE_BUTTON_ID, Flag::Hidden),
+    ] {
+        let messages = crate::library_states::tests::press_control(&app, id);
+        assert!(
+            matches!(
+                messages.as_slice(),
+                [Message::Tags(Event::ToggleFlag(pressed))] if *pressed == flag
+            ),
+            "{id}"
+        );
+    }
+    let id = iced::widget::Id::new;
+    let forward = [
+        (TAGS_BUTTON_ID, FAVORITE_BUTTON_ID),
+        (FAVORITE_BUTTON_ID, HIDE_BUTTON_ID),
+        (HIDE_BUTTON_ID, CLEAR_ID),
+    ];
+    for (from, to) in forward {
+        let step =
+            iced::widget::operation::focus(id(from)).chain(iced::widget::operation::focus_next());
+        assert_eq!(focused_after(&app, step), [id(to)], "Tab from {from}");
+        let back =
+            iced::widget::operation::focus(id(to)).chain(iced::widget::operation::focus_previous());
+        assert_eq!(focused_after(&app, back), [id(from)], "Shift+Tab from {to}");
+    }
+}
+
+#[test]
+fn the_flag_buttons_do_nothing_without_the_bar() {
+    let (_root, mut app) = flagged_library(&[], &[]);
+    app.clear_marks();
+    let task = flag_event(&mut app, Flag::Favorite);
+    assert!(saved(task, 0).is_empty());
+    assert!(app.cards.iter().all(|card| !card.favorite));
+}
+
+#[test]
+fn the_bar_with_its_four_buttons_fits_the_narrowest_window() {
+    let all = ["alpha", "bravo", "charlie"];
+    // Unfavorite and Show are the widest labels.
+    for (favorites, hidden) in [(&[][..], &[][..]), (&all[..], &all[..])] {
+        let (_root, mut app) = flagged_library(favorites, hidden);
+        show_hidden(&mut app);
+        app.clear_marks();
+        for name in all {
+            app.toggle_mark(name);
+        }
+        assert_eq!(app.flag_all(Flag::Favorite), !favorites.is_empty());
+        for width in [480.0, 720.0, 1200.0] {
+            app.window_size = iced::Size::new(width, 500.0);
+            let found = bar_bounds(&app);
+            let order = [TAGS_BUTTON_ID, FAVORITE_BUTTON_ID, HIDE_BUTTON_ID, CLEAR_ID];
+            for pair in order.windows(2) {
+                let (left, right) = (found[pair[0]], found[pair[1]]);
+                // The bar's 8 px spacing.
+                assert!(
+                    (right.x - (left.x + left.width) - 8.0).abs() < 0.5,
+                    "{} then {} at {width}",
+                    pair[0],
+                    pair[1]
+                );
+            }
+            let clear = found[CLEAR_ID];
+            let right = clear.x + clear.width + BAR_PADDING;
+            let left = found[TAGS_BUTTON_ID].x - 12.0;
+            // Inside the notes' 16 px margin on both sides.
+            assert!(
+                left >= 16.0 && right <= width - 16.0,
+                "{left}..{right} in {width}"
+            );
+            for bounds in found.values() {
+                assert_eq!(bounds.height, ui::BUTTON_HEIGHT);
+            }
+        }
+    }
+}
+
+/// The bounds of each of the bar's focusable controls in the laid out window.
+fn bar_bounds(app: &App) -> std::collections::BTreeMap<&'static str, Rectangle> {
+    struct Bounds(std::sync::Arc<std::sync::Mutex<Vec<(iced::widget::Id, Rectangle)>>>);
+    impl iced::advanced::widget::Operation for Bounds {
+        fn traverse(
+            &mut self,
+            operate: &mut dyn FnMut(&mut dyn iced::advanced::widget::Operation),
+        ) {
+            operate(self);
+        }
+
+        fn focusable(
+            &mut self,
+            id: Option<&iced::widget::Id>,
+            bounds: Rectangle,
+            _state: &mut dyn iced::advanced::widget::operation::Focusable,
+        ) {
+            if let Some(id) = id {
+                self.0.lock().unwrap().push((id.clone(), bounds));
+            }
+        }
+    }
+    let seen = std::sync::Arc::default();
+    let mut laid = crate::layout_probe::lay_out(app.view(), app.window_size);
+    laid.run(Box::new(Bounds(std::sync::Arc::clone(&seen))));
+    let seen = seen.lock().unwrap();
+    [TAGS_BUTTON_ID, FAVORITE_BUTTON_ID, HIDE_BUTTON_ID, CLEAR_ID]
+        .into_iter()
+        .map(|name| {
+            let id = iced::widget::Id::new(name);
+            let bounds = seen
+                .iter()
+                .find(|(seen, _)| *seen == id)
+                .unwrap_or_else(|| panic!("{name} is drawn"))
+                .1;
+            (name, bounds)
+        })
+        .collect()
+}
+
+// Selection when a batch hides the selected card.
+
+#[test]
+fn hiding_the_selected_marked_card_hands_the_panel_to_the_next_one_that_stays() {
+    let (_root, mut app) = flagged_library(&[], &[]);
+    app.clear_marks();
+    app.toggle_mark("alpha");
+    app.toggle_mark("bravo");
+    let _ = app.select_card("bravo".into());
+    assert!(app.panel_open);
+    let task = flag_event(&mut app, Flag::Hidden);
+    // alpha went too, so the card after bravo that stays is charlie.
+    assert_eq!(shown(&app), ["charlie", "delta"]);
+    assert_eq!(app.selected.as_deref(), Some("charlie"));
+    assert!(app.panel_open);
+    finish(&mut app, task);
+    assert_eq!(app.selected.as_deref(), Some("charlie"));
+}
+
+#[test]
+fn hiding_the_last_cards_selection_falls_back_to_the_last_one_shown() {
+    let (_root, mut app) = flagged_library(&[], &[]);
+    app.clear_marks();
+    app.toggle_mark("charlie");
+    app.toggle_mark("delta");
+    let _ = app.select_card("charlie".into());
+    let _ = flag_event(&mut app, Flag::Hidden);
+    assert_eq!(shown(&app), ["alpha", "bravo"]);
+    assert_eq!(app.selected.as_deref(), Some("bravo"));
+}
+
+#[test]
+fn hiding_marked_cards_leaves_a_selection_outside_the_batch_alone() {
+    let (_root, mut app) = flagged_library(&[], &[]);
+    let _ = app.select_card("delta".into());
+    let _ = flag_event(&mut app, Flag::Hidden);
+    assert_eq!(shown(&app), ["delta"]);
+    assert_eq!(app.selected.as_deref(), Some("delta"));
+    assert!(app.panel_open);
+}
+
+#[test]
+fn hiding_every_shown_card_closes_the_panel() {
+    let (_root, mut app) = flagged_library(&[], &[]);
+    app.toggle_mark("delta");
+    let _ = app.select_card("bravo".into());
+    let _ = flag_event(&mut app, Flag::Hidden);
+    assert!(shown(&app).is_empty());
+    assert!(app.selected.is_none());
+    assert!(!app.panel_open);
+}
+
+#[test]
+fn showing_and_favoriting_never_move_the_selection() {
+    let (_root, mut app) = flagged_library(&[], &["alpha", "bravo", "charlie"]);
+    show_hidden(&mut app);
+    for name in ["alpha", "bravo", "charlie"] {
+        app.toggle_mark(name);
+    }
+    let _ = app.select_card("bravo".into());
+    assert!(app.flag_all(Flag::Hidden));
+    // All three start hidden, so this press is Show.
+    let _ = flag_event(&mut app, Flag::Hidden);
+    assert_eq!(app.selected.as_deref(), Some("bravo"));
+    let _ = flag_event(&mut app, Flag::Hidden);
+    // Hidden again with hidden games shown: still in view, still selected.
+    assert_eq!(app.selected.as_deref(), Some("bravo"));
+    let _ = flag_event(&mut app, Flag::Favorite);
+    assert_eq!(app.selected.as_deref(), Some("bravo"));
+    assert!(app.panel_open);
+}
+
+// Failures, pending maps, the cache, and labels.
+
+#[test]
+fn a_mixed_failure_rolls_back_only_the_games_written_and_counts_them() {
+    let (_root, mut app) = flagged_library(&["alpha"], &[]);
+    fs::remove_file(app.paths.library_file()).unwrap();
+    fs::create_dir_all(app.paths.library_file()).unwrap();
+    let task = flag_event(&mut app, Flag::Favorite);
+    finish(&mut app, task);
+    assert!(flagged(&app, "alpha", Flag::Favorite), "was one already");
+    assert!(!flagged(&app, "bravo", Flag::Favorite));
+    assert!(!flagged(&app, "charlie", Flag::Favorite));
+    // As with tags, the count is of the games the batch wrote, not of the
+    // marked ones: alpha needed nothing.
+    let text = notice(&app).unwrap();
+    assert!(
+        text.starts_with("Couldn't favorite 2 of 2 (bravo, charlie): "),
+        "{text}"
+    );
+    assert_eq!(app.marked.len(), 3);
+}
+
+/// Runs the single-game write `task` starts and hands the reply back.
+fn finish_single(app: &mut App, task: Task<Message>) {
+    let is_single = |message: &Message| {
+        matches!(
+            message,
+            Message::Mark(crate::library_actions::Event::Saved(_))
+        )
+    };
+    for reply in run_counting(task, false, 1, is_single)
+        .messages
+        .into_iter()
+        .filter(is_single)
+    {
+        let _ = app.update(reply);
+    }
+}
+
+#[test]
+fn a_batch_and_a_single_toggle_pending_together_both_survive_a_rescan() {
+    let (_root, mut app) = flagged_library(&[], &[]);
+    let batch = flag_event(&mut app, Flag::Favorite);
+    let single = app.update(Message::Mark(crate::library_actions::Event::Toggle(
+        "delta".into(),
+        Flag::Hidden,
+    )));
+    assert!(app.tag_writes.get_flag("alpha", Flag::Favorite).is_some());
+    assert!(app.flag_writes.get("delta", Flag::Hidden).is_some());
+    // A read from before either write landed.
+    let _ = app.update(Message::Loaded(Ok(library())));
+    for name in ["alpha", "bravo", "charlie"] {
+        assert!(flagged(&app, name, Flag::Favorite), "{name}");
+    }
+    assert!(flagged(&app, "delta", Flag::Hidden));
+    // And a rescan that started before both finished.
+    let stale = crate::rescan::Scan {
+        revisions: app.shown.revisions(),
+        library: Some(Ok(library())),
+        ..Default::default()
+    };
+    finish(&mut app, batch);
+    finish_single(&mut app, single);
+    assert!(!app.tag_writes.pending());
+    assert!(!app.flag_writes.pending());
+    let _ = app.update(Message::Rescanned(Box::new(stale)));
+    for name in ["alpha", "bravo", "charlie"] {
+        assert!(flagged(&app, name, Flag::Favorite), "{name}");
+        assert!(entry(&app, name).favorite, "{name}");
+    }
+    assert!(flagged(&app, "delta", Flag::Hidden));
+    assert!(entry(&app, "delta").hidden);
+}
+
+#[test]
+fn a_flag_batch_rereads_the_rescan_cache_once_whether_it_saved_or_not() {
+    let (_root, mut app) = flagged_library(&[], &[]);
+    let reads = app.shown.library_reads();
+    let task = flag_event(&mut app, Flag::Favorite);
+    assert_eq!(app.shown.library_reads(), reads, "not on the UI thread");
+    finish(&mut app, task);
+    assert_eq!(app.shown.library_reads(), reads + 1, "one per batch");
+
+    let reads = app.shown.library_reads();
+    fs::remove_file(app.paths.library_file()).unwrap();
+    fs::create_dir_all(app.paths.library_file()).unwrap();
+    let task = flag_event(&mut app, Flag::Favorite);
+    finish(&mut app, task);
+    assert!(notice(&app).is_some());
+    assert_eq!(app.shown.library_reads(), reads + 1);
+
+    // A tag batch doesn't touch library.toml's cache.
+    let reads = app.shown.library_reads();
+    let _ = open(&mut app);
+    let task = toggle(&mut app, "rpg");
+    finish(&mut app, task);
+    assert_eq!(app.shown.library_reads(), reads);
+}
+
+#[test]
+fn the_button_reads_unfavorite_as_soon_as_the_press_changes_the_cards() {
+    let (_root, mut app) = flagged_library(&["alpha"], &[]);
+    let width = |app: &App| bar_bounds(app)[FAVORITE_BUTTON_ID].width;
+    let before = width(&app);
+    assert_eq!(
+        flag_label(Flag::Favorite, app.flag_all(Flag::Favorite)),
+        "Favorite"
+    );
+    let task = flag_event(&mut app, Flag::Favorite);
+    // The reply hasn't come back.
+    assert!(app.tag_writes.get_flag("bravo", Flag::Favorite).is_some());
+    assert!(app.flag_all(Flag::Favorite));
+    assert_eq!(
+        flag_label(Flag::Favorite, app.flag_all(Flag::Favorite)),
+        "Unfavorite"
+    );
+    assert!(width(&app) > before, "the drawn label is the longer one");
+    finish(&mut app, task);
+    assert!(app.flag_all(Flag::Favorite));
 }
