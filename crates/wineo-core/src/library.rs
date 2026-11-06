@@ -130,6 +130,43 @@ impl ViewLayout {
     }
 }
 
+/// What the desktop app groups the library into sections by, saved as
+/// `group`. Recently played and Hidden sit around any grouping but `None`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub enum GroupBy {
+    /// One flat library, with no sections.
+    #[default]
+    None,
+    /// A section per tag, so a game with several shows in each.
+    Tag,
+    /// A section per store, else platform.
+    Source,
+    /// Running, not installed, and everything else.
+    State,
+}
+
+impl GroupBy {
+    /// The value `library.toml` holds.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::Tag => "tag",
+            Self::Source => "source",
+            Self::State => "state",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "none" => Some(Self::None),
+            "tag" => Some(Self::Tag),
+            "source" => Some(Self::Source),
+            "state" => Some(Self::State),
+            _ => None,
+        }
+    }
+}
+
 /// The grid's zoom in whole percent: any integer in range is valid, so the
 /// slider can rest anywhere.
 pub const ZOOM_MIN: u16 = 60;
@@ -145,6 +182,7 @@ pub struct View {
     pub poster_only: bool,
     pub random: RandomPool,
     pub layout: ViewLayout,
+    pub group: GroupBy,
 }
 
 impl Default for View {
@@ -157,6 +195,7 @@ impl Default for View {
             poster_only: false,
             random: RandomPool::default(),
             layout: ViewLayout::default(),
+            group: GroupBy::default(),
         }
     }
 }
@@ -431,6 +470,10 @@ pub fn set_layout(paths: &Paths, layout: ViewLayout) -> Result<bool> {
     edit(paths, |document| set_view_layout(document, layout))
 }
 
+pub fn set_group(paths: &Paths, group: GroupBy) -> Result<bool> {
+    edit(paths, |document| set_view_group(document, group))
+}
+
 /// Writes only the fields that differ from what the file reads as, so an
 /// unchanged `Appearance` never rewrites it.
 pub fn set_appearance(paths: &Paths, appearance: &Appearance) -> Result<bool> {
@@ -625,6 +668,11 @@ fn read_library(document: &DocumentMut) -> Library {
                 .and_then(Item::as_str)
                 .and_then(ViewLayout::parse)
                 .unwrap_or_default(),
+            group: table
+                .get("group")
+                .and_then(Item::as_str)
+                .and_then(GroupBy::parse)
+                .unwrap_or_default(),
         })
         .unwrap_or_default();
     let environments = document
@@ -769,6 +817,26 @@ fn set_view_layout(document: &mut DocumentMut, layout: ViewLayout) -> bool {
         view_table_mut(document),
         "layout",
         Value::from(layout.as_str()),
+    );
+    true
+}
+
+fn set_view_group(document: &mut DocumentMut, group: GroupBy) -> bool {
+    let current = document
+        .get("view")
+        .and_then(Item::as_table_like)
+        .and_then(|table| table.get("group"));
+    let matches = match current {
+        None => group == GroupBy::default(),
+        Some(item) => item.as_str().and_then(GroupBy::parse) == Some(group),
+    };
+    if matches {
+        return false;
+    }
+    store_value(
+        view_table_mut(document),
+        "group",
+        Value::from(group.as_str()),
     );
     true
 }

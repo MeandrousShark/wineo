@@ -166,7 +166,8 @@ pub(crate) fn key(app: &mut App, key: &Key, _modifiers: Modifiers) -> Task<Messa
 /// to pick.
 pub(crate) fn toolbar(app: &App) -> Element<'_, Message> {
     let palette = app.palette;
-    let enabled = !app.filtered().is_empty();
+    // Only what's in view can come up (plan 0062, question 22).
+    let enabled = !app.grid_places().ids.is_empty();
     let ink = if enabled {
         palette.foreground
     } else {
@@ -249,11 +250,14 @@ impl App {
         )
     }
 
-    /// The game a pick would show, from the cards shown now.
+    /// The game a pick would show, from the games in view now, once each
+    /// however many copies show (plan 0062, question 22).
     pub(crate) fn random_choice(&self, rng: &mut fastrand::Rng) -> Option<String> {
+        let visible = self.visible_names();
         let entries: Vec<Entry<'_>> = self
             .filtered()
             .into_iter()
+            .filter(|card| visible.contains(&card.name))
             .map(|card| Entry {
                 name: &card.name,
                 launchable: self.random_launchable(card),

@@ -2,7 +2,7 @@
 //! Ctrl+A, cleared by Esc or a plain click. Marks only ever hold shown
 //! games, last for the session, and are never saved.
 
-use std::collections::{BTreeSet, HashSet};
+use std::collections::BTreeSet;
 
 use iced::widget::container;
 use iced::{Element, Fill, Task, border};
@@ -45,6 +45,7 @@ impl App {
             Task::none()
         } else {
             self.clear_marks();
+            self.header_cursor = None;
             if let Some(slot) = slot {
                 // Another copy of the open panel's game only moves the
                 // cursor, rather than closing the panel as its own card
@@ -150,16 +151,13 @@ impl App {
 
     /// Drops the marks on games no longer shown. Every change to the cards
     /// or the order ends here, so a filter, search, or removal that hides
-    /// a game drops its mark and nothing else does.
+    /// a game drops its mark, as does collapsing every section it's in
+    /// (plan 0062, question 22), and nothing else does.
     pub(crate) fn prune_marks(&mut self) {
         if self.marked.is_empty() && self.mark_range.anchor.is_none() {
             return;
         }
-        let shown: HashSet<String> = self
-            .filtered()
-            .iter()
-            .map(|card| card.name.clone())
-            .collect();
+        let shown = self.visible_names();
         self.marked.retain(|name| shown.contains(name));
         self.mark_range.added.retain(|name| shown.contains(name));
         if self
@@ -172,11 +170,9 @@ impl App {
         }
     }
 
+    /// The games Ctrl+A and a mark can reach: those with a copy in view.
     fn shown_names(&self) -> BTreeSet<String> {
-        self.filtered()
-            .iter()
-            .map(|card| card.name.clone())
-            .collect()
+        self.visible_names()
     }
 }
 

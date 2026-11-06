@@ -92,11 +92,18 @@ fn two_copies_spring_and_leave_on_their_own() {
 fn a_zoom_with_a_copy_swapped_for_another_springs_instead_of_scaling() {
     let mut motion = GridMotion::default();
     motion.snap_to(&places(&[flat("hades"), flat("celeste")], 3));
+    let generation = motion.generation();
     // Same count, same game names, but a different slot.
     let moved = places(&[other("hades"), flat("celeste")], 3);
     motion.zoom_to(&moved, Instant::now());
-    assert_eq!(motion.opacity(&other("hades")), 0.0);
-    assert_eq!(motion.leaving().len(), 1);
+    // A spring, which only scaling wouldn't start: the new copy takes the
+    // body hades left (plan 0062, question 17), so it neither fades in nor
+    // leaves one fading out.
+    assert_ne!(motion.generation(), generation);
+    assert!(motion.bodies.contains_key(&other("hades")));
+    assert!(!motion.bodies.contains_key(&flat("hades")));
+    assert_eq!(motion.opacity(&other("hades")), 1.0);
+    assert!(motion.leaving().is_empty());
 }
 
 #[test]

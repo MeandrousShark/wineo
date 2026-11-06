@@ -40,14 +40,30 @@ impl App {
     pub(crate) fn set_cursor(&mut self, slot: SlotId) {
         self.selected = Some(slot.name().to_owned());
         self.active_slot = Some(slot);
+        self.header_cursor = None;
     }
 
     /// Forgets a copy of a game that isn't the selected one, however the
     /// selection moved, so coming back to that game later starts on its
-    /// first copy.
+    /// first copy. A copy that stops being drawn, like one in a section
+    /// that just collapsed, falls back to the game's first through
+    /// `cursor`; collapsing drops the cursor's own. A cursor on a header
+    /// goes with its header, or with the selection.
     pub(crate) fn sync_active_slot(&mut self) {
         if self.active_slot.as_ref().map(SlotId::name) != self.selected.as_deref() {
             self.active_slot = None;
+        }
+        if self.header_cursor.is_some()
+            && (self.selected.is_none()
+                || self.header_cursor.as_ref().is_some_and(|key| {
+                    !self
+                        .grid_places()
+                        .headers
+                        .iter()
+                        .any(|place| &place.header.key == key)
+                }))
+        {
+            self.header_cursor = None;
         }
     }
 
@@ -58,6 +74,7 @@ impl App {
             Task::none()
         } else {
             let was_open = self.panel_open;
+            self.header_cursor = None;
             self.close_log();
             if self.selected.as_deref() != Some(&name) {
                 self.close_checkup();

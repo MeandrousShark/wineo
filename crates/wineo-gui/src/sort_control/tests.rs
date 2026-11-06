@@ -1427,7 +1427,8 @@ fn a_menu_with_no_button_found_stays_closed() {
 #[test]
 fn the_keyboard_menu_position_is_clamped_like_the_pointer_one() {
     let (_root, mut app) = loaded();
-    app.window_size = iced::Size::new(300.0, 400.0);
+    // Tall enough for the whole menu under the button, Group by row and all.
+    app.window_size = iced::Size::new(300.0, 440.0);
     let request = press_sort(&mut app);
     let _ = app.update(Message::Sort(Event::OpenUnder(
         request,
