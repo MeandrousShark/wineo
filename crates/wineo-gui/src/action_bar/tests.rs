@@ -1445,6 +1445,7 @@ fn showing_and_favoriting_never_move_the_selection() {
     }
     let _ = app.select_card("bravo".into());
     assert!(app.flag_all(Flag::Hidden));
+    // All three start hidden, so this press is Show.
     let _ = flag_event(&mut app, Flag::Hidden);
     assert_eq!(app.selected.as_deref(), Some("bravo"));
     let _ = flag_event(&mut app, Flag::Hidden);
