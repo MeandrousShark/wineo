@@ -165,7 +165,9 @@ Plan 0054 added these.
   thumb sits under the chosen side with the poster-only toggle's selected
   look, and the chosen side's icon is primary; hovering a side adds a faint
   foreground tint. The thumb slides with the panel's spring and snaps under
-  reduced motion. In the list, an empty slot holds the slider and toggle's
+  reduced motion. Only the keyboard focuses a side, since a click already
+  moves the thumb: the focus ring then goes around the whole segment, and
+  the focused side takes the hover tint to show which one it is. In the list, an empty slot holds the slider and toggle's
   place, so the toolbar keeps its shape. With the switch the toolbar's right
   end starts clipping about 72 px sooner.
 - The dice shows a die face of five, in the foreground color, or muted

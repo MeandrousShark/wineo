@@ -3,7 +3,7 @@ use iced::advanced::{
     Clipboard, Layout, Renderer as AdvancedRenderer, Shell, Widget, layout, mouse, overlay,
     renderer, widget::tree,
 };
-use iced::{Element, Event, Length, Rectangle, Size, Vector};
+use iced::{Element, Event, Length, Padding, Rectangle, Size, Vector};
 
 mod rows;
 
@@ -35,6 +35,7 @@ pub(crate) fn control<'a, M: Clone + 'a>(
         leaves_submit: false,
         exclude: None,
         menu: None,
+        ring: Padding::ZERO,
     })
 }
 
@@ -55,6 +56,7 @@ pub(crate) fn excludable<'a, M: Clone + 'a>(
         leaves_submit: false,
         exclude: Some(on_exclude),
         menu: None,
+        ring: Padding::ZERO,
     })
 }
 
@@ -78,6 +80,7 @@ pub(crate) fn with_menu<'a, M: Clone + 'a>(
         leaves_submit: false,
         exclude: None,
         menu: Some(on_menu),
+        ring: Padding::ZERO,
     })
 }
 
@@ -120,6 +123,7 @@ fn leaves_submit<'a, M: Clone + 'a>(
         leaves_submit: true,
         exclude: None,
         menu: None,
+        ring: Padding::ZERO,
     })
 }
 
@@ -141,7 +145,37 @@ pub(crate) fn keyboard_control<'a, M: Clone + 'a>(
         leaves_submit: false,
         exclude: None,
         menu: None,
+        ring: Padding::ZERO,
     })
+}
+
+/// One side of a segment: it takes focus only from the keyboard, since a
+/// click already moves the segment's thumb, and its ring reaches past its
+/// own edges by `ring` so it outlines the whole segment, not one side.
+/// Focused, it also takes the hover tint, since that ring can't say which
+/// side has focus.
+pub(crate) fn segment_side<'a, M: Clone + 'a>(
+    content: Element<'a, M>,
+    id: impl Into<iced::widget::Id>,
+    on_press: M,
+    ring: Padding,
+) -> Element<'a, M> {
+    Element::new(FocusControl {
+        content,
+        enabled: true,
+        id: id.into(),
+        on_press,
+        mouse_focus: false,
+        leaves_submit: false,
+        exclude: None,
+        menu: None,
+        ring,
+    })
+}
+
+/// Where the focus ring sits around a control at `bounds`.
+fn ring_bounds(bounds: Rectangle, ring: Padding) -> Rectangle {
+    bounds.expand(2.0).expand(ring)
 }
 
 /// Asks whether the Undo control has focus. Unlike `is_focused`, which says
@@ -261,6 +295,9 @@ struct FocusControl<'a, M, R: AdvancedRenderer = iced::Renderer> {
     exclude: Option<M>,
     /// Sent for the keys and click that open a context menu.
     menu: Option<M>,
+    /// How far the focus ring reaches past this control's own edges, on top
+    /// of the usual 2 px, so one part of a larger control can ring all of it.
+    ring: Padding,
 }
 
 #[derive(Default)]
@@ -456,6 +493,20 @@ where
         cursor: mouse::Cursor,
         viewport: &Rectangle,
     ) {
+        let focused = self.enabled && tree.state.downcast_ref::<State>().focused;
+        // A ring around a whole segment can't say which side has focus, so
+        // that side takes its hover tint as well.
+        if focused && self.ring != Padding::ZERO {
+            renderer.fill_quad(
+                renderer::Quad {
+                    bounds: layout.bounds(),
+                    border: iced::border::rounded(crate::ui::CONTROL_RADIUS),
+                    shadow: iced::Shadow::default(),
+                    snap: false,
+                },
+                theme.palette().text.scale_alpha(0.08),
+            );
+        }
         self.content.as_widget().draw(
             &tree.children[0],
             renderer,
@@ -466,10 +517,10 @@ where
             viewport,
         );
 
-        if self.enabled && tree.state.downcast_ref::<State>().focused {
+        if focused {
             renderer.fill_quad(
                 renderer::Quad {
-                    bounds: layout.bounds().expand(2.0),
+                    bounds: ring_bounds(layout.bounds(), self.ring),
                     border: iced::border::rounded(crate::ui::CONTROL_RADIUS + 2.0)
                         .width(2)
                         .color(theme.palette().primary),
@@ -534,6 +585,7 @@ mod tests {
             leaves_submit: false,
             exclude: None,
             menu: None,
+            ring: Padding::ZERO,
         });
         let mut tree = tree::Tree::new(widget.as_widget());
         let bounds = Size::new(100.0, 32.0);
@@ -577,6 +629,7 @@ mod tests {
             leaves_submit: false,
             exclude: None,
             menu: None,
+            ring: Padding::ZERO,
         });
         let mut tree = tree::Tree::new(widget.as_widget());
         let bounds = Size::new(100.0, 32.0);
@@ -624,6 +677,7 @@ mod tests {
             leaves_submit: false,
             exclude: None,
             menu: None,
+            ring: Padding::ZERO,
         });
         let mut tree = tree::Tree::new(widget.as_widget());
         let bounds = Size::new(100.0, 32.0);
@@ -773,6 +827,7 @@ mod tests {
                         leaves_submit: false,
                         exclude: None,
                         menu: None,
+                        ring: Padding::ZERO,
                     });
                 let mut tree = tree::Tree::new(widget.as_widget());
                 tree.state.downcast_mut::<State>().focus();
@@ -813,5 +868,82 @@ mod tests {
             text: None,
             repeat: false,
         })
+    }
+
+    #[test]
+    fn either_side_of_a_segment_rings_the_whole_segment() {
+        let list = Rectangle::new(iced::Point::new(10.0, 4.0), Size::new(32.0, 32.0));
+        let grid = Rectangle::new(iced::Point::new(42.0, 4.0), Size::new(32.0, 32.0));
+        let from_list = ring_bounds(
+            list,
+            Padding {
+                right: 32.0,
+                ..Padding::ZERO
+            },
+        );
+        let from_grid = ring_bounds(
+            grid,
+            Padding {
+                left: 32.0,
+                ..Padding::ZERO
+            },
+        );
+        assert_eq!(from_list, from_grid);
+        assert_eq!(
+            from_list,
+            Rectangle::new(iced::Point::new(8.0, 2.0), Size::new(68.0, 36.0))
+        );
+        assert_eq!(ring_bounds(list, Padding::ZERO), list.expand(2.0));
+    }
+
+    #[test]
+    fn a_click_takes_keyboard_focus_off_a_segment_side() {
+        let button = iced::widget::button::Button::<crate::Message, iced::Theme, ()>::new("List")
+            .on_press(crate::Message::Undo);
+        let mut widget: Element<'_, crate::Message, iced::Theme, ()> = Element::new(FocusControl {
+            content: button.into(),
+            enabled: true,
+            id: "segment-side".into(),
+            on_press: crate::Message::Undo,
+            mouse_focus: false,
+            leaves_submit: false,
+            exclude: None,
+            menu: None,
+            ring: Padding {
+                right: 32.0,
+                ..Padding::ZERO
+            },
+        });
+        let mut tree = tree::Tree::new(widget.as_widget());
+        let bounds = Size::new(32.0, 32.0);
+        let node =
+            widget
+                .as_widget_mut()
+                .layout(&mut tree, &(), &layout::Limits::new(Size::ZERO, bounds));
+        let mut operation = iced::advanced::widget::operation::focusable::focus(
+            iced::widget::Id::new("segment-side"),
+        );
+        widget
+            .as_widget_mut()
+            .operate(&mut tree, Layout::new(&node), &(), &mut operation);
+        assert!(tree.state.downcast_ref::<State>().focused, "Tab focuses it");
+
+        let click = Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left));
+        let over = mouse::Cursor::Available(iced::Point::new(16.0, 16.0));
+        for _ in 0..2 {
+            let mut messages = Vec::new();
+            let mut shell = Shell::new(&mut messages);
+            widget.as_widget_mut().update(
+                &mut tree,
+                &click,
+                Layout::new(&node),
+                over,
+                &(),
+                &mut iced::advanced::clipboard::Null,
+                &mut shell,
+                &Rectangle::with_size(bounds),
+            );
+            assert!(!tree.state.downcast_ref::<State>().focused);
+        }
     }
 }

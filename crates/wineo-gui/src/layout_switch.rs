@@ -187,11 +187,23 @@ pub(crate) fn toolbar(app: &App) -> Element<'_, Message> {
                 border: border::rounded(ui::CONTROL_RADIUS),
                 ..button::Style::default()
             });
-        focus_button::control(
+        // The ring reaches over the other side, so either one outlines the
+        // whole segment.
+        let ring = match layout {
+            ViewLayout::List => Padding {
+                right: SIDE,
+                ..Padding::ZERO
+            },
+            ViewLayout::Grid => Padding {
+                left: SIDE,
+                ..Padding::ZERO
+            },
+        };
+        focus_button::segment_side(
             zoom_control::with_tooltip(side.into(), label(layout), palette),
-            true,
             id,
             message,
+            ring,
         )
     };
     stack![
