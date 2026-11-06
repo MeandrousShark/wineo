@@ -2314,6 +2314,41 @@ fn a_clean_library_reports_nothing() {
 }
 
 #[test]
+fn bad_preset_fields_are_warnings_and_a_preset_is_never_a_stray_entry() {
+    let f = Fixture::new();
+    f.wine("hades", HEALTHY);
+    write_library(
+        &f,
+        "schema_version = 1\n[presets.gone]\nsort = \"added\"\nstores = [\"itch\"]\nfuture = 1\n",
+    );
+    let report = f.check();
+    assert_eq!(
+        library_problems(&report),
+        [
+            (
+                Code::LibraryFieldInvalid,
+                None,
+                None,
+                "library.toml: presets.gone.stores: expected a list of store ids: steam, gog, epic, amazon, found \"itch\"".to_owned()
+            ),
+            (
+                Code::LibraryKeyUnknown,
+                None,
+                None,
+                "library.toml: presets.gone.future: unknown key, ignored".to_owned()
+            ),
+        ]
+    );
+    assert!(
+        report
+            .problems
+            .iter()
+            .filter(|problem| problem.area == Area::Library)
+            .all(|problem| problem.fix.is_none())
+    );
+}
+
+#[test]
 fn library_fields_unknown_keys_and_stray_entries_are_reported() {
     let f = Fixture::new();
     f.wine("hades", HEALTHY);

@@ -355,3 +355,132 @@ fn a_custom_theme_without_a_usable_kind_counts_as_dark() {
         ["library.toml: appearance.light: expected a light theme, found \"custom:odd\""]
     );
 }
+
+#[test]
+fn a_clean_preset_has_no_findings() {
+    let inspection = inspect_text(
+        r#"schema_version = 1
+
+[presets."Couch co-op"]
+sort = "last-played"
+descending = true
+favorites_first = false
+stores = ["steam", "gog"]
+platforms = ["native"]
+tags = ["co-op", "any text at all"]
+not_stores = ["epic", "amazon"]
+not_platforms = ["windows"]
+not_tags = ["vr"]
+show_hidden = false
+group = "tag"
+layout = "list"
+
+[presets.Empty]
+"#,
+    );
+    assert_eq!(inspection.unreadable, None);
+    assert_eq!(inspection.findings, []);
+    assert_eq!(inspection.entries, Vec::<String>::new());
+}
+
+#[test]
+fn bad_preset_values_name_the_preset_the_field_and_what_was_found() {
+    let inspection = inspect_text(
+        r#"[presets."Couch co-op"]
+sort = "random"
+descending = "yes"
+favorites_first = 1
+show_hidden = "no"
+group = "genre"
+layout = true
+stores = "steam"
+platforms = ["macos", "native", 3]
+not_stores = ["Steam"]
+not_platforms = [["windows"]]
+tags = ["ok", 3]
+not_tags = 5
+"#,
+    );
+    assert_eq!(
+        messages(&inspection, FindingKind::FieldInvalid),
+        [
+            r#"library.toml: presets."Couch co-op".sort: expected one of name, last-played, playtime, added, source, tags, found "random""#,
+            r#"library.toml: presets."Couch co-op".descending: expected true or false, found "yes""#,
+            r#"library.toml: presets."Couch co-op".favorites_first: expected true or false, found 1"#,
+            r#"library.toml: presets."Couch co-op".show_hidden: expected true or false, found "no""#,
+            r#"library.toml: presets."Couch co-op".group: expected one of none, tag, source, state, found "genre""#,
+            r#"library.toml: presets."Couch co-op".layout: expected one of grid, list, found true"#,
+            r#"library.toml: presets."Couch co-op".stores: expected a list of store ids: steam, gog, epic, amazon, found "steam""#,
+            r#"library.toml: presets."Couch co-op".platforms: expected a list of platform ids: native, windows, found "macos""#,
+            r#"library.toml: presets."Couch co-op".platforms: expected a list of platform ids: native, windows, found 3"#,
+            r#"library.toml: presets."Couch co-op".not_stores: expected a list of store ids: steam, gog, epic, amazon, found "Steam""#,
+            r#"library.toml: presets."Couch co-op".not_platforms: expected a list of platform ids: native, windows, found ["windows"]"#,
+            r#"library.toml: presets."Couch co-op".tags: expected a list of tag names, found 3"#,
+            r#"library.toml: presets."Couch co-op".not_tags: expected a list of tag names, found 5"#,
+        ]
+    );
+    assert!(inspection.findings.iter().all(|f| f.environment.is_none()));
+    assert_eq!(
+        messages(&inspection, FindingKind::KeyUnknown),
+        [] as [String; 0]
+    );
+}
+
+#[test]
+fn a_preset_with_one_bad_field_still_reports_only_that_field() {
+    let inspection =
+        inspect_text("[presets.P]\nsort = \"added\"\nstores = [\"steam\", \"itch\"]\n");
+    assert_eq!(
+        messages(&inspection, FindingKind::FieldInvalid),
+        [
+            r#"library.toml: presets.P.stores: expected a list of store ids: steam, gog, epic, amazon, found "itch""#
+        ]
+    );
+}
+
+#[test]
+fn unknown_preset_keys_are_warned_about_and_ignored() {
+    let inspection =
+        inspect_text("[presets.P]\nsort = \"added\"\nfuture = 1\nsearch = \"hades\"\nzoom = 100\n");
+    assert_eq!(
+        messages(&inspection, FindingKind::KeyUnknown),
+        [
+            "library.toml: presets.P.future: unknown key, ignored",
+            "library.toml: presets.P.search: unknown key, ignored",
+            "library.toml: presets.P.zoom: unknown key, ignored",
+        ]
+    );
+    assert_eq!(
+        messages(&inspection, FindingKind::FieldInvalid),
+        [] as [String; 0]
+    );
+}
+
+#[test]
+fn presets_of_the_wrong_shape_are_bad_values() {
+    let inspection = inspect_text("presets = 1\n");
+    assert_eq!(
+        messages(&inspection, FindingKind::FieldInvalid),
+        ["library.toml: presets: expected a table, found 1"]
+    );
+
+    let inspection = inspect_text(
+        "[presets]\nbroken = \"x\"\n[presets.\"\"]\nsort = \"added\"\n[presets.\" \"]\n[presets.Good]\nsort = \"added\"\n",
+    );
+    assert_eq!(
+        messages(&inspection, FindingKind::FieldInvalid),
+        [
+            r#"library.toml: presets.broken: expected a table, found "x""#,
+            r#"library.toml: presets."": expected a preset name that isn't empty, found a table"#,
+            r#"library.toml: presets." ": expected a preset name that isn't empty, found a table"#,
+        ]
+    );
+    assert_eq!(inspection.entries, Vec::<String>::new());
+}
+
+#[test]
+fn presets_name_no_environment_so_they_are_never_strays() {
+    let inspection = inspect_text("[presets.hades]\nsort = \"added\"\n");
+    assert_eq!(inspection.entries, Vec::<String>::new());
+    assert_eq!(inspection.findings, []);
+}
