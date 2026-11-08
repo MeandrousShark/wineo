@@ -1101,6 +1101,31 @@ fn a_failed_save_keeps_its_name_after_it_is_edited_and_the_popup_closes() {
 }
 
 #[test]
+fn a_typed_name_keeps_only_its_own_failure_when_the_popup_opens_again() {
+    let (_root, mut app) = booted(FILE);
+    write_file(&app.paths, "schema_version = [");
+    app.problem_read(wineo_core::library::load(&app.paths).problem);
+    open_filters(&mut app);
+    let _ = send(&mut app, Event::StartSave);
+    let _ = send(&mut app, Event::Draft("Evening".into()));
+    let _ = send(&mut app, Event::Submit);
+    let failed = app.presets.failure.clone();
+    assert!(failed.is_some());
+    let _ = filter(&mut app, FilterEvent::CloseMenu);
+    open_filters(&mut app);
+    assert_eq!(app.presets.failure, failed);
+
+    // An Update of another preset fails with the name still typed.
+    let _ = send(&mut app, Event::Update("Tools".into()));
+    assert_ne!(app.presets.failure, failed);
+    assert!(app.presets.failure.is_some());
+    let _ = filter(&mut app, FilterEvent::CloseMenu);
+    open_filters(&mut app);
+    assert!(app.presets.failure.is_none());
+    assert_eq!(app.presets.edit, Some(Edit::Save("Evening".into())));
+}
+
+#[test]
 fn a_failed_delete_or_update_is_forgotten_when_the_popup_opens_again() {
     let (_root, mut app) = booted(FILE);
     write_file(&app.paths, "schema_version = [");

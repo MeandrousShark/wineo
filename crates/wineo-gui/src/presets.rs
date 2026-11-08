@@ -113,6 +113,11 @@ impl Write {
             Self::Delete(name) => format!("Couldn't delete \"{name}\""),
         }
     }
+
+    /// Whether it writes the name typed in the field.
+    fn typed(&self) -> bool {
+        matches!(self, Self::Create(..) | Self::Rename(..))
+    }
 }
 
 /// A write that didn't land, as the popup shows it.
@@ -124,6 +129,8 @@ pub(crate) struct Failure {
     pub(crate) checkup: bool,
     /// Core refused a name another preset has.
     pub(crate) taken: bool,
+    /// It was Save as preset or a rename, so it goes with the typed name.
+    pub(crate) typed: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -277,6 +284,7 @@ pub(crate) fn write(
         ),
         checkup: repairable(&error),
         taken: matches!(error, Error::PresetNameTaken(_)),
+        typed: write.typed(),
     });
     (result, presets)
 }
@@ -355,16 +363,28 @@ impl App {
     }
 
     /// Opening the popup starts the presets part afresh, except for a write
-    /// still landing and a typed name, with its failure if it has one, so it
-    /// isn't lost. A field opened with nothing typed in it closes.
+    /// still landing and a typed name, with its own failure if it has one,
+    /// so it isn't lost. A field opened with nothing typed in it closes, and
+    /// a failed Update or Delete is forgotten.
     pub(crate) fn presets_opened(&mut self) {
+        if self.presets.writing.is_some() {
+            return;
+        }
         let typed = match &self.presets.edit {
             Some(Edit::Save(draft)) => !draft.is_empty(),
             Some(Edit::Rename { old, draft }) => draft != old,
             _ => false,
         };
-        if self.presets.writing.is_none() && !typed {
+        if !typed {
             self.presets.edit = None;
+        }
+        if !(typed
+            && self
+                .presets
+                .failure
+                .as_ref()
+                .is_some_and(|failure| failure.typed))
+        {
             self.presets.failure = None;
         }
     }
@@ -509,6 +529,7 @@ impl App {
             ),
             checkup: repairable(&error),
             taken: false,
+            typed: write.typed(),
         });
         true
     }
@@ -536,6 +557,7 @@ impl App {
                             text: format!("{}: {error}", write.failed()),
                             checkup: false,
                             taken: false,
+                            typed: write.typed(),
                         }),
                         None,
                     ),
