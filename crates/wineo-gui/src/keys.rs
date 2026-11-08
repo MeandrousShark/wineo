@@ -271,7 +271,7 @@ impl App {
                 // The arrows walk slots, so stepping onto another copy of
                 // the selected game moves the cursor and leaves the panel.
                 // A cursor on a header starts from there.
-                let current = match self.header_cursor.as_ref().and_then(|key| {
+                let current = match self.header_cursor().and_then(|key| {
                     places
                         .headers
                         .iter()

@@ -1,6 +1,8 @@
 //! The library's list layout: one row per game with a thumbnail and
 //! columns, the header that sorts by them, and which columns fit.
 
+use std::borrow::Cow;
+
 use iced::widget::{Space, button, column, container, image, row, stack, svg, text};
 use iced::{Center, Color, ContentFit, Element, Fill, Font, Length, Padding, border, font};
 use wineo_core::library::SortKey;
@@ -10,7 +12,7 @@ use crate::grid::{card_area, install_bar, shows_identifier};
 use crate::grid_motion::PADDING;
 use crate::library::{Card, CardKind};
 use crate::library_actions::{EYE_OFF, STAR, STAR_OUTLINE};
-use crate::library_menu::{CHECK, icon};
+use crate::library_menu::icon;
 use crate::slot::SlotId;
 use crate::sort_control::{ARROW_DOWN, ARROW_UP};
 use crate::theme::Palette;
@@ -41,16 +43,11 @@ const MARK_ICON: f32 = 16.0;
 /// nothing moves when the hover brings it.
 const STAR_BOX: f32 = 24.0;
 const CHECK_CHIP: f32 = 22.0;
-const CHECK_ICON: f32 = 14.0;
 const SELECTED_BORDER: f32 = 2.0;
 /// A header button's tint reaches this far past its label. The header's
 /// cells grow by it on each side and its gaps and padding shrink to match,
 /// so the labels still line up with the rows' cells.
 pub(crate) const HEADER_INSET: f32 = 6.0;
-/// The GOG pill, as on the poster.
-const PILL_SIZE: f32 = 11.0;
-const PILL_PADDING: f32 = 2.0;
-const PILL_SIDE: f32 = 8.0;
 const MARKS_GAP: f32 = 4.0;
 /// How much the star grows at the top of its pop.
 const STAR_LIFT: f32 = 4.0;
@@ -128,16 +125,17 @@ pub(crate) enum Star {
 
 /// What a row shows, from the same card data a poster draws.
 #[derive(Debug, Clone, PartialEq)]
-pub(crate) struct RowFacts {
-    pub(crate) title: String,
+pub(crate) struct RowFacts<'a> {
+    pub(crate) title: &'a str,
     /// The environment name, as the card's muted line under the title.
-    pub(crate) identifier: Option<String>,
+    pub(crate) identifier: Option<&'a str>,
     pub(crate) state: &'static str,
     pub(crate) dot: Color,
-    pub(crate) playtime: String,
-    pub(crate) last_played: String,
+    pub(crate) playtime: &'a str,
+    pub(crate) last_played: &'a str,
     pub(crate) source: &'static str,
-    pub(crate) tags: String,
+    /// Joined only when the Tags column shows.
+    pub(crate) tags: &'a [String],
     pub(crate) star: Star,
     /// How far the hover has faded in, 0 to 1, as on the poster.
     pub(crate) hover: f32,
@@ -169,21 +167,26 @@ impl App {
     }
 
     /// What `card`'s row in `slot` shows.
-    pub(crate) fn row_facts(&self, slot: &SlotId, card: &Card, palette: Palette) -> RowFacts {
+    pub(crate) fn row_facts<'a>(
+        &self,
+        slot: &SlotId,
+        card: &'a Card,
+        palette: Palette,
+    ) -> RowFacts<'a> {
         let hovered = self.hovered.as_ref() == Some(slot);
         let selected = self.selected.as_ref() == Some(&card.name);
         let dimmed = card.not_installed();
         // The poster's hover fade, so the row's hover and star ease the same.
         let (hover, _) = self.hover_fades.progress(slot, hovered, selected);
         RowFacts {
-            title: card.display_title.clone(),
-            identifier: shows_identifier(card).then(|| card.name.clone()),
+            title: &card.display_title,
+            identifier: shows_identifier(card).then_some(card.name.as_str()),
             state: card.state_word(),
             dot: card.dot(palette),
-            playtime: card.playtime().to_owned(),
-            last_played: card.last_played.clone(),
+            playtime: card.playtime(),
+            last_played: &card.last_played,
             source: source_label(card),
-            tags: card.tags.join(", "),
+            tags: &card.tags,
             star: if card.favorite {
                 Star::Filled
             } else if hovered || hover > 0.0 {
@@ -208,14 +211,15 @@ impl App {
         }
     }
 
-    /// `card`'s row in `slot`, `width` wide at `opacity`, as it fades in or
-    /// out.
+    /// `card`'s row in `slot`, `width` wide with `columns`, the ones
+    /// `columns(width)` gives, at `opacity`, as it fades in or out.
     pub(crate) fn row_drawn<'a>(
         &'a self,
         slot: &SlotId,
         card: &'a Card,
         opacity: f32,
         width: f32,
+        columns: &[Column],
     ) -> Element<'a, Message> {
         let alpha = self.collapse.alpha() * opacity;
         let palette = self.palette.faded(alpha);
@@ -248,11 +252,18 @@ impl App {
                 .into(),
         };
         let thumb: Element<'_, Message> = if facts.marked {
-            stack![thumb, check(self.palette, alpha)].into()
+            let check = crate::multi_select::check(self.palette, alpha, CHECK_CHIP);
+            stack![
+                thumb,
+                container(check)
+                    .center_x(THUMB_WIDTH)
+                    .center_y(THUMB_HEIGHT)
+            ]
+            .into()
         } else {
             thumb
         };
-        let fitted = row_text(&facts, width);
+        let fitted = row_text(&facts, columns, width);
         let mut title = column![
             text(fitted.title)
                 .size(TITLE_SIZE)
@@ -275,7 +286,8 @@ impl App {
         }
         let mut marks = row![].spacing(MARKS_GAP).align_y(Center);
         if let Some(badge) = facts.gog {
-            marks = marks.push(pill(badge, palette, alpha));
+            marks = marks
+                .push(crate::grid::gog_pill(badge, palette, alpha, false).width(pill_width(badge)));
         }
         if facts.steam {
             marks = marks.push(
@@ -468,13 +480,10 @@ pub(crate) struct RowText {
     pub(crate) cells: Vec<(Column, String)>,
 }
 
-/// The room the title's text has in a row `width` wide, after the
-/// thumbnail, the other columns, and the marks beside it.
-pub(crate) fn title_room(facts: &RowFacts, width: f32) -> f32 {
-    let others: f32 = columns(width)
-        .iter()
-        .map(|column| CELL_GAP + column.width())
-        .sum();
+/// The room the title's text has in a row `width` wide with `columns`,
+/// after the thumbnail, the other columns, and the marks beside it.
+pub(crate) fn title_room(facts: &RowFacts, columns: &[Column], width: f32) -> f32 {
+    let others: f32 = columns.iter().map(|column| CELL_GAP + column.width()).sum();
     let cell = width - 2.0 * ROW_PADDING - CELL_GAP - STATE_WIDTH - others;
     let mut marks = STAR_BOX;
     if facts.steam {
@@ -492,28 +501,32 @@ pub(crate) fn title_room(facts: &RowFacts, width: f32) -> f32 {
 /// The state's room beside its dot.
 pub(crate) const STATE_ROOM: f32 = STATE_WIDTH - DOT - 8.0;
 
-pub(crate) fn row_text(facts: &RowFacts, width: f32) -> RowText {
+/// The row's text for a row `width` wide with `columns`, the ones
+/// `columns(width)` gives.
+pub(crate) fn row_text(facts: &RowFacts, columns: &[Column], width: f32) -> RowText {
     use crate::tile_title::fit;
-    let room = title_room(facts, width);
+    let room = title_room(facts, columns, width);
     RowText {
-        title: fit(&facts.title, room, TITLE_SIZE, SEMIBOLD),
+        title: fit(facts.title, room, TITLE_SIZE, SEMIBOLD),
         identifier: facts
             .identifier
-            .as_ref()
             .map(|identifier| fit(identifier, room, IDENTIFIER_SIZE, Font::DEFAULT)),
         state: fit(facts.state, STATE_ROOM, CELL_SIZE, Font::DEFAULT),
-        cells: columns(width)
+        cells: columns
             .iter()
             .map(|column| {
                 let value = match column {
-                    Column::Playtime => facts.playtime.as_str(),
-                    Column::LastPlayed => facts.last_played.as_str(),
-                    Column::Source => facts.source,
-                    Column::Tags => facts.tags.as_str(),
+                    Column::Playtime => Cow::Borrowed(facts.playtime),
+                    Column::LastPlayed => Cow::Borrowed(facts.last_played),
+                    Column::Source => Cow::Borrowed(facts.source),
+                    Column::Tags => match facts.tags {
+                        [tag] => Cow::Borrowed(tag.as_str()),
+                        tags => Cow::Owned(tags.join(", ")),
+                    },
                 };
                 (
                     *column,
-                    fit(value, column.width(), CELL_SIZE, Font::DEFAULT),
+                    fit(&value, column.width(), CELL_SIZE, Font::DEFAULT),
                 )
             })
             .collect(),
@@ -521,27 +534,8 @@ pub(crate) fn row_text(facts: &RowFacts, width: f32) -> RowText {
 }
 
 fn pill_width(badge: Badge) -> f32 {
-    crate::tile_title::line_width(badge.label(), PILL_SIZE, Font::DEFAULT) + 2.0 * PILL_SIDE
-}
-
-/// The GOG pill in its semantic color, as the poster draws it.
-fn pill(badge: Badge, palette: Palette, alpha: f32) -> Element<'static, Message> {
-    let color = badge.color(palette);
-    let ink = ui::accent_ink(color);
-    container(
-        text(badge.label())
-            .size(PILL_SIZE)
-            .color(ink.scale_alpha(alpha))
-            .wrapping(text::Wrapping::None),
-    )
-    .width(pill_width(badge))
-    .padding([PILL_PADDING, PILL_SIDE])
-    .style(move |_| {
-        container::Style::default()
-            .background(color)
-            .border(border::rounded(8))
-    })
-    .into()
+    use crate::grid::{GOG_PILL_SIDE, GOG_PILL_SIZE};
+    crate::tile_title::line_width(badge.label(), GOG_PILL_SIZE, Font::DEFAULT) + 2.0 * GOG_PILL_SIDE
 }
 
 /// A sortable header's look: a list row's hover and press, with the label
@@ -609,26 +603,6 @@ pub(crate) fn star_style(palette: Palette, status: button::Status) -> button::St
             .color(style.border.color),
         ..style
     }
-}
-
-/// A marked row's check, centered on its thumbnail like the poster's on
-/// its art.
-fn check(palette: Palette, alpha: f32) -> Element<'static, Message> {
-    let fill = palette.primary;
-    // The renderer's tint ignores its alpha, so the icon fades by opacity.
-    let chip = container(icon(CHECK, ui::accent_ink(fill), CHECK_ICON).opacity(alpha))
-        .width(CHECK_CHIP)
-        .height(CHECK_CHIP)
-        .center(CHECK_CHIP)
-        .style(move |_| {
-            container::Style::default()
-                .background(fill.scale_alpha(alpha))
-                .border(border::rounded(CHECK_CHIP / 2.0))
-        });
-    container(chip)
-        .center_x(THUMB_WIDTH)
-        .center_y(THUMB_HEIGHT)
-        .into()
 }
 
 #[cfg(test)]

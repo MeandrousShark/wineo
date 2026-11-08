@@ -205,17 +205,8 @@ pub(crate) struct App {
     /// What `view` reads in place of the disk; see `prefix_facts`.
     facts: prefix_facts::Stored,
     pub(crate) selected: Option<String>,
-    /// Which copy of the selected game the cursor is on, set by clicks and
-    /// arrow keys. Unset, or for another game, it's the first copy; see
-    /// `App::selected_index`.
-    pub(crate) active_slot: Option<slot::SlotId>,
-    /// The header the cursor moved to when its section collapsed, which
-    /// the arrows then start from (plan 0062, question 22).
-    pub(crate) header_cursor: Option<slot::SectionKey>,
-    /// A game the grid shows a second time, and where; see
-    /// `App::show_test_copy`.
-    #[cfg(test)]
-    test_copy: Option<(String, usize)>,
+    /// The copy of the selected game or the header the cursor is on.
+    pub(crate) cursor: Option<app_selection::Cursor>,
     /// The cards marked for a bulk action, which only ever holds shown
     /// games. `selected` stays the panel's card.
     pub(crate) marked: BTreeSet<String>,
@@ -617,10 +608,7 @@ impl App {
             flag_writes: library_actions::Writes::default(),
             facts: prefix_facts::Stored::default(),
             selected: None,
-            active_slot: None,
-            header_cursor: None,
-            #[cfg(test)]
-            test_copy: None,
+            cursor: None,
             marked: BTreeSet::new(),
             mark_range: multi_select::Range::default(),
             panel_open: false,
@@ -940,7 +928,7 @@ impl App {
         // edit, a save, Revert, leaving Settings, or the system's mode.
         self.sync_palette();
         // One place for every path that changes the selection.
-        self.sync_active_slot();
+        self.sync_cursor();
         // One place for every path that changes the hover or selection.
         self.sync_hover_fades();
         self.sync_star_pops();

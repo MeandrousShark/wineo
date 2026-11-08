@@ -35,18 +35,18 @@ impl From<library::View> for Query {
 /// include and exclude sets; the popup keeps it that way.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct Filters {
-    /// Store labels; a card matches any of them. A game with no store
-    /// matches none.
-    pub(crate) stores: BTreeSet<&'static str>,
-    /// Platform labels, the same way. A game with no platform matches none.
-    pub(crate) platforms: BTreeSet<&'static str>,
+    /// A card matches any of these stores. A game with no store matches
+    /// none.
+    pub(crate) stores: BTreeSet<Store>,
+    /// Platforms, the same way. A game with no platform matches none.
+    pub(crate) platforms: BTreeSet<Platform>,
     /// A card matches when it has any of these.
     pub(crate) tags: BTreeSet<String>,
     /// A card with any of these stores is out. A game with no store stays in.
-    pub(crate) not_stores: BTreeSet<&'static str>,
+    pub(crate) not_stores: BTreeSet<Store>,
     /// Platforms that take a card out. A game with no platform isn't known
     /// to be on any, so it stays in.
-    pub(crate) not_platforms: BTreeSet<&'static str>,
+    pub(crate) not_platforms: BTreeSet<Platform>,
     /// A card with any of these tags is out.
     pub(crate) not_tags: BTreeSet<String>,
     pub(crate) show_hidden: bool,
@@ -77,14 +77,13 @@ impl Filters {
     /// Any checked value within a group matches, every group with a check
     /// has to, and no excluded value in any group may match.
     fn admit(&self, card: &Card) -> bool {
-        let store = card.source.store.map(Store::label);
-        let platform = card.source.platform.map(Platform::label);
-        (self.stores.is_empty() || store.is_some_and(|label| self.stores.contains(label)))
+        let (store, platform) = (card.source.store, card.source.platform);
+        (self.stores.is_empty() || store.is_some_and(|store| self.stores.contains(&store)))
             && (self.platforms.is_empty()
-                || platform.is_some_and(|label| self.platforms.contains(label)))
+                || platform.is_some_and(|platform| self.platforms.contains(&platform)))
             && (self.tags.is_empty() || card.tags.iter().any(|tag| self.tags.contains(tag)))
-            && !store.is_some_and(|label| self.not_stores.contains(label))
-            && !platform.is_some_and(|label| self.not_platforms.contains(label))
+            && !store.is_some_and(|store| self.not_stores.contains(&store))
+            && !platform.is_some_and(|platform| self.not_platforms.contains(&platform))
             && !card.tags.iter().any(|tag| self.not_tags.contains(tag))
     }
 }
@@ -102,28 +101,30 @@ pub(crate) struct Counts {
 /// The stores, platforms, and tags the library has, for the filter popup.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct Options {
-    /// Store labels, A to Z.
-    pub(crate) stores: Vec<&'static str>,
-    /// Platform labels, A to Z.
-    pub(crate) platforms: Vec<&'static str>,
+    /// Stores, A to Z by label.
+    pub(crate) stores: Vec<Store>,
+    /// Platforms, A to Z by label.
+    pub(crate) platforms: Vec<Platform>,
     /// Tags, A to Z ignoring case.
     pub(crate) tags: Vec<String>,
 }
 
 impl Options {
     fn of(cards: &[Card]) -> Self {
-        let labels = |label: fn(&Card) -> Option<&'static str>| {
-            let mut labels: Vec<&'static str> = cards
-                .iter()
-                .filter_map(label)
-                .collect::<BTreeSet<_>>()
-                .into_iter()
-                .collect();
-            labels.sort_unstable_by_key(|label| label.to_lowercase());
-            labels
-        };
-        let stores = labels(|card| card.source.store.map(Store::label));
-        let platforms = labels(|card| card.source.platform.map(Platform::label));
+        let mut stores: Vec<Store> = cards
+            .iter()
+            .filter_map(|card| card.source.store)
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect();
+        stores.sort_unstable_by_key(|store| store.label().to_lowercase());
+        let mut platforms: Vec<Platform> = cards
+            .iter()
+            .filter_map(|card| card.source.platform)
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect();
+        platforms.sort_unstable_by_key(|platform| platform.label().to_lowercase());
         let mut tags: Vec<String> = cards
             .iter()
             .flat_map(|card| card.tags.iter().cloned())

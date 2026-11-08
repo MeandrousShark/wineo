@@ -476,7 +476,7 @@ fn the_toolbar_reads_add_search_sort_filters_then_the_zoom_controls() {
 #[test]
 fn tab_reaches_the_slider_after_the_filter_tab_chips() {
     let (_root, mut app) = library(4);
-    app.filters.stores.insert("Steam");
+    app.filters.stores.insert(wineo_core::source::Store::Steam);
     app.reorder();
     let mut laid = lay_out(app.view(), app.window_size);
     let redraw = iced::Event::Window(iced::window::Event::RedrawRequested(Instant::now()));
@@ -513,7 +513,7 @@ fn tab_reaches_the_dice_after_the_filter_tab_chips_and_before_the_slider() {
             ..Default::default()
         });
     }
-    app.filters.stores.insert("Steam");
+    app.filters.stores.insert(wineo_core::source::Store::Steam);
     app.reorder();
     assert_eq!(app.filtered().len(), 4);
     let mut laid = lay_out(app.view(), app.window_size);
@@ -809,7 +809,7 @@ fn the_selected_card_anchors_when_any_of_it_is_on_screen() {
 #[test]
 fn the_cursors_copy_anchors_a_zoom_rather_than_the_games_first() {
     let (_root, mut app) = library(120);
-    let copy = app.show_test_copy("game-005", 10);
+    let copy = crate::tests::show_copy(&mut app, "game-005", 10);
     let places = app.grid_places();
     let at = places.index(&copy).unwrap();
     let tops: Vec<f32> = app
@@ -821,7 +821,7 @@ fn the_cursors_copy_anchors_a_zoom_rather_than_the_games_first() {
     // The first copy is partly on screen too.
     app.scroll_offset = tops[5] + 10.0;
     app.selected = Some("game-005".into());
-    app.active_slot = Some(copy.clone());
+    app.cursor = Some(crate::app_selection::Cursor::Card(copy.clone()));
     let offset = tops[at] - app.scroll_offset;
     let _ = zoom(&mut app, Event::Key(Key::In));
     assert_eq!(

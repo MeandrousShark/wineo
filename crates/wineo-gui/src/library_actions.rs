@@ -427,21 +427,6 @@ impl App {
         }
     }
 
-    /// Where the cursor's successor will sit once every slot of the games
-    /// `leaving` picks is gone, counted by place: the cursor's slot now,
-    /// less the leaving slots before it. Each game's copies all leave
-    /// together, so earlier copies count too.
-    #[cfg(test)]
-    pub(crate) fn place_after_leaving(&self, leaving: impl Fn(&str) -> bool) -> Option<usize> {
-        let places = self.grid_places();
-        let at = self.selected_index(&places)?;
-        let before = places.ids[..at]
-            .iter()
-            .filter(|slot| leaving(slot.name()))
-            .count();
-        Some(at - before)
-    }
-
     /// The cursor's successor once every slot of the games `leaving` picks
     /// is gone: the first slot after it that stays, else the nearest one
     /// before it, found again by identity rather than by place, since a
@@ -464,21 +449,12 @@ impl App {
     /// else the last slot, or selects nothing when nothing is left.
     pub(crate) fn select_successor(&mut self, successor: Successor) -> Task<Message> {
         let places = self.grid_places();
-        match successor
+        let next = successor
             .candidates
             .into_iter()
             .find(|slot| places.index(slot).is_some())
-        {
-            Some(next) => self.select_slot(next),
-            None => self.select_in_place(usize::MAX),
-        }
-    }
-
-    /// Puts the cursor on the slot now at `place` in the shown order, or the
-    /// last one, or selects nothing when nothing is left.
-    pub(crate) fn select_in_place(&mut self, place: usize) -> Task<Message> {
-        let places = self.grid_places();
-        let Some(next) = places.ids.get(place).or(places.ids.last()).cloned() else {
+            .or_else(|| places.ids.last().cloned());
+        let Some(next) = next else {
             self.selected = None;
             self.close_panel();
             return Task::none();

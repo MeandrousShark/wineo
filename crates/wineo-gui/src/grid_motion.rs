@@ -304,6 +304,8 @@ pub(crate) struct Places {
     /// one. Headers are kept apart in `headers`, so a card index never
     /// lands on one.
     pub(crate) ids: Vec<SlotId>,
+    /// Each slot's index into the app's cards, set by `App::grid_places`.
+    pub(crate) cards: Vec<usize>,
     pub(crate) slots: Vec<Rectangle>,
     /// The section headers, in shown order, laid out with the cards.
     pub(crate) headers: Vec<HeaderPlace>,
@@ -312,8 +314,6 @@ pub(crate) struct Places {
     pub(crate) height: f32,
     pub(crate) layout: GridLayout,
     pub(crate) mode: ViewLayout,
-    /// Each card's neighbor in the next row of its section, in its column.
-    pub(crate) below: Vec<Option<usize>>,
     indices: HashMap<SlotId, usize>,
     /// Each game's first slot in shown order.
     first: HashMap<String, usize>,
@@ -359,17 +359,15 @@ impl Places {
     pub(crate) fn new(
         ids: Vec<SlotId>,
         heights: &[f32],
-        widths: &[f32],
+        width: f32,
         columns: usize,
         shift: f32,
         layout: GridLayout,
         mode: ViewLayout,
     ) -> Self {
-        let width = widths.first().copied().unwrap_or(layout.card_width);
         Self::sectioned(
             ids,
             heights,
-            widths,
             Vec::new(),
             width,
             columns,
@@ -379,13 +377,11 @@ impl Places {
         )
     }
 
-    /// Cards with `headers` among them, each slot `width` wide for the
-    /// headers' span when no card says otherwise.
+    /// Cards with `headers` among them, each slot `width` wide.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn sectioned(
         ids: Vec<SlotId>,
         heights: &[f32],
-        widths: &[f32],
         headers: Vec<Header>,
         width: f32,
         columns: usize,
@@ -396,8 +392,7 @@ impl Places {
         let columns = columns.max(1);
         let sizes: Vec<Size> = heights
             .iter()
-            .zip(widths)
-            .map(|(height, width)| Size::new(*width, *height))
+            .map(|height| Size::new(width, *height))
             .collect();
         let breaks: Vec<usize> = headers.iter().map(|header| header.at).collect();
         let arranged = arrange(&sizes, &breaks, columns, shift, row_gap(mode));
@@ -423,6 +418,7 @@ impl Places {
                 .collect(),
             first,
             ids,
+            cards: Vec::new(),
             slots: points
                 .into_iter()
                 .zip(sizes)
@@ -433,7 +429,6 @@ impl Places {
             height,
             layout,
             mode,
-            below: arranged.below,
         }
     }
 
@@ -2002,6 +1997,15 @@ mod tests {
     }
 
     #[test]
+    fn the_card_below_is_in_its_own_section_only() {
+        let sizes = [Size::new(100.0, 100.0); 4];
+        let flat = arrange(&sizes, &[], 3, 0.0, GAP);
+        assert_eq!(flat.below, [Some(3), None, None, None]);
+        let sectioned = arrange(&sizes, &[0, 1], 3, 0.0, GAP);
+        assert_eq!(sectioned.below, [None, None, None, None]);
+    }
+
+    #[test]
     fn a_band_runs_from_the_card_to_the_card_below_or_its_own_room() {
         let card = Rectangle::new(Point::new(16.0, 16.0), Size::new(160.0, 280.0));
         let details = Rectangle::new(Point::new(16.0, 300.0), Size::new(160.0, 16.0));
@@ -2281,7 +2285,7 @@ mod tests {
         let full = Places::new(
             (0..7).map(|index| index.to_string().into()).collect(),
             &[300.0; 7],
-            &[layout.card_width(); 7],
+            layout.card_width(),
             columns_for_viewport(896.0, false, layout, ViewLayout::Grid),
             shift_for_viewport(896.0, false, layout, ViewLayout::Grid),
             layout,
@@ -2322,7 +2326,7 @@ mod tests {
                     let places = Places::new(
                         (0..13).map(|index| index.to_string().into()).collect(),
                         &heights,
-                        &[slot; 13],
+                        slot,
                         columns,
                         shift,
                         layout,
@@ -2396,7 +2400,7 @@ mod tests {
         let rows = Places::new(
             vec!["a".into(), "b".into(), "c".into()],
             &[56.0; 3],
-            &[968.0; 3],
+            968.0,
             1,
             0.0,
             GridLayout::default(),
@@ -2439,7 +2443,7 @@ mod tests {
         let empty = Places::new(
             Vec::new(),
             &[],
-            &[],
+            GridLayout::default().card_width,
             1,
             0.0,
             GridLayout::default(),
@@ -2540,7 +2544,7 @@ mod tests {
         Places::new(
             names.iter().map(|name| (*name).into()).collect(),
             &heights,
-            &vec![layout.card_width(); names.len()],
+            layout.card_width(),
             columns,
             0.0,
             layout,

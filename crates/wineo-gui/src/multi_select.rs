@@ -17,7 +17,7 @@ use crate::{App, Message, ui};
 pub(crate) const WASH: f32 = 0.25;
 /// The poster's check is a corner mark like the status chip, so it takes
 /// their size and icon size.
-const CHECK_CHIP: f32 = crate::library_actions::MARK_SIZE;
+pub(crate) const CHECK_CHIP: f32 = crate::library_actions::MARK_SIZE;
 const CHECK_ICON: f32 = 14.0;
 
 /// Where a Shift+click range starts and what the last one added.
@@ -48,7 +48,7 @@ impl App {
             Task::none()
         } else {
             self.clear_marks();
-            self.header_cursor = None;
+            self.leave_header();
             if let Some(slot) = slot {
                 // Another copy of the open panel's game only moves the
                 // cursor, rather than closing the panel as its own card
@@ -56,7 +56,7 @@ impl App {
                 let elsewhere = self.panel_open
                     && self.selected.as_deref() == Some(&name)
                     && self.selected_slot().is_some_and(|cursor| cursor != slot);
-                self.active_slot = Some(slot);
+                self.cursor = Some(crate::app_selection::Cursor::Card(slot));
                 if elsewhere {
                     return Task::none();
                 }
@@ -99,7 +99,7 @@ impl App {
     /// Toggles `name`'s mark from its copy in `slot`, which a range then
     /// starts from.
     fn toggle_mark_at(&mut self, name: &str, slot: Option<SlotId>) {
-        if !self.shown_names().contains(name) {
+        if self.grid_places().first(name).is_none() {
             return;
         }
         self.mark_range.added.clear();
@@ -121,7 +121,7 @@ impl App {
     /// else `name` itself. With Ctrl held too, the last range stays.
     fn mark_range(&mut self, name: &str, slot: Option<&SlotId>, keep_last: bool) {
         let places = self.grid_places();
-        let active = self.active_slot.as_ref();
+        let active = self.card_cursor();
         let to = match slot {
             Some(slot) => places.index(slot),
             None => cursor(&places, Some(name), active),
@@ -163,7 +163,7 @@ impl App {
     }
 
     pub(crate) fn mark_all(&mut self) {
-        self.marked = self.shown_names();
+        self.marked = self.visible_names();
         self.mark_range.added.clear();
     }
 
@@ -193,11 +193,6 @@ impl App {
             self.mark_range.anchor_slot = None;
         }
     }
-
-    /// The games Ctrl+A and a mark can reach: those with a copy in view.
-    fn shown_names(&self) -> BTreeSet<String> {
-        self.visible_names()
-    }
 }
 
 /// The primary wash over a marked card's art, under its corner layers.
@@ -214,19 +209,20 @@ pub(crate) fn wash(palette: Palette, alpha: f32) -> Element<'static, Message> {
         .into()
 }
 
-/// The check chip for a marked card's top-left corner, where the grid
-/// lays it out before the status chip and the GOG pill.
-pub(crate) fn check(palette: Palette, alpha: f32) -> Element<'static, Message> {
+/// A marked card's check chip, `size` across: `CHECK_CHIP` in a poster's
+/// top-left corner, before the status chip and the GOG pill, and smaller
+/// on a list row's thumbnail.
+pub(crate) fn check(palette: Palette, alpha: f32, size: f32) -> Element<'static, Message> {
     let fill = palette.primary;
     // The renderer's tint ignores its alpha, so the icon fades by opacity.
     container(icon(CHECK, ui::accent_ink(fill), CHECK_ICON).opacity(alpha))
-        .width(CHECK_CHIP)
-        .height(CHECK_CHIP)
-        .center(CHECK_CHIP)
+        .width(size)
+        .height(size)
+        .center(size)
         .style(move |_| {
             container::Style::default()
                 .background(fill.scale_alpha(alpha))
-                .border(border::rounded(CHECK_CHIP / 2.0))
+                .border(border::rounded(size / 2.0))
         })
         .into()
 }

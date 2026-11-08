@@ -4,6 +4,7 @@ use iced::Rectangle;
 use iced::keyboard::{Key, Modifiers, key::Named};
 use wineo_core::library::{GroupBy, SortKey, ViewLayout};
 use wineo_core::runtime::State;
+use wineo_core::source::{Platform, Store};
 
 use super::*;
 use crate::filter_control::tests::{library, open_filters};
@@ -242,7 +243,7 @@ fn applying_a_preset_sets_the_whole_view_and_writes_nothing() {
     open_filters(&mut app);
     let _ = send(&mut app, Event::Apply("Couch co-op".into()));
 
-    assert_eq!(app.filters.stores, ["GOG", "Steam"].into_iter().collect());
+    assert_eq!(app.filters.stores, [Store::Gog, Store::Steam].into());
     assert_eq!(app.filters.tags, ["game".to_owned()].into());
     assert_eq!(app.filters.not_tags, ["rpg".to_owned()].into());
     assert!(app.filters.show_hidden);
@@ -345,6 +346,42 @@ fn a_preset_whose_held_card_is_gone_lands_the_selection_from_where_it_was() {
         (top - before).abs() < (from_top - before).abs(),
         "{top} {from_top} {before}"
     );
+}
+
+#[test]
+fn a_preset_that_leaves_less_than_the_old_scroll_clamps_it_to_the_end() {
+    // Ungrouping takes the held card's slot in rpg away, and the 30 rows
+    // left end above where the grid was scrolled to. The selection is in
+    // the last screenful, so it lands with the list scrolled to its end.
+    let (_root, mut app) =
+        booted("schema_version = 1\n\n[presets.Short]\nlayout = \"list\"\ntags = [\"short\"]\n");
+    app.viewport_width = 1000.0;
+    app.viewport_height = 800.0;
+    app.group = GroupBy::Tag;
+    let cards = (0..60)
+        .map(|index| {
+            let mut card = crate::tests::card(&format!("game-{index:02}"), State::Inactive, 60);
+            card.tags = vec!["rpg".into()];
+            if index >= 30 {
+                card.tags.push("short".into());
+            }
+            card
+        })
+        .collect();
+    let _ = app.update(Message::Loaded(Ok(cards)));
+    app.snap_grid();
+    let places = app.grid_places();
+    let before = places.slots[places.first("game-59").unwrap()].y - 300.0;
+    app.scroll_offset = before;
+    app.selected = Some("game-59".into());
+    open_filters(&mut app);
+    let _ = send(&mut app, Event::Apply("Short".into()));
+    assert_eq!((app.layout, app.group), (ViewLayout::List, GroupBy::None));
+    let places = app.grid_places();
+    assert_eq!(places.ids.len(), 30);
+    let end = places.height + app.bar_room() - app.viewport_height;
+    assert!(0.0 < end && end < before, "{end} {before}");
+    assert_eq!(app.scroll_offset, end);
 }
 
 #[test]
@@ -462,9 +499,9 @@ layout = "list"
     );
     open_filters(&mut app);
     let _ = send(&mut app, Event::Apply("Odd".into()));
-    assert_eq!(app.filters.stores, ["GOG"].into());
+    assert_eq!(app.filters.stores, [Store::Gog].into());
     assert!(app.filters.platforms.is_empty());
-    assert_eq!(app.filters.not_platforms, ["Native"].into());
+    assert_eq!(app.filters.not_platforms, [Platform::Native].into());
     assert_eq!(app.filters.tags, ["co-op".to_owned()].into());
     assert_eq!(app.query.sort, SortKey::Playtime);
     assert_eq!(app.layout, ViewLayout::List);
@@ -492,7 +529,7 @@ not_stores = ["steam"]
     assert_eq!(app.filters.tags, ["game".to_owned()].into());
     assert_eq!(app.filters.not_tags, ["rpg".to_owned()].into());
     assert!(app.filters.stores.is_empty());
-    assert_eq!(app.filters.not_stores, ["Steam"].into());
+    assert_eq!(app.filters.not_stores, [Store::Steam].into());
     assert_eq!(button_label(&app), "Filters (Both)");
     assert!(app.preset_to_update().is_none());
 }
@@ -509,7 +546,7 @@ fn update_shows_only_while_the_view_differs_from_the_active_preset() {
     assert!(!app.preset_ids().contains(&UPDATE_ID.to_owned()));
 
     for change in [
-        FilterEvent::ToggleStore("Steam"),
+        FilterEvent::ToggleStore(Store::Steam),
         FilterEvent::ExcludeTag("game".into()),
         FilterEvent::ToggleShowHidden,
     ] {

@@ -122,7 +122,7 @@ fn group_by_none_is_one_flat_section_with_hidden_games_in_place_as_today() {
     let places = app.grid_places();
     assert!(places.headers.is_empty());
     let layout = app.grid_layout();
-    let flat_places = Places::new(
+    let mut flat_places = Places::new(
         app.filtered()
             .iter()
             .map(|card| SlotId::new(SectionKey::All, card.name.as_str()))
@@ -131,12 +131,18 @@ fn group_by_none_is_one_flat_section_with_hidden_games_in_place_as_today() {
             .iter()
             .map(|card| crate::grid::card_height(card, layout))
             .collect::<Vec<_>>(),
-        &vec![layout.card_width(); app.filtered().len()],
+        layout.card_width(),
         app.columns(),
         app.grid_shift(),
         layout,
         ViewLayout::Grid,
     );
+    flat_places.cards = app
+        .filtered()
+        .iter()
+        .map(|card| app.cards.iter().position(|each| each.name == card.name))
+        .collect::<Option<_>>()
+        .unwrap();
     assert_eq!(*places, flat_places);
     assert!(
         places.ids.iter().all(|slot| slot.widget_id()
@@ -574,7 +580,6 @@ fn a_header_takes_a_row_of_its_own_and_its_cards_start_a_new_one() {
     let places = Places::sectioned(
         ids,
         &heights,
-        &[width; 4],
         headers,
         width,
         3,
@@ -603,14 +608,11 @@ fn a_header_takes_a_row_of_its_own_and_its_cards_start_a_new_one() {
     );
     assert_eq!(places.slots[3].y, next);
     assert_eq!(places.height, next + row + PADDING);
-    // The card below one is in its own section only.
-    assert_eq!(places.below, [None, None, None, None]);
 
     // A list's header is a row across the list.
     let rows = Places::sectioned(
         vec![SlotId::new(SectionKey::All, "a")],
         &[crate::list_view::ROW_HEIGHT],
-        &[700.0],
         vec![grid_motion::Header {
             key: SectionKey::Recent,
             count: 1,
@@ -649,7 +651,7 @@ fn the_rows_in_view_are_found_the_same_way_with_or_without_sections() {
     let places = Places::new(
         ids,
         &heights,
-        &[layout.card_width(); 23],
+        layout.card_width(),
         4,
         0.0,
         layout,
@@ -1184,7 +1186,6 @@ fn header_places(sections: &[(&str, &[&str])]) -> Places {
     Places::sectioned(
         ids,
         &vec![layout.poster_height(); count],
-        &vec![layout.card_width(); count],
         headers,
         layout.card_width(),
         3,
@@ -1293,7 +1294,6 @@ fn walk_places(rows: &[(&str, &[&str])], columns: usize, mode: ViewLayout) -> Pl
     Places::sectioned(
         ids,
         &vec![height; count],
-        &vec![width; count],
         headers,
         width,
         columns,
@@ -1372,7 +1372,7 @@ fn the_walk_matches_the_old_arithmetic_on_a_flat_grid() {
             let places = Places::new(
                 ids,
                 &vec![layout.poster_height(); count],
-                &vec![layout.card_width(); count],
+                layout.card_width(),
                 columns,
                 0.0,
                 layout,
@@ -1454,7 +1454,7 @@ fn a_game_moving_between_sections_springs_and_its_extra_copies_fade() {
                 .map(|name| SlotId::new(SectionKey::All, *name))
                 .collect(),
             &vec![layout.poster_height(); names.len()],
-            &vec![layout.card_width(); names.len()],
+            layout.card_width(),
             3,
             0.0,
             layout,
@@ -1808,8 +1808,10 @@ fn the_cursors_section_collapsing_moves_it_to_the_header_and_keeps_the_panel() {
     let _ = app.update(Message::Press(celeste));
     assert!(app.panel_open);
     let _ = app.update(Message::ToggleSection(tag("rpg")));
-    assert_eq!(app.header_cursor, Some(tag("rpg")));
-    assert_eq!(app.active_slot, None);
+    assert_eq!(
+        app.cursor,
+        Some(crate::app_selection::Cursor::Header(tag("rpg")))
+    );
     assert!(app.panel_open);
     assert_eq!(app.selected.as_deref(), Some("celeste"));
     // The selected game has no copy in view, so keys that act on it wait.
@@ -1828,16 +1830,16 @@ fn the_cursors_section_collapsing_moves_it_to_the_header_and_keeps_the_panel() {
         app.selected_slot(),
         Some(slot(SectionKey::NoTag, "notepad"))
     );
-    assert_eq!(app.header_cursor, None);
+    assert_eq!(app.header_cursor(), None);
     // Back on the header, Up goes to the row above and Left to the card
     // before it in shown order.
-    app.header_cursor = Some(tag("rpg"));
+    app.cursor = Some(crate::app_selection::Cursor::Header(tag("rpg")));
     key(&mut app, Named::ArrowUp);
     assert_eq!(app.selected_slot(), Some(slot(SectionKey::Recent, "hades")));
-    app.header_cursor = Some(tag("rpg"));
+    app.cursor = Some(crate::app_selection::Cursor::Header(tag("rpg")));
     key(&mut app, Named::ArrowLeft);
     assert_eq!(app.selected_slot(), Some(slot(SectionKey::Recent, "hades")));
-    app.header_cursor = Some(tag("rpg"));
+    app.cursor = Some(crate::app_selection::Cursor::Header(tag("rpg")));
     key(&mut app, Named::ArrowRight);
     assert_eq!(
         app.selected_slot(),
@@ -1846,7 +1848,7 @@ fn the_cursors_section_collapsing_moves_it_to_the_header_and_keeps_the_panel() {
     // A cursor outside the section stays where it is.
     let _ = app.update(Message::ToggleSection(tag("rpg")));
     let _ = app.update(Message::ToggleSection(SectionKey::Recent));
-    assert_eq!(app.header_cursor, None);
+    assert_eq!(app.header_cursor(), None);
     assert_eq!(
         app.selected_slot(),
         Some(slot(SectionKey::NoTag, "notepad"))
@@ -1858,18 +1860,18 @@ fn a_cursor_on_the_last_header_with_nothing_below_stays_there() {
     let mut app = collapsible();
     let _ = app.update(Message::Press(slot(SectionKey::NoTag, "notepad")));
     let _ = app.update(Message::ToggleSection(SectionKey::NoTag));
-    assert_eq!(app.header_cursor, Some(SectionKey::NoTag));
+    assert_eq!(app.header_cursor(), Some(&SectionKey::NoTag));
     let _ = app.update(Message::KeyWithFocus(
         Key::Named(Named::ArrowDown),
         Modifiers::empty(),
         iced::event::Status::Ignored,
         false,
     ));
-    assert_eq!(app.header_cursor, Some(SectionKey::NoTag));
+    assert_eq!(app.header_cursor(), Some(&SectionKey::NoTag));
     assert_eq!(app.selected.as_deref(), Some("notepad"));
     // The header going away, as on a regroup, takes the cursor with it.
     let _ = app.update(Message::Sort(Event::Group(GroupBy::None)));
-    assert_eq!(app.header_cursor, None);
+    assert_eq!(app.header_cursor(), None);
 }
 
 #[test]
@@ -1930,14 +1932,13 @@ fn every_card_operation_skips_headers() {
     // A hide of the first card hands the cursor to the next card, not to
     // the rpg header between them.
     let _ = app.update(Message::Press(slot(SectionKey::Recent, "hades")));
-    let place = app.place_after_leaving(|name| name == "hades");
-    assert_eq!(place, Some(0));
+    let successor = app.successor_after_leaving(|name| name == "hades");
     if let Some(card) = app.cards.iter_mut().find(|card| card.name == "hades") {
         card.hidden = true;
     }
     app.order.cards_edited();
     app.reorder();
-    let _ = app.select_in_place(place.unwrap());
+    let _ = app.select_successor(successor.unwrap());
     assert_eq!(app.selected_slot(), Some(slot(tag("rpg"), "celeste")));
 }
 
@@ -1980,6 +1981,27 @@ fn a_bulk_hide_hands_the_cursor_to_the_next_slot_even_when_recent_fills_up() {
     )));
     assert_eq!(app.grid_places().ids[8], slot(SectionKey::Recent, "k"));
     assert_eq!(app.selected_slot(), Some(slot(all(), "b")));
+}
+
+#[test]
+fn a_hide_with_nothing_after_the_cursor_staying_hands_it_back_not_to_a_newcomer() {
+    // With All collapsed, Recently played is all there is. Hiding the last
+    // three games there leaves only those before the cursor, and k comes
+    // in after them, so the last slot isn't the nearest one before.
+    let mut app = eleven_played();
+    let _ = app.update(Message::ToggleSection(all()));
+    let _ = app.update(Message::Press(slot(SectionKey::Recent, "h")));
+    for name in ["h", "i", "j"] {
+        app.toggle_mark(name);
+    }
+    let _ = app.update(Message::Tags(crate::action_bar::Event::ToggleFlag(
+        crate::library_actions::Flag::Hidden,
+    )));
+    assert_eq!(
+        app.grid_places().ids.last(),
+        Some(&slot(SectionKey::Recent, "k"))
+    );
+    assert_eq!(app.selected_slot(), Some(slot(SectionKey::Recent, "g")));
 }
 
 /// Twelve played games, a to l, l played last, grouped by Recently played,
@@ -2521,8 +2543,10 @@ fn the_cursor_in_all_moves_to_its_header_when_it_collapses() {
     let _ = app.update(Message::Press(slot(all(), "celeste")));
     assert!(app.panel_open);
     let _ = app.update(Message::ToggleSection(all()));
-    assert_eq!(app.header_cursor, Some(all()));
-    assert_eq!(app.active_slot, None);
+    assert_eq!(
+        app.cursor,
+        Some(crate::app_selection::Cursor::Header(all()))
+    );
     assert!(app.panel_open);
     assert_eq!(app.selected.as_deref(), Some("celeste"));
     let key = |app: &mut App, named: Named| {
@@ -2535,11 +2559,11 @@ fn the_cursor_in_all_moves_to_its_header_when_it_collapses() {
     };
     // Nothing is below it, so Down stays.
     key(&mut app, Named::ArrowDown);
-    assert_eq!(app.header_cursor, Some(all()));
+    assert_eq!(app.header_cursor(), Some(&all()));
     // Up goes to the row above, which is Recently played.
     key(&mut app, Named::ArrowUp);
     assert_eq!(app.selected_slot(), Some(slot(SectionKey::Recent, "hades")));
-    assert_eq!(app.header_cursor, None);
+    assert_eq!(app.header_cursor(), None);
 }
 
 #[test]
