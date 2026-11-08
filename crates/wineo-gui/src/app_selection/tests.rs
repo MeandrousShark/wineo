@@ -25,7 +25,7 @@ fn places(ids: &[SlotId]) -> Places {
     Places::new(
         ids.to_vec(),
         &vec![layout.poster_height(); ids.len()],
-        &vec![layout.card_width(); ids.len()],
+        layout.card_width(),
         3,
         0.0,
         layout,

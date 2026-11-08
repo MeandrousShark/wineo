@@ -131,7 +131,7 @@ fn group_by_none_is_one_flat_section_with_hidden_games_in_place_as_today() {
             .iter()
             .map(|card| crate::grid::card_height(card, layout))
             .collect::<Vec<_>>(),
-        &vec![layout.card_width(); app.filtered().len()],
+        layout.card_width(),
         app.columns(),
         app.grid_shift(),
         layout,
@@ -574,7 +574,6 @@ fn a_header_takes_a_row_of_its_own_and_its_cards_start_a_new_one() {
     let places = Places::sectioned(
         ids,
         &heights,
-        &[width; 4],
         headers,
         width,
         3,
@@ -608,7 +607,6 @@ fn a_header_takes_a_row_of_its_own_and_its_cards_start_a_new_one() {
     let rows = Places::sectioned(
         vec![SlotId::new(SectionKey::All, "a")],
         &[crate::list_view::ROW_HEIGHT],
-        &[700.0],
         vec![grid_motion::Header {
             key: SectionKey::Recent,
             count: 1,
@@ -647,7 +645,7 @@ fn the_rows_in_view_are_found_the_same_way_with_or_without_sections() {
     let places = Places::new(
         ids,
         &heights,
-        &[layout.card_width(); 23],
+        layout.card_width(),
         4,
         0.0,
         layout,
@@ -1182,7 +1180,6 @@ fn header_places(sections: &[(&str, &[&str])]) -> Places {
     Places::sectioned(
         ids,
         &vec![layout.poster_height(); count],
-        &vec![layout.card_width(); count],
         headers,
         layout.card_width(),
         3,
@@ -1291,7 +1288,6 @@ fn walk_places(rows: &[(&str, &[&str])], columns: usize, mode: ViewLayout) -> Pl
     Places::sectioned(
         ids,
         &vec![height; count],
-        &vec![width; count],
         headers,
         width,
         columns,
@@ -1370,7 +1366,7 @@ fn the_walk_matches_the_old_arithmetic_on_a_flat_grid() {
             let places = Places::new(
                 ids,
                 &vec![layout.poster_height(); count],
-                &vec![layout.card_width(); count],
+                layout.card_width(),
                 columns,
                 0.0,
                 layout,
@@ -1452,7 +1448,7 @@ fn a_game_moving_between_sections_springs_and_its_extra_copies_fade() {
                 .map(|name| SlotId::new(SectionKey::All, *name))
                 .collect(),
             &vec![layout.poster_height(); names.len()],
-            &vec![layout.card_width(); names.len()],
+            layout.card_width(),
             3,
             0.0,
             layout,

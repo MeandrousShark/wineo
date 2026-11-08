@@ -32,7 +32,7 @@ fn places(ids: &[SlotId], columns: usize) -> Places {
     Places::new(
         ids.to_vec(),
         &vec![layout.poster_height() + 60.0; ids.len()],
-        &vec![layout.card_width(); ids.len()],
+        layout.card_width(),
         columns,
         0.0,
         layout,

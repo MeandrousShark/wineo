@@ -207,14 +207,11 @@ impl App {
                 .collect(),
             grid_motion::ViewLayout::List => vec![crate::list_view::ROW_HEIGHT; cards.len()],
         };
-        let width = self.slot_width();
-        let widths = vec![width; heights.len()];
         let places = Rc::new(grid_motion::Places::sectioned(
             ids,
             &heights,
-            &widths,
             headers,
-            width,
+            self.slot_width(),
             self.columns(),
             self.grid_shift(),
             layout,
