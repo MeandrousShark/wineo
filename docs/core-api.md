@@ -651,15 +651,20 @@ added it.
   or `State`), the same way, and `View::group` reads it, defaulting to
   `None`.
 - `Library::presets` lists the saved views, A to Z ignoring case, as
-  `(name, Preset)`; `Library::preset(name)` finds one by its exact name and
-  `taken_preset_name(name)` returns the name already used for it, exactly or
-  differing only in case. `set_preset(paths, name, &preset)`,
+  `(name, Preset)`; `Library::preset(name)` finds one by its exact name.
+  `Library::other_presets` holds the keys under `[presets]` that aren't
+  tables, and `taken_preset_name(name)` returns the key already using a
+  name, preset or not, exactly or differing only in case. Both go through
+  `preset_name_taken(names, name, except)`, the one collision rule, which
+  prefers an exact match and skips `except` so a rename can change the case
+  of its own name. `set_preset(paths, name, &preset)`,
   `create_preset` (the same, but it refuses a name that's taken rather than
   saving over it), `remove_preset(paths, name)`, and
   `rename_preset(paths, old, new)` write
   like the view setters: under the lock, `Ok(false)` for a no-op, field by
-  field, keeping comments, unknown keys, and position. A name another preset
-  uses in any case is refused with `Error::PresetNameTaken`, a bad name with
+  field, keeping comments, unknown keys, and position. A name another key
+  under `[presets]` uses in any case is refused with
+  `Error::PresetNameTaken`, a bad name with
   `Error::InvalidPresetName`, and renaming a missing preset with
   `Error::UnknownPreset`; removing one that isn't there is a no-op.
   `normalize_preset_name` trims a typed name and checks it. `Store::id`,
