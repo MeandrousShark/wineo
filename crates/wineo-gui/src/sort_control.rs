@@ -8,8 +8,8 @@ use wineo_core::library::{self, GroupBy, RandomPool, SortKey, ViewLayout};
 use wineo_core::paths::Paths;
 
 use crate::grid::{
-    ACTION_MENU_HEADER_HEIGHT, ACTION_MENU_MARGIN, ACTION_MENU_PADDING, ACTION_MENU_SPACING,
-    ACTION_MENU_WIDTH, menu_position,
+    ACTION_MENU_DIVIDER, ACTION_MENU_HEADER_HEIGHT, ACTION_MENU_MARGIN, ACTION_MENU_PADDING,
+    ACTION_MENU_SPACING, ACTION_MENU_WIDTH, menu_position,
 };
 #[cfg(test)]
 use crate::library_menu::bounds_of;
@@ -553,7 +553,7 @@ fn menu_height(window_height: f32) -> f32 {
     let items = 1 + MENU_ROWS + 1;
     let content = ACTION_MENU_HEADER_HEIGHT
         + MENU_ROWS as f32 * ui::BUTTON_HEIGHT
-        + 7.0
+        + ACTION_MENU_DIVIDER
         + (items - 1) as f32 * ACTION_MENU_SPACING;
     (content + 2.0 * ACTION_MENU_PADDING).min((window_height - 2.0 * ACTION_MENU_MARGIN).max(0.0))
 }
@@ -644,23 +644,22 @@ impl App {
             self.window_size,
             menu_height(self.window_size.height),
         );
-        // The Group by row's top inside the menu: the heading and the sort
-        // rows above it, and the separator.
-        let row_top = menu.y
-            + ACTION_MENU_PADDING
+        // The submenu's top, which lines its first row up with Group by.
+        // Both menus have the same padding, so what's left above the row is
+        // the heading, the sort rows, and the separator.
+        let top = menu.y
             + ACTION_MENU_HEADER_HEIGHT
             + SortKey::ALL.len() as f32 * (ui::BUTTON_HEIGHT + ACTION_MENU_SPACING)
             + ACTION_MENU_SPACING
-            + 7.0
-            + ACTION_MENU_SPACING
-            - ACTION_MENU_PADDING;
+            + ACTION_MENU_DIVIDER
+            + ACTION_MENU_SPACING;
         let right = menu.x + ACTION_MENU_WIDTH + GROUP_MENU_GAP;
         let x = if right + GROUP_MENU_WIDTH + ACTION_MENU_MARGIN <= self.window_size.width {
             right
         } else {
             (menu.x - GROUP_MENU_GAP - GROUP_MENU_WIDTH).max(ACTION_MENU_MARGIN)
         };
-        let y = row_top.clamp(
+        let y = top.clamp(
             ACTION_MENU_MARGIN,
             (self.window_size.height - height - ACTION_MENU_MARGIN).max(ACTION_MENU_MARGIN),
         );

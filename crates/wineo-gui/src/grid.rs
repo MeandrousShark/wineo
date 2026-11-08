@@ -24,6 +24,8 @@ pub(crate) const ACTION_MENU_MARGIN: f32 = 8.0;
 pub(crate) const ACTION_MENU_PADDING: f32 = 12.0;
 pub(crate) const ACTION_MENU_SPACING: f32 = 4.0;
 pub(crate) const ACTION_MENU_HEADER_HEIGHT: f32 = 20.0;
+/// A menu's separator: its 1 px line and 3 px of padding above and below.
+pub(crate) const ACTION_MENU_DIVIDER: f32 = 7.0;
 const INSTALL_BAR_HEIGHT: f32 = 4.0;
 const CARD_TITLE_SIZE: f32 = 14.0;
 const CARD_SPACING: f32 = 4.0;
@@ -1709,7 +1711,7 @@ fn action_menu_body_height(buttons: usize, dividers: usize, reason: Option<&str>
     let reason_height = reason.map_or(0.0, |reason| text_height(reason, ACTION_MENU_WIDTH - 24.0));
     let items = buttons + dividers + usize::from(reason.is_some());
     buttons as f32 * ui::BUTTON_HEIGHT
-        + dividers as f32 * 7.0
+        + dividers as f32 * ACTION_MENU_DIVIDER
         + reason_height
         + items.saturating_sub(1) as f32 * ACTION_MENU_SPACING
 }
