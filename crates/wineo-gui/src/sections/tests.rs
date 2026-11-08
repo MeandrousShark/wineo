@@ -1889,6 +1889,47 @@ fn every_card_operation_skips_headers() {
     assert_eq!(app.selected_slot(), Some(slot(tag("rpg"), "celeste")));
 }
 
+/// Eleven played games, a to k, played newest to oldest, grouped by Recently
+/// played, so k is the one game All has that Recently played doesn't.
+fn eleven_played() -> App {
+    let cards = ('a'..='k')
+        .enumerate()
+        .map(|(age, name)| played(tagged(&name.to_string(), &[]), 100 - age as i64))
+        .collect();
+    let mut app = grouped(cards, GroupBy::Recent);
+    let _ = settle_grid(&mut app);
+    assert_eq!(app.grid_places().ids[9], slot(SectionKey::Recent, "j"));
+    assert_eq!(app.grid_places().ids[10], slot(all(), "a"));
+    app
+}
+
+#[test]
+fn hiding_hands_the_cursor_to_the_next_slot_even_when_recent_fills_up() {
+    // k comes into Recently played as a leaves it, which would put the
+    // cursor on k there had it counted places.
+    let mut app = eleven_played();
+    let _ = app.update(Message::Press(slot(all(), "a")));
+    let _ = app.update(Message::Mark(crate::library_actions::Event::Toggle(
+        "a".to_owned(),
+        crate::library_actions::Flag::Hidden,
+    )));
+    assert_eq!(app.grid_places().ids[9], slot(SectionKey::Recent, "k"));
+    assert_eq!(app.selected_slot(), Some(slot(all(), "b")));
+}
+
+#[test]
+fn a_bulk_hide_hands_the_cursor_to_the_next_slot_even_when_recent_fills_up() {
+    let mut app = eleven_played();
+    let _ = app.update(Message::Press(slot(all(), "a")));
+    app.toggle_mark("a");
+    app.toggle_mark("c");
+    let _ = app.update(Message::Tags(crate::action_bar::Event::ToggleFlag(
+        crate::library_actions::Flag::Hidden,
+    )));
+    assert_eq!(app.grid_places().ids[8], slot(SectionKey::Recent, "k"));
+    assert_eq!(app.selected_slot(), Some(slot(all(), "b")));
+}
+
 /// The library mid-switch from no grouping to Group by Tag in `layout`:
 /// the cards spring from their flat places, across the headers that just
 /// appeared at theirs.

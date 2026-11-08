@@ -257,15 +257,15 @@ impl App {
         }
         // Hiding the selected card hands the cursor's place to the one
         // after it.
-        let place = (flag == Flag::Hidden
+        let successor = (flag == Flag::Hidden
             && value
             && !self.filters.show_hidden
             && self.selected.as_deref() == Some(name))
-        .then(|| self.place_after_leaving(|gone| gone == name))
+        .then(|| self.successor_after_leaving(|gone| gone == name))
         .flatten();
         let write = self.write_flag(name, added, flag, value);
         let shown = self.set_flag(name, flag, value);
-        let selection = place.map_or_else(Task::none, |place| self.select_in_place(place));
+        let selection = successor.map_or_else(Task::none, |next| self.select_successor(next));
         Task::batch([shown, selection, write])
     }
 
@@ -428,9 +428,9 @@ impl App {
     }
 
     /// Where the cursor's successor will sit once every slot of the games
-    /// `leaving` picks is gone: the cursor's slot now, less the leaving
-    /// slots before it, so the first slot after it that stays comes next.
-    /// Each game's copies all leave together, so earlier copies count too.
+    /// `leaving` picks is gone, when no slot after it stays: the cursor's
+    /// slot now, less the leaving slots before it. Each game's copies all
+    /// leave together, so earlier copies count too.
     pub(crate) fn place_after_leaving(&self, leaving: impl Fn(&str) -> bool) -> Option<usize> {
         let places = self.grid_places();
         let at = self.selected_index(&places)?;
@@ -439,6 +439,37 @@ impl App {
             .filter(|slot| leaving(slot.name()))
             .count();
         Some(at - before)
+    }
+
+    /// The cursor's successor once every slot of the games `leaving` picks
+    /// is gone: the first slot after it that stays, found again by identity,
+    /// since a hide can also bring a game into Recently played.
+    pub(crate) fn successor_after_leaving(
+        &self,
+        leaving: impl Fn(&str) -> bool,
+    ) -> Option<Successor> {
+        let place = self.place_after_leaving(&leaving)?;
+        let places = self.grid_places();
+        let at = self.selected_index(&places)?;
+        let after = places.ids[at + 1..]
+            .iter()
+            .filter(|slot| !leaving(slot.name()))
+            .cloned()
+            .collect();
+        Some(Successor { after, place })
+    }
+
+    /// Puts the cursor on `successor` in the order shown now.
+    pub(crate) fn select_successor(&mut self, successor: Successor) -> Task<Message> {
+        let places = self.grid_places();
+        match successor
+            .after
+            .into_iter()
+            .find(|slot| places.index(slot).is_some())
+        {
+            Some(next) => self.select_slot(next),
+            None => self.select_in_place(successor.place),
+        }
     }
 
     /// Puts the cursor on the slot now at `place` in the shown order, or the
@@ -450,6 +481,10 @@ impl App {
             self.close_panel();
             return Task::none();
         };
+        self.select_slot(next)
+    }
+
+    fn select_slot(&mut self, next: SlotId) -> Task<Message> {
         self.set_cursor(next);
         self.selection_changed();
         Task::batch([
@@ -458,6 +493,15 @@ impl App {
             self.load_panel_art(),
         ])
     }
+}
+
+/// Where the cursor goes after a hide takes its game.
+pub(crate) struct Successor {
+    /// The slots after the cursor whose games stay, in the order shown
+    /// before the hide.
+    after: Vec<SlotId>,
+    /// Where it goes when none of them is shown afterward.
+    place: usize,
 }
 
 /// The star in a poster's top right corner: a filled one on a favorite, or

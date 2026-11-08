@@ -317,17 +317,21 @@ impl App {
             start.push((name.clone(), *added));
         }
         let names: Vec<String> = targets.into_iter().map(|(name, _)| name).collect();
-        let place = self.place_after_hide(&names, change, value);
+        let successor = self.successor_after_hide(&names, change, value);
         let shown = self.show_change(&names, change, value);
-        let selection = place.map_or_else(Task::none, |place| self.select_in_place(place));
+        let selection = successor.map_or_else(Task::none, |next| self.select_successor(next));
         let write = self.write_batch(start, change, value);
         Task::batch([shown, selection, write])
     }
 
-    /// Where the selected card's successor sits once the batch is shown, when
-    /// the batch hides the selected card out of view, as with hiding one
-    /// card.
-    fn place_after_hide(&self, names: &[String], change: &Change, value: bool) -> Option<usize> {
+    /// The selected card's successor once the batch is shown, when the batch
+    /// hides the selected card out of view, as with hiding one card.
+    fn successor_after_hide(
+        &self,
+        names: &[String],
+        change: &Change,
+        value: bool,
+    ) -> Option<crate::library_actions::Successor> {
         if *change != Change::Flag(Flag::Hidden) || !value || self.filters.show_hidden {
             return None;
         }
@@ -335,7 +339,7 @@ impl App {
         if !names.iter().any(|name| name == selected) {
             return None;
         }
-        self.place_after_leaving(|gone| names.iter().any(|name| name == gone))
+        self.successor_after_leaving(|gone| names.iter().any(|name| name == gone))
     }
 
     fn write_batch(
