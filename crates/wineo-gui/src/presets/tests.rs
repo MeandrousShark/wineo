@@ -3,6 +3,7 @@ use std::fs;
 use iced::Rectangle;
 use iced::keyboard::{Key, Modifiers, key::Named};
 use wineo_core::library::{GroupBy, SortKey, ViewLayout};
+use wineo_core::runtime::State;
 
 use super::*;
 use crate::filter_control::tests::{library, open_filters};
@@ -260,6 +261,90 @@ fn applying_a_preset_sets_the_whole_view_and_writes_nothing() {
     assert_eq!(button_label(&app), "Filters (Couch co-op)");
     assert!(!app.view_writes.pending());
     assert_eq!(file(&app), before);
+}
+
+#[test]
+fn applying_a_preset_never_reads_the_order_before_rebuilding_it() {
+    // A debug run of the app stops on a miss, so the layout switch has to
+    // find its place before the filters, sort, and group change, and lay
+    // out the order rebuilt after.
+    let (_root, mut app) = booted(FILE);
+    app.viewport_width = 1000.0;
+    app.viewport_height = 800.0;
+    open_filters(&mut app);
+    let misses = app.order.misses.get();
+    let _ = send(&mut app, Event::Apply("Couch co-op".into()));
+    assert_eq!(app.layout, ViewLayout::List);
+    assert_eq!(app.group, GroupBy::Tag);
+    assert_eq!(app.order.misses.get(), misses);
+}
+
+#[test]
+fn a_preset_that_switches_the_layout_holds_the_card_as_it_was_drawn() {
+    // The held card is where the selection was drawn before the preset
+    // changed the order, not wherever the new order puts something.
+    let (_root, mut app) =
+        booted("schema_version = 1\n\n[presets.Backwards]\ndescending = true\nlayout = \"list\"\n");
+    app.viewport_width = 1000.0;
+    app.viewport_height = 800.0;
+    let cards = (0..60)
+        .map(|index| crate::tests::card(&format!("game-{index:02}"), State::Inactive, 60))
+        .collect();
+    let _ = app.update(Message::Loaded(Ok(cards)));
+    app.snap_grid();
+    let places = app.grid_places();
+    let index = places.first("game-20").unwrap();
+    app.scroll_offset = (places.slots[index].y - 300.0).max(0.0);
+    app.selected = Some("game-20".into());
+    open_filters(&mut app);
+    let (held, _) = app.find_anchor();
+    let (held, offset) = held.expect("the selection is in view");
+    assert_eq!(held.name(), "game-20");
+    let _ = send(&mut app, Event::Apply("Backwards".into()));
+    assert_eq!(app.layout, ViewLayout::List);
+    let places = app.grid_places();
+    let index = places.index(&held).unwrap();
+    let now = places.slots[index].y - app.scroll_offset;
+    assert!((now - offset).abs() < 0.5, "{now} {offset}");
+}
+
+#[test]
+fn a_preset_whose_held_card_is_gone_lands_the_selection_from_where_it_was() {
+    // Ungrouping moves the held card from rpg to All, so its slot is gone,
+    // and the selection lands from the old place, as a regroup does.
+    let (_root, mut app) = booted("schema_version = 1\n\n[presets.Flat]\nlayout = \"list\"\n");
+    app.viewport_width = 1000.0;
+    app.viewport_height = 800.0;
+    app.group = GroupBy::Tag;
+    let cards = (0..60)
+        .map(|index| {
+            let mut card = crate::tests::card(&format!("game-{index:02}"), State::Inactive, 60);
+            card.tags = vec!["rpg".into()];
+            card
+        })
+        .collect();
+    let _ = app.update(Message::Loaded(Ok(cards)));
+    app.snap_grid();
+    let places = app.grid_places();
+    let index = places.first("game-50").unwrap();
+    let before = (places.slots[index].y - 300.0).max(0.0);
+    app.scroll_offset = before;
+    app.selected = Some("game-50".into());
+    open_filters(&mut app);
+    let _ = send(&mut app, Event::Apply("Flat".into()));
+    assert_eq!(app.layout, ViewLayout::List);
+    assert_eq!(app.group, GroupBy::None);
+    let places = app.grid_places();
+    let card = places.slots[places.first("game-50").unwrap()];
+    let visible = app.viewport_height - app.bar_room();
+    let top = app.scroll_offset;
+    assert!(card.y >= top && card.y + card.height <= top + visible);
+    // From the top it would have landed with the card on the bottom edge.
+    let from_top = card.y + card.height - visible;
+    assert!(
+        (top - before).abs() < (from_top - before).abs(),
+        "{top} {from_top} {before}"
+    );
 }
 
 #[test]
@@ -1010,6 +1095,73 @@ fn the_popup_draws_every_presets_state() {
         let _ = send(&mut app, event);
         let _ = crate::layout_probe::layout(&mut app.view(), app.window_size);
     }
+}
+
+#[test]
+fn a_typed_name_survives_closing_the_popup() {
+    let (_root, mut app) = booted(FILE);
+    let typed = [
+        (Event::StartSave, Edit::Save("Evening".into())),
+        (
+            Event::Rename("Tools".into()),
+            Edit::Rename {
+                old: "Tools".into(),
+                draft: "Evening".into(),
+            },
+        ),
+    ];
+    for (start, edit) in typed {
+        open_filters(&mut app);
+        let _ = send(&mut app, start);
+        let _ = send(&mut app, Event::Draft("Evening".into()));
+        let _ = filter(&mut app, FilterEvent::CloseMenu);
+        open_filters(&mut app);
+        assert_eq!(app.presets.edit, Some(edit));
+        assert!(app.preset_ids().contains(&NAME_ID.to_owned()));
+        let _ = key(&mut app, Named::Escape);
+        let _ = filter(&mut app, FilterEvent::CloseMenu);
+    }
+}
+
+#[test]
+fn a_failed_save_keeps_its_name_after_it_is_edited_and_the_popup_closes() {
+    let (_root, mut app) = booted(FILE);
+    write_file(&app.paths, "schema_version = [");
+    app.problem_read(wineo_core::library::load(&app.paths).problem);
+    open_filters(&mut app);
+    let _ = send(&mut app, Event::StartSave);
+    let _ = send(&mut app, Event::Draft("Evening".into()));
+    let _ = send(&mut app, Event::Submit);
+    assert!(app.presets.failure.is_some());
+    let _ = send(&mut app, Event::Draft("Evenings".into()));
+    let _ = filter(&mut app, FilterEvent::CloseMenu);
+    open_filters(&mut app);
+    assert_eq!(app.presets.edit, Some(Edit::Save("Evenings".into())));
+}
+
+#[test]
+fn a_typed_name_keeps_only_its_own_failure_when_the_popup_opens_again() {
+    let (_root, mut app) = booted(FILE);
+    write_file(&app.paths, "schema_version = [");
+    app.problem_read(wineo_core::library::load(&app.paths).problem);
+    open_filters(&mut app);
+    let _ = send(&mut app, Event::StartSave);
+    let _ = send(&mut app, Event::Draft("Evening".into()));
+    let _ = send(&mut app, Event::Submit);
+    let failed = app.presets.failure.clone();
+    assert!(failed.is_some());
+    let _ = filter(&mut app, FilterEvent::CloseMenu);
+    open_filters(&mut app);
+    assert_eq!(app.presets.failure, failed);
+
+    // An Update of another preset fails with the name still typed.
+    let _ = send(&mut app, Event::Update("Tools".into()));
+    assert_ne!(app.presets.failure, failed);
+    assert!(app.presets.failure.is_some());
+    let _ = filter(&mut app, FilterEvent::CloseMenu);
+    open_filters(&mut app);
+    assert!(app.presets.failure.is_none());
+    assert_eq!(app.presets.edit, Some(Edit::Save("Evening".into())));
 }
 
 #[test]

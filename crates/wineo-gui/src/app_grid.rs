@@ -326,6 +326,11 @@ impl App {
     /// their new slots, but the selection stays in view when it's shown.
     pub(crate) fn resorted(&mut self) -> Task<Message> {
         self.reorder();
+        self.reflowed()
+    }
+
+    /// `resorted` for an order already rebuilt.
+    pub(crate) fn reflowed(&mut self) -> Task<Message> {
         self.reflow_grid();
         if self.selected_shown() {
             Task::batch([self.scroll_to_landing(), self.load_visible_art()])

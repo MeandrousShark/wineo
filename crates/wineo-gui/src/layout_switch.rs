@@ -9,6 +9,7 @@ use iced::{Element, Fill, Padding, Task, border};
 
 use crate::grid_motion::ViewLayout;
 use crate::library_menu::icon;
+use crate::slot::SlotId;
 use crate::sort_control::Field;
 use crate::{App, Message, SCROLL_ID, focus_button, ui, zoom_control};
 
@@ -85,7 +86,24 @@ impl App {
         }
         // Found where the cards are drawn now, before a zoom in flight
         // jumps them to where it was heading.
-        let (anchor, reveal) = self.find_anchor();
+        let anchor = self.find_anchor();
+        self.switch_layout_from(layout, anchor, false)
+    }
+
+    /// `switch_layout` keeping the place `find_anchor` gave, for a caller
+    /// that also changes the order and so has to find it first. When
+    /// `lands_itself`, the caller lands the selection afterward, as a
+    /// regroup does, so a held card that's gone from the new order keeps
+    /// the scroll where it was instead of going back to the top.
+    pub(crate) fn switch_layout_from(
+        &mut self,
+        layout: ViewLayout,
+        (anchor, reveal): (Option<(SlotId, f32)>, bool),
+        lands_itself: bool,
+    ) -> Task<Message> {
+        if layout == self.layout {
+            return Task::none();
+        }
         // The zoom stays saved for the grid, so one in flight ends where it
         // was heading. Its own anchor and pending scroll would fight the
         // place kept here.
@@ -110,15 +128,18 @@ impl App {
         self.snap_grid();
         let _ = self.motion_ended(false);
         let places = self.grid_places();
+        let height = places.height + self.bar_room();
+        let end = (height - self.viewport_height).max(0.0);
         if let Some((slot, offset)) = anchor
             && let Some(index) = places.index(&slot)
         {
             // A card clipped by the top edge would otherwise keep its clipped
             // offset, and a shorter row would then land above the viewport.
             let offset = offset.max(0.0);
-            let height = places.height + self.bar_room();
             let top = places.slots[index].y - offset;
-            self.scroll_offset = top.clamp(0.0, (height - self.viewport_height).max(0.0));
+            self.scroll_offset = top.clamp(0.0, end);
+        } else if lands_itself {
+            self.scroll_offset = self.scroll_offset.clamp(0.0, end);
         } else {
             self.scroll_offset = 0.0;
         }

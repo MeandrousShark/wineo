@@ -25,6 +25,9 @@ const CHECK_ICON: f32 = 14.0;
 pub(crate) struct Range {
     /// The last card marked by Ctrl+click or Space.
     anchor: Option<String>,
+    /// The anchor's copy that was clicked, or the cursor's for Space, so a
+    /// range starts there rather than at another copy of the same game.
+    anchor_slot: Option<SlotId>,
     /// The marks the last Shift+click added, which the next one replaces,
     /// as file managers do. Ctrl+click, Space, and Ctrl+A keep them.
     added: BTreeSet<String>,
@@ -41,7 +44,7 @@ impl App {
             self.mark_range(&name, slot.as_ref(), held.control());
             Task::none()
         } else if held.control() {
-            self.toggle_mark(&name);
+            self.toggle_mark_at(&name, slot);
             Task::none()
         } else {
             self.clear_marks();
@@ -70,7 +73,8 @@ impl App {
             return;
         }
         if let Some(name) = self.selected.clone() {
-            self.toggle_mark(&name);
+            let slot = self.selected_slot();
+            self.toggle_mark_at(&name, slot);
         }
     }
 
@@ -87,7 +91,14 @@ impl App {
             && !(self.checkup_visible() && !self.panel_log_visible())
     }
 
+    #[cfg(test)]
     pub(crate) fn toggle_mark(&mut self, name: &str) {
+        self.toggle_mark_at(name, None);
+    }
+
+    /// Toggles `name`'s mark from its copy in `slot`, which a range then
+    /// starts from.
+    fn toggle_mark_at(&mut self, name: &str, slot: Option<SlotId>) {
         if !self.shown_names().contains(name) {
             return;
         }
@@ -95,16 +106,18 @@ impl App {
         if self.marked.remove(name) {
             if self.mark_range.anchor.as_deref() == Some(name) {
                 self.mark_range.anchor = None;
+                self.mark_range.anchor_slot = None;
             }
         } else {
             self.marked.insert(name.to_owned());
             self.mark_range.anchor = Some(name.to_owned());
+            self.mark_range.anchor_slot = slot;
         }
     }
 
     /// Marks from the anchor to `name`'s card in `slot`, or the copy the
     /// cursor is on or its first without one, in shown order. The anchor is
-    /// the last card marked by Ctrl+click or Space, else the cursor's card,
+    /// the copy last marked by Ctrl+click or Space, else the cursor's card,
     /// else `name` itself. With Ctrl held too, the last range stays.
     fn mark_range(&mut self, name: &str, slot: Option<&SlotId>, keep_last: bool) {
         let places = self.grid_places();
@@ -116,13 +129,23 @@ impl App {
         let Some(to) = to else {
             return;
         };
-        // Marks are kept by game, so the anchor is the copy the cursor is
-        // on when it's the cursor's game, else its first.
+        // An anchor whose copy is no longer shown, or that came with none,
+        // falls back to the copy the cursor is on when it's the cursor's
+        // game, else its first.
         let anchor = self.mark_range.anchor.as_deref();
-        let from = match cursor(&places, anchor, active).or_else(|| self.selected_index(&places)) {
+        let from = self
+            .mark_range
+            .anchor_slot
+            .as_ref()
+            .filter(|slot| Some(slot.name()) == anchor)
+            .and_then(|slot| places.index(slot))
+            .or_else(|| cursor(&places, anchor, active))
+            .or_else(|| self.selected_index(&places));
+        let from = match from {
             Some(from) => from,
             None => {
                 self.mark_range.anchor = Some(name.to_owned());
+                self.mark_range.anchor_slot = Some(places.ids[to].clone());
                 to
             }
         };
@@ -167,6 +190,7 @@ impl App {
             .is_some_and(|anchor| !shown.contains(anchor))
         {
             self.mark_range.anchor = None;
+            self.mark_range.anchor_slot = None;
         }
     }
 

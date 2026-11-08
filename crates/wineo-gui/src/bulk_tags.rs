@@ -248,10 +248,14 @@ fn failure_notice(verb: &str, failed: &[(String, String)], total: usize) -> Stri
 impl App {
     /// The marked games' cards, in name order.
     pub(crate) fn marked_cards(&self) -> Vec<&Card> {
-        self.marked
+        let mut cards: Vec<&Card> = self
+            .cards
             .iter()
-            .filter_map(|name| self.cards.iter().find(|card| &card.name == name))
-            .collect()
+            .filter(|card| self.marked.contains(&card.name))
+            .collect();
+        // A scan already lists cards by name, which this sort only checks.
+        cards.sort_by(|a, b| a.name.cmp(&b.name));
+        cards
     }
 
     /// Adds `tag` to every marked game that lacks it, or removes it from
@@ -317,17 +321,21 @@ impl App {
             start.push((name.clone(), *added));
         }
         let names: Vec<String> = targets.into_iter().map(|(name, _)| name).collect();
-        let place = self.place_after_hide(&names, change, value);
+        let successor = self.successor_after_hide(&names, change, value);
         let shown = self.show_change(&names, change, value);
-        let selection = place.map_or_else(Task::none, |place| self.select_in_place(place));
+        let selection = successor.map_or_else(Task::none, |next| self.select_successor(next));
         let write = self.write_batch(start, change, value);
         Task::batch([shown, selection, write])
     }
 
-    /// Where the selected card's successor sits once the batch is shown, when
-    /// the batch hides the selected card out of view, as with hiding one
-    /// card.
-    fn place_after_hide(&self, names: &[String], change: &Change, value: bool) -> Option<usize> {
+    /// The selected card's successor once the batch is shown, when the batch
+    /// hides the selected card out of view, as with hiding one card.
+    fn successor_after_hide(
+        &self,
+        names: &[String],
+        change: &Change,
+        value: bool,
+    ) -> Option<crate::library_actions::Successor> {
         if *change != Change::Flag(Flag::Hidden) || !value || self.filters.show_hidden {
             return None;
         }
@@ -335,7 +343,7 @@ impl App {
         if !names.iter().any(|name| name == selected) {
             return None;
         }
-        self.place_after_leaving(|gone| names.iter().any(|name| name == gone))
+        self.successor_after_leaving(|gone| names.iter().any(|name| name == gone))
     }
 
     fn write_batch(

@@ -1685,6 +1685,88 @@ fn a_range_skips_a_collapsed_section() {
 }
 
 #[test]
+fn a_range_starts_at_the_copy_that_was_ctrl_clicked() {
+    let mut app = grouped(
+        vec![
+            tagged("hades", &["co-op", "rpg"]),
+            tagged("celeste", &["rpg"]),
+            tagged("zelda", &["rpg"]),
+        ],
+        GroupBy::Tag,
+    );
+    let _ = settle_grid(&mut app);
+    let ids = app.grid_places().ids.clone();
+    assert_eq!(
+        ids,
+        [
+            slot(tag("co-op"), "hades"),
+            slot(tag("rpg"), "celeste"),
+            slot(tag("rpg"), "hades"),
+            slot(tag("rpg"), "zelda"),
+        ]
+    );
+    app.modifiers = Modifiers::CTRL;
+    let _ = app.update(Message::Press(slot(tag("rpg"), "hades")));
+    app.modifiers = Modifiers::SHIFT;
+    let _ = app.update(Message::Press(slot(tag("rpg"), "zelda")));
+    app.modifiers = Modifiers::empty();
+    let marked: Vec<&str> = app.marked.iter().map(String::as_str).collect();
+    assert_eq!(marked, ["hades", "zelda"]);
+}
+
+#[test]
+fn a_range_after_space_starts_at_the_copy_the_cursor_was_on() {
+    let mut app = grouped(
+        vec![
+            tagged("hades", &["co-op", "rpg"]),
+            tagged("celeste", &["rpg"]),
+            tagged("zelda", &["rpg"]),
+        ],
+        GroupBy::Tag,
+    );
+    let _ = settle_grid(&mut app);
+    let _ = app.update(Message::Press(slot(tag("rpg"), "hades")));
+    let _ = app.update(Message::SpaceFocus(false));
+    assert_eq!(app.marked.len(), 1);
+    // The cursor moves on to zelda, so it no longer says which copy.
+    let _ = app.update(Message::KeyWithFocus(
+        Key::Named(Named::ArrowRight),
+        Modifiers::empty(),
+        iced::event::Status::Ignored,
+        false,
+    ));
+    assert_eq!(app.selected_slot(), Some(slot(tag("rpg"), "zelda")));
+    app.modifiers = Modifiers::SHIFT;
+    let _ = app.update(Message::Press(slot(tag("rpg"), "zelda")));
+    app.modifiers = Modifiers::empty();
+    let marked: Vec<&str> = app.marked.iter().map(String::as_str).collect();
+    assert_eq!(marked, ["hades", "zelda"]);
+}
+
+#[test]
+fn a_range_from_a_copy_no_longer_shown_starts_at_the_games_first() {
+    let mut app = grouped(
+        vec![
+            tagged("hades", &["co-op", "rpg"]),
+            tagged("kiwi", &["co-op"]),
+            tagged("portal", &["co-op"]),
+            tagged("celeste", &["rpg"]),
+        ],
+        GroupBy::Tag,
+    );
+    let _ = settle_grid(&mut app);
+    app.modifiers = Modifiers::CTRL;
+    let _ = app.update(Message::Press(slot(tag("rpg"), "hades")));
+    app.modifiers = Modifiers::empty();
+    let _ = app.update(Message::ToggleSection(tag("rpg")));
+    app.modifiers = Modifiers::SHIFT;
+    let _ = app.update(Message::Press(slot(tag("co-op"), "portal")));
+    app.modifiers = Modifiers::empty();
+    let marked: Vec<&str> = app.marked.iter().map(String::as_str).collect();
+    assert_eq!(marked, ["hades", "kiwi", "portal"]);
+}
+
+#[test]
 fn the_random_picker_draws_by_game_from_what_is_in_view() {
     // Plan 0062, question 22's A, and a game shown twice isn't twice as
     // likely.
@@ -1857,6 +1939,83 @@ fn every_card_operation_skips_headers() {
     app.reorder();
     let _ = app.select_in_place(place.unwrap());
     assert_eq!(app.selected_slot(), Some(slot(tag("rpg"), "celeste")));
+}
+
+/// Eleven played games, a to k, played newest to oldest, grouped by Recently
+/// played, so k is the one game All has that Recently played doesn't.
+fn eleven_played() -> App {
+    let cards = ('a'..='k')
+        .enumerate()
+        .map(|(age, name)| played(tagged(&name.to_string(), &[]), 100 - age as i64))
+        .collect();
+    let mut app = grouped(cards, GroupBy::Recent);
+    let _ = settle_grid(&mut app);
+    assert_eq!(app.grid_places().ids[9], slot(SectionKey::Recent, "j"));
+    assert_eq!(app.grid_places().ids[10], slot(all(), "a"));
+    app
+}
+
+#[test]
+fn hiding_hands_the_cursor_to_the_next_slot_even_when_recent_fills_up() {
+    // k comes into Recently played as a leaves it, which would put the
+    // cursor on k there had it counted places.
+    let mut app = eleven_played();
+    let _ = app.update(Message::Press(slot(all(), "a")));
+    let _ = app.update(Message::Mark(crate::library_actions::Event::Toggle(
+        "a".to_owned(),
+        crate::library_actions::Flag::Hidden,
+    )));
+    assert_eq!(app.grid_places().ids[9], slot(SectionKey::Recent, "k"));
+    assert_eq!(app.selected_slot(), Some(slot(all(), "b")));
+}
+
+#[test]
+fn a_bulk_hide_hands_the_cursor_to_the_next_slot_even_when_recent_fills_up() {
+    let mut app = eleven_played();
+    let _ = app.update(Message::Press(slot(all(), "a")));
+    app.toggle_mark("a");
+    app.toggle_mark("c");
+    let _ = app.update(Message::Tags(crate::action_bar::Event::ToggleFlag(
+        crate::library_actions::Flag::Hidden,
+    )));
+    assert_eq!(app.grid_places().ids[8], slot(SectionKey::Recent, "k"));
+    assert_eq!(app.selected_slot(), Some(slot(all(), "b")));
+}
+
+/// Twelve played games, a to l, l played last, grouped by Recently played,
+/// so a and b are the games All has that Recently played doesn't.
+fn twelve_played() -> App {
+    let cards = ('a'..='l')
+        .enumerate()
+        .map(|(age, name)| played(tagged(&name.to_string(), &[]), age as i64))
+        .collect();
+    let mut app = grouped(cards, GroupBy::Recent);
+    let _ = settle_grid(&mut app);
+    assert_eq!(app.grid_places().ids.last(), Some(&slot(all(), "l")));
+    app
+}
+
+#[test]
+fn hiding_the_last_slot_hands_the_cursor_back_even_when_recent_fills_up() {
+    // a and b come into Recently played as k and l leave it, which would
+    // put the cursor on i had it counted places from the end.
+    let mut app = twelve_played();
+    let _ = app.update(Message::Press(slot(all(), "l")));
+    app.toggle_mark("k");
+    app.toggle_mark("l");
+    let _ = app.update(Message::Tags(crate::action_bar::Event::ToggleFlag(
+        crate::library_actions::Flag::Hidden,
+    )));
+    assert_eq!(app.grid_places().ids[9], slot(SectionKey::Recent, "a"));
+    assert_eq!(app.selected_slot(), Some(slot(all(), "j")));
+
+    let mut app = twelve_played();
+    let _ = app.update(Message::Press(slot(all(), "l")));
+    let _ = app.update(Message::Mark(crate::library_actions::Event::Toggle(
+        "l".to_owned(),
+        crate::library_actions::Flag::Hidden,
+    )));
+    assert_eq!(app.selected_slot(), Some(slot(all(), "k")));
 }
 
 /// The library mid-switch from no grouping to Group by Tag in `layout`:
