@@ -349,6 +349,42 @@ fn a_preset_whose_held_card_is_gone_lands_the_selection_from_where_it_was() {
 }
 
 #[test]
+fn a_preset_that_leaves_less_than_the_old_scroll_clamps_it_to_the_end() {
+    // Ungrouping takes the held card's slot in rpg away, and the 30 rows
+    // left end above where the grid was scrolled to. The selection is in
+    // the last screenful, so it lands with the list scrolled to its end.
+    let (_root, mut app) =
+        booted("schema_version = 1\n\n[presets.Short]\nlayout = \"list\"\ntags = [\"short\"]\n");
+    app.viewport_width = 1000.0;
+    app.viewport_height = 800.0;
+    app.group = GroupBy::Tag;
+    let cards = (0..60)
+        .map(|index| {
+            let mut card = crate::tests::card(&format!("game-{index:02}"), State::Inactive, 60);
+            card.tags = vec!["rpg".into()];
+            if index >= 30 {
+                card.tags.push("short".into());
+            }
+            card
+        })
+        .collect();
+    let _ = app.update(Message::Loaded(Ok(cards)));
+    app.snap_grid();
+    let places = app.grid_places();
+    let before = places.slots[places.first("game-59").unwrap()].y - 300.0;
+    app.scroll_offset = before;
+    app.selected = Some("game-59".into());
+    open_filters(&mut app);
+    let _ = send(&mut app, Event::Apply("Short".into()));
+    assert_eq!((app.layout, app.group), (ViewLayout::List, GroupBy::None));
+    let places = app.grid_places();
+    assert_eq!(places.ids.len(), 30);
+    let end = places.height + app.bar_room() - app.viewport_height;
+    assert!(0.0 < end && end < before, "{end} {before}");
+    assert_eq!(app.scroll_offset, end);
+}
+
+#[test]
 fn a_preset_can_group_by_recently_played_and_saves_that_group() {
     let (_root, mut app) = booted("schema_version = 1\n\n[presets.Recents]\ngroup = \"recent\"\n");
     open_filters(&mut app);
