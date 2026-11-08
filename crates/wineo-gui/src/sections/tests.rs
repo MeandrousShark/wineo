@@ -1932,14 +1932,13 @@ fn every_card_operation_skips_headers() {
     // A hide of the first card hands the cursor to the next card, not to
     // the rpg header between them.
     let _ = app.update(Message::Press(slot(SectionKey::Recent, "hades")));
-    let place = app.place_after_leaving(|name| name == "hades");
-    assert_eq!(place, Some(0));
+    let successor = app.successor_after_leaving(|name| name == "hades");
     if let Some(card) = app.cards.iter_mut().find(|card| card.name == "hades") {
         card.hidden = true;
     }
     app.order.cards_edited();
     app.reorder();
-    let _ = app.select_in_place(place.unwrap());
+    let _ = app.select_successor(successor.unwrap());
     assert_eq!(app.selected_slot(), Some(slot(tag("rpg"), "celeste")));
 }
 
