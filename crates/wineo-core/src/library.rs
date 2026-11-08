@@ -27,7 +27,7 @@ pub use cache::Cache;
 pub(crate) use check::{FindingKind, inspect, remove_strays};
 pub use preset::{
     PRESET_NAME_MAX_CHARS, Preset, create_preset, normalize_preset_name, preset_name_problem,
-    remove_preset, rename_preset, set_preset,
+    preset_name_taken, remove_preset, rename_preset, set_preset,
 };
 pub use record::{
     Claim, RecordChanges, Recorded, SteamRecord, apply_changes, claim_game, dismiss_game,
@@ -297,6 +297,9 @@ pub struct Library {
     pub environments: BTreeMap<String, Entry>,
     /// Saved views by name, A to Z ignoring case.
     pub presets: Vec<(String, Preset)>,
+    /// The keys under `[presets]` that aren't presets, whose names are
+    /// taken all the same.
+    pub other_presets: Vec<String>,
     pub steam: SteamRecord,
     pub problem: Option<Problem>,
 }
@@ -310,21 +313,16 @@ impl Library {
             .map(|(_, preset)| preset)
     }
 
-    /// The saved preset a new preset called `name` would collide with: the
-    /// one with exactly that name, else one that differs only in case. The
-    /// app offers to update it instead of saving a second, look-alike one.
+    /// The entry under `[presets]` that a new preset called `name` would
+    /// collide with; see `preset_name_taken`. The app offers to update it
+    /// instead of saving a second, look-alike one, unless it isn't a preset.
     pub fn taken_preset_name(&self, name: &str) -> Option<&str> {
-        let folded = crate::name::fold_case(name);
-        self.presets
+        let names = self
+            .presets
             .iter()
             .map(|(saved, _)| saved.as_str())
-            .find(|saved| *saved == name)
-            .or_else(|| {
-                self.presets
-                    .iter()
-                    .map(|(saved, _)| saved.as_str())
-                    .find(|saved| crate::name::fold_case(saved) == folded)
-            })
+            .chain(self.other_presets.iter().map(String::as_str));
+        preset_name_taken(names, name, None)
     }
 }
 
@@ -761,6 +759,7 @@ fn read_library(document: &DocumentMut) -> Library {
         appearance: read_appearance(document),
         environments,
         presets: preset::read_presets(document),
+        other_presets: preset::read_other_presets(document),
         steam: record::read_record(document),
         problem: None,
     }

@@ -5,7 +5,7 @@ use std::sync::{Arc, Barrier};
 use std::thread;
 
 use super::*;
-use crate::library::{self, Library, load};
+use crate::library::{self, Library, load, preset_name_taken};
 
 struct Fixture {
     _root: tempfile::TempDir,
@@ -668,10 +668,7 @@ fn a_name_that_differs_only_in_case_is_taken_but_the_exact_name_updates() {
     for name in ["couch CO-OP", "COUCH CO-OP"] {
         let error = set_preset(&fixture.paths, name, &Preset::default()).unwrap_err();
         assert!(matches!(&error, Error::PresetNameTaken(taken) if taken == "Couch co-op"));
-        assert_eq!(
-            error.to_string(),
-            "A preset named Couch co-op already exists."
-        );
+        assert_eq!(error.to_string(), "The name Couch co-op is taken.");
         assert_eq!(fixture.read(), bytes);
     }
 
@@ -773,7 +770,7 @@ fn renaming_to_a_taken_name_is_refused_whatever_its_case() {
             matches!(&error, Error::PresetNameTaken(taken) if taken == "Desk"),
             "{new}"
         );
-        assert_eq!(error.to_string(), "A preset named Desk already exists.");
+        assert_eq!(error.to_string(), "The name Desk is taken.");
         assert_eq!(fixture.read(), text, "{new}");
     }
 }
@@ -1277,10 +1274,7 @@ fn create_preset_refuses_a_name_taken_exactly_or_in_another_case_and_writes_noth
             matches!(&error, Error::PresetNameTaken(taken) if taken == "Couch co-op"),
             "{name}: {error:?}"
         );
-        assert_eq!(
-            error.to_string(),
-            "A preset named Couch co-op already exists."
-        );
+        assert_eq!(error.to_string(), "The name Couch co-op is taken.");
     }
     assert_eq!(fixture.read(), before);
     assert_eq!(fixture.inode(), inode);
@@ -1341,6 +1335,48 @@ fn renaming_refuses_a_name_a_non_preset_entry_already_uses() {
         );
         assert_eq!(fixture.read(), NON_PRESETS, "{new}");
     }
+}
+
+#[test]
+fn a_non_preset_entry_folds_case_like_a_preset_in_every_write() {
+    let text = "[presets]\n\"ςb\" = 1\n\n[presets.Old]\nsort = \"added\"\n";
+    for name in ["ΣB", "σb", "ςB"] {
+        let fixture = Fixture::with(text);
+        let inode = fixture.inode();
+        for error in [
+            set_preset(&fixture.paths, name, &couch()).unwrap_err(),
+            create_preset(&fixture.paths, name, &couch()).unwrap_err(),
+            rename_preset(&fixture.paths, "Old", name).unwrap_err(),
+        ] {
+            assert!(
+                matches!(&error, Error::PresetNameTaken(found) if found == "ςb"),
+                "{name}: {error:?}"
+            );
+        }
+        assert_eq!(fixture.read(), text, "{name}");
+        assert_eq!(fixture.inode(), inode, "{name}");
+        assert_eq!(fixture.library().taken_preset_name(name), Some("ςb"));
+    }
+}
+
+#[test]
+fn the_library_reports_the_keys_that_are_not_presets() {
+    let fixture = Fixture::with(NON_PRESETS);
+    let library = fixture.library();
+    assert_eq!(library.other_presets, ["broken", "list"]);
+    assert_eq!(library.taken_preset_name("BROKEN"), Some("broken"));
+    assert_eq!(library.taken_preset_name("old"), Some("Old"));
+}
+
+#[test]
+fn preset_name_taken_prefers_the_exact_name_and_skips_the_exception() {
+    let names = ["A", "a", "b"];
+    assert_eq!(preset_name_taken(names, "a", None), Some("a"));
+    assert_eq!(preset_name_taken(names, "A", None), Some("A"));
+    assert_eq!(preset_name_taken(names, "B", None), Some("b"));
+    assert_eq!(preset_name_taken(names, "c", None), None);
+    assert_eq!(preset_name_taken(names, "B", Some("b")), None);
+    assert_eq!(preset_name_taken(names, "a", Some("a")), Some("A"));
 }
 
 #[test]

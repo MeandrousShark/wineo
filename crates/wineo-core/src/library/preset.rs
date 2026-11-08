@@ -138,31 +138,30 @@ pub(super) fn read_list<T: Ord>(
 /// preset's only in case is refused, so the list never holds two that look
 /// alike. Returns whether the file changed.
 pub fn set_preset(paths: &Paths, name: &str, preset: &Preset) -> Result<bool> {
-    save_preset(paths, name, preset, case_variant)
+    save_preset(paths, name, preset, true)
 }
 
 /// Saves a new preset under `name`, refusing when one already has that name
 /// in any case, so a preset another writer made since the caller last read
 /// the file is never overwritten. Returns whether the file changed.
 pub fn create_preset(paths: &Paths, name: &str, preset: &Preset) -> Result<bool> {
-    save_preset(paths, name, preset, existing_name)
+    save_preset(paths, name, preset, false)
 }
 
-/// `set_preset` and `create_preset`, refusing whatever name `taken` finds
-/// under the lock.
-fn save_preset(
-    paths: &Paths,
-    name: &str,
-    preset: &Preset,
-    taken: fn(&DocumentMut, &str) -> Option<String>,
-) -> Result<bool> {
+/// `set_preset` and `create_preset`, refusing under the lock whatever name is
+/// taken. Only `update` lets a preset with exactly this name through.
+fn save_preset(paths: &Paths, name: &str, preset: &Preset, update: bool) -> Result<bool> {
     if let Some(problem) = preset_name_problem(name) {
         return Err(Error::InvalidPresetName(problem));
     }
     let mut refused = None;
     let changed = edit(paths, |document| {
-        if let Some(existing) = taken(document, name) {
-            refused = Some(Error::PresetNameTaken(existing));
+        let updating = update && is_preset(document, name);
+        let taken = (!updating)
+            .then(|| preset_name_taken(entry_names(document), name, None).map(str::to_owned))
+            .flatten();
+        if let Some(taken) = taken {
+            refused = Some(Error::PresetNameTaken(taken));
             return false;
         }
         write_preset(document, name, preset)
@@ -209,11 +208,8 @@ pub fn rename_preset(paths: &Paths, old: &str, new: &str) -> Result<bool> {
         if old == new {
             return false;
         }
-        let folded = fold_case(new);
-        let taken = presets
-            .iter()
-            .find(|(name, _)| *name != old && fold_case(name) == folded)
-            .map(|(name, _)| name.to_owned());
+        let taken = preset_name_taken(presets.iter().map(|(name, _)| name), new, Some(old))
+            .map(str::to_owned);
         if let Some(taken) = taken {
             refused = Some(Error::PresetNameTaken(taken));
             return false;
@@ -261,30 +257,57 @@ fn rename_key(table: &mut dyn TableLike, old: &str, new: &str) {
     }
 }
 
-/// The name of an entry under `[presets]` that `name` collides with: it
-/// differs from it only in case. An entry that isn't a table counts, since
-/// saving over it would drop what a person or a newer wineo wrote there. None
-/// when `name` is the exact name of a preset (that's an update) or matches
-/// no entry.
-fn case_variant(document: &DocumentMut, name: &str) -> Option<String> {
-    let presets = document.get("presets").and_then(Item::as_table_like)?;
-    if presets.get(name).is_some_and(Item::is_table_like) {
-        return None;
-    }
+/// The one name `name` collides with among `names`, the keys under
+/// `[presets]`: the entry named exactly that, else one that differs only in
+/// case. Every key counts, a value that isn't a preset included, since saving
+/// over it would drop what a person or a newer wineo wrote there. `except` is
+/// a name that doesn't count, as a rename's own old name.
+pub fn preset_name_taken<'a>(
+    names: impl IntoIterator<Item = &'a str>,
+    name: &str,
+    except: Option<&str>,
+) -> Option<&'a str> {
     let folded = fold_case(name);
-    presets
-        .iter()
-        .find(|(other, _)| fold_case(other) == folded)
-        .map(|(other, _)| other.to_owned())
+    let mut variant = None;
+    for other in names.into_iter().filter(|other| Some(*other) != except) {
+        if other == name {
+            return Some(other);
+        }
+        if variant.is_none() && fold_case(other) == folded {
+            variant = Some(other);
+        }
+    }
+    variant
 }
 
-/// The entry named `name` exactly, else one that differs only in case.
-fn existing_name(document: &DocumentMut, name: &str) -> Option<String> {
-    let presets = document.get("presets").and_then(Item::as_table_like)?;
-    if presets.get(name).is_some() {
-        return Some(name.to_owned());
-    }
-    case_variant(document, name)
+/// Every key under `[presets]`, whatever its value.
+fn entry_names(document: &DocumentMut) -> impl Iterator<Item = &str> {
+    document
+        .get("presets")
+        .and_then(Item::as_table_like)
+        .into_iter()
+        .flat_map(|presets| presets.iter().map(|(name, _)| name))
+}
+
+fn is_preset(document: &DocumentMut, name: &str) -> bool {
+    document
+        .get("presets")
+        .and_then(Item::as_table_like)
+        .and_then(|presets| presets.get(name))
+        .is_some_and(Item::is_table_like)
+}
+
+/// The keys under `[presets]` that aren't presets: values that aren't
+/// tables, which still hold their name.
+pub(super) fn read_other_presets(document: &DocumentMut) -> Vec<String> {
+    let Some(table) = document.get("presets").and_then(Item::as_table_like) else {
+        return Vec::new();
+    };
+    table
+        .iter()
+        .filter(|(_, item)| !item.is_table_like())
+        .map(|(name, _)| name.to_owned())
+        .collect()
 }
 
 fn write_preset(document: &mut DocumentMut, name: &str, preset: &Preset) -> bool {
