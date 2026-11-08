@@ -99,7 +99,7 @@ impl App {
     /// Toggles `name`'s mark from its copy in `slot`, which a range then
     /// starts from.
     fn toggle_mark_at(&mut self, name: &str, slot: Option<SlotId>) {
-        if !self.shown_names().contains(name) {
+        if self.grid_places().first(name).is_none() {
             return;
         }
         self.mark_range.added.clear();
@@ -163,7 +163,7 @@ impl App {
     }
 
     pub(crate) fn mark_all(&mut self) {
-        self.marked = self.shown_names();
+        self.marked = self.visible_names();
         self.mark_range.added.clear();
     }
 
@@ -192,11 +192,6 @@ impl App {
             self.mark_range.anchor = None;
             self.mark_range.anchor_slot = None;
         }
-    }
-
-    /// The games Ctrl+A and a mark can reach: those with a copy in view.
-    fn shown_names(&self) -> BTreeSet<String> {
-        self.visible_names()
     }
 }
 
