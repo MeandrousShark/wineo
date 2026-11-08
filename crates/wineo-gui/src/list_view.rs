@@ -12,7 +12,7 @@ use crate::grid::{card_area, install_bar, shows_identifier};
 use crate::grid_motion::PADDING;
 use crate::library::{Card, CardKind};
 use crate::library_actions::{EYE_OFF, STAR, STAR_OUTLINE};
-use crate::library_menu::{CHECK, icon};
+use crate::library_menu::icon;
 use crate::slot::SlotId;
 use crate::sort_control::{ARROW_DOWN, ARROW_UP};
 use crate::theme::Palette;
@@ -43,16 +43,11 @@ const MARK_ICON: f32 = 16.0;
 /// nothing moves when the hover brings it.
 const STAR_BOX: f32 = 24.0;
 const CHECK_CHIP: f32 = 22.0;
-const CHECK_ICON: f32 = 14.0;
 const SELECTED_BORDER: f32 = 2.0;
 /// A header button's tint reaches this far past its label. The header's
 /// cells grow by it on each side and its gaps and padding shrink to match,
 /// so the labels still line up with the rows' cells.
 pub(crate) const HEADER_INSET: f32 = 6.0;
-/// The GOG pill, as on the poster.
-const PILL_SIZE: f32 = 11.0;
-const PILL_PADDING: f32 = 2.0;
-const PILL_SIDE: f32 = 8.0;
 const MARKS_GAP: f32 = 4.0;
 /// How much the star grows at the top of its pop.
 const STAR_LIFT: f32 = 4.0;
@@ -257,7 +252,14 @@ impl App {
                 .into(),
         };
         let thumb: Element<'_, Message> = if facts.marked {
-            stack![thumb, check(self.palette, alpha)].into()
+            let check = crate::multi_select::check(self.palette, alpha, CHECK_CHIP);
+            stack![
+                thumb,
+                container(check)
+                    .center_x(THUMB_WIDTH)
+                    .center_y(THUMB_HEIGHT)
+            ]
+            .into()
         } else {
             thumb
         };
@@ -284,7 +286,8 @@ impl App {
         }
         let mut marks = row![].spacing(MARKS_GAP).align_y(Center);
         if let Some(badge) = facts.gog {
-            marks = marks.push(pill(badge, palette, alpha));
+            marks = marks
+                .push(crate::grid::gog_pill(badge, palette, alpha, false).width(pill_width(badge)));
         }
         if facts.steam {
             marks = marks.push(
@@ -531,27 +534,8 @@ pub(crate) fn row_text(facts: &RowFacts, columns: &[Column], width: f32) -> RowT
 }
 
 fn pill_width(badge: Badge) -> f32 {
-    crate::tile_title::line_width(badge.label(), PILL_SIZE, Font::DEFAULT) + 2.0 * PILL_SIDE
-}
-
-/// The GOG pill in its semantic color, as the poster draws it.
-fn pill(badge: Badge, palette: Palette, alpha: f32) -> Element<'static, Message> {
-    let color = badge.color(palette);
-    let ink = ui::accent_ink(color);
-    container(
-        text(badge.label())
-            .size(PILL_SIZE)
-            .color(ink.scale_alpha(alpha))
-            .wrapping(text::Wrapping::None),
-    )
-    .width(pill_width(badge))
-    .padding([PILL_PADDING, PILL_SIDE])
-    .style(move |_| {
-        container::Style::default()
-            .background(color)
-            .border(border::rounded(8))
-    })
-    .into()
+    use crate::grid::{GOG_PILL_SIDE, GOG_PILL_SIZE};
+    crate::tile_title::line_width(badge.label(), GOG_PILL_SIZE, Font::DEFAULT) + 2.0 * GOG_PILL_SIDE
 }
 
 /// A sortable header's look: a list row's hover and press, with the label
@@ -619,26 +603,6 @@ pub(crate) fn star_style(palette: Palette, status: button::Status) -> button::St
             .color(style.border.color),
         ..style
     }
-}
-
-/// A marked row's check, centered on its thumbnail like the poster's on
-/// its art.
-fn check(palette: Palette, alpha: f32) -> Element<'static, Message> {
-    let fill = palette.primary;
-    // The renderer's tint ignores its alpha, so the icon fades by opacity.
-    let chip = container(icon(CHECK, ui::accent_ink(fill), CHECK_ICON).opacity(alpha))
-        .width(CHECK_CHIP)
-        .height(CHECK_CHIP)
-        .center(CHECK_CHIP)
-        .style(move |_| {
-            container::Style::default()
-                .background(fill.scale_alpha(alpha))
-                .border(border::rounded(CHECK_CHIP / 2.0))
-        });
-    container(chip)
-        .center_x(THUMB_WIDTH)
-        .center_y(THUMB_HEIGHT)
-        .into()
 }
 
 #[cfg(test)]
