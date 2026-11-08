@@ -100,10 +100,13 @@ the order you picked and says why.
 ### Grouping
 
 **Group by**, in the Sort menu between the sorts and **Favorites first**,
-splits the library into sections: by **Tag**, **Source**, or **State**, or
-**None** for one flat grid as before. Press it, or Enter or Space on it, to
+splits the library into sections: by **Recently played**, **Tag**,
+**Source**, or **State**, or **None** for one flat grid as before. Press it, or Enter or Space on it, to
 open its list beside the menu; Esc or Left goes back.
 
+- **Recently played** keeps the whole library together in **All**, in the
+  same order as None, with Recently played above it. A game you played
+  lately shows in both.
 - **Tag** gives each tag its own section, A to Z, and a game with several
   tags shows in each of them, with **No tag** last. The copies are one game:
   starring, marking, or hiding one does all of them, and the panel stays open

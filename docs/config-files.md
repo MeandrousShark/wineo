@@ -398,7 +398,7 @@ zoom = 125                # grid size in percent, 60 to 200
 poster_only = true
 random = "any"            # launchable (default) or any
 layout = "list"           # grid (default) or list
-group = "tag"             # none (default), tag, source, or state
+group = "tag"             # none (default), recent, tag, source, or state
 
 [appearance]
 follow_system = true
@@ -446,7 +446,8 @@ there's another choice. An unknown `random` reads as `launchable`, and
 `validate` warns about it. `layout` is how the library shows, `grid`, the
 default, or `list`; an unknown value reads as `grid`, and `validate` warns
 about it. `group` is how the library splits into sections, `none`, the
-default, `tag`, `source`, or `state`; collapsed sections aren't saved. The
+default, `recent`, `tag`, `source`, or `state`; collapsed sections aren't
+saved. The
 window's filters and Show hidden aren't saved in `[view]`, only in a preset.
 
 Each `[presets."<name>"]` table is a saved view the desktop app can apply: a
