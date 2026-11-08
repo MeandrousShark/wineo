@@ -502,7 +502,7 @@ impl App {
         // Rebuilt before the switch lays the new layout out from it.
         self.reorder();
         let switched = anchor.map_or_else(Task::none, |anchor| {
-            self.switch_layout_from(preset.layout, anchor)
+            self.switch_layout_from(preset.layout, anchor, true)
         });
         let resorted = self.reflowed();
         let focus = iced::widget::operation::focus(iced::widget::Id::new(

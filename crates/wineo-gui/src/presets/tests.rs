@@ -309,6 +309,45 @@ fn a_preset_that_switches_the_layout_holds_the_card_as_it_was_drawn() {
 }
 
 #[test]
+fn a_preset_whose_held_card_is_gone_lands_the_selection_from_where_it_was() {
+    // Ungrouping moves the held card from rpg to All, so its slot is gone,
+    // and the selection lands from the old place, as a regroup does.
+    let (_root, mut app) = booted("schema_version = 1\n\n[presets.Flat]\nlayout = \"list\"\n");
+    app.viewport_width = 1000.0;
+    app.viewport_height = 800.0;
+    app.group = GroupBy::Tag;
+    let cards = (0..60)
+        .map(|index| {
+            let mut card = crate::tests::card(&format!("game-{index:02}"), State::Inactive, 60);
+            card.tags = vec!["rpg".into()];
+            card
+        })
+        .collect();
+    let _ = app.update(Message::Loaded(Ok(cards)));
+    app.snap_grid();
+    let places = app.grid_places();
+    let index = places.first("game-50").unwrap();
+    let before = (places.slots[index].y - 300.0).max(0.0);
+    app.scroll_offset = before;
+    app.selected = Some("game-50".into());
+    open_filters(&mut app);
+    let _ = send(&mut app, Event::Apply("Flat".into()));
+    assert_eq!(app.layout, ViewLayout::List);
+    assert_eq!(app.group, GroupBy::None);
+    let places = app.grid_places();
+    let card = places.slots[places.first("game-50").unwrap()];
+    let visible = app.viewport_height - app.bar_room();
+    let top = app.scroll_offset;
+    assert!(card.y >= top && card.y + card.height <= top + visible);
+    // From the top it would have landed with the card on the bottom edge.
+    let from_top = card.y + card.height - visible;
+    assert!(
+        (top - before).abs() < (from_top - before).abs(),
+        "{top} {from_top} {before}"
+    );
+}
+
+#[test]
 fn a_preset_can_group_by_recently_played_and_saves_that_group() {
     let (_root, mut app) = booted("schema_version = 1\n\n[presets.Recents]\ngroup = \"recent\"\n");
     open_filters(&mut app);
