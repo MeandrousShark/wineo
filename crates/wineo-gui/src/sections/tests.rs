@@ -1715,6 +1715,58 @@ fn a_range_starts_at_the_copy_that_was_ctrl_clicked() {
 }
 
 #[test]
+fn a_range_after_space_starts_at_the_copy_the_cursor_was_on() {
+    let mut app = grouped(
+        vec![
+            tagged("hades", &["co-op", "rpg"]),
+            tagged("celeste", &["rpg"]),
+            tagged("zelda", &["rpg"]),
+        ],
+        GroupBy::Tag,
+    );
+    let _ = settle_grid(&mut app);
+    let _ = app.update(Message::Press(slot(tag("rpg"), "hades")));
+    let _ = app.update(Message::SpaceFocus(false));
+    assert_eq!(app.marked.len(), 1);
+    // The cursor moves on to zelda, so it no longer says which copy.
+    let _ = app.update(Message::KeyWithFocus(
+        Key::Named(Named::ArrowRight),
+        Modifiers::empty(),
+        iced::event::Status::Ignored,
+        false,
+    ));
+    assert_eq!(app.selected_slot(), Some(slot(tag("rpg"), "zelda")));
+    app.modifiers = Modifiers::SHIFT;
+    let _ = app.update(Message::Press(slot(tag("rpg"), "zelda")));
+    app.modifiers = Modifiers::empty();
+    let marked: Vec<&str> = app.marked.iter().map(String::as_str).collect();
+    assert_eq!(marked, ["hades", "zelda"]);
+}
+
+#[test]
+fn a_range_from_a_copy_no_longer_shown_starts_at_the_games_first() {
+    let mut app = grouped(
+        vec![
+            tagged("hades", &["co-op", "rpg"]),
+            tagged("kiwi", &["co-op"]),
+            tagged("portal", &["co-op"]),
+            tagged("celeste", &["rpg"]),
+        ],
+        GroupBy::Tag,
+    );
+    let _ = settle_grid(&mut app);
+    app.modifiers = Modifiers::CTRL;
+    let _ = app.update(Message::Press(slot(tag("rpg"), "hades")));
+    app.modifiers = Modifiers::empty();
+    let _ = app.update(Message::ToggleSection(tag("rpg")));
+    app.modifiers = Modifiers::SHIFT;
+    let _ = app.update(Message::Press(slot(tag("co-op"), "portal")));
+    app.modifiers = Modifiers::empty();
+    let marked: Vec<&str> = app.marked.iter().map(String::as_str).collect();
+    assert_eq!(marked, ["hades", "kiwi", "portal"]);
+}
+
+#[test]
 fn the_random_picker_draws_by_game_from_what_is_in_view() {
     // Plan 0062, question 22's A, and a game shown twice isn't twice as
     // likely.
