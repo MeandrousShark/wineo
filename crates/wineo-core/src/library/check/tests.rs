@@ -492,3 +492,48 @@ fn presets_name_no_environment_so_they_are_never_strays() {
     assert_eq!(inspection.entries, Vec::<String>::new());
     assert_eq!(inspection.findings, []);
 }
+
+#[test]
+fn preset_names_the_write_api_would_refuse_are_findings() {
+    let long = "x".repeat(61);
+    let fine = "y".repeat(60);
+    let text = format!(
+        "[presets.\" lead\"]\nsort = \"added\"\n[presets.\"trail \"]\n[presets.\"a\\tb\"]\n[presets.\"{long}\"]\n[presets.\"{fine}\"]\n[presets.\"Couch co-op\"]\n"
+    );
+    let inspection = inspect_text(&text);
+    assert_eq!(
+        messages(&inspection, FindingKind::FieldInvalid),
+        [
+            r#"library.toml: presets." lead": expected a preset name that can't start or end with whitespace, found a table"#.to_owned(),
+            r#"library.toml: presets."trail ": expected a preset name that can't start or end with whitespace, found a table"#.to_owned(),
+            r#"library.toml: presets."a\tb": expected a preset name that can't contain control characters, found a table"#.to_owned(),
+            format!(
+                r#"library.toml: presets.{long}: expected a preset name that can't be longer than 60 characters, found a table"#
+            ),
+        ]
+    );
+
+    // The reader keeps showing every one of them.
+    let root = tempfile::tempdir().unwrap();
+    let paths = paths(&root);
+    fs::create_dir_all(paths.library_file().parent().unwrap()).unwrap();
+    fs::write(paths.library_file(), &text).unwrap();
+    let names: Vec<String> = crate::library::load(&paths)
+        .presets
+        .into_iter()
+        .map(|(name, _)| name)
+        .collect();
+    assert_eq!(names.len(), 6, "{names:?}");
+}
+
+#[test]
+fn a_badly_named_preset_still_has_its_fields_checked() {
+    let inspection = inspect_text("[presets.\" P\"]\nsort = \"random\"\n");
+    assert_eq!(
+        messages(&inspection, FindingKind::FieldInvalid),
+        [
+            r#"library.toml: presets." P": expected a preset name that can't start or end with whitespace, found a table"#,
+            r#"library.toml: presets." P".sort: expected one of name, last-played, playtime, added, source, tags, found "random""#,
+        ]
+    );
+}

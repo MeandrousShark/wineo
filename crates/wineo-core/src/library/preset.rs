@@ -42,10 +42,11 @@ pub struct Preset {
     pub layout: ViewLayout,
 }
 
-/// Why a preset name, as stored, breaks the rules. None when it's fine.
-/// Trimming is the caller's job when it takes what a person typed; see
-/// `normalize_preset_name`.
-pub fn preset_name_problem(name: &str) -> Option<String> {
+/// What is wrong with a preset name, as stored, finishing "a preset name
+/// that ...". None when it's fine. Trimming is the caller's job when it takes
+/// what a person typed; see `normalize_preset_name`. `validate` uses this
+/// too, so it flags what the write API refuses.
+pub(super) fn preset_name_rule(name: &str) -> Option<String> {
     let reason = if name.trim().is_empty() {
         "can't be empty".to_owned()
     } else if name.chars().any(char::is_control) {
@@ -57,7 +58,12 @@ pub fn preset_name_problem(name: &str) -> Option<String> {
     } else {
         return None;
     };
-    Some(format!("Invalid preset name: {reason}."))
+    Some(reason)
+}
+
+/// Why a preset name, as stored, breaks the rules. None when it's fine.
+pub fn preset_name_problem(name: &str) -> Option<String> {
+    preset_name_rule(name).map(|reason| format!("Invalid preset name: {reason}."))
 }
 
 /// What a person typed as a preset name, trimmed and checked.
