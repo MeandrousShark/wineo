@@ -4,6 +4,35 @@ A finished plan bumps the minor version and fixes between plans bump the
 patch version. A plan released in parts bumps the minor version for each
 part. See `AGENTS.md` for the rule.
 
+## 1.4.0 - 2026-11-08
+
+Multi-select, the list view, grouping, and saved presets (plan 0062, part 2
+of 2, done).
+
+New in this release:
+
+- Ctrl+click, Shift+click, Space, and Ctrl+A mark several games, and a bar
+  tags, favorites, or hides them all at once.
+- The library shows as posters or a sortable list, switched from the toolbar
+  or with Ctrl+L, and saved as `layout` under `[view]` in `library.toml`.
+- Sort by Source or Tags too, from the menu or the list's headers.
+- Group by tag, source, or state, with collapsible headers, a Hidden section
+  while hidden games show, and a copy of a game with several tags in each of
+  its sections. Group by Recently played shows what you played last above
+  the whole library. The choice is saved as `group` under `[view]`.
+- Presets save the filters, Show hidden, the sort, grouping, and layout under
+  a name in the Filters popup, kept under `[presets]` in `library.toml`.
+  Applying one changes nothing saved, and changing what it set offers
+  **Update**.
+- `wineo validate` checks `layout`, `group`, and `[presets]`, and its repair
+  of a broken file keeps every preset setting that still reads correctly.
+
+Behavior changes:
+
+- After a layout, grouping, or preset is saved, an older wineo still reads
+  `library.toml`, but its `validate` warns about the new keys and its repair
+  of a broken file drops them.
+
 ## 1.3.0 - 2026-11-04
 
 Exclude filters, a random pick, and tagging many environments at once (plan
