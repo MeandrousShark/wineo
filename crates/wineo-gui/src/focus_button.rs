@@ -26,19 +26,7 @@ pub(crate) fn control<'a, M: Clone + 'a>(
     id: impl Into<iced::widget::Id>,
     on_press: M,
 ) -> Element<'a, M> {
-    Element::new(FocusControl {
-        content,
-        enabled,
-        id: id.into(),
-        on_press,
-        mouse_focus: true,
-        leaves_submit: false,
-        exclude: None,
-        menu: None,
-        arrows: false,
-        rename: None,
-        delete: None,
-    })
+    Element::new(FocusControl::new(content, enabled, id, on_press))
 }
 
 /// A control that also takes X while focused, sending `on_exclude`, for a
@@ -50,17 +38,8 @@ pub(crate) fn excludable<'a, M: Clone + 'a>(
     on_exclude: M,
 ) -> Element<'a, M> {
     Element::new(FocusControl {
-        content,
-        enabled: true,
-        id: id.into(),
-        on_press,
-        mouse_focus: true,
-        leaves_submit: false,
         exclude: Some(on_exclude),
-        menu: None,
-        arrows: false,
-        rename: None,
-        delete: None,
+        ..FocusControl::new(content, true, id, on_press)
     })
 }
 
@@ -76,17 +55,8 @@ pub(crate) fn with_menu<'a, M: Clone + 'a>(
     on_menu: M,
 ) -> Element<'a, M> {
     Element::new(FocusControl {
-        content,
-        enabled,
-        id: id.into(),
-        on_press,
-        mouse_focus: true,
-        leaves_submit: false,
-        exclude: None,
         menu: Some(on_menu),
-        arrows: false,
-        rename: None,
-        delete: None,
+        ..FocusControl::new(content, enabled, id, on_press)
     })
 }
 
@@ -102,17 +72,10 @@ pub(crate) fn editable_row<'a, M: Clone + 'a>(
     on_delete: M,
 ) -> Element<'a, M> {
     Element::new(FocusControl {
-        content,
-        enabled: true,
-        id: id.into(),
-        on_press,
-        mouse_focus: true,
-        leaves_submit: false,
-        exclude: None,
         menu: Some(on_menu),
-        arrows: false,
         rename: Some(on_rename),
         delete: Some(on_delete),
+        ..FocusControl::new(content, true, id, on_press)
     })
 }
 
@@ -147,17 +110,8 @@ fn leaves_submit<'a, M: Clone + 'a>(
     on_press: M,
 ) -> Element<'a, M> {
     Element::new(FocusControl {
-        content,
-        enabled,
-        id: id.into(),
-        on_press,
-        mouse_focus: true,
         leaves_submit: true,
-        exclude: None,
-        menu: None,
-        arrows: false,
-        rename: None,
-        delete: None,
+        ..FocusControl::new(content, enabled, id, on_press)
     })
 }
 
@@ -171,17 +125,8 @@ pub(crate) fn keyboard_control<'a, M: Clone + 'a>(
     on_press: M,
 ) -> Element<'a, M> {
     Element::new(FocusControl {
-        content,
-        enabled,
-        id: id.into(),
-        on_press,
         mouse_focus: false,
-        leaves_submit: false,
-        exclude: None,
-        menu: None,
-        arrows: false,
-        rename: None,
-        delete: None,
+        ..FocusControl::new(content, enabled, id, on_press)
     })
 }
 
@@ -195,17 +140,9 @@ pub(crate) fn segment<'a, M: Clone + 'a>(
     on_press: M,
 ) -> Element<'a, M> {
     Element::new(FocusControl {
-        content,
-        enabled: true,
-        id: id.into(),
-        on_press,
         mouse_focus: false,
-        leaves_submit: false,
-        exclude: None,
-        menu: None,
         arrows: true,
-        rename: None,
-        delete: None,
+        ..FocusControl::new(content, true, id, on_press)
     })
 }
 
@@ -334,6 +271,31 @@ struct FocusControl<'a, M, R: AdvancedRenderer = iced::Renderer> {
     /// focused.
     rename: Option<M>,
     delete: Option<M>,
+}
+
+impl<'a, M, R: AdvancedRenderer> FocusControl<'a, M, R> {
+    /// A control with no extra keys, arrows, or menu, which a click
+    /// focuses too. Each constructor changes only what it adds.
+    fn new(
+        content: Element<'a, M, iced::Theme, R>,
+        enabled: bool,
+        id: impl Into<iced::widget::Id>,
+        on_press: M,
+    ) -> Self {
+        Self {
+            content,
+            enabled,
+            id: id.into(),
+            on_press,
+            mouse_focus: true,
+            leaves_submit: false,
+            exclude: None,
+            menu: None,
+            arrows: false,
+            rename: None,
+            delete: None,
+        }
+    }
 }
 
 #[derive(Default)]
@@ -652,19 +614,9 @@ mod tests {
     /// answer it gave.
     fn run_undo_focused(enabled: bool, focus: bool) -> Vec<bool> {
         let button = iced::widget::button::Button::<crate::Message, iced::Theme, ()>::new("Undo");
-        let mut widget: Element<'_, crate::Message, iced::Theme, ()> = Element::new(FocusControl {
-            content: button.into(),
-            enabled,
-            id: UNDO_ID.into(),
-            on_press: crate::Message::Undo,
-            mouse_focus: true,
-            leaves_submit: false,
-            exclude: None,
-            menu: None,
-            arrows: false,
-            rename: None,
-            delete: None,
-        });
+        let mut widget: Element<'_, crate::Message, iced::Theme, ()> = Element::new(
+            FocusControl::new(button.into(), enabled, UNDO_ID, crate::Message::Undo),
+        );
         let mut tree = tree::Tree::new(widget.as_widget());
         let bounds = Size::new(100.0, 32.0);
         let node =
@@ -698,19 +650,9 @@ mod tests {
     fn focus_operation_registers_the_undo_id_and_enter_activates_it() {
         let button = iced::widget::button::Button::<crate::Message, iced::Theme, ()>::new("Undo")
             .on_press(crate::Message::Undo);
-        let mut widget: Element<'_, crate::Message, iced::Theme, ()> = Element::new(FocusControl {
-            content: button.into(),
-            enabled: true,
-            id: UNDO_ID.into(),
-            on_press: crate::Message::Undo,
-            mouse_focus: true,
-            leaves_submit: false,
-            exclude: None,
-            menu: None,
-            arrows: false,
-            rename: None,
-            delete: None,
-        });
+        let mut widget: Element<'_, crate::Message, iced::Theme, ()> = Element::new(
+            FocusControl::new(button.into(), true, UNDO_ID, crate::Message::Undo),
+        );
         let mut tree = tree::Tree::new(widget.as_widget());
         let bounds = Size::new(100.0, 32.0);
         let node =
@@ -748,19 +690,9 @@ mod tests {
     fn focused_space_activates_but_unfocused_space_does_not() {
         let button = iced::widget::button::Button::<crate::Message, iced::Theme, ()>::new("Undo")
             .on_press(crate::Message::Undo);
-        let mut widget: Element<'_, crate::Message, iced::Theme, ()> = Element::new(FocusControl {
-            content: button.into(),
-            enabled: true,
-            id: UNDO_ID.into(),
-            on_press: crate::Message::Undo,
-            mouse_focus: true,
-            leaves_submit: false,
-            exclude: None,
-            menu: None,
-            arrows: false,
-            rename: None,
-            delete: None,
-        });
+        let mut widget: Element<'_, crate::Message, iced::Theme, ()> = Element::new(
+            FocusControl::new(button.into(), true, UNDO_ID, crate::Message::Undo),
+        );
         let mut tree = tree::Tree::new(widget.as_widget());
         let bounds = Size::new(100.0, 32.0);
         let node =
@@ -900,19 +832,7 @@ mod tests {
                 let button =
                     iced::widget::button::Button::<crate::Message, iced::Theme, ()>::new("control");
                 let mut widget: Element<'_, crate::Message, iced::Theme, ()> =
-                    Element::new(FocusControl {
-                        content: button.into(),
-                        enabled: true,
-                        id: id.into(),
-                        on_press: on_press.clone(),
-                        mouse_focus: true,
-                        leaves_submit: false,
-                        exclude: None,
-                        menu: None,
-                        arrows: false,
-                        rename: None,
-                        delete: None,
-                    });
+                    Element::new(FocusControl::new(button.into(), true, id, on_press.clone()));
                 let mut tree = tree::Tree::new(widget.as_widget());
                 tree.state.downcast_mut::<State>().focus();
                 let bounds = Size::new(100.0, 32.0);
@@ -967,17 +887,9 @@ mod tests {
         let button = iced::widget::button::Button::<crate::Message, iced::Theme, ()>::new("List")
             .on_press(crate::Message::Undo);
         let mut widget: Element<'_, crate::Message, iced::Theme, ()> = Element::new(FocusControl {
-            content: button.into(),
-            enabled: true,
-            id: "segment".into(),
-            on_press: crate::Message::Undo,
             mouse_focus: false,
-            leaves_submit: false,
-            exclude: None,
-            menu: None,
             arrows: true,
-            rename: None,
-            delete: None,
+            ..FocusControl::new(button.into(), true, "segment", crate::Message::Undo)
         });
         let mut tree = tree::Tree::new(widget.as_widget());
         let node = widget.as_widget_mut().layout(
@@ -1056,17 +968,8 @@ mod tests {
     fn a_plain_focus_control_leaves_the_arrows_alone() {
         let button = iced::widget::button::Button::<crate::Message, iced::Theme, ()>::new("Undo");
         let mut widget: Element<'_, crate::Message, iced::Theme, ()> = Element::new(FocusControl {
-            content: button.into(),
-            enabled: true,
-            id: "plain".into(),
-            on_press: crate::Message::Undo,
             mouse_focus: false,
-            leaves_submit: false,
-            exclude: None,
-            menu: None,
-            arrows: false,
-            rename: None,
-            delete: None,
+            ..FocusControl::new(button.into(), true, "plain", crate::Message::Undo)
         });
         let mut tree = tree::Tree::new(widget.as_widget());
         tree.state.downcast_mut::<State>().focus();
