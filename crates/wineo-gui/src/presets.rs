@@ -355,10 +355,15 @@ impl App {
     }
 
     /// Opening the popup starts the presets part afresh, except for a write
-    /// still landing and a typed name that didn't land, so it isn't lost.
+    /// still landing and a typed name, with its failure if it has one, so it
+    /// isn't lost. A field opened with nothing typed in it closes.
     pub(crate) fn presets_opened(&mut self) {
-        let typed = matches!(self.presets.edit, Some(Edit::Save(_) | Edit::Rename { .. }));
-        if self.presets.writing.is_none() && !(typed && self.presets.failure.is_some()) {
+        let typed = match &self.presets.edit {
+            Some(Edit::Save(draft)) => !draft.is_empty(),
+            Some(Edit::Rename { old, draft }) => draft != old,
+            _ => false,
+        };
+        if self.presets.writing.is_none() && !typed {
             self.presets.edit = None;
             self.presets.failure = None;
         }

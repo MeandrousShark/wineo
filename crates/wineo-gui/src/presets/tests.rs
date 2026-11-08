@@ -1029,6 +1029,48 @@ fn the_popup_draws_every_presets_state() {
 }
 
 #[test]
+fn a_typed_name_survives_closing_the_popup() {
+    let (_root, mut app) = booted(FILE);
+    let typed = [
+        (Event::StartSave, Edit::Save("Evening".into())),
+        (
+            Event::Rename("Tools".into()),
+            Edit::Rename {
+                old: "Tools".into(),
+                draft: "Evening".into(),
+            },
+        ),
+    ];
+    for (start, edit) in typed {
+        open_filters(&mut app);
+        let _ = send(&mut app, start);
+        let _ = send(&mut app, Event::Draft("Evening".into()));
+        let _ = filter(&mut app, FilterEvent::CloseMenu);
+        open_filters(&mut app);
+        assert_eq!(app.presets.edit, Some(edit));
+        assert!(app.preset_ids().contains(&NAME_ID.to_owned()));
+        let _ = key(&mut app, Named::Escape);
+        let _ = filter(&mut app, FilterEvent::CloseMenu);
+    }
+}
+
+#[test]
+fn a_failed_save_keeps_its_name_after_it_is_edited_and_the_popup_closes() {
+    let (_root, mut app) = booted(FILE);
+    write_file(&app.paths, "schema_version = [");
+    app.problem_read(wineo_core::library::load(&app.paths).problem);
+    open_filters(&mut app);
+    let _ = send(&mut app, Event::StartSave);
+    let _ = send(&mut app, Event::Draft("Evening".into()));
+    let _ = send(&mut app, Event::Submit);
+    assert!(app.presets.failure.is_some());
+    let _ = send(&mut app, Event::Draft("Evenings".into()));
+    let _ = filter(&mut app, FilterEvent::CloseMenu);
+    open_filters(&mut app);
+    assert_eq!(app.presets.edit, Some(Edit::Save("Evenings".into())));
+}
+
+#[test]
 fn a_failed_delete_or_update_is_forgotten_when_the_popup_opens_again() {
     let (_root, mut app) = booted(FILE);
     write_file(&app.paths, "schema_version = [");
