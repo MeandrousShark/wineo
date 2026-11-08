@@ -809,7 +809,7 @@ fn the_selected_card_anchors_when_any_of_it_is_on_screen() {
 #[test]
 fn the_cursors_copy_anchors_a_zoom_rather_than_the_games_first() {
     let (_root, mut app) = library(120);
-    let copy = app.show_test_copy("game-005", 10);
+    let copy = crate::tests::show_copy(&mut app, "game-005", 10);
     let places = app.grid_places();
     let at = places.index(&copy).unwrap();
     let tops: Vec<f32> = app

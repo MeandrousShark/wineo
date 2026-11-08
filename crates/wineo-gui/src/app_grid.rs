@@ -187,20 +187,6 @@ impl App {
                 }
             }
         }
-        #[cfg(test)]
-        if let Some((name, at)) = &self.test_copy
-            && let Some(index) = cards
-                .iter()
-                .copied()
-                .find(|&index| &self.cards[index].name == name)
-        {
-            let at = (*at).min(ids.len());
-            ids.insert(
-                at,
-                SlotId::new(crate::slot::SectionKey::Test("copy"), name.as_str()),
-            );
-            cards.insert(at, index);
-        }
         let heights: Vec<f32> = match self.layout {
             grid_motion::ViewLayout::Grid => cards
                 .iter()
@@ -232,16 +218,6 @@ impl App {
             .iter()
             .filter_map(|&index| self.cards.get(index))
             .collect()
-    }
-
-    /// Shows `name` a second time, in a test-only section at `at` in the
-    /// shown order, as grouping will.
-    #[cfg(test)]
-    pub(crate) fn show_test_copy(&mut self, name: &str, at: usize) -> SlotId {
-        self.test_copy = Some((name.to_owned(), at));
-        *self.places.borrow_mut() = None;
-        self.snap_grid();
-        SlotId::new(crate::slot::SectionKey::Test("copy"), name)
     }
 
     /// Springs the cards to their slots from where they're drawn, or puts

@@ -46,6 +46,35 @@ pub(crate) fn card(name: &str, state: State, seconds: i64) -> Card {
     }
 }
 /// Runs the grid's motion to its end.
+/// Shows `name` a second time at slot `at` by grouping by Tag: the games
+/// in the first `at` slots are tagged "a" and the rest "b", and `name`,
+/// one of the first, gets "b" too, so its second slot opens "b". Returns
+/// that slot. The slots keep the order they had, with `name` again at `at`.
+pub(crate) fn show_copy(app: &mut App, name: &str, at: usize) -> crate::slot::SlotId {
+    let first: Vec<String> = app.grid_places().ids[..at]
+        .iter()
+        .map(|slot| slot.name().to_owned())
+        .collect();
+    assert!(first.iter().any(|shown| shown == name));
+    for card in &mut app.cards {
+        card.tags = if first.contains(&card.name) {
+            vec!["a".into()]
+        } else {
+            vec!["b".into()]
+        };
+        if card.name == name {
+            card.tags.push("b".into());
+        }
+    }
+    app.group = wineo_core::library::GroupBy::Tag;
+    app.order.cards_edited();
+    app.reorder();
+    app.snap_grid();
+    let copy = crate::slot::SlotId::new(crate::slot::SectionKey::Tag("b".into()), name);
+    assert_eq!(app.grid_places().index(&copy), Some(at));
+    copy
+}
+
 pub(crate) fn settle_grid(app: &mut App) -> Task<Message> {
     app.update(Message::GridTick(
         app.grid_motion.generation(),

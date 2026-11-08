@@ -207,10 +207,6 @@ pub(crate) struct App {
     pub(crate) selected: Option<String>,
     /// The copy of the selected game or the header the cursor is on.
     pub(crate) cursor: Option<app_selection::Cursor>,
-    /// A game the grid shows a second time, and where; see
-    /// `App::show_test_copy`.
-    #[cfg(test)]
-    test_copy: Option<(String, usize)>,
     /// The cards marked for a bulk action, which only ever holds shown
     /// games. `selected` stays the panel's card.
     pub(crate) marked: BTreeSet<String>,
@@ -613,8 +609,6 @@ impl App {
             facts: prefix_facts::Stored::default(),
             selected: None,
             cursor: None,
-            #[cfg(test)]
-            test_copy: None,
             marked: BTreeSet::new(),
             mark_range: multi_select::Range::default(),
             panel_open: false,
