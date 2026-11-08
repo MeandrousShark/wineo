@@ -209,6 +209,7 @@ fn row_id(sort: SortKey) -> &'static str {
 fn group_row_id(group: GroupBy) -> &'static str {
     match group {
         GroupBy::None => "library-group-none",
+        GroupBy::Recent => "library-group-recent",
         GroupBy::Tag => "library-group-tag",
         GroupBy::Source => "library-group-source",
         GroupBy::State => "library-group-state",

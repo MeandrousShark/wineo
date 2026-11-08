@@ -11,7 +11,10 @@ use iced::advanced::widget::Id;
 /// played and Hidden pinned around them.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub(crate) enum SectionKey {
-    /// The whole shown library, ungrouped.
+    /// The whole shown library: ungrouped, with no header, or under Group
+    /// by Recently played, as a section with one. The two never show at
+    /// once, so they share slot and widget ids and a switch between them
+    /// moves each card instead of fading it.
     #[default]
     All,
     /// The last ten games played, pinned first.

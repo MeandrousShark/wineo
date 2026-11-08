@@ -571,7 +571,13 @@ fn group_change() {
     let iterations = iterations() * 20;
 
     header("order rebuild and slots, per Group by", iterations);
-    for group in [GroupBy::None, GroupBy::Tag, GroupBy::Source, GroupBy::State] {
+    for group in [
+        GroupBy::None,
+        GroupBy::Recent,
+        GroupBy::Tag,
+        GroupBy::Source,
+        GroupBy::State,
+    ] {
         let (mut orders, mut places) = (Vec::with_capacity(iterations), Vec::new());
         let mut slots = 0;
         for round in 0..iterations + 100 {
