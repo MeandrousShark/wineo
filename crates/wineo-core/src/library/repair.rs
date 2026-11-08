@@ -676,13 +676,15 @@ fn salvage(bytes: &[u8]) -> Salvaged {
                     }
                     // A name the reader would skip can't be shown or picked.
                     Some(Header::Preset(name)) if readable_name(&name) => {
-                        Current::Preset(salvaged.preset(name))
+                        Current::Preset(section_index(&mut salvaged.presets, name))
                     }
                     Some(Header::Preset(_)) => {
                         salvaged.dropped_text = true;
                         Current::Unattributed
                     }
-                    Some(Header::Entry(name)) => Current::Entry(salvaged.entry(name)),
+                    Some(Header::Entry(name)) => {
+                        Current::Entry(section_index(&mut salvaged.entries, name))
+                    }
                     None => {
                         salvaged.dropped_text = true;
                         Current::Unattributed
@@ -779,27 +781,17 @@ fn parsed_prefix(lines: &Lines<'_>) -> (usize, DocumentMut) {
     }
 }
 
+fn section_index(sections: &mut Vec<(String, Section)>, name: String) -> usize {
+    match sections.iter().position(|(seen, _)| *seen == name) {
+        Some(index) => index,
+        None => {
+            sections.push((name, Section::default()));
+            sections.len() - 1
+        }
+    }
+}
+
 impl Salvaged {
-    fn preset(&mut self, name: String) -> usize {
-        match self.presets.iter().position(|(seen, _)| *seen == name) {
-            Some(index) => index,
-            None => {
-                self.presets.push((name, Section::default()));
-                self.presets.len() - 1
-            }
-        }
-    }
-
-    fn entry(&mut self, name: String) -> usize {
-        match self.entries.iter().position(|(seen, _)| *seen == name) {
-            Some(index) => index,
-            None => {
-                self.entries.push((name, Section::default()));
-                self.entries.len() - 1
-            }
-        }
-    }
-
     /// Takes what the parser read, and says which table the broken tail
     /// continues.
     fn read_prefix(&mut self, document: &DocumentMut) -> Current {
@@ -839,7 +831,7 @@ impl Salvaged {
                             self.dropped_text = true;
                             continue;
                         };
-                        let index = self.preset(name.to_owned());
+                        let index = section_index(&mut self.presets, name.to_owned());
                         let section = &mut self.presets[index].1;
                         for (field, value) in preset.iter() {
                             let key = preset
@@ -856,7 +848,7 @@ impl Salvaged {
                             self.dropped_text = true;
                             continue;
                         };
-                        let index = self.entry(name.to_owned());
+                        let index = section_index(&mut self.entries, name.to_owned());
                         let section = &mut self.entries[index].1;
                         for (field, value) in entry.iter() {
                             let key = entry.key(field).cloned().unwrap_or_else(|| Key::new(field));
