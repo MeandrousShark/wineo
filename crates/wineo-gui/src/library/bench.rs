@@ -490,21 +490,16 @@ fn filter_change() {
     let platform = app.cards[0]
         .source
         .platform
-        .map(wineo_core::source::Platform::label)
         .expect("the generated library has no Steam games");
     println!(
-        "filters: tag {tag:?} on {} cards, platform {platform:?} on {} cards, {} hidden",
+        "filters: tag {tag:?} on {} cards, platform {label:?} on {} cards, {} hidden",
         tag_counts[tag.as_str()],
         app.cards
             .iter()
-            .filter(|card| {
-                card.source
-                    .platform
-                    .map(wineo_core::source::Platform::label)
-                    == Some(platform)
-            })
+            .filter(|card| card.source.platform == Some(platform))
             .count(),
         app.cards.iter().filter(|card| card.hidden).count(),
+        label = platform.label(),
     );
     let iterations = iterations() * 20;
 
@@ -522,7 +517,7 @@ fn filter_change() {
         (
             "reorder() per platform filter",
             Box::new(move |filters| {
-                if !filters.platforms.remove(platform) {
+                if !filters.platforms.remove(&platform) {
                     filters.platforms.insert(platform);
                 }
             }),

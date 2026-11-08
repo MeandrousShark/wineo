@@ -12,6 +12,7 @@ use iced::advanced::{
 };
 use iced::widget::{Row, button, container, mouse_area, text, tooltip};
 use iced::{Center, Color, Element, Fill, Font, Length, Rectangle, Size, Task, Vector, border};
+use wineo_core::source::{Platform, Store};
 
 use crate::filter_control::{Event, FILTER_BUTTON_ID};
 use crate::library_menu::icon;
@@ -56,21 +57,19 @@ const CLEAR_ICON: f32 = 14.0;
 /// "Not co-op".
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Chip {
-    Store(&'static str),
-    Platform(&'static str),
+    Store(Store),
+    Platform(Platform),
     Tag(String),
-    NotStore(&'static str),
-    NotPlatform(&'static str),
+    NotStore(Store),
+    NotPlatform(Platform),
     NotTag(String),
 }
 
 impl Chip {
     fn label(&self) -> &str {
         match self {
-            Self::Store(label)
-            | Self::Platform(label)
-            | Self::NotStore(label)
-            | Self::NotPlatform(label) => label,
+            Self::Store(store) | Self::NotStore(store) => store.label(),
+            Self::Platform(platform) | Self::NotPlatform(platform) => platform.label(),
             Self::Tag(tag) | Self::NotTag(tag) => tag,
         }
     }
@@ -94,16 +93,25 @@ impl Chip {
 
     fn id(&self) -> String {
         match self {
-            Self::Store(label) => format!("library-filter-tab-store-{}", label.to_lowercase()),
-            Self::Platform(label) => {
-                format!("library-filter-tab-platform-{}", label.to_lowercase())
+            Self::Store(_) => format!("library-filter-tab-store-{}", self.label().to_lowercase()),
+            Self::Platform(_) => {
+                format!(
+                    "library-filter-tab-platform-{}",
+                    self.label().to_lowercase()
+                )
             }
             Self::Tag(tag) => format!("library-filter-tab-tag-{tag}"),
-            Self::NotStore(label) => {
-                format!("library-filter-tab-not-store-{}", label.to_lowercase())
+            Self::NotStore(_) => {
+                format!(
+                    "library-filter-tab-not-store-{}",
+                    self.label().to_lowercase()
+                )
             }
-            Self::NotPlatform(label) => {
-                format!("library-filter-tab-not-platform-{}", label.to_lowercase())
+            Self::NotPlatform(_) => {
+                format!(
+                    "library-filter-tab-not-platform-{}",
+                    self.label().to_lowercase()
+                )
             }
             Self::NotTag(tag) => format!("library-filter-tab-not-tag-{tag}"),
         }
@@ -191,18 +199,18 @@ impl App {
         let offered = self.offered();
         let filters = &self.filters;
         let mut chips: Vec<Chip> = Vec::new();
-        for label in offered.stores {
-            if filters.stores.contains(label) {
-                chips.push(Chip::Store(label));
-            } else if filters.not_stores.contains(label) {
-                chips.push(Chip::NotStore(label));
+        for store in offered.stores {
+            if filters.stores.contains(&store) {
+                chips.push(Chip::Store(store));
+            } else if filters.not_stores.contains(&store) {
+                chips.push(Chip::NotStore(store));
             }
         }
-        for label in offered.platforms {
-            if filters.platforms.contains(label) {
-                chips.push(Chip::Platform(label));
-            } else if filters.not_platforms.contains(label) {
-                chips.push(Chip::NotPlatform(label));
+        for platform in offered.platforms {
+            if filters.platforms.contains(&platform) {
+                chips.push(Chip::Platform(platform));
+            } else if filters.not_platforms.contains(&platform) {
+                chips.push(Chip::NotPlatform(platform));
             }
         }
         for tag in offered.tags {
@@ -478,11 +486,11 @@ pub(crate) fn remove(app: &mut App, chip: &Chip, keyboard: bool) -> Task<Message
     }
     let index = app.filter_chips().iter().position(|shown| shown == chip);
     let removed = match chip {
-        Chip::Store(label) => app.filters.stores.remove(label),
-        Chip::Platform(label) => app.filters.platforms.remove(label),
+        Chip::Store(store) => app.filters.stores.remove(store),
+        Chip::Platform(platform) => app.filters.platforms.remove(platform),
         Chip::Tag(tag) => app.filters.tags.remove(tag),
-        Chip::NotStore(label) => app.filters.not_stores.remove(label),
-        Chip::NotPlatform(label) => app.filters.not_platforms.remove(label),
+        Chip::NotStore(store) => app.filters.not_stores.remove(store),
+        Chip::NotPlatform(platform) => app.filters.not_platforms.remove(platform),
         Chip::NotTag(tag) => app.filters.not_tags.remove(tag),
     };
     if !removed {

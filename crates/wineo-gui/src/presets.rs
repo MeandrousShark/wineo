@@ -4,14 +4,11 @@
 //! `[view]` keeps what the controls last saved, and launching still opens
 //! the saved view.
 
-use std::collections::BTreeSet;
-
 use iced::widget::{Space, button, column, container, row, text, text_input};
 use iced::{Center, Element, Fill, Font, Task, border};
 use wineo_core::error::Error;
 use wineo_core::library::{self, GroupBy, Library, Preset, ViewLayout};
 use wineo_core::paths::Paths;
-use wineo_core::source::{Platform, Store};
 
 use crate::grid::{ACTION_MENU_PADDING, ACTION_MENU_WIDTH, context_menu_style};
 use crate::library_menu::menu_row;
@@ -181,40 +178,24 @@ impl Presets {
     }
 }
 
-fn store_of(label: &str) -> Option<Store> {
-    Store::ALL.into_iter().find(|store| store.label() == label)
-}
-
-fn platform_of(label: &str) -> Option<Platform> {
-    Platform::ALL
-        .into_iter()
-        .find(|platform| platform.label() == label)
-}
-
 /// The filters a preset applies. An include that's also excluded is left
 /// out, since a popup row is never both; a tag no game has stays, so its
 /// chip shows until it's cleared.
 pub(crate) fn filters_of(preset: &Preset) -> Filters {
-    let labels = |stores: &BTreeSet<Store>| -> BTreeSet<&'static str> {
-        stores.iter().map(|store| store.label()).collect()
-    };
-    let platform_labels = |platforms: &BTreeSet<Platform>| -> BTreeSet<&'static str> {
-        platforms.iter().map(|platform| platform.label()).collect()
-    };
-    let not_stores = labels(&preset.not_stores);
-    let not_platforms = platform_labels(&preset.not_platforms);
     Filters {
-        stores: labels(&preset.stores)
-            .difference(&not_stores)
+        stores: preset
+            .stores
+            .difference(&preset.not_stores)
             .copied()
             .collect(),
-        platforms: platform_labels(&preset.platforms)
-            .difference(&not_platforms)
+        platforms: preset
+            .platforms
+            .difference(&preset.not_platforms)
             .copied()
             .collect(),
         tags: preset.tags.difference(&preset.not_tags).cloned().collect(),
-        not_stores,
-        not_platforms,
+        not_stores: preset.not_stores.clone(),
+        not_platforms: preset.not_platforms.clone(),
         not_tags: preset.not_tags.clone(),
         show_hidden: preset.show_hidden,
     }
@@ -227,23 +208,15 @@ pub(crate) fn preset_of(
     group: GroupBy,
     layout: ViewLayout,
 ) -> Preset {
-    let stores =
-        |labels: &BTreeSet<&str>| labels.iter().filter_map(|label| store_of(label)).collect();
-    let platforms = |labels: &BTreeSet<&str>| {
-        labels
-            .iter()
-            .filter_map(|label| platform_of(label))
-            .collect()
-    };
     Preset {
         sort: query.sort,
         descending: query.descending,
         favorites_first: query.favorites_first,
-        stores: stores(&filters.stores),
-        platforms: platforms(&filters.platforms),
+        stores: filters.stores.clone(),
+        platforms: filters.platforms.clone(),
         tags: filters.tags.clone(),
-        not_stores: stores(&filters.not_stores),
-        not_platforms: platforms(&filters.not_platforms),
+        not_stores: filters.not_stores.clone(),
+        not_platforms: filters.not_platforms.clone(),
         not_tags: filters.not_tags.clone(),
         show_hidden: filters.show_hidden,
         group,

@@ -4,6 +4,7 @@ use iced::Rectangle;
 use iced::keyboard::{Key, Modifiers, key::Named};
 use wineo_core::library::{GroupBy, SortKey, ViewLayout};
 use wineo_core::runtime::State;
+use wineo_core::source::{Platform, Store};
 
 use super::*;
 use crate::filter_control::tests::{library, open_filters};
@@ -242,7 +243,7 @@ fn applying_a_preset_sets_the_whole_view_and_writes_nothing() {
     open_filters(&mut app);
     let _ = send(&mut app, Event::Apply("Couch co-op".into()));
 
-    assert_eq!(app.filters.stores, ["GOG", "Steam"].into_iter().collect());
+    assert_eq!(app.filters.stores, [Store::Gog, Store::Steam].into());
     assert_eq!(app.filters.tags, ["game".to_owned()].into());
     assert_eq!(app.filters.not_tags, ["rpg".to_owned()].into());
     assert!(app.filters.show_hidden);
@@ -462,9 +463,9 @@ layout = "list"
     );
     open_filters(&mut app);
     let _ = send(&mut app, Event::Apply("Odd".into()));
-    assert_eq!(app.filters.stores, ["GOG"].into());
+    assert_eq!(app.filters.stores, [Store::Gog].into());
     assert!(app.filters.platforms.is_empty());
-    assert_eq!(app.filters.not_platforms, ["Native"].into());
+    assert_eq!(app.filters.not_platforms, [Platform::Native].into());
     assert_eq!(app.filters.tags, ["co-op".to_owned()].into());
     assert_eq!(app.query.sort, SortKey::Playtime);
     assert_eq!(app.layout, ViewLayout::List);
@@ -492,7 +493,7 @@ not_stores = ["steam"]
     assert_eq!(app.filters.tags, ["game".to_owned()].into());
     assert_eq!(app.filters.not_tags, ["rpg".to_owned()].into());
     assert!(app.filters.stores.is_empty());
-    assert_eq!(app.filters.not_stores, ["Steam"].into());
+    assert_eq!(app.filters.not_stores, [Store::Steam].into());
     assert_eq!(button_label(&app), "Filters (Both)");
     assert!(app.preset_to_update().is_none());
 }
@@ -509,7 +510,7 @@ fn update_shows_only_while_the_view_differs_from_the_active_preset() {
     assert!(!app.preset_ids().contains(&UPDATE_ID.to_owned()));
 
     for change in [
-        FilterEvent::ToggleStore("Steam"),
+        FilterEvent::ToggleStore(Store::Steam),
         FilterEvent::ExcludeTag("game".into()),
         FilterEvent::ToggleShowHidden,
     ] {
