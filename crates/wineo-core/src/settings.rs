@@ -31,6 +31,7 @@ use crate::runtime::Runtime;
 
 mod tags;
 pub use tags::{TagChange, Tagged, change_tags, check_tag};
+pub(crate) use tags::{push_tag, remove_tag};
 
 /// Which config file `update` edits.
 #[derive(Debug, Clone, Copy)]

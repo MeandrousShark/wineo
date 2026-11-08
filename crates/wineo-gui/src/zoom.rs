@@ -9,6 +9,7 @@ use iced::widget::scrollable;
 use iced::{Subscription, Task, window};
 use wineo_core::library::{ZOOM_DEFAULT, ZOOM_MAX, ZOOM_MIN};
 
+use crate::slot::SlotId;
 use crate::sort_control::Field;
 use crate::{App, Message, SCROLL_ID};
 
@@ -104,11 +105,11 @@ struct Tween {
     shown: f32,
 }
 
-/// A drag or a run of steps. The anchor is a card's name and its top's
+/// A drag or a run of steps. The anchor is a card's slot and its top's
 /// offset in the viewport, found once when the gesture starts.
 #[derive(Debug, Clone, Default)]
 struct Gesture {
-    anchor: Option<(String, f32)>,
+    anchor: Option<(SlotId, f32)>,
     /// The selection was off screen, so it scrolls into view at the end.
     reveal: bool,
 }
@@ -138,6 +139,12 @@ impl Zoom {
 
     pub(crate) fn revision(&self) -> u64 {
         self.revision
+    }
+
+    /// The generation a tween's frames carry.
+    #[cfg(test)]
+    pub(crate) fn generation(&self) -> u64 {
+        self.generation
     }
 
     fn moved(&mut self) {
@@ -214,7 +221,8 @@ impl App {
     /// Zoom input counts while the Library shows with nothing over it: no
     /// menu, popup, flow, or dialog.
     pub(crate) fn zoom_allowed(&self) -> bool {
-        self.library_menu_may_open()
+        // A list has no posters to size; the zoom waits for the grid.
+        self.library_menu_may_open() && self.layout == crate::grid_motion::ViewLayout::Grid
     }
 
     /// The card that keeps the place: the selected one when any of it is on
@@ -222,16 +230,17 @@ impl App {
     /// the viewport, read from where cards are drawn now, so a place kept
     /// mid-motion is the one on screen. Also whether the selection is off
     /// screen.
-    fn find_anchor(&self) -> (Option<(String, f32)>, bool) {
+    pub(crate) fn find_anchor(&self) -> (Option<(SlotId, f32)>, bool) {
         let places = self.grid_places();
         let shown = self.grid_motion.shown(&places);
         let top = self.scroll_offset;
-        let bottom = top + self.viewport_height;
+        // What the action bar covers isn't on screen.
+        let bottom = top + (self.viewport_height - self.bar_room()).max(0.0);
         let in_view = |index: usize| {
             let card: iced::Rectangle = shown[index];
             card.y < bottom && card.y + card.height > top
         };
-        let selected = self.selected.as_ref().and_then(|name| places.index(name));
+        let selected = self.selected_index(&places);
         let (anchor, reveal) = match selected {
             Some(index) if in_view(index) => (Some(index), false),
             selected => (
@@ -239,7 +248,7 @@ impl App {
                 selected.is_some(),
             ),
         };
-        let anchor = anchor.map(|index| (places.names[index].clone(), shown[index].y - top));
+        let anchor = anchor.map(|index| (places.ids[index].clone(), shown[index].y - top));
         (anchor, reveal)
     }
 
@@ -270,7 +279,7 @@ impl App {
     /// the scroll range. A card taller than the viewport shows its top.
     /// After the zoom stops, the cards it set moving keep the anchor too.
     pub(crate) fn hold_anchor(&mut self) -> Task<Message> {
-        let Some((name, offset)) = self
+        let Some((slot, offset)) = self
             .zooming
             .gesture
             .as_ref()
@@ -280,11 +289,11 @@ impl App {
             return Task::none();
         };
         let places = self.grid_places();
-        let Some(index) = places.index(&name) else {
+        let Some(index) = places.index(&slot) else {
             return Task::none();
         };
         let card = self.grid_motion.drawn(&places, index);
-        let height = self.grid_motion.content_height(&places);
+        let height = self.grid_motion.content_height(&places) + self.bar_room();
         let wanted = if card.height > self.viewport_height {
             card.y
         } else {

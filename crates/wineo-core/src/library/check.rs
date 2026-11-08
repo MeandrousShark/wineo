@@ -6,12 +6,14 @@ use std::fs;
 
 use toml_edit::{DocumentMut, Item, Key};
 
+use super::preset::{preset_name_rule, readable_name};
 use super::record::{Recorded, valid_app_id};
 use super::{
-    RandomPool, ReadFailure, SCHEMA_VERSION, SortKey, ZOOM_MAX, ZOOM_MIN, edit, read_document,
-    read_zoom,
+    GroupBy, RandomPool, ReadFailure, SCHEMA_VERSION, SortKey, ViewLayout, ZOOM_MAX, ZOOM_MIN,
+    edit, read_document, read_zoom, sort_name,
 };
 use crate::paths::Paths;
+use crate::source::{Platform, Store};
 use crate::themes::{self, CUSTOM_PREFIX, ThemeKind, Themes};
 
 /// The file as a whole can't be used.
@@ -68,6 +70,7 @@ pub(crate) fn inspect(paths: &Paths) -> Inspection {
         match key {
             "schema_version" => {}
             "view" => inspect_view(item, &mut inspection),
+            "presets" => inspect_presets(item, &mut inspection),
             "appearance" => inspect_appearance(paths, &mut themes, item, &mut inspection),
             "environments" => inspect_environments(item, &mut inspection),
             "steam" => inspect_steam(item, &mut inspection),
@@ -115,7 +118,15 @@ fn inspect_view(item: &Item, inspection: &mut Inspection) {
             "descending" | "favorites_first" | "poster_only" => BOOL.to_owned(),
             "random" => match value.as_str() {
                 Some(name) if RandomPool::parse(name).is_some() => continue,
-                _ => "expected one of launchable, any".to_owned(),
+                _ => random_expected(),
+            },
+            "layout" => match value.as_str() {
+                Some(name) if ViewLayout::parse(name).is_some() => continue,
+                _ => layout_expected(),
+            },
+            "group" => match value.as_str() {
+                Some(name) if GroupBy::parse(name).is_some() => continue,
+                _ => group_expected(),
             },
             "zoom" if read_zoom(value).is_some() => continue,
             "zoom" => format!("expected a whole number from {ZOOM_MIN} to {ZOOM_MAX}"),
@@ -127,6 +138,121 @@ fn inspect_view(item: &Item, inspection: &mut Inspection) {
         inspection
             .findings
             .push(invalid(None, &path, &expected, value));
+    }
+}
+
+/// Each preset is checked field by field like `[view]`. A filter id this
+/// wineo doesn't know is a finding of its own, since the reader skips it.
+fn inspect_presets(item: &Item, inspection: &mut Inspection) {
+    let Some(table) = item.as_table_like() else {
+        inspection
+            .findings
+            .push(invalid(None, &display_path(&["presets"]), TABLE, item));
+        return;
+    };
+    for (name, preset) in table.iter() {
+        let path = display_path(&["presets", name]);
+        if !readable_name(name) {
+            let expected = "expected a preset name that isn't empty";
+            inspection
+                .findings
+                .push(invalid(None, &path, expected, preset));
+            continue;
+        }
+        // The reader still shows such a name and the rest of the preset is
+        // checked below, so this is a finding and not a reason to skip it.
+        if let Some(rule) = preset_name_rule(name) {
+            let expected = format!("expected a preset name that {rule}");
+            inspection
+                .findings
+                .push(invalid(None, &path, &expected, preset));
+        }
+        let Some(fields) = preset.as_table_like() else {
+            inspection
+                .findings
+                .push(invalid(None, &path, TABLE, preset));
+            continue;
+        };
+        for (key, value) in fields.iter() {
+            let path = display_path(&["presets", name, key]);
+            let expected = match key {
+                "sort" => match value.as_str() {
+                    Some(name) if SortKey::from_str(name).is_some() => continue,
+                    _ => sort_expected(),
+                },
+                "descending" | "favorites_first" | "show_hidden" if value.as_bool().is_some() => {
+                    continue;
+                }
+                "descending" | "favorites_first" | "show_hidden" => BOOL.to_owned(),
+                "group" => match value.as_str() {
+                    Some(name) if GroupBy::parse(name).is_some() => continue,
+                    _ => group_expected(),
+                },
+                "layout" => match value.as_str() {
+                    Some(name) if ViewLayout::parse(name).is_some() => continue,
+                    _ => layout_expected(),
+                },
+                "stores" | "not_stores" => {
+                    let ids = Store::ALL.map(Store::id).join(", ");
+                    inspect_list(
+                        &path,
+                        value,
+                        &format!("a list of store ids: {ids}"),
+                        |id| Store::from_id(id).is_some(),
+                        inspection,
+                    );
+                    continue;
+                }
+                "platforms" | "not_platforms" => {
+                    let ids = Platform::ALL.map(Platform::id).join(", ");
+                    inspect_list(
+                        &path,
+                        value,
+                        &format!("a list of platform ids: {ids}"),
+                        |id| Platform::from_id(id).is_some(),
+                        inspection,
+                    );
+                    continue;
+                }
+                "tags" | "not_tags" => {
+                    inspect_list(&path, value, "a list of tag names", |_| true, inspection);
+                    continue;
+                }
+                _ => {
+                    inspection.findings.push(unknown(None, &path));
+                    continue;
+                }
+            };
+            inspection
+                .findings
+                .push(invalid(None, &path, &expected, value));
+        }
+    }
+}
+
+/// A finding for the field if it isn't a list, else one for each entry that
+/// isn't text `known` accepts, so the message names the entry at fault.
+fn inspect_list(
+    path: &str,
+    item: &Item,
+    expected: &str,
+    known: impl Fn(&str) -> bool,
+    inspection: &mut Inspection,
+) {
+    let expected = format!("expected {expected}");
+    let Some(array) = item.as_array() else {
+        inspection
+            .findings
+            .push(invalid(None, path, &expected, item));
+        return;
+    };
+    for value in array
+        .iter()
+        .filter(|value| !value.as_str().is_some_and(&known))
+    {
+        inspection
+            .findings
+            .push(invalid(None, path, &expected, &Item::Value(value.clone())));
     }
 }
 
@@ -328,10 +454,23 @@ pub(super) fn is_offset_datetime(item: &Item) -> bool {
 }
 
 pub(super) fn sort_expected() -> String {
-    format!(
-        "expected one of {}",
-        ["name", "last-played", "playtime", "added", "source"].join(", ")
-    )
+    expected_one_of(SortKey::ALL.map(sort_name))
+}
+
+fn random_expected() -> String {
+    expected_one_of(RandomPool::ALL.map(RandomPool::as_str))
+}
+
+fn layout_expected() -> String {
+    expected_one_of(ViewLayout::ALL.map(ViewLayout::as_str))
+}
+
+fn group_expected() -> String {
+    expected_one_of(GroupBy::ALL.map(GroupBy::as_str))
+}
+
+fn expected_one_of<const N: usize>(names: [&str; N]) -> String {
+    format!("expected one of {}", names.join(", "))
 }
 
 fn invalid(environment: Option<String>, path: &str, expected: &str, found: &Item) -> Finding {

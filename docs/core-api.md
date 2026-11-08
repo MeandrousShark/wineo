@@ -635,9 +635,11 @@ added it.
   share that rule, so a banner and Checkup never disagree. A bad field falls back to its
   default without affecting the entry's other fields.
 - `set_favorite`, `set_hidden` (per environment) and `set_sort`,
-  `set_descending`, `set_favorites_first`, `set_random` (the `[view]`
-  table; `set_random` takes a `RandomPool`, `Launchable` or `Any`, and
-  `View::random` reads it, defaulting to `Launchable`): each
+  `set_descending`, `set_favorites_first`, `set_random`, `set_layout` (the
+  `[view]` table; `set_random` takes a `RandomPool`, `Launchable` or `Any`,
+  and `View::random` reads it, defaulting to `Launchable`; `set_layout` takes
+  a `ViewLayout`, `Grid` or `List`, and `View::layout` reads it, defaulting
+  to `Grid`): each
   changes one field. It reads the file fresh and holds its config lock
   through the atomic replace, so it never writes back a frontend's cached
   copy. `Ok(true)` means the file changed, `Ok(false)` a no-op that left
@@ -645,6 +647,29 @@ added it.
   be read refuses with `Error::LibraryUnreadable` and stays byte-for-byte
   as it was. Its `newer_version` says a newer wineo wrote the file, which
   has no repair, so the refusal says to update wineo instead.
+- `set_group` writes `[view] group`, a `GroupBy` (`None`, `Tag`, `Source`,
+  or `State`), the same way, and `View::group` reads it, defaulting to
+  `None`.
+- `Library::presets` lists the saved views, A to Z ignoring case, as
+  `(name, Preset)`; `Library::preset(name)` finds one by its exact name.
+  `Library::other_presets` holds the keys under `[presets]` that aren't
+  tables, and `taken_preset_name(name)` returns the key already using a
+  name, preset or not, exactly or differing only in case. Both go through
+  `preset_name_taken(names, name, except)`, the one collision rule, which
+  prefers an exact match and skips `except` so a rename can change the case
+  of its own name. `set_preset(paths, name, &preset)`,
+  `create_preset` (the same, but it refuses a name that's taken rather than
+  saving over it), `remove_preset(paths, name)`, and
+  `rename_preset(paths, old, new)` write
+  like the view setters: under the lock, `Ok(false)` for a no-op, field by
+  field, keeping comments, unknown keys, and position. A name another key
+  under `[presets]` uses in any case is refused with
+  `Error::PresetNameTaken`, a bad name with
+  `Error::InvalidPresetName`, and renaming a missing preset with
+  `Error::UnknownPreset`; removing one that isn't there is a no-op.
+  `normalize_preset_name` trims a typed name and checks it. `Store::id`,
+  `Platform::id`, and their `from_id` give the lowercase ids a preset's
+  filter lists hold.
 - `set_favorite_for` and `set_hidden_for(paths, name, added, value)` are
   the same writes tied to one environment: under the lock they check that
   the environment's config still exists and that its entry's `added`

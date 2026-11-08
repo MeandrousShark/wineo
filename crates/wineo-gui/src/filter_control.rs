@@ -6,6 +6,7 @@ use std::collections::BTreeSet;
 use iced::keyboard::{Key, Modifiers, key::Named};
 use iced::widget::{Row, button, column, container, mouse_area, row, scrollable, text};
 use iced::{Center, Element, Font, Point, Rectangle, Task, border, font};
+use wineo_core::source::{Platform, Store};
 
 use crate::grid::{
     ACTION_MENU_HEADER_HEIGHT, ACTION_MENU_MARGIN, ACTION_MENU_PADDING, ACTION_MENU_SPACING,
@@ -19,7 +20,7 @@ use crate::{App, Message, focus_button};
 pub(crate) const FILTER_BUTTON_ID: &str = "library-filters";
 const SHOW_HIDDEN_ID: &str = "library-filter-show-hidden";
 const CLEAR_ID: &str = "library-filter-clear";
-const MENU_SCROLL_ID: &str = "library-filter-menu";
+pub(crate) const MENU_SCROLL_ID: &str = "library-filter-menu";
 /// What the popup's placement assumes it needs at least, so a button near
 /// the bottom of a short window still leaves room for a few rows.
 const MIN_HEIGHT: f32 = 200.0;
@@ -35,13 +36,13 @@ pub(crate) enum Event {
     OpenUnder(u64, Option<Rectangle>),
     /// A click outside the popup.
     CloseMenu,
-    ToggleStore(&'static str),
-    TogglePlatform(&'static str),
+    ToggleStore(Store),
+    TogglePlatform(Platform),
     ToggleTag(String),
     /// A right-click, or X on the focused row, which excludes an off value
     /// and turns a chosen one off.
-    ExcludeStore(&'static str),
-    ExcludePlatform(&'static str),
+    ExcludeStore(Store),
+    ExcludePlatform(Platform),
     ExcludeTag(String),
     ToggleShowHidden,
     /// An empty state's Show hidden, which only turns it on.
@@ -61,6 +62,8 @@ pub(crate) enum Event {
     ClearChipsFromKeyboard,
     /// A wheel turn over the filter tab, which scrolls the grid under it.
     Wheel(iced::mouse::ScrollDelta),
+    /// The presets at the top of the popup.
+    Preset(crate::presets::Event),
 }
 
 impl Event {
@@ -68,7 +71,10 @@ impl Event {
     pub(crate) fn is_input(&self) -> bool {
         // The reply always arrives, so it can clear its request even when
         // an overlay is up; `OpenUnder` checks the window itself.
-        !matches!(self, Self::OpenUnder(..) | Self::ButtonBounds(_))
+        match self {
+            Self::Preset(event) => event.is_input(),
+            _ => !matches!(self, Self::OpenUnder(..) | Self::ButtonBounds(_)),
+        }
     }
 }
 
@@ -142,36 +148,41 @@ fn press_row<T: Ord>(include: &mut BTreeSet<T>, exclude: &mut BTreeSet<T>, value
     }
 }
 
-fn store_id(label: &str) -> String {
-    format!("library-filter-store-{}", label.to_lowercase())
+fn store_id(store: Store) -> String {
+    format!("library-filter-store-{}", store.label().to_lowercase())
 }
 
-fn platform_id(label: &str) -> String {
-    format!("library-filter-platform-{}", label.to_lowercase())
+fn platform_id(platform: Platform) -> String {
+    format!(
+        "library-filter-platform-{}",
+        platform.label().to_lowercase()
+    )
 }
 
-/// What the popup offers, each group A to Z.
+/// What the popup offers, each group A to Z by label.
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) struct Offered {
-    pub(crate) stores: Vec<&'static str>,
-    pub(crate) platforms: Vec<&'static str>,
+    pub(crate) stores: Vec<Store>,
+    pub(crate) platforms: Vec<Platform>,
     pub(crate) tags: Vec<String>,
 }
 
-/// `listed` plus any `chosen` or `excluded` it lacks, sorted A to Z.
-fn with_chosen(
-    listed: &[&'static str],
-    chosen: &BTreeSet<&'static str>,
-    excluded: &BTreeSet<&'static str>,
-) -> Vec<&'static str> {
-    let mut labels = listed.to_vec();
-    for label in chosen.iter().chain(excluded) {
-        if !labels.contains(label) {
-            labels.push(label);
+/// `listed` plus any `chosen` or `excluded` it lacks, sorted A to Z by
+/// `label`.
+fn with_chosen<T: Copy + Ord>(
+    listed: &[T],
+    chosen: &BTreeSet<T>,
+    excluded: &BTreeSet<T>,
+    label: fn(T) -> &'static str,
+) -> Vec<T> {
+    let mut values = listed.to_vec();
+    for value in chosen.iter().chain(excluded) {
+        if !values.contains(value) {
+            values.push(*value);
         }
     }
-    labels.sort_by_key(|label| label.to_lowercase());
-    labels
+    values.sort_by_key(|value| label(*value).to_lowercase());
+    values
 }
 
 fn tag_id(tag: &str) -> String {
@@ -201,11 +212,13 @@ impl App {
             &options.stores,
             &self.filters.stores,
             &self.filters.not_stores,
+            Store::label,
         );
         let platforms = with_chosen(
             &options.platforms,
             &self.filters.platforms,
             &self.filters.not_platforms,
+            Platform::label,
         );
         let mut tags = options.tags.clone();
         let mut gone = false;
@@ -225,11 +238,19 @@ impl App {
         }
     }
 
-    /// The popup's focusable rows, in order.
+    /// Every focusable control in the popup, in order: the presets part,
+    /// then the filter rows.
+    pub(crate) fn popup_ids(&self) -> Vec<String> {
+        let mut ids = self.preset_ids();
+        ids.extend(self.filter_menu_ids());
+        ids
+    }
+
+    /// The popup's focusable filter rows, in order.
     fn filter_menu_ids(&self) -> Vec<String> {
         let offered = self.offered();
-        let mut ids: Vec<String> = offered.stores.iter().map(|label| store_id(label)).collect();
-        ids.extend(offered.platforms.iter().map(|label| platform_id(label)));
+        let mut ids: Vec<String> = offered.stores.into_iter().map(store_id).collect();
+        ids.extend(offered.platforms.into_iter().map(platform_id));
         ids.extend(offered.tags.iter().map(|tag| tag_id(tag)));
         ids.push(SHOW_HIDDEN_ID.to_owned());
         if self.filters_clearable() {
@@ -267,11 +288,11 @@ pub(crate) fn update(app: &mut App, event: Event) -> Task<Message> {
             app.filter_menu = false;
             Task::none()
         }
-        Event::ToggleStore(label) => press_store(app, label, Press::Click),
-        Event::TogglePlatform(label) => press_platform(app, label, Press::Click),
+        Event::ToggleStore(store) => press_store(app, store, Press::Click),
+        Event::TogglePlatform(platform) => press_platform(app, platform, Press::Click),
         Event::ToggleTag(tag) => press_tag(app, tag, Press::Click),
-        Event::ExcludeStore(label) => press_store(app, label, Press::Exclude),
-        Event::ExcludePlatform(label) => press_platform(app, label, Press::Exclude),
+        Event::ExcludeStore(store) => press_store(app, store, Press::Exclude),
+        Event::ExcludePlatform(platform) => press_platform(app, platform, Press::Exclude),
         Event::ExcludeTag(tag) => press_tag(app, tag, Press::Exclude),
         Event::ToggleShowHidden => {
             app.filters.show_hidden = !app.filters.show_hidden;
@@ -314,21 +335,22 @@ pub(crate) fn update(app: &mut App, event: Event) -> Task<Message> {
             app.interrupt_zoom();
             crate::filter_tab::wheel(delta, app.modifiers.shift())
         }
+        Event::Preset(event) => crate::presets::update(app, event),
     }
 }
 
-fn press_store(app: &mut App, label: &'static str, press: Press) -> Task<Message> {
+fn press_store(app: &mut App, store: Store, press: Press) -> Task<Message> {
     let filters = &mut app.filters;
-    press_row(&mut filters.stores, &mut filters.not_stores, label, press);
+    press_row(&mut filters.stores, &mut filters.not_stores, store, press);
     app.resorted()
 }
 
-fn press_platform(app: &mut App, label: &'static str, press: Press) -> Task<Message> {
+fn press_platform(app: &mut App, platform: Platform, press: Press) -> Task<Message> {
     let filters = &mut app.filters;
     press_row(
         &mut filters.platforms,
         &mut filters.not_platforms,
-        label,
+        platform,
         press,
     );
     app.resorted()
@@ -344,33 +366,44 @@ fn open_menu(app: &mut App, position: Point) -> Task<Message> {
     app.close_library_menus();
     app.filter_menu = true;
     app.filter_menu_position = position;
+    app.presets_opened();
     // Focus moves into the popup, so a second Enter or Space toggles a row
-    // instead of closing it again.
+    // instead of closing it again. It lands on the first filter row as it
+    // did before presets, which sit one Up or Shift+Tab above it.
     let first = app.filter_menu_ids().swap_remove(0);
     crate::library_menu::focus(first, MENU_SCROLL_ID)
 }
 
-/// Keys while the popup is open: Escape closes it, Tab and the up and down
-/// arrows move through its rows, and the rows take Enter and Space
-/// themselves. Nothing else reaches the grid behind it.
+/// Keys while the popup is open: Escape closes a preset's edit, or else
+/// the popup, Tab and the up and down arrows move through its rows, and the
+/// rows take Enter, Space, X, R, and Delete themselves. Nothing else reaches
+/// the grid behind it.
 pub(crate) fn key(app: &mut App, key: &Key, modifiers: Modifiers) -> Task<Message> {
     match key {
         Key::Named(Named::Escape) => {
+            if let Some(task) = app.cancel_preset_edit() {
+                return task;
+            }
             app.filter_menu = false;
             iced::widget::operation::focus(iced::widget::Id::new(FILTER_BUTTON_ID))
         }
         Key::Named(Named::Tab | Named::ArrowDown | Named::ArrowUp) => {
             let reverse = *key == Key::Named(Named::ArrowUp)
                 || (*key == Key::Named(Named::Tab) && modifiers.shift());
-            crate::library_menu::cycle(&app.filter_menu_ids(), reverse, MENU_SCROLL_ID)
+            crate::library_menu::cycle(&app.popup_ids(), reverse, MENU_SCROLL_ID)
         }
         _ => Task::none(),
     }
 }
 
-/// The Filters button's label, with how many store, platform, and tag
-/// filters are on, included or excluded.
+/// The Filters button's label: the active preset while the view matches
+/// it, or else how many store, platform, and tag filters are on, included
+/// or excluded.
 pub(crate) fn button_label(app: &App) -> String {
+    if let Some(name) = app.preset_shown() {
+        let name = crate::tile_title::fit(name, crate::presets::BUTTON_NAME, 14.0, Font::DEFAULT);
+        return format!("Filters ({name})");
+    }
     match app.filters.active() {
         0 => "Filters".to_owned(),
         count => format!("Filters ({count})"),
@@ -512,44 +545,43 @@ impl App {
                 .color(palette.foreground)
                 .height(ACTION_MENU_HEADER_HEIGHT)
                 .align_y(Center),
+            heading("Presets", palette),
         ]
         .spacing(ACTION_MENU_SPACING);
-        type Group<'a> = (
-            &'a str,
-            Vec<&'static str>,
-            &'a BTreeSet<&'static str>,
-            &'a BTreeSet<&'static str>,
-            fn(&str) -> String,
-            fn(&'static str) -> Event,
-            fn(&'static str) -> Event,
-        );
-        let groups: [Group<'_>; 2] = [
+        for item in self.presets_view() {
+            rows = rows.push(item);
+        }
+        rows = rows.push(ui::separator(palette).padding([3, 0]));
+        // Each row: its label, mark, id, and what a click and an exclude send.
+        let filters = &self.filters;
+        let stores = stores.into_iter().map(|store| {
             (
-                "Store",
-                stores,
-                &self.filters.stores,
-                &self.filters.not_stores,
-                store_id,
-                Event::ToggleStore,
-                Event::ExcludeStore,
-            ),
+                store.label(),
+                Mark::of(&filters.stores, &filters.not_stores, &store),
+                store_id(store),
+                Event::ToggleStore(store),
+                Event::ExcludeStore(store),
+            )
+        });
+        let platforms = platforms.into_iter().map(|platform| {
             (
-                "Platform",
-                platforms,
-                &self.filters.platforms,
-                &self.filters.not_platforms,
-                platform_id,
-                Event::TogglePlatform,
-                Event::ExcludePlatform,
-            ),
+                platform.label(),
+                Mark::of(&filters.platforms, &filters.not_platforms, &platform),
+                platform_id(platform),
+                Event::TogglePlatform(platform),
+                Event::ExcludePlatform(platform),
+            )
+        });
+        let groups = [
+            ("Store", stores.collect::<Vec<_>>()),
+            ("Platform", platforms.collect()),
         ];
-        for (title, labels, included, excluded, id, toggle, exclude) in groups {
-            if labels.is_empty() {
+        for (title, values) in groups {
+            if values.is_empty() {
                 continue;
             }
             rows = rows.push(heading(title, palette));
-            for label in labels {
-                let mark = Mark::of(included, excluded, &label);
+            for (label, mark, id, toggle, exclude) in values {
                 rows = rows.push(menu_row_with(
                     row![mark_box(mark, palette), text(label).size(14)]
                         .spacing(8)
@@ -557,9 +589,9 @@ impl App {
                         .into(),
                     palette,
                     false,
-                    id(label),
-                    Message::Filter(toggle(label)),
-                    Some(Message::Filter(exclude(label))),
+                    id,
+                    Message::Filter(toggle),
+                    Some(Message::Filter(exclude)),
                 ));
             }
         }

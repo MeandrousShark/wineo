@@ -15,6 +15,7 @@ use wineo_core::steam::Discovery;
 use crate::Message;
 use crate::art_page::{self, EnvironmentIdentity};
 use crate::library::{Card, Loaded, load_library_with};
+use crate::presets::List;
 use crate::sidebar::TrashBadge;
 use crate::trash_page::{Snapshot, entry_label};
 
@@ -28,6 +29,8 @@ struct Shown {
     library: Option<Result<Vec<Card>, String>>,
     /// `library.toml`'s problem, as last shown.
     problem: Option<Problem>,
+    /// Its presets, as last shown.
+    presets: List,
     /// What's new in Steam, as last applied, for the library nudge to read.
     discovery: Discovery,
     /// The next scan's discovery goes to the app even if it's the same, since
@@ -163,6 +166,17 @@ impl Watch {
         self.shown().problem = problem;
     }
 
+    pub(crate) fn show_presets(&self, presets: List) {
+        self.shown().presets = presets;
+    }
+
+    /// `refresh_library`, returning the presets as they are on disk now,
+    /// or None while the file can't be read; see `presets_of`.
+    pub(crate) fn refresh_library_presets(&self, paths: &Paths) -> Option<List> {
+        let mut caches = self.0.caches.lock().unwrap_or_else(PoisonError::into_inner);
+        presets_of(caches.library.refresh(paths))
+    }
+
     pub(crate) fn show_discovery(&self, discovery: Discovery) {
         let mut shown = self.shown();
         shown.discovery = discovery;
@@ -215,6 +229,7 @@ impl Watch {
         if scan.revisions.library != now.library {
             scan.library = None;
             scan.problem = None;
+            scan.presets = None;
             scan.discovery = None;
         }
         if scan.revisions.trash != now.trash {
@@ -237,6 +252,9 @@ impl Watch {
         let problem = scan
             .problem
             .filter(|problem| shown.library.is_some() && shown.problem != *problem);
+        let presets = scan
+            .presets
+            .filter(|presets| shown.library.is_some() && shown.presets != *presets);
         let discovery = scan.discovery.filter(|discovery| {
             shown.library.is_some() && (shown.discovery_due || shown.discovery != *discovery)
         });
@@ -257,6 +275,7 @@ impl Watch {
         });
         let changed = library.is_some()
             || problem.is_some()
+            || presets.is_some()
             || discovery.is_some()
             || trash.is_some()
             || art.is_some();
@@ -264,6 +283,7 @@ impl Watch {
             revisions: scan.revisions,
             library,
             problem,
+            presets,
             discovery,
             trash,
             art,
@@ -278,6 +298,8 @@ pub(crate) struct Scan {
     pub(crate) library: Option<Result<Vec<Card>, String>>,
     /// `library.toml`'s problem, read with `library`.
     pub(crate) problem: Option<Option<Problem>>,
+    /// Its presets, from the same read.
+    pub(crate) presets: Option<List>,
     /// What's new in Steam, read with `library`. A new install changes no
     /// card, so it's compared on its own.
     pub(crate) discovery: Option<Discovery>,
@@ -349,6 +371,7 @@ pub(crate) fn read_with(
         revisions,
         library: Some(library),
         problem: Some(saved.problem.clone()),
+        presets: presets_of(saved),
         discovery,
         trash: Some(if trash_page {
             Trash::Page(crate::trash_work::read(paths))
@@ -361,6 +384,14 @@ pub(crate) fn read_with(
             snapshot: art_page::load_snapshot(paths, name),
         }),
     }
+}
+
+/// The presets `saved` holds, or None when it couldn't be read: the read
+/// falls back to none, and the window keeps showing the ones it last read
+/// rather than lose them, and the active one's name, to a broken file
+/// that refuses every write anyway.
+fn presets_of(saved: &saved::Library) -> Option<List> {
+    saved.problem.is_none().then(|| List::of(saved))
 }
 
 /// Sleeps first: a new stream starts at boot, whose load is already running,

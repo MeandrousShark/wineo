@@ -46,6 +46,35 @@ pub(crate) fn card(name: &str, state: State, seconds: i64) -> Card {
     }
 }
 /// Runs the grid's motion to its end.
+/// Shows `name` a second time at slot `at` by grouping by Tag: the games
+/// in the first `at` slots are tagged "a" and the rest "b", and `name`,
+/// one of the first, gets "b" too, so its second slot opens "b". Returns
+/// that slot. The slots keep the order they had, with `name` again at `at`.
+pub(crate) fn show_copy(app: &mut App, name: &str, at: usize) -> crate::slot::SlotId {
+    let first: Vec<String> = app.grid_places().ids[..at]
+        .iter()
+        .map(|slot| slot.name().to_owned())
+        .collect();
+    assert!(first.iter().any(|shown| shown == name));
+    for card in &mut app.cards {
+        card.tags = if first.contains(&card.name) {
+            vec!["a".into()]
+        } else {
+            vec!["b".into()]
+        };
+        if card.name == name {
+            card.tags.push("b".into());
+        }
+    }
+    app.group = wineo_core::library::GroupBy::Tag;
+    app.order.cards_edited();
+    app.reorder();
+    app.snap_grid();
+    let copy = crate::slot::SlotId::new(crate::slot::SectionKey::Tag("b".into()), name);
+    assert_eq!(app.grid_places().index(&copy), Some(at));
+    copy
+}
+
 pub(crate) fn settle_grid(app: &mut App) -> Task<Message> {
     app.update(Message::GridTick(
         app.grid_motion.generation(),
@@ -765,7 +794,12 @@ fn deep_scrolls_load_art_for_every_visible_row_of_mixed_heights() {
     let mut app = app();
     app.viewport_width = 1000.0;
     app.viewport_height = 800.0;
-    let columns = grid_motion::columns_for_viewport(app.viewport_width, false, app.grid_layout());
+    let columns = grid_motion::columns_for_viewport(
+        app.viewport_width,
+        false,
+        app.grid_layout(),
+        grid_motion::ViewLayout::Grid,
+    );
     app.cards = (0..columns * 120)
         .map(|index| {
             let mut card = card(&format!("game-{index:04}"), State::Inactive, 0);
@@ -911,7 +945,12 @@ fn art_scrolled_out_of_range_is_evicted_and_reloads_when_it_returns() {
     let mut app = app();
     app.viewport_width = 1000.0;
     app.viewport_height = 800.0;
-    let columns = grid_motion::columns_for_viewport(app.viewport_width, false, app.grid_layout());
+    let columns = grid_motion::columns_for_viewport(
+        app.viewport_width,
+        false,
+        app.grid_layout(),
+        grid_motion::ViewLayout::Grid,
+    );
     app.merge(
         (0..columns * 60)
             .map(|index| {
@@ -1207,7 +1246,12 @@ fn opening_the_panel_keeps_art_for_cards_sweeping_through_the_viewport() {
     let range = |open| {
         grid_motion::cards_between(
             &heights,
-            grid_motion::columns_for_viewport(app.viewport_width, open, app.grid_layout()),
+            grid_motion::columns_for_viewport(
+                app.viewport_width,
+                open,
+                app.grid_layout(),
+                grid_motion::ViewLayout::Grid,
+            ),
             app.scroll_offset - margin,
             app.scroll_offset + app.viewport_height + margin,
         )
@@ -1268,7 +1312,12 @@ fn closing_the_panel_near_the_bottom_keeps_art_for_cards_rising_into_view() {
     let range = |open| {
         grid_motion::cards_between(
             &heights,
-            grid_motion::columns_for_viewport(app.viewport_width, open, app.grid_layout()),
+            grid_motion::columns_for_viewport(
+                app.viewport_width,
+                open,
+                app.grid_layout(),
+                grid_motion::ViewLayout::Grid,
+            ),
             app.scroll_offset - margin,
             app.scroll_offset + app.viewport_height + margin,
         )
@@ -1761,16 +1810,16 @@ fn unchanged_refresh_does_not_cut_grid_motion_short() {
         Instant::now() + Duration::from_millis(90),
     ));
     let drawn = (
-        app.grid_motion.offset("game"),
-        app.grid_motion.opacity("game"),
+        app.grid_motion.offset(&"game".into()),
+        app.grid_motion.opacity(&"game".into()),
     );
     app.merge(app.cards.clone());
     assert!(app.grid_motion.active());
     assert_eq!(app.grid_motion.generation(), generation);
     assert_eq!(
         (
-            app.grid_motion.offset("game"),
-            app.grid_motion.opacity("game")
+            app.grid_motion.offset(&"game".into()),
+            app.grid_motion.opacity(&"game".into())
         ),
         drawn
     );

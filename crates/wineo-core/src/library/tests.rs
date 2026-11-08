@@ -167,22 +167,39 @@ fn set_order_writes_the_key_and_direction_in_one_edit() {
 }
 
 #[test]
-fn a_saved_source_sort_reads_as_name_and_keeps_the_direction() {
-    let fixture = Fixture::new();
-    fixture.write("schema_version = 1\n\n[view]\nsort = \"source\"\ndescending = true\n");
-    let view = load(&fixture.paths).view;
-    assert_eq!((view.sort, view.descending), (SortKey::Name, true));
-    assert_eq!(
-        fixture.read().matches("source").count(),
-        1,
-        "reads don't rewrite"
-    );
+fn source_and_tags_sorts_round_trip_and_keep_the_direction() {
+    for (text, sort) in [("source", SortKey::Source), ("tags", SortKey::Tags)] {
+        let fixture = Fixture::new();
+        fixture.write(&format!(
+            "schema_version = 1\n\n[view]\nsort = \"{text}\" # keep\ndescending = true\n"
+        ));
+        let before = fixture.read();
+        let view = load(&fixture.paths).view;
+        assert_eq!((view.sort, view.descending), (sort, true), "{text}");
+        assert_eq!(fixture.read(), before, "reads don't rewrite");
+        assert!(!set_sort(&fixture.paths, sort).unwrap(), "{text}");
+        assert_eq!(fixture.read(), before, "a no-op edit doesn't rewrite");
+
+        assert!(set_sort(&fixture.paths, SortKey::Name).unwrap());
+        assert!(fixture.read().contains("sort = \"name\" # keep"));
+        assert!(set_sort(&fixture.paths, sort).unwrap());
+        assert!(
+            fixture
+                .read()
+                .contains(&format!("sort = \"{text}\" # keep"))
+        );
+        assert_eq!(load(&fixture.paths).view.sort, sort);
+    }
 }
 
 #[test]
-fn only_name_starts_ascending() {
-    for sort in SortKey::ALL {
-        assert_eq!(sort.starts_descending(), sort != SortKey::Name, "{sort:?}");
+fn set_order_saves_the_new_keys_ascending() {
+    for sort in [SortKey::Source, SortKey::Tags] {
+        let fixture = Fixture::new();
+        assert!(set_order(&fixture.paths, sort, false).unwrap());
+        let view = load(&fixture.paths).view;
+        assert_eq!((view.sort, view.descending), (sort, false));
+        assert!(!set_order(&fixture.paths, sort, false).unwrap());
     }
 }
 
@@ -634,6 +651,8 @@ fn a_bad_zoom_reads_as_the_default_and_touches_no_other_field() {
             zoom: 100,
             poster_only: false,
             random: RandomPool::Launchable,
+            layout: ViewLayout::Grid,
+            group: GroupBy::None,
         }
     );
 
@@ -838,6 +857,189 @@ fn a_random_write_is_refused_on_a_broken_file() {
 }
 
 #[test]
+fn layout_defaults_to_grid_and_reads_both_values() {
+    let fixture = Fixture::new();
+    assert_eq!(load(&fixture.paths).view.layout, ViewLayout::Grid);
+    // An older file has no key.
+    fixture.write("schema_version = 1\n\n[view]\nsort = \"added\"\n");
+    assert_eq!(load(&fixture.paths).view.layout, ViewLayout::Grid);
+    for (text, expected) in [("grid", ViewLayout::Grid), ("list", ViewLayout::List)] {
+        fixture.write(&format!(
+            "schema_version = 1\n\n[view]\nlayout = \"{text}\"\n"
+        ));
+        assert_eq!(load(&fixture.paths).view.layout, expected, "{text}");
+        assert_eq!(expected.as_str(), text);
+        assert_eq!(ViewLayout::parse(text), Some(expected));
+    }
+}
+
+#[test]
+fn an_unknown_layout_reads_as_grid_and_touches_no_other_field() {
+    let fixture = Fixture::new();
+    for bad in ["\"table\"", "\"List\"", "true", "1"] {
+        fixture.write(&format!(
+            "schema_version = 1\n\n[view]\nsort = \"playtime\"\nlayout = {bad}\n"
+        ));
+        let library = load(&fixture.paths);
+        assert_eq!(library.problem, None, "{bad}");
+        assert_eq!(library.view.layout, ViewLayout::Grid, "{bad}");
+        assert_eq!(library.view.sort, SortKey::Playtime, "{bad}");
+    }
+}
+
+#[test]
+fn set_layout_round_trips_and_skips_no_ops() {
+    let fixture = Fixture::new();
+    // The default on a missing file writes nothing.
+    assert!(!set_layout(&fixture.paths, ViewLayout::Grid).unwrap());
+    assert!(!fixture.paths.library_file().exists());
+
+    assert!(set_layout(&fixture.paths, ViewLayout::List).unwrap());
+    assert_eq!(load(&fixture.paths).view.layout, ViewLayout::List);
+    assert!(fixture.read().contains("layout = \"list\""));
+    assert!(!set_layout(&fixture.paths, ViewLayout::List).unwrap());
+
+    assert!(set_layout(&fixture.paths, ViewLayout::Grid).unwrap());
+    assert_eq!(load(&fixture.paths).view.layout, ViewLayout::Grid);
+    assert!(!set_layout(&fixture.paths, ViewLayout::Grid).unwrap());
+
+    // A bad value is replaced by the default when that is what is saved.
+    fixture.write("schema_version = 1\n\n[view]\nlayout = \"table\"\n");
+    assert!(set_layout(&fixture.paths, ViewLayout::Grid).unwrap());
+    assert!(fixture.read().contains("layout = \"grid\""));
+}
+
+#[test]
+fn a_layout_write_changes_only_that_line() {
+    let fixture = Fixture::new();
+    let before = "# my library\nschema_version = 1\n\n[view]\n# newest first\ndescending = true\nzoom = 90 # small\nfuture_view = \"kept\"\n\n[environments.hades]\n# my favorite\nfavorite = true\n";
+    fixture.write(before);
+    assert!(set_layout(&fixture.paths, ViewLayout::List).unwrap());
+    let after = fixture.read();
+    let without: String = after
+        .lines()
+        .filter(|line| !line.starts_with("layout ="))
+        .map(|line| format!("{line}\n"))
+        .collect();
+    assert_eq!(without, before, "{after}");
+    assert!(after.contains("layout = \"list\""), "{after}");
+
+    // A no-op leaves the bytes alone.
+    assert!(!set_layout(&fixture.paths, ViewLayout::List).unwrap());
+    assert_eq!(fixture.read(), after);
+}
+
+#[test]
+fn a_layout_write_is_refused_on_a_broken_file() {
+    let fixture = Fixture::new();
+    fixture.write("[view\nlayout = \"list\"\n");
+    assert!(set_layout(&fixture.paths, ViewLayout::Grid).is_err());
+    assert!(set_layout(&fixture.paths, ViewLayout::List).is_err());
+    assert_eq!(fixture.read(), "[view\nlayout = \"list\"\n");
+}
+
+#[test]
+fn group_defaults_to_none_and_reads_every_value() {
+    let fixture = Fixture::new();
+    assert_eq!(load(&fixture.paths).view.group, GroupBy::None);
+    // An older file has no key.
+    fixture.write("schema_version = 1\n\n[view]\nlayout = \"list\"\n");
+    assert_eq!(load(&fixture.paths).view.group, GroupBy::None);
+    for (text, expected) in [
+        ("none", GroupBy::None),
+        ("recent", GroupBy::Recent),
+        ("tag", GroupBy::Tag),
+        ("source", GroupBy::Source),
+        ("state", GroupBy::State),
+    ] {
+        fixture.write(&format!(
+            "schema_version = 1\n\n[view]\ngroup = \"{text}\"\n"
+        ));
+        assert_eq!(load(&fixture.paths).view.group, expected, "{text}");
+        assert_eq!(expected.as_str(), text);
+        assert_eq!(GroupBy::parse(text), Some(expected));
+    }
+}
+
+#[test]
+fn an_unknown_group_reads_as_none_and_touches_no_other_field() {
+    let fixture = Fixture::new();
+    // "hidden" is a pinned section, never a grouping (plan 0062, question
+    // 21), and "all" is only a section under Recent.
+    for bad in ["\"all\"", "\"hidden\"", "\"Tag\"", "true", "1"] {
+        fixture.write(&format!(
+            "schema_version = 1\n\n[view]\nsort = \"playtime\"\ngroup = {bad}\n"
+        ));
+        let library = load(&fixture.paths);
+        assert_eq!(library.problem, None, "{bad}");
+        assert_eq!(library.view.group, GroupBy::None, "{bad}");
+        assert_eq!(library.view.sort, SortKey::Playtime, "{bad}");
+    }
+}
+
+#[test]
+fn set_group_round_trips_and_skips_no_ops() {
+    let fixture = Fixture::new();
+    // The default on a missing file writes nothing.
+    assert!(!set_group(&fixture.paths, GroupBy::None).unwrap());
+    assert!(!fixture.paths.library_file().exists());
+
+    for group in [
+        GroupBy::Recent,
+        GroupBy::Tag,
+        GroupBy::Source,
+        GroupBy::State,
+    ] {
+        assert!(set_group(&fixture.paths, group).unwrap());
+        assert_eq!(load(&fixture.paths).view.group, group);
+        assert!(
+            fixture
+                .read()
+                .contains(&format!("group = \"{}\"", group.as_str()))
+        );
+        assert!(!set_group(&fixture.paths, group).unwrap());
+    }
+
+    assert!(set_group(&fixture.paths, GroupBy::None).unwrap());
+    assert_eq!(load(&fixture.paths).view.group, GroupBy::None);
+    assert!(!set_group(&fixture.paths, GroupBy::None).unwrap());
+
+    // A bad value is replaced by the default when that is what is saved.
+    fixture.write("schema_version = 1\n\n[view]\ngroup = \"genre\"\n");
+    assert!(set_group(&fixture.paths, GroupBy::None).unwrap());
+    assert!(fixture.read().contains("group = \"none\""));
+}
+
+#[test]
+fn a_group_write_changes_only_that_line() {
+    let fixture = Fixture::new();
+    let before = "# my library\nschema_version = 1\n\n[view]\n# newest first\ndescending = true\nlayout = \"list\" # rows\nfuture_view = \"kept\"\n\n[environments.hades]\n# my favorite\nfavorite = true\n";
+    fixture.write(before);
+    assert!(set_group(&fixture.paths, GroupBy::Tag).unwrap());
+    let after = fixture.read();
+    let without: String = after
+        .lines()
+        .filter(|line| !line.starts_with("group ="))
+        .map(|line| format!("{line}\n"))
+        .collect();
+    assert_eq!(without, before, "{after}");
+    assert!(after.contains("group = \"tag\""), "{after}");
+
+    // A no-op leaves the bytes alone.
+    assert!(!set_group(&fixture.paths, GroupBy::Tag).unwrap());
+    assert_eq!(fixture.read(), after);
+}
+
+#[test]
+fn a_group_write_is_refused_on_a_broken_file() {
+    let fixture = Fixture::new();
+    fixture.write("[view\ngroup = \"tag\"\n");
+    assert!(set_group(&fixture.paths, GroupBy::None).is_err());
+    assert!(set_group(&fixture.paths, GroupBy::Tag).is_err());
+    assert_eq!(fixture.read(), "[view\ngroup = \"tag\"\n");
+}
+
+#[test]
 fn zoom_and_poster_only_edits_leave_the_other_view_keys_alone() {
     let fixture = Fixture::new();
     assert!(set_order(&fixture.paths, SortKey::Playtime, true).unwrap());
@@ -853,6 +1055,8 @@ fn zoom_and_poster_only_edits_leave_the_other_view_keys_alone() {
             zoom: 70,
             poster_only: true,
             random: RandomPool::Launchable,
+            layout: ViewLayout::Grid,
+            group: GroupBy::None,
         }
     );
 }

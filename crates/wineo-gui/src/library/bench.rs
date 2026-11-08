@@ -10,7 +10,8 @@
 //!
 //! Run one measurement by naming it instead of `library::bench`:
 //! `rescan_quiet_and_busy`, `rescan_parts`, `stats_overview_cache`,
-//! `filtered_search_change`, `sort_change`, or `filter_change`.
+//! `filtered_search_change`, `sort_change`, `filter_change`, `group_change`,
+//! or `motion_frames`.
 //! `WINEO_BENCH_ITERS` sets the iterations per measurement (default 100).
 //!
 //! The profile is release with debug assertions on for iced_core only, which
@@ -489,21 +490,16 @@ fn filter_change() {
     let platform = app.cards[0]
         .source
         .platform
-        .map(wineo_core::source::Platform::label)
         .expect("the generated library has no Steam games");
     println!(
-        "filters: tag {tag:?} on {} cards, platform {platform:?} on {} cards, {} hidden",
+        "filters: tag {tag:?} on {} cards, platform {label:?} on {} cards, {} hidden",
         tag_counts[tag.as_str()],
         app.cards
             .iter()
-            .filter(|card| {
-                card.source
-                    .platform
-                    .map(wineo_core::source::Platform::label)
-                    == Some(platform)
-            })
+            .filter(|card| card.source.platform == Some(platform))
             .count(),
         app.cards.iter().filter(|card| card.hidden).count(),
+        label = platform.label(),
     );
     let iterations = iterations() * 20;
 
@@ -521,7 +517,7 @@ fn filter_change() {
         (
             "reorder() per platform filter",
             Box::new(move |filters| {
-                if !filters.platforms.remove(platform) {
+                if !filters.platforms.remove(&platform) {
                     filters.platforms.insert(platform);
                 }
             }),
@@ -551,4 +547,208 @@ fn filter_change() {
         all.extend(samples);
     }
     report("reorder() per filter, all", all, "us", 1e6);
+}
+
+/// What a Group by change costs: the order rebuilt into each grouping's
+/// sections, then the slots measured from them, which a frame reads
+/// cached. Flat (None) is the baseline. Grouped by Tag, the generated
+/// library's "game" tag gives most games a second copy.
+#[test]
+#[ignore = "needs WINEO_BENCH_ROOT and a release-test build"]
+fn group_change() {
+    use wineo_core::library::GroupBy;
+
+    let paths = paths();
+    let mut app = crate::tests::app();
+    app.cards = library(&paths);
+    app.viewport_width = 1280.0;
+    app.viewport_height = 800.0;
+    let iterations = iterations() * 20;
+
+    header("order rebuild and slots, per Group by", iterations);
+    for group in [
+        GroupBy::None,
+        GroupBy::Recent,
+        GroupBy::Tag,
+        GroupBy::Source,
+        GroupBy::State,
+    ] {
+        let (mut orders, mut places) = (Vec::with_capacity(iterations), Vec::new());
+        let mut slots = 0;
+        for round in 0..iterations + 100 {
+            // Alternating with flat makes every rebuild a real change.
+            app.group = if round % 2 == 0 { group } else { GroupBy::None };
+            let start = Instant::now();
+            app.reorder();
+            let ordered = start.elapsed();
+            let start = Instant::now();
+            let measured = black_box(app.grid_places());
+            let placed = start.elapsed();
+            if round >= 100 && round % 2 == 0 {
+                slots = measured.ids.len();
+                orders.push(ordered);
+                places.push(placed);
+            }
+        }
+        println!("{group:?}: {slots} slots");
+        report(&format!("reorder() into {group:?}"), orders, "us", 1e6);
+        report(&format!("grid_places() for {group:?}"), places, "us", 1e6);
+    }
+}
+
+/// The window's work for one frame: the view built, diffed against the
+/// last frame's tree, laid out, and drawn with the CPU renderer, which is
+/// what a frame of motion costs besides rasterizing. Art isn't decoded, so
+/// posters draw as their placeholders.
+struct Frames {
+    renderer: iced::Renderer,
+    tree: Option<iced::advanced::widget::Tree>,
+    size: iced::Size,
+}
+
+impl Frames {
+    fn new(size: iced::Size) -> Self {
+        Self {
+            renderer: crate::layout_probe::renderer(),
+            tree: None,
+            size,
+        }
+    }
+
+    fn frame(&mut self, app: &crate::App) {
+        use iced::advanced::Renderer as _;
+        use iced::advanced::widget::Tree;
+        let mut element = app.view();
+        let mut tree = match self.tree.take() {
+            Some(mut tree) => {
+                tree.diff(element.as_widget());
+                tree
+            }
+            None => Tree::new(element.as_widget()),
+        };
+        let node = element.as_widget_mut().layout(
+            &mut tree,
+            &self.renderer,
+            &iced::advanced::layout::Limits::new(iced::Size::ZERO, self.size),
+        );
+        let viewport = iced::Rectangle::with_size(self.size);
+        self.renderer.reset(viewport);
+        self.renderer.with_layer(viewport, |renderer| {
+            element.as_widget().draw(
+                &tree,
+                renderer,
+                &iced::Theme::Dark,
+                &iced::advanced::renderer::Style {
+                    text_color: iced::Color::WHITE,
+                },
+                iced::advanced::Layout::new(&node),
+                iced::mouse::Cursor::Unavailable,
+                &viewport,
+            );
+        });
+        drop(element);
+        self.tree = Some(tree);
+    }
+}
+
+/// Runs the motion `change` starts to its end, a frame per 16 ms, and
+/// returns what the change itself took and each frame's tick and view.
+fn sweep(
+    app: &mut crate::App,
+    frames: &mut Frames,
+    change: &dyn Fn(&mut crate::App),
+) -> (Duration, Vec<Duration>) {
+    let start = Instant::now();
+    change(app);
+    let changed = start.elapsed();
+    let mut at = Instant::now();
+    let mut samples = Vec::new();
+    // The springs settle in 300 ms; the cap only guards a stuck motion.
+    for _ in 0..60 {
+        if !app.grid_motion.active() {
+            break;
+        }
+        at += Duration::from_millis(16);
+        let start = Instant::now();
+        let _ = app.update(crate::Message::GridTick(app.grid_motion.generation(), at));
+        frames.frame(app);
+        samples.push(start.elapsed());
+    }
+    (changed, samples)
+}
+
+/// Frames of motion in the grid and the list, flat and grouped: a re-sort
+/// with no grouping is the baseline, then the same re-sort grouped by Tag,
+/// switching Group by between None and Tag, and collapsing and opening a
+/// section, which moves every header and card below it.
+#[test]
+#[ignore = "needs WINEO_BENCH_ROOT and a release-test build"]
+fn motion_frames() {
+    use wineo_core::library::GroupBy;
+
+    let paths = paths();
+    let mut app = crate::tests::app();
+    app.cards = library(&paths);
+    let _ = app.window_resized(iced::Size::new(1280.0, 800.0));
+    app.reorder();
+    app.snap_grid();
+    let size = iced::Size::new(1280.0, 800.0);
+    let sweeps = (iterations() / 5).max(4);
+    let flip = |app: &mut crate::App| {
+        let _ = app.update(crate::Message::Sort(
+            crate::sort_control::Event::FlipDirection,
+        ));
+    };
+    let regroup = |app: &mut crate::App| {
+        app.group = match app.group {
+            GroupBy::None => GroupBy::Tag,
+            _ => GroupBy::None,
+        };
+        let _ = app.resorted();
+    };
+    let collapse = |app: &mut crate::App| {
+        // The first section after Recently played, so most of the grid
+        // moves.
+        let key = app
+            .grid_places()
+            .headers
+            .iter()
+            .map(|place| place.header.key.clone())
+            .find(|key| *key != crate::slot::SectionKey::Recent)
+            .expect("a tag section");
+        let _ = app.update(crate::Message::ToggleSection(key));
+    };
+    type Change<'a> = &'a dyn Fn(&mut crate::App);
+    let cases: [(&str, GroupBy, Change<'_>); 4] = [
+        ("flat re-sort", GroupBy::None, &flip),
+        ("grouped re-sort", GroupBy::Tag, &flip),
+        ("Group by None and Tag", GroupBy::None, &regroup),
+        ("collapse and open", GroupBy::Tag, &collapse),
+    ];
+    for layout in [
+        crate::grid_motion::ViewLayout::Grid,
+        crate::grid_motion::ViewLayout::List,
+    ] {
+        header(&format!("motion frames, {layout:?}"), sweeps);
+        for (label, group, change) in &cases {
+            app.layout = layout;
+            app.group = *group;
+            app.collapsed.clear();
+            app.reorder();
+            app.snap_grid();
+            let mut frames = Frames::new(size);
+            frames.frame(&app);
+            let mut changes = Vec::new();
+            let mut all = Vec::new();
+            for _ in 0..sweeps {
+                let (changed, samples) = sweep(&mut app, &mut frames, *change);
+                changes.push(changed);
+                all.extend(samples);
+            }
+            let slots = app.grid_places().ids.len();
+            println!("{label}: {slots} slots, {} frames", all.len());
+            report(&format!("{label}, the change"), changes, "ms", 1e3);
+            report(&format!("{label}, per frame"), all, "ms", 1e3);
+        }
+    }
 }

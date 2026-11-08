@@ -75,9 +75,13 @@ tag, so `rpg` finds games tagged `rpg`.
 ### Sorting
 
 **Sort** beside the search field picks the order: Name (the title shown on
-the card), Last played, Playtime, or Date added. Picking one starts it in
-its natural direction: Name A to Z, Last played most recent first, Playtime
-most played first, and Date added newest first. The arrow button next to it
+the card), Last played, Playtime, Date added, Source, or Tags. Picking one
+starts it in its natural direction: Name, Source, and Tags A to Z, Last
+played most recent first, Playtime most played first, and Date added newest
+first. Source goes by the label a game's list row shows, like GOG, Steam, or
+Windows. Tags compares each game's tags in A to Z order, one by one, so
+`co-op, rpg` comes before `rpg`; untagged games come last either way, as do
+games with no source. The arrow button next to it
 flips the direction, and its tooltip names the order you have, like "Most
 played first" or "A to Z". **Favorites first**, at the bottom of
 the Sort menu, puts favorites ahead of everything else in the same order.
@@ -92,6 +96,39 @@ The sort, its direction, and Favorites first are saved in `library.toml`
 opens the same way. A window keeps its own order while it's open, even if
 another window changes the saved one. If the save fails, the window keeps
 the order you picked and says why.
+
+### Grouping
+
+**Group by**, in the Sort menu between the sorts and **Favorites first**,
+splits the library into sections: by **Recently played**, **Tag**,
+**Source**, or **State**, or **None** for one flat grid as before. Press it, or Enter or Space on it, to
+open its list beside the menu; Esc or Left goes back.
+
+- **Recently played** keeps the whole library together in **All**, in the
+  same order as None, with Recently played above it. A game you played
+  lately shows in both.
+- **Tag** gives each tag its own section, A to Z, and a game with several
+  tags shows in each of them, with **No tag** last. The copies are one game:
+  starring, marking, or hiding one does all of them, and the panel stays open
+  when you move between them.
+- **Source** follows the Source sort's labels, with **No source** last.
+- **State** shows **Running**, then **Other**, then **Not installed**. A game
+  moves as it starts or stops, or as Steam installs or removes it.
+
+While grouped, **Recently played** comes first, with the ten games you played
+last, newest first, and hidden games sit together in **Hidden** at the end
+when Show hidden is on. Inside each section, games follow the sort and
+Favorites first.
+
+Each section has a header with its name and count, like **rpg (12)**. Click
+it, or Tab to it and press Enter or Space, to collapse it to just the
+header, and again to open it. Collapsed sections stay that way until you
+close wineo. Marks, Ctrl+A, and the dice only count what you can see: a game
+whose every copy is collapsed loses its mark, and Ctrl+A and the dice skip
+it.
+
+Group by is saved with the sort in `library.toml`, so the next launch opens
+grouped the same way.
 
 ### Filters and hidden games
 
@@ -114,7 +151,35 @@ excluding Windows keeps a game that's not known to be Windows.
 The button counts checked and excluded entries, as in **Filters (2)**.
 Clear filters clears the search, stores, platforms, and tags, excludes
 included, and leaves the sort and Show hidden alone. Filters and Show
-hidden start fresh at every launch.
+hidden start fresh at every launch, unless you save them in a preset.
+
+### Presets
+
+A preset is a saved view: the filters, excludes included, Show hidden, the
+sort and its direction, Favorites first, Group by, and the layout. Presets
+are at the top of the Filters popup, A to Z, above the filters. The popup
+still opens on the first filter, so Up or Shift+Tab reaches them.
+
+- **Apply** a preset by clicking it, or Enter or Space on it. Everything it
+  holds changes at once and the popup closes. Applying saves nothing: the
+  view you had saved stays saved, and the next launch opens it, until you
+  change a setting yourself. The search, zoom, and titles stay as they were.
+  While the view still matches, the button names the preset, as in
+  **Filters (Couch co-op)**.
+- **Save as preset** turns into a name field; type a name and press Enter.
+  A name is up to 60 characters. If another preset already has the name, in
+  any case, it says so and offers **Update** instead.
+- **Update "X"** shows once you change the view after applying or saving X,
+  and saves the view you have now over it.
+- **Rename** and **Delete**: right-click a preset, or press Shift+F10 or the
+  Menu key on it, for both under it. R renames it and Delete asks first,
+  with **Keep it** focused.
+
+Presets live in `library.toml` (see
+[Library state](config-files.md#library-state)), so every window and the
+next launch see them. A name you've typed stays when you close the popup,
+until you save or cancel it. If a save fails, the reason shows under the
+presets.
 
 An installed Steam game goes under Native or Windows from the start, even
 before its first run. See [Platforms](steam.md#platforms). One Steam doesn't
@@ -159,6 +224,75 @@ favorite without opening the panel. Hide a game with **Hide** in the same menu; 
 no key for it, since the game disappears. Both save to `library.toml` right
 away. If a save fails, the card goes back to what's saved and a notice says
 why, like `Couldn't hide Hades: ...`.
+
+### Marking several games
+
+Ctrl+click a card to mark it, or press Space on the selected card when no
+button or field has focus. Ctrl+click or Space again unmarks it. Shift+click
+marks every shown card from the last one you marked, or from the selected
+card, to the one you click, in the order they're shown. When a game shows in
+several sections, the range starts at the copy you marked. Another Shift+click
+replaces that range and keeps your other marks, and Ctrl+Shift+click adds a
+range instead. Ctrl+A marks every shown game. A marked poster gets a wash in
+the theme's primary color and a check in its top-left corner, which moves the
+running light and GOG pill along to its right.
+
+Marking never opens the panel or launches anything, even when the clicks
+land as a double-click. A plain click clears the marks and selects as usual.
+Esc clears them too, once the log, version picker, results, and menus are
+closed.
+A filter or search that hides a marked game drops its mark, and so does
+removing it. Sorting, rescans, and tag changes keep the rest. Marks last
+until you close wineo and are never saved.
+
+While games are marked, a bar at the bottom of the Library says how many,
+like **3 selected**, with **Tags**, **Favorite**, **Hide**, and an x that
+clears the marks. The grid leaves room under its last row so the bar never
+covers a card.
+
+**Favorite** stars every marked game. Once they all are, it reads
+**Unfavorite** and takes the star off all of them. **Hide** and **Show** work
+the same way. Hiding games while hidden ones aren't shown takes them out of
+view, so their marks go too, and if the panel's game was one of them, the
+panel moves on to the next game, as a single hide does.
+
+**Tags** opens a list of every tag in the library. A tag's box is checked
+when every marked game has it, shows a dash when some do, and is empty when
+none do. Click a dash or an empty box to add the tag to all of them, and a
+checked box to remove it from all of them. Type a new tag in the field under
+the list and press Enter to add it; a name wineo can't use says why under
+the field. A tag you just took off every marked game stays listed until the
+list closes, so you can put it back.
+
+Each change saves right away, like a single favorite. If some can't be
+saved, those go back to what they had and a notice names them,
+like `Couldn't tag 2 of 3 (Hades, Celeste): ...`, `Couldn't untag ...`, or
+`Couldn't favorite ...`.
+
+### List view
+
+The switch left of the zoom slider shows the library as a grid of posters
+or as a list, and Ctrl+L flips between them. The list has one 56 px row per
+game: a small poster, the title with the environment name under it when
+they differ, then State, Playtime, Last played, Source, and Tags. A row
+shows what its poster does: the star, the eye, the Steam mark, a GOG pill,
+the install bar, the state's dot, and the dim for a hidden or not installed
+game. Text that doesn't fit ends in an ellipsis.
+
+Click **Title**, **Playtime**, **Last played**, **Source**, or **Tags** in
+the header to sort by it, the same as picking it in the Sort menu, and click
+it again to flip the direction. Date added stays in the Sort menu. As the window or the panel
+narrows the list, columns leave from the right: Tags, then Source, Last
+played, and Playtime. Title and State always stay.
+
+Rows work like cards: click to select, double-click to play, right-click
+for the menu, the arrow keys to move, and the same marking, Tags bar,
+favorites, and random pick. The zoom slider and the titles button leave the
+toolbar in the list, and the zoom keys do nothing there; the zoom is kept
+for the way back. Switching keeps the sort, the marks, and the selection,
+and keeps your place: the selected game if it's in view, otherwise
+whatever was at the same spot. The choice saves to `library.toml`
+(`layout` under `[view]`).
 
 ### Zoom and poster-only
 
@@ -942,37 +1076,46 @@ edits, the bar says which, and **Reload** takes what's on disk.
 
 | Key | Does |
 |---|---|
-| Arrow keys | Move between cards |
+| Arrow keys | Move between cards or rows; Up and Down cross section headers to the nearest card above or below |
+| Ctrl+L | Switch between the grid and the list (Library only) |
 | Enter | Open the panel, or play when it's open (only for a card that's shown) |
 | F | Add the selected card to favorites, or remove it (only for a card that's shown) |
+| Space | Mark or unmark the selected card, when no button or field has focus (Library only) |
+| Ctrl+A | Mark every game in view, skipping collapsed sections, unless the search or log has focus (Library only) |
 | R | Pick a shown game at random, as the dice does (Library only) |
 | Shift+F10 or Menu | Open the focused dice's menu (Library only) |
-| Esc | Close the log, version picker, or results, then the panel, then clear the search |
+| Esc | Close the log, version picker, results, or Tags list, then clear the marks, then close the panel, then clear the search |
 | `/` or Ctrl+F | Search |
 | Ctrl+N | Open Add (Library only) |
-| Ctrl+= or Ctrl++, Ctrl+- | Make the posters bigger or smaller (Library only) |
-| Ctrl+0 | Posters back to the usual size (Library only) |
+| Ctrl+= or Ctrl++, Ctrl+- | Make the posters bigger or smaller (Library grid only) |
+| Ctrl+0 | Posters back to the usual size (Library grid only) |
 | Delete | Remove the selected environment, asking first (on the details) |
 | Ctrl+Z | Undo a removal while its bar shows |
 | Ctrl+1, Ctrl+2, Ctrl+3, Ctrl+4, Ctrl+5 | Library, Trash, Checkup, Downloads, Snapshots |
 | Ctrl+, | Global settings |
 | Down (in the search) | Back to the cards |
-| Tab, Shift+Tab | Move focus through the toolbar from Add to the titles button, then panel actions |
+| Tab, Shift+Tab | Move focus through the toolbar from Add to the layout switch (then the zoom slider and titles button in the grid), then section headers while grouped, then panel actions |
+| Left, Right, Space, Enter (on the layout switch) | Switch between the grid and the list |
+| Enter, Space (on a section header) | Collapse the section, or open it |
 | Left, Right (on the zoom slider) | Make the posters smaller or bigger |
 
 The mouse Back button does whatever Esc does on the current page, here and
 in every table below. Forward does nothing.
 
-In the Sort menu, the Filters popup, and the dice's menu, which take every key
-while open:
+In the Sort menu, the Filters popup, the dice's menu, and the marked games'
+Tags list, which take every key while open:
 
 | Key | Does |
 |---|---|
 | Enter, Space (on Sort or Filters) | Open the menu under its button, on the current choice |
 | Arrow keys, Tab, Shift+Tab | Move between rows |
 | Enter, Space | Pick a sort, or toggle a check box or tag |
+| Enter (in the Tags list's field) | Add the typed tag to every marked game |
 | X (in Filters) | Exclude the focused store, platform, or tag, or turn it off if it's checked or excluded |
-| Esc | Close the menu and go back to its button |
+| Enter (in a preset's name field) | Save the view as that preset, or rename it |
+| R, Delete (on a preset) | Rename it, or delete it after asking |
+| Shift+F10, Menu, right-click (on a preset) | Show Rename and Delete under it |
+| Esc | Close a preset's name field or question first, then the menu, going back to its button |
 
 In the choice lists on **Add**, New's program list, the Heroic and GOG
 lists, and the version picker:
@@ -1030,5 +1173,3 @@ the palette, spacing, control states, motion, and layout rules for future pages.
 ## Not yet
 
 - Gamepad navigation.
-- A list view, saved filter presets, and grouping (the later parts of the
-  library views series in plan 0054).

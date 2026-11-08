@@ -143,7 +143,7 @@ fn card_dot(app: &App, name: &str) -> Option<(u64, f32)> {
         Some(index) => index,
         None => {
             let leaving = app.grid_motion.leaving();
-            shown.len() + leaving.iter().position(|card| card.name == name)?
+            shown.len() + leaving.iter().position(|card| card.id.name() == name)?
         }
     };
     let card = node.children()[index].bounds();
@@ -515,7 +515,7 @@ fn a_card_leaving_mid_crossing_keeps_fading_its_details_with_the_rest() {
             app.grid_motion
                 .leaving()
                 .iter()
-                .any(|card| card.name == "game-01" && card.opacity == 1.0)
+                .any(|card| card.id.name() == "game-01" && card.opacity == 1.0)
         );
         let mut last = None;
         for _ in 0..2 {

@@ -271,7 +271,7 @@ pub(crate) fn update(app: &mut App, event: Event) -> Task<Message> {
                 return navigation;
             }
             app.close_panel();
-            Task::batch([navigation, app.update(Message::Select(name))])
+            Task::batch([navigation, app.update(Message::OpenCard(name))])
         }
         Event::OpenInstallLog(scope) => {
             let Some((name, source)) = app.checkup_install_log(&scope) else {
@@ -694,6 +694,18 @@ impl App {
     }
 
     /// Whether the visible Checkup is asking to confirm a rollback.
+    /// Shows `name`'s results in its panel, as a finished check does.
+    #[cfg(test)]
+    pub(crate) fn show_checkup_results(&mut self, name: &str) {
+        self.checkups.insert(
+            Scope::Environment(name.to_owned()),
+            Results {
+                showing: true,
+                ..Results::default()
+            },
+        );
+    }
+
     #[cfg(test)]
     pub(crate) fn checkup_recovery_open(&self) -> bool {
         self.checkup_screen().3.is_some()

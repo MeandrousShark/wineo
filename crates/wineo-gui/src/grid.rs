@@ -10,17 +10,22 @@ use iced::{
 use crate::grid_motion::{CardText, GridLayout};
 use crate::library::Card;
 use crate::library_actions::{Event, Flag};
+use crate::slot::SlotId;
 use crate::theme::Palette;
 use crate::ui::{self, ScrollStyle, secondary_button};
 use crate::wheel;
 use crate::{App, Message, SCROLL_ID, SEARCH_ID, WHEEL_STEP_SCALE};
 
+/// The bottom notes' and action bar's distance from the window's edges.
+pub(crate) const NOTES_MARGIN: f32 = 16.0;
 pub(crate) const ACTION_MENU_WIDTH: f32 = 248.0;
 const ACTION_MENU_MAX_HEIGHT: f32 = 600.0;
 pub(crate) const ACTION_MENU_MARGIN: f32 = 8.0;
 pub(crate) const ACTION_MENU_PADDING: f32 = 12.0;
 pub(crate) const ACTION_MENU_SPACING: f32 = 4.0;
 pub(crate) const ACTION_MENU_HEADER_HEIGHT: f32 = 20.0;
+/// A menu's separator: its 1 px line and 3 px of padding above and below.
+pub(crate) const ACTION_MENU_DIVIDER: f32 = 7.0;
 const INSTALL_BAR_HEIGHT: f32 = 4.0;
 const CARD_TITLE_SIZE: f32 = 14.0;
 const CARD_SPACING: f32 = 4.0;
@@ -28,14 +33,14 @@ const CARD_SPACING: f32 = 4.0;
 const CARD_CONTEXT_SIZE: f32 = 12.0;
 const CARD_DOT: f32 = 8.0;
 const CARD_META_SPACING: f32 = 8.0;
-const GOG_PILL_SIZE: f32 = 11.0;
+pub(crate) const GOG_PILL_SIZE: f32 = 11.0;
 /// The poster's corner layers sit this far from the art's edges.
 const CORNER_PADDING: f32 = 8.0;
 /// Room the top-left corner leaves for the marks' column on the right:
 /// its margin, a mark, and the gap the chip and pill keep.
 const MARKS_ROOM: f32 = CORNER_PADDING + crate::library_actions::MARK_SIZE + 4.0;
 const GOG_PILL_PADDING: f32 = 2.0;
-const GOG_PILL_SIDE: f32 = 8.0;
+pub(crate) const GOG_PILL_SIDE: f32 = 8.0;
 const GOG_BADGE_ICON: f32 = 14.0;
 /// The poster-only title's margin from the art's edges.
 const OVERLAY_PADDING: f32 = 8.0;
@@ -58,7 +63,7 @@ pub(crate) const SEARCH_WIDTH: f32 = 320.0;
 pub(crate) const SEARCH_MIN_WIDTH: f32 = 160.0;
 
 /// The identifier shows as muted context only when a title replaces it.
-fn shows_identifier(card: &Card) -> bool {
+pub(crate) fn shows_identifier(card: &Card) -> bool {
     card.name != card.display_title
 }
 
@@ -169,7 +174,8 @@ impl App {
     pub(crate) fn grid(&self) -> Element<'_, Message> {
         let layout = self.grid_layout();
         let progress = self.details_progress();
-        let filtered = self.filtered();
+        let places = self.grid_places();
+        let filtered = self.slot_cards(&places);
         let scene = (!self.collapse.idle()).then(|| crate::grid_motion::Scene {
             collapse: &self.collapse,
             posters: filtered
@@ -184,13 +190,24 @@ impl App {
                 .collect(),
             on_press: self.collapse.restorable().then_some(Message::Rebuild),
         });
+        let list = self.layout == crate::grid_motion::ViewLayout::List;
+        let row_width = self.slot_width();
+        let row_columns = crate::list_view::columns(row_width);
         let cards = filtered
             .into_iter()
-            .map(|card| {
-                let opacity = self.grid_motion.opacity(&card.name);
+            .zip(&places.ids)
+            .map(|(card, id)| {
+                let opacity = self.grid_motion.opacity(id);
+                if list {
+                    return crate::grid_motion::GridCard {
+                        id: id.clone(),
+                        card: self.row_drawn(id, card, opacity, row_width, row_columns),
+                        details: None,
+                    };
+                }
                 crate::grid_motion::GridCard {
-                    name: card.name.clone(),
-                    card: self.card_drawn(card, opacity, layout, Details::Apart),
+                    id: id.clone(),
+                    card: self.card_drawn(id, card, opacity, layout, Details::Apart),
                     details: self.details_apart(card, opacity, layout, progress),
                 }
             })
@@ -218,22 +235,74 @@ impl App {
                 leaving.bounds.y <= bottom && leaving.bounds.y + leaving.bounds.height >= top
             })
             .filter_map(|leaving| {
-                let card = by_name.get(leaving.name.as_str())?;
+                let card = by_name.get(leaving.id.name())?;
+                // A layout switch snaps, ending every fade, so what leaves
+                // left from the layout shown.
+                if list {
+                    return Some(crate::grid_motion::Outgoing {
+                        id: leaving.id.clone(),
+                        bounds: leaving.bounds,
+                        card: self.row_drawn(
+                            &leaving.id,
+                            card,
+                            leaving.opacity,
+                            leaving.bounds.width,
+                            crate::list_view::columns(leaving.bounds.width),
+                        ),
+                        details: None,
+                    });
+                }
                 Some(crate::grid_motion::Outgoing {
-                    name: leaving.name.clone(),
+                    id: leaving.id.clone(),
                     bounds: leaving.bounds,
-                    card: self.card_drawn(card, leaving.opacity, leaving.layout, Details::Apart),
+                    card: self.card_drawn(
+                        &leaving.id,
+                        card,
+                        leaving.opacity,
+                        leaving.layout,
+                        Details::Apart,
+                    ),
                     details: self.details_apart(card, leaving.opacity, leaving.layout, progress),
                 })
             })
             .collect();
-        crate::grid_motion::grid(
+        let headers = crate::grid_motion::Headers {
+            shown: places
+                .headers
+                .iter()
+                .map(|place| crate::grid_motion::GridHeader {
+                    key: place.header.key.clone(),
+                    element: self.section_header(
+                        &place.header,
+                        self.grid_motion.header_opacity(&place.header.key),
+                        true,
+                    ),
+                })
+                .collect(),
+            breaks: places.headers.iter().map(|place| place.header.at).collect(),
+            leaving: self
+                .grid_motion
+                .leaving_headers()
+                .iter()
+                .filter(|leaving| {
+                    leaving.bounds.y <= bottom && leaving.bounds.y + leaving.bounds.height >= top
+                })
+                .map(|leaving| crate::grid_motion::OutgoingHeader {
+                    key: leaving.header.key.clone(),
+                    bounds: leaving.bounds,
+                    element: self.section_header(&leaving.header, leaving.opacity, false),
+                })
+                .collect(),
+        };
+        crate::grid_motion::sectioned(
             cards,
             leaving,
+            headers,
             &self.grid_motion,
             self.panel_open,
             scene,
             self.grid_layout(),
+            self.layout,
             crate::details_fade::DetailsFade::drift(progress),
         )
     }
@@ -286,15 +355,18 @@ impl App {
         };
         Some((art.unwrap_or(placeholder).clone(), opacity))
     }
+    /// `card` in the flat library's slot.
     #[cfg(test)]
     pub(crate) fn card<'a>(&'a self, card: &'a Card) -> Element<'a, Message> {
-        self.card_drawn(card, 1.0, self.grid_layout(), Details::Inline)
+        let slot = crate::slot::SlotId::from(card.name.as_str());
+        self.card_drawn(&slot, card, 1.0, self.grid_layout(), Details::Inline)
     }
 
-    /// A card drawn at `opacity` and `layout`, as it fades in or out of the
-    /// grid.
+    /// A card drawn in `slot` at `opacity` and `layout`, as it fades in or
+    /// out of the grid.
     pub(crate) fn card_drawn<'a>(
         &'a self,
+        slot: &SlotId,
         card: &'a Card,
         opacity: f32,
         layout: GridLayout,
@@ -303,12 +375,13 @@ impl App {
         let alpha = self.collapse.alpha() * opacity;
         let caption = self.collapse.caption_alpha() * opacity;
         let palette = self.palette.faded(alpha);
-        let hovered = self.hovered.as_ref() == Some(&card.name);
+        let hovered = self.hovered.as_ref() == Some(slot);
+        // Every copy of the selected game shows the selection.
         let selected = self.selected.as_ref() == Some(&card.name);
-        let (star, shade) = self.hover_fades.progress(&card.name, hovered, selected);
+        let (star, shade) = self.hover_fades.progress(slot, hovered, selected);
         let glow = self
             .hover_fades
-            .glow(&card.name, self.glowing_star() == Some(card.name.as_str()));
+            .glow(slot, self.glowing_star() == Some(slot));
         let dimmed = card.not_installed();
         let art = card.art.as_ref().and_then(|art| {
             self.images
@@ -370,7 +443,13 @@ impl App {
             ..Font::DEFAULT
         };
         let steam_mark = card.kind == Some(crate::library::CardKind::Proxied);
+        // Marks belong to the game, so every copy shows them.
+        let marked = self.marked.contains(slot.name());
         let mut layers = stack![poster];
+        // Under the title and corner layers, so their meaning shows through.
+        if marked {
+            layers = layers.push(crate::multi_select::wash(self.palette, alpha));
+        }
         if overlay {
             layers = layers.push(title_overlay(
                 &card.display_title,
@@ -412,66 +491,77 @@ impl App {
         // column on every card, even with no mark showing, and nothing
         // shifts when the hover star appears. A pill squeezed by them wraps
         // between words and clips rather than spill under a mark.
-        let room = layout.art_frame().width
-            - CORNER_PADDING
-            - MARKS_ROOM
-            - if chip.is_some() {
-                crate::library_actions::MARK_SIZE + 4.0
-            } else {
-                0.0
-            };
+        //
+        // A marked card's check takes the corner first, then the chip and
+        // the pill follow it, so each one that shows pushes the next right.
+        let step = crate::library_actions::MARK_SIZE + 4.0;
+        let ahead = [marked, chip.is_some()]
+            .into_iter()
+            .filter(|shown| *shown)
+            .count() as f32
+            * step;
+        let room = layout.art_frame().width - CORNER_PADDING - MARKS_ROOM - ahead;
         let gog = crate::gog_library::badge(card.gog.as_ref(), self.gog_updates.status(&card.name))
             .map(|badge| {
-                let color = match badge {
-                    crate::gog_library::Badge::UpdateAvailable => palette.primary,
-                    crate::gog_library::Badge::FinishUpdate
-                    | crate::gog_library::Badge::FinishInstall => palette.warning,
-                };
+                let color = badge.color(palette);
                 let ink = ui::accent_ink(color);
                 if !pill_fits(badge.label(), room) {
                     return Gog::Badge(gog_badge(color, ink, alpha));
                 }
-                Gog::Pill(
-                    container(
-                        text(badge.label())
-                            .size(GOG_PILL_SIZE)
-                            .color(ink.scale_alpha(alpha)),
-                    )
-                    .padding([GOG_PILL_PADDING, GOG_PILL_SIDE])
-                    .clip(true)
-                    .style(move |_| {
-                        container::Style::default()
-                            .background(color)
-                            .border(border::rounded(8))
-                    })
-                    .into(),
-                )
+                Gog::Pill(gog_pill(badge, palette, alpha, true).clip(true).into())
             });
         // Below about 63% three 24 px circles and their margins outgrow the
-        // art, so a badge may give up its gap to the marks, never more.
+        // art, so a badge may give up its gap to the marks, never more. A
+        // marked card's check adds a fourth margin, so a badge that still
+        // can't clear the marks is left out until the mark goes.
+        let flush = CORNER_PADDING + crate::library_actions::MARK_SIZE;
+        let gog = gog.filter(|gog| {
+            !matches!(gog, Gog::Badge(_))
+                || CORNER_PADDING + ahead + crate::library_actions::MARK_SIZE + flush
+                    <= layout.art_frame().width
+        });
         let right = match &gog {
-            Some(Gog::Badge(_)) => CORNER_PADDING + crate::library_actions::MARK_SIZE,
-            _ => MARKS_ROOM,
+            Some(Gog::Pill(_)) => MARKS_ROOM,
+            _ => flush,
         };
-        let corner: Option<Element<'_, Message>> = match (chip, gog) {
-            (Some(chip), Some(Gog::Pill(pill))) => {
-                // The chip keeps the corner, mirroring the marks, and a
-                // one-line pill centers on it. On a small poster the pill
-                // wraps, growing down instead of pushing the chip.
+        // The check, chip, and pill or badge share one row, 4 px apart, so
+        // marking a card moves the chip and pill at once with no animation.
+        let mut corner: Vec<Element<'_, Message>> = Vec::new();
+        if marked {
+            corner.push(crate::multi_select::check(
+                self.palette,
+                alpha,
+                crate::multi_select::CHECK_CHIP,
+            ));
+        }
+        corner.extend(chip);
+        let leads = !corner.is_empty();
+        match gog {
+            Some(Gog::Pill(pill)) if leads => {
+                // The marks in front keep the corner, mirroring the star, and
+                // a one-line pill centers on them. On a small poster the pill
+                // wraps, growing down instead of pushing them.
                 let line = iced::widget::text::LineHeight::default()
                     .to_absolute(GOG_PILL_SIZE.into())
                     .0
                     + 2.0 * GOG_PILL_PADDING;
-                let pill = container(pill).padding(iced::Padding {
-                    top: ((crate::library_actions::MARK_SIZE - line) / 2.0).max(0.0),
-                    ..iced::Padding::ZERO
-                });
-                Some(row![chip, pill].spacing(4).into())
+                corner.push(
+                    container(pill)
+                        .padding(iced::Padding {
+                            top: ((crate::library_actions::MARK_SIZE - line) / 2.0).max(0.0),
+                            ..iced::Padding::ZERO
+                        })
+                        .into(),
+                );
             }
-            (Some(chip), Some(Gog::Badge(badge))) => Some(row![chip, badge].spacing(4).into()),
-            (Some(chip), None) => Some(chip),
-            (None, Some(Gog::Pill(gog) | Gog::Badge(gog))) => Some(gog),
-            (None, None) => None,
+            Some(Gog::Pill(gog) | Gog::Badge(gog)) => corner.push(gog),
+            None => {}
+        }
+        // One thing alone sits in the corner itself, as it always has.
+        let corner: Option<Element<'_, Message>> = if corner.len() > 1 {
+            Some(row(corner).spacing(4).into())
+        } else {
+            corner.pop()
         };
         if let Some(corner) = corner {
             layers = layers.push(
@@ -489,7 +579,7 @@ impl App {
         if let Some(eye) = crate::library_actions::poster_eye(card, alpha) {
             layers = layers.push(eye);
         }
-        let pop = self.star_pops.progress(&card.name);
+        let pop = self.star_pops.progress(slot);
         if let Some(t) = pop {
             layers = layers.push(crate::library_actions::star_ring(
                 t,
@@ -503,7 +593,8 @@ impl App {
             primary: self.palette.primary,
             lift: pop.map_or(0.0, crate::star_pop::lift),
         };
-        if let Some(marks) = crate::library_actions::poster_marks_faded(card, alpha, hovered, look)
+        if let Some(marks) =
+            crate::library_actions::poster_marks_faded(slot, card, alpha, hovered, look)
         {
             layers = layers.push(marks);
         }
@@ -527,7 +618,7 @@ impl App {
                 }))
             });
         if text_mode == CardText::PosterOnly {
-            return card_area(column![framed].width(layout.card_width()), card);
+            return card_area(column![framed].width(layout.card_width()), slot);
         }
         let label = crate::tile_title::lines(
             &card.display_title,
@@ -555,7 +646,7 @@ impl App {
         .spacing(CARD_SPACING)
         .width(layout.card_width());
         if text_mode == CardText::Title {
-            return card_area(content, card);
+            return card_area(content, slot);
         }
         match details {
             #[cfg(test)]
@@ -572,7 +663,7 @@ impl App {
                 content = content.push(Space::new().height(meta_height(card, layout)));
             }
         }
-        card_area(content, card)
+        card_area(content, slot)
     }
     /// How wide the Add, import, and clone dialog is in the current window.
     pub(crate) fn flow_width(&self) -> f32 {
@@ -623,6 +714,7 @@ impl App {
         let undo = self.toast.is_some();
         let notice = self.feature_notice.is_some();
         let import = self.import_toast_view();
+        let imported = import.is_some();
         let import_slot: Element<'_, Message> = match import {
             Some(toast) => container(toast).padding(below(notice || undo)).into(),
             None => Space::new().into(),
@@ -649,12 +741,21 @@ impl App {
         } else {
             Space::new().into()
         };
-        let toasts = column![import_slot, notice_slot, undo_slot].align_x(Center);
+        // The action bar stays while the notes above it come and go.
+        let bar_slot: Element<'_, Message> = if self.action_bar_shown() {
+            let above = imported || notice || undo;
+            container(self.action_bar_view())
+                .padding(iced::Padding::default().top(if above { GAP } else { 0.0 }))
+                .into()
+        } else {
+            Space::new().into()
+        };
+        let toasts = column![import_slot, notice_slot, undo_slot, bar_slot].align_x(Center);
         // Always a layer, so the dialogs above keep their places, and their
         // focus, when a toast comes or goes. Empty slots take no input.
         page = page.push(
             container(toasts)
-                .padding(16)
+                .padding(NOTES_MARGIN)
                 .align_bottom(Fill)
                 .center_x(Fill),
         );
@@ -791,7 +892,11 @@ impl App {
         }
         if self.sort_menu_shown() {
             let [backdrop, menu] = self.sort_menu_view();
-            return page.push(backdrop).push(menu).into();
+            let page = page.push(backdrop).push(menu);
+            return match self.group_menu_view() {
+                Some(groups) => page.push(groups).into(),
+                None => page.into(),
+            };
         }
         if self.filter_menu_shown() {
             let [backdrop, menu] = self.filter_menu_view();
@@ -799,6 +904,10 @@ impl App {
         }
         if self.random_menu_shown() {
             let [backdrop, menu] = self.random_menu_view();
+            return page.push(backdrop).push(menu).into();
+        }
+        if self.tag_menu_shown() {
+            let [backdrop, menu] = self.tag_menu_view();
             return page.push(backdrop).push(menu).into();
         }
         if let Some(name) = &self.action_menu {
@@ -1156,7 +1265,8 @@ impl App {
         }
         let page = page.push(strips);
         let visible = self.scroll_visible_until.is_some();
-        let scroll = scrollable(self.grid())
+        // Always there, so the grid keeps its place in the tree.
+        let scroll = scrollable(column![self.grid(), Space::new().height(self.bar_room())])
             .id(iced::widget::Id::new(SCROLL_ID))
             .width(Fill)
             .height(Fill)
@@ -1167,7 +1277,13 @@ impl App {
             ))
             .on_scroll(Message::Scrolled)
             .style(move |theme, status| crate::ui::scroll_style(theme, status, palette, visible));
-        let library = mouse_area(wheel::zoom(
+        // Always a child, so the scroll after it keeps its place in the tree.
+        let header: Element<'_, Message> = if self.layout == crate::grid_motion::ViewLayout::List {
+            self.list_header()
+        } else {
+            Space::new().into()
+        };
+        let scroll = wheel::zoom(
             wheel::scale(scroll, WHEEL_STEP_SCALE),
             wheel::Zoom {
                 on_zoom: self
@@ -1179,8 +1295,9 @@ impl App {
                     .then_some(Message::Zoom(crate::zoom::Event::Interrupted)),
                 modifiers: self.modifiers,
             },
-        ))
-        .on_exit(Message::Zoom(crate::zoom::Event::PointerLeft));
+        );
+        let library = mouse_area(column![header, scroll])
+            .on_exit(Message::Zoom(crate::zoom::Event::PointerLeft));
         let library = if self.panel_open {
             library.on_press(Message::ClosePanel)
         } else if self.collapse.faded() {
@@ -1333,7 +1450,14 @@ impl App {
                     crate::sort_control::toolbar(self),
                     crate::filter_control::toolbar(self),
                     crate::random_pick::toolbar(self),
-                    crate::zoom_control::toolbar(self),
+                    crate::layout_switch::toolbar(self),
+                    // Always a child, so the controls before it keep their
+                    // places in the tree, and their focus.
+                    if self.layout == crate::grid_motion::ViewLayout::Grid {
+                        crate::zoom_control::toolbar(self)
+                    } else {
+                        Space::new().into()
+                    },
                 ]
                 .spacing(8)
                 .align_y(Center),
@@ -1359,6 +1483,30 @@ impl App {
 enum Gog<'a> {
     Pill(Element<'a, Message>),
     Badge(Element<'a, Message>),
+}
+
+/// The GOG pill: `badge`'s label on its semantic color. A poster's wraps
+/// between words when squeezed; a list row's never wraps.
+pub(crate) fn gog_pill(
+    badge: crate::gog_library::Badge,
+    palette: Palette,
+    alpha: f32,
+    wrap: bool,
+) -> container::Container<'static, Message> {
+    let color = badge.color(palette);
+    let mut label = text(badge.label())
+        .size(GOG_PILL_SIZE)
+        .color(ui::accent_ink(color).scale_alpha(alpha));
+    if !wrap {
+        label = label.wrapping(iced::widget::text::Wrapping::None);
+    }
+    container(label)
+        .padding([GOG_PILL_PADDING, GOG_PILL_SIDE])
+        .style(move |_| {
+            container::Style::default()
+                .background(color)
+                .border(border::rounded(8))
+        })
 }
 
 /// Whether the pill's longest word fits on one line in `room`, the width
@@ -1394,13 +1542,19 @@ fn gog_badge(color: Color, ink: Color, alpha: f32) -> Element<'static, Message> 
 }
 
 /// A card's content as one pointer target.
-fn card_area<'a>(content: impl Into<Element<'a, Message>>, card: &Card) -> Element<'a, Message> {
+/// A card's pointer input. A press and the hover belong to the slot under
+/// the pointer; the rest acts on its game.
+pub(crate) fn card_area<'a>(
+    content: impl Into<Element<'a, Message>>,
+    slot: &SlotId,
+) -> Element<'a, Message> {
+    let name = slot.name().to_owned();
     mouse_area(content)
-        .on_press(Message::Select(card.name.clone()))
-        .on_double_click(Message::DoubleClick(card.name.clone()))
-        .on_right_press(Message::Context(card.name.clone()))
-        .on_enter(Message::Hover(Some(card.name.clone())))
-        .on_exit(Message::Unhover(card.name.clone()))
+        .on_press(Message::Press(slot.clone()))
+        .on_double_click(Message::DoubleClick(name.clone()))
+        .on_right_press(Message::Context(name))
+        .on_enter(Message::Hover(Some(slot.clone())))
+        .on_exit(Message::Unhover(slot.clone()))
         .interaction(mouse::Interaction::Pointer)
         .into()
 }
@@ -1467,7 +1621,7 @@ fn title_overlay(
         .into()
 }
 
-fn install_bar(percent: u8, palette: Palette, alpha: f32) -> Element<'static, Message> {
+pub(crate) fn install_bar(percent: u8, palette: Palette, alpha: f32) -> Element<'static, Message> {
     let done = u16::from(percent.min(100));
     let mut bar = row![].width(Fill).height(INSTALL_BAR_HEIGHT);
     if done > 0 {
@@ -1557,7 +1711,7 @@ fn action_menu_body_height(buttons: usize, dividers: usize, reason: Option<&str>
     let reason_height = reason.map_or(0.0, |reason| text_height(reason, ACTION_MENU_WIDTH - 24.0));
     let items = buttons + dividers + usize::from(reason.is_some());
     buttons as f32 * ui::BUTTON_HEIGHT
-        + dividers as f32 * 7.0
+        + dividers as f32 * ACTION_MENU_DIVIDER
         + reason_height
         + items.saturating_sub(1) as f32 * ACTION_MENU_SPACING
 }
@@ -1686,12 +1840,24 @@ mod tests {
         let size = Size::new(200.0, 400.0);
         let layout = GridLayout::default();
         let shown = crate::layout_probe::render(
-            &mut app.card_drawn(&card, 1.0, layout, Details::Inline),
+            &mut app.card_drawn(
+                &card.name.as_str().into(),
+                &card,
+                1.0,
+                layout,
+                Details::Inline,
+            ),
             size,
         );
         assert!(shown.chunks(4).any(|pixel| pixel[3] > 0));
         let gone = crate::layout_probe::render(
-            &mut app.card_drawn(&card, 0.0, layout, Details::Inline),
+            &mut app.card_drawn(
+                &card.name.as_str().into(),
+                &card,
+                0.0,
+                layout,
+                Details::Inline,
+            ),
             size,
         );
         assert!(gone.chunks(4).all(|pixel| pixel[3] == 0));

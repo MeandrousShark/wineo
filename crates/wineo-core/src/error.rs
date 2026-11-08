@@ -116,6 +116,18 @@ pub enum Error {
     #[error("invalid theme id `{0}`")]
     InvalidThemeId(String),
 
+    /// Shown as is: the GUI puts it under the name field.
+    #[error("{0}")]
+    InvalidPresetName(String),
+
+    /// Carries the name already in use, which may differ in case from what
+    /// was asked for and may be an entry that isn't a preset.
+    #[error("The name {0} is taken.")]
+    PresetNameTaken(String),
+
+    #[error("There is no preset named {0}.")]
+    UnknownPreset(String),
+
     /// A newer file has no repair to offer, so it gets its own refusal.
     #[error("{}", library_unreadable_message(*.newer_version))]
     LibraryUnreadable {

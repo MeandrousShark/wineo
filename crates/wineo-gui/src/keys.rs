@@ -23,6 +23,9 @@ pub(crate) enum Action {
     FocusSearch,
     ToggleFavorite,
     PickRandom,
+    MarkAll,
+    MarkSelected,
+    ToggleLayout,
 }
 
 pub(crate) fn action(
@@ -38,6 +41,26 @@ pub(crate) fn action(
             Action::FocusSearch
         }
         Key::Character("/") if !search_focused => Action::FocusSearch,
+        Key::Character(character)
+            if modifiers.control()
+                && !(modifiers.alt() || modifiers.logo())
+                && character.eq_ignore_ascii_case("l") =>
+        {
+            Action::ToggleLayout
+        }
+        Key::Character(character)
+            if !search_focused
+                && modifiers.control()
+                && !(modifiers.alt() || modifiers.logo())
+                && character.eq_ignore_ascii_case("a") =>
+        {
+            Action::MarkAll
+        }
+        Key::Named(Named::Space) | Key::Character(" ")
+            if !search_focused && !(modifiers.control() || modifiers.alt() || modifiers.logo()) =>
+        {
+            Action::MarkSelected
+        }
         // Shift is allowed, so Caps Lock doesn't matter.
         Key::Character(character)
             if !search_focused
@@ -103,6 +126,9 @@ impl App {
         }
         if self.random_menu_shown() {
             return crate::random_pick::key(self, &key, modifiers);
+        }
+        if self.tag_menu_shown() {
+            return crate::action_bar::key(self, &key, modifiers);
         }
         if let Some(task) = crate::checkup::key(
             self,
@@ -170,6 +196,18 @@ impl App {
                 Task::none()
             };
         }
+        // Marks clear after the log, version picker, results, and context
+        // menu, and before the panel.
+        if key == Key::Named(Named::Escape)
+            && !self.marked.is_empty()
+            && !(self.panel_log_visible()
+                || self.version_visible()
+                || self.checkup_visible()
+                || self.action_menu.is_some())
+        {
+            self.clear_marks();
+            return Task::none();
+        }
         match action(
             &key,
             modifiers,
@@ -195,13 +233,15 @@ impl App {
             Action::ClearSearch => self.update(Message::SearchChanged(String::new())),
             Action::GridFromSearch => {
                 self.interrupt_zoom();
-                // With nothing shown there's nowhere to go, so the kept
+                // With nothing in view there's nowhere to go, so the kept
                 // selection and the search's focus both stay.
-                if self.filtered().is_empty() {
+                if self.grid_places().ids.is_empty() {
                     return Task::none();
                 }
                 let old = self.selected.clone();
-                self.selected = self.filtered().first().map(|card| card.name.clone());
+                if let Some(first) = self.grid_places().ids.first() {
+                    self.set_cursor(first.clone());
+                }
                 if self.selected != old {
                     self.selection_changed();
                 }
@@ -222,20 +262,27 @@ impl App {
             Action::Move(direction) => {
                 self.interrupt_zoom();
                 let old = self.selected.clone();
-                let filtered = self.filtered();
+                let places = self.grid_places();
                 // A selection the filters hide stays put when there's
                 // nothing to move to.
-                if filtered.is_empty() {
+                if places.ids.is_empty() {
                     return Task::none();
                 }
-                let current = self
-                    .selected
-                    .as_ref()
-                    .and_then(|name| filtered.iter().position(|card| &card.name == name));
-                let columns = self.columns();
-                let next = move_index(current, filtered.len(), columns, direction);
-                let next_name = next.map(|index| filtered[index].name.clone());
-                self.selected = next_name;
+                // The arrows walk slots, so stepping onto another copy of
+                // the selected game moves the cursor and leaves the panel.
+                // A cursor on a header starts from there.
+                let current = match self.header_cursor().and_then(|key| {
+                    places
+                        .headers
+                        .iter()
+                        .position(|place| &place.header.key == key)
+                }) {
+                    Some(header) => Some(Spot::Header(header)),
+                    None => self.selected_index(&places).map(Spot::Card),
+                };
+                if let Some(next) = walk(&places, current, direction) {
+                    self.set_cursor(places.ids[next].clone());
+                }
                 if self.selected != old {
                     self.selection_changed();
                 }
@@ -273,6 +320,34 @@ impl App {
                 }
                 self.update(Message::Random(crate::random_pick::Event::Pick))
             }
+            // Search has no use for Ctrl+L, but anything else that took it
+            // keeps it.
+            Action::ToggleLayout => {
+                if captured && !search_focused {
+                    return Task::none();
+                }
+                self.update(Message::Layout(crate::layout_switch::Event::Toggle))
+            }
+            // A captured Ctrl+A is the log's or the search's own select all.
+            Action::MarkAll => {
+                if captured || !self.marking_keys_free() {
+                    return Task::none();
+                }
+                self.mark_all();
+                Task::none()
+            }
+            // A focused button takes Space only when it isn't a repeat, so
+            // whether anything has focus is asked rather than read from the
+            // capture.
+            Action::MarkSelected => {
+                if captured || !self.marking_keys_free() || !self.selected_shown() {
+                    return Task::none();
+                }
+                iced::advanced::widget::operate(
+                    iced::advanced::widget::operation::focusable::count(),
+                )
+                .map(|count| Message::SpaceFocus(count.focused.is_some()))
+            }
             Action::OpenOrPlay => {
                 if self.action_menu.is_some()
                     || self.version_visible()
@@ -283,7 +358,7 @@ impl App {
                 } else if self.panel_open {
                     self.start_selected()
                 } else if let Some(name) = self.selected.clone() {
-                    self.update(Message::Select(name))
+                    self.update(Message::OpenCard(name))
                 } else {
                     Task::none()
                 }
@@ -291,11 +366,12 @@ impl App {
         }
     }
 
-    /// The selected card is in the shown grid, whatever else hides it.
+    /// The selected game has a copy in view: shown, and not only in
+    /// collapsed sections (plan 0062, question 22).
     pub(crate) fn selected_shown(&self) -> bool {
         self.selected
             .as_ref()
-            .is_some_and(|name| self.filtered().iter().any(|card| &card.name == name))
+            .is_some_and(|name| self.grid_places().first(name).is_some())
     }
 
     pub(crate) fn selection_changed(&mut self) {
@@ -310,20 +386,100 @@ impl App {
         self.panel_note = None;
     }
 
+    /// Brings the card the cursor is on into view, now or, while the grid
+    /// moves, once it settles.
     pub(crate) fn scroll_selection(&mut self) -> Task<Message> {
-        let Some(name) = self.selected.as_deref() else {
+        let Some(name) = self.selected.clone() else {
             return Task::none();
         };
-        let name = name.to_owned();
         if self.grid_motion.active() || self.zooming.moving() {
-            self.grid_scroll_after_settle = Some(name.clone());
+            // The copy is found again when it fires, so it follows the
+            // cursor meanwhile.
+            self.grid_scroll_after_settle = Some(name);
         }
+        // A selection the grid doesn't show has no card to find.
+        let Some(slot) = self.selected_slot() else {
+            return Task::none();
+        };
         let generation = self.grid_revision();
-        crate::grid_motion::locate_card(&name)
-            .map(move |bounds| Message::GridCardLocated(name.clone(), generation, bounds))
+        crate::grid_motion::locate_card(&slot)
+            .map(move |bounds| Message::GridCardLocated(slot.clone(), generation, bounds))
     }
 }
 
+/// Where the cursor is: on a card's slot, or on a section's header.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Spot {
+    Card(usize),
+    Header(usize),
+}
+
+/// The slot an arrow moves the cursor to from `current`, the first slot
+/// without one. Left and Right follow the shown order and wrap; from a
+/// header they go to the cards either side of it. Up and Down go to the
+/// nearest row above or below by where the slots sit, so they cross
+/// section headers, and land on the slot whose middle is nearest the
+/// cursor's, the leftmost on a tie; from a header that's the row's first.
+/// With no row there, the cursor stays: `None` from a header.
+pub(crate) fn walk(
+    places: &crate::grid_motion::Places,
+    current: Option<Spot>,
+    direction: Direction,
+) -> Option<usize> {
+    let count = places.slots.len();
+    if count == 0 {
+        return None;
+    }
+    let (here, middle, before, after) = match current {
+        None => return Some(0),
+        Some(Spot::Card(index)) => {
+            let here = places.slots[index];
+            (here, here.center_x(), index + count - 1, index + 1)
+        }
+        Some(Spot::Header(header)) => {
+            let place = places.headers.get(header)?;
+            let at = place.header.at;
+            (place.slot, place.slot.x, at + count - 1, at)
+        }
+    };
+    let stay = match current {
+        Some(Spot::Card(index)) => Some(index),
+        _ => None,
+    };
+    let row = match direction {
+        Direction::Left => return Some(before % count),
+        Direction::Right => return Some(after % count),
+        Direction::Up => places
+            .slots
+            .iter()
+            .map(|slot| slot.y)
+            .filter(|y| *y < here.y)
+            .reduce(f32::max),
+        Direction::Down => places
+            .slots
+            .iter()
+            .map(|slot| slot.y)
+            .filter(|y| *y > here.y)
+            .reduce(f32::min),
+    };
+    let Some(row) = row else {
+        return stay;
+    };
+    places
+        .slots
+        .iter()
+        .enumerate()
+        .filter(|(_, slot)| slot.y == row)
+        .min_by(|(_, a), (_, b)| {
+            (a.center_x() - middle)
+                .abs()
+                .total_cmp(&(b.center_x() - middle).abs())
+        })
+        .map(|(index, _)| index)
+}
+
+/// The arrows on one uniform grid, as the art picker's are. `walk` moves
+/// the same way over a flat library.
 pub(crate) fn move_index(
     selected: Option<usize>,
     count: usize,

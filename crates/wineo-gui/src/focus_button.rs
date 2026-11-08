@@ -26,16 +26,7 @@ pub(crate) fn control<'a, M: Clone + 'a>(
     id: impl Into<iced::widget::Id>,
     on_press: M,
 ) -> Element<'a, M> {
-    Element::new(FocusControl {
-        content,
-        enabled,
-        id: id.into(),
-        on_press,
-        mouse_focus: true,
-        leaves_submit: false,
-        exclude: None,
-        menu: None,
-    })
+    Element::new(FocusControl::new(content, enabled, id, on_press))
 }
 
 /// A control that also takes X while focused, sending `on_exclude`, for a
@@ -47,14 +38,8 @@ pub(crate) fn excludable<'a, M: Clone + 'a>(
     on_exclude: M,
 ) -> Element<'a, M> {
     Element::new(FocusControl {
-        content,
-        enabled: true,
-        id: id.into(),
-        on_press,
-        mouse_focus: true,
-        leaves_submit: false,
         exclude: Some(on_exclude),
-        menu: None,
+        ..FocusControl::new(content, true, id, on_press)
     })
 }
 
@@ -70,14 +55,27 @@ pub(crate) fn with_menu<'a, M: Clone + 'a>(
     on_menu: M,
 ) -> Element<'a, M> {
     Element::new(FocusControl {
-        content,
-        enabled,
-        id: id.into(),
-        on_press,
-        mouse_focus: true,
-        leaves_submit: false,
-        exclude: None,
         menu: Some(on_menu),
+        ..FocusControl::new(content, enabled, id, on_press)
+    })
+}
+
+/// A row of a saved list that can also be renamed and deleted: R sends
+/// `on_rename` and Delete `on_delete` while it has focus, and a right-click,
+/// Shift+F10, or the Menu key sends `on_menu`, as `with_menu` does.
+pub(crate) fn editable_row<'a, M: Clone + 'a>(
+    content: Element<'a, M>,
+    id: impl Into<iced::widget::Id>,
+    on_press: M,
+    on_menu: M,
+    on_rename: M,
+    on_delete: M,
+) -> Element<'a, M> {
+    Element::new(FocusControl {
+        menu: Some(on_menu),
+        rename: Some(on_rename),
+        delete: Some(on_delete),
+        ..FocusControl::new(content, true, id, on_press)
     })
 }
 
@@ -112,14 +110,8 @@ fn leaves_submit<'a, M: Clone + 'a>(
     on_press: M,
 ) -> Element<'a, M> {
     Element::new(FocusControl {
-        content,
-        enabled,
-        id: id.into(),
-        on_press,
-        mouse_focus: true,
         leaves_submit: true,
-        exclude: None,
-        menu: None,
+        ..FocusControl::new(content, enabled, id, on_press)
     })
 }
 
@@ -133,14 +125,24 @@ pub(crate) fn keyboard_control<'a, M: Clone + 'a>(
     on_press: M,
 ) -> Element<'a, M> {
     Element::new(FocusControl {
-        content,
-        enabled,
-        id: id.into(),
-        on_press,
         mouse_focus: false,
-        leaves_submit: false,
-        exclude: None,
-        menu: None,
+        ..FocusControl::new(content, enabled, id, on_press)
+    })
+}
+
+/// A two-way segment as one control, like a radio group: it takes focus
+/// only from the keyboard, since a click already moves the segment's thumb,
+/// and while focused Enter, Space, Left, and Right all press it. Left and
+/// Right are captured, so they never reach the library's selection.
+pub(crate) fn segment<'a, M: Clone + 'a>(
+    content: Element<'a, M>,
+    id: impl Into<iced::widget::Id>,
+    on_press: M,
+) -> Element<'a, M> {
+    Element::new(FocusControl {
+        mouse_focus: false,
+        arrows: true,
+        ..FocusControl::new(content, true, id, on_press)
     })
 }
 
@@ -261,6 +263,39 @@ struct FocusControl<'a, M, R: AdvancedRenderer = iced::Renderer> {
     exclude: Option<M>,
     /// Sent for the keys and click that open a context menu.
     menu: Option<M>,
+    /// Left and Right press it as well, for a segment of two choices.
+    arrows: bool,
+    /// Sent for R while focused, and `delete` for Delete, for a row that
+    /// can be renamed or deleted from the keyboard. Like `exclude`, the
+    /// control owns the keys, since its popup can't tell which row is
+    /// focused.
+    rename: Option<M>,
+    delete: Option<M>,
+}
+
+impl<'a, M, R: AdvancedRenderer> FocusControl<'a, M, R> {
+    /// A control with no extra keys, arrows, or menu, which a click
+    /// focuses too. Each constructor changes only what it adds.
+    fn new(
+        content: Element<'a, M, iced::Theme, R>,
+        enabled: bool,
+        id: impl Into<iced::widget::Id>,
+        on_press: M,
+    ) -> Self {
+        Self {
+            content,
+            enabled,
+            id: id.into(),
+            on_press,
+            mouse_focus: true,
+            leaves_submit: false,
+            exclude: None,
+            menu: None,
+            arrows: false,
+            rename: None,
+            delete: None,
+        }
+    }
 }
 
 #[derive(Default)]
@@ -386,6 +421,28 @@ where
                 shell.capture_event();
                 return;
             }
+            Event::Keyboard(iced::keyboard::Event::KeyPressed {
+                key:
+                    iced::keyboard::Key::Named(
+                        iced::keyboard::key::Named::ArrowLeft
+                        | iced::keyboard::key::Named::ArrowRight,
+                    ),
+                modifiers,
+                repeat,
+                ..
+            }) if self.arrows
+                && self.enabled
+                && state.focused
+                && !(modifiers.control() || modifiers.alt() || modifiers.logo()) =>
+            {
+                // A held key repeats, and a repeat must not slip through to
+                // the library's selection, nor flip the layout back and forth.
+                if !repeat {
+                    shell.publish(self.on_press.clone());
+                }
+                shell.capture_event();
+                return;
+            }
             Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Right))
                 if self.enabled && cursor.is_over(layout.bounds()) =>
             {
@@ -431,6 +488,37 @@ where
                     return;
                 }
             }
+            Event::Keyboard(iced::keyboard::Event::KeyPressed {
+                key: iced::keyboard::Key::Character(character),
+                modifiers,
+                repeat: false,
+                ..
+            }) if self.enabled
+                && state.focused
+                && character.eq_ignore_ascii_case("r")
+                && !(modifiers.control() || modifiers.alt() || modifiers.logo()) =>
+            {
+                if let Some(rename) = &self.rename {
+                    shell.publish(rename.clone());
+                    shell.capture_event();
+                    return;
+                }
+            }
+            Event::Keyboard(iced::keyboard::Event::KeyPressed {
+                key: iced::keyboard::Key::Named(iced::keyboard::key::Named::Delete),
+                modifiers,
+                repeat: false,
+                ..
+            }) if self.enabled
+                && state.focused
+                && !(modifiers.control() || modifiers.alt() || modifiers.logo()) =>
+            {
+                if let Some(delete) = &self.delete {
+                    shell.publish(delete.clone());
+                    shell.capture_event();
+                    return;
+                }
+            }
             _ => {}
         }
 
@@ -456,6 +544,7 @@ where
         cursor: mouse::Cursor,
         viewport: &Rectangle,
     ) {
+        let focused = self.enabled && tree.state.downcast_ref::<State>().focused;
         self.content.as_widget().draw(
             &tree.children[0],
             renderer,
@@ -466,7 +555,7 @@ where
             viewport,
         );
 
-        if self.enabled && tree.state.downcast_ref::<State>().focused {
+        if focused {
             renderer.fill_quad(
                 renderer::Quad {
                     bounds: layout.bounds().expand(2.0),
@@ -525,16 +614,9 @@ mod tests {
     /// answer it gave.
     fn run_undo_focused(enabled: bool, focus: bool) -> Vec<bool> {
         let button = iced::widget::button::Button::<crate::Message, iced::Theme, ()>::new("Undo");
-        let mut widget: Element<'_, crate::Message, iced::Theme, ()> = Element::new(FocusControl {
-            content: button.into(),
-            enabled,
-            id: UNDO_ID.into(),
-            on_press: crate::Message::Undo,
-            mouse_focus: true,
-            leaves_submit: false,
-            exclude: None,
-            menu: None,
-        });
+        let mut widget: Element<'_, crate::Message, iced::Theme, ()> = Element::new(
+            FocusControl::new(button.into(), enabled, UNDO_ID, crate::Message::Undo),
+        );
         let mut tree = tree::Tree::new(widget.as_widget());
         let bounds = Size::new(100.0, 32.0);
         let node =
@@ -568,16 +650,9 @@ mod tests {
     fn focus_operation_registers_the_undo_id_and_enter_activates_it() {
         let button = iced::widget::button::Button::<crate::Message, iced::Theme, ()>::new("Undo")
             .on_press(crate::Message::Undo);
-        let mut widget: Element<'_, crate::Message, iced::Theme, ()> = Element::new(FocusControl {
-            content: button.into(),
-            enabled: true,
-            id: UNDO_ID.into(),
-            on_press: crate::Message::Undo,
-            mouse_focus: true,
-            leaves_submit: false,
-            exclude: None,
-            menu: None,
-        });
+        let mut widget: Element<'_, crate::Message, iced::Theme, ()> = Element::new(
+            FocusControl::new(button.into(), true, UNDO_ID, crate::Message::Undo),
+        );
         let mut tree = tree::Tree::new(widget.as_widget());
         let bounds = Size::new(100.0, 32.0);
         let node =
@@ -615,16 +690,9 @@ mod tests {
     fn focused_space_activates_but_unfocused_space_does_not() {
         let button = iced::widget::button::Button::<crate::Message, iced::Theme, ()>::new("Undo")
             .on_press(crate::Message::Undo);
-        let mut widget: Element<'_, crate::Message, iced::Theme, ()> = Element::new(FocusControl {
-            content: button.into(),
-            enabled: true,
-            id: UNDO_ID.into(),
-            on_press: crate::Message::Undo,
-            mouse_focus: true,
-            leaves_submit: false,
-            exclude: None,
-            menu: None,
-        });
+        let mut widget: Element<'_, crate::Message, iced::Theme, ()> = Element::new(
+            FocusControl::new(button.into(), true, UNDO_ID, crate::Message::Undo),
+        );
         let mut tree = tree::Tree::new(widget.as_widget());
         let bounds = Size::new(100.0, 32.0);
         let node =
@@ -764,16 +832,7 @@ mod tests {
                 let button =
                     iced::widget::button::Button::<crate::Message, iced::Theme, ()>::new("control");
                 let mut widget: Element<'_, crate::Message, iced::Theme, ()> =
-                    Element::new(FocusControl {
-                        content: button.into(),
-                        enabled: true,
-                        id: id.into(),
-                        on_press: on_press.clone(),
-                        mouse_focus: true,
-                        leaves_submit: false,
-                        exclude: None,
-                        menu: None,
-                    });
+                    Element::new(FocusControl::new(button.into(), true, id, on_press.clone()));
                 let mut tree = tree::Tree::new(widget.as_widget());
                 tree.state.downcast_mut::<State>().focus();
                 let bounds = Size::new(100.0, 32.0);
@@ -801,6 +860,10 @@ mod tests {
     }
 
     fn key_event(key: Named) -> Event {
+        key_with(key, keyboard::Modifiers::empty(), false)
+    }
+
+    fn key_with(key: Named, modifiers: keyboard::Modifiers, repeat: bool) -> Event {
         let key = Key::Named(key);
         Event::Keyboard(keyboard::Event::KeyPressed {
             key: key.clone(),
@@ -809,9 +872,154 @@ mod tests {
                 keyboard::key::NativeCode::Unidentified,
             ),
             location: keyboard::Location::Standard,
-            modifiers: keyboard::Modifiers::empty(),
+            modifiers,
             text: None,
-            repeat: false,
+            repeat,
         })
+    }
+
+    /// A segment around a button, laid out in 64 x 32.
+    fn segment_fixture() -> (
+        Element<'static, crate::Message, iced::Theme, ()>,
+        tree::Tree,
+        layout::Node,
+    ) {
+        let button = iced::widget::button::Button::<crate::Message, iced::Theme, ()>::new("List")
+            .on_press(crate::Message::Undo);
+        let mut widget: Element<'_, crate::Message, iced::Theme, ()> = Element::new(FocusControl {
+            mouse_focus: false,
+            arrows: true,
+            ..FocusControl::new(button.into(), true, "segment", crate::Message::Undo)
+        });
+        let mut tree = tree::Tree::new(widget.as_widget());
+        let node = widget.as_widget_mut().layout(
+            &mut tree,
+            &(),
+            &layout::Limits::new(Size::ZERO, Size::new(64.0, 32.0)),
+        );
+        (widget, tree, node)
+    }
+
+    fn send(
+        widget: &mut Element<'_, crate::Message, iced::Theme, ()>,
+        tree: &mut tree::Tree,
+        node: &layout::Node,
+        cursor: mouse::Cursor,
+        event: Event,
+    ) -> (Vec<crate::Message>, iced::event::Status) {
+        let mut messages = Vec::new();
+        let mut shell = Shell::new(&mut messages);
+        widget.as_widget_mut().update(
+            tree,
+            &event,
+            Layout::new(node),
+            cursor,
+            &(),
+            &mut iced::advanced::clipboard::Null,
+            &mut shell,
+            &Rectangle::with_size(Size::new(64.0, 32.0)),
+        );
+        let status = shell.event_status();
+        (messages, status)
+    }
+
+    #[test]
+    fn a_focused_segment_presses_on_enter_space_left_and_right_and_keeps_them() {
+        let (mut widget, mut tree, node) = segment_fixture();
+        let none = mouse::Cursor::Unavailable;
+        for key in [Named::ArrowLeft, Named::ArrowRight] {
+            let (messages, status) = send(&mut widget, &mut tree, &node, none, key_event(key));
+            assert!(messages.is_empty(), "unfocused, {key:?} is not its");
+            assert_eq!(status, iced::event::Status::Ignored);
+        }
+        tree.state.downcast_mut::<State>().focus();
+        for key in [
+            Named::Enter,
+            Named::Space,
+            Named::ArrowLeft,
+            Named::ArrowRight,
+        ] {
+            let (messages, status) = send(&mut widget, &mut tree, &node, none, key_event(key));
+            assert!(
+                matches!(messages.as_slice(), [crate::Message::Undo]),
+                "{key:?}"
+            );
+            assert_eq!(status, iced::event::Status::Captured, "{key:?}");
+        }
+        // Up and Down are not the segment's.
+        for key in [Named::ArrowUp, Named::ArrowDown] {
+            let (messages, status) = send(&mut widget, &mut tree, &node, none, key_event(key));
+            assert!(messages.is_empty());
+            assert_eq!(status, iced::event::Status::Ignored);
+        }
+        // A held arrow is kept from the library but flips only once.
+        let held = key_with(Named::ArrowRight, keyboard::Modifiers::empty(), true);
+        let (messages, status) = send(&mut widget, &mut tree, &node, none, held);
+        assert!(messages.is_empty());
+        assert_eq!(status, iced::event::Status::Captured);
+        // A shortcut with Ctrl is left to the app.
+        let ctrl = key_with(Named::ArrowLeft, keyboard::Modifiers::CTRL, false);
+        let (messages, status) = send(&mut widget, &mut tree, &node, none, ctrl);
+        assert!(messages.is_empty());
+        assert_eq!(status, iced::event::Status::Ignored);
+    }
+
+    #[test]
+    fn a_plain_focus_control_leaves_the_arrows_alone() {
+        let button = iced::widget::button::Button::<crate::Message, iced::Theme, ()>::new("Undo");
+        let mut widget: Element<'_, crate::Message, iced::Theme, ()> = Element::new(FocusControl {
+            mouse_focus: false,
+            ..FocusControl::new(button.into(), true, "plain", crate::Message::Undo)
+        });
+        let mut tree = tree::Tree::new(widget.as_widget());
+        tree.state.downcast_mut::<State>().focus();
+        let node = widget.as_widget_mut().layout(
+            &mut tree,
+            &(),
+            &layout::Limits::new(Size::ZERO, Size::new(64.0, 32.0)),
+        );
+        let (messages, status) = send(
+            &mut widget,
+            &mut tree,
+            &node,
+            mouse::Cursor::Unavailable,
+            key_event(Named::ArrowRight),
+        );
+        assert!(messages.is_empty());
+        assert_eq!(status, iced::event::Status::Ignored);
+    }
+
+    #[test]
+    fn a_click_presses_a_segment_but_never_focuses_it() {
+        let (mut widget, mut tree, node) = segment_fixture();
+        let mut operation =
+            iced::advanced::widget::operation::focusable::focus(iced::widget::Id::new("segment"));
+        widget
+            .as_widget_mut()
+            .operate(&mut tree, Layout::new(&node), &(), &mut operation);
+        assert!(tree.state.downcast_ref::<State>().focused, "Tab focuses it");
+
+        // Text has no size without a real renderer, so aim at the laid-out
+        // control rather than a fixed point.
+        let over = mouse::Cursor::Available(Layout::new(&node).bounds().center());
+        let press = Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left));
+        let release = Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left));
+        for _ in 0..2 {
+            let (mut messages, _) = send(&mut widget, &mut tree, &node, over, press.clone());
+            assert!(!tree.state.downcast_ref::<State>().focused);
+            messages.extend(send(&mut widget, &mut tree, &node, over, release.clone()).0);
+            assert!(
+                matches!(messages.as_slice(), [crate::Message::Undo]),
+                "the click still reaches the segment"
+            );
+        }
+
+        // Tab back to it, and Enter presses it.
+        widget
+            .as_widget_mut()
+            .operate(&mut tree, Layout::new(&node), &(), &mut operation);
+        assert!(tree.state.downcast_ref::<State>().focused);
+        let (messages, _) = send(&mut widget, &mut tree, &node, over, key_event(Named::Enter));
+        assert!(matches!(messages.as_slice(), [crate::Message::Undo]));
     }
 }

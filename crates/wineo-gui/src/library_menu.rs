@@ -1,5 +1,6 @@
-//! What the library toolbar's Sort menu, Filters popup, and dice menu share:
-//! one open at a time, opening under their button, and their rows.
+//! What the library toolbar's Sort menu, Filters popup, and dice menu share,
+//! along with the action bar's tag popup: one open at a time, opening at
+//! their button, and their rows.
 
 use iced::widget::{Space, button, container, mouse_area, svg};
 use iced::{Color, Element, Fill, Point, Rectangle, Task, border};
@@ -10,6 +11,8 @@ use crate::ui;
 use crate::{App, Message, focus_button};
 
 pub(crate) const CHECK: &[u8] = br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><path d="M3.5 8.5l3 3 6-6.5" fill="none" stroke="#000" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>"##;
+/// The dash in a check box whose choice holds for only some of the games.
+const DASH: &[u8] = br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><path d="M4 8h8" fill="none" stroke="#000" stroke-width="2" stroke-linecap="round"/></svg>"##;
 pub(crate) const CHEVRON: &[u8] = br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><path d="M4 6l4 4 4-4" fill="none" stroke="#000" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>"##;
 
 /// A request to open a menu while it looks up its button.
@@ -53,14 +56,18 @@ pub(crate) fn request_bounds(
 }
 
 impl App {
-    /// Any toolbar menu is open: Sort, Filters, or the dice's.
+    /// Any toolbar menu is open: Sort, Filters, the dice's, or the action
+    /// bar's tag popup.
     pub(crate) fn library_menu_open(&self) -> bool {
-        self.sort_menu || self.filter_menu || self.random_menu
+        self.sort_menu || self.filter_menu || self.random_menu || self.tag_menu
     }
 
     /// Any toolbar menu is showing over the Library.
     pub(crate) fn library_menu_shown(&self) -> bool {
-        self.sort_menu_shown() || self.filter_menu_shown() || self.random_menu_shown()
+        self.sort_menu_shown()
+            || self.filter_menu_shown()
+            || self.random_menu_shown()
+            || self.tag_menu_shown()
     }
 
     /// Whether a menu can open: nothing took the window since it was asked
@@ -71,6 +78,7 @@ impl App {
             || self.sort_menu
             || self.filter_menu
             || self.random_menu
+            || self.tag_menu
             || self.action_menu.is_some()
             || self.hook_stop_confirm.is_some()
             || self.section != crate::sidebar::Section::Library
@@ -83,9 +91,11 @@ impl App {
         self.sort_menu = false;
         self.filter_menu = false;
         self.random_menu = false;
+        self.tag_menu = false;
         self.sort_opening.cancel();
         self.filter_opening.cancel();
         self.random_opening.cancel();
+        self.tag_opening.cancel();
         self.action_menu = None;
     }
 }
@@ -351,6 +361,21 @@ pub(crate) fn check_box(on: bool, palette: Palette) -> Element<'static, Message>
             } else {
                 style
             }
+        })
+        .into()
+}
+
+/// `check_box` for a choice that holds for some of several games but not
+/// all: filled like a checked box, with a dash in place of the check.
+pub(crate) fn mixed_box(palette: Palette) -> Element<'static, Message> {
+    container(icon(DASH, ui::accent_ink(palette.primary), 12.0))
+        .width(16)
+        .height(16)
+        .center(16)
+        .style(move |_| {
+            container::Style::default()
+                .background(palette.primary)
+                .border(border::rounded(4).width(1).color(palette.primary))
         })
         .into()
 }

@@ -63,6 +63,9 @@ impl App {
         if let Some(problem) = scan.problem {
             self.problem_read(problem);
         }
+        if let Some(presets) = scan.presets {
+            self.presets_read(presets);
+        }
         let library = match scan.library {
             Some(result) if !self.refreshing => self.update(Message::Loaded(result)),
             _ => Task::none(),
@@ -162,19 +165,22 @@ impl App {
     /// waiting for.
     fn merge_cards(&mut self, mut cards: Vec<Card>) -> Task<Message> {
         self.flag_writes.reconcile(&mut cards);
+        self.tag_writes.reconcile(&mut cards);
         // A rescan that changed nothing the order reads keeps the order.
         let new_order = (self.cards.len() != cards.len()
             || !self
                 .cards
                 .iter()
                 .zip(&cards)
-                .all(|(old, new)| order::same_inputs(old, new)))
+                .all(|(old, new)| order::same_inputs(old, new, self.group)))
         .then(|| {
             order::Order::sorted(order::Of {
                 cards: &cards,
                 search: &self.search,
                 query: self.query,
                 filters: &self.filters,
+                group: self.group,
+                collapsed: &self.collapsed,
             })
         });
         let layout_changed = new_order.as_ref().is_some_and(|built| {
@@ -184,6 +190,9 @@ impl App {
                 || old.iter().zip(indices).any(|(old, &index)| {
                     old.name != cards[index].name || old.display_title != cards[index].display_title
                 })
+                // A game can change sections without moving in the flat
+                // order, like a State section on a launch.
+                || !built.same_sections(&self.order.sections(self.order_inputs()), &self.cards, &cards)
         });
         if self
             .selected
@@ -211,11 +220,14 @@ impl App {
             search: &self.search,
             query: self.query,
             filters: &self.filters,
+            group: self.group,
+            collapsed: &self.collapsed,
         };
         match new_order {
             Some(built) => self.order.replace(built, of),
             None => self.order.keep(of),
         }
+        self.prune_marks();
         self.refresh_facts();
         if layout_changed {
             // Settles a transition in flight too.

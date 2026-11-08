@@ -12,15 +12,16 @@ use wineo_core::paths::Paths;
 
 use crate::library::Card;
 use crate::library_menu::icon;
+use crate::slot::SlotId;
 use crate::ui;
 use crate::{App, Message, focus_button, rescan};
 
 pub(crate) const PANEL_FAVORITE_ID: &str = "panel-favorite";
 const NOTICE_TIME: Duration = Duration::from_secs(8);
 
-const STAR: &[u8] = br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><path d="M8 1.6l1.95 4.1 4.45.55-3.3 3.05.85 4.45L8 11.55l-3.95 2.2.85-4.45-3.3-3.05 4.45-.55z" fill="#000" stroke="#000" stroke-width="1" stroke-linejoin="round"/></svg>"##;
-const STAR_OUTLINE: &[u8] = br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><path d="M8 1.6l1.95 4.1 4.45.55-3.3 3.05.85 4.45L8 11.55l-3.95 2.2.85-4.45-3.3-3.05 4.45-.55z" fill="none" stroke="#000" stroke-width="1.3" stroke-linejoin="round"/></svg>"##;
-const EYE_OFF: &[u8] = br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><path d="M1.5 8s2.4-4.5 6.5-4.5S14.5 8 14.5 8s-2.4 4.5-6.5 4.5S1.5 8 1.5 8z" fill="none" stroke="#000" stroke-width="1.4" stroke-linejoin="round"/><circle cx="8" cy="8" r="2" fill="none" stroke="#000" stroke-width="1.4"/><path d="M2.5 13.5l11-11" fill="none" stroke="#000" stroke-width="1.4" stroke-linecap="round"/></svg>"##;
+pub(crate) const STAR: &[u8] = br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><path d="M8 1.6l1.95 4.1 4.45.55-3.3 3.05.85 4.45L8 11.55l-3.95 2.2.85-4.45-3.3-3.05 4.45-.55z" fill="#000" stroke="#000" stroke-width="1" stroke-linejoin="round"/></svg>"##;
+pub(crate) const STAR_OUTLINE: &[u8] = br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><path d="M8 1.6l1.95 4.1 4.45.55-3.3 3.05.85 4.45L8 11.55l-3.95 2.2.85-4.45-3.3-3.05 4.45-.55z" fill="none" stroke="#000" stroke-width="1.3" stroke-linejoin="round"/></svg>"##;
+pub(crate) const EYE_OFF: &[u8] = br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><path d="M1.5 8s2.4-4.5 6.5-4.5S14.5 8 14.5 8s-2.4 4.5-6.5 4.5S1.5 8 1.5 8z" fill="none" stroke="#000" stroke-width="1.4" stroke-linejoin="round"/><circle cx="8" cy="8" r="2" fill="none" stroke="#000" stroke-width="1.4"/><path d="M2.5 13.5l11-11" fill="none" stroke="#000" stroke-width="1.4" stroke-linecap="round"/></svg>"##;
 
 /// The poster marks' size and their backdrop, which keeps them readable on
 /// light and dark art alike.
@@ -60,7 +61,7 @@ impl Flag {
         }
     }
 
-    fn set(self, card: &mut Card, value: bool) {
+    pub(crate) fn set(self, card: &mut Card, value: bool) {
         match self {
             Self::Favorite => card.favorite = value,
             Self::Hidden => card.hidden = value,
@@ -100,9 +101,9 @@ impl Flag {
 pub(crate) enum Event {
     /// The context menu row or the panel star for this card.
     Toggle(String, Flag),
-    /// A left click on this card's poster star, which pops it when it
+    /// A left click on the poster star in this slot, which pops it when it
     /// favorites the card.
-    PosterStar(String),
+    PosterStar(SlotId),
     /// A write finished.
     Saved(Saved),
 }
@@ -215,17 +216,18 @@ pub(crate) fn update(app: &mut App, event: Event) -> Task<Message> {
             app.action_menu = None;
             app.toggle_flag(&name, flag)
         }
-        Event::PosterStar(name) => {
+        Event::PosterStar(slot) => {
             app.action_menu = None;
             let favorite = |app: &App| {
                 app.cards
                     .iter()
-                    .any(|card| card.name == name && card.favorite)
+                    .any(|card| card.name == slot.name() && card.favorite)
             };
             let was = favorite(app);
-            let task = app.toggle_flag(&name, Flag::Favorite);
+            let task = app.toggle_flag(slot.name(), Flag::Favorite);
+            // Only the copy clicked pops.
             if !was && favorite(app) && !app.reduced_motion && app.collapse.idle() {
-                app.star_pops.start(&name);
+                app.star_pops.start(&slot);
             }
             task
         }
@@ -253,16 +255,17 @@ impl App {
             self.flag_notice(notice);
             return Task::none();
         }
-        // Hiding the selected card hands its place to the one after it.
-        let place = (flag == Flag::Hidden
+        // Hiding the selected card hands the cursor's place to the one
+        // after it.
+        let successor = (flag == Flag::Hidden
             && value
             && !self.filters.show_hidden
             && self.selected.as_deref() == Some(name))
-        .then(|| self.filtered().iter().position(|card| card.name == name))
+        .then(|| self.successor_after_leaving(|gone| gone == name))
         .flatten();
         let write = self.write_flag(name, added, flag, value);
         let shown = self.set_flag(name, flag, value);
-        let selection = place.map_or_else(Task::none, |place| self.select_in_place(place));
+        let selection = successor.map_or_else(Task::none, |next| self.select_successor(next));
         Task::batch([shown, selection, write])
     }
 
@@ -388,11 +391,7 @@ impl App {
     /// now on, and the order is rebuilt; cards that moved snap, and the
     /// selection stays in view.
     fn set_flag(&mut self, name: &str, flag: Flag, value: bool) -> Task<Message> {
-        let before: Vec<String> = self
-            .filtered()
-            .iter()
-            .map(|card| card.name.clone())
-            .collect();
+        let before = self.shown_order();
         let Some(card) = self.cards.iter_mut().find(|card| card.name == name) else {
             return Task::none();
         };
@@ -400,16 +399,23 @@ impl App {
             return Task::none();
         }
         flag.set(card, value);
+        self.cards_edited(&before)
+    }
+
+    /// The slots shown now, in order, for `cards_edited`. A tag edit can
+    /// move a game between sections without moving it in the flat order.
+    pub(crate) fn shown_order(&self) -> Vec<crate::slot::SlotId> {
+        self.grid_places().ids.clone()
+    }
+
+    /// After the window changed its own cards: the rescan compares against
+    /// them from now on and the order is rebuilt. When that moved anything
+    /// from `before`, cards snap and the selection stays in view.
+    pub(crate) fn cards_edited(&mut self, before: &[crate::slot::SlotId]) -> Task<Message> {
         self.shown.show_library(Ok(self.cards.clone()));
+        self.order.cards_edited();
         self.reorder();
-        let moved = {
-            let after = self.filtered();
-            after.len() != before.len()
-                || after
-                    .iter()
-                    .zip(&before)
-                    .any(|(card, name)| &card.name != name)
-        };
+        let moved = self.grid_places().ids != before;
         if !moved {
             return Task::none();
         }
@@ -421,20 +427,43 @@ impl App {
         }
     }
 
-    /// Selects the card now at `place` in the shown order, or the last one,
-    /// or nothing when nothing is left.
-    fn select_in_place(&mut self, place: usize) -> Task<Message> {
-        let shown = self.filtered();
-        let Some(next) = shown
-            .get(place)
-            .or(shown.last())
-            .map(|card| card.name.clone())
-        else {
+    /// The cursor's successor once every slot of the games `leaving` picks
+    /// is gone: the first slot after it that stays, else the nearest one
+    /// before it, found again by identity rather than by place, since a
+    /// hide can also bring games into Recently played.
+    pub(crate) fn successor_after_leaving(
+        &self,
+        leaving: impl Fn(&str) -> bool,
+    ) -> Option<Successor> {
+        let places = self.grid_places();
+        let at = self.selected_index(&places)?;
+        let stays = |slot: &&SlotId| !leaving(slot.name());
+        let after = places.ids[at + 1..].iter().filter(stays);
+        let before = places.ids[..at].iter().rev().filter(stays);
+        Some(Successor {
+            candidates: after.chain(before).cloned().collect(),
+        })
+    }
+
+    /// Puts the cursor on the first of `successor`'s candidates shown now,
+    /// else the last slot, or selects nothing when nothing is left.
+    pub(crate) fn select_successor(&mut self, successor: Successor) -> Task<Message> {
+        let places = self.grid_places();
+        let next = successor
+            .candidates
+            .into_iter()
+            .find(|slot| places.index(slot).is_some())
+            .or_else(|| places.ids.last().cloned());
+        let Some(next) = next else {
             self.selected = None;
             self.close_panel();
             return Task::none();
         };
-        self.selected = Some(next);
+        self.select_slot(next)
+    }
+
+    fn select_slot(&mut self, next: SlotId) -> Task<Message> {
+        self.set_cursor(next);
         self.selection_changed();
         Task::batch([
             self.scroll_selection(),
@@ -442,6 +471,13 @@ impl App {
             self.load_panel_art(),
         ])
     }
+}
+
+/// Where the cursor goes after a hide takes its game.
+pub(crate) struct Successor {
+    /// The slots whose games stay, as shown before the hide: those after
+    /// the cursor in order, then those before it, nearest first.
+    candidates: Vec<SlotId>,
 }
 
 /// The star in a poster's top right corner: a filled one on a favorite, or
@@ -458,7 +494,13 @@ pub(crate) fn poster_marks(
         primary: Color::WHITE,
         lift: 0.0,
     };
-    poster_marks_faded(card, alpha, hovered, star)
+    poster_marks_faded(
+        &SlotId::from(card.name.as_str()),
+        card,
+        alpha,
+        hovered,
+        star,
+    )
 }
 
 /// How the poster star draws beyond its card's fade.
@@ -477,6 +519,7 @@ pub(crate) struct StarLook {
 
 /// `poster_marks` with the star drawn as `look` says.
 pub(crate) fn poster_marks_faded(
+    slot: &SlotId,
     card: &Card,
     alpha: f32,
     hovered: bool,
@@ -505,14 +548,14 @@ pub(crate) fn poster_marks_faded(
         .height(STAR_TARGET)
         .padding((STAR_TARGET - size) / 2.0)
         .on_press_maybe(
-            (card.favorite || hovered).then(|| Message::Mark(Event::PosterStar(card.name.clone()))),
+            (card.favorite || hovered).then(|| Message::Mark(Event::PosterStar(slot.clone()))),
         )
         .style(|_, _| button::Style::default());
     // A left press is the button's, so only the pointer's coming and
     // going reach here.
     let star = mouse_area(target)
-        .on_enter(Message::StarHover(card.name.clone(), true))
-        .on_exit(Message::StarHover(card.name.clone(), false));
+        .on_enter(Message::StarHover(slot.clone(), true))
+        .on_exit(Message::StarHover(slot.clone(), false));
     Some(
         container(star)
             .width(Fill)

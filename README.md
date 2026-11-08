@@ -271,11 +271,13 @@ couple of seconds.
 </p>
 
 - **Library.** Every environment is a poster card with its art, whether
-  it's running, and how long you've played it. Search by title, name, or
-  tag; sort by name, last played, playtime, or date added; and filter by
-  store (Steam, GOG, Epic, Amazon), platform, or tag. Star favorites, hide
-  what you don't want to see, zoom the grid from 60% to 200%, or switch to
-  posters only.
+  it's running, and how long you've played it, or a row in the list view
+  with columns you can sort by. Search by title, name, or tag; sort by name,
+  last played, playtime, date added, source, or tags; and filter by store
+  (Steam, GOG, Epic, Amazon), platform, or tag. Star favorites, hide what
+  you don't want to see, zoom the grid from 60% to 200%, or switch to
+  posters only. Mark several games to tag, favorite, or hide them all at
+  once.
 - **A panel for each game.** Click a card for its hero art and logo, state,
   playtime, sessions, and tags, with Play and Stop, the live log, settings,
   art, and more actions. Double-click a card to launch it right away.

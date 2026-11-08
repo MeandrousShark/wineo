@@ -2,12 +2,14 @@
 //! follows its hover, its glow follows the pointer on the star itself, and
 //! its overlay follows its hover or selection, over the grid's card fade.
 //! Only cards that are still fading are stored: a settled card's values are
-//! what its hover and selection say.
+//! what its hover and selection say. The hover and the glow belong to one
+//! slot, and the selection to every slot of the selected game.
 
 use std::collections::HashMap;
 use std::time::Instant;
 
 use crate::grid_motion::FADE;
+use crate::slot::SlotId;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 struct Fade {
@@ -18,47 +20,50 @@ struct Fade {
 
 impl Fade {
     fn of(
-        name: &str,
-        hovered: Option<&str>,
+        slot: &SlotId,
+        hovered: Option<&SlotId>,
         selected: Option<&str>,
-        glowing: Option<&str>,
+        glowing: Option<&SlotId>,
     ) -> Self {
-        let hovered = hovered == Some(name);
-        let selected = selected == Some(name);
+        let hovered = hovered == Some(slot);
+        let selected = selected == Some(slot.name());
         Self {
             star: if hovered { 1.0 } else { 0.0 },
             overlay: if hovered || selected { 1.0 } else { 0.0 },
-            glow: if glowing == Some(name) { 1.0 } else { 0.0 },
+            glow: if glowing == Some(slot) { 1.0 } else { 0.0 },
         }
     }
 }
 
 #[derive(Debug, Default)]
 pub(crate) struct HoverFades {
-    fades: HashMap<String, Fade>,
+    fades: HashMap<SlotId, Fade>,
     /// The hover and selection last seen, which the fades head for. Kept
     /// apart from the app's own so a fade still knows where it was going
     /// after they change, and so a change by any path retargets.
-    hovered: Option<String>,
+    hovered: Option<SlotId>,
     selected: Option<String>,
     /// The card whose star has the pointer and takes presses.
-    glowing: Option<String>,
+    glowing: Option<SlotId>,
     last_tick: Option<Instant>,
     generation: u64,
 }
 
 impl HoverFades {
     /// Retargets the cards whose hover, selection, or glow changed since the
-    /// last call, each from where it's drawn now.
+    /// last call, each from where it's drawn now. `shown` is every slot,
+    /// for finding the selected game's, and is only read when
+    /// `selection_moves` says so.
     pub(crate) fn sync(
         &mut self,
-        hovered: Option<&str>,
+        hovered: Option<&SlotId>,
         selected: Option<&str>,
-        glowing: Option<&str>,
+        glowing: Option<&SlotId>,
+        shown: &[SlotId],
     ) {
-        if hovered == self.hovered.as_deref()
+        if hovered == self.hovered.as_ref()
             && selected == self.selected.as_deref()
-            && glowing == self.glowing.as_deref()
+            && glowing == self.glowing.as_ref()
         {
             return;
         }
@@ -66,28 +71,32 @@ impl HoverFades {
         let old_hovered = self.hovered.take();
         let old_selected = self.selected.take();
         let old_glowing = self.glowing.take();
-        let names = [
-            old_hovered.as_deref(),
-            old_selected.as_deref(),
-            old_glowing.as_deref(),
-            hovered,
-            selected,
-            glowing,
-        ];
-        for name in names.into_iter().flatten() {
+        let copies: Vec<SlotId> = if selected == old_selected.as_deref() {
+            Vec::new()
+        } else {
+            shown
+                .iter()
+                .filter(|slot| {
+                    Some(slot.name()) == selected || Some(slot.name()) == old_selected.as_deref()
+                })
+                .cloned()
+                .collect()
+        };
+        let slots = [old_hovered.as_ref(), old_glowing.as_ref(), hovered, glowing];
+        for slot in slots.into_iter().flatten().chain(&copies) {
             let before = Fade::of(
-                name,
-                old_hovered.as_deref(),
+                slot,
+                old_hovered.as_ref(),
                 old_selected.as_deref(),
-                old_glowing.as_deref(),
+                old_glowing.as_ref(),
             );
-            if before != Fade::of(name, hovered, selected, glowing) {
-                self.fades.entry(name.to_owned()).or_insert(before);
+            if before != Fade::of(slot, hovered, selected, glowing) {
+                self.fades.entry(slot.clone()).or_insert(before);
             }
         }
-        self.hovered = hovered.map(str::to_owned);
+        self.hovered = hovered.cloned();
         self.selected = selected.map(str::to_owned);
-        self.glowing = glowing.map(str::to_owned);
+        self.glowing = glowing.cloned();
         // The first frame starts the clock, so a fade sets out from what's
         // on screen.
         if !was_active && self.active() {
@@ -96,28 +105,33 @@ impl HoverFades {
         }
     }
 
-    /// Puts `name`'s star at full strength: a hovered favorite's filled
+    /// Puts `slot`'s star at full strength: a hovered favorite's filled
     /// star hides it, so an unfavorite under the pointer shows the outline
     /// star at once.
-    pub(crate) fn fill_star(&mut self, name: &str) {
-        if let Some(fade) = self.fades.get_mut(name) {
+    pub(crate) fn fill_star(&mut self, slot: &SlotId) {
+        if let Some(fade) = self.fades.get_mut(slot) {
             fade.star = 1.0;
         }
         self.drop_settled();
     }
 
-    /// The hover the fades last headed for.
-    pub(crate) fn hovered(&self) -> Option<&str> {
-        self.hovered.as_deref()
+    /// Whether `sync` to `selected` would retarget the selection's slots.
+    pub(crate) fn selection_moves(&self, selected: Option<&str>) -> bool {
+        selected != self.selected.as_deref()
     }
 
-    pub(crate) fn fading(&self, name: &str) -> bool {
-        self.fades.contains_key(name)
+    /// The hover the fades last headed for.
+    pub(crate) fn hovered(&self) -> Option<&SlotId> {
+        self.hovered.as_ref()
+    }
+
+    pub(crate) fn fading(&self, slot: &SlotId) -> bool {
+        self.fades.contains_key(slot)
     }
 
     /// Drops the fades of cards `shown` no longer has.
-    pub(crate) fn retain(&mut self, shown: impl Fn(&str) -> bool) {
-        self.fades.retain(|name, _| shown(name));
+    pub(crate) fn retain(&mut self, shown: impl Fn(&SlotId) -> bool) {
+        self.fades.retain(|slot, _| shown(slot));
         if !self.active() {
             self.last_tick = None;
         }
@@ -130,12 +144,12 @@ impl HoverFades {
         let previous = self.last_tick.unwrap_or(now);
         self.last_tick = Some(now.max(previous));
         let step = now.saturating_duration_since(previous).as_secs_f32() / FADE.as_secs_f32();
-        for (name, fade) in &mut self.fades {
+        for (slot, fade) in &mut self.fades {
             let target = Fade::of(
-                name,
-                self.hovered.as_deref(),
+                slot,
+                self.hovered.as_ref(),
                 self.selected.as_deref(),
-                self.glowing.as_deref(),
+                self.glowing.as_ref(),
             );
             fade.star = toward(fade.star, target.star, step);
             fade.overlay = toward(fade.overlay, target.overlay, step);
@@ -146,20 +160,20 @@ impl HoverFades {
 
     fn drop_settled(&mut self) {
         let (hovered, selected, glowing) = (
-            self.hovered.as_deref(),
+            self.hovered.as_ref(),
             self.selected.as_deref(),
-            self.glowing.as_deref(),
+            self.glowing.as_ref(),
         );
         self.fades
-            .retain(|name, fade| *fade != Fade::of(name, hovered, selected, glowing));
+            .retain(|slot, fade| *fade != Fade::of(slot, hovered, selected, glowing));
         if !self.active() {
             self.last_tick = None;
         }
     }
 
-    /// The star's and the overlay's strength on `name`, 0 to 1.
-    pub(crate) fn progress(&self, name: &str, hovered: bool, selected: bool) -> (f32, f32) {
-        self.fades.get(name).map_or(
+    /// The star's and the overlay's strength on `slot`, 0 to 1.
+    pub(crate) fn progress(&self, slot: &SlotId, hovered: bool, selected: bool) -> (f32, f32) {
+        self.fades.get(slot).map_or(
             (
                 if hovered { 1.0 } else { 0.0 },
                 if hovered || selected { 1.0 } else { 0.0 },
@@ -168,10 +182,10 @@ impl HoverFades {
         )
     }
 
-    /// The star's glow on `name`, 0 to 1.
-    pub(crate) fn glow(&self, name: &str, glowing: bool) -> f32 {
+    /// The star's glow on `slot`, 0 to 1.
+    pub(crate) fn glow(&self, slot: &SlotId, glowing: bool) -> f32 {
         self.fades
-            .get(name)
+            .get(slot)
             .map_or(if glowing { 1.0 } else { 0.0 }, |fade| fade.glow)
     }
 

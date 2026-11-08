@@ -161,7 +161,7 @@ fn only_store_platform_and_tag_filters_bring_the_tab() {
 #[test]
 fn the_tab_hangs_in_the_gap_above_the_first_poster() {
     let mut app = loaded(1200.0);
-    let _ = filter(&mut app, Event::ToggleStore("GOG"));
+    let _ = filter(&mut app, Event::ToggleStore(Store::Gog));
     placed(&mut app);
     let button = app.filter_button.unwrap();
     let probe = crate::layout_probe::probe(&mut app.view(), app.window_size);
@@ -189,10 +189,10 @@ fn chips_follow_the_popup_order() {
     let mut app = loaded(1600.0);
     for event in [
         Event::ToggleTag("rpg".into()),
-        Event::ToggleStore("Steam"),
-        Event::TogglePlatform("Windows"),
+        Event::ToggleStore(Store::Steam),
+        Event::TogglePlatform(Platform::Windows),
         Event::ToggleTag("Indie".into()),
-        Event::ToggleStore("GOG"),
+        Event::ToggleStore(Store::Gog),
         Event::ToggleTag("game".into()),
     ] {
         let _ = filter(&mut app, event);
@@ -200,9 +200,9 @@ fn chips_follow_the_popup_order() {
     assert_eq!(
         app.filter_chips(),
         [
-            Chip::Store("GOG"),
-            Chip::Store("Steam"),
-            Chip::Platform("Windows"),
+            Chip::Store(Store::Gog),
+            Chip::Store(Store::Steam),
+            Chip::Platform(Platform::Windows),
             Chip::Tag("game".into()),
             Chip::Tag("Indie".into()),
             Chip::Tag("rpg".into()),
@@ -218,19 +218,20 @@ fn chips_follow_the_popup_order() {
 #[test]
 fn a_chip_x_removes_only_its_filter() {
     let mut app = loaded(1200.0);
-    let _ = filter(&mut app, Event::ToggleStore("GOG"));
+    let _ = filter(&mut app, Event::ToggleStore(Store::Gog));
     let _ = filter(&mut app, Event::ToggleTag("game".into()));
     placed(&mut app);
     assert_eq!(shown(&app), ["papers-please"]);
 
     let mut laid = lay_out(app.view(), app.window_size);
-    let x = bounds(&mut laid, Chip::Store("GOG").id()).unwrap();
+    let x = bounds(&mut laid, Chip::Store(Store::Gog).id()).unwrap();
     let messages = click(&mut laid, x.center());
     drop(laid);
     assert!(
-        messages
-            .iter()
-            .any(|message| matches!(message, Message::Filter(Event::Remove(Chip::Store("GOG"))))),
+        messages.iter().any(|message| matches!(
+            message,
+            Message::Filter(Event::Remove(Chip::Store(Store::Gog)))
+        )),
         "{messages:?}"
     );
     for message in messages {
@@ -246,8 +247,8 @@ fn a_chip_x_removes_only_its_filter() {
 fn the_big_x_clears_every_chip_and_keeps_the_search() {
     let mut app = loaded(1200.0);
     let _ = app.update(Message::SearchChanged("a".into()));
-    let _ = filter(&mut app, Event::ToggleStore("GOG"));
-    let _ = filter(&mut app, Event::TogglePlatform("Native"));
+    let _ = filter(&mut app, Event::ToggleStore(Store::Gog));
+    let _ = filter(&mut app, Event::TogglePlatform(Platform::Native));
     let _ = filter(&mut app, Event::ToggleTag("game".into()));
     placed(&mut app);
     let mut laid = lay_out(app.view(), app.window_size);
@@ -283,10 +284,10 @@ fn fit_folds_what_doesnt_fit_into_more() {
 
 fn every_filter(app: &mut App) {
     for event in [
-        Event::ToggleStore("GOG"),
-        Event::ToggleStore("Steam"),
-        Event::TogglePlatform("Native"),
-        Event::TogglePlatform("Windows"),
+        Event::ToggleStore(Store::Gog),
+        Event::ToggleStore(Store::Steam),
+        Event::TogglePlatform(Platform::Native),
+        Event::TogglePlatform(Platform::Windows),
         Event::ToggleTag("game".into()),
         Event::ToggleTag("Indie".into()),
         Event::ToggleTag("rpg".into()),
@@ -422,8 +423,8 @@ fn remove_from_keyboard(app: &mut App, chip: Chip) -> Vec<Id> {
 fn removing_a_chip_from_the_keyboard_moves_focus_to_a_neighbor() {
     let mut app = loaded(1600.0);
     for event in [
-        Event::ToggleStore("GOG"),
-        Event::ToggleStore("Steam"),
+        Event::ToggleStore(Store::Gog),
+        Event::ToggleStore(Store::Steam),
         Event::ToggleTag("game".into()),
         Event::ToggleTag("rpg".into()),
     ] {
@@ -432,8 +433,8 @@ fn removing_a_chip_from_the_keyboard_moves_focus_to_a_neighbor() {
     placed(&mut app);
     // The first goes to the next.
     assert_eq!(
-        remove_from_keyboard(&mut app, Chip::Store("GOG")),
-        [Id::from(Chip::Store("Steam").id())]
+        remove_from_keyboard(&mut app, Chip::Store(Store::Gog)),
+        [Id::from(Chip::Store(Store::Steam).id())]
     );
     // A middle one goes to the next.
     assert_eq!(
@@ -443,11 +444,11 @@ fn removing_a_chip_from_the_keyboard_moves_focus_to_a_neighbor() {
     // The last goes to the previous.
     assert_eq!(
         remove_from_keyboard(&mut app, Chip::Tag("rpg".into())),
-        [Id::from(Chip::Store("Steam").id())]
+        [Id::from(Chip::Store(Store::Steam).id())]
     );
     // The only one leaves the tab, so focus goes back to Filters.
     assert_eq!(
-        remove_from_keyboard(&mut app, Chip::Store("Steam")),
+        remove_from_keyboard(&mut app, Chip::Store(Store::Steam)),
         [Id::new(FILTER_BUTTON_ID)]
     );
     assert!(app.filter_tab().is_none());
@@ -477,7 +478,7 @@ fn removing_a_chip_from_the_keyboard_falls_to_more_when_the_next_is_folded() {
     assert_eq!(app.window_size.width, app.filter_button.unwrap().x + tab);
     assert_eq!(app.filter_tab().unwrap().visible, 1);
     assert_eq!(
-        remove_from_keyboard(&mut app, Chip::Store("GOG")),
+        remove_from_keyboard(&mut app, Chip::Store(Store::Gog)),
         [Id::new(MORE_ID)]
     );
     assert_eq!(app.filter_tab().unwrap().visible, 0);
@@ -576,14 +577,14 @@ fn clicks_on_the_tab_never_reach_the_grid() {
 #[test]
 fn an_open_menu_keeps_the_tab_drawn_but_inert() {
     let mut app = loaded(1200.0);
-    let _ = filter(&mut app, Event::ToggleStore("GOG"));
+    let _ = filter(&mut app, Event::ToggleStore(Store::Gog));
     let _ = filter(&mut app, Event::ToggleTag("game".into()));
     placed(&mut app);
     let mut laid = lay_out(app.view(), app.window_size);
-    let x = bounds(&mut laid, Chip::Store("GOG").id()).unwrap();
+    let x = bounds(&mut laid, Chip::Store(Store::Gog).id()).unwrap();
     drop(laid);
 
-    let menus: [fn(&mut App); 4] = [
+    let menus: [fn(&mut App); 5] = [
         crate::sort_control::tests::open_sort,
         crate::filter_control::tests::open_filters,
         |app| {
@@ -600,6 +601,19 @@ fn an_open_menu_keeps_the_tab_drawn_but_inert() {
                 iced::Rectangle::new(iced::Point::new(600.0, 20.0), iced::Size::new(32.0, 32.0));
             let _ = app.update(Message::Random(Event::OpenUnder(request, Some(dice))));
             assert!(app.random_menu);
+        },
+        |app| {
+            use crate::action_bar::Event;
+            app.toggle_mark("papers-please");
+            let _ = app.update(Message::Tags(Event::ToggleMenu));
+            let request = app
+                .tag_opening
+                .pending
+                .expect("a request waits for the Tags button");
+            let tags =
+                iced::Rectangle::new(iced::Point::new(500.0, 740.0), iced::Size::new(80.0, 32.0));
+            let _ = app.update(Message::Tags(Event::OpenAbove(request, Some(tags))));
+            assert!(app.tag_menu_shown());
         },
     ];
     for open in menus {
@@ -620,7 +634,7 @@ fn an_open_menu_keeps_the_tab_drawn_but_inert() {
             "{messages:?}"
         );
         // A stale press does nothing either.
-        let _ = filter(&mut app, Event::Remove(Chip::Store("GOG")));
+        let _ = filter(&mut app, Event::Remove(Chip::Store(Store::Gog)));
         let _ = filter(&mut app, Event::ClearChips);
         assert_eq!(app.filters.active(), 2);
         app.close_library_menus();
@@ -776,8 +790,8 @@ fn the_wheel_over_the_tab_scrolls_the_grid_like_the_grid_itself() {
 fn a_mouse_removal_leaves_no_ring_on_the_tab() {
     let mut app = loaded(1600.0);
     for event in [
-        Event::ToggleStore("GOG"),
-        Event::TogglePlatform("Windows"),
+        Event::ToggleStore(Store::Gog),
+        Event::TogglePlatform(Platform::Windows),
         Event::ToggleTag("Indie".into()),
         Event::ToggleTag("rpg".into()),
     ] {
@@ -790,7 +804,7 @@ fn a_mouse_removal_leaves_no_ring_on_the_tab() {
             // Where Esc from the popup leaves focus.
             focus(&mut laid, id);
         }
-        let x = bounds(&mut laid, Chip::Store("GOG").id()).unwrap();
+        let x = bounds(&mut laid, Chip::Store(Store::Gog).id()).unwrap();
         let messages = click(&mut laid, x.center());
         // At most one control has focus at any point, and never the tab's.
         let focused = laid.focused();
@@ -808,7 +822,7 @@ fn a_mouse_removal_leaves_no_ring_on_the_tab() {
             .into_iter()
             .map(|message| app.update(message))
             .collect();
-        assert!(!app.filters.stores.contains("GOG"));
+        assert!(!app.filters.stores.contains(&Store::Gog));
         let mut laid = crate::layout_probe::relay_out(app.view(), tree, app.window_size);
         drive(&mut laid, Task::batch(tasks));
         let focused = laid.focused();
@@ -822,7 +836,7 @@ fn a_mouse_removal_leaves_no_ring_on_the_tab() {
             .collect();
         assert!(!focused.iter().any(|id| tab.contains(id)), "{focused:?}");
         drop(laid);
-        let _ = filter(&mut app, Event::ToggleStore("GOG"));
+        let _ = filter(&mut app, Event::ToggleStore(Store::Gog));
     }
 }
 
@@ -831,9 +845,9 @@ fn excluded_chips_read_not_and_follow_the_popup_order() {
     let mut app = loaded(1600.0);
     for event in [
         Event::ExcludeTag("rpg".into()),
-        Event::ExcludeStore("Steam"),
-        Event::ToggleStore("GOG"),
-        Event::ExcludePlatform("Native"),
+        Event::ExcludeStore(Store::Steam),
+        Event::ToggleStore(Store::Gog),
+        Event::ExcludePlatform(Platform::Native),
         Event::ToggleTag("game".into()),
     ] {
         let _ = filter(&mut app, event);
@@ -843,9 +857,9 @@ fn excluded_chips_read_not_and_follow_the_popup_order() {
     assert_eq!(
         chips,
         [
-            Chip::Store("GOG"),
-            Chip::NotStore("Steam"),
-            Chip::NotPlatform("Native"),
+            Chip::Store(Store::Gog),
+            Chip::NotStore(Store::Steam),
+            Chip::NotPlatform(Platform::Native),
             Chip::Tag("game".into()),
             Chip::NotTag("rpg".into()),
         ]
@@ -858,7 +872,10 @@ fn excluded_chips_read_not_and_follow_the_popup_order() {
     unique.sort();
     unique.dedup();
     assert_eq!(unique.len(), ids.len());
-    assert_ne!(Chip::Store("Steam").id(), Chip::NotStore("Steam").id());
+    assert_ne!(
+        Chip::Store(Store::Steam).id(),
+        Chip::NotStore(Store::Steam).id()
+    );
     assert_ne!(
         Chip::Tag("rpg".into()).id(),
         Chip::NotTag("rpg".into()).id()
@@ -887,20 +904,20 @@ fn an_exclude_alone_brings_the_tab_and_a_not_chip_is_as_wide_as_its_words() {
 #[test]
 fn a_not_chip_x_removes_only_its_exclude() {
     let mut app = loaded(1200.0);
-    let _ = filter(&mut app, Event::ExcludeStore("GOG"));
+    let _ = filter(&mut app, Event::ExcludeStore(Store::Gog));
     let _ = filter(&mut app, Event::ExcludeTag("rpg".into()));
     let _ = filter(&mut app, Event::ToggleTag("game".into()));
     placed(&mut app);
     assert_eq!(shown(&app), ["balatro"]);
 
     let mut laid = lay_out(app.view(), app.window_size);
-    let x = bounds(&mut laid, Chip::NotStore("GOG").id()).unwrap();
+    let x = bounds(&mut laid, Chip::NotStore(Store::Gog).id()).unwrap();
     let messages = click(&mut laid, x.center());
     drop(laid);
     assert!(
         messages.iter().any(|message| matches!(
             message,
-            Message::Filter(Event::Remove(Chip::NotStore("GOG")))
+            Message::Filter(Event::Remove(Chip::NotStore(Store::Gog)))
         )),
         "{messages:?}"
     );
@@ -917,20 +934,20 @@ fn a_not_chip_x_removes_only_its_exclude() {
 fn removing_a_not_chip_from_the_keyboard_moves_focus_to_a_neighbor() {
     let mut app = loaded(1600.0);
     for event in [
-        Event::ExcludeStore("GOG"),
-        Event::ToggleStore("Steam"),
+        Event::ExcludeStore(Store::Gog),
+        Event::ToggleStore(Store::Steam),
         Event::ExcludeTag("rpg".into()),
     ] {
         let _ = filter(&mut app, event);
     }
     placed(&mut app);
     assert_eq!(
-        remove_from_keyboard(&mut app, Chip::NotStore("GOG")),
-        [Id::from(Chip::Store("Steam").id())]
+        remove_from_keyboard(&mut app, Chip::NotStore(Store::Gog)),
+        [Id::from(Chip::Store(Store::Steam).id())]
     );
     assert_eq!(
         remove_from_keyboard(&mut app, Chip::NotTag("rpg".into())),
-        [Id::from(Chip::Store("Steam").id())]
+        [Id::from(Chip::Store(Store::Steam).id())]
     );
     assert!(app.filters.not_stores.is_empty() && app.filters.not_tags.is_empty());
 }
@@ -938,8 +955,8 @@ fn removing_a_not_chip_from_the_keyboard_moves_focus_to_a_neighbor() {
 #[test]
 fn the_tab_x_clears_excludes_too() {
     let mut app = loaded(1200.0);
-    let _ = filter(&mut app, Event::ExcludeStore("GOG"));
-    let _ = filter(&mut app, Event::ExcludePlatform("Native"));
+    let _ = filter(&mut app, Event::ExcludeStore(Store::Gog));
+    let _ = filter(&mut app, Event::ExcludePlatform(Platform::Native));
     let _ = filter(&mut app, Event::ExcludeTag("rpg".into()));
     let _ = filter(&mut app, Event::ToggleTag("tool".into()));
     placed(&mut app);

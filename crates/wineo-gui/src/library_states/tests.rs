@@ -4,6 +4,7 @@ use std::time::Duration;
 use iced::Task;
 use iced::keyboard::key::Named;
 use wineo_core::paths::Paths;
+use wineo_core::source::{Platform, Store};
 
 use super::*;
 use crate::filter_control::tests::library;
@@ -96,7 +97,7 @@ fn a_populated_grid_never_shows_an_empty_state() {
     filter(&mut app, Event::ToggleTag("rpg".into()));
     assert_eq!(app.empty_state(), None);
     filter(&mut app, Event::ToggleShowHidden);
-    filter(&mut app, Event::TogglePlatform("Windows"));
+    filter(&mut app, Event::TogglePlatform(Platform::Windows));
     assert_eq!(app.empty_state(), None);
     let _ = app.update(Message::SearchChanged("demo".into()));
     assert_eq!(app.empty_state(), None);
@@ -143,7 +144,7 @@ fn everything_hidden_with_a_search_or_filter_on_is_no_matches() {
         Some(Empty::NoMatches { hidden_matching: 2 })
     );
     let _ = app.update(Message::SearchChanged(String::new()));
-    filter(&mut app, Event::ToggleStore("Steam"));
+    filter(&mut app, Event::ToggleStore(Store::Steam));
     assert_eq!(
         app.empty_state(),
         Some(Empty::NoMatches { hidden_matching: 1 })
@@ -169,7 +170,7 @@ fn no_matches_says_how_many_hidden_games_match() {
     assert!(bounds(&app, CLEAR_ID).is_some());
 
     let _ = app.update(Message::SearchChanged(String::new()));
-    filter(&mut app, Event::TogglePlatform("Windows"));
+    filter(&mut app, Event::TogglePlatform(Platform::Windows));
     filter(&mut app, Event::ToggleTag("rpg".into()));
     let _ = crate::tests::settle_grid(&mut app);
     assert_eq!(
@@ -189,8 +190,8 @@ fn no_matches_says_how_many_hidden_games_match() {
     );
     filter(&mut app, Event::ShowHidden);
     assert_eq!(app.empty_state(), None);
-    filter(&mut app, Event::TogglePlatform("Windows"));
-    filter(&mut app, Event::ToggleStore("GOG"));
+    filter(&mut app, Event::TogglePlatform(Platform::Windows));
+    filter(&mut app, Event::ToggleStore(Store::Gog));
     assert_eq!(
         app.empty_state(),
         Some(Empty::NoMatches { hidden_matching: 0 })
@@ -201,7 +202,7 @@ fn no_matches_says_how_many_hidden_games_match() {
 fn clear_filters_from_no_matches_shows_the_library_again() {
     let (_root, mut app) = loaded();
     let _ = app.update(Message::SearchChanged("zzz".into()));
-    filter(&mut app, Event::ToggleStore("Steam"));
+    filter(&mut app, Event::ToggleStore(Store::Steam));
     let _ = crate::tests::settle_grid(&mut app);
     let messages = press_control(&app, CLEAR_ID);
     assert!(
@@ -407,10 +408,10 @@ fn excluding_everything_is_no_matches_and_counts_the_hidden_games_it_leaves() {
 
     // Excluding only what the shown games have leaves old-demo to count.
     filter(&mut app, Event::Clear);
-    for store in ["GOG", "Steam"] {
+    for store in [Store::Gog, Store::Steam] {
         filter(&mut app, Event::ExcludeStore(store));
     }
-    filter(&mut app, Event::ExcludePlatform("Native"));
+    filter(&mut app, Event::ExcludePlatform(Platform::Native));
     filter(&mut app, Event::ExcludeTag("tool".into()));
     assert!(app.filtered().is_empty());
     assert_eq!(

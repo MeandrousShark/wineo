@@ -7,6 +7,13 @@ pub fn is_valid(name: &str) -> bool {
             .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
 }
 
+/// A key for comparing text without regard to case. Lowercasing alone leaves
+/// a capital sigma and the final sigma apart, and `ß` and `SS`; going through
+/// uppercase first folds each pair together.
+pub fn fold_case(text: &str) -> String {
+    text.to_uppercase().to_lowercase()
+}
+
 /// The longest name `from_title` returns, so a pasted blurb can't become a
 /// file name the filesystem refuses. Names typed by hand are not held to it by
 /// `is_valid`, since existing configs may already exceed it.

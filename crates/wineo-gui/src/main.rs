@@ -1,3 +1,4 @@
+mod action_bar;
 mod app_art;
 mod app_flow;
 mod app_grid;
@@ -11,6 +12,7 @@ mod art_navigation;
 mod art_page;
 mod art_picker;
 mod artwork;
+mod bulk_tags;
 mod checkup;
 mod checkup_work;
 mod chips;
@@ -40,28 +42,34 @@ mod import_toast;
 mod keys;
 #[cfg(test)]
 mod layout_probe;
+mod layout_switch;
 mod library;
 mod library_actions;
 mod library_menu;
 mod library_states;
+mod list_view;
 mod logview;
 mod menu_anchor;
+mod multi_select;
 mod order;
 mod panel;
 mod panel_motion;
 mod picker;
 mod portable_page;
 mod prefix_facts;
+mod presets;
 mod progress;
 mod random_pick;
 mod removal;
 mod remove_work;
 mod rescan;
 mod runner_label;
+mod sections;
 mod settings;
 mod shortcuts;
 mod sidebar;
 mod size;
+mod slot;
 mod snapshots_page;
 mod sort_control;
 mod spinner;
@@ -90,7 +98,7 @@ mod worker;
 mod zoom;
 mod zoom_control;
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::ops::ControlFlow;
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -149,14 +157,25 @@ pub(crate) struct App {
     zooming: zoom::Zoom,
     /// Titles hide until a poster is pointed at or selected.
     poster_only: bool,
+    /// Posters in a grid, or one row per game.
+    layout: grid_motion::ViewLayout,
+    /// The layout segment's thumb: 0 on the list side, 1 on the grid's.
+    layout_thumb: panel_motion::PanelMotion,
     /// Store, platform, and tag filters and Show hidden, which reset each launch.
     filters: order::Filters,
     /// The held modifier keys, for a wheel turn the filter tab hands to the grid.
     modifiers: keyboard::Modifiers,
+    /// What the library is grouped into sections by, from the saved view.
+    group: wineo_core::library::GroupBy,
+    /// The sections collapsed this session. Never saved, and a key whose
+    /// section is gone stays until the session ends.
+    collapsed: BTreeSet<slot::SectionKey>,
     /// The shown order, rebuilt by `reorder`.
     order: order::Order,
     /// The sort menu is open.
     sort_menu: bool,
+    /// Its Group by submenu is open too.
+    group_menu: bool,
     sort_menu_position: iced::Point,
     view_writes: sort_control::Writes,
     /// Favorite and hidden writes in flight.
@@ -171,12 +190,27 @@ pub(crate) struct App {
     random_menu: bool,
     random_menu_position: iced::Point,
     random_opening: library_menu::Opening,
+    /// The action bar's tag popup is open.
+    tag_menu: bool,
+    tag_popup: action_bar::Popup,
+    tag_opening: library_menu::Opening,
+    /// Tag writes in flight from the action bar.
+    tag_writes: bulk_tags::Writes,
+    /// Saved presets, the one applied, and what the Filters popup is doing
+    /// to them.
+    presets: presets::Presets,
     /// The Filters button's bounds as last laid out, which the filter tab
     /// hangs from.
     filter_button: Option<iced::Rectangle>,
     /// What `view` reads in place of the disk; see `prefix_facts`.
     facts: prefix_facts::Stored,
     pub(crate) selected: Option<String>,
+    /// The copy of the selected game or the header the cursor is on.
+    pub(crate) cursor: Option<app_selection::Cursor>,
+    /// The cards marked for a bulk action, which only ever holds shown
+    /// games. `selected` stays the panel's card.
+    pub(crate) marked: BTreeSet<String>,
+    mark_range: multi_select::Range,
     panel_open: bool,
     panel_motion: panel_motion::PanelMotion,
     grid_motion: grid_motion::GridMotion,
@@ -191,9 +225,9 @@ pub(crate) struct App {
     grid_scroll_after_settle: Option<String>,
     pub(crate) target: Option<String>,
     card_click_target: Option<(String, Option<String>)>,
-    pub(crate) hovered: Option<String>,
+    pub(crate) hovered: Option<slot::SlotId>,
     /// The card whose poster star has the pointer, which lights it up.
-    pub(crate) star_hovered: Option<String>,
+    pub(crate) star_hovered: Option<slot::SlotId>,
     pub(crate) images: art_cache::ArtCache<ArtKey>,
     /// Art decoding, by key and whether it is decoded dimmed.
     loading: HashSet<(ArtKey, bool)>,
@@ -334,7 +368,19 @@ pub(crate) struct Operation {
 #[derive(Debug, Clone)]
 pub(crate) enum Message {
     SearchChanged(String),
+    /// A press on the card in this slot, which marks with Ctrl or Shift
+    /// held.
+    Press(slot::SlotId),
+    /// A click, Enter, or Space on a section's header.
+    ToggleSection(slot::SectionKey),
+    /// A press on this game's card, on the copy the cursor is on or else
+    /// its first.
     Select(String),
+    /// Selects a card and opens its panel whatever keys are held, for
+    /// Enter and other ways in that aren't a press on the card.
+    OpenCard(String),
+    /// Space's answer to whether a control has keyboard focus.
+    SpaceFocus(bool),
     DoubleClick(String),
     ClosePanel,
     TargetPicked(String),
@@ -361,11 +407,11 @@ pub(crate) enum Message {
     LogScrolled(scrollable::Viewport),
     LogFollow,
     CopyLog,
-    Hover(Option<String>),
+    Hover(Option<slot::SlotId>),
     /// The pointer left this card.
-    Unhover(String),
+    Unhover(slot::SlotId),
     /// The pointer moved onto this card's poster star, or off it.
-    StarHover(String, bool),
+    StarHover(slot::SlotId, bool),
     Refresh,
     /// The parts of a periodic rescan that differ from what is shown.
     Rescanned(Box<rescan::Scan>),
@@ -410,7 +456,7 @@ pub(crate) enum Message {
     TrashBadgeLoaded(sidebar::TrashBadge),
     ArtLoaded(ArtKey, bool, Result<image::Handle, String>),
     Scrolled(scrollable::Viewport),
-    GridCardLocated(String, u64, grid_motion::CardBounds),
+    GridCardLocated(slot::SlotId, u64, grid_motion::CardBounds),
     /// The scrollbar fade deadline, tagged with the wakeup that scheduled it.
     ScrollIdle(u64),
     Window(window::Event),
@@ -510,6 +556,9 @@ pub(crate) enum Message {
     Mark(library_actions::Event),
     Zoom(zoom::Event),
     Random(random_pick::Event),
+    Layout(layout_switch::Event),
+    /// The action bar and its tag popup.
+    Tags(action_bar::Event),
     /// The wait for `library.toml` writes on close is over, tagged with its
     /// wakeup.
     CloseWaitOver(u64),
@@ -531,10 +580,15 @@ impl App {
             zoom: wineo_core::library::ZOOM_DEFAULT,
             zooming: zoom::Zoom::default(),
             poster_only: false,
+            layout: grid_motion::ViewLayout::Grid,
+            layout_thumb: panel_motion::PanelMotion::default(),
             filters: order::Filters::default(),
             modifiers: keyboard::Modifiers::empty(),
+            group: wineo_core::library::GroupBy::default(),
+            collapsed: BTreeSet::new(),
             order: order::Order::default(),
             sort_menu: false,
+            group_menu: false,
             sort_opening: library_menu::Opening::default(),
             filter_menu: false,
             filter_menu_position: iced::Point::ORIGIN,
@@ -543,12 +597,20 @@ impl App {
             random_menu: false,
             random_menu_position: iced::Point::ORIGIN,
             random_opening: library_menu::Opening::default(),
+            tag_menu: false,
+            tag_popup: action_bar::Popup::default(),
+            tag_opening: library_menu::Opening::default(),
+            tag_writes: bulk_tags::Writes::default(),
+            presets: presets::Presets::default(),
             filter_button: None,
             sort_menu_position: iced::Point::ORIGIN,
             view_writes: sort_control::Writes::default(),
             flag_writes: library_actions::Writes::default(),
             facts: prefix_facts::Stored::default(),
             selected: None,
+            cursor: None,
+            marked: BTreeSet::new(),
+            mark_range: multi_select::Range::default(),
             panel_open: false,
             panel_motion: panel_motion::PanelMotion::default(),
             grid_motion: grid_motion::GridMotion::default(),
@@ -659,6 +721,7 @@ impl App {
         // Read once, here, so the first cards already show in the saved
         // order. A read takes no lock and never writes.
         let saved = wineo_core::library::load(&app.paths);
+        let presets = presets::List::of(&saved);
         // Until the system mode arrives, the saved dark theme shows, as
         // Midnight did before themes.
         app.appearance = saved.appearance;
@@ -667,9 +730,14 @@ impl App {
         app.zoom = saved.view.zoom;
         app.poster_only = saved.view.poster_only;
         app.random_pool = saved.view.random;
+        app.layout = saved.view.layout;
+        app.group = saved.view.group;
+        app.layout_thumb
+            .snap(app.layout == grid_motion::ViewLayout::Grid);
         app.query = saved.view.into();
         // The banner shows from the first frame, before the cards arrive.
         app.problem_read(saved.problem);
+        app.presets_read(presets);
         app.reorder();
         let load = app.reload_library();
         let badge = app.reload_badge();
@@ -788,6 +856,15 @@ impl App {
         } else {
             self.grid_motion.subscription()
         };
+        let layout_thumb = if self.layout_thumb.active() {
+            window::frames()
+                .with(self.layout_thumb.generation())
+                .map(|(generation, now)| {
+                    Message::Layout(layout_switch::Event::Tick(generation, now))
+                })
+        } else {
+            Subscription::none()
+        };
         let zoom = if self.panel_hidden() {
             Subscription::none()
         } else {
@@ -834,6 +911,7 @@ impl App {
             self.details_fade.subscription(),
             zoom,
             collapse,
+            layout_thumb,
             // Only a toast has focus to recheck.
             if self.toast.is_some() {
                 iced::event::listen_with(|event, _, _| focus_input(event))
@@ -849,6 +927,8 @@ impl App {
         // One place for every path that changes the theme: an Appearance
         // edit, a save, Revert, leaving Settings, or the system's mode.
         self.sync_palette();
+        // One place for every path that changes the selection.
+        self.sync_cursor();
         // One place for every path that changes the hover or selection.
         self.sync_hover_fades();
         self.sync_star_pops();
@@ -864,11 +944,18 @@ impl App {
         if self.sort_menu && !self.sort_menu_shown() {
             self.sort_menu = false;
         }
+        // The submenu only ever shows with its menu.
+        if self.group_menu && !self.sort_menu {
+            self.group_menu = false;
+        }
         if self.filter_menu && !self.filter_menu_shown() {
             self.filter_menu = false;
         }
         if self.random_menu && !self.random_menu_shown() {
             self.random_menu = false;
+        }
+        if self.tag_menu && !self.tag_menu_shown() {
+            self.tag_menu = false;
         }
         // Whichever way a close got here, once only `library.toml` writes
         // are left they get a bounded wait.
@@ -922,7 +1009,11 @@ impl App {
             && (matches!(
                 message,
                 Message::SearchChanged(_)
+                    | Message::Press(_)
+                    | Message::ToggleSection(_)
                     | Message::Select(_)
+                    | Message::OpenCard(_)
+                    | Message::SpaceFocus(_)
                     | Message::ImportToast
                     | Message::DoubleClick(_)
                     | Message::ClosePanel
@@ -961,6 +1052,8 @@ impl App {
                 || matches!(message, Message::Filter(event) if event.is_input())
                 || matches!(message, Message::Mark(event) if event.is_input())
                 || matches!(message, Message::Random(event) if event.is_input())
+                || matches!(message, Message::Layout(event) if event.is_input())
+                || matches!(message, Message::Tags(event) if event.is_input())
                 || matches!(message, Message::Zoom(event) if event.is_input()))
         {
             return true;
@@ -978,7 +1071,11 @@ impl App {
         if !self.collapse.idle()
             && (matches!(
                 message,
-                Message::Select(_)
+                Message::Press(_)
+                    | Message::ToggleSection(_)
+                    | Message::Select(_)
+                    | Message::OpenCard(_)
+                    | Message::SpaceFocus(_)
                     | Message::DoubleClick(_)
                     | Message::Context(_)
                     | Message::ImportToast
@@ -1021,6 +1118,8 @@ impl App {
             Message::Mark(event) => library_actions::update(self, event),
             Message::Zoom(event) => zoom::update(self, event),
             Message::Random(event) => random_pick::update(self, event),
+            Message::Layout(event) => layout_switch::update(self, event),
+            Message::Tags(event) => action_bar::update(self, event),
             message @ (Message::Remove(_)
             | Message::RemovePrefix(_)
             | Message::RemoveSize(..)
@@ -1036,7 +1135,14 @@ impl App {
             | Message::ToastFocus(..)
             | Message::ToastAnswer(..)) => removal::update(self, message),
             Message::SearchChanged(search) => self.search_changed(search),
-            Message::Select(name) => self.select_card(name),
+            Message::Press(slot) => self.card_pressed(slot.name().to_owned(), Some(slot)),
+            Message::ToggleSection(key) => self.toggle_section(key),
+            Message::Select(name) => self.card_pressed(name, None),
+            Message::OpenCard(name) => self.select_card(name),
+            Message::SpaceFocus(focused) => {
+                self.space_answered(focused);
+                Task::none()
+            }
             Message::ImportToast => self.import_toast_clicked(),
             Message::DoubleClick(name) => self.double_click_card(name),
             Message::ClosePanel => {
@@ -1211,8 +1317,8 @@ impl App {
             }
             Message::ArtLoaded(key, dimmed, result) => self.art_result(key, dimmed, result)?,
             Message::Scrolled(viewport) => self.grid_scrolled(viewport),
-            Message::GridCardLocated(name, generation, bounds) => {
-                self.grid_card_located(name, generation, bounds)?
+            Message::GridCardLocated(slot, generation, bounds) => {
+                self.grid_card_located(slot, generation, bounds)?
             }
             // Handled in `update`, which polls the toast's focus for it.
             Message::FocusRecheck => Task::none(),
@@ -1301,6 +1407,9 @@ impl App {
             }
             Message::Key(key, modifiers, _) if self.random_menu_shown() => {
                 random_pick::key(self, &key, modifiers)
+            }
+            Message::Key(key, modifiers, _) if self.tag_menu_shown() => {
+                action_bar::key(self, &key, modifiers)
             }
             Message::Key(key, modifiers, status) if self.flow.is_some() => {
                 self.flow_key(key, modifiers, status)?
@@ -1477,11 +1586,15 @@ impl App {
         self.foreground_busy() || self.library_writes_pending()
     }
 
-    /// A sort, favorite, or hidden write is in flight, or an auto-import
-    /// pass, whose claims are writes too: one left behind keeps its game from
-    /// being offered again.
+    /// A sort, favorite, hidden, or tag write is in flight, or an
+    /// auto-import pass, whose claims are writes too: one left behind keeps
+    /// its game from being offered again.
     fn library_writes_pending(&self) -> bool {
-        self.view_writes.pending() || self.flag_writes.pending() || self.steam_auto.running()
+        self.view_writes.pending()
+            || self.flag_writes.pending()
+            || self.tag_writes.pending()
+            || self.presets.writing.is_some()
+            || self.steam_auto.running()
     }
 
     fn foreground_busy(&self) -> bool {
@@ -1511,7 +1624,9 @@ impl App {
     /// Drops the visible cards, or fades them with reduced motion. The panel
     /// closes without animating so the cards fall from their closed slots.
     fn start_collapse(&mut self, now: Instant) {
+        // The posters fall; a list has none.
         if !self.collapse.idle()
+            || self.layout == grid_motion::ViewLayout::List
             || self.section != sidebar::Section::Library
             || self.panel_hidden()
             || self.filtered().is_empty()
@@ -1532,14 +1647,21 @@ impl App {
             self.collapse.fade(now);
         } else {
             let layout = self.grid_layout();
-            let filtered = self.filtered();
-            let heights: Vec<f32> = filtered
+            // The slots as drawn, sections and all, with the panel shut.
+            let places = self.grid_places();
+            let tallest = places
+                .slots
                 .iter()
-                .map(|card| grid::card_height(card, layout))
-                .collect();
-            let columns = grid_motion::columns_for_viewport(self.viewport_width, false, layout);
+                .map(|slot| slot.height)
+                .fold(0.0, f32::max);
+            let columns = grid_motion::columns_for_viewport(
+                self.viewport_width,
+                false,
+                layout,
+                grid_motion::ViewLayout::Grid,
+            );
             let floor = self.scroll_offset + self.viewport_height;
-            let visible = grid_motion::cards_between(&heights, columns, self.scroll_offset, floor);
+            let visible = places.between(self.scroll_offset, floor);
             // Nothing in view would leave only hidden cards and nothing to click.
             if visible.is_empty() {
                 return;
@@ -1550,7 +1672,7 @@ impl App {
             let seed = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .map_or(0, |elapsed| elapsed.as_nanos() as u64);
-            let count = heights.len();
+            let count = places.slots.len();
             self.collapse.fall(
                 now,
                 count,
@@ -1564,7 +1686,7 @@ impl App {
                         iced::Vector::new(frame.width / 2.0, frame.height / 2.0)
                     },
                     // A partly visible top row can start a card height above.
-                    drop: self.viewport_height + heights.iter().copied().fold(0.0, f32::max),
+                    drop: self.viewport_height + tallest,
                 },
                 placeholder,
                 seed,
@@ -1583,6 +1705,8 @@ impl App {
             search: &self.search,
             query: self.query,
             filters: &self.filters,
+            group: self.group,
+            collapsed: &self.collapsed,
         }
     }
 
@@ -1594,14 +1718,36 @@ impl App {
             search: &self.search,
             query: self.query,
             filters: &self.filters,
+            group: self.group,
+            collapsed: &self.collapsed,
         };
         self.order.rebuild(of);
+        self.prune_marks();
     }
     fn columns(&self) -> usize {
-        grid_motion::columns_for_viewport(self.viewport_width, self.panel_open, self.grid_layout())
+        grid_motion::columns_for_viewport(
+            self.viewport_width,
+            self.panel_open,
+            self.grid_layout(),
+            self.layout,
+        )
     }
     fn grid_shift(&self) -> f32 {
-        grid_motion::shift_for_viewport(self.viewport_width, self.panel_open, self.grid_layout())
+        grid_motion::shift_for_viewport(
+            self.viewport_width,
+            self.panel_open,
+            self.grid_layout(),
+            self.layout,
+        )
+    }
+    /// Every slot's width: a poster's, or a list row's.
+    pub(crate) fn slot_width(&self) -> f32 {
+        grid_motion::width_for_viewport(
+            self.viewport_width,
+            self.panel_open,
+            self.grid_layout(),
+            self.layout,
+        )
     }
     pub(crate) fn grid_layout(&self) -> grid_motion::GridLayout {
         match self.zooming.shown() {

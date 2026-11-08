@@ -39,6 +39,14 @@ fn a_missing_or_clean_file_has_no_findings() {
 }
 
 #[test]
+fn the_source_and_tags_sorts_are_valid() {
+    for sort in ["source", "tags"] {
+        let inspection = inspect_text(&format!("schema_version = 1\n[view]\nsort = \"{sort}\"\n"));
+        assert_eq!(inspection.findings, [], "{sort}");
+    }
+}
+
+#[test]
 fn bad_values_name_the_field_what_was_expected_and_what_was_found() {
     let inspection = inspect_text(
         r#"[view]
@@ -57,7 +65,7 @@ hidden = 1
     assert_eq!(
         messages(&inspection, FindingKind::FieldInvalid),
         [
-            "library.toml: view.sort: expected one of name, last-played, playtime, added, source, found \"random\"",
+            "library.toml: view.sort: expected one of name, last-played, playtime, added, source, tags, found \"random\"",
             "library.toml: view.descending: expected true or false, found \"yes\"",
             "library.toml: environments.hades.favorite: expected true or false, found \"yes\"",
             "library.toml: environments.hades.added: expected a date and time with an offset, like 2026-10-17T18:00:00Z, found 2026-10-17",
@@ -90,13 +98,14 @@ fn tables_of_the_wrong_shape_are_bad_values() {
 
 #[test]
 fn unknown_keys_are_found_at_every_level() {
-    let inspection =
-        inspect_text("zoom = 2\n[view]\nlayout = \"grid\"\n[environments.hades]\nnotes = \"hi\"\n");
+    let inspection = inspect_text(
+        "zoom = 2\n[view]\nfuture_view = \"grid\"\n[environments.hades]\nnotes = \"hi\"\n",
+    );
     assert_eq!(
         messages(&inspection, FindingKind::KeyUnknown),
         [
             "library.toml: zoom: unknown key, ignored",
-            "library.toml: view.layout: unknown key, ignored",
+            "library.toml: view.future_view: unknown key, ignored",
             "library.toml: environments.hades.notes: unknown key, ignored",
         ]
     );
@@ -224,6 +233,40 @@ fn random_is_a_known_view_key_and_a_bad_value_is_reported() {
     assert_eq!(messages(&inspection, FindingKind::FieldInvalid).len(), 1);
 }
 
+#[test]
+fn layout_is_a_known_view_key_and_a_bad_value_is_reported() {
+    for good in ["grid", "list"] {
+        let inspection = inspect_text(&format!("[view]\nlayout = \"{good}\"\n"));
+        assert_eq!(inspection.findings, [], "{good}");
+    }
+    let inspection = inspect_text("[view]\nlayout = \"table\"\n");
+    assert_eq!(
+        messages(&inspection, FindingKind::FieldInvalid),
+        ["library.toml: view.layout: expected one of grid, list, found \"table\""]
+    );
+    assert_eq!(messages(&inspection, FindingKind::KeyUnknown).len(), 0);
+    let inspection = inspect_text("[view]\nlayout = true\n");
+    assert_eq!(messages(&inspection, FindingKind::FieldInvalid).len(), 1);
+}
+
+#[test]
+fn group_is_a_known_view_key_and_a_bad_value_is_reported() {
+    for good in ["none", "recent", "tag", "source", "state"] {
+        let inspection = inspect_text(&format!("[view]\ngroup = \"{good}\"\n"));
+        assert_eq!(inspection.findings, [], "{good}");
+    }
+    let inspection = inspect_text("[view]\ngroup = \"genre\"\n");
+    assert_eq!(
+        messages(&inspection, FindingKind::FieldInvalid),
+        [
+            "library.toml: view.group: expected one of none, recent, tag, source, state, found \"genre\""
+        ]
+    );
+    assert_eq!(messages(&inspection, FindingKind::KeyUnknown).len(), 0);
+    let inspection = inspect_text("[view]\ngroup = true\n");
+    assert_eq!(messages(&inspection, FindingKind::FieldInvalid).len(), 1);
+}
+
 fn inspect_with_themes(text: &str, themes: &[(&str, &str)]) -> Inspection {
     let root = tempfile::tempdir().unwrap();
     let paths = paths(&root);
@@ -312,5 +355,185 @@ fn a_custom_theme_without_a_usable_kind_counts_as_dark() {
     assert_eq!(
         messages(&inspection, FindingKind::FieldInvalid),
         ["library.toml: appearance.light: expected a light theme, found \"custom:odd\""]
+    );
+}
+
+#[test]
+fn a_clean_preset_has_no_findings() {
+    let inspection = inspect_text(
+        r#"schema_version = 1
+
+[presets."Couch co-op"]
+sort = "last-played"
+descending = true
+favorites_first = false
+stores = ["steam", "gog"]
+platforms = ["native"]
+tags = ["co-op", "any text at all"]
+not_stores = ["epic", "amazon"]
+not_platforms = ["windows"]
+not_tags = ["vr"]
+show_hidden = false
+group = "tag"
+layout = "list"
+
+[presets.Empty]
+"#,
+    );
+    assert_eq!(inspection.unreadable, None);
+    assert_eq!(inspection.findings, []);
+    assert_eq!(inspection.entries, Vec::<String>::new());
+}
+
+#[test]
+fn a_preset_may_group_by_recently_played() {
+    let inspection = inspect_text("[presets.Recents]\ngroup = \"recent\"\n");
+    assert_eq!(inspection.findings, []);
+}
+
+#[test]
+fn bad_preset_values_name_the_preset_the_field_and_what_was_found() {
+    let inspection = inspect_text(
+        r#"[presets."Couch co-op"]
+sort = "random"
+descending = "yes"
+favorites_first = 1
+show_hidden = "no"
+group = "genre"
+layout = true
+stores = "steam"
+platforms = ["macos", "native", 3]
+not_stores = ["Steam"]
+not_platforms = [["windows"]]
+tags = ["ok", 3]
+not_tags = 5
+"#,
+    );
+    assert_eq!(
+        messages(&inspection, FindingKind::FieldInvalid),
+        [
+            r#"library.toml: presets."Couch co-op".sort: expected one of name, last-played, playtime, added, source, tags, found "random""#,
+            r#"library.toml: presets."Couch co-op".descending: expected true or false, found "yes""#,
+            r#"library.toml: presets."Couch co-op".favorites_first: expected true or false, found 1"#,
+            r#"library.toml: presets."Couch co-op".show_hidden: expected true or false, found "no""#,
+            r#"library.toml: presets."Couch co-op".group: expected one of none, recent, tag, source, state, found "genre""#,
+            r#"library.toml: presets."Couch co-op".layout: expected one of grid, list, found true"#,
+            r#"library.toml: presets."Couch co-op".stores: expected a list of store ids: steam, gog, epic, amazon, found "steam""#,
+            r#"library.toml: presets."Couch co-op".platforms: expected a list of platform ids: native, windows, found "macos""#,
+            r#"library.toml: presets."Couch co-op".platforms: expected a list of platform ids: native, windows, found 3"#,
+            r#"library.toml: presets."Couch co-op".not_stores: expected a list of store ids: steam, gog, epic, amazon, found "Steam""#,
+            r#"library.toml: presets."Couch co-op".not_platforms: expected a list of platform ids: native, windows, found ["windows"]"#,
+            r#"library.toml: presets."Couch co-op".tags: expected a list of tag names, found 3"#,
+            r#"library.toml: presets."Couch co-op".not_tags: expected a list of tag names, found 5"#,
+        ]
+    );
+    assert!(inspection.findings.iter().all(|f| f.environment.is_none()));
+    assert_eq!(
+        messages(&inspection, FindingKind::KeyUnknown),
+        [] as [String; 0]
+    );
+}
+
+#[test]
+fn a_preset_with_one_bad_field_still_reports_only_that_field() {
+    let inspection =
+        inspect_text("[presets.P]\nsort = \"added\"\nstores = [\"steam\", \"itch\"]\n");
+    assert_eq!(
+        messages(&inspection, FindingKind::FieldInvalid),
+        [
+            r#"library.toml: presets.P.stores: expected a list of store ids: steam, gog, epic, amazon, found "itch""#
+        ]
+    );
+}
+
+#[test]
+fn unknown_preset_keys_are_warned_about_and_ignored() {
+    let inspection =
+        inspect_text("[presets.P]\nsort = \"added\"\nfuture = 1\nsearch = \"hades\"\nzoom = 100\n");
+    assert_eq!(
+        messages(&inspection, FindingKind::KeyUnknown),
+        [
+            "library.toml: presets.P.future: unknown key, ignored",
+            "library.toml: presets.P.search: unknown key, ignored",
+            "library.toml: presets.P.zoom: unknown key, ignored",
+        ]
+    );
+    assert_eq!(
+        messages(&inspection, FindingKind::FieldInvalid),
+        [] as [String; 0]
+    );
+}
+
+#[test]
+fn presets_of_the_wrong_shape_are_bad_values() {
+    let inspection = inspect_text("presets = 1\n");
+    assert_eq!(
+        messages(&inspection, FindingKind::FieldInvalid),
+        ["library.toml: presets: expected a table, found 1"]
+    );
+
+    let inspection = inspect_text(
+        "[presets]\nbroken = \"x\"\n[presets.\"\"]\nsort = \"added\"\n[presets.\" \"]\n[presets.Good]\nsort = \"added\"\n",
+    );
+    assert_eq!(
+        messages(&inspection, FindingKind::FieldInvalid),
+        [
+            r#"library.toml: presets.broken: expected a table, found "x""#,
+            r#"library.toml: presets."": expected a preset name that isn't empty, found a table"#,
+            r#"library.toml: presets." ": expected a preset name that isn't empty, found a table"#,
+        ]
+    );
+    assert_eq!(inspection.entries, Vec::<String>::new());
+}
+
+#[test]
+fn presets_name_no_environment_so_they_are_never_strays() {
+    let inspection = inspect_text("[presets.hades]\nsort = \"added\"\n");
+    assert_eq!(inspection.entries, Vec::<String>::new());
+    assert_eq!(inspection.findings, []);
+}
+
+#[test]
+fn preset_names_the_write_api_would_refuse_are_findings() {
+    let long = "x".repeat(61);
+    let fine = "y".repeat(60);
+    let text = format!(
+        "[presets.\" lead\"]\nsort = \"added\"\n[presets.\"trail \"]\n[presets.\"a\\tb\"]\n[presets.\"{long}\"]\n[presets.\"{fine}\"]\n[presets.\"Couch co-op\"]\n"
+    );
+    let inspection = inspect_text(&text);
+    assert_eq!(
+        messages(&inspection, FindingKind::FieldInvalid),
+        [
+            r#"library.toml: presets." lead": expected a preset name that can't start or end with whitespace, found a table"#.to_owned(),
+            r#"library.toml: presets."trail ": expected a preset name that can't start or end with whitespace, found a table"#.to_owned(),
+            r#"library.toml: presets."a\tb": expected a preset name that can't contain control characters, found a table"#.to_owned(),
+            format!(
+                r#"library.toml: presets.{long}: expected a preset name that can't be longer than 60 characters, found a table"#
+            ),
+        ]
+    );
+
+    // The reader keeps showing every one of them.
+    let root = tempfile::tempdir().unwrap();
+    let paths = paths(&root);
+    fs::create_dir_all(paths.library_file().parent().unwrap()).unwrap();
+    fs::write(paths.library_file(), &text).unwrap();
+    let names: Vec<String> = crate::library::load(&paths)
+        .presets
+        .into_iter()
+        .map(|(name, _)| name)
+        .collect();
+    assert_eq!(names.len(), 6, "{names:?}");
+}
+
+#[test]
+fn a_badly_named_preset_still_has_its_fields_checked() {
+    let inspection = inspect_text("[presets.\" P\"]\nsort = \"random\"\n");
+    assert_eq!(
+        messages(&inspection, FindingKind::FieldInvalid),
+        [
+            r#"library.toml: presets." P": expected a preset name that can't start or end with whitespace, found a table"#,
+            r#"library.toml: presets." P".sort: expected one of name, last-played, playtime, added, source, tags, found "random""#,
+        ]
     );
 }

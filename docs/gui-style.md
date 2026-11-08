@@ -145,8 +145,11 @@ Plan 0054 added these.
 
 - The toolbar reads the wordmark, the accent **Add**, search, **Sort:
   <key>** with a chevron, a 32 px square direction button, **Filters** (or
-  **Filters (N)** with N chosen or excluded stores, platforms, and tags),
-  the 32 px square dice, the zoom slider, and the poster-only toggle. All
+  **Filters (N)** with N chosen or excluded stores, platforms, and tags,
+  or **Filters (Name)** while the view matches a preset, its name cut at
+  120 px),
+  the 32 px square dice, the layout switch, the zoom slider, and the
+  poster-only toggle (the last two in the grid only). All
   are 32 px high, and Tab follows that order, with the filter tab's chips
   right after **Filters**. Its
   bottom padding is 15 px, room for the filter tab. Search is 320 px wide
@@ -158,6 +161,20 @@ Plan 0054 added these.
   square icon button, an outline poster over a short title line, with the
   tag chips' selected look while on (15% primary tint, primary border and
   icon); its tooltip says "Hide titles" or "Show titles".
+- The layout switch is a segment, 64 x 32 px: two 32 px sides, a list icon
+  (dots and lines) on the left and a grid icon (2 x 2 squares) on the right,
+  each with a tooltip ("Show as list", "Show as grid"). One thumb sits under
+  the chosen side with the poster-only toggle's selected look, and the
+  chosen side's icon is primary; hovering a side adds a faint foreground
+  tint. The thumb slides with the panel's spring and snaps under reduced
+  motion. The keyboard treats the segment as one control, like a radio
+  group: it's a single Tab stop, its focus ring goes around the whole
+  segment, and Left, Right, Space, and Enter flip it while it has focus,
+  so the arrows don't reach the library then. Held arrows don't repeat the
+  flip. A click picks a side and never takes focus, since the thumb already
+  shows the change. In the list, an empty slot holds the slider and
+  toggle's place, so the toolbar keeps its shape. With the switch the toolbar's right end starts clipping
+  about 72 px sooner.
 - The dice shows a die face of five, in the foreground color, or muted
   while there's nothing to pick from; its tooltip says "Pick one at
   random (right-click for options)". Right-click, Shift+F10, or the Menu
@@ -173,6 +190,17 @@ Plan 0054 added these.
   border, 8 px corners, and a 6 px gap. Toolbar tooltips sit below their
   button. The direction button's names the current order ("Most played
   first", "A to Z").
+- **Group by** is a row in the Sort menu, between the sorts and Favorites
+  first, showing the current grouping and a right chevron. Opening it shows
+  a 160 px list beside the menu, on the left near the window's right edge,
+  in the same chrome; Up, Down, and Tab move in it, Esc or Left returns to
+  the row, and a pick closes both. It doesn't open on hover.
+- A section header is a 32 px row across the grid's columns or the list:
+  a chevron pointing down while open and right while collapsed, the name in
+  16 px semibold, and the count muted, as "(12)". It tints like a list row
+  on hover and press, takes Tab focus but not focus from a click, and sits
+  the layout's usual gap from the cards above and below. Cards drawn over a
+  header while they move take the pointer before it.
 - The Sort menu and the Filters popup share the context menu's chrome,
   248 px wide. Only one of them or the context menu is open at a time. A
   click, Enter, or Space opens it under its button.
@@ -181,6 +209,16 @@ Plan 0054 added these.
   show the focused row (to the top for the first row), and Esc closes it and
   returns focus to its button. The Filters popup grows with its content up
   to the window's edge, then scrolls.
+- The Filters popup starts with its presets: a muted 12 px **Presets**
+  heading, one quiet 32 px row per preset, the active one tinted 12% primary
+  while the view matches it, names cut with an ellipsis at 204 px, then
+  **Update "X"** when shown and **Save as preset**, which becomes a name
+  field, and a separator before the filters. It still opens on the first
+  filter row. Rename and Delete show as rows indented 12 px under their
+  preset, Delete in danger text, and deleting asks in a card with 8 px
+  padding and a 1 px danger border, **Keep it** focused. Name problems show
+  live under the field in 12 px danger text, and a failed save shows under
+  the presets with **Open Checkup** when Checkup can repair the file.
 - The filter tab floats 3 px under **Filters**, left edges aligned, over
   the gap above the grid: 26 px high, the surface color, a 1 px border,
   8 px corners, and 4 px between items. It leaves 3 px above the first
@@ -224,6 +262,22 @@ Plan 0054 added these.
   top, at most 480 px wide, then a feature notice, then the removal bar with
   **Undo**. A note that can act, like one naming a single imported game, is
   a neutral button with hover and focus states.
+- The action bar for marked cards is the last item in that stack, 16 px
+  above the window's bottom, and shows with no motion like the notes above
+  it. It's 48 px high in the context menu's chrome: "N selected" in 14 px, a
+  neutral **Tags** button with an up chevron, text buttons for **Favorite**
+  and **Hide** in the same style, and a 32 px square x with a "Clear
+  selection" tooltip above it, each a Tab stop in that order. The flag
+  buttons read **Unfavorite** and **Show** once every marked game has the
+  flag, so the bar grows about 22 px and, being centered, shifts about 11 px.
+  While it shows, the grid keeps 72 px under its last row, and scrolling a
+  card into view or holding one through a zoom treats that strip as covered.
+- The Tags list opens above its button with left edges aligned, 248 px wide,
+  in the Sort menu's chrome and keys. It grows up to the window's top edge,
+  then scrolls, and ends with a separator and a "New tag" field whose
+  problems show live under it in danger text. A tag some but not all marked
+  games have shows the check box filled with the primary color and a drawn
+  dash in its ink color.
 - Poster marks are a 24 px round chip in black at 55% opacity with a 14 px
   white icon, 8 px in from their corner, each corner holding one so nothing
   moves when another appears. The star has the top-right corner and a
@@ -283,8 +337,18 @@ chips, and badges keep their sizes at every zoom.
   24 px badge instead: a circle in the pill's color with a 14 px down arrow
   in its ink color. The panel keeps the words. At 60 to 62% with a chip,
   a badge, and a mark, the badge sits flush against the mark.
+- A card marked for a bulk action (plan 0062) gets a 25% primary wash over
+  its art, under the title overlay and the corner layers, and the selected
+  card's border still draws over it. Its check leads the top-left corner: a
+  24 px primary circle holding a 14 px check in the primary's ink, 8 px in.
+  The status chip and the GOG pill or badge follow it in one row with 4 px
+  gaps, jumping right at once when the mark comes or goes, and the pill's
+  fit counts the check, so marking can turn it into its badge. The row may
+  run flush against the star's circle, as the badge already could. When a
+  marked card's check, chip, and badge can't all fit, below about 78%, the
+  badge hides until the mark clears.
 - Every poster layer fades with its card, including the marks, the pill
-  or badge, and the install bar's track.
+  or badge, the marked wash and check, and the install bar's track.
 
 ## Panel motion
 
@@ -309,10 +373,44 @@ correct through a transition.
 Clicking unused Library space closes the panel. Card clicks, scrollbars,
 menus, and the panel itself keep their own input handling.
 
+## List rows
+
+Plan 0062 added these.
+
+- Rows are 56 px and full width, one column through the same motion owner
+  as cards, so re-sorts and filters animate the same way. A 32 x 48 px
+  thumbnail of the grid art leads, grayscale when not installed and faded
+  when hidden or not installed, like the poster.
+- The title cell takes what's left after the other columns: the title over
+  a muted environment name when they differ, then the row's marks at its
+  right end: the poster's GOG pill, then the Steam mark, eye, and star as
+  bare 16 px icons, without the poster's round backdrops.
+  The star keeps its place when hidden and fades in on hover like the
+  poster's. The install bar runs along the row's bottom edge, and a
+  warning shows as the State column's dot.
+- Columns are fixed: State 128, Playtime 96, Last played 112, Source 80,
+  and Tags 176 px, with the title at least 200 px. They leave from the
+  right as the width drops: Tags, Source, Last played, then Playtime. Text
+  that doesn't fit is cut between graphemes and ends in an ellipsis.
+- The header is 32 px and stays put above the scrolling rows. Every label
+  but State sorts. Sortable labels are buttons that tint 6 px past their text on hover and press (10%
+  and 22% primary, with a primary border pressed), with cells widened so
+  labels line up with the row cells below. The active sort shows its
+  direction arrow. The header is mouse-only; the Sort menu covers the
+  keyboard.
+- A selected row gets a 2 px primary border, rounded 6; a hovered row fades
+  in a surface-colored background with the poster's hover timing. A marked
+  row gets the marked poster's 25% primary wash across the row and a 22 px
+  check centered on the thumbnail.
+- Switching layouts snaps rather than morphing posters into rows.
+
 ## Grid motion
 
-One owner moves the Library's cards, matching each card by name, so its
-hover and state follow it. Every layout change springs each card from where
+One owner moves the Library's cards, matching each card by its slot (its
+section and game), so its hover and state follow it. When a game's copies
+change sections, a copy that stays keeps its place, and the others pair up
+by game, first with first in shown order, so they spring rather than fade.
+Section headers spring and fade like cards. Every layout change springs each card from where
 it's drawn now, with the panel's spring, so a re-sort during the dock or a
 column change halfway through a zoom never jumps.
 

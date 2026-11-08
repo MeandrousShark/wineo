@@ -66,6 +66,9 @@ impl App {
         if self.view_writes.pending() || self.flag_writes.pending() {
             work.push("a library write".to_owned());
         }
+        if self.tag_writes.pending() {
+            work.push("a tag write".to_owned());
+        }
         if self.steam_auto.running() {
             work.push("a Steam import".to_owned());
         }
@@ -146,7 +149,7 @@ impl App {
     pub(crate) fn window_resized(&mut self, size: iced::Size) -> Task<Message> {
         self.window_size = size;
         self.viewport_width = (size.width - sidebar::WIDTH).max(0.0);
-        self.viewport_height = (size.height - 48.0).max(0.0);
+        self.viewport_height = (size.height - 48.0 - self.header_room()).max(0.0);
         // Every frame of a drag would restart the springs.
         self.snap_grid();
         self.collapse.reset();

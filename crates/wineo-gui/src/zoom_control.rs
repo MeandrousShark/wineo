@@ -99,10 +99,20 @@ pub(crate) fn with_tooltip<'a>(
     label: &'a str,
     palette: Palette,
 ) -> Element<'a, Message> {
+    with_tooltip_at(content, label, palette, tooltip::Position::Bottom)
+}
+
+/// `with_tooltip` on another side, for a control away from the toolbar.
+pub(crate) fn with_tooltip_at<'a>(
+    content: Element<'a, Message>,
+    label: &'a str,
+    palette: Palette,
+    position: tooltip::Position,
+) -> Element<'a, Message> {
     tooltip(
         content,
         container(text(label).size(13)).padding([4, 8]),
-        tooltip::Position::Bottom,
+        position,
     )
     .style(move |_| {
         container::Style::default()
