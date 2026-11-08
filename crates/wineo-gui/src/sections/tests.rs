@@ -122,7 +122,7 @@ fn group_by_none_is_one_flat_section_with_hidden_games_in_place_as_today() {
     let places = app.grid_places();
     assert!(places.headers.is_empty());
     let layout = app.grid_layout();
-    let flat_places = Places::new(
+    let mut flat_places = Places::new(
         app.filtered()
             .iter()
             .map(|card| SlotId::new(SectionKey::All, card.name.as_str()))
@@ -137,6 +137,12 @@ fn group_by_none_is_one_flat_section_with_hidden_games_in_place_as_today() {
         layout,
         ViewLayout::Grid,
     );
+    flat_places.cards = app
+        .filtered()
+        .iter()
+        .map(|card| app.cards.iter().position(|each| each.name == card.name))
+        .collect::<Option<_>>()
+        .unwrap();
     assert_eq!(*places, flat_places);
     assert!(
         places.ids.iter().all(|slot| slot.widget_id()

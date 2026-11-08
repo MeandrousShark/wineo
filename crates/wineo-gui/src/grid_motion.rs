@@ -304,6 +304,8 @@ pub(crate) struct Places {
     /// one. Headers are kept apart in `headers`, so a card index never
     /// lands on one.
     pub(crate) ids: Vec<SlotId>,
+    /// Each slot's index into the app's cards, set by `App::grid_places`.
+    pub(crate) cards: Vec<usize>,
     pub(crate) slots: Vec<Rectangle>,
     /// The section headers, in shown order, laid out with the cards.
     pub(crate) headers: Vec<HeaderPlace>,
@@ -416,6 +418,7 @@ impl Places {
                 .collect(),
             first,
             ids,
+            cards: Vec::new(),
             slots: points
                 .into_iter()
                 .zip(sizes)

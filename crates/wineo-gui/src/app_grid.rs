@@ -165,7 +165,7 @@ impl App {
         // The flat library is one section with no header. Group by Recent
         // has an All with one, so the key alone can't say.
         let grouped = self.group != wineo_core::library::GroupBy::None;
-        let mut cards: Vec<&crate::library::Card> = Vec::new();
+        let mut cards: Vec<usize> = Vec::new();
         let mut ids: Vec<SlotId> = Vec::new();
         let mut headers = Vec::new();
         for section in sections.iter() {
@@ -180,34 +180,35 @@ impl App {
             if section.collapsed {
                 continue;
             }
-            for card in section
-                .cards
-                .iter()
-                .filter_map(|&index| self.cards.get(index))
-            {
-                ids.push(SlotId::new(section.key.clone(), card.name.as_str()));
-                cards.push(card);
+            for &index in &section.cards {
+                if let Some(card) = self.cards.get(index) {
+                    ids.push(SlotId::new(section.key.clone(), card.name.as_str()));
+                    cards.push(index);
+                }
             }
         }
         #[cfg(test)]
         if let Some((name, at)) = &self.test_copy
-            && let Some(card) = cards.iter().find(|card| &card.name == name).copied()
+            && let Some(index) = cards
+                .iter()
+                .copied()
+                .find(|&index| &self.cards[index].name == name)
         {
             let at = (*at).min(ids.len());
             ids.insert(
                 at,
                 SlotId::new(crate::slot::SectionKey::Test("copy"), name.as_str()),
             );
-            cards.insert(at, card);
+            cards.insert(at, index);
         }
         let heights: Vec<f32> = match self.layout {
             grid_motion::ViewLayout::Grid => cards
                 .iter()
-                .map(|card| grid::card_height(card, layout))
+                .map(|&index| grid::card_height(&self.cards[index], layout))
                 .collect(),
             grid_motion::ViewLayout::List => vec![crate::list_view::ROW_HEIGHT; cards.len()],
         };
-        let places = Rc::new(grid_motion::Places::sectioned(
+        let mut places = grid_motion::Places::sectioned(
             ids,
             &heights,
             headers,
@@ -216,32 +217,20 @@ impl App {
             self.grid_shift(),
             layout,
             self.layout,
-        ));
+        );
+        places.cards = cards;
+        let places = Rc::new(places);
         *self.places.borrow_mut() = key.map(|key| (key, places.clone()));
         places
     }
 
-    /// Each slot's card in `places`, which `filtered` already is while the
-    /// slots hold every shown game once in shown order, as the flat
-    /// library's do. Sections can hold as many slots in another order.
+    /// Each slot's card in `places`, which must be this app's
+    /// `grid_places`.
     pub(crate) fn slot_cards(&self, places: &grid_motion::Places) -> Vec<&crate::library::Card> {
-        let filtered = self.filtered();
-        if filtered.len() == places.ids.len()
-            && filtered
-                .iter()
-                .zip(&places.ids)
-                .all(|(card, slot)| card.name == slot.name())
-        {
-            return filtered;
-        }
-        let by_name: std::collections::HashMap<&str, &crate::library::Card> = filtered
-            .iter()
-            .map(|card| (card.name.as_str(), *card))
-            .collect();
         places
-            .ids
+            .cards
             .iter()
-            .filter_map(|slot| by_name.get(slot.name()).copied())
+            .filter_map(|&index| self.cards.get(index))
             .collect()
     }
 
