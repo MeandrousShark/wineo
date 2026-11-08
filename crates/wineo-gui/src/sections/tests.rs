@@ -1685,6 +1685,36 @@ fn a_range_skips_a_collapsed_section() {
 }
 
 #[test]
+fn a_range_starts_at_the_copy_that_was_ctrl_clicked() {
+    let mut app = grouped(
+        vec![
+            tagged("hades", &["co-op", "rpg"]),
+            tagged("celeste", &["rpg"]),
+            tagged("zelda", &["rpg"]),
+        ],
+        GroupBy::Tag,
+    );
+    let _ = settle_grid(&mut app);
+    let ids = app.grid_places().ids.clone();
+    assert_eq!(
+        ids,
+        [
+            slot(tag("co-op"), "hades"),
+            slot(tag("rpg"), "celeste"),
+            slot(tag("rpg"), "hades"),
+            slot(tag("rpg"), "zelda"),
+        ]
+    );
+    app.modifiers = Modifiers::CTRL;
+    let _ = app.update(Message::Press(slot(tag("rpg"), "hades")));
+    app.modifiers = Modifiers::SHIFT;
+    let _ = app.update(Message::Press(slot(tag("rpg"), "zelda")));
+    app.modifiers = Modifiers::empty();
+    let marked: Vec<&str> = app.marked.iter().map(String::as_str).collect();
+    assert_eq!(marked, ["hades", "zelda"]);
+}
+
+#[test]
 fn the_random_picker_draws_by_game_from_what_is_in_view() {
     // Plan 0062, question 22's A, and a game shown twice isn't twice as
     // likely.
