@@ -1,0 +1,144 @@
+version = 1
+id = "20261108T214635Z-31105901"
+name = "doomed-prefix"
+removed_at = "2026-11-08T21:46:35.041279188Z"
+include_prefix = true
+prefix_present = true
+prefix_reference = "prefixes/doomed-prefix"
+phase = "trashed"
+
+[entry_identity]
+device = 50
+inode = 68969061
+mount = 60
+birth = [
+    1794174395,
+    38901235,
+]
+fsid = 6632707880272169117
+
+[prefix_identity]
+device = 50
+inode = 68969036
+mount = 60
+birth = [
+    1794174394,
+    992901238,
+]
+fsid = 6632707880272169117
+
+[[payloads]]
+kind = "config"
+original = "config/environments/doomed-prefix.toml"
+retained = "data/trash/20261108T214635Z-31105901/config.toml"
+digest = "v2:03b79a38b7c75e15b56950721bc622381ffe3fb8d6b8b6b4ed1240df6b7e81a5"
+step = "retained"
+
+[payloads.identity]
+device = 50
+inode = 68969046
+mount = 60
+birth = [
+    1794174394,
+    997901238,
+]
+fsid = 6632707880272169117
+
+[payloads.source_parent]
+device = 50
+inode = 68968913
+mount = 60
+birth = [
+    1794174391,
+    765901478,
+]
+fsid = 6632707880272169117
+
+[payloads.destination_parent]
+device = 50
+inode = 68969061
+mount = 60
+birth = [
+    1794174395,
+    38901235,
+]
+fsid = 6632707880272169117
+
+[[payloads]]
+kind = "prefix"
+original = "prefixes/doomed-prefix"
+retained = "prefixes/.wineo-trash/20261108T214635Z-31105901/prefix"
+digest = "v2:39f0ee9e31b572e8873629386365c9ceaaad31870f060ea0c454275709e61530"
+step = "retained"
+
+[payloads.identity]
+device = 50
+inode = 68969036
+mount = 60
+birth = [
+    1794174394,
+    992901238,
+]
+fsid = 6632707880272169117
+
+[payloads.source_parent]
+device = 50
+inode = 68968902
+mount = 60
+birth = [
+    1794174391,
+    758901478,
+]
+fsid = 6632707880272169117
+
+[payloads.destination_parent]
+device = 50
+inode = 68969063
+mount = 60
+birth = [
+    1794174395,
+    39901235,
+]
+fsid = 6632707880272169117
+
+[[payloads]]
+kind = "snapshots"
+original = "prefixes/.wineo-snapshots/doomed-prefix"
+retained = "prefixes/.wineo-trash/20261108T214635Z-31105901/snapshots"
+digest = "v2:b539e56bc40c389701f06599e5e464791953e95ce2ad4b51eae81aee1f6e5f34"
+step = "retained"
+
+[payloads.identity]
+device = 50
+inode = 68969048
+mount = 60
+birth = [
+    1794174395,
+    15901237,
+]
+fsid = 6632707880272169117
+
+[payloads.source_parent]
+device = 50
+inode = 68968974
+mount = 60
+birth = [
+    1794174391,
+    860901471,
+]
+fsid = 6632707880272169117
+
+[payloads.destination_parent]
+device = 50
+inode = 68969063
+mount = 60
+birth = [
+    1794174395,
+    39901235,
+]
+fsid = 6632707880272169117
+
+[library]
+favorite = false
+hidden = false
+added = "2026-11-08T21:46:34.998808338Z"
