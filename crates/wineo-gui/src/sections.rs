@@ -117,8 +117,7 @@ impl App {
         self.reorder();
         self.reflow_grid();
         if collapsing && cursor_inside {
-            self.active_slot = None;
-            self.header_cursor = Some(key);
+            self.cursor = Some(crate::app_selection::Cursor::Header(key));
         }
         self.load_visible_art()
     }

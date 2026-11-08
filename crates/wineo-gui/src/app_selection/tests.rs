@@ -5,7 +5,7 @@ use iced::keyboard::{Key, Modifiers};
 use iced::{Point, Rectangle, Size, Vector};
 use wineo_core::runtime::State;
 
-use super::cursor;
+use super::{Cursor, cursor};
 use crate::grid_motion::{CardBounds, GridLayout, Places, ViewLayout};
 use crate::library_actions::Flag;
 use crate::slot::{SectionKey, SlotId};
@@ -87,7 +87,7 @@ fn a_press_puts_the_cursor_on_its_slot_and_a_marking_press_doesnt() {
     let (_root, mut app) = fixture(6);
     let _ = app.update(Message::Press(flat("game-03")));
     assert_eq!(app.selected.as_deref(), Some("game-03"));
-    assert_eq!(app.active_slot, Some(flat("game-03")));
+    assert_eq!(app.card_cursor(), Some(&flat("game-03")));
     assert_eq!(app.selected_slot(), Some(flat("game-03")));
     // With nothing marked yet, a range runs from the cursor's slot.
     app.modifiers = Modifiers::SHIFT;
@@ -95,7 +95,7 @@ fn a_press_puts_the_cursor_on_its_slot_and_a_marking_press_doesnt() {
     app.modifiers = Modifiers::CTRL;
     let _ = app.update(Message::Press(flat("game-01")));
     app.modifiers = Modifiers::empty();
-    assert_eq!(app.active_slot, Some(flat("game-03")));
+    assert_eq!(app.card_cursor(), Some(&flat("game-03")));
     assert_eq!(app.selected.as_deref(), Some("game-03"));
     let marked: Vec<_> = app.marked.iter().map(String::as_str).collect();
     assert_eq!(marked, ["game-01", "game-03", "game-04", "game-05"]);
@@ -107,17 +107,17 @@ fn arrows_move_the_cursor_from_its_copy_or_the_first() {
     let _ = app.update(Message::Press(flat("game-02")));
     key(&mut app, Named::ArrowRight);
     assert_eq!(app.selected.as_deref(), Some("game-03"));
-    assert_eq!(app.active_slot, Some(flat("game-03")));
+    assert_eq!(app.card_cursor(), Some(&flat("game-03")));
     // A copy the grid doesn't show falls back to the game's first.
-    app.active_slot = Some(other("game-03"));
+    app.cursor = Some(Cursor::Card(other("game-03")));
     assert_eq!(app.selected_slot(), Some(flat("game-03")));
     key(&mut app, Named::ArrowRight);
-    assert_eq!(app.active_slot, Some(flat("game-04")));
+    assert_eq!(app.card_cursor(), Some(&flat("game-04")));
     // With nothing selected the first slot takes the cursor.
     app.selected = None;
-    app.active_slot = None;
+    app.cursor = None;
     key(&mut app, Named::ArrowRight);
-    assert_eq!(app.active_slot, Some(flat("game-00")));
+    assert_eq!(app.card_cursor(), Some(&flat("game-00")));
 }
 
 #[test]
@@ -128,10 +128,10 @@ fn another_copy_of_the_open_games_card_moves_the_cursor_and_keeps_the_panel() {
     let _ = app.update(Message::Press(other("game-01")));
     assert!(app.panel_open);
     assert_eq!(app.selected.as_deref(), Some("game-01"));
-    assert_eq!(app.active_slot, Some(other("game-01")));
+    assert_eq!(app.card_cursor(), Some(&other("game-01")));
     // Selecting the game by name, as a double-click does, keeps the copy.
     let _ = app.update(Message::Select("game-01".into()));
-    assert_eq!(app.active_slot, Some(other("game-01")));
+    assert_eq!(app.card_cursor(), Some(&other("game-01")));
     // The copy the cursor is on closes it, as a card always has.
     let _ = app.update(Message::Press(flat("game-01")));
     let _ = app.update(Message::Press(flat("game-01")));
@@ -142,9 +142,9 @@ fn another_copy_of_the_open_games_card_moves_the_cursor_and_keeps_the_panel() {
 fn selecting_another_game_by_any_path_forgets_the_copy() {
     let (_root, mut app) = fixture(4);
     let _ = app.update(Message::Press(other("game-01")));
-    assert_eq!(app.active_slot, Some(other("game-01")));
+    assert_eq!(app.card_cursor(), Some(&other("game-01")));
     let _ = app.update(Message::OpenCard("game-02".into()));
-    assert_eq!(app.active_slot, None);
+    assert_eq!(app.card_cursor(), None);
     // Coming back to the game starts on its first copy.
     let _ = app.update(Message::OpenCard("game-01".into()));
     assert_eq!(app.selected_slot(), Some(flat("game-01")));
@@ -194,7 +194,7 @@ fn hiding_the_selected_game_moves_the_cursor_to_the_next_slot() {
     let _ = app.update(Message::Press(flat("game-02")));
     let _ = app.toggle_flag("game-02", Flag::Hidden);
     assert_eq!(app.selected.as_deref(), Some("game-03"));
-    assert_eq!(app.active_slot, Some(flat("game-03")));
+    assert_eq!(app.card_cursor(), Some(&flat("game-03")));
 }
 
 // The grid below shows one game twice, through the test-only copy.
@@ -209,7 +209,7 @@ fn hiding_a_later_copy_counts_the_earlier_copy_that_leaves_too() {
     let _ = app.toggle_flag("game-00", Flag::Hidden);
     // The first card after the cursor that stays.
     assert_eq!(app.selected.as_deref(), Some("game-02"));
-    assert_eq!(app.active_slot, Some(flat("game-02")));
+    assert_eq!(app.card_cursor(), Some(&flat("game-02")));
 }
 
 #[test]
@@ -222,7 +222,7 @@ fn a_bulk_hide_counts_every_leaving_copy_before_the_cursor() {
     app.marked.insert("game-01".into());
     let _ = app.flag_marked(Flag::Hidden, true);
     assert_eq!(app.selected.as_deref(), Some("game-03"));
-    assert_eq!(app.active_slot, Some(flat("game-03")));
+    assert_eq!(app.card_cursor(), Some(&flat("game-03")));
 }
 
 #[test]
@@ -234,11 +234,11 @@ fn arrows_walk_across_both_copies_of_a_game() {
     assert!(app.panel_open);
     key(&mut app, Named::ArrowRight);
     assert_eq!(app.selected.as_deref(), Some("game-00"));
-    assert_eq!(app.active_slot, Some(copy.clone()));
+    assert_eq!(app.card_cursor(), Some(&copy));
     assert_eq!(app.selected_slot(), Some(copy.clone()));
     assert!(app.panel_open);
     key(&mut app, Named::ArrowRight);
-    assert_eq!(app.active_slot, Some(flat("game-01")));
+    assert_eq!(app.card_cursor(), Some(&flat("game-01")));
     key(&mut app, Named::ArrowLeft);
     assert_eq!(app.selected_slot(), Some(copy));
     key(&mut app, Named::ArrowLeft);

@@ -48,7 +48,7 @@ impl App {
             Task::none()
         } else {
             self.clear_marks();
-            self.header_cursor = None;
+            self.leave_header();
             if let Some(slot) = slot {
                 // Another copy of the open panel's game only moves the
                 // cursor, rather than closing the panel as its own card
@@ -56,7 +56,7 @@ impl App {
                 let elsewhere = self.panel_open
                     && self.selected.as_deref() == Some(&name)
                     && self.selected_slot().is_some_and(|cursor| cursor != slot);
-                self.active_slot = Some(slot);
+                self.cursor = Some(crate::app_selection::Cursor::Card(slot));
                 if elsewhere {
                     return Task::none();
                 }
@@ -121,7 +121,7 @@ impl App {
     /// else `name` itself. With Ctrl held too, the last range stays.
     fn mark_range(&mut self, name: &str, slot: Option<&SlotId>, keep_last: bool) {
         let places = self.grid_places();
-        let active = self.active_slot.as_ref();
+        let active = self.card_cursor();
         let to = match slot {
             Some(slot) => places.index(slot),
             None => cursor(&places, Some(name), active),

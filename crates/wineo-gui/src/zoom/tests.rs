@@ -821,7 +821,7 @@ fn the_cursors_copy_anchors_a_zoom_rather_than_the_games_first() {
     // The first copy is partly on screen too.
     app.scroll_offset = tops[5] + 10.0;
     app.selected = Some("game-005".into());
-    app.active_slot = Some(copy.clone());
+    app.cursor = Some(crate::app_selection::Cursor::Card(copy.clone()));
     let offset = tops[at] - app.scroll_offset;
     let _ = zoom(&mut app, Event::Key(Key::In));
     assert_eq!(

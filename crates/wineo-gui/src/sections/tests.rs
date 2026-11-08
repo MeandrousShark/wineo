@@ -1808,8 +1808,10 @@ fn the_cursors_section_collapsing_moves_it_to_the_header_and_keeps_the_panel() {
     let _ = app.update(Message::Press(celeste));
     assert!(app.panel_open);
     let _ = app.update(Message::ToggleSection(tag("rpg")));
-    assert_eq!(app.header_cursor, Some(tag("rpg")));
-    assert_eq!(app.active_slot, None);
+    assert_eq!(
+        app.cursor,
+        Some(crate::app_selection::Cursor::Header(tag("rpg")))
+    );
     assert!(app.panel_open);
     assert_eq!(app.selected.as_deref(), Some("celeste"));
     // The selected game has no copy in view, so keys that act on it wait.
@@ -1828,16 +1830,16 @@ fn the_cursors_section_collapsing_moves_it_to_the_header_and_keeps_the_panel() {
         app.selected_slot(),
         Some(slot(SectionKey::NoTag, "notepad"))
     );
-    assert_eq!(app.header_cursor, None);
+    assert_eq!(app.header_cursor(), None);
     // Back on the header, Up goes to the row above and Left to the card
     // before it in shown order.
-    app.header_cursor = Some(tag("rpg"));
+    app.cursor = Some(crate::app_selection::Cursor::Header(tag("rpg")));
     key(&mut app, Named::ArrowUp);
     assert_eq!(app.selected_slot(), Some(slot(SectionKey::Recent, "hades")));
-    app.header_cursor = Some(tag("rpg"));
+    app.cursor = Some(crate::app_selection::Cursor::Header(tag("rpg")));
     key(&mut app, Named::ArrowLeft);
     assert_eq!(app.selected_slot(), Some(slot(SectionKey::Recent, "hades")));
-    app.header_cursor = Some(tag("rpg"));
+    app.cursor = Some(crate::app_selection::Cursor::Header(tag("rpg")));
     key(&mut app, Named::ArrowRight);
     assert_eq!(
         app.selected_slot(),
@@ -1846,7 +1848,7 @@ fn the_cursors_section_collapsing_moves_it_to_the_header_and_keeps_the_panel() {
     // A cursor outside the section stays where it is.
     let _ = app.update(Message::ToggleSection(tag("rpg")));
     let _ = app.update(Message::ToggleSection(SectionKey::Recent));
-    assert_eq!(app.header_cursor, None);
+    assert_eq!(app.header_cursor(), None);
     assert_eq!(
         app.selected_slot(),
         Some(slot(SectionKey::NoTag, "notepad"))
@@ -1858,18 +1860,18 @@ fn a_cursor_on_the_last_header_with_nothing_below_stays_there() {
     let mut app = collapsible();
     let _ = app.update(Message::Press(slot(SectionKey::NoTag, "notepad")));
     let _ = app.update(Message::ToggleSection(SectionKey::NoTag));
-    assert_eq!(app.header_cursor, Some(SectionKey::NoTag));
+    assert_eq!(app.header_cursor(), Some(&SectionKey::NoTag));
     let _ = app.update(Message::KeyWithFocus(
         Key::Named(Named::ArrowDown),
         Modifiers::empty(),
         iced::event::Status::Ignored,
         false,
     ));
-    assert_eq!(app.header_cursor, Some(SectionKey::NoTag));
+    assert_eq!(app.header_cursor(), Some(&SectionKey::NoTag));
     assert_eq!(app.selected.as_deref(), Some("notepad"));
     // The header going away, as on a regroup, takes the cursor with it.
     let _ = app.update(Message::Sort(Event::Group(GroupBy::None)));
-    assert_eq!(app.header_cursor, None);
+    assert_eq!(app.header_cursor(), None);
 }
 
 #[test]
@@ -2521,8 +2523,10 @@ fn the_cursor_in_all_moves_to_its_header_when_it_collapses() {
     let _ = app.update(Message::Press(slot(all(), "celeste")));
     assert!(app.panel_open);
     let _ = app.update(Message::ToggleSection(all()));
-    assert_eq!(app.header_cursor, Some(all()));
-    assert_eq!(app.active_slot, None);
+    assert_eq!(
+        app.cursor,
+        Some(crate::app_selection::Cursor::Header(all()))
+    );
     assert!(app.panel_open);
     assert_eq!(app.selected.as_deref(), Some("celeste"));
     let key = |app: &mut App, named: Named| {
@@ -2535,11 +2539,11 @@ fn the_cursor_in_all_moves_to_its_header_when_it_collapses() {
     };
     // Nothing is below it, so Down stays.
     key(&mut app, Named::ArrowDown);
-    assert_eq!(app.header_cursor, Some(all()));
+    assert_eq!(app.header_cursor(), Some(&all()));
     // Up goes to the row above, which is Recently played.
     key(&mut app, Named::ArrowUp);
     assert_eq!(app.selected_slot(), Some(slot(SectionKey::Recent, "hades")));
-    assert_eq!(app.header_cursor, None);
+    assert_eq!(app.header_cursor(), None);
 }
 
 #[test]
