@@ -1930,6 +1930,42 @@ fn a_bulk_hide_hands_the_cursor_to_the_next_slot_even_when_recent_fills_up() {
     assert_eq!(app.selected_slot(), Some(slot(all(), "b")));
 }
 
+/// Twelve played games, a to l, l played last, grouped by Recently played,
+/// so a and b are the games All has that Recently played doesn't.
+fn twelve_played() -> App {
+    let cards = ('a'..='l')
+        .enumerate()
+        .map(|(age, name)| played(tagged(&name.to_string(), &[]), age as i64))
+        .collect();
+    let mut app = grouped(cards, GroupBy::Recent);
+    let _ = settle_grid(&mut app);
+    assert_eq!(app.grid_places().ids.last(), Some(&slot(all(), "l")));
+    app
+}
+
+#[test]
+fn hiding_the_last_slot_hands_the_cursor_back_even_when_recent_fills_up() {
+    // a and b come into Recently played as k and l leave it, which would
+    // put the cursor on i had it counted places from the end.
+    let mut app = twelve_played();
+    let _ = app.update(Message::Press(slot(all(), "l")));
+    app.toggle_mark("k");
+    app.toggle_mark("l");
+    let _ = app.update(Message::Tags(crate::action_bar::Event::ToggleFlag(
+        crate::library_actions::Flag::Hidden,
+    )));
+    assert_eq!(app.grid_places().ids[9], slot(SectionKey::Recent, "a"));
+    assert_eq!(app.selected_slot(), Some(slot(all(), "j")));
+
+    let mut app = twelve_played();
+    let _ = app.update(Message::Press(slot(all(), "l")));
+    let _ = app.update(Message::Mark(crate::library_actions::Event::Toggle(
+        "l".to_owned(),
+        crate::library_actions::Flag::Hidden,
+    )));
+    assert_eq!(app.selected_slot(), Some(slot(all(), "k")));
+}
+
 /// The library mid-switch from no grouping to Group by Tag in `layout`:
 /// the cards spring from their flat places, across the headers that just
 /// appeared at theirs.

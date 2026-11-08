@@ -428,9 +428,10 @@ impl App {
     }
 
     /// Where the cursor's successor will sit once every slot of the games
-    /// `leaving` picks is gone, when no slot after it stays: the cursor's
-    /// slot now, less the leaving slots before it. Each game's copies all
-    /// leave together, so earlier copies count too.
+    /// `leaving` picks is gone, counted by place: the cursor's slot now,
+    /// less the leaving slots before it. Each game's copies all leave
+    /// together, so earlier copies count too.
+    #[cfg(test)]
     pub(crate) fn place_after_leaving(&self, leaving: impl Fn(&str) -> bool) -> Option<usize> {
         let places = self.grid_places();
         let at = self.selected_index(&places)?;
@@ -442,33 +443,34 @@ impl App {
     }
 
     /// The cursor's successor once every slot of the games `leaving` picks
-    /// is gone: the first slot after it that stays, found again by identity,
-    /// since a hide can also bring a game into Recently played.
+    /// is gone: the first slot after it that stays, else the nearest one
+    /// before it, found again by identity rather than by place, since a
+    /// hide can also bring games into Recently played.
     pub(crate) fn successor_after_leaving(
         &self,
         leaving: impl Fn(&str) -> bool,
     ) -> Option<Successor> {
-        let place = self.place_after_leaving(&leaving)?;
         let places = self.grid_places();
         let at = self.selected_index(&places)?;
-        let after = places.ids[at + 1..]
-            .iter()
-            .filter(|slot| !leaving(slot.name()))
-            .cloned()
-            .collect();
-        Some(Successor { after, place })
+        let stays = |slot: &&SlotId| !leaving(slot.name());
+        let after = places.ids[at + 1..].iter().filter(stays);
+        let before = places.ids[..at].iter().rev().filter(stays);
+        Some(Successor {
+            candidates: after.chain(before).cloned().collect(),
+        })
     }
 
-    /// Puts the cursor on `successor` in the order shown now.
+    /// Puts the cursor on the first of `successor`'s candidates shown now,
+    /// else the last slot, or selects nothing when nothing is left.
     pub(crate) fn select_successor(&mut self, successor: Successor) -> Task<Message> {
         let places = self.grid_places();
         match successor
-            .after
+            .candidates
             .into_iter()
             .find(|slot| places.index(slot).is_some())
         {
             Some(next) => self.select_slot(next),
-            None => self.select_in_place(successor.place),
+            None => self.select_in_place(usize::MAX),
         }
     }
 
@@ -497,11 +499,9 @@ impl App {
 
 /// Where the cursor goes after a hide takes its game.
 pub(crate) struct Successor {
-    /// The slots after the cursor whose games stay, in the order shown
-    /// before the hide.
-    after: Vec<SlotId>,
-    /// Where it goes when none of them is shown afterward.
-    place: usize,
+    /// The slots whose games stay, as shown before the hide: those after
+    /// the cursor in order, then those before it, nearest first.
+    candidates: Vec<SlotId>,
 }
 
 /// The star in a poster's top right corner: a filled one on a favorite, or
