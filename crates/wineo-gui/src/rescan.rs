@@ -8,13 +8,14 @@ use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
 use iced::futures::Stream;
-use wineo_core::library::{self as saved, Preset, Problem};
+use wineo_core::library::{self as saved, Problem};
 use wineo_core::paths::Paths;
 use wineo_core::steam::Discovery;
 
 use crate::Message;
 use crate::art_page::{self, EnvironmentIdentity};
 use crate::library::{Card, Loaded, load_library_with};
+use crate::presets::List;
 use crate::sidebar::TrashBadge;
 use crate::trash_page::{Snapshot, entry_label};
 
@@ -29,7 +30,7 @@ struct Shown {
     /// `library.toml`'s problem, as last shown.
     problem: Option<Problem>,
     /// Its presets, as last shown.
-    presets: Vec<(String, Preset)>,
+    presets: List,
     /// What's new in Steam, as last applied, for the library nudge to read.
     discovery: Discovery,
     /// The next scan's discovery goes to the app even if it's the same, since
@@ -165,13 +166,13 @@ impl Watch {
         self.shown().problem = problem;
     }
 
-    pub(crate) fn show_presets(&self, presets: Vec<(String, Preset)>) {
+    pub(crate) fn show_presets(&self, presets: List) {
         self.shown().presets = presets;
     }
 
     /// `refresh_library`, returning the presets as they are on disk now,
     /// or None while the file can't be read; see `presets_of`.
-    pub(crate) fn refresh_library_presets(&self, paths: &Paths) -> Option<Vec<(String, Preset)>> {
+    pub(crate) fn refresh_library_presets(&self, paths: &Paths) -> Option<List> {
         let mut caches = self.0.caches.lock().unwrap_or_else(PoisonError::into_inner);
         presets_of(caches.library.refresh(paths))
     }
@@ -298,7 +299,7 @@ pub(crate) struct Scan {
     /// `library.toml`'s problem, read with `library`.
     pub(crate) problem: Option<Option<Problem>>,
     /// Its presets, from the same read.
-    pub(crate) presets: Option<Vec<(String, Preset)>>,
+    pub(crate) presets: Option<List>,
     /// What's new in Steam, read with `library`. A new install changes no
     /// card, so it's compared on its own.
     pub(crate) discovery: Option<Discovery>,
@@ -389,8 +390,8 @@ pub(crate) fn read_with(
 /// falls back to none, and the window keeps showing the ones it last read
 /// rather than lose them, and the active one's name, to a broken file
 /// that refuses every write anyway.
-fn presets_of(saved: &saved::Library) -> Option<Vec<(String, Preset)>> {
-    saved.problem.is_none().then(|| saved.presets.clone())
+fn presets_of(saved: &saved::Library) -> Option<List> {
+    saved.problem.is_none().then(|| List::of(saved))
 }
 
 /// Sleeps first: a new stream starts at boot, whose load is already running,
