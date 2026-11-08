@@ -362,6 +362,19 @@ fn write_preset(document: &mut DocumentMut, name: &str, preset: &Preset) -> bool
     changed
 }
 
+/// Whether a stored choice already reads as `value`: a missing field is the
+/// default, and text that doesn't parse reads as none.
+pub(super) fn choice_matches<T: PartialEq + Default>(
+    current: Option<&Item>,
+    value: T,
+    parse: fn(&str) -> Option<T>,
+) -> bool {
+    match current {
+        None => value == T::default(),
+        Some(item) => item.as_str().and_then(parse) == Some(value),
+    }
+}
+
 fn set_choice<T: Copy + PartialEq + Default>(
     table: &mut dyn TableLike,
     field: &str,
@@ -370,12 +383,7 @@ fn set_choice<T: Copy + PartialEq + Default>(
     parse: fn(&str) -> Option<T>,
     fresh: bool,
 ) -> bool {
-    let matches = !fresh
-        && match table.get(field) {
-            None => value == T::default(),
-            Some(item) => item.as_str().and_then(parse) == Some(value),
-        };
-    if matches {
+    if !fresh && choice_matches(table.get(field), value, parse) {
         return false;
     }
     store_value(table, field, Value::from(name));
