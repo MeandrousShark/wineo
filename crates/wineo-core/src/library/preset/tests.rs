@@ -593,11 +593,14 @@ fn a_bad_scalar_is_replaced_even_with_the_default() {
 }
 
 #[test]
-fn a_preset_replaces_an_entry_that_was_not_a_table() {
+fn a_preset_does_not_replace_an_entry_that_was_not_a_table() {
     let fixture = Fixture::with("[presets]\nP = 1\n");
     assert_eq!(fixture.presets(), Vec::<String>::new());
-    assert!(set_preset(&fixture.paths, "P", &couch()).unwrap());
-    assert_eq!(fixture.preset("P"), couch());
+    assert!(matches!(
+        set_preset(&fixture.paths, "P", &couch()),
+        Err(Error::PresetNameTaken(taken)) if taken == "P"
+    ));
+    assert_eq!(fixture.read(), "[presets]\nP = 1\n");
 }
 
 #[test]
@@ -1171,13 +1174,14 @@ fn renaming_a_standard_preset_keeps_the_comment_above_its_header() {
 }
 
 #[test]
-fn renaming_over_an_entry_that_is_not_a_preset_replaces_it() {
-    let fixture = Fixture::with(
-        "[presets]\nOld = { sort = \"added\" }\nNew = 3\nAfter = { sort = \"tags\" }\n",
-    );
-    assert!(rename_preset(&fixture.paths, "Old", "New").unwrap());
-    assert_eq!(fixture.presets(), ["After", "New"]);
-    assert_eq!(fixture.preset("New").sort, SortKey::Added);
+fn renaming_over_an_entry_that_is_not_a_preset_is_refused() {
+    let text = "[presets]\nOld = { sort = \"added\" }\nNew = 3\nAfter = { sort = \"tags\" }\n";
+    let fixture = Fixture::with(text);
+    assert!(matches!(
+        rename_preset(&fixture.paths, "Old", "New"),
+        Err(Error::PresetNameTaken(taken)) if taken == "New"
+    ));
+    assert_eq!(fixture.read(), text);
 }
 
 /// Pairs that `to_lowercase` keeps apart but that are the same name to a
@@ -1292,4 +1296,60 @@ fn create_preset_checks_the_name_like_set_preset() {
         Err(Error::InvalidPresetName(_))
     ));
     assert!(!fixture.paths.library_file().exists());
+}
+
+const NON_PRESETS: &str =
+    "[presets]\nbroken = 1\nlist = [\"a\", \"b\"]\n\n[presets.Old]\nsort = \"added\"\n";
+
+#[test]
+fn saving_refuses_a_name_a_non_preset_entry_already_uses() {
+    for (name, taken) in [
+        ("broken", "broken"),
+        ("Broken", "broken"),
+        ("list", "list"),
+        ("LIST", "list"),
+    ] {
+        let fixture = Fixture::with(NON_PRESETS);
+        let inode = fixture.inode();
+        for error in [
+            set_preset(&fixture.paths, name, &couch()).unwrap_err(),
+            create_preset(&fixture.paths, name, &couch()).unwrap_err(),
+        ] {
+            assert!(
+                matches!(&error, Error::PresetNameTaken(found) if found == taken),
+                "{name}: {error:?}"
+            );
+        }
+        assert_eq!(fixture.read(), NON_PRESETS, "{name}");
+        assert_eq!(fixture.inode(), inode, "{name}");
+    }
+}
+
+#[test]
+fn renaming_refuses_a_name_a_non_preset_entry_already_uses() {
+    for (new, taken) in [
+        ("broken", "broken"),
+        ("BROKEN", "broken"),
+        ("list", "list"),
+        ("List", "list"),
+    ] {
+        let fixture = Fixture::with(NON_PRESETS);
+        let error = rename_preset(&fixture.paths, "Old", new).unwrap_err();
+        assert!(
+            matches!(&error, Error::PresetNameTaken(found) if found == taken),
+            "{new}: {error:?}"
+        );
+        assert_eq!(fixture.read(), NON_PRESETS, "{new}");
+    }
+}
+
+#[test]
+fn a_non_preset_entry_survives_next_to_a_save_and_a_rename() {
+    let fixture = Fixture::with(NON_PRESETS);
+    assert!(set_preset(&fixture.paths, "Fresh", &couch()).unwrap());
+    assert!(rename_preset(&fixture.paths, "Old", "Newer").unwrap());
+    let text = fixture.read();
+    assert!(text.contains("broken = 1"), "{text}");
+    assert!(text.contains("list = [\"a\", \"b\"]"), "{text}");
+    assert_eq!(fixture.presets(), ["Fresh", "Newer"]);
 }

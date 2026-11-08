@@ -181,7 +181,8 @@ pub fn remove_preset(paths: &Paths, name: &str) -> Result<bool> {
 
 /// Gives the preset a new name in the one write, so a failure leaves the old
 /// one. The table moves whole, with its comments and keys this wineo doesn't
-/// know. Another preset's name is taken whatever its case; the preset's own
+/// know. Any other entry's name is taken whatever its case, a value that
+/// isn't a preset included, so nothing in the file is lost; the preset's own
 /// name in another case is fine. Renaming to the same name writes nothing.
 pub fn rename_preset(paths: &Paths, old: &str, new: &str) -> Result<bool> {
     if old != new
@@ -205,7 +206,7 @@ pub fn rename_preset(paths: &Paths, old: &str, new: &str) -> Result<bool> {
         let folded = fold_case(new);
         let taken = presets
             .iter()
-            .find(|(name, item)| *name != old && item.is_table_like() && fold_case(name) == folded)
+            .find(|(name, _)| *name != old && fold_case(name) == folded)
             .map(|(name, _)| name.to_owned());
         if let Some(taken) = taken {
             refused = Some(Error::PresetNameTaken(taken));
@@ -225,9 +226,6 @@ pub fn rename_preset(paths: &Paths, old: &str, new: &str) -> Result<bool> {
 /// taken out and put back in order. That keeps the order of a dotted or
 /// inline table, where a headered table's position already holds its place.
 fn rename_key(table: &mut dyn TableLike, old: &str, new: &str) {
-    // Whatever else sits under the new name is not a preset, or the collision
-    // check would have refused, and would be in the way.
-    table.remove(new);
     let order: Vec<String> = table.iter().map(|(name, _)| name.to_owned()).collect();
     let from = order
         .iter()
@@ -257,9 +255,11 @@ fn rename_key(table: &mut dyn TableLike, old: &str, new: &str) {
     }
 }
 
-/// The name of a preset that `name` collides with: it differs from it only in
-/// case. None when `name` is the exact name of a preset (that's an update)
-/// or matches none.
+/// The name of an entry under `[presets]` that `name` collides with: it
+/// differs from it only in case. An entry that isn't a table counts, since
+/// saving over it would drop what a person or a newer wineo wrote there. None
+/// when `name` is the exact name of a preset (that's an update) or matches
+/// no entry.
 fn case_variant(document: &DocumentMut, name: &str) -> Option<String> {
     let presets = document.get("presets").and_then(Item::as_table_like)?;
     if presets.get(name).is_some_and(Item::is_table_like) {
@@ -268,14 +268,14 @@ fn case_variant(document: &DocumentMut, name: &str) -> Option<String> {
     let folded = fold_case(name);
     presets
         .iter()
-        .find(|(other, item)| item.is_table_like() && fold_case(other) == folded)
+        .find(|(other, _)| fold_case(other) == folded)
         .map(|(other, _)| other.to_owned())
 }
 
-/// The preset named `name` exactly, else one that differs only in case.
+/// The entry named `name` exactly, else one that differs only in case.
 fn existing_name(document: &DocumentMut, name: &str) -> Option<String> {
     let presets = document.get("presets").and_then(Item::as_table_like)?;
-    if presets.get(name).is_some_and(Item::is_table_like) {
+    if presets.get(name).is_some() {
         return Some(name.to_owned());
     }
     case_variant(document, name)
