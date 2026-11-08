@@ -6,7 +6,7 @@ use std::fs;
 
 use toml_edit::{DocumentMut, Item, Key};
 
-use super::preset::readable_name;
+use super::preset::{preset_name_rule, readable_name};
 use super::record::{Recorded, valid_app_id};
 use super::{
     GroupBy, RandomPool, ReadFailure, SCHEMA_VERSION, SortKey, ViewLayout, ZOOM_MAX, ZOOM_MIN,
@@ -158,6 +158,14 @@ fn inspect_presets(item: &Item, inspection: &mut Inspection) {
                 .findings
                 .push(invalid(None, &path, expected, preset));
             continue;
+        }
+        // The reader still shows such a name and the rest of the preset is
+        // checked below, so this is a finding and not a reason to skip it.
+        if let Some(rule) = preset_name_rule(name) {
+            let expected = format!("expected a preset name that {rule}");
+            inspection
+                .findings
+                .push(invalid(None, &path, &expected, preset));
         }
         let Some(fields) = preset.as_table_like() else {
             inspection
