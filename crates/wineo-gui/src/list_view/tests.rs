@@ -42,7 +42,7 @@ fn shown(app: &App) -> Vec<String> {
         .collect()
 }
 
-fn facts(app: &App, name: &str) -> RowFacts {
+fn facts<'a>(app: &'a App, name: &str) -> RowFacts<'a> {
     let card = app.cards.iter().find(|card| card.name == name).unwrap();
     app.row_facts(&card.name.as_str().into(), card, app.palette)
 }
@@ -262,8 +262,10 @@ fn a_row_shows_what_its_poster_does() {
 
     let titled = facts(&app, "hades-goty");
     assert_eq!(titled.title, "Hades");
-    assert_eq!(titled.identifier.as_deref(), Some("hades-goty"));
-    assert_eq!(titled.tags, "rpg, co-op");
+    assert_eq!(titled.identifier, Some("hades-goty"));
+    assert_eq!(titled.tags, ["rpg", "co-op"]);
+    let cells = row_text(&titled, &Column::ALL, 2000.0).cells;
+    assert!(cells.contains(&(Column::Tags, "rpg, co-op".to_owned())));
     assert_eq!(titled.last_played, "yesterday");
     assert_eq!(titled.source, "GOG");
     assert_eq!(facts(&app, "native").source, "Native");
@@ -280,14 +282,21 @@ fn a_row_shows_what_its_poster_does() {
         assert_eq!(badge.color(palette), color, "{name}");
         // The pill takes its room from the title, as the marks do.
         assert!(
-            title_room(&facts, 1000.0) < title_room(&plain, 1000.0),
+            title_room(&facts, columns(1000.0), 1000.0)
+                < title_room(&plain, columns(1000.0), 1000.0),
             "{name}"
         );
         // And it's drawn: the marks gain it before the star, and the title
         // keeps exactly the room left.
         let card = app.cards.iter().find(|card| card.name == name).unwrap();
         let node = layout(
-            &mut app.row_drawn(&card.name.as_str().into(), card, 1.0, 1000.0),
+            &mut app.row_drawn(
+                &card.name.as_str().into(),
+                card,
+                1.0,
+                1000.0,
+                columns(1000.0),
+            ),
             Size::new(2000.0, 500.0),
         );
         let marks = iced::advanced::Layout::new(&node)
@@ -299,7 +308,7 @@ fn a_row_shows_what_its_poster_does() {
         assert_eq!(marks.children().count(), 2, "{name}");
         assert_eq!(
             bounds_at(&node, &[0, 0, 1]).width,
-            title_room(&facts, 1000.0)
+            title_room(&facts, columns(1000.0), 1000.0)
         );
     }
 
@@ -313,7 +322,7 @@ fn a_row_shows_what_its_poster_does() {
     let width = app.slot_width();
     for card in &app.cards {
         let node = layout(
-            &mut app.row_drawn(&card.name.as_str().into(), card, 1.0, width),
+            &mut app.row_drawn(&card.name.as_str().into(), card, 1.0, width, columns(width)),
             Size::new(2000.0, 500.0),
         );
         assert_eq!(node.size(), Size::new(width, ROW_HEIGHT), "{}", card.name);
@@ -335,7 +344,14 @@ fn a_row_takes_presses_like_a_card() {
     let (_root, mut app) = listed(3);
     app.hovered = Some("game-001".into());
     let card = app.cards[1].clone();
-    let row = app.row_drawn(&card.name.as_str().into(), &card, 1.0, app.slot_width());
+    let width = app.slot_width();
+    let row = app.row_drawn(
+        &card.name.as_str().into(),
+        &card,
+        1.0,
+        width,
+        columns(width),
+    );
     // Cells, title cell, marks, star.
     let messages = click_at(row, Size::new(2000.0, 100.0), &[0, 0, 2, 0]);
     assert!(
@@ -687,8 +703,8 @@ fn overlong_text_ends_in_an_ellipsis_within_its_column() {
     let _ = app.update(Message::Loaded(Ok(vec![long, short])));
     for width in [500.0, 700.0, 1000.0] {
         let long = facts(&app, "a-very-long-environment-name-for-a-game");
-        let text = row_text(&long, width);
-        let room = title_room(&long, width);
+        let text = row_text(&long, columns(width), width);
+        let room = title_room(&long, columns(width), width);
         assert!(text.title.ends_with("..."), "{width}: {}", text.title);
         assert!(line_width(&text.title, 14.0, SEMIBOLD) <= room, "{width}");
         let identifier = text.identifier.unwrap();
@@ -704,7 +720,7 @@ fn overlong_text_ends_in_an_ellipsis_within_its_column() {
             }
         }
         // What fits stays whole.
-        let short = row_text(&facts(&app, "short"), width);
+        let short = row_text(&facts(&app, "short"), columns(width), width);
         assert_eq!(short.title, "short");
         assert_eq!(short.state, "inactive");
     }

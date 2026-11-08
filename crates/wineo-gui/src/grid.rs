@@ -190,6 +190,7 @@ impl App {
         });
         let list = self.layout == crate::grid_motion::ViewLayout::List;
         let row_width = self.slot_width();
+        let row_columns = crate::list_view::columns(row_width);
         let cards = filtered
             .into_iter()
             .zip(&places.ids)
@@ -198,7 +199,7 @@ impl App {
                 if list {
                     return crate::grid_motion::GridCard {
                         id: id.clone(),
-                        card: self.row_drawn(id, card, opacity, row_width),
+                        card: self.row_drawn(id, card, opacity, row_width, row_columns),
                         details: None,
                     };
                 }
@@ -244,6 +245,7 @@ impl App {
                             card,
                             leaving.opacity,
                             leaving.bounds.width,
+                            crate::list_view::columns(leaving.bounds.width),
                         ),
                         details: None,
                     });
