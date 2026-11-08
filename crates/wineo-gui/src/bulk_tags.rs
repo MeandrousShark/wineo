@@ -248,10 +248,14 @@ fn failure_notice(verb: &str, failed: &[(String, String)], total: usize) -> Stri
 impl App {
     /// The marked games' cards, in name order.
     pub(crate) fn marked_cards(&self) -> Vec<&Card> {
-        self.marked
+        let mut cards: Vec<&Card> = self
+            .cards
             .iter()
-            .filter_map(|name| self.cards.iter().find(|card| &card.name == name))
-            .collect()
+            .filter(|card| self.marked.contains(&card.name))
+            .collect();
+        // A scan already lists cards by name, which this sort only checks.
+        cards.sort_by(|a, b| a.name.cmp(&b.name));
+        cards
     }
 
     /// Adds `tag` to every marked game that lacks it, or removes it from

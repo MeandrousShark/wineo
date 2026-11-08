@@ -14,6 +14,7 @@ use crate::grid::{
     ACTION_MENU_HEADER_HEIGHT, ACTION_MENU_MARGIN, ACTION_MENU_PADDING, ACTION_MENU_SPACING,
     ACTION_MENU_WIDTH, menu_position,
 };
+use crate::library::Card;
 use crate::library_actions::Flag;
 use crate::library_menu::{check_box, icon, menu_row, mixed_box};
 use crate::theme::Palette;
@@ -139,25 +140,13 @@ impl App {
 
     /// How many of the marked games have `tag`.
     pub(crate) fn tag_share(&self, tag: &str) -> Share {
-        let marked = self.marked_cards();
-        let with = marked
-            .iter()
-            .filter(|card| bulk_tags::has_tag(card, tag))
-            .count();
-        if with == 0 {
-            Share::None
-        } else if with == marked.len() {
-            Share::All
-        } else {
-            Share::Some
-        }
+        share_of(&self.marked_cards(), tag)
     }
 
     /// Whether every marked game has `flag`, which the bar's button then
     /// undoes instead of setting.
     pub(crate) fn flag_all(&self, flag: Flag) -> bool {
-        let marked = self.marked_cards();
-        !marked.is_empty() && marked.iter().all(|card| flag.of(card))
+        all_flagged(&self.marked_cards(), flag)
     }
 
     /// Every tag in the library, A to Z as the Filters popup lists them,
@@ -331,9 +320,29 @@ fn flag_button(
     focus_button::control(button.into(), true, id, message)
 }
 
+/// How many of `marked` have `tag`.
+fn share_of(marked: &[&Card], tag: &str) -> Share {
+    let with = marked
+        .iter()
+        .filter(|card| bulk_tags::has_tag(card, tag))
+        .count();
+    if with == 0 {
+        Share::None
+    } else if with == marked.len() {
+        Share::All
+    } else {
+        Share::Some
+    }
+}
+
+/// Whether every one of `marked` has `flag`.
+fn all_flagged(marked: &[&Card], flag: Flag) -> bool {
+    !marked.is_empty() && marked.iter().all(|card| flag.of(card))
+}
+
 /// What the bar does to the marked games. Each action is one more button
 /// here, before the x, and Tab visits them in this order.
-fn actions(app: &App) -> Vec<Element<'static, Message>> {
+fn actions(app: &App, marked: &[&Card]) -> Vec<Element<'static, Message>> {
     let palette = app.palette;
     let message = Message::Tags(Event::ToggleMenu);
     let tags = button(
@@ -350,13 +359,13 @@ fn actions(app: &App) -> Vec<Element<'static, Message>> {
         focus_button::control(tags.into(), true, TAGS_BUTTON_ID, message),
         flag_button(
             palette,
-            flag_label(Flag::Favorite, app.flag_all(Flag::Favorite)),
+            flag_label(Flag::Favorite, all_flagged(marked, Flag::Favorite)),
             FAVORITE_BUTTON_ID,
             Message::Tags(Event::ToggleFlag(Flag::Favorite)),
         ),
         flag_button(
             palette,
-            flag_label(Flag::Hidden, app.flag_all(Flag::Hidden)),
+            flag_label(Flag::Hidden, all_flagged(marked, Flag::Hidden)),
             HIDE_BUTTON_ID,
             Message::Tags(Event::ToggleFlag(Flag::Hidden)),
         ),
@@ -366,6 +375,7 @@ fn actions(app: &App) -> Vec<Element<'static, Message>> {
 impl App {
     /// The bar, for the bottom of the Library's notes.
     pub(crate) fn action_bar_view(&self) -> Element<'_, Message> {
+        let marked = self.marked_cards();
         let palette = self.palette;
         let message = Message::Tags(Event::Clear);
         let clear = button(
@@ -392,7 +402,7 @@ impl App {
             .color(palette.foreground);
         let content = Row::with_children(
             std::iter::once(container(count).padding([0, 4]).into())
-                .chain(actions(self))
+                .chain(actions(self, &marked))
                 .chain(std::iter::once(clear)),
         )
         .spacing(8)
@@ -429,8 +439,9 @@ impl App {
                 .align_y(Center),
         ]
         .spacing(ACTION_MENU_SPACING);
+        let marked = self.marked_cards();
         for tag in self.tag_rows() {
-            let mark = match self.tag_share(&tag) {
+            let mark = match share_of(&marked, &tag) {
                 Share::All => check_box(true, palette),
                 Share::Some => mixed_box(palette),
                 Share::None => check_box(false, palette),

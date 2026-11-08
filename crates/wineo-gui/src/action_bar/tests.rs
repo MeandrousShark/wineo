@@ -1576,3 +1576,19 @@ fn the_button_reads_unfavorite_as_soon_as_the_press_changes_the_cards() {
     finish(&mut app, task);
     assert!(app.flag_all(Flag::Favorite));
 }
+
+#[test]
+fn the_marked_cards_come_in_name_order_whatever_order_the_cards_are_in() {
+    let mut app = crate::tests::app();
+    app.cards = ["delta", "alpha", "charlie", "bravo"]
+        .into_iter()
+        .map(|name| tagged(name, &[]))
+        .collect();
+    app.marked = names(&["delta", "bravo", "alpha"]);
+    let marked: Vec<&str> = app
+        .marked_cards()
+        .iter()
+        .map(|card| card.name.as_str())
+        .collect();
+    assert_eq!(marked, ["alpha", "bravo", "delta"]);
+}
