@@ -231,7 +231,7 @@ fn a_row_shows_what_its_poster_does() {
         (Star::None, false, false, None)
     );
     assert_eq!(
-        (plain.faded, plain.gray, plain.identifier.clone()),
+        (plain.faded, plain.gray, plain.identifier),
         (false, false, None)
     );
     assert_eq!((plain.state, plain.dot), ("inactive", palette.muted));
