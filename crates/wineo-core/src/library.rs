@@ -142,6 +142,9 @@ pub enum GroupBy {
     /// One flat library, with no sections.
     #[default]
     None,
+    /// Nothing but the pinned sections and an All with the whole library
+    /// in the shown order.
+    Recent,
     /// A section per tag, so a game with several shows in each.
     Tag,
     /// A section per store, else platform.
@@ -155,6 +158,7 @@ impl GroupBy {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::None => "none",
+            Self::Recent => "recent",
             Self::Tag => "tag",
             Self::Source => "source",
             Self::State => "state",
@@ -164,6 +168,7 @@ impl GroupBy {
     pub fn parse(value: &str) -> Option<Self> {
         match value {
             "none" => Some(Self::None),
+            "recent" => Some(Self::Recent),
             "tag" => Some(Self::Tag),
             "source" => Some(Self::Source),
             "state" => Some(Self::State),

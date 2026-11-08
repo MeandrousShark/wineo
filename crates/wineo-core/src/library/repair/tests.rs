@@ -950,7 +950,13 @@ fn repair_keeps_a_valid_layout_and_drops_an_invalid_one() {
 
 #[test]
 fn repair_keeps_a_valid_group_and_drops_an_invalid_one() {
-    for value in ["\"tag\"", "\"source\"", "\"state\"", "\"none\""] {
+    for value in [
+        "\"tag\"",
+        "\"source\"",
+        "\"state\"",
+        "\"none\"",
+        "\"recent\"",
+    ] {
         let fixture = Fixture::new();
         fixture.write(&format!(
             "[view]\ngroup = {value}\n\n[environments.hades]\nfavorite = true\nthis is broken\n"
@@ -1359,6 +1365,21 @@ fn repair_keeps_a_preset_whose_every_field_was_bad_as_an_empty_one() {
         report
             .to_string()
             .contains(" Presets could not be recovered.")
+    );
+}
+
+#[test]
+fn repair_keeps_a_preset_that_groups_by_recently_played() {
+    let (fixture, report) =
+        repaired("[presets.Recents]\ngroup = \"recent\"\nsort = \"bogus\"\n\n[broken header\n");
+    assert_eq!(report.presets, ViewRecovery::Partly);
+    assert_eq!(
+        fixture.read(),
+        "schema_version = 1\n\n[presets.Recents]\ngroup = \"recent\"\n"
+    );
+    assert_eq!(
+        load(&fixture.paths).preset("Recents").unwrap().group,
+        crate::library::GroupBy::Recent
     );
 }
 

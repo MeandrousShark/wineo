@@ -461,7 +461,8 @@ pub(crate) const RECENT: usize = 10;
 /// the shown order inside, and only show with a card in them. Any grouping
 /// pins Recently played first and Hidden last (question 21): a hidden game
 /// sits only in Hidden, and a recent one in Recently played as well as its
-/// usual sections.
+/// usual sections. Group by Recent is just the pinned sections around All,
+/// which holds every game that isn't hidden, as the flat library does.
 fn sections(
     cards: &[Card],
     indices: &[usize],
@@ -490,6 +491,9 @@ fn sections(
     recent.truncate(RECENT);
     let grouped: Vec<(SectionKey, Vec<usize>)> = match group {
         GroupBy::None => Vec::new(),
+        // The same All as the flat library, so switching between the two
+        // pairs its cards slot for slot.
+        GroupBy::Recent => vec![(SectionKey::All, indices.to_vec())],
         GroupBy::Tag => {
             let mut tags: BTreeMap<(String, &str), Vec<usize>> = BTreeMap::new();
             let mut untagged = Vec::new();

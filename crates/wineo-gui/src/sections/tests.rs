@@ -2024,3 +2024,493 @@ fn a_press_on_a_header_with_no_card_over_it_collapses_its_section() {
         assert!(app.collapsed.contains(&header.header.key), "{layout:?}");
     }
 }
+
+// Group by Recently played: the pinned sections around an All that is the
+// flat library (plan 0062, "Step 10 checkpoint").
+
+fn all() -> SectionKey {
+    SectionKey::All
+}
+
+fn hidden_game(card: Card) -> Card {
+    let mut card = card;
+    card.hidden = true;
+    card
+}
+
+#[test]
+fn group_by_recent_menu_sits_second_after_none() {
+    let labels: Vec<&str> = crate::sections::GROUPS
+        .into_iter()
+        .map(crate::sections::label)
+        .collect();
+    assert_eq!(
+        labels,
+        ["None", "Recently played", "Tag", "Source", "State"]
+    );
+}
+
+#[test]
+fn group_by_recent_is_recently_played_then_all_in_the_shown_order() {
+    // hades is newest, so it leads Recently played, while All keeps the
+    // sort's order, which is the flat library's.
+    let cards = vec![
+        played(tagged("hades", &["rpg"]), 20),
+        played(tagged("celeste", &[]), 10),
+        tagged("notepad", &[]),
+    ];
+    let sections = sections_of(
+        &cards,
+        GroupBy::Recent,
+        Query::default(),
+        &Filters::default(),
+    );
+    assert_eq!(
+        sections,
+        [
+            (SectionKey::Recent, names(&["hades", "celeste"])),
+            (all(), names(&["celeste", "hades", "notepad"])),
+        ]
+    );
+    // A recent game is in both, as two copies.
+    let both = sections
+        .iter()
+        .filter(|(_, games)| games.contains(&"hades".to_owned()))
+        .count();
+    assert_eq!(both, 2);
+}
+
+#[test]
+fn all_under_recent_matches_group_by_none_for_every_sort() {
+    let mut cards = vec![
+        played(tagged("hades", &["rpg"]), 20),
+        played(tagged("celeste", &[]), 10),
+        tagged("notepad", &[]),
+        tagged("anodyne", &["rpg"]),
+    ];
+    cards[1].favorite = true;
+    cards[3].seconds = 90;
+    for sort in SortKey::ALL {
+        for descending in [false, true] {
+            for favorites_first in [false, true] {
+                let query = Query {
+                    sort,
+                    descending,
+                    favorites_first,
+                };
+                let filters = Filters::default();
+                let flat = sections_of(&cards, GroupBy::None, query, &filters);
+                let recent = sections_of(&cards, GroupBy::Recent, query, &filters);
+                let all_cards = &recent.iter().find(|(key, _)| *key == all()).unwrap().1;
+                assert_eq!(
+                    *all_cards, flat[0].1,
+                    "{sort:?} {descending} {favorites_first}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn recent_takes_the_ten_newest_and_all_still_holds_every_game() {
+    let cards: Vec<Card> = (0..=RECENT)
+        .map(|index| {
+            played(
+                tagged(&format!("game-{index:02}"), &[]),
+                i64::try_from(index).unwrap(),
+            )
+        })
+        .collect();
+    let sections = sections_of(
+        &cards,
+        GroupBy::Recent,
+        Query::default(),
+        &Filters::default(),
+    );
+    assert_eq!(sections[0].0, SectionKey::Recent);
+    assert_eq!(sections[0].1.len(), RECENT);
+    assert!(!sections[0].1.contains(&"game-00".to_owned()));
+    assert_eq!(sections[1].0, all());
+    assert_eq!(sections[1].1.len(), RECENT + 1);
+}
+
+#[test]
+fn recent_hides_hidden_games_until_show_hidden_and_then_puts_them_last_alone() {
+    let cards = vec![
+        played(tagged("hades", &[]), 1),
+        hidden_game(played(tagged("secret", &[]), 99)),
+        tagged("notepad", &[]),
+    ];
+    let query = Query::default();
+    let off = sections_of(&cards, GroupBy::Recent, query, &Filters::default());
+    assert_eq!(
+        off,
+        [
+            (SectionKey::Recent, names(&["hades"])),
+            (all(), names(&["hades", "notepad"])),
+        ]
+    );
+    let on = Filters {
+        show_hidden: true,
+        ..Filters::default()
+    };
+    // The hidden game leaves All and stays out of Recently played, so
+    // Hidden is the only place it shows, as under every other grouping.
+    let sections = sections_of(&cards, GroupBy::Recent, query, &on);
+    assert_eq!(
+        sections,
+        [
+            (SectionKey::Recent, names(&["hades"])),
+            (all(), names(&["hades", "notepad"])),
+            (SectionKey::Hidden, names(&["secret"])),
+        ]
+    );
+    // Only hidden games left: All is empty, so it doesn't show.
+    let only = vec![hidden_game(tagged("secret", &[]))];
+    let sections = sections_of(&only, GroupBy::Recent, query, &on);
+    assert_eq!(sections, [(SectionKey::Hidden, names(&["secret"]))]);
+}
+
+#[test]
+fn recent_filters_narrow_both_sections() {
+    let mut vr = played(tagged("beat", &["vr"]), 30);
+    vr.favorite = true;
+    let cards = vec![played(tagged("hades", &["rpg"]), 20), vr];
+    let filters = Filters {
+        not_tags: BTreeSet::from(["vr".to_owned()]),
+        ..Filters::default()
+    };
+    let sections = sections_of(&cards, GroupBy::Recent, Query::default(), &filters);
+    assert_eq!(
+        sections,
+        [
+            (SectionKey::Recent, names(&["hades"])),
+            (all(), names(&["hades"])),
+        ]
+    );
+}
+
+#[test]
+fn recent_with_nothing_played_shows_only_all_with_a_header() {
+    let cards = vec![tagged("hades", &[]), tagged("notepad", &[])];
+    let query = Query::default();
+    let sections = sections_of(&cards, GroupBy::Recent, query, &Filters::default());
+    assert_eq!(sections, [(all(), names(&["hades", "notepad"]))]);
+
+    let app = grouped(cards.clone(), GroupBy::Recent);
+    assert_eq!(header_keys(&app), [(all(), 2, false)]);
+    assert_eq!(app.grid_places().ids.len(), 2);
+    // Group by None has no header, over the same cards.
+    let flat = grouped(cards, GroupBy::None);
+    assert!(flat.grid_places().headers.is_empty());
+    assert_eq!(flat.grid_places().ids, app.grid_places().ids);
+
+    // It collapses like any section, header and count kept.
+    let mut app = app;
+    let _ = app.update(Message::ToggleSection(all()));
+    assert_eq!(header_keys(&app), [(all(), 2, true)]);
+    assert!(app.grid_places().ids.is_empty());
+    let _ = app.update(Message::ToggleSection(all()));
+    assert_eq!(app.grid_places().ids.len(), 2);
+}
+
+#[test]
+fn recent_with_no_games_shows_nothing() {
+    let sections = sections_of(&[], GroupBy::Recent, Query::default(), &Filters::default());
+    assert_eq!(sections, []);
+    let app = grouped(Vec::new(), GroupBy::Recent);
+    assert!(app.grid_places().headers.is_empty());
+    assert!(app.grid_places().ids.is_empty());
+}
+
+/// Recently played holds hades, and All holds celeste, hades, and notepad.
+fn recent_library() -> App {
+    let mut app = grouped(
+        vec![
+            played(tagged("hades", &["rpg"]), 5),
+            tagged("celeste", &["rpg"]),
+            tagged("notepad", &[]),
+        ],
+        GroupBy::Recent,
+    );
+    let _ = settle_grid(&mut app);
+    app
+}
+
+#[test]
+fn the_app_draws_both_recent_sections_under_headers() {
+    let app = recent_library();
+    assert_eq!(
+        app.grid_places().ids,
+        [
+            slot(SectionKey::Recent, "hades"),
+            slot(all(), "celeste"),
+            slot(all(), "hades"),
+            slot(all(), "notepad"),
+        ]
+    );
+    assert_eq!(
+        header_keys(&app),
+        [(SectionKey::Recent, 1, false), (all(), 3, false)]
+    );
+    assert_eq!(app.slot_cards(&app.grid_places()).len(), 4);
+}
+
+#[test]
+fn show_hidden_adds_hidden_last_under_recent() {
+    let mut app = grouped(
+        vec![
+            played(tagged("hades", &[]), 5),
+            hidden_game(tagged("secret", &[])),
+        ],
+        GroupBy::Recent,
+    );
+    app.filters.show_hidden = true;
+    app.reorder();
+    assert_eq!(
+        header_keys(&app),
+        [
+            (SectionKey::Recent, 1, false),
+            (all(), 1, false),
+            (SectionKey::Hidden, 1, false),
+        ]
+    );
+    assert_eq!(
+        app.grid_places().ids.last(),
+        Some(&slot(SectionKey::Hidden, "secret"))
+    );
+}
+
+#[test]
+fn a_game_joins_recently_played_under_recent_when_its_session_ends() {
+    let mut app = grouped(
+        vec![tagged("hades", &[]), tagged("celeste", &[])],
+        GroupBy::Recent,
+    );
+    assert_eq!(header_keys(&app), [(all(), 2, false)]);
+    app.merge(vec![
+        played(tagged("hades", &[]), 5),
+        tagged("celeste", &[]),
+    ]);
+    assert_eq!(
+        app.grid_places().ids,
+        [
+            slot(SectionKey::Recent, "hades"),
+            slot(all(), "celeste"),
+            slot(all(), "hades"),
+        ]
+    );
+}
+
+#[test]
+fn collapsing_all_marks_and_picks_only_through_recently_played() {
+    // Question 22's A: with All collapsed, hades is in view through
+    // Recently played and nothing else is.
+    let mut app = recent_library();
+    let _ = app.update(Message::ToggleSection(all()));
+    assert_eq!(
+        header_keys(&app),
+        [(SectionKey::Recent, 1, false), (all(), 3, true)]
+    );
+    assert_eq!(app.grid_places().ids, [slot(SectionKey::Recent, "hades")]);
+    ctrl_a(&mut app);
+    let marked: Vec<&str> = app.marked.iter().map(String::as_str).collect();
+    assert_eq!(marked, ["hades"]);
+
+    // Opening All and marking everything, then collapsing it, keeps the
+    // mark with a copy left in view.
+    let _ = app.update(Message::ToggleSection(all()));
+    ctrl_a(&mut app);
+    assert_eq!(app.marked.len(), 3);
+    let _ = app.update(Message::ToggleSection(all()));
+    let marked: Vec<&str> = app.marked.iter().map(String::as_str).collect();
+    assert_eq!(marked, ["hades"]);
+
+    // With both collapsed there is nothing to pick.
+    let _ = app.update(Message::ToggleSection(SectionKey::Recent));
+    assert!(app.marked.is_empty());
+    app.random_pool = wineo_core::library::RandomPool::Any;
+    assert_eq!(app.random_choice(&mut fastrand::Rng::with_seed(3)), None);
+}
+
+#[test]
+fn all_with_nothing_recent_collapses_and_ctrl_a_marks_nothing() {
+    let mut app = grouped(
+        vec![tagged("hades", &[]), tagged("celeste", &[])],
+        GroupBy::Recent,
+    );
+    let _ = app.update(Message::ToggleSection(all()));
+    ctrl_a(&mut app);
+    assert!(app.marked.is_empty());
+}
+
+#[test]
+fn a_collapsed_all_is_forgotten_by_none_and_remembered_by_recent() {
+    let mut app = recent_library();
+    let _ = app.update(Message::ToggleSection(all()));
+    let _ = app.update(Message::Sort(Event::Group(GroupBy::None)));
+    // The flat grid has no header to collapse, so every game shows.
+    assert!(app.grid_places().headers.is_empty());
+    assert_eq!(app.grid_places().ids.len(), 3);
+    let _ = app.update(Message::Sort(Event::Group(GroupBy::Recent)));
+    assert_eq!(header_keys(&app)[1], (all(), 3, true));
+}
+
+#[test]
+fn the_cursor_in_all_moves_to_its_header_when_it_collapses() {
+    let mut app = recent_library();
+    let _ = app.update(Message::Press(slot(all(), "celeste")));
+    assert!(app.panel_open);
+    let _ = app.update(Message::ToggleSection(all()));
+    assert_eq!(app.header_cursor, Some(all()));
+    assert_eq!(app.active_slot, None);
+    assert!(app.panel_open);
+    assert_eq!(app.selected.as_deref(), Some("celeste"));
+    let key = |app: &mut App, named: Named| {
+        let _ = app.update(Message::KeyWithFocus(
+            Key::Named(named),
+            Modifiers::empty(),
+            iced::event::Status::Ignored,
+            false,
+        ));
+    };
+    // Nothing is below it, so Down stays.
+    key(&mut app, Named::ArrowDown);
+    assert_eq!(app.header_cursor, Some(all()));
+    // Up goes to the row above, which is Recently played.
+    key(&mut app, Named::ArrowUp);
+    assert_eq!(app.selected_slot(), Some(slot(SectionKey::Recent, "hades")));
+    assert_eq!(app.header_cursor, None);
+}
+
+#[test]
+fn arrow_keys_walk_from_recently_played_into_all_by_slot() {
+    let mut app = recent_library();
+    let _ = app.update(Message::Press(slot(SectionKey::Recent, "hades")));
+    let key = |app: &mut App, named: Named| {
+        let _ = app.update(Message::KeyWithFocus(
+            Key::Named(named),
+            Modifiers::empty(),
+            iced::event::Status::Ignored,
+            false,
+        ));
+    };
+    // Right follows the shown order, onto All's first card.
+    key(&mut app, Named::ArrowRight);
+    assert_eq!(app.selected_slot(), Some(slot(all(), "celeste")));
+    key(&mut app, Named::ArrowRight);
+    // The second copy of hades moves the cursor and not the panel.
+    assert_eq!(app.selected_slot(), Some(slot(all(), "hades")));
+}
+
+#[test]
+fn switching_between_none_and_recent_springs_all_and_fades_the_extra_copy() {
+    // Question 17's pairing: All is the flat library's section, so each of
+    // its cards pairs with its flat slot, and only the recent copy fades.
+    let mut app = grouped(
+        vec![
+            played(tagged("hades", &[]), 5),
+            tagged("celeste", &[]),
+            tagged("notepad", &[]),
+        ],
+        GroupBy::None,
+    );
+    let _ = settle_grid(&mut app);
+    let flat = app.grid_places();
+    let before: Vec<iced::Point> = flat
+        .ids
+        .iter()
+        .enumerate()
+        .map(|(index, _)| app.grid_motion.drawn(&flat, index).position())
+        .collect();
+    app.group = GroupBy::Recent;
+    let _ = app.resorted();
+    assert!(app.grid_motion.active());
+    let places = app.grid_places();
+    for (id, from) in flat.ids.iter().zip(&before) {
+        let moved = slot(all(), id.name());
+        assert_eq!(app.grid_motion.opacity(&moved), 1.0, "{id:?}");
+        let index = places.index(&moved).unwrap();
+        assert_eq!(app.grid_motion.drawn(&places, index).position(), *from);
+    }
+    assert_eq!(
+        app.grid_motion.opacity(&slot(SectionKey::Recent, "hades")),
+        0.0
+    );
+    assert!(app.grid_motion.leaving().is_empty());
+
+    let _ = settle_grid(&mut app);
+    app.group = GroupBy::None;
+    let _ = app.resorted();
+    let leaving: Vec<&SlotId> = app
+        .grid_motion
+        .leaving()
+        .iter()
+        .map(|card| &card.id)
+        .collect();
+    assert_eq!(leaving, [&slot(SectionKey::Recent, "hades")]);
+    for name in ["celeste", "hades", "notepad"] {
+        assert_eq!(app.grid_motion.opacity(&slot(all(), name)), 1.0, "{name}");
+    }
+}
+
+#[test]
+fn recent_headers_take_tab_focus_and_all_toggles_on_enter() {
+    use crate::focus_button::{focusables, press};
+    let app = recent_library();
+    let mut laid = crate::layout_probe::lay_out(app.view(), Size::new(1200.0, 800.0));
+    let ids = focusables(&mut laid);
+    let position = |id: iced::widget::Id| {
+        let id = Some(format!("{id:?}"));
+        ids.iter().position(|found| *found == id)
+    };
+    let sort = position(iced::widget::Id::new(crate::sort_control::SORT_BUTTON_ID)).unwrap();
+    let recent = position(SectionKey::Recent.header_id()).expect("a focusable header");
+    let all_header = position(all().header_id()).expect("a focusable header");
+    assert!(sort < recent && recent < all_header, "{ids:?}");
+    crate::focus_button::run_task(
+        &mut laid,
+        iced::widget::operation::focus::<Message>(all().header_id()),
+    );
+    let (messages, status) = press(&mut laid, Named::Enter, Modifiers::empty());
+    assert_eq!(status, iced::event::Status::Captured);
+    assert!(
+        matches!(messages.as_slice(), [Message::ToggleSection(key)] if *key == all()),
+        "{messages:?}"
+    );
+
+    // Group by None has no All header to reach.
+    let flat = grouped(vec![tagged("hades", &[])], GroupBy::None);
+    let mut laid = crate::layout_probe::lay_out(flat.view(), Size::new(1200.0, 800.0));
+    let ids = focusables(&mut laid);
+    let header = Some(format!("{:?}", all().header_id()));
+    assert!(!ids.contains(&header));
+}
+
+#[test]
+fn group_by_recent_is_saved_and_reopens_grouped_that_way() {
+    let (_root, mut app) = fixture();
+    crate::sort_control::tests::open_sort(&mut app);
+    let _ = app.update(Message::Sort(Event::OpenGroups));
+    let _ = app.update(Message::Sort(Event::Group(GroupBy::Recent)));
+    assert_eq!(app.group, GroupBy::Recent);
+    // Nothing played, so All alone, under a header.
+    assert_eq!(app.grid_places().headers.len(), 1);
+    finish_group_write(&mut app);
+    let saved = std::fs::read_to_string(app.paths.library_file()).unwrap();
+    assert!(saved.contains("group = \"recent\""), "{saved}");
+    let reopened = App::boot(app.paths.clone()).0;
+    assert_eq!(reopened.group, GroupBy::Recent);
+}
+
+#[test]
+fn only_grouping_by_state_reads_state_so_recent_keeps_the_rescan_shortcut() {
+    let idle = card("hades", State::Inactive, 0);
+    let mut running = idle.clone();
+    running.state = State::Running;
+    assert!(order::same_inputs(&idle, &running, GroupBy::Recent));
+    // A new last played time still counts, since it changes the section.
+    let mut played_now = idle.clone();
+    played_now.last_played_at = at(5);
+    assert!(!order::same_inputs(&idle, &played_now, GroupBy::Recent));
+}

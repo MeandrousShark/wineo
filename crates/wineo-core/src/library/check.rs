@@ -126,7 +126,7 @@ fn inspect_view(item: &Item, inspection: &mut Inspection) {
             },
             "group" => match value.as_str() {
                 Some(name) if GroupBy::parse(name).is_some() => continue,
-                _ => "expected one of none, tag, source, state".to_owned(),
+                _ => "expected one of none, recent, tag, source, state".to_owned(),
             },
             "zoom" if read_zoom(value).is_some() => continue,
             "zoom" => format!("expected a whole number from {ZOOM_MIN} to {ZOOM_MAX}"),
@@ -178,7 +178,7 @@ fn inspect_presets(item: &Item, inspection: &mut Inspection) {
                 "descending" | "favorites_first" | "show_hidden" => BOOL.to_owned(),
                 "group" => match value.as_str() {
                     Some(name) if GroupBy::parse(name).is_some() => continue,
-                    _ => "expected one of none, tag, source, state".to_owned(),
+                    _ => "expected one of none, recent, tag, source, state".to_owned(),
                 },
                 "layout" => match value.as_str() {
                     Some(name) if ViewLayout::parse(name).is_some() => continue,

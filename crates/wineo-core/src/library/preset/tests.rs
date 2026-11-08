@@ -240,7 +240,13 @@ fn every_field_round_trips_alone() {
         set_preset(&fixture.paths, "P", &preset).unwrap();
         assert_eq!(fixture.preset("P"), preset, "{sort:?}");
     }
-    for group in [GroupBy::None, GroupBy::Tag, GroupBy::Source, GroupBy::State] {
+    for group in [
+        GroupBy::None,
+        GroupBy::Recent,
+        GroupBy::Tag,
+        GroupBy::Source,
+        GroupBy::State,
+    ] {
         let fixture = Fixture::new();
         let preset = Preset {
             group,

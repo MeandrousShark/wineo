@@ -251,14 +251,16 @@ fn layout_is_a_known_view_key_and_a_bad_value_is_reported() {
 
 #[test]
 fn group_is_a_known_view_key_and_a_bad_value_is_reported() {
-    for good in ["none", "tag", "source", "state"] {
+    for good in ["none", "recent", "tag", "source", "state"] {
         let inspection = inspect_text(&format!("[view]\ngroup = \"{good}\"\n"));
         assert_eq!(inspection.findings, [], "{good}");
     }
     let inspection = inspect_text("[view]\ngroup = \"genre\"\n");
     assert_eq!(
         messages(&inspection, FindingKind::FieldInvalid),
-        ["library.toml: view.group: expected one of none, tag, source, state, found \"genre\""]
+        [
+            "library.toml: view.group: expected one of none, recent, tag, source, state, found \"genre\""
+        ]
     );
     assert_eq!(messages(&inspection, FindingKind::KeyUnknown).len(), 0);
     let inspection = inspect_text("[view]\ngroup = true\n");
@@ -384,6 +386,12 @@ layout = "list"
 }
 
 #[test]
+fn a_preset_may_group_by_recently_played() {
+    let inspection = inspect_text("[presets.Recents]\ngroup = \"recent\"\n");
+    assert_eq!(inspection.findings, []);
+}
+
+#[test]
 fn bad_preset_values_name_the_preset_the_field_and_what_was_found() {
     let inspection = inspect_text(
         r#"[presets."Couch co-op"]
@@ -408,7 +416,7 @@ not_tags = 5
             r#"library.toml: presets."Couch co-op".descending: expected true or false, found "yes""#,
             r#"library.toml: presets."Couch co-op".favorites_first: expected true or false, found 1"#,
             r#"library.toml: presets."Couch co-op".show_hidden: expected true or false, found "no""#,
-            r#"library.toml: presets."Couch co-op".group: expected one of none, tag, source, state, found "genre""#,
+            r#"library.toml: presets."Couch co-op".group: expected one of none, recent, tag, source, state, found "genre""#,
             r#"library.toml: presets."Couch co-op".layout: expected one of grid, list, found true"#,
             r#"library.toml: presets."Couch co-op".stores: expected a list of store ids: steam, gog, epic, amazon, found "steam""#,
             r#"library.toml: presets."Couch co-op".platforms: expected a list of platform ids: native, windows, found "macos""#,

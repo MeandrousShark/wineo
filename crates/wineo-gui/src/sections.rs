@@ -17,12 +17,18 @@ use crate::{App, Message, focus_button, ui};
 pub(crate) const CHEVRON_RIGHT: &[u8] = br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><path d="M6 4l4 4-4 4" fill="none" stroke="#000" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>"##;
 
 /// The Group by choices, in the Sort menu's order.
-pub(crate) const GROUPS: [GroupBy; 4] =
-    [GroupBy::None, GroupBy::Tag, GroupBy::Source, GroupBy::State];
+pub(crate) const GROUPS: [GroupBy; 5] = [
+    GroupBy::None,
+    GroupBy::Recent,
+    GroupBy::Tag,
+    GroupBy::Source,
+    GroupBy::State,
+];
 
 pub(crate) fn label(group: GroupBy) -> &'static str {
     match group {
         GroupBy::None => "None",
+        GroupBy::Recent => "Recently played",
         GroupBy::Tag => "Tag",
         GroupBy::Source => "Source",
         GroupBy::State => "State",

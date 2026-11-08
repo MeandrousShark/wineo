@@ -263,6 +263,37 @@ fn applying_a_preset_sets_the_whole_view_and_writes_nothing() {
 }
 
 #[test]
+fn a_preset_can_group_by_recently_played_and_saves_that_group() {
+    let (_root, mut app) = booted("schema_version = 1\n\n[presets.Recents]\ngroup = \"recent\"\n");
+    open_filters(&mut app);
+    let _ = send(&mut app, Event::Apply("Recents".into()));
+    assert_eq!(app.group, GroupBy::Recent);
+    // Nothing in the fixture library is played, so All is the one section.
+    let keys: Vec<_> = app
+        .grid_places()
+        .headers
+        .iter()
+        .map(|place| place.header.key.clone())
+        .collect();
+    assert_eq!(keys, [crate::slot::SectionKey::All]);
+    assert_eq!(button_label(&app), "Filters (Recents)");
+
+    // Saving the view as a preset keeps the group.
+    let saved = preset_of(app.query, &app.filters, app.group, app.layout);
+    assert_eq!(saved.group, GroupBy::Recent);
+    wineo_core::library::set_preset(&app.paths, "Mine", &saved).unwrap();
+    let text = file(&app);
+    assert!(text.contains("group = \"recent\""), "{text}");
+    assert_eq!(
+        wineo_core::library::load(&app.paths)
+            .preset("Mine")
+            .unwrap()
+            .group,
+        GroupBy::Recent
+    );
+}
+
+#[test]
 fn applying_a_preset_gives_the_filters_button_focus() {
     let (_root, mut app) = booted(FILE);
     open_filters(&mut app);

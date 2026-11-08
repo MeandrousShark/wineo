@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 use iced::Task;
 use iced::widget::scrollable;
 
-use crate::slot::{SectionKey, SlotId};
+use crate::slot::SlotId;
 use crate::{App, Early, Message, SCROLL_ID, grid, grid_motion, sidebar};
 
 impl App {
@@ -162,10 +162,9 @@ impl App {
             return places.clone();
         }
         let sections = self.order.sections(self.order_inputs());
-        // The flat library is one section with no header.
-        let grouped = sections
-            .first()
-            .is_some_and(|section| section.key != SectionKey::All);
+        // The flat library is one section with no header. Group by Recent
+        // has an All with one, so the key alone can't say.
+        let grouped = self.group != wineo_core::library::GroupBy::None;
         let mut cards: Vec<&crate::library::Card> = Vec::new();
         let mut ids: Vec<SlotId> = Vec::new();
         let mut headers = Vec::new();
@@ -195,7 +194,10 @@ impl App {
             && let Some(card) = cards.iter().find(|card| &card.name == name).copied()
         {
             let at = (*at).min(ids.len());
-            ids.insert(at, SlotId::new(SectionKey::Test("copy"), name.as_str()));
+            ids.insert(
+                at,
+                SlotId::new(crate::slot::SectionKey::Test("copy"), name.as_str()),
+            );
             cards.insert(at, card);
         }
         let heights: Vec<f32> = match self.layout {
@@ -253,7 +255,7 @@ impl App {
         self.test_copy = Some((name.to_owned(), at));
         *self.places.borrow_mut() = None;
         self.snap_grid();
-        SlotId::new(SectionKey::Test("copy"), name)
+        SlotId::new(crate::slot::SectionKey::Test("copy"), name)
     }
 
     /// Springs the cards to their slots from where they're drawn, or puts
