@@ -617,6 +617,36 @@ fn a_taken_name_offers_update_instead() {
     assert!(file(&app).contains("# Kept through every edit."));
 }
 
+/// An entry under `[presets]` that isn't a preset holds its name, but Update
+/// would be refused too, so none is offered.
+#[test]
+fn a_name_a_non_preset_entry_holds_is_taken_without_an_update_offer() {
+    let text = format!("{FILE}\n[presets]\n\"\u{3c2}b\" = 1\nbroken = 1\n");
+    let (_root, mut app) = booted(&text);
+    assert_eq!(names(&app), ["Couch co-op", "Tools"]);
+    open_filters(&mut app);
+    let _ = send(&mut app, Event::StartSave);
+    for (draft, held) in [
+        ("broken", "broken"),
+        ("BROKEN", "broken"),
+        ("\u{3a3}B", "\u{3c2}b"),
+    ] {
+        let _ = send(&mut app, Event::Draft(draft.into()));
+        assert_eq!(app.save_taken(draft), Some(held), "{draft}");
+        assert!(app.update_offer(draft).is_none(), "{draft}");
+        assert!(!app.preset_ids().contains(&OFFER_ID.to_owned()), "{draft}");
+        let _ = send(&mut app, Event::Submit);
+        assert!(app.presets.writing.is_none(), "{draft}");
+        let _ = app.view();
+    }
+    assert_eq!(app.rename_taken("Tools", "Broken"), Some("broken"));
+    // A real preset still offers Update.
+    let _ = send(&mut app, Event::Draft("tools".into()));
+    assert_eq!(app.update_offer("tools"), Some("Tools"));
+    assert!(app.preset_ids().contains(&OFFER_ID.to_owned()));
+    assert_eq!(file(&app), text);
+}
+
 #[test]
 fn update_saves_the_view_over_the_active_preset() {
     let (_root, mut app) = booted(FILE);
@@ -663,7 +693,7 @@ fn a_rename_to_a_taken_name_is_refused_with_the_core_message() {
             .failure
             .as_ref()
             .map(|failure| failure.text.as_str()),
-        Some("Couldn't rename \"Tools\": A preset named Late already exists.")
+        Some("Couldn't rename \"Tools\": The name Late is taken.")
     );
     // The typed name stays for another try, and nothing moved.
     assert_eq!(
@@ -1247,7 +1277,7 @@ fn a_name_saved_elsewhere_since_the_last_read_is_never_overwritten() {
             let (notice, _) = app.feature_notice.clone().expect("a notice");
             assert_eq!(
                 notice,
-                format!("Couldn't save \"{name}\": A preset named {name} already exists.")
+                format!("Couldn't save \"{name}\": The name {name} is taken.")
             );
             open_filters(&mut app);
             assert!(app.preset_ids().contains(&OFFER_ID.to_owned()));
@@ -1637,7 +1667,7 @@ fn a_taken_name_refusal_stays_when_the_list_cannot_show_it() {
         let failure = app.presets.failure.clone().expect("the refusal shows");
         assert_eq!(
             failure.text,
-            "Couldn't save \"Late\": A preset named Late already exists."
+            "Couldn't save \"Late\": The name Late is taken."
         );
         assert!(app.save_taken("Late").is_none(), "unreadable: {unreadable}");
         assert_eq!(app.presets.edit, Some(Edit::Save("Late".into())));

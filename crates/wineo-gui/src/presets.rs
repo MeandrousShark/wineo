@@ -142,15 +142,29 @@ pub(crate) struct Done {
     pub(crate) presets: Option<List>,
 }
 
-/// Presets by name, A to Z, as `library.toml` lists them.
-pub(crate) type List = Vec<(String, Preset)>;
+/// What `library.toml` holds under `[presets]`: the presets by name, A to Z,
+/// and the names of entries that aren't presets, which are taken all the same.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub(crate) struct List {
+    presets: Vec<(String, Preset)>,
+    other: Vec<String>,
+}
+
+impl List {
+    pub(crate) fn of(library: &Library) -> Self {
+        Self {
+            presets: library.presets.clone(),
+            other: library.other_presets.clone(),
+        }
+    }
+}
 
 /// The window's presets and what's being done to them.
 #[derive(Debug, Default)]
 pub(crate) struct Presets {
-    /// `library.toml` as last read, for its presets alone; the rest of it
-    /// reaches the window by other paths.
-    saved: Library,
+    /// `library.toml`'s presets as last read; the rest of it reaches the
+    /// window by other paths.
+    saved: List,
     /// The preset applied or saved last this session. The Filters button
     /// names it while the view still matches it, and Update offers to save
     /// the view over it once it doesn't.
@@ -172,12 +186,23 @@ impl Presets {
     }
 
     pub(crate) fn get(&self, name: &str) -> Option<&Preset> {
-        self.saved.preset(name)
+        self.saved
+            .presets
+            .iter()
+            .find(|(saved, _)| saved == name)
+            .map(|(_, preset)| preset)
     }
 
-    /// The saved preset a new one called `name` would collide with.
-    pub(crate) fn taken(&self, name: &str) -> Option<&str> {
-        self.saved.taken_preset_name(name)
+    /// The entry under `[presets]` that `name` would collide with, a
+    /// non-preset's included; `except` is a name that doesn't count.
+    pub(crate) fn taken(&self, name: &str, except: Option<&str>) -> Option<&str> {
+        let names = self
+            .saved
+            .presets
+            .iter()
+            .map(|(saved, _)| saved.as_str())
+            .chain(self.saved.other.iter().map(String::as_str));
+        library::preset_name_taken(names, name, except)
     }
 }
 
@@ -335,9 +360,9 @@ impl App {
     /// Takes the presets from a read of `library.toml`, which the rescan
     /// then compares against. A preset gone from the file stops being
     /// active, and an edit of it closes.
-    pub(crate) fn presets_read(&mut self, presets: Vec<(String, Preset)>) {
+    pub(crate) fn presets_read(&mut self, presets: List) {
         self.shown.show_presets(presets.clone());
-        self.presets.saved.presets = presets;
+        self.presets.saved = presets;
         // A rename of the active preset that's landing on disk takes its
         // name along when its reply comes, so a read in between doesn't
         // count it as removed.
@@ -413,7 +438,7 @@ impl App {
         }
         if let Some(Edit::Save(draft)) = edit {
             ids.push(NAME_ID.to_owned());
-            if self.save_taken(draft).is_some() {
+            if self.update_offer(draft).is_some() {
                 ids.push(OFFER_ID.to_owned());
             }
         } else {
@@ -430,17 +455,25 @@ impl App {
         ids
     }
 
-    /// The saved preset a new one named `draft` would collide with.
+    /// The entry a new preset named `draft` would collide with, which is
+    /// only worth updating when it's a preset.
     fn save_taken(&self, draft: &str) -> Option<&str> {
         let name = library::normalize_preset_name(draft).ok()?;
-        self.presets.taken(&name)
+        self.presets.taken(&name, None)
     }
 
-    /// The saved preset renaming `old` to `draft` would collide with. A
-    /// change of case alone is fine.
+    /// The preset a taken name offers to update, none when the entry is
+    /// something else, which core would refuse to save over.
+    fn update_offer(&self, draft: &str) -> Option<&str> {
+        self.save_taken(draft)
+            .filter(|taken| self.presets.get(taken).is_some())
+    }
+
+    /// The entry renaming `old` to `draft` would collide with. A change of
+    /// case alone is fine.
     fn rename_taken(&self, old: &str, draft: &str) -> Option<&str> {
         let name = library::normalize_preset_name(draft).ok()?;
-        self.presets.taken(&name).filter(|taken| *taken != old)
+        self.presets.taken(&name, Some(old))
     }
 
     /// Escape while the presets part is mid-edit closes the edit and gives
@@ -579,7 +612,7 @@ impl App {
                 let Ok(name) = library::normalize_preset_name(&draft) else {
                     return Task::none();
                 };
-                if self.presets.taken(&name).is_some() {
+                if self.presets.taken(&name, None).is_some() {
                     return Task::none();
                 }
                 let preset = self.view_preset();
@@ -659,7 +692,7 @@ impl App {
             self.presets_read(presets);
             // Only when the list now shows it is the failure line redundant;
             // an unreadable file or a taker gone again leaves it to say why.
-            if created.is_some_and(|name| self.presets.taken(&name).is_some()) {
+            if created.is_some_and(|name| self.presets.taken(&name, None).is_some()) {
                 self.presets.failure = None;
             }
         }
@@ -919,7 +952,7 @@ impl App {
                 let taken = self.save_taken(draft);
                 items.extend(self.name_field(draft, taken));
                 // A taken name offers to save over that preset instead.
-                if let Some(taken) = taken {
+                if let Some(taken) = self.update_offer(draft) {
                     items.push(menu_row(
                         text(update_label(taken)).size(14).into(),
                         palette,
