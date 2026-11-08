@@ -312,8 +312,6 @@ pub(crate) struct Places {
     pub(crate) height: f32,
     pub(crate) layout: GridLayout,
     pub(crate) mode: ViewLayout,
-    /// Each card's neighbor in the next row of its section, in its column.
-    pub(crate) below: Vec<Option<usize>>,
     indices: HashMap<SlotId, usize>,
     /// Each game's first slot in shown order.
     first: HashMap<String, usize>,
@@ -433,7 +431,6 @@ impl Places {
             height,
             layout,
             mode,
-            below: arranged.below,
         }
     }
 
@@ -1999,6 +1996,15 @@ mod tests {
         assert_eq!(below(3, 5, 8), None);
         assert_eq!(below(7, 5, 8), None);
         assert_eq!(below(0, 0, 2), Some(1));
+    }
+
+    #[test]
+    fn the_card_below_is_in_its_own_section_only() {
+        let sizes = [Size::new(100.0, 100.0); 4];
+        let flat = arrange(&sizes, &[], 3, 0.0, GAP);
+        assert_eq!(flat.below, [Some(3), None, None, None]);
+        let sectioned = arrange(&sizes, &[0, 1], 3, 0.0, GAP);
+        assert_eq!(sectioned.below, [None, None, None, None]);
     }
 
     #[test]

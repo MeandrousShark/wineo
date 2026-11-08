@@ -603,8 +603,6 @@ fn a_header_takes_a_row_of_its_own_and_its_cards_start_a_new_one() {
     );
     assert_eq!(places.slots[3].y, next);
     assert_eq!(places.height, next + row + PADDING);
-    // The card below one is in its own section only.
-    assert_eq!(places.below, [None, None, None, None]);
 
     // A list's header is a row across the list.
     let rows = Places::sectioned(
