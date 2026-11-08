@@ -947,6 +947,7 @@ fn group_defaults_to_none_and_reads_every_value() {
     assert_eq!(load(&fixture.paths).view.group, GroupBy::None);
     for (text, expected) in [
         ("none", GroupBy::None),
+        ("recent", GroupBy::Recent),
         ("tag", GroupBy::Tag),
         ("source", GroupBy::Source),
         ("state", GroupBy::State),
@@ -963,9 +964,9 @@ fn group_defaults_to_none_and_reads_every_value() {
 #[test]
 fn an_unknown_group_reads_as_none_and_touches_no_other_field() {
     let fixture = Fixture::new();
-    // "recent" and "hidden" are pinned sections, never a grouping (plan
-    // 0062, question 21).
-    for bad in ["\"recent\"", "\"hidden\"", "\"Tag\"", "true", "1"] {
+    // "hidden" is a pinned section, never a grouping (plan 0062, question
+    // 21), and "all" is only a section under Recent.
+    for bad in ["\"all\"", "\"hidden\"", "\"Tag\"", "true", "1"] {
         fixture.write(&format!(
             "schema_version = 1\n\n[view]\nsort = \"playtime\"\ngroup = {bad}\n"
         ));
@@ -983,7 +984,12 @@ fn set_group_round_trips_and_skips_no_ops() {
     assert!(!set_group(&fixture.paths, GroupBy::None).unwrap());
     assert!(!fixture.paths.library_file().exists());
 
-    for group in [GroupBy::Tag, GroupBy::Source, GroupBy::State] {
+    for group in [
+        GroupBy::Recent,
+        GroupBy::Tag,
+        GroupBy::Source,
+        GroupBy::State,
+    ] {
         assert!(set_group(&fixture.paths, group).unwrap());
         assert_eq!(load(&fixture.paths).view.group, group);
         assert!(
