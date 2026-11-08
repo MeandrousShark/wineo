@@ -1983,6 +1983,27 @@ fn a_bulk_hide_hands_the_cursor_to_the_next_slot_even_when_recent_fills_up() {
     assert_eq!(app.selected_slot(), Some(slot(all(), "b")));
 }
 
+#[test]
+fn a_hide_with_nothing_after_the_cursor_staying_hands_it_back_not_to_a_newcomer() {
+    // With All collapsed, Recently played is all there is. Hiding the last
+    // three games there leaves only those before the cursor, and k comes
+    // in after them, so the last slot isn't the nearest one before.
+    let mut app = eleven_played();
+    let _ = app.update(Message::ToggleSection(all()));
+    let _ = app.update(Message::Press(slot(SectionKey::Recent, "h")));
+    for name in ["h", "i", "j"] {
+        app.toggle_mark(name);
+    }
+    let _ = app.update(Message::Tags(crate::action_bar::Event::ToggleFlag(
+        crate::library_actions::Flag::Hidden,
+    )));
+    assert_eq!(
+        app.grid_places().ids.last(),
+        Some(&slot(SectionKey::Recent, "k"))
+    );
+    assert_eq!(app.selected_slot(), Some(slot(SectionKey::Recent, "g")));
+}
+
 /// Twelve played games, a to l, l played last, grouped by Recently played,
 /// so a and b are the games All has that Recently played doesn't.
 fn twelve_played() -> App {
