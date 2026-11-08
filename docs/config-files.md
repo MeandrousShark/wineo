@@ -459,9 +459,12 @@ excludes what it names, and an empty or missing list filters nothing. A
 preset doesn't hold the search, zoom, titles, or random setting, and
 applying one doesn't change `[view]`. Names are up to 60 characters, not
 empty, without control characters or space at either end, and two names
-can't differ only in case. wineo writes every setting of a new preset, edits
-a changed one a field at a time, and keeps comments, unknown keys, and ids
-it doesn't know. A bad value counts as unset for that field only, and
+can't differ only in case; `validate` reports a hand-written name that
+breaks these rules. A name that something else under `[presets]` already
+uses, in any case, is taken too, so a save or rename never replaces it.
+wineo writes every setting of a new preset except empty lists, edits a
+changed one a field at a time, and keeps comments, unknown keys, and ids it
+doesn't know. A bad value counts as unset for that field only, and
 `validate` reports it. An older wineo warns about this table in `validate`,
 leaves it alone when it writes the file, and its repair drops it.
 
