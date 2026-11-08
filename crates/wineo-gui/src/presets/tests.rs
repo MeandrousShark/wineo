@@ -263,6 +263,22 @@ fn applying_a_preset_sets_the_whole_view_and_writes_nothing() {
 }
 
 #[test]
+fn applying_a_preset_never_reads_the_order_before_rebuilding_it() {
+    // A debug run of the app stops on a miss, so the layout switch has to
+    // find its place before the filters, sort, and group change, and lay
+    // out the order rebuilt after.
+    let (_root, mut app) = booted(FILE);
+    app.viewport_width = 1000.0;
+    app.viewport_height = 800.0;
+    open_filters(&mut app);
+    let misses = app.order.misses.get();
+    let _ = send(&mut app, Event::Apply("Couch co-op".into()));
+    assert_eq!(app.layout, ViewLayout::List);
+    assert_eq!(app.group, GroupBy::Tag);
+    assert_eq!(app.order.misses.get(), misses);
+}
+
+#[test]
 fn a_preset_can_group_by_recently_played_and_saves_that_group() {
     let (_root, mut app) = booted("schema_version = 1\n\n[presets.Recents]\ngroup = \"recent\"\n");
     open_filters(&mut app);

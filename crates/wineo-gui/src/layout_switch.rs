@@ -9,6 +9,7 @@ use iced::{Element, Fill, Padding, Task, border};
 
 use crate::grid_motion::ViewLayout;
 use crate::library_menu::icon;
+use crate::slot::SlotId;
 use crate::sort_control::Field;
 use crate::{App, Message, SCROLL_ID, focus_button, ui, zoom_control};
 
@@ -85,7 +86,20 @@ impl App {
         }
         // Found where the cards are drawn now, before a zoom in flight
         // jumps them to where it was heading.
-        let (anchor, reveal) = self.find_anchor();
+        let anchor = self.find_anchor();
+        self.switch_layout_from(layout, anchor)
+    }
+
+    /// `switch_layout` keeping the place `find_anchor` gave, for a caller
+    /// that also changes the order and so has to find it first.
+    pub(crate) fn switch_layout_from(
+        &mut self,
+        layout: ViewLayout,
+        (anchor, reveal): (Option<(SlotId, f32)>, bool),
+    ) -> Task<Message> {
+        if layout == self.layout {
+            return Task::none();
+        }
         // The zoom stays saved for the grid, so one in flight ends where it
         // was heading. Its own anchor and pending scroll would fight the
         // place kept here.

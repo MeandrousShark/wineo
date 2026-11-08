@@ -450,6 +450,8 @@ impl App {
         let Some(preset) = self.presets.get(&name).cloned() else {
             return Task::none();
         };
+        // Measured from what's drawn now, before the order changes under it.
+        let anchor = (preset.layout != self.layout).then(|| self.find_anchor());
         self.filter_menu = false;
         self.filter_opening.cancel();
         self.presets.edit = None;
@@ -472,8 +474,12 @@ impl App {
             favorites_first: preset.favorites_first,
         };
         self.group = preset.group;
-        let switched = self.switch_layout(preset.layout);
-        let resorted = self.resorted();
+        // Rebuilt before the switch lays the new layout out from it.
+        self.reorder();
+        let switched = anchor.map_or_else(Task::none, |anchor| {
+            self.switch_layout_from(preset.layout, anchor)
+        });
+        let resorted = self.reflowed();
         let focus = iced::widget::operation::focus(iced::widget::Id::new(
             crate::filter_control::FILTER_BUTTON_ID,
         ));
