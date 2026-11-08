@@ -90,6 +90,8 @@ pub enum RandomPool {
 }
 
 impl RandomPool {
+    pub const ALL: [Self; 2] = [Self::Launchable, Self::Any];
+
     /// The value `library.toml` holds.
     pub fn as_str(self) -> &'static str {
         match self {
@@ -118,6 +120,8 @@ pub enum ViewLayout {
 }
 
 impl ViewLayout {
+    pub const ALL: [Self; 2] = [Self::Grid, Self::List];
+
     /// The value `library.toml` holds.
     pub fn as_str(self) -> &'static str {
         match self {
@@ -154,6 +158,14 @@ pub enum GroupBy {
 }
 
 impl GroupBy {
+    pub const ALL: [Self; 5] = [
+        Self::None,
+        Self::Recent,
+        Self::Tag,
+        Self::Source,
+        Self::State,
+    ];
+
     /// The value `library.toml` holds.
     pub fn as_str(self) -> &'static str {
         match self {
