@@ -177,8 +177,9 @@ still opens on the first filter, so Up or Shift+Tab reaches them.
 
 Presets live in `library.toml` (see
 [Library state](config-files.md#library-state)), so every window and the
-next launch see them. If a save fails, the reason shows under the presets
-and the name you typed stays until you save or cancel it.
+next launch see them. A name you've typed stays when you close the popup,
+until you save or cancel it. If a save fails, the reason shows under the
+presets.
 
 An installed Steam game goes under Native or Windows from the start, even
 before its first run. See [Platforms](steam.md#platforms). One Steam doesn't
@@ -229,7 +230,8 @@ why, like `Couldn't hide Hades: ...`.
 Ctrl+click a card to mark it, or press Space on the selected card when no
 button or field has focus. Ctrl+click or Space again unmarks it. Shift+click
 marks every shown card from the last one you marked, or from the selected
-card, to the one you click, in the order they're shown. Another Shift+click
+card, to the one you click, in the order they're shown. When a game shows in
+several sections, the range starts at the copy you marked. Another Shift+click
 replaces that range and keeps your other marks, and Ctrl+Shift+click adds a
 range instead. Ctrl+A marks every shown game. A marked poster gets a wash in
 the theme's primary color and a check in its top-left corner, which moves the
