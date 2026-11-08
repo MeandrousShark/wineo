@@ -91,6 +91,7 @@ impl App {
             && !(self.checkup_visible() && !self.panel_log_visible())
     }
 
+    #[cfg(test)]
     pub(crate) fn toggle_mark(&mut self, name: &str) {
         self.toggle_mark_at(name, None);
     }
