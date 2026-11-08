@@ -3,6 +3,7 @@ use std::fs;
 use iced::Rectangle;
 use iced::keyboard::{Key, Modifiers, key::Named};
 use wineo_core::library::{GroupBy, SortKey, ViewLayout};
+use wineo_core::runtime::State;
 
 use super::*;
 use crate::filter_control::tests::{library, open_filters};
@@ -276,6 +277,35 @@ fn applying_a_preset_never_reads_the_order_before_rebuilding_it() {
     assert_eq!(app.layout, ViewLayout::List);
     assert_eq!(app.group, GroupBy::Tag);
     assert_eq!(app.order.misses.get(), misses);
+}
+
+#[test]
+fn a_preset_that_switches_the_layout_holds_the_card_as_it_was_drawn() {
+    // The held card is where the selection was drawn before the preset
+    // changed the order, not wherever the new order puts something.
+    let (_root, mut app) =
+        booted("schema_version = 1\n\n[presets.Backwards]\ndescending = true\nlayout = \"list\"\n");
+    app.viewport_width = 1000.0;
+    app.viewport_height = 800.0;
+    let cards = (0..60)
+        .map(|index| crate::tests::card(&format!("game-{index:02}"), State::Inactive, 60))
+        .collect();
+    let _ = app.update(Message::Loaded(Ok(cards)));
+    app.snap_grid();
+    let places = app.grid_places();
+    let index = places.first("game-20").unwrap();
+    app.scroll_offset = (places.slots[index].y - 300.0).max(0.0);
+    app.selected = Some("game-20".into());
+    open_filters(&mut app);
+    let (held, _) = app.find_anchor();
+    let (held, offset) = held.expect("the selection is in view");
+    assert_eq!(held.name(), "game-20");
+    let _ = send(&mut app, Event::Apply("Backwards".into()));
+    assert_eq!(app.layout, ViewLayout::List);
+    let places = app.grid_places();
+    let index = places.index(&held).unwrap();
+    let now = places.slots[index].y - app.scroll_offset;
+    assert!((now - offset).abs() < 0.5, "{now} {offset}");
 }
 
 #[test]
