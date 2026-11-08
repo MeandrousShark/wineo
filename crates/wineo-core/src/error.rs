@@ -120,9 +120,9 @@ pub enum Error {
     #[error("{0}")]
     InvalidPresetName(String),
 
-    /// Carries the existing preset's name, which may differ in case from what
-    /// was asked for.
-    #[error("A preset named {0} already exists.")]
+    /// Carries the name already in use, which may differ in case from what
+    /// was asked for and may be an entry that isn't a preset.
+    #[error("The name {0} is taken.")]
     PresetNameTaken(String),
 
     #[error("There is no preset named {0}.")]

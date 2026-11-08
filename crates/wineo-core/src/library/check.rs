@@ -10,7 +10,7 @@ use super::preset::{preset_name_rule, readable_name};
 use super::record::{Recorded, valid_app_id};
 use super::{
     GroupBy, RandomPool, ReadFailure, SCHEMA_VERSION, SortKey, ViewLayout, ZOOM_MAX, ZOOM_MIN,
-    edit, read_document, read_zoom,
+    edit, read_document, read_zoom, sort_name,
 };
 use crate::paths::Paths;
 use crate::source::{Platform, Store};
@@ -118,15 +118,15 @@ fn inspect_view(item: &Item, inspection: &mut Inspection) {
             "descending" | "favorites_first" | "poster_only" => BOOL.to_owned(),
             "random" => match value.as_str() {
                 Some(name) if RandomPool::parse(name).is_some() => continue,
-                _ => "expected one of launchable, any".to_owned(),
+                _ => random_expected(),
             },
             "layout" => match value.as_str() {
                 Some(name) if ViewLayout::parse(name).is_some() => continue,
-                _ => "expected one of grid, list".to_owned(),
+                _ => layout_expected(),
             },
             "group" => match value.as_str() {
                 Some(name) if GroupBy::parse(name).is_some() => continue,
-                _ => "expected one of none, recent, tag, source, state".to_owned(),
+                _ => group_expected(),
             },
             "zoom" if read_zoom(value).is_some() => continue,
             "zoom" => format!("expected a whole number from {ZOOM_MIN} to {ZOOM_MAX}"),
@@ -186,11 +186,11 @@ fn inspect_presets(item: &Item, inspection: &mut Inspection) {
                 "descending" | "favorites_first" | "show_hidden" => BOOL.to_owned(),
                 "group" => match value.as_str() {
                     Some(name) if GroupBy::parse(name).is_some() => continue,
-                    _ => "expected one of none, recent, tag, source, state".to_owned(),
+                    _ => group_expected(),
                 },
                 "layout" => match value.as_str() {
                     Some(name) if ViewLayout::parse(name).is_some() => continue,
-                    _ => "expected one of grid, list".to_owned(),
+                    _ => layout_expected(),
                 },
                 "stores" | "not_stores" => {
                     let ids = Store::ALL.map(Store::id).join(", ");
@@ -454,10 +454,23 @@ pub(super) fn is_offset_datetime(item: &Item) -> bool {
 }
 
 pub(super) fn sort_expected() -> String {
-    format!(
-        "expected one of {}",
-        ["name", "last-played", "playtime", "added", "source", "tags"].join(", ")
-    )
+    expected_one_of(SortKey::ALL.map(sort_name))
+}
+
+fn random_expected() -> String {
+    expected_one_of(RandomPool::ALL.map(RandomPool::as_str))
+}
+
+fn layout_expected() -> String {
+    expected_one_of(ViewLayout::ALL.map(ViewLayout::as_str))
+}
+
+fn group_expected() -> String {
+    expected_one_of(GroupBy::ALL.map(GroupBy::as_str))
+}
+
+fn expected_one_of<const N: usize>(names: [&str; N]) -> String {
+    format!("expected one of {}", names.join(", "))
 }
 
 fn invalid(environment: Option<String>, path: &str, expected: &str, found: &Item) -> Finding {

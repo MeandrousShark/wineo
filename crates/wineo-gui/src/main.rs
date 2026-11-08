@@ -721,6 +721,7 @@ impl App {
         // Read once, here, so the first cards already show in the saved
         // order. A read takes no lock and never writes.
         let saved = wineo_core::library::load(&app.paths);
+        let presets = presets::List::of(&saved);
         // Until the system mode arrives, the saved dark theme shows, as
         // Midnight did before themes.
         app.appearance = saved.appearance;
@@ -736,7 +737,7 @@ impl App {
         app.query = saved.view.into();
         // The banner shows from the first frame, before the cards arrive.
         app.problem_read(saved.problem);
-        app.presets_read(saved.presets);
+        app.presets_read(presets);
         app.reorder();
         let load = app.reload_library();
         let badge = app.reload_badge();

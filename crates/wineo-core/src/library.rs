@@ -27,7 +27,7 @@ pub use cache::Cache;
 pub(crate) use check::{FindingKind, inspect, remove_strays};
 pub use preset::{
     PRESET_NAME_MAX_CHARS, Preset, create_preset, normalize_preset_name, preset_name_problem,
-    remove_preset, rename_preset, set_preset,
+    preset_name_taken, remove_preset, rename_preset, set_preset,
 };
 pub use record::{
     Claim, RecordChanges, Recorded, SteamRecord, apply_changes, claim_game, dismiss_game,
@@ -90,6 +90,8 @@ pub enum RandomPool {
 }
 
 impl RandomPool {
+    pub const ALL: [Self; 2] = [Self::Launchable, Self::Any];
+
     /// The value `library.toml` holds.
     pub fn as_str(self) -> &'static str {
         match self {
@@ -118,6 +120,8 @@ pub enum ViewLayout {
 }
 
 impl ViewLayout {
+    pub const ALL: [Self; 2] = [Self::Grid, Self::List];
+
     /// The value `library.toml` holds.
     pub fn as_str(self) -> &'static str {
         match self {
@@ -154,6 +158,14 @@ pub enum GroupBy {
 }
 
 impl GroupBy {
+    pub const ALL: [Self; 5] = [
+        Self::None,
+        Self::Recent,
+        Self::Tag,
+        Self::Source,
+        Self::State,
+    ];
+
     /// The value `library.toml` holds.
     pub fn as_str(self) -> &'static str {
         match self {
@@ -285,6 +297,9 @@ pub struct Library {
     pub environments: BTreeMap<String, Entry>,
     /// Saved views by name, A to Z ignoring case.
     pub presets: Vec<(String, Preset)>,
+    /// The keys under `[presets]` that aren't presets, whose names are
+    /// taken all the same.
+    pub other_presets: Vec<String>,
     pub steam: SteamRecord,
     pub problem: Option<Problem>,
 }
@@ -298,21 +313,16 @@ impl Library {
             .map(|(_, preset)| preset)
     }
 
-    /// The saved preset a new preset called `name` would collide with: the
-    /// one with exactly that name, else one that differs only in case. The
-    /// app offers to update it instead of saving a second, look-alike one.
+    /// The entry under `[presets]` that a new preset called `name` would
+    /// collide with; see `preset_name_taken`. The app offers to update it
+    /// instead of saving a second, look-alike one, unless it isn't a preset.
     pub fn taken_preset_name(&self, name: &str) -> Option<&str> {
-        let folded = crate::name::fold_case(name);
-        self.presets
+        let names = self
+            .presets
             .iter()
             .map(|(saved, _)| saved.as_str())
-            .find(|saved| *saved == name)
-            .or_else(|| {
-                self.presets
-                    .iter()
-                    .map(|(saved, _)| saved.as_str())
-                    .find(|saved| crate::name::fold_case(saved) == folded)
-            })
+            .chain(self.other_presets.iter().map(String::as_str));
+        preset_name_taken(names, name, None)
     }
 }
 
@@ -463,14 +473,16 @@ fn set_bool_for(
 }
 
 pub fn set_sort(paths: &Paths, sort: SortKey) -> Result<bool> {
-    edit(paths, |document| set_view_sort(document, sort))
+    edit(paths, |document| {
+        set_view_choice(document, "sort", sort, sort_name(sort), SortKey::from_str)
+    })
 }
 
 /// `set_sort` and `set_descending` in one write, for picking a key that
 /// starts in its own direction.
 pub fn set_order(paths: &Paths, sort: SortKey, descending: bool) -> Result<bool> {
     edit(paths, |document| {
-        let sorted = set_view_sort(document, sort);
+        let sorted = set_view_choice(document, "sort", sort, sort_name(sort), SortKey::from_str);
         let directed = set_view_bool(document, "descending", descending);
         sorted || directed
     })
@@ -502,15 +514,33 @@ pub fn set_poster_only(paths: &Paths, poster_only: bool) -> Result<bool> {
 }
 
 pub fn set_random(paths: &Paths, random: RandomPool) -> Result<bool> {
-    edit(paths, |document| set_view_random(document, random))
+    edit(paths, |document| {
+        set_view_choice(
+            document,
+            "random",
+            random,
+            random.as_str(),
+            RandomPool::parse,
+        )
+    })
 }
 
 pub fn set_layout(paths: &Paths, layout: ViewLayout) -> Result<bool> {
-    edit(paths, |document| set_view_layout(document, layout))
+    edit(paths, |document| {
+        set_view_choice(
+            document,
+            "layout",
+            layout,
+            layout.as_str(),
+            ViewLayout::parse,
+        )
+    })
 }
 
 pub fn set_group(paths: &Paths, group: GroupBy) -> Result<bool> {
-    edit(paths, |document| set_view_group(document, group))
+    edit(paths, |document| {
+        set_view_choice(document, "group", group, group.as_str(), GroupBy::parse)
+    })
 }
 
 /// Writes only the fields that differ from what the file reads as, so an
@@ -729,6 +759,7 @@ fn read_library(document: &DocumentMut) -> Library {
         appearance: read_appearance(document),
         environments,
         presets: preset::read_presets(document),
+        other_presets: preset::read_other_presets(document),
         steam: record::read_record(document),
         problem: None,
     }
@@ -798,86 +829,24 @@ fn set_environment_bool(document: &mut DocumentMut, name: &str, field: &str, val
     true
 }
 
-fn set_view_sort(document: &mut DocumentMut, sort: SortKey) -> bool {
+/// Sets a `[view]` field that holds one of an enum's names. A missing field
+/// reads as the default, and one that already reads as `value` is left as
+/// written, so a no-op edit never rewrites the file.
+fn set_view_choice<T: Copy + PartialEq + Default>(
+    document: &mut DocumentMut,
+    field: &str,
+    value: T,
+    name: &str,
+    parse: fn(&str) -> Option<T>,
+) -> bool {
     let current = document
         .get("view")
         .and_then(Item::as_table_like)
-        .and_then(|table| table.get("sort"));
-    let matches = match current {
-        None => sort == SortKey::default(),
-        Some(item) => item
-            .as_str()
-            .and_then(SortKey::from_str)
-            .is_some_and(|current| current == sort),
-    };
-    if matches {
+        .and_then(|table| table.get(field));
+    if preset::choice_matches(current, value, parse) {
         return false;
     }
-    store_value(
-        view_table_mut(document),
-        "sort",
-        Value::from(sort_name(sort)),
-    );
-    true
-}
-
-fn set_view_random(document: &mut DocumentMut, random: RandomPool) -> bool {
-    let current = document
-        .get("view")
-        .and_then(Item::as_table_like)
-        .and_then(|table| table.get("random"));
-    let matches = match current {
-        None => random == RandomPool::default(),
-        Some(item) => item.as_str().and_then(RandomPool::parse) == Some(random),
-    };
-    if matches {
-        return false;
-    }
-    store_value(
-        view_table_mut(document),
-        "random",
-        Value::from(random.as_str()),
-    );
-    true
-}
-
-fn set_view_layout(document: &mut DocumentMut, layout: ViewLayout) -> bool {
-    let current = document
-        .get("view")
-        .and_then(Item::as_table_like)
-        .and_then(|table| table.get("layout"));
-    let matches = match current {
-        None => layout == ViewLayout::default(),
-        Some(item) => item.as_str().and_then(ViewLayout::parse) == Some(layout),
-    };
-    if matches {
-        return false;
-    }
-    store_value(
-        view_table_mut(document),
-        "layout",
-        Value::from(layout.as_str()),
-    );
-    true
-}
-
-fn set_view_group(document: &mut DocumentMut, group: GroupBy) -> bool {
-    let current = document
-        .get("view")
-        .and_then(Item::as_table_like)
-        .and_then(|table| table.get("group"));
-    let matches = match current {
-        None => group == GroupBy::default(),
-        Some(item) => item.as_str().and_then(GroupBy::parse) == Some(group),
-    };
-    if matches {
-        return false;
-    }
-    store_value(
-        view_table_mut(document),
-        "group",
-        Value::from(group.as_str()),
-    );
+    store_value(view_table_mut(document), field, Value::from(name));
     true
 }
 
