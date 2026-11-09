@@ -1,3 +1,9 @@
+wineo (1.4.1-1ppa1) UNRELEASED; urgency=medium
+
+  * Package the 1.4.1 release for the PPA from the vendored source tarball.
+
+ -- Michael Hannon <mphannon@pm.me>  Sun, 08 Nov 2026 12:00:00 +0000
+
 wineo (1.4.0-1ppa1) UNRELEASED; urgency=medium
 
   * Package the 1.4.0 release for the PPA from the vendored source tarball.

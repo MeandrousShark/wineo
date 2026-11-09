@@ -4,6 +4,14 @@ A finished plan bumps the minor version and fixes between plans bump the
 patch version. A plan released in parts bumps the minor version for each
 part. See `AGENTS.md` for the rule.
 
+## 1.4.1 - 2026-11-08
+
+A layout fix in the desktop app's menus.
+
+- The Group by submenu lines its first row up with the Group by row, where
+  it sat 6 px lower. The Sort menu and a game's menu no longer leave a few
+  pixels of empty space at the bottom.
+
 ## 1.4.0 - 2026-11-08
 
 Multi-select, the list view, grouping, and saved presets (plan 0062, part 2
