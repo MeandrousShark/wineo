@@ -1377,15 +1377,35 @@ fn the_direction_button_still_flips_from_the_keyboard_with_its_tooltip() {
 
 /// The Sort button's bounds in the laid out window.
 fn sort_button_bounds(app: &App) -> iced::Rectangle {
+    laid_bounds(app, SORT_BUTTON_ID)
+}
+
+/// The bounds of the widget with `id` in the window laid out at 1200x800.
+fn laid_bounds(app: &App, id: &'static str) -> iced::Rectangle {
     let mut laid = crate::layout_probe::lay_out(app.view(), iced::Size::new(1200.0, 800.0));
     let found = std::sync::Arc::new(std::sync::Mutex::new(None));
     let sink = found.clone();
     laid.run(Box::new(iced::advanced::widget::operation::map(
-        bounds_of(SORT_BUTTON_ID),
+        bounds_of(id),
         move |bounds| *sink.lock().unwrap() = bounds,
     )));
     let bounds = *found.lock().unwrap();
-    bounds.expect("the Sort button registers its bounds")
+    bounds.unwrap_or_else(|| panic!("{id} registers its bounds"))
+}
+
+#[test]
+fn the_group_by_submenu_lines_its_first_row_up_with_group_by() {
+    let (_root, mut app) = loaded();
+    app.window_size = iced::Size::new(1200.0, 800.0);
+    open_sort(&mut app);
+    let _ = app.update(Message::Sort(Event::OpenGroups));
+    assert!(app.group_menu);
+    let row = laid_bounds(&app, GROUP_ID);
+    let first = laid_bounds(&app, group_row_id(crate::sections::GROUPS[0]));
+    assert_eq!(
+        first.y, row.y,
+        "Group by {row:?}, first submenu row {first:?}"
+    );
 }
 
 #[test]

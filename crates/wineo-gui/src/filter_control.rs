@@ -551,7 +551,7 @@ impl App {
         for item in self.presets_view() {
             rows = rows.push(item);
         }
-        rows = rows.push(ui::separator(palette).padding([3, 0]));
+        rows = rows.push(ui::separator(palette));
         // Each row: its label, mark, id, and what a click and an exclude send.
         let filters = &self.filters;
         let stores = stores.into_iter().map(|store| {
@@ -624,7 +624,7 @@ impl App {
         .on_press_maybe(clear_enabled.then(|| clear_message.clone()))
         .style(move |_, status| context_menu_style(palette, false, status));
         rows = rows
-            .push(ui::separator(palette).padding([3, 0]))
+            .push(ui::separator(palette))
             .push(menu_row(
                 row![
                     check_box(self.filters.show_hidden, palette),
@@ -638,7 +638,7 @@ impl App {
                 SHOW_HIDDEN_ID,
                 Message::Filter(Event::ToggleShowHidden),
             ))
-            .push(ui::separator(palette).padding([3, 0]))
+            .push(ui::separator(palette))
             .push(focus_button::control(
                 clear.into(),
                 clear_enabled,

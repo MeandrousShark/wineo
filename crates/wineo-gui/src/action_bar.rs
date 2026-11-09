@@ -466,9 +466,7 @@ impl App {
             .size(14)
             .padding([6, 10])
             .style(move |_, status| crate::chips::input_style(palette, status));
-        rows = rows
-            .push(ui::separator(palette).padding([3, 0]))
-            .push(field);
+        rows = rows.push(ui::separator(palette)).push(field);
         if let Some(problem) = problem(draft) {
             rows = rows.push(text(problem).size(12).color(palette.danger));
         }

@@ -24,8 +24,8 @@ pub(crate) const ACTION_MENU_MARGIN: f32 = 8.0;
 pub(crate) const ACTION_MENU_PADDING: f32 = 12.0;
 pub(crate) const ACTION_MENU_SPACING: f32 = 4.0;
 pub(crate) const ACTION_MENU_HEADER_HEIGHT: f32 = 20.0;
-/// A menu's separator: its 1 px line and 3 px of padding above and below.
-pub(crate) const ACTION_MENU_DIVIDER: f32 = 7.0;
+/// A menu's separator: its 1 px line, which is all `ui::separator` takes up.
+pub(crate) const ACTION_MENU_DIVIDER: f32 = 1.0;
 const INSTALL_BAR_HEIGHT: f32 = 4.0;
 const CARD_TITLE_SIZE: f32 = 14.0;
 const CARD_SPACING: f32 = 4.0;
@@ -948,7 +948,7 @@ impl App {
                     false,
                     Some(Message::Mark(Event::Toggle(name.clone(), Flag::Hidden))),
                 ),
-                ui::separator(palette).padding([3, 0]),
+                ui::separator(palette),
                 context_menu_button(
                     "Settings",
                     palette,
@@ -1015,7 +1015,7 @@ impl App {
             }
             if wine_actions {
                 scroll_items = scroll_items
-                    .push(ui::separator(palette).padding([3, 0]))
+                    .push(ui::separator(palette))
                     .push(context_menu_button(
                         "Run program...",
                         palette,
@@ -1044,7 +1044,7 @@ impl App {
                         crate::checkup::Scope::Environment(name.clone()),
                     ))),
                 ))
-                .push(ui::separator(palette).padding([3, 0]));
+                .push(ui::separator(palette));
             if transfer_actions {
                 scroll_items = scroll_items.push(context_menu_button(
                     "Clone",
@@ -2240,7 +2240,7 @@ mod tests {
     fn context_menu_shrinks_to_its_content_for_native_environments() {
         // Favorite and Hide, Settings, Art, Copy, Check, Clone, Remove.
         let body_height = action_menu_body_height(8, 2, None);
-        assert_eq!(action_menu_height(800.0, body_height), 390.0);
+        assert_eq!(action_menu_height(800.0, body_height), 378.0);
     }
 
     #[test]
@@ -2249,7 +2249,7 @@ mod tests {
         // Winetricks, Check, Clone, Remove, with three separators.
         let content_height = action_menu_body_height(11, 3, None);
         let height = action_menu_height(800.0, content_height);
-        assert_eq!(height, 509.0);
+        assert_eq!(height, 491.0);
         assert!(action_menu_scroll_height(height) >= content_height);
     }
 }

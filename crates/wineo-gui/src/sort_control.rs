@@ -586,7 +586,7 @@ impl App {
             ));
         }
         rows = rows
-            .push(ui::separator(palette).padding([3, 0]))
+            .push(ui::separator(palette))
             .push(menu_row(
                 row![
                     text("Group by").size(14).width(Fill),
