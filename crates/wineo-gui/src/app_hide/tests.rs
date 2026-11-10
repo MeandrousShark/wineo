@@ -376,17 +376,55 @@ fn always_show_brings_back_a_user_closed_window_with_the_window_kept_open() {
 }
 
 #[test]
-fn keeping_the_window_open_with_it_open_never_joins_under_either_stop_choice() {
-    for on_stop in OnStop::ALL {
-        let mut app = example();
-        with_tray(&mut app);
-        app.desktop.on_stop = on_stop;
-        let main = app.main_window;
-        window_play(&mut app, "stardew", StartOutcome::Started);
-        tray_play(&mut app, "notepad", StartOutcome::Started);
-        assert_eq!(app.main_window, main, "{on_stop:?}");
-        assert!(app.tray.hidden_for.is_empty(), "{on_stop:?}");
-    }
+fn restore_with_the_window_kept_open_never_joins() {
+    let mut app = example();
+    with_tray(&mut app);
+    assert_eq!(app.desktop.on_stop, OnStop::Restore);
+    let main = app.main_window;
+    window_play(&mut app, "stardew", StartOutcome::Started);
+    tray_play(&mut app, "notepad", StartOutcome::Started);
+    assert_eq!(app.main_window, main);
+    assert!(app.tray.hidden_for.is_empty());
+    // Closing it mid-run leaves it closed when the run stops.
+    closed_by_the_user(&mut app);
+    let _ = polled(&mut app, &[]);
+    assert_eq!(app.main_window, None);
+}
+
+#[test]
+fn always_show_opens_a_window_the_user_closed_mid_run() {
+    let mut app = example();
+    with_tray(&mut app);
+    app.desktop.on_stop = OnStop::Show;
+    let main = app.main_window;
+    window_play(&mut app, "stardew", StartOutcome::Started);
+    // The window stays up for a start, but the run is remembered.
+    assert_eq!(app.main_window, main);
+    assert_eq!(hidden_for(&app), ["stardew"]);
+
+    app.desktop.close = CloseWindow::Tray;
+    let _ = app.update(app.window_event(window::Event::CloseRequested));
+    assert_eq!(app.main_window, None);
+    let _ = polled(&mut app, &["stardew"]);
+    assert_eq!(app.main_window, None);
+    let _ = polled(&mut app, &[]);
+    assert!(app.main_window.is_some());
+    assert!(app.focused);
+    assert!(app.tray.hidden_for.is_empty());
+}
+
+#[test]
+fn always_show_leaves_a_window_that_was_open_the_whole_time() {
+    let mut app = example();
+    with_tray(&mut app);
+    app.desktop.on_stop = OnStop::Show;
+    let main = app.main_window;
+    window_play(&mut app, "stardew", StartOutcome::Started);
+    tray_play(&mut app, "notepad", StartOutcome::Started);
+    assert_eq!(app.main_window, main);
+    let _ = polled(&mut app, &[]);
+    assert_eq!(app.main_window, main);
+    assert!(app.tray.hidden_for.is_empty());
 }
 
 #[test]

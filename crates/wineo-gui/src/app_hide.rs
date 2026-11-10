@@ -31,25 +31,33 @@ impl App {
         // reading brings the window back, and a reading from before this
         // start can't.
         self.tray.poll_generation += 1;
-        // A window that's already closed stays closed.
-        self.hide_window()
+        // Only Hide to the tray closes the window. Always show the window
+        // joins a start with the window open too, so one closed mid-run
+        // still comes back. A window that's already closed stays closed.
+        if self.desktop.on_start == OnStart::Hide {
+            self.hide_window()
+        } else {
+            Task::none()
+        }
     }
 
-    /// Whether a start has the window come back when it's over. A hide
-    /// closes an open window, and a window it closed already has everything
-    /// that started since in its set. A window the user closed (Keep
-    /// running, nothing hidden for) only returns when Always show the window
-    /// says so, with either When something starts choice.
+    /// Whether a start has the window come back when it's over. Always show
+    /// the window counts every start. Otherwise only a window a hide closed
+    /// does: a hide closes an open window, and a window it closed already
+    /// has everything that started since in its set.
     fn joins_the_hide(&self) -> bool {
+        if self.desktop.on_stop == OnStop::Show {
+            return true;
+        }
         if self.main_window.is_some() {
             return self.desktop.on_start == OnStart::Hide;
         }
-        !self.tray.hidden_for.is_empty() || self.desktop.on_stop == OnStop::Show
+        !self.tray.hidden_for.is_empty()
     }
 
     /// The light poll's reading: when it's from since the last hide and
     /// nothing the window hid for still runs, the window comes back where
-    /// it was.
+    /// it was. One that's open by then is left alone, not raised.
     pub(crate) fn hidden_for_stopped(
         &mut self,
         generation: u64,
@@ -59,6 +67,10 @@ impl App {
             || self.tray.hidden_for.is_empty()
             || !self.tray.hidden_for.is_disjoint(running)
         {
+            return Task::none();
+        }
+        if self.main_window.is_some() {
+            self.tray.hidden_for.clear();
             return Task::none();
         }
         self.come_back()
