@@ -4,7 +4,7 @@
 use iced::widget::{button, container, row, text};
 use std::collections::BTreeSet;
 
-use iced::{Center, Element, Fill, Font, Task, font};
+use iced::{Center, Element, Fill, Task};
 use wineo_core::library::GroupBy;
 
 use crate::grid_motion::{HEADER_HEIGHT, Header};
@@ -53,10 +53,7 @@ pub(crate) fn header_content(
             icon(chevron, palette.muted, 16.0),
             text(header.key.title())
                 .size(16)
-                .font(Font {
-                    weight: font::Weight::Semibold,
-                    ..Font::DEFAULT
-                })
+                .font(crate::fonts::semibold())
                 .color(palette.foreground)
                 .wrapping(text::Wrapping::None),
             text(format!("({})", header.count))

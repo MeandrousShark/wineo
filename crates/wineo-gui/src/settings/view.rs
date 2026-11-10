@@ -2,7 +2,7 @@ use iced::widget::{
     Column, Space, button, column, container, opaque, pick_list, row, scrollable, stack, text,
     text_input, toggler,
 };
-use iced::{Center, Color, Element, Fill, Font, border, font};
+use iced::{Center, Color, Element, Fill, border};
 
 use wineo_core::art::Kind;
 use wineo_core::components::Component;
@@ -42,13 +42,6 @@ fn root_placeholder(field: global::Field, paths: &Paths) -> String {
         .unwrap_or_else(|_| root.display().to_string())
 }
 
-fn semibold() -> Font {
-    Font {
-        weight: font::Weight::Semibold,
-        ..Font::DEFAULT
-    }
-}
-
 impl Page {
     pub(crate) fn view(&self, paths: &Paths, palette: Palette) -> Element<'_, Message> {
         // Global settings is a sidebar section, so the sidebar is its way out.
@@ -60,7 +53,7 @@ impl Page {
             back,
             text(format!("{} settings", self.name))
                 .size(22)
-                .font(semibold())
+                .font(crate::fonts::semibold())
                 .color(palette.foreground),
         ]
         .spacing(16)
@@ -1230,7 +1223,9 @@ fn target_card<'a>(
     }
     let header = button(
         row![
-            text(title).font(semibold()).color(palette.foreground),
+            text(title)
+                .font(crate::fonts::semibold())
+                .color(palette.foreground),
             text(values.exe.as_str()).size(13).color(palette.muted),
         ]
         .spacing(12)
@@ -1557,7 +1552,7 @@ fn add_target(
         |line: String| -> Element<'_, Message> { text(line).size(13).color(palette.muted).into() };
     let mut rows = column![
         text("Add target")
-            .font(semibold())
+            .font(crate::fonts::semibold())
             .color(palette.foreground)
     ]
     .spacing(10);
@@ -2020,7 +2015,7 @@ fn leave_prompt(palette: Palette) -> Element<'static, Message> {
         column![
             text("Discard unsaved changes?")
                 .size(16)
-                .font(semibold())
+                .font(crate::fonts::semibold())
                 .color(palette.foreground),
             row![
                 Space::new().width(Fill),

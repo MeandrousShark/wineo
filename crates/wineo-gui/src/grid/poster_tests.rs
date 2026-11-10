@@ -153,10 +153,7 @@ fn the_overlay_sits_at_the_bottom_of_the_art_in_one_or_two_lines() {
     // A long title ellipsizes on its second line, and it leaves room for
     // the Steam mark.
     card.display_title = "The Elder Scrolls V: Skyrim Special Edition Anniversary Upgrade".into();
-    let font = Font {
-        weight: font::Weight::Semibold,
-        ..Font::DEFAULT
-    };
+    let font = crate::fonts::semibold();
     let width = GridLayout::default().art_frame().width - OVERLAY_PADDING - STEAM_MARK_ROOM;
     let lines = crate::tile_title::lines(&card.display_title, width, CARD_TITLE_SIZE, font);
     assert_eq!(lines.len(), 2);

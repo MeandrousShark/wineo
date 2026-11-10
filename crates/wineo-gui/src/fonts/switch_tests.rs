@@ -6,7 +6,7 @@ use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
 use iced::widget::{pick_list, text};
-use iced::{Element, Font, Size};
+use iced::{Element, Font, Size, font};
 
 use super::fixtures::{WIDE, install_wide};
 use super::*;
@@ -132,6 +132,33 @@ fn cached_text_follows_the_family() {
     assert!(render_with(&mut styled, &mut pick(None), size) == styled_noto);
 }
 
+/// Semibold text in a family with only a regular face stays in that family
+/// rather than coming from the bundle's semibold.
+fn semibold_stays_in_a_regular_only_family() {
+    let semibold_width = |font: Font| {
+        let label: Element<'static, ()> = text("Interface size").font(font).into();
+        let laid = lay_out(label, Size::new(800.0, 100.0));
+        laid.node.bounds().width
+    };
+    let noto = semibold_width(semibold());
+    assert_eq!(semibold().weight, font::Weight::Semibold);
+
+    switch_to(Some(WIDE));
+    assert_eq!(semibold().weight, font::Weight::Normal);
+    let wide = semibold_width(semibold());
+    assert!(wide > noto * 1.8, "{noto} then {wide}");
+    // What asking for semibold outright gets: another family's face.
+    let asked = semibold_width(Font {
+        weight: font::Weight::Semibold,
+        ..Font::DEFAULT
+    });
+    assert!(asked < noto * 1.2, "{asked} against {noto}");
+
+    switch_to(None);
+    assert_eq!(semibold().weight, font::Weight::Semibold);
+    assert_eq!(semibold_width(semibold()), noto);
+}
+
 #[test]
 fn child_process_scenario() {
     let Ok(scenario) = std::env::var(CHILD) else {
@@ -142,6 +169,7 @@ fn child_process_scenario() {
         "label" => label_width_follows_the_family(),
         "card" => card_height_follows_the_family(),
         "cached" => cached_text_follows_the_family(),
+        "semibold" => semibold_stays_in_a_regular_only_family(),
         other => panic!("unknown scenario {other}"),
     }
 }
@@ -191,4 +219,9 @@ fn a_card_height_follows_a_switch() {
 #[test]
 fn text_from_the_renderer_cache_follows_a_switch() {
     run_child("cached");
+}
+
+#[test]
+fn semibold_in_a_regular_only_family_stays_in_it() {
+    run_child("semibold");
 }

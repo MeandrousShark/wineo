@@ -11,11 +11,12 @@
 use std::borrow::Cow;
 use std::collections::HashSet;
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU16, AtomicU64, Ordering};
 
 use iced::Font;
-use iced::advanced::graphics::text::cosmic_text::fontdb::Database;
+use iced::advanced::graphics::text::cosmic_text::fontdb::{self, Database};
 use iced::advanced::graphics::text::font_system;
+use iced::font::Weight;
 
 pub(crate) const REGULAR: &[u8] = include_bytes!("../fonts/NotoSans-Regular.ttf");
 pub(crate) const SEMIBOLD: &[u8] = include_bytes!("../fonts/NotoSans-SemiBold.ttf");
@@ -25,6 +26,8 @@ pub(crate) const BUILT_IN: &str = "Noto Sans";
 
 /// Counts remaps, so measurements kept from an older family are dropped.
 static GENERATION: AtomicU64 = AtomicU64::new(0);
+/// The weight semibold text asks for in the family in use.
+static HEAVY: AtomicU16 = AtomicU16::new(SEMIBOLD_WEIGHT);
 /// The family sans-serif points at.
 static CURRENT: Mutex<&str> = Mutex::new(BUILT_IN);
 
@@ -108,9 +111,47 @@ pub(crate) fn remap(family: &'static str) {
     // `db_mut` also drops cosmic-text's cache of font matches.
     let db = system.raw().db_mut();
     db.set_sans_serif_family(family);
+    HEAVY.store(heavy_weight(db, family), Ordering::Relaxed);
     system.load_font(Cow::Owned(Vec::new()));
     *CURRENT.lock().expect("current font lock") = family;
     GENERATION.fetch_add(1, Ordering::Relaxed);
+}
+
+/// Semibold text in the family in use.
+///
+/// cosmic-text only takes a family at the exact weight asked for and has no
+/// synthetic bold, so semibold in a family without that face would come
+/// from another family. This asks for bold instead, then regular, so heavy
+/// text keeps the chosen typeface.
+pub(crate) fn semibold() -> Font {
+    Font {
+        weight: match HEAVY.load(Ordering::Relaxed) {
+            BOLD_WEIGHT => Weight::Bold,
+            NORMAL_WEIGHT => Weight::Normal,
+            _ => Weight::Semibold,
+        },
+        ..Font::DEFAULT
+    }
+}
+
+const SEMIBOLD_WEIGHT: u16 = 600;
+const BOLD_WEIGHT: u16 = 700;
+const NORMAL_WEIGHT: u16 = 400;
+
+/// Semibold, then bold, then regular: the first upright weight `family`
+/// has. Variable fonts register at their default weight, so they land on
+/// that one.
+fn heavy_weight(db: &Database, family: &str) -> u16 {
+    let weights: Vec<u16> = db
+        .faces()
+        .filter(|face| face.style == fontdb::Style::Normal)
+        .filter(|face| face.families.iter().any(|(name, _)| name == family))
+        .map(|face| face.weight.0)
+        .collect();
+    [SEMIBOLD_WEIGHT, BOLD_WEIGHT]
+        .into_iter()
+        .find(|weight| weights.contains(weight))
+        .unwrap_or(NORMAL_WEIGHT)
 }
 
 /// The family in use by name, for widgets that draw through the renderer's

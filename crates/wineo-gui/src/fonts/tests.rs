@@ -58,3 +58,24 @@ fn prepare_leaves_only_the_bundled_noto_sans_and_other_families() {
     // A weight the bundle lacks lands on a bundled face, not a system one.
     assert_eq!(resolve(&db, Weight::BOLD), SEMIBOLD.as_ptr());
 }
+
+#[test]
+fn semibold_asks_for_the_heaviest_weight_up_to_semibold_a_family_has() {
+    let mut db = Database::new();
+    for (family, weights) in [
+        ("Regular Only", &[400][..]),
+        ("With Bold", &[400, 700]),
+        ("Full", &[300, 400, 600, 700]),
+    ] {
+        for weight in weights {
+            db.load_font_source(Source::Binary(Arc::new(fake(REGULAR, family, *weight))));
+        }
+    }
+    assert_eq!(heavy_weight(&db, "Regular Only"), 400);
+    assert_eq!(heavy_weight(&db, "With Bold"), 700);
+    assert_eq!(heavy_weight(&db, "Full"), 600);
+    // A family the database lacks never gets here, but reads as regular.
+    assert_eq!(heavy_weight(&db, "Missing"), 400);
+    // The bundle has a semibold, so the app starts there.
+    assert_eq!(semibold().weight, iced::font::Weight::Semibold);
+}

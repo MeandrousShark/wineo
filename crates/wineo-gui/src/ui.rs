@@ -1,7 +1,7 @@
 use std::borrow::Borrow;
 
 use iced::widget::{Button, Column, Container, Space, Text, button, container, scrollable, text};
-use iced::{Color, Element, Fill, Font, Theme, border, font};
+use iced::{Color, Element, Fill, Theme, border};
 
 use crate::theme::{Palette, luminance};
 
@@ -394,10 +394,7 @@ pub(crate) fn section_heading(label: &str, palette: Palette) -> Text<'_> {
 fn heading(label: &str, palette: Palette, size: u32) -> Text<'_> {
     text(label)
         .size(size)
-        .font(Font {
-            weight: font::Weight::Semibold,
-            ..Font::DEFAULT
-        })
+        .font(crate::fonts::semibold())
         .color(palette.foreground)
 }
 

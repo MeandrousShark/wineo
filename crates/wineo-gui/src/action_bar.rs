@@ -8,7 +8,7 @@ use std::collections::BTreeSet;
 use iced::alignment::Vertical;
 use iced::keyboard::{Key, Modifiers, key::Named};
 use iced::widget::{Row, button, column, container, row, scrollable, text, text_input, tooltip};
-use iced::{Center, Element, Fill, Font, Padding, Point, Rectangle, Task, font};
+use iced::{Center, Element, Fill, Padding, Point, Rectangle, Task};
 
 use crate::grid::{
     ACTION_MENU_HEADER_HEIGHT, ACTION_MENU_MARGIN, ACTION_MENU_PADDING, ACTION_MENU_SPACING,
@@ -430,10 +430,7 @@ impl App {
         let mut rows = column![
             text("Tags")
                 .size(14)
-                .font(Font {
-                    weight: font::Weight::Semibold,
-                    ..Font::DEFAULT
-                })
+                .font(crate::fonts::semibold())
                 .color(palette.foreground)
                 .height(ACTION_MENU_HEADER_HEIGHT)
                 .align_y(Center),

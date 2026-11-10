@@ -5,7 +5,7 @@ use std::collections::BTreeSet;
 
 use iced::keyboard::{Key, Modifiers, key::Named};
 use iced::widget::{Row, button, column, container, mouse_area, row, scrollable, text};
-use iced::{Center, Element, Font, Point, Rectangle, Task, border, font};
+use iced::{Center, Element, Font, Point, Rectangle, Task, border};
 use wineo_core::source::{Platform, Store};
 
 use crate::grid::{
@@ -538,10 +538,7 @@ impl App {
         let mut rows = column![
             text("Filters")
                 .size(14)
-                .font(Font {
-                    weight: font::Weight::Semibold,
-                    ..Font::DEFAULT
-                })
+                .font(crate::fonts::semibold())
                 .color(palette.foreground)
                 .height(ACTION_MENU_HEADER_HEIGHT)
                 .align_y(Center),
