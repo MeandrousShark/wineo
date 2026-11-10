@@ -250,3 +250,52 @@ fn a_focused_icon_hands_its_focus_to_the_field_when_search_comes_back() {
     assert!(!app.search_icon);
     assert_eq!(window.focused(&app), ids(SEARCH_ID));
 }
+
+/// Opens the drop-down from its icon and types the character `text`.
+fn opened_with(app: &mut App, window: &mut Window, text: &str) {
+    let icon = window.bounds(app, ICON_ID).unwrap();
+    window.click(app, center(icon));
+    window.overlay_event(app, typed(text), None);
+    assert!(app.search_dropdown_shown());
+}
+
+#[test]
+fn tab_and_shift_tab_out_of_the_field_close_it_and_move_on_from_the_icon() {
+    let (_root, mut app) = library(200);
+    let mut window = Window::new(&mut app);
+    opened_with(&mut app, &mut window, "g");
+    window.press(&mut app, Named::Tab);
+    assert!(!app.search_open);
+    assert_eq!(
+        app.search, "g",
+        "the text stays, so the icon looks selected"
+    );
+    assert_eq!(
+        window.focused(&app),
+        ids(crate::sort_control::SORT_BUTTON_ID)
+    );
+    // The toolbar's menus open again.
+    window.send(
+        &mut app,
+        vec![Message::More(crate::more_menu::Event::ToggleMenu)],
+    );
+    assert!(app.more_menu);
+    window.press(&mut app, Named::Escape);
+
+    opened_with(&mut app, &mut window, "a");
+    window.key(&mut app, Named::Tab, Modifiers::SHIFT);
+    assert!(!app.search_open);
+    assert_eq!(window.focused(&app), ids(crate::grid::ADD_ID));
+}
+
+#[test]
+fn down_out_of_the_field_closes_it_and_goes_to_the_grid() {
+    let (_root, mut app) = library(200);
+    let mut window = Window::new(&mut app);
+    opened_with(&mut app, &mut window, "g");
+    window.press(&mut app, Named::ArrowDown);
+    assert!(!app.search_open);
+    assert_eq!(app.selected.as_deref(), Some("game-000"));
+    assert!(window.focused(&app).is_empty());
+    assert_eq!(app.search, "g");
+}
