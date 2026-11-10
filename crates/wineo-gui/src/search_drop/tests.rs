@@ -312,3 +312,80 @@ fn collapsing_under_a_context_menu_leaves_the_drop_down_closed() {
     assert!(app.search_icon);
     assert!(!app.search_open);
 }
+
+/// What a left click at `point` sends through the window's whole event
+/// path, overlays and all, as the runtime delivers it.
+fn clicked(app: &App, point: Point) -> Vec<Message> {
+    use iced::mouse::{Button, Event as Mouse};
+    use iced_runtime::user_interface::{Cache, UserInterface};
+    let mut renderer = crate::layout_probe::renderer();
+    let mut ui = UserInterface::build(app.view(), app.window_size, Cache::default(), &mut renderer);
+    let mut messages = Vec::new();
+    let _ = ui.update(
+        &[
+            iced::Event::Mouse(Mouse::CursorMoved { position: point }),
+            iced::Event::Mouse(Mouse::ButtonPressed(Button::Left)),
+            iced::Event::Mouse(Mouse::ButtonReleased(Button::Left)),
+        ],
+        iced::mouse::Cursor::Available(point),
+        &mut renderer,
+        &mut iced::advanced::clipboard::Null,
+        &mut messages,
+    );
+    messages
+}
+
+/// Whether a click reached a card or the Sort button.
+fn acted(messages: &[Message]) -> bool {
+    messages.iter().any(|message| {
+        matches!(
+            message,
+            Message::Press(_)
+                | Message::Select(_)
+                | Message::OpenCard(_)
+                | Message::Sort(crate::sort_control::Event::ToggleMenu)
+        )
+    })
+}
+
+#[test]
+fn a_click_outside_the_open_drop_down_or_more_menu_only_closes_it() {
+    // On the first card, clear of the drop-down and the menu.
+    let card = Point::new(260.0, 120.0);
+    for size in [200, 150] {
+        let (_root, mut app) = library(size);
+        let mut window = Window::new(&mut app);
+        let sort = center(
+            window
+                .bounds(&app, crate::sort_control::SORT_BUTTON_ID)
+                .unwrap(),
+        );
+        // With nothing open, both clicks act.
+        assert!(acted(&clicked(&app, sort)), "{size}%: Sort");
+        let baseline = clicked(&app, card);
+        assert!(acted(&baseline), "{size}%: a card {baseline:?}");
+        if size == 200 {
+            let icon = window.bounds(&app, ICON_ID).unwrap();
+            window.click(&mut app, center(icon));
+            assert!(app.search_dropdown_shown());
+        } else {
+            window.send(
+                &mut app,
+                vec![Message::More(crate::more_menu::Event::ToggleMenu)],
+            );
+            assert!(app.more_menu_shown());
+        }
+        for point in [sort, card] {
+            let messages = clicked(&app, point);
+            assert!(!acted(&messages), "{size}%: {messages:?}");
+            assert!(
+                messages.iter().any(|message| matches!(
+                    message,
+                    Message::Search(Event::Close)
+                        | Message::More(crate::more_menu::Event::CloseMenu)
+                )),
+                "{size}%: the click closes it: {messages:?}"
+            );
+        }
+    }
+}
