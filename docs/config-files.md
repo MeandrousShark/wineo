@@ -415,6 +415,7 @@ font = "Inter"            # no key means the built-in Noto Sans
 tray = true               # show a tray icon (default)
 close = "quit"            # quit (default) or tray
 on_start = "keep"         # keep (default) or hide
+on_stop = "restore"       # restore (default) or show
 
 [environments.hades]
 favorite = true
@@ -520,11 +521,16 @@ to the tray and opens it again, where it was, once everything it hid for
 has stopped. Only a run wineo starts itself hides it, not one that was
 already running, a Steam launch, or a start from the CLI. Like `close =
 "tray"`, it needs the tray, and if the tray goes away while the window is
-hidden, the window comes back at once. A value of the wrong type, or an
-unknown `close` or `on_start`, reads as the default, isn't rewritten when
-the app saves, and `validate` reports it; repair keeps any boolean `tray`
-and any string `close` or `on_start` and drops other types. An older wineo
-warns about this table in `validate`, and its repair drops it.
+hidden, the window comes back at once. `on_stop` is what happens once
+everything started from the app has stopped: `restore`, the default,
+brings back only a window that `hide` closed, and `show` also opens a
+window you closed yourself with `close = "tray"`. Opening the window
+yourself in between ends either. A value of the wrong type, or an unknown
+`close`, `on_start`, or `on_stop`, reads as the default, isn't rewritten
+when the app saves, and `validate` reports it; repair keeps any boolean
+`tray` and any string `close`, `on_start`, or `on_stop` and drops other
+types. An older wineo warns about this table in `validate`, and its repair
+drops it.
 
 `[steam]` is how the desktop app remembers what it has
 [offered](steam.md#new-installs). `auto_import` imports new installs without
