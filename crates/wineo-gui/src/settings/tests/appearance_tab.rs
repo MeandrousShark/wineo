@@ -1280,3 +1280,64 @@ fn tab_stays_in_the_open_font_dropdown() {
         assert!(!moves(app.settings_key(&tab, modifiers, true)));
     }
 }
+
+#[test]
+fn a_reload_and_its_landing_close_the_font_dropdown() {
+    let (_root, paths) = setup();
+    let mut app = open_global_app(&paths);
+    show_appearance(&mut app);
+    // General's edit stays through the reload, since config.toml didn't
+    // change.
+    let _ = app.update(Message::Settings(Event::GlobalSwitch(
+        Switch::Gamemode,
+        true,
+    )));
+    edit(&mut app, Edit::FontOpen);
+    write_library(&paths, "[appearance]\ndark = \"dracula\"\n");
+    let page = app.settings.as_mut().unwrap();
+    let sequence = start_check(page);
+    let generation = page.generation;
+    let _ = app.update(Message::Settings(Event::Checked(
+        generation,
+        sequence,
+        Texts::read_global(&paths),
+    )));
+    assert!(page_of(&app).loading(), "the check reloads");
+    assert!(
+        font_form(&app).font_picker.is_none(),
+        "reload_after closes it"
+    );
+    // Opened again under the load, the landing closes it too.
+    let page = app.settings.as_mut().unwrap();
+    page.menu_open = true;
+    page.appearance_mut().unwrap().font_picker = Some(appearance::FontPicker {
+        query: String::new(),
+        families: Vec::new(),
+        highlight: 0,
+    });
+    let _ = app.update(Message::Settings(Event::Loaded(
+        generation,
+        load::snapshot_global(&paths),
+    )));
+    assert!(!page_of(&app).loading());
+    assert_eq!(page_of(&app).changes(), 1, "General's edit is kept");
+    assert!(font_form(&app).font_picker.is_none());
+    assert!(!page_of(&app).navigation_blocked());
+}
+
+#[test]
+fn escape_with_the_font_dropdown_open_stays_on_settings() {
+    let (_root, paths) = setup();
+    let mut app = open_global_app(&paths);
+    show_appearance(&mut app);
+    edit(&mut app, Edit::FontOpen);
+    app.settings.as_mut().unwrap().menu_open = false;
+    let escape = Key::Named(Named::Escape);
+    let task = app.settings_key(&escape, Modifiers::empty(), false);
+    assert!(iced_runtime::task::into_stream(task).is_none(), "no Back");
+    assert!(app.settings.is_some());
+    assert!(
+        font_form(&app).font_picker.is_some(),
+        "the popup closes itself"
+    );
+}

@@ -42,9 +42,9 @@ struct Keys<Message> {
 }
 
 impl<Message> Dropdown<'_, Message> {
-    /// Up and Shift+Tab publish `up`, Down and Tab `down`, and Enter
-    /// `enter`, while the popup is open, so a list can keep a highlight while its search field
-    /// has focus.
+    /// Up and Shift+Tab publish `up`, Down and Tab `down`, and Enter `enter`,
+    /// while the popup is open, so a list can keep a highlight while its
+    /// search field has focus.
     pub(crate) fn on_keys(mut self, up: Message, down: Message, enter: Message) -> Self {
         self.keys = Some(Keys { up, down, enter });
         self
