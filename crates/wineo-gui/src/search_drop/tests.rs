@@ -299,3 +299,16 @@ fn down_out_of_the_field_closes_it_and_goes_to_the_grid() {
     assert!(window.focused(&app).is_empty());
     assert_eq!(app.search, "g");
 }
+
+#[test]
+fn collapsing_under_a_context_menu_leaves_the_drop_down_closed() {
+    let (_root, mut app) = library(100);
+    let mut window = Window::new(&mut app);
+    window.focus(&app, SEARCH_ID);
+    app.action_menu = Some("game-000".to_owned());
+    crate::more_menu::tests::at_size(&mut app, 200);
+    window.frame(&mut app);
+    window.frame(&mut app);
+    assert!(app.search_icon);
+    assert!(!app.search_open);
+}

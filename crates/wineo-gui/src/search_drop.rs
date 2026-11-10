@@ -68,7 +68,7 @@ pub(crate) fn update(app: &mut App, event: Event) -> Task<Message> {
         Event::Toggle => app.open_search(),
         Event::Close => app.close_search(),
         Event::CollapsedWithFocus => {
-            if !app.library_menu_open() {
+            if !app.library_menu_open() && app.action_menu.is_none() {
                 app.search_open = true;
             }
             Task::none()
