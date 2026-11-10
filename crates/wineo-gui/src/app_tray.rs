@@ -169,7 +169,9 @@ impl App {
     /// Another launch for this root, which exits after this, so it's the
     /// user asking for the window like Open wineo.
     pub(crate) fn bus_show(&mut self) -> Task<Message> {
-        if self.exiting {
+        // A close that's waiting on writes or work still ends in an exit, and
+        // the name is already free for a relaunch to start fresh.
+        if self.closing || self.exiting {
             return Task::none();
         }
         self.user_show()

@@ -219,3 +219,76 @@ fn exits_within(task: iced::Task<Message>, patience: std::time::Duration) -> boo
             false
         })
 }
+
+/// Whether `instance` refuses shows and has asked once for the name to go.
+fn left(instance: &Instance, releases: &mut mpsc::UnboundedReceiver<oneshot::Sender<()>>) -> bool {
+    let refused = instance.leaving.load(Ordering::SeqCst);
+    let asked = releases.try_recv().is_ok();
+    assert!(
+        releases.try_recv().is_err(),
+        "the release was asked for twice"
+    );
+    refused && asked
+}
+
+/// A sort flip leaves a `library.toml` write pending, which a close waits on.
+fn with_pending_write(app: &mut crate::App) {
+    let _ = app.update(Message::Sort(crate::sort_control::Event::FlipDirection));
+    assert!(app.library_writes_pending());
+}
+
+#[test]
+fn a_close_waiting_on_library_writes_lets_the_name_go_and_refuses_shows() {
+    let (instance, mut releases) = instance();
+    let mut app = example();
+    app.instance = Some(instance.clone());
+    with_pending_write(&mut app);
+    let _ = app.update(app.window_event(window::Event::CloseRequested));
+    assert!(app.closing && !app.exiting);
+    // Free for a relaunch to own while this app waits to exit.
+    assert!(left(&instance, &mut releases));
+
+    let main = app.main_window;
+    let _ = app.update(Message::Show);
+    assert_eq!(app.main_window, main);
+    assert!(app.closing);
+}
+
+#[test]
+fn a_close_waiting_on_canceled_work_lets_the_name_go_and_refuses_shows() {
+    let (instance, mut releases) = instance();
+    let mut app = example();
+    app.instance = Some(instance.clone());
+    let _ = app.start_named("stardew".into());
+    let _ = app.update(app.window_event(window::Event::CloseRequested));
+    assert!(app.close_prompt);
+    // The question can still be answered with Keep working, so nothing's
+    // let go yet.
+    assert!(!instance.leaving.load(Ordering::SeqCst));
+    assert!(releases.try_recv().is_err());
+
+    let _ = app.update(Message::CancelAndClose);
+    assert!(app.closing && !app.exiting, "the exit waits for the stop");
+    assert!(left(&instance, &mut releases));
+    let main = app.main_window;
+    let _ = app.update(Message::Show);
+    assert_eq!(app.main_window, main);
+}
+
+#[test]
+fn a_quiet_close_from_the_tray_keeps_a_hidden_window_hidden_on_a_show() {
+    let (instance, mut releases) = instance();
+    let mut app = example();
+    app.instance = Some(instance.clone());
+    with_tray(&mut app);
+    app.desktop.close = CloseWindow::Tray;
+    let _ = app.update(app.window_event(window::Event::CloseRequested));
+    assert_eq!(app.main_window, None);
+    with_pending_write(&mut app);
+    let _ = app.update(Message::Tray(crate::tray::Event::Quit));
+    assert!(app.closing && app.close_quietly && !app.exiting);
+    assert!(left(&instance, &mut releases));
+
+    let _ = app.update(Message::Show);
+    assert_eq!(app.main_window, None);
+}

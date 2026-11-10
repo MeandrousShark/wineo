@@ -81,6 +81,7 @@ impl App {
             // the wait runs out. Like any accepted close it takes the input,
             // but it shows nothing.
             self.closing = true;
+            self.start_leaving();
             self.steam_auto.cancel();
             self.close_prompt = true;
             self.close_quietly = true;
@@ -226,6 +227,7 @@ impl App {
     pub(crate) fn cancel_and_close(&mut self, event: Message) -> Task<Message> {
         let force = matches!(event, Message::ForceCloseWork);
         self.closing = true;
+        self.start_leaving();
         self.steam_auto.cancel();
         self.cancel_management();
         self.cancel_features(force);

@@ -1033,7 +1033,8 @@ impl App {
         } else {
             Subscription::none()
         };
-        let tray_on = self.tray.service && self.desktop.tray && !self.exiting;
+        // The tray stops as a close becomes final, with the bus name.
+        let tray_on = self.tray.service && self.desktop.tray && !self.closing && !self.exiting;
         let tray = if tray_on {
             Subscription::run_with(
                 tray::Service {
@@ -1058,7 +1059,7 @@ impl App {
             Subscription::none()
         };
         let shows = match &self.instance {
-            Some(instance) if !self.exiting => {
+            Some(instance) if !self.closing && !self.exiting => {
                 Subscription::run_with(instance.shows(), instance::shows)
             }
             _ => Subscription::none(),
