@@ -6,6 +6,7 @@ mod app_keys;
 mod app_library;
 mod app_operation;
 mod app_selection;
+mod app_tray;
 mod app_window;
 mod art_cache;
 mod art_navigation;
@@ -92,6 +93,7 @@ mod tools_navigation;
 mod tools_page;
 mod trash_page;
 mod trash_work;
+mod tray;
 mod ui;
 mod version_picker;
 mod wake;
@@ -124,7 +126,7 @@ use crate::theme::{Appearance, Palette};
 
 pub(crate) const CARD_WIDTH: f32 = 160.0;
 pub(crate) const GAP: f32 = 16.0;
-const SCROLL_ID: &str = "library";
+pub(crate) const SCROLL_ID: &str = "library";
 const SEARCH_ID: &str = "library-search";
 // iced moves 60px per wheel line, which felt too fast beside native apps.
 const WHEEL_STEP_SCALE: f32 = 0.7;
@@ -140,6 +142,10 @@ pub(crate) struct App {
     /// The saved appearance. The global Settings page's base replaces it
     /// whenever that page reads `library.toml`.
     appearance: Appearance,
+    /// The saved `[desktop]`, replaced like `appearance` whenever the global
+    /// Settings page reads `library.toml`.
+    desktop: wineo_core::library::Desktop,
+    pub(crate) tray: tray::Tray,
     /// The saved custom themes, replaced like `appearance`.
     themes: Vec<theme::Custom>,
     /// The last system light or dark mode the app saw.
@@ -574,6 +580,12 @@ pub(crate) enum Message {
     /// The wait for `library.toml` writes on close is over, tagged with its
     /// wakeup.
     CloseWaitOver(u64),
+    /// A click in the tray, or its host coming or going.
+    Tray(tray::Event),
+    /// What the light poll found running, when that changed.
+    TrayPolled(BTreeSet<String>),
+    /// An environment's last play time, read after the poll saw it stop.
+    TrayPlayed(String, Option<jiff::Timestamp>),
 }
 
 impl App {
@@ -582,6 +594,8 @@ impl App {
             paths,
             palette: Palette::DARK,
             appearance: Appearance::default(),
+            desktop: wineo_core::library::Desktop::default(),
+            tray: tray::Tray::default(),
             themes: Vec::new(),
             system_mode: iced::theme::Mode::Dark,
             palette_from: (Appearance::default(), Vec::new(), iced::theme::Mode::Dark),
@@ -741,6 +755,7 @@ impl App {
         // Until the system mode arrives, the saved dark theme shows, as
         // Midnight did before themes.
         app.appearance = saved.appearance;
+        app.desktop = saved.desktop;
         app.themes = theme::customs(&wineo_core::themes::list(&app.paths));
         app.sync_palette();
         app.sync_motion();
@@ -997,9 +1012,33 @@ impl App {
         } else {
             Subscription::none()
         };
+        let tray_on = self.tray.service && self.desktop.tray && !self.exiting;
+        let tray = if tray_on {
+            Subscription::run_with(
+                tray::Service {
+                    menu: self.tray.menu.subscribe(),
+                },
+                tray::service,
+            )
+        } else {
+            Subscription::none()
+        };
+        // The tray's Stop rows need what runs while the rescan is paused.
+        let tray_poll = if tray_on && !self.focused {
+            Subscription::run_with(
+                tray::Poll {
+                    paths: self.paths.clone(),
+                },
+                tray::poll,
+            )
+        } else {
+            Subscription::none()
+        };
         Subscription::batch([
             rescan,
             settings_tick,
+            tray,
+            tray_poll,
             iced::system::theme_changes().map(Message::ThemeChanged),
             motion::subscription(),
             iced::event::listen_with(|event, _, window| window_or_press(event, window)),
@@ -1030,6 +1069,10 @@ impl App {
         self.sync_motion();
         let rescaled = self.sync_interface_size();
         self.sync_font();
+        self.sync_desktop();
+        if self.tray.service && self.desktop.tray {
+            self.sync_tray_menu();
+        }
         // One place for every path that changes the selection.
         self.sync_cursor();
         // One place for every path that changes the hover or selection.
@@ -1339,12 +1382,15 @@ impl App {
             Message::Rescanned(scan) => self.rescanned(*scan),
             Message::SettingsTick => self.settings_tick(),
             Message::Window(window, _) if self.main_window != Some(window) => Task::none(),
+            // A closed window's last presses still arrive.
+            Message::Pressed if self.main_window.is_none() => Task::none(),
             Message::Pressed | Message::Window(_, window::Event::Focused) => {
                 if self.focused {
                     Task::none()
                 } else {
                     self.focused = true;
-                    self.update(Message::Refresh)
+                    let refresh = self.update(Message::Refresh);
+                    Task::batch([refresh, self.release_held_error()])
                 }
             }
             Message::Section(section) => self.navigate_section(section),
@@ -1625,6 +1671,12 @@ impl App {
             }
             event @ (Message::CancelAndClose | Message::ForceCloseWork) => {
                 self.cancel_and_close(event)
+            }
+            Message::Tray(event) => self.tray_event(event),
+            Message::TrayPolled(running) => self.tray_polled(running),
+            Message::TrayPlayed(name, played) => {
+                self.tray_played(name, played);
+                Task::none()
             }
         })
     }
@@ -1911,7 +1963,11 @@ fn run() -> anyhow::Result<()> {
     let paths = Paths::from_env(None)?;
     fonts::install();
     iced::daemon(
-        move || App::boot(paths.clone()),
+        move || {
+            let (mut app, task) = App::boot(paths.clone());
+            app.tray.service = true;
+            (app, task)
+        },
         App::update,
         App::window_view,
     )
@@ -1925,15 +1981,58 @@ fn run() -> anyhow::Result<()> {
 }
 
 fn app_icon() -> Option<window::Icon> {
+    let (rgba, width, height) = icon_rgba(None)?;
+    window::icon::from_rgba(rgba, width, height).ok()
+}
+
+/// The tray's pixmaps at 32 and 64 px, ARGB32 in network order, for a build
+/// that isn't installed and has no `wineo-gui` icon to find by name.
+pub(crate) fn tray_icons() -> Vec<ksni::Icon> {
+    [32, 64]
+        .into_iter()
+        .filter_map(|size| {
+            let (rgba, width, height) = icon_rgba(Some(size))?;
+            let data = rgba
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .flat_map(|[red, green, blue, alpha]| [*alpha, *red, *green, *blue])
+                .collect();
+            Some(ksni::Icon {
+                width: i32::try_from(width).ok()?,
+                height: i32::try_from(height).ok()?,
+                data,
+            })
+        })
+        .collect()
+}
+
+/// The app icon as straight RGBA, at its own size or scaled to `size` px
+/// square.
+fn icon_rgba(size: Option<u32>) -> Option<(Vec<u8>, u32, u32)> {
     let svg = include_bytes!("../assets/wineo-gui.svg");
     let tree = resvg::usvg::Tree::from_data(svg, &resvg::usvg::Options::default()).ok()?;
-    let size = tree.size().to_int_size();
-    let mut pixmap = resvg::tiny_skia::Pixmap::new(size.width(), size.height())?;
-    resvg::render(
-        &tree,
-        resvg::tiny_skia::Transform::default(),
-        &mut pixmap.as_mut(),
-    );
+    let natural = tree.size();
+    let (width, height, transform) = match size {
+        None => {
+            let size = natural.to_int_size();
+            (
+                size.width(),
+                size.height(),
+                resvg::tiny_skia::Transform::default(),
+            )
+        }
+        Some(size) => (
+            size,
+            size,
+            resvg::tiny_skia::Transform::from_scale(
+                size as f32 / natural.width(),
+                size as f32 / natural.height(),
+            ),
+        ),
+    };
+    let mut pixmap = resvg::tiny_skia::Pixmap::new(width, height)?;
+    resvg::render(&tree, transform, &mut pixmap.as_mut());
 
     let rgba = pixmap
         .data()
@@ -1956,13 +2055,12 @@ fn app_icon() -> Option<window::Icon> {
             }
         })
         .collect();
-
-    window::icon::from_rgba(rgba, size.width(), size.height()).ok()
+    Some((rgba, width, height))
 }
 
 /// Opens the main window. The id is known at once, before the window
 /// exists, so events can be matched to it from the first one.
-fn open_main_window(size: iced::Size) -> (window::Id, Task<Message>) {
+pub(crate) fn open_main_window(size: iced::Size) -> (window::Id, Task<Message>) {
     let (id, open) = window::open(window_settings(size));
     (id, open.discard())
 }

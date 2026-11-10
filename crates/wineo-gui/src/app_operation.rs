@@ -116,13 +116,22 @@ impl App {
         {
             self.force_stop_at = None;
         }
-        if self.selected.as_deref() == Some(&name) {
+        let from_tray = self.tray.stopping.as_deref() == Some(&name);
+        if from_tray {
+            self.tray.stopping = None;
+        }
+        // A tray stop's panel may not be in front of anyone, so its error
+        // waits for the window instead of dropping.
+        let panel_shown = self.main_window.is_some() && self.panel_open && !self.page_open();
+        if self.selected.as_deref() == Some(&name) && (!from_tray || panel_shown) {
             match result {
                 Ok(messages) => {
                     self.panel_note = (!messages.is_empty()).then(|| messages.join("\n"))
                 }
                 Err(error) => self.panel_error = Some(error),
             }
+        } else if from_tray && let Err(error) = result {
+            self.tray.held_error = Some((name, error));
         }
         self.reload_library_once()
     }

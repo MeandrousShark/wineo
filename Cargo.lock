@@ -5663,6 +5663,7 @@ dependencies = [
  "unicode-segmentation",
  "wineo-core",
  "wineo-gog",
+ "zbus",
  "zip",
 ]
 

@@ -330,24 +330,40 @@ impl App {
         self.panel_note = None;
     }
     pub(crate) fn start_selected(&mut self) -> Task<Message> {
-        let Some(card) = self
-            .selected
-            .as_ref()
-            .and_then(|name| self.cards.iter().find(|card| &card.name == name))
-        else {
+        let Some(name) = self.selected.clone() else {
             return Task::none();
         };
-        let Some(target) = self.chosen_target(card).map(str::to_owned) else {
-            return Task::none();
-        };
-        if !play_enabled(
-            card,
-            self.operation.is_some() || self.tool_blocks_launch(&card.name),
-            Some(&target),
-        ) {
-            return Task::none();
+        match self.startable(&name) {
+            Some(target) => self.begin_start(name, target),
+            None => Task::none(),
         }
-        let name = card.name.clone();
+    }
+    /// A start from the tray, through the same checks and operation slot as
+    /// Play. One that can't start now shows the window on that card.
+    pub(crate) fn start_named(&mut self, name: String) -> Task<Message> {
+        match self.startable(&name) {
+            Some(target) => self.begin_start(name, target),
+            None => self.tray_blocked(name, crate::tray::PLAY_BLOCKED),
+        }
+    }
+    /// The target a start of `name` would use, when Play would start it
+    /// now: the panel's pick for the selected card, else the default.
+    fn startable(&self, name: &str) -> Option<String> {
+        let card = self.cards.iter().find(|card| card.name == name)?;
+        let target = if self.selected.as_deref() == Some(name) {
+            self.chosen_target(card)
+        } else {
+            card.default_target.as_deref()
+        }?
+        .to_owned();
+        play_enabled(
+            card,
+            self.operation.is_some() || self.tool_blocks_launch(name),
+            Some(&target),
+        )
+        .then_some(target)
+    }
+    fn begin_start(&mut self, name: String, target: String) -> Task<Message> {
         let token = Token::new();
         let install_done = Token::new();
         self.operation = Some(Operation {
@@ -360,8 +376,7 @@ impl App {
             installing: false,
             after_hook: false,
         });
-        self.panel_error = None;
-        self.panel_note = None;
+        self.clear_panel_messages(&name);
         worker::start(self.paths.clone(), name, target, token, install_done)
     }
     pub(crate) fn install_selected(&mut self) -> Task<Message> {
@@ -503,26 +518,63 @@ impl App {
             return Task::none();
         }
         if !own_start || card.state == State::Starting {
-            self.operation = Some(Operation {
-                name: name.clone(),
-                kind: OperationKind::Stop,
-                token: None,
-                cancelled: false,
-                status: "Stopping...".to_owned(),
-                install_done: None,
-                installing: false,
-                after_hook: false,
-            });
-            let at = Instant::now() + FORCE_STOP_DELAY;
-            self.force_stop_at = Some((name.clone(), at));
-            self.panel_error = None;
-            self.panel_note = None;
-            return Task::batch([
-                worker::stop(self.paths.clone(), name, false),
-                Task::perform(force_stop_due(at), |message| message),
-            ]);
+            return self.begin_stop(name);
         }
         worker::stop(self.paths.clone(), name, false)
+    }
+    /// A normal stop from the tray, through the same operation slot as Stop.
+    /// Force stop and the hooks' prompts stay in the panel, so anything but
+    /// a plain stop of a running card shows the window on it instead.
+    pub(crate) fn stop_named(&mut self, name: String) -> Task<Message> {
+        let plain = self
+            .cards
+            .iter()
+            .find(|card| card.name == name)
+            .is_some_and(|card| {
+                card.busy_holder.is_none()
+                    && stop_enabled(card, self.operation.is_some())
+                    && !self.tool_prefix_busy(&card.name)
+            });
+        if !plain {
+            return self.tray_blocked(name, crate::tray::STOP_BLOCKED);
+        }
+        self.tray.stopping = Some(name.clone());
+        self.begin_stop(name)
+    }
+    fn begin_stop(&mut self, name: String) -> Task<Message> {
+        self.operation = Some(Operation {
+            name: name.clone(),
+            kind: OperationKind::Stop,
+            token: None,
+            cancelled: false,
+            status: "Stopping...".to_owned(),
+            install_done: None,
+            installing: false,
+            after_hook: false,
+        });
+        let at = Instant::now() + FORCE_STOP_DELAY;
+        self.force_stop_at = Some((name.clone(), at));
+        self.clear_panel_messages(&name);
+        Task::batch([
+            worker::stop(self.paths.clone(), name, false),
+            Task::perform(force_stop_due(at), |message| message),
+        ])
+    }
+    /// A new start or stop of `name` replaces what its panel said, and any
+    /// error a tray stop held for it.
+    fn clear_panel_messages(&mut self, name: &str) {
+        if self.selected.as_deref() == Some(name) {
+            self.panel_error = None;
+            self.panel_note = None;
+        }
+        if self
+            .tray
+            .held_error
+            .as_ref()
+            .is_some_and(|(held, _)| held == name)
+        {
+            self.tray.held_error = None;
+        }
     }
     pub(crate) fn confirm_hook_stop(&mut self) -> Task<Message> {
         let Some(name) = self.hook_stop_confirm.take() else {
