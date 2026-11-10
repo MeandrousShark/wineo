@@ -483,3 +483,25 @@ fn absolute_resolves_relative_paths() {
     assert_eq!(paths.absolute("some/dir").unwrap(), cwd.join("some/dir"));
     assert_eq!(paths.absolute("~/x").unwrap(), Path::new("/home/me/x"));
 }
+
+#[test]
+fn root_tells_the_default_apart_from_a_custom_data_dir_and_a_portable_folder() {
+    let default = paths(&[("HOME", "/home/me")]).unwrap();
+    assert_eq!(default.root(), Root::Default);
+    // Naming the default explicitly is still the default.
+    let named = paths(&[
+        ("HOME", "/home/me"),
+        ("XDG_DATA_HOME", "/home/me/.local/share/"),
+    ])
+    .unwrap();
+    assert_eq!(named.root(), Root::Default);
+    let custom = paths(&[("HOME", "/home/me"), ("XDG_DATA_HOME", "/data")]).unwrap();
+    assert_eq!(custom.root(), Root::Data(Path::new("/data/wineo")));
+    let portable = paths(&[
+        ("HOME", "/home/me"),
+        ("XDG_DATA_HOME", "/data"),
+        (PORTABLE_VAR, "/opt/folder"),
+    ])
+    .unwrap();
+    assert_eq!(portable.root(), Root::Portable(Path::new("/opt/folder")));
+}
