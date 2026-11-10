@@ -750,7 +750,8 @@ fn more_keeps_its_focus_through_a_partial_unfold() {
 #[test]
 fn a_more_pick_is_refused_whenever_the_dice_is() {
     // Each state the app can be in, and whether a pick goes through.
-    let states: [(&str, fn(&mut App)); 3] = [
+    type Setup = fn(&mut App);
+    let states: [(&str, Setup); 3] = [
         ("idle", |_| {}),
         ("a dialog over the window", |app| app.close_prompt = true),
         ("nothing to pick from", |app| {
