@@ -748,6 +748,25 @@ fn a_flow_coming_back_carries_its_discovery() {
 }
 
 #[test]
+fn a_flow_coming_back_during_a_close_records_nothing() {
+    for closing in [false, true] {
+        let (root, mut app) = shown(&["game"]);
+        steam_game(&root, "1");
+        let discovery = rescan(&app, false).discovery.unwrap();
+        assert!(!discovery.proposed.baseline.is_empty());
+
+        app.closing = closing;
+        let _ = app.update(Message::FlowRead(
+            app.flow_generation,
+            crate::flow::Action::Choose,
+            Box::new(discovery),
+            library(&app.paths),
+        ));
+        assert_eq!(app.steam_record.writing(), !closing, "closing: {closing}");
+    }
+}
+
+#[test]
 fn a_scan_never_writes_and_the_app_applies_what_it_proposed() {
     let (root, mut app) = shown(&["game"]);
     steam_game(&root, "1");

@@ -1525,7 +1525,13 @@ impl App {
             Message::FlowRead(generation, action, discovery, result)
                 if generation == self.flow_generation =>
             {
-                let recording = self.discovery_read(*discovery);
+                // A closing window would only race the exit with the Steam
+                // record write. The next read proposes the same record.
+                let recording = if self.closing {
+                    Task::none()
+                } else {
+                    self.discovery_read(*discovery)
+                };
                 let returned = self.flow_returned(action, result);
                 Task::batch([recording, returned])
             }
