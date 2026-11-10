@@ -168,19 +168,34 @@ impl Page {
                 };
                 let was_open = editor.appearance.font_picker.is_some();
                 editor.appearance.apply(edit, mode);
-                let open = editor.appearance.font_picker.is_some();
-                if open == was_open {
+                let Some(picker) = &editor.appearance.font_picker else {
+                    if was_open {
+                        self.menu_open = false;
+                    }
                     return Step::none();
+                };
+                // The highlight moves with the arrows and the search, so
+                // its row is brought into the list's view after each.
+                let reveal = picker
+                    .highlighted_id()
+                    .map_or_else(iced::Task::none, |row| {
+                        iced::advanced::widget::operate(crate::library_menu::reveal_row(
+                            super::appearance::FONT_LIST_ID,
+                            row,
+                        ))
+                        .discard()
+                    });
+                if was_open {
+                    return Step::task(reveal);
                 }
                 // Like a pick list's menu, so Escape and the sidebar wait.
-                self.menu_open = open;
-                if open {
-                    Step::task(iced::widget::operation::focus(iced::widget::Id::new(
+                self.menu_open = true;
+                Step::task(
+                    iced::widget::operation::focus(iced::widget::Id::new(
                         super::appearance::FONT_SEARCH_ID,
-                    )))
-                } else {
-                    Step::none()
-                }
+                    ))
+                    .chain(reveal),
+                )
             }
             Event::BrowseGamesRoot => self.browse_games_root(paths),
             Event::PickedGamesRoot(generation, previous, result) => {

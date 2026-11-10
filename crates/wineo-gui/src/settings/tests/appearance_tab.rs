@@ -1011,3 +1011,157 @@ fn the_font_dropdown_draws_the_pick_lists_arrow() {
         )]
     );
 }
+
+fn font_picker(app: &App) -> &appearance::FontPicker {
+    font_form(app).font_picker.as_ref().unwrap()
+}
+
+fn highlighted(app: &App) -> Option<&'static str> {
+    let picker = font_picker(app);
+    picker.rows().get(picker.highlight).map(|row| row.0)
+}
+
+#[test]
+fn the_font_highlight_starts_on_the_chosen_family_and_the_arrows_wrap() {
+    install_wide();
+    let (_root, paths) = setup();
+    let mut app = open_global_app(&paths);
+    show_appearance(&mut app);
+    edit(&mut app, Edit::FontOpen);
+    assert_eq!(highlighted(&app), Some(appearance::BUILT_IN_LABEL));
+    edit(&mut app, Edit::FontClose);
+
+    edit(&mut app, Edit::Font(Some(WIDE.to_owned())));
+    edit(&mut app, Edit::FontOpen);
+    assert_eq!(highlighted(&app), Some(WIDE));
+    let count = font_picker(&app).rows().len();
+    let wide = font_picker(&app).highlight;
+
+    edit(&mut app, Edit::FontMove(false));
+    assert_eq!(font_picker(&app).highlight, (wide + 1) % count);
+    edit(&mut app, Edit::FontMove(true));
+    assert_eq!(font_picker(&app).highlight, wide);
+    for _ in 0..=wide {
+        edit(&mut app, Edit::FontMove(true));
+    }
+    assert_eq!(
+        font_picker(&app).highlight,
+        count - 1,
+        "Up from the top wraps"
+    );
+    edit(&mut app, Edit::FontMove(false));
+    assert_eq!(font_picker(&app).highlight, 0, "Down from the bottom wraps");
+
+    // Enter picks the highlighted row, not the first.
+    edit(&mut app, Edit::FontMove(true));
+    let last = font_picker(&app).rows()[count - 1].1;
+    edit(&mut app, Edit::FontSubmit);
+    assert!(font_form(&app).font_picker.is_none());
+    assert_eq!(font_form(&app).draft.font.as_deref(), last);
+}
+
+#[test]
+fn searching_moves_the_font_highlight_to_the_first_match() {
+    install_wide();
+    let (_root, paths) = setup();
+    let mut app = open_global_app(&paths);
+    show_appearance(&mut app);
+    edit(&mut app, Edit::FontOpen);
+    edit(&mut app, Edit::FontMove(true));
+    assert_ne!(font_picker(&app).highlight, 0);
+    edit(&mut app, Edit::FontQuery("test".into()));
+    assert_eq!(font_picker(&app).highlight, 0);
+    assert_eq!(
+        highlighted(&app),
+        font_picker(&app).rows().first().map(|row| row.0)
+    );
+    // With nothing matching, the arrows and Enter do nothing.
+    edit(&mut app, Edit::FontQuery("no family is called this".into()));
+    edit(&mut app, Edit::FontMove(false));
+    assert_eq!(highlighted(&app), None);
+    edit(&mut app, Edit::FontSubmit);
+    assert!(font_form(&app).font_picker.is_some());
+    assert_eq!(font_form(&app).draft.font, None);
+}
+
+#[test]
+fn the_highlighted_font_row_scrolls_into_the_lists_view() {
+    use crate::focus_button::run_task;
+    use crate::layout_probe::{bounds_at, lay_out, relay_out, within};
+    const FAMILIES: [&str; 30] = [
+        "Family 01",
+        "Family 02",
+        "Family 03",
+        "Family 04",
+        "Family 05",
+        "Family 06",
+        "Family 07",
+        "Family 08",
+        "Family 09",
+        "Family 10",
+        "Family 11",
+        "Family 12",
+        "Family 13",
+        "Family 14",
+        "Family 15",
+        "Family 16",
+        "Family 17",
+        "Family 18",
+        "Family 19",
+        "Family 20",
+        "Family 21",
+        "Family 22",
+        "Family 23",
+        "Family 24",
+        "Family 25",
+        "Family 26",
+        "Family 27",
+        "Family 28",
+        "Family 29",
+        "Family 30",
+    ];
+    let (_root, paths) = setup();
+    let mut app = open_global_app(&paths);
+    show_appearance(&mut app);
+    edit(&mut app, Edit::FontOpen);
+    let picker = app
+        .settings
+        .as_mut()
+        .and_then(|page| page.appearance_mut())
+        .and_then(|form| form.font_picker.as_mut())
+        .unwrap();
+    picker.families = FAMILIES.to_vec();
+    let size = iced::Size::new(260.0, 2000.0);
+    let popup = |app: &App| appearance::font_popup(font_picker(app), BUILT_IN, Palette::DARK);
+    // The list's viewport, and the highlighted row in the window.
+    let shown = |laid: &crate::layout_probe::Laid<'_, Message>, app: &App| {
+        let viewport = bounds_at(&laid.node, &[0, 1]);
+        let row = bounds_at(&laid.node, &[0, 1, 0, font_picker(app).highlight]);
+        (viewport, row)
+    };
+
+    let mut laid = lay_out(popup(&app), size);
+    assert_eq!(laid.offsets(), [0.0]);
+    let task = app.update(Message::Settings(Event::Appearance(Edit::FontMove(true))));
+    assert_eq!(highlighted(&app), Some("Family 30"));
+    let mut laid = relay_out(popup(&app), laid.into_tree(), size);
+    run_task(&mut laid, task);
+    let offset = laid.offsets()[0];
+    let (viewport, row) = shown(&laid, &app);
+    let row = iced::Rectangle {
+        y: row.y - offset,
+        ..row
+    };
+    // The scrollable draws at a whole pixel offset.
+    let viewport = viewport.expand(1.0);
+    assert!(
+        offset > 0.0 && within(row, viewport),
+        "{row:?} in {viewport:?}"
+    );
+
+    let task = app.update(Message::Settings(Event::Appearance(Edit::FontMove(false))));
+    assert_eq!(font_picker(&app).highlight, 0);
+    let mut laid = relay_out(popup(&app), laid.into_tree(), size);
+    run_task(&mut laid, task);
+    assert_eq!(laid.offsets(), [0.0], "the first row goes back to the top");
+}

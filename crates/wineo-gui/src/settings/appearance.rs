@@ -43,7 +43,10 @@ pub(crate) enum Edit {
     FontOpen,
     FontClose,
     FontQuery(String),
-    /// Picks the first family the search shows.
+    /// Moves the highlight up a row when true, down otherwise, wrapping
+    /// around at the ends like the Library's menus.
+    FontMove(bool),
+    /// Picks the highlighted row.
     FontSubmit,
     /// Copies the theme the slot shows to a new custom theme, which the slot
     /// then shows.
@@ -141,10 +144,13 @@ pub(crate) struct FontPicker {
     pub(crate) query: String,
     /// Read when it opened, so a font installed since shows next time.
     pub(crate) families: Vec<&'static str>,
+    /// The index in `rows` of the row Enter picks.
+    pub(crate) highlight: usize,
 }
 
 pub(crate) const BUILT_IN_LABEL: &str = "Noto Sans (built in)";
 pub(crate) const FONT_SEARCH_ID: &str = "appearance-font-search";
+pub(crate) const FONT_LIST_ID: &str = "appearance-font-list";
 
 impl FontPicker {
     /// The rows the search shows: the built-in font first, then the
@@ -156,6 +162,16 @@ impl FontPicker {
             .filter(|(label, _)| label.to_lowercase().contains(&query))
             .collect()
     }
+    /// The id of the highlighted row's container, for scrolling it into view.
+    pub(crate) fn highlighted_id(&self) -> Option<iced::widget::Id> {
+        self.rows()
+            .get(self.highlight)
+            .map(|(label, _)| font_row_id(label))
+    }
+}
+
+pub(crate) fn font_row_id(label: &str) -> iced::widget::Id {
+    iced::widget::Id::from(format!("appearance-font-row:{label}"))
 }
 
 /// The open name field of a custom theme.
@@ -238,23 +254,44 @@ impl Form {
                 self.font_picker = None;
             }
             Edit::FontOpen => {
-                self.font_picker = Some(FontPicker {
+                let mut picker = FontPicker {
                     query: String::new(),
                     families: crate::fonts::families(),
-                });
+                    highlight: 0,
+                };
+                let in_use = self.font_in_use;
+                picker.highlight = picker
+                    .rows()
+                    .iter()
+                    .position(|(_, family)| family.unwrap_or(crate::fonts::BUILT_IN) == in_use)
+                    .unwrap_or(0);
+                self.font_picker = Some(picker);
             }
             Edit::FontClose => self.font_picker = None,
             Edit::FontQuery(query) => {
                 if let Some(picker) = &mut self.font_picker {
                     picker.query = query;
+                    picker.highlight = 0;
+                }
+            }
+            Edit::FontMove(up) => {
+                if let Some(picker) = &mut self.font_picker {
+                    let count = picker.rows().len();
+                    if count > 0 {
+                        picker.highlight = if up {
+                            (picker.highlight + count - 1) % count
+                        } else {
+                            (picker.highlight + 1) % count
+                        };
+                    }
                 }
             }
             Edit::FontSubmit => {
-                let first = self
+                let highlighted = self
                     .font_picker
                     .as_ref()
-                    .and_then(|picker| picker.rows().first().copied());
-                if let Some((_, font)) = first {
+                    .and_then(|picker| picker.rows().get(picker.highlight).copied());
+                if let Some((_, font)) = highlighted {
                     self.apply(Edit::Font(font.map(str::to_owned)), mode);
                 }
             }
@@ -937,6 +974,12 @@ pub(super) fn font_choice(
         .as_ref()
         .map(|picker| font_popup(picker, in_use, palette));
     dropdown(control, popup, send(Edit::FontClose))
+        .on_keys(
+            send(Edit::FontMove(true)),
+            send(Edit::FontMove(false)),
+            send(Edit::FontSubmit),
+        )
+        .into()
 }
 
 const FONT_POPUP_HEIGHT: f32 = 320.0;
@@ -949,30 +992,33 @@ pub(crate) fn font_popup(
     let search = text_input("Search fonts", &picker.query)
         .id(iced::widget::Id::new(FONT_SEARCH_ID))
         .on_input(|query| send(Edit::FontQuery(query)))
-        .on_submit(send(Edit::FontSubmit))
         .padding([6, 10])
         .size(14)
         .style(move |_, status| input_style(palette, status));
     let rows = picker.rows();
-    let list: Element<'static, Message> = if rows.is_empty() {
-        container(text("No fonts match.").size(14).color(palette.muted))
-            .padding([6, 10])
+    let list: Element<'static, Message> =
+        if rows.is_empty() {
+            container(text("No fonts match.").size(14).color(palette.muted))
+                .padding([6, 10])
+                .into()
+        } else {
+            scrollable(
+                Column::with_children(rows.into_iter().enumerate().map(
+                    |(index, (label, family))| {
+                        let chosen = family.unwrap_or(crate::fonts::BUILT_IN) == in_use;
+                        font_row(label, family, chosen, index == picker.highlight, palette)
+                    },
+                ))
+                .spacing(2)
+                .padding(iced::Padding {
+                    right: crate::ui::SCROLLBAR_WIDTH + 4.0,
+                    ..iced::Padding::ZERO
+                }),
+            )
+            .id(iced::widget::Id::new(FONT_LIST_ID))
+            .wineo_style(palette)
             .into()
-    } else {
-        scrollable(
-            Column::with_children(rows.into_iter().map(|(label, family)| {
-                let chosen = family.unwrap_or(crate::fonts::BUILT_IN) == in_use;
-                font_row(label, family, chosen, palette)
-            }))
-            .spacing(2)
-            .padding(iced::Padding {
-                right: crate::ui::SCROLLBAR_WIDTH + 4.0,
-                ..iced::Padding::ZERO
-            }),
-        )
-        .wineo_style(palette)
-        .into()
-    };
+        };
     container(column![search, list].spacing(6))
         .padding(6)
         .max_height(FONT_POPUP_HEIGHT)
@@ -980,14 +1026,16 @@ pub(crate) fn font_popup(
         .into()
 }
 
+/// `highlighted` is the keyboard's row, shown like the one under the mouse.
 fn font_row(
     label: &'static str,
     family: Option<&'static str>,
     chosen: bool,
+    highlighted: bool,
     palette: Palette,
 ) -> Element<'static, Message> {
     let font = Font::with_name(family.unwrap_or(crate::fonts::BUILT_IN));
-    button(
+    let row = button(
         text(label)
             .font(font)
             .size(14)
@@ -1004,11 +1052,13 @@ fn font_row(
                 border: border::rounded(crate::ui::CONTROL_RADIUS),
                 ..button::Style::default()
             }
+        } else if highlighted && status == button::Status::Active {
+            list_row_style(palette, button::Status::Hovered)
         } else {
             list_row_style(palette, status)
         }
-    })
-    .into()
+    });
+    crate::dropdown::tagged(row, font_row_id(label))
 }
 
 fn motion_choice(motion: Motion, locked: bool, palette: Palette) -> Element<'static, Message> {

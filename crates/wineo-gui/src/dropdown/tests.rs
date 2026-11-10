@@ -9,28 +9,36 @@ enum Pressed {
     Control,
     Row,
     Dismiss,
+    Up,
+    Down,
+    Enter,
 }
 
-/// A control 100 px down, with its popup open when `open`.
-fn view(open: bool) -> Element<'static, Pressed> {
+/// A control 100 px down, with its popup open when `open`, and the arrow
+/// and Enter messages when `keys`.
+fn view(open: bool, keys: bool) -> Element<'static, Pressed> {
     let popup = open.then(|| button("Row").on_press(Pressed::Row).into());
-    column![
-        Space::new().height(100),
-        dropdown(
-            button("Pick").on_press(Pressed::Control),
-            popup,
-            Pressed::Dismiss
-        ),
-    ]
-    .into()
+    let mut dropdown = dropdown(
+        button("Pick").on_press(Pressed::Control),
+        popup,
+        Pressed::Dismiss,
+    );
+    if keys {
+        dropdown = dropdown.on_keys(Pressed::Up, Pressed::Down, Pressed::Enter);
+    }
+    column![Space::new().height(100), dropdown].into()
 }
 
 /// What `events` with the cursor at `at` publish, and whether the first was
 /// captured.
 fn run(open: bool, at: Point, events: &[Event]) -> (Vec<Pressed>, bool) {
+    run_with(open, false, at, events)
+}
+
+fn run_with(open: bool, keys: bool, at: Point, events: &[Event]) -> (Vec<Pressed>, bool) {
     let mut renderer = crate::layout_probe::renderer();
     let mut ui = UserInterface::build(
-        view(open),
+        view(open, keys),
         Size::new(400.0, 600.0),
         Cache::default(),
         &mut renderer,
@@ -55,9 +63,13 @@ fn click() -> [Event; 2] {
 }
 
 fn escape() -> Event {
+    press(keyboard::Key::Named(Named::Escape))
+}
+
+fn press(key: keyboard::Key) -> Event {
     Event::Keyboard(keyboard::Event::KeyPressed {
-        key: keyboard::Key::Named(Named::Escape),
-        modified_key: keyboard::Key::Named(Named::Escape),
+        key: key.clone(),
+        modified_key: key,
         physical_key: keyboard::key::Physical::Unidentified(
             keyboard::key::NativeCode::Unidentified,
         ),
@@ -100,4 +112,38 @@ fn a_press_outside_or_escape_dismisses() {
 fn pressing_the_control_while_open_only_dismisses() {
     // Its release would otherwise open the popup again.
     assert_eq!(run(true, CONTROL, &click()), (vec![Pressed::Dismiss], true));
+}
+
+#[test]
+fn the_arrows_and_enter_publish_their_messages_while_open() {
+    for (key, sent) in [
+        (Named::ArrowUp, Pressed::Up),
+        (Named::ArrowDown, Pressed::Down),
+        (Named::Enter, Pressed::Enter),
+    ] {
+        let event = press(keyboard::Key::Named(key));
+        assert_eq!(
+            run_with(true, true, ELSEWHERE, std::slice::from_ref(&event)),
+            (vec![sent], true),
+            "{key:?}"
+        );
+        assert_eq!(
+            run_with(false, true, ELSEWHERE, &[event]),
+            (vec![], false),
+            "{key:?} while closed"
+        );
+    }
+    // Escape still dismisses, and other keys, like typing, pass to the popup.
+    assert_eq!(
+        run_with(true, true, ELSEWHERE, &[escape()]),
+        (vec![Pressed::Dismiss], true)
+    );
+    let typed = press(keyboard::Key::Character("a".into()));
+    assert_eq!(run_with(true, true, ELSEWHERE, &[typed]), (vec![], false));
+}
+
+#[test]
+fn without_keys_the_arrows_pass_through() {
+    let event = press(keyboard::Key::Named(Named::ArrowDown));
+    assert_eq!(run(true, ELSEWHERE, &[event]), (vec![], false));
 }

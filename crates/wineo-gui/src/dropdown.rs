@@ -17,18 +17,44 @@ pub(crate) fn dropdown<'a, Message: Clone + 'a>(
     underlay: impl Into<Element<'a, Message>>,
     popup: Option<Element<'a, Message>>,
     on_dismiss: Message,
-) -> Element<'a, Message> {
-    Element::new(Dropdown {
+) -> Dropdown<'a, Message> {
+    Dropdown {
         underlay: underlay.into(),
         popup,
         on_dismiss,
-    })
+        keys: None,
+    }
 }
 
-struct Dropdown<'a, Message> {
+pub(crate) struct Dropdown<'a, Message> {
     underlay: Element<'a, Message>,
     popup: Option<Element<'a, Message>>,
     on_dismiss: Message,
+    keys: Option<Keys<Message>>,
+}
+
+/// What the open popup's keys publish, whatever has focus inside it.
+#[derive(Clone)]
+struct Keys<Message> {
+    up: Message,
+    down: Message,
+    enter: Message,
+}
+
+impl<Message> Dropdown<'_, Message> {
+    /// Up and Down publish `up` and `down`, and Enter `enter`, while the
+    /// popup is open, so a list can keep a highlight while its search field
+    /// has focus.
+    pub(crate) fn on_keys(mut self, up: Message, down: Message, enter: Message) -> Self {
+        self.keys = Some(Keys { up, down, enter });
+        self
+    }
+}
+
+impl<'a, Message: Clone + 'a> From<Dropdown<'a, Message>> for Element<'a, Message> {
+    fn from(dropdown: Dropdown<'a, Message>) -> Self {
+        Element::new(dropdown)
+    }
 }
 
 impl<Message: Clone> Widget<Message, iced::Theme, iced::Renderer> for Dropdown<'_, Message> {
@@ -151,6 +177,7 @@ impl<Message: Clone> Widget<Message, iced::Theme, iced::Renderer> for Dropdown<'
             tree: &mut tree.children[1],
             anchor: layout.bounds() + translation,
             on_dismiss: self.on_dismiss.clone(),
+            keys: self.keys.clone(),
         })))
     }
 }
@@ -161,6 +188,7 @@ struct Popup<'a, 'b, Message> {
     /// The control's bounds in the window.
     anchor: Rectangle,
     on_dismiss: Message,
+    keys: Option<Keys<Message>>,
 }
 
 impl<Message: Clone> overlay::Overlay<Message, iced::Theme, iced::Renderer>
@@ -227,6 +255,24 @@ impl<Message: Clone> overlay::Overlay<Message, iced::Theme, iced::Renderer>
         shell: &mut Shell<'_, Message>,
     ) {
         let bounds = layout.bounds();
+        if let Some(keys) = &self.keys
+            && let Event::Keyboard(keyboard::Event::KeyPressed {
+                key: keyboard::Key::Named(named),
+                ..
+            }) = event
+        {
+            let message = match named {
+                Named::ArrowUp => Some(&keys.up),
+                Named::ArrowDown => Some(&keys.down),
+                Named::Enter => Some(&keys.enter),
+                _ => None,
+            };
+            if let Some(message) = message {
+                shell.publish(message.clone());
+                shell.capture_event();
+                return;
+            }
+        }
         match event {
             Event::Keyboard(keyboard::Event::KeyPressed {
                 key: keyboard::Key::Named(Named::Escape),
@@ -333,6 +379,129 @@ impl<Message> Widget<Message, iced::Theme, iced::Renderer> for Arrow {
             self.color,
             *viewport,
         );
+    }
+}
+
+/// `content` under `id` for operations that find a container, like
+/// `library_menu::reveal_row`, without a layout level of its own, so the
+/// layout tree is the same as without it.
+pub(crate) fn tagged<'a, Message: 'a>(
+    content: impl Into<Element<'a, Message>>,
+    id: iced::widget::Id,
+) -> Element<'a, Message> {
+    Element::new(Tagged {
+        content: content.into(),
+        id,
+    })
+}
+
+struct Tagged<'a, Message> {
+    content: Element<'a, Message>,
+    id: iced::widget::Id,
+}
+
+impl<Message> Widget<Message, iced::Theme, iced::Renderer> for Tagged<'_, Message> {
+    fn tag(&self) -> iced::advanced::widget::tree::Tag {
+        self.content.as_widget().tag()
+    }
+
+    fn state(&self) -> iced::advanced::widget::tree::State {
+        self.content.as_widget().state()
+    }
+
+    fn children(&self) -> Vec<Tree> {
+        self.content.as_widget().children()
+    }
+
+    fn diff(&self, tree: &mut Tree) {
+        self.content.as_widget().diff(tree);
+    }
+
+    fn size(&self) -> Size<Length> {
+        self.content.as_widget().size()
+    }
+
+    fn size_hint(&self) -> Size<Length> {
+        self.content.as_widget().size_hint()
+    }
+
+    fn layout(
+        &mut self,
+        tree: &mut Tree,
+        renderer: &iced::Renderer,
+        limits: &layout::Limits,
+    ) -> layout::Node {
+        self.content.as_widget_mut().layout(tree, renderer, limits)
+    }
+
+    fn operate(
+        &mut self,
+        tree: &mut Tree,
+        layout: Layout<'_>,
+        renderer: &iced::Renderer,
+        operation: &mut dyn Operation,
+    ) {
+        operation.container(Some(&self.id), layout.bounds());
+        self.content
+            .as_widget_mut()
+            .operate(tree, layout, renderer, operation);
+    }
+
+    fn update(
+        &mut self,
+        tree: &mut Tree,
+        event: &Event,
+        layout: Layout<'_>,
+        cursor: mouse::Cursor,
+        renderer: &iced::Renderer,
+        clipboard: &mut dyn Clipboard,
+        shell: &mut Shell<'_, Message>,
+        viewport: &Rectangle,
+    ) {
+        self.content.as_widget_mut().update(
+            tree, event, layout, cursor, renderer, clipboard, shell, viewport,
+        );
+    }
+
+    fn draw(
+        &self,
+        tree: &Tree,
+        renderer: &mut iced::Renderer,
+        theme: &iced::Theme,
+        style: &renderer::Style,
+        layout: Layout<'_>,
+        cursor: mouse::Cursor,
+        viewport: &Rectangle,
+    ) {
+        self.content
+            .as_widget()
+            .draw(tree, renderer, theme, style, layout, cursor, viewport);
+    }
+
+    fn mouse_interaction(
+        &self,
+        tree: &Tree,
+        layout: Layout<'_>,
+        cursor: mouse::Cursor,
+        viewport: &Rectangle,
+        renderer: &iced::Renderer,
+    ) -> mouse::Interaction {
+        self.content
+            .as_widget()
+            .mouse_interaction(tree, layout, cursor, viewport, renderer)
+    }
+
+    fn overlay<'b>(
+        &'b mut self,
+        tree: &'b mut Tree,
+        layout: Layout<'b>,
+        renderer: &iced::Renderer,
+        viewport: &Rectangle,
+        translation: Vector,
+    ) -> Option<overlay::Element<'b, Message, iced::Theme, iced::Renderer>> {
+        self.content
+            .as_widget_mut()
+            .overlay(tree, layout, renderer, viewport, translation)
     }
 }
 
