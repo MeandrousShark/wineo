@@ -234,6 +234,39 @@ pub struct Appearance {
     /// Used when `follow_system` is off.
     pub theme: String,
     pub improve_readability: bool,
+    pub motion: Motion,
+}
+
+/// Whether the desktop app animates movement. `System` follows the
+/// desktop's own animation setting.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum Motion {
+    #[default]
+    System,
+    Full,
+    Reduced,
+}
+
+impl Motion {
+    pub const ALL: [Self; 3] = [Self::System, Self::Full, Self::Reduced];
+
+    /// The value `library.toml` holds.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::System => "system",
+            Self::Full => "full",
+            Self::Reduced => "reduced",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "system" => Some(Self::System),
+            "full" => Some(Self::Full),
+            "reduced" => Some(Self::Reduced),
+            _ => None,
+        }
+    }
 }
 
 impl Default for Appearance {
@@ -244,6 +277,7 @@ impl Default for Appearance {
             light: "daylight".to_owned(),
             theme: "midnight".to_owned(),
             improve_readability: false,
+            motion: Motion::default(),
         }
     }
 }
@@ -564,6 +598,7 @@ pub fn set_appearance(paths: &Paths, appearance: &Appearance) -> Result<bool> {
             appearance.improve_readability,
             default.improve_readability,
         );
+        changed |= set_appearance_motion(document, appearance.motion);
         changed
     })
 }
@@ -784,7 +819,15 @@ fn read_appearance(document: &DocumentMut) -> Appearance {
         light: text("light", default.light),
         theme: text("theme", default.theme),
         improve_readability: flag("improve_readability", default.improve_readability),
+        motion: read_motion(table.get("motion")),
     }
+}
+
+/// An unknown or mistyped value reads as the default.
+fn read_motion(item: Option<&Item>) -> Motion {
+    item.and_then(Item::as_str)
+        .and_then(Motion::parse)
+        .unwrap_or_default()
 }
 
 fn read_entry(item: &Item) -> Entry {
@@ -925,6 +968,24 @@ fn set_appearance_text(
         return false;
     }
     store_value(appearance_table_mut(document), field, Value::from(value));
+    true
+}
+
+/// Compares with what the file reads as, so a value this wineo doesn't know,
+/// maybe a newer one's, stays until the user picks another.
+fn set_appearance_motion(document: &mut DocumentMut, motion: Motion) -> bool {
+    let current = document
+        .get("appearance")
+        .and_then(Item::as_table_like)
+        .and_then(|table| table.get("motion"));
+    if read_motion(current) == motion {
+        return false;
+    }
+    store_value(
+        appearance_table_mut(document),
+        "motion",
+        Value::from(motion.as_str()),
+    );
     true
 }
 

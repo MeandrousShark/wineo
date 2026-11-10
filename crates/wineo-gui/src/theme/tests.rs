@@ -97,6 +97,7 @@ fn appearance(follow_system: bool, dark: &str, light: &str, theme: &str) -> Appe
         light: light.into(),
         theme: theme.into(),
         improve_readability: false,
+        motion: wineo_core::library::Motion::System,
     }
 }
 

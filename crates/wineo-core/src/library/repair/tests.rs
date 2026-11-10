@@ -1034,6 +1034,35 @@ future = "kept"
 }
 
 #[test]
+fn repair_keeps_a_motion_string_and_drops_another_type() {
+    let fixture = Fixture::new();
+    fixture.write(
+        "schema_version = 1\n[appearance]\nmotion = \"reduced\"\n[appearance]\ntheme = \"cellar\"\n",
+    );
+    repair_at(&fixture.paths, STAMP, sync_dir).unwrap().unwrap();
+    assert_eq!(
+        load(&fixture.paths).appearance.motion,
+        crate::library::Motion::Reduced
+    );
+
+    // A value this wineo doesn't know may be a newer one's, so it stays.
+    let fixture = Fixture::new();
+    fixture.write(
+        "schema_version = 1\n[appearance]\nmotion = \"slow\"\n[appearance]\ntheme = \"cellar\"\n",
+    );
+    repair_at(&fixture.paths, STAMP, sync_dir).unwrap().unwrap();
+    assert!(fixture.read().contains("motion = \"slow\""));
+
+    let fixture = Fixture::new();
+    fixture.write(
+        "schema_version = 1\n[appearance]\nmotion = 3\ndark = \"dracula\"\n[appearance]\ntheme = \"cellar\"\n",
+    );
+    let report = repair_at(&fixture.paths, STAMP, sync_dir).unwrap().unwrap();
+    assert_eq!(report.appearance, ViewRecovery::Partly);
+    assert!(!fixture.read().contains("motion"));
+}
+
+#[test]
 fn a_fully_recovered_appearance_is_reported() {
     let fixture = Fixture::new();
     fixture.write(
