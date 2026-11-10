@@ -31,7 +31,9 @@ fn boot_opens_the_main_window() {
 
     // The batch yields the first ready action before polling the other
     // tasks, which would reach the keyring and the portal. So this sees the
-    // open first only if it isn't chained behind any of them.
+    // open first only if it isn't chained behind any of them. It also pins
+    // `open` as first in the batch, so moving it later would fail this even
+    // though that would be harmless.
     let mut stream = iced_runtime::task::into_stream(boot).unwrap();
     let action = iced::futures::executor::block_on(iced::futures::StreamExt::next(&mut stream));
     let Some(iced_runtime::Action::Window(Action::Open(opened, settings, _))) = action else {

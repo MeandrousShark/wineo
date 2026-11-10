@@ -354,6 +354,24 @@ fn a_chained_exit_takes_the_window_down_before_exiting() {
 }
 
 #[test]
+fn a_forced_close_goes_out_while_a_chained_exit_waits_on_a_slow_task() {
+    let (_root, mut app) = fixture();
+    app.closing = true;
+    let slow = Task::perform(
+        async { tokio::time::sleep(Duration::from_secs(60)).await },
+        |()| Message::ScrollIdle(0),
+    );
+    let _chained = app.settle_panel(false, slow);
+    assert!(app.exiting, "the exit is queued behind the slow task");
+
+    // The forced task is polled alone: it must close and exit by itself,
+    // since the chained exit won't run for a minute.
+    let forced = app.update(Message::ForceCloseWork);
+    let seen = steps(&app, forced);
+    assert_closes_then_exits(&app, &seen);
+}
+
+#[test]
 fn a_force_close_with_nothing_running_exits_once() {
     let (_root, mut app) = fixture();
     let task = app.update(Message::ForceCloseWork);
