@@ -354,6 +354,24 @@ fn a_chained_exit_takes_the_window_down_before_exiting() {
 }
 
 #[test]
+fn a_force_close_with_nothing_running_exits_once() {
+    let (_root, mut app) = fixture();
+    let task = app.update(Message::ForceCloseWork);
+    let seen = steps(&app, task);
+    assert_closes_then_exits(&app, &seen);
+}
+
+#[test]
+fn updates_after_a_queued_exit_queue_no_other() {
+    let (_root, mut app) = fixture();
+    app.closing = true;
+    let first = app.update(Message::ScrollIdle(0));
+    let later = app.update(Message::ScrollIdle(0));
+    assert!(steps(&app, later).is_empty());
+    assert_closes_then_exits(&app, &steps(&app, first));
+}
+
+#[test]
 fn events_from_another_window_are_ignored() {
     let (_root, mut app) = fixture();
     let stale = iced::window::Id::unique();

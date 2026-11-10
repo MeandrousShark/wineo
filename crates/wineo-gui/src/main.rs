@@ -329,6 +329,9 @@ pub(crate) struct App {
     close_wake: wake::Wake,
     /// The window chose to exit, so late results only drop.
     exiting: bool,
+    /// A close and exit are already queued, so later updates don't queue
+    /// another while the window goes down.
+    exit_queued: bool,
     /// Ends the process if work still holds it open after the window closes.
     watchdog: exit_watchdog::Watchdog,
     /// The one window the app draws; events from any other id are dropped.
@@ -708,6 +711,7 @@ impl App {
             close_by: None,
             close_wake: wake::Wake::default(),
             exiting: false,
+            exit_queued: false,
             watchdog: exit_watchdog::Watchdog::default(),
             main_window: None,
             feature_notice: None,
@@ -1586,7 +1590,8 @@ impl App {
         // the window still open. Nothing is named here either way, since
         // reaching this branch means nothing that `abandoned_work` names is
         // left.
-        if self.closing && !self.exit_waits() {
+        if self.closing && !self.exit_queued && !self.exit_waits() {
+            self.exit_queued = true;
             let watchdog = self.watchdog.clone();
             let work = self.abandoned_work();
             let exit = Task::future(async move {

@@ -59,6 +59,7 @@ impl App {
         self.steam_auto.cancel();
         let work = self.abandoned_work();
         self.watchdog.start(&work);
+        self.exit_queued = true;
         self.close_then_exit()
     }
 
