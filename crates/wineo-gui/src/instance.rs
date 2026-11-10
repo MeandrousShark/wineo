@@ -22,7 +22,8 @@ pub(crate) const INTERFACE: &str = "io.github.MeandrousShark.wineo.Gui";
 
 /// How long connecting to the bus may take before the app starts without it.
 const CONNECT_WAIT: Duration = Duration::from_secs(5);
-/// How long a `Show` call may go unanswered, say by an owner that's stuck.
+/// How long the first `Show` call may go unanswered, say by an owner that's
+/// stuck. A launch waits at most this plus `RELEASE_WAIT`.
 const SHOW_WAIT: Duration = Duration::from_secs(2);
 /// After a `Show` that failed, how long to keep trying for a name an exiting
 /// owner is about to let go before starting without it.
@@ -201,30 +202,66 @@ enum Taken {
 }
 
 async fn take_name(connection: &zbus::Connection, name: &str) -> Taken {
+    let Ok(bus) = zbus::fdo::DBusProxy::new(connection).await else {
+        return Taken::Alone;
+    };
     // Never ReplaceExisting or AllowReplacement: the first app keeps it.
     let flags = zbus::fdo::RequestNameFlags::DoNotQueue.into();
-    let mut deadline = None;
+    let request = async || match connection.request_name_with_flags(name, flags).await {
+        Ok(_) => Some(true),
+        Err(zbus::Error::NameTaken) => Some(false),
+        Err(_) => None,
+    };
+    match request().await {
+        Some(true) => return Taken::Owner,
+        Some(false) => {}
+        None => return Taken::Alone,
+    }
+    let mut shown_to = owner(&bus, name).await;
+    if let Some(owner) = &shown_to
+        && call_show(connection, owner, SHOW_WAIT).await
+    {
+        return Taken::Shown;
+    }
+    // The owner is leaving or stuck. One that's leaving lets go soon, so the
+    // name is polled; only a new owner, a launch that won meanwhile, is
+    // asked to show again, with what's left of the wait.
+    let deadline = tokio::time::Instant::now() + RELEASE_WAIT;
     loop {
-        match connection.request_name_with_flags(name, flags).await {
-            Ok(_) => return Taken::Owner,
-            Err(zbus::Error::NameTaken) => {}
-            Err(_) => return Taken::Alone,
+        tokio::time::sleep(RETRY).await;
+        match request().await {
+            Some(true) => return Taken::Owner,
+            Some(false) => {}
+            None => return Taken::Alone,
         }
-        if call_show(connection, name).await {
-            return Taken::Shown;
-        }
-        // The owner is leaving or stuck. One that's leaving lets go soon.
-        let deadline = *deadline.get_or_insert_with(|| tokio::time::Instant::now() + RELEASE_WAIT);
-        if tokio::time::Instant::now() >= deadline {
+        let now = tokio::time::Instant::now();
+        if now >= deadline {
             return Taken::Alone;
         }
-        tokio::time::sleep(RETRY).await;
+        let current = owner(&bus, name).await;
+        if current.is_some() && current != shown_to {
+            shown_to = current;
+            if let Some(owner) = &shown_to
+                && call_show(connection, owner, deadline - now).await
+            {
+                return Taken::Shown;
+            }
+        }
     }
 }
 
-async fn call_show(connection: &zbus::Connection, name: &str) -> bool {
-    let call = connection.call_method(Some(name), PATH, Some(INTERFACE), "Show", &());
-    matches!(tokio::time::timeout(SHOW_WAIT, call).await, Ok(Ok(_)))
+/// The unique name that owns `name` now, if any.
+async fn owner(bus: &zbus::fdo::DBusProxy<'_>, name: &str) -> Option<String> {
+    let name = zbus::names::BusName::try_from(name).ok()?;
+    let owner = bus.get_name_owner(name).await.ok()?;
+    Some(owner.to_string())
+}
+
+/// Calls `Show` on the unique name `owner`, so the answer comes from the
+/// owner just looked up and not one that took the name since.
+async fn call_show(connection: &zbus::Connection, owner: &str, wait: Duration) -> bool {
+    let call = connection.call_method(Some(owner), PATH, Some(INTERFACE), "Show", &());
+    matches!(tokio::time::timeout(wait, call).await, Ok(Ok(_)))
 }
 
 /// The `Show` calls as a subscription. Its identity never changes, so it

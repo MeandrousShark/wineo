@@ -313,8 +313,13 @@ fn a_launch_finding_a_stuck_owner_starts_anyway() {
     let started = Instant::now();
     let mut second = Launch::start(Some(&bus), home.path(), Root::Default);
     second.expect("alone");
+    let waited = started.elapsed();
+    // One Show's wait, then the name is polled until the release wait runs
+    // out, with a margin for starting the child.
+    let bound = super::super::SHOW_WAIT + super::super::RELEASE_WAIT;
+    assert!(waited >= bound, "{waited:?}");
+    assert!(waited < bound + Duration::from_millis(1500), "{waited:?}");
     assert!(second.exit_status().success());
-    assert!(started.elapsed() < PATIENCE);
     rustix::process::kill_process(pid, rustix::process::Signal::CONT).unwrap();
 }
 
