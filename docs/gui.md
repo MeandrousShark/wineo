@@ -1061,12 +1061,23 @@ same bar as General's, and one **Save** writes both.
   colors that need it, in any theme. Dracula's muted text and several of
   Catppuccin Latte's colors change; the wineo themes and Macchiato already
   pass. Swatches show the colors you'll get.
-- **Accessibility** holds **Motion**: **Follow the system** (the default),
-  **Full**, or **Reduced**. Follow the system uses the desktop's animation
-  switch and picks up a change without a restart. Reduced snaps everything
-  that moves (the grid, zoom, the panel's slide, the layout switch, the
-  star) and keeps the fades; the busy spinner still turns. Like a theme, it
-  applies as you pick it and **Save** keeps it.
+- **Accessibility** holds three rows. Like a theme, each applies as you
+  pick it and **Save** keeps it.
+  - **Interface size**, from 100% (the default) to 200%, scales everything
+    together: text, buttons, rows, menus, posters, and the panel. It stacks
+    with the desktop's own scale and with the grid's zoom. The window keeps
+    its size on screen, so a bigger interface shows fewer columns.
+  - **Font** lists the installed sans and serif families, each drawn in
+    itself, with **Noto Sans (built in)** first. Type to search; the arrows
+    or Tab move through the list and Enter picks. Bold text uses the
+    family's own semibold or bold, or its regular weight if it has neither,
+    so it never comes from another font. Monospace text keeps the system's
+    font. A family that's been uninstalled falls back to the built-in font.
+  - **Motion**: **Follow the system** (the default), **Full**, or
+    **Reduced**. Follow the system uses the desktop's animation switch and
+    picks up a change without a restart. Reduced snaps everything that
+    moves (the grid, zoom, the panel's slide, the layout switch, the star)
+    and keeps the fades; the busy spinner still turns.
 
 Copies, renames, color edits, and deletes all wait for **Save**, which
 writes the theme files first, then `library.toml`, then removes deleted
