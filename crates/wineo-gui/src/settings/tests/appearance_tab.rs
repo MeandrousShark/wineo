@@ -7,6 +7,7 @@ use crate::layout_probe::lay_out;
 use crate::theme::{Palette, Preset};
 use appearance::{Edit, FOLLOW_ID, READABILITY_ID, Slot};
 use theme_colors::COPY_ID;
+use wineo_core::library::Motion;
 
 const SIZE: iced::Size = iced::Size::new(900.0, 2000.0);
 
@@ -566,4 +567,50 @@ fn a_save_locks_the_rows() {
         !ids.contains(&id(&Slot::Dark.row_id("midnight"))),
         "{ids:?}"
     );
+}
+
+#[test]
+fn the_motion_dropdown_previews_live_and_save_writes_only_it() {
+    let (_root, paths) = setup();
+    let mut app = open_global_app(&paths);
+    show_appearance(&mut app);
+    let shown = super::custom_themes::texts(&app, &paths);
+    for label in ["Accessibility", "Motion"] {
+        assert!(
+            shown.iter().any(|text| text == label),
+            "{label} in {shown:?}"
+        );
+    }
+    assert!(!app.motion.reduced());
+
+    edit(&mut app, Edit::Motion(Motion::Reduced));
+    assert!(app.motion.reduced(), "the draft applies at once");
+    assert_eq!(page_of(&app).changes(), 1);
+    assert_eq!(library_text(&paths), "", "nothing written before Save");
+    let _ = app.update(Message::Settings(Event::Revert));
+    assert!(!app.motion.reduced(), "Revert undoes the preview");
+
+    edit(&mut app, Edit::Motion(Motion::Reduced));
+    let report = save(&mut app, &paths);
+    assert_eq!(report.failed, None);
+    assert_eq!(
+        library_text(&paths),
+        "schema_version = 1\n\n[appearance]\nmotion = \"reduced\"\n"
+    );
+    assert!(!page_of(&app).is_dirty());
+    let _ = app.update(Message::Section(crate::sidebar::Section::Library));
+    assert!(app.settings.is_none());
+    assert!(app.motion.reduced(), "the saved setting stays");
+}
+
+#[test]
+fn startup_applies_the_saved_motion() {
+    let (_root, paths) = setup();
+    write_library(&paths, "[appearance]\nmotion = \"reduced\"\n");
+    let app = App::boot(paths.clone()).0;
+    assert!(app.motion.reduced(), "before any update");
+    write_library(&paths, "[appearance]\nmotion = \"full\"\n");
+    let mut app = App::boot(paths.clone()).0;
+    let _ = app.update(Message::SystemMotion(true));
+    assert!(!app.motion.reduced());
 }

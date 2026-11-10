@@ -282,7 +282,7 @@ fn inspect_with_themes(text: &str, themes: &[(&str, &str)]) -> Inspection {
 #[test]
 fn a_clean_appearance_has_no_findings() {
     let inspection = inspect_with_themes(
-        "[appearance]\nfollow_system = false\ndark = \"dracula\"\nlight = \"custom:soft\"\ntheme = \"custom:night\"\nimprove_readability = true\n",
+        "[appearance]\nfollow_system = false\ndark = \"dracula\"\nlight = \"custom:soft\"\ntheme = \"custom:night\"\nimprove_readability = true\nmotion = \"reduced\"\n",
         &[
             ("soft.toml", "name = \"Soft\"\nkind = \"light\"\n"),
             ("night.toml", "name = \"Night\"\n"),
@@ -312,6 +312,24 @@ fn bad_appearance_types_are_field_findings_and_unknown_keys_are_ignored() {
     assert_eq!(
         messages(&inspection, FindingKind::FieldInvalid),
         ["library.toml: appearance: expected a table, found 4"]
+    );
+}
+
+#[test]
+fn an_unknown_or_mistyped_motion_is_a_field_finding() {
+    for motion in ["system", "full", "reduced"] {
+        let inspection = inspect_text(&format!("[appearance]\nmotion = \"{motion}\"\n"));
+        assert_eq!(inspection.findings, [], "{motion}");
+    }
+    let inspection = inspect_text("[appearance]\nmotion = \"slow\"\n");
+    assert_eq!(
+        messages(&inspection, FindingKind::FieldInvalid),
+        ["library.toml: appearance.motion: expected one of system, full, reduced, found \"slow\""]
+    );
+    let inspection = inspect_text("[appearance]\nmotion = false\n");
+    assert_eq!(
+        messages(&inspection, FindingKind::FieldInvalid),
+        ["library.toml: appearance.motion: expected one of system, full, reduced, found false"]
     );
 }
 

@@ -114,7 +114,7 @@ impl App {
         let header = self.header_room();
         self.layout = layout;
         self.viewport_height = (self.viewport_height + header - self.header_room()).max(0.0);
-        if self.reduced_motion {
+        if self.motion.reduced() {
             self.layout_thumb.snap(rests_at_grid(layout));
         } else if rests_at_grid(layout) {
             self.layout_thumb.open(Instant::now());

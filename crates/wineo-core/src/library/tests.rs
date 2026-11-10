@@ -1078,6 +1078,7 @@ fn custom_appearance() -> Appearance {
         light: "custom:mine".to_owned(),
         theme: "cellar".to_owned(),
         improve_readability: true,
+        motion: Motion::Reduced,
     }
 }
 
@@ -1095,6 +1096,7 @@ fn a_library_without_appearance_reads_as_the_defaults() {
             light: "daylight".to_owned(),
             theme: "midnight".to_owned(),
             improve_readability: false,
+            motion: Motion::System,
         }
     );
 }
@@ -1111,6 +1113,7 @@ dark = "dracula"
 light = "custom:mine"
 theme = "cellar"
 improve_readability = true
+motion = "reduced"
 future_key = "ignored"
 "#,
     );
@@ -1201,6 +1204,61 @@ fn a_no_op_set_appearance_does_not_rewrite_the_file() {
     let missing = Fixture::new();
     assert!(!set_appearance(&missing.paths, &Appearance::default()).unwrap());
     assert!(!missing.paths.library_file().exists());
+}
+
+#[test]
+fn motion_reads_each_value_and_unknown_ones_as_system() {
+    let fixture = Fixture::new();
+    for motion in Motion::ALL {
+        fixture.write(&format!(
+            "schema_version = 1\n[appearance]\nmotion = \"{}\"\n",
+            motion.as_str()
+        ));
+        assert_eq!(load(&fixture.paths).appearance.motion, motion);
+    }
+    for bad in ["\"slow\"", "\"Reduced\"", "true", "2"] {
+        fixture.write(&format!(
+            "schema_version = 1\n[appearance]\nmotion = {bad}\n"
+        ));
+        let library = load(&fixture.paths);
+        assert_eq!(library.appearance.motion, Motion::System, "{bad}");
+        assert_eq!(library.problem, None);
+    }
+}
+
+#[test]
+fn set_appearance_writes_motion_only_when_it_changes() {
+    let fixture = Fixture::new();
+    let reduced = Appearance {
+        motion: Motion::Reduced,
+        ..Appearance::default()
+    };
+    assert!(set_appearance(&fixture.paths, &reduced).unwrap());
+    assert_eq!(
+        fixture.read(),
+        "schema_version = 1\n\n[appearance]\nmotion = \"reduced\"\n"
+    );
+    assert!(!set_appearance(&fixture.paths, &reduced).unwrap());
+    assert!(set_appearance(&fixture.paths, &Appearance::default()).unwrap());
+    assert!(fixture.read().contains("motion = \"system\""));
+}
+
+#[test]
+fn an_unknown_motion_is_not_rewritten() {
+    let fixture = Fixture::new();
+    for bad in ["\"slow\"", "3"] {
+        let text = format!("schema_version = 1\n\n[appearance]\nmotion = {bad}\n");
+        fixture.write(&text);
+        // It reads as system, so saving system leaves it be.
+        assert!(!set_appearance(&fixture.paths, &Appearance::default()).unwrap());
+        assert_eq!(fixture.read(), text);
+        let full = Appearance {
+            motion: Motion::Full,
+            ..Appearance::default()
+        };
+        assert!(set_appearance(&fixture.paths, &full).unwrap());
+        assert!(fixture.read().contains("motion = \"full\""));
+    }
 }
 
 #[test]

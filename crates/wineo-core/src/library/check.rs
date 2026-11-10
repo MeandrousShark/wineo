@@ -9,8 +9,8 @@ use toml_edit::{DocumentMut, Item, Key};
 use super::preset::{preset_name_rule, readable_name};
 use super::record::{Recorded, valid_app_id};
 use super::{
-    GroupBy, RandomPool, ReadFailure, SCHEMA_VERSION, SortKey, ViewLayout, ZOOM_MAX, ZOOM_MIN,
-    edit, read_document, read_zoom, sort_name,
+    GroupBy, Motion, RandomPool, ReadFailure, SCHEMA_VERSION, SortKey, ViewLayout, ZOOM_MAX,
+    ZOOM_MIN, edit, read_document, read_zoom, sort_name,
 };
 use crate::paths::Paths;
 use crate::source::{Platform, Store};
@@ -276,6 +276,10 @@ fn inspect_appearance(
         let expected = match key {
             "follow_system" | "improve_readability" if value.as_bool().is_some() => continue,
             "follow_system" | "improve_readability" => BOOL.to_owned(),
+            "motion" => match value.as_str() {
+                Some(name) if Motion::parse(name).is_some() => continue,
+                _ => expected_one_of(Motion::ALL.map(Motion::as_str)),
+            },
             "dark" | "light" | "theme" => {
                 let wanted = match key {
                     "dark" => Some(ThemeKind::Dark),

@@ -51,7 +51,7 @@ fn id(name: &str) -> Option<String> {
 }
 
 /// Every piece of text the page shows.
-fn texts(app: &App, paths: &Paths) -> Vec<String> {
+pub(super) fn texts(app: &App, paths: &Paths) -> Vec<String> {
     struct All(Arc<Mutex<Vec<String>>>);
     impl Operation for All {
         fn traverse(&mut self, operate: &mut dyn FnMut(&mut dyn Operation)) {

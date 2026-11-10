@@ -30,7 +30,7 @@ fn boot_opens_the_main_window() {
     assert_eq!(children(window::Id::unique()), 0);
 
     // The batch yields the first ready action before polling the other
-    // tasks, which would reach the keyring and the portal. So this sees the
+    // tasks, which would reach the keyring. So this sees the
     // open first only if it isn't chained behind any of them. It also pins
     // `open` as first in the batch, so moving it later would fail this even
     // though that would be harmless.

@@ -1,19 +1,21 @@
 //! The global page's Appearance tab: which theme shows, whether it follows
-//! the system, Improve readability, and custom themes. Its edits preview at
-//! once.
+//! the system, Improve readability, custom themes, and Accessibility. Its
+//! edits preview at once.
 
 use std::collections::BTreeMap;
 
 use iced::theme::Mode;
-use iced::widget::{Space, column, container, row, text};
+use iced::widget::{Space, column, container, pick_list, row, text};
 use iced::{Center, Element, Fill, border};
+use wineo_core::library::Motion;
 use wineo_core::themes::{ROLES, normalize_color};
 
 use super::Event;
 use crate::Message;
 use crate::library_menu::{CHECK, check_box, icon};
+use crate::motion::Choice as MotionChoice;
 use crate::theme::{self, Appearance, Custom, PRESETS, Palette, PresetKind, Shown};
-use crate::ui::{ListRow, list_group, list_row, list_row_text, section_heading};
+use crate::ui::{ListRow, PickListStyle, list_group, list_row, list_row_text, section_heading};
 
 pub(crate) const FOLLOW_ID: &str = "appearance-follow-system";
 pub(crate) const READABILITY_ID: &str = "appearance-readability";
@@ -25,6 +27,7 @@ pub(crate) enum Edit {
     /// The id of the theme for the slot.
     Theme(Slot, String),
     ImproveReadability(bool),
+    Motion(Motion),
     /// Copies the theme the slot shows to a new custom theme, which the slot
     /// then shows.
     Copy(Slot),
@@ -179,6 +182,7 @@ impl Form {
             }
             Edit::Theme(slot, id) => *slot.id_mut(&mut self.draft) = id,
             Edit::ImproveReadability(on) => self.draft.improve_readability = on,
+            Edit::Motion(motion) => self.draft.motion = motion,
             Edit::Copy(slot) => self.copy(slot),
             Edit::Color(id, role, text) => self.set_color(&id, role, text),
             Edit::RenameOpen(id) => {
@@ -360,6 +364,7 @@ impl Form {
             before.light != after.light,
             before.theme != after.theme,
             before.improve_readability != after.improve_readability,
+            before.motion != after.motion,
         ]
         .into_iter()
         .filter(|changed| *changed)
@@ -443,6 +448,7 @@ impl Form {
             &mut draft.improve_readability,
             &new.improve_readability,
         );
+        pick(&old.motion, &mut draft.motion, &new.motion);
     }
     /// A three-way merge of each theme against the old base, the new one,
     /// and the draft, so a change on disk shows unless the draft changed the
@@ -729,7 +735,31 @@ pub(super) fn tab(
             locked,
             palette,
         ))
+        .push(super::view::section(
+            "Accessibility",
+            super::view::setting_row(
+                "Motion",
+                motion_choice(draft.motion, locked, palette),
+                None,
+                palette,
+            ),
+            palette,
+        ))
         .into()
+}
+
+fn motion_choice(motion: Motion, locked: bool, palette: Palette) -> Element<'static, Message> {
+    if locked {
+        return super::view::locked_choice(&MotionChoice(motion).to_string(), palette);
+    }
+    pick_list(MotionChoice::ALL, Some(MotionChoice(motion)), |choice| {
+        send(Edit::Motion(choice.0))
+    })
+    .on_open(Message::Settings(Event::MenuOpened))
+    .on_close(Message::Settings(Event::MenuClosed))
+    .width(super::view::CONTROL_WIDTH)
+    .wineo_style(palette)
+    .into()
 }
 
 /// A check row in a grouped surface of its own, so it takes focus and Enter

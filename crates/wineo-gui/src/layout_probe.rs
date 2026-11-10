@@ -213,6 +213,24 @@ impl<M> Laid<'_, M> {
         (messages, status)
     }
 
+    /// Hands a redraw at `now` to the tree and returns when it asked to be
+    /// drawn again.
+    pub(crate) fn redraw(&mut self, now: std::time::Instant) -> iced::window::RedrawRequest {
+        let mut messages = Vec::new();
+        let mut shell = iced::advanced::Shell::new(&mut messages);
+        self.element.as_widget_mut().update(
+            &mut self.tree,
+            &iced::Event::Window(iced::window::Event::RedrawRequested(now)),
+            Layout::new(&self.node),
+            iced::mouse::Cursor::Unavailable,
+            &self.renderer,
+            &mut iced::advanced::clipboard::Null,
+            &mut shell,
+            &Rectangle::with_size(self.size),
+        );
+        shell.redraw_request()
+    }
+
     /// The scroll offsets of every scrollable, top first.
     pub(crate) fn offsets(&mut self) -> Vec<f32> {
         struct Offsets(Vec<f32>);

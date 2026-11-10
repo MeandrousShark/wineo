@@ -24,7 +24,7 @@ use crate::{Message, WHEEL_STEP_SCALE, wheel};
 use wineo_core::paths::Paths;
 
 const LABEL_WIDTH: f32 = 180.0;
-const CONTROL_WIDTH: f32 = 260.0;
+pub(super) const CONTROL_WIDTH: f32 = 260.0;
 const PAGE_WIDTH: f32 = 760.0;
 pub(super) const SCROLL_ID: &str = "settings-scroll";
 const STEAM_KEY_ID: &str = "settings-steam-key";
@@ -1957,7 +1957,7 @@ fn gamescope_fields<'a>(
     rows.into()
 }
 
-fn section<'a>(
+pub(super) fn section<'a>(
     title: &'a str,
     content: Element<'a, Message>,
     palette: Palette,
@@ -1970,7 +1970,7 @@ fn section<'a>(
     .into()
 }
 
-fn setting_row<'a>(
+pub(super) fn setting_row<'a>(
     label: &'a str,
     control: Element<'a, Message>,
     note: Option<Element<'a, Message>>,
@@ -2056,7 +2056,7 @@ fn divider(palette: Palette) -> Element<'static, Message> {
 
 /// A pick list's value while the page is locked, since iced's pick list has
 /// no disabled state.
-fn locked_choice(value: &str, palette: Palette) -> Element<'static, Message> {
+pub(super) fn locked_choice(value: &str, palette: Palette) -> Element<'static, Message> {
     container(text(value.to_owned()).color(palette.muted))
         .width(CONTROL_WIDTH)
         .padding([5, 10])

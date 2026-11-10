@@ -1007,11 +1007,11 @@ fn valid_view_field(key: &str, item: &Item) -> bool {
 }
 
 /// Only the types: whether an id names a theme is `validate`'s business, and
-/// a newer wineo's theme id is no reason to drop the line.
+/// a newer wineo's theme id or motion is no reason to drop the line.
 fn valid_appearance_field(key: &str, item: &Item) -> bool {
     match key {
         "follow_system" | "improve_readability" => item.as_bool().is_some(),
-        "dark" | "light" | "theme" => item.as_str().is_some(),
+        "dark" | "light" | "theme" | "motion" => item.as_str().is_some(),
         _ => true,
     }
 }
