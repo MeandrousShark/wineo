@@ -127,7 +127,11 @@ impl App {
         match event {
             Event::Available(available) => {
                 self.tray.available = available;
-                Task::none()
+                if available {
+                    Task::none()
+                } else {
+                    self.tray_lost()
+                }
             }
             Event::Open => {
                 let show = self.show_window();
@@ -201,10 +205,18 @@ impl App {
         Task::batch([show, open])
     }
 
-    /// Shows the window where it was, or raises it if it's open. A raise
+    /// The user's own show: the tray's click or menu, or a blocked tray
+    /// Play or Stop. It shows the window where it was, or raises it if it's
+    /// open.
+    pub(crate) fn show_window(&mut self) -> Task<Message> {
+        self.user_opened_window();
+        self.open_window()
+    }
+
+    /// Opens the window where it was, or raises it if it's open. A raise
     /// can't pass the tray's activation token, since iced takes none, so a
     /// compositor may refuse to focus it.
-    pub(crate) fn show_window(&mut self) -> Task<Message> {
+    pub(crate) fn open_window(&mut self) -> Task<Message> {
         match self.main_window {
             Some(id) => window::gain_focus(id),
             None => {
@@ -289,7 +301,12 @@ impl App {
 
     /// The light poll's running set. What it no longer lists has stopped,
     /// so its play time is read again and the Play rows reorder.
-    pub(crate) fn tray_polled(&mut self, running: BTreeSet<String>) -> Task<Message> {
+    pub(crate) fn tray_polled(
+        &mut self,
+        generation: u64,
+        running: BTreeSet<String>,
+    ) -> Task<Message> {
+        let back = self.hidden_for_stopped(generation, &running);
         let stopped: Vec<String> = self
             .cards
             .iter()
@@ -298,16 +315,17 @@ impl App {
             .collect();
         self.tray.polled = Some(running);
         if stopped.is_empty() {
-            return Task::none();
+            return back;
         }
-        Task::batch(stopped.into_iter().map(|name| {
+        let reads = Task::batch(stopped.into_iter().map(|name| {
             let paths = self.paths.clone();
             let read = name.clone();
             crate::task::blocking_value(
                 move || tray::last_played(&paths, &read),
                 move |played| Message::TrayPlayed(name, played.ok().flatten()),
             )
-        }))
+        }));
+        Task::batch([back, reads])
     }
 
     pub(crate) fn tray_played(&mut self, name: String, played: Option<Timestamp>) {

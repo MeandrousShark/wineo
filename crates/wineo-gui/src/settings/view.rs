@@ -8,7 +8,7 @@ use wineo_core::art::Kind;
 use wineo_core::components::Component;
 use wineo_core::config::{self, Arch};
 use wineo_core::key_store::KeySource;
-use wineo_core::library::{CloseWindow, Desktop};
+use wineo_core::library::{CloseWindow, Desktop, OnStart};
 
 use super::form::{self, Build, Choice, Field, GamescopeFields, List, Source, Switch};
 use super::global;
@@ -619,7 +619,7 @@ fn global_view<'a>(
     .into()
 }
 
-/// The note under Closing the window while the tray icon is off.
+/// The note under the Desktop choices while the tray icon is off.
 pub(super) const NEEDS_TRAY: &str = "Needs the tray icon.";
 
 /// Closing the window's dropdown label.
@@ -639,16 +639,49 @@ impl std::fmt::Display for CloseChoice {
     }
 }
 
-/// The tray switch and what closing the window does. Keeping running needs
-/// the tray, so without it the choice stays in place, locked, with why.
+/// When something starts' dropdown label.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct OnStartChoice(pub(super) OnStart);
+
+impl OnStartChoice {
+    pub(super) const ALL: [Self; 2] = [Self(OnStart::Keep), Self(OnStart::Hide)];
+}
+
+impl std::fmt::Display for OnStartChoice {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self.0 {
+            OnStart::Keep => "Keep the window open",
+            OnStart::Hide => "Hide to the tray",
+        })
+    }
+}
+
+/// The tray switch, what closing the window does, and what a start does to
+/// it. Both choices need the tray, so without it they stay in place, locked,
+/// with why.
 fn desktop_rows<'a>(desktop: Desktop, locked: bool, palette: Palette) -> Element<'a, Message> {
-    let close: Element<'a, Message> = if locked || !desktop.tray {
+    let needs_tray = locked || !desktop.tray;
+    let close: Element<'a, Message> = if needs_tray {
         locked_choice(&CloseChoice(desktop.close).to_string(), palette)
     } else {
         pick_list(
             CloseChoice::ALL,
             Some(CloseChoice(desktop.close)),
             |choice| send(Event::GlobalClose(choice.0)),
+        )
+        .on_open(send(Event::MenuOpened))
+        .on_close(send(Event::MenuClosed))
+        .width(CONTROL_WIDTH)
+        .wineo_style(palette)
+        .into()
+    };
+    let on_start: Element<'a, Message> = if needs_tray {
+        locked_choice(&OnStartChoice(desktop.on_start).to_string(), palette)
+    } else {
+        pick_list(
+            OnStartChoice::ALL,
+            Some(OnStartChoice(desktop.on_start)),
+            |choice| send(Event::GlobalOnStart(choice.0)),
         )
         .on_open(send(Event::MenuOpened))
         .on_close(send(Event::MenuClosed))
@@ -667,6 +700,7 @@ fn desktop_rows<'a>(desktop: Desktop, locked: bool, palette: Palette) -> Element
             palette,
         ),
         setting_row("Closing the window", close, None, palette),
+        setting_row("When something starts", on_start, None, palette),
     ]
     .spacing(12);
     if !desktop.tray {

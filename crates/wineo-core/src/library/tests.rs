@@ -1425,6 +1425,7 @@ fn desktop_reads_its_defaults_without_a_table() {
         Desktop {
             tray: true,
             close: CloseWindow::Quit,
+            on_start: OnStart::Keep,
         }
     );
     fixture.write("schema_version = 1\n[desktop]\n");
@@ -1475,6 +1476,7 @@ fn set_desktop_writes_only_the_fields_that_change() {
     let keep = Desktop {
         tray: true,
         close: CloseWindow::Tray,
+        ..Desktop::default()
     };
     assert!(set_desktop(&fixture.paths, &keep).unwrap());
     assert_eq!(
@@ -1526,4 +1528,70 @@ fn an_unknown_desktop_value_is_not_rewritten() {
         assert!(set_desktop(&fixture.paths, &keep).unwrap());
         assert!(fixture.read().contains("close = \"tray\""));
     }
+}
+
+#[test]
+fn on_start_reads_each_value_and_bad_ones_as_keep() {
+    let fixture = Fixture::new();
+    assert_eq!(load(&fixture.paths).desktop.on_start, OnStart::Keep);
+    for on_start in OnStart::ALL {
+        fixture.write(&format!(
+            "schema_version = 1\n[desktop]\non_start = \"{}\"\n",
+            on_start.as_str()
+        ));
+        assert_eq!(load(&fixture.paths).desktop.on_start, on_start);
+    }
+    for value in ["\"minimize\"", "\"Hide\"", "true", "1", "[]"] {
+        fixture.write(&format!(
+            "schema_version = 1\n[desktop]\non_start = {value}\n"
+        ));
+        let library = load(&fixture.paths);
+        assert_eq!(library.desktop.on_start, OnStart::Keep, "{value}");
+        assert_eq!(library.problem, None);
+    }
+}
+
+#[test]
+fn set_desktop_writes_on_start_only_when_it_changes() {
+    let fixture = Fixture::new();
+    let hide = Desktop {
+        on_start: OnStart::Hide,
+        ..Desktop::default()
+    };
+    assert!(set_desktop(&fixture.paths, &hide).unwrap());
+    assert_eq!(
+        fixture.read(),
+        "schema_version = 1\n\n[desktop]\non_start = \"hide\"\n"
+    );
+    assert!(!set_desktop(&fixture.paths, &hide).unwrap());
+    assert_eq!(load(&fixture.paths).desktop, hide);
+    assert!(set_desktop(&fixture.paths, &Desktop::default()).unwrap());
+    assert_eq!(
+        fixture.read(),
+        "schema_version = 1\n\n[desktop]\non_start = \"keep\"\n"
+    );
+}
+
+#[test]
+fn an_unknown_on_start_is_not_rewritten_by_reads_or_no_op_edits() {
+    let fixture = Fixture::new();
+    let text = "# mine\nschema_version = 1\n\n[desktop]\n# by hand\non_start   =   \"minimize\"\n";
+    fixture.write(text);
+    let path = fixture.paths.library_file();
+    let before = fs::metadata(&path).unwrap().ino();
+    let read = load(&fixture.paths).desktop;
+    assert_eq!(read.on_start, OnStart::Keep);
+    assert!(!set_desktop(&fixture.paths, &read).unwrap());
+    assert_eq!(fixture.read(), text);
+    assert_eq!(fs::metadata(&path).unwrap().ino(), before);
+
+    let hide = Desktop {
+        on_start: OnStart::Hide,
+        ..read
+    };
+    assert!(set_desktop(&fixture.paths, &hide).unwrap());
+    assert_eq!(
+        fixture.read(),
+        "# mine\nschema_version = 1\n\n[desktop]\n# by hand\non_start   =   \"hide\"\n"
+    );
 }

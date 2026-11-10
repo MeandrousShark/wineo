@@ -166,6 +166,12 @@ pub(crate) struct Tray {
     pub(crate) stopping: Option<String>,
     /// A tray stop's error, kept until the window shows.
     pub(crate) held_error: Option<(String, PanelError)>,
+    /// What the window is hidden for with Hide to the tray: it comes back
+    /// once the poll sees all of them stopped.
+    pub(crate) hidden_for: BTreeSet<String>,
+    /// Bumped by each hide, which restarts the poll so its first reading
+    /// always arrives, and tells a reading from before the hide apart.
+    pub(crate) poll_generation: u64,
     pub(crate) menu: watch::Sender<Menu>,
 }
 
@@ -178,6 +184,8 @@ impl Default for Tray {
             played: HashMap::new(),
             stopping: None,
             held_error: None,
+            hidden_for: BTreeSet::new(),
+            poll_generation: 0,
             menu: watch::channel(Menu::default()).0,
         }
     }
@@ -317,19 +325,24 @@ impl ksni::Tray for Item {
     }
 }
 
-/// The light poll's subscription. Like the rescan, it sleeps first.
+/// The light poll's subscription. Like the rescan, it sleeps first. A new
+/// generation is a new subscription, which starts over and sends its first
+/// reading even if nothing changed.
 pub(crate) struct Poll {
     pub(crate) paths: Paths,
+    pub(crate) generation: u64,
 }
 
 impl Hash for Poll {
     fn hash<H: Hasher>(&self, state: &mut H) {
         "tray-poll".hash(state);
+        self.generation.hash(state);
     }
 }
 
 pub(crate) fn poll(poll: &Poll) -> impl Stream<Item = Message> + use<> {
     let paths = poll.paths.clone();
+    let generation = poll.generation;
     iced::stream::channel(1, async move |mut output| {
         let mut sent: Option<BTreeSet<String>> = None;
         loop {
@@ -344,7 +357,11 @@ pub(crate) fn poll(poll: &Poll) -> impl Stream<Item = Message> + use<> {
                 continue;
             }
             sent = Some(running.clone());
-            if output.send(Message::TrayPolled(running)).await.is_err() {
+            if output
+                .send(Message::TrayPolled(generation, running))
+                .await
+                .is_err()
+            {
                 return;
             }
         }
@@ -392,4 +409,4 @@ pub(crate) fn last_played(paths: &Paths, name: &str) -> Option<Timestamp> {
 }
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;
