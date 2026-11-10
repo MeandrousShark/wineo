@@ -4,6 +4,7 @@
 
 use std::collections::{BTreeSet, HashMap};
 use std::hash::{Hash, Hasher};
+use std::sync::{Arc, Mutex, PoisonError};
 
 use iced::futures::{SinkExt, Stream};
 use jiff::Timestamp;
@@ -173,6 +174,7 @@ pub(crate) struct Tray {
     /// always arrives, and tells a reading from before the hide apart.
     pub(crate) poll_generation: u64,
     pub(crate) menu: watch::Sender<Menu>,
+    pub(crate) running: Running,
 }
 
 impl Default for Tray {
@@ -187,7 +189,36 @@ impl Default for Tray {
             hidden_for: BTreeSet::new(),
             poll_generation: 0,
             menu: watch::channel(Menu::default()).0,
+            running: Running::default(),
         }
+    }
+}
+
+/// The tray service while it's up, so an exit can take the icon down and
+/// wait for that instead of leaving it to the subscription's drop.
+#[derive(Clone, Default)]
+pub(crate) struct Running(Arc<Mutex<Option<ksni::Handle<Item>>>>);
+
+impl std::fmt::Debug for Running {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Running")
+    }
+}
+
+impl Running {
+    fn set(&self, handle: Option<ksni::Handle<Item>>) {
+        *self.0.lock().unwrap_or_else(PoisonError::into_inner) = handle;
+    }
+
+    /// Takes the icon down, if it's up. The future ends once the service has
+    /// left the bus.
+    pub(crate) fn stop(&self) -> Option<ksni::ShutdownAwaiter> {
+        let handle = self
+            .0
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .take()?;
+        Some(handle.shutdown())
     }
 }
 
@@ -195,6 +226,7 @@ impl Default for Tray {
 /// once for as long as it's subscribed.
 pub(crate) struct Service {
     pub(crate) menu: watch::Receiver<Menu>,
+    pub(crate) running: Running,
 }
 
 impl Hash for Service {
@@ -205,7 +237,12 @@ impl Hash for Service {
 
 pub(crate) fn service(service: &Service) -> impl Stream<Item = Message> + use<> {
     use iced::futures::StreamExt;
-    events(service.menu.clone(), crate::tray_icons()).map(Message::Tray)
+    events(
+        service.menu.clone(),
+        crate::tray_icons(),
+        service.running.clone(),
+    )
+    .map(Message::Tray)
 }
 
 /// Serves the tray until the stream is dropped, with the menu `menu` holds,
@@ -213,6 +250,7 @@ pub(crate) fn service(service: &Service) -> impl Stream<Item = Message> + use<> 
 pub(crate) fn events(
     mut menu: watch::Receiver<Menu>,
     icons: Vec<ksni::Icon>,
+    running: Running,
 ) -> impl Stream<Item = Event> + use<> {
     iced::stream::channel(16, async move |mut output| {
         let (send, mut clicks) = mpsc::unbounded_channel();
@@ -229,7 +267,8 @@ pub(crate) fn events(
             std::future::pending::<()>().await;
             return;
         };
-        let _shutdown = Shutdown(handle.clone());
+        running.set(Some(handle.clone()));
+        let _shutdown = Shutdown(handle.clone(), running);
         // Sent before anything `spawn` queued, so a watcher that was already
         // missing reads as offline after this.
         if output.send(Event::Available(true)).await.is_err() {
@@ -256,10 +295,11 @@ pub(crate) fn events(
 
 /// Takes the icon down when the stream goes, say when the setting is
 /// turned off.
-struct Shutdown(ksni::Handle<Item>);
+struct Shutdown(ksni::Handle<Item>, Running);
 
 impl Drop for Shutdown {
     fn drop(&mut self) {
+        self.1.set(None);
         drop(self.0.shutdown());
     }
 }

@@ -13,7 +13,7 @@ use crate::sort_control::tests::run_counting;
 use crate::tests::card;
 use crate::{App, Message, OperationKind};
 
-mod bus;
+pub(crate) mod bus;
 
 fn at(second: i64) -> Option<Timestamp> {
     Some(Timestamp::from_second(second).unwrap())

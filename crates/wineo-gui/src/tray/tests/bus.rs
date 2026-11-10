@@ -21,6 +21,7 @@ const PATIENCE: Duration = Duration::from_secs(15);
 const CHILD: &str = "WINEO_TRAY_TEST_CHILD";
 const CHILD_TEST: &str = "tray::tests::bus::child_serves_the_tray";
 const EVENT_LINE: &str = "tray-event: ";
+const STOPPED: &str = "stopped";
 const WATCHER: &str = "org.kde.StatusNotifierWatcher";
 const WATCHER_PATH: &str = "/StatusNotifierWatcher";
 const ITEM_PATH: &str = "/StatusNotifierItem";
@@ -40,8 +41,8 @@ fn child_menu() -> Menu {
 }
 
 /// Not a test of its own: the child the others start. It serves the tray
-/// with a fixed menu, prints each event, and swaps the menu for an empty one
-/// when told to on stdin.
+/// with a fixed menu, prints each event, and on stdin swaps the menu for an
+/// empty one or stops the service the way an exit does.
 #[test]
 fn child_serves_the_tray() {
     if std::env::var_os(CHILD).is_none() {
@@ -52,16 +53,27 @@ fn child_serves_the_tray() {
         .build()
         .unwrap();
     let (menu, receiver) = tokio::sync::watch::channel(child_menu());
+    let running = super::super::Running::default();
+    let stopping = running.clone();
     std::thread::spawn(move || {
         for line in std::io::stdin().lines() {
-            if line.as_deref().is_ok_and(|line| line == "swap") {
-                menu.send_replace(Menu::default());
+            match line.as_deref() {
+                Ok("swap") => {
+                    menu.send_replace(Menu::default());
+                }
+                Ok("stop") => {
+                    if let Some(stopped) = stopping.stop() {
+                        iced::futures::executor::block_on(stopped);
+                        println!("{EVENT_LINE}{STOPPED}");
+                    }
+                }
+                _ => {}
             }
         }
     });
     runtime.block_on(async move {
         use iced::futures::StreamExt;
-        let mut events = std::pin::pin!(events(receiver, crate::tray_icons()));
+        let mut events = std::pin::pin!(events(receiver, crate::tray_icons(), running,));
         while let Some(event) = events.next().await {
             println!("{EVENT_LINE}{event:?}");
         }
@@ -70,15 +82,15 @@ fn child_serves_the_tray() {
 
 /// A session bus of the test's own, with no service files, so nothing on it
 /// can start a real program.
-struct Bus {
+pub(crate) struct Bus {
     _dir: tempfile::TempDir,
     _daemon: KillOnDrop,
-    address: String,
+    pub(crate) address: String,
 }
 
 impl Bus {
     /// None, with a note, where `dbus-daemon` isn't installed.
-    fn start() -> Option<Self> {
+    pub(crate) fn start() -> Option<Self> {
         let dir = tempfile::tempdir().unwrap();
         let config = dir.path().join("session.conf");
         std::fs::write(
@@ -129,7 +141,7 @@ impl Bus {
         })
     }
 
-    async fn connect(&self) -> zbus::Connection {
+    pub(crate) async fn connect(&self) -> zbus::Connection {
         zbus::connection::Builder::address(self.address.as_str())
             .unwrap()
             .method_timeout(PATIENCE)
@@ -187,7 +199,10 @@ impl Child {
 
     /// Waits for the child to print `event`, failing on any other.
     async fn expect(&mut self, event: &Event) {
-        let wanted = format!("{event:?}");
+        self.expect_line(&format!("{event:?}")).await;
+    }
+
+    async fn expect_line(&mut self, wanted: &str) {
         let deadline = Instant::now() + PATIENCE;
         loop {
             match self.lines.try_recv() {
@@ -209,6 +224,10 @@ impl Child {
 
     fn swap_menu(&mut self) {
         writeln!(self.stdin, "swap").unwrap();
+    }
+
+    fn stop(&mut self) {
+        writeln!(self.stdin, "stop").unwrap();
     }
 }
 
@@ -447,5 +466,34 @@ fn the_menu_layout_reads_as_the_app_built_it_and_clicks_come_back() {
             assert!(Instant::now() < deadline, "{rows:?}");
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
+    });
+}
+
+#[test]
+fn an_exit_takes_the_icon_off_the_bus() {
+    run(async |bus| {
+        let host = bus.connect().await;
+        let watcher = Watcher::default();
+        watcher.serve(&host).await;
+        let mut child = Child::start(&bus);
+        child.expect(&Event::Available(true)).await;
+        let item = watcher.registered().await;
+        let owner = zbus::fdo::DBusProxy::new(&host)
+            .await
+            .unwrap()
+            .get_name_owner(item.as_str().try_into().unwrap())
+            .await
+            .unwrap();
+        child.stop();
+        child.expect_line(STOPPED).await;
+        // The stop ends once the service has closed its connection, so the
+        // bus drops the item while the process lives on.
+        let proxy = zbus::fdo::DBusProxy::new(&host).await.unwrap();
+        let deadline = Instant::now() + PATIENCE;
+        while proxy.name_has_owner(owner.as_ref().into()).await.unwrap() {
+            assert!(Instant::now() < deadline, "{item} stayed");
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        assert!(child.process.try_wait().unwrap().is_none());
     });
 }

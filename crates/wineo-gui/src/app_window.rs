@@ -13,6 +13,10 @@ pub(crate) const SORT_SAVE_WAIT: Duration = Duration::from_secs(6);
 /// How long the exit waits after closing the window.
 pub(crate) const EXIT_AFTER_CLOSE: Duration = Duration::from_millis(50);
 
+/// How long an exit waits for the bus to take back the app's name and the
+/// tray icon before it goes on anyway.
+pub(crate) const LEAVE_WAIT: Duration = Duration::from_secs(1);
+
 /// The window's size at 100%, in logical pixels.
 const LAUNCH: iced::Size = iced::Size::new(1200.0, 800.0);
 
@@ -113,10 +117,39 @@ impl App {
     /// waiting out doesn't leave a frozen window up. The pause lets the
     /// destroy reach the compositor before the runtime stops.
     pub(crate) fn close_then_exit(&self) -> Task<Message> {
+        let leave = self.leave_bus();
         let close = self.main_window.map_or_else(Task::none, window::close);
         close
+            .chain(leave)
             .chain(Task::future(async { tokio::time::sleep(EXIT_AFTER_CLOSE).await }).discard())
             .chain(iced::exit())
+    }
+
+    /// Gives the bus name back and takes the tray icon down, both started at
+    /// once, so a relaunch during an exit stuck on work starts a fresh app
+    /// instead of calling `Show` on this one. The exit waits for both, since
+    /// the runtime that serves the tray may hang once it's stopping.
+    fn leave_bus(&self) -> Task<Message> {
+        let release = self.instance.as_ref().map(crate::instance::Instance::leave);
+        let tray = self.tray.running.stop();
+        if release.is_none() && tray.is_none() {
+            return Task::none();
+        }
+        Task::future(async move {
+            let release = async move {
+                if let Some(release) = release {
+                    release.await;
+                }
+            };
+            let tray = async move {
+                if let Some(tray) = tray {
+                    tray.await;
+                }
+            };
+            let _ =
+                tokio::time::timeout(LEAVE_WAIT, iced::futures::future::join(release, tray)).await;
+        })
+        .discard()
     }
 
     /// What closing would leave unfinished, named for the line the watchdog
