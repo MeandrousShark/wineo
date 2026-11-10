@@ -51,6 +51,7 @@ impl App {
     /// over foreground work since nothing stops, and otherwise it quits.
     pub(crate) fn close_requested(&mut self) -> Task<Message> {
         if self.keeps_running() {
+            self.closing_to_the_tray();
             self.hide_window()
         } else {
             self.quit_requested()

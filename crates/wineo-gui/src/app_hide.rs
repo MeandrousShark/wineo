@@ -76,6 +76,33 @@ impl App {
         self.come_back()
     }
 
+    /// With the window open nothing polls, so what Always show the window
+    /// is waiting for is kept honest from what the window itself learns:
+    /// a run that's seen stopped drops out, as does one whose environment
+    /// is gone. A pending return for a run that ended while the user
+    /// watched would otherwise reopen the window right after they close it.
+    pub(crate) fn forget_stopped(&mut self) {
+        if self.main_window.is_none() || self.tray.hidden_for.is_empty() {
+            return;
+        }
+        let cards = &self.cards;
+        self.tray
+            .hidden_for
+            .retain(|name| cards.iter().any(|card| &card.name == name && card.active()));
+    }
+
+    /// The user closes the window with Keep running. Whatever it was
+    /// waiting for was only ever for a window the user would close, so a
+    /// run already over doesn't bring it straight back, and with Bring back
+    /// a hidden window nothing does: this isn't a hide's doing.
+    pub(crate) fn closing_to_the_tray(&mut self) {
+        if self.desktop.on_stop == OnStop::Restore {
+            self.tray.hidden_for.clear();
+        } else {
+            self.forget_stopped();
+        }
+    }
+
     /// The tray host went away. A hidden window, whatever hid it, comes
     /// back at once, so the app is never left running unreachable.
     pub(crate) fn tray_lost(&mut self) -> Task<Message> {

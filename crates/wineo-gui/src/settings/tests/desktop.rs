@@ -323,6 +323,7 @@ fn another_windows_on_stop_save_moves_an_untouched_control() {
 
     // A control the user changed keeps the edit.
     let mut page = global_page(&paths);
+    assert_eq!(desktop(&page).on_stop, OnStop::Show);
     let _ = page.update(&paths, Event::GlobalOnStop(OnStop::Restore));
     wineo_core::library::set_desktop(&paths, &Desktop::default()).unwrap();
     let sequence = start_check(&mut page);
@@ -331,8 +332,7 @@ fn another_windows_on_stop_save_moves_an_untouched_control() {
         Event::Checked(1, sequence, Texts::read_global(&paths)),
     );
     let _ = page.update(&paths, Event::Loaded(1, load::snapshot_global(&paths)));
-    assert_eq!(
-        global_editor(&page).form.draft.desktop.on_stop,
-        OnStop::Restore
-    );
+    let form = &global_editor(&page).form;
+    assert_eq!(form.draft.desktop.on_stop, OnStop::Restore);
+    assert_eq!(form.loaded.desktop.on_stop, OnStop::Restore);
 }
