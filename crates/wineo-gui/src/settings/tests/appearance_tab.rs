@@ -1165,3 +1165,49 @@ fn the_highlighted_font_row_scrolls_into_the_lists_view() {
     run_task(&mut laid, task);
     assert_eq!(laid.offsets(), [0.0], "the first row goes back to the top");
 }
+
+#[test]
+fn the_highlighted_font_row_draws_the_focus_outline_not_a_tint() {
+    use crate::layout_probe::{bounds_at, layout, render};
+    let (_root, paths) = setup();
+    let mut app = open_global_app(&paths);
+    show_appearance(&mut app);
+    edit(&mut app, Edit::FontOpen);
+    let mut picker = font_picker(&app).clone();
+    picker.families = vec!["Family 01", "Family 02", "Family 03"];
+    let size = iced::Size::new(260.0, 400.0);
+    let draw = |highlight: usize| {
+        let picker = appearance::FontPicker {
+            highlight,
+            ..picker.clone()
+        };
+        let mut popup = appearance::font_popup(&picker, BUILT_IN, Palette::DARK);
+        let node = layout(&mut popup, size);
+        (render(&mut popup, size), node)
+    };
+    let pixel = |pixels: &[u8], x: f32, y: f32| {
+        let at = (y as usize * size.width as usize + x as usize) * 4;
+        pixels[at..at + 4].to_vec()
+    };
+    // The last row, far enough that its outline misses rows 0 and 1.
+    let (away, node) = draw(3);
+    // Row 0 is the chosen built-in font, row 1 a plain one.
+    for row in [0, 1] {
+        let bounds = bounds_at(&node, &[0, 1, 0, row]);
+        let (on, _) = draw(row);
+        let mid = bounds.x + bounds.width / 2.0;
+        let edge = bounds.y + bounds.height + 1.0;
+        assert_ne!(
+            pixel(&on, mid, edge),
+            pixel(&away, mid, edge),
+            "row {row}'s outline"
+        );
+        let inside = bounds.y + bounds.height / 2.0;
+        let left = bounds.x + 4.0;
+        assert_eq!(
+            pixel(&on, left, inside),
+            pixel(&away, left, inside),
+            "row {row}'s fill"
+        );
+    }
+}

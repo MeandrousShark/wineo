@@ -382,22 +382,26 @@ impl<Message> Widget<Message, iced::Theme, iced::Renderer> for Arrow {
     }
 }
 
-/// `content` under `id` for operations that find a container, like
+/// A popup row under `id` for operations that find a container, like
 /// `library_menu::reveal_row`, without a layout level of its own, so the
-/// layout tree is the same as without it.
+/// layout tree is the same as without it. A `highlighted` row draws the
+/// focus outline, since the keyboard's place in the list isn't focus.
 pub(crate) fn tagged<'a, Message: 'a>(
     content: impl Into<Element<'a, Message>>,
     id: iced::widget::Id,
+    highlighted: bool,
 ) -> Element<'a, Message> {
     Element::new(Tagged {
         content: content.into(),
         id,
+        highlighted,
     })
 }
 
 struct Tagged<'a, Message> {
     content: Element<'a, Message>,
     id: iced::widget::Id,
+    highlighted: bool,
 }
 
 impl<Message> Widget<Message, iced::Theme, iced::Renderer> for Tagged<'_, Message> {
@@ -476,6 +480,9 @@ impl<Message> Widget<Message, iced::Theme, iced::Renderer> for Tagged<'_, Messag
         self.content
             .as_widget()
             .draw(tree, renderer, theme, style, layout, cursor, viewport);
+        if self.highlighted {
+            crate::focus_button::draw_ring(renderer, layout.bounds(), theme);
+        }
     }
 
     fn mouse_interaction(

@@ -1026,7 +1026,7 @@ pub(crate) fn font_popup(
         .into()
 }
 
-/// `highlighted` is the keyboard's row, shown like the one under the mouse.
+/// `highlighted` is the keyboard's row, drawn with the focus outline.
 fn font_row(
     label: &'static str,
     family: Option<&'static str>,
@@ -1052,13 +1052,11 @@ fn font_row(
                 border: border::rounded(crate::ui::CONTROL_RADIUS),
                 ..button::Style::default()
             }
-        } else if highlighted && status == button::Status::Active {
-            list_row_style(palette, button::Status::Hovered)
         } else {
             list_row_style(palette, status)
         }
     });
-    crate::dropdown::tagged(row, font_row_id(label))
+    crate::dropdown::tagged(row, font_row_id(label), highlighted)
 }
 
 fn motion_choice(motion: Motion, locked: bool, palette: Palette) -> Element<'static, Message> {
