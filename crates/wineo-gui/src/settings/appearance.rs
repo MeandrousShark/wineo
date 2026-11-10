@@ -6,7 +6,7 @@ use std::collections::BTreeMap;
 
 use iced::theme::Mode;
 use iced::widget::{
-    Column, Space, button, column, container, pick_list, row, scrollable, text, text_input,
+    Column, Space, button, column, container, pick_list, row, scrollable, stack, text, text_input,
 };
 use iced::{Center, Element, Fill, Font, border};
 use wineo_core::library::{INTERFACE_SIZE_MAX, INTERFACE_SIZE_MIN, Motion};
@@ -16,12 +16,13 @@ use super::Event;
 use crate::Message;
 use crate::chips::input_style;
 use crate::dropdown::dropdown;
-use crate::library_menu::{CHECK, CHEVRON, check_box, icon};
+use crate::library_menu::{CHECK, check_box, icon};
 use crate::motion::Choice as MotionChoice;
 use crate::theme::{self, Appearance, Custom, PRESETS, Palette, PresetKind, Shown};
 use crate::ui::{
-    ListRow, PickListStyle, ScrollStyle, accent_ink, dropdown_popup_style, dropdown_style,
-    list_group, list_row, list_row_style, list_row_text, section_heading,
+    ListRow, PICK_LIST_PADDING, PickListStyle, ScrollStyle, accent_ink, dropdown_arrow,
+    dropdown_popup_style, dropdown_style, list_group, list_row, list_row_style, list_row_text,
+    section_heading,
 };
 
 pub(crate) const FOLLOW_ID: &str = "appearance-follow-system";
@@ -873,7 +874,7 @@ pub(crate) fn size_choices(current: u16) -> Vec<SizeChoice> {
     sizes.into_iter().map(SizeChoice).collect()
 }
 
-fn size_choice(size: u16, locked: bool, palette: Palette) -> Element<'static, Message> {
+pub(super) fn size_choice(size: u16, locked: bool, palette: Palette) -> Element<'static, Message> {
     if locked {
         return super::view::locked_choice(&SizeChoice(size).to_string(), palette);
     }
@@ -898,7 +899,11 @@ fn font_label(family: &'static str) -> &'static str {
 
 /// A searchable dropdown, since a pick list draws every row in one font
 /// and each family here shows in itself.
-fn font_choice(form: &Form, locked: bool, palette: Palette) -> Element<'static, Message> {
+pub(super) fn font_choice(
+    form: &Form,
+    locked: bool,
+    palette: Palette,
+) -> Element<'static, Message> {
     let in_use = form.font_in_use;
     let label = font_label(in_use);
     if locked {
@@ -912,16 +917,13 @@ fn font_choice(form: &Form, locked: bool, palette: Palette) -> Element<'static, 
                 .size(14)
                 .wrapping(text::Wrapping::None)
                 .width(Fill),
-            icon(
-                CHEVRON,
-                if open { palette.primary } else { palette.muted },
-                16.0
-            ),
+            // Room for the arrow laid over the button.
+            Space::new().width(14),
         ]
         .spacing(8)
         .align_y(Center),
     )
-    .padding([8, 10])
+    .padding(PICK_LIST_PADDING)
     .width(super::view::CONTROL_WIDTH)
     .on_press(send(if open {
         Edit::FontClose
@@ -929,6 +931,7 @@ fn font_choice(form: &Form, locked: bool, palette: Palette) -> Element<'static, 
         Edit::FontOpen
     }))
     .style(move |_, status| dropdown_style(palette, open, status));
+    let control = stack![control, dropdown_arrow(palette, open)];
     let popup = form
         .font_picker
         .as_ref()

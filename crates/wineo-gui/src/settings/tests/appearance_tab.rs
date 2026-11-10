@@ -970,3 +970,44 @@ fn a_font_switch_and_the_leave_prompt_keep_the_page_scrolled() {
     }
     assert!(!page_of(&app).leave_prompt && page_of(&app).is_dirty());
 }
+
+#[test]
+fn the_font_dropdown_draws_the_pick_lists_arrow() {
+    use crate::layout_probe::render;
+    let (_root, paths) = setup();
+    let mut app = open_global_app(&paths);
+    show_appearance(&mut app);
+    let size = iced::Size::new(view::CONTROL_WIDTH, 40.0);
+    let width = view::CONTROL_WIDTH as usize;
+    // The right end, past both labels, where each draws its arrow.
+    let arrow = |pixels: Vec<u8>| -> Vec<u8> {
+        pixels
+            .chunks(width * 4)
+            .flat_map(|line| line[(width - 32) * 4..].to_vec())
+            .collect()
+    };
+    let form = font_form(&app);
+    let pick_list = arrow(render(
+        &mut appearance::size_choice(100, false, Palette::DARK),
+        size,
+    ));
+    let font = arrow(render(
+        &mut appearance::font_choice(form, false, Palette::DARK),
+        size,
+    ));
+    // Something is drawn there, not just the background.
+    assert!(pick_list.chunks(4).any(|pixel| *pixel != pick_list[..4]));
+    assert_eq!(font, pick_list);
+    // The arrow lies over the whole control, and presses still reach it.
+    assert_eq!(
+        crate::layout_probe::click_at(
+            appearance::font_choice(form, false, Palette::DARK),
+            size,
+            &[]
+        ),
+        [format!(
+            "{:?}",
+            Message::Settings(Event::Appearance(Edit::FontOpen))
+        )]
+    );
+}

@@ -4,7 +4,7 @@
 use iced::advanced::widget::{Operation, Tree};
 use iced::advanced::{Clipboard, Layout, Shell, Widget, layout, mouse, overlay, renderer};
 use iced::keyboard::{self, key::Named};
-use iced::{Element, Event, Length, Rectangle, Size, Vector};
+use iced::{Color, Element, Event, Length, Point, Rectangle, Size, Vector};
 
 /// Room kept between the popup and the window's edges.
 const MARGIN: f32 = 8.0;
@@ -189,7 +189,7 @@ impl<Message: Clone> overlay::Overlay<Message, iced::Theme, iced::Renderer>
             .x
             .min(bounds.width - width - MARGIN)
             .max(MARGIN.min(self.anchor.x));
-        node.move_to(iced::Point::new(x, y))
+        node.move_to(Point::new(x, y))
     }
 
     fn draw(
@@ -274,6 +274,65 @@ impl<Message: Clone> overlay::Overlay<Message, iced::Theme, iced::Renderer>
         } else {
             interaction
         }
+    }
+}
+
+/// A pick list's arrow, drawn over a control the way iced's pick list draws
+/// its own: right-aligned inside `right` padding and centered on the
+/// control's middle, so the two line up to the pixel.
+pub(crate) fn arrow<'a, Message: 'a>(color: Color, right: f32) -> Element<'a, Message> {
+    Element::new(Arrow { color, right })
+}
+
+struct Arrow {
+    color: Color,
+    right: f32,
+}
+
+impl<Message> Widget<Message, iced::Theme, iced::Renderer> for Arrow {
+    fn size(&self) -> Size<Length> {
+        Size::new(Length::Fill, Length::Fill)
+    }
+
+    fn layout(
+        &mut self,
+        _tree: &mut Tree,
+        _renderer: &iced::Renderer,
+        limits: &layout::Limits,
+    ) -> layout::Node {
+        layout::Node::new(limits.resolve(Length::Fill, Length::Fill, Size::ZERO))
+    }
+
+    fn draw(
+        &self,
+        _tree: &Tree,
+        renderer: &mut iced::Renderer,
+        _theme: &iced::Theme,
+        _style: &renderer::Style,
+        layout: Layout<'_>,
+        _cursor: mouse::Cursor,
+        viewport: &Rectangle,
+    ) {
+        use iced::advanced::text::{self, Renderer as _};
+        let bounds = layout.bounds();
+        let size = renderer.default_size();
+        let line_height = text::LineHeight::default();
+        renderer.fill_text(
+            text::Text {
+                content: iced::Renderer::ARROW_DOWN_ICON.to_string(),
+                bounds: Size::new(bounds.width, f32::from(line_height.to_absolute(size))),
+                size,
+                line_height,
+                font: iced::Renderer::ICON_FONT,
+                align_x: text::Alignment::Right,
+                align_y: iced::alignment::Vertical::Center,
+                shaping: text::Shaping::Basic,
+                wrapping: text::Wrapping::default(),
+            },
+            Point::new(bounds.x + bounds.width - self.right, bounds.center_y()),
+            self.color,
+            *viewport,
+        );
     }
 }
 

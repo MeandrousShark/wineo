@@ -9,6 +9,9 @@ pub(crate) const BUTTON_HEIGHT: f32 = 32.0;
 pub(crate) const CONTROL_RADIUS: f32 = 8.0;
 pub(crate) const SECTION_RADIUS: f32 = 12.0;
 
+/// Vertical and horizontal.
+pub(crate) const PICK_LIST_PADDING: [u16; 2] = [8, 10];
+
 pub(crate) trait PickListStyle<'a, T, L, V, M>
 where
     T: ToString + PartialEq + Clone,
@@ -27,7 +30,7 @@ where
     M: Clone,
 {
     fn wineo_style(self, palette: Palette) -> Self {
-        self.padding([8, 10])
+        self.padding(PICK_LIST_PADDING)
             .text_size(14)
             .font(crate::fonts::named())
             .style(move |_, status| pick_list_style(palette, status))
@@ -84,6 +87,21 @@ pub(crate) fn dropdown_style(
         border: style.border,
         ..button::Style::default()
     }
+}
+
+/// The arrow a pick list draws, in its handle color, to lay over a
+/// `dropdown_style` control with `PICK_LIST_PADDING`.
+pub(crate) fn dropdown_arrow<'a, M: 'a>(palette: Palette, open: bool) -> Element<'a, M> {
+    use iced::widget::pick_list::Status;
+    let status = if open {
+        Status::Opened { is_hovered: false }
+    } else {
+        Status::Active
+    };
+    crate::dropdown::arrow(
+        pick_list_style(palette, status).handle_color,
+        f32::from(PICK_LIST_PADDING[1]),
+    )
 }
 
 /// The popup of a `dropdown_style` control, in the pick lists' menu chrome.
