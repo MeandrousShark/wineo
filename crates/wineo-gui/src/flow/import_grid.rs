@@ -483,9 +483,16 @@ fn tile<'a, Message: Clone + 'a>(
             })
     ];
     if chosen {
+        // Svg is invariant over its lifetime; an Element can shorten to 'a.
+        let check: Element<'a, Message> = crate::library_menu::icon(
+            crate::library_menu::CHECK,
+            crate::ui::accent_ink(palette.primary),
+            14.0,
+        )
+        .into();
         layers = layers.push(
             container(
-                container(text("✓").size(14).color(palette.background))
+                container(check)
                     .width(22)
                     .height(22)
                     .center(22)
