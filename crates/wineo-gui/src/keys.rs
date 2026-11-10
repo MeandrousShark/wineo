@@ -127,6 +127,9 @@ impl App {
         if self.random_menu_shown() {
             return crate::random_pick::key(self, &key, modifiers);
         }
+        if self.more_menu_shown() {
+            return crate::more_menu::key(self, &key, modifiers);
+        }
         if self.tag_menu_shown() {
             return crate::action_bar::key(self, &key, modifiers);
         }

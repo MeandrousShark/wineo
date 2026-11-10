@@ -901,6 +901,10 @@ impl App {
             let [backdrop, menu] = self.random_menu_view();
             return page.push(backdrop).push(menu).into();
         }
+        if self.more_menu_shown() {
+            let [backdrop, menu] = self.more_menu_view();
+            return page.push(backdrop).push(menu).into();
+        }
         if self.tag_menu_shown() {
             let [backdrop, menu] = self.tag_menu_view();
             return page.push(backdrop).push(menu).into();
@@ -1406,18 +1410,59 @@ impl App {
                 .style(|_, _| button::Style::default())
                 .into()
         };
-        let search = crate::fit_width::fit_width(
-            stack![
-                input,
-                container(clear)
-                    .width(Fill)
-                    .height(Fill)
-                    .align_right(Fill)
-                    .center_y(Fill)
-                    .padding([0, 6])
+        let search = stack![
+            input,
+            container(clear)
+                .width(Fill)
+                .height(Fill)
+                .align_right(Fill)
+                .center_y(Fill)
+                .padding([0, 6])
+        ];
+        use crate::toolbar_squeeze::{Control, child};
+        let grid = self.layout == crate::grid_motion::ViewLayout::Grid;
+        // Every child stays in the tree, folded or absent, so the controls
+        // before it keep their places, and their focus.
+        let zoom_slot = |element: fn(&App) -> Element<'_, Message>| {
+            if grid {
+                element(self)
+            } else {
+                Space::new().into()
+            }
+        };
+        let controls = crate::toolbar_squeeze::squeeze(
+            search.into(),
+            crate::toolbar_squeeze::Search {
+                min: SEARCH_MIN_WIDTH,
+                max: SEARCH_WIDTH,
+            },
+            vec![
+                child(crate::sort_control::toolbar(self), None, true),
+                child(
+                    crate::filter_control::toolbar(self),
+                    Some(Control::Filters),
+                    true,
+                ),
+                child(crate::random_pick::toolbar(self), Some(Control::Dice), true),
+                child(
+                    crate::layout_switch::toolbar(self),
+                    Some(Control::Layout),
+                    true,
+                ),
+                child(
+                    zoom_slot(crate::zoom_control::toolbar_slider),
+                    Some(Control::Zoom),
+                    grid,
+                ),
+                child(
+                    zoom_slot(crate::zoom_control::toolbar_toggle),
+                    Some(Control::Titles),
+                    grid,
+                ),
             ],
-            SEARCH_MIN_WIDTH,
-            SEARCH_WIDTH,
+            crate::more_menu::toolbar(self),
+            8.0,
+            |folds| Message::More(crate::more_menu::Event::Folded(folds)),
         );
         container(
             row![
@@ -1435,22 +1480,7 @@ impl App {
                         Message::Add,
                     )
                 },
-                row![
-                    search,
-                    crate::sort_control::toolbar(self),
-                    crate::filter_control::toolbar(self),
-                    crate::random_pick::toolbar(self),
-                    crate::layout_switch::toolbar(self),
-                    // Always a child, so the controls before it keep their
-                    // places in the tree, and their focus.
-                    if self.layout == crate::grid_motion::ViewLayout::Grid {
-                        crate::zoom_control::toolbar(self)
-                    } else {
-                        Space::new().into()
-                    },
-                ]
-                .spacing(8)
-                .align_y(Center),
+                controls,
             ]
             .spacing(16)
             .align_y(Center),

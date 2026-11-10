@@ -236,6 +236,10 @@ impl App {
             || self.trash_banner_text().is_some()
             || self.steam_offer().is_some()
             || self.error.is_some()
+            // It hangs from the Filters button, which More holds then.
+            || self
+                .toolbar_folds
+                .contains(crate::toolbar_squeeze::Control::Filters)
         {
             return None;
         }

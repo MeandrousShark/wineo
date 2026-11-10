@@ -476,7 +476,7 @@ impl App {
 }
 
 pub(crate) fn update(app: &mut App, event: Event) -> Task<Message> {
-    if event.is_input() && !app.zoom_allowed() {
+    if event.is_input() && !(app.zoom_allowed() || app.more_menu_zoom(&event)) {
         return Task::none();
     }
     let now = Instant::now();

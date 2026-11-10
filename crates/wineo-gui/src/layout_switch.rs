@@ -51,7 +51,8 @@ fn rests_at_grid(layout: ViewLayout) -> bool {
 }
 
 pub(crate) fn update(app: &mut App, event: Event) -> Task<Message> {
-    if event.is_input() && !app.library_menu_may_open() {
+    // The More menu holds the segment while the layout switch is folded.
+    if event.is_input() && !(app.library_menu_may_open() || app.more_menu_input()) {
         return Task::none();
     }
     match event {
@@ -163,6 +164,11 @@ impl App {
 
 /// The segment for the toolbar, left of the zoom slider.
 pub(crate) fn toolbar(app: &App) -> Element<'_, Message> {
+    segment(app, ID)
+}
+
+/// The segment as focus control `id`, for the toolbar or the More menu.
+pub(crate) fn segment<'a>(app: &'a App, id: &'static str) -> Element<'a, Message> {
     let palette = app.palette;
     let track = container(Space::new())
         .width(WIDTH)
@@ -228,7 +234,7 @@ pub(crate) fn toolbar(app: &App) -> Element<'_, Message> {
         .width(WIDTH)
         .height(ui::BUTTON_HEIGHT)
         .into(),
-        ID,
+        id,
         Message::Layout(Event::Toggle),
     )
 }

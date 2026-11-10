@@ -28,7 +28,6 @@ mod ends;
 mod exit_watchdog;
 mod filter_control;
 mod filter_tab;
-mod fit_width;
 mod flow;
 mod focus_button;
 mod fonts;
@@ -53,6 +52,7 @@ mod library_states;
 mod list_view;
 mod logview;
 mod menu_anchor;
+mod more_menu;
 mod motion;
 mod multi_select;
 mod order;
@@ -90,6 +90,7 @@ mod test_runners;
 mod test_script;
 mod theme;
 mod tile_title;
+mod toolbar_squeeze;
 mod tools_navigation;
 mod tools_page;
 mod trash_page;
@@ -199,6 +200,14 @@ pub(crate) struct App {
     random_menu: bool,
     random_menu_position: iced::Point,
     random_opening: library_menu::Opening,
+    /// The More menu is open, and the folded controls it was opened with
+    /// plus any that folded since.
+    more_menu: bool,
+    more_rows: toolbar_squeeze::Folds,
+    more_menu_position: iced::Point,
+    more_opening: library_menu::Opening,
+    /// The controls the toolbar folded into More as last laid out.
+    toolbar_folds: toolbar_squeeze::Folds,
     /// The action bar's tag popup is open.
     tag_menu: bool,
     tag_popup: action_bar::Popup,
@@ -578,6 +587,8 @@ pub(crate) enum Message {
     Zoom(zoom::Event),
     Random(random_pick::Event),
     Layout(layout_switch::Event),
+    /// The toolbar's More button and menu.
+    More(more_menu::Event),
     /// The action bar and its tag popup.
     Tags(action_bar::Event),
     /// The wait for `library.toml` writes on close is over, tagged with its
@@ -627,6 +638,11 @@ impl App {
             random_menu: false,
             random_menu_position: iced::Point::ORIGIN,
             random_opening: library_menu::Opening::default(),
+            more_menu: false,
+            more_rows: toolbar_squeeze::Folds::default(),
+            more_menu_position: iced::Point::ORIGIN,
+            more_opening: library_menu::Opening::default(),
+            toolbar_folds: toolbar_squeeze::Folds::default(),
             tag_menu: false,
             tag_popup: action_bar::Popup::default(),
             tag_opening: library_menu::Opening::default(),
@@ -1108,6 +1124,9 @@ impl App {
         if self.random_menu && !self.random_menu_shown() {
             self.random_menu = false;
         }
+        if self.more_menu && !self.more_menu_shown() {
+            self.more_menu = false;
+        }
         if self.tag_menu && !self.tag_menu_shown() {
             self.tag_menu = false;
         }
@@ -1212,6 +1231,7 @@ impl App {
                 || matches!(message, Message::Mark(event) if event.is_input())
                 || matches!(message, Message::Random(event) if event.is_input())
                 || matches!(message, Message::Layout(event) if event.is_input())
+                || matches!(message, Message::More(event) if event.is_input())
                 || matches!(message, Message::Tags(event) if event.is_input())
                 || matches!(message, Message::Zoom(event) if event.is_input()))
         {
@@ -1278,6 +1298,7 @@ impl App {
             Message::Zoom(event) => zoom::update(self, event),
             Message::Random(event) => random_pick::update(self, event),
             Message::Layout(event) => layout_switch::update(self, event),
+            Message::More(event) => more_menu::update(self, event),
             Message::Tags(event) => action_bar::update(self, event),
             message @ (Message::Remove(_)
             | Message::RemovePrefix(_)
@@ -1571,6 +1592,9 @@ impl App {
             }
             Message::Key(key, modifiers, _) if self.random_menu_shown() => {
                 random_pick::key(self, &key, modifiers)
+            }
+            Message::Key(key, modifiers, _) if self.more_menu_shown() => {
+                more_menu::key(self, &key, modifiers)
             }
             Message::Key(key, modifiers, _) if self.tag_menu_shown() => {
                 action_bar::key(self, &key, modifiers)
