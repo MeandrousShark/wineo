@@ -9,7 +9,7 @@ use toml_edit::{DocumentMut, Item, Key};
 use super::preset::{preset_name_rule, readable_name};
 use super::record::{Recorded, valid_app_id};
 use super::{
-    GroupBy, INTERFACE_SIZE_MAX, INTERFACE_SIZE_MIN, Motion, RandomPool, ReadFailure,
+    CloseWindow, GroupBy, INTERFACE_SIZE_MAX, INTERFACE_SIZE_MIN, Motion, RandomPool, ReadFailure,
     SCHEMA_VERSION, SortKey, ViewLayout, ZOOM_MAX, ZOOM_MIN, edit, read_document, read_zoom,
     sort_name,
 };
@@ -73,6 +73,7 @@ pub(crate) fn inspect(paths: &Paths) -> Inspection {
             "view" => inspect_view(item, &mut inspection),
             "presets" => inspect_presets(item, &mut inspection),
             "appearance" => inspect_appearance(paths, &mut themes, item, &mut inspection),
+            "desktop" => inspect_desktop(item, &mut inspection),
             "environments" => inspect_environments(item, &mut inspection),
             "steam" => inspect_steam(item, &mut inspection),
             other => inspection
@@ -315,6 +316,33 @@ fn inspect_appearance(
                     None => continue,
                 }
             }
+            _ => {
+                inspection.findings.push(unknown(None, &path));
+                continue;
+            }
+        };
+        inspection
+            .findings
+            .push(invalid(None, &path, &expected, value));
+    }
+}
+
+fn inspect_desktop(item: &Item, inspection: &mut Inspection) {
+    let Some(table) = item.as_table_like() else {
+        inspection
+            .findings
+            .push(invalid(None, &display_path(&["desktop"]), TABLE, item));
+        return;
+    };
+    for (key, value) in table.iter() {
+        let path = display_path(&["desktop", key]);
+        let expected = match key {
+            "tray" if value.as_bool().is_some() => continue,
+            "tray" => BOOL.to_owned(),
+            "close" => match value.as_str() {
+                Some(name) if CloseWindow::parse(name).is_some() => continue,
+                _ => expected_one_of(CloseWindow::ALL.map(CloseWindow::as_str)),
+            },
             _ => {
                 inspection.findings.push(unknown(None, &path));
                 continue;
