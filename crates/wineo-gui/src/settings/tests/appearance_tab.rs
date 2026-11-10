@@ -775,7 +775,7 @@ fn a_hand_edited_size_between_steps_is_used_and_listed() {
     assert_eq!(app.scale_factor(app.main_window.unwrap()), 2.0);
 }
 
-use crate::fonts::fixtures::{WIDE, install_wide};
+use crate::fonts::fixtures::{NO_LATIN, WIDE, install_no_latin, install_wide};
 use crate::fonts::{BUILT_IN, live};
 
 fn font_form(app: &App) -> &appearance::Form {
@@ -921,6 +921,52 @@ fn each_font_row_draws_in_its_own_family() {
     assert_eq!(
         label(0),
         crate::tile_title::line_width(appearance::BUILT_IN_LABEL, 14.0, iced::Font::DEFAULT)
+    );
+}
+
+#[test]
+fn a_font_row_whose_family_cant_draw_its_name_draws_in_the_built_in_font() {
+    use crate::fonts::checks;
+    use crate::layout_probe::{bounds_at, lay_out};
+    install_wide();
+    install_no_latin();
+    let (_root, paths) = setup();
+    let mut app = open_global_app(&paths);
+    show_appearance(&mut app);
+    let before = checks::so_far();
+    edit(&mut app, Edit::FontOpen);
+    let picker = font_form(&app).font_picker.clone().unwrap();
+    assert_eq!(
+        checks::so_far() - before,
+        picker.families.len(),
+        "one check per family as the list is built"
+    );
+    assert!(picker.rows().contains(&(NO_LATIN, Some(NO_LATIN))), "kept");
+    assert!(picker.fallback.contains(NO_LATIN));
+    assert!(!picker.fallback.contains(WIDE));
+
+    let size = iced::Size::new(260.0, 2000.0);
+    let checked = checks::so_far();
+    for _ in 0..2 {
+        let _ = lay_out(
+            appearance::font_popup(&picker, BUILT_IN, Palette::DARK),
+            size,
+        );
+    }
+    assert_eq!(checks::so_far(), checked, "drawing checks nothing again");
+
+    // The row draws in whatever font the list decided, so a family put in
+    // the fallback set by hand lays out as Noto Sans.
+    let mut decided = picker.clone();
+    decided.fallback.insert(WIDE);
+    let wide = decided.rows().iter().position(|row| row.0 == WIDE).unwrap();
+    let laid = lay_out(
+        appearance::font_popup(&decided, BUILT_IN, Palette::DARK),
+        size,
+    );
+    assert_eq!(
+        bounds_at(&laid.node, &[0, 1, 0, wide, 0]).width,
+        crate::tile_title::line_width(WIDE, 14.0, iced::Font::with_name(BUILT_IN))
     );
 }
 
@@ -1313,6 +1359,7 @@ fn a_reload_and_its_landing_close_the_font_dropdown() {
     page.appearance_mut().unwrap().font_picker = Some(appearance::FontPicker {
         query: String::new(),
         families: Vec::new(),
+        fallback: Default::default(),
         highlight: 0,
     });
     let _ = app.update(Message::Settings(Event::Loaded(

@@ -15,6 +15,7 @@ use std::sync::atomic::{AtomicU16, AtomicU64, Ordering};
 
 use iced::Font;
 use iced::advanced::graphics::text::cosmic_text::fontdb::{self, Database};
+use iced::advanced::graphics::text::cosmic_text::skrifa::{FontRef, GlyphId, MetadataProvider};
 use iced::advanced::graphics::text::font_system;
 use iced::font::Weight;
 
@@ -163,14 +164,22 @@ pub(crate) fn named() -> Font {
 
 /// The installed families a user can pick, by name, without the bundle's
 /// and without monospace ones, which stay the system's.
-pub(crate) fn families() -> Vec<&'static str> {
+pub(crate) struct Families {
+    pub(crate) names: Vec<&'static str>,
+    /// Those among `names` whose own faces can't draw their names, such as
+    /// CJK or Arabic fonts without Latin letters, so their rows show in the
+    /// bundle instead of empty boxes.
+    pub(crate) fallback: HashSet<&'static str>,
+}
+
+/// The families a user can pick, read from the font system now.
+pub(crate) fn families() -> Families {
     #[cfg(test)]
     install_once();
     let mut system = font_system().write().expect("font system lock");
+    let db = system.raw().db();
     let mut seen = HashSet::new();
-    let mut names: Vec<&'static str> = system
-        .raw()
-        .db()
+    let mut names: Vec<&'static str> = db
         .faces()
         .filter(|face| !face.monospaced)
         .filter_map(|face| face.families.first().map(|(name, _)| name.as_str()))
@@ -178,7 +187,60 @@ pub(crate) fn families() -> Vec<&'static str> {
         .map(intern)
         .collect();
     names.sort_by_cached_key(|name| (name.to_lowercase(), *name));
-    names
+    let fallback = names
+        .iter()
+        .copied()
+        .filter(|name| !draws_own_name(db, name))
+        .collect();
+    Families { names, fallback }
+}
+
+/// Whether the face `family` draws regular upright text with has a glyph for
+/// every character of its name but whitespace. A face that can't be found or
+/// read counts as not drawing it, since the bundle always can.
+fn draws_own_name(db: &Database, family: &str) -> bool {
+    #[cfg(test)]
+    checks::count();
+    let query = fontdb::Query {
+        families: &[fontdb::Family::Name(family)],
+        weight: fontdb::Weight::NORMAL,
+        stretch: fontdb::Stretch::Normal,
+        style: fontdb::Style::Normal,
+    };
+    let Some(id) = db.query(&query) else {
+        return false;
+    };
+    db.with_face_data(id, |data, index| {
+        let Ok(font) = FontRef::from_index(data, index) else {
+            return false;
+        };
+        let charmap = font.charmap();
+        family.chars().filter(|ch| !ch.is_whitespace()).all(|ch| {
+            charmap
+                .map(ch)
+                .is_some_and(|glyph| glyph != GlyphId::NOTDEF)
+        })
+    })
+    .unwrap_or(false)
+}
+
+/// Counts coverage checks on this thread, so tests can tell they run when
+/// the list is built and not when it draws.
+#[cfg(test)]
+pub(crate) mod checks {
+    use std::cell::Cell;
+
+    thread_local! {
+        static COUNT: Cell<usize> = const { Cell::new(0) };
+    }
+
+    pub(super) fn count() {
+        COUNT.set(COUNT.get() + 1);
+    }
+
+    pub(crate) fn so_far() -> usize {
+        COUNT.get()
+    }
 }
 
 /// Iced's own icon font, which has no letters.

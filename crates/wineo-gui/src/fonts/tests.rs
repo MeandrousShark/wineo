@@ -79,3 +79,45 @@ fn semibold_asks_for_the_heaviest_weight_up_to_semibold_a_family_has() {
     // The bundle has a semibold, so the app starts there.
     assert_eq!(semibold().weight, iced::font::Weight::Semibold);
 }
+
+#[test]
+fn a_family_draws_its_own_name_only_when_its_regular_face_covers_it() {
+    use super::fixtures::no_latin;
+    let mut db = Database::new();
+    db.load_font_source(Source::Binary(Arc::new(fake(
+        REGULAR,
+        "Covers Its Name",
+        400,
+    ))));
+    db.load_font_source(Source::Binary(Arc::new(no_latin(
+        REGULAR,
+        "Lacks Latin",
+        400,
+    ))));
+    // Only the bold face lacks the letters, and text asks for regular.
+    db.load_font_source(Source::Binary(Arc::new(fake(REGULAR, "Bold Lacks", 400))));
+    db.load_font_source(Source::Binary(Arc::new(no_latin(
+        REGULAR,
+        "Bold Lacks",
+        700,
+    ))));
+    assert!(draws_own_name(&db, "Covers Its Name"));
+    assert!(!draws_own_name(&db, "Lacks Latin"));
+    assert!(draws_own_name(&db, "Bold Lacks"));
+    // Noto Sans has no CJK, and no face at all can't draw anything.
+    db.load_font_source(Source::Binary(Arc::new(fake(REGULAR, "思源黑体", 400))));
+    assert!(!draws_own_name(&db, "思源黑体"));
+    assert!(!draws_own_name(&db, "Missing"));
+}
+
+#[test]
+fn whitespace_in_a_name_needs_no_glyph() {
+    use super::fixtures::no_latin;
+    let mut db = Database::new();
+    db.load_font_source(Source::Binary(Arc::new(no_latin(
+        REGULAR,
+        " \u{3000}",
+        400,
+    ))));
+    assert!(draws_own_name(&db, " \u{3000}"));
+}
