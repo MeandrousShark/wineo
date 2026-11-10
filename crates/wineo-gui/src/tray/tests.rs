@@ -831,3 +831,26 @@ fn a_stale_play_for_a_hidden_card_shows_it_instead_of_starting() {
     let _ = app.update(Message::Play);
     assert!(app.operation.is_some());
 }
+
+#[test]
+fn focus_coming_back_releases_a_held_error_only_into_a_free_panel() {
+    // Another card's panel is open, say from a blocked tray click.
+    let mut app = example();
+    let _ = app.update(app.window_event(window::Event::Unfocused));
+    let _ = app.update(Message::OpenCard("notepad".into()));
+    hold(&mut app, "hollow");
+    let _ = app.update(app.window_event(window::Event::Focused));
+    assert_eq!(app.selected.as_deref(), Some("notepad"));
+    assert_eq!(shown_error(&app), None);
+    assert!(app.tray.held_error.is_some());
+
+    // No panel open, so the held card's opens with it.
+    let mut app = example();
+    let _ = app.update(app.window_event(window::Event::Unfocused));
+    hold(&mut app, "hollow");
+    let _ = app.update(app.window_event(window::Event::Focused));
+    assert_eq!(app.selected.as_deref(), Some("hollow"));
+    assert!(app.panel_open);
+    assert_eq!(shown_error(&app), Some("it would not stop"));
+    assert!(app.tray.held_error.is_none());
+}

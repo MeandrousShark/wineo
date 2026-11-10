@@ -259,7 +259,12 @@ impl App {
         if self.main_window.is_none() || self.page_open() {
             return Task::none();
         }
-        if self.selected.as_deref() == Some(&name) && self.panel_open {
+        let own_panel = self.selected.as_deref() == Some(&name);
+        // Another card's open panel claims the window, so the error waits.
+        if self.panel_open && !own_panel {
+            return Task::none();
+        }
+        if own_panel && self.panel_open {
             self.show_held_error(&name);
             Task::none()
         } else {
