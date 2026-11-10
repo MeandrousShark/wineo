@@ -120,6 +120,12 @@ impl App {
         {
             self.force_stop_at = None;
         }
+        // Seen in the window, where nothing polls. A stop from the tray
+        // leaves the set to the poll, which can't bring the window back from
+        // an empty one.
+        if result.is_ok() && self.main_window.is_some() {
+            self.tray.hidden_for.remove(&name);
+        }
         let from_tray = self.tray.stopping.as_deref() == Some(&name);
         if from_tray {
             self.tray.stopping = None;

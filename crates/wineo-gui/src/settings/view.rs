@@ -8,7 +8,7 @@ use wineo_core::art::Kind;
 use wineo_core::components::Component;
 use wineo_core::config::{self, Arch};
 use wineo_core::key_store::KeySource;
-use wineo_core::library::{CloseWindow, Desktop, OnStart};
+use wineo_core::library::{CloseWindow, Desktop, OnStart, OnStop};
 
 use super::form::{self, Build, Choice, Field, GamescopeFields, List, Source, Switch};
 use super::global;
@@ -656,9 +656,26 @@ impl std::fmt::Display for OnStartChoice {
     }
 }
 
-/// The tray switch, what closing the window does, and what a start does to
-/// it. Both choices need the tray, so without it they stay in place, locked,
-/// with why.
+/// When everything stops' dropdown label.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct OnStopChoice(pub(super) OnStop);
+
+impl OnStopChoice {
+    pub(super) const ALL: [Self; 2] = [Self(OnStop::Restore), Self(OnStop::Show)];
+}
+
+impl std::fmt::Display for OnStopChoice {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self.0 {
+            OnStop::Restore => "Bring back a hidden window",
+            OnStop::Show => "Always show the window",
+        })
+    }
+}
+
+/// The tray switch, what closing the window does, what a start does to it,
+/// and what the last stop does. The choices need the tray, so without it
+/// they stay in place, locked, with why.
 fn desktop_rows<'a>(desktop: Desktop, locked: bool, palette: Palette) -> Element<'a, Message> {
     let needs_tray = locked || !desktop.tray;
     let close: Element<'a, Message> = if needs_tray {
@@ -689,6 +706,20 @@ fn desktop_rows<'a>(desktop: Desktop, locked: bool, palette: Palette) -> Element
         .wineo_style(palette)
         .into()
     };
+    let on_stop: Element<'a, Message> = if needs_tray {
+        locked_choice(&OnStopChoice(desktop.on_stop).to_string(), palette)
+    } else {
+        pick_list(
+            OnStopChoice::ALL,
+            Some(OnStopChoice(desktop.on_stop)),
+            |choice| send(Event::GlobalOnStop(choice.0)),
+        )
+        .on_open(send(Event::MenuOpened))
+        .on_close(send(Event::MenuClosed))
+        .width(CONTROL_WIDTH)
+        .wineo_style(palette)
+        .into()
+    };
     let mut rows = column![
         switch_row(
             "Show a tray icon",
@@ -701,6 +732,7 @@ fn desktop_rows<'a>(desktop: Desktop, locked: bool, palette: Palette) -> Element
         ),
         setting_row("Closing the window", close, None, palette),
         setting_row("When something starts", on_start, None, palette),
+        setting_row("When everything stops", on_stop, None, palette),
     ]
     .spacing(12);
     if !desktop.tray {
