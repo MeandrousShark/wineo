@@ -5,7 +5,7 @@ use std::collections::BTreeSet;
 
 use iced::window;
 use wineo_core::launch::StartOutcome;
-use wineo_core::library::{CloseWindow, Desktop, OnStart};
+use wineo_core::library::{CloseWindow, Desktop, OnStart, OnStop};
 
 use crate::panel::PanelError;
 use crate::sort_control::tests::run_counting;
@@ -315,17 +315,161 @@ fn a_cli_stop_of_what_the_window_hid_for_brings_it_back() {
     assert!(app.main_window.is_some());
 }
 
-#[test]
-fn a_start_while_keep_running_has_the_window_closed_joins_the_set() {
-    let mut app = hiding();
+/// The window closed by the user with Keep running, the way a close
+/// request does it.
+fn closed_by_the_user(app: &mut App) {
     app.desktop.close = CloseWindow::Tray;
     let _ = app.update(app.window_event(window::Event::CloseRequested));
     assert_eq!(app.main_window, None);
+    assert!(app.tray.hidden_for.is_empty());
+}
+
+#[test]
+fn a_start_while_keep_running_has_the_window_closed_leaves_it_closed() {
+    let mut app = hiding();
+    assert_eq!(app.desktop.on_stop, OnStop::Restore);
+    closed_by_the_user(&mut app);
+    let generation = app.tray.poll_generation;
+    tray_play(&mut app, "stardew", StartOutcome::Started);
+    assert_eq!(app.main_window, None);
+    assert!(app.tray.hidden_for.is_empty());
+    assert_eq!(app.tray.poll_generation, generation);
+    let _ = polled(&mut app, &["stardew"]);
+    let _ = polled(&mut app, &[]);
+    assert_eq!(app.main_window, None);
+}
+
+#[test]
+fn with_always_show_a_start_while_keep_running_has_the_window_closed_joins_the_set() {
+    let mut app = hiding();
+    app.desktop.on_stop = OnStop::Show;
+    closed_by_the_user(&mut app);
     tray_play(&mut app, "stardew", StartOutcome::Started);
     assert_eq!(app.main_window, None);
     assert_eq!(hidden_for(&app), ["stardew"]);
     let _ = polled(&mut app, &[]);
     assert!(app.main_window.is_some());
+    assert!(app.tray.hidden_for.is_empty());
+}
+
+#[test]
+fn always_show_brings_back_a_user_closed_window_with_the_window_kept_open() {
+    let mut app = example();
+    with_tray(&mut app);
+    app.desktop.on_stop = OnStop::Show;
+    assert_eq!(app.desktop.on_start, OnStart::Keep);
+    closed_by_the_user(&mut app);
+    let generation = app.tray.poll_generation;
+    tray_play(&mut app, "stardew", StartOutcome::Started);
+    assert_eq!(app.main_window, None);
+    assert_eq!(hidden_for(&app), ["stardew"]);
+    assert_eq!(app.tray.poll_generation, generation + 1);
+
+    // It waits for everything started from the app.
+    tray_play(&mut app, "notepad", StartOutcome::Started);
+    let _ = polled(&mut app, &["notepad"]);
+    assert_eq!(app.main_window, None);
+    let _ = polled(&mut app, &[]);
+    assert!(app.main_window.is_some());
+    assert!(app.focused);
+    assert!(app.tray.hidden_for.is_empty());
+}
+
+#[test]
+fn keeping_the_window_open_with_it_open_never_joins_under_either_stop_choice() {
+    for on_stop in OnStop::ALL {
+        let mut app = example();
+        with_tray(&mut app);
+        app.desktop.on_stop = on_stop;
+        let main = app.main_window;
+        window_play(&mut app, "stardew", StartOutcome::Started);
+        tray_play(&mut app, "notepad", StartOutcome::Started);
+        assert_eq!(app.main_window, main, "{on_stop:?}");
+        assert!(app.tray.hidden_for.is_empty(), "{on_stop:?}");
+    }
+}
+
+#[test]
+fn a_window_a_start_hid_comes_back_under_either_stop_choice() {
+    for on_stop in OnStop::ALL {
+        let mut app = hiding();
+        app.desktop.on_stop = on_stop;
+        window_play(&mut app, "stardew", StartOutcome::Started);
+        assert_eq!(app.main_window, None, "{on_stop:?}");
+        // A start while it's hidden joins the set under either choice.
+        tray_play(&mut app, "notepad", StartOutcome::Started);
+        assert_eq!(hidden_for(&app), ["notepad", "stardew"], "{on_stop:?}");
+        let _ = polled(&mut app, &["notepad"]);
+        assert_eq!(app.main_window, None, "{on_stop:?}");
+        let _ = polled(&mut app, &[]);
+        assert!(app.main_window.is_some(), "{on_stop:?}");
+    }
+}
+
+#[test]
+fn the_users_open_ends_a_return_always_show_was_waiting_for() {
+    let mut app = hiding();
+    app.desktop.on_stop = OnStop::Show;
+    closed_by_the_user(&mut app);
+    tray_play(&mut app, "stardew", StartOutcome::Started);
+    assert_eq!(hidden_for(&app), ["stardew"]);
+    let _ = app.update(Message::Tray(Event::Open));
+    assert!(app.main_window.is_some());
+    assert!(app.tray.hidden_for.is_empty());
+    let main = app.main_window;
+    let _ = polled(&mut app, &[]);
+    assert_eq!(app.main_window, main);
+}
+
+#[test]
+fn losing_the_tray_brings_back_a_window_always_show_was_waiting_for() {
+    let mut app = hiding();
+    app.desktop.on_stop = OnStop::Show;
+    closed_by_the_user(&mut app);
+    tray_play(&mut app, "stardew", StartOutcome::Started);
+    let _ = app.update(Message::Tray(Event::Available(false)));
+    assert!(app.main_window.is_some());
+    assert!(app.tray.hidden_for.is_empty());
+}
+
+#[test]
+fn losing_the_tray_brings_back_a_user_closed_window_with_restore() {
+    let mut app = hiding();
+    closed_by_the_user(&mut app);
+    tray_play(&mut app, "stardew", StartOutcome::Started);
+    let _ = app.update(Message::Tray(Event::Available(false)));
+    assert!(app.main_window.is_some());
+}
+
+#[test]
+fn always_show_without_a_tray_joins_nothing() {
+    let mut app = example();
+    app.tray.service = true;
+    app.tray.available = false;
+    app.desktop = Desktop {
+        close: CloseWindow::Tray,
+        on_stop: OnStop::Show,
+        ..Desktop::default()
+    };
+    app.main_window = None;
+    started(&mut app, "stardew", StartOutcome::Started);
+    assert!(app.tray.hidden_for.is_empty());
+}
+
+#[test]
+fn only_a_start_wineo_runs_itself_joins_a_window_always_show_waits_for() {
+    for outcome in [
+        StartOutcome::AlreadyRunning,
+        StartOutcome::SteamAlreadyRunning,
+        StartOutcome::SteamRequested,
+        StartOutcome::SteamAdopted,
+    ] {
+        let mut app = hiding();
+        app.desktop.on_stop = OnStop::Show;
+        closed_by_the_user(&mut app);
+        tray_play(&mut app, "stardew", outcome);
+        assert!(app.tray.hidden_for.is_empty(), "{outcome:?}");
+    }
 }
 
 #[test]

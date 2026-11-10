@@ -166,8 +166,9 @@ pub(crate) struct Tray {
     pub(crate) stopping: Option<String>,
     /// A tray stop's error, kept until the window shows.
     pub(crate) held_error: Option<(String, PanelError)>,
-    /// What the window is hidden for with Hide to the tray: it comes back
-    /// once the poll sees all of them stopped.
+    /// What the window comes back for once the poll sees all of them
+    /// stopped: what a hide closed it for, or with Always show the window,
+    /// what started while the user had it closed.
     pub(crate) hidden_for: BTreeSet<String>,
     /// Bumped by each hide, which restarts the poll so its first reading
     /// always arrives, and tells a reading from before the hide apart.

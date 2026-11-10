@@ -1,21 +1,22 @@
-//! Hide to the tray (plan 0063): a start the app runs closes the window,
-//! and it comes back once everything it hid for has stopped.
+//! Hide to the tray (plan 0063): a start the app runs can close the window,
+//! and it comes back once everything it hid for has stopped. When everything
+//! stops can also open a window the user closed themselves.
 
 use std::collections::BTreeSet;
 
 use iced::Task;
 use wineo_core::launch::StartOutcome;
-use wineo_core::library::OnStart;
+use wineo_core::library::{OnStart, OnStop};
 
 use crate::{App, Message};
 
 impl App {
     /// A start the app ran, from the window or the tray, has finished. Only
-    /// one wineo runs itself hides the window: AlreadyRunning and Steam's
-    /// answers leave it alone (answer 13), and a CLI start never gets here.
+    /// one wineo runs itself counts: AlreadyRunning and Steam's answers
+    /// leave the window alone (answer 13), and a CLI start never gets here.
     pub(crate) fn hide_for_start(&mut self, name: &str, outcome: StartOutcome) -> Task<Message> {
         if outcome != StartOutcome::Started
-            || self.desktop.on_start != OnStart::Hide
+            || !self.joins_the_hide()
             // Without a tray to come back from, the window stays.
             || !self.tray_shown()
             // A close question needs the window to be answered.
@@ -30,8 +31,20 @@ impl App {
         // reading brings the window back, and a reading from before this
         // start can't.
         self.tray.poll_generation += 1;
-        // A window that's already hidden stays hidden.
+        // A window that's already closed stays closed.
         self.hide_window()
+    }
+
+    /// Whether a start has the window come back when it's over. A hide
+    /// closes an open window, and a window it closed already has everything
+    /// that started since in its set. A window the user closed (Keep
+    /// running, nothing hidden for) only returns when Always show the window
+    /// says so, with either When something starts choice.
+    fn joins_the_hide(&self) -> bool {
+        if self.main_window.is_some() {
+            return self.desktop.on_start == OnStart::Hide;
+        }
+        !self.tray.hidden_for.is_empty() || self.desktop.on_stop == OnStop::Show
     }
 
     /// The light poll's reading: when it's from since the last hide and
