@@ -10,7 +10,7 @@ use iced::widget::{
 };
 use iced::{Center, Element, Fill, Shrink, Task};
 use wineo_core::cancel::Token;
-use wineo_core::config::{Arch, GamescopeSetting, GlobalConfig};
+use wineo_core::config::{Arch, GamescopeSetting, GlobalConfig, title_problem};
 use wineo_core::create::{self, AfterInstall, CreateEvent, CreateRequest, Stepped, TargetOutcome};
 use wineo_core::desktop;
 use wineo_core::download::{Client, Provider};
@@ -205,7 +205,8 @@ impl Draft {
         }
     }
 
-    /// What the desktop entry is called, when the title says anything.
+    /// What the desktop entry is called and what the card shows, when the
+    /// title says anything.
     fn target_title(&self) -> Option<String> {
         let title = self.title.trim();
         (!title.is_empty()).then(|| title.to_owned())
@@ -469,6 +470,14 @@ impl Page {
             return Err(format!(
                 "An environment named {name} already exists. Open its Settings from the library."
             ));
+        }
+        // Core refuses a title with control characters at create. A title over
+        // the card's length is left alone here: the name above cuts a long one.
+        if let Some(title) = self.draft.target_title()
+            && title.chars().any(char::is_control)
+            && let Some(problem) = title_problem(&title)
+        {
+            return Err(problem);
         }
         if self.draft.source != Source::Empty && self.draft.path.trim().is_empty() {
             return Err("Choose an executable or installer".to_owned());
@@ -1944,6 +1953,7 @@ fn prepare(paths: &Paths, draft: &Draft) -> Result<Review, String> {
                 arch: draft.arch,
                 template: template.clone(),
                 gog_id: None,
+                title: None,
             }
             .prefix_dir(paths, &global)
             .map_err(|error| error.to_string())?;
@@ -1975,6 +1985,7 @@ fn prepare(paths: &Paths, draft: &Draft) -> Result<Review, String> {
         arch: Some(arch),
         template: template.clone(),
         gog_id: None,
+        title: None,
     }
     .prefix_dir(paths, &global)
     .map_err(|error| error.to_string())?;
@@ -2064,6 +2075,7 @@ fn create_request(draft: &Draft, review: Review, runner: Runner) -> CreateReques
         template: review.template,
         exe: (draft.source == Source::Executable).then(|| draft.path.clone()),
         target_name: draft.target_title(),
+        title: draft.target_title(),
         desktop: draft.desktop,
         expected_adopted: Some(review.adopted),
         ..CreateRequest::default()
@@ -2107,6 +2119,7 @@ fn perform(
             &global,
             name,
             exe,
+            draft.target_title().as_deref(),
             draft.target_title().as_deref(),
             draft.desktop,
             |warning| report.notes.push(warning),

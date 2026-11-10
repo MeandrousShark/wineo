@@ -83,6 +83,9 @@ pub struct NewEnvironment {
     pub template: Option<Template>,
     /// The GOG game it runs, recorded in the same write as the rest.
     pub gog_id: Option<String>,
+    /// The person's own title for the card, written as the `title` key. None
+    /// writes no key.
+    pub title: Option<String>,
 }
 
 impl NewEnvironment {
@@ -223,6 +226,8 @@ impl Environment {
         mut events: impl FnMut(PrefixEvent),
     ) -> Result<Self> {
         check_new_name(paths, &new.name)?;
+        // Before the prefix is built, so a bad title doesn't cost a build.
+        let title = new.title.as_deref().map(normalize_env_title).transpose()?;
         let path = paths.environment_config(&new.name);
         let _runner_guard = build_lock::runner(paths, runner)?;
         let dir = new.prefix_dir(paths, global)?;
@@ -269,6 +274,9 @@ impl Environment {
         }
         if let Some(gog_id) = &new.gog_id {
             doc["gog_id"] = value(gog_id.as_str());
+        }
+        if let Some(title) = title {
+            doc["title"] = value(title);
         }
         let _guard = Locks::new(paths).config(&path)?;
         let _build_guards = build_lock::config(
@@ -323,24 +331,31 @@ impl Environment {
         desktop: bool,
         warnings: impl FnMut(String),
     ) -> Result<Self> {
-        Self::create_native_titled(paths, global, name, exe, None, desktop, warnings)
+        Self::create_native_titled(paths, global, name, exe, None, None, desktop, warnings)
     }
 
     /// Like `create_native`, with `title` naming the default target's desktop
-    /// entry instead of the environment.
+    /// entry instead of the environment, and `environment_title` written as
+    /// the environment's own `title` for its card.
+    #[allow(clippy::too_many_arguments)]
     pub fn create_native_titled(
         paths: &Paths,
         global: &GlobalConfig,
         name: &str,
         exe: Option<&str>,
         title: Option<&str>,
+        environment_title: Option<&str>,
         desktop: bool,
         mut warnings: impl FnMut(String),
     ) -> Result<Self> {
         Self::plan_native(paths, global, name, exe)?;
+        let environment_title = environment_title.map(normalize_env_title).transpose()?;
         let path = paths.environment_config(name);
         let mut doc = config::new_document();
         doc["kind"] = value("native");
+        if let Some(title) = environment_title {
+            doc["title"] = value(title);
+        }
         if let Some(exe) = exe {
             let mut table = toml_edit::Table::new();
             table["exe"] = value(paths.store_value(exe)?);
@@ -795,6 +810,12 @@ fn check_overlap(paths: &Paths, name: &str, prefix: &Path, allow_equal: bool) ->
         return Err(Error::UnreadableEnvironments(unreadable));
     }
     Ok(())
+}
+
+/// A title for the card as a person typed it, refused with the config rules'
+/// own message.
+pub(crate) fn normalize_env_title(raw: &str) -> Result<String> {
+    config::normalize_title(raw).map_err(|message| edit::EditError::Refused(message).into())
 }
 
 pub(crate) fn check_new_name(paths: &Paths, name: &str) -> Result<()> {

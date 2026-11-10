@@ -247,6 +247,157 @@ fn native_executable_titles_its_target() {
     );
 }
 
+fn card_title_of(paths: &Paths, name: &str) -> String {
+    crate::library::load_library(paths)
+        .unwrap()
+        .into_iter()
+        .find(|card| card.name == name)
+        .unwrap()
+        .display_title
+}
+
+fn read_config(paths: &Paths, name: &str) -> String {
+    fs::read_to_string(paths.environment_config(name)).unwrap()
+}
+
+#[test]
+fn an_empty_windows_registration_shows_the_typed_name_on_its_card() {
+    let root = tempfile::tempdir().unwrap();
+    let paths =
+        Paths::from_lookup(|key| (key == "HOME").then(|| OsString::from(root.path()))).unwrap();
+    fake_runner(&paths);
+    let draft = Draft {
+        title: "Hollow Knight".to_owned(),
+        runner: "fake".to_owned(),
+        ..Draft::default()
+    };
+    let review = prepare(&paths, &draft).unwrap();
+    let report = perform(
+        &paths,
+        draft,
+        review,
+        artwork::Draft::new(),
+        Token::new(),
+        |_| {},
+        |_| {},
+    );
+    assert!(report.registered, "{:?}", report.notes);
+    assert!(read_config(&paths, "hollow-knight").contains("title = \"Hollow Knight\"\n"));
+    assert_eq!(card_title_of(&paths, "hollow-knight"), "Hollow Knight");
+}
+
+#[test]
+fn an_empty_native_registration_shows_the_typed_name_on_its_card() {
+    let root = tempfile::tempdir().unwrap();
+    let paths =
+        Paths::from_lookup(|key| (key == "HOME").then(|| OsString::from(root.path()))).unwrap();
+    let draft = Draft {
+        title: "Hollow Knight".to_owned(),
+        kind: Kind::Native,
+        ..Draft::default()
+    };
+    let review = prepare(&paths, &draft).unwrap();
+    let report = perform(
+        &paths,
+        draft,
+        review,
+        artwork::Draft::new(),
+        Token::new(),
+        |_| {},
+        |_| {},
+    );
+    assert!(report.registered, "{:?}", report.notes);
+    assert!(read_config(&paths, "hollow-knight").contains("title = \"Hollow Knight\"\n"));
+    assert_eq!(card_title_of(&paths, "hollow-knight"), "Hollow Knight");
+}
+
+#[test]
+fn executables_without_a_desktop_entry_still_show_the_typed_name() {
+    let root = tempfile::tempdir().unwrap();
+    let paths =
+        Paths::from_lookup(|key| (key == "HOME").then(|| OsString::from(root.path()))).unwrap();
+    fake_runner(&paths);
+    let exe = root.path().join("game.exe");
+    fs::write(&exe, "").unwrap();
+    let draft = Draft {
+        title: "Hollow Knight".to_owned(),
+        source: Source::Executable,
+        path: exe.display().to_string(),
+        runner: "fake".to_owned(),
+        desktop: false,
+        ..Draft::default()
+    };
+    let review = prepare(&paths, &draft).unwrap();
+    let runner = review.runner.clone().unwrap();
+    let request = create_request(&draft, review.clone(), runner);
+    assert_eq!(request.title.as_deref(), Some("Hollow Knight"));
+    let report = perform(
+        &paths,
+        draft,
+        review,
+        artwork::Draft::new(),
+        Token::new(),
+        |_| {},
+        |_| {},
+    );
+    assert!(report.registered, "{:?}", report.notes);
+    assert_eq!(card_title_of(&paths, "hollow-knight"), "Hollow Knight");
+}
+
+#[test]
+fn an_installer_target_added_with_desktop_off_keeps_the_typed_name() {
+    let root = tempfile::tempdir().unwrap();
+    let paths =
+        Paths::from_lookup(|key| (key == "HOME").then(|| OsString::from(root.path()))).unwrap();
+    fake_runner(&paths);
+    let installer = root.path().join("setup.msi");
+    fs::write(&installer, "fixture").unwrap();
+    let draft = Draft {
+        title: "Hollow Knight".to_owned(),
+        source: Source::Installer,
+        path: installer.display().to_string(),
+        runner: "fake".to_owned(),
+        ..Draft::default()
+    };
+    let review = prepare(&paths, &draft).unwrap();
+    let report = perform(
+        &paths,
+        draft.clone(),
+        review,
+        artwork::Draft::new(),
+        Token::new(),
+        |_| {},
+        |_| {},
+    );
+    assert!(report.registered, "{:?}", report.notes);
+
+    // The Target step's own write, with "Create desktop entry" left off.
+    let environment = Environment::load(&paths, "hollow-knight").unwrap();
+    let mut batch = Batch::new(environment.config.targets);
+    batch
+        .add(
+            "hollow-knight",
+            target_spec("C:\\Game\\game.exe".to_owned(), draft.target_title(), false),
+        )
+        .unwrap();
+    batch.set_default(Some("hollow-knight"));
+    assert!(matches!(
+        targets::write(&paths, "hollow-knight", &batch).unwrap(),
+        Written::Saved
+    ));
+    assert_eq!(card_title_of(&paths, "hollow-knight"), "Hollow Knight");
+}
+
+#[test]
+fn a_name_with_control_characters_is_refused_with_the_core_message() {
+    let mut page = page();
+    let _ = page.update(Event::Name("Hollow\u{7}Knight".to_owned()));
+    assert_eq!(
+        page.validate().unwrap_err(),
+        "Invalid title: can't contain control characters."
+    );
+}
+
 #[test]
 fn native_creation_keeps_library_warning_in_report() {
     let root = tempfile::tempdir().unwrap();

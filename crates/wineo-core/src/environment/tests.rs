@@ -929,3 +929,43 @@ fn tags_lists_distinct_tags_of_readable_environments_with_one_trash_scan() {
     // Each manifest is read once, not once per environment.
     assert_eq!(crate::trash::take_manifest_reads(), 5);
 }
+
+#[test]
+fn native_creation_writes_the_environment_title_only_when_given() {
+    let root = tempfile::tempdir().unwrap();
+    let paths = test_paths(root.path());
+    let global = GlobalConfig::default();
+    let titled = Environment::create_native_titled(
+        &paths,
+        &global,
+        "hollow-knight",
+        None,
+        None,
+        Some(" Hollow Knight "),
+        false,
+        |_| {},
+    )
+    .unwrap();
+    assert_eq!(titled.config.title.as_deref(), Some("Hollow Knight"));
+    let text = fs::read_to_string(paths.environment_config("hollow-knight")).unwrap();
+    assert!(text.contains("title = \"Hollow Knight\"\n"), "{text}");
+
+    Environment::create_native(&paths, &global, "plain", None, false, |_| {}).unwrap();
+    // Exact bytes, so `wineo new` configs stay as they were.
+    let text = fs::read_to_string(paths.environment_config("plain")).unwrap();
+    assert_eq!(text, "schema_version = 1\nkind = \"native\"\n");
+
+    let error = Environment::create_native_titled(
+        &paths,
+        &global,
+        "bad",
+        None,
+        None,
+        Some("a\u{7}b"),
+        false,
+        |_| {},
+    )
+    .unwrap_err();
+    assert!(error.to_string().starts_with("Invalid title:"), "{error}");
+    assert!(!paths.environment_config("bad").exists());
+}
