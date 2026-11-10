@@ -625,8 +625,25 @@ impl Page {
             _ => None,
         }
     }
+    /// Whether a pick list's menu or the Font dropdown is open, which holds
+    /// Escape and the sidebar.
+    fn any_menu_open(&self) -> bool {
+        self.menu_open
+            || self
+                .appearance()
+                .is_some_and(|form| form.font_picker.is_some())
+    }
+    /// Closes the Font dropdown, and the menu it counted as, so no path
+    /// leaves it open where it doesn't show.
+    pub(super) fn close_font_picker(&mut self) {
+        if let Some(form) = self.appearance_mut()
+            && form.font_picker.take().is_some()
+        {
+            self.menu_open = false;
+        }
+    }
     pub(crate) fn navigation_blocked(&self) -> bool {
-        self.leave_prompt || self.menu_open || self.locked()
+        self.leave_prompt || self.any_menu_open() || self.locked()
     }
     pub(crate) fn changes(&self) -> usize {
         match &self.view {
@@ -691,10 +708,7 @@ impl Page {
         }
         self.drop_checks();
         self.menu_open = false;
-        // It counts as a menu, so it closes with them.
-        if let Some(form) = self.appearance_mut() {
-            form.font_picker = None;
-        }
+        self.close_font_picker();
         self.pending = Some(Pending {
             mode,
             draft: self.editor().map(|editor| editor.form.draft.clone()),
@@ -1033,7 +1047,8 @@ impl App {
         let Some(page) = &self.settings else {
             return Task::none();
         };
-        let (prompt, menu_open, global) = (page.leave_prompt, page.menu_open, page.is_global());
+        let (prompt, menu_open, global) =
+            (page.leave_prompt, page.any_menu_open(), page.is_global());
         match key.as_ref() {
             Key::Character(character)
                 if modifiers.control() && character.eq_ignore_ascii_case("s") =>

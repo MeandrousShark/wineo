@@ -1211,3 +1211,57 @@ fn the_highlighted_font_row_draws_the_focus_outline_not_a_tint() {
         );
     }
 }
+
+#[test]
+fn revert_closes_the_font_dropdown_and_unblocks_the_page() {
+    let (_root, paths) = setup();
+    let mut app = open_global_app(&paths);
+    show_appearance(&mut app);
+    edit(&mut app, Edit::InterfaceSize(125));
+    edit(&mut app, Edit::FontOpen);
+    assert!(page_of(&app).navigation_blocked());
+    let _ = app.update(Message::Settings(Event::Revert));
+    assert!(font_form(&app).font_picker.is_none());
+    assert!(!page_of(&app).menu_open);
+    assert!(!page_of(&app).navigation_blocked());
+}
+
+#[test]
+fn switching_tabs_closes_the_font_dropdown() {
+    let (_root, paths) = setup();
+    let mut app = open_global_app(&paths);
+    show_appearance(&mut app);
+    edit(&mut app, Edit::FontOpen);
+    let _ = app.update(Message::Settings(Event::Tab(Tab::General)));
+    assert!(font_form(&app).font_picker.is_none());
+    assert!(!page_of(&app).navigation_blocked());
+    show_appearance(&mut app);
+    assert!(
+        font_form(&app).font_picker.is_none(),
+        "it comes back closed"
+    );
+}
+
+#[test]
+fn starting_a_save_closes_the_font_dropdown() {
+    let (_root, paths) = setup();
+    let mut app = open_global_app(&paths);
+    show_appearance(&mut app);
+    edit(&mut app, Edit::InterfaceSize(125));
+    edit(&mut app, Edit::FontOpen);
+    // Before the save's task runs, so a refused save can't show it again.
+    let _ = app.update(Message::Settings(Event::Save));
+    assert!(page_of(&app).saving);
+    assert!(font_form(&app).font_picker.is_none());
+    assert!(!page_of(&app).menu_open);
+}
+
+#[test]
+fn an_open_font_dropdown_holds_navigation_without_the_menu_flag() {
+    let (_root, paths) = setup();
+    let mut app = open_global_app(&paths);
+    show_appearance(&mut app);
+    edit(&mut app, Edit::FontOpen);
+    app.settings.as_mut().unwrap().menu_open = false;
+    assert!(page_of(&app).navigation_blocked());
+}

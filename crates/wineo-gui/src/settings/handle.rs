@@ -439,6 +439,7 @@ impl Page {
     }
     fn land(&mut self, pending: Pending, snapshot: Snapshot) {
         self.menu_open = false;
+        self.close_font_picker();
         let draft = self.editor().map(|editor| &editor.form.draft);
         let global_draft = match &self.view {
             View::Global(editor) => Some(&editor.form.draft),
