@@ -255,6 +255,17 @@ impl Page {
                 }
                 Step::none()
             }
+            // Bringing a window back needs the tray, like Keep running.
+            Event::GlobalOnStop(_) if matches!(&self.view, View::Global(editor) if !editor.form.draft.desktop.tray) => {
+                Step::none()
+            }
+            Event::GlobalOnStop(on_stop) => {
+                self.edited();
+                if let View::Global(editor) = &mut self.view {
+                    editor.form.draft.desktop.on_stop = on_stop;
+                }
+                Step::none()
+            }
             Event::GlobalArtKind(kind, on) => {
                 if let View::Global(editor) = &self.view {
                     let fetch = editor.form.draft.art_fetch.with(kind, on);
@@ -436,6 +447,7 @@ impl Page {
                     | Event::GlobalTray(_)
                     | Event::GlobalClose(_)
                     | Event::GlobalOnStart(_)
+                    | Event::GlobalOnStop(_)
                     | Event::Appearance(_)
                     | Event::EnvKey(..)
                     | Event::EnvValue(..)
@@ -461,6 +473,7 @@ impl Page {
                     | Event::GlobalTray(_)
                     | Event::GlobalClose(_)
                     | Event::GlobalOnStart(_)
+                    | Event::GlobalOnStop(_)
                     | Event::Appearance(_)
             )
         {

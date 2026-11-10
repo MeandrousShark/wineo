@@ -238,6 +238,9 @@ impl Form {
         if self.draft.desktop.on_start == self.loaded.desktop.on_start {
             self.draft.desktop.on_start = values.desktop.on_start;
         }
+        if self.draft.desktop.on_stop == self.loaded.desktop.on_stop {
+            self.draft.desktop.on_stop = values.desktop.on_stop;
+        }
         self.loaded = values;
     }
     pub(crate) fn set_switch(&mut self, key: Switch, on: bool) {
@@ -268,6 +271,7 @@ impl Form {
             + usize::from(self.draft.desktop.tray != self.loaded.desktop.tray)
             + usize::from(self.draft.desktop.close != self.loaded.desktop.close)
             + usize::from(self.draft.desktop.on_start != self.loaded.desktop.on_start)
+            + usize::from(self.draft.desktop.on_stop != self.loaded.desktop.on_stop)
     }
     /// What to save to `library.toml`, if anything changed there.
     pub(crate) fn library_edits(&self) -> super::load::LibraryEdits {

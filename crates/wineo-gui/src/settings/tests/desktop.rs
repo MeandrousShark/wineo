@@ -1,7 +1,7 @@
 //! The General tab's Desktop section: Show a tray icon, Closing the window,
-//! and When something starts, saved to `library.toml`'s `[desktop]`.
+//! When something starts, and When everything stops, saved to `library.toml`'s `[desktop]`.
 
-use wineo_core::library::{CloseWindow, Desktop, OnStart};
+use wineo_core::library::{CloseWindow, Desktop, OnStart, OnStop};
 
 use super::*;
 
@@ -96,6 +96,7 @@ fn an_environment_page_ignores_the_desktop_section() {
     let _ = page.update(&paths, Event::GlobalTray(false));
     let _ = page.update(&paths, Event::GlobalClose(CloseWindow::Tray));
     let _ = page.update(&paths, Event::GlobalOnStart(OnStart::Hide));
+    let _ = page.update(&paths, Event::GlobalOnStop(OnStop::Show));
     assert!(!page.is_dirty());
     assert_eq!(page.desktop(), None);
 }
@@ -242,4 +243,96 @@ fn another_windows_on_start_save_moves_an_untouched_control() {
     let form = &global_editor(&page).form;
     assert_eq!(form.draft.desktop.on_start, OnStart::Hide);
     assert_eq!(form.draft.desktop.close, CloseWindow::Tray);
+}
+
+#[test]
+fn when_everything_stops_defaults_to_restore_and_saves_show() {
+    let (_root, paths) = setup();
+    let mut page = global_page(&paths);
+    assert_eq!(desktop(&page).on_stop, OnStop::Restore);
+    let _ = page.update(&paths, Event::GlobalOnStop(OnStop::Show));
+    assert_eq!(page.changes(), 1);
+    assert!(global_editor(&page).form.edits().is_empty());
+    assert!(save_desktop(&paths, &page).failed.is_none());
+    let saved = wineo_core::library::load(&paths).desktop;
+    assert_eq!(saved.on_stop, OnStop::Show);
+    assert_eq!(
+        (saved.tray, saved.close, saved.on_start),
+        (true, CloseWindow::Quit, OnStart::Keep)
+    );
+    assert_eq!(
+        fs::read_to_string(paths.library_file()).unwrap(),
+        "schema_version = 1\n\n[desktop]\non_stop = \"show\"\n"
+    );
+
+    let page = global_page(&paths);
+    assert_eq!(desktop(&page).on_stop, OnStop::Show);
+    assert!(!page.is_dirty());
+}
+
+#[test]
+fn when_everything_stops_is_locked_while_the_tray_is_off() {
+    let (_root, paths) = setup();
+    let mut page = global_page(&paths);
+    let _ = page.update(&paths, Event::GlobalTray(false));
+    let _ = page.update(&paths, Event::GlobalOnStop(OnStop::Show));
+    assert_eq!(desktop(&page).on_stop, OnStop::Restore);
+    assert_eq!(page.changes(), 1);
+    let _ = page.update(&paths, Event::GlobalTray(true));
+    let _ = page.update(&paths, Event::GlobalOnStop(OnStop::Show));
+    assert_eq!(desktop(&page).on_stop, OnStop::Show);
+    assert_eq!(page.changes(), 1);
+
+    // Turning the tray off keeps the choice as made, locked.
+    let _ = page.update(&paths, Event::GlobalTray(false));
+    assert_eq!(desktop(&page).on_stop, OnStop::Show);
+    let _ = page.update(&paths, Event::GlobalOnStop(OnStop::Restore));
+    assert_eq!(desktop(&page).on_stop, OnStop::Show);
+}
+
+#[test]
+fn the_on_stop_choice_reads_as_the_plan_says() {
+    assert_eq!(
+        super::super::view::OnStopChoice::ALL.map(|choice| choice.to_string()),
+        ["Bring back a hidden window", "Always show the window"]
+    );
+}
+
+#[test]
+fn another_windows_on_stop_save_moves_an_untouched_control() {
+    let (_root, paths) = setup();
+    let mut page = global_page(&paths);
+    let _ = page.update(&paths, Event::GlobalClose(CloseWindow::Tray));
+    wineo_core::library::set_desktop(
+        &paths,
+        &Desktop {
+            on_stop: OnStop::Show,
+            ..Desktop::default()
+        },
+    )
+    .unwrap();
+    let sequence = start_check(&mut page);
+    let _ = page.update(
+        &paths,
+        Event::Checked(1, sequence, Texts::read_global(&paths)),
+    );
+    let _ = page.update(&paths, Event::Loaded(1, load::snapshot_global(&paths)));
+    let form = &global_editor(&page).form;
+    assert_eq!(form.draft.desktop.on_stop, OnStop::Show);
+    assert_eq!(form.draft.desktop.close, CloseWindow::Tray);
+
+    // A control the user changed keeps the edit.
+    let mut page = global_page(&paths);
+    let _ = page.update(&paths, Event::GlobalOnStop(OnStop::Restore));
+    wineo_core::library::set_desktop(&paths, &Desktop::default()).unwrap();
+    let sequence = start_check(&mut page);
+    let _ = page.update(
+        &paths,
+        Event::Checked(1, sequence, Texts::read_global(&paths)),
+    );
+    let _ = page.update(&paths, Event::Loaded(1, load::snapshot_global(&paths)));
+    assert_eq!(
+        global_editor(&page).form.draft.desktop.on_stop,
+        OnStop::Restore
+    );
 }

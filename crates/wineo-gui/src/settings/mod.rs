@@ -82,6 +82,8 @@ pub(crate) enum Event {
     GlobalClose(wineo_core::library::CloseWindow),
     /// Desktop's When something starts.
     GlobalOnStart(wineo_core::library::OnStart),
+    /// Desktop's When everything stops.
+    GlobalOnStop(wineo_core::library::OnStop),
     /// An edit on the Appearance tab, which the app previews at once.
     Appearance(appearance::Edit),
     /// Opens a folder picker for the Games folder.
@@ -272,6 +274,7 @@ impl Event {
                 | Event::GlobalTray(_)
                 | Event::GlobalClose(_)
                 | Event::GlobalOnStart(_)
+                | Event::GlobalOnStop(_)
                 | Event::Appearance(_)
                 | Event::Target(..)
                 | Event::ProgramPicked(_)
