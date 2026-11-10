@@ -212,13 +212,12 @@ environment name, and sorting by name uses the shown title. The CLI keeps
 using the environment name, which is what commands take.
 
 Wineo writes a title for you in two places: the Steam import's fallback, and
-the desktop app's new environment flow, which saves the typed Name. A
-title is trimmed, can't be empty, can't hold control characters, and is at
-most 120 characters (counted as characters, not bytes). Any other Unicode is
+the desktop app's new environment flow, which saves the typed Name. A title
+is trimmed, can't be empty, can't hold control characters, and is at most
+120 characters (counted as characters, not bytes). Any other Unicode is
 fine. `wineo set`, the Settings page, and the new environment flow enforce
-those rules. A title written
-by hand that breaks them still loads, and `wineo validate` warns about it
-(`title_invalid`) without changing the file.
+those rules. A title written by hand that breaks them still loads, and
+`wineo validate` warns about it (`title_invalid`) without changing the file.
 
 ```sh
 wineo set rimworld title=RimWorld
