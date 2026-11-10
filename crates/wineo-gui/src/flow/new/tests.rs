@@ -2,6 +2,7 @@ use crate::test_script::write_script;
 use std::ffi::OsString;
 
 use super::*;
+use wineo_core::config::TITLE_MAX_CHARS;
 
 fn page() -> Page {
     let root = tempfile::tempdir().unwrap();
@@ -153,9 +154,11 @@ fn edited_environment_name_stops_following_the_title_until_cleared() {
 }
 
 #[test]
-fn a_long_override_is_refused_but_a_long_title_is_cut() {
+fn a_long_override_is_refused_but_a_long_name_is_cut() {
     let mut page = page();
-    let _ = page.update(Event::Name("word ".repeat(100)));
+    // Within the title limit but well past the environment name's.
+    let _ = page.update(Event::Name("word ".repeat(20)));
+    assert!(page.draft.title.trim().len() > name::TITLE_MAX);
     assert!(page.draft.environment_name().len() <= name::TITLE_MAX);
     assert!(page.validate().is_ok());
 
@@ -396,6 +399,69 @@ fn a_name_with_control_characters_is_refused_with_the_core_message() {
         page.validate().unwrap_err(),
         "Invalid title: can't contain control characters."
     );
+}
+
+#[test]
+fn a_name_at_the_title_limit_is_written_as_the_title() {
+    let root = tempfile::tempdir().unwrap();
+    let paths =
+        Paths::from_lookup(|key| (key == "HOME").then(|| OsString::from(root.path()))).unwrap();
+    // Two-byte characters, so the limit is counted in characters, not bytes.
+    let title = "\u{e9}".repeat(TITLE_MAX_CHARS);
+    let mut page = Page::new(paths.clone()).0;
+    let _ = page.update(Event::Kind(Kind::Native));
+    let _ = page.update(Event::Name(title.clone()));
+    // The name can't come from letters like these, so it is typed.
+    let _ = page.update(Event::EnvironmentName("long-title".to_owned()));
+    assert_eq!(page.validate(), Ok(()));
+    let _ = page.update(Event::Next);
+    assert!(page.error.is_none());
+    assert!(page.reviewing.is_some());
+
+    let draft = Draft {
+        title: title.clone(),
+        environment: Some("long-title".to_owned()),
+        kind: Kind::Native,
+        ..Draft::default()
+    };
+    let review = prepare(&paths, &draft).unwrap();
+    let report = perform(
+        &paths,
+        draft,
+        review,
+        artwork::Draft::new(),
+        Token::new(),
+        |_| {},
+        |_| {},
+    );
+    assert!(report.registered, "{:?}", report.notes);
+    assert_eq!(card_title_of(&paths, "long-title"), title);
+}
+
+#[test]
+fn a_name_over_the_title_limit_is_refused_until_it_is_shortened() {
+    let mut page = page();
+    let _ = page.update(Event::Name("a".repeat(TITLE_MAX_CHARS + 1)));
+    let message = format!("Invalid title: can't be longer than {TITLE_MAX_CHARS} characters.");
+    assert_eq!(page.validate().unwrap_err(), message);
+
+    let _ = page.update(Event::Next);
+    assert_eq!(page.error.as_deref(), Some(message.as_str()));
+    assert_eq!(page.stage, Stage::Details);
+    assert!(page.reviewing.is_none());
+    // Create has no review to act on, and starting it anyway re-checks the Name.
+    let _ = page.update(Event::Create);
+    assert_eq!(page.stage, Stage::Details);
+    page.stage = Stage::Review;
+    let _ = page.update(Event::Create);
+    assert_eq!(page.error.as_deref(), Some(message.as_str()));
+    assert!(!page.busy());
+    page.stage = Stage::Details;
+
+    // Whitespace around the Name doesn't count toward the limit.
+    let _ = page.update(Event::Name(format!(" {} ", "a".repeat(TITLE_MAX_CHARS))));
+    assert!(page.error.is_none());
+    assert_eq!(page.validate(), Ok(()));
 }
 
 #[test]

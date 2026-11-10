@@ -471,10 +471,9 @@ impl Page {
                 "An environment named {name} already exists. Open its Settings from the library."
             ));
         }
-        // Core refuses a title with control characters at create. A title over
-        // the card's length is left alone here: the name above cuts a long one.
+        // The Name is written as the title and core refuses a bad one at
+        // create, so catch it here, where the field can still be fixed.
         if let Some(title) = self.draft.target_title()
-            && title.chars().any(char::is_control)
             && let Some(problem) = title_problem(&title)
         {
             return Err(problem);
