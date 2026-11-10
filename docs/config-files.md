@@ -410,6 +410,10 @@ motion = "system"         # system (default), full, or reduced
 interface_size = 125      # percent, 100 (default) to 200
 font = "Inter"            # no key means the built-in Noto Sans
 
+[desktop]
+tray = true               # show a tray icon (default)
+close = "quit"            # quit (default) or tray
+
 [environments.hades]
 favorite = true
 added = 2026-10-18T19:30:00Z
@@ -503,6 +507,17 @@ rewriting the file; an empty or non-string value does the same, and
 `validate` reports that. Repair keeps any integer `interface_size` and any
 string `font` and drops other types.
 
+`[desktop]` (plan 0063) is how the desktop app sits on the desktop. `tray`
+shows a tray icon and defaults to `true`. `close` is what the window's close
+button does: `quit`, the default, quits, and `tray` closes the window and
+keeps the app running in the tray. With no tray icon, or no tray on the
+desktop to show it in, `tray` quits anyway, so the app is never left running
+where you can't reach it. A value of the wrong type or an unknown `close`
+reads as the default, isn't rewritten when the app saves, and `validate`
+reports it; repair keeps any boolean `tray` and any string `close` and drops
+other types. An older wineo warns about this table in `validate`, and its
+repair drops it.
+
 `[steam]` is how the desktop app remembers what it has
 [offered](steam.md#new-installs). `auto_import` imports new installs without
 asking and defaults to `false`. `baselined` lists the Steam libraries whose
@@ -527,7 +542,8 @@ repair it: the original is copied to `library.toml.broken-<time>` (with
 `-2`, `-3` if that name is taken), and that copy is synced to disk before
 the new file replaces it. The repair keeps each setting whose line still
 reads correctly on its own, under an entry, `[view]`, `[appearance]`,
-`[steam]`, or a preset, and reports what it couldn't keep. A file from a newer wineo is never repaired;
+`[desktop]`, `[steam]`, or a preset, and reports what it couldn't keep. A
+file from a newer wineo is never repaired;
 update wineo instead. The fix that removes entries for environments that no
 longer exist adds `schema_version = 1` if the file had none.
 
