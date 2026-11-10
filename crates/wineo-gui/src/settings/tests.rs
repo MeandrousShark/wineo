@@ -3826,3 +3826,5 @@ mod appearance_tab;
 mod custom_themes;
 
 mod key_rows;
+
+mod desktop;

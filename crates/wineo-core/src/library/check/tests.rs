@@ -588,3 +588,38 @@ fn a_badly_named_preset_still_has_its_fields_checked() {
         ]
     );
 }
+
+#[test]
+fn a_clean_desktop_has_no_findings() {
+    for close in ["quit", "tray"] {
+        let inspection = inspect_text(&format!("[desktop]\ntray = false\nclose = \"{close}\"\n"));
+        assert_eq!(inspection.findings, [], "{close}");
+    }
+}
+
+#[test]
+fn bad_desktop_values_are_field_findings_and_unknown_keys_are_reported() {
+    let inspection =
+        inspect_text("[desktop]\ntray = \"yes\"\nclose = \"minimize\"\nextra = true\n");
+    assert_eq!(
+        messages(&inspection, FindingKind::FieldInvalid),
+        [
+            "library.toml: desktop.tray: expected true or false, found \"yes\"",
+            "library.toml: desktop.close: expected one of quit, tray, found \"minimize\"",
+        ]
+    );
+    assert_eq!(
+        messages(&inspection, FindingKind::KeyUnknown),
+        ["library.toml: desktop.extra: unknown key, ignored"]
+    );
+    let inspection = inspect_text("[desktop]\nclose = 1\n");
+    assert_eq!(
+        messages(&inspection, FindingKind::FieldInvalid),
+        ["library.toml: desktop.close: expected one of quit, tray, found 1"]
+    );
+    let inspection = inspect_text("desktop = 4\n");
+    assert_eq!(
+        messages(&inspection, FindingKind::FieldInvalid),
+        ["library.toml: desktop: expected a table, found 4"]
+    );
+}

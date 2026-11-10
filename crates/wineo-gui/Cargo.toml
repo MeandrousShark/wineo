@@ -21,8 +21,9 @@ iced = { version = "0.14", features = ["image-without-codecs", "svg", "tokio", "
 image = { workspace = true, features = ["webp", "gif"] }
 resvg = "0.45"
 unicode-segmentation = "1.13.3"
-tokio = { version = "1", features = ["rt", "sync", "time"] }
+tokio = { version = "1", features = ["macros", "rt", "sync", "time"] }
 ashpd = { version = "0.12.3", default-features = false, features = ["tokio"] }
+ksni = { version = "0.3.7", default-features = false, features = ["tokio"] }
 
 [dev-dependencies]
 flate2.workspace = true
@@ -35,6 +36,8 @@ wineo-gog = { workspace = true, features = ["test-server"] }
 iced_runtime = "0.14"
 # Paused time drives the rescan stream in tests.
 tokio = { version = "1", features = ["test-util"] }
+# Plays the tray host on a private bus in the tray's tests.
+zbus = { workspace = true, features = ["tokio"] }
 
 [lints]
 workspace = true

@@ -225,6 +225,25 @@ impl Page {
                 }
                 Step::none()
             }
+            Event::GlobalTray(on) => {
+                self.edited();
+                if let View::Global(editor) = &mut self.view {
+                    editor.form.draft.desktop.tray = on;
+                }
+                Step::none()
+            }
+            // Keeping running needs the tray, so the choice is locked
+            // without it.
+            Event::GlobalClose(_) if matches!(&self.view, View::Global(editor) if !editor.form.draft.desktop.tray) => {
+                Step::none()
+            }
+            Event::GlobalClose(close) => {
+                self.edited();
+                if let View::Global(editor) = &mut self.view {
+                    editor.form.draft.desktop.close = close;
+                }
+                Step::none()
+            }
             Event::GlobalArtKind(kind, on) => {
                 if let View::Global(editor) = &self.view {
                     let fetch = editor.form.draft.art_fetch.with(kind, on);
@@ -403,6 +422,8 @@ impl Page {
                     | Event::GlobalArtKind(_, _)
                     | Event::GlobalExternalRunners(_)
                     | Event::GlobalAutoImport(_)
+                    | Event::GlobalTray(_)
+                    | Event::GlobalClose(_)
                     | Event::Appearance(_)
                     | Event::EnvKey(..)
                     | Event::EnvValue(..)
@@ -425,6 +446,8 @@ impl Page {
                     | Event::GlobalArtKind(_, _)
                     | Event::GlobalExternalRunners(_)
                     | Event::GlobalAutoImport(_)
+                    | Event::GlobalTray(_)
+                    | Event::GlobalClose(_)
                     | Event::Appearance(_)
             )
         {
@@ -467,6 +490,7 @@ impl Page {
                     if let Some(disk) = &mut self.disk {
                         disk.appearance = snapshot.texts.appearance;
                         disk.auto_import = snapshot.texts.auto_import;
+                        disk.desktop = snapshot.texts.desktop;
                         disk.themes = snapshot.texts.themes;
                     }
                 } else {

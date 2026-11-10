@@ -1416,3 +1416,114 @@ fn edits_write_through_a_symlinked_library_file() {
     }
     .check();
 }
+
+#[test]
+fn desktop_reads_its_defaults_without_a_table() {
+    let fixture = Fixture::new();
+    assert_eq!(
+        load(&fixture.paths).desktop,
+        Desktop {
+            tray: true,
+            close: CloseWindow::Quit,
+        }
+    );
+    fixture.write("schema_version = 1\n[desktop]\n");
+    assert_eq!(load(&fixture.paths).desktop, Desktop::default());
+}
+
+#[test]
+fn desktop_reads_each_value_and_bad_ones_as_the_default() {
+    let fixture = Fixture::new();
+    for close in CloseWindow::ALL {
+        fixture.write(&format!(
+            "schema_version = 1\n[desktop]\ntray = false\nclose = \"{}\"\n",
+            close.as_str()
+        ));
+        let desktop = load(&fixture.paths).desktop;
+        assert_eq!((desktop.tray, desktop.close), (false, close));
+    }
+    for (tray, close) in [("\"no\"", "\"hide\""), ("0", "\"Tray\""), ("[]", "true")] {
+        fixture.write(&format!(
+            "schema_version = 1\n[desktop]\ntray = {tray}\nclose = {close}\n"
+        ));
+        let library = load(&fixture.paths);
+        assert_eq!(library.desktop, Desktop::default(), "{tray} {close}");
+        assert_eq!(library.problem, None);
+    }
+    fixture.write("schema_version = 1\ndesktop = 4\n");
+    assert_eq!(load(&fixture.paths).desktop, Desktop::default());
+}
+
+#[test]
+fn set_desktop_writes_only_the_fields_that_change() {
+    let fixture = Fixture::new();
+    // The defaults on a missing file are already what it reads as.
+    assert!(!set_desktop(&fixture.paths, &Desktop::default()).unwrap());
+    assert!(!fixture.paths.library_file().exists());
+
+    let tray_off = Desktop {
+        tray: false,
+        ..Desktop::default()
+    };
+    assert!(set_desktop(&fixture.paths, &tray_off).unwrap());
+    assert_eq!(
+        fixture.read(),
+        "schema_version = 1\n\n[desktop]\ntray = false\n"
+    );
+    assert!(!set_desktop(&fixture.paths, &tray_off).unwrap());
+
+    let keep = Desktop {
+        tray: true,
+        close: CloseWindow::Tray,
+    };
+    assert!(set_desktop(&fixture.paths, &keep).unwrap());
+    assert_eq!(
+        fixture.read(),
+        "schema_version = 1\n\n[desktop]\ntray = true\nclose = \"tray\"\n"
+    );
+    assert_eq!(load(&fixture.paths).desktop, keep);
+}
+
+#[test]
+fn a_no_op_desktop_edit_leaves_the_file_alone() {
+    let fixture = Fixture::new();
+    let text = "# mine\nschema_version = 1\n\n[desktop]\n# by hand\nclose   =   \"tray\"\n";
+    fixture.write(text);
+    let path = fixture.paths.library_file();
+    let before = fs::metadata(&path).unwrap().ino();
+    let read = load(&fixture.paths).desktop;
+    assert!(!set_desktop(&fixture.paths, &read).unwrap());
+    assert_eq!(fixture.read(), text);
+    assert_eq!(fs::metadata(&path).unwrap().ino(), before);
+
+    // A change keeps the comments and the other field as written.
+    let quit = Desktop {
+        close: CloseWindow::Quit,
+        ..read
+    };
+    assert!(set_desktop(&fixture.paths, &quit).unwrap());
+    assert_eq!(
+        fixture.read(),
+        "# mine\nschema_version = 1\n\n[desktop]\n# by hand\nclose   =   \"quit\"\n"
+    );
+}
+
+#[test]
+fn an_unknown_desktop_value_is_not_rewritten() {
+    let fixture = Fixture::new();
+    for text in [
+        "schema_version = 1\n\n[desktop]\ntray = \"yes\"\nclose = \"minimize\"\n",
+        "schema_version = 1\n\n[desktop]\nclose = 3\n",
+    ] {
+        fixture.write(text);
+        // It reads as the default, so saving the default leaves it be.
+        assert!(!set_desktop(&fixture.paths, &Desktop::default()).unwrap());
+        assert_eq!(fixture.read(), text);
+        let keep = Desktop {
+            close: CloseWindow::Tray,
+            ..Desktop::default()
+        };
+        assert!(set_desktop(&fixture.paths, &keep).unwrap());
+        assert!(fixture.read().contains("close = \"tray\""));
+    }
+}

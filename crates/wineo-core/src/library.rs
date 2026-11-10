@@ -293,6 +293,52 @@ impl Default for Appearance {
     }
 }
 
+/// How the desktop app lives on the desktop: its tray icon and what closing
+/// the window does.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Desktop {
+    pub tray: bool,
+    pub close: CloseWindow,
+}
+
+impl Default for Desktop {
+    fn default() -> Self {
+        Self {
+            tray: true,
+            close: CloseWindow::default(),
+        }
+    }
+}
+
+/// What the desktop app's close button does.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum CloseWindow {
+    #[default]
+    Quit,
+    /// Closes the window and keeps the app in the tray.
+    Tray,
+}
+
+impl CloseWindow {
+    pub const ALL: [Self; 2] = [Self::Quit, Self::Tray];
+
+    /// The value `library.toml` holds.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Quit => "quit",
+            Self::Tray => "tray",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "quit" => Some(Self::Quit),
+            "tray" => Some(Self::Tray),
+            _ => None,
+        }
+    }
+}
+
 /// A saved zoom, or None for a value that isn't an integer in range.
 fn read_zoom(item: &Item) -> Option<u16> {
     item.as_integer()
@@ -339,6 +385,7 @@ pub(crate) fn unreadable_message(line: Option<usize>, reason: &str) -> String {
 pub struct Library {
     pub view: View,
     pub appearance: Appearance,
+    pub desktop: Desktop,
     pub environments: BTreeMap<String, Entry>,
     /// Saved views by name, A to Z ignoring case.
     pub presets: Vec<(String, Preset)>,
@@ -616,6 +663,31 @@ pub fn set_appearance(paths: &Paths, appearance: &Appearance) -> Result<bool> {
     })
 }
 
+/// Writes only the fields that differ from what the file reads as, like
+/// `set_appearance`.
+pub fn set_desktop(paths: &Paths, desktop: &Desktop) -> Result<bool> {
+    edit(paths, |document| {
+        let mut changed = false;
+        if read_desktop(document).tray != desktop.tray {
+            store_value(
+                desktop_table_mut(document),
+                "tray",
+                Value::from(desktop.tray),
+            );
+            changed = true;
+        }
+        if read_desktop(document).close != desktop.close {
+            store_value(
+                desktop_table_mut(document),
+                "close",
+                Value::from(desktop.close.as_str()),
+            );
+            changed = true;
+        }
+        changed
+    })
+}
+
 pub fn stamp_added(paths: &Paths, name: &str) -> Result<bool> {
     set_added(paths, name, Timestamp::now())
 }
@@ -805,6 +877,7 @@ fn read_library(document: &DocumentMut) -> Library {
     Library {
         view,
         appearance: read_appearance(document),
+        desktop: read_desktop(document),
         environments,
         presets: preset::read_presets(document),
         other_presets: preset::read_other_presets(document),
@@ -835,6 +908,26 @@ fn read_appearance(document: &DocumentMut) -> Appearance {
         motion: read_motion(table.get("motion")),
         interface_size: read_interface_size(table.get("interface_size")),
         font: read_font(table.get("font")),
+    }
+}
+
+/// A mistyped or unknown value reads as the default, so a newer wineo's
+/// value stays in the file until the user picks another.
+fn read_desktop(document: &DocumentMut) -> Desktop {
+    let default = Desktop::default();
+    let Some(table) = document.get("desktop").and_then(Item::as_table_like) else {
+        return default;
+    };
+    Desktop {
+        tray: table
+            .get("tray")
+            .and_then(Item::as_bool)
+            .unwrap_or(default.tray),
+        close: table
+            .get("close")
+            .and_then(Item::as_str)
+            .and_then(CloseWindow::parse)
+            .unwrap_or(default.close),
     }
 }
 
@@ -1132,6 +1225,10 @@ fn view_table_mut(document: &mut DocumentMut) -> &mut dyn TableLike {
 
 fn appearance_table_mut(document: &mut DocumentMut) -> &mut dyn TableLike {
     table_mut(document.as_table_mut(), "appearance")
+}
+
+fn desktop_table_mut(document: &mut DocumentMut) -> &mut dyn TableLike {
+    table_mut(document.as_table_mut(), "desktop")
 }
 
 fn environments_table_mut(document: &mut DocumentMut) -> &mut dyn TableLike {

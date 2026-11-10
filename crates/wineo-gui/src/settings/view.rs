@@ -8,6 +8,7 @@ use wineo_core::art::Kind;
 use wineo_core::components::Component;
 use wineo_core::config::{self, Arch};
 use wineo_core::key_store::KeySource;
+use wineo_core::library::{CloseWindow, Desktop};
 
 use super::form::{self, Build, Choice, Field, GamescopeFields, List, Source, Switch};
 use super::global;
@@ -572,6 +573,11 @@ fn global_view<'a>(
         section("Launch defaults", launch.into(), palette),
         section("New environments", new_env.into(), palette),
         section("Runs", runs.into(), palette),
+        section(
+            "Desktop",
+            desktop_rows(draft.desktop, locked, palette),
+            palette
+        ),
         section("Art to fetch", art.into(), palette),
         section(
             "SteamGridDB",
@@ -611,6 +617,62 @@ fn global_view<'a>(
     .spacing(24)
     .width(Fill)
     .into()
+}
+
+/// The note under Closing the window while the tray icon is off.
+pub(super) const NEEDS_TRAY: &str = "Needs the tray icon.";
+
+/// Closing the window's dropdown label.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct CloseChoice(pub(super) CloseWindow);
+
+impl CloseChoice {
+    pub(super) const ALL: [Self; 2] = [Self(CloseWindow::Quit), Self(CloseWindow::Tray)];
+}
+
+impl std::fmt::Display for CloseChoice {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self.0 {
+            CloseWindow::Quit => "Quit",
+            CloseWindow::Tray => "Keep running in the tray",
+        })
+    }
+}
+
+/// The tray switch and what closing the window does. Keeping running needs
+/// the tray, so without it the choice stays in place, locked, with why.
+fn desktop_rows<'a>(desktop: Desktop, locked: bool, palette: Palette) -> Element<'a, Message> {
+    let close: Element<'a, Message> = if locked || !desktop.tray {
+        locked_choice(&CloseChoice(desktop.close).to_string(), palette)
+    } else {
+        pick_list(
+            CloseChoice::ALL,
+            Some(CloseChoice(desktop.close)),
+            |choice| send(Event::GlobalClose(choice.0)),
+        )
+        .on_open(send(Event::MenuOpened))
+        .on_close(send(Event::MenuClosed))
+        .width(CONTROL_WIDTH)
+        .wineo_style(palette)
+        .into()
+    };
+    let mut rows = column![
+        switch_row(
+            "Show a tray icon",
+            desktop.tray,
+            None,
+            |on| send(Event::GlobalTray(on)),
+            None,
+            locked,
+            palette,
+        ),
+        setting_row("Closing the window", close, None, palette),
+    ]
+    .spacing(12);
+    if !desktop.tray {
+        rows = rows.push(text(NEEDS_TRAY).size(13).color(palette.muted));
+    }
+    rows.into()
 }
 
 /// The auto-import switch. It stays in place with a reason when it can't do

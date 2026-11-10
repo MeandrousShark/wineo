@@ -18,9 +18,12 @@ ignore = []
 # Only licenses that OBS (OSI approved), Launchpad (OSI, FSF, or DFSG
 # approved), and Fedora's allowed list all accept, plus wineo's own. cargo-deny
 # reads "OR" in a crate's license, so a crate that offers a choice only needs
-# one of them here; that is why Unlicense and Apache-2.0 WITH LLVM-exception
-# aren't listed. 0BSD is here for the patched copy of hexf-parse in
-# third_party/, which has no choice to offer. A new entry needs all three
+# one of them here; that is why Apache-2.0 WITH LLVM-exception isn't listed.
+# 0BSD is here for the patched copy of hexf-parse in third_party/, which has
+# no choice to offer. Unlicense is here for ksni, the tray icon, which has
+# none either: OSI approved it on 2020-06-12
+# (https://opensource.org/license/unlicense), and Fedora's license data
+# (fedora-license-data 1.76) lists it as allowed. A new entry needs all three
 # policies checked first, not just the list.
 allow = [
     "0BSD",
@@ -32,5 +35,6 @@ allow = [
     "ISC",
     "MIT",
     "Unicode-3.0",
+    "Unlicense",
     "Zlib",
 ]

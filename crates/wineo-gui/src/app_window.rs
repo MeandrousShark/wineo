@@ -47,7 +47,18 @@ impl App {
         window::size(id).map(move |size| Message::Window(id, window::Event::Resized(size)))
     }
 
+    /// The close button: Keep running in the tray hides the window, even
+    /// over foreground work since nothing stops, and otherwise it quits.
     pub(crate) fn close_requested(&mut self) -> Task<Message> {
+        if self.keeps_running() {
+            self.hide_window()
+        } else {
+            self.quit_requested()
+        }
+    }
+
+    /// The tray's Quit, and the close button when it quits.
+    pub(crate) fn quit_requested(&mut self) -> Task<Message> {
         // A drag the close interrupts saves where it was, and the wait
         // below covers that write.
         let drag = self.end_zoom_drag();

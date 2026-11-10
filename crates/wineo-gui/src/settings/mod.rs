@@ -76,6 +76,10 @@ pub(crate) enum Event {
     GlobalArtKind(wineo_core::art::Kind, bool),
     GlobalExternalRunners(bool),
     GlobalAutoImport(bool),
+    /// Desktop's Show a tray icon.
+    GlobalTray(bool),
+    /// Desktop's Closing the window.
+    GlobalClose(wineo_core::library::CloseWindow),
     /// An edit on the Appearance tab, which the app previews at once.
     Appearance(appearance::Edit),
     /// Opens a folder picker for the Games folder.
@@ -263,6 +267,8 @@ impl Event {
                 | Event::GlobalArtKind(_, _)
                 | Event::GlobalExternalRunners(_)
                 | Event::GlobalAutoImport(_)
+                | Event::GlobalTray(_)
+                | Event::GlobalClose(_)
                 | Event::Appearance(_)
                 | Event::Target(..)
                 | Event::ProgramPicked(_)
@@ -328,7 +334,10 @@ impl ChangedFile {
     fn between(disk: &Texts, texts: &Texts) -> Self {
         if disk.environment != texts.environment || disk.global != texts.global {
             Self::Config
-        } else if disk.appearance != texts.appearance || disk.auto_import != texts.auto_import {
+        } else if disk.appearance != texts.appearance
+            || disk.auto_import != texts.auto_import
+            || disk.desktop != texts.desktop
+        {
             Self::Library
         } else if disk.themes != texts.themes {
             Self::Theme
@@ -616,6 +625,13 @@ impl Page {
     pub(crate) fn appearance(&self) -> Option<&appearance::Form> {
         match &self.view {
             View::Global(editor) => Some(&editor.appearance),
+            _ => None,
+        }
+    }
+    /// `[desktop]` as the global page last read it.
+    pub(crate) fn desktop(&self) -> Option<wineo_core::library::Desktop> {
+        match &self.view {
+            View::Global(editor) => Some(editor.form.loaded.desktop),
             _ => None,
         }
     }

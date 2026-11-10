@@ -95,6 +95,8 @@ pub(crate) struct Values {
     /// `[steam] auto_import` in `library.toml`, which isn't this form's file,
     /// so it's saved on its own rather than through `edits`.
     pub(crate) auto_import: bool,
+    /// `[desktop]` in `library.toml`, saved on its own the same way.
+    pub(crate) desktop: wineo_core::library::Desktop,
 }
 
 impl Values {
@@ -121,6 +123,7 @@ impl Values {
             art_fetch: config.art.fetch,
             external_runners: config.external_runners,
             auto_import: false,
+            desktop: wineo_core::library::Desktop::default(),
             env: config
                 .env
                 .iter()
@@ -220,11 +223,17 @@ impl Form {
     pub(crate) fn revert(&mut self) {
         self.draft = self.loaded.clone();
     }
-    /// The new base can differ in `auto_import` alone, from another window,
-    /// and an untouched switch follows it.
+    /// The new base can differ in `auto_import` or `[desktop]` alone, from
+    /// another window, and an untouched control follows it.
     pub(crate) fn rebase(&mut self, values: Values) {
         if self.draft.auto_import == self.loaded.auto_import {
             self.draft.auto_import = values.auto_import;
+        }
+        if self.draft.desktop.tray == self.loaded.desktop.tray {
+            self.draft.desktop.tray = values.desktop.tray;
+        }
+        if self.draft.desktop.close == self.loaded.desktop.close {
+            self.draft.desktop.close = values.desktop.close;
         }
         self.loaded = values;
     }
@@ -250,7 +259,18 @@ impl Form {
     }
     pub(crate) fn changes(&self) -> usize {
         let edits = self.edits();
-        edits.pairs.len() + edits.unset.len() + usize::from(self.auto_import_edit().is_some())
+        edits.pairs.len()
+            + edits.unset.len()
+            + usize::from(self.auto_import_edit().is_some())
+            + usize::from(self.draft.desktop.tray != self.loaded.desktop.tray)
+            + usize::from(self.draft.desktop.close != self.loaded.desktop.close)
+    }
+    /// What to save to `library.toml`, if anything changed there.
+    pub(crate) fn library_edits(&self) -> super::load::LibraryEdits {
+        super::load::LibraryEdits {
+            auto_import: self.auto_import_edit(),
+            desktop: (self.draft.desktop != self.loaded.desktop).then_some(self.draft.desktop),
+        }
     }
     /// What to save for `auto_import`, if it changed.
     pub(crate) fn auto_import_edit(&self) -> Option<bool> {
